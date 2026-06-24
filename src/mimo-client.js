@@ -14,7 +14,7 @@ export class MimoClient {
     this.config = config;
   }
 
-  async checkHealth() {
+  async checkHealth(requestedModel = this.config.model) {
     const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/models`;
     try {
       const response = await fetch(endpoint, {
@@ -24,7 +24,7 @@ export class MimoClient {
       if (!response.ok) return { reachable: false, modelAvailable: false, status: response.status };
       const body = await response.json();
       const modelIds = Array.isArray(body.data) ? body.data.map((item) => item?.id).filter(Boolean) : [];
-      const requested = this.config.model;
+      const requested = requestedModel || this.config.model;
       const requestedTail = requested.split("/").pop();
       const modelAvailable = modelIds.some((id) => id === requested || id.split("/").pop() === requestedTail);
       return { reachable: true, modelAvailable, status: response.status, modelIds };
@@ -33,14 +33,14 @@ export class MimoClient {
     }
   }
 
-  async generateJson({ prompt, frames = [] }) {
-    return this.generateJsonWithMedia({ prompt, frames });
+  async generateJson({ prompt, frames = [], model = null, maxCompletionTokens = null } = {}) {
+    return this.generateJsonWithMedia({ prompt, frames, model, maxCompletionTokens });
   }
 
-  async generateJsonWithMedia({ prompt, frames = [], video = null }) {
+  async generateJsonWithMedia({ prompt, frames = [], video = null, model = null, maxCompletionTokens = null }) {
     const canUseVideo = Boolean(video?.dataUrl) && this.config.mediaMode !== "frames";
     try {
-      return await this.requestJson({ prompt, frames, video, useVideo: canUseVideo });
+      return await this.requestJson({ prompt, frames, video, useVideo: canUseVideo, model, maxCompletionTokens });
     } catch (error) {
       const canFallback = canUseVideo
         && this.config.mediaMode === "auto"
@@ -48,13 +48,13 @@ export class MimoClient {
         && error instanceof ModelResponseError
         && [400, 415, 422].includes(error.status);
       if (!canFallback) throw error;
-      return this.requestJson({ prompt, frames, useVideo: false });
+      return this.requestJson({ prompt, frames, useVideo: false, model, maxCompletionTokens });
     }
   }
 
-  async requestJson({ prompt, frames = [], video = null, useVideo = false }) {
+  async requestJson({ prompt, frames = [], video = null, useVideo = false, model = null, maxCompletionTokens = null }) {
     const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`;
-    const body = buildRequestBody(this.config, { prompt, frames, video, useVideo });
+    const body = buildRequestBody(this.config, { prompt, frames, video, useVideo }, { model, maxCompletionTokens });
 
     const response = await fetch(endpoint, {
       method: "POST",
@@ -82,13 +82,13 @@ export class MimoClient {
   }
 }
 
-export function buildRequestBody(config, { prompt, frames = [], video = null, useVideo = false }) {
+export function buildRequestBody(config, { prompt, frames = [], video = null, useVideo = false }, overrides = {}) {
   const visualContent = useVideo && video?.dataUrl
     ? [{ type: "video_url", video_url: { url: video.dataUrl }, fps: config.videoFps ?? 2, media_resolution: config.videoMediaResolution || "default" }]
     : frames.map((frame) => ({ type: "image_url", image_url: { url: frame.dataUrl } }));
   const body = {
-    model: config.model,
-    max_completion_tokens: config.maxCompletionTokens ?? 8192,
+    model: overrides.model || config.model,
+    max_completion_tokens: overrides.maxCompletionTokens ?? config.maxCompletionTokens ?? 8192,
     temperature: 0.3,
     top_p: 0.95,
     stream: false,

@@ -18,8 +18,11 @@ flowchart LR
     C --> D[sourceScriptReconstruction]
     D --> E[creativeBrief]
     E --> F[themeVariants]
+    F --> H[选择主题变体]
+    H --> I[fullStory]
     G[固定角色与垂直赛道] --> E
     G --> F
+    G --> I
 ```
 
 ### 阶段一：referenceAnalysis
@@ -63,12 +66,25 @@ flowchart LR
 
 只替换姓名或职业不算主题变体。变体必须产生新的具体任务、环境压力、情感媒介、帮助方式和结尾仪式。
 
+### 阶段五：fullStory
+
+用户选择一个 `themeVariants.variants[]` 后，进入独立完整剧情页。该阶段不重新发散主题，只围绕被选中的主题变体扩写，输出：
+
+- `characterBible`：锁定固定角色、被关爱对象、帮助者与对白规则。
+- `beatSheet`：45–90 秒短视频的完整剧情节拍。
+- `sceneScript`：可拍摄分场，包含地点、人物、可见动作、对白、镜头/声音、情绪节点和剧作功能。
+- `keyProps`、`shootingPlan`、`retentionPlan`：进入拍摄筹备需要的道具、场景和完播设计。
+- `experienceFidelity` 与 `transformationProof`：继续证明同定位、同受众、同情绪、同类驱动力、同款高价值桥段，同时重写具体表达。
+- `continuityAndSafetyCheck`：确认固定角色没有被原片表面身份污染，也没有复用 protectedExpressions。
+
+完整剧情阶段默认调用 `mimo-v2.5-pro`，通过 `MIMO_STORY_MODEL` 单独配置；其余四阶段默认仍用 `MIMO_MODEL=mimo-v2.5`。
+
 ## 3. 模型与媒体策略
 
 - 浏览器从本地视频均匀采样 6–10 张关键帧，最长边压缩到 720px；在 MiMo `auto/video` 模式且文件大小允许时，同时用 base64 `video_url` 发送原生视频。应用不持久化视频。
 - `auto` 模式下，推理服务不接受原生视频时自动回退关键帧；超出大小限制时直接走关键帧。
 - MiMo 多模态视觉输入必须在文本指令之前；用户消息末尾保留 `/no_think`，请求体同时设置 `thinking={"type":"disabled"}`。
-- 默认使用 `mimo-v2.5`，推理参数 `temperature=0.3`、`top_p=0.95`、`max_completion_tokens=8192`、`stream=false`。
+- 默认四阶段使用 `mimo-v2.5`，完整剧情阶段使用 `mimo-v2.5-pro`。基础推理参数 `temperature=0.3`、`top_p=0.95`、`stream=false`；四阶段默认 `max_completion_tokens=8192`，完整剧情默认 `MIMO_STORY_MAX_COMPLETION_TOKENS=12288`。
 - 当前实现通过小米 OpenAI 兼容 `/chat/completions` 接口连接 MiMo V2.5；原生视频使用 `video_url`，并携带 `fps=2`、`media_resolution=default`。未配置服务时使用明确标注的演示模式。
 
 ## 4. 当前边界

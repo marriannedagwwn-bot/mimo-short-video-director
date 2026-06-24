@@ -1,10 +1,12 @@
-import { analysisPrompt, briefPrompt, reconstructionPrompt, variantsPrompt } from "./prompts.js";
-import { mockAnalysis, mockBrief, mockReconstruction, mockVariants } from "./mock.js";
-import { ensureCreativeBriefMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, requireFrames, requireObject, requireText } from "./validation.js";
+import { analysisPrompt, briefPrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt } from "./prompts.js";
+import { mockAnalysis, mockBrief, mockFullStory, mockReconstruction, mockVariants } from "./mock.js";
+import { ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, requireFrames, requireObject, requireText } from "./validation.js";
 
 export class WorkflowService {
-  constructor({ client = null } = {}) {
+  constructor({ client = null, storyModel = "mimo-v2.5-pro", storyMaxCompletionTokens = 12288 } = {}) {
     this.client = client;
+    this.storyModel = storyModel;
+    this.storyMaxCompletionTokens = storyMaxCompletionTokens;
   }
 
   get mode() {
@@ -51,6 +53,23 @@ export class WorkflowService {
       ? mockVariants(input)
       : await this.client.generateJson({ prompt: variantsPrompt(input) });
     return ensureThemeVariantsMatchProfile(ensureOutputContract(result, "themeVariants"), profile, input.creativeBrief);
+  }
+
+  async createFullStory(input) {
+    requireObject(input, "请求");
+    requireObject(input.creativeBrief, "creativeBrief");
+    requireObject(input.variant, "variant");
+    const profile = requireObject(input.creatorProfile, "creatorProfile");
+    requireText(profile.fixedCharacter, "固定角色");
+    requireText(profile.vertical, "垂直赛道");
+    const result = !this.client
+      ? mockFullStory(input)
+      : await this.client.generateJson({
+        prompt: fullStoryPrompt(input),
+        model: this.storyModel,
+        maxCompletionTokens: this.storyMaxCompletionTokens
+      });
+    return ensureFullStoryMatchesProfile(ensureOutputContract(result, "fullStory"), profile, input.creativeBrief, input.variant);
   }
 
   async run(input) {

@@ -29,18 +29,21 @@ export function getConfig() {
   const maxCompletionTokens = Math.round(clampNumber(process.env.MIMO_MAX_COMPLETION_TOKENS, 8192, 512, 32768));
   const requestedThinking = process.env.MIMO_THINKING?.trim().toLowerCase() || "disabled";
   const thinking = ["disabled", "enabled"].includes(requestedThinking) ? requestedThinking : "disabled";
+  const storyMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_STORY_MAX_COMPLETION_TOKENS, 12288, 1024, 32768));
   return {
     port: Number(process.env.PORT || 4173),
     mimo: {
       baseUrl,
       apiKey: process.env.MIMO_API_KEY?.trim() || "",
       model: process.env.MIMO_MODEL?.trim() || "mimo-v2.5",
+      storyModel: process.env.MIMO_STORY_MODEL?.trim() || "mimo-v2.5-pro",
       jsonMode: process.env.MIMO_JSON_MODE === "true",
       mediaMode,
       nativeVideoMaxBytes: Math.floor(nativeVideoMaxMb * 1024 * 1024),
       videoFps,
       videoMediaResolution,
       maxCompletionTokens,
+      storyMaxCompletionTokens,
       thinking,
       enabled: Boolean(baseUrl)
     }

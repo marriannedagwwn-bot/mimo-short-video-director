@@ -45,7 +45,8 @@ const outputContracts = {
   referenceAnalysis: ["contentPositioning", "targetAudience", "storySynopsis", "characters", "protagonistIdentity", "careRecipient", "dialogueStyle", "shotRhythm", "emotionCurve", "retentionDrivers", "whyWatchToEnd", "analysisConfidence", "uncertainties"],
   sourceScriptReconstruction: ["scenes", "coreEventSequence", "relationshipPattern", "endingAction", "turningPoints", "uncertainties"],
   creativeBrief: ["contentType", "targetAudience", "coreEmotion", "storyEngine", "emotionStructure", "roleAndOccupationMapping", "reusableHighValueBeats", "controlledRewriteVariables", "protectedExpressions", "minimumTransformationRules", "allowedNarrativeComponents", "nonNegotiableExperience", "creativeDistancePolicy"],
-  themeVariants: ["variants"]
+  themeVariants: ["variants"],
+  fullStory: ["selectedVariantId", "title", "oneLinePremise", "targetDurationSeconds", "shootingSynopsis", "characterBible", "beatSheet", "sceneScript", "keyProps", "shootingPlan", "dialogueStyleGuide", "retentionPlan", "experienceFidelity", "transformationProof", "continuityAndSafetyCheck", "uncertainties"]
 };
 
 export function ensureOutputContract(value, contract) {
@@ -56,7 +57,8 @@ export function ensureOutputContract(value, contract) {
     referenceAnalysis: ["characters", "emotionCurve", "retentionDrivers", "uncertainties"],
     sourceScriptReconstruction: ["scenes", "coreEventSequence", "turningPoints", "uncertainties"],
     creativeBrief: ["emotionStructure", "roleAndOccupationMapping", "reusableHighValueBeats", "controlledRewriteVariables", "protectedExpressions", "minimumTransformationRules", "allowedNarrativeComponents"],
-    themeVariants: ["variants"]
+    themeVariants: ["variants"],
+    fullStory: ["beatSheet", "sceneScript", "keyProps", "shootingPlan", "retentionPlan", "uncertainties"]
   }[contract] || [];
   const wrongArrays = arrayFields.filter((key) => !Array.isArray(value[key]));
   if (wrongArrays.length) throw new OutputContractError(`${contract} 字段类型无效：${wrongArrays.join("、")} 必须是数组`);
@@ -66,6 +68,10 @@ export function ensureOutputContract(value, contract) {
     validateProtectedExpressions(value.protectedExpressions);
   }
   if (contract === "themeVariants" && value.variants.length < 1) throw new OutputContractError("themeVariants 至少需要一个主题方案");
+  if (contract === "fullStory") {
+    if (value.beatSheet.length < 1) throw new OutputContractError("fullStory 至少需要一个剧情节拍");
+    if (value.sceneScript.length < 1) throw new OutputContractError("fullStory 至少需要一个可拍摄分场");
+  }
   return value;
 }
 
@@ -136,6 +142,48 @@ export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}, crea
   if (mismatches.length) {
     throw new OutputContractError(`themeVariants 未锁定固定角色：${mismatches.join("；")}`);
   }
+  return value;
+}
+
+export function ensureFullStoryMatchesProfile(value, creatorProfile = {}, creativeBrief = null, variant = null) {
+  const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
+  if (variant?.id && String(value.selectedVariantId || "") !== String(variant.id)) {
+    throw new OutputContractError(`fullStory.selectedVariantId 必须等于选中的主题变体 ${variant.id}`);
+  }
+  if (!fixedName) return value;
+
+  const fixedProfile = String(creatorProfile.fixedCharacter || "");
+  const protectedTerms = collectProtectedTermsFromBrief(creativeBrief, fixedProfile);
+  const protagonistLeakTerms = incompatibleProtagonistSurfaceTerms(fixedProfile);
+  const visibleLeakTerms = [...protectedTerms, ...incompatibleBodySurfaceTerms(fixedProfile)];
+  const protagonist = value.characterBible?.protagonist || {};
+  const protagonistText = JSON.stringify(protagonist);
+  const fullText = JSON.stringify(value);
+  const sceneText = JSON.stringify({
+    title: value.title,
+    oneLinePremise: value.oneLinePremise,
+    shootingSynopsis: value.shootingSynopsis,
+    beatSheet: value.beatSheet,
+    sceneScript: value.sceneScript,
+    keyProps: value.keyProps
+  });
+
+  const mismatches = [];
+  if (!protagonistText.includes(fixedName)) {
+    mismatches.push(`characterBible.protagonist 未包含固定角色「${fixedName}」`);
+  }
+  if (!fullText.includes(fixedName)) {
+    mismatches.push(`fullStory 未使用固定角色「${fixedName}」`);
+  }
+  const protagonistHits = findTerms(protagonistText, [...protectedTerms, ...protagonistLeakTerms]);
+  if (protagonistHits.length) {
+    mismatches.push(`主角设定混入原片表面身份或非用户设定身份：${protagonistHits.join("、")}`);
+  }
+  const visibleHits = findTerms(sceneText, visibleLeakTerms);
+  if (visibleHits.length) {
+    mismatches.push(`剧情文本复用了禁止表面表达：${visibleHits.join("、")}`);
+  }
+  if (mismatches.length) throw new OutputContractError(`fullStory 未锁定固定角色：${mismatches.join("；")}`);
   return value;
 }
 

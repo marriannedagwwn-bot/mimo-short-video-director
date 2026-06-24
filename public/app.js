@@ -5,10 +5,14 @@ const state = {
   frames: [],
   metadata: null,
   output: {},
+  selectedVariantId: null,
+  fullStories: {},
   mode: "demo",
   mediaMode: "auto",
+  storyModel: "mimo-v2.5-pro",
   nativeVideoMaxBytes: 0,
-  running: false
+  running: false,
+  storyRunning: false
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -19,7 +23,10 @@ const elements = {
   fixedCharacter: $("#fixedCharacter"), vertical: $("#vertical"), constraints: $("#constraints"), variantCount: $("#variantCount"),
   run: $("#runWorkflow"), error: $("#errorMessage"), modelState: $("#modelState"),
   empty: $("#emptyResults"), resultStack: $("#resultStack"), export: $("#exportButton"),
-  analysis: $("#analysisResult"), script: $("#scriptResult"), brief: $("#briefResult"), variants: $("#variantsResult")
+  analysis: $("#analysisResult"), script: $("#scriptResult"), brief: $("#briefResult"), variants: $("#variantsResult"),
+  mainPage: $("#top"), storyPage: $("#storyPage"), storyModelName: $("#storyModelName"),
+  selectedVariantSummary: $("#selectedVariantSummary"), storyStatus: $("#storyStatus"),
+  storyGenerate: $("#generateFullStory"), fullStory: $("#fullStoryResult"), backToResults: $("#backToResults")
 };
 
 init();
@@ -32,17 +39,23 @@ async function init() {
     const health = await fetch("/api/health").then((response) => response.json());
     state.mode = health.mode;
     state.mediaMode = health.mediaMode || "auto";
+    state.storyModel = health.storyModel || "mimo-v2.5-pro";
     state.nativeVideoMaxBytes = health.nativeVideoMaxBytes || 0;
-    const connected = health.mode === "mimo" && health.providerReachable && health.modelAvailable;
+    elements.storyModelName.textContent = state.storyModel.split("/").pop();
+    const storyReady = health.storyModelAvailable !== false;
+    const connected = health.mode === "mimo" && health.providerReachable && health.modelAvailable && storyReady;
     elements.modelState.className = `model-state ${connected ? "ready" : health.mode === "mimo" ? "" : "demo"}`;
     elements.modelState.lastElementChild.textContent = connected
-      ? `MiMo 已连接 · ${health.model.split("/").pop()}`
+      ? `MiMo 已连接 · ${health.model.split("/").pop()} / 剧情 ${state.storyModel.split("/").pop()}`
       : health.mode === "mimo"
-        ? health.providerReachable ? "MiMo 可访问，但指定模型未加载" : "MiMo 已配置，但服务不可达"
+        ? health.providerReachable
+          ? health.modelAvailable ? `完整剧情模型未加载：${state.storyModel.split("/").pop()}` : "MiMo 可访问，但指定模型未加载"
+          : "MiMo 已配置，但服务不可达"
         : "演示模式 · 配置 MiMo 后启用真实分析";
   } catch {
     elements.modelState.lastElementChild.textContent = "服务连接失败";
   }
+  renderRoute();
 }
 
 function bindEvents() {
@@ -53,6 +66,13 @@ function bindEvents() {
   elements.replace.addEventListener("click", () => elements.input.click());
   elements.run.addEventListener("click", runWorkflow);
   elements.export.addEventListener("click", exportJson);
+  elements.variants.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-story-variant]");
+    if (button) navigateToStory(button.dataset.storyVariant);
+  });
+  elements.backToResults.addEventListener("click", backToMainResults);
+  elements.storyGenerate.addEventListener("click", () => generateFullStory({ force: true }));
+  window.addEventListener("popstate", renderRoute);
   [elements.fixedCharacter, elements.vertical, elements.constraints].forEach((element) => element.addEventListener("input", () => { saveProfile(); validateReady(); }));
 }
 
@@ -160,6 +180,8 @@ async function runWorkflow() {
   if (state.frames.length < 3 || !creatorProfile.fixedCharacter || !creatorProfile.vertical) return showError("请先上传视频，并填写固定角色和垂直赛道。 ");
   state.running = true;
   state.output = {};
+  state.fullStories = {};
+  state.selectedVariantId = null;
   showError("");
   setRunning(true);
   resetPipeline();
@@ -276,8 +298,143 @@ function renderVariants(data) {
       </div>
       <ul class="mini-beats">${(variant.storyOutline || []).map((beat) => `<li><b>${escape(beat.beat)}</b><span><strong>${escape(beat.phase)}</strong> · ${escape(beat.action)}</span></li>`).join("")}</ul>
       <div class="variant-ending"><b>结尾仪式：</b>${escape(variant.endingRitual)}</div>
+      <button class="outline-button variant-story-button" type="button" data-story-variant="${escape(variant.id)}">进入完整剧情 →</button>
     </div>`).join("")}</div>`;
   reveal(elements.variants);
+}
+
+function navigateToStory(variantId) {
+  if (!variantId) return;
+  state.selectedVariantId = variantId;
+  history.pushState({ storyVariantId: variantId }, "", `/story/${encodeURIComponent(variantId)}`);
+  renderStoryPage({ autoGenerate: true });
+}
+
+function backToMainResults() {
+  history.pushState({}, "", "/");
+  renderMainPage();
+  const target = elements.variants.classList.contains("hidden") ? elements.resultStack : elements.variants;
+  target?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderRoute() {
+  const match = location.pathname.match(/^\/story\/([^/]+)/);
+  if (match) {
+    state.selectedVariantId = decodeURIComponent(match[1]);
+    renderStoryPage({ autoGenerate: false });
+  } else {
+    renderMainPage();
+  }
+}
+
+function renderMainPage() {
+  elements.storyPage.classList.add("hidden");
+  elements.mainPage.classList.remove("hidden");
+}
+
+function renderStoryPage({ autoGenerate = false } = {}) {
+  elements.mainPage.classList.add("hidden");
+  elements.storyPage.classList.remove("hidden");
+  window.scrollTo({ top: 0, behavior: "instant" });
+  const variant = selectedVariant();
+  renderSelectedVariantSummary(variant);
+  const existing = variant ? state.fullStories[variant.id] : null;
+  if (existing) {
+    renderFullStory(existing);
+    setStoryStatus(`已生成完整剧情 · ${state.storyModel.split("/").pop()}`, "ready");
+  } else {
+    elements.fullStory.classList.add("hidden");
+    elements.fullStory.innerHTML = "";
+    if (variant) {
+      setStoryStatus("准备生成完整剧情。", "");
+      if (autoGenerate) generateFullStory();
+    } else {
+      setStoryStatus("当前页面没有可用主题变体。请先返回工作台，完成视频分析并选择一个主题变体。", "error");
+    }
+  }
+  elements.storyGenerate.disabled = !variant || state.storyRunning;
+}
+
+function renderSelectedVariantSummary(variant) {
+  if (!variant) {
+    elements.selectedVariantSummary.innerHTML = `<div class="warning-box"><b>缺少选中主题。</b> 当前浏览器状态里没有主题变体结果，无法继续生成完整剧情。</div>`;
+    return;
+  }
+  elements.selectedVariantSummary.innerHTML = `
+    <span class="variant-number">${escape(variant.id)} · SELECTED</span>
+    <h3>${escape(variant.title)}</h3>
+    <p>${escape(variant.logline || variant.oneLineHook)}</p>
+    <div class="variant-cast compact">
+      <span><b>主角</b>${escape(variant.characterSetup?.protagonist || "待确认")}</span>
+      <span><b>任务</b>${escape(variant.newTask || "待确认")}</span>
+      <span><b>压力</b>${escape(variant.environmentPressure || "待确认")}</span>
+      <span><b>媒介</b>${escape(variant.emotionalMedium || "待确认")}</span>
+    </div>`;
+}
+
+async function generateFullStory({ force = false } = {}) {
+  if (state.storyRunning) return;
+  const variant = selectedVariant();
+  if (!variant) return setStoryStatus("请先选择一个可拍摄主题变体。", "error");
+  if (!force && state.fullStories[variant.id]) {
+    renderFullStory(state.fullStories[variant.id]);
+    return;
+  }
+  state.storyRunning = true;
+  setStoryRunning(true);
+  setStoryStatus(`正在调用 ${state.storyModel.split("/").pop()} 生成完整剧情…`, "active");
+  try {
+    const fullStory = await api("/api/full-story", {
+      referenceAnalysis: state.output.referenceAnalysis,
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+      creativeBrief: state.output.creativeBrief,
+      themeVariants: state.output.themeVariants,
+      variant,
+      creatorProfile: profile()
+    });
+    state.fullStories[variant.id] = fullStory;
+    state.output.fullStories = state.fullStories;
+    state.output.fullStory = fullStory;
+    renderFullStory(fullStory);
+    setStoryStatus(`完整剧情已生成 · ${state.storyModel.split("/").pop()}`, "ready");
+    elements.export.classList.remove("hidden");
+  } catch (error) {
+    setStoryStatus(error.message || "完整剧情生成失败", "error");
+  } finally {
+    state.storyRunning = false;
+    setStoryRunning(false);
+  }
+}
+
+function renderFullStory(data) {
+  elements.fullStory.innerHTML = `${resultHeader("FULL STORY", data.title || "完整剧情", `${escape(data.targetDurationSeconds || 60)} 秒`)}
+    <div class="summary-strip">${escape(data.oneLinePremise || data.shootingSynopsis)}</div>
+    <div class="data-grid">
+      ${cell("主角锁定", data.characterBible?.protagonist?.identity || data.characterBible?.protagonist?.name)}
+      ${cell("被关爱对象", joinParts(data.characterBible?.careRecipient, ["identity", "implicitNeed"]))}
+      ${cell("对白规则", data.dialogueStyleGuide?.protagonistSpeechRule || data.characterBible?.protagonist?.speechRules)}
+    </div>
+    ${block("剧情梗概", `<p class="long-copy">${escape(data.shootingSynopsis)}</p>`)}
+    ${block("剧情节拍", `<div class="beat-list">${(data.beatSheet || []).map((beat) => `<div class="beat"><strong>${escape(beat.timeRange)} · ${escape(beat.emotion)}</strong><p>${escape(beat.storyAction)}<br><b>功能：</b>${escape(beat.dramaticFunction)}<br><b>保留价值：</b>${escape(beat.retainedValueFromBrief)}</p></div>`).join("")}</div>`)}
+    ${block("可拍分场剧本", `<div class="timeline">${(data.sceneScript || []).map((scene) => `<div class="scene">
+      <span class="scene-id">${escape(scene.sceneId)}</span>
+      <div class="scene-head"><strong>${escape(scene.location)}</strong><span>${escape(scene.timeRange)}</span></div>
+      <p><b>人物：</b>${escape((scene.characters || []).join("、"))}</p>
+      <p><b>动作：</b>${escape(scene.visibleAction)}</p>
+      <p><b>对白：</b>${formatDialogue(scene.dialogue)}</p>
+      <p><b>镜头/声音：</b>${escape(scene.shotAndSound)}</p>
+      <div class="scene-meta"><span>${escape(scene.emotionNode)}</span><span>${escape(scene.dramaticFunction)}</span></div>
+      <p><b>拍摄备注：</b>${escape(scene.shootingNotes)}</p>
+    </div>`).join("")}</div>`)}
+    ${block("关键道具", `<div class="rule-list">${(data.keyProps || []).map((item) => `<div class="rule"><strong>${escape(item.prop)}</strong><p>${escape(item.storyFunction)}<br>${escape(item.visualUse)}<br><b>避相似：</b>${escape(item.avoidSimilarityNote)}</p></div>`).join("")}</div>`)}
+    ${block("拍摄计划", `<div class="rule-list">${(data.shootingPlan || []).map((item) => `<div class="rule"><strong>${escape(item.unit)}</strong><p>${escape(item.setup)}<br><b>必拍：</b>${escape(item.mustCapture)}<br><b>执行：</b>${escape(item.practicalNote)}</p></div>`).join("")}</div>`)}
+    ${block("体验保真", `<div class="data-grid">
+      ${cell("定位", data.experienceFidelity?.positioning)}${cell("受众", data.experienceFidelity?.audience)}${cell("情绪", data.experienceFidelity?.emotion)}
+      ${cell("驱动力", data.experienceFidelity?.plotDriver)}${cell("高价值桥段", data.experienceFidelity?.highValueBeats)}${cell("改写证明", data.transformationProof?.changedVisualExpression)}
+    </div>`)}
+    <div class="warning-box"><b>连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
+    ${uncertainties(data.uncertainties)}`;
+  reveal(elements.fullStory);
 }
 
 function resultHeader(kicker, title, badge = "") {
@@ -296,11 +453,21 @@ function setStage(stage, status) {
 }
 function resetPipeline() { document.querySelectorAll(".pipeline li").forEach((item) => { item.className = ""; item.querySelector("b").textContent = "等待"; }); }
 function setRunning(running) { elements.run.classList.toggle("running", running); elements.run.querySelector("span").textContent = running ? "AI 导演工作中…" : "启动 AI 导演"; elements.run.disabled = running; }
+function setStoryRunning(running) {
+  elements.storyGenerate.classList.toggle("running", running);
+  elements.storyGenerate.querySelector("span").textContent = running ? "完整剧情生成中…" : `用 ${state.storyModel.split("/").pop()} 生成完整剧情`;
+  elements.storyGenerate.disabled = running || !selectedVariant();
+}
+function setStoryStatus(message, tone = "") {
+  elements.storyStatus.textContent = message;
+  elements.storyStatus.className = `story-status ${tone}`;
+}
 function validateReady() { if (!state.running) elements.run.disabled = !(state.frames.length >= 3 && elements.fixedCharacter.value.trim() && elements.vertical.value.trim()); }
 function showError(message) { elements.error.textContent = message; }
 function profile() { return { fixedCharacter: elements.fixedCharacter.value.trim(), vertical: elements.vertical.value.trim(), constraints: elements.constraints.value.trim() }; }
 function saveProfile() { localStorage.setItem("directorProfile", JSON.stringify(profile())); }
 function restoreProfile() { try { const data = JSON.parse(localStorage.getItem("directorProfile")); if (data) { elements.fixedCharacter.value = data.fixedCharacter || ""; elements.vertical.value = data.vertical || ""; elements.constraints.value = data.constraints || ""; } } catch {} }
+function selectedVariant() { return (state.output.themeVariants?.variants || []).find((variant) => String(variant.id) === String(state.selectedVariantId)); }
 
 function exportJson() {
   const payload = { exportedAt: new Date().toISOString(), mode: state.mode, sourceVideo: state.metadata, creatorProfile: profile(), ...state.output };
@@ -314,6 +481,10 @@ function exportJson() {
 
 function escape(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
+}
+function formatDialogue(items = []) {
+  if (!Array.isArray(items) || !items.length) return "无对白，以动作和声画推进";
+  return items.map((item) => `${escape(item.speaker || "角色")}：${escape(item.line || "")}${item.deliveryOrSubtext ? `（${escape(item.deliveryOrSubtext)}）` : ""}`).join("<br>");
 }
 function formatBytes(bytes) { if (!bytes) return "0 B"; const unit = Math.min(3, Math.floor(Math.log(bytes) / Math.log(1024))); return `${(bytes / (1024 ** unit)).toFixed(unit ? 1 : 0)} ${["B", "KB", "MB", "GB"][unit]}`; }
 function formatTime(seconds) { const value = Math.max(0, Math.floor(Number(seconds) || 0)); return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`; }

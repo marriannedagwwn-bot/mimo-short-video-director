@@ -138,6 +138,68 @@ creativeBrief：${JSON.stringify(input.creativeBrief)}
 每个方案必须是不同的具体主题，不是只换职业名称。必须能看出保留了什么剧作价值、改写了什么具体表达。不要复用 protectedExpressions。${JSON_ONLY}`;
 }
 
+export function fullStoryPrompt(input) {
+  const variant = input.variant || {};
+  return `${SYSTEM_PROMPT}
+
+你现在进入 AI 导演的“完整剧情”阶段。上游已经完成 referenceAnalysis、sourceScriptReconstruction、creativeBrief 和一个被用户选中的可拍摄主题变体。请只围绕被选中的主题变体扩写完整剧情，不要重新发散成新选题。
+
+使用目标模型：mimo-v2.5-pro。任务目标是生成可直接进入拍摄筹备的完整剧情，而不是视频大纲。
+
+固定角色：${input.creatorProfile?.fixedCharacter || "未指定"}
+垂直赛道：${input.creatorProfile?.vertical || "未指定"}
+创作限制：${input.creatorProfile?.constraints || "无"}
+选中主题变体：${JSON.stringify(variant)}
+creativeBrief：${JSON.stringify(input.creativeBrief)}
+referenceAnalysis 摘要：${JSON.stringify(input.referenceAnalysis || {})}
+sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstruction || {})}
+
+硬约束：
+- selectedVariantId 必须等于选中主题变体 id：${variant.id || "未指定"}。
+- 主角必须锁定为上方固定角色，不能改名、不能换身份、不能降级为旁观者或帮助者。
+- 如果固定角色是人类儿童/学生/村民，就必须保持该身份；不得继承原片表面形象、服装拟态、动物身份、玩偶身份、快递员外壳或尾巴/翅膀/爪子等身体动作。
+- 可以继续使用送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾，但要完全重写人物、任务细节、道具、对白、场面调度和镜头表达。
+- 如果用户限制了角色说话方式，例如“只用嗷/嗷呜表达”，对白必须服从该限制；可以用动作备注补足信息，不要让角色突然说完整成人台词。
+- 每场戏都要能拍：写清地点、人物、动作、对白/声画信息、镜头建议、情绪节点和剧作功能。
+
+输出 fullStory，严格使用以下结构：
+{
+  "selectedVariantId":"",
+  "title":"",
+  "oneLinePremise":"",
+  "targetDurationSeconds":60,
+  "shootingSynopsis":"",
+  "characterBible":{
+    "protagonist":{"name":"","identity":"","traits":[], "speechRules":"", "signatureBehaviors":[]},
+    "careRecipient":{"nameOrLabel":"", "identity":"", "explicitNeed":"", "implicitNeed":"", "relationshipToProtagonist":""},
+    "helpers":[{"nameOrLabel":"", "functionInStory":"", "relationshipToProtagonist":"", "helpingAction":""}]
+  },
+  "beatSheet":[{"beat":1, "timeRange":"", "storyAction":"", "emotion":"", "dramaticFunction":"", "retainedValueFromBrief":""}],
+  "sceneScript":[{
+    "sceneId":"S1",
+    "timeRange":"",
+    "location":"",
+    "characters":[],
+    "visibleAction":"",
+    "dialogue":[{"speaker":"", "line":"", "deliveryOrSubtext":""}],
+    "shotAndSound":"",
+    "emotionNode":"",
+    "dramaticFunction":"",
+    "shootingNotes":""
+  }],
+  "keyProps":[{"prop":"", "storyFunction":"", "visualUse":"", "avoidSimilarityNote":""}],
+  "shootingPlan":[{"unit":"", "setup":"", "mustCapture":"", "practicalNote":""}],
+  "dialogueStyleGuide":{"overallTone":"", "protagonistSpeechRule":"", "supportingCharactersSpeechRule":"", "forbiddenDialoguePatterns":[]},
+  "retentionPlan":[{"moment":"", "viewerQuestion":"", "payoff":"", "approxTime":""}],
+  "experienceFidelity":{"positioning":"", "audience":"", "emotion":"", "plotDriver":"", "highValueBeats":""},
+  "transformationProof":{"changedCharacters":"", "changedTask":"", "changedDetailsAndProps":"", "changedDialogue":"", "changedVisualExpression":""},
+  "continuityAndSafetyCheck":{"fixedCharacterLocked":"", "verticalFit":"", "sourceSurfaceAvoided":"", "protectedExpressionsAvoided":"", "shootableWithinConstraints":""},
+  "uncertainties":[{"field":"", "reason":"", "safeFallback":""}]
+}
+
+sceneScript 至少 6 场，beatSheet 至少 6 个节拍。剧情应适合 45-90 秒短视频，默认以 60 秒为目标。不要输出分镜号空泛堆叠；每场都要推进任务、关系或情绪。${JSON_ONLY}`;
+}
+
 function formatTime(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
   const minutes = Math.floor(safe / 60);

@@ -161,6 +161,172 @@ export function mockVariants(input) {
   })) };
 }
 
+export function mockFullStory(input) {
+  const variant = input.variant || {};
+  const fixed = input.creatorProfile?.fixedCharacter || variant.characterSetup?.protagonist || "固定主角";
+  const fixedName = fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
+  const title = variant.title || "雨后的那件小事";
+  const careRecipient = variant.characterSetup?.careRecipient || "一位不愿麻烦别人的重要关系人";
+  const helper = variant.characterSetup?.helper || "路过的热心帮手";
+  const task = variant.newTask || "把承载心意的东西及时送到";
+  const medium = variant.emotionalMedium || "一件带有生活痕迹的小物件";
+  const pressure = variant.environmentPressure || "天气和路程同时制造压力";
+  const ending = variant.endingRitual || "两人没有多说话，只把物件摆正，安静地笑了一下";
+  const speechRule = input.creatorProfile?.constraints?.includes("嗷") ? "主角只用“嗷”“嗷呜”和动作表达情绪，信息由他人回应与画面动作补足。" : "主角短句、少解释，重点用动作表达关心。";
+
+  return {
+    selectedVariantId: variant.id || "V1",
+    title,
+    oneLinePremise: `${fixedName}必须完成“${task}”，途中被${pressure}逼到失手边缘，最终用${medium}回应${careRecipient}真正没有说出口的需要。`,
+    targetDurationSeconds: 60,
+    shootingSynopsis: `${fixedName}接下一个看似普通的任务：${task}。路上，${pressure}让任务成本不断增加，${fixedName}先保护任务物，再解决自己。最低谷时，${helper}看懂了情况，给出一个不追问的帮助。抵达后，${fixedName}没有解释辛苦，而是完成一个生活化动作：${ending}。观众最终理解，这个任务真正送达的是“我记得你”。`,
+    characterBible: {
+      protagonist: {
+        name: fixedName,
+        identity: fixed,
+        traits: ["主动承担", "懂事", "行动先于解释"],
+        speechRules: speechRule,
+        signatureBehaviors: ["先确认任务物是否完好", "遇到困难先护住别人托付的东西", "开心时用很小的动作回应"]
+      },
+      careRecipient: {
+        nameOrLabel: careRecipient,
+        identity: "被主角认真对待的人",
+        explicitNeed: task,
+        implicitNeed: "确认自己没有被落下，也不必把需要说得很重",
+        relationshipToProtagonist: "日常里有稳定牵挂的人"
+      },
+      helpers: [{ nameOrLabel: helper, functionInStory: "在压力最高处提供具体帮助", relationshipToProtagonist: "临时相遇的善意角色", helpingAction: "不追问原因，只补上完成任务缺失的条件" }]
+    },
+    beatSheet: [
+      { beat: 1, timeRange: "00:00-00:05", storyAction: `${fixedName}发现任务必须马上完成，先把${medium}护在怀里。`, emotion: "紧迫", dramaticFunction: "建立任务钩子", retainedValueFromBrief: "任务物首次出现并绑定期限" },
+      { beat: 2, timeRange: "00:05-00:14", storyAction: `${fixedName}按原计划出发，但${pressure}让路线变得不稳定。`, emotion: "担心", dramaticFunction: "外部阻力出现", retainedValueFromBrief: "旅途结构推动情绪" },
+      { beat: 3, timeRange: "00:14-00:25", storyAction: `任务物差点受损，${fixedName}先护住它，自己变得更狼狈。`, emotion: "揪心", dramaticFunction: "用成本证明关系重量", retainedValueFromBrief: "主角优先保护任务而不是自己" },
+      { beat: 4, timeRange: "00:25-00:38", storyAction: `${helper}看懂困境，给出一个小但关键的帮助。`, emotion: "温暖", dramaticFunction: "善意转折", retainedValueFromBrief: "帮助者看懂但不追问" },
+      { beat: 5, timeRange: "00:38-00:51", storyAction: `${fixedName}赶到${careRecipient}面前，却没有急着解释路上的困难。`, emotion: "克制", dramaticFunction: "关系真相延迟揭示", retainedValueFromBrief: "显性任务连接隐性需求" },
+      { beat: 6, timeRange: "00:51-01:00", storyAction: ending, emotion: "释然", dramaticFunction: "生活化仪式收束", retainedValueFromBrief: "小动作揭示真正需求" }
+    ],
+    sceneScript: [
+      {
+        sceneId: "S1",
+        timeRange: "00:00-00:05",
+        location: "出发点",
+        characters: [fixedName],
+        visibleAction: `${fixedName}确认${medium}，听到任务期限后立刻把它收好。`,
+        dialogue: [{ speaker: fixedName, line: input.creatorProfile?.constraints?.includes("嗷") ? "嗷呜。" : "我现在去。", deliveryOrSubtext: "不解释，只接住任务。" }],
+        shotAndSound: "任务物特写切到主角反应近景，环境声压低。",
+        emotionNode: "任务启动",
+        dramaticFunction: "3 秒内建立观众问题",
+        shootingNotes: "让任务物被观众看清，但不要拍成原片同款道具。"
+      },
+      {
+        sceneId: "S2",
+        timeRange: "00:05-00:14",
+        location: "途中第一段空间",
+        characters: [fixedName],
+        visibleAction: `${pressure}出现，${fixedName}调整路线，反复确认任务物没有受损。`,
+        dialogue: [],
+        shotAndSound: "手持跟拍与脚步声增强紧张感。",
+        emotionNode: "压力上升",
+        dramaticFunction: "把简单任务变难",
+        shootingNotes: "重点拍新空间规则，不复刻原片移动路径。"
+      },
+      {
+        sceneId: "S3",
+        timeRange: "00:14-00:25",
+        location: "临时受阻点",
+        characters: [fixedName],
+        visibleAction: `任务物差点被影响，${fixedName}用身体和动作护住它，自己耽误了时间。`,
+        dialogue: [{ speaker: fixedName, line: input.creatorProfile?.constraints?.includes("嗷") ? "嗷！" : "没事，东西没坏。", deliveryOrSubtext: "先关心任务而不是自己。" }],
+        shotAndSound: "近景捕捉手部动作，声音短促停顿。",
+        emotionNode: "成本证明",
+        dramaticFunction: "让观众相信这件事对主角重要",
+        shootingNotes: "动作要生活化，避免夸张英雄化。"
+      },
+      {
+        sceneId: "S4",
+        timeRange: "00:25-00:38",
+        location: "临时避让处",
+        characters: [fixedName, helper],
+        visibleAction: `${helper}没有问太多，只递出解决眼前问题的工具或线索。${fixedName}点头，继续出发。`,
+        dialogue: [
+          { speaker: helper, line: "你要的是这个吧？拿去，来得及。", deliveryOrSubtext: "帮助具体，不消费主角困境。" },
+          { speaker: fixedName, line: input.creatorProfile?.constraints?.includes("嗷") ? "嗷呜！" : "谢谢。", deliveryOrSubtext: "短促但真诚。" }
+        ],
+        shotAndSound: "双人中景停半秒，节奏从急促转暖。",
+        emotionNode: "善意介入",
+        dramaticFunction: "把外部阻力转成情绪回报",
+        shootingNotes: "帮助方式必须来自当前垂直赛道，不要像便利桥段。"
+      },
+      {
+        sceneId: "S5",
+        timeRange: "00:38-00:51",
+        location: "到达点门口",
+        characters: [fixedName, careRecipient],
+        visibleAction: `${fixedName}把${medium}递出，${careRecipient}第一反应不是看物品，而是看主角是否还好。`,
+        dialogue: [{ speaker: careRecipient, line: "你怎么还真来了。", deliveryOrSubtext: "表面责备，实际被认真对待。" }],
+        shotAndSound: "门口逆光近景，留出沉默。",
+        emotionNode: "关系揭示",
+        dramaticFunction: "显性任务触发隐性情绪",
+        shootingNotes: "不要解释过多，用眼神和接物动作交代关系。"
+      },
+      {
+        sceneId: "S6",
+        timeRange: "00:51-01:00",
+        location: "到达点内部或门口",
+        characters: [fixedName, careRecipient],
+        visibleAction: ending,
+        dialogue: [{ speaker: fixedName, line: input.creatorProfile?.constraints?.includes("嗷") ? "嗷呜。" : "放这儿就好。", deliveryOrSubtext: "把付出压进普通动作里。" }],
+        shotAndSound: "静态近景收尾，保留环境声和一个动作特写。",
+        emotionNode: "释然",
+        dramaticFunction: "用生活仪式完成情绪兑现",
+        shootingNotes: "结尾动作要可复拍、低成本、清楚表达关系。"
+      }
+    ],
+    keyProps: [
+      { prop: medium, storyFunction: "承载显性任务和隐性情绪", visualUse: "开场、受阻、结尾三次出现", avoidSimilarityNote: "使用新物件、新材质和新摆放方式" },
+      { prop: "帮助工具", storyFunction: "让善意转折具体可见", visualUse: "帮助者递出或指出", avoidSimilarityNote: "由垂直赛道自然产生" }
+    ],
+    shootingPlan: [
+      { unit: "出发点", setup: "任务物特写加主角近景", mustCapture: "期限和主角立刻行动", practicalNote: "一处室内或村口即可完成" },
+      { unit: "途中空间", setup: "移动中景、手部护物特写", mustCapture: "环境压力和主角选择", practicalNote: "选择可控空间，避免复杂调度" },
+      { unit: "结尾点", setup: "固定机位加动作特写", mustCapture: "被关爱对象的反应和结尾仪式", practicalNote: "用自然光或单灯即可" }
+    ],
+    dialogueStyleGuide: {
+      overallTone: "生活化、短句、少解释",
+      protagonistSpeechRule: speechRule,
+      supportingCharactersSpeechRule: "帮助者不煽情，被关爱对象不直接说教。",
+      forbiddenDialoguePatterns: ["解释主题的大段独白", "复用原片台词", "把辛苦直接说破"]
+    },
+    retentionPlan: [
+      { moment: "开场任务", viewerQuestion: "为什么必须现在完成？", payoff: "结尾揭示隐性需要", approxTime: "00:00" },
+      { moment: "任务受阻", viewerQuestion: "还来得及吗？", payoff: "帮助者提供转折", approxTime: "00:14" },
+      { moment: "抵达沉默", viewerQuestion: "对方真正需要什么？", payoff: "生活仪式回答", approxTime: "00:51" }
+    ],
+    experienceFidelity: {
+      positioning: "仍是任务驱动的温情生活短故事",
+      audience: "仍服务需要关系共鸣和善意确认的受众",
+      emotion: "好奇—担心—温暖—释然",
+      plotDriver: "必须完成的具体任务推动",
+      highValueBeats: "任务期限、成本证明、获得帮助、生活化结尾全部保留"
+    },
+    transformationProof: {
+      changedCharacters: `主角锁定为${fixed}，被关爱对象和帮助者按新主题重设`,
+      changedTask: task,
+      changedDetailsAndProps: `${medium}、${pressure}与帮助工具均为新表达`,
+      changedDialogue: "按固定角色说话规则重写，避免复用原句",
+      changedVisualExpression: "以新空间、新动作和新道具组织镜头"
+    },
+    continuityAndSafetyCheck: {
+      fixedCharacterLocked: `主角始终为${fixedName}`,
+      verticalFit: `任务和帮助方式来自${input.creatorProfile?.vertical || "当前赛道"}`,
+      sourceSurfaceAvoided: "不继承原片服装、动物拟态、外壳职业或独特动作",
+      protectedExpressionsAvoided: "仅保留剧作功能，不复用具体表达",
+      shootableWithinConstraints: input.creatorProfile?.constraints || "默认 60 秒、少场景、低成本可拍"
+    },
+    uncertainties: []
+  };
+}
+
 function time(seconds) {
   const value = Math.max(0, Math.floor(seconds));
   return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;

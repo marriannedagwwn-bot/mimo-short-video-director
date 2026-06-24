@@ -120,6 +120,28 @@
     </section>
   </main>
 
+  <main class="story-page hidden" id="storyPage">
+    <section class="story-shell">
+      <button class="text-button back-button" id="backToResults" type="button">← 返回主题变体</button>
+      <div class="story-hero-card">
+        <div>
+          <p class="eyebrow">SELECTED VARIANT → FULL STORY</p>
+          <h1>把主题变体扩写成<br><em>可拍完整剧情。</em></h1>
+          <p class="hero-copy">这一页只基于你选中的主题变体继续创作，调用 <span id="storyModelName">mimo-v2.5-pro</span>，输出可进入拍摄筹备的剧情、分场、对白、道具和拍摄要点。</p>
+        </div>
+        <div class="story-control-card">
+          <div id="selectedVariantSummary" class="selected-variant-summary"></div>
+          <p class="story-status" id="storyStatus"></p>
+          <button class="primary-button" id="generateFullStory" type="button">
+            <span>用 mimo-v2.5-pro 生成完整剧情</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+          </button>
+        </div>
+      </div>
+      <article class="result-card story-result hidden" id="fullStoryResult"></article>
+    </section>
+  </main>
+
   <footer><span>母题导演台 · MVP</span><span>结构保真，表达原创</span></footer>
   <script type="module" src="/app.js"></script>
 </body>
