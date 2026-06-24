@@ -1,0 +1,16 @@
+{
+  "name": "mimo-short-video-director",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "基于 MiMo-VL 的参考短视频分析与受控改编工作流",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "run:video": "node bin/run-video.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

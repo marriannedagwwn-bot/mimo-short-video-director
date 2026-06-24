@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="让 MiMo 理解参考短视频的叙事价值，再为固定角色和垂直赛道生成受控改编方案。">
+  <title>母题导演台 · AI 短视频工作流</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+  <header class="topbar">
+    <a class="brand" href="#top" aria-label="母题导演台首页">
+      <span class="brand-mark">母</span>
+      <span><strong>母题导演台</strong><small>AI STORY REMIX STUDIO</small></span>
+    </a>
+    <div class="model-state" id="modelState"><span class="pulse"></span><span>正在检查 MiMo</span></div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <p class="eyebrow">REFERENCE → STORY DNA → NEW EPISODE</p>
+      <h1>保留观众爱看的，<br><em>重做观众看见的。</em></h1>
+      <p class="hero-copy">不是随机洗稿，也不是为了不同而不同。先拆出定位、受众、情绪和剧情驱动力，再为你的固定角色生成同款体验的新故事。</p>
+      <div class="principles" aria-label="改编原则">
+        <span>同定位</span><i></i><span>同受众</span><i></i><span>同情绪</span><i></i><span>同类驱动力</span><i></i><span>新表达</span>
+      </div>
+    </section>
+
+    <section class="workspace-grid">
+      <div class="card upload-card">
+        <div class="section-head">
+          <span class="step-number">01</span>
+          <div><p class="label">REFERENCE</p><h2>上传参考视频</h2></div>
+        </div>
+        <label class="dropzone" id="dropzone" for="videoInput">
+          <input id="videoInput" type="file" accept="video/*" hidden>
+          <span class="upload-icon">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+          </span>
+          <strong id="uploadTitle">把视频拖到这里</strong>
+          <span id="uploadHint">或点击选择文件 · MP4 / MOV / WebM</span>
+        </label>
+        <div class="video-info hidden" id="videoInfo">
+          <video id="videoPreview" controls playsinline></video>
+          <div class="file-meta">
+            <div><strong id="fileName"></strong><span id="fileMeta"></span></div>
+            <button class="text-button" id="replaceVideo" type="button">更换</button>
+          </div>
+          <div class="frame-head"><span>时间轴采样</span><small id="frameStatus">等待抽帧</small></div>
+          <div class="frames" id="frames"></div>
+        </div>
+        <label class="field transcript-field">
+          <span>字幕 / 对白补充 <small>可选，但能明显提高脚本还原精度</small></span>
+          <textarea id="transcript" rows="4" placeholder="粘贴字幕、对白或无法从画面判断的背景信息…"></textarea>
+        </label>
+      </div>
+
+      <aside class="card profile-card">
+        <div class="section-head">
+          <span class="step-number">02</span>
+          <div><p class="label">YOUR UNIVERSE</p><h2>设定创作宇宙</h2></div>
+        </div>
+        <label class="field">
+          <span>固定角色 <b>必填</b></span>
+          <textarea id="fixedCharacter" rows="5" placeholder="例：阿岚，28 岁社区修理师，寡言，习惯先动手后解释；标志动作是把工具按尺寸排齐。"></textarea>
+        </label>
+        <label class="field">
+          <span>垂直赛道 <b>必填</b></span>
+          <input id="vertical" type="text" placeholder="例：家电维修 / 宠物救助 / 乡村美食">
+        </label>
+        <label class="field">
+          <span>创作限制 <small>可选</small></span>
+          <textarea id="constraints" rows="3" placeholder="例：60 秒内；单人可拍；不出现儿童；预算 500 元以内。"></textarea>
+        </label>
+        <label class="field inline-field">
+          <span>主题变体数量</span>
+          <select id="variantCount">
+            <option value="3">3 个</option>
+            <option value="4">4 个</option>
+            <option value="5">5 个</option>
+            <option value="6">6 个</option>
+          </select>
+        </label>
+        <div class="promise-box">
+          <span>导演约束</span>
+          <p>人物、任务、道具、对白和视听表达重做；母题、结构功能和情绪价值不被误杀。</p>
+        </div>
+        <button class="primary-button" id="runWorkflow" type="button" disabled>
+          <span>启动 AI 导演</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+        </button>
+        <p class="error-message" id="errorMessage" role="alert"></p>
+      </aside>
+    </section>
+
+    <section class="pipeline-section" id="resultsSection">
+      <div class="pipeline-head">
+        <div><p class="eyebrow">DIRECTOR PIPELINE</p><h2>从原片证据到新故事</h2></div>
+        <button class="outline-button hidden" id="exportButton" type="button">导出完整 JSON</button>
+      </div>
+      <ol class="pipeline" id="pipeline">
+        <li data-stage="analysis"><span>1</span><div><strong>参考片分析</strong><small>定位、人物、节奏、情绪与完播理由</small></div><b>等待</b></li>
+        <li data-stage="script"><span>2</span><div><strong>原片脚本还原</strong><small>分场、动作、镜头、转折与剧作功能</small></div><b>等待</b></li>
+        <li data-stage="brief"><span>3</span><div><strong>创意简报</strong><small>保留价值、受控变量与最低变换规则</small></div><b>等待</b></li>
+        <li data-stage="variants"><span>4</span><div><strong>主题变体</strong><small>适配固定角色和垂直赛道的新故事</small></div><b>等待</b></li>
+      </ol>
+
+      <div class="empty-results" id="emptyResults">
+        <span class="empty-glyph">⌁</span>
+        <p>上传一条参考视频并设定角色，分析结果会在这里逐层展开。</p>
+      </div>
+      <div class="result-stack hidden" id="resultStack">
+        <article class="result-card" id="analysisResult"></article>
+        <article class="result-card" id="scriptResult"></article>
+        <article class="result-card" id="briefResult"></article>
+        <article class="result-card" id="variantsResult"></article>
+      </div>
+    </section>
+  </main>
+
+  <footer><span>母题导演台 · MVP</span><span>结构保真，表达原创</span></footer>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
