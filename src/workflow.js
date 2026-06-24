@@ -1,6 +1,6 @@
 import { analysisPrompt, briefPrompt, reconstructionPrompt, variantsPrompt } from "./prompts.js";
 import { mockAnalysis, mockBrief, mockReconstruction, mockVariants } from "./mock.js";
-import { ensureOutputContract, ensureThemeVariantsMatchProfile, requireFrames, requireObject, requireText } from "./validation.js";
+import { ensureCreativeBriefMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, requireFrames, requireObject, requireText } from "./validation.js";
 
 export class WorkflowService {
   constructor({ client = null } = {}) {
@@ -38,7 +38,7 @@ export class WorkflowService {
     const result = !this.client
       ? mockBrief(input)
       : await this.client.generateJson({ prompt: briefPrompt(input) });
-    return ensureOutputContract(result, "creativeBrief");
+    return ensureCreativeBriefMatchesProfile(ensureOutputContract(result, "creativeBrief"), input.creatorProfile);
   }
 
   async createVariants(input) {
@@ -50,7 +50,7 @@ export class WorkflowService {
     const result = !this.client
       ? mockVariants(input)
       : await this.client.generateJson({ prompt: variantsPrompt(input) });
-    return ensureThemeVariantsMatchProfile(ensureOutputContract(result, "themeVariants"), profile);
+    return ensureThemeVariantsMatchProfile(ensureOutputContract(result, "themeVariants"), profile, input.creativeBrief);
   }
 
   async run(input) {

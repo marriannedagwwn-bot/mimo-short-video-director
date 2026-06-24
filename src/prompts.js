@@ -78,6 +78,8 @@ export function briefPrompt(input) {
 垂直赛道：${input.creatorProfile?.vertical || "未指定"}
 创作限制：${input.creatorProfile?.constraints || "无"}
 固定角色是后续所有新故事的主角锁定项。creativeBrief 可以要求改写原片人物，但不得建议更换、重命名或弱化用户指定的固定角色；角色和职业映射必须服务于该固定角色与该垂直赛道。
+原片的服装、动物拟态、玩偶感、外壳职业或视觉标签只能作为“表面表达”处理，不能映射成固定角色身份。比如参考片若出现企鹅服女孩，只能提炼其剧作功能：任务执行者、信使、善意连接者、萌系情感载体；不能把“企鹅”“企鹅快递员”“翅膀/尾巴动作”等表面元素写进固定角色映射或新故事。
+roleAndOccupationMapping 的第一项必须映射原片主角的剧作功能，且 newRole 必须原样包含固定角色“${input.creatorProfile?.fixedCharacter || "未指定"}”。newOccupationOrIdentity 只能根据固定角色文本与垂直赛道改写，例如“小女孩/儿童/学生/村民/热心帮手”，不能继承原片的动物、玩偶、服装、快递员外壳或拟态动作。
 referenceAnalysis：${JSON.stringify(input.referenceAnalysis)}
 sourceScriptReconstruction：${JSON.stringify(input.sourceScriptReconstruction)}
 
@@ -116,6 +118,7 @@ creativeBrief：${JSON.stringify(input.creativeBrief)}
 - characterSetup.protagonist 必须原样包含固定角色的核心姓名和身份设定；oneLineHook、logline、storyOutline.action 至少在首次出现主角时明确写出该固定角色姓名。
 - 可以更换被关爱对象、帮助者、任务、情感媒介、天气/空间、路人互动和结尾仪式；不能更换固定角色的姓名、年龄段、核心性格和身份定位。
 - 如果 creativeBrief 中出现“人物必须改”，它只表示原片人物表达必须改写，不能覆盖用户指定的固定角色。
+- 如果 creativeBrief 或 protectedExpressions 提到原片表面形象（如企鹅服、动物外观、玩偶服、特定拟声词、尾巴/翅膀动作），这些都是禁止复用的表达；不得写入 characterSetup.protagonist、logline、storyOutline 或结尾动作。固定角色如果是“小女孩/儿童/学生/村民”，就必须保持人类儿童身份，不能变成企鹅、动物、玩偶或快递员外壳。
 
 输出结构：
 {

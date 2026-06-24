@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "基于 MiMo-VL 的参考短视频分析与受控改编工作流",
+  "description": "基于 Xiaomi MiMo V2.5 的参考短视频分析与受控改编工作流",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",

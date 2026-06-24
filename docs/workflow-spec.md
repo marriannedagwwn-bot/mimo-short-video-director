@@ -67,9 +67,9 @@ flowchart LR
 
 - 浏览器从本地视频均匀采样 6–10 张关键帧，最长边压缩到 720px；在 MiMo `auto/video` 模式且文件大小允许时，同时用 base64 `video_url` 发送原生视频。应用不持久化视频。
 - `auto` 模式下，推理服务不接受原生视频时自动回退关键帧；超出大小限制时直接走关键帧。
-- MiMo-VL 视觉输入必须在文本指令之前，`/no_think` 位于用户消息末尾。
-- 推荐使用 `XiaomiMiMo/MiMo-VL-7B-RL-2508`，推理参数 `temperature=0.3`、`top_p=0.95`。
-- 当前实现通过 OpenAI 兼容 `/chat/completions` 接口连接自托管 MiMo-VL；原生视频使用 `video_url`，视觉内容位于文本之前。未配置服务时使用明确标注的演示模式。
+- MiMo 多模态视觉输入必须在文本指令之前；用户消息末尾保留 `/no_think`，请求体同时设置 `thinking={"type":"disabled"}`。
+- 默认使用 `mimo-v2.5`，推理参数 `temperature=0.3`、`top_p=0.95`、`max_completion_tokens=8192`、`stream=false`。
+- 当前实现通过小米 OpenAI 兼容 `/chat/completions` 接口连接 MiMo V2.5；原生视频使用 `video_url`，并携带 `fps=2`、`media_resolution=default`。未配置服务时使用明确标注的演示模式。
 
 ## 4. 当前边界
 

@@ -84,12 +84,15 @@ export class MimoClient {
 
 export function buildRequestBody(config, { prompt, frames = [], video = null, useVideo = false }) {
   const visualContent = useVideo && video?.dataUrl
-    ? [{ type: "video_url", video_url: { url: video.dataUrl } }]
+    ? [{ type: "video_url", video_url: { url: video.dataUrl }, fps: config.videoFps ?? 2, media_resolution: config.videoMediaResolution || "default" }]
     : frames.map((frame) => ({ type: "image_url", image_url: { url: frame.dataUrl } }));
   const body = {
     model: config.model,
+    max_completion_tokens: config.maxCompletionTokens ?? 8192,
     temperature: 0.3,
     top_p: 0.95,
+    stream: false,
+    thinking: { type: config.thinking || "disabled" },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: [...visualContent, { type: "text", text: `${prompt}\n/no_think` }] }

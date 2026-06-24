@@ -23,15 +23,25 @@ export function getConfig() {
   const requestedMediaMode = process.env.MIMO_MEDIA_MODE?.trim().toLowerCase() || "auto";
   const mediaMode = ["auto", "video", "frames"].includes(requestedMediaMode) ? requestedMediaMode : "auto";
   const nativeVideoMaxMb = clampNumber(process.env.MIMO_NATIVE_VIDEO_MAX_MB, 18, 1, 22);
+  const videoFps = clampNumber(process.env.MIMO_VIDEO_FPS, 2, 0.1, 10);
+  const requestedVideoResolution = process.env.MIMO_VIDEO_MEDIA_RESOLUTION?.trim().toLowerCase() || "default";
+  const videoMediaResolution = ["default", "max"].includes(requestedVideoResolution) ? requestedVideoResolution : "default";
+  const maxCompletionTokens = Math.round(clampNumber(process.env.MIMO_MAX_COMPLETION_TOKENS, 8192, 512, 32768));
+  const requestedThinking = process.env.MIMO_THINKING?.trim().toLowerCase() || "disabled";
+  const thinking = ["disabled", "enabled"].includes(requestedThinking) ? requestedThinking : "disabled";
   return {
     port: Number(process.env.PORT || 4173),
     mimo: {
       baseUrl,
       apiKey: process.env.MIMO_API_KEY?.trim() || "",
-      model: process.env.MIMO_MODEL?.trim() || "XiaomiMiMo/MiMo-VL-7B-RL-2508",
+      model: process.env.MIMO_MODEL?.trim() || "mimo-v2.5",
       jsonMode: process.env.MIMO_JSON_MODE === "true",
       mediaMode,
       nativeVideoMaxBytes: Math.floor(nativeVideoMaxMb * 1024 * 1024),
+      videoFps,
+      videoMediaResolution,
+      maxCompletionTokens,
+      thinking,
       enabled: Boolean(baseUrl)
     }
   };

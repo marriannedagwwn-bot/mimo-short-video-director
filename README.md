@@ -12,20 +12,13 @@ npm start
 
 打开 <http://localhost:4173>。未配置模型时会显示“演示模式”，完整四阶段流程仍可运行，但结果不是对视频的真实判断。
 
-## 接入 MiMo-VL
+## 接入 Xiaomi MiMo V2.5
 
-MiMo-VL 是开源视觉语言模型，可通过 vLLM 等服务暴露 OpenAI 兼容接口。复制环境变量文件：
-
-在具备可用 GPU 的模型服务器上，一种最小启动方式是：
+项目默认使用小米官方 OpenAI 兼容接口和 `mimo-v2.5` 模型。先确认模型服务可访问：
 
 ```bash
-vllm serve XiaomiMiMo/MiMo-VL-7B-RL-2508 --host 0.0.0.0 --port 8000
-```
-
-先确认模型服务可访问：
-
-```bash
-curl http://127.0.0.1:8000/v1/models
+curl https://api.xiaomimimo.com/v1/models \
+  -H "Authorization: Bearer $MIMO_API_KEY"
 ```
 
 然后在本项目中复制环境变量文件：
@@ -37,16 +30,17 @@ cp .env.example .env
 至少配置：
 
 ```dotenv
-MIMO_BASE_URL=http://127.0.0.1:8000/v1
-MIMO_MODEL=XiaomiMiMo/MiMo-VL-7B-RL-2508
+MIMO_BASE_URL=https://api.xiaomimimo.com/v1
+MIMO_API_KEY=你的 key
+MIMO_MODEL=mimo-v2.5
 MIMO_MEDIA_MODE=auto
 ```
 
-如果推理服务要求鉴权，再设置 `MIMO_API_KEY`。连接成功后，页面右上角会显示“MiMo 已连接”。
+连接成功后，页面右上角会显示“MiMo 已连接”。
 
-`MIMO_MEDIA_MODE=auto` 会优先通过 `video_url` 发送原生视频；若服务返回不支持媒体类型的 400/415/422，再自动回退为带时间戳关键帧。超过 `MIMO_NATIVE_VIDEO_MAX_MB` 的视频直接使用关键帧，避免 base64 请求占用过多内存。
+`MIMO_MEDIA_MODE=auto` 会优先通过 `video_url` 发送原生视频；请求中会按 MiMo V2.5 文档携带 `fps` 与 `media_resolution`，默认 `MIMO_VIDEO_FPS=2`、`MIMO_VIDEO_MEDIA_RESOLUTION=default`。若服务返回不支持媒体类型的 400/415/422，再自动回退为带时间戳关键帧。超过 `MIMO_NATIVE_VIDEO_MAX_MB` 的视频直接使用关键帧，避免 base64 请求占用过多内存。
 
-接口依据：[MiMo-VL 官方仓库](https://github.com/XiaomiMiMo/MiMo-VL)说明其与 `Qwen2_5_VLForConditionalGeneration` 架构兼容；[vLLM 多模态输入文档](https://docs.vllm.ai/en/latest/features/multimodal_inputs/)定义了 OpenAI 兼容接口的 `video_url` 与 base64 视频格式。
+当前请求参数默认为 `temperature=0.3`、`top_p=0.95`、`max_completion_tokens=8192`、`thinking=disabled`、`stream=false`。接口依据：[MiMo V2.5 模型说明](https://mimo.mi.com/docs/en-US/product/introduction/models#MiMo-V25)、[MiMo OpenAI API](https://mimo.mi.com/docs/en-US/api/chat/openai-api) 和 [MiMo 视频理解文档](https://mimo.mi.com/docs/en-US/use-cases/video-understanding)。
 
 ## 结构
 

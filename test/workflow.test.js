@@ -9,6 +9,7 @@ import { briefPrompt, variantsPrompt } from "../src/prompts.js";
 import { parseRunVideoArgs } from "../src/run-video-command.js";
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
 import { extractFixedCharacterName } from "../src/validation.js";
+import { mockBrief } from "../src/mock.js";
 
 const frames = Array.from({ length: 8 }, (_, index) => ({
   timestamp: index * 5,
@@ -66,19 +67,25 @@ test("模型 JSON 解析兼容 think 标签和代码块", () => {
 
 test("原生视频请求将视觉内容放在文本前并把 no_think 放在末尾", () => {
   const body = buildRequestBody(
-    { model: "MiMo-VL", jsonMode: false },
+    { model: "mimo-v2.5", jsonMode: false, videoFps: 2, videoMediaResolution: "default", maxCompletionTokens: 8192, thinking: "disabled" },
     { prompt: "分析视频", frames, video: { dataUrl: "data:video/mp4;base64,AAAA" }, useVideo: true }
   );
   const content = body.messages[1].content;
+  assert.equal(body.model, "mimo-v2.5");
+  assert.equal(body.max_completion_tokens, 8192);
+  assert.equal(body.stream, false);
+  assert.deepEqual(body.thinking, { type: "disabled" });
   assert.equal(content[0].type, "video_url");
   assert.equal(content[0].video_url.url, "data:video/mp4;base64,AAAA");
+  assert.equal(content[0].fps, 2);
+  assert.equal(content[0].media_resolution, "default");
   assert.equal(content.at(-1).type, "text");
   assert.match(content.at(-1).text, /\/no_think$/);
 });
 
 test("关键帧请求保持全部图像在文本之前", () => {
   const body = buildRequestBody(
-    { model: "MiMo-VL", jsonMode: true },
+    { model: "mimo-v2.5", jsonMode: true },
     { prompt: "分析画面", frames, useVideo: false }
   );
   const content = body.messages[1].content;
@@ -107,7 +114,7 @@ test("auto 模式在服务拒绝 video_url 时回退关键帧", async (t) => {
   t.after(() => server.close());
   const address = server.address();
   const client = new MimoClient({
-    baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "", model: "MiMo-VL", jsonMode: false, mediaMode: "auto"
+    baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "", model: "mimo-v2.5", jsonMode: false, mediaMode: "auto", videoFps: 2, videoMediaResolution: "default", maxCompletionTokens: 8192, thinking: "disabled"
   });
   const result = await client.generateJsonWithMedia({
     prompt: "分析", frames, video: { dataUrl: "data:video/mp4;base64,AAAA" }
@@ -122,19 +129,19 @@ test("MiMo 健康检查同时验证服务可达和指定模型已加载", async 
   const server = http.createServer((request, response) => {
     assert.equal(request.url, "/v1/models");
     response.writeHead(200, { "content-type": "application/json" });
-    response.end('{"data":[{"id":"XiaomiMiMo/MiMo-VL-7B-RL-2508"}]}');
+    response.end('{"data":[{"id":"mimo-v2.5"}]}');
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => server.close());
   const address = server.address();
   const client = new MimoClient({
-    baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "", model: "XiaomiMiMo/MiMo-VL-7B-RL-2508"
+    baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "", model: "mimo-v2.5"
   });
   assert.deepEqual(await client.checkHealth(), {
     reachable: true,
     modelAvailable: true,
     status: 200,
-    modelIds: ["XiaomiMiMo/MiMo-VL-7B-RL-2508"]
+    modelIds: ["mimo-v2.5"]
   });
 });
 
@@ -143,11 +150,51 @@ test("brief 提示词明确区分可复用结构与禁止表达", () => {
   assert.match(prompt, /不能因为原片使用过就一刀切禁止/);
   assert.match(prompt, /protectedExpressions 只允许放具体且可识别的表达/);
   assert.match(prompt, /送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾/);
+  assert.match(prompt, /企鹅服女孩/);
+  assert.match(prompt, /不能把“企鹅”“企鹅快递员”“翅膀\/尾巴动作”等表面元素写进固定角色映射或新故事/);
+  assert.match(prompt, /roleAndOccupationMapping 的第一项必须映射原片主角的剧作功能/);
 });
 
 test("模型漏掉必要字段时拒绝把结果标记为成功", () => {
   assert.throws(() => ensureOutputContract({ storySynopsis: "只有一个字段" }, "referenceAnalysis"), /缺少必要字段/);
   assert.throws(() => ensureOutputContract({ variants: [] }, "themeVariants"), /至少需要一个主题方案/);
+});
+
+test("creativeBrief 禁止把原片表面形象映射成固定角色身份", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
+    vertical: "治愈/温情/日常",
+    constraints: "小白子用嗷或嗷呜表达情绪"
+  };
+  const leakedBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  leakedBrief.roleAndOccupationMapping[0].newRole = "小白子";
+  leakedBrief.roleAndOccupationMapping[0].newOccupationOrIdentity = "一只呆萌但尽责的“企鹅快递员”，是村里孩子们都喜欢的可爱帮手。";
+  leakedBrief.protectedExpressions.push({
+    expressionType: "视觉元素",
+    sourceExpression: "企鹅服",
+    prohibition: "禁止出现企鹅形象的服装或直接扮演企鹅。",
+    safeAlternativePrinciple: "只保留任务执行者、信使、善意连接者和萌系情感载体的剧作功能。"
+  });
+
+  const workflow = new WorkflowService({
+    client: { async generateJson() { return leakedBrief; } }
+  });
+
+  await assert.rejects(
+    () => workflow.createBrief({ referenceAnalysis: {}, sourceScriptReconstruction: {}, creatorProfile }),
+    /企鹅/
+  );
+});
+
+test("creativeBrief 拒绝 protectedExpressions 的错误字段名", () => {
+  const brief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  brief.protectedExpressions = [{
+    expressionType: "视觉元素",
+    sourceExpression: "企鹅服",
+    prohibition: "禁止出现企鹅形象的服装或直接扮演企鹅。",
+    "safeAlternative Principle": "错误 key，应该是 safeAlternativePrinciple。"
+  }];
+  assert.throws(() => ensureOutputContract(brief, "creativeBrief"), /safeAlternativePrinciple/);
 });
 
 test("主题变体必须锁定用户指定固定角色，不能另起主角名", async () => {
@@ -182,6 +229,49 @@ test("主题变体必须锁定用户指定固定角色，不能另起主角名",
       count: 1
     }),
     OutputContractError
+  );
+});
+
+test("主题变体禁止继承 creativeBrief 中已保护的表面形象", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
+    vertical: "治愈/温情/日常"
+  };
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  creativeBrief.protectedExpressions.push({
+    expressionType: "视觉元素",
+    sourceExpression: "企鹅服",
+    prohibition: "禁止出现企鹅形象的服装或直接扮演企鹅。",
+    safeAlternativePrinciple: "只保留任务执行者、信使、善意连接者和萌系情感载体的剧作功能。"
+  });
+  const workflow = new WorkflowService({
+    client: {
+      async generateJson() {
+        return { variants: [{
+          id: "V1",
+          title: "雾中画境",
+          oneLineHook: "小白子冒雾送画。",
+          logline: "企鹅快递员小白子被委托将画作送到山村女孩手中。",
+          verticalFit: "治愈/温情/日常",
+          characterSetup: { protagonist: "小白子，一只呆萌但尽责的企鹅快递员", careRecipient: "小月", helper: "老张" },
+          newTask: "送画作",
+          emotionalMedium: "儿童画",
+          environmentPressure: "大雾",
+          storyOutline: [{ beat: 1, phase: "任务", action: "小白子翅膀微拍，整理背包出发。", emotion: "期待", dramaticFunction: "建立任务", estimatedSeconds: 6 }],
+          highValueBeatMapping: [],
+          keyDialogueDirections: [],
+          endingRitual: "小白子尾巴轻摇，与小月一起放风筝。",
+          transformationProof: { changedCharacters: "", changedTask: "", changedDetailsAndProps: "", changedDialogue: "", changedVisualExpression: "" },
+          experienceFidelity: { positioning: "", audience: "", emotion: "", plotDriver: "", highValueBeats: "" },
+          originalityRiskCheck: { riskLevel: "low", possibleSimilarity: "", mitigation: "" }
+        }] };
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => workflow.createVariants({ creativeBrief, creatorProfile, count: 1 }),
+    /企鹅|翅膀|尾巴/
   );
 });
 

@@ -61,14 +61,54 @@ export function ensureOutputContract(value, contract) {
   const wrongArrays = arrayFields.filter((key) => !Array.isArray(value[key]));
   if (wrongArrays.length) throw new OutputContractError(`${contract} 字段类型无效：${wrongArrays.join("、")} 必须是数组`);
   if (contract === "sourceScriptReconstruction" && value.scenes.length < 1) throw new OutputContractError("sourceScriptReconstruction 至少需要一个分场");
-  if (contract === "creativeBrief") validateNarrativeComponents(value.allowedNarrativeComponents);
+  if (contract === "creativeBrief") {
+    validateNarrativeComponents(value.allowedNarrativeComponents);
+    validateProtectedExpressions(value.protectedExpressions);
+  }
   if (contract === "themeVariants" && value.variants.length < 1) throw new OutputContractError("themeVariants 至少需要一个主题方案");
   return value;
 }
 
-export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}) {
+export function ensureCreativeBriefMatchesProfile(value, creatorProfile = {}) {
+  const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
+  const fixedProfile = String(creatorProfile.fixedCharacter || "");
+  if (!fixedName) return value;
+
+  const mappingText = JSON.stringify(value.roleAndOccupationMapping || []);
+  if (!mappingText.includes(fixedName)) {
+    throw new OutputContractError(`creativeBrief 未将固定角色「${fixedName}」写入角色映射`);
+  }
+
+  const protectedTerms = collectProtectedTermsFromBrief(value, fixedProfile);
+  const identityLeakTerms = incompatibleProtagonistSurfaceTerms(fixedProfile);
+  const protagonistMappings = (value.roleAndOccupationMapping || []).filter((mapping) => {
+    const text = JSON.stringify(mapping || {});
+    return text.includes(fixedName) || /主角|信使|任务执行|行动承担|固定角色/u.test(text);
+  });
+  for (const mapping of protagonistMappings) {
+    assertNoTerms(
+      JSON.stringify({
+        newRole: mapping?.newRole,
+        newOccupationOrIdentity: mapping?.newOccupationOrIdentity,
+        mappingLogic: mapping?.mappingLogic
+      }),
+      [...protectedTerms, ...identityLeakTerms],
+      `creativeBrief.roleAndOccupationMapping 中固定角色「${fixedName}」的身份映射`
+    );
+  }
+
+  const adaptiveDirections = JSON.stringify((value.controlledRewriteVariables || []).map((item) => item?.allowedDirections || []));
+  assertNoTerms(adaptiveDirections, protectedTerms, "creativeBrief.controlledRewriteVariables.allowedDirections");
+  return value;
+}
+
+export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}, creativeBrief = null) {
   const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
   if (!fixedName) return value;
+  const fixedProfile = String(creatorProfile.fixedCharacter || "");
+  const protectedTerms = collectProtectedTermsFromBrief(creativeBrief, fixedProfile);
+  const protagonistLeakTerms = incompatibleProtagonistSurfaceTerms(fixedProfile);
+  const visibleLeakTerms = [...protectedTerms, ...incompatibleBodySurfaceTerms(fixedProfile)];
   const mismatches = [];
   value.variants.forEach((variant, index) => {
     const label = variant?.id || `V${index + 1}`;
@@ -83,6 +123,14 @@ export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}) {
       mismatches.push(`${label} 的 protagonist 未包含「${fixedName}」`);
     } else if (!visibleStoryText.includes(fixedName)) {
       mismatches.push(`${label} 的可见故事文本未使用固定角色「${fixedName}」`);
+    }
+    const protagonistHits = findTerms(protagonist, [...protectedTerms, ...protagonistLeakTerms]);
+    if (protagonistHits.length) {
+      mismatches.push(`${label} 的 protagonist 混入原片表面身份或非用户设定身份：${protagonistHits.join("、")}`);
+    }
+    const visibleHits = findTerms(visibleStoryText, visibleLeakTerms);
+    if (visibleHits.length) {
+      mismatches.push(`${label} 的故事文本复用了禁止表面表达：${visibleHits.join("、")}`);
     }
   });
   if (mismatches.length) {
@@ -102,11 +150,86 @@ export function extractFixedCharacterName(fixedCharacter) {
   return stripNameWrapper(spaceMatch?.[1] || firstSegment);
 }
 
+const protagonistSurfaceTerms = [
+  "一只", "企鹅", "企鹅服", "企鹅形象", "动物", "动物形象", "动物服", "玩偶", "玩偶服",
+  "人偶", "人偶服", "兽装", "头套", "尾巴", "翅膀", "爪子", "鸟喙", "羽毛", "脚蹼", "蹼", "鳍"
+];
+
+const bodySurfaceTerms = ["尾巴", "翅膀", "爪子", "鸟喙", "羽毛", "脚蹼", "蹼", "鳍"];
+
+const protectedTermStopWords = new Set([
+  "台词", "视觉元素", "特定动作", "禁止", "直接使用", "高度相似", "表述", "形象", "服装", "动作", "约定"
+]);
+
 function validateNarrativeComponents(components) {
   const required = ["送达任务", "旅途结构", "情感媒介", "获得帮助", "被关爱对象", "天气或空间推动情绪", "生活化或仪式化结尾"];
   const present = new Set(components.map((item) => item?.component));
   const missing = required.filter((name) => !present.has(name));
   if (missing.length) throw new OutputContractError(`creativeBrief 未逐项评估可复用叙事构件：${missing.join("、")}`);
+}
+
+function validateProtectedExpressions(items) {
+  items.forEach((item, index) => {
+    const missing = ["expressionType", "sourceExpression", "prohibition", "safeAlternativePrinciple"].filter((key) => !(key in (item || {})));
+    if (missing.length) {
+      throw new OutputContractError(`creativeBrief.protectedExpressions 第 ${index + 1} 项缺少字段：${missing.join("、")}`);
+    }
+  });
+}
+
+function collectProtectedTermsFromBrief(brief, fixedProfile = "") {
+  if (!brief || typeof brief !== "object") return [];
+  const terms = new Set();
+  for (const item of brief.protectedExpressions || []) {
+    const text = [item?.sourceExpression, item?.prohibition].filter(Boolean).join(" ");
+    addProtectedTerm(terms, item?.sourceExpression, fixedProfile);
+    for (const quoted of text.matchAll(/[“"「『']([^”"」』']{1,30})[”"」』']/gu)) {
+      addProtectedTerm(terms, quoted[1], fixedProfile);
+    }
+    for (const surface of protagonistSurfaceTerms) {
+      if (surface.length >= 2 && text.includes(surface)) addProtectedTerm(terms, surface, fixedProfile);
+    }
+  }
+  return [...terms];
+}
+
+function addProtectedTerm(terms, raw, fixedProfile) {
+  const normalized = normalizeProtectedTerm(raw);
+  if (!normalized || normalized.length < 2 || protectedTermStopWords.has(normalized) || fixedProfile.includes(normalized)) return;
+  terms.add(normalized);
+  for (const suffix of ["服", "服装", "形象", "外观"]) {
+    if (normalized.endsWith(suffix)) {
+      const base = normalized.slice(0, -suffix.length);
+      if (base.length >= 2 && !fixedProfile.includes(base) && !protectedTermStopWords.has(base)) terms.add(base);
+    }
+  }
+}
+
+function incompatibleProtagonistSurfaceTerms(fixedProfile) {
+  return protagonistSurfaceTerms.filter((term) => term.length >= 2 && !fixedProfile.includes(term));
+}
+
+function incompatibleBodySurfaceTerms(fixedProfile) {
+  return bodySurfaceTerms.filter((term) => !fixedProfile.includes(term));
+}
+
+function assertNoTerms(text, terms, label) {
+  const hits = findTerms(text, terms);
+  if (hits.length) throw new OutputContractError(`${label} 复用了禁止表面表达或非用户设定身份：${hits.join("、")}`);
+}
+
+function findTerms(text, terms) {
+  const value = String(text || "");
+  return [...new Set((terms || []).filter((term) => term && value.includes(term)))];
+}
+
+function normalizeProtectedTerm(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^[「『“”"'《<【\[\s]+/u, "")
+    .replace(/[」』“”"'》>】\]\s]+$/u, "")
+    .replace(/[~～。.!！?？、，,；;：:\s]+$/u, "")
+    .trim();
 }
 
 function stripNameWrapper(value) {
