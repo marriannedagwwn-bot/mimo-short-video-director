@@ -123,6 +123,14 @@ npm run plan:video -- ./视频任务队列.jsonl --root ./production/V1 --worksp
 - `requests/**/<taskId>.json`：供应商无关请求包，包含能力类型、依赖产物路径、输出路径、参数和验收标准，供后续 API worker 消费。
 - `outputs/**/`：按任务类型划分的建议产物目录。
 
+制作过程中可以反复运行：
+
+```bash
+npm run plan:video -- ./视频任务队列.jsonl --root ./production/V1 --workspace --scan-existing
+```
+
+`--scan-existing` 会扫描预期 `outputs/` 路径上的非空文件，自动把对应任务标记为 `done`，并重新计算下一批 `ready` 任务；这使人工制作和未来 API worker 都能通过落盘产物推进同一条依赖链。
+
 自动视频生成尚未绑定具体供应商。接入真实视频模型前，需要明确：
 
 - 视频模型是否支持首尾帧、单首帧图生视频，还是只支持文生视频。

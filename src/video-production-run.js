@@ -84,6 +84,21 @@ export function buildProductionWorkspaceFiles(queue = {}, run = buildProductionR
   return files;
 }
 
+export function buildArtifactsFromExistingOutputs(queue = {}, options = {}) {
+  const outputRoot = cleanPath(options.outputRoot || "production");
+  const existing = new Set((options.existingOutputPaths || []).map(normalizeComparablePath));
+  const artifacts = {};
+  for (const job of queue.jobs || []) {
+    const outputKey = job.outputKey || "";
+    if (!outputKey) continue;
+    const outputPath = defaultOutputPath(outputRoot, job);
+    if (existing.has(normalizeComparablePath(outputPath))) {
+      artifacts[outputKey] = { status: "done", path: outputPath };
+    }
+  }
+  return artifacts;
+}
+
 function normalizeArtifacts(artifacts = {}, completedOutputs = []) {
   const normalized = {};
   if (Array.isArray(artifacts)) {
@@ -158,7 +173,7 @@ function formatWorkspaceReadme(queue = {}, run = {}) {
     "2. 参考图/资产图通过后，生成每个镜头的 `start_frame_image` 和 `end_frame_image`。",
     "3. 首尾帧通过后，用 `first_last_frame_video` 任务生成逐镜视频。",
     "4. 每个视频片段通过 `quality_check` 后，执行 `final_edit` 合成最终竖屏短片。",
-    "5. 每完成一个产物，重新运行 `npm run plan:video` 并用 `--done` 或 `--artifact` 标记完成项，释放下一批任务。",
+    "5. 每完成一个产物，重新运行 `npm run plan:video -- --scan-existing` 自动扫描 `outputs/`，或用 `--done` / `--artifact` 手动标记完成项，释放下一批任务。",
     ""
   ].join("\n");
 }
@@ -345,6 +360,10 @@ function createRunId(queue = {}) {
 
 function cleanPath(value) {
   return String(value || "production").replace(/\/+$/u, "") || "production";
+}
+
+function normalizeComparablePath(value) {
+  return cleanPath(String(value || "").replace(/\\/gu, "/"));
 }
 
 function safeSegment(value) {

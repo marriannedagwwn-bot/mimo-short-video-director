@@ -10,7 +10,7 @@ import { parseRunVideoArgs } from "../src/run-video-command.js";
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
 import { extractFixedCharacterName } from "../src/validation.js";
 import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
-import { buildProductionRun, buildProductionWorkspaceFiles, parseQueueJsonl } from "../src/video-production-run.js";
+import { buildArtifactsFromExistingOutputs, buildProductionRun, buildProductionWorkspaceFiles, parseQueueJsonl } from "../src/video-production-run.js";
 import { buildVideoGenerationQueue, formatQueueJsonl } from "../public/animation-queue.js";
 
 const frames = Array.from({ length: 8 }, (_, index) => ({
@@ -197,6 +197,22 @@ test("视频生产运行状态按任务依赖释放下一步", () => {
 
   const parsed = parseQueueJsonl(formatQueueJsonl(queue));
   assert.equal(parsed.jobs.length, queue.jobs.length);
+});
+
+test("视频生产运行状态可从已存在输出路径自动识别完成产物", () => {
+  const queue = buildQueueFixture();
+  const initialRun = buildProductionRun(queue, { outputRoot: "production/V1" });
+  const existingOutputPaths = initialRun.jobs
+    .filter((job) => job.type === "reference_image" || job.type === "asset_image")
+    .map((job) => job.outputPath);
+  const artifacts = buildArtifactsFromExistingOutputs(queue, {
+    outputRoot: "production/V1",
+    existingOutputPaths
+  });
+  assert.equal(Object.keys(artifacts).length, existingOutputPaths.length);
+  const scannedRun = buildProductionRun(queue, { outputRoot: "production/V1", artifacts });
+  assert.ok(scannedRun.jobs.filter((job) => job.type === "reference_image" || job.type === "asset_image").every((job) => job.status === "done"));
+  assert.ok(scannedRun.jobs.filter((job) => job.type === "start_frame_image").every((job) => job.status === "ready"));
 });
 
 test("视频生产工作区导出 README、运行状态和逐任务 prompt 卡", () => {

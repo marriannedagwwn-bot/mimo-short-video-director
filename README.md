@@ -70,6 +70,15 @@ npm run plan:video -- ./视频任务队列.jsonl \
 
 ```bash
 npm run plan:video -- ./视频任务队列.jsonl \
+  --root ./production/V1 \
+  --workspace \
+  --scan-existing
+```
+
+`--scan-existing` 会扫描 `outputs/` 下已经存在的非空产物文件，并按队列依赖自动把对应任务标记为 `done`。如果产物不在建议目录，也可以手动指定：
+
+```bash
+npm run plan:video -- ./视频任务队列.jsonl \
   --done references.阿岚 \
   --artifact assets.旧设备=./production/V1/outputs/asset_image/old_device.png
 ```
