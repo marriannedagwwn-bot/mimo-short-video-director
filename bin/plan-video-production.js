@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
 import path from "node:path";
-import { buildProductionRun, parseQueueJsonl } from "../src/video-production-run.js";
+import { buildProductionRun, buildProductionWorkspaceFiles, parseQueueJsonl } from "../src/video-production-run.js";
 
 const options = parseArgs(process.argv.slice(2));
 
 if (options.help || !options.input) {
   console.log(`用法：
-  npm run plan:video -- <queue-or-package.json|queue.jsonl> [--out production-run.json] [--root production/V1]
+  npm run plan:video -- <queue-or-package.json|queue.jsonl> [--out production-run.json] [--root production/V1] [--workspace]
 
 选项：
   --out <file>          写入生产运行状态 JSON；不传则输出到终端
   --root <dir>          产物根目录，默认 production
+  --workspace           在 root 下生成 README、production-run.json、逐任务 prompt 卡和 outputs 目录
   --done <outputKey>    标记某个产物已完成，可重复
   --artifact <key=path> 标记某个产物已完成并记录路径，可重复
 
@@ -36,8 +37,15 @@ try {
     await fs.writeFile(options.out, body);
     console.log(`已生成视频生产运行状态：${options.out}`);
     console.log(`ready=${run.counts.ready} blocked=${run.counts.blocked} done=${run.counts.done} failed=${run.counts.failed}`);
-  } else {
+  } else if (!options.workspace) {
     process.stdout.write(body);
+  }
+  if (options.workspace) {
+    const files = buildProductionWorkspaceFiles(queue, run);
+    await writeWorkspace(files, run);
+    console.log(`已生成视频生产工作区：${run.outputRoot}`);
+    console.log(`prompt 卡：${files.filter((file) => file.path.endsWith(".md") && file.path.includes("/prompts/")).length} 个`);
+    console.log(`当前可执行：${run.nextTaskIds.length ? run.nextTaskIds.join(" / ") : "无"}`);
   }
 } catch (error) {
   console.error(error.message);
@@ -63,10 +71,11 @@ function looksLikeJsonl(text) {
 }
 
 function parseArgs(args) {
-  const options = { input: "", out: "", root: "production", done: [], artifacts: {}, help: false };
+  const options = { input: "", out: "", root: "production", done: [], artifacts: {}, workspace: false, help: false };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "-h" || arg === "--help") options.help = true;
+    else if (arg === "--workspace") options.workspace = true;
     else if (arg === "--out") options.out = requireValue(args, ++index, arg);
     else if (arg.startsWith("--out=")) options.out = arg.slice("--out=".length);
     else if (arg === "--root") options.root = requireValue(args, ++index, arg);
@@ -93,4 +102,14 @@ function requireValue(args, index, flag) {
   const value = args[index];
   if (!value || value.startsWith("--")) throw new Error(`${flag} 缺少参数`);
   return value;
+}
+
+async function writeWorkspace(files, run) {
+  const outputDirs = new Set((run.jobs || []).map((job) => path.dirname(path.resolve(job.outputPath))));
+  for (const dir of outputDirs) await fs.mkdir(dir, { recursive: true });
+  for (const file of files) {
+    const target = path.resolve(file.path);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, file.content);
+  }
 }

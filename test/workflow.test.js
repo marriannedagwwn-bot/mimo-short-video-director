@@ -10,7 +10,7 @@ import { parseRunVideoArgs } from "../src/run-video-command.js";
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
 import { extractFixedCharacterName } from "../src/validation.js";
 import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
-import { buildProductionRun, parseQueueJsonl } from "../src/video-production-run.js";
+import { buildProductionRun, buildProductionWorkspaceFiles, parseQueueJsonl } from "../src/video-production-run.js";
 import { buildVideoGenerationQueue, formatQueueJsonl } from "../public/animation-queue.js";
 
 const frames = Array.from({ length: 8 }, (_, index) => ({
@@ -197,6 +197,26 @@ test("视频生产运行状态按任务依赖释放下一步", () => {
 
   const parsed = parseQueueJsonl(formatQueueJsonl(queue));
   assert.equal(parsed.jobs.length, queue.jobs.length);
+});
+
+test("视频生产工作区导出 README、运行状态和逐任务 prompt 卡", () => {
+  const queue = buildQueueFixture();
+  const run = buildProductionRun(queue, {
+    createdAt: "2026-06-25T00:00:00.000Z",
+    outputRoot: "production/V1"
+  });
+  const files = buildProductionWorkspaceFiles(queue, run);
+  assert.ok(files.some((file) => file.path === "production/V1/README.md" && file.content.includes("执行顺序")));
+  assert.ok(files.some((file) => file.path === "production/V1/production-run.json" && file.content.includes('"nextTaskIds"')));
+  const promptCards = files.filter((file) => file.path.includes("/prompts/") && file.path.endsWith(".md"));
+  assert.equal(promptCards.length, queue.jobs.length);
+  const videoCard = promptCards.find((file) => file.path.includes("first_last_frame_video"));
+  assert.match(videoCard.content, /正向 Prompt/);
+  assert.match(videoCard.content, /依赖输入/);
+  assert.match(videoCard.content, /验收标准/);
+  const finalCard = promptCards.find((file) => file.path.includes("final_edit"));
+  assert.match(finalCard.content, /最终剪辑/);
+  assert.match(finalCard.content, /quality_check|reviews\./);
 });
 
 test("少于三张画面时拒绝分析", async () => {

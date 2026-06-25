@@ -109,6 +109,19 @@ npm run plan:video -- ./视频任务队列.jsonl --out ./production/V1/productio
 
 该运行状态不会调用具体供应商 API，只负责解析任务依赖、标记可执行任务、列出阻塞输入和建议产物路径；后续真实视频 API worker 应读取同一份运行状态并写回产物。
 
+如果要进入手动制作或 API worker 开发，可以使用 `--workspace` 物料化生产工作区：
+
+```bash
+npm run plan:video -- ./视频任务队列.jsonl --root ./production/V1 --workspace
+```
+
+该命令会生成：
+
+- `README.md`：当前可执行任务、任务类型统计和执行顺序。
+- `production-run.json`：机器可读运行状态。
+- `prompts/**/<taskId>.md`：逐任务 prompt 卡，包含依赖输入、正向 prompt、负向 prompt、验收标准和原始任务 JSON。
+- `outputs/**/`：按任务类型划分的建议产物目录。
+
 自动视频生成尚未绑定具体供应商。接入真实视频模型前，需要明确：
 
 - 视频模型是否支持首尾帧、单首帧图生视频，还是只支持文生视频。

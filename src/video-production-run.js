@@ -52,6 +52,33 @@ export function buildProductionRun(queue = {}, options = {}) {
   };
 }
 
+export function buildProductionWorkspaceFiles(queue = {}, run = buildProductionRun(queue)) {
+  const jobsByTaskId = new Map((run.jobs || []).map((job) => [job.taskId, job]));
+  const jobsByOutputKey = new Map((run.jobs || []).map((job) => [job.outputKey, job]));
+  const files = [
+    {
+      path: [run.outputRoot, "README.md"].join("/"),
+      content: formatWorkspaceReadme(queue, run)
+    },
+    {
+      path: [run.outputRoot, "production-run.json"].join("/"),
+      content: `${JSON.stringify(run, null, 2)}\n`
+    }
+  ];
+
+  for (const [index, queueJob] of (queue.jobs || []).entries()) {
+    const taskId = queueJob.taskId || `JOB-${String(index + 1).padStart(3, "0")}`;
+    const runJob = jobsByTaskId.get(taskId) || run.jobs?.[index];
+    if (!runJob?.promptPath) continue;
+    files.push({
+      path: runJob.promptPath,
+      content: formatJobPromptCard(queueJob, runJob, jobsByOutputKey)
+    });
+  }
+
+  return files;
+}
+
 function normalizeArtifacts(artifacts = {}, completedOutputs = []) {
   const normalized = {};
   if (Array.isArray(artifacts)) {
@@ -92,6 +119,140 @@ function countStatuses(jobs = []) {
   const counts = { total: jobs.length, ready: 0, blocked: 0, done: 0, failed: 0 };
   for (const job of jobs) counts[job.status] = (counts[job.status] || 0) + 1;
   return counts;
+}
+
+function formatWorkspaceReadme(queue = {}, run = {}) {
+  const typeCounts = countBy(run.jobs || [], "type");
+  const nextTasks = run.nextTaskIds?.length ? run.nextTaskIds.join(" / ") : "暂无，等待依赖产物或检查失败任务";
+  return [
+    `# ${run.title || queue.title || "视频生产工作区"}`,
+    "",
+    "## 运行状态",
+    "",
+    `- Run ID：${run.runId || ""}`,
+    `- 主题变体：${run.selectedVariantId || ""}`,
+    `- 队列版本：${run.queueVersion || queue.version || ""}`,
+    `- 供应商模式：${run.providerMode || queue.providerMode || "provider_agnostic"}`,
+    `- 任务统计：total=${run.counts?.total || 0} ready=${run.counts?.ready || 0} blocked=${run.counts?.blocked || 0} done=${run.counts?.done || 0} failed=${run.counts?.failed || 0}`,
+    `- 当前可执行任务：${nextTasks}`,
+    "",
+    "## 任务类型",
+    "",
+    ...Object.entries(typeCounts).map(([type, count]) => `- ${jobTypeLabel(type)}（${type}）：${count}`),
+    "",
+    "## 目录约定",
+    "",
+    "- `prompts/`：每个任务一张 Markdown prompt 卡，可直接复制给图像/视频模型或交给 API worker。",
+    "- `outputs/`：建议产物目录。参考图、资产图、首尾帧、视频片段、质检 JSON 和最终成片按任务类型分开存放。",
+    "- `production-run.json`：机器可读运行状态，记录依赖、产物路径和下一批可执行任务。",
+    "",
+    "## 执行顺序",
+    "",
+    "1. 先生成 `reference_image` 和 `asset_image`。",
+    "2. 参考图/资产图通过后，生成每个镜头的 `start_frame_image` 和 `end_frame_image`。",
+    "3. 首尾帧通过后，用 `first_last_frame_video` 任务生成逐镜视频。",
+    "4. 每个视频片段通过 `quality_check` 后，执行 `final_edit` 合成最终竖屏短片。",
+    "5. 每完成一个产物，重新运行 `npm run plan:video` 并用 `--done` 或 `--artifact` 标记完成项，释放下一批任务。",
+    ""
+  ].join("\n");
+}
+
+function formatJobPromptCard(queueJob = {}, runJob = {}, jobsByOutputKey = new Map()) {
+  const dependencyLines = runJob.requiredInputs?.length
+    ? runJob.requiredInputs.map((key) => {
+      const dependency = jobsByOutputKey.get(key);
+      return `- ${key}${dependency?.outputPath ? ` → ${dependency.outputPath}` : ""}${runJob.missingInputs?.includes(key) ? "（缺失）" : ""}`;
+    })
+    : ["- 无"];
+  const detailLines = detailEntries(queueJob).map(([label, value]) => `- ${label}：${formatValue(value)}`);
+  const acceptanceLines = runJob.acceptanceCriteria?.length ? runJob.acceptanceCriteria.map((item) => `- ${item}`) : ["- 按任务 prompt 和项目视觉规则验收"];
+  return [
+    `# ${runJob.taskId} · ${jobTypeLabel(runJob.type)}`,
+    "",
+    "## 执行信息",
+    "",
+    `- 状态：${runJob.status}`,
+    `- 输入类型：${runJob.inputType}`,
+    `- 输出 key：${runJob.outputKey}`,
+    `- 建议输出路径：${runJob.outputPath}`,
+    "",
+    "## 依赖输入",
+    "",
+    ...dependencyLines,
+    "",
+    detailLines.length ? "## 镜头 / 制作参数" : "",
+    detailLines.length ? "" : "",
+    ...detailLines,
+    detailLines.length ? "" : "",
+    "## 正向 Prompt",
+    "",
+    queueJob.prompt || "无",
+    "",
+    "## 负向 Prompt",
+    "",
+    queueJob.negativePrompt || "无",
+    "",
+    "## 验收标准",
+    "",
+    ...acceptanceLines,
+    "",
+    "## 原始任务 JSON",
+    "",
+    "```json",
+    JSON.stringify(queueJob, null, 2),
+    "```",
+    ""
+  ].filter((line, index, lines) => !(line === "" && lines[index - 1] === "" && lines[index + 1] === "")).join("\n");
+}
+
+function detailEntries(job = {}) {
+  return [
+    ["镜头 ID", job.shotId],
+    ["源场景", job.sourceSceneId],
+    ["时长", job.durationSeconds ? `${job.durationSeconds} 秒` : ""],
+    ["画幅", job.aspectRatio],
+    ["剧情功能", job.storyPurpose],
+    ["情绪目标", job.emotionalTarget],
+    ["镜头运动", job.cameraMotion],
+    ["角色动作", job.characterAction],
+    ["对白/字幕", job.dialogueOrSubtitle],
+    ["声音设计", job.soundDesign],
+    ["连续性备注", job.continuityNotes],
+    ["剪辑节奏", job.sequenceRhythm],
+    ["转场", job.transitions],
+    ["字幕方案", job.subtitlePlan],
+    ["音乐音效", job.musicAndSfx],
+    ["开头结尾", job.hookAndEndingNotes],
+    ["一致性标签", job.consistencyTags]
+  ].filter(([, value]) => hasValue(value));
+}
+
+function jobTypeLabel(type) {
+  return ({
+    reference_image: "角色参考图",
+    asset_image: "关键资产图",
+    start_frame_image: "首帧图",
+    end_frame_image: "尾帧图",
+    first_last_frame_video: "首尾帧视频",
+    quality_check: "质检",
+    final_edit: "最终剪辑"
+  })[type] || type || "未知任务";
+}
+
+function countBy(items = [], key) {
+  return items.reduce((acc, item) => {
+    const value = item?.[key] || "unknown";
+    acc[value] = (acc[value] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function hasValue(value) {
+  return Array.isArray(value) ? value.length > 0 : Boolean(value);
+}
+
+function formatValue(value) {
+  return Array.isArray(value) ? value.join("；") : String(value ?? "");
 }
 
 function defaultOutputPath(root, job = {}) {
