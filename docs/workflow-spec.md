@@ -139,6 +139,14 @@ npm run exec:video -- ./production/V1 --provider mock --all
 
 当前 `mock` provider 只生成占位产物和执行回执，用于验证 ready → done → 释放下一批任务的链路；真实图像/视频 provider 必须遵守同一份 request JSON 输入、outputPath 落盘和 `production-run.json` 状态刷新约定。
 
+真实执行前预检：
+
+```bash
+npm run preflight:video -- ./production/V1 --strict
+```
+
+预检会检查 mock/占位产物是否已经被标记为 `done`、ready 任务是否依赖 mock 输入、generic HTTP worker 是否缺少对应 capability 的 endpoint/API key。这样可以避免 mock 链路验证后的占位文件被误送进真实视频模型。
+
 外部 API worker 可通过 `command` provider 接入：
 
 ```bash

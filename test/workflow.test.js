@@ -4,6 +4,8 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { WorkflowService } from "../src/workflow.js";
 import { InputError, OutputContractError } from "../src/validation.js";
 import { ensureOutputContract } from "../src/validation.js";
@@ -15,6 +17,7 @@ import { extractFixedCharacterName } from "../src/validation.js";
 import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
 import { executeProductionWorkspace } from "../src/video-production-executor.js";
 import { buildProductionReport, formatProductionReportMarkdown, loadProductionReport } from "../src/video-production-report.js";
+import { formatProductionPreflightMarkdown, loadProductionPreflight } from "../src/video-production-preflight.js";
 import { buildArtifactsFromExistingOutputs, buildProductionRun, buildProductionWorkspaceFiles, parseQueueJsonl } from "../src/video-production-run.js";
 import { buildVideoGenerationQueue, formatQueueJsonl } from "../public/animation-queue.js";
 
@@ -22,6 +25,7 @@ const frames = Array.from({ length: 8 }, (_, index) => ({
   timestamp: index * 5,
   dataUrl: "data:image/jpeg;base64,AA=="
 }));
+const execFileAsync = promisify(execFile);
 const input = {
   frames,
   metadata: { name: "reference.mp4", duration: 40, width: 1080, height: 1920 },
@@ -600,13 +604,100 @@ test("视频生产报告输出进度、失败、阻塞和建议命令", async ()
   assert.equal(report.progress.failed, 1);
   assert.ok(report.failedTasks.some((task) => task.error.message === "asset provider failed"));
   assert.ok(report.blockedTasks.length > 0);
-  assert.match(report.recommendedCommands[0], /--retry-failed/);
+  assert.match(report.recommendedCommands[1], /--retry-failed/);
   const markdown = formatProductionReportMarkdown(report);
   assert.match(markdown, /失败任务/);
   assert.match(markdown, /asset provider failed/);
 
   const directReport = buildProductionReport(run);
   assert.equal(directReport.progress.total, run.jobs.length);
+  assert.match(report.recommendedCommands[0], /preflight:video/);
+});
+
+test("视频生产预检会阻止 mock 产物进入真实执行", async () => {
+  const queue = buildQueueFixture();
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-preflight-mock-"));
+  const run = buildProductionRun(queue, { outputRoot: root });
+  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+  await executeProductionWorkspace({ root, provider: "mock", all: false, limit: 1 });
+
+  const report = await loadProductionPreflight(root, {
+    command: process.execPath,
+    commandArgs: ["workers/generic-http-worker.mjs"]
+  });
+  assert.equal(report.passed, false);
+  assert.ok(report.issues.some((issue) => issue.code === "mock_artifact_marked_done"));
+  assert.match(formatProductionPreflightMarkdown(report), /mock\/占位产物/);
+});
+
+test("视频生产预检会检查 generic HTTP worker endpoint 配置", async () => {
+  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_IMAGE_ENDPOINT", "VIDEO_HTTP_API_KEY"]);
+  delete process.env.VIDEO_HTTP_ENDPOINT;
+  delete process.env.VIDEO_HTTP_IMAGE_ENDPOINT;
+  delete process.env.VIDEO_HTTP_API_KEY;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-preflight-config-"));
+  const queue = {
+    version: "test",
+    providerMode: "provider_agnostic",
+    title: "preflight config test",
+    selectedVariantId: "V1",
+    jobs: [
+      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" }
+    ]
+  };
+  const run = buildProductionRun(queue, { outputRoot: root });
+  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+
+  try {
+    const missing = await loadProductionPreflight(root, {
+      command: process.execPath,
+      commandArgs: ["workers/generic-http-worker.mjs"]
+    });
+    assert.equal(missing.passed, false);
+    assert.ok(missing.issues.some((issue) => issue.code === "missing_http_endpoint" && /image_generation/.test(issue.message)));
+
+    const configPath = path.join(root, "provider.json");
+    await fs.writeFile(configPath, JSON.stringify({
+      endpoints: { image_generation: "http://127.0.0.1:9/images" },
+      apiKey: "test-key"
+    }));
+    const configured = await loadProductionPreflight(root, {
+      command: process.execPath,
+      commandArgs: ["workers/generic-http-worker.mjs", "--config", configPath]
+    });
+    assert.equal(configured.passed, true);
+    assert.equal(configured.command.configLoaded, true);
+    assert.ok(configured.recommendedCommands.some((command) => command.includes("exec:video")));
+  } finally {
+    restoreEnv(savedEnv);
+  }
+});
+
+test("preflight CLI strict 模式在错误时返回非零状态", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-preflight-cli-"));
+  const queue = {
+    version: "test",
+    providerMode: "provider_agnostic",
+    title: "preflight cli test",
+    selectedVariantId: "V1",
+    jobs: [
+      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" }
+    ]
+  };
+  const run = buildProductionRun(queue, { outputRoot: root });
+  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+
+  await assert.rejects(
+    () => execFileAsync(process.execPath, ["bin/preflight-video-production.js", root, "--strict"], {
+      cwd: process.cwd(),
+      env: withoutEnv(process.env, ["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_IMAGE_ENDPOINT", "VIDEO_HTTP_API_KEY"])
+    }),
+    (error) => {
+      assert.equal(error.code, 2);
+      assert.match(error.stdout, /missing_http_endpoint/);
+      return true;
+    }
+  );
 });
 
 test("少于三张画面时拒绝分析", async () => {
@@ -985,4 +1076,21 @@ async function writeTestWorkspace(files) {
     await fs.mkdir(path.dirname(file.path), { recursive: true });
     await fs.writeFile(file.path, file.content);
   }
+}
+
+function pickEnv(keys) {
+  return Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+}
+
+function restoreEnv(values) {
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+}
+
+function withoutEnv(env, keys) {
+  const copy = { ...env };
+  for (const key of keys) delete copy[key];
+  return copy;
 }

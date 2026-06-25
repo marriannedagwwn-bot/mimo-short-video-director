@@ -91,6 +91,12 @@ npm run exec:video -- ./production/V1 --provider mock --all
 
 `mock` 会为每个 ready request 写入占位产物和 `.mock.json` 回执。真实图像/视频模型接入时，会复用同一个 `requests/`、`outputs/` 和 `production-run.json` 约定。
 
+如果准备切到真实图像/视频 API，先做一次预检。它会阻止常见错误：把 mock/占位产物当成真实素材、ready 任务吃到 mock 首尾帧、generic HTTP worker 缺 endpoint 或 key。
+
+```bash
+npm run preflight:video -- ./production/V1 --strict
+```
+
 如果你已经有自己的图像/视频 API 脚本，可以用 `command` provider 接入。执行器会为每个 ready 任务调用外部命令。
 
 项目内置了一个通用 HTTP worker，可通过环境变量或 JSON 配置接入常见“提交任务 → 轮询 → 下载 mediaUrl/base64 产物”的图像/首尾帧视频 API：
@@ -138,7 +144,7 @@ npm run exec:video -- ./production/V1 --provider command --command node --comman
 npm run report:video -- ./production/V1
 ```
 
-报告会列出总进度、ready/blocked/failed 任务、失败原因、最终成片路径和下一步建议命令；加 `--json` 可输出机器可读报告。
+报告会列出总进度、ready/blocked/failed 任务、失败原因、最终成片路径和下一步建议命令；加 `--json` 可输出机器可读报告。建议命令会优先提示先跑 `preflight:video`，再执行真实 worker。
 
 通用 HTTP worker 见 [workers/generic-http-worker.mjs](workers/generic-http-worker.mjs)，占位模板见 [workers/command-worker-template.mjs](workers/command-worker-template.mjs)，协议说明见 [docs/video-worker-protocol.md](docs/video-worker-protocol.md)。
 

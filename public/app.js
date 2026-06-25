@@ -632,15 +632,21 @@ function renderLocalProductionGuide(queue = {}) {
     },
     {
       label: "4",
+      title: "真实执行前预检",
+      body: "检查是否还残留 mock/占位产物、ready 任务是否会吃到 mock 输入，以及 HTTP worker endpoint/key 是否已配置。",
+      command: `npm run preflight:video -- ${productionRoot} --strict`
+    },
+    {
+      label: "5",
       title: "接入真实视频 worker",
       body: "先配置 VIDEO_HTTP_ENDPOINT / VIDEO_HTTP_API_KEY 或 provider config；CLI 会逐个传入 request、output 和 receipt 路径。",
       command: `npm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${commandWorker} --all`
     },
     {
-      label: "5",
+      label: "6",
       title: "查看进度或重试失败任务",
       body: "失败任务会留下 .error.json，修好 worker 或模型参数后可以只重试失败项。",
-      command: `npm run report:video -- ${productionRoot}\nnpm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${commandWorker} --all --retry-failed`
+      command: `npm run report:video -- ${productionRoot}\nnpm run preflight:video -- ${productionRoot} --strict\nnpm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${commandWorker} --all --retry-failed`
     }
   ];
   return `<div class="production-guide">

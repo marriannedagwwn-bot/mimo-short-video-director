@@ -27,6 +27,14 @@ npm run exec:video -- ./production/V1 \
 - `VIDEO_TASK_ID`
 - `VIDEO_TASK_CAPABILITY`
 
+真实执行前建议先跑：
+
+```bash
+npm run preflight:video -- ./production/V1 --strict
+```
+
+预检会检查 mock/占位产物、ready 任务依赖的输入类型，以及 generic HTTP worker 的 endpoint/API key 配置。`--strict` 会在存在阻塞级问题时返回非 0，适合放进自动化脚本。
+
 ## Request 结构
 
 核心字段：

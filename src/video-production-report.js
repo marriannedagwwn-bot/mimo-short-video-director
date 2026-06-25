@@ -129,10 +129,16 @@ function summarizeJob(job = {}) {
 function recommendedCommands(run = {}, state = {}) {
   const root = run.outputRoot || "./production/V1";
   if (state.failed?.length) {
-    return [`npm run exec:video -- ${root} --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --retry-failed`];
+    return [
+      `npm run preflight:video -- ${root} --strict`,
+      `npm run exec:video -- ${root} --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --retry-failed`
+    ];
   }
   if (state.ready?.length) {
-    return [`npm run exec:video -- ${root} --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all`];
+    return [
+      `npm run preflight:video -- ${root} --strict`,
+      `npm run exec:video -- ${root} --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all`
+    ];
   }
   if (state.blocked?.length) {
     return [`npm run plan:video -- ./视频任务队列.jsonl --root ${root} --workspace --scan-existing`];
