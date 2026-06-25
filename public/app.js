@@ -508,6 +508,12 @@ async function generateAnimationPlan({ force = false } = {}) {
 function renderAnimationPlan(data) {
   const strategy = data.productionStrategy || {};
   const visual = data.visualBible || {};
+  const queue = buildVideoGenerationQueue({
+    exportedAt: new Date().toISOString(),
+    selectedVariant: selectedVariant() || {},
+    fullStory: currentFullStory(),
+    animationPlan: data
+  });
   elements.animationPlan.innerHTML = `${resultHeader("ANIMATION PLAN", data.title || "首尾帧动画生产包", strategy.format || "first_last_frame_video")}
     <div class="summary-strip">${escape(strategy.whyThisWorkflow || "按首尾帧拆镜头，逐镜生成短视频，优先控制角色一致性。")}</div>
     <div class="data-grid">
@@ -553,6 +559,7 @@ function renderAnimationPlan(data) {
       ${cell("开头结尾", data.editPlan?.hookAndEndingNotes)}
       ${cell("模型无关说明", (data.modelAgnosticNotes || []).join("；"))}
     </div>`)}
+    ${block("视频生成任务队列", renderQueueSummary(queue))}
     ${block("生成验收清单", `<div class="rule-list">${(data.generationChecklist || []).map((item) => `<div class="rule"><strong>${escape(item.check)}</strong><p>${escape(item.passCriteria)}</p></div>`).join("")}</div>`)}
     <div class="warning-box"><b>动画连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
     ${uncertainties(data.uncertainties)}`;
@@ -567,6 +574,43 @@ function cell(label, value) { return `<div class="data-cell"><span>${label}</spa
 function uncertainties(items = []) { return items.length ? `<div class="warning-box"><b>待确认：</b> ${items.map((item) => escape(item.reason || item.unknown)).join("；")}</div>` : ""; }
 function joinParts(object = {}, keys = []) { return keys.map((key) => object?.[key]).filter(Boolean).join(" · "); }
 function reveal(element) { element.classList.remove("hidden"); }
+
+function renderQueueSummary(queue) {
+  const counts = countBy(queue.jobs || [], "type");
+  const typeLabels = {
+    reference_image: "角色参考图",
+    asset_image: "关键资产图",
+    start_frame_image: "首帧图",
+    end_frame_image: "尾帧图",
+    first_last_frame_video: "首尾帧视频",
+    quality_check: "质检"
+  };
+  const chips = Object.entries(typeLabels)
+    .map(([type, label]) => `<span class="queue-chip"><b>${escape(counts[type] || 0)}</b>${escape(label)}</span>`)
+    .join("");
+  const orderedJobs = (queue.jobs || []).filter((job) => ["reference_image", "asset_image", "first_last_frame_video", "quality_check"].includes(job.type));
+  return `<div class="queue-panel">
+    <div class="queue-overview">${chips}</div>
+    <div class="queue-meta">
+      <span>队列版本 ${escape(queue.version)}</span>
+      <span>${escape(queue.common?.aspectRatio || "9:16")}</span>
+      <span>${escape(queue.common?.targetRuntimeSeconds || 60)} 秒</span>
+      <span>${escape(queue.providerMode || "provider_agnostic")}</span>
+    </div>
+    <div class="queue-job-list">${orderedJobs.map((job) => `<div class="queue-job">
+      <strong>${escape(job.taskId)} · ${escape(typeLabels[job.type] || job.type)}</strong>
+      <p>${escape(job.inputType)} → ${escape(job.outputKey)}${job.requiredInputs?.length ? `<br>依赖：${escape(job.requiredInputs.join(" / "))}` : ""}</p>
+    </div>`).join("")}</div>
+  </div>`;
+}
+
+function countBy(items, key) {
+  return items.reduce((acc, item) => {
+    const value = item?.[key] || "";
+    acc[value] = (acc[value] || 0) + 1;
+    return acc;
+  }, {});
+}
 
 function setStage(stage, status) {
   const element = document.querySelector(`[data-stage="${stage}"]`);
@@ -602,6 +646,10 @@ function profile() { return { fixedCharacter: elements.fixedCharacter.value.trim
 function saveProfile() { localStorage.setItem("directorProfile", JSON.stringify(profile())); }
 function restoreProfile() { try { const data = JSON.parse(localStorage.getItem("directorProfile")); if (data) { elements.fixedCharacter.value = data.fixedCharacter || ""; elements.vertical.value = data.vertical || ""; elements.constraints.value = data.constraints || ""; } } catch {} }
 function selectedVariant() { return (state.output.themeVariants?.variants || []).find((variant) => String(variant.id) === String(state.selectedVariantId)); }
+function currentFullStory() {
+  const variant = selectedVariant();
+  return variant ? state.fullStories[variant.id] || state.output.fullStory || null : state.output.fullStory || null;
+}
 
 function selectedStoryPackage() {
   const variant = selectedVariant();

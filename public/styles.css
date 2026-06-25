@@ -202,6 +202,16 @@ h1 em { color: var(--accent); font-style: normal; }
 .prompt-grid div { padding: 12px; border-radius: 10px; background: rgba(29,27,24,.045); border: 1px solid rgba(29,27,24,.08); }
 .prompt-grid span { display: block; margin-bottom: 6px; color: var(--accent); font-size: 8px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
 .prompt-grid p { margin: 0; color: var(--ink); font-size: 10px; line-height: 1.65; }
+.queue-panel { display: grid; gap: 12px; }
+.queue-overview { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.queue-chip { padding: 11px 8px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.48); color: var(--muted); font-size: 9px; text-align: center; }
+.queue-chip b { display: block; margin-bottom: 4px; color: var(--accent); font-size: 18px; }
+.queue-meta { display: flex; flex-wrap: wrap; gap: 7px; }
+.queue-meta span { padding: 6px 9px; border-radius: 999px; background: #edf6f1; color: var(--green); font-size: 9px; }
+.queue-job-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.queue-job { padding: 12px; border-radius: 10px; background: rgba(29,27,24,.045); border: 1px solid rgba(29,27,24,.08); }
+.queue-job strong { font-size: 10px; }
+.queue-job p { margin: 6px 0 0; color: var(--muted); font-size: 9px; line-height: 1.55; }
 
 .hidden { display: none !important; }
 footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex; justify-content: space-between; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; letter-spacing: .08em; }
@@ -230,7 +240,7 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
   .pipeline { grid-template-columns: 1fr; }
   .pipeline li { border-right: 0; border-bottom: 1px solid var(--line); }
   .pipeline li:last-child { border-bottom: 0; }
-  .data-grid, .variant-grid, .allow-grid, .prompt-grid { grid-template-columns: 1fr; }
+  .data-grid, .variant-grid, .allow-grid, .prompt-grid, .queue-overview, .queue-job-list { grid-template-columns: 1fr; }
   .beat, .rule { grid-template-columns: 1fr; gap: 6px; }
   footer { padding: 20px 16px; }
 }
