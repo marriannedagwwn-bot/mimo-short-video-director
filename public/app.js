@@ -1,3 +1,5 @@
+import { buildVideoGenerationQueue, formatQueueJsonl } from "./animation-queue.js";
+
 const state = {
   file: null,
   previewUrl: null,
@@ -31,7 +33,7 @@ const elements = {
   selectedVariantSummary: $("#selectedVariantSummary"), storyStatus: $("#storyStatus"),
   storyGenerate: $("#generateFullStory"), fullStory: $("#fullStoryResult"), backToResults: $("#backToResults"),
   animationGenerate: $("#generateAnimationPlan"), animationStatus: $("#animationStatus"), animationPlan: $("#animationPlanResult"),
-  exportStoryPackage: $("#exportStoryPackage"), copyAnimationPack: $("#copyAnimationPack")
+  exportStoryPackage: $("#exportStoryPackage"), copyAnimationPack: $("#copyAnimationPack"), exportVideoQueue: $("#exportVideoQueue")
 };
 
 init();
@@ -81,6 +83,7 @@ function bindEvents() {
   elements.animationGenerate.addEventListener("click", () => generateAnimationPlan({ force: true }));
   elements.exportStoryPackage.addEventListener("click", exportCurrentStoryPackage);
   elements.copyAnimationPack.addEventListener("click", copyAnimationProductionPack);
+  elements.exportVideoQueue.addEventListener("click", exportVideoGenerationQueue);
   window.addEventListener("popstate", renderRoute);
   [elements.fixedCharacter, elements.vertical, elements.constraints].forEach((element) => element.addEventListener("input", () => { saveProfile(); validateReady(); }));
 }
@@ -603,7 +606,7 @@ function selectedVariant() { return (state.output.themeVariants?.variants || [])
 function selectedStoryPackage() {
   const variant = selectedVariant();
   if (!variant) return null;
-  return {
+  const pack = {
     exportedAt: new Date().toISOString(),
     mode: state.mode,
     modelInfo: { storyModel: state.storyModel, animationModel: state.animationModel },
@@ -614,6 +617,8 @@ function selectedStoryPackage() {
     fullStory: state.fullStories[variant.id] || state.output.fullStory || null,
     animationPlan: state.animationPlans[variant.id] || state.output.animationPlan || null
   };
+  if (pack.animationPlan) pack.videoGenerationQueue = buildVideoGenerationQueue(pack);
+  return pack;
 }
 
 function updateStoryExportActions() {
@@ -622,6 +627,7 @@ function updateStoryExportActions() {
   const hasAnimation = Boolean(pack?.animationPlan);
   elements.exportStoryPackage.disabled = !hasStory;
   elements.copyAnimationPack.disabled = !hasAnimation;
+  elements.exportVideoQueue.disabled = !hasAnimation;
 }
 
 function exportJson() {
@@ -639,6 +645,18 @@ function exportCurrentStoryPackage() {
   if (!pack?.fullStory) return setStoryStatus("请先生成完整剧情，再导出当前生产包。", "error");
   const suffix = pack.animationPlan ? "动画生产包" : "完整剧情";
   downloadJson(pack, `短视频${suffix}-${pack.selectedVariant?.id || "variant"}-${Date.now()}.json`);
+}
+
+function exportVideoGenerationQueue() {
+  const pack = selectedStoryPackage();
+  if (!pack?.videoGenerationQueue) return setAnimationStatus("请先生成动画生产包，再导出视频任务队列。", "error");
+  const jsonl = formatQueueJsonl(pack.videoGenerationQueue);
+  const url = URL.createObjectURL(new Blob([jsonl], { type: "application/x-ndjson" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `视频任务队列-${pack.selectedVariant?.id || "variant"}-${Date.now()}.jsonl`;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 async function copyAnimationProductionPack() {

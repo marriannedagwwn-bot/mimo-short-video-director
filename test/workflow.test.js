@@ -10,6 +10,7 @@ import { parseRunVideoArgs } from "../src/run-video-command.js";
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
 import { extractFixedCharacterName } from "../src/validation.js";
 import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
+import { buildVideoGenerationQueue, formatQueueJsonl } from "../public/animation-queue.js";
 
 const frames = Array.from({ length: 8 }, (_, index) => ({
   timestamp: index * 5,
@@ -119,6 +120,39 @@ test("完整剧情后可生成首尾帧动画生产包", async () => {
   assert.ok(result.shotPlan[0].startFramePrompt);
   assert.ok(result.shotPlan[0].endFramePrompt);
   assert.ok(result.shotPlan[0].videoPrompt);
+});
+
+test("动画生产包可转换为视频生成任务队列", () => {
+  const creativeBrief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const variant = {
+    id: "V1",
+    title: "最后一格电",
+    characterSetup: { protagonist: "阿岚，社区修理师", careRecipient: "独居老人", helper: "夜班便利店员" },
+    newTask: "修复并送回旧设备",
+    emotionalMedium: "一段旧录音",
+    environmentPressure: "暴雨停电",
+    endingRitual: "老人按下播放键"
+  };
+  const fullStory = mockFullStory({ ...input, creativeBrief, variant });
+  const animationPlan = mockAnimationPlan({ ...input, creativeBrief, variant, fullStory });
+  const queue = buildVideoGenerationQueue({
+    exportedAt: "2026-06-25T00:00:00.000Z",
+    selectedVariant: variant,
+    fullStory,
+    animationPlan
+  });
+  assert.equal(queue.providerMode, "provider_agnostic");
+  assert.equal(queue.selectedVariantId, "V1");
+  assert.ok(queue.jobs.some((job) => job.type === "reference_image"));
+  assert.ok(queue.jobs.some((job) => job.type === "start_frame_image"));
+  assert.ok(queue.jobs.some((job) => job.type === "end_frame_image"));
+  assert.ok(queue.jobs.some((job) => job.type === "first_last_frame_video"));
+  assert.ok(queue.jobs.some((job) => job.type === "quality_check"));
+  const videoJob = queue.jobs.find((job) => job.type === "first_last_frame_video");
+  assert.deepEqual(videoJob.requiredInputs, [`frames.${videoJob.shotId}.start`, `frames.${videoJob.shotId}.end`]);
+  const jsonl = formatQueueJsonl(queue);
+  assert.equal(jsonl.split("\n").length, queue.jobs.length);
+  assert.equal(JSON.parse(jsonl.split("\n")[0]).taskId, queue.jobs[0].taskId);
 });
 
 test("少于三张画面时拒绝分析", async () => {
