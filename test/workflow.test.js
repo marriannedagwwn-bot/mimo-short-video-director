@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { WorkflowService } from "../src/workflow.js";
 import { InputError, OutputContractError } from "../src/validation.js";
 import { ensureOutputContract } from "../src/validation.js";
@@ -10,6 +13,7 @@ import { parseRunVideoArgs } from "../src/run-video-command.js";
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
 import { extractFixedCharacterName } from "../src/validation.js";
 import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
+import { executeProductionWorkspace } from "../src/video-production-executor.js";
 import { buildArtifactsFromExistingOutputs, buildProductionRun, buildProductionWorkspaceFiles, parseQueueJsonl } from "../src/video-production-run.js";
 import { buildVideoGenerationQueue, formatQueueJsonl } from "../public/animation-queue.js";
 
@@ -242,6 +246,27 @@ test("视频生产工作区导出 README、运行状态和逐任务 prompt 卡",
   const finalRequest = JSON.parse(requestFiles.find((file) => file.path.includes("final_edit")).content);
   assert.equal(finalRequest.capability, "video_assembly");
   assert.ok(finalRequest.inputArtifacts.some((item) => item.outputKey.startsWith("reviews.")));
+});
+
+test("mock 视频生产执行器可按依赖链跑完整个工作区", async () => {
+  const queue = buildQueueFixture();
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-exec-"));
+  const run = buildProductionRun(queue, {
+    createdAt: "2026-06-26T00:00:00.000Z",
+    outputRoot: root
+  });
+  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+
+  const result = await executeProductionWorkspace({ root, provider: "mock", all: true });
+  assert.equal(result.executed.length, queue.jobs.length);
+  assert.equal(result.run.counts.done, queue.jobs.length);
+  assert.equal(result.run.counts.ready, 0);
+  assert.equal(result.run.counts.blocked, 0);
+  const finalJob = result.run.jobs.find((job) => job.type === "final_edit");
+  const finalBody = await fs.readFile(finalJob.outputPath, "utf8");
+  assert.match(finalBody, /MOCK ARTIFACT/);
+  const finalReceipt = JSON.parse(await fs.readFile(`${finalJob.outputPath}.mock.json`, "utf8"));
+  assert.equal(finalReceipt.capability, "video_assembly");
 });
 
 test("少于三张画面时拒绝分析", async () => {
@@ -614,3 +639,10 @@ test("视频工具选择稳定采样时间点并识别常见 MIME 类型", () =>
   assert.equal(mimeTypeFor("/tmp/a.mov"), "video/quicktime");
   assert.equal(mimeTypeFor("/tmp/a.unknown"), "application/octet-stream");
 });
+
+async function writeTestWorkspace(files) {
+  for (const file of files) {
+    await fs.mkdir(path.dirname(file.path), { recursive: true });
+    await fs.writeFile(file.path, file.content);
+  }
+}

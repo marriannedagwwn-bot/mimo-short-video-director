@@ -131,6 +131,14 @@ npm run plan:video -- ./视频任务队列.jsonl --root ./production/V1 --worksp
 
 `--scan-existing` 会扫描预期 `outputs/` 路径上的非空文件，自动把对应任务标记为 `done`，并重新计算下一批 `ready` 任务；这使人工制作和未来 API worker 都能通过落盘产物推进同一条依赖链。
 
+本地执行器入口：
+
+```bash
+npm run exec:video -- ./production/V1 --provider mock --all
+```
+
+当前 `mock` provider 只生成占位产物和执行回执，用于验证 ready → done → 释放下一批任务的链路；真实图像/视频 provider 必须遵守同一份 request JSON 输入、outputPath 落盘和 `production-run.json` 状态刷新约定。
+
 自动视频生成尚未绑定具体供应商。接入真实视频模型前，需要明确：
 
 - 视频模型是否支持首尾帧、单首帧图生视频，还是只支持文生视频。

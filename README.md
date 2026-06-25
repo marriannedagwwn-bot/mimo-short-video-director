@@ -83,6 +83,14 @@ npm run plan:video -- ./视频任务队列.jsonl \
   --artifact assets.旧设备=./production/V1/outputs/asset_image/old_device.png
 ```
 
+也可以用本地执行器跑 ready 任务。当前内置 `mock` provider，只用于验证工作区依赖链和文件流转，不会生成真实图片或视频：
+
+```bash
+npm run exec:video -- ./production/V1 --provider mock --all
+```
+
+`mock` 会为每个 ready request 写入占位产物和 `.mock.json` 回执。真实图像/视频模型接入时，会复用同一个 `requests/`、`outputs/` 和 `production-run.json` 约定。
+
 当前尚未绑定具体视频生成供应商。下一步若要自动生成视频，需要确定视频模型 API、首尾帧图片生成方式、任务轮询、候选视频存储和质检/重试策略。
 
 ## 结构
