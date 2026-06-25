@@ -58,7 +58,7 @@ npm run plan:video -- ./视频任务队列.jsonl \
   --root ./production/V1
 ```
 
-如果要直接进入制作，可以加 `--workspace` 生成完整生产工作区：`README.md`、`production-run.json`、每个任务的 Markdown prompt 卡，以及按任务类型分好的输出目录。
+如果要直接进入制作，可以加 `--workspace` 生成完整生产工作区：`README.md`、`production-run.json`、每个任务的 Markdown prompt 卡、供应商无关 request JSON，以及按任务类型分好的输出目录。
 
 ```bash
 npm run plan:video -- ./视频任务队列.jsonl \

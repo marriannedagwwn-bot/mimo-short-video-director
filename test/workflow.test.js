@@ -209,14 +209,23 @@ test("视频生产工作区导出 README、运行状态和逐任务 prompt 卡",
   assert.ok(files.some((file) => file.path === "production/V1/README.md" && file.content.includes("执行顺序")));
   assert.ok(files.some((file) => file.path === "production/V1/production-run.json" && file.content.includes('"nextTaskIds"')));
   const promptCards = files.filter((file) => file.path.includes("/prompts/") && file.path.endsWith(".md"));
+  const requestFiles = files.filter((file) => file.path.includes("/requests/") && file.path.endsWith(".json"));
   assert.equal(promptCards.length, queue.jobs.length);
+  assert.equal(requestFiles.length, queue.jobs.length);
   const videoCard = promptCards.find((file) => file.path.includes("first_last_frame_video"));
   assert.match(videoCard.content, /正向 Prompt/);
   assert.match(videoCard.content, /依赖输入/);
   assert.match(videoCard.content, /验收标准/);
+  const videoRequest = JSON.parse(requestFiles.find((file) => file.path.includes("first_last_frame_video")).content);
+  assert.equal(videoRequest.capability, "first_last_frame_video_generation");
+  assert.equal(videoRequest.inputArtifacts.length, 2);
+  assert.ok(videoRequest.inputArtifacts.every((item) => item.path.includes("/outputs/")));
   const finalCard = promptCards.find((file) => file.path.includes("final_edit"));
   assert.match(finalCard.content, /最终剪辑/);
   assert.match(finalCard.content, /quality_check|reviews\./);
+  const finalRequest = JSON.parse(requestFiles.find((file) => file.path.includes("final_edit")).content);
+  assert.equal(finalRequest.capability, "video_assembly");
+  assert.ok(finalRequest.inputArtifacts.some((item) => item.outputKey.startsWith("reviews.")));
 });
 
 test("少于三张画面时拒绝分析", async () => {

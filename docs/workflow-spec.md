@@ -120,6 +120,7 @@ npm run plan:video -- ./视频任务队列.jsonl --root ./production/V1 --worksp
 - `README.md`：当前可执行任务、任务类型统计和执行顺序。
 - `production-run.json`：机器可读运行状态。
 - `prompts/**/<taskId>.md`：逐任务 prompt 卡，包含依赖输入、正向 prompt、负向 prompt、验收标准和原始任务 JSON。
+- `requests/**/<taskId>.json`：供应商无关请求包，包含能力类型、依赖产物路径、输出路径、参数和验收标准，供后续 API worker 消费。
 - `outputs/**/`：按任务类型划分的建议产物目录。
 
 自动视频生成尚未绑定具体供应商。接入真实视频模型前，需要明确：

@@ -33,6 +33,7 @@ export function buildProductionRun(queue = {}, options = {}) {
       missingInputs,
       outputPath,
       promptPath: defaultPromptPath(outputRoot, job),
+      requestPath: defaultRequestPath(outputRoot, job),
       acceptanceCriteria: job.acceptanceCriteria || []
     };
   });
@@ -73,6 +74,10 @@ export function buildProductionWorkspaceFiles(queue = {}, run = buildProductionR
     files.push({
       path: runJob.promptPath,
       content: formatJobPromptCard(queueJob, runJob, jobsByOutputKey)
+    });
+    files.push({
+      path: runJob.requestPath,
+      content: `${JSON.stringify(formatJobRequest(queueJob, runJob, jobsByOutputKey), null, 2)}\n`
     });
   }
 
@@ -143,6 +148,7 @@ function formatWorkspaceReadme(queue = {}, run = {}) {
     "## 目录约定",
     "",
     "- `prompts/`：每个任务一张 Markdown prompt 卡，可直接复制给图像/视频模型或交给 API worker。",
+    "- `requests/`：每个任务一份供应商无关 JSON 请求包，包含能力类型、依赖产物路径、输出路径、参数和验收标准。",
     "- `outputs/`：建议产物目录。参考图、资产图、首尾帧、视频片段、质检 JSON 和最终成片按任务类型分开存放。",
     "- `production-run.json`：机器可读运行状态，记录依赖、产物路径和下一批可执行任务。",
     "",
@@ -205,6 +211,63 @@ function formatJobPromptCard(queueJob = {}, runJob = {}, jobsByOutputKey = new M
   ].filter((line, index, lines) => !(line === "" && lines[index - 1] === "" && lines[index + 1] === "")).join("\n");
 }
 
+function formatJobRequest(queueJob = {}, runJob = {}, jobsByOutputKey = new Map()) {
+  return {
+    version: "1.0",
+    providerMode: "provider_agnostic",
+    taskId: runJob.taskId,
+    type: runJob.type,
+    capability: capabilityFor(runJob.type, runJob.inputType),
+    status: runJob.status,
+    inputType: runJob.inputType,
+    outputKey: runJob.outputKey,
+    outputPath: runJob.outputPath,
+    prompt: queueJob.prompt || "",
+    negativePrompt: queueJob.negativePrompt || "",
+    inputArtifacts: (runJob.requiredInputs || []).map((key) => {
+      const dependency = jobsByOutputKey.get(key);
+      return {
+        outputKey: key,
+        path: dependency?.outputPath || "",
+        status: dependency?.status || "missing",
+        missing: runJob.missingInputs?.includes(key) || false
+      };
+    }),
+    parameters: requestParameters(queueJob, runJob),
+    acceptanceCriteria: runJob.acceptanceCriteria || [],
+    rawJob: queueJob
+  };
+}
+
+function capabilityFor(type, inputType) {
+  if (type === "reference_image" || type === "asset_image" || type === "start_frame_image" || type === "end_frame_image") return "image_generation";
+  if (type === "first_last_frame_video") return "first_last_frame_video_generation";
+  if (type === "quality_check") return "video_quality_review";
+  if (type === "final_edit") return "video_assembly";
+  return inputType || "unknown";
+}
+
+function requestParameters(queueJob = {}, runJob = {}) {
+  return {
+    aspectRatio: queueJob.aspectRatio || "",
+    durationSeconds: queueJob.durationSeconds || "",
+    shotId: queueJob.shotId || "",
+    sourceSceneId: queueJob.sourceSceneId || "",
+    cameraMotion: queueJob.cameraMotion || "",
+    characterAction: queueJob.characterAction || "",
+    dialogueOrSubtitle: queueJob.dialogueOrSubtitle || "",
+    soundDesign: queueJob.soundDesign || "",
+    continuityNotes: queueJob.continuityNotes || "",
+    sequenceRhythm: queueJob.sequenceRhythm || "",
+    transitions: queueJob.transitions || [],
+    subtitlePlan: queueJob.subtitlePlan || "",
+    musicAndSfx: queueJob.musicAndSfx || "",
+    hookAndEndingNotes: queueJob.hookAndEndingNotes || "",
+    requiredInputCount: runJob.requiredInputs?.length || 0,
+    missingInputCount: runJob.missingInputs?.length || 0
+  };
+}
+
 function detailEntries(job = {}) {
   return [
     ["镜头 ID", job.shotId],
@@ -262,6 +325,10 @@ function defaultOutputPath(root, job = {}) {
 
 function defaultPromptPath(root, job = {}) {
   return [root, "prompts", safeSegment(job.type || "unknown"), `${safeSegment(job.taskId || job.outputKey || "job")}.md`].join("/");
+}
+
+function defaultRequestPath(root, job = {}) {
+  return [root, "requests", safeSegment(job.type || "unknown"), `${safeSegment(job.taskId || job.outputKey || "job")}.json`].join("/");
 }
 
 function extensionFor(type) {

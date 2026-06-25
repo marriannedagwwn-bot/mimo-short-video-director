@@ -12,7 +12,7 @@ if (options.help || !options.input) {
 选项：
   --out <file>          写入生产运行状态 JSON；不传则输出到终端
   --root <dir>          产物根目录，默认 production
-  --workspace           在 root 下生成 README、production-run.json、逐任务 prompt 卡和 outputs 目录
+  --workspace           在 root 下生成 README、production-run.json、prompt 卡、请求包和 outputs 目录
   --done <outputKey>    标记某个产物已完成，可重复
   --artifact <key=path> 标记某个产物已完成并记录路径，可重复
 
@@ -45,6 +45,7 @@ try {
     await writeWorkspace(files, run);
     console.log(`已生成视频生产工作区：${run.outputRoot}`);
     console.log(`prompt 卡：${files.filter((file) => file.path.endsWith(".md") && file.path.includes("/prompts/")).length} 个`);
+    console.log(`请求包：${files.filter((file) => file.path.endsWith(".json") && file.path.includes("/requests/")).length} 个`);
     console.log(`当前可执行：${run.nextTaskIds.length ? run.nextTaskIds.join(" / ") : "无"}`);
   }
 } catch (error) {
