@@ -560,6 +560,7 @@ function renderAnimationPlan(data) {
       ${cell("模型无关说明", (data.modelAgnosticNotes || []).join("；"))}
     </div>`)}
     ${block("视频生成任务队列", renderQueueSummary(queue))}
+    ${block("本地制作步骤", renderLocalProductionGuide(queue))}
     ${block("生成验收清单", `<div class="rule-list">${(data.generationChecklist || []).map((item) => `<div class="rule"><strong>${escape(item.check)}</strong><p>${escape(item.passCriteria)}</p></div>`).join("")}</div>`)}
     <div class="warning-box"><b>动画连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
     ${uncertainties(data.uncertainties)}`;
@@ -603,6 +604,65 @@ function renderQueueSummary(queue) {
       <p>${escape(job.inputType)} → ${escape(job.outputKey)}${job.requiredInputs?.length ? `<br>依赖：${escape(job.requiredInputs.join(" / "))}` : ""}</p>
     </div>`).join("")}</div>
   </div>`;
+}
+
+function renderLocalProductionGuide(queue = {}) {
+  const runId = localRunId(queue.selectedVariantId || "V1");
+  const queueFilename = `视频任务队列-${runId}.jsonl`;
+  const productionRoot = `./production/${runId}`;
+  const commandWorker = "./workers/command-worker-template.mjs";
+  const steps = [
+    {
+      label: "1",
+      title: "导出任务队列",
+      body: `点击“导出视频任务队列 JSONL”，然后把下载文件改名为 ${queueFilename} 并放到项目根目录。`,
+      command: null
+    },
+    {
+      label: "2",
+      title: "生成本地制作工作区",
+      body: "把每个图像、视频、质检、最终剪辑任务拆成 request JSON、prompt card 和输出目录。",
+      command: `npm run plan:video -- ./${queueFilename} --root ${productionRoot} --workspace`
+    },
+    {
+      label: "3",
+      title: "先跑 mock 验证链路",
+      body: "只验证依赖、输出路径、收据和最终剪辑链路；不会生成真实视频。",
+      command: `npm run exec:video -- ${productionRoot} --provider mock --all`
+    },
+    {
+      label: "4",
+      title: "接入真实视频 worker",
+      body: "把模板 worker 替换为实际图像/首尾帧视频模型调用；CLI 会逐个传入 request、output 和 receipt 路径。",
+      command: `npm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${commandWorker} --all`
+    },
+    {
+      label: "5",
+      title: "查看进度或重试失败任务",
+      body: "失败任务会留下 .error.json，修好 worker 或模型参数后可以只重试失败项。",
+      command: `npm run report:video -- ${productionRoot}\nnpm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${commandWorker} --all --retry-failed`
+    }
+  ];
+  return `<div class="production-guide">
+    <p class="long-copy">这一步把浏览器生成的首尾帧计划落到本地制作流水线。当前项目已经支持 mock 执行和 command worker；真实视频生成需要把 worker 接到你选定的图像/视频模型。</p>
+    <div class="production-step-list">${steps.map((step) => `<div class="production-step">
+      <span class="step-badge">${escape(step.label)}</span>
+      <div>
+        <strong>${escape(step.title)}</strong>
+        <p>${escape(step.body)}</p>
+        ${step.command ? `<pre class="command-box"><code>${escape(step.command)}</code></pre>` : ""}
+      </div>
+    </div>`).join("")}</div>
+  </div>`;
+}
+
+function localRunId(value) {
+  return String(value || "V1")
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[^\p{L}\p{N}_-]+/gu, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 32) || "V1";
 }
 
 function countBy(items, key) {
