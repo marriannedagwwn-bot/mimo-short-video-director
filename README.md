@@ -44,6 +44,13 @@ MIMO_MEDIA_MODE=auto
 
 当前分析/拆解/简报/主题变体请求参数默认为 `temperature=0.3`、`top_p=0.95`、`max_completion_tokens=8192`、`thinking=disabled`、`stream=false`。用户选中某个主题变体后，完整剧情页会单独调用 `MIMO_STORY_MODEL`，默认 `mimo-v2.5-pro`，并使用 `MIMO_STORY_MAX_COMPLETION_TOKENS=12288` 给分场剧情留出更长输出空间。完整剧情生成后，可以继续调用 `MIMO_ANIMATION_MODEL`，默认同样为 `mimo-v2.5-pro`，生成首尾帧 AI 视频生产包：视觉圣经、角色参考、资产提示词、每个短镜头的首帧 prompt、尾帧 prompt、视频 prompt、负面 prompt 和验收标准。接口依据：[MiMo V2.5 模型说明](https://mimo.mi.com/docs/en-US/product/introduction/models#MiMo-V25)、[MiMo OpenAI API](https://mimo.mi.com/docs/en-US/api/chat/openai-api) 和 [MiMo 视频理解文档](https://mimo.mi.com/docs/en-US/use-cases/video-understanding)。
 
+动画生产包生成后，剧情页提供两个执行出口：
+
+- 导出当前生产包 JSON：保留完整剧情、主题变体、动画生产包和模型信息，适合进入后续自动化队列。
+- 复制视频模型生产包：输出 Markdown 格式的角色参考、资产提示词和逐镜首帧/尾帧/video prompt，适合手动粘贴到支持首尾帧或关键帧的视频生成工具。
+
+当前尚未绑定具体视频生成供应商。下一步若要自动生成视频，需要确定视频模型 API、首尾帧图片生成方式、任务轮询、候选视频存储和质检/重试策略。
+
 ## 结构
 
 - `public/`：上传、浏览器抽帧、角色配置、结果展示与 JSON 导出。

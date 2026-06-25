@@ -30,7 +30,8 @@ const elements = {
   mainPage: $("#top"), storyPage: $("#storyPage"), storyModelName: $("#storyModelName"),
   selectedVariantSummary: $("#selectedVariantSummary"), storyStatus: $("#storyStatus"),
   storyGenerate: $("#generateFullStory"), fullStory: $("#fullStoryResult"), backToResults: $("#backToResults"),
-  animationGenerate: $("#generateAnimationPlan"), animationStatus: $("#animationStatus"), animationPlan: $("#animationPlanResult")
+  animationGenerate: $("#generateAnimationPlan"), animationStatus: $("#animationStatus"), animationPlan: $("#animationPlanResult"),
+  exportStoryPackage: $("#exportStoryPackage"), copyAnimationPack: $("#copyAnimationPack")
 };
 
 init();
@@ -78,6 +79,8 @@ function bindEvents() {
   elements.backToResults.addEventListener("click", backToMainResults);
   elements.storyGenerate.addEventListener("click", () => generateFullStory({ force: true }));
   elements.animationGenerate.addEventListener("click", () => generateAnimationPlan({ force: true }));
+  elements.exportStoryPackage.addEventListener("click", exportCurrentStoryPackage);
+  elements.copyAnimationPack.addEventListener("click", copyAnimationProductionPack);
   window.addEventListener("popstate", renderRoute);
   [elements.fixedCharacter, elements.vertical, elements.constraints].forEach((element) => element.addEventListener("input", () => { saveProfile(); validateReady(); }));
 }
@@ -351,6 +354,7 @@ function renderStoryPage({ autoGenerate = false } = {}) {
     renderFullStory(existing);
     setStoryStatus(`已生成完整剧情 · ${state.storyModel.split("/").pop()}`, "ready");
     elements.animationGenerate.disabled = state.animationRunning;
+    updateStoryExportActions();
     if (animationExisting) {
       renderAnimationPlan(animationExisting);
       setAnimationStatus(`已生成动画生产包 · ${state.animationModel.split("/").pop()}`, "ready");
@@ -366,6 +370,7 @@ function renderStoryPage({ autoGenerate = false } = {}) {
     elements.animationPlan.innerHTML = "";
     setAnimationStatus("", "");
     elements.animationGenerate.disabled = true;
+    updateStoryExportActions();
     if (variant) {
       setStoryStatus("准备生成完整剧情。", "");
       if (autoGenerate) generateFullStory();
@@ -374,6 +379,7 @@ function renderStoryPage({ autoGenerate = false } = {}) {
     }
   }
   elements.storyGenerate.disabled = !variant || state.storyRunning;
+  updateStoryExportActions();
 }
 
 function renderSelectedVariantSummary(variant) {
@@ -420,6 +426,7 @@ async function generateFullStory({ force = false } = {}) {
     setStoryStatus(`完整剧情已生成 · ${state.storyModel.split("/").pop()}`, "ready");
     elements.animationGenerate.disabled = false;
     setAnimationStatus("可以继续生成首尾帧动画生产包。", "");
+    updateStoryExportActions();
     elements.export.classList.remove("hidden");
   } catch (error) {
     setStoryStatus(error.message || "完整剧情生成失败", "error");
@@ -485,6 +492,7 @@ async function generateAnimationPlan({ force = false } = {}) {
     state.output.animationPlan = animationPlan;
     renderAnimationPlan(animationPlan);
     setAnimationStatus(`动画生产包已生成 · ${state.animationModel.split("/").pop()}`, "ready");
+    updateStoryExportActions();
     elements.export.classList.remove("hidden");
   } catch (error) {
     setAnimationStatus(error.message || "动画生产包生成失败", "error");
@@ -575,6 +583,7 @@ function setAnimationRunning(running) {
   const variant = selectedVariant();
   const fullStory = variant ? state.fullStories[variant.id] || state.output.fullStory : null;
   elements.animationGenerate.disabled = running || !variant || !fullStory;
+  updateStoryExportActions();
 }
 function setStoryStatus(message, tone = "") {
   elements.storyStatus.textContent = message;
@@ -591,6 +600,30 @@ function saveProfile() { localStorage.setItem("directorProfile", JSON.stringify(
 function restoreProfile() { try { const data = JSON.parse(localStorage.getItem("directorProfile")); if (data) { elements.fixedCharacter.value = data.fixedCharacter || ""; elements.vertical.value = data.vertical || ""; elements.constraints.value = data.constraints || ""; } } catch {} }
 function selectedVariant() { return (state.output.themeVariants?.variants || []).find((variant) => String(variant.id) === String(state.selectedVariantId)); }
 
+function selectedStoryPackage() {
+  const variant = selectedVariant();
+  if (!variant) return null;
+  return {
+    exportedAt: new Date().toISOString(),
+    mode: state.mode,
+    modelInfo: { storyModel: state.storyModel, animationModel: state.animationModel },
+    sourceVideo: state.metadata,
+    creatorProfile: profile(),
+    selectedVariant: variant,
+    creativeBrief: state.output.creativeBrief,
+    fullStory: state.fullStories[variant.id] || state.output.fullStory || null,
+    animationPlan: state.animationPlans[variant.id] || state.output.animationPlan || null
+  };
+}
+
+function updateStoryExportActions() {
+  const pack = selectedStoryPackage();
+  const hasStory = Boolean(pack?.fullStory);
+  const hasAnimation = Boolean(pack?.animationPlan);
+  elements.exportStoryPackage.disabled = !hasStory;
+  elements.copyAnimationPack.disabled = !hasAnimation;
+}
+
 function exportJson() {
   const payload = { exportedAt: new Date().toISOString(), mode: state.mode, sourceVideo: state.metadata, creatorProfile: profile(), ...state.output };
   const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
@@ -599,6 +632,97 @@ function exportJson() {
   link.download = `短视频创意方案-${Date.now()}.json`;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function exportCurrentStoryPackage() {
+  const pack = selectedStoryPackage();
+  if (!pack?.fullStory) return setStoryStatus("请先生成完整剧情，再导出当前生产包。", "error");
+  const suffix = pack.animationPlan ? "动画生产包" : "完整剧情";
+  downloadJson(pack, `短视频${suffix}-${pack.selectedVariant?.id || "variant"}-${Date.now()}.json`);
+}
+
+async function copyAnimationProductionPack() {
+  const pack = selectedStoryPackage();
+  if (!pack?.animationPlan) return setAnimationStatus("请先生成动画生产包，再复制给视频模型使用。", "error");
+  const text = formatAnimationPackMarkdown(pack);
+  try {
+    await navigator.clipboard.writeText(text);
+    setAnimationStatus("已复制视频模型生产包，可直接粘贴到图像/视频生成工具。", "ready");
+  } catch {
+    setAnimationStatus("浏览器拒绝访问剪贴板，请使用“导出当前生产包 JSON”。", "error");
+  }
+}
+
+function downloadJson(payload, filename) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function formatAnimationPackMarkdown(pack) {
+  const plan = pack.animationPlan || {};
+  const strategy = plan.productionStrategy || {};
+  const visual = plan.visualBible || {};
+  const lines = [
+    `# ${plan.title || pack.fullStory?.title || "首尾帧动画生产包"}`,
+    "",
+    `- 画幅：${strategy.targetAspectRatio || "9:16"}`,
+    `- 目标时长：${strategy.targetRuntimeSeconds || pack.fullStory?.targetDurationSeconds || 60} 秒`,
+    `- 单镜头时长：${strategy.recommendedShotDurationSeconds?.min || 3}-${strategy.recommendedShotDurationSeconds?.max || 6} 秒`,
+    `- 工作流：${strategy.format || "first_last_frame_video"}`,
+    "",
+    "## 视觉圣经",
+    `- 整体风格：${visual.overallStyle || ""}`,
+    `- 动画风格：${visual.animationStyle || ""}`,
+    `- 色彩：${(visual.colorPalette || []).join(" / ")}`,
+    `- 光线：${visual.lighting || ""}`,
+    `- 镜头语言：${visual.cameraLanguage || ""}`,
+    `- 角色一致性：${(visual.characterConsistencyRules || []).join("；")}`,
+    `- 负面视觉规则：${(visual.negativeVisualRules || []).join("；")}`,
+    "",
+    "## 角色参考图 Prompt"
+  ];
+  for (const item of plan.characterReferencePrompts || []) {
+    lines.push("", `### ${item.characterName || "角色"}`, item.appearancePrompt || "", `一致性标签：${(item.consistencyTags || []).join(" / ")}`, `禁止变化：${(item.forbiddenChanges || []).join(" / ")}`);
+  }
+  lines.push("", "## 关键资产 Prompt");
+  for (const item of plan.assetPrompts || []) {
+    lines.push("", `### ${item.assetName || "资产"}`, item.imagePrompt || "", `功能：${item.storyFunction || ""}`, `一致性标签：${(item.consistencyTags || []).join(" / ")}`);
+  }
+  lines.push("", "## 镜头生产任务");
+  for (const shot of plan.shotPlan || []) {
+    lines.push(
+      "",
+      `### ${shot.shotId || "镜头"} · ${shot.sourceSceneId || ""} · ${shot.durationSeconds || 4} 秒`,
+      `剧情功能：${shot.storyPurpose || ""}`,
+      `情绪目标：${shot.emotionalTarget || ""}`,
+      "",
+      "首帧 prompt：",
+      shot.startFramePrompt || "",
+      "",
+      "尾帧 prompt：",
+      shot.endFramePrompt || "",
+      "",
+      "视频 prompt：",
+      shot.videoPrompt || "",
+      "",
+      "负面 prompt：",
+      shot.negativePrompt || "",
+      "",
+      `镜头运动：${shot.cameraMotion || ""}`,
+      `角色动作：${shot.characterAction || ""}`,
+      `对白/字幕：${shot.dialogueOrSubtitle || ""}`,
+      `声音设计：${shot.soundDesign || ""}`,
+      `连续性备注：${shot.continuityNotes || ""}`,
+      `验收标准：${(shot.acceptanceCriteria || []).join("；")}`
+    );
+  }
+  lines.push("", "## 生成检查清单");
+  for (const item of plan.generationChecklist || []) lines.push(`- ${item.check || ""}：${item.passCriteria || ""}`);
+  return lines.join("\n");
 }
 
 function escape(value) {

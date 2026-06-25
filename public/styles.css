@@ -184,6 +184,8 @@ h1 em { color: var(--accent); font-style: normal; }
 .story-control-card { padding: 22px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow); backdrop-filter: blur(16px); }
 .story-control-card .primary-button { margin-top: 16px; }
 .animation-button { width: 100%; margin-top: 10px; }
+.story-export-actions { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 10px; }
+.story-export-actions .outline-button { width: 100%; }
 .selected-variant-summary h3 { margin: 6px 0 10px; font-family: Georgia, "Songti SC", serif; font-size: 26px; font-weight: 500; }
 .selected-variant-summary p { margin: 0 0 14px; color: var(--muted); font-size: 12px; line-height: 1.7; }
 .variant-cast.compact { margin-bottom: 0; }
