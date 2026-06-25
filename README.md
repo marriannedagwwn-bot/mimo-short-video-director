@@ -97,11 +97,13 @@ npm run exec:video -- ./production/V1 --provider mock --all
 npm run exec:video -- ./production/V1 \
   --provider command \
   --command node \
-  --command-arg ./workers/my-video-worker.mjs \
+  --command-arg ./workers/command-worker-template.mjs \
   --all
 ```
 
 外部命令会收到 `--request <request.json>`、`--output <target-file>`、`--receipt <receipt.json>`、`--root <production-root>`，也会收到 `VIDEO_TASK_*` 环境变量。只要脚本把产物写到 `--output`，执行器就会自动刷新状态并释放后续任务。
+
+Worker 模板见 [workers/command-worker-template.mjs](workers/command-worker-template.mjs)，协议说明见 [docs/video-worker-protocol.md](docs/video-worker-protocol.md)。
 
 当前尚未绑定具体视频生成供应商。下一步若要自动生成视频，需要确定视频模型 API、首尾帧图片生成方式、任务轮询、候选视频存储和质检/重试策略。
 

@@ -311,6 +311,34 @@ await fs.writeFile(receiptPath, JSON.stringify({ provider: "command-test", taskI
   assert.equal(receipt.provider, "command-test");
 });
 
+test("内置 command worker 模板可作为 command provider 执行任务", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-template-"));
+  const queue = {
+    version: "test",
+    providerMode: "provider_agnostic",
+    title: "template worker test",
+    selectedVariantId: "V1",
+    jobs: [
+      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" }
+    ]
+  };
+  const run = buildProductionRun(queue, { outputRoot: root });
+  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+
+  const result = await executeProductionWorkspace({
+    root,
+    provider: "command",
+    command: process.execPath,
+    commandArgs: ["workers/command-worker-template.mjs"],
+    all: true
+  });
+  assert.equal(result.run.counts.done, 1);
+  const output = await fs.readFile(result.run.jobs[0].outputPath, "utf8");
+  assert.match(output, /PLACEHOLDER ARTIFACT/);
+  const receipt = JSON.parse(await fs.readFile(`${result.run.jobs[0].outputPath}.provider.json`, "utf8"));
+  assert.equal(receipt.provider, "command-worker-template");
+});
+
 test("少于三张画面时拒绝分析", async () => {
   const workflow = new WorkflowService();
   await assert.rejects(() => workflow.analyze({ ...input, frames: frames.slice(0, 2) }), InputError);

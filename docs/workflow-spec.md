@@ -142,10 +142,12 @@ npm run exec:video -- ./production/V1 --provider mock --all
 外部 API worker 可通过 `command` provider 接入：
 
 ```bash
-npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/my-video-worker.mjs --all
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/command-worker-template.mjs --all
 ```
 
 执行器为每个 ready 任务调用外部命令，并追加 `--request`、`--output`、`--receipt`、`--root` 参数，同时注入 `VIDEO_TASK_REQUEST`、`VIDEO_TASK_OUTPUT`、`VIDEO_TASK_RECEIPT`、`VIDEO_TASK_ROOT`、`VIDEO_TASK_ID`、`VIDEO_TASK_CAPABILITY` 环境变量。worker 只要读取 request JSON、调用具体供应商并把结果写入 `--output`，主执行器就会通过落盘产物继续推进依赖链。
+
+Worker 模板位于 `workers/command-worker-template.mjs`，详细协议见 `docs/video-worker-protocol.md`。
 
 自动视频生成尚未绑定具体供应商。接入真实视频模型前，需要明确：
 
