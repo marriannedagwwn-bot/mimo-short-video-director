@@ -583,12 +583,13 @@ function renderQueueSummary(queue) {
     start_frame_image: "首帧图",
     end_frame_image: "尾帧图",
     first_last_frame_video: "首尾帧视频",
-    quality_check: "质检"
+    quality_check: "质检",
+    final_edit: "最终剪辑"
   };
   const chips = Object.entries(typeLabels)
     .map(([type, label]) => `<span class="queue-chip"><b>${escape(counts[type] || 0)}</b>${escape(label)}</span>`)
     .join("");
-  const orderedJobs = (queue.jobs || []).filter((job) => ["reference_image", "asset_image", "first_last_frame_video", "quality_check"].includes(job.type));
+  const orderedJobs = (queue.jobs || []).filter((job) => ["reference_image", "asset_image", "first_last_frame_video", "quality_check", "final_edit"].includes(job.type));
   return `<div class="queue-panel">
     <div class="queue-overview">${chips}</div>
     <div class="queue-meta">

@@ -2,11 +2,12 @@ export function buildVideoGenerationQueue(pack = {}) {
   const plan = pack.animationPlan || {};
   const strategy = plan.productionStrategy || {};
   const visual = plan.visualBible || {};
+  const editPlan = plan.editPlan || {};
   const selectedVariant = pack.selectedVariant || {};
   const generatedAt = pack.exportedAt || new Date().toISOString();
   const aspectRatio = strategy.targetAspectRatio || "9:16";
   const queue = {
-    version: "1.0",
+    version: "1.1",
     generatedAt,
     providerMode: "provider_agnostic",
     selectedVariantId: selectedVariant.id || plan.selectedVariantId || "",
@@ -22,6 +23,7 @@ export function buildVideoGenerationQueue(pack = {}) {
     },
     jobs: []
   };
+  const videoOutputs = [];
 
   for (const [index, character] of (plan.characterReferencePrompts || []).entries()) {
     queue.jobs.push({
@@ -103,6 +105,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       soundDesign: shot.soundDesign || "",
       acceptanceCriteria: shot.acceptanceCriteria || []
     });
+    videoOutputs.push(videoOutput);
 
     queue.jobs.push({
       taskId: `${shotId}-QA`,
@@ -114,6 +117,32 @@ export function buildVideoGenerationQueue(pack = {}) {
       prompt: `检查 ${shotId} 是否符合角色一致性、首尾帧因果、动作目标、情绪目标和可剪辑性。`,
       negativePrompt: "",
       acceptanceCriteria: [...(shot.acceptanceCriteria || []), "没有角色漂移、服装漂移、场景跳变或肢体严重变形"]
+    });
+  }
+
+  if (videoOutputs.length) {
+    queue.jobs.push({
+      taskId: "FINAL-EDIT",
+      type: "final_edit",
+      inputType: "video_assembly",
+      outputKey: "exports.final_cut",
+      durationSeconds: queue.common.targetRuntimeSeconds,
+      aspectRatio,
+      requiredInputs: videoOutputs,
+      prompt: buildFinalEditPrompt(editPlan, plan.generationChecklist),
+      negativePrompt: joinList(queue.common.negativeVisualRules),
+      sequenceRhythm: editPlan.sequenceRhythm || "",
+      transitions: editPlan.transitions || [],
+      subtitlePlan: editPlan.subtitlePlan || "",
+      musicAndSfx: editPlan.musicAndSfx || "",
+      hookAndEndingNotes: editPlan.hookAndEndingNotes || "",
+      acceptanceCriteria: [
+        `按 shotPlan 顺序拼接 ${videoOutputs.length} 个镜头`,
+        `成片画幅保持 ${aspectRatio}`,
+        `总时长接近 ${queue.common.targetRuntimeSeconds} 秒`,
+        "字幕、音乐和音效服务动作与情绪，不遮盖剧情信息",
+        ...checklistToText(plan.generationChecklist)
+      ]
     });
   }
 
@@ -133,6 +162,27 @@ function collectReferenceKeys(queue) {
 function joinList(value) {
   if (Array.isArray(value)) return value.join("；");
   return String(value || "");
+}
+
+function buildFinalEditPrompt(editPlan = {}, checklist = []) {
+  const lines = [
+    "按 shotPlan 顺序把所有已通过质检的镜头剪成一条完整竖屏短片。",
+    editPlan.sequenceRhythm ? `节奏：${editPlan.sequenceRhythm}` : "",
+    Array.isArray(editPlan.transitions) && editPlan.transitions.length ? `转场：${editPlan.transitions.join("；")}` : "",
+    editPlan.subtitlePlan ? `字幕：${editPlan.subtitlePlan}` : "",
+    editPlan.musicAndSfx ? `音乐音效：${editPlan.musicAndSfx}` : "",
+    editPlan.hookAndEndingNotes ? `开头结尾：${editPlan.hookAndEndingNotes}` : ""
+  ].filter(Boolean);
+  const checks = checklistToText(checklist);
+  if (checks.length) lines.push(`整片验收：${checks.join("；")}`);
+  return lines.join("\n");
+}
+
+function checklistToText(items = []) {
+  return items.map((item) => {
+    if (typeof item === "string") return item;
+    return [item?.check, item?.passCriteria].filter(Boolean).join("：");
+  }).filter(Boolean);
 }
 
 function slug(value) {

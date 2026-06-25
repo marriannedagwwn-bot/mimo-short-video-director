@@ -148,8 +148,13 @@ test("动画生产包可转换为视频生成任务队列", () => {
   assert.ok(queue.jobs.some((job) => job.type === "end_frame_image"));
   assert.ok(queue.jobs.some((job) => job.type === "first_last_frame_video"));
   assert.ok(queue.jobs.some((job) => job.type === "quality_check"));
+  assert.ok(queue.jobs.some((job) => job.type === "final_edit"));
   const videoJob = queue.jobs.find((job) => job.type === "first_last_frame_video");
   assert.deepEqual(videoJob.requiredInputs, [`frames.${videoJob.shotId}.start`, `frames.${videoJob.shotId}.end`]);
+  const videoOutputs = queue.jobs.filter((job) => job.type === "first_last_frame_video").map((job) => job.outputKey);
+  const finalEditJob = queue.jobs.find((job) => job.type === "final_edit");
+  assert.deepEqual(finalEditJob.requiredInputs, videoOutputs);
+  assert.match(finalEditJob.prompt, /竖屏短片|字幕|音乐音效/);
   const jsonl = formatQueueJsonl(queue);
   assert.equal(jsonl.split("\n").length, queue.jobs.length);
   assert.equal(JSON.parse(jsonl.split("\n")[0]).taskId, queue.jobs[0].taskId);

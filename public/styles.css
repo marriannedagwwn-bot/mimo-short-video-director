@@ -203,7 +203,7 @@ h1 em { color: var(--accent); font-style: normal; }
 .prompt-grid span { display: block; margin-bottom: 6px; color: var(--accent); font-size: 8px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
 .prompt-grid p { margin: 0; color: var(--ink); font-size: 10px; line-height: 1.65; }
 .queue-panel { display: grid; gap: 12px; }
-.queue-overview { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.queue-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
 .queue-chip { padding: 11px 8px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.48); color: var(--muted); font-size: 9px; text-align: center; }
 .queue-chip b { display: block; margin-bottom: 4px; color: var(--accent); font-size: 18px; }
 .queue-meta { display: flex; flex-wrap: wrap; gap: 7px; }

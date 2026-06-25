@@ -99,7 +99,7 @@ flowchart LR
 
 - JSON 导出：保留完整结构化数据，供后续自动视频队列或外部工具读取。
 - Markdown 复制：把角色参考、资产提示词和逐镜首尾帧/video prompt 合并成可直接粘贴到视频生成工具的生产包。
-- JSONL 任务队列导出：将 `animationPlan` 拆成机器可读任务，任务类型包括 `reference_image`、`asset_image`、`start_frame_image`、`end_frame_image`、`first_last_frame_video` 和 `quality_check`。
+- JSONL 任务队列导出：将 `animationPlan` 拆成机器可读任务，任务类型包括 `reference_image`、`asset_image`、`start_frame_image`、`end_frame_image`、`first_last_frame_video`、`quality_check` 和 `final_edit`。`final_edit` 依赖所有逐镜视频输出，负责按 `editPlan` 生成最终竖屏短片。
 
 自动视频生成尚未绑定具体供应商。接入真实视频模型前，需要明确：
 
