@@ -610,7 +610,7 @@ function renderLocalProductionGuide(queue = {}) {
   const runId = localRunId(queue.selectedVariantId || "V1");
   const queueFilename = `视频任务队列-${runId}.jsonl`;
   const productionRoot = `./production/${runId}`;
-  const commandWorker = "./workers/command-worker-template.mjs";
+  const commandWorker = "./workers/generic-http-worker.mjs";
   const steps = [
     {
       label: "1",
@@ -633,7 +633,7 @@ function renderLocalProductionGuide(queue = {}) {
     {
       label: "4",
       title: "接入真实视频 worker",
-      body: "把模板 worker 替换为实际图像/首尾帧视频模型调用；CLI 会逐个传入 request、output 和 receipt 路径。",
+      body: "先配置 VIDEO_HTTP_ENDPOINT / VIDEO_HTTP_API_KEY 或 provider config；CLI 会逐个传入 request、output 和 receipt 路径。",
       command: `npm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${commandWorker} --all`
     },
     {

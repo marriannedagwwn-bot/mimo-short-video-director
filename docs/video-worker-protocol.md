@@ -8,7 +8,7 @@
 npm run exec:video -- ./production/V1 \
   --provider command \
   --command node \
-  --command-arg ./workers/command-worker-template.mjs \
+  --command-arg ./workers/generic-http-worker.mjs \
   --all
 ```
 
@@ -66,18 +66,46 @@ npm run exec:video -- ./production/V1 \
 该失败回执会让任务在后续状态刷新中显示为 `failed`，依赖它的后续任务保持 `blocked`。如果希望一个任务失败后继续执行其它互不依赖的 ready 任务，可以使用：
 
 ```bash
-npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/command-worker-template.mjs --all --continue-on-error
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --continue-on-error
 ```
 
 修复失败后，可以直接使用：
 
 ```bash
-npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/command-worker-template.mjs --all --retry-failed
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --retry-failed
 ```
 
 `--retry-failed` 会先删除匹配任务的 `.error.json`，再重新计算 ready 任务并执行。也可以手动删除对应的 `.error.json`，或者把正确产物放到 `--output` 对应路径后再运行 `plan:video --scan-existing`。
 
 ## 接真实视频模型时的建议
+
+- 默认可先使用 `workers/generic-http-worker.mjs`，它支持：
+  - 按 `capability` 配置不同 endpoint；
+  - 将依赖图片/视频小文件内联为 data URL；
+  - 提交 JSON 请求；
+  - 从响应里提取 `mediaUrl` / `video_url` / `b64_json` / `base64` 等常见产物字段；
+  - 通过 `pollEndpointTemplate` 轮询异步任务；
+  - 下载最终 URL 或解码 base64 到 `--output`。
+  - 下载 `mediaUrl` 时默认不转发 API Key；如果供应商下载接口也要求鉴权，可在配置里设置 `authOnDownload: true`。
+- 最小环境变量：
+
+```bash
+VIDEO_HTTP_IMAGE_ENDPOINT=https://provider.example.com/v1/images
+VIDEO_HTTP_VIDEO_ENDPOINT=https://provider.example.com/v1/videos
+VIDEO_HTTP_API_KEY=你的_key
+```
+
+- 如果供应商字段不同，复制 `workers/generic-http-worker.example.json`，用 `bodyTemplates` 做字段映射，然后执行：
+
+```bash
+npm run exec:video -- ./production/V1 \
+  --provider command \
+  --command node \
+  --command-arg ./workers/generic-http-worker.mjs \
+  --command-arg=--config \
+  --command-arg=./workers/generic-http-worker.example.json \
+  --all
+```
 
 - 图像生成任务优先保证角色、服装、道具一致，不要过度追求画面复杂度。
 - 首尾帧视频任务必须使用 `inputArtifacts` 中的 start/end 两张图；不要让模型重新发明镜头起点和终点。

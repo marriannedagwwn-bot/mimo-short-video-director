@@ -142,12 +142,12 @@ npm run exec:video -- ./production/V1 --provider mock --all
 外部 API worker 可通过 `command` provider 接入：
 
 ```bash
-npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/command-worker-template.mjs --all
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all
 ```
 
 执行器为每个 ready 任务调用外部命令，并追加 `--request`、`--output`、`--receipt`、`--root` 参数，同时注入 `VIDEO_TASK_REQUEST`、`VIDEO_TASK_OUTPUT`、`VIDEO_TASK_RECEIPT`、`VIDEO_TASK_ROOT`、`VIDEO_TASK_ID`、`VIDEO_TASK_CAPABILITY` 环境变量。worker 只要读取 request JSON、调用具体供应商并把结果写入 `--output`，主执行器就会通过落盘产物继续推进依赖链。
 
-Worker 模板位于 `workers/command-worker-template.mjs`，详细协议见 `docs/video-worker-protocol.md`。
+通用 HTTP worker 位于 `workers/generic-http-worker.mjs`，支持分能力 endpoint、data URL 输入、异步任务轮询和 mediaUrl/base64 产物写入。占位协议模板位于 `workers/command-worker-template.mjs`，详细协议见 `docs/video-worker-protocol.md`。
 
 失败任务会写入 `<output>.error.json`，并在状态刷新后显示为 `failed`；其下游任务继续保持 `blocked`。`--continue-on-error` 可让互不依赖的其它 ready 任务继续执行；修复 worker 或供应商问题后，可用 `--retry-failed` 清理失败回执并重试。
 

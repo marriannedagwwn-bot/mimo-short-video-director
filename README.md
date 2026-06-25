@@ -91,28 +91,45 @@ npm run exec:video -- ./production/V1 --provider mock --all
 
 `mock` 会为每个 ready request 写入占位产物和 `.mock.json` 回执。真实图像/视频模型接入时，会复用同一个 `requests/`、`outputs/` 和 `production-run.json` 约定。
 
-如果你已经有自己的图像/视频 API 脚本，可以用 `command` provider 接入。执行器会为每个 ready 任务调用外部命令：
+如果你已经有自己的图像/视频 API 脚本，可以用 `command` provider 接入。执行器会为每个 ready 任务调用外部命令。
+
+项目内置了一个通用 HTTP worker，可通过环境变量或 JSON 配置接入常见“提交任务 → 轮询 → 下载 mediaUrl/base64 产物”的图像/首尾帧视频 API：
 
 ```bash
+VIDEO_HTTP_IMAGE_ENDPOINT=https://provider.example.com/v1/images \
+VIDEO_HTTP_VIDEO_ENDPOINT=https://provider.example.com/v1/videos \
+VIDEO_HTTP_API_KEY=你的_key \
 npm run exec:video -- ./production/V1 \
   --provider command \
   --command node \
-  --command-arg ./workers/command-worker-template.mjs \
+  --command-arg ./workers/generic-http-worker.mjs \
   --all
 ```
 
 外部命令会收到 `--request <request.json>`、`--output <target-file>`、`--receipt <receipt.json>`、`--root <production-root>`，也会收到 `VIDEO_TASK_*` 环境变量。只要脚本把产物写到 `--output`，执行器就会自动刷新状态并释放后续任务。
 
+如果供应商字段和默认 JSON 不一致，可以复制 [workers/generic-http-worker.example.json](workers/generic-http-worker.example.json)，通过 `bodyTemplates` 映射字段：
+
+```bash
+npm run exec:video -- ./production/V1 \
+  --provider command \
+  --command node \
+  --command-arg ./workers/generic-http-worker.mjs \
+  --command-arg=--config \
+  --command-arg=./workers/generic-http-worker.example.json \
+  --all
+```
+
 如果 worker 失败，执行器会写入 `<output>.error.json` 失败回执，并在下一次刷新时把任务标记为 `failed`。需要不中断其它 ready 任务时可加：
 
 ```bash
-npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/command-worker-template.mjs --all --continue-on-error
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --continue-on-error
 ```
 
 修复 worker 或供应商问题后，可以直接重试 failed 任务：
 
 ```bash
-npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/command-worker-template.mjs --all --retry-failed
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --retry-failed
 ```
 
 查看当前生产状态报告：
@@ -123,9 +140,9 @@ npm run report:video -- ./production/V1
 
 报告会列出总进度、ready/blocked/failed 任务、失败原因、最终成片路径和下一步建议命令；加 `--json` 可输出机器可读报告。
 
-Worker 模板见 [workers/command-worker-template.mjs](workers/command-worker-template.mjs)，协议说明见 [docs/video-worker-protocol.md](docs/video-worker-protocol.md)。
+通用 HTTP worker 见 [workers/generic-http-worker.mjs](workers/generic-http-worker.mjs)，占位模板见 [workers/command-worker-template.mjs](workers/command-worker-template.mjs)，协议说明见 [docs/video-worker-protocol.md](docs/video-worker-protocol.md)。
 
-当前尚未绑定具体视频生成供应商。下一步若要自动生成视频，需要确定视频模型 API、首尾帧图片生成方式、任务轮询、候选视频存储和质检/重试策略。
+当前尚未绑定某一家具体视频生成供应商。若供应商 API 是非标准字段，优先用通用 worker 的 `bodyTemplates` 适配；如果还需要上传文件、候选筛选或专用鉴权，再新增专用 worker。
 
 ## 结构
 

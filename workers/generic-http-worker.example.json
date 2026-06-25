@@ -1,0 +1,36 @@
+{
+  "endpoint": "https://provider.example.com/v1/generate",
+  "endpoints": {
+    "image_generation": "https://provider.example.com/v1/images",
+    "first_last_frame_video_generation": "https://provider.example.com/v1/videos/first-last-frame",
+    "video_quality_review": "https://provider.example.com/v1/review",
+    "video_assembly": "https://provider.example.com/v1/assemble"
+  },
+  "models": {
+    "image_generation": "provider-image-model",
+    "first_last_frame_video_generation": "provider-video-model"
+  },
+  "authHeader": "Authorization",
+  "authScheme": "Bearer",
+  "pollEndpointTemplate": "https://provider.example.com/v1/tasks/{taskId}",
+  "pollIntervalMs": 3000,
+  "pollTimeoutMs": 600000,
+  "bodyTemplates": {
+    "image_generation": {
+      "model": "{{model}}",
+      "prompt": "{{request.prompt}}",
+      "negative_prompt": "{{request.negativePrompt}}",
+      "aspect_ratio": "{{request.parameters.aspectRatio}}",
+      "input_references": "{{json inputArtifacts}}"
+    },
+    "first_last_frame_video_generation": {
+      "model": "{{model}}",
+      "prompt": "{{request.prompt}}",
+      "negative_prompt": "{{request.negativePrompt}}",
+      "duration": "{{request.parameters.durationSeconds}}",
+      "aspect_ratio": "{{request.parameters.aspectRatio}}",
+      "start_frame": "{{inputArtifacts.0.dataUrl}}",
+      "end_frame": "{{inputArtifacts.1.dataUrl}}"
+    }
+  }
+}

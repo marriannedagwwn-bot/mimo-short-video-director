@@ -56,7 +56,7 @@ function parseArgs(args) {
     else if (arg.startsWith("--provider=")) options.provider = arg.slice("--provider=".length);
     else if (arg === "--command") options.command = requireValue(args, ++index, arg);
     else if (arg.startsWith("--command=")) options.command = arg.slice("--command=".length);
-    else if (arg === "--command-arg") options.commandArgs.push(requireValue(args, ++index, arg));
+    else if (arg === "--command-arg") options.commandArgs.push(requireCommandArgValue(args, ++index, arg));
     else if (arg.startsWith("--command-arg=")) options.commandArgs.push(arg.slice("--command-arg=".length));
     else if (arg === "--limit") options.limit = Number(requireValue(args, ++index, arg));
     else if (arg.startsWith("--limit=")) options.limit = Number(arg.slice("--limit=".length));
@@ -75,5 +75,11 @@ function parseArgs(args) {
 function requireValue(args, index, flag) {
   const value = args[index];
   if (!value || value.startsWith("--")) throw new Error(`${flag} 缺少参数`);
+  return value;
+}
+
+function requireCommandArgValue(args, index, flag) {
+  const value = args[index];
+  if (!value) throw new Error(`${flag} 缺少参数`);
   return value;
 }

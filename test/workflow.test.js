@@ -353,6 +353,142 @@ test("内置 command worker 模板可作为 command provider 执行任务", asyn
   assert.equal(receipt.provider, "command-worker-template");
 });
 
+test("通用 HTTP worker 可调用供应商接口生成图片产物", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-http-image-"));
+  let receivedBody = null;
+  let receivedAuth = "";
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    receivedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    receivedAuth = request.headers.authorization || "";
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ data: { b64_json: Buffer.from("http image bytes").toString("base64") } }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  const configPath = path.join(root, "provider.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    endpoints: { image_generation: `http://127.0.0.1:${address.port}/images` },
+    apiKey: "test-key",
+    model: "test-image-model"
+  }));
+  const queue = {
+    version: "test",
+    providerMode: "provider_agnostic",
+    title: "generic http image worker test",
+    selectedVariantId: "V1",
+    jobs: [
+      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图", negativePrompt: "不要变形" }
+    ]
+  };
+  const run = buildProductionRun(queue, { outputRoot: root });
+  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+
+  const result = await executeProductionWorkspace({
+    root,
+    provider: "command",
+    command: process.execPath,
+    commandArgs: ["workers/generic-http-worker.mjs", "--config", configPath],
+    all: true
+  });
+  assert.equal(result.run.counts.done, 1);
+  assert.equal(receivedAuth, "Bearer test-key");
+  assert.equal(receivedBody.prompt, "角色参考图");
+  assert.equal(receivedBody.negativePrompt, "不要变形");
+  assert.equal(receivedBody.model, "test-image-model");
+  assert.match(await fs.readFile(result.run.jobs[0].outputPath, "utf8"), /http image bytes/);
+  const receipt = JSON.parse(await fs.readFile(`${result.run.jobs[0].outputPath}.provider.json`, "utf8"));
+  assert.equal(receipt.provider, "generic-http-worker");
+  assert.equal(receipt.resultKind, "base64");
+});
+
+test("通用 HTTP worker 支持首尾帧视频提交、轮询和下载", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-http-video-"));
+  let postBody = null;
+  let pollCount = 0;
+  const server = http.createServer(async (request, response) => {
+    if (request.url === "/videos") {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      postBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ task_id: "provider-task-1", status: "queued" }));
+      return;
+    }
+    if (request.url === "/tasks/provider-task-1") {
+      pollCount += 1;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(pollCount < 2
+        ? { task_id: "provider-task-1", status: "processing" }
+        : { task_id: "provider-task-1", status: "succeeded", video_url: `http://127.0.0.1:${server.address().port}/media/clip.mp4` }));
+      return;
+    }
+    if (request.url === "/media/clip.mp4") {
+      response.writeHead(200, { "content-type": "video/mp4" });
+      response.end("video bytes");
+      return;
+    }
+    response.writeHead(404);
+    response.end("not found");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  const queue = {
+    version: "test",
+    providerMode: "provider_agnostic",
+    title: "generic http video worker test",
+    selectedVariantId: "V1",
+    jobs: [
+      { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", prompt: "首帧" },
+      { taskId: "S01-END", type: "end_frame_image", inputType: "text_to_image", outputKey: "frames.S01.end", prompt: "尾帧" },
+      { taskId: "S01-VIDEO", type: "first_last_frame_video", inputType: "image_pair_to_video", outputKey: "videos.S01", requiredInputs: ["frames.S01.start", "frames.S01.end"], prompt: "让人物从首帧走到尾帧", durationSeconds: 4, aspectRatio: "9:16" }
+    ]
+  };
+  const initialRun = buildProductionRun(queue, { outputRoot: root });
+  const startJob = initialRun.jobs.find((job) => job.taskId === "S01-START");
+  const endJob = initialRun.jobs.find((job) => job.taskId === "S01-END");
+  await fs.mkdir(path.dirname(startJob.outputPath), { recursive: true });
+  await fs.mkdir(path.dirname(endJob.outputPath), { recursive: true });
+  await fs.writeFile(startJob.outputPath, "start frame bytes");
+  await fs.writeFile(endJob.outputPath, "end frame bytes");
+  const artifacts = buildArtifactsFromExistingOutputs(queue, {
+    outputRoot: root,
+    existingOutputPaths: [startJob.outputPath, endJob.outputPath]
+  });
+  const run = buildProductionRun(queue, { outputRoot: root, artifacts });
+  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+  const configPath = path.join(root, "provider.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    endpoints: { first_last_frame_video_generation: `http://127.0.0.1:${address.port}/videos` },
+    models: { first_last_frame_video_generation: "test-video-model" },
+    pollEndpointTemplate: `http://127.0.0.1:${address.port}/tasks/{taskId}`,
+    pollIntervalMs: 1,
+    pollTimeoutMs: 1000
+  }));
+
+  const result = await executeProductionWorkspace({
+    root,
+    provider: "command",
+    command: process.execPath,
+    commandArgs: ["workers/generic-http-worker.mjs", "--config", configPath],
+    all: true
+  });
+  const videoJob = result.run.jobs.find((job) => job.taskId === "S01-VIDEO");
+  assert.equal(result.executed.length, 1);
+  assert.equal(videoJob.status, "done");
+  assert.equal(postBody.model, "test-video-model");
+  assert.equal(postBody.parameters.durationSeconds, 4);
+  assert.equal(postBody.inputArtifacts.length, 2);
+  assert.match(postBody.inputArtifacts[0].dataUrl, /^data:image\/png;base64,/);
+  assert.equal(await fs.readFile(videoJob.outputPath, "utf8"), "video bytes");
+  const receipt = JSON.parse(await fs.readFile(`${videoJob.outputPath}.provider.json`, "utf8"));
+  assert.equal(receipt.providerTaskId, "provider-task-1");
+  assert.equal(receipt.resultKind, "url");
+});
+
 test("command 视频生产执行失败会写入失败回执并刷新 failed 状态", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-command-fail-"));
   const workerPath = path.join(root, "failing-worker.mjs");
