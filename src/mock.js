@@ -327,6 +327,132 @@ export function mockFullStory(input) {
   };
 }
 
+export function mockAnimationPlan(input) {
+  const variant = input.variant || {};
+  const fullStory = input.fullStory || {};
+  const fixed = input.creatorProfile?.fixedCharacter || fullStory.characterBible?.protagonist?.identity || variant.characterSetup?.protagonist || "固定主角";
+  const fixedName = fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
+  const title = fullStory.title || variant.title || "可动画化短片";
+  const targetRuntime = Number(fullStory.targetDurationSeconds) || 60;
+  const protagonistIdentity = fullStory.characterBible?.protagonist?.identity || fixed;
+  const careRecipient = fullStory.characterBible?.careRecipient?.nameOrLabel || variant.characterSetup?.careRecipient || "被关爱对象";
+  const protagonistPrompt = `${fixedName}，人类儿童形象，${protagonistIdentity}，圆润可爱的 2.5D 动画造型，干净朴素的日常衣服，表情活泼但懂事，动作小而认真，始终保持同一发型、同一服装、同一年龄感。`;
+  const sceneScript = Array.isArray(fullStory.sceneScript) && fullStory.sceneScript.length ? fullStory.sceneScript : [
+    { sceneId: "S1", timeRange: "00:00-00:05", location: "出发点", visibleAction: `${fixedName}确认任务物后出发。`, emotionNode: "任务启动", dramaticFunction: "建立任务" },
+    { sceneId: "S2", timeRange: "00:05-00:14", location: "途中", visibleAction: `${fixedName}在环境压力中保护任务物。`, emotionNode: "压力上升", dramaticFunction: "增加成本" },
+    { sceneId: "S3", timeRange: "00:14-00:25", location: "受阻点", visibleAction: `${fixedName}差点失手但护住任务物。`, emotionNode: "担心", dramaticFunction: "证明在意" },
+    { sceneId: "S4", timeRange: "00:25-00:38", location: "临时停靠点", visibleAction: "帮助者递出关键工具。", emotionNode: "温暖", dramaticFunction: "善意转折" },
+    { sceneId: "S5", timeRange: "00:38-00:51", location: "到达点", visibleAction: `${fixedName}把任务物交给${careRecipient}。`, emotionNode: "克制", dramaticFunction: "关系揭示" },
+    { sceneId: "S6", timeRange: "00:51-01:00", location: "结尾空间", visibleAction: "两人完成生活化结尾动作。", emotionNode: "释然", dramaticFunction: "情绪兑现" }
+  ];
+  const shotPlan = sceneScript.flatMap((scene, index) => {
+    const baseId = index + 1;
+    const location = scene.location || "生活化场景";
+    const action = scene.visibleAction || `${fixedName}继续完成任务。`;
+    const emotion = scene.emotionNode || "克制温暖";
+    const first = {
+      shotId: `A${String(baseId).padStart(2, "0")}`,
+      sourceSceneId: scene.sceneId || `S${baseId}`,
+      durationSeconds: baseId === 1 ? 4 : 5,
+      storyPurpose: scene.dramaticFunction || "推进任务和情绪",
+      emotionalTarget: emotion,
+      startFramePrompt: `竖屏 9:16，温暖治愈 2.5D 动画。${protagonistPrompt}${fixedName}位于${location}，画面开始时刚准备执行动作：${action}，中近景构图，柔和自然光，关键道具清晰但不夸张。`,
+      endFramePrompt: `竖屏 9:16，保持同一 2.5D 动画风格和同一角色设定。${fixedName}完成这一镜头的动作节点，身体姿态从紧张转为更坚定，${location}环境保持连续，关键道具位置与上一帧逻辑一致。`,
+      videoPrompt: `从首帧过渡到尾帧：${fixedName}只完成一个主要动作，节奏自然，镜头轻微跟随或推进，保持角色脸型、服装、年龄感和道具不变，不新增无关角色，不改变场景。`,
+      cameraMotion: baseId <= 2 ? "轻微跟拍，保持稳定竖屏构图" : baseId === sceneScript.length ? "静态近景，保留情绪停顿" : "缓慢推进到动作细节",
+      characterAction: action,
+      dialogueOrSubtitle: Array.isArray(scene.dialogue) && scene.dialogue.length ? scene.dialogue.map((item) => `${item.speaker}：${item.line}`).join(" / ") : "无对白或短字幕，靠动作推进",
+      soundDesign: scene.shotAndSound || "轻环境声，动作音效克制",
+      continuityNotes: `承接 ${scene.sceneId || `S${baseId}`}，保持${fixedName}外观、道具和情绪递进连续。`,
+      negativePrompt: "不要改变主角年龄、服装、脸型；不要新增动物拟态、玩偶感、夸张服装；不要跳切到无关场景；不要出现多余手指或畸形肢体。",
+      acceptanceCriteria: [
+        `${fixedName}身份和外观稳定`,
+        "首帧与尾帧动作因果清楚",
+        "镜头只完成一个主要动作",
+        "道具和场景没有漂移"
+      ]
+    };
+    if (index === 0 || index === sceneScript.length - 1) return [first];
+    return [first];
+  });
+
+  return {
+    selectedVariantId: variant.id || fullStory.selectedVariantId || "V1",
+    title: `${title} · 首尾帧动画生产包`,
+    productionStrategy: {
+      format: "first_last_frame_video",
+      targetAspectRatio: "9:16",
+      targetRuntimeSeconds: targetRuntime,
+      recommendedShotDurationSeconds: { min: 3, max: 6 },
+      generationOrder: ["生成角色参考图", "生成关键道具参考图", "逐镜生成首帧", "逐镜生成尾帧", "用首尾帧生成短视频", "质检并挑选候选", "剪辑、配音、字幕和音效"],
+      whyThisWorkflow: "首尾帧把每个镜头的起点和终点锁住，降低角色漂移和动作失控风险。"
+    },
+    visualBible: {
+      overallStyle: "治愈生活流短片，细节干净，情绪克制，不夸张煽情。",
+      animationStyle: "2.5D 动画，轻微手绘质感，角色圆润可爱，动作真实但带一点童话感。",
+      colorPalette: ["暖米色", "雨后青灰", "低饱和橙色", "柔和绿色"],
+      lighting: "自然散射光，情绪低点偏冷，帮助和结尾逐步转暖。",
+      worldRules: ["村庄/生活空间真实可信", "道具比例稳定", "角色不突然换装", "天气变化服务情绪，不抢戏"],
+      cameraLanguage: "竖屏近中景为主，少量跟拍，关键情绪用静态停顿。",
+      characterConsistencyRules: [`${fixedName}始终是同一名人类儿童`, "同一发型、同一衣服、同一身高比例", "表情变化克制，动作先于语言"],
+      negativeVisualRules: ["不要动物化主角", "不要玩偶服或夸张拟态", "不要让道具变形或漂移", "不要电影大片式过度运镜"]
+    },
+    characterReferencePrompts: [
+      {
+        characterName: fixedName,
+        storyRole: "主角 / 任务执行者 / 善意连接者",
+        identity: protagonistIdentity,
+        appearancePrompt: protagonistPrompt,
+        consistencyTags: [fixedName, "人类儿童", "朴素日常衣服", "活泼懂事", "同一发型", "同一年龄感"],
+        forbiddenChanges: ["不能改名", "不能变成动物或玩偶", "不能更换年龄段", "不能更换核心服装"]
+      },
+      {
+        characterName: careRecipient,
+        storyRole: "被关爱对象",
+        identity: fullStory.characterBible?.careRecipient?.identity || "被主角认真对待的人",
+        appearancePrompt: `${careRecipient}，生活化动画角色，表情克制，有被记得时的微小松动，服装朴素，和${fixedName}处在同一个温暖现实世界。`,
+        consistencyTags: [careRecipient, "生活化", "克制温情"],
+        forbiddenChanges: ["不要过度煽情", "不要突然年轻化或卡通夸张"]
+      }
+    ],
+    assetPrompts: (fullStory.keyProps || []).slice(0, 4).map((item, index) => ({
+      assetName: item.prop || `关键道具${index + 1}`,
+      storyFunction: item.storyFunction || "承载任务和情绪",
+      imagePrompt: `竖屏动画道具参考图，${item.prop || `关键道具${index + 1}`}，生活化、低饱和、手感真实，适合${fixedName}拿在手中，能在开场、受阻和结尾保持同一外观。`,
+      consistencyTags: [item.prop || `道具${index + 1}`, "低饱和", "同一外观", "生活化"],
+      avoidSimilarityNote: "只服务新剧情道具功能，不复刻参考片具体道具组合。"
+    })),
+    shotPlan,
+    editPlan: {
+      sequenceRhythm: "前 5 秒建立任务，10–35 秒用连续小阻力制造担心，35–48 秒让帮助出现，最后 12 秒放慢给情绪回味。",
+      transitions: ["动作方向匹配剪辑", "道具特写转场", "环境声过门", "结尾静态停顿"],
+      subtitlePlan: "字幕只补充必要信息，主角台词短；如果角色只用拟声表达，字幕用括号解释动作意图。",
+      musicAndSfx: "轻钢琴或木吉他底色，雨声/脚步/递物声要清楚，帮助出现时音乐变暖但不煽情。",
+      hookAndEndingNotes: "开场必须让观众知道任务和期限；结尾保留 1 秒无对白停顿。"
+    },
+    generationChecklist: [
+      { check: "角色一致性", passCriteria: `${fixedName}每个镜头都是同一名人类儿童，脸、发型、服装、年龄感一致。` },
+      { check: "首尾帧因果", passCriteria: "首帧和尾帧之间只发生一个清楚动作，不跳剧情。" },
+      { check: "情绪曲线", passCriteria: "镜头情绪按紧迫、担心、温暖、释然推进。" },
+      { check: "可剪辑性", passCriteria: "每个镜头 3–6 秒，动作结束点可作为剪辑点。" },
+      { check: "表达原创", passCriteria: "不复用参考片具体人物、台词、道具组合和镜头连续设计。" }
+    ],
+    modelAgnosticNotes: [
+      "如果视频模型支持首尾帧，先分别生成首帧和尾帧，再用同一镜头的 videoPrompt 生成短视频。",
+      "如果视频模型只支持图生视频，优先用 startFramePrompt 生成视频，再用 endFramePrompt 做结果验收。",
+      "每个镜头至少生成 2 个候选，优先选择角色稳定而不是动作最复杂的版本。"
+    ],
+    continuityAndSafetyCheck: {
+      fixedCharacterLocked: `动画主角始终锁定为${fixedName}`,
+      positivePromptsAvoidSourceSurface: "正向提示词只写新人设、新场景和新道具，不继承参考片表面身份。",
+      firstLastFrameContinuity: "每个镜头都给出首帧、尾帧、运动和验收标准。",
+      shotDurationControlled: "所有镜头按 3–6 秒短镜头设计。",
+      readyForVideoGeneration: "可以进入角色参考图、道具参考图、首尾帧和短视频候选生成。"
+    },
+    uncertainties: []
+  };
+}
+
 function time(seconds) {
   const value = Math.max(0, Math.floor(seconds));
   return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;

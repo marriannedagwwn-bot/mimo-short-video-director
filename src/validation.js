@@ -46,7 +46,8 @@ const outputContracts = {
   sourceScriptReconstruction: ["scenes", "coreEventSequence", "relationshipPattern", "endingAction", "turningPoints", "uncertainties"],
   creativeBrief: ["contentType", "targetAudience", "coreEmotion", "storyEngine", "emotionStructure", "roleAndOccupationMapping", "reusableHighValueBeats", "controlledRewriteVariables", "protectedExpressions", "minimumTransformationRules", "allowedNarrativeComponents", "nonNegotiableExperience", "creativeDistancePolicy"],
   themeVariants: ["variants"],
-  fullStory: ["selectedVariantId", "title", "oneLinePremise", "targetDurationSeconds", "shootingSynopsis", "characterBible", "beatSheet", "sceneScript", "keyProps", "shootingPlan", "dialogueStyleGuide", "retentionPlan", "experienceFidelity", "transformationProof", "continuityAndSafetyCheck", "uncertainties"]
+  fullStory: ["selectedVariantId", "title", "oneLinePremise", "targetDurationSeconds", "shootingSynopsis", "characterBible", "beatSheet", "sceneScript", "keyProps", "shootingPlan", "dialogueStyleGuide", "retentionPlan", "experienceFidelity", "transformationProof", "continuityAndSafetyCheck", "uncertainties"],
+  animationPlan: ["selectedVariantId", "title", "productionStrategy", "visualBible", "characterReferencePrompts", "assetPrompts", "shotPlan", "editPlan", "generationChecklist", "modelAgnosticNotes", "continuityAndSafetyCheck", "uncertainties"]
 };
 
 export function ensureOutputContract(value, contract) {
@@ -58,7 +59,8 @@ export function ensureOutputContract(value, contract) {
     sourceScriptReconstruction: ["scenes", "coreEventSequence", "turningPoints", "uncertainties"],
     creativeBrief: ["emotionStructure", "roleAndOccupationMapping", "reusableHighValueBeats", "controlledRewriteVariables", "protectedExpressions", "minimumTransformationRules", "allowedNarrativeComponents"],
     themeVariants: ["variants"],
-    fullStory: ["beatSheet", "sceneScript", "keyProps", "shootingPlan", "retentionPlan", "uncertainties"]
+    fullStory: ["beatSheet", "sceneScript", "keyProps", "shootingPlan", "retentionPlan", "uncertainties"],
+    animationPlan: ["characterReferencePrompts", "assetPrompts", "shotPlan", "generationChecklist", "modelAgnosticNotes", "uncertainties"]
   }[contract] || [];
   const wrongArrays = arrayFields.filter((key) => !Array.isArray(value[key]));
   if (wrongArrays.length) throw new OutputContractError(`${contract} 字段类型无效：${wrongArrays.join("、")} 必须是数组`);
@@ -71,6 +73,10 @@ export function ensureOutputContract(value, contract) {
   if (contract === "fullStory") {
     if (value.beatSheet.length < 1) throw new OutputContractError("fullStory 至少需要一个剧情节拍");
     if (value.sceneScript.length < 1) throw new OutputContractError("fullStory 至少需要一个可拍摄分场");
+  }
+  if (contract === "animationPlan") {
+    if (value.characterReferencePrompts.length < 1) throw new OutputContractError("animationPlan 至少需要一个角色参考提示词");
+    if (value.shotPlan.length < 1) throw new OutputContractError("animationPlan 至少需要一个镜头生产任务");
   }
   return value;
 }
@@ -184,6 +190,81 @@ export function ensureFullStoryMatchesProfile(value, creatorProfile = {}, creati
     mismatches.push(`剧情文本复用了禁止表面表达：${visibleHits.join("、")}`);
   }
   if (mismatches.length) throw new OutputContractError(`fullStory 未锁定固定角色：${mismatches.join("；")}`);
+  return value;
+}
+
+export function ensureAnimationPlanMatchesProfile(value, creatorProfile = {}, creativeBrief = null, variant = null) {
+  const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
+  if (variant?.id && String(value.selectedVariantId || "") !== String(variant.id)) {
+    throw new OutputContractError(`animationPlan.selectedVariantId 必须等于选中的主题变体 ${variant.id}`);
+  }
+  if (!fixedName) return value;
+
+  const fixedProfile = String(creatorProfile.fixedCharacter || "");
+  const protectedTerms = collectProtectedTermsFromBrief(creativeBrief, fixedProfile);
+  const protagonistLeakTerms = incompatibleProtagonistSurfaceTerms(fixedProfile);
+  const visibleLeakTerms = [...protectedTerms, ...incompatibleBodySurfaceTerms(fixedProfile)];
+  const referenceText = JSON.stringify((value.characterReferencePrompts || []).map((item) => ({
+    characterName: item?.characterName,
+    storyRole: item?.storyRole,
+    identity: item?.identity,
+    appearancePrompt: item?.appearancePrompt,
+    consistencyTags: item?.consistencyTags
+  })));
+  const fullText = JSON.stringify(value);
+  const positivePromptText = JSON.stringify({
+    title: value.title,
+    visualBible: {
+      overallStyle: value.visualBible?.overallStyle,
+      animationStyle: value.visualBible?.animationStyle,
+      colorPalette: value.visualBible?.colorPalette,
+      lighting: value.visualBible?.lighting,
+      worldRules: value.visualBible?.worldRules,
+      cameraLanguage: value.visualBible?.cameraLanguage,
+      characterConsistencyRules: value.visualBible?.characterConsistencyRules
+    },
+    characterReferencePrompts: (value.characterReferencePrompts || []).map((item) => ({
+      characterName: item?.characterName,
+      storyRole: item?.storyRole,
+      identity: item?.identity,
+      appearancePrompt: item?.appearancePrompt,
+      consistencyTags: item?.consistencyTags
+    })),
+    assetPrompts: (value.assetPrompts || []).map((item) => ({
+      assetName: item?.assetName,
+      storyFunction: item?.storyFunction,
+      imagePrompt: item?.imagePrompt,
+      consistencyTags: item?.consistencyTags
+    })),
+    shotPlan: (value.shotPlan || []).map((shot) => ({
+      shotId: shot?.shotId,
+      storyPurpose: shot?.storyPurpose,
+      emotionalTarget: shot?.emotionalTarget,
+      startFramePrompt: shot?.startFramePrompt,
+      endFramePrompt: shot?.endFramePrompt,
+      videoPrompt: shot?.videoPrompt,
+      cameraMotion: shot?.cameraMotion,
+      characterAction: shot?.characterAction,
+      continuityNotes: shot?.continuityNotes
+    }))
+  });
+
+  const mismatches = [];
+  if (!referenceText.includes(fixedName)) {
+    mismatches.push(`characterReferencePrompts 未包含固定角色「${fixedName}」`);
+  }
+  if (!fullText.includes(fixedName)) {
+    mismatches.push(`animationPlan 未使用固定角色「${fixedName}」`);
+  }
+  const referenceHits = findTerms(referenceText, [...protectedTerms, ...protagonistLeakTerms]);
+  if (referenceHits.length) {
+    mismatches.push(`角色参考提示词混入原片表面身份或非用户设定身份：${referenceHits.join("、")}`);
+  }
+  const positiveHits = findTerms(positivePromptText, visibleLeakTerms);
+  if (positiveHits.length) {
+    mismatches.push(`正向画面提示词复用了禁止表面表达：${positiveHits.join("、")}`);
+  }
+  if (mismatches.length) throw new OutputContractError(`animationPlan 未锁定固定角色：${mismatches.join("；")}`);
   return value;
 }
 

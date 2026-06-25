@@ -5,11 +5,11 @@ import { WorkflowService } from "../src/workflow.js";
 import { InputError, OutputContractError } from "../src/validation.js";
 import { ensureOutputContract } from "../src/validation.js";
 import { buildRequestBody, MimoClient, parseModelJson } from "../src/mimo-client.js";
-import { briefPrompt, fullStoryPrompt, variantsPrompt } from "../src/prompts.js";
+import { animationPlanPrompt, briefPrompt, fullStoryPrompt, variantsPrompt } from "../src/prompts.js";
 import { parseRunVideoArgs } from "../src/run-video-command.js";
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
 import { extractFixedCharacterName } from "../src/validation.js";
-import { mockBrief, mockFullStory } from "../src/mock.js";
+import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
 
 const frames = Array.from({ length: 8 }, (_, index) => ({
   timestamp: index * 5,
@@ -86,6 +86,39 @@ test("选择主题变体后可用 mimo-v2.5-pro 生成完整剧情", async () =>
   assert.equal(result.selectedVariantId, "V1");
   assert.ok(result.sceneScript.length >= 6);
   assert.match(result.characterBible.protagonist.identity, /阿岚/);
+});
+
+test("完整剧情后可生成首尾帧动画生产包", async () => {
+  const creativeBrief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const variant = {
+    id: "V1",
+    title: "最后一格电",
+    characterSetup: { protagonist: "阿岚，社区修理师", careRecipient: "独居老人", helper: "夜班便利店员" },
+    newTask: "修复并送回旧设备",
+    emotionalMedium: "一段旧录音",
+    environmentPressure: "暴雨停电",
+    endingRitual: "老人按下播放键"
+  };
+  const fullStory = mockFullStory({ ...input, creativeBrief, variant });
+  let captured;
+  const workflow = new WorkflowService({
+    animationModel: "mimo-v2.5-pro",
+    animationMaxCompletionTokens: 13000,
+    client: {
+      async generateJson(args) {
+        captured = args;
+        return mockAnimationPlan({ ...input, creativeBrief, variant, fullStory });
+      }
+    }
+  });
+  const result = await workflow.createAnimationPlan({ ...input, creativeBrief, variant, fullStory });
+  assert.equal(captured.model, "mimo-v2.5-pro");
+  assert.equal(captured.maxCompletionTokens, 13000);
+  assert.equal(result.productionStrategy.format, "first_last_frame_video");
+  assert.ok(result.shotPlan.length >= 6);
+  assert.ok(result.shotPlan[0].startFramePrompt);
+  assert.ok(result.shotPlan[0].endFramePrompt);
+  assert.ok(result.shotPlan[0].videoPrompt);
 });
 
 test("少于三张画面时拒绝分析", async () => {
@@ -202,6 +235,7 @@ test("模型漏掉必要字段时拒绝把结果标记为成功", () => {
   assert.throws(() => ensureOutputContract({ storySynopsis: "只有一个字段" }, "referenceAnalysis"), /缺少必要字段/);
   assert.throws(() => ensureOutputContract({ variants: [] }, "themeVariants"), /至少需要一个主题方案/);
   assert.throws(() => ensureOutputContract({ selectedVariantId: "V1" }, "fullStory"), /缺少必要字段/);
+  assert.throws(() => ensureOutputContract({ selectedVariantId: "V1" }, "animationPlan"), /缺少必要字段/);
 });
 
 test("creativeBrief 禁止把原片表面形象映射成固定角色身份", async () => {
@@ -354,6 +388,42 @@ test("完整剧情禁止继承 creativeBrief 中已保护的表面形象", async
   );
 });
 
+test("动画生产包正向提示词禁止继承原片表面形象", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
+    vertical: "治愈/温情/日常",
+    constraints: "小白子用嗷或嗷呜表达情绪"
+  };
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  creativeBrief.protectedExpressions.push({
+    expressionType: "视觉元素",
+    sourceExpression: "企鹅服",
+    prohibition: "禁止出现企鹅形象的服装或直接扮演企鹅。",
+    safeAlternativePrinciple: "只保留任务执行者、信使、善意连接者和萌系情感载体的剧作功能。"
+  });
+  const variant = {
+    id: "V1",
+    title: "雾中画境",
+    characterSetup: { protagonist: "小白子，小女孩", careRecipient: "小月", helper: "老张" },
+    newTask: "送画作",
+    emotionalMedium: "儿童画",
+    environmentPressure: "大雾",
+    endingRitual: "把儿童画摆正"
+  };
+  const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  const leakedPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory });
+  leakedPlan.shotPlan[0].startFramePrompt = "企鹅快递员小白子站在村口，翅膀微拍，准备送画。";
+  leakedPlan.shotPlan[0].negativePrompt = "不要出现企鹅服、翅膀、尾巴。";
+  const workflow = new WorkflowService({
+    client: { async generateJson() { return leakedPlan; } },
+    animationModel: "mimo-v2.5-pro"
+  });
+  await assert.rejects(
+    () => workflow.createAnimationPlan({ creativeBrief, creatorProfile, variant, fullStory }),
+    /企鹅|翅膀/
+  );
+});
+
 test("固定角色名提取支持中文逗号设定，variants 提示词声明不可改名", () => {
   assert.equal(extractFixedCharacterName("小白子，小女孩，儿童，活泼可爱"), "小白子");
   assert.equal(extractFixedCharacterName("阿岚，28 岁社区修理师"), "阿岚");
@@ -380,6 +450,21 @@ test("完整剧情提示词要求围绕选中变体并锁定固定角色", () =>
   assert.match(prompt, /不能改名/);
   assert.match(prompt, /不得继承原片表面形象/);
   assert.match(prompt, /sceneScript 至少 6 场/);
+});
+
+test("动画提示词要求输出首尾帧视频生产包", () => {
+  const prompt = animationPlanPrompt({
+    creativeBrief: {},
+    variant: { id: "V2", title: "雨停之前" },
+    fullStory: { selectedVariantId: "V2", title: "雨停之前", sceneScript: [] },
+    creatorProfile: { fixedCharacter: "小白子，小女孩，儿童", vertical: "治愈日常", constraints: "只用嗷呜表达" }
+  });
+  assert.match(prompt, /首尾帧 AI 视频生产包/);
+  assert.match(prompt, /startFramePrompt/);
+  assert.match(prompt, /endFramePrompt/);
+  assert.match(prompt, /videoPrompt/);
+  assert.match(prompt, /默认 8–12 个镜头/);
+  assert.match(prompt, /正向画面提示词/);
 });
 
 test("本地视频命令解析角色、赛道、抽帧和变体数量", () => {

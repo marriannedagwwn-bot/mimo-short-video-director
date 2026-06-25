@@ -1,12 +1,20 @@
-import { analysisPrompt, briefPrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt } from "./prompts.js";
-import { mockAnalysis, mockBrief, mockFullStory, mockReconstruction, mockVariants } from "./mock.js";
-import { ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, requireFrames, requireObject, requireText } from "./validation.js";
+import { analysisPrompt, animationPlanPrompt, briefPrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt } from "./prompts.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants } from "./mock.js";
+import { ensureAnimationPlanMatchesProfile, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, requireFrames, requireObject, requireText } from "./validation.js";
 
 export class WorkflowService {
-  constructor({ client = null, storyModel = "mimo-v2.5-pro", storyMaxCompletionTokens = 12288 } = {}) {
+  constructor({
+    client = null,
+    storyModel = "mimo-v2.5-pro",
+    storyMaxCompletionTokens = 12288,
+    animationModel = "mimo-v2.5-pro",
+    animationMaxCompletionTokens = 12288
+  } = {}) {
     this.client = client;
     this.storyModel = storyModel;
     this.storyMaxCompletionTokens = storyMaxCompletionTokens;
+    this.animationModel = animationModel;
+    this.animationMaxCompletionTokens = animationMaxCompletionTokens;
   }
 
   get mode() {
@@ -70,6 +78,24 @@ export class WorkflowService {
         maxCompletionTokens: this.storyMaxCompletionTokens
       });
     return ensureFullStoryMatchesProfile(ensureOutputContract(result, "fullStory"), profile, input.creativeBrief, input.variant);
+  }
+
+  async createAnimationPlan(input) {
+    requireObject(input, "请求");
+    requireObject(input.creativeBrief, "creativeBrief");
+    requireObject(input.variant, "variant");
+    requireObject(input.fullStory, "fullStory");
+    const profile = requireObject(input.creatorProfile, "creatorProfile");
+    requireText(profile.fixedCharacter, "固定角色");
+    requireText(profile.vertical, "垂直赛道");
+    const result = !this.client
+      ? mockAnimationPlan(input)
+      : await this.client.generateJson({
+        prompt: animationPlanPrompt(input),
+        model: this.animationModel,
+        maxCompletionTokens: this.animationMaxCompletionTokens
+      });
+    return ensureAnimationPlanMatchesProfile(ensureOutputContract(result, "animationPlan"), profile, input.creativeBrief, input.variant);
   }
 
   async run(input) {

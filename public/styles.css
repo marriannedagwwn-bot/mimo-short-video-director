@@ -183,6 +183,7 @@ h1 em { color: var(--accent); font-style: normal; }
 .story-hero-card { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr); gap: 22px; align-items: stretch; }
 .story-control-card { padding: 22px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow); backdrop-filter: blur(16px); }
 .story-control-card .primary-button { margin-top: 16px; }
+.animation-button { width: 100%; margin-top: 10px; }
 .selected-variant-summary h3 { margin: 6px 0 10px; font-family: Georgia, "Songti SC", serif; font-size: 26px; font-weight: 500; }
 .selected-variant-summary p { margin: 0 0 14px; color: var(--muted); font-size: 12px; line-height: 1.7; }
 .variant-cast.compact { margin-bottom: 0; }
@@ -192,6 +193,13 @@ h1 em { color: var(--accent); font-style: normal; }
 .story-status.error { color: #b42318; }
 .story-result { margin-top: 24px; }
 .long-copy { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.8; }
+.shot-list { display: grid; gap: 12px; }
+.shot-card { padding: 17px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.46); }
+.shot-card p { margin: 10px 0 0; color: var(--muted); font-size: 10px; line-height: 1.7; }
+.prompt-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 12px; }
+.prompt-grid div { padding: 12px; border-radius: 10px; background: rgba(29,27,24,.045); border: 1px solid rgba(29,27,24,.08); }
+.prompt-grid span { display: block; margin-bottom: 6px; color: var(--accent); font-size: 8px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+.prompt-grid p { margin: 0; color: var(--ink); font-size: 10px; line-height: 1.65; }
 
 .hidden { display: none !important; }
 footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex; justify-content: space-between; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; letter-spacing: .08em; }
@@ -220,7 +228,7 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
   .pipeline { grid-template-columns: 1fr; }
   .pipeline li { border-right: 0; border-bottom: 1px solid var(--line); }
   .pipeline li:last-child { border-bottom: 0; }
-  .data-grid, .variant-grid, .allow-grid { grid-template-columns: 1fr; }
+  .data-grid, .variant-grid, .allow-grid, .prompt-grid { grid-template-columns: 1fr; }
   .beat, .rule { grid-template-columns: 1fr; gap: 6px; }
   footer { padding: 20px 16px; }
 }

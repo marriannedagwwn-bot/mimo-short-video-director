@@ -7,12 +7,15 @@ const state = {
   output: {},
   selectedVariantId: null,
   fullStories: {},
+  animationPlans: {},
   mode: "demo",
   mediaMode: "auto",
   storyModel: "mimo-v2.5-pro",
+  animationModel: "mimo-v2.5-pro",
   nativeVideoMaxBytes: 0,
   running: false,
-  storyRunning: false
+  storyRunning: false,
+  animationRunning: false
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -26,7 +29,8 @@ const elements = {
   analysis: $("#analysisResult"), script: $("#scriptResult"), brief: $("#briefResult"), variants: $("#variantsResult"),
   mainPage: $("#top"), storyPage: $("#storyPage"), storyModelName: $("#storyModelName"),
   selectedVariantSummary: $("#selectedVariantSummary"), storyStatus: $("#storyStatus"),
-  storyGenerate: $("#generateFullStory"), fullStory: $("#fullStoryResult"), backToResults: $("#backToResults")
+  storyGenerate: $("#generateFullStory"), fullStory: $("#fullStoryResult"), backToResults: $("#backToResults"),
+  animationGenerate: $("#generateAnimationPlan"), animationStatus: $("#animationStatus"), animationPlan: $("#animationPlanResult")
 };
 
 init();
@@ -40,16 +44,17 @@ async function init() {
     state.mode = health.mode;
     state.mediaMode = health.mediaMode || "auto";
     state.storyModel = health.storyModel || "mimo-v2.5-pro";
+    state.animationModel = health.animationModel || state.storyModel;
     state.nativeVideoMaxBytes = health.nativeVideoMaxBytes || 0;
     elements.storyModelName.textContent = state.storyModel.split("/").pop();
-    const storyReady = health.storyModelAvailable !== false;
+    const storyReady = health.storyModelAvailable !== false && health.animationModelAvailable !== false;
     const connected = health.mode === "mimo" && health.providerReachable && health.modelAvailable && storyReady;
     elements.modelState.className = `model-state ${connected ? "ready" : health.mode === "mimo" ? "" : "demo"}`;
     elements.modelState.lastElementChild.textContent = connected
-      ? `MiMo 已连接 · ${health.model.split("/").pop()} / 剧情 ${state.storyModel.split("/").pop()}`
+      ? `MiMo 已连接 · ${health.model.split("/").pop()} / 剧情 ${state.storyModel.split("/").pop()} / 动画 ${state.animationModel.split("/").pop()}`
       : health.mode === "mimo"
         ? health.providerReachable
-          ? health.modelAvailable ? `完整剧情模型未加载：${state.storyModel.split("/").pop()}` : "MiMo 可访问，但指定模型未加载"
+          ? health.modelAvailable ? `后续模型未加载：${state.storyModel.split("/").pop()} / ${state.animationModel.split("/").pop()}` : "MiMo 可访问，但指定模型未加载"
           : "MiMo 已配置，但服务不可达"
         : "演示模式 · 配置 MiMo 后启用真实分析";
   } catch {
@@ -72,6 +77,7 @@ function bindEvents() {
   });
   elements.backToResults.addEventListener("click", backToMainResults);
   elements.storyGenerate.addEventListener("click", () => generateFullStory({ force: true }));
+  elements.animationGenerate.addEventListener("click", () => generateAnimationPlan({ force: true }));
   window.addEventListener("popstate", renderRoute);
   [elements.fixedCharacter, elements.vertical, elements.constraints].forEach((element) => element.addEventListener("input", () => { saveProfile(); validateReady(); }));
 }
@@ -181,6 +187,7 @@ async function runWorkflow() {
   state.running = true;
   state.output = {};
   state.fullStories = {};
+  state.animationPlans = {};
   state.selectedVariantId = null;
   showError("");
   setRunning(true);
@@ -339,12 +346,26 @@ function renderStoryPage({ autoGenerate = false } = {}) {
   const variant = selectedVariant();
   renderSelectedVariantSummary(variant);
   const existing = variant ? state.fullStories[variant.id] : null;
+  const animationExisting = variant ? state.animationPlans[variant.id] : null;
   if (existing) {
     renderFullStory(existing);
     setStoryStatus(`已生成完整剧情 · ${state.storyModel.split("/").pop()}`, "ready");
+    elements.animationGenerate.disabled = state.animationRunning;
+    if (animationExisting) {
+      renderAnimationPlan(animationExisting);
+      setAnimationStatus(`已生成动画生产包 · ${state.animationModel.split("/").pop()}`, "ready");
+    } else {
+      elements.animationPlan.classList.add("hidden");
+      elements.animationPlan.innerHTML = "";
+      setAnimationStatus("可以继续生成首尾帧动画生产包。", "");
+    }
   } else {
     elements.fullStory.classList.add("hidden");
     elements.fullStory.innerHTML = "";
+    elements.animationPlan.classList.add("hidden");
+    elements.animationPlan.innerHTML = "";
+    setAnimationStatus("", "");
+    elements.animationGenerate.disabled = true;
     if (variant) {
       setStoryStatus("准备生成完整剧情。", "");
       if (autoGenerate) generateFullStory();
@@ -397,6 +418,8 @@ async function generateFullStory({ force = false } = {}) {
     state.output.fullStory = fullStory;
     renderFullStory(fullStory);
     setStoryStatus(`完整剧情已生成 · ${state.storyModel.split("/").pop()}`, "ready");
+    elements.animationGenerate.disabled = false;
+    setAnimationStatus("可以继续生成首尾帧动画生产包。", "");
     elements.export.classList.remove("hidden");
   } catch (error) {
     setStoryStatus(error.message || "完整剧情生成失败", "error");
@@ -437,6 +460,94 @@ function renderFullStory(data) {
   reveal(elements.fullStory);
 }
 
+async function generateAnimationPlan({ force = false } = {}) {
+  if (state.animationRunning) return;
+  const variant = selectedVariant();
+  if (!variant) return setAnimationStatus("请先选择一个主题变体。", "error");
+  const fullStory = state.fullStories[variant.id] || state.output.fullStory;
+  if (!fullStory) return setAnimationStatus("请先生成完整剧情，再生成动画生产包。", "error");
+  if (!force && state.animationPlans[variant.id]) {
+    renderAnimationPlan(state.animationPlans[variant.id]);
+    return;
+  }
+  state.animationRunning = true;
+  setAnimationRunning(true);
+  setAnimationStatus(`正在调用 ${state.animationModel.split("/").pop()} 生成首尾帧动画生产包…`, "active");
+  try {
+    const animationPlan = await api("/api/animation-plan", {
+      creativeBrief: state.output.creativeBrief,
+      variant,
+      fullStory,
+      creatorProfile: profile()
+    });
+    state.animationPlans[variant.id] = animationPlan;
+    state.output.animationPlans = state.animationPlans;
+    state.output.animationPlan = animationPlan;
+    renderAnimationPlan(animationPlan);
+    setAnimationStatus(`动画生产包已生成 · ${state.animationModel.split("/").pop()}`, "ready");
+    elements.export.classList.remove("hidden");
+  } catch (error) {
+    setAnimationStatus(error.message || "动画生产包生成失败", "error");
+  } finally {
+    state.animationRunning = false;
+    setAnimationRunning(false);
+  }
+}
+
+function renderAnimationPlan(data) {
+  const strategy = data.productionStrategy || {};
+  const visual = data.visualBible || {};
+  elements.animationPlan.innerHTML = `${resultHeader("ANIMATION PLAN", data.title || "首尾帧动画生产包", strategy.format || "first_last_frame_video")}
+    <div class="summary-strip">${escape(strategy.whyThisWorkflow || "按首尾帧拆镜头，逐镜生成短视频，优先控制角色一致性。")}</div>
+    <div class="data-grid">
+      ${cell("画幅", strategy.targetAspectRatio || "9:16")}
+      ${cell("目标时长", `${strategy.targetRuntimeSeconds || 60} 秒`)}
+      ${cell("单镜头", `${strategy.recommendedShotDurationSeconds?.min || 3}-${strategy.recommendedShotDurationSeconds?.max || 6} 秒`)}
+      ${cell("动画风格", visual.animationStyle)}
+      ${cell("色彩", (visual.colorPalette || []).join(" / "))}
+      ${cell("镜头语言", visual.cameraLanguage)}
+    </div>
+    ${block("生产顺序", `<div class="tag-row">${(strategy.generationOrder || []).map((item, index) => `<span class="tag orange">${index + 1} · ${escape(item)}</span>`).join("")}</div>`)}
+    ${block("视觉圣经", `<div class="rule-list">
+      <div class="rule"><strong>整体风格</strong><p>${escape(visual.overallStyle)}<br><b>光线：</b>${escape(visual.lighting)}</p></div>
+      <div class="rule"><strong>世界规则</strong><p>${escape((visual.worldRules || []).join("；"))}</p></div>
+      <div class="rule"><strong>角色一致性</strong><p>${escape((visual.characterConsistencyRules || []).join("；"))}</p></div>
+      <div class="rule"><strong>负面视觉规则</strong><p>${escape((visual.negativeVisualRules || []).join("；"))}</p></div>
+    </div>`)}
+    ${block("角色参考提示词", `<div class="rule-list">${(data.characterReferencePrompts || []).map((item) => `<div class="rule">
+      <strong>${escape(item.characterName)}<br><small>${escape(item.storyRole)}</small></strong>
+      <p>${escape(item.appearancePrompt)}<br><b>一致性标签：</b>${escape((item.consistencyTags || []).join(" / "))}<br><b>禁止变化：</b>${escape((item.forbiddenChanges || []).join(" / "))}</p>
+    </div>`).join("")}</div>`)}
+    ${block("关键资产提示词", `<div class="rule-list">${(data.assetPrompts || []).map((item) => `<div class="rule">
+      <strong>${escape(item.assetName)}</strong>
+      <p>${escape(item.imagePrompt)}<br><b>功能：</b>${escape(item.storyFunction)}<br><b>一致性：</b>${escape((item.consistencyTags || []).join(" / "))}</p>
+    </div>`).join("") || "<p class=\"long-copy\">无单独资产提示词。</p>"}</div>`)}
+    ${block("首尾帧镜头计划", `<div class="shot-list">${(data.shotPlan || []).map((shot) => `<div class="shot-card">
+      <div class="scene-head"><strong>${escape(shot.shotId)} · ${escape(shot.sourceSceneId)}</strong><span>${escape(shot.durationSeconds)} 秒 · ${escape(shot.emotionalTarget)}</span></div>
+      <p><b>剧情功能：</b>${escape(shot.storyPurpose)}</p>
+      <div class="prompt-grid">
+        <div><span>首帧 prompt</span><p>${escape(shot.startFramePrompt)}</p></div>
+        <div><span>尾帧 prompt</span><p>${escape(shot.endFramePrompt)}</p></div>
+        <div><span>视频 prompt</span><p>${escape(shot.videoPrompt)}</p></div>
+        <div><span>负面 prompt</span><p>${escape(shot.negativePrompt)}</p></div>
+      </div>
+      <p><b>镜头运动：</b>${escape(shot.cameraMotion)}<br><b>动作：</b>${escape(shot.characterAction)}<br><b>对白/字幕：</b>${escape(shot.dialogueOrSubtitle)}<br><b>声音：</b>${escape(shot.soundDesign)}</p>
+      <div class="tag-row">${(shot.acceptanceCriteria || []).map((item) => `<span class="tag">${escape(item)}</span>`).join("")}</div>
+    </div>`).join("")}</div>`)}
+    ${block("剪辑与声音", `<div class="data-grid">
+      ${cell("节奏", data.editPlan?.sequenceRhythm)}
+      ${cell("转场", (data.editPlan?.transitions || []).join(" / "))}
+      ${cell("字幕", data.editPlan?.subtitlePlan)}
+      ${cell("音乐音效", data.editPlan?.musicAndSfx)}
+      ${cell("开头结尾", data.editPlan?.hookAndEndingNotes)}
+      ${cell("模型无关说明", (data.modelAgnosticNotes || []).join("；"))}
+    </div>`)}
+    ${block("生成验收清单", `<div class="rule-list">${(data.generationChecklist || []).map((item) => `<div class="rule"><strong>${escape(item.check)}</strong><p>${escape(item.passCriteria)}</p></div>`).join("")}</div>`)}
+    <div class="warning-box"><b>动画连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
+    ${uncertainties(data.uncertainties)}`;
+  reveal(elements.animationPlan);
+}
+
 function resultHeader(kicker, title, badge = "") {
   return `<div class="result-title"><div><p>${kicker}</p><h3>${title}</h3></div>${badge ? `<span class="confidence">${escape(badge)}</span>` : ""}</div>`;
 }
@@ -458,9 +569,20 @@ function setStoryRunning(running) {
   elements.storyGenerate.querySelector("span").textContent = running ? "完整剧情生成中…" : `用 ${state.storyModel.split("/").pop()} 生成完整剧情`;
   elements.storyGenerate.disabled = running || !selectedVariant();
 }
+function setAnimationRunning(running) {
+  elements.animationGenerate.classList.toggle("running", running);
+  elements.animationGenerate.textContent = running ? "动画生产包生成中…" : "生成首尾帧动画生产包";
+  const variant = selectedVariant();
+  const fullStory = variant ? state.fullStories[variant.id] || state.output.fullStory : null;
+  elements.animationGenerate.disabled = running || !variant || !fullStory;
+}
 function setStoryStatus(message, tone = "") {
   elements.storyStatus.textContent = message;
   elements.storyStatus.className = `story-status ${tone}`;
+}
+function setAnimationStatus(message, tone = "") {
+  elements.animationStatus.textContent = message;
+  elements.animationStatus.className = `story-status ${tone}`;
 }
 function validateReady() { if (!state.running) elements.run.disabled = !(state.frames.length >= 3 && elements.fixedCharacter.value.trim() && elements.vertical.value.trim()); }
 function showError(message) { elements.error.textContent = message; }

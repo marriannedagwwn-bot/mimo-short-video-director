@@ -34,6 +34,7 @@ MIMO_BASE_URL=https://api.xiaomimimo.com/v1
 MIMO_API_KEY=你的 key
 MIMO_MODEL=mimo-v2.5
 MIMO_STORY_MODEL=mimo-v2.5-pro
+MIMO_ANIMATION_MODEL=mimo-v2.5-pro
 MIMO_MEDIA_MODE=auto
 ```
 
@@ -41,14 +42,14 @@ MIMO_MEDIA_MODE=auto
 
 `MIMO_MEDIA_MODE=auto` 会优先通过 `video_url` 发送原生视频；请求中会按 MiMo V2.5 文档携带 `fps` 与 `media_resolution`，默认 `MIMO_VIDEO_FPS=2`、`MIMO_VIDEO_MEDIA_RESOLUTION=default`。若服务返回不支持媒体类型的 400/415/422，再自动回退为带时间戳关键帧。超过 `MIMO_NATIVE_VIDEO_MAX_MB` 的视频直接使用关键帧，避免 base64 请求占用过多内存。
 
-当前分析/拆解/简报/主题变体请求参数默认为 `temperature=0.3`、`top_p=0.95`、`max_completion_tokens=8192`、`thinking=disabled`、`stream=false`。用户选中某个主题变体后，完整剧情页会单独调用 `MIMO_STORY_MODEL`，默认 `mimo-v2.5-pro`，并使用 `MIMO_STORY_MAX_COMPLETION_TOKENS=12288` 给分场剧情留出更长输出空间。接口依据：[MiMo V2.5 模型说明](https://mimo.mi.com/docs/en-US/product/introduction/models#MiMo-V25)、[MiMo OpenAI API](https://mimo.mi.com/docs/en-US/api/chat/openai-api) 和 [MiMo 视频理解文档](https://mimo.mi.com/docs/en-US/use-cases/video-understanding)。
+当前分析/拆解/简报/主题变体请求参数默认为 `temperature=0.3`、`top_p=0.95`、`max_completion_tokens=8192`、`thinking=disabled`、`stream=false`。用户选中某个主题变体后，完整剧情页会单独调用 `MIMO_STORY_MODEL`，默认 `mimo-v2.5-pro`，并使用 `MIMO_STORY_MAX_COMPLETION_TOKENS=12288` 给分场剧情留出更长输出空间。完整剧情生成后，可以继续调用 `MIMO_ANIMATION_MODEL`，默认同样为 `mimo-v2.5-pro`，生成首尾帧 AI 视频生产包：视觉圣经、角色参考、资产提示词、每个短镜头的首帧 prompt、尾帧 prompt、视频 prompt、负面 prompt 和验收标准。接口依据：[MiMo V2.5 模型说明](https://mimo.mi.com/docs/en-US/product/introduction/models#MiMo-V25)、[MiMo OpenAI API](https://mimo.mi.com/docs/en-US/api/chat/openai-api) 和 [MiMo 视频理解文档](https://mimo.mi.com/docs/en-US/use-cases/video-understanding)。
 
 ## 结构
 
 - `public/`：上传、浏览器抽帧、角色配置、结果展示与 JSON 导出。
 - `src/prompts.js`：四阶段导演提示词和结构化输出契约。
 - `src/mimo-client.js`：MiMo OpenAI 兼容适配器。
-- `src/workflow.js`：四阶段编排、选中主题后的完整剧情生成与输入验证。
+- `src/workflow.js`：四阶段编排、选中主题后的完整剧情生成、动画生产包生成与输入验证。
 - `src/mock.js`：未配置模型时的演示结果。
 - `docs/workflow-spec.md`：产品原则、字段要求和验收标准。
 - `test/`：工作流和核心叙事约束测试。

@@ -13,7 +13,9 @@ const mimoClient = config.mimo.enabled ? new MimoClient(config.mimo) : null;
 const workflow = new WorkflowService({
   client: mimoClient,
   storyModel: config.mimo.storyModel,
-  storyMaxCompletionTokens: config.mimo.storyMaxCompletionTokens
+  storyMaxCompletionTokens: config.mimo.storyMaxCompletionTokens,
+  animationModel: config.mimo.animationModel,
+  animationMaxCompletionTokens: config.mimo.animationMaxCompletionTokens
 });
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, "public");
@@ -24,6 +26,7 @@ const routes = {
   "/api/brief": (body) => workflow.createBrief(body),
   "/api/variants": (body) => workflow.createVariants(body),
   "/api/full-story": (body) => workflow.createFullStory(body),
+  "/api/animation-plan": (body) => workflow.createAnimationPlan(body),
   "/api/run": (body) => workflow.run(body)
 };
 
@@ -31,9 +34,14 @@ const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
     if (request.method === "GET" && url.pathname === "/api/health") {
-      const [provider, storyProvider] = mimoClient
-        ? await Promise.all([mimoClient.checkHealth(config.mimo.model), mimoClient.checkHealth(config.mimo.storyModel)])
+      const [provider, storyProvider, animationProvider] = mimoClient
+        ? await Promise.all([
+          mimoClient.checkHealth(config.mimo.model),
+          mimoClient.checkHealth(config.mimo.storyModel),
+          mimoClient.checkHealth(config.mimo.animationModel)
+        ])
         : [
+          { reachable: false, modelAvailable: false, status: 0 },
           { reachable: false, modelAvailable: false, status: 0 },
           { reachable: false, modelAvailable: false, status: 0 }
         ];
@@ -42,10 +50,12 @@ const server = http.createServer(async (request, response) => {
         mode: workflow.mode,
         model: config.mimo.model,
         storyModel: config.mimo.storyModel,
+        animationModel: config.mimo.animationModel,
         providerConfigured: config.mimo.enabled,
         providerReachable: provider.reachable,
         modelAvailable: provider.modelAvailable,
         storyModelAvailable: storyProvider.modelAvailable,
+        animationModelAvailable: animationProvider.modelAvailable,
         mediaMode: config.mimo.mediaMode,
         nativeVideoMaxBytes: config.mimo.nativeVideoMaxBytes
       });
@@ -69,7 +79,7 @@ const server = http.createServer(async (request, response) => {
 
 server.listen(config.port, () => {
   console.log(`AI 短视频导演：http://localhost:${config.port}`);
-  console.log(`运行模式：${workflow.mode === "mimo" ? `MiMo (${config.mimo.model} / 剧情 ${config.mimo.storyModel})` : "演示数据（配置 .env 后接入 MiMo）"}`);
+  console.log(`运行模式：${workflow.mode === "mimo" ? `MiMo (${config.mimo.model} / 剧情 ${config.mimo.storyModel} / 动画 ${config.mimo.animationModel})` : "演示数据（配置 .env 后接入 MiMo）"}`);
 });
 
 async function readJson(request) {

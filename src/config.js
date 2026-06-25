@@ -30,6 +30,7 @@ export function getConfig() {
   const requestedThinking = process.env.MIMO_THINKING?.trim().toLowerCase() || "disabled";
   const thinking = ["disabled", "enabled"].includes(requestedThinking) ? requestedThinking : "disabled";
   const storyMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_STORY_MAX_COMPLETION_TOKENS, 12288, 1024, 32768));
+  const animationMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_ANIMATION_MAX_COMPLETION_TOKENS, 12288, 1024, 32768));
   return {
     port: Number(process.env.PORT || 4173),
     mimo: {
@@ -37,6 +38,7 @@ export function getConfig() {
       apiKey: process.env.MIMO_API_KEY?.trim() || "",
       model: process.env.MIMO_MODEL?.trim() || "mimo-v2.5",
       storyModel: process.env.MIMO_STORY_MODEL?.trim() || "mimo-v2.5-pro",
+      animationModel: process.env.MIMO_ANIMATION_MODEL?.trim() || process.env.MIMO_STORY_MODEL?.trim() || "mimo-v2.5-pro",
       jsonMode: process.env.MIMO_JSON_MODE === "true",
       mediaMode,
       nativeVideoMaxBytes: Math.floor(nativeVideoMaxMb * 1024 * 1024),
@@ -44,6 +46,7 @@ export function getConfig() {
       videoMediaResolution,
       maxCompletionTokens,
       storyMaxCompletionTokens,
+      animationMaxCompletionTokens,
       thinking,
       enabled: Boolean(baseUrl)
     }

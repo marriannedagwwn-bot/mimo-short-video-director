@@ -200,6 +200,112 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 sceneScript 至少 6 场，beatSheet 至少 6 个节拍。剧情应适合 45-90 秒短视频，默认以 60 秒为目标。不要输出分镜号空泛堆叠；每场都要推进任务、关系或情绪。${JSON_ONLY}`;
 }
 
+export function animationPlanPrompt(input) {
+  const variant = input.variant || {};
+  const fullStory = input.fullStory || {};
+  return `${SYSTEM_PROMPT}
+
+你现在进入 AI 动画导演阶段。上游已经有完整剧情 fullStory。你的任务不是继续写剧情，而是把剧情转换成“首尾帧 AI 视频生产包”：先稳定视觉，再按短镜头生成首帧、尾帧和视频生成提示词。
+
+推荐策略：
+- 每个镜头单独生成 3–6 秒，不要一次生成整条片。
+- 先用 visualBible 和 characterReferencePrompts 锁定角色、世界观、色彩和动画风格。
+- 每个 shot 必须同时给出 startFramePrompt、endFramePrompt、videoPrompt、negativePrompt 和 acceptanceCriteria。
+- 首帧负责镜头起点，尾帧负责镜头终点，videoPrompt 只描述中间运动、镜头运动和情绪变化。
+- 输出应保持模型无关，可用于支持首尾帧/关键帧驱动的视频模型。
+
+固定角色：${input.creatorProfile?.fixedCharacter || "未指定"}
+垂直赛道：${input.creatorProfile?.vertical || "未指定"}
+创作限制：${input.creatorProfile?.constraints || "无"}
+选中主题变体：${JSON.stringify(variant)}
+完整剧情 fullStory：${JSON.stringify(fullStory)}
+creativeBrief：${JSON.stringify(input.creativeBrief || {})}
+
+硬约束：
+- selectedVariantId 必须等于选中主题变体 id：${variant.id || fullStory.selectedVariantId || "未指定"}。
+- animationPlan 只能服务当前 fullStory，不得改剧情、不得换主题、不得更换固定角色。
+- 正向画面提示词中必须锁定固定角色姓名、身份、年龄感、服装/外观和核心性格；不能把角色变成动物、玩偶、服装拟态或原片表面身份。
+- 如果固定角色是“小女孩/儿童/学生/村民”，视觉提示词必须保持人类儿童身份，不得出现企鹅、动物外观、快递员外壳、尾巴、翅膀、爪子等正向表达。
+- negativePrompt 可以写禁止项；但 startFramePrompt、endFramePrompt、videoPrompt、appearancePrompt 中不得把禁止项写成正向画面。
+- 角色一致性优先于动作复杂度；每个镜头只允许一个主要动作目标。
+- 镜头数量应覆盖完整剧情关键动作，默认 8–12 个镜头；若 fullStory.sceneScript 少于 6 场，也要拆出至少 6 个镜头。
+
+输出 animationPlan，严格使用以下结构：
+{
+  "selectedVariantId":"",
+  "title":"",
+  "productionStrategy":{
+    "format":"first_last_frame_video",
+    "targetAspectRatio":"9:16",
+    "targetRuntimeSeconds":60,
+    "recommendedShotDurationSeconds":{"min":3, "max":6},
+    "generationOrder":[],
+    "whyThisWorkflow":""
+  },
+  "visualBible":{
+    "overallStyle":"",
+    "animationStyle":"",
+    "colorPalette":[],
+    "lighting":"",
+    "worldRules":[],
+    "cameraLanguage":"",
+    "characterConsistencyRules":[],
+    "negativeVisualRules":[]
+  },
+  "characterReferencePrompts":[{
+    "characterName":"",
+    "storyRole":"",
+    "identity":"",
+    "appearancePrompt":"",
+    "consistencyTags":[],
+    "forbiddenChanges":[]
+  }],
+  "assetPrompts":[{
+    "assetName":"",
+    "storyFunction":"",
+    "imagePrompt":"",
+    "consistencyTags":[],
+    "avoidSimilarityNote":""
+  }],
+  "shotPlan":[{
+    "shotId":"A01",
+    "sourceSceneId":"",
+    "durationSeconds":4,
+    "storyPurpose":"",
+    "emotionalTarget":"",
+    "startFramePrompt":"",
+    "endFramePrompt":"",
+    "videoPrompt":"",
+    "cameraMotion":"",
+    "characterAction":"",
+    "dialogueOrSubtitle":"",
+    "soundDesign":"",
+    "continuityNotes":"",
+    "negativePrompt":"",
+    "acceptanceCriteria":[]
+  }],
+  "editPlan":{
+    "sequenceRhythm":"",
+    "transitions":[],
+    "subtitlePlan":"",
+    "musicAndSfx":"",
+    "hookAndEndingNotes":""
+  },
+  "generationChecklist":[{"check":"", "passCriteria":""}],
+  "modelAgnosticNotes":[],
+  "continuityAndSafetyCheck":{
+    "fixedCharacterLocked":"",
+    "positivePromptsAvoidSourceSurface":"",
+    "firstLastFrameContinuity":"",
+    "shotDurationControlled":"",
+    "readyForVideoGeneration":""
+  },
+  "uncertainties":[{"field":"", "reason":"", "safeFallback":""}]
+}
+
+shotPlan 的 startFramePrompt、endFramePrompt、videoPrompt 应该是可以直接复制给图像/视频模型的中文提示词。每个镜头的 startFramePrompt 和 endFramePrompt 必须写清：角色、服装/外观、地点、构图、光线、情绪、关键道具。videoPrompt 必须写清：从首帧到尾帧的运动、镜头运动、节奏和禁止新增内容。${JSON_ONLY}`;
+}
+
 function formatTime(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
   const minutes = Math.floor(safe / 60);
