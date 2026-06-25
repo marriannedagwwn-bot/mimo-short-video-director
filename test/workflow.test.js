@@ -386,6 +386,57 @@ test("command 视频生产执行失败会写入失败回执并刷新 failed 状�
   assert.match(failure.error.stderr, /provider down/);
 });
 
+test("command 视频生产执行器可重试 failed 任务并释放下游", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-command-retry-"));
+  const failingWorkerPath = path.join(root, "failing-worker.mjs");
+  const successWorkerPath = path.join(root, "success-worker.mjs");
+  const queue = {
+    version: "test",
+    providerMode: "provider_agnostic",
+    title: "command worker retry test",
+    selectedVariantId: "V1",
+    jobs: [
+      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" },
+      { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", requiredInputs: ["references.hero"], prompt: "首帧" }
+    ]
+  };
+  const run = buildProductionRun(queue, { outputRoot: root });
+  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+  await fs.writeFile(failingWorkerPath, "console.error('temporary outage'); process.exit(8);");
+  await fs.writeFile(successWorkerPath, `
+import fs from "node:fs/promises";
+const args = process.argv.slice(2);
+const value = (flag) => args[args.indexOf(flag) + 1];
+const request = JSON.parse(await fs.readFile(value("--request"), "utf8"));
+await fs.writeFile(value("--output"), "retry ok:" + request.taskId);
+await fs.writeFile(value("--receipt"), JSON.stringify({ provider: "retry-worker", taskId: request.taskId }) + "\\n");
+`);
+
+  const failedRun = await executeProductionWorkspace({
+    root,
+    provider: "command",
+    command: process.execPath,
+    commandArgs: [failingWorkerPath],
+    all: true,
+    continueOnError: true
+  });
+  assert.equal(failedRun.run.counts.failed, 1);
+
+  const retriedRun = await executeProductionWorkspace({
+    root,
+    provider: "command",
+    command: process.execPath,
+    commandArgs: [successWorkerPath],
+    all: true,
+    retryFailed: true
+  });
+  assert.equal(retriedRun.retried.length, 1);
+  assert.equal(retriedRun.run.counts.done, 2);
+  assert.equal(retriedRun.run.counts.failed, 0);
+  const startJob = retriedRun.run.jobs.find((job) => job.taskId === "S01-START");
+  assert.match(await fs.readFile(startJob.outputPath, "utf8"), /retry ok:S01-START/);
+});
+
 test("少于三张画面时拒绝分析", async () => {
   const workflow = new WorkflowService();
   await assert.rejects(() => workflow.analyze({ ...input, frames: frames.slice(0, 2) }), InputError);

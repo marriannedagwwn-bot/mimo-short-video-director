@@ -109,6 +109,12 @@ npm run exec:video -- ./production/V1 \
 npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/command-worker-template.mjs --all --continue-on-error
 ```
 
+修复 worker 或供应商问题后，可以直接重试 failed 任务：
+
+```bash
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/command-worker-template.mjs --all --retry-failed
+```
+
 Worker 模板见 [workers/command-worker-template.mjs](workers/command-worker-template.mjs)，协议说明见 [docs/video-worker-protocol.md](docs/video-worker-protocol.md)。
 
 当前尚未绑定具体视频生成供应商。下一步若要自动生成视频，需要确定视频模型 API、首尾帧图片生成方式、任务轮询、候选视频存储和质检/重试策略。

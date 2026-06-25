@@ -13,6 +13,7 @@ export async function executeProductionWorkspace(options = {}) {
   const providerCommandArgs = options.commandArgs || [];
   const all = Boolean(options.all);
   const continueOnError = Boolean(options.continueOnError);
+  const retryFailed = Boolean(options.retryFailed);
   const maxPasses = Math.max(1, Number(options.maxPasses) || 12);
   const limit = Math.max(1, Number(options.limit) || Number.POSITIVE_INFINITY);
   const taskIds = new Set(options.taskIds || []);
@@ -21,7 +22,12 @@ export async function executeProductionWorkspace(options = {}) {
 
   let loaded = await loadWorkspace(root);
   let queue = loaded.queue;
+  const retried = retryFailed ? await clearFailureReceipts(queue, root, taskIds) : [];
   let run = await refreshRun(queue, root);
+  if (retryFailed) {
+    await writeWorkspaceFiles(queue, run);
+    loaded = await loadWorkspace(root);
+  }
   const executed = [];
   const skipped = [];
   const failed = [];
@@ -72,6 +78,7 @@ export async function executeProductionWorkspace(options = {}) {
     executed,
     skipped,
     failed,
+    retried,
     run: await refreshRun(queue, root)
   };
 }
@@ -209,6 +216,18 @@ async function writeFailureReceipt(request, job, provider, error) {
     provider,
     error: receipt.error
   };
+}
+
+async function clearFailureReceipts(queue, root, taskIds = new Set()) {
+  const expectedRun = buildProductionRun(queue, { outputRoot: root });
+  const cleared = [];
+  for (const job of expectedRun.jobs || []) {
+    if (taskIds.size && !taskIds.has(job.taskId)) continue;
+    if (!await isNonEmptyFile(job.failurePath)) continue;
+    await fs.unlink(job.failurePath);
+    cleared.push({ taskId: job.taskId, failurePath: job.failurePath });
+  }
+  return cleared;
 }
 
 function mockArtifactBody(request, job) {

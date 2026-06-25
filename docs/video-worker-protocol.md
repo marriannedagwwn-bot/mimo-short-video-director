@@ -69,7 +69,13 @@ npm run exec:video -- ./production/V1 \
 npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/command-worker-template.mjs --all --continue-on-error
 ```
 
-修复失败后，删除对应的 `.error.json`，重新运行 worker，或者手动把正确产物放到 `--output` 对应路径后再运行 `plan:video --scan-existing`。
+修复失败后，可以直接使用：
+
+```bash
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/command-worker-template.mjs --all --retry-failed
+```
+
+`--retry-failed` 会先删除匹配任务的 `.error.json`，再重新计算 ready 任务并执行。也可以手动删除对应的 `.error.json`，或者把正确产物放到 `--output` 对应路径后再运行 `plan:video --scan-existing`。
 
 ## 接真实视频模型时的建议
 

@@ -149,7 +149,7 @@ npm run exec:video -- ./production/V1 --provider command --command node --comman
 
 Worker 模板位于 `workers/command-worker-template.mjs`，详细协议见 `docs/video-worker-protocol.md`。
 
-失败任务会写入 `<output>.error.json`，并在状态刷新后显示为 `failed`；其下游任务继续保持 `blocked`。`--continue-on-error` 可让互不依赖的其它 ready 任务继续执行。
+失败任务会写入 `<output>.error.json`，并在状态刷新后显示为 `failed`；其下游任务继续保持 `blocked`。`--continue-on-error` 可让互不依赖的其它 ready 任务继续执行；修复 worker 或供应商问题后，可用 `--retry-failed` 清理失败回执并重试。
 
 自动视频生成尚未绑定具体供应商。接入真实视频模型前，需要明确：
 
