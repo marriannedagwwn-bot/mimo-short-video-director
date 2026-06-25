@@ -22,6 +22,7 @@ export function buildProductionRun(queue = {}, options = {}) {
     const missingInputs = requiredInputs.filter((key) => !isDone(artifacts[key]));
     const status = resolveJobStatus(artifact, missingInputs);
     const outputPath = artifact.path || defaultOutputPath(outputRoot, job);
+    const failurePath = artifact.errorPath || failurePathForOutput(outputPath);
     return {
       order: index + 1,
       taskId: job.taskId || `JOB-${String(index + 1).padStart(3, "0")}`,
@@ -32,6 +33,7 @@ export function buildProductionRun(queue = {}, options = {}) {
       requiredInputs,
       missingInputs,
       outputPath,
+      failurePath,
       promptPath: defaultPromptPath(outputRoot, job),
       requestPath: defaultRequestPath(outputRoot, job),
       acceptanceCriteria: job.acceptanceCriteria || []
@@ -87,13 +89,17 @@ export function buildProductionWorkspaceFiles(queue = {}, run = buildProductionR
 export function buildArtifactsFromExistingOutputs(queue = {}, options = {}) {
   const outputRoot = cleanPath(options.outputRoot || "production");
   const existing = new Set((options.existingOutputPaths || []).map(normalizeComparablePath));
+  const failures = new Set((options.existingFailurePaths || []).map(normalizeComparablePath));
   const artifacts = {};
   for (const job of queue.jobs || []) {
     const outputKey = job.outputKey || "";
     if (!outputKey) continue;
     const outputPath = defaultOutputPath(outputRoot, job);
+    const failurePath = failurePathForOutput(outputPath);
     if (existing.has(normalizeComparablePath(outputPath))) {
       artifacts[outputKey] = { status: "done", path: outputPath };
+    } else if (failures.has(normalizeComparablePath(failurePath))) {
+      artifacts[outputKey] = { status: "failed", path: outputPath, errorPath: failurePath };
     }
   }
   return artifacts;
@@ -120,7 +126,8 @@ function normalizeArtifactValue(value) {
   if (typeof value === "string") return { status: "done", path: value };
   return {
     status: ["done", "failed", "ready", "blocked"].includes(value?.status) ? value.status : "done",
-    path: value?.path || ""
+    path: value?.path || "",
+    errorPath: value?.errorPath || ""
   };
 }
 
@@ -196,6 +203,7 @@ function formatJobPromptCard(queueJob = {}, runJob = {}, jobsByOutputKey = new M
     `- 输入类型：${runJob.inputType}`,
     `- 输出 key：${runJob.outputKey}`,
     `- 建议输出路径：${runJob.outputPath}`,
+    `- 失败回执路径：${runJob.failurePath}`,
     "",
     "## 依赖输入",
     "",
@@ -237,6 +245,7 @@ function formatJobRequest(queueJob = {}, runJob = {}, jobsByOutputKey = new Map(
     inputType: runJob.inputType,
     outputKey: runJob.outputKey,
     outputPath: runJob.outputPath,
+    failurePath: runJob.failurePath,
     prompt: queueJob.prompt || "",
     negativePrompt: queueJob.negativePrompt || "",
     inputArtifacts: (runJob.requiredInputs || []).map((key) => {
@@ -344,6 +353,10 @@ function defaultPromptPath(root, job = {}) {
 
 function defaultRequestPath(root, job = {}) {
   return [root, "requests", safeSegment(job.type || "unknown"), `${safeSegment(job.taskId || job.outputKey || "job")}.json`].join("/");
+}
+
+export function failurePathForOutput(outputPath) {
+  return `${outputPath}.error.json`;
 }
 
 function extensionFor(type) {

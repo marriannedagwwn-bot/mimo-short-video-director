@@ -12,6 +12,7 @@ export async function executeProductionWorkspace(options = {}) {
   const providerCommand = options.command || process.env.VIDEO_PROVIDER_COMMAND || "";
   const providerCommandArgs = options.commandArgs || [];
   const all = Boolean(options.all);
+  const continueOnError = Boolean(options.continueOnError);
   const maxPasses = Math.max(1, Number(options.maxPasses) || 12);
   const limit = Math.max(1, Number(options.limit) || Number.POSITIVE_INFINITY);
   const taskIds = new Set(options.taskIds || []);
@@ -23,6 +24,7 @@ export async function executeProductionWorkspace(options = {}) {
   let run = await refreshRun(queue, root);
   const executed = [];
   const skipped = [];
+  const failed = [];
 
   for (let pass = 1; pass <= maxPasses; pass += 1) {
     const readyJobs = run.jobs.filter((job) => {
@@ -39,10 +41,22 @@ export async function executeProductionWorkspace(options = {}) {
         skipped.push({ taskId: job.taskId, reason: "request_missing" });
         continue;
       }
-      const result = provider === "command"
-        ? await executeCommandRequest(request, job, { root, command: providerCommand, commandArgs: providerCommandArgs })
-        : await executeMockRequest(request, job);
-      executed.push(result);
+      try {
+        const result = provider === "command"
+          ? await executeCommandRequest(request, job, { root, command: providerCommand, commandArgs: providerCommandArgs })
+          : await executeMockRequest(request, job);
+        executed.push(result);
+      } catch (error) {
+        const failure = await writeFailureReceipt(request, job, provider, error);
+        failed.push(failure);
+        await writeWorkspaceFiles(queue, await refreshRun(queue, root));
+        if (!continueOnError) {
+          const message = `${job.taskId} 执行失败：${error.message}`;
+          const wrapped = new Error(message);
+          wrapped.cause = error;
+          throw wrapped;
+        }
+      }
     }
 
     await writeWorkspaceFiles(queue, await refreshRun(queue, root));
@@ -57,6 +71,7 @@ export async function executeProductionWorkspace(options = {}) {
     mode: all ? "all_ready_until_blocked" : "single_pass",
     executed,
     skipped,
+    failed,
     run: await refreshRun(queue, root)
   };
 }
@@ -88,10 +103,12 @@ export async function loadWorkspace(root) {
 async function refreshRun(queue, root) {
   const expectedRun = buildProductionRun(queue, { outputRoot: root });
   const existingOutputPaths = [];
+  const existingFailurePaths = [];
   for (const job of expectedRun.jobs || []) {
     if (await isNonEmptyFile(job.outputPath)) existingOutputPaths.push(job.outputPath);
+    else if (await isNonEmptyFile(job.failurePath)) existingFailurePaths.push(job.failurePath);
   }
-  const artifacts = buildArtifactsFromExistingOutputs(queue, { outputRoot: root, existingOutputPaths });
+  const artifacts = buildArtifactsFromExistingOutputs(queue, { outputRoot: root, existingOutputPaths, existingFailurePaths });
   return buildProductionRun(queue, { outputRoot: root, artifacts });
 }
 
@@ -161,6 +178,36 @@ async function executeCommandRequest(request, job, options = {}) {
     outputPath: job.outputPath,
     receiptPath,
     provider: "command"
+  };
+}
+
+async function writeFailureReceipt(request, job, provider, error) {
+  await fs.mkdir(path.dirname(job.failurePath), { recursive: true });
+  const receipt = {
+    provider,
+    taskId: job.taskId,
+    capability: request?.capability || "",
+    outputKey: job.outputKey,
+    outputPath: job.outputPath,
+    failurePath: job.failurePath,
+    failedAt: new Date().toISOString(),
+    error: {
+      name: error.name || "Error",
+      message: error.message || String(error),
+      code: error.code || "",
+      stdout: String(error.stdout || "").slice(0, 4000),
+      stderr: String(error.stderr || "").slice(0, 4000)
+    }
+  };
+  await fs.writeFile(job.failurePath, `${JSON.stringify(receipt, null, 2)}\n`);
+  return {
+    taskId: job.taskId,
+    type: job.type,
+    capability: request?.capability || "",
+    outputPath: job.outputPath,
+    failurePath: job.failurePath,
+    provider,
+    error: receipt.error
   };
 }
 

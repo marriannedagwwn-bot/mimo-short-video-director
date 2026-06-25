@@ -219,6 +219,19 @@ test("视频生产运行状态可从已存在输出路径自动识别完成产�
   assert.ok(scannedRun.jobs.filter((job) => job.type === "start_frame_image").every((job) => job.status === "ready"));
 });
 
+test("视频生产运行状态可从失败回执识别 failed 任务", () => {
+  const queue = buildQueueFixture();
+  const initialRun = buildProductionRun(queue, { outputRoot: "production/V1" });
+  const failedJob = initialRun.jobs.find((job) => job.type === "reference_image");
+  const artifacts = buildArtifactsFromExistingOutputs(queue, {
+    outputRoot: "production/V1",
+    existingFailurePaths: [failedJob.failurePath]
+  });
+  const scannedRun = buildProductionRun(queue, { outputRoot: "production/V1", artifacts });
+  assert.equal(scannedRun.jobs.find((job) => job.taskId === failedJob.taskId).status, "failed");
+  assert.ok(scannedRun.jobs.filter((job) => job.type === "start_frame_image").some((job) => job.status === "blocked"));
+});
+
 test("视频生产工作区导出 README、运行状态和逐任务 prompt 卡", () => {
   const queue = buildQueueFixture();
   const run = buildProductionRun(queue, {
@@ -337,6 +350,40 @@ test("内置 command worker 模板可作为 command provider 执行任务", asyn
   assert.match(output, /PLACEHOLDER ARTIFACT/);
   const receipt = JSON.parse(await fs.readFile(`${result.run.jobs[0].outputPath}.provider.json`, "utf8"));
   assert.equal(receipt.provider, "command-worker-template");
+});
+
+test("command 视频生产执行失败会写入失败回执并刷新 failed 状态", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-command-fail-"));
+  const workerPath = path.join(root, "failing-worker.mjs");
+  const queue = {
+    version: "test",
+    providerMode: "provider_agnostic",
+    title: "command worker failure test",
+    selectedVariantId: "V1",
+    jobs: [
+      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" },
+      { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", requiredInputs: ["references.hero"], prompt: "首帧" }
+    ]
+  };
+  const run = buildProductionRun(queue, { outputRoot: root });
+  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+  await fs.writeFile(workerPath, "console.error('provider down'); process.exit(7);");
+
+  const result = await executeProductionWorkspace({
+    root,
+    provider: "command",
+    command: process.execPath,
+    commandArgs: [workerPath],
+    all: true,
+    continueOnError: true
+  });
+  assert.equal(result.failed.length, 1);
+  assert.equal(result.run.counts.failed, 1);
+  assert.equal(result.run.jobs.find((job) => job.taskId === "REF-01").status, "failed");
+  assert.equal(result.run.jobs.find((job) => job.taskId === "S01-START").status, "blocked");
+  const failure = JSON.parse(await fs.readFile(result.failed[0].failurePath, "utf8"));
+  assert.equal(failure.taskId, "REF-01");
+  assert.match(failure.error.stderr, /provider down/);
 });
 
 test("少于三张画面时拒绝分析", async () => {

@@ -124,10 +124,12 @@ async function writeWorkspace(files, run) {
 async function scanExistingArtifacts(queue, outputRoot) {
   const expectedRun = buildProductionRun(queue, { outputRoot });
   const existingOutputPaths = [];
+  const existingFailurePaths = [];
   for (const job of expectedRun.jobs || []) {
     if (await isNonEmptyFile(job.outputPath)) existingOutputPaths.push(job.outputPath);
+    else if (await isNonEmptyFile(job.failurePath)) existingFailurePaths.push(job.failurePath);
   }
-  return buildArtifactsFromExistingOutputs(queue, { outputRoot, existingOutputPaths });
+  return buildArtifactsFromExistingOutputs(queue, { outputRoot, existingOutputPaths, existingFailurePaths });
 }
 
 async function isNonEmptyFile(filePath) {

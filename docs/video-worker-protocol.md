@@ -55,6 +55,22 @@ npm run exec:video -- ./production/V1 \
 
 只要 `--output` 是非空文件，主执行器就会在下一轮自动把该任务标记为 `done`，并释放依赖它的后续任务。
 
+## 失败处理
+
+如果 worker 退出非 0，或没有生成非空 `--output`，主执行器会写入：
+
+```text
+<output>.error.json
+```
+
+该失败回执会让任务在后续状态刷新中显示为 `failed`，依赖它的后续任务保持 `blocked`。如果希望一个任务失败后继续执行其它互不依赖的 ready 任务，可以使用：
+
+```bash
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/command-worker-template.mjs --all --continue-on-error
+```
+
+修复失败后，删除对应的 `.error.json`，重新运行 worker，或者手动把正确产物放到 `--output` 对应路径后再运行 `plan:video --scan-existing`。
+
 ## 接真实视频模型时的建议
 
 - 图像生成任务优先保证角色、服装、道具一致，不要过度追求画面复杂度。
