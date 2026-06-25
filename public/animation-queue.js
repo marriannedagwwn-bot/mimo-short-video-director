@@ -24,6 +24,7 @@ export function buildVideoGenerationQueue(pack = {}) {
     jobs: []
   };
   const videoOutputs = [];
+  const reviewOutputs = [];
 
   for (const [index, character] of (plan.characterReferencePrompts || []).entries()) {
     queue.jobs.push({
@@ -118,6 +119,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       negativePrompt: "",
       acceptanceCriteria: [...(shot.acceptanceCriteria || []), "没有角色漂移、服装漂移、场景跳变或肢体严重变形"]
     });
+    reviewOutputs.push(`reviews.${shotId}`);
   }
 
   if (videoOutputs.length) {
@@ -128,7 +130,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       outputKey: "exports.final_cut",
       durationSeconds: queue.common.targetRuntimeSeconds,
       aspectRatio,
-      requiredInputs: videoOutputs,
+      requiredInputs: [...videoOutputs, ...reviewOutputs],
       prompt: buildFinalEditPrompt(editPlan, plan.generationChecklist),
       negativePrompt: joinList(queue.common.negativeVisualRules),
       sequenceRhythm: editPlan.sequenceRhythm || "",
@@ -137,7 +139,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       musicAndSfx: editPlan.musicAndSfx || "",
       hookAndEndingNotes: editPlan.hookAndEndingNotes || "",
       acceptanceCriteria: [
-        `按 shotPlan 顺序拼接 ${videoOutputs.length} 个镜头`,
+        `按 shotPlan 顺序拼接 ${videoOutputs.length} 个已通过质检的镜头`,
         `成片画幅保持 ${aspectRatio}`,
         `总时长接近 ${queue.common.targetRuntimeSeconds} 秒`,
         "字幕、音乐和音效服务动作与情绪，不遮盖剧情信息",

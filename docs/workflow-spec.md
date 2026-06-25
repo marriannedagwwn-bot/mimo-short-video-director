@@ -99,7 +99,15 @@ flowchart LR
 
 - JSON 导出：保留完整结构化数据，供后续自动视频队列或外部工具读取。
 - Markdown 复制：把角色参考、资产提示词和逐镜首尾帧/video prompt 合并成可直接粘贴到视频生成工具的生产包。
-- JSONL 任务队列导出：将 `animationPlan` 拆成机器可读任务，任务类型包括 `reference_image`、`asset_image`、`start_frame_image`、`end_frame_image`、`first_last_frame_video`、`quality_check` 和 `final_edit`。`final_edit` 依赖所有逐镜视频输出，负责按 `editPlan` 生成最终竖屏短片。
+- JSONL 任务队列导出：将 `animationPlan` 拆成机器可读任务，任务类型包括 `reference_image`、`asset_image`、`start_frame_image`、`end_frame_image`、`first_last_frame_video`、`quality_check` 和 `final_edit`。`final_edit` 依赖所有逐镜视频输出和质检结果，负责按 `editPlan` 生成最终竖屏短片。
+
+浏览器导出的生产包或 JSONL 队列可以继续通过本地命令生成生产运行状态：
+
+```bash
+npm run plan:video -- ./视频任务队列.jsonl --out ./production/V1/production-run.json --root ./production/V1
+```
+
+该运行状态不会调用具体供应商 API，只负责解析任务依赖、标记可执行任务、列出阻塞输入和建议产物路径；后续真实视频 API worker 应读取同一份运行状态并写回产物。
 
 自动视频生成尚未绑定具体供应商。接入真实视频模型前，需要明确：
 

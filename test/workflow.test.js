@@ -10,6 +10,7 @@ import { parseRunVideoArgs } from "../src/run-video-command.js";
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
 import { extractFixedCharacterName } from "../src/validation.js";
 import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
+import { buildProductionRun, parseQueueJsonl } from "../src/video-production-run.js";
 import { buildVideoGenerationQueue, formatQueueJsonl } from "../public/animation-queue.js";
 
 const frames = Array.from({ length: 8 }, (_, index) => ({
@@ -23,6 +24,27 @@ const input = {
   creatorProfile: { fixedCharacter: "阿岚，社区修理师", vertical: "家电维修", constraints: "60 秒内" },
   count: 3
 };
+
+function buildQueueFixture() {
+  const creativeBrief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const variant = {
+    id: "V1",
+    title: "最后一格电",
+    characterSetup: { protagonist: "阿岚，社区修理师", careRecipient: "独居老人", helper: "夜班便利店员" },
+    newTask: "修复并送回旧设备",
+    emotionalMedium: "一段旧录音",
+    environmentPressure: "暴雨停电",
+    endingRitual: "老人按下播放键"
+  };
+  const fullStory = mockFullStory({ ...input, creativeBrief, variant });
+  const animationPlan = mockAnimationPlan({ ...input, creativeBrief, variant, fullStory });
+  return buildVideoGenerationQueue({
+    exportedAt: "2026-06-25T00:00:00.000Z",
+    selectedVariant: variant,
+    fullStory,
+    animationPlan
+  });
+}
 
 test("演示模式跑通完整四阶段工作流", async () => {
   const workflow = new WorkflowService();
@@ -123,24 +145,7 @@ test("完整剧情后可生成首尾帧动画生产包", async () => {
 });
 
 test("动画生产包可转换为视频生成任务队列", () => {
-  const creativeBrief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  const variant = {
-    id: "V1",
-    title: "最后一格电",
-    characterSetup: { protagonist: "阿岚，社区修理师", careRecipient: "独居老人", helper: "夜班便利店员" },
-    newTask: "修复并送回旧设备",
-    emotionalMedium: "一段旧录音",
-    environmentPressure: "暴雨停电",
-    endingRitual: "老人按下播放键"
-  };
-  const fullStory = mockFullStory({ ...input, creativeBrief, variant });
-  const animationPlan = mockAnimationPlan({ ...input, creativeBrief, variant, fullStory });
-  const queue = buildVideoGenerationQueue({
-    exportedAt: "2026-06-25T00:00:00.000Z",
-    selectedVariant: variant,
-    fullStory,
-    animationPlan
-  });
+  const queue = buildQueueFixture();
   assert.equal(queue.providerMode, "provider_agnostic");
   assert.equal(queue.selectedVariantId, "V1");
   assert.ok(queue.jobs.some((job) => job.type === "reference_image"));
@@ -152,12 +157,46 @@ test("动画生产包可转换为视频生成任务队列", () => {
   const videoJob = queue.jobs.find((job) => job.type === "first_last_frame_video");
   assert.deepEqual(videoJob.requiredInputs, [`frames.${videoJob.shotId}.start`, `frames.${videoJob.shotId}.end`]);
   const videoOutputs = queue.jobs.filter((job) => job.type === "first_last_frame_video").map((job) => job.outputKey);
+  const reviewOutputs = queue.jobs.filter((job) => job.type === "quality_check").map((job) => job.outputKey);
   const finalEditJob = queue.jobs.find((job) => job.type === "final_edit");
-  assert.deepEqual(finalEditJob.requiredInputs, videoOutputs);
+  assert.deepEqual(finalEditJob.requiredInputs, [...videoOutputs, ...reviewOutputs]);
   assert.match(finalEditJob.prompt, /竖屏短片|字幕|音乐音效/);
   const jsonl = formatQueueJsonl(queue);
   assert.equal(jsonl.split("\n").length, queue.jobs.length);
   assert.equal(JSON.parse(jsonl.split("\n")[0]).taskId, queue.jobs[0].taskId);
+});
+
+test("视频生产运行状态按任务依赖释放下一步", () => {
+  const queue = buildQueueFixture();
+  const initialRun = buildProductionRun(queue, { createdAt: "2026-06-25T00:00:00.000Z", outputRoot: "production/V1" });
+  assert.equal(initialRun.counts.done, 0);
+  assert.ok(initialRun.nextTaskIds.includes("REF-01"));
+  assert.ok(initialRun.nextTaskIds.includes("ASSET-01"));
+  assert.equal(initialRun.jobs.find((job) => job.type === "start_frame_image").status, "blocked");
+  assert.equal(initialRun.jobs.find((job) => job.type === "final_edit").status, "blocked");
+
+  const referenceOutputs = queue.jobs
+    .filter((job) => job.type === "reference_image" || job.type === "asset_image")
+    .map((job) => job.outputKey);
+  const frameRun = buildProductionRun(queue, { completedOutputs: referenceOutputs });
+  assert.ok(frameRun.jobs.filter((job) => job.type === "start_frame_image").every((job) => job.status === "ready"));
+  assert.ok(frameRun.jobs.filter((job) => job.type === "end_frame_image").every((job) => job.status === "ready"));
+  assert.ok(frameRun.jobs.filter((job) => job.type === "first_last_frame_video").every((job) => job.status === "blocked"));
+
+  const videoReadyOutputs = queue.jobs
+    .filter((job) => ["reference_image", "asset_image", "start_frame_image", "end_frame_image"].includes(job.type))
+    .map((job) => job.outputKey);
+  const videoRun = buildProductionRun(queue, { completedOutputs: videoReadyOutputs });
+  assert.ok(videoRun.jobs.filter((job) => job.type === "first_last_frame_video").every((job) => job.status === "ready"));
+
+  const videoAndReviewOutputs = queue.jobs
+    .filter((job) => job.type === "first_last_frame_video" || job.type === "quality_check")
+    .map((job) => job.outputKey);
+  const finalRun = buildProductionRun(queue, { completedOutputs: [...videoReadyOutputs, ...videoAndReviewOutputs] });
+  assert.equal(finalRun.jobs.find((job) => job.type === "final_edit").status, "ready");
+
+  const parsed = parseQueueJsonl(formatQueueJsonl(queue));
+  assert.equal(parsed.jobs.length, queue.jobs.length);
 });
 
 test("少于三张画面时拒绝分析", async () => {

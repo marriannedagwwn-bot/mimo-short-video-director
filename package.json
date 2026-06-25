@@ -8,6 +8,7 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "run:video": "node bin/run-video.js",
+    "plan:video": "node bin/plan-video-production.js",
     "test": "node --test"
   },
   "engines": {
