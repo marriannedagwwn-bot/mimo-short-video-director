@@ -115,6 +115,14 @@ npm run exec:video -- ./production/V1 --provider command --command node --comman
 npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/command-worker-template.mjs --all --retry-failed
 ```
 
+查看当前生产状态报告：
+
+```bash
+npm run report:video -- ./production/V1
+```
+
+报告会列出总进度、ready/blocked/failed 任务、失败原因、最终成片路径和下一步建议命令；加 `--json` 可输出机器可读报告。
+
 Worker 模板见 [workers/command-worker-template.mjs](workers/command-worker-template.mjs)，协议说明见 [docs/video-worker-protocol.md](docs/video-worker-protocol.md)。
 
 当前尚未绑定具体视频生成供应商。下一步若要自动生成视频，需要确定视频模型 API、首尾帧图片生成方式、任务轮询、候选视频存储和质检/重试策略。

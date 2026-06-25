@@ -151,6 +151,14 @@ Worker 模板位于 `workers/command-worker-template.mjs`，详细协议见 `doc
 
 失败任务会写入 `<output>.error.json`，并在状态刷新后显示为 `failed`；其下游任务继续保持 `blocked`。`--continue-on-error` 可让互不依赖的其它 ready 任务继续执行；修复 worker 或供应商问题后，可用 `--retry-failed` 清理失败回执并重试。
 
+生产状态报告入口：
+
+```bash
+npm run report:video -- ./production/V1
+```
+
+报告包含总进度、按类型统计、ready 任务、failed 任务错误摘要、blocked 任务缺失依赖、最终成片路径和下一步建议命令；`--json` 可输出机器可读结果。
+
 自动视频生成尚未绑定具体供应商。接入真实视频模型前，需要明确：
 
 - 视频模型是否支持首尾帧、单首帧图生视频，还是只支持文生视频。

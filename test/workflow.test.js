@@ -14,6 +14,7 @@ import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
 import { extractFixedCharacterName } from "../src/validation.js";
 import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
 import { executeProductionWorkspace } from "../src/video-production-executor.js";
+import { buildProductionReport, formatProductionReportMarkdown, loadProductionReport } from "../src/video-production-report.js";
 import { buildArtifactsFromExistingOutputs, buildProductionRun, buildProductionWorkspaceFiles, parseQueueJsonl } from "../src/video-production-run.js";
 import { buildVideoGenerationQueue, formatQueueJsonl } from "../public/animation-queue.js";
 
@@ -435,6 +436,41 @@ await fs.writeFile(value("--receipt"), JSON.stringify({ provider: "retry-worker"
   assert.equal(retriedRun.run.counts.failed, 0);
   const startJob = retriedRun.run.jobs.find((job) => job.taskId === "S01-START");
   assert.match(await fs.readFile(startJob.outputPath, "utf8"), /retry ok:S01-START/);
+});
+
+test("视频生产报告输出进度、失败、阻塞和建议命令", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-report-"));
+  const queue = buildQueueFixture();
+  const initialRun = buildProductionRun(queue, { outputRoot: root });
+  const readyReference = initialRun.jobs.find((job) => job.type === "reference_image");
+  const failedAsset = initialRun.jobs.find((job) => job.type === "asset_image");
+  await fs.mkdir(path.dirname(readyReference.outputPath), { recursive: true });
+  await fs.writeFile(readyReference.outputPath, "done reference");
+  await fs.mkdir(path.dirname(failedAsset.failurePath), { recursive: true });
+  await fs.writeFile(failedAsset.failurePath, JSON.stringify({
+    taskId: failedAsset.taskId,
+    error: { message: "asset provider failed" }
+  }));
+  const artifacts = buildArtifactsFromExistingOutputs(queue, {
+    outputRoot: root,
+    existingOutputPaths: [readyReference.outputPath],
+    existingFailurePaths: [failedAsset.failurePath]
+  });
+  const run = buildProductionRun(queue, { outputRoot: root, artifacts });
+  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+
+  const report = await loadProductionReport(root);
+  assert.equal(report.progress.done, 1);
+  assert.equal(report.progress.failed, 1);
+  assert.ok(report.failedTasks.some((task) => task.error.message === "asset provider failed"));
+  assert.ok(report.blockedTasks.length > 0);
+  assert.match(report.recommendedCommands[0], /--retry-failed/);
+  const markdown = formatProductionReportMarkdown(report);
+  assert.match(markdown, /失败任务/);
+  assert.match(markdown, /asset provider failed/);
+
+  const directReport = buildProductionReport(run);
+  assert.equal(directReport.progress.total, run.jobs.length);
 });
 
 test("少于三张画面时拒绝分析", async () => {
