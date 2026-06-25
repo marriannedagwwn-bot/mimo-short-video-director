@@ -91,6 +91,18 @@ npm run exec:video -- ./production/V1 --provider mock --all
 
 `mock` 会为每个 ready request 写入占位产物和 `.mock.json` 回执。真实图像/视频模型接入时，会复用同一个 `requests/`、`outputs/` 和 `production-run.json` 约定。
 
+如果你已经有自己的图像/视频 API 脚本，可以用 `command` provider 接入。执行器会为每个 ready 任务调用外部命令：
+
+```bash
+npm run exec:video -- ./production/V1 \
+  --provider command \
+  --command node \
+  --command-arg ./workers/my-video-worker.mjs \
+  --all
+```
+
+外部命令会收到 `--request <request.json>`、`--output <target-file>`、`--receipt <receipt.json>`、`--root <production-root>`，也会收到 `VIDEO_TASK_*` 环境变量。只要脚本把产物写到 `--output`，执行器就会自动刷新状态并释放后续任务。
+
 当前尚未绑定具体视频生成供应商。下一步若要自动生成视频，需要确定视频模型 API、首尾帧图片生成方式、任务轮询、候选视频存储和质检/重试策略。
 
 ## 结构

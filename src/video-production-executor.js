@@ -1,15 +1,22 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { buildArtifactsFromExistingOutputs, buildProductionRun, buildProductionWorkspaceFiles } from "./video-production-run.js";
+
+const execFileAsync = promisify(execFile);
 
 export async function executeProductionWorkspace(options = {}) {
   const root = trimRoot(options.root || "production");
   const provider = options.provider || "mock";
+  const providerCommand = options.command || process.env.VIDEO_PROVIDER_COMMAND || "";
+  const providerCommandArgs = options.commandArgs || [];
   const all = Boolean(options.all);
   const maxPasses = Math.max(1, Number(options.maxPasses) || 12);
   const limit = Math.max(1, Number(options.limit) || Number.POSITIVE_INFINITY);
   const taskIds = new Set(options.taskIds || []);
-  if (provider !== "mock") throw new Error(`暂未接入 ${provider} provider；当前只支持 mock，用于验证生产依赖链。`);
+  if (provider !== "mock" && provider !== "command") throw new Error(`暂未接入 ${provider} provider；当前支持 mock 和 command。`);
+  if (provider === "command" && !providerCommand) throw new Error("command provider 需要 --command 或 VIDEO_PROVIDER_COMMAND");
 
   let loaded = await loadWorkspace(root);
   let queue = loaded.queue;
@@ -32,7 +39,9 @@ export async function executeProductionWorkspace(options = {}) {
         skipped.push({ taskId: job.taskId, reason: "request_missing" });
         continue;
       }
-      const result = await executeMockRequest(request, job);
+      const result = provider === "command"
+        ? await executeCommandRequest(request, job, { root, command: providerCommand, commandArgs: providerCommandArgs })
+        : await executeMockRequest(request, job);
       executed.push(result);
     }
 
@@ -106,6 +115,52 @@ async function executeMockRequest(request, job) {
     capability: request.capability,
     outputPath: job.outputPath,
     receiptPath
+  };
+}
+
+async function executeCommandRequest(request, job, options = {}) {
+  await fs.mkdir(path.dirname(job.outputPath), { recursive: true });
+  const receiptPath = `${job.outputPath}.provider.json`;
+  const args = [
+    ...(options.commandArgs || []),
+    "--request", job.requestPath,
+    "--output", job.outputPath,
+    "--receipt", receiptPath,
+    "--root", options.root
+  ];
+  const env = {
+    ...process.env,
+    VIDEO_TASK_REQUEST: job.requestPath,
+    VIDEO_TASK_OUTPUT: job.outputPath,
+    VIDEO_TASK_RECEIPT: receiptPath,
+    VIDEO_TASK_ROOT: options.root,
+    VIDEO_TASK_ID: job.taskId,
+    VIDEO_TASK_CAPABILITY: request.capability || ""
+  };
+  const { stdout, stderr } = await execFileAsync(options.command, args, { env, maxBuffer: 10 * 1024 * 1024 });
+  if (!await isNonEmptyFile(job.outputPath)) {
+    throw new Error(`command provider 没有生成预期产物：${job.outputPath}`);
+  }
+  if (!await isNonEmptyFile(receiptPath)) {
+    await fs.writeFile(receiptPath, `${JSON.stringify({
+      provider: "command",
+      taskId: job.taskId,
+      capability: request.capability,
+      outputKey: job.outputKey,
+      outputPath: job.outputPath,
+      command: options.command,
+      stdout: String(stdout || "").slice(0, 4000),
+      stderr: String(stderr || "").slice(0, 4000),
+      generatedAt: new Date().toISOString()
+    }, null, 2)}\n`);
+  }
+  return {
+    taskId: job.taskId,
+    type: job.type,
+    capability: request.capability,
+    outputPath: job.outputPath,
+    receiptPath,
+    provider: "command"
   };
 }
 

@@ -5,10 +5,12 @@ const options = parseArgs(process.argv.slice(2));
 
 if (options.help || !options.root) {
   console.log(`用法：
-  npm run exec:video -- <production-root> [--provider mock] [--all] [--limit 4] [--task TASK_ID]
+  npm run exec:video -- <production-root> [--provider mock|command] [--command ./worker.js] [--all] [--limit 4] [--task TASK_ID]
 
 选项：
-  --provider <name>  当前支持 mock；真实图像/视频 provider 后续接入同一入口
+  --provider <name>  支持 mock 和 command
+  --command <path>   command provider 的可执行文件；也可用 VIDEO_PROVIDER_COMMAND
+  --command-arg <x>  传给 command provider 的固定参数，可重复
   --all              循环执行 ready 任务，直到没有 ready 任务或达到 limit
   --limit <n>        本次最多执行多少个任务，默认不限
   --task <id>        只执行指定任务，可重复
@@ -33,13 +35,17 @@ try {
 }
 
 function parseArgs(args) {
-  const options = { root: "", provider: "mock", all: false, limit: Number.POSITIVE_INFINITY, taskIds: [], maxPasses: 12, help: false };
+  const options = { root: "", provider: "mock", command: "", commandArgs: [], all: false, limit: Number.POSITIVE_INFINITY, taskIds: [], maxPasses: 12, help: false };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "-h" || arg === "--help") options.help = true;
     else if (arg === "--all") options.all = true;
     else if (arg === "--provider") options.provider = requireValue(args, ++index, arg);
     else if (arg.startsWith("--provider=")) options.provider = arg.slice("--provider=".length);
+    else if (arg === "--command") options.command = requireValue(args, ++index, arg);
+    else if (arg.startsWith("--command=")) options.command = arg.slice("--command=".length);
+    else if (arg === "--command-arg") options.commandArgs.push(requireValue(args, ++index, arg));
+    else if (arg.startsWith("--command-arg=")) options.commandArgs.push(arg.slice("--command-arg=".length));
     else if (arg === "--limit") options.limit = Number(requireValue(args, ++index, arg));
     else if (arg.startsWith("--limit=")) options.limit = Number(arg.slice("--limit=".length));
     else if (arg === "--task") options.taskIds.push(requireValue(args, ++index, arg));

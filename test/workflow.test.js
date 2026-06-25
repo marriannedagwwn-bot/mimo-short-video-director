@@ -269,6 +269,48 @@ test("mock 视频生产执行器可按依赖链跑完整个工作区", async () 
   assert.equal(finalReceipt.capability, "video_assembly");
 });
 
+test("command 视频生产执行器可调用外部 worker 生成产物", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-command-"));
+  const workerPath = path.join(root, "worker.mjs");
+  const queue = {
+    version: "test",
+    providerMode: "provider_agnostic",
+    title: "command worker test",
+    selectedVariantId: "V1",
+    jobs: [
+      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" },
+      { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", requiredInputs: ["references.hero"], prompt: "首帧" }
+    ]
+  };
+  const run = buildProductionRun(queue, { outputRoot: root });
+  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+  await fs.writeFile(workerPath, `
+import fs from "node:fs/promises";
+const args = process.argv.slice(2);
+const value = (flag) => args[args.indexOf(flag) + 1];
+const requestPath = value("--request");
+const outputPath = value("--output");
+const receiptPath = value("--receipt");
+const request = JSON.parse(await fs.readFile(requestPath, "utf8"));
+await fs.writeFile(outputPath, "worker output:" + request.taskId + ":" + process.env.VIDEO_TASK_CAPABILITY);
+await fs.writeFile(receiptPath, JSON.stringify({ provider: "command-test", taskId: request.taskId, capability: request.capability }) + "\\n");
+`);
+
+  const result = await executeProductionWorkspace({
+    root,
+    provider: "command",
+    command: process.execPath,
+    commandArgs: [workerPath],
+    all: true
+  });
+  assert.equal(result.executed.length, 2);
+  assert.equal(result.run.counts.done, 2);
+  const startJob = result.run.jobs.find((job) => job.taskId === "S01-START");
+  assert.match(await fs.readFile(startJob.outputPath, "utf8"), /worker output:S01-START:image_generation/);
+  const receipt = JSON.parse(await fs.readFile(`${startJob.outputPath}.provider.json`, "utf8"));
+  assert.equal(receipt.provider, "command-test");
+});
+
 test("少于三张画面时拒绝分析", async () => {
   const workflow = new WorkflowService();
   await assert.rejects(() => workflow.analyze({ ...input, frames: frames.slice(0, 2) }), InputError);
