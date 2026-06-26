@@ -17,6 +17,8 @@ export async function executeProductionWorkspace(options = {}) {
   const maxPasses = Math.max(1, Number(options.maxPasses) || 12);
   const limit = Math.max(1, Number(options.limit) || Number.POSITIVE_INFINITY);
   const taskIds = new Set(options.taskIds || []);
+  const types = new Set(options.types || []);
+  const capabilities = new Set(options.capabilities || []);
   if (provider !== "mock" && provider !== "command") throw new Error(`暂未接入 ${provider} provider；当前支持 mock 和 command。`);
   if (provider === "command" && !providerCommand) throw new Error("command provider 需要 --command 或 VIDEO_PROVIDER_COMMAND");
 
@@ -36,6 +38,8 @@ export async function executeProductionWorkspace(options = {}) {
     const readyJobs = run.jobs.filter((job) => {
       if (job.status !== "ready") return false;
       if (taskIds.size && !taskIds.has(job.taskId)) return false;
+      if (types.size && !types.has(job.type)) return false;
+      if (capabilities.size && !capabilities.has(loaded.requestsByTaskId.get(job.taskId)?.capability)) return false;
       return !executed.some((item) => item.taskId === job.taskId);
     }).slice(0, Math.max(0, limit - executed.length));
 

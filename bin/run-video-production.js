@@ -5,7 +5,7 @@ const options = parseArgs(process.argv.slice(2));
 
 if (options.help || !options.root) {
   console.log(`用法：
-  npm run exec:video -- <production-root> [--provider mock|command] [--command ./worker.js] [--all] [--continue-on-error] [--retry-failed] [--limit 4] [--task TASK_ID]
+  npm run exec:video -- <production-root> [--provider mock|command] [--command ./worker.js] [--all] [--continue-on-error] [--retry-failed] [--limit 4] [--task TASK_ID] [--type quality_check] [--capability video_quality_review]
 
 选项：
   --provider <name>  支持 mock 和 command
@@ -16,6 +16,8 @@ if (options.help || !options.root) {
   --retry-failed     先清理 failed 任务的失败回执，再重新计算 ready 任务
   --limit <n>        本次最多执行多少个任务，默认不限
   --task <id>        只执行指定任务，可重复
+  --type <type>      只执行指定任务类型，可重复
+  --capability <cap> 只执行指定能力类型，可重复
   --max-passes <n>   --all 模式最多刷新多少轮，默认 12`);
   process.exit(options.help ? 0 : 1);
 }
@@ -45,7 +47,7 @@ try {
 }
 
 function parseArgs(args) {
-  const options = { root: "", provider: "mock", command: "", commandArgs: [], all: false, continueOnError: false, retryFailed: false, limit: Number.POSITIVE_INFINITY, taskIds: [], maxPasses: 12, help: false };
+  const options = { root: "", provider: "mock", command: "", commandArgs: [], all: false, continueOnError: false, retryFailed: false, limit: Number.POSITIVE_INFINITY, taskIds: [], types: [], capabilities: [], maxPasses: 12, help: false };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "-h" || arg === "--help") options.help = true;
@@ -62,6 +64,10 @@ function parseArgs(args) {
     else if (arg.startsWith("--limit=")) options.limit = Number(arg.slice("--limit=".length));
     else if (arg === "--task") options.taskIds.push(requireValue(args, ++index, arg));
     else if (arg.startsWith("--task=")) options.taskIds.push(arg.slice("--task=".length));
+    else if (arg === "--type") options.types.push(requireValue(args, ++index, arg));
+    else if (arg.startsWith("--type=")) options.types.push(arg.slice("--type=".length));
+    else if (arg === "--capability") options.capabilities.push(requireValue(args, ++index, arg));
+    else if (arg.startsWith("--capability=")) options.capabilities.push(arg.slice("--capability=".length));
     else if (arg === "--max-passes") options.maxPasses = Number(requireValue(args, ++index, arg));
     else if (arg.startsWith("--max-passes=")) options.maxPasses = Number(arg.slice("--max-passes=".length));
     else if (!options.root) options.root = arg;

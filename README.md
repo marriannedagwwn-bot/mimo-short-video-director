@@ -109,7 +109,9 @@ npm run exec:video -- ./production/V1 \
   --provider command \
   --command node \
   --command-arg ./workers/generic-http-worker.mjs \
-  --all
+  --all \
+  --capability image_generation \
+  --capability first_last_frame_video_generation
 ```
 
 外部命令会收到 `--request <request.json>`、`--output <target-file>`、`--receipt <receipt.json>`、`--root <production-root>`，也会收到 `VIDEO_TASK_*` 环境变量。只要脚本把产物写到 `--output`，执行器就会自动刷新状态并释放后续任务。
@@ -123,19 +125,34 @@ npm run exec:video -- ./production/V1 \
   --command-arg ./workers/generic-http-worker.mjs \
   --command-arg=--config \
   --command-arg=./workers/generic-http-worker.example.json \
-  --all
+  --all \
+  --capability image_generation \
+  --capability first_last_frame_video_generation
+```
+
+视频片段生成完成后，推荐用本地后处理 worker 做基础质检和最终剪辑。最终剪辑依赖本机 `ffmpeg`：
+
+```bash
+npm run exec:video -- ./production/V1 \
+  --provider command \
+  --command node \
+  --command-arg ./workers/local-postprocess-worker.mjs \
+  --all \
+  --capability video_quality_review \
+  --capability video_assembly
 ```
 
 如果 worker 失败，执行器会写入 `<output>.error.json` 失败回执，并在下一次刷新时把任务标记为 `failed`。需要不中断其它 ready 任务时可加：
 
 ```bash
-npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --continue-on-error
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --continue-on-error --capability image_generation --capability first_last_frame_video_generation
 ```
 
 修复 worker 或供应商问题后，可以直接重试 failed 任务：
 
 ```bash
-npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --retry-failed
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --retry-failed --capability image_generation --capability first_last_frame_video_generation
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/local-postprocess-worker.mjs --all --retry-failed --capability video_quality_review --capability video_assembly
 ```
 
 查看当前生产状态报告：
@@ -146,7 +163,7 @@ npm run report:video -- ./production/V1
 
 报告会列出总进度、ready/blocked/failed 任务、失败原因、最终成片路径和下一步建议命令；加 `--json` 可输出机器可读报告。建议命令会优先提示先跑 `preflight:video`，再执行真实 worker。
 
-通用 HTTP worker 见 [workers/generic-http-worker.mjs](workers/generic-http-worker.mjs)，占位模板见 [workers/command-worker-template.mjs](workers/command-worker-template.mjs)，协议说明见 [docs/video-worker-protocol.md](docs/video-worker-protocol.md)。
+通用 HTTP worker 见 [workers/generic-http-worker.mjs](workers/generic-http-worker.mjs)，本地后处理 worker 见 [workers/local-postprocess-worker.mjs](workers/local-postprocess-worker.mjs)，占位模板见 [workers/command-worker-template.mjs](workers/command-worker-template.mjs)，协议说明见 [docs/video-worker-protocol.md](docs/video-worker-protocol.md)。
 
 当前尚未绑定某一家具体视频生成供应商。若供应商 API 是非标准字段，优先用通用 worker 的 `bodyTemplates` 适配；如果还需要上传文件、候选筛选或专用鉴权，再新增专用 worker。
 

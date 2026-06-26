@@ -131,17 +131,28 @@ function recommendedCommands(run = {}, state = {}) {
   if (state.failed?.length) {
     return [
       `npm run preflight:video -- ${root} --strict`,
-      `npm run exec:video -- ${root} --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --retry-failed`
+      ...workerCommands(root, state.failed, "--all --retry-failed")
     ];
   }
   if (state.ready?.length) {
     return [
       `npm run preflight:video -- ${root} --strict`,
-      `npm run exec:video -- ${root} --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all`
+      ...workerCommands(root, state.ready, "--all")
     ];
   }
   if (state.blocked?.length) {
     return [`npm run plan:video -- ./视频任务队列.jsonl --root ${root} --workspace --scan-existing`];
   }
   return [];
+}
+
+function workerCommands(root, jobs = [], suffix = "--all") {
+  const commands = [];
+  if (jobs.some((job) => ["reference_image", "asset_image", "start_frame_image", "end_frame_image", "first_last_frame_video"].includes(job.type))) {
+    commands.push(`npm run exec:video -- ${root} --provider command --command node --command-arg ./workers/generic-http-worker.mjs ${suffix} --capability image_generation --capability first_last_frame_video_generation`);
+  }
+  if (jobs.some((job) => ["quality_check", "final_edit"].includes(job.type))) {
+    commands.push(`npm run exec:video -- ${root} --provider command --command node --command-arg ./workers/local-postprocess-worker.mjs ${suffix} --capability video_quality_review --capability video_assembly`);
+  }
+  return commands;
 }

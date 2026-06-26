@@ -493,6 +493,64 @@ test("通用 HTTP worker 支持首尾帧视频提交、轮询和下载", async (
   assert.equal(receipt.resultKind, "url");
 });
 
+test("本地后处理 worker 可完成质检并合成最终视频", async () => {
+  const savedEnv = pickEnv(["LOCAL_POSTPROCESS_FFMPEG", "LOCAL_POSTPROCESS_REENCODE"]);
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-local-post-"));
+  const fakeFfmpegPath = path.join(root, "fake-ffmpeg.mjs");
+  await fs.writeFile(fakeFfmpegPath, `#!/usr/bin/env node
+import fs from "node:fs/promises";
+const output = process.argv.at(-1);
+await fs.writeFile(output, "assembled video bytes");
+`);
+  await fs.chmod(fakeFfmpegPath, 0o755);
+  process.env.LOCAL_POSTPROCESS_FFMPEG = fakeFfmpegPath;
+  delete process.env.LOCAL_POSTPROCESS_REENCODE;
+  const queue = {
+    version: "test",
+    providerMode: "provider_agnostic",
+    title: "local postprocess test",
+    selectedVariantId: "V1",
+    jobs: [
+      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" },
+      { taskId: "S01-VIDEO", type: "first_last_frame_video", inputType: "image_pair_to_video", outputKey: "videos.S01", prompt: "视频片段" },
+      { taskId: "S01-QA", type: "quality_check", inputType: "video_review", outputKey: "reviews.S01", requiredInputs: ["videos.S01"], prompt: "检查视频" },
+      { taskId: "FINAL-EDIT", type: "final_edit", inputType: "video_assembly", outputKey: "exports.final_cut", requiredInputs: ["videos.S01", "reviews.S01"], prompt: "合成最终视频" }
+    ]
+  };
+  try {
+    const initialRun = buildProductionRun(queue, { outputRoot: root });
+    const videoJob = initialRun.jobs.find((job) => job.taskId === "S01-VIDEO");
+    await fs.mkdir(path.dirname(videoJob.outputPath), { recursive: true });
+    await fs.writeFile(videoJob.outputPath, "real video bytes");
+    const artifacts = buildArtifactsFromExistingOutputs(queue, {
+      outputRoot: root,
+      existingOutputPaths: [videoJob.outputPath]
+    });
+    const run = buildProductionRun(queue, { outputRoot: root, artifacts });
+    await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+
+    const result = await executeProductionWorkspace({
+      root,
+      provider: "command",
+      command: process.execPath,
+      commandArgs: ["workers/local-postprocess-worker.mjs"],
+      all: true,
+      capabilities: ["video_quality_review", "video_assembly"]
+    });
+    assert.equal(result.executed.length, 2);
+    assert.equal(result.run.jobs.find((job) => job.taskId === "REF-01").status, "ready");
+    assert.equal(result.run.jobs.find((job) => job.taskId === "S01-QA").status, "done");
+    const finalJob = result.run.jobs.find((job) => job.taskId === "FINAL-EDIT");
+    assert.equal(finalJob.status, "done");
+    assert.equal(await fs.readFile(finalJob.outputPath, "utf8"), "assembled video bytes");
+    const finalReceipt = JSON.parse(await fs.readFile(`${finalJob.outputPath}.provider.json`, "utf8"));
+    assert.equal(finalReceipt.provider, "local-postprocess-worker");
+    assert.equal(finalReceipt.inputCount, 1);
+  } finally {
+    restoreEnv(savedEnv);
+  }
+});
+
 test("command 视频生产执行失败会写入失败回执并刷新 failed 状态", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-command-fail-"));
   const workerPath = path.join(root, "failing-worker.mjs");

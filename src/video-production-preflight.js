@@ -27,6 +27,10 @@ export async function loadProductionPreflight(root, options = {}) {
     ...mockArtifactIssues(artifacts, artifactsByOutputKey, run),
     ...genericHttpConfigIssues(run, loaded.requestsByTaskId, command, config.data || {})
   ];
+  const readyJobs = run.jobs || [];
+  const readyTasks = readyJobs
+    .filter((job) => job.status === "ready")
+    .map((job) => summarizeJob(job, loaded.requestsByTaskId.get(job.taskId)));
   return {
     version: "1.0",
     root,
@@ -37,11 +41,9 @@ export async function loadProductionPreflight(root, options = {}) {
     command,
     passed: !issues.some((issue) => issue.severity === "error"),
     issues,
-    readyTasks: (run.jobs || [])
-      .filter((job) => job.status === "ready")
-      .map((job) => summarizeJob(job, loaded.requestsByTaskId.get(job.taskId))),
+    readyTasks,
     artifacts,
-    recommendedCommands: recommendedCommands(root, issues, command)
+    recommendedCommands: recommendedCommands(root, issues, command, readyTasks)
   };
 }
 
@@ -158,7 +160,8 @@ function genericHttpConfigIssues(run = {}, requestsByTaskId = new Map(), command
   }
   if (!command.worker.includes("generic-http-worker")) return issues;
   const ready = (run.jobs || []).filter((job) => job.status === "ready");
-  const capabilities = [...new Set(ready.map((job) => requestsByTaskId.get(job.taskId)?.capability).filter(Boolean))];
+  const httpCapabilities = new Set(["image_generation", "first_last_frame_video_generation"]);
+  const capabilities = [...new Set(ready.map((job) => requestsByTaskId.get(job.taskId)?.capability).filter((capability) => httpCapabilities.has(capability)))];
   for (const capability of capabilities) {
     if (!endpointFor(capability, config)) {
       issues.push({
@@ -202,7 +205,7 @@ function hasApiKey(config = {}) {
   return Boolean(config.apiKey || process.env.VIDEO_HTTP_API_KEY);
 }
 
-function recommendedCommands(root, issues = [], command = {}) {
+function recommendedCommands(root, issues = [], command = {}, readyTasks = []) {
   const commands = [];
   if (issues.some((issue) => issue.code === "mock_artifact_marked_done" || issue.code === "ready_task_uses_mock_input")) {
     commands.push(`# 清理 mock/占位产物后重新扫描：npm run plan:video -- ./视频任务队列.jsonl --root ${root} --workspace --scan-existing`);
@@ -212,7 +215,12 @@ function recommendedCommands(root, issues = [], command = {}) {
   }
   if (!issues.some((issue) => issue.severity === "error")) {
     const configArgs = command.configPath ? ` --command-arg=--config --command-arg=${command.configPath}` : "";
-    commands.push(`npm run exec:video -- ${root} --provider command --command node --command-arg ./workers/generic-http-worker.mjs${configArgs} --all`);
+    if (readyTasks.some((task) => ["image_generation", "first_last_frame_video_generation"].includes(task.capability))) {
+      commands.push(`npm run exec:video -- ${root} --provider command --command node --command-arg ./workers/generic-http-worker.mjs${configArgs} --all --capability image_generation --capability first_last_frame_video_generation`);
+    }
+    if (readyTasks.some((task) => ["video_quality_review", "video_assembly"].includes(task.capability))) {
+      commands.push(`npm run exec:video -- ${root} --provider command --command node --command-arg ./workers/local-postprocess-worker.mjs --all --capability video_quality_review --capability video_assembly`);
+    }
   }
   return commands;
 }

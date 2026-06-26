@@ -611,6 +611,7 @@ function renderLocalProductionGuide(queue = {}) {
   const queueFilename = `视频任务队列-${runId}.jsonl`;
   const productionRoot = `./production/${runId}`;
   const commandWorker = "./workers/generic-http-worker.mjs";
+  const postprocessWorker = "./workers/local-postprocess-worker.mjs";
   const steps = [
     {
       label: "1",
@@ -638,15 +639,21 @@ function renderLocalProductionGuide(queue = {}) {
     },
     {
       label: "5",
-      title: "接入真实视频 worker",
-      body: "先配置 VIDEO_HTTP_ENDPOINT / VIDEO_HTTP_API_KEY 或 provider config；CLI 会逐个传入 request、output 和 receipt 路径。",
-      command: `npm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${commandWorker} --all`
+      title: "生成图像和首尾帧视频",
+      body: "先配置 VIDEO_HTTP_ENDPOINT / VIDEO_HTTP_API_KEY 或 provider config；这里只执行图像与首尾帧视频任务。",
+      command: `npm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${commandWorker} --all --capability image_generation --capability first_last_frame_video_generation`
     },
     {
       label: "6",
+      title: "本地质检并合成成片",
+      body: "视频片段完成后，用本地 worker 做基础质检，并用 ffmpeg 按队列顺序合成最终竖屏视频。",
+      command: `npm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${postprocessWorker} --all --capability video_quality_review --capability video_assembly`
+    },
+    {
+      label: "7",
       title: "查看进度或重试失败任务",
       body: "失败任务会留下 .error.json，修好 worker 或模型参数后可以只重试失败项。",
-      command: `npm run report:video -- ${productionRoot}\nnpm run preflight:video -- ${productionRoot} --strict\nnpm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${commandWorker} --all --retry-failed`
+      command: `npm run report:video -- ${productionRoot}\nnpm run preflight:video -- ${productionRoot} --strict\nnpm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${commandWorker} --all --retry-failed --capability image_generation --capability first_last_frame_video_generation\nnpm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${postprocessWorker} --all --retry-failed --capability video_quality_review --capability video_assembly`
     }
   ];
   return `<div class="production-guide">

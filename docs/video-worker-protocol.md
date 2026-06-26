@@ -9,7 +9,9 @@ npm run exec:video -- ./production/V1 \
   --provider command \
   --command node \
   --command-arg ./workers/generic-http-worker.mjs \
-  --all
+  --all \
+  --capability image_generation \
+  --capability first_last_frame_video_generation
 ```
 
 执行器会自动追加：
@@ -74,13 +76,14 @@ npm run preflight:video -- ./production/V1 --strict
 该失败回执会让任务在后续状态刷新中显示为 `failed`，依赖它的后续任务保持 `blocked`。如果希望一个任务失败后继续执行其它互不依赖的 ready 任务，可以使用：
 
 ```bash
-npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --continue-on-error
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --continue-on-error --capability image_generation --capability first_last_frame_video_generation
 ```
 
 修复失败后，可以直接使用：
 
 ```bash
-npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --retry-failed
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --retry-failed --capability image_generation --capability first_last_frame_video_generation
+npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/local-postprocess-worker.mjs --all --retry-failed --capability video_quality_review --capability video_assembly
 ```
 
 `--retry-failed` 会先删除匹配任务的 `.error.json`，再重新计算 ready 任务并执行。也可以手动删除对应的 `.error.json`，或者把正确产物放到 `--output` 对应路径后再运行 `plan:video --scan-existing`。
@@ -112,11 +115,26 @@ npm run exec:video -- ./production/V1 \
   --command-arg ./workers/generic-http-worker.mjs \
   --command-arg=--config \
   --command-arg=./workers/generic-http-worker.example.json \
-  --all
+  --all \
+  --capability image_generation \
+  --capability first_last_frame_video_generation
 ```
 
 - 图像生成任务优先保证角色、服装、道具一致，不要过度追求画面复杂度。
 - 首尾帧视频任务必须使用 `inputArtifacts` 中的 start/end 两张图；不要让模型重新发明镜头起点和终点。
 - 每个视频片段建议先生成多个候选，但 worker 最终只把被选中的候选写到 `--output`。
-- 质检任务可以先人工确认，也可以接视觉模型；失败时不要写 `--output`，保留 blocked/ready 状态供人工处理或重试策略处理。
+- 视频片段完成后，可用本地后处理 worker 做基础质检和最终剪辑：
+
+```bash
+npm run exec:video -- ./production/V1 \
+  --provider command \
+  --command node \
+  --command-arg ./workers/local-postprocess-worker.mjs \
+  --all \
+  --capability video_quality_review \
+  --capability video_assembly
+```
+
+- `local-postprocess-worker` 的 `video_assembly` 需要本机可执行 `ffmpeg`；可用 `LOCAL_POSTPROCESS_FFMPEG=/path/to/ffmpeg` 指定路径。
+- 质检任务也可以接视觉模型；失败时不要写 `--output`，保留 blocked/ready 状态供人工处理或重试策略处理。
 - 最终剪辑任务应按 request 中的依赖视频顺序合成，并保留字幕、音乐音效和结尾停顿要求。
