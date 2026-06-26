@@ -31,6 +31,7 @@ export function getConfig() {
   const thinking = ["disabled", "enabled"].includes(requestedThinking) ? requestedThinking : "disabled";
   const storyMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_STORY_MAX_COMPLETION_TOKENS, 12288, 1024, 32768));
   const animationMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_ANIMATION_MAX_COMPLETION_TOKENS, 12288, 1024, 32768));
+  const jsonRetryAttempts = Math.round(clampNumber(process.env.MIMO_JSON_RETRY_ATTEMPTS, 2, 0, 3));
   return {
     port: Number(process.env.PORT || 4173),
     mimo: {
@@ -47,6 +48,7 @@ export function getConfig() {
       maxCompletionTokens,
       storyMaxCompletionTokens,
       animationMaxCompletionTokens,
+      jsonRetryAttempts,
       thinking,
       enabled: Boolean(baseUrl)
     }

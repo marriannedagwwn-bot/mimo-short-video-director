@@ -109,8 +109,6 @@ export function ensureCreativeBriefMatchesProfile(value, creatorProfile = {}) {
     );
   }
 
-  const adaptiveDirections = JSON.stringify((value.controlledRewriteVariables || []).map((item) => item?.allowedDirections || []));
-  assertNoTerms(adaptiveDirections, protectedTerms, "creativeBrief.controlledRewriteVariables.allowedDirections");
   return value;
 }
 
@@ -287,7 +285,7 @@ const protagonistSurfaceTerms = [
 const bodySurfaceTerms = ["尾巴", "翅膀", "爪子", "鸟喙", "羽毛", "脚蹼", "蹼", "鳍"];
 
 const protectedTermStopWords = new Set([
-  "台词", "视觉元素", "特定动作", "禁止", "直接使用", "高度相似", "表述", "形象", "服装", "动作", "约定"
+  "台词", "视觉元素", "特定动作", "禁止", "直接使用", "高度相似", "表述", "形象", "服装", "动作", "约定", "一只", "动物"
 ]);
 
 function validateNarrativeComponents(components) {

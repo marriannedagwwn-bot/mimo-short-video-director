@@ -989,6 +989,84 @@ test("auto 模式在服务拒绝 video_url 时回退关键帧", async (t) => {
   assert.equal(requests[1].messages[1].content[0].type, "image_url");
 });
 
+test("auto 模式在原生视频返回坏 JSON 时回退关键帧", async (t) => {
+  const requests = [];
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    requests.push(body);
+    const content = body.messages[1].content;
+    response.writeHead(200, { "content-type": "application/json" });
+    if (content.some((item) => item.type === "video_url")) {
+      response.end('{"choices":[{"message":{"content":"{\\"ok\\":"}}]}');
+      return;
+    }
+    response.end('{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}');
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  const client = new MimoClient({
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    apiKey: "",
+    model: "mimo-v2.5",
+    jsonMode: false,
+    mediaMode: "auto",
+    videoFps: 2,
+    videoMediaResolution: "default",
+    maxCompletionTokens: 8192,
+    jsonRetryAttempts: 2,
+    thinking: "disabled"
+  });
+
+  const result = await client.generateJsonWithMedia({
+    prompt: "分析", frames, video: { dataUrl: "data:video/mp4;base64,AAAA" }
+  });
+
+  assert.deepEqual(result, { ok: true });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].messages[1].content[0].type, "video_url");
+  assert.equal(requests[1].messages[1].content[0].type, "image_url");
+});
+
+test("MiMo JSON 截断时自动用精简 JSON 提示重试", async (t) => {
+  const requests = [];
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    requests.push(body);
+    response.writeHead(200, { "content-type": "application/json" });
+    if (requests.length === 1) {
+      response.end('{"choices":[{"message":{"content":"{\\"variants\\":[{\\"id\\":\\"V1\\",\\"title\\":\\"截断"}}]}');
+      return;
+    }
+    response.end('{"choices":[{"message":{"content":"{\\"variants\\":[{\\"id\\":\\"V1\\",\\"title\\":\\"修复成功\\"}]}"}}]}');
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  const client = new MimoClient({
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    apiKey: "",
+    model: "mimo-v2.5",
+    jsonMode: false,
+    mediaMode: "frames",
+    maxCompletionTokens: 8192,
+    jsonRetryAttempts: 1,
+    thinking: "disabled"
+  });
+
+  const result = await client.generateJson({ prompt: "生成主题变体" });
+
+  assert.deepEqual(result, { variants: [{ id: "V1", title: "修复成功" }] });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].max_completion_tokens, 8192);
+  assert.equal(requests[1].max_completion_tokens, 12288);
+  assert.match(requests[1].messages[1].content.at(-1).text, /上一次模型输出不是完整合法 JSON/);
+});
+
 test("MiMo 健康检查同时验证服务可达和指定模型已加载", async (t) => {
   const server = http.createServer((request, response) => {
     assert.equal(request.url, "/v1/models");
@@ -1050,6 +1128,35 @@ test("creativeBrief 禁止把原片表面形象映射成固定角色身份", asy
     () => workflow.createBrief({ referenceAnalysis: {}, sourceScriptReconstruction: {}, creatorProfile }),
     /企鹅/
   );
+});
+
+test("creativeBrief 的安全改写方向允许提及被替换的原片表达", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，狼耳少女，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
+    vertical: "温馨/日常/治愈",
+    constraints: "小白子用嗷或嗷呜表达情绪"
+  };
+  const brief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  brief.protectedExpressions.push({
+    expressionType: "关键道具",
+    sourceExpression: "录取通知书",
+    prohibition: "禁止直接复用录取通知书作为情感媒介。",
+    safeAlternativePrinciple: "更换为适合新赛道的新情感媒介。"
+  });
+  brief.controlledRewriteVariables.push({
+    variable: "情感媒介",
+    sourceValue: "录取通知书",
+    allowedDirections: ["不要继续使用录取通知书，改成小白子在村里能自然接触到的新情感媒介", "保留传递希望的剧作功能"],
+    mustChange: true,
+    reason: "允许在安全改写说明中点名被替换对象，但后续故事不能直接复用。"
+  });
+
+  const workflow = new WorkflowService({
+    client: { async generateJson() { return brief; } }
+  });
+
+  const result = await workflow.createBrief({ referenceAnalysis: {}, sourceScriptReconstruction: {}, creatorProfile });
+  assert.ok(result.controlledRewriteVariables.some((item) => JSON.stringify(item).includes("录取通知书")));
 });
 
 test("creativeBrief 拒绝 protectedExpressions 的错误字段名", () => {
@@ -1174,6 +1281,52 @@ test("完整剧情禁止继承 creativeBrief 中已保护的表面形象", async
     () => workflow.createFullStory({ creativeBrief, creatorProfile, variant }),
     /企鹅|翅膀/
   );
+});
+
+test("完整剧情校验失败时会自动要求模型纠偏一次", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，狼耳少女，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
+    vertical: "治愈/温情/日常",
+    constraints: "小白子用嗷或嗷呜表达情绪"
+  };
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  creativeBrief.protectedExpressions.push({
+    expressionType: "视觉元素",
+    sourceExpression: "企鹅服",
+    prohibition: "禁止出现企鹅形象的服装或直接扮演企鹅。",
+    safeAlternativePrinciple: "只保留任务执行者、信使、善意连接者和萌系情感载体的剧作功能。"
+  });
+  const variant = {
+    id: "V1",
+    title: "风车的约定",
+    characterSetup: { protagonist: "小白子，狼耳少女", careRecipient: "邻居奶奶", helper: "拖拉机叔叔" },
+    newTask: "送风车",
+    emotionalMedium: "手工风车",
+    environmentPressure: "阵雨",
+    endingRitual: "一起把风车插在窗边"
+  };
+  const leakedStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  leakedStory.characterBible.protagonist.signatureBehaviors = ["尾巴轻轻摇动表示开心"];
+  leakedStory.sceneScript[0].visibleAction = "小白子尾巴轻摇，抱着风车出发。";
+  const fixedStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  fixedStory.characterBible.protagonist.signatureBehaviors = ["狼耳轻轻抖动表示开心", "抱紧风车表示认真"];
+  fixedStory.sceneScript[0].visibleAction = "小白子抱紧风车，狼耳轻轻抖动，认真出发。";
+  const prompts = [];
+  const workflow = new WorkflowService({
+    client: {
+      async generateJson(args) {
+        prompts.push(args.prompt);
+        return prompts.length === 1 ? leakedStory : fixedStory;
+      }
+    }
+  });
+
+  const result = await workflow.createFullStory({ creativeBrief, creatorProfile, variant });
+
+  assert.equal(result.selectedVariantId, "V1");
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1], /没有通过系统校验/);
+  assert.doesNotMatch(JSON.stringify(result), /尾巴/);
 });
 
 test("动画生产包正向提示词禁止继承原片表面形象", async () => {
