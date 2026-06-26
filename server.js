@@ -6,6 +6,7 @@ import { loadEnv, getConfig } from "./src/config.js";
 import { MimoClient, ModelResponseError } from "./src/mimo-client.js";
 import { WorkflowService } from "./src/workflow.js";
 import { InputError, OutputContractError } from "./src/validation.js";
+import { generateShotVideo, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
 
 loadEnv();
 const config = getConfig();
@@ -27,6 +28,7 @@ const routes = {
   "/api/variants": (body) => workflow.createVariants(body),
   "/api/full-story": (body) => workflow.createFullStory(body),
   "/api/animation-plan": (body) => workflow.createAnimationPlan(body),
+  "/api/generate-shot-video": (body) => generateShotVideo(body),
   "/api/run": (body) => workflow.run(body)
 };
 
@@ -69,6 +71,8 @@ const server = http.createServer(async (request, response) => {
     return json(response, 404, { ok: false, error: "接口不存在" });
   } catch (error) {
     if (error instanceof InputError) return json(response, 400, { ok: false, error: error.message, details: error.details });
+    if (error instanceof ShotVideoConfigError) return json(response, 400, { ok: false, error: error.message });
+    if (error instanceof ShotVideoProviderError) return json(response, 502, { ok: false, error: "视频生成服务调用失败", detail: error.message });
     if (error instanceof OutputContractError) return json(response, 502, { ok: false, error: `模型输出不完整：${error.message}` });
     if (error instanceof ModelResponseError) return json(response, 502, { ok: false, error: error.message, detail: error.raw });
     if (error.name === "AbortError" || error.name === "TimeoutError") return json(response, 504, { ok: false, error: "MiMo 响应超时" });
@@ -123,5 +127,13 @@ function json(response, status, body) {
 }
 
 function mime(extension) {
-  return ({ ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml" })[extension] || "application/octet-stream";
+  return ({
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm"
+  })[extension] || "application/octet-stream";
 }

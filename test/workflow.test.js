@@ -12,6 +12,7 @@ import { ensureOutputContract } from "../src/validation.js";
 import { buildRequestBody, MimoClient, parseModelJson } from "../src/mimo-client.js";
 import { animationPlanPrompt, briefPrompt, fullStoryPrompt, variantsPrompt } from "../src/prompts.js";
 import { parseRunVideoArgs } from "../src/run-video-command.js";
+import { generateShotVideo, ShotVideoConfigError } from "../src/shot-video-generator.js";
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
 import { extractFixedCharacterName } from "../src/validation.js";
 import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
@@ -492,6 +493,63 @@ test("通用 HTTP worker 支持首尾帧视频提交、轮询和下载", async (
   const receipt = JSON.parse(await fs.readFile(`${videoJob.outputPath}.provider.json`, "utf8"));
   assert.equal(receipt.providerTaskId, "provider-task-1");
   assert.equal(receipt.resultKind, "url");
+});
+
+test("单镜头首尾帧视频接口可调用供应商并返回播放地址", async (t) => {
+  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_API_KEY", "VIDEO_HTTP_CONFIG"]);
+  delete process.env.VIDEO_HTTP_ENDPOINT;
+  delete process.env.VIDEO_HTTP_VIDEO_ENDPOINT;
+  delete process.env.VIDEO_HTTP_API_KEY;
+  delete process.env.VIDEO_HTTP_CONFIG;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-"));
+  let receivedBody = null;
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    receivedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ data: { videoBase64: Buffer.from("shot video bytes").toString("base64") } }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  t.after(() => restoreEnv(savedEnv));
+  const address = server.address();
+  process.env.VIDEO_HTTP_VIDEO_ENDPOINT = `http://127.0.0.1:${address.port}/videos`;
+  process.env.VIDEO_HTTP_API_KEY = "test-key";
+
+  const result = await generateShotVideo({
+    outputRoot: path.join(root, "generated-videos"),
+    publicBasePath: "/generated-videos",
+    shot: {
+      shotId: "S01",
+      durationSeconds: 4,
+      videoPrompt: "从首帧走到尾帧",
+      negativePrompt: "不要变形",
+      cameraMotion: "缓慢推进"
+    }
+  });
+
+  assert.equal(result.shotId, "S01");
+  assert.match(result.outputUrl, /^\/generated-videos\/S01-/);
+  assert.equal(await fs.readFile(result.outputPath, "utf8"), "shot video bytes");
+  assert.equal(receivedBody.capability, "first_last_frame_video_generation");
+  assert.equal(receivedBody.prompt, "从首帧走到尾帧");
+  assert.equal(receivedBody.parameters.cameraMotion, "缓慢推进");
+});
+
+test("单镜头视频生成未配置供应商时给出明确错误", async () => {
+  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_CONFIG"]);
+  delete process.env.VIDEO_HTTP_ENDPOINT;
+  delete process.env.VIDEO_HTTP_VIDEO_ENDPOINT;
+  delete process.env.VIDEO_HTTP_CONFIG;
+  try {
+    await assert.rejects(
+      () => generateShotVideo({ shot: { shotId: "S01", videoPrompt: "测试" } }),
+      ShotVideoConfigError
+    );
+  } finally {
+    restoreEnv(savedEnv);
+  }
 });
 
 test("本地后处理 worker 可完成质检并合成最终视频", async () => {

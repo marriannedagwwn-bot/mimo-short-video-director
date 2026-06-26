@@ -10,6 +10,7 @@ const state = {
   selectedVariantId: null,
   fullStories: {},
   animationPlans: {},
+  shotVideoResults: {},
   mode: "demo",
   mediaMode: "auto",
   storyModel: "mimo-v2.5-pro",
@@ -84,6 +85,10 @@ function bindEvents() {
   elements.exportStoryPackage.addEventListener("click", exportCurrentStoryPackage);
   elements.copyAnimationPack.addEventListener("click", copyAnimationProductionPack);
   elements.exportVideoQueue.addEventListener("click", exportVideoGenerationQueue);
+  elements.animationPlan.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-generate-shot-video]");
+    if (button) generateShotVideo(button.dataset.generateShotVideo);
+  });
   window.addEventListener("popstate", renderRoute);
   [elements.fixedCharacter, elements.vertical, elements.constraints].forEach((element) => element.addEventListener("input", () => { saveProfile(); validateReady(); }));
 }
@@ -194,6 +199,7 @@ async function runWorkflow() {
   state.output = {};
   state.fullStories = {};
   state.animationPlans = {};
+  state.shotVideoResults = {};
   state.selectedVariantId = null;
   showError("");
   setRunning(true);
@@ -481,6 +487,7 @@ async function generateAnimationPlan({ force = false } = {}) {
     return;
   }
   state.animationRunning = true;
+  if (force) state.shotVideoResults = {};
   setAnimationRunning(true);
   setAnimationStatus(`正在调用 ${state.animationModel.split("/").pop()} 生成首尾帧动画生产包…`, "active");
   try {
@@ -550,6 +557,10 @@ function renderAnimationPlan(data) {
       </div>
       <p><b>镜头运动：</b>${escape(shot.cameraMotion)}<br><b>动作：</b>${escape(shot.characterAction)}<br><b>对白/字幕：</b>${escape(shot.dialogueOrSubtitle)}<br><b>声音：</b>${escape(shot.soundDesign)}</p>
       <div class="tag-row">${(shot.acceptanceCriteria || []).map((item) => `<span class="tag">${escape(item)}</span>`).join("")}</div>
+      <div class="shot-video-action">
+        <button class="outline-button shot-video-button" type="button" data-generate-shot-video="${escape(shot.shotId)}"${state.shotVideoResults[shot.shotId]?.status === "running" ? " disabled" : ""}>生成此镜头视频</button>
+        <div class="shot-video-result" data-shot-video-result="${escape(shot.shotId)}">${renderShotVideoResult(shot.shotId)}</div>
+      </div>
     </div>`).join("")}</div>`)}
     ${block("剪辑与声音", `<div class="data-grid">
       ${cell("节奏", data.editPlan?.sequenceRhythm)}
@@ -565,6 +576,48 @@ function renderAnimationPlan(data) {
     <div class="warning-box"><b>动画连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
     ${uncertainties(data.uncertainties)}`;
   reveal(elements.animationPlan);
+}
+
+async function generateShotVideo(shotId) {
+  const variant = selectedVariant();
+  const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
+  const shot = (plan?.shotPlan || []).find((item) => String(item.shotId) === String(shotId));
+  if (!shot) return setAnimationStatus("没有找到对应镜头。", "error");
+  state.shotVideoResults[shotId] = { status: "running", message: "正在调用视频生成服务…" };
+  updateShotVideoResult(shotId);
+  setAnimationStatus(`正在生成 ${shotId} 镜头视频…`, "active");
+  try {
+    const result = await api("/api/generate-shot-video", {
+      selectedVariantId: variant?.id || "",
+      shot
+    });
+    state.shotVideoResults[shotId] = { status: "ready", result };
+    setAnimationStatus(`${shotId} 镜头视频已生成。`, "ready");
+  } catch (error) {
+    state.shotVideoResults[shotId] = { status: "error", message: error.message || "镜头视频生成失败" };
+    setAnimationStatus(error.message || "镜头视频生成失败", "error");
+  }
+  updateShotVideoResult(shotId);
+}
+
+function updateShotVideoResult(shotId) {
+  const resultBox = [...elements.animationPlan.querySelectorAll("[data-shot-video-result]")]
+    .find((item) => String(item.dataset.shotVideoResult) === String(shotId));
+  if (resultBox) resultBox.innerHTML = renderShotVideoResult(shotId);
+  const button = [...elements.animationPlan.querySelectorAll("[data-generate-shot-video]")]
+    .find((item) => String(item.dataset.generateShotVideo) === String(shotId));
+  if (button) button.disabled = state.shotVideoResults[shotId]?.status === "running";
+}
+
+function renderShotVideoResult(shotId) {
+  const stateItem = state.shotVideoResults[shotId];
+  if (!stateItem) return "<p>配置视频供应商后，可直接生成该镜头视频。</p>";
+  if (stateItem.status === "running") return `<p class="active">生成中，请等待供应商返回视频…</p>`;
+  if (stateItem.status === "error") return `<p class="error">${escape(stateItem.message)}</p>`;
+  const url = stateItem.result?.outputUrl || "";
+  return url
+    ? `<video src="${escape(url)}" controls playsinline></video><a href="${escape(url)}" download>下载视频</a>`
+    : "<p>视频已生成，但未返回可播放地址。</p>";
 }
 
 function resultHeader(kicker, title, badge = "") {
