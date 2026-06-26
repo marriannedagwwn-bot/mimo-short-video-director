@@ -612,12 +612,20 @@ function updateShotVideoResult(shotId) {
 function renderShotVideoResult(shotId) {
   const stateItem = state.shotVideoResults[shotId];
   if (!stateItem) return "<p>配置视频供应商后，可直接生成该镜头视频。</p>";
-  if (stateItem.status === "running") return `<p class="active">生成中，请等待供应商返回视频…</p>`;
+  if (stateItem.status === "running") return `<p class="active">生成中：先生成首帧/尾帧，再生成视频…</p>`;
   if (stateItem.status === "error") return `<p class="error">${escape(stateItem.message)}</p>`;
+  const startFrameUrl = stateItem.result?.startFrameUrl || "";
+  const endFrameUrl = stateItem.result?.endFrameUrl || "";
+  const frameHtml = startFrameUrl || endFrameUrl
+    ? `<div class="shot-frame-preview">
+        ${startFrameUrl ? `<figure><img src="${escape(startFrameUrl)}" alt="首帧"><figcaption>首帧</figcaption></figure>` : ""}
+        ${endFrameUrl ? `<figure><img src="${escape(endFrameUrl)}" alt="尾帧"><figcaption>尾帧</figcaption></figure>` : ""}
+      </div>`
+    : "";
   const url = stateItem.result?.outputUrl || "";
   return url
-    ? `<video src="${escape(url)}" controls playsinline></video><a href="${escape(url)}" download>下载视频</a>`
-    : "<p>视频已生成，但未返回可播放地址。</p>";
+    ? `${frameHtml}<video src="${escape(url)}" controls playsinline></video><a href="${escape(url)}" download>下载视频</a>`
+    : `${frameHtml}<p>视频已生成，但未返回可播放地址。</p>`;
 }
 
 function resultHeader(kicker, title, badge = "") {

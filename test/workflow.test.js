@@ -496,24 +496,33 @@ test("通用 HTTP worker 支持首尾帧视频提交、轮询和下载", async (
 });
 
 test("单镜头首尾帧视频接口可调用供应商并返回播放地址", async (t) => {
-  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_API_KEY", "VIDEO_HTTP_CONFIG"]);
+  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_IMAGE_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_API_KEY", "VIDEO_HTTP_CONFIG"]);
   delete process.env.VIDEO_HTTP_ENDPOINT;
+  delete process.env.VIDEO_HTTP_IMAGE_ENDPOINT;
   delete process.env.VIDEO_HTTP_VIDEO_ENDPOINT;
   delete process.env.VIDEO_HTTP_API_KEY;
   delete process.env.VIDEO_HTTP_CONFIG;
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-"));
-  let receivedBody = null;
+  const imageBodies = [];
+  let videoBody = null;
   const server = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
-    receivedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     response.writeHead(200, { "content-type": "application/json" });
+    if (request.url === "/images") {
+      imageBodies.push(body);
+      response.end(JSON.stringify({ data: { imageBase64: Buffer.from(`shot image ${imageBodies.length}`).toString("base64") } }));
+      return;
+    }
+    videoBody = body;
     response.end(JSON.stringify({ data: { videoBase64: Buffer.from("shot video bytes").toString("base64") } }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => server.close());
   t.after(() => restoreEnv(savedEnv));
   const address = server.address();
+  process.env.VIDEO_HTTP_IMAGE_ENDPOINT = `http://127.0.0.1:${address.port}/images`;
   process.env.VIDEO_HTTP_VIDEO_ENDPOINT = `http://127.0.0.1:${address.port}/videos`;
   process.env.VIDEO_HTTP_API_KEY = "test-key";
 
@@ -523,6 +532,8 @@ test("单镜头首尾帧视频接口可调用供应商并返回播放地址", as
     shot: {
       shotId: "S01",
       durationSeconds: 4,
+      startFramePrompt: "小白子站在村口，抱着包裹准备出发",
+      endFramePrompt: "小白子把包裹交到老人手里，老人露出笑容",
       videoPrompt: "从首帧走到尾帧",
       negativePrompt: "不要变形",
       cameraMotion: "缓慢推进"
@@ -530,16 +541,28 @@ test("单镜头首尾帧视频接口可调用供应商并返回播放地址", as
   });
 
   assert.equal(result.shotId, "S01");
+  assert.match(result.startFrameUrl, /^\/generated-videos\/S01-start-/);
+  assert.match(result.endFrameUrl, /^\/generated-videos\/S01-end-/);
   assert.match(result.outputUrl, /^\/generated-videos\/S01-/);
+  assert.equal(await fs.readFile(result.startFramePath, "utf8"), "shot image 1");
+  assert.equal(await fs.readFile(result.endFramePath, "utf8"), "shot image 2");
   assert.equal(await fs.readFile(result.outputPath, "utf8"), "shot video bytes");
-  assert.equal(receivedBody.capability, "first_last_frame_video_generation");
-  assert.equal(receivedBody.prompt, "从首帧走到尾帧");
-  assert.equal(receivedBody.parameters.cameraMotion, "缓慢推进");
+  assert.equal(imageBodies.length, 2);
+  assert.equal(imageBodies[0].capability, "image_generation");
+  assert.equal(imageBodies[0].prompt, "小白子站在村口，抱着包裹准备出发");
+  assert.equal(imageBodies[1].prompt, "小白子把包裹交到老人手里，老人露出笑容");
+  assert.equal(videoBody.capability, "first_last_frame_video_generation");
+  assert.equal(videoBody.prompt, "从首帧走到尾帧");
+  assert.equal(videoBody.parameters.cameraMotion, "缓慢推进");
+  assert.equal(videoBody.inputArtifacts.length, 2);
+  assert.match(videoBody.inputArtifacts[0].dataUrl, /^data:image\/png;base64,/);
+  assert.match(videoBody.inputArtifacts[1].dataUrl, /^data:image\/png;base64,/);
 });
 
 test("单镜头视频生成未配置供应商时给出明确错误", async () => {
-  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_CONFIG"]);
+  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_IMAGE_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_CONFIG"]);
   delete process.env.VIDEO_HTTP_ENDPOINT;
+  delete process.env.VIDEO_HTTP_IMAGE_ENDPOINT;
   delete process.env.VIDEO_HTTP_VIDEO_ENDPOINT;
   delete process.env.VIDEO_HTTP_CONFIG;
   try {

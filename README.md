@@ -50,14 +50,15 @@ MIMO_MEDIA_MODE=auto
 - 复制视频模型生产包：输出 Markdown 格式的角色参考、资产提示词和逐镜首帧/尾帧/video prompt，适合手动粘贴到支持首尾帧或关键帧的视频生成工具。
 - 导出视频任务队列 JSONL：把动画计划拆成逐行任务，包括参考图、资产图、首帧、尾帧、首尾帧视频、质检和最终剪辑任务，适合后续脚本或视频 API worker 消费。最终剪辑任务会依赖所有逐镜视频输出和质检结果，并携带剪辑节奏、字幕、音乐音效和整片验收标准。
 
-如果只想在页面里快速试单个镜头，动画生产包的每个 shot 卡片都有“生成此镜头视频”按钮。它会把该镜头的 `videoPrompt`、负面 prompt 和结构化参数发送给通用 HTTP 视频 worker，并把结果保存到 `public/generated-videos/` 后在页面内播放。使用前至少配置：
+如果只想在页面里快速试单个镜头，动画生产包的每个 shot 卡片都有“生成此镜头视频”按钮。它会先用该镜头的 `startFramePrompt` / `endFramePrompt` 调用图像生成接口，保存首帧和尾帧；随后把两张关键帧、`videoPrompt`、负面 prompt 和结构化参数发送给通用 HTTP 视频 worker，并把结果保存到 `public/generated-videos/` 后在页面内播放。使用前至少配置：
 
 ```dotenv
+VIDEO_HTTP_IMAGE_ENDPOINT=https://provider.example.com/v1/images
 VIDEO_HTTP_VIDEO_ENDPOINT=https://provider.example.com/v1/videos
 VIDEO_HTTP_API_KEY=你的_key
 ```
 
-如果供应商需要特殊字段，继续使用 `VIDEO_HTTP_CONFIG=./provider.json` 配置 `bodyTemplates.first_last_frame_video_generation`。
+如果供应商需要特殊字段，继续使用 `VIDEO_HTTP_CONFIG=./provider.json` 配置 `bodyTemplates.image_generation` 和 `bodyTemplates.first_last_frame_video_generation`。
 
 导出生产包或 JSONL 队列后，可以先生成一份本地生产运行状态，用来确认哪些任务现在可执行、哪些被依赖阻塞、每个产物建议存放在哪里：
 

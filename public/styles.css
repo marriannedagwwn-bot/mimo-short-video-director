@@ -209,6 +209,10 @@ h1 em { color: var(--accent); font-style: normal; }
 .shot-video-result p.error { color: #b42318; }
 .shot-video-result video { width: min(100%, 260px); display: block; border-radius: 10px; background: #111; }
 .shot-video-result a { display: inline-block; margin-top: 7px; color: var(--accent); font-size: 10px; text-decoration: none; }
+.shot-frame-preview { width: min(100%, 260px); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-bottom: 8px; }
+.shot-frame-preview figure { margin: 0; position: relative; overflow: hidden; border-radius: 9px; background: #d7d2c8; aspect-ratio: 9 / 16; }
+.shot-frame-preview img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.shot-frame-preview figcaption { position: absolute; left: 5px; bottom: 5px; padding: 2px 5px; border-radius: 999px; color: #fff; background: rgba(0,0,0,.64); font-size: 8px; }
 .queue-panel { display: grid; gap: 12px; }
 .queue-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
 .queue-chip { padding: 11px 8px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.48); color: var(--muted); font-size: 9px; text-align: center; }
