@@ -215,6 +215,10 @@ function recommendedCommands(root, issues = [], command = {}, readyTasks = []) {
   }
   if (!issues.some((issue) => issue.severity === "error")) {
     const configArgs = command.configPath ? ` --command-arg=--config --command-arg=${command.configPath}` : "";
+    const makeConfigArg = command.configPath ? ` --config ${command.configPath}` : " --config ./provider.json";
+    if (readyTasks.length) {
+      commands.push(`npm run make:video -- ${root}${makeConfigArg}`);
+    }
     if (readyTasks.some((task) => ["image_generation", "first_last_frame_video_generation"].includes(task.capability))) {
       commands.push(`npm run exec:video -- ${root} --provider command --command node --command-arg ./workers/generic-http-worker.mjs${configArgs} --all --capability image_generation --capability first_last_frame_video_generation`);
     }

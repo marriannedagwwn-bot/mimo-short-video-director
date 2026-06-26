@@ -37,6 +37,14 @@ npm run preflight:video -- ./production/V1 --strict
 
 预检会检查 mock/占位产物、ready 任务依赖的输入类型，以及 generic HTTP worker 的 endpoint/API key 配置。`--strict` 会在存在阻塞级问题时返回非 0，适合放进自动化脚本。
 
+如果已经准备好供应商配置，可以直接使用一键编排命令：
+
+```bash
+npm run make:video -- ./production/V1 --config ./provider.json
+```
+
+它会依次执行预检、图像/首尾帧视频生成、本地质检和 ffmpeg 最终合成。
+
 ## Request 结构
 
 核心字段：

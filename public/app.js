@@ -639,15 +639,15 @@ function renderLocalProductionGuide(queue = {}) {
     },
     {
       label: "5",
-      title: "生成图像和首尾帧视频",
-      body: "先配置 VIDEO_HTTP_ENDPOINT / VIDEO_HTTP_API_KEY 或 provider config；这里只执行图像与首尾帧视频任务。",
-      command: `npm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${commandWorker} --all --capability image_generation --capability first_last_frame_video_generation`
+      title: "一键制作到最终视频",
+      body: "配置 provider config 后，一条命令串起预检、图像/首尾帧视频生成、本地质检和 ffmpeg 合成。",
+      command: `npm run make:video -- ${productionRoot} --config ./provider.json`
     },
     {
       label: "6",
-      title: "本地质检并合成成片",
-      body: "视频片段完成后，用本地 worker 做基础质检，并用 ffmpeg 按队列顺序合成最终竖屏视频。",
-      command: `npm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${postprocessWorker} --all --capability video_quality_review --capability video_assembly`
+      title: "分段调试命令",
+      body: "如果某一段失败，可以拆开执行：先生成素材和视频片段，再本地质检和合成。",
+      command: `npm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${commandWorker} --all --capability image_generation --capability first_last_frame_video_generation\nnpm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${postprocessWorker} --all --capability video_quality_review --capability video_assembly`
     },
     {
       label: "7",

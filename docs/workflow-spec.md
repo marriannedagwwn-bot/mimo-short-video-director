@@ -147,6 +147,14 @@ npm run preflight:video -- ./production/V1 --strict
 
 预检会检查 mock/占位产物是否已经被标记为 `done`、ready 任务是否依赖 mock 输入、generic HTTP worker 是否缺少对应 capability 的 endpoint/API key。这样可以避免 mock 链路验证后的占位文件被误送进真实视频模型。
 
+一键制作入口：
+
+```bash
+npm run make:video -- ./production/V1 --config ./provider.json
+```
+
+`make:video` 会先执行预检，再调用通用 HTTP worker 生成图像和首尾帧视频，最后调用本地后处理 worker 做基础质检与 ffmpeg 合成。分段执行命令仍可用于调试和重试。
+
 外部 API worker 可通过 `command` provider 接入：
 
 ```bash

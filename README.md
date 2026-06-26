@@ -97,6 +97,14 @@ npm run exec:video -- ./production/V1 --provider mock --all
 npm run preflight:video -- ./production/V1 --strict
 ```
 
+预检通过后，可以用一条命令串起图像生成、首尾帧视频生成、本地质检和 ffmpeg 最终合成：
+
+```bash
+npm run make:video -- ./production/V1 --config ./provider.json
+```
+
+`provider.json` 可从 [workers/generic-http-worker.example.json](workers/generic-http-worker.example.json) 复制后改成真实供应商 endpoint 和字段映射。最终剪辑依赖本机 `ffmpeg`；如果不在 PATH 中，可加 `--ffmpeg /path/to/ffmpeg`。
+
 如果你已经有自己的图像/视频 API 脚本，可以用 `command` provider 接入。执行器会为每个 ready 任务调用外部命令。
 
 项目内置了一个通用 HTTP worker，可通过环境变量或 JSON 配置接入常见“提交任务 → 轮询 → 下载 mediaUrl/base64 产物”的图像/首尾帧视频 API：

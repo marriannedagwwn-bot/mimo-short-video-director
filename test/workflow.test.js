@@ -16,6 +16,7 @@ import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
 import { extractFixedCharacterName } from "../src/validation.js";
 import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
 import { executeProductionWorkspace } from "../src/video-production-executor.js";
+import { formatMakeVideoMarkdown, makeProductionVideo } from "../src/video-production-maker.js";
 import { buildProductionReport, formatProductionReportMarkdown, loadProductionReport } from "../src/video-production-report.js";
 import { formatProductionPreflightMarkdown, loadProductionPreflight } from "../src/video-production-preflight.js";
 import { buildArtifactsFromExistingOutputs, buildProductionRun, buildProductionWorkspaceFiles, parseQueueJsonl } from "../src/video-production-run.js";
@@ -549,6 +550,75 @@ await fs.writeFile(output, "assembled video bytes");
   } finally {
     restoreEnv(savedEnv);
   }
+});
+
+test("make:video 可编排预检、HTTP 生成、本地质检和最终剪辑", async (t) => {
+  const savedEnv = pickEnv(["VIDEO_HTTP_API_KEY", "LOCAL_POSTPROCESS_FFMPEG", "LOCAL_POSTPROCESS_REENCODE"]);
+  delete process.env.VIDEO_HTTP_API_KEY;
+  delete process.env.LOCAL_POSTPROCESS_REENCODE;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-make-"));
+  const fakeFfmpegPath = path.join(root, "fake-ffmpeg.mjs");
+  await fs.writeFile(fakeFfmpegPath, `#!/usr/bin/env node
+import fs from "node:fs/promises";
+const output = process.argv.at(-1);
+await fs.writeFile(output, "final cut bytes");
+`);
+  await fs.chmod(fakeFfmpegPath, 0o755);
+  process.env.LOCAL_POSTPROCESS_FFMPEG = fakeFfmpegPath;
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+    response.writeHead(200, { "content-type": "application/json" });
+    if (request.url === "/images") {
+      response.end(JSON.stringify({ data: { b64_json: Buffer.from(`image:${body.taskId}`).toString("base64") } }));
+      return;
+    }
+    if (request.url === "/videos") {
+      response.end(JSON.stringify({ data: { videoBase64: Buffer.from(`video:${body.taskId}`).toString("base64") } }));
+      return;
+    }
+    response.end("{}");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  t.after(() => restoreEnv(savedEnv));
+  const address = server.address();
+  const queue = {
+    version: "test",
+    providerMode: "provider_agnostic",
+    title: "make video test",
+    selectedVariantId: "V1",
+    jobs: [
+      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" },
+      { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", requiredInputs: ["references.hero"], prompt: "首帧" },
+      { taskId: "S01-END", type: "end_frame_image", inputType: "text_to_image", outputKey: "frames.S01.end", requiredInputs: ["references.hero"], prompt: "尾帧" },
+      { taskId: "S01-VIDEO", type: "first_last_frame_video", inputType: "image_pair_to_video", outputKey: "videos.S01", requiredInputs: ["frames.S01.start", "frames.S01.end"], prompt: "视频片段" },
+      { taskId: "S01-QA", type: "quality_check", inputType: "video_review", outputKey: "reviews.S01", requiredInputs: ["videos.S01"], prompt: "检查视频" },
+      { taskId: "FINAL-EDIT", type: "final_edit", inputType: "video_assembly", outputKey: "exports.final_cut", requiredInputs: ["videos.S01", "reviews.S01"], prompt: "合成最终视频" }
+    ]
+  };
+  const run = buildProductionRun(queue, { outputRoot: root });
+  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+  const configPath = path.join(root, "provider.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    endpoints: {
+      image_generation: `http://127.0.0.1:${address.port}/images`,
+      first_last_frame_video_generation: `http://127.0.0.1:${address.port}/videos`
+    },
+    apiKey: "test-key"
+  }));
+
+  const result = await makeProductionVideo({ root, configPath, command: process.execPath });
+  assert.equal(result.preflight.passed, true);
+  assert.equal(result.stages.media.executed, 4);
+  assert.equal(result.stages.postprocess.executed, 2);
+  assert.equal(result.report.progress.done, 6);
+  assert.equal(result.report.progress.percent, 100);
+  const finalJob = result.report.finalOutputs.find((item) => item.taskId === "FINAL-EDIT");
+  assert.equal(finalJob.status, "done");
+  assert.equal(await fs.readFile(finalJob.outputPath, "utf8"), "final cut bytes");
+  assert.match(formatMakeVideoMarkdown(result), /最终成片/);
 });
 
 test("command 视频生产执行失败会写入失败回执并刷新 failed 状态", async () => {
