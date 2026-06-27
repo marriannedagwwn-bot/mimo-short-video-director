@@ -32,6 +32,15 @@ export function getConfig() {
   const storyMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_STORY_MAX_COMPLETION_TOKENS, 12288, 1024, 32768));
   const animationMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_ANIMATION_MAX_COMPLETION_TOKENS, 12288, 1024, 32768));
   const jsonRetryAttempts = Math.round(clampNumber(process.env.MIMO_JSON_RETRY_ATTEMPTS, 2, 0, 3));
+  const qwenBaseUrl = process.env.QWEN_BASE_URL?.trim() || "";
+  const qwenStoryModel = process.env.QWEN_STORY_MODEL?.trim() || process.env.QWEN_MODEL?.trim() || "qwen3.7-max";
+  const qwenAnimationModel = process.env.QWEN_ANIMATION_MODEL?.trim() || process.env.QWEN_MODEL?.trim() || qwenStoryModel;
+  const qwenMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_MAX_COMPLETION_TOKENS, 16384, 1024, 65536));
+  const qwenStoryMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_STORY_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
+  const qwenAnimationMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_ANIMATION_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
+  const qwenJsonRetryAttempts = Math.round(clampNumber(process.env.QWEN_JSON_RETRY_ATTEMPTS, 2, 0, 3));
+  const qwenEnableThinkingValue = process.env.QWEN_ENABLE_THINKING?.trim().toLowerCase();
+  const qwenEnableThinking = qwenEnableThinkingValue === "true" ? true : qwenEnableThinkingValue === "false" ? false : false;
   return {
     port: Number(process.env.PORT || 4173),
     mimo: {
@@ -51,6 +60,20 @@ export function getConfig() {
       jsonRetryAttempts,
       thinking,
       enabled: Boolean(baseUrl)
+    },
+    qwen: {
+      baseUrl: qwenBaseUrl,
+      apiKey: process.env.QWEN_API_KEY?.trim() || process.env.DASHSCOPE_API_KEY?.trim() || "",
+      model: process.env.QWEN_MODEL?.trim() || "qwen3.7-max",
+      storyModel: qwenStoryModel,
+      animationModel: qwenAnimationModel,
+      maxCompletionTokens: qwenMaxCompletionTokens,
+      storyMaxCompletionTokens: qwenStoryMaxCompletionTokens,
+      animationMaxCompletionTokens: qwenAnimationMaxCompletionTokens,
+      jsonRetryAttempts: qwenJsonRetryAttempts,
+      enableThinking: qwenEnableThinking,
+      jsonMode: process.env.QWEN_JSON_MODE === "true",
+      enabled: Boolean(qwenBaseUrl && (process.env.QWEN_API_KEY?.trim() || process.env.DASHSCOPE_API_KEY?.trim()))
     }
   };
 }

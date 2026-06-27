@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv, getConfig } from "./src/config.js";
 import { MimoClient, ModelResponseError } from "./src/mimo-client.js";
+import { QwenClient } from "./src/qwen-client.js";
 import { WorkflowService } from "./src/workflow.js";
 import { InputError, OutputContractError } from "./src/validation.js";
 import { generateShotVideo, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
@@ -11,12 +12,19 @@ import { generateShotVideo, ShotVideoConfigError, ShotVideoProviderError } from 
 loadEnv();
 const config = getConfig();
 const mimoClient = config.mimo.enabled ? new MimoClient(config.mimo) : null;
+const qwenClient = config.qwen.enabled ? new QwenClient(config.qwen) : null;
+const storyClient = qwenClient || mimoClient;
+const animationClient = qwenClient || mimoClient;
 const workflow = new WorkflowService({
   client: mimoClient,
-  storyModel: config.mimo.storyModel,
-  storyMaxCompletionTokens: config.mimo.storyMaxCompletionTokens,
-  animationModel: config.mimo.animationModel,
-  animationMaxCompletionTokens: config.mimo.animationMaxCompletionTokens
+  storyClient,
+  storyModel: qwenClient ? config.qwen.storyModel : config.mimo.storyModel,
+  storyMaxCompletionTokens: qwenClient ? config.qwen.storyMaxCompletionTokens : config.mimo.storyMaxCompletionTokens,
+  storyProvider: qwenClient ? "Qwen" : "MiMo",
+  animationClient,
+  animationModel: qwenClient ? config.qwen.animationModel : config.mimo.animationModel,
+  animationMaxCompletionTokens: qwenClient ? config.qwen.animationMaxCompletionTokens : config.mimo.animationMaxCompletionTokens,
+  animationProvider: qwenClient ? "Qwen" : "MiMo"
 });
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, "public");
@@ -25,9 +33,11 @@ const routes = {
   "/api/analyze": (body) => workflow.analyze(body),
   "/api/reconstruct": (body) => workflow.reconstruct(body),
   "/api/brief": (body) => workflow.createBrief(body),
+  "/api/visual-guardrails": (body) => workflow.createVisualGuardrails(body),
   "/api/variants": (body) => workflow.createVariants(body),
   "/api/full-story": (body) => workflow.createFullStory(body),
   "/api/animation-plan": (body) => workflow.createAnimationPlan(body),
+  "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
   "/api/generate-shot-video": (body) => generateShotVideo(body),
   "/api/run": (body) => workflow.run(body)
 };
@@ -36,28 +46,27 @@ const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
     if (request.method === "GET" && url.pathname === "/api/health") {
-      const [provider, storyProvider, animationProvider] = mimoClient
-        ? await Promise.all([
-          mimoClient.checkHealth(config.mimo.model),
-          mimoClient.checkHealth(config.mimo.storyModel),
-          mimoClient.checkHealth(config.mimo.animationModel)
-        ])
-        : [
-          { reachable: false, modelAvailable: false, status: 0 },
-          { reachable: false, modelAvailable: false, status: 0 },
-          { reachable: false, modelAvailable: false, status: 0 }
-        ];
+      const [provider, storyProvider, animationProvider] = await Promise.all([
+        mimoClient ? mimoClient.checkHealth(config.mimo.model) : { reachable: false, modelAvailable: false, status: 0 },
+        storyClient ? storyClient.checkHealth(workflow.storyModel) : { reachable: false, modelAvailable: false, status: 0 },
+        animationClient ? animationClient.checkHealth(workflow.animationModel) : { reachable: false, modelAvailable: false, status: 0 }
+      ]);
       return json(response, 200, {
         ok: true,
         mode: workflow.mode,
         model: config.mimo.model,
-        storyModel: config.mimo.storyModel,
-        animationModel: config.mimo.animationModel,
+        storyModel: workflow.storyModel,
+        animationModel: workflow.animationModel,
+        baseProvider: "MiMo",
+        storyProvider: workflow.storyProvider,
+        animationProvider: workflow.animationProvider,
         providerConfigured: config.mimo.enabled,
         providerReachable: provider.reachable,
         modelAvailable: provider.modelAvailable,
         storyModelAvailable: storyProvider.modelAvailable,
         animationModelAvailable: animationProvider.modelAvailable,
+        storyProviderReachable: storyProvider.reachable,
+        animationProviderReachable: animationProvider.reachable,
         mediaMode: config.mimo.mediaMode,
         nativeVideoMaxBytes: config.mimo.nativeVideoMaxBytes
       });
@@ -75,7 +84,7 @@ const server = http.createServer(async (request, response) => {
     if (error instanceof ShotVideoProviderError) return json(response, 502, { ok: false, error: "视频生成服务调用失败", detail: error.message });
     if (error instanceof OutputContractError) return json(response, 502, { ok: false, error: `模型输出不完整：${error.message}` });
     if (error instanceof ModelResponseError) return json(response, 502, { ok: false, error: error.message, detail: error.raw });
-    if (error.name === "AbortError" || error.name === "TimeoutError") return json(response, 504, { ok: false, error: "MiMo 响应超时" });
+    if (error.name === "AbortError" || error.name === "TimeoutError") return json(response, 504, { ok: false, error: "模型响应超时" });
     console.error(error);
     return json(response, 500, { ok: false, error: "服务器内部错误" });
   }
@@ -83,7 +92,7 @@ const server = http.createServer(async (request, response) => {
 
 server.listen(config.port, () => {
   console.log(`AI 短视频导演：http://localhost:${config.port}`);
-  console.log(`运行模式：${workflow.mode === "mimo" ? `MiMo (${config.mimo.model} / 剧情 ${config.mimo.storyModel} / 动画 ${config.mimo.animationModel})` : "演示数据（配置 .env 后接入 MiMo）"}`);
+  console.log(`运行模式：${workflow.mode === "mimo" ? `MiMo (${config.mimo.model}) / 剧情 ${workflow.storyProvider} ${workflow.storyModel} / 动画 ${workflow.animationProvider} ${workflow.animationModel}` : "演示数据（配置 .env 后接入 MiMo）"}`);
 });
 
 async function readJson(request) {

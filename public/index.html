@@ -104,7 +104,8 @@
         <li data-stage="analysis"><span>1</span><div><strong>参考片分析</strong><small>定位、人物、节奏、情绪与完播理由</small></div><b>等待</b></li>
         <li data-stage="script"><span>2</span><div><strong>原片脚本还原</strong><small>分场、动作、镜头、转折与剧作功能</small></div><b>等待</b></li>
         <li data-stage="brief"><span>3</span><div><strong>创意简报</strong><small>保留价值、受控变量与最低变换规则</small></div><b>等待</b></li>
-        <li data-stage="variants"><span>4</span><div><strong>主题变体</strong><small>适配固定角色和垂直赛道的新故事</small></div><b>等待</b></li>
+        <li data-stage="guardrails"><span>4</span><div><strong>视觉负面提示词</strong><small>由 AI 判断允许外观与禁止联想</small></div><b>等待</b></li>
+        <li data-stage="variants"><span>5</span><div><strong>主题变体</strong><small>适配固定角色和垂直赛道的新故事</small></div><b>等待</b></li>
       </ol>
 
       <div class="empty-results" id="emptyResults">
@@ -115,6 +116,7 @@
         <article class="result-card" id="analysisResult"></article>
         <article class="result-card" id="scriptResult"></article>
         <article class="result-card" id="briefResult"></article>
+        <article class="result-card" id="guardrailsResult"></article>
         <article class="result-card" id="variantsResult"></article>
       </div>
     </section>
@@ -127,13 +129,19 @@
         <div>
           <p class="eyebrow">SELECTED VARIANT → FULL STORY</p>
           <h1>把主题变体扩写成<br><em>可拍完整剧情。</em></h1>
-          <p class="hero-copy">这一页只基于你选中的主题变体继续创作，调用 <span id="storyModelName">mimo-v2.5-pro</span>，输出可进入拍摄筹备的剧情、分场、对白、道具和拍摄要点。</p>
+          <p class="hero-copy">这一页只基于你选中的主题变体继续创作，调用 <span id="storyModelName">完整剧情模型</span>，输出可进入拍摄筹备的剧情、分场、对白、道具和拍摄要点。</p>
+          <div class="story-package-tools">
+            <button class="outline-button" id="importStoryPackage" type="button">导入测试包 JSON</button>
+            <button class="outline-button" id="exportStoryTestPackage" type="button" disabled>导出测试包 JSON</button>
+            <input id="storyPackageFile" type="file" accept="application/json,.json" hidden>
+            <small id="storyPackageStatus">可导入/导出完整剧情与首尾帧动画生产包，避免重复请求模型。</small>
+          </div>
         </div>
         <div class="story-control-card">
           <div id="selectedVariantSummary" class="selected-variant-summary"></div>
           <p class="story-status" id="storyStatus"></p>
           <button class="primary-button" id="generateFullStory" type="button">
-            <span>用 mimo-v2.5-pro 生成完整剧情</span>
+            <span>生成完整剧情</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
           </button>
           <p class="story-status" id="animationStatus"></p>

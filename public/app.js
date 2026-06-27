@@ -1,4 +1,5 @@
 import { buildVideoGenerationQueue, formatQueueJsonl } from "./animation-queue.js";
+import { syncShotCharacterReference } from "./character-reference-sync.js";
 
 const state = {
   file: null,
@@ -11,10 +12,13 @@ const state = {
   fullStories: {},
   animationPlans: {},
   shotVideoResults: {},
+  characterReferenceStatuses: {},
   mode: "demo",
   mediaMode: "auto",
   storyModel: "mimo-v2.5-pro",
   animationModel: "mimo-v2.5-pro",
+  storyProvider: "MiMo",
+  animationProvider: "MiMo",
   nativeVideoMaxBytes: 0,
   running: false,
   storyRunning: false,
@@ -29,12 +33,14 @@ const elements = {
   fixedCharacter: $("#fixedCharacter"), vertical: $("#vertical"), constraints: $("#constraints"), variantCount: $("#variantCount"),
   run: $("#runWorkflow"), error: $("#errorMessage"), modelState: $("#modelState"),
   empty: $("#emptyResults"), resultStack: $("#resultStack"), export: $("#exportButton"),
-  analysis: $("#analysisResult"), script: $("#scriptResult"), brief: $("#briefResult"), variants: $("#variantsResult"),
+  analysis: $("#analysisResult"), script: $("#scriptResult"), brief: $("#briefResult"), guardrails: $("#guardrailsResult"), variants: $("#variantsResult"),
   mainPage: $("#top"), storyPage: $("#storyPage"), storyModelName: $("#storyModelName"),
   selectedVariantSummary: $("#selectedVariantSummary"), storyStatus: $("#storyStatus"),
   storyGenerate: $("#generateFullStory"), fullStory: $("#fullStoryResult"), backToResults: $("#backToResults"),
   animationGenerate: $("#generateAnimationPlan"), animationStatus: $("#animationStatus"), animationPlan: $("#animationPlanResult"),
-  exportStoryPackage: $("#exportStoryPackage"), copyAnimationPack: $("#copyAnimationPack"), exportVideoQueue: $("#exportVideoQueue")
+  exportStoryPackage: $("#exportStoryPackage"), copyAnimationPack: $("#copyAnimationPack"), exportVideoQueue: $("#exportVideoQueue"),
+  importStoryPackage: $("#importStoryPackage"), exportStoryTestPackage: $("#exportStoryTestPackage"),
+  storyPackageFile: $("#storyPackageFile"), storyPackageStatus: $("#storyPackageStatus")
 };
 
 init();
@@ -49,16 +55,18 @@ async function init() {
     state.mediaMode = health.mediaMode || "auto";
     state.storyModel = health.storyModel || "mimo-v2.5-pro";
     state.animationModel = health.animationModel || state.storyModel;
+    state.storyProvider = health.storyProvider || "MiMo";
+    state.animationProvider = health.animationProvider || state.storyProvider || "MiMo";
     state.nativeVideoMaxBytes = health.nativeVideoMaxBytes || 0;
-    elements.storyModelName.textContent = state.storyModel.split("/").pop();
+    elements.storyModelName.textContent = modelDisplayLabel(state.storyProvider, state.storyModel);
     const storyReady = health.storyModelAvailable !== false && health.animationModelAvailable !== false;
     const connected = health.mode === "mimo" && health.providerReachable && health.modelAvailable && storyReady;
     elements.modelState.className = `model-state ${connected ? "ready" : health.mode === "mimo" ? "" : "demo"}`;
     elements.modelState.lastElementChild.textContent = connected
-      ? `MiMo 已连接 · ${health.model.split("/").pop()} / 剧情 ${state.storyModel.split("/").pop()} / 动画 ${state.animationModel.split("/").pop()}`
+      ? `MiMo 已连接 · ${modelName(health.model)} / 剧情 ${modelDisplayLabel(state.storyProvider, state.storyModel)} / 动画 ${modelDisplayLabel(state.animationProvider, state.animationModel)}`
       : health.mode === "mimo"
         ? health.providerReachable
-          ? health.modelAvailable ? `后续模型未加载：${state.storyModel.split("/").pop()} / ${state.animationModel.split("/").pop()}` : "MiMo 可访问，但指定模型未加载"
+          ? health.modelAvailable ? `后续模型未加载：${modelDisplayLabel(state.storyProvider, state.storyModel)} / ${modelDisplayLabel(state.animationProvider, state.animationModel)}` : "MiMo 可访问，但指定模型未加载"
           : "MiMo 已配置，但服务不可达"
         : "演示模式 · 配置 MiMo 后启用真实分析";
   } catch {
@@ -85,10 +93,38 @@ function bindEvents() {
   elements.exportStoryPackage.addEventListener("click", exportCurrentStoryPackage);
   elements.copyAnimationPack.addEventListener("click", copyAnimationProductionPack);
   elements.exportVideoQueue.addEventListener("click", exportVideoGenerationQueue);
+  elements.importStoryPackage.addEventListener("click", () => elements.storyPackageFile.click());
+  elements.exportStoryTestPackage.addEventListener("click", exportStoryTestPackage);
+  elements.storyPackageFile.addEventListener("change", (event) => {
+    const file = event.target.files[0];
+    if (file) importStoryTestPackage(file);
+    event.target.value = "";
+  });
   elements.animationPlan.addEventListener("click", (event) => {
     const button = event.target.closest("[data-generate-shot-video]");
-    if (button) generateShotVideo(button.dataset.generateShotVideo);
+    if (button) return generateShotVideo(button.dataset.generateShotVideo);
+    if (event.target.closest("[data-character-reference-input]")) return;
+    const card = event.target.closest("[data-character-reference-card]");
+    if (card) return openCharacterReferenceInput(card.dataset.characterReferenceCard);
   });
+  elements.animationPlan.addEventListener("keydown", (event) => {
+    if (!["Enter", " "].includes(event.key)) return;
+    const card = event.target.closest("[data-character-reference-card]");
+    if (!card) return;
+    event.preventDefault();
+    openCharacterReferenceInput(card.dataset.characterReferenceCard);
+  });
+  elements.animationPlan.addEventListener("change", (event) => {
+    const input = event.target.closest("[data-character-reference-input]");
+    if (input && input.files[0]) {
+      refineCharacterReferenceWithImage(input.dataset.characterReferenceInput, input.files[0]);
+      input.value = "";
+    }
+  });
+  elements.animationPlan.addEventListener("dragenter", handleCharacterReferenceDrag);
+  elements.animationPlan.addEventListener("dragover", handleCharacterReferenceDrag);
+  elements.animationPlan.addEventListener("dragleave", handleCharacterReferenceDragLeave);
+  elements.animationPlan.addEventListener("drop", handleCharacterReferenceDrop);
   window.addEventListener("popstate", renderRoute);
   [elements.fixedCharacter, elements.vertical, elements.constraints].forEach((element) => element.addEventListener("input", () => { saveProfile(); validateReady(); }));
 }
@@ -200,13 +236,14 @@ async function runWorkflow() {
   state.fullStories = {};
   state.animationPlans = {};
   state.shotVideoResults = {};
+  state.characterReferenceStatuses = {};
   state.selectedVariantId = null;
   showError("");
   setRunning(true);
   resetPipeline();
   elements.empty.classList.add("hidden");
   elements.resultStack.classList.remove("hidden");
-  [elements.analysis, elements.script, elements.brief, elements.variants].forEach((element) => { element.innerHTML = ""; element.classList.add("hidden"); });
+  [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants].forEach((element) => { element.innerHTML = ""; element.classList.add("hidden"); });
   const shared = {
     frames: state.frames,
     ...(state.videoDataUrl ? { video: { dataUrl: state.videoDataUrl, mimeType: state.file.type, size: state.file.size } } : {}),
@@ -230,8 +267,23 @@ async function runWorkflow() {
     renderBrief(state.output.creativeBrief);
     setStage("brief", "done");
 
+    setStage("guardrails", "active");
+    state.output.visualGuardrails = await api("/api/visual-guardrails", {
+      ...shared,
+      referenceAnalysis: state.output.referenceAnalysis,
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+      creativeBrief: state.output.creativeBrief
+    });
+    renderVisualGuardrails(state.output.visualGuardrails);
+    setStage("guardrails", "done");
+
     setStage("variants", "active");
-    state.output.themeVariants = await api("/api/variants", { creativeBrief: state.output.creativeBrief, creatorProfile, count: Number(elements.variantCount.value) });
+    state.output.themeVariants = await api("/api/variants", {
+      creativeBrief: state.output.creativeBrief,
+      visualGuardrails: state.output.visualGuardrails,
+      creatorProfile,
+      count: Number(elements.variantCount.value)
+    });
     renderVariants(state.output.themeVariants);
     setStage("variants", "done");
     elements.export.classList.remove("hidden");
@@ -304,6 +356,31 @@ function renderBrief(data) {
   reveal(elements.brief);
 }
 
+function renderVisualGuardrails(data) {
+  const boundary = data.fixedCharacterBoundary || {};
+  elements.guardrails.innerHTML = `${resultHeader("VISUAL GUARDRAILS", "AI 视觉负面提示词", "通用规则")}
+    <div class="summary-strip">${escape(data.rationale || boundary.doNotInfer || "已生成固定角色外观边界与通用负面提示词。")}</div>
+    <div class="data-grid">
+      ${cell("角色锁定", boundary.identityLock || boundary.characterName)}
+      ${cell("允许身份", boundary.allowedIdentity)}
+      ${cell("允许外观", boundary.allowedAppearance)}
+      ${cell("允许身体特征", (boundary.allowedBodyFeatures || []).join(" / ") || "无额外身体特征")}
+      ${cell("风格说明", boundary.styleNotes)}
+      ${cell("禁止推导", boundary.doNotInfer)}
+    </div>
+    ${block("允许正向使用", `<div class="tag-row">${(data.allowedPositiveTraits || []).map((item) => `<span class="tag">${escape(item.term)} · ${escape(item.scope || "")}</span>`).join("") || "<span class=\"tag\">无额外允许项</span>"}</div>`)}
+    ${block("禁止写进正向内容", `<div class="rule-list">${(data.forbiddenPositiveTraits || []).map((item) => `<div class="rule"><strong>${escape(item.term)} · ${escape(item.severity || "block")}</strong><p>${escape(item.reason)}</p></div>`).join("") || "<p class=\"long-copy\">无额外禁止项。</p>"}</div>`)}
+    ${block("原片表面表达", `<div class="rule-list">${(data.sourceSurfaceExpressions || []).map((item) => `<div class="rule"><strong>${escape(item.term)}${item.mustAvoid === false ? " · 可说明但不正向复用" : " · 禁止正向复用"}</strong><p>${escape(item.reason)}<br><b>来源：</b>${escape(item.source)}</p></div>`).join("") || "<p class=\"long-copy\">无。</p>"}</div>`)}
+    ${block("通用负面 Prompt", `<div class="warning-box">${escape((data.commonNegativePrompt || []).join("；") || "无")}</div>`)}
+    ${block("阶段使用说明", `<div class="data-grid">
+      ${cell("主题变体", data.stageInstructions?.themeVariants)}
+      ${cell("完整剧情", data.stageInstructions?.fullStory)}
+      ${cell("首尾帧动画", data.stageInstructions?.animationPlan)}
+    </div>`)}
+    ${uncertainties(data.uncertainties)}`;
+  reveal(elements.guardrails);
+}
+
 function renderVariants(data) {
   elements.variants.innerHTML = `${resultHeader("THEME VARIANTS", "可拍摄的具体主题变体")}
     <div class="variant-grid">${(data.variants || []).map((variant) => `<div class="variant">
@@ -361,12 +438,12 @@ function renderStoryPage({ autoGenerate = false } = {}) {
   const animationExisting = variant ? state.animationPlans[variant.id] : null;
   if (existing) {
     renderFullStory(existing);
-    setStoryStatus(`已生成完整剧情 · ${state.storyModel.split("/").pop()}`, "ready");
+    setStoryStatus(`已生成完整剧情 · ${storyModelLabel()}`, "ready");
     elements.animationGenerate.disabled = state.animationRunning;
     updateStoryExportActions();
     if (animationExisting) {
       renderAnimationPlan(animationExisting);
-      setAnimationStatus(`已生成动画生产包 · ${state.animationModel.split("/").pop()}`, "ready");
+      setAnimationStatus(`已生成动画生产包 · ${animationModelLabel()}`, "ready");
     } else {
       elements.animationPlan.classList.add("hidden");
       elements.animationPlan.innerHTML = "";
@@ -418,12 +495,13 @@ async function generateFullStory({ force = false } = {}) {
   }
   state.storyRunning = true;
   setStoryRunning(true);
-  setStoryStatus(`正在调用 ${state.storyModel.split("/").pop()} 生成完整剧情…`, "active");
+  setStoryStatus(`正在调用 ${storyModelLabel()} 生成完整剧情…`, "active");
   try {
     const fullStory = await api("/api/full-story", {
       referenceAnalysis: state.output.referenceAnalysis,
       sourceScriptReconstruction: state.output.sourceScriptReconstruction,
       creativeBrief: state.output.creativeBrief,
+      visualGuardrails: state.output.visualGuardrails,
       themeVariants: state.output.themeVariants,
       variant,
       creatorProfile: profile()
@@ -432,7 +510,7 @@ async function generateFullStory({ force = false } = {}) {
     state.output.fullStories = state.fullStories;
     state.output.fullStory = fullStory;
     renderFullStory(fullStory);
-    setStoryStatus(`完整剧情已生成 · ${state.storyModel.split("/").pop()}`, "ready");
+    setStoryStatus(`完整剧情已生成 · ${storyModelLabel()}`, "ready");
     elements.animationGenerate.disabled = false;
     setAnimationStatus("可以继续生成首尾帧动画生产包。", "");
     updateStoryExportActions();
@@ -487,9 +565,12 @@ async function generateAnimationPlan({ force = false } = {}) {
     return;
   }
   state.animationRunning = true;
-  if (force) state.shotVideoResults = {};
+  if (force) {
+    state.shotVideoResults = {};
+    state.characterReferenceStatuses = {};
+  }
   setAnimationRunning(true);
-  setAnimationStatus(`正在调用 ${state.animationModel.split("/").pop()} 生成首尾帧动画生产包…`, "active");
+  setAnimationStatus(`正在调用 ${animationModelLabel()} 生成首尾帧动画生产包…`, "active");
   try {
     const animationPlan = await api("/api/animation-plan", {
       creativeBrief: state.output.creativeBrief,
@@ -501,7 +582,7 @@ async function generateAnimationPlan({ force = false } = {}) {
     state.output.animationPlans = state.animationPlans;
     state.output.animationPlan = animationPlan;
     renderAnimationPlan(animationPlan);
-    setAnimationStatus(`动画生产包已生成 · ${state.animationModel.split("/").pop()}`, "ready");
+    setAnimationStatus(`动画生产包已生成 · ${animationModelLabel()}`, "ready");
     updateStoryExportActions();
     elements.export.classList.remove("hidden");
   } catch (error) {
@@ -538,10 +619,7 @@ function renderAnimationPlan(data) {
       <div class="rule"><strong>角色一致性</strong><p>${escape((visual.characterConsistencyRules || []).join("；"))}</p></div>
       <div class="rule"><strong>负面视觉规则</strong><p>${escape((visual.negativeVisualRules || []).join("；"))}</p></div>
     </div>`)}
-    ${block("角色参考提示词", `<div class="rule-list">${(data.characterReferencePrompts || []).map((item) => `<div class="rule">
-      <strong>${escape(item.characterName)}<br><small>${escape(item.storyRole)}</small></strong>
-      <p>${escape(item.appearancePrompt)}<br><b>一致性标签：</b>${escape((item.consistencyTags || []).join(" / "))}<br><b>禁止变化：</b>${escape((item.forbiddenChanges || []).join(" / "))}</p>
-    </div>`).join("")}</div>`)}
+    ${block("角色参考提示词", renderCharacterReferencePrompts(data.characterReferencePrompts || []))}
     ${block("关键资产提示词", `<div class="rule-list">${(data.assetPrompts || []).map((item) => `<div class="rule">
       <strong>${escape(item.assetName)}</strong>
       <p>${escape(item.imagePrompt)}<br><b>功能：</b>${escape(item.storyFunction)}<br><b>一致性：</b>${escape((item.consistencyTags || []).join(" / "))}</p>
@@ -576,6 +654,126 @@ function renderAnimationPlan(data) {
     <div class="warning-box"><b>动画连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
     ${uncertainties(data.uncertainties)}`;
   reveal(elements.animationPlan);
+}
+
+function renderCharacterReferencePrompts(items = []) {
+  return `<div class="rule-list">${items.map((item, index) => {
+    const key = characterReferenceStatusKey(index);
+    const status = state.characterReferenceStatuses[key];
+    const hasReference = Boolean(item.referenceImageAdded || item.referenceImageDataUrl);
+    const statusText = status?.message || (hasReference ? "点击或拖入图片可更换人物参考图" : "点击或拖入人物参考图");
+    return `<div class="rule character-reference-card${hasReference ? " has-reference-image" : ""}" data-character-reference-card="${escape(index)}" role="button" tabindex="0" aria-label="${escape(item.characterName || "角色")}人物参考图上传区">
+      <div class="reference-card-top">
+        <strong>${escape(item.characterName)}<br><small>${escape(item.storyRole)}</small></strong>
+        ${hasReference ? `<span class="reference-image-badge">已添加人物参考图</span>` : ""}
+      </div>
+      <div class="character-reference-body">
+        <p>${escape(item.appearancePrompt)}<br><b>一致性标签：</b>${escape((item.consistencyTags || []).join(" / "))}<br><b>禁止变化：</b>${escape((item.forbiddenChanges || []).join(" / "))}${item.referenceImageNotes ? `<br><b>参考图吸收：</b>${escape(item.referenceImageNotes)}` : ""}</p>
+        <div class="character-reference-actions">
+          <input class="hidden" type="file" accept="image/*" data-character-reference-input="${escape(index)}">
+          <span class="character-reference-status ${escape(status?.status || "idle")}">${escape(statusText)}</span>
+        </div>
+      </div>
+    </div>`;
+  }).join("") || "<p class=\"long-copy\">无角色参考提示词。</p>"}</div>`;
+}
+
+function openCharacterReferenceInput(indexValue) {
+  const key = characterReferenceStatusKey(indexValue);
+  if (state.characterReferenceStatuses[key]?.status === "running") return;
+  const input = [...elements.animationPlan.querySelectorAll("[data-character-reference-input]")]
+    .find((item) => String(item.dataset.characterReferenceInput) === String(indexValue));
+  if (input) input.click();
+}
+
+function handleCharacterReferenceDrag(event) {
+  const card = event.target.closest("[data-character-reference-card]");
+  if (!card || !hasImageTransfer(event)) return;
+  event.preventDefault();
+  card.classList.add("dragging");
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+}
+
+function handleCharacterReferenceDragLeave(event) {
+  const card = event.target.closest("[data-character-reference-card]");
+  if (!card) return;
+  const nextTarget = event.relatedTarget;
+  if (nextTarget && card.contains(nextTarget)) return;
+  card.classList.remove("dragging");
+}
+
+function handleCharacterReferenceDrop(event) {
+  const card = event.target.closest("[data-character-reference-card]");
+  if (!card) return;
+  event.preventDefault();
+  card.classList.remove("dragging");
+  const file = [...(event.dataTransfer?.files || [])].find((item) => item.type.startsWith("image/"));
+  if (file) refineCharacterReferenceWithImage(card.dataset.characterReferenceCard, file);
+}
+
+function hasImageTransfer(event) {
+  const items = [...(event.dataTransfer?.items || [])];
+  if (items.length) return items.some((item) => item.kind === "file" && item.type.startsWith("image/"));
+  return [...(event.dataTransfer?.files || [])].some((item) => item.type.startsWith("image/"));
+}
+
+async function refineCharacterReferenceWithImage(indexValue, file) {
+  const index = Number(indexValue);
+  const variant = selectedVariant();
+  const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
+  const item = plan?.characterReferencePrompts?.[index];
+  if (!variant || !plan || !item) return setAnimationStatus("没有找到对应角色参考项。", "error");
+  if (!file.type.startsWith("image/")) return setAnimationStatus("请选择人物图片文件。", "error");
+  if (file.size > 8 * 1024 * 1024) return setAnimationStatus(`人物参考图不能超过 ${formatBytes(8 * 1024 * 1024)}。`, "error");
+
+  const key = characterReferenceStatusKey(index);
+  state.characterReferenceStatuses[key] = { status: "running", message: "正在用 MiMo 分析人物参考图…" };
+  renderAnimationPlan(plan);
+  setAnimationStatus(`正在分析 ${item.characterName || "角色"} 的人物参考图…`, "active");
+
+  try {
+    const imageDataUrl = await readFileAsDataUrl(file);
+    const { referenceImageDataUrl, ...safeCharacterReference } = item;
+    const refined = await api("/api/refine-character-reference", {
+      imageName: file.name,
+      imageDataUrl,
+      characterReference: safeCharacterReference,
+      creatorProfile: profile(),
+      visualGuardrails: state.output.visualGuardrails,
+      selectedVariant: variant,
+      fullStory: currentFullStory(),
+      animationPlan: {
+        title: plan.title,
+        productionStrategy: plan.productionStrategy,
+        visualBible: plan.visualBible
+      }
+    });
+    const updated = {
+      ...item,
+      ...refined,
+      referenceImageAdded: true,
+      referenceImageName: file.name,
+      referenceImageDataUrl: imageDataUrl
+    };
+    plan.characterReferencePrompts[index] = updated;
+    const syncedShots = syncShotCharacterReference(plan, item, updated);
+    state.animationPlans[variant.id] = plan;
+    state.output.animationPlans = state.animationPlans;
+    state.output.animationPlan = plan;
+    state.characterReferenceStatuses[key] = { status: "ready", message: syncedShots ? `已更新人物描述，并同步 ${syncedShots} 个镜头` : "已更新人物描述" };
+    renderAnimationPlan(plan);
+    setAnimationStatus(`${updated.characterName || "角色"} 已添加人物参考图，并更新了角色描述${syncedShots ? `，同步了 ${syncedShots} 个镜头提示词` : ""}。`, "ready");
+    updateStoryExportActions();
+  } catch (error) {
+    state.characterReferenceStatuses[key] = { status: "error", message: error.message || "人物参考图分析失败" };
+    renderAnimationPlan(plan);
+    setAnimationStatus(error.message || "人物参考图分析失败", "error");
+  }
+}
+
+function characterReferenceStatusKey(index) {
+  const variant = selectedVariant();
+  return `${variant?.id || "variant"}:${index}`;
 }
 
 async function generateShotVideo(shotId) {
@@ -756,7 +954,7 @@ function resetPipeline() { document.querySelectorAll(".pipeline li").forEach((it
 function setRunning(running) { elements.run.classList.toggle("running", running); elements.run.querySelector("span").textContent = running ? "AI 导演工作中…" : "启动 AI 导演"; elements.run.disabled = running; }
 function setStoryRunning(running) {
   elements.storyGenerate.classList.toggle("running", running);
-  elements.storyGenerate.querySelector("span").textContent = running ? "完整剧情生成中…" : `用 ${state.storyModel.split("/").pop()} 生成完整剧情`;
+  elements.storyGenerate.querySelector("span").textContent = running ? "完整剧情生成中…" : `用 ${storyModelLabel()} 生成完整剧情`;
   elements.storyGenerate.disabled = running || !selectedVariant();
 }
 function setAnimationRunning(running) {
@@ -775,6 +973,13 @@ function setAnimationStatus(message, tone = "") {
   elements.animationStatus.textContent = message;
   elements.animationStatus.className = `story-status ${tone}`;
 }
+function storyModelLabel() { return modelDisplayLabel(state.storyProvider, state.storyModel); }
+function animationModelLabel() { return modelDisplayLabel(state.animationProvider, state.animationModel); }
+function modelDisplayLabel(provider, model) {
+  const name = modelName(model);
+  return provider && !name.toLowerCase().includes(String(provider).toLowerCase()) ? `${provider} ${name}` : name;
+}
+function modelName(model) { return String(model || "").split("/").pop(); }
 function validateReady() { if (!state.running) elements.run.disabled = !(state.frames.length >= 3 && elements.fixedCharacter.value.trim() && elements.vertical.value.trim()); }
 function showError(message) { elements.error.textContent = message; }
 function profile() { return { fixedCharacter: elements.fixedCharacter.value.trim(), vertical: elements.vertical.value.trim(), constraints: elements.constraints.value.trim() }; }
@@ -790,13 +995,19 @@ function selectedStoryPackage() {
   const variant = selectedVariant();
   if (!variant) return null;
   const pack = {
+    packageType: "story-production-test-package",
+    packageVersion: "1.0",
     exportedAt: new Date().toISOString(),
     mode: state.mode,
-    modelInfo: { storyModel: state.storyModel, animationModel: state.animationModel },
+    modelInfo: { storyProvider: state.storyProvider, storyModel: state.storyModel, animationProvider: state.animationProvider, animationModel: state.animationModel },
     sourceVideo: state.metadata,
     creatorProfile: profile(),
+    referenceAnalysis: state.output.referenceAnalysis || null,
+    sourceScriptReconstruction: state.output.sourceScriptReconstruction || null,
     selectedVariant: variant,
+    themeVariants: state.output.themeVariants || { variants: [variant] },
     creativeBrief: state.output.creativeBrief,
+    visualGuardrails: state.output.visualGuardrails,
     fullStory: state.fullStories[variant.id] || state.output.fullStory || null,
     animationPlan: state.animationPlans[variant.id] || state.output.animationPlan || null
   };
@@ -809,6 +1020,7 @@ function updateStoryExportActions() {
   const hasStory = Boolean(pack?.fullStory);
   const hasAnimation = Boolean(pack?.animationPlan);
   elements.exportStoryPackage.disabled = !hasStory;
+  elements.exportStoryTestPackage.disabled = !hasStory;
   elements.copyAnimationPack.disabled = !hasAnimation;
   elements.exportVideoQueue.disabled = !hasAnimation;
 }
@@ -828,6 +1040,101 @@ function exportCurrentStoryPackage() {
   if (!pack?.fullStory) return setStoryStatus("请先生成完整剧情，再导出当前生产包。", "error");
   const suffix = pack.animationPlan ? "动画生产包" : "完整剧情";
   downloadJson(pack, `短视频${suffix}-${pack.selectedVariant?.id || "variant"}-${Date.now()}.json`);
+}
+
+function exportStoryTestPackage() {
+  const pack = selectedStoryPackage();
+  if (!pack?.fullStory) return setStoryPackageStatus("请先生成或导入完整剧情，再导出测试包。", "error");
+  const suffix = pack.animationPlan ? "完整剧情-动画测试包" : "完整剧情测试包";
+  downloadJson(pack, `短视频${suffix}-${pack.selectedVariant?.id || "variant"}-${Date.now()}.json`);
+  setStoryPackageStatus(`已导出 ${pack.animationPlan ? "完整剧情 + 动画生产包" : "完整剧情"} 测试包。`, "ready");
+}
+
+async function importStoryTestPackage(file) {
+  try {
+    setStoryPackageStatus("正在导入测试包…", "");
+    const payload = JSON.parse(await file.text());
+    const restored = restoreStoryPackage(payload);
+    setStoryPackageStatus(`已导入 ${restored.id}：${restored.hasStory ? "完整剧情" : "未含完整剧情"}${restored.hasAnimation ? " + 动画生产包" : ""}。`, "ready");
+  } catch (error) {
+    setStoryPackageStatus(error.message || "测试包导入失败", "error");
+  }
+}
+
+function restoreStoryPackage(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("测试包 JSON 格式无效。");
+  const variant = normalizeImportedVariant(payload);
+  if (!variant?.id) throw new Error("测试包缺少 selectedVariant 或主题变体 id。");
+  const id = String(variant.id);
+  const fullStory = payload.fullStory || payload.fullStories?.[id] || payload.output?.fullStory || null;
+  const animationPlan = payload.animationPlan || payload.animationPlans?.[id] || payload.output?.animationPlan || null;
+
+  if (payload.creatorProfile && typeof payload.creatorProfile === "object") {
+    elements.fixedCharacter.value = payload.creatorProfile.fixedCharacter || elements.fixedCharacter.value;
+    elements.vertical.value = payload.creatorProfile.vertical || elements.vertical.value;
+    elements.constraints.value = payload.creatorProfile.constraints || elements.constraints.value;
+    saveProfile();
+    validateReady();
+  }
+  if (payload.modelInfo) {
+    state.storyProvider = payload.modelInfo.storyProvider || state.storyProvider;
+    state.storyModel = payload.modelInfo.storyModel || state.storyModel;
+    state.animationProvider = payload.modelInfo.animationProvider || state.animationProvider;
+    state.animationModel = payload.modelInfo.animationModel || state.animationModel;
+    elements.storyModelName.textContent = modelDisplayLabel(state.storyProvider, state.storyModel);
+  }
+
+  state.metadata = payload.sourceVideo || payload.metadata || state.metadata;
+  state.output.referenceAnalysis = payload.referenceAnalysis || payload.output?.referenceAnalysis || state.output.referenceAnalysis;
+  state.output.sourceScriptReconstruction = payload.sourceScriptReconstruction || payload.output?.sourceScriptReconstruction || state.output.sourceScriptReconstruction;
+  state.output.creativeBrief = payload.creativeBrief || payload.output?.creativeBrief || state.output.creativeBrief;
+  state.output.visualGuardrails = payload.visualGuardrails || payload.output?.visualGuardrails || state.output.visualGuardrails;
+  state.output.themeVariants = mergeImportedThemeVariants(payload.themeVariants || payload.output?.themeVariants, variant);
+  state.selectedVariantId = id;
+
+  state.fullStories = { ...(payload.fullStories || {}), ...state.fullStories };
+  state.animationPlans = { ...(payload.animationPlans || {}), ...state.animationPlans };
+  if (fullStory) {
+    state.fullStories[id] = fullStory;
+    state.output.fullStory = fullStory;
+  }
+  if (animationPlan) {
+    state.animationPlans[id] = animationPlan;
+    state.output.animationPlan = animationPlan;
+  }
+  state.output.fullStories = state.fullStories;
+  state.output.animationPlans = state.animationPlans;
+  elements.export.classList.remove("hidden");
+  history.replaceState({ storyVariantId: id }, "", `/story/${encodeURIComponent(id)}`);
+  renderStoryPage({ autoGenerate: false });
+  return { id, hasStory: Boolean(fullStory), hasAnimation: Boolean(animationPlan) };
+}
+
+function normalizeImportedVariant(payload) {
+  const variant = payload.selectedVariant || payload.variant || payload.output?.selectedVariant || null;
+  if (variant?.id) return variant;
+  const variants = payload.themeVariants?.variants || payload.output?.themeVariants?.variants || [];
+  const fullStory = payload.fullStory || payload.output?.fullStory || null;
+  const animationPlan = payload.animationPlan || payload.output?.animationPlan || null;
+  const id = fullStory?.selectedVariantId || animationPlan?.selectedVariantId || variants[0]?.id || "";
+  if (id) return variants.find((item) => String(item.id) === String(id)) || { id, title: fullStory?.title || animationPlan?.title || id, characterSetup: { protagonist: payload.creatorProfile?.fixedCharacter || "" } };
+  return variant;
+}
+
+function mergeImportedThemeVariants(themeVariants, variant) {
+  const imported = Array.isArray(themeVariants?.variants) ? themeVariants.variants : [];
+  const existing = Array.isArray(state.output.themeVariants?.variants) ? state.output.themeVariants.variants : [];
+  const merged = [...imported, ...existing, variant].filter(Boolean).reduce((acc, item) => {
+    if (!item?.id || acc.some((entry) => String(entry.id) === String(item.id))) return acc;
+    acc.push(item);
+    return acc;
+  }, []);
+  return { ...(themeVariants || state.output.themeVariants || {}), variants: merged };
+}
+
+function setStoryPackageStatus(message, tone = "") {
+  elements.storyPackageStatus.textContent = message;
+  elements.storyPackageStatus.className = tone;
 }
 
 function exportVideoGenerationQueue() {
@@ -887,7 +1194,15 @@ function formatAnimationPackMarkdown(pack) {
     "## 角色参考图 Prompt"
   ];
   for (const item of plan.characterReferencePrompts || []) {
-    lines.push("", `### ${item.characterName || "角色"}`, item.appearancePrompt || "", `一致性标签：${(item.consistencyTags || []).join(" / ")}`, `禁止变化：${(item.forbiddenChanges || []).join(" / ")}`);
+    lines.push(
+      "",
+      `### ${item.characterName || "角色"}`,
+      item.referenceImageAdded ? `参考图：已添加人物参考图${item.referenceImageName ? `（${item.referenceImageName}）` : ""}` : "参考图：未添加",
+      item.appearancePrompt || "",
+      item.referenceImageNotes ? `参考图吸收：${item.referenceImageNotes}` : "",
+      `一致性标签：${(item.consistencyTags || []).join(" / ")}`,
+      `禁止变化：${(item.forbiddenChanges || []).join(" / ")}`
+    );
   }
   lines.push("", "## 关键资产 Prompt");
   for (const item of plan.assetPrompts || []) {

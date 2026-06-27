@@ -8,20 +8,22 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { WorkflowService } from "../src/workflow.js";
 import { InputError, OutputContractError } from "../src/validation.js";
-import { ensureOutputContract } from "../src/validation.js";
+import { collectForbiddenVisualTerms, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile } from "../src/validation.js";
 import { buildRequestBody, MimoClient, parseModelJson } from "../src/mimo-client.js";
-import { animationPlanPrompt, briefPrompt, fullStoryPrompt, variantsPrompt } from "../src/prompts.js";
+import { buildQwenRequestBody, QwenClient } from "../src/qwen-client.js";
+import { animationPlanPrompt, briefPrompt, fullStoryPrompt, variantsPrompt, visualGuardrailsPrompt } from "../src/prompts.js";
 import { parseRunVideoArgs } from "../src/run-video-command.js";
 import { generateShotVideo, ShotVideoConfigError } from "../src/shot-video-generator.js";
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
-import { extractFixedCharacterName } from "../src/validation.js";
-import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
+import { collectFixedCharacterVisualPolicy, extractFixedCharacterName, fixedCharacterVisualPolicyText } from "../src/validation.js";
+import { mockAnimationPlan, mockBrief, mockFullStory, mockVisualGuardrails } from "../src/mock.js";
 import { executeProductionWorkspace } from "../src/video-production-executor.js";
 import { formatMakeVideoMarkdown, makeProductionVideo } from "../src/video-production-maker.js";
 import { buildProductionReport, formatProductionReportMarkdown, loadProductionReport } from "../src/video-production-report.js";
 import { formatProductionPreflightMarkdown, loadProductionPreflight } from "../src/video-production-preflight.js";
 import { buildArtifactsFromExistingOutputs, buildProductionRun, buildProductionWorkspaceFiles, parseQueueJsonl } from "../src/video-production-run.js";
 import { buildVideoGenerationQueue, formatQueueJsonl } from "../public/animation-queue.js";
+import { syncShotCharacterReference } from "../public/character-reference-sync.js";
 
 const frames = Array.from({ length: 8 }, (_, index) => ({
   timestamp: index * 5,
@@ -57,7 +59,7 @@ function buildQueueFixture() {
   });
 }
 
-test("演示模式跑通完整四阶段工作流", async () => {
+test("演示模式跑通完整工作流并生成视觉负面提示词", async () => {
   const workflow = new WorkflowService();
   const result = await workflow.run(input);
   assert.equal(workflow.mode, "demo");
@@ -65,7 +67,51 @@ test("演示模式跑通完整四阶段工作流", async () => {
   assert.ok(result.sourceScriptReconstruction.scenes.length >= 4);
   assert.ok(result.creativeBrief.reusableHighValueBeats.length >= 4);
   assert.equal(result.creativeBrief.allowedNarrativeComponents.length, 7);
+  assert.ok(result.visualGuardrails.commonNegativePrompt.length);
+  assert.match(JSON.stringify(result.visualGuardrails.stageInstructions), /主题变体/);
   assert.equal(result.themeVariants.variants.length, 3);
+});
+
+test("视觉负面提示词 AI 阶段区分用户显式狼尾巴和模型误推导猫尾爪子", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，q版狼耳少女，形象类似猫娘，有狼尾巴，活泼可爱，懂事，学生/村民，村里的热心帮手",
+    vertical: "治愈/温情/日常",
+    constraints: "小白子只用嗷呜表达"
+  };
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const guardrails = ensureVisualGuardrailsMatchesProfile(
+    ensureOutputContract(mockVisualGuardrails({ ...input, creatorProfile, creativeBrief }), "visualGuardrails"),
+    creatorProfile
+  );
+  const forbidden = collectForbiddenVisualTerms(creativeBrief, creatorProfile.fixedCharacter, guardrails);
+
+  assert.deepEqual(guardrails.fixedCharacterBoundary.allowedBodyFeatures.filter((term) => term === "狼尾巴"), ["狼尾巴"]);
+  assert.ok(forbidden.includes("猫尾"));
+  assert.ok(forbidden.includes("爪子"));
+  assert.ok(!forbidden.includes("狼尾巴"));
+  assert.doesNotMatch(guardrails.commonNegativePrompt.join("；"), /不要狼尾巴/);
+});
+
+test("视觉负面提示词 prompt 只要求输出主题变体和完整剧情通用规则", () => {
+  const prompt = visualGuardrailsPrompt({
+    referenceAnalysis: { storySynopsis: "企鹅服女孩执行送达任务" },
+    sourceScriptReconstruction: { relationshipPattern: "信使连接被关爱对象" },
+    creativeBrief: {
+      protectedExpressions: [{ sourceExpression: "企鹅服", prohibition: "禁止企鹅形象", expressionType: "视觉元素", safeAlternativePrinciple: "只保留信使功能" }],
+      controlledRewriteVariables: []
+    },
+    creatorProfile: {
+      fixedCharacter: "小白子，q版狼耳少女，形象类似猫娘，有狼尾巴",
+      vertical: "治愈日常",
+      constraints: ""
+    }
+  });
+  assert.match(prompt, /角色外观与负面提示词审查 AI/);
+  assert.match(prompt, /主题变体”和“完整剧情”/);
+  assert.match(prompt, /首尾帧动画生产包阶段不使用这套 AI 检测/);
+  assert.match(prompt, /形象类似猫娘，有狼尾巴/);
+  assert.match(prompt, /不能自动新增猫尾、猫爪、兽爪、肉垫/);
+  assert.match(prompt, /commonNegativePrompt/);
 });
 
 test("creativeBrief 将通用叙事构件列为允许复用而非禁止项", async () => {
@@ -122,6 +168,57 @@ test("选择主题变体后可用 mimo-v2.5-pro 生成完整剧情", async () =>
   assert.match(result.characterBible.protagonist.identity, /阿岚/);
 });
 
+test("完整剧情和动画生产包可切换到 Qwen，同时保留 MiMo 基础客户端", async () => {
+  const creativeBrief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const variant = {
+    id: "V1",
+    title: "最后一格电",
+    characterSetup: { protagonist: "阿岚，社区修理师", careRecipient: "独居老人", helper: "夜班便利店员" },
+    newTask: "修复并送回旧设备",
+    emotionalMedium: "一段旧录音",
+    environmentPressure: "暴雨停电",
+    endingRitual: "老人按下播放键"
+  };
+  const calls = [];
+  const mimoClient = {
+    async generateJson() {
+      throw new Error("fullStory/animationPlan 不应调用 MiMo 基础客户端");
+    },
+    async generateJsonWithMedia() {
+      return {};
+    }
+  };
+  const qwenClient = {
+    async generateJson(args) {
+      calls.push(args);
+      if (args.model === "qwen3.7-max-story") return mockFullStory({ ...input, creativeBrief, variant });
+      return mockAnimationPlan({ ...input, creativeBrief, variant, fullStory: mockFullStory({ ...input, creativeBrief, variant }) });
+    }
+  };
+  const workflow = new WorkflowService({
+    client: mimoClient,
+    storyClient: qwenClient,
+    storyProvider: "Qwen",
+    storyModel: "qwen3.7-max-story",
+    storyMaxCompletionTokens: 16000,
+    animationClient: qwenClient,
+    animationProvider: "Qwen",
+    animationModel: "qwen3.7-max-animation",
+    animationMaxCompletionTokens: 17000
+  });
+
+  const fullStory = await workflow.createFullStory({ ...input, creativeBrief, variant });
+  const animationPlan = await workflow.createAnimationPlan({ ...input, creativeBrief, variant, fullStory });
+
+  assert.equal(workflow.mode, "mimo");
+  assert.equal(calls[0].model, "qwen3.7-max-story");
+  assert.equal(calls[0].maxCompletionTokens, 16000);
+  assert.equal(calls[1].model, "qwen3.7-max-animation");
+  assert.equal(calls[1].maxCompletionTokens, 17000);
+  assert.equal(fullStory.selectedVariantId, "V1");
+  assert.equal(animationPlan.selectedVariantId, "V1");
+});
+
 test("完整剧情后可生成首尾帧动画生产包", async () => {
   const creativeBrief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
   const variant = {
@@ -155,6 +252,96 @@ test("完整剧情后可生成首尾帧动画生产包", async () => {
   assert.ok(result.shotPlan[0].videoPrompt);
 });
 
+test("人物参考图可用 MiMo 修正角色参考提示词", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，狼耳少女，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
+    vertical: "温馨/日常/治愈"
+  };
+  let captured;
+  const workflow = new WorkflowService({
+    client: {
+      async generateJsonWithMedia(args) {
+        captured = args;
+        return {
+          characterName: "小白子",
+          storyRole: "主角",
+          identity: "狼耳少女，村里的热心帮手",
+          appearancePrompt: "参考图中的小白子，短发，狼耳发饰，粉色上衣和蓝色背带裙，儿童比例，温暖治愈动画风格。",
+          consistencyTags: ["短发", "狼耳发饰", "粉色上衣", "蓝色背带裙"],
+          forbiddenChanges: ["不要改变参考图中的发型和服装", "不要添加尾巴或爪子"],
+          referenceImageNotes: "吸收参考图中的发型、服装配色和年龄感。"
+        };
+      }
+    }
+  });
+
+  const result = await workflow.refineCharacterReference({
+    imageName: "xiaobaizi.png",
+    imageDataUrl: "data:image/png;base64,AA==",
+    creatorProfile,
+    selectedVariant: { id: "V1", title: "风车与彩虹" },
+    fullStory: { title: "风车与彩虹" },
+    characterReference: {
+      characterName: "小白子",
+      storyRole: "主角",
+      identity: "狼耳少女",
+      appearancePrompt: "小白子，儿童，村民装扮。",
+      consistencyTags: ["儿童"],
+      forbiddenChanges: ["不要变成成人"]
+    }
+  });
+
+  assert.equal(captured.frames.length, 1);
+  assert.equal(captured.frames[0].dataUrl, "data:image/png;base64,AA==");
+  assert.match(captured.prompt, /人物参考图/);
+  assert.equal(result.referenceImageAdded, true);
+  assert.equal(result.referenceImageName, "xiaobaizi.png");
+  assert.match(result.appearancePrompt, /参考图中的小白子/);
+  assert.ok(result.consistencyTags.includes("狼耳发饰"));
+});
+
+test("人物参考图更新后同步镜头里的角色外观描述", () => {
+  const plan = {
+    characterReferencePrompts: [{
+      characterName: "小白子",
+      appearancePrompt: "狼耳少女小白子，双马尾，浅蓝背带裤。",
+      consistencyTags: ["狼耳少女", "双马尾"]
+    }],
+    shotPlan: [
+      {
+        shotId: "A01",
+        startFramePrompt: "清晨，村口小路起点。狼耳少女小白子（双马尾，浅蓝背带裤）正从一位村民叔叔手中接过一本画册。她双手捧着画册，眼睛发亮，表情郑重。特写，柔和的晨光。",
+        endFramePrompt: "小白子（双马尾，浅蓝背带裤）把画册抱在胸前，准备出发。",
+        videoPrompt: "小白子从首帧到尾帧只完成接过画册并抱稳的动作。",
+        characterAction: "小白子双手捧住画册。",
+        continuityNotes: "保持小白子旧服装不变。"
+      },
+      {
+        shotId: "A02",
+        startFramePrompt: "村民叔叔站在路边看着画册。",
+        endFramePrompt: "村民叔叔转身离开。",
+        videoPrompt: "镜头缓慢推进。",
+        characterAction: "村民叔叔挥手。",
+        continuityNotes: "无主角外观变化。"
+      }
+    ]
+  };
+  const updated = {
+    characterName: "小白子",
+    appearancePrompt: "参考图中的小白子，银灰色长发，灰白色狼耳，蓝色大眼睛，深色水手服外套，白色衬衫，蓝色领结，儿童比例，Q版动漫风格。",
+    consistencyTags: ["银灰色长发", "灰白色狼耳", "蓝色大眼睛", "深色水手服外套"]
+  };
+
+  const changed = syncShotCharacterReference(plan, plan.characterReferencePrompts[0], updated);
+
+  assert.equal(changed, 1);
+  assert.match(plan.shotPlan[0].startFramePrompt, /小白子（银灰色长发/);
+  assert.doesNotMatch(plan.shotPlan[0].startFramePrompt, /双马尾，浅蓝背带裤/);
+  assert.match(plan.shotPlan[0].endFramePrompt, /深色水手服外套/);
+  assert.match(plan.shotPlan[0].videoPrompt, /小白子（银灰色长发/);
+  assert.equal(plan.shotPlan[1].startFramePrompt, "村民叔叔站在路边看着画册。");
+});
+
 test("动画生产包可转换为视频生成任务队列", () => {
   const queue = buildQueueFixture();
   assert.equal(queue.providerMode, "provider_agnostic");
@@ -175,6 +362,36 @@ test("动画生产包可转换为视频生成任务队列", () => {
   const jsonl = formatQueueJsonl(queue);
   assert.equal(jsonl.split("\n").length, queue.jobs.length);
   assert.equal(JSON.parse(jsonl.split("\n")[0]).taskId, queue.jobs[0].taskId);
+});
+
+test("视频任务队列不再合并 visualGuardrails 通用负面 prompt", () => {
+  const creatorProfile = { fixedCharacter: "小白子，q版狼耳少女，有狼尾巴", vertical: "治愈日常", constraints: "" };
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const variant = {
+    id: "V1",
+    title: "风车",
+    characterSetup: { protagonist: creatorProfile.fixedCharacter, careRecipient: "奶奶", helper: "叔叔" },
+    newTask: "送风车",
+    emotionalMedium: "手工风车",
+    environmentPressure: "阵雨",
+    endingRitual: "插好风车"
+  };
+  const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief });
+  visualGuardrails.commonNegativePrompt.push("不要彩虹披风");
+  const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant, visualGuardrails });
+  const animationPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory, visualGuardrails });
+  const queue = buildVideoGenerationQueue({
+    exportedAt: "2026-06-25T00:00:00.000Z",
+    selectedVariant: variant,
+    fullStory,
+    animationPlan,
+    visualGuardrails
+  });
+
+  assert.ok(!queue.common.negativeVisualRules.includes("不要彩虹披风"));
+  for (const job of queue.jobs.filter((item) => ["reference_image", "start_frame_image", "end_frame_image", "first_last_frame_video"].includes(item.type))) {
+    assert.doesNotMatch(job.negativePrompt, /不要彩虹披风/);
+  }
 });
 
 test("视频生产运行状态按任务依赖释放下一步", () => {
@@ -918,7 +1135,7 @@ test("模型 JSON 解析兼容 think 标签和代码块", () => {
   assert.deepEqual(parseModelJson('<think>internal</think>\n```json\n{"ok":true}\n```'), { ok: true });
 });
 
-test("原生视频请求将视觉内容放在文本前并把 no_think 放在末尾", () => {
+test("MiMo thinking disabled 时将视觉内容放在文本前并把 no_think 放在末尾", () => {
   const body = buildRequestBody(
     { model: "mimo-v2.5", jsonMode: false, videoFps: 2, videoMediaResolution: "default", maxCompletionTokens: 8192, thinking: "disabled" },
     { prompt: "分析视频", frames, video: { dataUrl: "data:video/mp4;base64,AAAA" }, useVideo: true }
@@ -936,6 +1153,16 @@ test("原生视频请求将视觉内容放在文本前并把 no_think 放在末�
   assert.match(content.at(-1).text, /\/no_think$/);
 });
 
+test("MiMo thinking enabled 时不追加 no_think", () => {
+  const body = buildRequestBody(
+    { model: "mimo-v2.5", jsonMode: false, maxCompletionTokens: 8192, thinking: "enabled" },
+    { prompt: "分析视频", frames: [], useVideo: false }
+  );
+  assert.deepEqual(body.thinking, { type: "enabled" });
+  assert.equal(body.messages[1].content.at(-1).text, "分析视频");
+  assert.doesNotMatch(body.messages[1].content.at(-1).text, /\/no_think/);
+});
+
 test("完整剧情请求可覆盖为 pro 模型和更长 token 上限", () => {
   const body = buildRequestBody(
     { model: "mimo-v2.5", jsonMode: false, maxCompletionTokens: 8192, thinking: "disabled" },
@@ -945,6 +1172,21 @@ test("完整剧情请求可覆盖为 pro 模型和更长 token 上限", () => {
   assert.equal(body.model, "mimo-v2.5-pro");
   assert.equal(body.max_completion_tokens, 12288);
   assert.equal(body.messages[1].content.at(-1).type, "text");
+});
+
+test("Qwen 请求使用 OpenAI 兼容文本格式和 qwen3.7-max", () => {
+  const body = buildQwenRequestBody(
+    { model: "qwen3.7-max", jsonMode: true, maxCompletionTokens: 16384, enableThinking: false },
+    { prompt: "生成完整剧情" }
+  );
+  assert.equal(body.model, "qwen3.7-max");
+  assert.equal(body.max_tokens, 16384);
+  assert.equal(body.stream, false);
+  assert.equal(body.enable_thinking, false);
+  assert.deepEqual(body.response_format, { type: "json_object" });
+  assert.equal(body.messages[0].role, "system");
+  assert.equal(body.messages[1].role, "user");
+  assert.equal(body.messages[1].content, "生成完整剧情");
 });
 
 test("关键帧请求保持全部图像在文本之前", () => {
@@ -1104,6 +1346,18 @@ test("模型漏掉必要字段时拒绝把结果标记为成功", () => {
   assert.throws(() => ensureOutputContract({ selectedVariantId: "V1" }, "animationPlan"), /缺少必要字段/);
 });
 
+test("fullStory 不完整时拒绝通过校验", () => {
+  const story = mockFullStory({
+    ...input,
+    variant: { id: "V1", characterSetup: { protagonist: "小白子，小女孩" } },
+    creatorProfile: { fixedCharacter: "小白子，小女孩，儿童", vertical: "治愈日常" }
+  });
+  const shortBeats = { ...story, beatSheet: story.beatSheet.slice(0, 5) };
+  const shortScenes = { ...story, sceneScript: story.sceneScript.slice(0, 5) };
+  assert.throws(() => ensureOutputContract(shortBeats, "fullStory"), /至少需要 6 个剧情节拍/);
+  assert.throws(() => ensureOutputContract(shortScenes, "fullStory"), /至少需要 6 个可拍摄分场/);
+});
+
 test("creativeBrief 禁止把原片表面形象映射成固定角色身份", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
@@ -1248,6 +1502,59 @@ test("主题变体禁止继承 creativeBrief 中已保护的表面形象", async
   );
 });
 
+test("主题变体禁止复用 mustChange 受控改写变量", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
+    vertical: "治愈/温情/日常"
+  };
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  creativeBrief.controlledRewriteVariables.push(
+    {
+      variable: "送达物品",
+      sourceValue: "录取通知书",
+      allowedDirections: ["改成儿童画、风车或手写卡片"],
+      mustChange: true,
+      reason: "原片具体道具必须替换。"
+    },
+    {
+      variable: "结尾仪式",
+      sourceValue: "孔明灯（许愿灯）",
+      allowedDirections: ["改成风筝、风车或手绘明信片"],
+      mustChange: true,
+      reason: "原片结尾道具必须替换。"
+    }
+  );
+  const workflow = new WorkflowService({
+    client: {
+      async generateJson() {
+        return { variants: [{
+          id: "V1",
+          title: "灯下通知",
+          oneLineHook: "小白子送来录取通知书。",
+          logline: "小白子赶在天黑前把录取通知书送到邻居家。",
+          verticalFit: "治愈/温情/日常",
+          characterSetup: { protagonist: "小白子，小女孩", careRecipient: "小月", helper: "老张" },
+          newTask: "送录取通知书",
+          emotionalMedium: "录取通知书",
+          environmentPressure: "大雾",
+          storyOutline: [{ beat: 1, phase: "任务", action: "小白子抱着录取通知书出发。", emotion: "期待", dramaticFunction: "建立任务", estimatedSeconds: 6 }],
+          highValueBeatMapping: [],
+          keyDialogueDirections: [],
+          endingRitual: "两人一起放孔明灯。",
+          transformationProof: { changedCharacters: "", changedTask: "", changedDetailsAndProps: "", changedDialogue: "", changedVisualExpression: "" },
+          experienceFidelity: { positioning: "", audience: "", emotion: "", plotDriver: "", highValueBeats: "" },
+          originalityRiskCheck: { riskLevel: "low", possibleSimilarity: "", mitigation: "" }
+        }] };
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => workflow.createVariants({ creativeBrief, creatorProfile, count: 1 }),
+    /录取通知书|孔明灯/
+  );
+});
+
 test("完整剧情禁止继承 creativeBrief 中已保护的表面形象", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
@@ -1281,6 +1588,56 @@ test("完整剧情禁止继承 creativeBrief 中已保护的表面形象", async
     () => workflow.createFullStory({ creativeBrief, creatorProfile, variant }),
     /企鹅|翅膀/
   );
+});
+
+test("完整剧情禁止复用 mustChange 受控改写变量，但允许在避相似说明里负向提及", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
+    vertical: "治愈/温情/日常",
+    constraints: "小白子用嗷或嗷呜表达情绪"
+  };
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  creativeBrief.controlledRewriteVariables.push(
+    {
+      variable: "送达物品",
+      sourceValue: "录取通知书",
+      allowedDirections: ["改成儿童画、风车或手写卡片"],
+      mustChange: true,
+      reason: "原片具体道具必须替换。"
+    },
+    {
+      variable: "结尾仪式",
+      sourceValue: "孔明灯（许愿灯）",
+      allowedDirections: ["改成风筝、风车或手绘明信片"],
+      mustChange: true,
+      reason: "原片结尾道具必须替换。"
+    }
+  );
+  const variant = {
+    id: "V1",
+    title: "雾中画境",
+    characterSetup: { protagonist: "小白子，小女孩", careRecipient: "小月", helper: "老张" },
+    newTask: "送儿童画",
+    emotionalMedium: "儿童画",
+    environmentPressure: "大雾",
+    endingRitual: "一起把风筝线系好"
+  };
+  const leakedStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  leakedStory.sceneScript[0].visibleAction = "小白子抱着录取通知书出发，约好晚上放孔明灯。";
+  const safeStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  safeStory.keyProps[0].avoidSimilarityNote = "避免录取通知书和孔明灯，改用儿童画与风筝完成同类情绪功能。";
+
+  const leakedWorkflow = new WorkflowService({
+    client: { async generateJson() { return leakedStory; } },
+    storyModel: "mimo-v2.5-pro"
+  });
+  await assert.rejects(
+    () => leakedWorkflow.createFullStory({ creativeBrief, creatorProfile, variant }),
+    /录取通知书|孔明灯/
+  );
+
+  assert.doesNotThrow(() => ensureOutputContract(safeStory, "fullStory"));
+  assert.doesNotThrow(() => ensureFullStoryMatchesProfile(safeStory, creatorProfile, creativeBrief, variant));
 });
 
 test("完整剧情校验失败时会自动要求模型纠偏一次", async () => {
@@ -1329,7 +1686,7 @@ test("完整剧情校验失败时会自动要求模型纠偏一次", async () =>
   assert.doesNotMatch(JSON.stringify(result), /尾巴/);
 });
 
-test("动画生产包正向提示词禁止继承原片表面形象", async () => {
+test("动画生产包阶段不再因原片表面形象触发 AI 检测拦截", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常",
@@ -1359,9 +1716,182 @@ test("动画生产包正向提示词禁止继承原片表面形象", async () =>
     client: { async generateJson() { return leakedPlan; } },
     animationModel: "mimo-v2.5-pro"
   });
-  await assert.rejects(
+  await assert.doesNotReject(
     () => workflow.createAnimationPlan({ creativeBrief, creatorProfile, variant, fullStory }),
-    /企鹅|翅膀/
+  );
+});
+
+test("动画生产包阶段不再因狼耳少女外观扩展触发 AI 检测拦截", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，狼耳少女，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
+    vertical: "治愈/温情/日常",
+    constraints: "小白子用嗷或嗷呜表达情绪"
+  };
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const variant = {
+    id: "V1",
+    title: "风车的约定",
+    characterSetup: { protagonist: "小白子，狼耳少女", careRecipient: "邻居奶奶", helper: "拖拉机叔叔" },
+    newTask: "送风车",
+    emotionalMedium: "手工风车",
+    environmentPressure: "阵雨",
+    endingRitual: "一起把风车插在窗边"
+  };
+  const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  const leakedPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory });
+  leakedPlan.characterReferencePrompts[0].appearancePrompt = "小白子，狼耳少女，带狼尾和肉垫，狼爪轻轻扒着风车。";
+  leakedPlan.shotPlan[0].startFramePrompt = "小白子带着狼尾站在村口，狼爪扶住风车。";
+  const workflow = new WorkflowService({
+    client: { async generateJson() { return leakedPlan; } },
+    animationModel: "qwen3.7-max"
+  });
+  await assert.doesNotReject(
+    () => workflow.createAnimationPlan({ creativeBrief, creatorProfile, variant, fullStory }),
+  );
+});
+
+test("固定角色显式写狼尾巴时允许尾巴动作但不自动允许爪子肉垫", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，q版狼耳少女，形象类似猫娘，有狼尾巴，活泼可爱，懂事，学生/村民，村里的热心帮手",
+    vertical: "治愈/温情/日常",
+    constraints: "小白子用嗷或嗷呜表达情绪"
+  };
+  const policy = collectFixedCharacterVisualPolicy(creatorProfile.fixedCharacter);
+  assert.ok(policy.allowedBodyTerms.includes("尾巴"));
+  assert.ok(policy.allowedBodyTerms.includes("狼尾巴"));
+  assert.ok(!policy.forbiddenBodyTerms.includes("尾巴"));
+  assert.ok(policy.forbiddenBodyTerms.includes("狼爪"));
+  assert.ok(policy.forbiddenBodyTerms.includes("肉垫"));
+
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const variant = {
+    id: "V1",
+    title: "风车的约定",
+    characterSetup: { protagonist: "小白子，q版狼耳少女，有狼尾巴", careRecipient: "邻居奶奶", helper: "拖拉机叔叔" },
+    newTask: "送风车",
+    emotionalMedium: "手工风车",
+    environmentPressure: "阵雨",
+    endingRitual: "一起把风车插在窗边"
+  };
+  const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  const tailPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory });
+  tailPlan.characterReferencePrompts[0].appearancePrompt = "小白子，q版狼耳少女，有狼尾巴，穿浅蓝背带裙，尾巴轻轻摇动。";
+  tailPlan.shotPlan[0].startFramePrompt = "小白子站在村口，狼耳竖起，狼尾巴轻轻摇动，双手扶住手工风车。";
+  const workflow = new WorkflowService({
+    client: { async generateJson() { return tailPlan; } },
+    animationModel: "qwen3.7-max"
+  });
+  await assert.doesNotReject(
+    () => workflow.createAnimationPlan({ creativeBrief, creatorProfile, variant, fullStory })
+  );
+
+  const clawPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory });
+  clawPlan.characterReferencePrompts[0].appearancePrompt = "小白子，q版狼耳少女，有狼尾巴，狼爪和肉垫清晰可见。";
+  clawPlan.shotPlan[0].startFramePrompt = "小白子站在村口，狼尾巴轻摇，狼爪扶住风车，肉垫贴着木柄。";
+  const formerlyRejectingWorkflow = new WorkflowService({
+    client: { async generateJson() { return clawPlan; } },
+    animationModel: "qwen3.7-max"
+  });
+  await assert.doesNotReject(
+    () => formerlyRejectingWorkflow.createAnimationPlan({ creativeBrief, creatorProfile, variant, fullStory })
+  );
+});
+
+test("AI 视觉负面提示词只进入主题变体和完整剧情 prompt，不进入动画 prompt", () => {
+  const creatorProfile = { fixedCharacter: "小白子，q版狼耳少女，有狼尾巴", vertical: "治愈日常", constraints: "" };
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief });
+  visualGuardrails.forbiddenPositiveTraits.push({ term: "彩虹披风", reason: "用户未声明该服装符号。", severity: "block" });
+  visualGuardrails.commonNegativePrompt.push("不要彩虹披风");
+  const variant = { id: "V1", title: "风车", characterSetup: { protagonist: creatorProfile.fixedCharacter }, newTask: "送风车" };
+  const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+
+  const variantPrompt = variantsPrompt({ creativeBrief, visualGuardrails, creatorProfile, count: 2 });
+  const storyPrompt = fullStoryPrompt({ creativeBrief, visualGuardrails, referenceAnalysis: {}, sourceScriptReconstruction: {}, variant, creatorProfile });
+  const animationPrompt = animationPlanPrompt({ creativeBrief, visualGuardrails, variant, fullStory, creatorProfile });
+
+  for (const prompt of [variantPrompt, storyPrompt]) {
+    assert.match(prompt, /AI 视觉负面提示词通用规则/);
+    assert.match(prompt, /彩虹披风/);
+    assert.match(prompt, /不要彩虹披风/);
+  }
+  assert.doesNotMatch(animationPrompt, /AI 视觉负面提示词通用规则/);
+  assert.doesNotMatch(animationPrompt, /彩虹披风/);
+  assert.doesNotMatch(animationPrompt, /visualGuardrails\.commonNegativePrompt/);
+});
+
+test("动画生产包不再按 AI 视觉负面提示词拦截正向画面越界", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，q版狼耳少女，有狼尾巴，儿童",
+    vertical: "治愈/温情/日常",
+    constraints: ""
+  };
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief });
+  visualGuardrails.forbiddenPositiveTraits.push({ term: "彩虹披风", reason: "用户未声明该服装符号。", severity: "block" });
+  visualGuardrails.commonNegativePrompt.push("不要彩虹披风");
+  const variant = {
+    id: "V1",
+    title: "风车的约定",
+    characterSetup: { protagonist: "小白子，q版狼耳少女，有狼尾巴", careRecipient: "邻居奶奶", helper: "拖拉机叔叔" },
+    newTask: "送风车",
+    emotionalMedium: "手工风车",
+    environmentPressure: "阵雨",
+    endingRitual: "一起把风车插在窗边"
+  };
+  const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant, visualGuardrails });
+  const leakedPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory, visualGuardrails });
+  leakedPlan.shotPlan[0].startFramePrompt += " 小白子穿着彩虹披风。";
+  const workflow = new WorkflowService({
+    client: { async generateJson() { return leakedPlan; } },
+    animationModel: "qwen3.7-max"
+  });
+
+  await assert.doesNotReject(
+    () => workflow.createAnimationPlan({ creativeBrief, visualGuardrails, creatorProfile, variant, fullStory }),
+  );
+});
+
+test("动画生产包正向和规则字段都不再触发 AI 视觉检测", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，q版狼耳少女，有狼尾巴，儿童",
+    vertical: "治愈/温情/日常",
+    constraints: ""
+  };
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief });
+  visualGuardrails.forbiddenPositiveTraits.push({ term: "翅膀", reason: "固定角色未声明翅膀。", severity: "block" });
+  const variant = {
+    id: "V1",
+    title: "风车的约定",
+    characterSetup: { protagonist: "小白子，q版狼耳少女，有狼尾巴", careRecipient: "邻居奶奶", helper: "拖拉机叔叔" },
+    newTask: "送风车",
+    emotionalMedium: "手工风车",
+    environmentPressure: "阵雨",
+    endingRitual: "一起把风车插在窗边"
+  };
+  const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant, visualGuardrails });
+  const safePlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory, visualGuardrails });
+  safePlan.visualBible.characterConsistencyRules.push("不要出现翅膀、爪子、肉垫，保持儿童角色外观。");
+  safePlan.shotPlan[0].continuityNotes += " 不要新增翅膀、爪子、肉垫。";
+  safePlan.shotPlan[0].negativePrompt += "；不要翅膀、爪子、肉垫";
+  const safeWorkflow = new WorkflowService({
+    client: { async generateJson() { return safePlan; } },
+    animationModel: "qwen3.7-max"
+  });
+  await assert.doesNotReject(
+    () => safeWorkflow.createAnimationPlan({ creativeBrief, visualGuardrails, creatorProfile, variant, fullStory })
+  );
+
+  const leakedPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory, visualGuardrails });
+  leakedPlan.characterReferencePrompts[0].appearancePrompt += " 不要画爪子和肉垫。";
+  leakedPlan.shotPlan[0].startFramePrompt += " 不要出现翅膀。";
+  const noDetectionWorkflow = new WorkflowService({
+    client: { async generateJson() { return leakedPlan; } },
+    animationModel: "qwen3.7-max"
+  });
+  await assert.doesNotReject(
+    () => noDetectionWorkflow.createAnimationPlan({ creativeBrief, visualGuardrails, creatorProfile, variant, fullStory })
   );
 });
 
@@ -1380,7 +1910,13 @@ test("固定角色名提取支持中文逗号设定，variants 提示词声明�
 
 test("完整剧情提示词要求围绕选中变体并锁定固定角色", () => {
   const prompt = fullStoryPrompt({
-    creativeBrief: {},
+    creativeBrief: {
+      controlledRewriteVariables: [
+        { variable: "送达物品", sourceValue: "录取通知书", mustChange: true },
+        { variable: "结尾仪式", sourceValue: "孔明灯（许愿灯）", mustChange: true }
+      ],
+      protectedExpressions: []
+    },
     referenceAnalysis: {},
     sourceScriptReconstruction: {},
     variant: { id: "V2", title: "雨停之前" },
@@ -1390,6 +1926,9 @@ test("完整剧情提示词要求围绕选中变体并锁定固定角色", () =>
   assert.match(prompt, /selectedVariantId 必须等于选中主题变体 id：V2/);
   assert.match(prompt, /不能改名/);
   assert.match(prompt, /不得继承原片表面形象/);
+  assert.match(prompt, /禁止复用原片具体表达黑名单/);
+  assert.match(prompt, /录取通知书/);
+  assert.match(prompt, /孔明灯/);
   assert.match(prompt, /sceneScript 至少 6 场/);
 });
 
@@ -1398,7 +1937,7 @@ test("动画提示词要求输出首尾帧视频生产包", () => {
     creativeBrief: {},
     variant: { id: "V2", title: "雨停之前" },
     fullStory: { selectedVariantId: "V2", title: "雨停之前", sceneScript: [] },
-    creatorProfile: { fixedCharacter: "小白子，小女孩，儿童", vertical: "治愈日常", constraints: "只用嗷呜表达" }
+    creatorProfile: { fixedCharacter: "小白子，狼耳少女，小女孩，儿童", vertical: "治愈日常", constraints: "只用嗷呜表达" }
   });
   assert.match(prompt, /首尾帧 AI 视频生产包/);
   assert.match(prompt, /startFramePrompt/);
@@ -1406,6 +1945,17 @@ test("动画提示词要求输出首尾帧视频生产包", () => {
   assert.match(prompt, /videoPrompt/);
   assert.match(prompt, /默认 8–12 个镜头/);
   assert.match(prompt, /正向画面提示词/);
+  assert.match(prompt, /固定角色外观边界/);
+  assert.match(prompt, /耳朵类设定只代表用户写明的耳朵/);
+  assert.match(prompt, /禁止自动新增未声明的身体特征：尾巴/);
+});
+
+test("固定角色外观边界提示词不会把显式狼尾巴写成禁止项", () => {
+  const policyText = fixedCharacterVisualPolicyText("小白子，q版狼耳少女，形象类似猫娘，有狼尾巴，儿童");
+  assert.match(policyText, /允许正向使用的身体特征：尾巴、狼尾、狼尾巴/);
+  assert.doesNotMatch(policyText, /禁止自动新增未声明的身体特征：[^。]*狼尾巴/);
+  assert.match(policyText, /狼爪/);
+  assert.match(policyText, /肉垫/);
 });
 
 test("本地视频命令解析角色、赛道、抽帧和变体数量", () => {

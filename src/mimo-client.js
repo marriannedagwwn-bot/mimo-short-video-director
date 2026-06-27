@@ -95,7 +95,7 @@ export class MimoClient {
       const content = envelope.choices?.[0]?.message?.content;
       if (typeof content !== "string") throw new ModelResponseError("MiMo 响应缺少 message.content", raw.slice(0, 2000));
       try {
-        return parseModelJson(content);
+        return parseModelJson(content, "MiMo");
       } catch (error) {
         if (!(error instanceof ModelResponseError) || attempt >= retryAttempts) throw error;
         lastJsonError = error;
@@ -138,23 +138,25 @@ export function buildRequestBody(config, { prompt, frames = [], video = null, us
   const visualContent = useVideo && video?.dataUrl
     ? [{ type: "video_url", video_url: { url: video.dataUrl }, fps: config.videoFps ?? 2, media_resolution: config.videoMediaResolution || "default" }]
     : frames.map((frame) => ({ type: "image_url", image_url: { url: frame.dataUrl } }));
+  const thinkingType = config.thinking || "disabled";
+  const promptText = thinkingType === "enabled" ? prompt : `${prompt}\n/no_think`;
   const body = {
     model: overrides.model || config.model,
     max_completion_tokens: overrides.maxCompletionTokens ?? config.maxCompletionTokens ?? 8192,
     temperature: 0.3,
     top_p: 0.95,
     stream: false,
-    thinking: { type: config.thinking || "disabled" },
+    thinking: { type: thinkingType },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: [...visualContent, { type: "text", text: `${prompt}\n/no_think` }] }
+      { role: "user", content: [...visualContent, { type: "text", text: promptText }] }
     ]
   };
   if (config.jsonMode) body.response_format = { type: "json_object" };
   return body;
 }
 
-export function parseModelJson(content) {
+export function parseModelJson(content, providerName = "模型") {
   const cleaned = content
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .replace(/^```(?:json)?\s*/i, "")
@@ -170,6 +172,6 @@ export function parseModelJson(content) {
         return JSON.parse(cleaned.slice(start, end + 1));
       } catch {}
     }
-    throw new ModelResponseError("MiMo 未返回合法 JSON", content.slice(0, 3000));
+    throw new ModelResponseError(`${providerName} 未返回合法 JSON`, content.slice(0, 3000));
   }
 }

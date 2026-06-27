@@ -4,6 +4,7 @@ export function buildVideoGenerationQueue(pack = {}) {
   const visual = plan.visualBible || {};
   const editPlan = plan.editPlan || {};
   const selectedVariant = pack.selectedVariant || {};
+  const negativeVisualRules = visual.negativeVisualRules || [];
   const generatedAt = pack.exportedAt || new Date().toISOString();
   const aspectRatio = strategy.targetAspectRatio || "9:16";
   const queue = {
@@ -19,7 +20,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       visualStyle: visual.animationStyle || visual.overallStyle || "",
       cameraLanguage: visual.cameraLanguage || "",
       characterConsistencyRules: visual.characterConsistencyRules || [],
-      negativeVisualRules: visual.negativeVisualRules || []
+      negativeVisualRules
     },
     jobs: []
   };

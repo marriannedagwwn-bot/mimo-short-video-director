@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { loadEnv, getConfig } from "./config.js";
 import { MimoClient, ModelResponseError } from "./mimo-client.js";
+import { QwenClient } from "./qwen-client.js";
 import { WorkflowService } from "./workflow.js";
 import { prepareVideoInput } from "./video-file.js";
 
@@ -72,6 +73,7 @@ export async function runVideoCommand(argv, { stdout = process.stdout, stderr = 
     loadEnv();
     const config = getConfig();
     const client = config.mimo.enabled ? new MimoClient(config.mimo) : null;
+    const qwenClient = config.qwen.enabled ? new QwenClient(config.qwen) : null;
     await assertMimoState(client, config, options);
 
     stdout.write(`读取视频：${path.resolve(options.videoPath)}\n`);
@@ -82,8 +84,18 @@ export async function runVideoCommand(argv, { stdout = process.stdout, stderr = 
     });
     stdout.write(`已抽取 ${videoInput.frames.length} 张关键帧；${videoInput.nativeVideo.reason}\n`);
 
-    const workflow = new WorkflowService({ client });
-    stdout.write(`运行模式：${workflow.mode === "mimo" ? "MiMo 实分析" : "演示模式"}\n`);
+    const workflow = new WorkflowService({
+      client,
+      storyClient: qwenClient || client,
+      storyProvider: qwenClient ? "Qwen" : "MiMo",
+      storyModel: qwenClient ? config.qwen.storyModel : config.mimo.storyModel,
+      storyMaxCompletionTokens: qwenClient ? config.qwen.storyMaxCompletionTokens : config.mimo.storyMaxCompletionTokens,
+      animationClient: qwenClient || client,
+      animationProvider: qwenClient ? "Qwen" : "MiMo",
+      animationModel: qwenClient ? config.qwen.animationModel : config.mimo.animationModel,
+      animationMaxCompletionTokens: qwenClient ? config.qwen.animationMaxCompletionTokens : config.mimo.animationMaxCompletionTokens
+    });
+    stdout.write(`运行模式：${workflow.mode === "mimo" ? `MiMo 实分析；剧情 ${workflow.storyProvider} ${workflow.storyModel}；动画 ${workflow.animationProvider} ${workflow.animationModel}` : "演示模式"}\n`);
     const result = await workflow.run({
       frames: videoInput.frames,
       video: videoInput.video,
@@ -112,6 +124,12 @@ export async function runVideoCommand(argv, { stdout = process.stdout, stderr = 
         fixedCharacter: options.character,
         vertical: options.vertical,
         constraints: options.constraints
+      },
+      modelInfo: {
+        storyProvider: workflow.storyProvider,
+        storyModel: workflow.storyModel,
+        animationProvider: workflow.animationProvider,
+        animationModel: workflow.animationModel
       },
       ...result
     });

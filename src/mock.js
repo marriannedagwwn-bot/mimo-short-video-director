@@ -120,6 +120,59 @@ export function mockBrief(input) {
   };
 }
 
+export function mockVisualGuardrails(input) {
+  const fixed = input.creatorProfile?.fixedCharacter || "固定主角";
+  const fixedName = fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
+  const hasWolfTail = /狼尾|狼尾巴|有[^，,。；;\n]{0,6}尾巴/u.test(fixed);
+  const hasCatTail = /猫尾|猫尾巴/u.test(fixed);
+  const allowedBodyFeatures = [
+    /狼耳/u.test(fixed) ? "狼耳" : "",
+    /猫耳|猫娘/u.test(fixed) ? "猫娘风格参考" : "",
+    hasWolfTail ? "狼尾巴" : "",
+    hasCatTail ? "猫尾巴" : ""
+  ].filter(Boolean);
+  const forbiddenPositiveTraits = [
+    hasWolfTail ? { term: "猫尾", reason: "固定角色明确为狼尾巴，不能替换成猫尾。", severity: "block" } : null,
+    hasWolfTail ? { term: "猫尾巴", reason: "固定角色明确为狼尾巴，不能替换成猫尾巴。", severity: "block" } : null,
+    !/爪|肉垫/u.test(fixed) ? { term: "爪子", reason: "固定角色未声明爪子，不能从兽耳或猫娘风格自动推导。", severity: "block" } : null,
+    !/兽爪/u.test(fixed) ? { term: "兽爪", reason: "固定角色未声明兽爪。", severity: "block" } : null,
+    !/肉垫/u.test(fixed) ? { term: "肉垫", reason: "固定角色未声明肉垫。", severity: "block" } : null
+  ].filter(Boolean);
+  return {
+    fixedCharacterBoundary: {
+      characterName: fixedName,
+      identityLock: `主角始终为${fixed}`,
+      allowedIdentity: fixed,
+      allowedAppearance: allowedBodyFeatures.length ? `允许使用：${allowedBodyFeatures.join("、")}` : "只使用固定角色文本明写的人物外观。",
+      allowedBodyFeatures,
+      styleNotes: fixed.includes("猫娘") ? "猫娘只作为萌系/二次元风格参考，不自动等于猫尾、猫爪或肉垫。" : "不自动扩展未声明动物化身体特征。",
+      explicitUserPresets: fixed.split(/[，,；;、。\n\r]/u).map((item) => item.trim()).filter(Boolean),
+      doNotInfer: "不要把原片动物服、玩偶外壳或类比词扩展成固定角色没有明写的身体部位。"
+    },
+    allowedPositiveTraits: [
+      { term: fixedName, scope: "identity", reason: "固定角色姓名必须锁定。" },
+      ...allowedBodyFeatures.map((term) => ({ term, scope: "bodyFeature", reason: "来自用户固定角色预设或安全风格说明。" }))
+    ],
+    forbiddenPositiveTraits,
+    sourceSurfaceExpressions: [
+      { term: "企鹅", source: "creativeBrief", reason: "原片表面身份只能提炼剧作功能，不能映射给固定角色。", mustAvoid: true },
+      { term: "企鹅服", source: "creativeBrief", reason: "原片服装拟态属于具体表面表达。", mustAvoid: true },
+      { term: "企鹅快递员", source: "modelRisk", reason: "模型容易把原片表面职业外壳套给固定角色。", mustAvoid: true }
+    ],
+    commonNegativePrompt: [
+      "不要企鹅、企鹅服、企鹅快递员、玩偶服、动物外壳",
+      ...forbiddenPositiveTraits.map((item) => `不要${item.term}`)
+    ],
+    stageInstructions: {
+      themeVariants: "主题变体只写固定角色允许身份和外观，不把负面词写成新设定。",
+      fullStory: "完整剧情不得把负面词写入主角身份、动作、道具或剧情正向内容。",
+      animationPlan: "动画生产包阶段不使用 visualGuardrails 做 AI 检测，只保留结构校验。"
+    },
+    rationale: "先由固定角色文本确定允许项，再把原片表面表达和未声明联想项放入通用负面提示词。",
+    uncertainties: []
+  };
+}
+
 export function mockVariants(input) {
   const count = Math.max(1, Math.min(6, Number(input.count) || 3));
   const fixed = input.creatorProfile?.fixedCharacter || "固定主角";
