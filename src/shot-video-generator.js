@@ -25,7 +25,7 @@ export async function generateShotVideo(options = {}) {
   const shotId = safeSegment(shot.shotId || "shot");
   const stamp = new Date().toISOString().replace(/[-:.]/gu, "").replace(/Z$/u, "");
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-"));
-  const outputPath = path.join(outputRoot, `${shotId}-${stamp}.mp4`);
+  const count = clampVideoCount(options.count);
 
   try {
     await fs.mkdir(outputRoot, { recursive: true });
@@ -39,22 +39,40 @@ export async function generateShotVideo(options = {}) {
       stamp
     });
     const inputArtifacts = [frames.start, frames.end].map(({ url, receipt, ...artifact }) => artifact);
-    const request = buildShotVideoRequest(shot, { outputPath, inputArtifacts });
-    const receipt = await runGenericWorker({ request, outputPath, workDir, configPath });
+    const videos = [];
+    for (let index = 0; index < count; index += 1) {
+      const suffix = count > 1 ? `-${index + 1}` : "";
+      const outputPath = path.join(outputRoot, `${shotId}-${stamp}${suffix}.mp4`);
+      const request = buildShotVideoRequest(shot, { outputPath, inputArtifacts, candidateIndex: index, candidateCount: count });
+      const receipt = await runGenericWorker({ request, outputPath, workDir, configPath });
+      await assertUsableVideoOutput(outputPath);
+      videos.push({
+        candidateIndex: index,
+        taskId: request.taskId,
+        outputUrl: `${publicBasePath}/${path.basename(outputPath)}`,
+        outputPath,
+        receipt,
+        generatedAt: new Date().toISOString()
+      });
+    }
+    const firstVideo = videos[0] || {};
     return {
-      taskId: request.taskId,
+      taskId: firstVideo.taskId || `${shot.shotId || "SHOT"}-VIDEO-PREVIEW`,
       shotId: shot.shotId || "",
       startFrameUrl: frames.start.url,
       startFramePath: frames.start.path,
       endFrameUrl: frames.end.url,
       endFramePath: frames.end.path,
-      outputUrl: `${publicBasePath}/${path.basename(outputPath)}`,
-      outputPath,
+      outputUrl: firstVideo.outputUrl || "",
+      outputPath: firstVideo.outputPath || "",
+      count,
+      actualCount: videos.length,
+      videos,
       frameReceipts: {
         start: frames.start.receipt || {},
         end: frames.end.receipt || {}
       },
-      receipt,
+      receipt: firstVideo.receipt || {},
       generatedAt: new Date().toISOString()
     };
   } finally {
@@ -128,10 +146,13 @@ function buildFrameRequest(shot = {}, context = {}) {
 }
 
 function buildShotVideoRequest(shot = {}, context = {}) {
+  const candidateIndex = Number(context.candidateIndex) || 0;
+  const candidateCount = Number(context.candidateCount) || 1;
+  const candidateSuffix = candidateCount > 1 ? `-${candidateIndex + 1}` : "";
   return {
     version: "1.0",
     providerMode: "provider_agnostic",
-    taskId: `${shot.shotId || "SHOT"}-VIDEO-PREVIEW`,
+    taskId: `${shot.shotId || "SHOT"}-VIDEO-PREVIEW${candidateSuffix}`,
     type: "first_last_frame_video",
     capability: "first_last_frame_video_generation",
     status: "ready",
@@ -150,11 +171,39 @@ function buildShotVideoRequest(shot = {}, context = {}) {
       characterAction: shot.characterAction || "",
       dialogueOrSubtitle: shot.dialogueOrSubtitle || "",
       soundDesign: shot.soundDesign || "",
-      continuityNotes: shot.continuityNotes || ""
+      continuityNotes: shot.continuityNotes || "",
+      candidateIndex,
+      candidateCount
     },
     acceptanceCriteria: shot.acceptanceCriteria || [],
     rawJob: shot
   };
+}
+
+async function assertUsableVideoOutput(outputPath) {
+  let stat;
+  try {
+    stat = await fs.stat(outputPath);
+  } catch {
+    throw new ShotVideoProviderError("视频生成服务没有写入视频文件。");
+  }
+  if (!stat.isFile() || stat.size < 8) {
+    throw new ShotVideoProviderError(`视频生成服务返回的文件过小，疑似不是可播放视频（${stat?.size || 0} bytes）。`);
+  }
+  const file = await fs.open(outputPath, "r");
+  try {
+    const buffer = Buffer.alloc(Math.min(256, stat.size));
+    await file.read(buffer, 0, buffer.length, 0);
+    const sample = buffer.toString("utf8").replace(/\0/gu, "").trim().toLowerCase();
+    if (stat.size < 512 && /^(ok|success|done|accepted|created|queued|true)$/u.test(sample)) {
+      throw new ShotVideoProviderError(`视频生成服务只返回了任务确认文本“${sample}”，没有返回视频文件。请配置轮询结果接口或正确的视频结果字段。`);
+    }
+    if (/^[{[]/u.test(sample)) {
+      throw new ShotVideoProviderError("视频生成服务返回了 JSON 文本而不是视频文件。请配置 resultUrlPaths / resultBase64Paths / pollEndpointTemplate。");
+    }
+  } finally {
+    await file.close();
+  }
 }
 
 async function writeDataUrlArtifact({ outputRoot, publicBasePath, outputKey, basename, dataUrl }) {
@@ -205,6 +254,12 @@ async function loadProviderConfig(configPath) {
 
 function hasBothInputFrames(options = {}) {
   return Boolean(options.startFrameDataUrl && options.endFrameDataUrl);
+}
+
+function clampVideoCount(value) {
+  const number = Math.round(Number(value));
+  if (!Number.isFinite(number)) return 1;
+  return Math.min(4, Math.max(1, number));
 }
 
 function imageEndpointConfigured(config = {}) {

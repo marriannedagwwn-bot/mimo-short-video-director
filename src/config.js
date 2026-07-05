@@ -41,6 +41,10 @@ export function getConfig() {
   const qwenJsonRetryAttempts = Math.round(clampNumber(process.env.QWEN_JSON_RETRY_ATTEMPTS, 2, 0, 3));
   const qwenEnableThinkingValue = process.env.QWEN_ENABLE_THINKING?.trim().toLowerCase();
   const qwenEnableThinking = qwenEnableThinkingValue === "true" ? true : qwenEnableThinkingValue === "false" ? false : false;
+  const jimengBaseUrl = process.env.JIMENG_BASE_URL?.trim() || "https://ark.cn-beijing.volces.com/api/v3";
+  const jimengApiKey = process.env.JIMENG_API_KEY?.trim() || process.env.ARK_API_KEY?.trim() || process.env.VOLCENGINE_ARK_API_KEY?.trim() || "";
+  const jimengMaxImages = Math.round(clampNumber(process.env.JIMENG_MAX_IMAGES, 6, 1, 15));
+  const jimengTimeoutMs = Math.round(clampNumber(process.env.JIMENG_TIMEOUT_MS, 300000, 30000, 900000));
   return {
     port: Number(process.env.PORT || 4173),
     mimo: {
@@ -74,6 +78,18 @@ export function getConfig() {
       enableThinking: qwenEnableThinking,
       jsonMode: process.env.QWEN_JSON_MODE === "true",
       enabled: Boolean(qwenBaseUrl && (process.env.QWEN_API_KEY?.trim() || process.env.DASHSCOPE_API_KEY?.trim()))
+    },
+    jimeng: {
+      baseUrl: jimengBaseUrl,
+      apiKey: jimengApiKey,
+      model: process.env.JIMENG_IMAGE_MODEL?.trim() || "doubao-seedream-5-0-260128",
+      size: process.env.JIMENG_IMAGE_SIZE?.trim() || "1728x2304",
+      outputFormat: process.env.JIMENG_IMAGE_OUTPUT_FORMAT?.trim() || "png",
+      imageField: process.env.JIMENG_IMAGE_FIELD?.trim() || "image",
+      watermark: process.env.JIMENG_WATERMARK === "true",
+      maxImages: jimengMaxImages,
+      timeoutMs: jimengTimeoutMs,
+      enabled: Boolean(jimengBaseUrl && jimengApiKey)
     }
   };
 }

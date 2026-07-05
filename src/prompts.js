@@ -294,10 +294,24 @@ export function animationPlanPrompt(input) {
 
 推荐策略：
 - 每个镜头单独生成 3–6 秒，不要一次生成整条片。
-- 先用 visualBible 和 characterReferencePrompts 锁定角色、世界观、色彩和动画风格。
-- 每个 shot 必须同时给出 startFramePrompt、endFramePrompt、videoPrompt、negativePrompt 和 acceptanceCriteria。
+- 先用 visualBible 和 characterReferencePrompts 锁定角色、世界观、色彩和动画风格；这些是全局锁定层，只写一次。
+- 每个 shot 必须同时给出 startFramePrompt、endFramePrompt、videoPrompt、negativePrompt 和 acceptanceCriteria，但 negativePrompt 与 acceptanceCriteria 只作为局部例外和 QA 备注，不要承担主要生成控制。
 - 首帧负责镜头起点，尾帧负责镜头终点，videoPrompt 只描述中间运动、镜头运动和情绪变化。
 - 输出应保持模型无关，可用于支持首尾帧/关键帧驱动的视频模型。
+
+三层简化结构（必须执行）：
+- 第 1 层 identity lock：只在 characterReferencePrompts 中完整锁定角色姓名、身份、年龄感、服装/外观、核心性格和一致性标签；只在 visualBible 中完整锁定风格、色彩、镜头语言、世界规则和全局 negativeVisualRules。
+- 第 2 层 shot frame：startFramePrompt 只写人物状态、场景、镜头三类信息，保留 1-2 个动作语义；endFramePrompt 只写相对首帧发生变化的动作、表情、位置，但必须用一句短锚点复述与首帧相同的地点/室内外属性/背景/景别/机位，不要重复完整身份和全套风格。
+- 第 3 层 video prompt：videoPrompt 只写动作和镜头运动，不重复环境，不写身份设定，不写负面规则，不写验收标准。
+- 每条 startFramePrompt 控制在 80-150 个汉字；每条 endFramePrompt 控制在 40-120 个汉字；videoPrompt 控制在 40-120 个汉字。
+
+拆镜头方案 B（必须优先执行）：
+- 如果一个剧情段落同时包含“角色 A 指路/递物/示意 + 角色 B 转头/看见目标 + 角色 B 眼睛一亮/点头/握拳/摆尾/开心回应”等连续状态变化，必须拆成相邻 2 个或更多 shot，不要塞进同一组首尾帧。
+- 第 1 个 shot 做中景互动镜头：只表达外部互动与视线转向，例如 A 指向远方，B 跟随方向看过去。
+- 第 2 个 shot 做表情强化镜头：只表达 B 的反应终点，例如眼睛一亮、点头、握拳或开心回应。若固定角色没有明确写“尾巴/狼尾巴/猫尾巴”等特征，禁止写任何尾巴动作。
+- 每个 shot 只能有一个主要动作目标；如果出现“先……随后……然后……”“镜头从中景切到近景”“过肩切特写”“转头后又点头握拳”等组合，必须继续拆分。
+- 同一个 shot 的 startFramePrompt 与 endFramePrompt 必须保持同一地点、同一镜头景别、同一机位高度、同一镜头方向和同一主体构图；不能在同一 shot 里从中景变近景、从过肩变特写、从室外变室内。
+- videoPrompt 只能描述首帧到尾帧之间的微动作与镜头运动，不得包含“切换镜头、切到特写、转场、闪回、跳到下一个场景”。
 
 固定角色：${input.creatorProfile?.fixedCharacter || "未指定"}
 垂直赛道：${input.creatorProfile?.vertical || "未指定"}
@@ -311,13 +325,20 @@ creativeBrief：${JSON.stringify(input.creativeBrief || {})}
 硬约束：
 - selectedVariantId 必须等于选中主题变体 id：${variant.id || fullStory.selectedVariantId || "未指定"}。
 - animationPlan 只能服务当前 fullStory，不得改剧情、不得换主题、不得更换固定角色。
-- 正向画面提示词中必须锁定固定角色姓名、身份、年龄感、服装/外观和核心性格；不能把角色变成动物、玩偶、服装拟态或原片表面身份。
+- characterReferencePrompts 中必须锁定固定角色姓名、身份、年龄感、服装/外观和核心性格；shot 里的正向画面提示词只用角色名承接全局锁定，不要每个镜头重复完整外观。
 - 视觉提示词必须服从“固定角色外观边界”：用户明写的特征可以正向使用；用户没有明写的尾巴、爪子、肉垫、翅膀、脚蹼等身体特征不得自动新增。
 - 如果固定角色只包含“狼耳/猫耳/兽耳”等耳朵类设定，含义是“人物 + 头顶耳朵特征/发箍式耳朵”，不能自动推导为尾巴、爪子、肉垫、狼嘴、獠牙、四足姿态或动物化动作。
 - startFramePrompt、endFramePrompt、videoPrompt、assetPrompts.imagePrompt 不得出现上方黑名单词；如果 fullStory 已经换成新道具/新仪式，只能沿用 fullStory 的新表达。
+- visualBible.negativeVisualRules 是全局负面提示词，只写一次；shot.negativePrompt 默认留空，只在该镜头有独有禁忌时写 1 条短语。
 - negativePrompt 可以写禁止项；但 startFramePrompt、endFramePrompt、videoPrompt、appearancePrompt 中不得把禁止项写成正向画面。
 - 角色一致性优先于动作复杂度；每个镜头只允许一个主要动作目标。
 - 镜头数量应覆盖完整剧情关键动作，默认 8–12 个镜头；若 fullStory.sceneScript 少于 6 场，也要拆出至少 6 个镜头。
+- 不能为了维持 8–12 个镜头而合并复合动作；拆镜头方案 B 优先级更高，必要时可以扩展到 14 个以内。
+- startFramePrompt 和 endFramePrompt 必须写成“静态关键帧规格”，不是剧情散文。startFramePrompt 只包含：地点/时间/天气、景别/机位、主体位置与状态、手部/道具、视线/表情、背景层级/光线。endFramePrompt 只包含变化项。
+- endFramePrompt 即使只写变化项，也必须显式保留首帧的地点和空间属性：例如“仍在同一户外农家院落，中景平视，背景绿植和木栅栏不变”。禁止只写人物动作导致模型切到室内、另一个房间或另一条路。
+- startFramePrompt 与 endFramePrompt 不要写对白，不要写音效，不要写“正在变化”的连续动作；只写该帧被冻结的一瞬间。
+- characterAction 只写该 shot 的单一动作目标；dialogueOrSubtitle 和 soundDesign 只作视频理解参考，不要让它们污染画面文字。
+- acceptanceCriteria 只用于 QA/debug，控制在 1-3 条短标准；不要把生成提示词复述进 acceptanceCriteria。
 
 输出 animationPlan，严格使用以下结构：
 {
@@ -392,7 +413,7 @@ creativeBrief：${JSON.stringify(input.creativeBrief || {})}
   "uncertainties":[{"field":"", "reason":"", "safeFallback":""}]
 }
 
-shotPlan 的 startFramePrompt、endFramePrompt、videoPrompt 应该是可以直接复制给图像/视频模型的中文提示词。每个镜头的 startFramePrompt 和 endFramePrompt 必须写清：角色、服装/外观、地点、构图、光线、情绪、关键道具。videoPrompt 必须写清：从首帧到尾帧的运动、镜头运动、节奏和禁止新增内容。${JSON_ONLY}`;
+shotPlan 的 startFramePrompt、endFramePrompt、videoPrompt 应该是精简、可复制给图像/视频模型的中文提示词。身份、风格和全局负面由 characterReferencePrompts 与 visualBible 承担，shot 内不要重复堆叠。遇到“指路互动 + 主角反应强化”的组合时，按方案 B 拆成中景互动镜头和表情强化镜头。${JSON_ONLY}`;
 }
 
 export function characterReferenceRefinePrompt(input) {

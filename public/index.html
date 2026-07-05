@@ -158,6 +158,150 @@
     </section>
   </main>
 
+  <div class="modal-backdrop hidden" id="characterImageModal" aria-hidden="true">
+    <div class="modal-card character-image-modal" role="dialog" aria-modal="true" aria-labelledby="characterImageModalTitle">
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow">JIMENG 5.0 LITE</p>
+          <h2 id="characterImageModalTitle">生成角色全身参考图</h2>
+        </div>
+        <button class="icon-button" id="closeCharacterImageModal" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-grid">
+        <div class="modal-panel">
+          <label class="field">
+            <span>选择角色</span>
+            <select id="characterImageRole"></select>
+          </label>
+          <label class="field">
+            <span>一次生成数量</span>
+            <select id="characterImageCount">
+              <option value="1">1 张</option>
+              <option value="2">2 张</option>
+              <option value="3">3 张</option>
+              <option value="4">4 张</option>
+              <option value="5">5 张</option>
+              <option value="6">6 张</option>
+            </select>
+          </label>
+          <label class="reference-image-drop" id="characterImageDrop" for="characterImageInput">
+            <input id="characterImageInput" type="file" accept="image/*" hidden>
+            <span>上传参考图片</span>
+            <strong id="characterImageDropTitle">点击或拖入图片</strong>
+            <small id="characterImageDropHint">即梦会参考这张图，但会移除水果摊，只生成角色全身图。</small>
+          </label>
+          <div class="reference-image-preview hidden" id="characterImagePreviewWrap">
+            <img id="characterImagePreview" alt="参考图片预览">
+            <button class="text-button" id="replaceCharacterImage" type="button">更换参考图片</button>
+          </div>
+        </div>
+        <div class="modal-panel">
+          <span class="block-label">生成提示词预览 · 可编辑</span>
+          <textarea class="prompt-preview prompt-preview-editor" id="characterImagePromptPreview" rows="8"></textarea>
+          <p class="story-status" id="characterImageStatus"></p>
+          <button class="primary-button" id="generateCharacterImages" type="button">
+            <span>生成参考图</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="generated-reference-results" id="characterImageResults"></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop hidden" id="shotFrameImageModal" aria-hidden="true">
+    <div class="modal-card shot-frame-image-modal" role="dialog" aria-modal="true" aria-labelledby="shotFrameImageModalTitle">
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow">JIMENG 5.0 LITE</p>
+          <h2 id="shotFrameImageModalTitle">生成镜头帧图片</h2>
+        </div>
+        <button class="icon-button" id="closeShotFrameImageModal" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-grid">
+        <div class="modal-panel">
+          <p class="modal-meta" id="shotFrameImageMeta"></p>
+          <div class="shot-frame-control-row">
+            <label class="field shot-frame-kind-field">
+              <span>生成类型</span>
+              <select id="shotFrameImageKind">
+                <option value="start">首帧</option>
+                <option value="end">尾帧</option>
+              </select>
+            </label>
+            <label class="field shot-frame-count-field">
+              <span>生成数量</span>
+              <select id="shotFrameImageCount">
+                <option value="1">1 张</option>
+                <option value="2">2 张</option>
+                <option value="3">3 张</option>
+                <option value="4" selected>4 张</option>
+                <option value="5">5 张</option>
+                <option value="6">6 张</option>
+              </select>
+            </label>
+          </div>
+          <div class="shot-frame-reference-list" id="shotFrameReferenceList"></div>
+        </div>
+        <div class="modal-panel">
+          <span class="block-label">生成提示词预览 · 可编辑</span>
+          <textarea class="prompt-preview prompt-preview-editor shot-frame-prompt-editor" id="shotFrameImagePromptPreview" rows="14"></textarea>
+          <p class="story-status" id="shotFrameImageStatus"></p>
+          <button class="primary-button" id="confirmGenerateShotFrameImage" type="button">
+            <span id="confirmGenerateShotFrameImageLabel">生成首帧</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="generated-reference-results shot-frame-image-results" id="shotFrameImageResults"></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop hidden" id="shotVideoModal" aria-hidden="true">
+    <div class="modal-card shot-video-modal" role="dialog" aria-modal="true" aria-labelledby="shotVideoModalTitle">
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow">JIMENG 3.0</p>
+          <h2 id="shotVideoModalTitle">生成镜头视频</h2>
+        </div>
+        <button class="icon-button" id="closeShotVideoModal" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-grid">
+        <div class="modal-panel">
+          <p class="modal-meta" id="shotVideoMeta"></p>
+          <label class="field">
+            <span>生成数量</span>
+            <select id="shotVideoCount">
+              <option value="1">1 条</option>
+              <option value="2">2 条</option>
+              <option value="3">3 条</option>
+              <option value="4">4 条</option>
+            </select>
+          </label>
+          <div class="shot-video-reference-list" id="shotVideoReferenceList"></div>
+        </div>
+        <div class="modal-panel">
+          <span class="block-label">视频提示词预览 · 可编辑</span>
+          <textarea class="prompt-preview prompt-preview-editor shot-video-prompt-editor" id="shotVideoPromptPreview" rows="14"></textarea>
+          <p class="story-status" id="shotVideoStatus"></p>
+          <button class="primary-button" id="confirmGenerateShotVideo" type="button">
+            <span>生成视频</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="generated-reference-results shot-video-results" id="shotVideoResults"></div>
+    </div>
+  </div>
+
+  <div class="image-preview-backdrop hidden" id="generatedImagePreview" aria-hidden="true">
+    <button class="image-preview-close" id="closeGeneratedImagePreview" type="button" aria-label="关闭预览">×</button>
+    <figure class="image-preview-card">
+      <img id="generatedImagePreviewImage" alt="放大的角色参考图">
+      <figcaption id="generatedImagePreviewCaption">按 Esc 关闭</figcaption>
+    </figure>
+  </div>
+
   <footer><span>母题导演台 · MVP</span><span>结构保真，表达原创</span></footer>
   <script type="module" src="/app.js"></script>
 </body>

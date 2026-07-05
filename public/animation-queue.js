@@ -58,6 +58,7 @@ export function buildVideoGenerationQueue(pack = {}) {
     const startOutput = `frames.${shotId}.start`;
     const endOutput = `frames.${shotId}.end`;
     const videoOutput = `videos.${shotId}`;
+    const shotNegativePrompt = joinList([...negativeVisualRules, shot.negativePrompt].filter(Boolean));
     const sharedShot = {
       shotId,
       sourceSceneId: shot.sourceSceneId || "",
@@ -75,7 +76,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       outputKey: startOutput,
       ...sharedShot,
       prompt: shot.startFramePrompt || "",
-      negativePrompt: shot.negativePrompt || "",
+      negativePrompt: shotNegativePrompt,
       requiredInputs: collectReferenceKeys(queue),
       acceptanceCriteria: ["首帧角色、服装、地点、构图、光线和道具清楚", ...(shot.acceptanceCriteria || [])]
     });
@@ -87,7 +88,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       outputKey: endOutput,
       ...sharedShot,
       prompt: shot.endFramePrompt || "",
-      negativePrompt: shot.negativePrompt || "",
+      negativePrompt: shotNegativePrompt,
       requiredInputs: collectReferenceKeys(queue),
       acceptanceCriteria: ["尾帧与首帧形成明确动作终点", ...(shot.acceptanceCriteria || [])]
     });
@@ -99,7 +100,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       outputKey: videoOutput,
       ...sharedShot,
       prompt: shot.videoPrompt || "",
-      negativePrompt: shot.negativePrompt || "",
+      negativePrompt: shotNegativePrompt,
       requiredInputs: [startOutput, endOutput],
       cameraMotion: shot.cameraMotion || "",
       characterAction: shot.characterAction || "",

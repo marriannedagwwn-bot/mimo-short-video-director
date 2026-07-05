@@ -36,10 +36,9 @@ export function syncCharacterText(text, characterName, visualAnchor) {
   const anchor = `${characterName}（${visualAnchor}）`;
   const escapedName = escapeRegExp(characterName);
   const anchoredPattern = new RegExp(`${escapedName}（[^）]{0,220}）`, "gu");
-  if (anchoredPattern.test(text)) {
-    return text.replace(anchoredPattern, anchor);
-  }
-  return text.replace(characterName, anchor);
+  const anchored = replaceCharacterMentions(text, anchoredPattern, anchor, { replaceAll: true });
+  if (anchored.changed) return anchored.text;
+  return replaceCharacterMentions(text, new RegExp(escapedName, "gu"), anchor, { replaceAll: false }).text;
 }
 
 function stripLeadingCharacterName(value, characterName) {
@@ -53,4 +52,29 @@ function stripLeadingCharacterName(value, characterName) {
 
 function escapeRegExp(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function replaceCharacterMentions(text, pattern, replacement, options = {}) {
+  let changed = false;
+  const next = String(text || "").replace(pattern, (match, offset, fullText) => {
+    if (changed && !options.replaceAll) return match;
+    const after = suffixAfterOptionalParenthetical(fullText, offset + match.length);
+    if (isLocationOwnerSuffix(after)) return match;
+    changed = true;
+    return replacement;
+  });
+  return { text: next, changed };
+}
+
+function suffixAfterOptionalParenthetical(text, startIndex) {
+  let after = String(text || "").slice(startIndex);
+  if (after.startsWith("（")) {
+    const closeIndex = after.indexOf("）");
+    if (closeIndex >= 0) after = after.slice(closeIndex + 1);
+  }
+  return after;
+}
+
+function isLocationOwnerSuffix(value = "") {
+  return /^(?:的)?(?:家|家里|院子|小院|院落|庭院|院|屋子|屋|房间|厨房|客厅|卧室|门口|门前|花园|菜园|农田|田地|学校|教室|办公室|店铺|店|摊位|摊|路边|村口|院墙|餐桌|房子|宅院)/u.test(String(value || ""));
 }

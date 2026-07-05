@@ -11,9 +11,10 @@ import { InputError, OutputContractError } from "../src/validation.js";
 import { collectForbiddenVisualTerms, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile } from "../src/validation.js";
 import { buildRequestBody, MimoClient, parseModelJson } from "../src/mimo-client.js";
 import { buildQwenRequestBody, QwenClient } from "../src/qwen-client.js";
+import { JimengImageClient, buildCharacterReferenceImagePrompt, buildJimengImageRequestBody, buildShotFrameImagePrompt } from "../src/jimeng-client.js";
 import { animationPlanPrompt, briefPrompt, fullStoryPrompt, variantsPrompt, visualGuardrailsPrompt } from "../src/prompts.js";
 import { parseRunVideoArgs } from "../src/run-video-command.js";
-import { generateShotVideo, ShotVideoConfigError } from "../src/shot-video-generator.js";
+import { generateShotVideo, ShotVideoConfigError, ShotVideoProviderError } from "../src/shot-video-generator.js";
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
 import { collectFixedCharacterVisualPolicy, extractFixedCharacterName, fixedCharacterVisualPolicyText } from "../src/validation.js";
 import { mockAnimationPlan, mockBrief, mockFullStory, mockVisualGuardrails } from "../src/mock.js";
@@ -24,6 +25,7 @@ import { formatProductionPreflightMarkdown, loadProductionPreflight } from "../s
 import { buildArtifactsFromExistingOutputs, buildProductionRun, buildProductionWorkspaceFiles, parseQueueJsonl } from "../src/video-production-run.js";
 import { buildVideoGenerationQueue, formatQueueJsonl } from "../public/animation-queue.js";
 import { syncShotCharacterReference } from "../public/character-reference-sync.js";
+import { shotRelatedCharacterReferences, uploadedReferenceImages } from "../public/shot-reference-images.js";
 
 const frames = Array.from({ length: 8 }, (_, index) => ({
   timestamp: index * 5,
@@ -342,6 +344,40 @@ test("人物参考图更新后同步镜头里的角色外观描述", () => {
   assert.equal(plan.shotPlan[1].startFramePrompt, "村民叔叔站在路边看着画册。");
 });
 
+test("人物参考图同步不会把地点所有者写成出场角色", () => {
+  const plan = {
+    characterReferencePrompts: [{
+      characterName: "外婆",
+      appearancePrompt: "灰白头发，围裙，慈祥老人。"
+    }],
+    shotPlan: [
+      {
+        shotId: "A02",
+        startFramePrompt: "阳光明媚的外婆院子，近景平视。小白子双手抱着旧铁盒。",
+        endFramePrompt: "小白子身体转向画面右侧。",
+        videoPrompt: "小白子抱盒转身。"
+      },
+      {
+        shotId: "A03",
+        startFramePrompt: "外婆院子门口，外婆微笑着向小白子挥手。",
+        endFramePrompt: "外婆站在院门旁目送小白子。"
+      }
+    ]
+  };
+  const updated = {
+    characterName: "外婆",
+    appearancePrompt: "和蔼的老年女性，灰白头发盘起，穿着围裙。",
+    consistencyTags: ["灰白头发", "围裙"]
+  };
+
+  const changed = syncShotCharacterReference(plan, plan.characterReferencePrompts[0], updated);
+
+  assert.equal(changed, 1);
+  assert.equal(plan.shotPlan[0].startFramePrompt, "阳光明媚的外婆院子，近景平视。小白子双手抱着旧铁盒。");
+  assert.match(plan.shotPlan[1].startFramePrompt, /外婆院子门口，外婆（和蔼的老年女性/);
+  assert.doesNotMatch(plan.shotPlan[1].startFramePrompt, /外婆（和蔼的老年女性[^）]+）院子/);
+});
+
 test("动画生产包可转换为视频生成任务队列", () => {
   const queue = buildQueueFixture();
   assert.equal(queue.providerMode, "provider_agnostic");
@@ -354,6 +390,8 @@ test("动画生产包可转换为视频生成任务队列", () => {
   assert.ok(queue.jobs.some((job) => job.type === "final_edit"));
   const videoJob = queue.jobs.find((job) => job.type === "first_last_frame_video");
   assert.deepEqual(videoJob.requiredInputs, [`frames.${videoJob.shotId}.start`, `frames.${videoJob.shotId}.end`]);
+  assert.match(videoJob.negativePrompt, /不要动物化主角/);
+  assert.match(queue.jobs.find((job) => job.type === "start_frame_image").negativePrompt, /不要动物化主角/);
   const videoOutputs = queue.jobs.filter((job) => job.type === "first_last_frame_video").map((job) => job.outputKey);
   const reviewOutputs = queue.jobs.filter((job) => job.type === "quality_check").map((job) => job.outputKey);
   const finalEditJob = queue.jobs.find((job) => job.type === "final_edit");
@@ -712,6 +750,195 @@ test("通用 HTTP worker 支持首尾帧视频提交、轮询和下载", async (
   assert.equal(receipt.resultKind, "url");
 });
 
+test("通用 HTTP worker 支持 ModelArk/Dreamina 首尾帧视频任务 preset", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-modelark-"));
+  let postBody = null;
+  const server = http.createServer(async (request, response) => {
+    if (request.method === "POST" && request.url === "/api/v3/contents/generations/tasks") {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      postBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id: "cgt-test-1", status: "queued" }));
+      return;
+    }
+    if (request.method === "GET" && request.url === "/api/v3/contents/generations/tasks/cgt-test-1") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id: "cgt-test-1", status: "succeeded", content: { video_url: `http://127.0.0.1:${server.address().port}/media/modelark.mp4` } }));
+      return;
+    }
+    if (request.url === "/media/modelark.mp4") {
+      response.writeHead(200, { "content-type": "video/mp4" });
+      response.end("modelark video bytes");
+      return;
+    }
+    response.writeHead(404);
+    response.end("not found");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  const queue = {
+    version: "test",
+    providerMode: "provider_agnostic",
+    title: "modelark video worker test",
+    selectedVariantId: "V1",
+    jobs: [
+      { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", prompt: "首帧" },
+      { taskId: "S01-END", type: "end_frame_image", inputType: "text_to_image", outputKey: "frames.S01.end", prompt: "尾帧" },
+      { taskId: "S01-VIDEO", type: "first_last_frame_video", inputType: "image_pair_to_video", outputKey: "videos.S01", requiredInputs: ["frames.S01.start", "frames.S01.end"], prompt: "让人物从首帧走到尾帧", negativePrompt: "不要字幕", durationSeconds: 4, aspectRatio: "9:16" }
+    ]
+  };
+  const initialRun = buildProductionRun(queue, { outputRoot: root });
+  const startJob = initialRun.jobs.find((job) => job.taskId === "S01-START");
+  const endJob = initialRun.jobs.find((job) => job.taskId === "S01-END");
+  await fs.mkdir(path.dirname(startJob.outputPath), { recursive: true });
+  await fs.mkdir(path.dirname(endJob.outputPath), { recursive: true });
+  await fs.writeFile(startJob.outputPath, "start frame bytes");
+  await fs.writeFile(endJob.outputPath, "end frame bytes");
+  const artifacts = buildArtifactsFromExistingOutputs(queue, {
+    outputRoot: root,
+    existingOutputPaths: [startJob.outputPath, endJob.outputPath]
+  });
+  const run = buildProductionRun(queue, { outputRoot: root, artifacts });
+  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+  const configPath = path.join(root, "provider.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    videoEndpoint: `http://127.0.0.1:${address.port}/api/v3`,
+    providerPreset: "modelark_content_generation",
+    videoModel: "dreamina-seedance-2-0-260128",
+    pollIntervalMs: 1,
+    pollTimeoutMs: 1000
+  }));
+
+  const result = await executeProductionWorkspace({
+    root,
+    provider: "command",
+    command: process.execPath,
+    commandArgs: ["workers/generic-http-worker.mjs", "--config", configPath],
+    all: true
+  });
+  const videoJob = result.run.jobs.find((job) => job.taskId === "S01-VIDEO");
+  assert.equal(videoJob.status, "done");
+  assert.equal(postBody.model, "dreamina-seedance-2-0-260128");
+  assert.equal(postBody.ratio, "9:16");
+  assert.equal(postBody.duration, 4);
+  assert.equal(postBody.generate_audio, false);
+  assert.deepEqual(postBody.content.map((item) => item.type), ["text", "image_url", "image_url"]);
+  assert.deepEqual(postBody.content.map((item) => item.role || ""), ["", "first_frame", "last_frame"]);
+  assert.match(postBody.content[1].image_url.url, /^data:image\/png;base64,/);
+  assert.match(postBody.content[2].image_url.url, /^data:image\/png;base64,/);
+  assert.match(postBody.content[0].text, /不要字幕/);
+  assert.equal(await fs.readFile(videoJob.outputPath, "utf8"), "modelark video bytes");
+});
+
+test("通用 HTTP worker 支持 Kling 首尾帧视频任务 preset", async (t) => {
+  const savedEnv = pickEnv([
+    "VIDEO_HTTP_ENDPOINT",
+    "VIDEO_HTTP_IMAGE_ENDPOINT",
+    "VIDEO_HTTP_VIDEO_ENDPOINT",
+    "VIDEO_HTTP_VIDEO_MODEL",
+    "VIDEO_HTTP_PRESET",
+    "VIDEO_HTTP_API_KEY",
+    "VIDEO_HTTP_CONFIG",
+    "VIDEO_HTTP_VIDEO_DURATION",
+    "VIDEO_HTTP_VIDEO_MODE",
+    "VIDEO_HTTP_GENERATE_AUDIO",
+    "VIDEO_HTTP_VIDEO_ASPECT_RATIO",
+    "VIDEO_HTTP_CFG_SCALE"
+  ]);
+  for (const key of Object.keys(savedEnv)) delete process.env[key];
+  t.after(() => restoreEnv(savedEnv));
+
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-kling-"));
+  let postBody = null;
+  const server = http.createServer(async (request, response) => {
+    if (request.method === "POST" && request.url === "/v1/videos/image2video") {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      postBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ code: 0, data: { task_id: "kling-task-1", task_status: "submitted" } }));
+      return;
+    }
+    if (request.method === "GET" && request.url === "/v1/videos/image2video/kling-task-1") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        code: 0,
+        data: {
+          task_id: "kling-task-1",
+          task_status: "succeed",
+          task_result: { videos: [{ url: `http://127.0.0.1:${server.address().port}/media/kling.mp4` }] }
+        }
+      }));
+      return;
+    }
+    if (request.url === "/media/kling.mp4") {
+      response.writeHead(200, { "content-type": "video/mp4" });
+      response.end("kling video bytes");
+      return;
+    }
+    response.writeHead(404);
+    response.end("not found");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  const queue = {
+    version: "test",
+    providerMode: "provider_agnostic",
+    title: "kling video worker test",
+    selectedVariantId: "V1",
+    jobs: [
+      { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", prompt: "首帧" },
+      { taskId: "S01-END", type: "end_frame_image", inputType: "text_to_image", outputKey: "frames.S01.end", prompt: "尾帧" },
+      { taskId: "S01-VIDEO", type: "first_last_frame_video", inputType: "image_pair_to_video", outputKey: "videos.S01", requiredInputs: ["frames.S01.start", "frames.S01.end"], prompt: "让人物从首帧走到尾帧", negativePrompt: "不要字幕", durationSeconds: 4, aspectRatio: "9:16" }
+    ]
+  };
+  const initialRun = buildProductionRun(queue, { outputRoot: root });
+  const startJob = initialRun.jobs.find((job) => job.taskId === "S01-START");
+  const endJob = initialRun.jobs.find((job) => job.taskId === "S01-END");
+  await fs.mkdir(path.dirname(startJob.outputPath), { recursive: true });
+  await fs.mkdir(path.dirname(endJob.outputPath), { recursive: true });
+  await fs.writeFile(startJob.outputPath, "start frame bytes");
+  await fs.writeFile(endJob.outputPath, "end frame bytes");
+  const artifacts = buildArtifactsFromExistingOutputs(queue, {
+    outputRoot: root,
+    existingOutputPaths: [startJob.outputPath, endJob.outputPath]
+  });
+  const run = buildProductionRun(queue, { outputRoot: root, artifacts });
+  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+  const configPath = path.join(root, "provider.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    videoEndpoint: `http://127.0.0.1:${address.port}/v1`,
+    providerPreset: "kling_image_to_video",
+    videoModel: "kling-v2-1",
+    pollIntervalMs: 1,
+    pollTimeoutMs: 1000
+  }));
+
+  const result = await executeProductionWorkspace({
+    root,
+    provider: "command",
+    command: process.execPath,
+    commandArgs: ["workers/generic-http-worker.mjs", "--config", configPath],
+    all: true
+  });
+  const videoJob = result.run.jobs.find((job) => job.taskId === "S01-VIDEO");
+  assert.equal(videoJob.status, "done");
+  assert.equal(postBody.model_name, "kling-v2-1");
+  assert.equal(postBody.image, Buffer.from("start frame bytes").toString("base64"));
+  assert.equal(postBody.image_tail, Buffer.from("end frame bytes").toString("base64"));
+  assert.equal(postBody.prompt, "让人物从首帧走到尾帧");
+  assert.equal(postBody.negative_prompt, "不要字幕");
+  assert.equal(postBody.mode, "pro");
+  assert.equal(postBody.duration, "5");
+  assert.equal(await fs.readFile(videoJob.outputPath, "utf8"), "kling video bytes");
+  const receipt = JSON.parse(await fs.readFile(`${videoJob.outputPath}.provider.json`, "utf8"));
+  assert.equal(receipt.providerTaskId, "kling-task-1");
+  assert.equal(receipt.resultKind, "url");
+});
+
 test("单镜头首尾帧视频接口可调用供应商并返回播放地址", async (t) => {
   const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_IMAGE_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_API_KEY", "VIDEO_HTTP_CONFIG"]);
   delete process.env.VIDEO_HTTP_ENDPOINT;
@@ -774,6 +1001,93 @@ test("单镜头首尾帧视频接口可调用供应商并返回播放地址", as
   assert.equal(videoBody.inputArtifacts.length, 2);
   assert.match(videoBody.inputArtifacts[0].dataUrl, /^data:image\/png;base64,/);
   assert.match(videoBody.inputArtifacts[1].dataUrl, /^data:image\/png;base64,/);
+});
+
+test("单镜头首尾帧视频接口按请求数量返回多个候选视频", async (t) => {
+  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_IMAGE_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_API_KEY", "VIDEO_HTTP_CONFIG"]);
+  delete process.env.VIDEO_HTTP_ENDPOINT;
+  delete process.env.VIDEO_HTTP_IMAGE_ENDPOINT;
+  delete process.env.VIDEO_HTTP_VIDEO_ENDPOINT;
+  delete process.env.VIDEO_HTTP_API_KEY;
+  delete process.env.VIDEO_HTTP_CONFIG;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-count-"));
+  const videoBodies = [];
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    videoBodies.push(body);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ data: { videoBase64: Buffer.from(`shot video bytes ${videoBodies.length}`).toString("base64") } }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  t.after(() => restoreEnv(savedEnv));
+  const address = server.address();
+  process.env.VIDEO_HTTP_VIDEO_ENDPOINT = `http://127.0.0.1:${address.port}/videos`;
+  process.env.VIDEO_HTTP_API_KEY = "test-key";
+
+  const imageDataUrl = `data:image/png;base64,${Buffer.from("frame image bytes").toString("base64")}`;
+  const result = await generateShotVideo({
+    outputRoot: path.join(root, "generated-videos"),
+    publicBasePath: "/generated-videos",
+    count: 2,
+    startFrameDataUrl: imageDataUrl,
+    endFrameDataUrl: imageDataUrl,
+    shot: {
+      shotId: "S01",
+      durationSeconds: 4,
+      videoPrompt: "从首帧走到尾帧"
+    }
+  });
+
+  assert.equal(result.count, 2);
+  assert.equal(result.actualCount, 2);
+  assert.equal(result.videos.length, 2);
+  assert.match(result.outputUrl, /^\/generated-videos\/S01-/);
+  assert.match(result.videos[0].outputUrl, /-1\.mp4$/);
+  assert.match(result.videos[1].outputUrl, /-2\.mp4$/);
+  assert.equal(await fs.readFile(result.videos[0].outputPath, "utf8"), "shot video bytes 1");
+  assert.equal(await fs.readFile(result.videos[1].outputPath, "utf8"), "shot video bytes 2");
+  assert.equal(videoBodies.length, 2);
+  assert.equal(videoBodies[0].parameters.candidateIndex, 0);
+  assert.equal(videoBodies[0].parameters.candidateCount, 2);
+  assert.equal(videoBodies[1].parameters.candidateIndex, 1);
+});
+
+test("单镜头视频生成不会把供应商纯文本确认当成 mp4", async (t) => {
+  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_IMAGE_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_API_KEY", "VIDEO_HTTP_CONFIG"]);
+  delete process.env.VIDEO_HTTP_ENDPOINT;
+  delete process.env.VIDEO_HTTP_IMAGE_ENDPOINT;
+  delete process.env.VIDEO_HTTP_VIDEO_ENDPOINT;
+  delete process.env.VIDEO_HTTP_API_KEY;
+  delete process.env.VIDEO_HTTP_CONFIG;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-text-"));
+  const server = http.createServer(async (request, response) => {
+    for await (const _chunk of request) {
+      // drain body
+    }
+    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    response.end("ok");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  t.after(() => restoreEnv(savedEnv));
+  const address = server.address();
+  process.env.VIDEO_HTTP_VIDEO_ENDPOINT = `http://127.0.0.1:${address.port}/videos`;
+  process.env.VIDEO_HTTP_API_KEY = "test-key";
+
+  const imageDataUrl = `data:image/png;base64,${Buffer.from("frame image bytes").toString("base64")}`;
+  await assert.rejects(
+    () => generateShotVideo({
+      outputRoot: path.join(root, "generated-videos"),
+      publicBasePath: "/generated-videos",
+      startFrameDataUrl: imageDataUrl,
+      endFrameDataUrl: imageDataUrl,
+      shot: { shotId: "S01", videoPrompt: "测试视频" }
+    }),
+    ShotVideoProviderError
+  );
 });
 
 test("单镜头视频生成未配置供应商时给出明确错误", async () => {
@@ -1187,6 +1501,273 @@ test("Qwen 请求使用 OpenAI 兼容文本格式和 qwen3.7-max", () => {
   assert.equal(body.messages[0].role, "system");
   assert.equal(body.messages[1].role, "user");
   assert.equal(body.messages[1].content, "生成完整剧情");
+});
+
+test("即梦角色参考图请求使用 5.0 Lite 流式图片生成参数", () => {
+  const characterReference = {
+    characterName: "小白子",
+    appearancePrompt: "小白子，q版狼耳少女，蓝色眼睛，站在村口，学生/村民。"
+  };
+  const prompt = buildCharacterReferenceImagePrompt(characterReference, 3);
+  const body = buildJimengImageRequestBody(
+    { model: "doubao-seedream-5-0-260128", size: "1728x2304", outputFormat: "png", imageField: "image", maxImages: 6, watermark: false },
+    { referenceImageDataUrl: "data:image/png;base64,AA==", characterReference, count: 3 }
+  );
+  assert.match(prompt, /参考我上传的这张图片，不要水果摊，生成一张小白子/);
+  assert.match(prompt, /人物必须是站立姿态的全身图/);
+  assert.equal(body.model, "doubao-seedream-5-0-260128");
+  assert.equal(body.stream, true);
+  assert.equal(body.response_format, "b64_json");
+  assert.equal(body.watermark, false);
+  assert.equal(body.size, "1728x2304");
+  assert.equal(body.output_format, "png");
+  assert.equal(body.image, "data:image/png;base64,AA==");
+  assert.equal(body.sequential_image_generation, "auto");
+  assert.deepEqual(body.sequential_image_generation_options, { max_images: 3 });
+  const customBody = buildJimengImageRequestBody(
+    { model: "doubao-seedream-5-0-260128", size: "1728x2304", outputFormat: "png", imageField: "image", maxImages: 6, watermark: false },
+    { referenceImageDataUrl: "data:image/png;base64,AA==", characterReference, count: 1, prompt: "用户编辑后的提示词" }
+  );
+  assert.equal(customBody.prompt, "用户编辑后的提示词");
+  assert.equal(customBody.image, "data:image/png;base64,AA==");
+  const multiReferenceBody = buildJimengImageRequestBody(
+    { model: "doubao-seedream-5-0-260128", size: "1728x2304", outputFormat: "png", imageField: "image", maxImages: 6, watermark: false },
+    { referenceImageDataUrls: ["data:image/png;base64,AA==", "data:image/png;base64,BB=="], characterReference, count: 1, prompt: "多角色参考图" }
+  );
+  assert.deepEqual(multiReferenceBody.image, ["data:image/png;base64,AA==", "data:image/png;base64,BB=="]);
+});
+
+test("即梦图片客户端可解析流式 partial_succeeded 和 completed 事件", async (t) => {
+  const requests = [];
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8" });
+    response.write(`data: ${JSON.stringify({
+      type: "image_generation.partial_succeeded",
+      model: "doubao-seedream-5-0-260128",
+      image_index: 0,
+      b64_json: "AA==",
+      size: "1728x2304"
+    })}\n\n`);
+    response.write(`data: ${JSON.stringify({
+      type: "image_generation.completed",
+      model: "doubao-seedream-5-0-260128",
+      usage: { generated_images: 1 }
+    })}\n\n`);
+    response.end();
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  t.after(() => server.close());
+  const client = new JimengImageClient({
+    baseUrl: `http://127.0.0.1:${server.address().port}`,
+    apiKey: "test-key",
+    model: "doubao-seedream-5-0-260128",
+    size: "1728x2304",
+    outputFormat: "png",
+    imageField: "image",
+    maxImages: 6,
+    watermark: false
+  });
+  const events = [];
+  await client.generateImagesStream({
+    referenceImageDataUrl: "data:image/png;base64,AA==",
+    characterReference: { characterName: "小白子", appearancePrompt: "小白子，站立全身图" },
+    count: 1
+  }, (event) => events.push(event));
+  assert.equal(requests[0].model, "doubao-seedream-5-0-260128");
+  assert.equal(requests[0].stream, true);
+  assert.equal(requests[0].response_format, "b64_json");
+  assert.equal(requests[0].image, "data:image/png;base64,AA==");
+  assert.equal(events[0].type, "image_generation.partial_succeeded");
+  assert.equal(events[0].image_index, 0);
+  assert.equal(events[1].type, "image_generation.completed");
+  assert.equal(events[1].usage.generated_images, 1);
+});
+
+test("即梦首尾帧镜头图 prompt 合并视觉圣经、角色参考和帧提示词", () => {
+  const prompt = buildShotFrameImagePrompt({
+    frameKind: "start",
+    visualBible: {
+      overallStyle: "Q版定格动画",
+      animationStyle: "柔和乡村童话",
+      colorPalette: ["米白", "浅蓝"],
+      lighting: "清晨柔光",
+      cameraLanguage: "低机位近景",
+      negativeVisualRules: ["不要水果摊"]
+    },
+    characterReferences: [{
+      characterName: "小白子",
+      appearancePrompt: "q版狼耳少女，蓝色眼睛",
+      consistencyTags: ["狼耳", "浅蓝服装"],
+      referenceImageDataUrl: "data:image/png;base64,AA=="
+    }],
+    shot: {
+      shotId: "S01",
+      startFramePrompt: "小白子站在村口，手里拿着草药包。",
+      endFramePrompt: "小白子把草药包递给爷爷。",
+      cameraMotion: "轻微推近",
+      characterAction: "抱紧草药包",
+      negativePrompt: "不要现代城市"
+    }
+  });
+  assert.match(prompt, /生成竖屏 9:16 动画短视频分镜首帧图/);
+  assert.match(prompt, /整体风格：Q版定格动画/);
+  assert.match(prompt, /小白子：@图一/);
+  assert.match(prompt, /@图一=第1张输入图片/);
+  assert.match(prompt, /第1张输入参考图/);
+  assert.doesNotMatch(prompt, /q版狼耳少女/);
+  assert.doesNotMatch(prompt, /一致性标签：狼耳/);
+  assert.match(prompt, /首帧画面提示词（人物外观、服装、发型、年龄感和身份特征以 @图 为准/);
+  assert.match(prompt, /小白子（@图一）站在村口/);
+  assert.match(prompt, /首帧是静态关键帧/);
+  assert.match(prompt, /严格锁定画幅、景别、机位、主体位置/);
+  assert.doesNotMatch(prompt, /视频镜头运动上下文/);
+  assert.doesNotMatch(prompt, /当前镜头单一动作目标/);
+  assert.match(prompt, /不要水果摊/);
+  assert.match(prompt, /不要现代城市/);
+});
+
+test("即梦首尾帧镜头图无参考图时才保留角色文字描述", () => {
+  const prompt = buildShotFrameImagePrompt({
+    frameKind: "end",
+    characterReferences: [{
+      characterName: "爷爷",
+      appearancePrompt: "穿深色棉袄的慈祥老人",
+      consistencyTags: ["灰白头发"]
+    }],
+    shot: {
+      startFramePrompt: "小白子站在门口。",
+      endFramePrompt: "爷爷接过草药包。"
+    }
+  });
+  assert.match(prompt, /未提供角色参考图/);
+  assert.match(prompt, /角色：爷爷/);
+  assert.match(prompt, /穿深色棉袄的慈祥老人/);
+});
+
+test("尾帧镜头图会继承首帧场景锚点并禁止室内外跳变", () => {
+  const prompt = buildShotFrameImagePrompt({
+    frameKind: "end",
+    characterReferences: [{
+      characterName: "外婆",
+      appearancePrompt: "和蔼老人，穿围裙",
+      referenceImageDataUrl: "data:image/png;base64,AA=="
+    }, {
+      characterName: "小白子",
+      appearancePrompt: "Q版白发猫耳少女，蓝色眼睛",
+      referenceImageDataUrl: "data:image/png;base64,BB=="
+    }],
+    shot: {
+      startFramePrompt: "阳光明媚的外婆（和蔼的老年女性，头发灰白盘起，穿着围裙）院子，中景平视。外婆微笑着递出一个复古旧铁盒。小白子站在对面，双手微抬准备接物。背景是温馨的农家院落与茂密绿植，光线柔和。",
+      endFramePrompt: "小白子双手稳稳抱住旧铁盒，身体微微前倾。外婆的手已收回。小白子面带笑容。"
+    }
+  });
+  assert.match(prompt, /同镜头连续性锁定/);
+  assert.match(prompt, /首帧场景锚点/);
+  assert.match(prompt, /外婆院子/);
+  assert.match(prompt, /中景平视/);
+  assert.match(prompt, /背景是温馨的农家院落与茂密绿植/);
+  assert.match(prompt, /光线柔和/);
+  assert.match(prompt, /禁止切换到室内/);
+  assert.match(prompt, /换场景、室内外切换/);
+  assert.doesNotMatch(prompt, /外婆（@图一）院子/);
+});
+
+test("有参考图角色会清理首尾帧画面提示词里的外观文字", () => {
+  const prompt = buildShotFrameImagePrompt({
+    frameKind: "start",
+    characterReferences: [{
+      characterName: "小白子",
+      appearancePrompt: "Q版狼耳少女，灰白色狼耳朵和狼尾巴，黑色校园风外套。",
+      referenceImageDataUrl: "data:image/png;base64,AA=="
+    }],
+    shot: {
+      startFramePrompt: "日系2.5D治愈动画风格，Q版狼耳少女小白子（日系2.5D治愈动画风格，Q版二头身比例，狼耳少女，有毛茸茸的灰白色狼耳朵和蓬松的灰白色狼尾巴）坐在木质书桌前，穿着浅黄色背带裙，头顶灰白色狼耳朵，身后有灰白色狼尾巴。她双手拿着一条织了一半的彩虹手链，眼神专注。",
+      endFramePrompt: "小白子抬头。"
+    }
+  });
+  assert.match(prompt, /小白子：@图一/);
+  assert.match(prompt, /小白子（@图一）坐在木质书桌前/);
+  assert.match(prompt, /彩虹手链/);
+  assert.doesNotMatch(prompt, /Q版狼耳少女小白子/);
+  assert.doesNotMatch(prompt, /浅黄色背带裙|灰白色狼耳朵|灰白色狼尾巴|黑色校园风外套/);
+});
+
+test("首尾帧镜头图不会把地点所有者映射成参考图角色", () => {
+  const prompt = buildShotFrameImagePrompt({
+    frameKind: "start",
+    characterReferences: [{
+      characterName: "外婆",
+      appearancePrompt: "和蔼老人，穿围裙",
+      referenceImageDataUrl: "data:image/png;base64,AA=="
+    }, {
+      characterName: "小白子",
+      appearancePrompt: "Q版白发猫耳少女，蓝色眼睛",
+      referenceImageDataUrl: "data:image/png;base64,BB=="
+    }],
+    shot: {
+      startFramePrompt: "阳光明媚的外婆（和蔼的老年女性，头发灰白盘起，穿着围裙）院子，近景平视。小白子（Q版少女，白色长发及腰，头顶猫耳）双手抱着旧铁盒在胸前，眼睛弯成月牙。",
+      endFramePrompt: "小白子身体转向画面右侧。"
+    }
+  });
+  assert.match(prompt, /外婆院子，近景平视/);
+  assert.match(prompt, /小白子（@图二）双手抱着旧铁盒/);
+  assert.doesNotMatch(prompt, /外婆（@图一）院子/);
+  assert.doesNotMatch(prompt, /头发灰白盘起|穿着围裙|头顶猫耳/);
+});
+
+test("首尾帧镜头图禁止把字幕或对白文字画进图片", () => {
+  const prompt = buildShotFrameImagePrompt({
+    frameKind: "start",
+    shot: {
+      startFramePrompt: "小白子站在村口，手里拿着草药包。",
+      endFramePrompt: "小白子走进院子。",
+      dialogueOrSubtitle: "字幕：小白子说“嗷呜，谢谢你”。",
+      negativePrompt: "不要现代城市"
+    }
+  });
+  assert.doesNotMatch(prompt, /情绪\/动作理解参考/);
+  assert.match(prompt, /画面禁止出现任何字幕、对白文字、旁白文字、中文、英文、标题、说明字、对白气泡/);
+  assert.match(prompt, /Logo、水印、UI 文本或边框/);
+  assert.doesNotMatch(prompt, /对白\/字幕信息：/);
+});
+
+test("首尾帧图片请求只上传当前镜头相关角色参考图", () => {
+  const references = [
+    { characterName: "小白子", storyRole: "主角", referenceImageDataUrl: "data:image/png;base64,AA==", appearancePrompt: "狼耳少女" },
+    { characterName: "爷爷", storyRole: "被关爱对象", referenceImageDataUrl: "data:image/png;base64,BB==", appearancePrompt: "老人" },
+    { characterName: "张老师", storyRole: "路人", referenceImageDataUrl: "data:image/png;base64,CC==", appearancePrompt: "老师" }
+  ];
+  const shot = {
+    startFramePrompt: "小白子抱着草药包走到爷爷家门口。",
+    endFramePrompt: "爷爷接过草药包，向小白子点头。"
+  };
+  const related = shotRelatedCharacterReferences(shot, references);
+  const images = uploadedReferenceImages(related);
+  const body = buildJimengImageRequestBody(
+    { model: "doubao-seedream-5-0-260128", size: "1728x2304", outputFormat: "png", imageField: "image", maxImages: 6, watermark: false },
+    { referenceImageDataUrls: images.map((item) => item.referenceImageDataUrl), count: 4, prompt: "首帧图" }
+  );
+  assert.deepEqual(related.map((item) => item.characterName), ["小白子", "爷爷"]);
+  assert.deepEqual(body.image, ["data:image/png;base64,AA==", "data:image/png;base64,BB=="]);
+  assert.equal(body.sequential_image_generation, "auto");
+  assert.deepEqual(body.sequential_image_generation_options, { max_images: 4 });
+});
+
+test("首尾帧图片请求不会因地点词上传地点所有者参考图", () => {
+  const references = [
+    { characterName: "外婆", storyRole: "委托者", referenceImageDataUrl: "data:image/png;base64,AA==", appearancePrompt: "老人" },
+    { characterName: "小白子", storyRole: "主角", referenceImageDataUrl: "data:image/png;base64,BB==", appearancePrompt: "白发猫耳少女" }
+  ];
+  const shot = {
+    storyPurpose: "强化主角接到任务后的开心情绪。",
+    startFramePrompt: "阳光明媚的外婆院子，近景平视。小白子双手抱着旧铁盒在胸前。",
+    endFramePrompt: "小白子身体转向画面右侧，准备出发。"
+  };
+  const related = shotRelatedCharacterReferences(shot, references);
+  assert.deepEqual(related.map((item) => item.characterName), ["小白子"]);
 });
 
 test("关键帧请求保持全部图像在文本之前", () => {
@@ -1944,7 +2525,17 @@ test("动画提示词要求输出首尾帧视频生产包", () => {
   assert.match(prompt, /endFramePrompt/);
   assert.match(prompt, /videoPrompt/);
   assert.match(prompt, /默认 8–12 个镜头/);
-  assert.match(prompt, /正向画面提示词/);
+  assert.match(prompt, /三层简化结构/);
+  assert.match(prompt, /identity lock/);
+  assert.match(prompt, /全局负面提示词，只写一次/);
+  assert.match(prompt, /拆镜头方案 B/);
+  assert.match(prompt, /中景互动镜头/);
+  assert.match(prompt, /表情强化镜头/);
+  assert.match(prompt, /静态关键帧规格/);
+  assert.match(prompt, /同一地点、同一镜头景别、同一机位高度/);
+  assert.match(prompt, /必须用一句短锚点复述与首帧相同的地点\/室内外属性\/背景\/景别\/机位/);
+  assert.match(prompt, /仍在同一户外农家院落/);
+  assert.match(prompt, /shot 内不要重复堆叠/);
   assert.match(prompt, /固定角色外观边界/);
   assert.match(prompt, /耳朵类设定只代表用户写明的耳朵/);
   assert.match(prompt, /禁止自动新增未声明的身体特征：尾巴/);

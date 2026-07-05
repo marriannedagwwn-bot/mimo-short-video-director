@@ -47,7 +47,7 @@ async function executeRequest(request, options, config) {
   const body = buildRequestBody(context, config);
   const startedAt = Date.now();
   const first = await postJson(endpoint, body, config);
-  const resolved = await resolveProviderResult(first, request, config);
+  const resolved = await resolveProviderResult(first, request, { ...config, resolvedEndpoint: endpoint });
   await writeOutput(resolved, options.output, config);
   return {
     provider: "generic-http-worker",
@@ -66,12 +66,13 @@ async function executeRequest(request, options, config) {
 
 function endpointFor(capability, config) {
   const endpoints = config.endpoints || {};
-  if (endpoints[capability]) return endpoints[capability];
-  if (capability === "image_generation") return config.imageEndpoint || process.env.VIDEO_HTTP_IMAGE_ENDPOINT || config.endpoint;
-  if (capability === "first_last_frame_video_generation") return config.videoEndpoint || process.env.VIDEO_HTTP_VIDEO_ENDPOINT || config.endpoint;
-  if (capability === "video_quality_review") return config.reviewEndpoint || process.env.VIDEO_HTTP_REVIEW_ENDPOINT || config.endpoint;
-  if (capability === "video_assembly") return config.assemblyEndpoint || process.env.VIDEO_HTTP_ASSEMBLY_ENDPOINT || config.endpoint;
-  return config.endpoint;
+  let endpoint = endpoints[capability] || "";
+  if (!endpoint && capability === "image_generation") endpoint = config.imageEndpoint || process.env.VIDEO_HTTP_IMAGE_ENDPOINT || config.endpoint;
+  if (!endpoint && capability === "first_last_frame_video_generation") endpoint = config.videoEndpoint || process.env.VIDEO_HTTP_VIDEO_ENDPOINT || config.endpoint;
+  if (!endpoint && capability === "video_quality_review") endpoint = config.reviewEndpoint || process.env.VIDEO_HTTP_REVIEW_ENDPOINT || config.endpoint;
+  if (!endpoint && capability === "video_assembly") endpoint = config.assemblyEndpoint || process.env.VIDEO_HTTP_ASSEMBLY_ENDPOINT || config.endpoint;
+  if (!endpoint) endpoint = config.endpoint;
+  return normalizeEndpointForPreset(capability, endpoint, config);
 }
 
 function modelFor(capability, config) {
@@ -87,6 +88,8 @@ function modelFor(capability, config) {
 function buildRequestBody(context, config) {
   const template = config.bodyTemplates?.[context.request.capability] || config.bodyTemplate;
   if (template) return renderTemplate(template, context);
+  if (isModelArkContentGeneration(context.request.capability, config)) return buildModelArkContentGenerationBody(context, config);
+  if (isKlingImageToVideo(context.request.capability, config)) return buildKlingImageToVideoBody(context, config);
   return {
     taskId: context.request.taskId,
     capability: context.request.capability,
@@ -102,11 +105,14 @@ function buildRequestBody(context, config) {
 
 async function resolveProviderResult(first, request, config) {
   if (first.kind !== "json") {
+    if (first.kind === "text" && !textArtifactAllowed(request, config)) {
+      throw new Error(`供应商返回了纯文本响应“${String(first.text || "").trim().slice(0, 120)}”，但 ${request.capability || "当前"} 需要媒体产物。请配置正确的视频结果字段或轮询接口。`);
+    }
     return { ...first, providerTaskId: "" };
   }
 
   let current = first.data;
-  let providerTaskId = firstValue(current, config.taskIdPaths || defaultTaskIdPaths());
+  let providerTaskId = firstValue(current, taskIdPathsFor(request, config));
   let artifact = extractArtifact(current, request, config);
   if (artifact) return { ...artifact, providerTaskId };
 
@@ -115,7 +121,7 @@ async function resolveProviderResult(first, request, config) {
     if (request.capability === "video_quality_review" || config.writeJsonWhenNoMedia === true) {
       return { kind: "json", data: current, providerTaskId };
     }
-    throw new Error("供应商响应中没有可写入的 mediaUrl/base64/text，也没有可轮询任务");
+    throw new Error(`供应商响应中没有可写入的 mediaUrl/base64${textArtifactAllowed(request, config) ? "/text" : ""}，也没有可轮询任务`);
   }
 
   const deadline = Date.now() + Number(config.pollTimeoutMs || 600000);
@@ -124,14 +130,14 @@ async function resolveProviderResult(first, request, config) {
     await sleep(intervalMs);
     const polled = await getJson(pollTarget, config);
     current = polled.data;
-    providerTaskId = providerTaskId || firstValue(current, config.taskIdPaths || defaultTaskIdPaths());
-    const status = String(firstValue(current, config.statusPaths || defaultStatusPaths()) || "").toLowerCase();
-    if ((config.failureStatuses || defaultFailureStatuses()).map(String).map((item) => item.toLowerCase()).includes(status)) {
+    providerTaskId = providerTaskId || firstValue(current, taskIdPathsFor(request, config));
+    const status = String(firstValue(current, statusPathsFor(request, config)) || "").toLowerCase();
+    if (failureStatusesFor(request, config).map(String).map((item) => item.toLowerCase()).includes(status)) {
       throw new Error(`供应商任务失败：${status}`);
     }
     artifact = extractArtifact(current, request, config);
     if (artifact) return { ...artifact, providerTaskId };
-    if ((config.successStatuses || defaultSuccessStatuses()).map(String).map((item) => item.toLowerCase()).includes(status)) {
+    if (successStatusesFor(request, config).map(String).map((item) => item.toLowerCase()).includes(status)) {
       if (request.capability === "video_quality_review" || config.writeJsonWhenNoMedia === true) {
         return { kind: "json", data: current, providerTaskId };
       }
@@ -142,7 +148,7 @@ async function resolveProviderResult(first, request, config) {
 }
 
 function extractArtifact(data, request, config) {
-  const url = firstValue(data, config.resultUrlPaths || defaultResultUrlPaths());
+  const url = firstValue(data, resultUrlPathsFor(request, config));
   if (typeof url === "string" && url.trim()) {
     if (url.startsWith("data:")) return { kind: "data_url", dataUrl: url };
     return { kind: "url", url };
@@ -150,9 +156,56 @@ function extractArtifact(data, request, config) {
   const base64 = firstValue(data, config.resultBase64Paths || defaultResultBase64Paths());
   if (typeof base64 === "string" && base64.trim()) return { kind: "base64", base64 };
   const text = firstValue(data, config.resultTextPaths || defaultResultTextPaths());
-  if (typeof text === "string" && text.trim()) return { kind: "text", text };
+  if (typeof text === "string" && text.trim() && textArtifactAllowed(request, config)) return { kind: "text", text };
   if (request.capability === "video_quality_review" && data) return { kind: "json", data };
   return null;
+}
+
+function taskIdPathsFor(request, config) {
+  if (config.taskIdPaths) return config.taskIdPaths;
+  if (isKlingImageToVideo(request.capability, config)) {
+    return uniquePaths(["data.task_id", "data.taskId", "data.id", ...defaultTaskIdPaths()]);
+  }
+  return defaultTaskIdPaths();
+}
+
+function statusPathsFor(request, config) {
+  if (config.statusPaths) return config.statusPaths;
+  if (isKlingImageToVideo(request.capability, config)) {
+    return uniquePaths(["data.task_status", "data.taskStatus", ...defaultStatusPaths()]);
+  }
+  return defaultStatusPaths();
+}
+
+function resultUrlPathsFor(request, config) {
+  if (config.resultUrlPaths) return config.resultUrlPaths;
+  if (isKlingImageToVideo(request.capability, config)) {
+    return uniquePaths([
+      "data.task_result.videos.0.url",
+      "data.task_result.videos.0.video_url",
+      "data.task_result.video.url",
+      "data.task_result.video_url",
+      ...defaultResultUrlPaths()
+    ]);
+  }
+  return defaultResultUrlPaths();
+}
+
+function successStatusesFor(request, config) {
+  if (config.successStatuses) return config.successStatuses;
+  if (isKlingImageToVideo(request.capability, config)) return uniquePaths(["succeed", ...defaultSuccessStatuses()]);
+  return defaultSuccessStatuses();
+}
+
+function failureStatusesFor(request, config) {
+  if (config.failureStatuses) return config.failureStatuses;
+  if (isKlingImageToVideo(request.capability, config)) return uniquePaths(["failed", ...defaultFailureStatuses()]);
+  return defaultFailureStatuses();
+}
+
+function textArtifactAllowed(request, config) {
+  if (config.allowTextArtifact === true) return true;
+  return request.capability === "video_quality_review";
 }
 
 function pollTargetFor(data, providerTaskId, config) {
@@ -160,7 +213,130 @@ function pollTargetFor(data, providerTaskId, config) {
   if (typeof pollUrl === "string" && pollUrl.trim()) return pollUrl;
   const template = config.pollEndpointTemplate || process.env.VIDEO_HTTP_POLL_ENDPOINT_TEMPLATE || "";
   if (template && providerTaskId) return template.replace(/\{taskId\}/gu, encodeURIComponent(providerTaskId));
+  if (isModelArkContentGeneration("first_last_frame_video_generation", config) && providerTaskId && config.resolvedEndpoint) {
+    return `${String(config.resolvedEndpoint).replace(/\/$/u, "")}/${encodeURIComponent(providerTaskId)}`;
+  }
+  if (isKlingImageToVideo("first_last_frame_video_generation", config) && providerTaskId && config.resolvedEndpoint) {
+    return `${String(config.resolvedEndpoint).replace(/\/$/u, "")}/${encodeURIComponent(providerTaskId)}`;
+  }
   return "";
+}
+
+function presetFor(capability, config) {
+  const presets = config.presets || {};
+  return String(presets[capability] || config.providerPreset || config.preset || process.env.VIDEO_HTTP_PRESET || "").trim().toLowerCase();
+}
+
+function isModelArkContentGeneration(capability, config) {
+  if (capability !== "first_last_frame_video_generation") return false;
+  return ["modelark", "modelark_content_generation", "dreamina", "jimeng"].includes(presetFor(capability, config));
+}
+
+function isKlingImageToVideo(capability, config) {
+  if (capability !== "first_last_frame_video_generation") return false;
+  const preset = presetFor(capability, config);
+  if (["kling", "kling_image_to_video", "kling_image2video", "klingai"].includes(preset)) return true;
+  const endpoint = String(config.resolvedEndpoint || config.videoEndpoint || process.env.VIDEO_HTTP_VIDEO_ENDPOINT || config.endpoint || "");
+  return /(^|\.)klingai\.com\b/u.test(hostnameFor(endpoint));
+}
+
+function normalizeEndpointForPreset(capability, endpoint, config) {
+  if (!endpoint) return endpoint;
+  if (isKlingImageToVideo(capability, { ...config, videoEndpoint: endpoint, endpoint })) {
+    const clean = String(endpoint).replace(/\/$/u, "");
+    if (/\/v1\/videos\/image2video$/u.test(clean)) return clean;
+    if (/\/v1\/videos$/u.test(clean)) return `${clean}/image2video`;
+    if (/\/v1$/u.test(clean)) return `${clean}/videos/image2video`;
+    return `${clean}/v1/videos/image2video`;
+  }
+  if (!isModelArkContentGeneration(capability, config)) return endpoint;
+  const clean = String(endpoint).replace(/\/$/u, "");
+  if (/\/contents\/generations\/tasks$/u.test(clean)) return clean;
+  if (/\/api\/v3$/u.test(clean)) return `${clean}/contents/generations/tasks`;
+  return endpoint;
+}
+
+function buildModelArkContentGenerationBody(context, config) {
+  const artifacts = context.inputArtifacts || [];
+  const startFrame = firstArtifactDataUrl(artifacts[0]);
+  const endFrame = firstArtifactDataUrl(artifacts[1]);
+  if (!startFrame || !endFrame) throw new Error("ModelArk/Dreamina 首尾帧视频任务需要首帧和尾帧两张图片 dataUrl。");
+  const prompt = [
+    context.request.prompt || "",
+    context.request.negativePrompt ? `负面要求：${context.request.negativePrompt}` : ""
+  ].filter(Boolean).join("\n");
+  const parameters = context.request.parameters || {};
+  const body = {
+    model: context.model || config.model || undefined,
+    content: [
+      { type: "text", text: prompt },
+      { type: "image_url", image_url: { url: startFrame }, role: "first_frame" },
+      { type: "image_url", image_url: { url: endFrame }, role: "last_frame" }
+    ],
+    ratio: parameters.aspectRatio || config.ratio || "9:16",
+    duration: Number(parameters.durationSeconds) || Number(config.duration) || 4,
+    watermark: config.watermark === true,
+    generate_audio: config.generateAudio === true || process.env.VIDEO_HTTP_GENERATE_AUDIO === "1",
+    return_last_frame: config.returnLastFrame === true
+  };
+  if (config.resolution || process.env.VIDEO_HTTP_VIDEO_RESOLUTION) body.resolution = process.env.VIDEO_HTTP_VIDEO_RESOLUTION || config.resolution;
+  if (config.serviceTier || process.env.VIDEO_HTTP_SERVICE_TIER) body.service_tier = process.env.VIDEO_HTTP_SERVICE_TIER || config.serviceTier;
+  if (config.executionExpiresAfter || process.env.VIDEO_HTTP_EXECUTION_EXPIRES_AFTER) body.execution_expires_after = Number(process.env.VIDEO_HTTP_EXECUTION_EXPIRES_AFTER || config.executionExpiresAfter);
+  return body;
+}
+
+function buildKlingImageToVideoBody(context, config) {
+  const artifacts = context.inputArtifacts || [];
+  const startFrame = firstArtifactImagePayload(artifacts[0]);
+  const endFrame = firstArtifactImagePayload(artifacts[1]);
+  if (!startFrame && !endFrame) throw new Error("Kling 图生视频任务需要首帧或尾帧图片。");
+  const parameters = context.request.parameters || {};
+  const hasTail = Boolean(endFrame);
+  const body = {
+    model_name: context.model || config.model || "kling-v2-1",
+    image: startFrame || undefined,
+    image_tail: endFrame || undefined,
+    prompt: truncateText(context.request.prompt || "", Number(config.promptMaxChars || process.env.VIDEO_HTTP_PROMPT_MAX_CHARS || 2500)),
+    negative_prompt: truncateText(context.request.negativePrompt || "", Number(config.negativePromptMaxChars || process.env.VIDEO_HTTP_NEGATIVE_PROMPT_MAX_CHARS || 2500)),
+    mode: process.env.VIDEO_HTTP_VIDEO_MODE || config.mode || (hasTail ? "pro" : "std"),
+    duration: String(process.env.VIDEO_HTTP_VIDEO_DURATION || config.duration || normalizeKlingDuration(parameters.durationSeconds))
+  };
+  const aspectRatio = process.env.VIDEO_HTTP_VIDEO_ASPECT_RATIO || config.aspectRatio || "";
+  if (aspectRatio) body.aspect_ratio = aspectRatio;
+  const sound = process.env.VIDEO_HTTP_VIDEO_SOUND || config.sound;
+  if (sound) body.sound = sound;
+  const cfgScale = process.env.VIDEO_HTTP_CFG_SCALE || config.cfgScale;
+  if (cfgScale !== undefined && cfgScale !== "") body.cfg_scale = Number(cfgScale);
+  return body;
+}
+
+function firstArtifactImagePayload(artifact = {}) {
+  const dataUrl = firstArtifactDataUrl(artifact);
+  if (dataUrl) return stripDataUrlPrefix(dataUrl);
+  return artifact.url || artifact.mediaUrl || artifact.imageUrl || "";
+}
+
+function normalizeKlingDuration(value) {
+  const seconds = Math.round(Number(value) || 5);
+  return seconds <= 5 ? 5 : 10;
+}
+
+function truncateText(value, maxChars) {
+  const text = String(value || "").trim();
+  if (!Number.isFinite(maxChars) || maxChars <= 0 || text.length <= maxChars) return text;
+  return text.slice(0, maxChars);
+}
+
+function hostnameFor(value) {
+  try {
+    return new URL(String(value || "")).hostname || "";
+  } catch {
+    return "";
+  }
+}
+
+function firstArtifactDataUrl(artifact = {}) {
+  return artifact.dataUrl || artifact.data_url || "";
 }
 
 async function writeOutput(result, outputPath, config) {
@@ -297,7 +473,9 @@ function mergeEnvConfig(config) {
     pollTimeoutMs: process.env.VIDEO_HTTP_POLL_TIMEOUT_MS || config.pollTimeoutMs,
     maxInputDataUrlBytes: process.env.VIDEO_HTTP_MAX_INPUT_DATA_URL_BYTES || config.maxInputDataUrlBytes,
     includeInputDataUrls: process.env.VIDEO_HTTP_INCLUDE_INPUT_DATA_URLS === "0" ? false : config.includeInputDataUrls,
-    writeJsonWhenNoMedia: process.env.VIDEO_HTTP_WRITE_JSON_WHEN_NO_MEDIA === "1" || config.writeJsonWhenNoMedia
+    writeJsonWhenNoMedia: process.env.VIDEO_HTTP_WRITE_JSON_WHEN_NO_MEDIA === "1" || config.writeJsonWhenNoMedia,
+    allowTextArtifact: process.env.VIDEO_HTTP_ALLOW_TEXT_ARTIFACT === "1" || config.allowTextArtifact,
+    providerPreset: process.env.VIDEO_HTTP_PRESET || config.providerPreset || config.preset || ""
   };
 }
 
@@ -330,6 +508,10 @@ function firstValue(source, paths) {
     if (value !== undefined && value !== null && value !== "") return value;
   }
   return undefined;
+}
+
+function uniquePaths(paths) {
+  return [...new Set((paths || []).filter(Boolean))];
 }
 
 function removeUndefined(value) {
@@ -394,6 +576,7 @@ function defaultResultUrlPaths() {
     "data.mediaUrl", "data.media_url", "data.url", "data.outputUrl", "data.output_url", "data.imageUrl", "data.image_url", "data.videoUrl", "data.video_url",
     "result.mediaUrl", "result.media_url", "result.url", "result.outputUrl", "result.output_url", "result.imageUrl", "result.image_url", "result.videoUrl", "result.video_url",
     "output.url", "output.videoUrl", "output.video_url", "output.imageUrl", "output.image_url",
+    "content.videoUrl", "content.video_url", "content.0.videoUrl", "content.0.video_url",
     "files.0.url", "videos.0.url", "images.0.url"
   ];
 }
@@ -416,7 +599,7 @@ function defaultSuccessStatuses() {
 }
 
 function defaultFailureStatuses() {
-  return ["failed", "failure", "error", "canceled", "cancelled"];
+  return ["failed", "failure", "error", "canceled", "cancelled", "expired"];
 }
 
 function parseArgs(args) {
