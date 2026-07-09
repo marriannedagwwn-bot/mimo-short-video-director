@@ -39,7 +39,7 @@ async function executeRequest(request, options, config) {
 
   const context = {
     request,
-    model: modelFor(request.capability, config),
+    model: request.model || modelFor(request.capability, config),
     inputArtifacts: await loadInputArtifacts(request.inputArtifacts || [], config),
     root: options.root || "",
     output: options.output

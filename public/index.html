@@ -15,8 +15,30 @@
       <span class="brand-mark">母</span>
       <span><strong>母题导演台</strong><small>AI STORY REMIX STUDIO</small></span>
     </a>
-    <div class="model-state" id="modelState"><span class="pulse"></span><span>正在检查 MiMo</span></div>
+    <div class="topbar-actions">
+      <div class="model-state" id="modelState"><span class="pulse"></span><span>正在检查模型</span></div>
+      <button class="model-settings-button" id="openModelSettings" type="button">模型设置</button>
+    </div>
   </header>
+
+  <div class="modal-backdrop hidden" id="modelSettingsModal" aria-hidden="true">
+    <div class="modal-card model-settings-modal" role="dialog" aria-modal="true" aria-labelledby="modelSettingsTitle">
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow">MODEL ROUTING</p>
+          <h2 id="modelSettingsTitle">全局模型设置</h2>
+        </div>
+        <button class="icon-button" id="closeModelSettings" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="modal-copy">每个阶段都可以单独选择 provider 和模型名。留空或恢复默认时使用后端当前配置。</p>
+      <div class="model-stage-list" id="modelStageList"></div>
+      <div class="model-settings-actions">
+        <button class="outline-button" id="resetModelSettings" type="button">恢复默认</button>
+        <button class="primary-button" id="saveModelSettings" type="button"><span>应用模型设置</span></button>
+      </div>
+      <p class="story-status" id="modelSettingsStatus"></p>
+    </div>
+  </div>
 
   <main id="top">
     <section class="hero">

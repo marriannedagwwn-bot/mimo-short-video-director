@@ -43,7 +43,7 @@ export async function generateShotVideo(options = {}) {
     for (let index = 0; index < count; index += 1) {
       const suffix = count > 1 ? `-${index + 1}` : "";
       const outputPath = path.join(outputRoot, `${shotId}-${stamp}${suffix}.mp4`);
-      const request = buildShotVideoRequest(shot, { outputPath, inputArtifacts, candidateIndex: index, candidateCount: count });
+      const request = buildShotVideoRequest(shot, { outputPath, inputArtifacts, candidateIndex: index, candidateCount: count, model: options.videoModel });
       const receipt = await runGenericWorker({ request, outputPath, workDir, configPath });
       await assertUsableVideoOutput(outputPath);
       videos.push({
@@ -159,6 +159,7 @@ function buildShotVideoRequest(shot = {}, context = {}) {
     inputType: "image_pair_to_video",
     outputKey: `preview.${safeSegment(shot.shotId || "shot")}`,
     outputPath: context.outputPath,
+    model: context.model || "",
     prompt: shot.videoPrompt || "",
     negativePrompt: shot.negativePrompt || "",
     inputArtifacts: context.inputArtifacts || [],

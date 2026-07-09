@@ -15,18 +15,12 @@ const config = getConfig();
 const mimoClient = config.mimo.enabled ? new MimoClient(config.mimo) : null;
 const qwenClient = config.qwen.enabled ? new QwenClient(config.qwen) : null;
 const jimengClient = config.jimeng.enabled ? new JimengImageClient(config.jimeng) : null;
-const storyClient = qwenClient || mimoClient;
-const animationClient = qwenClient || mimoClient;
+const stageDefaults = buildStageDefaults(config, { mimoClient, qwenClient });
+const modelStages = buildModelStages(stageDefaults, config);
+const clients = { MiMo: mimoClient, Qwen: qwenClient };
 const workflow = new WorkflowService({
-  client: mimoClient,
-  storyClient,
-  storyModel: qwenClient ? config.qwen.storyModel : config.mimo.storyModel,
-  storyMaxCompletionTokens: qwenClient ? config.qwen.storyMaxCompletionTokens : config.mimo.storyMaxCompletionTokens,
-  storyProvider: qwenClient ? "Qwen" : "MiMo",
-  animationClient,
-  animationModel: qwenClient ? config.qwen.animationModel : config.mimo.animationModel,
-  animationMaxCompletionTokens: qwenClient ? config.qwen.animationMaxCompletionTokens : config.mimo.animationMaxCompletionTokens,
-  animationProvider: qwenClient ? "Qwen" : "MiMo"
+  clients,
+  stageDefaults
 });
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, "public");
@@ -40,7 +34,10 @@ const routes = {
   "/api/full-story": (body) => workflow.createFullStory(body),
   "/api/animation-plan": (body) => workflow.createAnimationPlan(body),
   "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
-  "/api/generate-shot-video": (body) => generateShotVideo(body),
+  "/api/generate-shot-video": (body) => generateShotVideo({
+    ...body,
+    videoModel: modelOverrideFor(body, "shotVideo") || body.videoModel
+  }),
   "/api/run": (body) => workflow.run(body)
 };
 
@@ -48,35 +45,53 @@ const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
     if (request.method === "GET" && url.pathname === "/api/health") {
-      const [provider, storyProvider, animationProvider, imageProvider] = await Promise.all([
-        mimoClient ? mimoClient.checkHealth(config.mimo.model) : { reachable: false, modelAvailable: false, status: 0 },
-        storyClient ? storyClient.checkHealth(workflow.storyModel) : { reachable: false, modelAvailable: false, status: 0 },
-        animationClient ? animationClient.checkHealth(workflow.animationModel) : { reachable: false, modelAvailable: false, status: 0 },
+      const [providerHealth, stageHealth, imageProvider] = await Promise.all([
+        healthByProvider(clients, config),
+        healthByStage(clients, stageDefaults),
         jimengClient ? jimengClient.checkHealth() : { reachable: false, modelAvailable: false, status: 0 }
       ]);
+      const analysisStage = stageDefaults.analysis || {};
+      const storyStage = stageDefaults.fullStory || {};
+      const animationStage = stageDefaults.animationPlan || {};
+      const analysisHealth = stageHealth.analysis || { reachable: false, modelAvailable: false, status: 0 };
+      const storyHealth = stageHealth.fullStory || { reachable: false, modelAvailable: false, status: 0 };
+      const animationHealth = stageHealth.animationPlan || { reachable: false, modelAvailable: false, status: 0 };
+      const analysisMedia = mediaSettingsForProvider(analysisStage.provider, config);
+      const fullStageHealth = {
+        ...stageHealth,
+        imageGeneration: compactHealth(imageProvider),
+        shotVideo: { reachable: videoGenerationConfigured(), modelAvailable: Boolean(videoHttpModel()), status: videoGenerationConfigured() ? 200 : 0 }
+      };
       return json(response, 200, {
         ok: true,
         mode: workflow.mode,
-        model: config.mimo.model,
-        storyModel: workflow.storyModel,
-        animationModel: workflow.animationModel,
-        baseProvider: "MiMo",
-        storyProvider: workflow.storyProvider,
-        animationProvider: workflow.animationProvider,
-        providerConfigured: config.mimo.enabled,
-        providerReachable: provider.reachable,
-        modelAvailable: provider.modelAvailable,
-        storyModelAvailable: storyProvider.modelAvailable,
-        animationModelAvailable: animationProvider.modelAvailable,
-        storyProviderReachable: storyProvider.reachable,
-        animationProviderReachable: animationProvider.reachable,
+        model: analysisStage.model,
+        analysisModel: analysisStage.model,
+        storyModel: storyStage.model,
+        animationModel: animationStage.model,
+        baseProvider: analysisStage.provider,
+        analysisProvider: analysisStage.provider,
+        storyProvider: storyStage.provider,
+        animationProvider: animationStage.provider,
+        providerConfigured: Boolean(clients[analysisStage.provider]),
+        providerReachable: analysisHealth.reachable,
+        modelAvailable: analysisHealth.modelAvailable,
+        analysisModelAvailable: analysisHealth.modelAvailable,
+        storyModelAvailable: storyHealth.modelAvailable,
+        animationModelAvailable: animationHealth.modelAvailable,
+        analysisProviderReachable: analysisHealth.reachable,
+        storyProviderReachable: storyHealth.reachable,
+        animationProviderReachable: animationHealth.reachable,
+        providers: providerHealth,
+        modelStages,
+        stageHealth: fullStageHealth,
         imageProvider: "Jimeng",
         imageModel: config.jimeng.model,
         imageProviderConfigured: config.jimeng.enabled,
         imageProviderReachable: imageProvider.reachable,
         imageModelAvailable: imageProvider.modelAvailable,
-        mediaMode: config.mimo.mediaMode,
-        nativeVideoMaxBytes: config.mimo.nativeVideoMaxBytes
+        mediaMode: analysisMedia.mediaMode,
+        nativeVideoMaxBytes: analysisMedia.nativeVideoMaxBytes
       });
     }
     if (request.method === "POST" && url.pathname === "/api/generate-character-reference-images") {
@@ -110,8 +125,129 @@ const server = http.createServer(async (request, response) => {
 
 server.listen(config.port, () => {
   console.log(`AI 短视频导演：http://localhost:${config.port}`);
-  console.log(`运行模式：${workflow.mode === "mimo" ? `MiMo (${config.mimo.model}) / 剧情 ${workflow.storyProvider} ${workflow.storyModel} / 动画 ${workflow.animationProvider} ${workflow.animationModel}` : "演示数据（配置 .env 后接入 MiMo）"}`);
+  console.log(`运行模式：${workflow.mode === "live" ? `${stageDefaults.analysis.provider} (${stageDefaults.analysis.model}) / 剧情 ${stageDefaults.fullStory.provider} ${stageDefaults.fullStory.model} / 动画 ${stageDefaults.animationPlan.provider} ${stageDefaults.animationPlan.model}` : "演示数据（配置 .env 后接入模型服务）"}`);
 });
+
+function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {}) {
+  const provider = qwenClient ? "Qwen" : "MiMo";
+  const source = provider === "Qwen" ? config.qwen : config.mimo;
+  return {
+    analysis: stageSetting(provider, source.analysisModel || source.videoModel || source.model, source.analysisMaxCompletionTokens || source.maxCompletionTokens),
+    reconstruction: stageSetting(provider, source.reconstructionModel || source.videoModel || source.model, source.reconstructionMaxCompletionTokens || source.maxCompletionTokens),
+    brief: stageSetting(provider, source.briefModel || source.model, source.briefMaxCompletionTokens || source.maxCompletionTokens),
+    visualGuardrails: stageSetting(provider, source.visualModel || source.videoModel || source.model, source.visualMaxCompletionTokens || source.maxCompletionTokens),
+    variants: stageSetting(provider, source.variantsModel || source.model, source.variantsMaxCompletionTokens || source.maxCompletionTokens),
+    fullStory: stageSetting(provider, source.storyModel || source.model, source.storyMaxCompletionTokens || source.maxCompletionTokens),
+    animationPlan: stageSetting(provider, source.animationModel || source.storyModel || source.model, source.animationMaxCompletionTokens || source.maxCompletionTokens),
+    characterReference: stageSetting(provider, source.characterReferenceModel || source.videoModel || source.model, source.characterReferenceMaxCompletionTokens || source.maxCompletionTokens)
+  };
+}
+
+function buildModelStages(stageDefaults, config) {
+  return {
+    ...stageDefaults,
+    imageGeneration: stageSetting("Jimeng", config.jimeng.model, null),
+    shotVideo: stageSetting("VideoHTTP", videoHttpModel(), null)
+  };
+}
+
+function modelOverrideFor(body = {}, stage) {
+  const value = body.modelOverrides?.[stage] || {};
+  return typeof value === "object" ? String(value.model || "").trim() : "";
+}
+
+function videoHttpModel() {
+  return process.env.VIDEO_HTTP_VIDEO_MODEL?.trim() || process.env.VIDEO_HTTP_MODEL?.trim() || "";
+}
+
+function videoGenerationConfigured() {
+  return Boolean(process.env.VIDEO_HTTP_VIDEO_ENDPOINT || process.env.VIDEO_HTTP_ENDPOINT || process.env.VIDEO_HTTP_CONFIG);
+}
+
+function stageSetting(provider, model, maxCompletionTokens) {
+  const tokenNumber = maxCompletionTokens === null || maxCompletionTokens === undefined || maxCompletionTokens === ""
+    ? null
+    : Number(maxCompletionTokens);
+  return {
+    provider,
+    model,
+    maxCompletionTokens: Number.isFinite(tokenNumber) ? Math.round(tokenNumber) : null
+  };
+}
+
+async function healthByProvider(clients, config) {
+  const entries = await Promise.all(Object.entries({
+    MiMo: { client: clients.MiMo, model: config.mimo.model, media: mediaSettingsForProvider("MiMo", config) },
+    Qwen: { client: clients.Qwen, model: config.qwen.model, media: mediaSettingsForProvider("Qwen", config) }
+  }).map(async ([provider, value]) => {
+    const health = value.client
+      ? await value.client.checkHealth(value.model)
+      : { reachable: false, modelAvailable: false, status: 0 };
+    return [provider, {
+      configured: Boolean(value.client),
+      defaultModel: value.model,
+      ...value.media,
+      reachable: health.reachable,
+      modelAvailable: health.modelAvailable,
+      status: health.status
+    }];
+  }));
+  return {
+    ...Object.fromEntries(entries),
+    Jimeng: {
+      configured: config.jimeng.enabled,
+      defaultModel: config.jimeng.model,
+      reachable: false,
+      modelAvailable: config.jimeng.enabled,
+      status: 0
+    },
+    VideoHTTP: {
+      configured: videoGenerationConfigured(),
+      defaultModel: videoHttpModel(),
+      reachable: videoGenerationConfigured(),
+      modelAvailable: Boolean(videoHttpModel()),
+      status: videoGenerationConfigured() ? 200 : 0
+    }
+  };
+}
+
+async function healthByStage(clients, stageDefaults) {
+  const cache = new Map();
+  const entries = await Promise.all(Object.entries(stageDefaults).map(async ([stage, setting]) => {
+    const key = `${setting.provider}:${setting.model}`;
+    if (!cache.has(key)) {
+      const client = clients[setting.provider];
+      cache.set(key, client
+        ? client.checkHealth(setting.model)
+        : Promise.resolve({ reachable: false, modelAvailable: false, status: 0 }));
+    }
+    return [stage, compactHealth(await cache.get(key))];
+  }));
+  return Object.fromEntries(entries);
+}
+
+function compactHealth(health = {}) {
+  return {
+    reachable: Boolean(health.reachable),
+    modelAvailable: Boolean(health.modelAvailable),
+    status: Number(health.status) || 0
+  };
+}
+
+function mediaSettingsForProvider(provider, config) {
+  if (provider === "Qwen") {
+    return {
+      mediaMode: config.qwen.mediaMode,
+      nativeVideoMaxBytes: config.qwen.nativeVideoMaxBytes,
+      videoFps: config.qwen.videoFps
+    };
+  }
+  return {
+    mediaMode: config.mimo.mediaMode,
+    nativeVideoMaxBytes: config.mimo.nativeVideoMaxBytes,
+    videoFps: config.mimo.videoFps
+  };
+}
 
 async function readJson(request) {
   const chunks = [];
@@ -143,11 +279,12 @@ async function streamCharacterReferenceImages(request, response) {
     const body = await readJson(request);
     if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
     const count = Math.max(1, Math.min(config.jimeng.maxImages, Math.round(Number(body.count) || 1)));
+    const imageModel = modelOverrideFor(body, "imageGeneration") || config.jimeng.model;
     const prompt = String(body.prompt || "").trim() || buildCharacterReferenceImagePrompt(body.characterReference, count);
     send("progress", {
       type: "start",
-      message: `正在调用即梦 ${config.jimeng.model} 生成 ${count} 张角色参考图…`,
-      model: config.jimeng.model,
+      message: `正在调用即梦 ${imageModel} 生成 ${count} 张角色参考图…`,
+      model: imageModel,
       count,
       prompt
     });
@@ -155,7 +292,8 @@ async function streamCharacterReferenceImages(request, response) {
       referenceImageDataUrl: body.referenceImageDataUrl,
       characterReference: body.characterReference,
       count,
-      prompt
+      prompt,
+      model: imageModel
     }, async (event) => {
       if (event.type === "image_generation.partial_succeeded") {
         const image = await persistGeneratedImage(event, body.characterReference);
@@ -163,7 +301,7 @@ async function streamCharacterReferenceImages(request, response) {
           type: "image",
           imageIndex: Number(event.image_index) || 0,
           characterName: body.characterReference?.characterName || "",
-          model: event.model || config.jimeng.model,
+          model: event.model || imageModel,
           created: event.created || Math.round(Date.now() / 1000),
           size: event.size || image.size || "",
           url: image.url,
@@ -182,7 +320,7 @@ async function streamCharacterReferenceImages(request, response) {
         return;
       }
       if (event.type === "image_generation.completed") {
-        send("completed", { type: "completed", usage: event.usage || {}, model: event.model || config.jimeng.model });
+        send("completed", { type: "completed", usage: event.usage || {}, model: event.model || imageModel });
         return;
       }
       if (event.error) {
@@ -201,19 +339,22 @@ async function generateShotFrameImage(body = {}) {
   if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
   const frameKind = body.frameKind === "end" ? "end" : "start";
   const shot = body.shot || {};
-  const prompt = String(body.prompt || "").trim() || buildShotFrameImagePrompt({
-    frameKind,
-    shot,
-    visualBible: body.visualBible,
-    characterReferences: body.characterReferences
-  });
+	  const prompt = String(body.prompt || "").trim() || buildShotFrameImagePrompt({
+	    frameKind,
+	    shot,
+	    visualBible: body.visualBible,
+	    characterReferences: body.characterReferences,
+	    sceneReference: body.sceneReference
+	  });
   const count = clampFrameImageCount(body.count);
+  const imageModel = modelOverrideFor(body, "imageGeneration") || config.jimeng.model;
   const uploadedReferences = referenceImages(body.characterReferences);
   const images = [];
   await jimengClient.generateImagesStream({
     count,
     prompt: buildShotFrameMultiImagePrompt(prompt, count),
-    referenceImageDataUrls: uploadedReferences
+    referenceImageDataUrls: uploadedReferences,
+    model: imageModel
   }, async (event) => {
     if (event.type === "image_generation.partial_succeeded") {
       images.push(await persistGeneratedImage(event, {
@@ -237,7 +378,7 @@ async function generateShotFrameImage(body = {}) {
     frameKind,
     shotId: shot.shotId || "",
     prompt,
-    model: config.jimeng.model,
+    model: imageModel,
     url: image.url,
     filename: image.filename,
     size: image.size || "",
@@ -247,7 +388,7 @@ async function generateShotFrameImage(body = {}) {
       url: item.url,
       filename: item.filename,
       size: item.size || "",
-      model: config.jimeng.model,
+      model: imageModel,
       referenceImageCount: uploadedReferences.length
     })),
     referenceImageCount: uploadedReferences.length,

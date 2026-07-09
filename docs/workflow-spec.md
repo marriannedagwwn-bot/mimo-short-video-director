@@ -88,8 +88,9 @@ flowchart LR
 - `productionStrategy`：默认采用 `first_last_frame_video`，单镜头控制在 3–6 秒，竖屏 9:16。
 - `visualBible`：动画风格、色彩、光线、世界规则、镜头语言、角色一致性规则和负面视觉规则。
 - `characterReferencePrompts`：固定角色、被关爱对象和帮助者的参考图提示词，用于先锁定视觉一致性。
-- `assetPrompts`：关键道具和场景资产提示词。
-- `shotPlan`：逐镜头提供首帧 prompt、尾帧 prompt、video prompt、负面 prompt、镜头运动、角色动作、声音设计和验收标准。
+- `sceneReferencePrompts`：可复用地点/场景参考提示词，用于锁定室内外属性、背景层级、光线、空间锚点和场景负面规则。
+- `assetPrompts`：关键道具提示词。
+- `shotPlan`：逐镜头引用 `sceneId`，并提供首帧 prompt、尾帧 prompt、video prompt、负面 prompt、镜头运动、角色动作、声音设计和验收标准。
 - `editPlan`：剪辑节奏、转场、字幕、音乐音效、开头钩子和结尾停顿。
 - `generationChecklist`：角色稳定、首尾帧因果、情绪曲线、可剪辑性和表达原创的质检标准。
 
@@ -98,8 +99,8 @@ flowchart LR
 剧情页必须提供两个生产出口：
 
 - JSON 导出：保留完整结构化数据，供后续自动视频队列或外部工具读取。
-- Markdown 复制：把角色参考、资产提示词和逐镜首尾帧/video prompt 合并成可直接粘贴到视频生成工具的生产包。
-- JSONL 任务队列导出：将 `animationPlan` 拆成机器可读任务，任务类型包括 `reference_image`、`asset_image`、`start_frame_image`、`end_frame_image`、`first_last_frame_video`、`quality_check` 和 `final_edit`。`final_edit` 依赖所有逐镜视频输出和质检结果，负责按 `editPlan` 生成最终竖屏短片。
+- Markdown 复制：把角色参考、场景参考、资产提示词和逐镜首尾帧/video prompt 合并成可直接粘贴到视频生成工具的生产包。
+- JSONL 任务队列导出：将 `animationPlan` 拆成机器可读任务，任务类型包括 `reference_image`、`scene_reference_image`、`asset_image`、`start_frame_image`、`end_frame_image`、`first_last_frame_video`、`quality_check` 和 `final_edit`。`final_edit` 依赖所有逐镜视频输出和质检结果，负责按 `editPlan` 生成最终竖屏短片。
 
 浏览器导出的生产包或 JSONL 队列可以继续通过本地命令生成生产运行状态：
 

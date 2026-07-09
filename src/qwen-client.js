@@ -29,11 +29,30 @@ export class QwenClient {
     return this.requestJson({ prompt, model, maxCompletionTokens });
   }
 
-  async generateJsonWithMedia({ prompt, model = null, maxCompletionTokens = null } = {}) {
-    return this.requestJson({ prompt, model, maxCompletionTokens });
+  async generateJsonWithMedia({ prompt, frames = [], video = null, model = null, maxCompletionTokens = null } = {}) {
+    const canUseVideo = Boolean(video?.dataUrl) && this.config.mediaMode !== "frames";
+    try {
+      return await this.requestJson({
+        prompt,
+        frames,
+        video,
+        useVideo: canUseVideo,
+        model,
+        maxCompletionTokens,
+        jsonRetryAttempts: canUseVideo && this.config.mediaMode === "auto" && frames.length > 0 ? 0 : null
+      });
+    } catch (error) {
+      const canFallback = canUseVideo
+        && this.config.mediaMode === "auto"
+        && frames.length > 0
+        && error instanceof ModelResponseError
+        && ([400, 413, 415, 422].includes(error.status) || isRecoverableVideoJsonError(error));
+      if (!canFallback) throw error;
+      return this.requestJson({ prompt, frames, useVideo: false, model, maxCompletionTokens });
+    }
   }
 
-  async requestJson({ prompt, model = null, maxCompletionTokens = null, jsonRetryAttempts = null }) {
+  async requestJson({ prompt, frames = [], video = null, useVideo = false, model = null, maxCompletionTokens = null, jsonRetryAttempts = null }) {
     const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`;
     const retryAttempts = jsonRetryAttempts === null
       ? Number.isFinite(Number(this.config.jsonRetryAttempts)) ? Number(this.config.jsonRetryAttempts) : 2
@@ -43,7 +62,7 @@ export class QwenClient {
     let lastJsonError = null;
 
     for (let attempt = 0; attempt <= retryAttempts; attempt += 1) {
-      const body = buildQwenRequestBody(this.config, { prompt: activePrompt }, { model, maxCompletionTokens: activeMaxTokens });
+      const body = buildQwenRequestBody(this.config, { prompt: activePrompt, frames, video, useVideo }, { model, maxCompletionTokens: activeMaxTokens });
       const response = await fetch(endpoint, {
         method: "POST",
         headers: {
@@ -80,7 +99,9 @@ export class QwenClient {
   }
 }
 
-export function buildQwenRequestBody(config, { prompt }, overrides = {}) {
+export function buildQwenRequestBody(config, { prompt, frames = [], video = null, useVideo = false }, overrides = {}) {
+  const visualContent = buildQwenVisualContent(config, { frames, video, useVideo });
+  const userContent = visualContent.length ? [...visualContent, { type: "text", text: prompt }] : prompt;
   const body = {
     model: overrides.model || config.model,
     max_tokens: overrides.maxCompletionTokens ?? config.maxCompletionTokens ?? 12288,
@@ -89,12 +110,56 @@ export function buildQwenRequestBody(config, { prompt }, overrides = {}) {
     stream: false,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: prompt }
+      { role: "user", content: userContent }
     ]
   };
   if (typeof config.enableThinking === "boolean") body.enable_thinking = config.enableThinking;
   if (config.jsonMode) body.response_format = { type: "json_object" };
   return body;
+}
+
+function buildQwenVisualContent(config, { frames = [], video = null, useVideo = false } = {}) {
+  const options = qwenVisionOptions(config);
+  if (useVideo && video?.dataUrl) {
+    return [{
+      type: "video_url",
+      video_url: { url: video.dataUrl },
+      ...options
+    }];
+  }
+  const imageUrls = frames.map((frame) => frame?.dataUrl).filter(Boolean);
+  if (imageUrls.length >= 4) {
+    return [{
+      type: "video",
+      video: imageUrls,
+      ...options
+    }];
+  }
+  return imageUrls.map((url) => ({
+    type: "image_url",
+    image_url: { url },
+    ...qwenImageOptions(config)
+  }));
+}
+
+function qwenVisionOptions(config = {}) {
+  return compactObject({
+    fps: config.videoFps ?? 2,
+    min_pixels: config.minPixels,
+    max_pixels: config.maxPixels,
+    total_pixels: config.totalPixels
+  });
+}
+
+function qwenImageOptions(config = {}) {
+  return compactObject({
+    min_pixels: config.minPixels,
+    max_pixels: config.maxPixels
+  });
+}
+
+function compactObject(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== null && item !== undefined && item !== ""));
 }
 
 function jsonRetryPrompt(originalPrompt, failedContent) {
@@ -111,6 +176,10 @@ function jsonRetryPrompt(originalPrompt, failedContent) {
 
 上一次错误输出开头仅供诊断，不要照抄：
 ${String(failedContent || "").slice(0, 800)}`;
+}
+
+function isRecoverableVideoJsonError(error) {
+  return error instanceof ModelResponseError && error.message.includes("未返回合法 JSON");
 }
 
 function retryTokenLimit(value) {

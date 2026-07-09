@@ -398,6 +398,19 @@ export function mockAnimationPlan(input) {
     { sceneId: "S5", timeRange: "00:38-00:51", location: "到达点", visibleAction: `${fixedName}把任务物交给${careRecipient}。`, emotionNode: "克制", dramaticFunction: "关系揭示" },
     { sceneId: "S6", timeRange: "00:51-01:00", location: "结尾空间", visibleAction: "两人完成生活化结尾动作。", emotionNode: "释然", dramaticFunction: "情绪兑现" }
   ];
+  const sceneReferencePrompts = sceneScript.map((scene, index) => {
+    const sceneId = `LOC${String(index + 1).padStart(2, "0")}`;
+    const location = scene.location || "生活化场景";
+    return {
+      sceneId,
+      sceneName: location,
+      storyFunction: scene.dramaticFunction || "承载剧情动作和情绪变化",
+      environmentPrompt: `竖屏 9:16，${location}，治愈生活流 2.5D 动画场景参考图，空间真实可信，背景层级清楚，光线自然，适合${fixedName}在其中完成短镜头动作。`,
+      continuityAnchors: [location, "同一室内外属性", "同一背景层级", "同一光线方向", "同一竖屏构图逻辑"],
+      negativeSceneRules: ["不要室内外跳变", "不要改成无关地点", "不要现代城市或商业影棚感", "不要背景漂移"],
+      relatedShotIds: [`A${String(index + 1).padStart(2, "0")}`]
+    };
+  });
   const shotPlan = sceneScript.flatMap((scene, index) => {
     const baseId = index + 1;
     const location = scene.location || "生活化场景";
@@ -406,6 +419,7 @@ export function mockAnimationPlan(input) {
     const first = {
       shotId: `A${String(baseId).padStart(2, "0")}`,
       sourceSceneId: scene.sceneId || `S${baseId}`,
+      sceneId: sceneReferencePrompts[index]?.sceneId || `LOC${String(baseId).padStart(2, "0")}`,
       durationSeconds: baseId === 1 ? 4 : 5,
       storyPurpose: scene.dramaticFunction || "推进任务和情绪",
       emotionalTarget: emotion,
@@ -450,7 +464,7 @@ export function mockAnimationPlan(input) {
       characterConsistencyRules: [`${fixedName}始终是同一名人类儿童`, "同一发型、同一衣服、同一身高比例", "表情变化克制，动作先于语言"],
       negativeVisualRules: ["不要动物化主角", "不要玩偶服或夸张拟态", "不要让道具变形或漂移", "不要电影大片式过度运镜"]
     },
-    characterReferencePrompts: [
+	    characterReferencePrompts: [
       {
         characterName: fixedName,
         storyRole: "主角 / 任务执行者 / 善意连接者",
@@ -467,8 +481,9 @@ export function mockAnimationPlan(input) {
         consistencyTags: [careRecipient, "生活化", "克制温情"],
         forbiddenChanges: ["不要过度煽情", "不要突然年轻化或卡通夸张"]
       }
-    ],
-    assetPrompts: (fullStory.keyProps || []).slice(0, 4).map((item, index) => ({
+	    ],
+	    sceneReferencePrompts,
+	    assetPrompts: (fullStory.keyProps || []).slice(0, 4).map((item, index) => ({
       assetName: item.prop || `关键道具${index + 1}`,
       storyFunction: item.storyFunction || "承载任务和情绪",
       imagePrompt: `竖屏动画道具参考图，${item.prop || `关键道具${index + 1}`}，生活化、低饱和、手感真实，适合${fixedName}拿在手中，能在开场、受阻和结尾保持同一外观。`,

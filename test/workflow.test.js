@@ -7,6 +7,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { WorkflowService } from "../src/workflow.js";
+import { getConfig } from "../src/config.js";
 import { InputError, OutputContractError } from "../src/validation.js";
 import { collectForbiddenVisualTerms, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile } from "../src/validation.js";
 import { buildRequestBody, MimoClient, parseModelJson } from "../src/mimo-client.js";
@@ -17,7 +18,7 @@ import { parseRunVideoArgs } from "../src/run-video-command.js";
 import { generateShotVideo, ShotVideoConfigError, ShotVideoProviderError } from "../src/shot-video-generator.js";
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
 import { collectFixedCharacterVisualPolicy, extractFixedCharacterName, fixedCharacterVisualPolicyText } from "../src/validation.js";
-import { mockAnimationPlan, mockBrief, mockFullStory, mockVisualGuardrails } from "../src/mock.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockVisualGuardrails } from "../src/mock.js";
 import { executeProductionWorkspace } from "../src/video-production-executor.js";
 import { formatMakeVideoMarkdown, makeProductionVideo } from "../src/video-production-maker.js";
 import { buildProductionReport, formatProductionReportMarkdown, loadProductionReport } from "../src/video-production-report.js";
@@ -212,13 +213,102 @@ test("完整剧情和动画生产包可切换到 Qwen，同时保留 MiMo 基础
   const fullStory = await workflow.createFullStory({ ...input, creativeBrief, variant });
   const animationPlan = await workflow.createAnimationPlan({ ...input, creativeBrief, variant, fullStory });
 
-  assert.equal(workflow.mode, "mimo");
+  assert.equal(workflow.mode, "live");
   assert.equal(calls[0].model, "qwen3.7-max-story");
   assert.equal(calls[0].maxCompletionTokens, 16000);
   assert.equal(calls[1].model, "qwen3.7-max-animation");
   assert.equal(calls[1].maxCompletionTokens, 17000);
   assert.equal(fullStory.selectedVariantId, "V1");
   assert.equal(animationPlan.selectedVariantId, "V1");
+});
+
+test("工作流阶段可通过 modelOverrides 灵活切换 provider 和模型", async () => {
+  const creativeBrief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const variant = {
+    id: "V1",
+    title: "最后一格电",
+    characterSetup: { protagonist: "阿岚，社区修理师", careRecipient: "独居老人", helper: "夜班便利店员" },
+    newTask: "修复并送回旧设备",
+    emotionalMedium: "一段旧录音",
+    environmentPressure: "暴雨停电",
+    endingRitual: "老人按下播放键"
+  };
+  const calls = [];
+  const qwenClient = {
+    async generateJson(args) {
+      calls.push(args);
+      return mockFullStory({ ...input, creativeBrief, variant });
+    }
+  };
+  const workflow = new WorkflowService({
+    clients: { Qwen: qwenClient },
+    stageDefaults: {
+      fullStory: { provider: "Qwen", model: "qwen-default", maxCompletionTokens: 16000 }
+    }
+  });
+  const result = await workflow.createFullStory({
+    ...input,
+    creativeBrief,
+    variant,
+    modelOverrides: {
+      fullStory: { provider: "Qwen", model: "qwen-custom-story", maxCompletionTokens: 22000 }
+    }
+  });
+  assert.equal(result.selectedVariantId, "V1");
+  assert.equal(calls[0].model, "qwen-custom-story");
+  assert.equal(calls[0].maxCompletionTokens, 22000);
+});
+
+test("Qwen 媒体阶段默认避开 qwen3.7-max 文本模型", () => {
+  const keys = [
+    "QWEN_MODEL",
+    "QWEN_VIDEO_MODEL",
+    "QWEN_ANALYSIS_MODEL",
+    "QWEN_RECONSTRUCTION_MODEL",
+    "QWEN_VISUAL_MODEL",
+    "QWEN_CHARACTER_REFERENCE_MODEL"
+  ];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    process.env.QWEN_MODEL = "qwen3.7-max";
+    const config = getConfig();
+    assert.equal(config.qwen.model, "qwen3.7-max");
+    assert.equal(config.qwen.videoModel, "qwen3.7-plus");
+    assert.equal(config.qwen.analysisModel, "qwen3.7-plus");
+    assert.equal(config.qwen.reconstructionModel, "qwen3.7-plus");
+    assert.equal(config.qwen.visualModel, "qwen3.7-plus");
+    assert.equal(config.qwen.characterReferenceModel, "qwen3.7-plus");
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});
+
+test("Qwen 媒体阶段覆盖为 qwen3.7-max 时回退默认视觉模型", async () => {
+  const calls = [];
+  const qwenClient = {
+    async generateJsonWithMedia(args) {
+      calls.push(args);
+      return mockAnalysis(input);
+    }
+  };
+  const workflow = new WorkflowService({
+    clients: { Qwen: qwenClient },
+    stageDefaults: {
+      analysis: { provider: "Qwen", model: "qwen3.7-plus", maxCompletionTokens: 16000 }
+    }
+  });
+  const result = await workflow.analyze({
+    ...input,
+    modelOverrides: {
+      analysis: { provider: "Qwen", model: "qwen3.7-max" }
+    }
+  });
+  assert.equal(result.summary, mockAnalysis(input).summary);
+  assert.equal(calls[0].model, "qwen3.7-plus");
 });
 
 test("完整剧情后可生成首尾帧动画生产包", async () => {
@@ -248,7 +338,10 @@ test("完整剧情后可生成首尾帧动画生产包", async () => {
   assert.equal(captured.model, "mimo-v2.5-pro");
   assert.equal(captured.maxCompletionTokens, 13000);
   assert.equal(result.productionStrategy.format, "first_last_frame_video");
+  assert.ok(result.sceneReferencePrompts.length >= 1);
+  assert.ok(result.sceneReferencePrompts[0].environmentPrompt);
   assert.ok(result.shotPlan.length >= 6);
+  assert.ok(result.shotPlan[0].sceneId);
   assert.ok(result.shotPlan[0].startFramePrompt);
   assert.ok(result.shotPlan[0].endFramePrompt);
   assert.ok(result.shotPlan[0].videoPrompt);
@@ -426,6 +519,11 @@ test("视频任务队列不再合并 visualGuardrails 通用负面 prompt", () =
     visualGuardrails
   });
 
+  const sceneJob = queue.jobs.find((job) => job.type === "scene_reference_image");
+  assert.ok(sceneJob);
+  assert.equal(sceneJob.capability || "image_generation", "image_generation");
+  const firstFrameJob = queue.jobs.find((job) => job.type === "start_frame_image");
+  assert.ok(firstFrameJob.requiredInputs.includes(sceneJob.outputKey));
   assert.ok(!queue.common.negativeVisualRules.includes("不要彩虹披风"));
   for (const job of queue.jobs.filter((item) => ["reference_image", "start_frame_image", "end_frame_image", "first_last_frame_video"].includes(item.type))) {
     assert.doesNotMatch(job.negativePrompt, /不要彩虹披风/);
@@ -436,22 +534,23 @@ test("视频生产运行状态按任务依赖释放下一步", () => {
   const queue = buildQueueFixture();
   const initialRun = buildProductionRun(queue, { createdAt: "2026-06-25T00:00:00.000Z", outputRoot: "production/V1" });
   assert.equal(initialRun.counts.done, 0);
-  assert.ok(initialRun.nextTaskIds.includes("REF-01"));
-  assert.ok(initialRun.nextTaskIds.includes("ASSET-01"));
-  assert.equal(initialRun.jobs.find((job) => job.type === "start_frame_image").status, "blocked");
+	  assert.ok(initialRun.nextTaskIds.includes("REF-01"));
+	  assert.ok(initialRun.nextTaskIds.includes("ASSET-01"));
+	  assert.ok(initialRun.nextTaskIds.includes("SCENE-01"));
+	  assert.equal(initialRun.jobs.find((job) => job.type === "start_frame_image").status, "blocked");
   assert.equal(initialRun.jobs.find((job) => job.type === "final_edit").status, "blocked");
 
-  const referenceOutputs = queue.jobs
-    .filter((job) => job.type === "reference_image" || job.type === "asset_image")
-    .map((job) => job.outputKey);
+	  const referenceOutputs = queue.jobs
+	    .filter((job) => job.type === "reference_image" || job.type === "asset_image" || job.type === "scene_reference_image")
+	    .map((job) => job.outputKey);
   const frameRun = buildProductionRun(queue, { completedOutputs: referenceOutputs });
   assert.ok(frameRun.jobs.filter((job) => job.type === "start_frame_image").every((job) => job.status === "ready"));
   assert.ok(frameRun.jobs.filter((job) => job.type === "end_frame_image").every((job) => job.status === "ready"));
   assert.ok(frameRun.jobs.filter((job) => job.type === "first_last_frame_video").every((job) => job.status === "blocked"));
 
-  const videoReadyOutputs = queue.jobs
-    .filter((job) => ["reference_image", "asset_image", "start_frame_image", "end_frame_image"].includes(job.type))
-    .map((job) => job.outputKey);
+	  const videoReadyOutputs = queue.jobs
+	    .filter((job) => ["reference_image", "asset_image", "scene_reference_image", "start_frame_image", "end_frame_image"].includes(job.type))
+	    .map((job) => job.outputKey);
   const videoRun = buildProductionRun(queue, { completedOutputs: videoReadyOutputs });
   assert.ok(videoRun.jobs.filter((job) => job.type === "first_last_frame_video").every((job) => job.status === "ready"));
 
@@ -468,16 +567,16 @@ test("视频生产运行状态按任务依赖释放下一步", () => {
 test("视频生产运行状态可从已存在输出路径自动识别完成产物", () => {
   const queue = buildQueueFixture();
   const initialRun = buildProductionRun(queue, { outputRoot: "production/V1" });
-  const existingOutputPaths = initialRun.jobs
-    .filter((job) => job.type === "reference_image" || job.type === "asset_image")
-    .map((job) => job.outputPath);
+	  const existingOutputPaths = initialRun.jobs
+	    .filter((job) => job.type === "reference_image" || job.type === "asset_image" || job.type === "scene_reference_image")
+	    .map((job) => job.outputPath);
   const artifacts = buildArtifactsFromExistingOutputs(queue, {
     outputRoot: "production/V1",
     existingOutputPaths
   });
   assert.equal(Object.keys(artifacts).length, existingOutputPaths.length);
   const scannedRun = buildProductionRun(queue, { outputRoot: "production/V1", artifacts });
-  assert.ok(scannedRun.jobs.filter((job) => job.type === "reference_image" || job.type === "asset_image").every((job) => job.status === "done"));
+	  assert.ok(scannedRun.jobs.filter((job) => job.type === "reference_image" || job.type === "asset_image" || job.type === "scene_reference_image").every((job) => job.status === "done"));
   assert.ok(scannedRun.jobs.filter((job) => job.type === "start_frame_image").every((job) => job.status === "ready"));
 });
 
@@ -705,7 +804,7 @@ test("通用 HTTP worker 支持首尾帧视频提交、轮询和下载", async (
     jobs: [
       { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", prompt: "首帧" },
       { taskId: "S01-END", type: "end_frame_image", inputType: "text_to_image", outputKey: "frames.S01.end", prompt: "尾帧" },
-      { taskId: "S01-VIDEO", type: "first_last_frame_video", inputType: "image_pair_to_video", outputKey: "videos.S01", requiredInputs: ["frames.S01.start", "frames.S01.end"], prompt: "让人物从首帧走到尾帧", durationSeconds: 4, aspectRatio: "9:16" }
+      { taskId: "S01-VIDEO", type: "first_last_frame_video", inputType: "image_pair_to_video", outputKey: "videos.S01", requiredInputs: ["frames.S01.start", "frames.S01.end"], model: "override-video-model", prompt: "让人物从首帧走到尾帧", durationSeconds: 4, aspectRatio: "9:16" }
     ]
   };
   const initialRun = buildProductionRun(queue, { outputRoot: root });
@@ -740,7 +839,7 @@ test("通用 HTTP worker 支持首尾帧视频提交、轮询和下载", async (
   const videoJob = result.run.jobs.find((job) => job.taskId === "S01-VIDEO");
   assert.equal(result.executed.length, 1);
   assert.equal(videoJob.status, "done");
-  assert.equal(postBody.model, "test-video-model");
+  assert.equal(postBody.model, "override-video-model");
   assert.equal(postBody.parameters.durationSeconds, 4);
   assert.equal(postBody.inputArtifacts.length, 2);
   assert.match(postBody.inputArtifacts[0].dataUrl, /^data:image\/png;base64,/);
@@ -1503,6 +1602,64 @@ test("Qwen 请求使用 OpenAI 兼容文本格式和 qwen3.7-max", () => {
   assert.equal(body.messages[1].content, "生成完整剧情");
 });
 
+test("Qwen 视频解析请求使用 video_url 或图片列表 video 格式", () => {
+  const direct = buildQwenRequestBody(
+    { model: "qwen3.7-max", maxCompletionTokens: 16384, videoFps: 1.5, maxPixels: 655360 },
+    { prompt: "分析视频", frames, video: { dataUrl: "data:video/mp4;base64,AAAA" }, useVideo: true }
+  );
+  assert.equal(direct.messages[1].content[0].type, "video_url");
+  assert.equal(direct.messages[1].content[0].video_url.url, "data:video/mp4;base64,AAAA");
+  assert.equal(direct.messages[1].content[0].fps, 1.5);
+  assert.equal(direct.messages[1].content[0].max_pixels, 655360);
+  assert.equal(direct.messages[1].content.at(-1).text, "分析视频");
+
+  const sampled = buildQwenRequestBody(
+    { model: "qwen3.7-max", maxCompletionTokens: 16384, videoFps: 2 },
+    { prompt: "分析关键帧", frames, useVideo: false }
+  );
+  assert.equal(sampled.messages[1].content[0].type, "video");
+  assert.deepEqual(sampled.messages[1].content[0].video, frames.map((frame) => frame.dataUrl));
+  assert.equal(sampled.messages[1].content[0].fps, 2);
+});
+
+test("auto 模式下 Qwen video_url 失败时回退为关键帧列表", async (t) => {
+  const requests = [];
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    requests.push(body);
+    const content = body.messages[1].content;
+    if (content.some((item) => item.type === "video_url")) {
+      response.writeHead(422, { "content-type": "application/json" });
+      response.end('{"error":"unsupported video"}');
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}');
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  const client = new QwenClient({
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    apiKey: "",
+    model: "qwen3.7-max",
+    mediaMode: "auto",
+    videoFps: 2,
+    maxCompletionTokens: 16384,
+    enableThinking: false,
+    jsonRetryAttempts: 2
+  });
+  const result = await client.generateJsonWithMedia({
+    prompt: "分析", frames, video: { dataUrl: "data:video/mp4;base64,AAAA" }
+  });
+  assert.deepEqual(result, { ok: true });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].messages[1].content[0].type, "video_url");
+  assert.equal(requests[1].messages[1].content[0].type, "video");
+});
+
 test("即梦角色参考图请求使用 5.0 Lite 流式图片生成参数", () => {
   const characterReference = {
     characterName: "小白子",
@@ -1526,8 +1683,9 @@ test("即梦角色参考图请求使用 5.0 Lite 流式图片生成参数", () =
   assert.deepEqual(body.sequential_image_generation_options, { max_images: 3 });
   const customBody = buildJimengImageRequestBody(
     { model: "doubao-seedream-5-0-260128", size: "1728x2304", outputFormat: "png", imageField: "image", maxImages: 6, watermark: false },
-    { referenceImageDataUrl: "data:image/png;base64,AA==", characterReference, count: 1, prompt: "用户编辑后的提示词" }
+    { referenceImageDataUrl: "data:image/png;base64,AA==", characterReference, count: 1, prompt: "用户编辑后的提示词", model: "custom-image-model" }
   );
+  assert.equal(customBody.model, "custom-image-model");
   assert.equal(customBody.prompt, "用户编辑后的提示词");
   assert.equal(customBody.image, "data:image/png;base64,AA==");
   const multiReferenceBody = buildJimengImageRequestBody(
@@ -1597,13 +1755,20 @@ test("即梦首尾帧镜头图 prompt 合并视觉圣经、角色参考和帧提
       cameraLanguage: "低机位近景",
       negativeVisualRules: ["不要水果摊"]
     },
-    characterReferences: [{
+	    characterReferences: [{
       characterName: "小白子",
       appearancePrompt: "q版狼耳少女，蓝色眼睛",
       consistencyTags: ["狼耳", "浅蓝服装"],
-      referenceImageDataUrl: "data:image/png;base64,AA=="
-    }],
-    shot: {
+	      referenceImageDataUrl: "data:image/png;base64,AA=="
+	    }],
+	    sceneReference: {
+	      sceneId: "LOC01",
+	      sceneName: "村口药铺门前",
+	      environmentPrompt: "户外村口药铺门前，木质门脸，青石路，清晨柔光。",
+	      continuityAnchors: ["户外", "村口药铺", "木质门脸", "青石路"],
+	      negativeSceneRules: ["不要室内药房", "不要现代城市街道"]
+	    },
+	    shot: {
       shotId: "S01",
       startFramePrompt: "小白子站在村口，手里拿着草药包。",
       endFramePrompt: "小白子把草药包递给爷爷。",
@@ -1613,7 +1778,10 @@ test("即梦首尾帧镜头图 prompt 合并视觉圣经、角色参考和帧提
     }
   });
   assert.match(prompt, /生成竖屏 9:16 动画短视频分镜首帧图/);
-  assert.match(prompt, /整体风格：Q版定格动画/);
+	  assert.match(prompt, /整体风格：Q版定格动画/);
+	  assert.match(prompt, /场景参考（必须继承/);
+	  assert.match(prompt, /村口药铺门前/);
+	  assert.match(prompt, /不要室内药房/);
   assert.match(prompt, /小白子：@图一/);
   assert.match(prompt, /@图一=第1张输入图片/);
   assert.match(prompt, /第1张输入参考图/);
@@ -2526,14 +2694,15 @@ test("动画提示词要求输出首尾帧视频生产包", () => {
   assert.match(prompt, /videoPrompt/);
   assert.match(prompt, /默认 8–12 个镜头/);
   assert.match(prompt, /三层简化结构/);
-  assert.match(prompt, /identity lock/);
+	  assert.match(prompt, /identity \/ scene lock/);
+	  assert.match(prompt, /sceneReferencePrompts/);
   assert.match(prompt, /全局负面提示词，只写一次/);
   assert.match(prompt, /拆镜头方案 B/);
   assert.match(prompt, /中景互动镜头/);
   assert.match(prompt, /表情强化镜头/);
   assert.match(prompt, /静态关键帧规格/);
   assert.match(prompt, /同一地点、同一镜头景别、同一机位高度/);
-  assert.match(prompt, /必须用一句短锚点复述与首帧相同的地点\/室内外属性\/背景\/景别\/机位/);
+	  assert.match(prompt, /必须用一句短锚点复述同一个 sceneId 的地点\/室内外属性\/背景\/景别\/机位/);
   assert.match(prompt, /仍在同一户外农家院落/);
   assert.match(prompt, /shot 内不要重复堆叠/);
   assert.match(prompt, /固定角色外观边界/);

@@ -44,6 +44,12 @@ const state = {
   animationModel: "mimo-v2.5-pro",
   storyProvider: "MiMo",
   animationProvider: "MiMo",
+  analysisProvider: "MiMo",
+  analysisModel: "mimo-v2.5",
+  modelStages: {},
+  stageHealth: {},
+  providers: {},
+  modelOverrides: {},
   imageModel: "doubao-seedream-5-0-260128",
   imageProvider: "Jimeng",
   imageProviderConfigured: false,
@@ -60,6 +66,9 @@ const elements = {
   frames: $("#frames"), frameStatus: $("#frameStatus"), replace: $("#replaceVideo"), transcript: $("#transcript"),
   fixedCharacter: $("#fixedCharacter"), vertical: $("#vertical"), constraints: $("#constraints"), variantCount: $("#variantCount"),
   run: $("#runWorkflow"), error: $("#errorMessage"), modelState: $("#modelState"),
+  openModelSettings: $("#openModelSettings"), modelSettingsModal: $("#modelSettingsModal"), closeModelSettings: $("#closeModelSettings"),
+  modelStageList: $("#modelStageList"), resetModelSettings: $("#resetModelSettings"), saveModelSettings: $("#saveModelSettings"),
+  modelSettingsStatus: $("#modelSettingsStatus"),
   empty: $("#emptyResults"), resultStack: $("#resultStack"), export: $("#exportButton"),
   analysis: $("#analysisResult"), script: $("#scriptResult"), brief: $("#briefResult"), guardrails: $("#guardrailsResult"), variants: $("#variantsResult"),
   mainPage: $("#top"), storyPage: $("#storyPage"), storyModelName: $("#storyModelName"),
@@ -94,6 +103,36 @@ const elements = {
   generatedImagePreviewCaption: $("#generatedImagePreviewCaption"), closeGeneratedImagePreview: $("#closeGeneratedImagePreview")
 };
 
+const MODEL_STAGE_DEFS = [
+  { key: "analysis", label: "参考片分析", hint: "视频解析、定位、人物、节奏" },
+  { key: "reconstruction", label: "脚本还原", hint: "分场、动作、镜头、转折" },
+  { key: "brief", label: "创意简报", hint: "保留价值、受控变量" },
+  { key: "visualGuardrails", label: "视觉规则", hint: "固定角色边界、负面联想" },
+  { key: "variants", label: "主题变体", hint: "新故事方向" },
+  { key: "fullStory", label: "完整剧情", hint: "可拍分场剧本" },
+  { key: "animationPlan", label: "动画生产包", hint: "首尾帧、镜头与视频提示词" },
+  { key: "characterReference", label: "人物图修正", hint: "根据上传图片修正角色描述" },
+  { key: "imageGeneration", label: "图片生成", hint: "角色参考图、镜头首尾帧图片", providerLocked: true, optional: true },
+  { key: "shotVideo", label: "首尾帧视频", hint: "单镜头图生视频候选", providerLocked: true, optional: true }
+];
+const MEDIA_INPUT_MODEL_STAGES = new Set(["analysis", "reconstruction", "visualGuardrails", "characterReference"]);
+const MODEL_OPTION_CATALOG = {
+  Qwen: {
+    media: ["qwen3.7-plus", "qwen-vl-max-latest", "qwen-vl-plus-latest", "qwen-omni-turbo-latest"],
+    text: ["qwen3.7-max", "qwen3.7-plus", "qwen-max-latest", "qwen-plus-latest", "qwen-turbo-latest"]
+  },
+  MiMo: {
+    media: ["mimo-v2.5", "mimo-v2.5-pro"],
+    text: ["mimo-v2.5", "mimo-v2.5-pro"]
+  },
+  Jimeng: {
+    imageGeneration: ["doubao-seedream-5-0-260128", "seedream-5-0-lite-260128"]
+  },
+  VideoHTTP: {
+    shotVideo: ["kling-v2-1", "dreamina-seedance-2-0-260128", "seedance-1-0-lite-i2v-250428", "seedance-1-0-pro-i2v-250528"]
+  }
+};
+
 init();
 
 async function init() {
@@ -104,25 +143,25 @@ async function init() {
     const health = await fetch("/api/health").then((response) => response.json());
     state.mode = health.mode;
     state.mediaMode = health.mediaMode || "auto";
-    state.storyModel = health.storyModel || "mimo-v2.5-pro";
-    state.animationModel = health.animationModel || state.storyModel;
-    state.storyProvider = health.storyProvider || "MiMo";
-    state.animationProvider = health.animationProvider || state.storyProvider || "MiMo";
+    state.modelStages = health.modelStages || {};
+    state.stageHealth = health.stageHealth || {};
+    state.providers = health.providers || {};
+    state.modelOverrides = readModelOverrides();
+    applyEffectiveModelState();
     state.imageModel = health.imageModel || state.imageModel;
     state.imageProvider = health.imageProvider || state.imageProvider;
     state.imageProviderConfigured = Boolean(health.imageProviderConfigured);
     state.nativeVideoMaxBytes = health.nativeVideoMaxBytes || 0;
     elements.storyModelName.textContent = modelDisplayLabel(state.storyProvider, state.storyModel);
-    const storyReady = health.storyModelAvailable !== false && health.animationModelAvailable !== false;
-    const connected = health.mode === "mimo" && health.providerReachable && health.modelAvailable && storyReady;
-    elements.modelState.className = `model-state ${connected ? "ready" : health.mode === "mimo" ? "" : "demo"}`;
+    updateModelActionLabels();
+    const connected = health.mode !== "demo" && modelStagesReady();
+    elements.modelState.className = `model-state ${connected ? "ready" : health.mode !== "demo" ? "" : "demo"}`;
     elements.modelState.lastElementChild.textContent = connected
-      ? `MiMo 已连接 · ${modelName(health.model)} / 剧情 ${modelDisplayLabel(state.storyProvider, state.storyModel)} / 动画 ${modelDisplayLabel(state.animationProvider, state.animationModel)}`
-      : health.mode === "mimo"
-        ? health.providerReachable
-          ? health.modelAvailable ? `后续模型未加载：${modelDisplayLabel(state.storyProvider, state.storyModel)} / ${modelDisplayLabel(state.animationProvider, state.animationModel)}` : "MiMo 可访问，但指定模型未加载"
-          : "MiMo 已配置，但服务不可达"
-        : "演示模式 · 配置 MiMo 后启用真实分析";
+      ? `${modelDisplayLabel(state.analysisProvider, state.analysisModel)} 解析 · 剧情 ${modelDisplayLabel(state.storyProvider, state.storyModel)} · 动画 ${modelDisplayLabel(state.animationProvider, state.animationModel)}`
+      : health.mode !== "demo"
+        ? "模型已配置，但部分阶段不可用"
+        : "演示模式 · 配置模型后启用真实分析";
+    renderModelSettings();
   } catch {
     elements.modelState.lastElementChild.textContent = "服务连接失败";
   }
@@ -137,6 +176,14 @@ function bindEvents() {
   elements.replace.addEventListener("click", () => elements.input.click());
   elements.run.addEventListener("click", runWorkflow);
   elements.export.addEventListener("click", exportJson);
+  elements.openModelSettings.addEventListener("click", openModelSettings);
+  elements.closeModelSettings.addEventListener("click", closeModelSettings);
+  elements.modelSettingsModal.addEventListener("click", (event) => {
+    if (event.target === elements.modelSettingsModal) closeModelSettings();
+  });
+  elements.resetModelSettings.addEventListener("click", resetModelSettings);
+  elements.saveModelSettings.addEventListener("click", saveModelSettings);
+  elements.modelStageList.addEventListener("change", handleModelStageListChange);
   elements.variants.addEventListener("click", (event) => {
     const button = event.target.closest("[data-story-variant]");
     if (button) navigateToStory(button.dataset.storyVariant);
@@ -188,6 +235,7 @@ function bindEvents() {
   elements.closeGeneratedImagePreview.addEventListener("click", closeGeneratedImagePreview);
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !elements.generatedImagePreview.classList.contains("hidden")) closeGeneratedImagePreview();
+    else if (event.key === "Escape" && !elements.modelSettingsModal.classList.contains("hidden")) closeModelSettings();
     else if (event.key === "Escape" && !elements.shotVideoModal.classList.contains("hidden")) closeShotVideoGenerator();
     else if (event.key === "Escape" && !elements.shotFrameImageModal.classList.contains("hidden")) closeShotFrameImageGenerator();
     else if (event.key === "Escape" && !elements.characterImageModal.classList.contains("hidden")) closeCharacterImageGenerator();
@@ -252,8 +300,9 @@ function bindEvents() {
 
 async function handleFile(file) {
   if (!file.type.startsWith("video/")) return showError("请选择视频文件。支持 MP4、MOV、WebM 等浏览器可播放格式。");
-  if (state.mode === "mimo" && state.mediaMode === "video" && file.size > state.nativeVideoMaxBytes) {
-    return showError(`当前强制使用原生视频，文件不能超过 ${formatBytes(state.nativeVideoMaxBytes)}。请压缩视频或改用 auto 模式。`);
+  const media = analysisMediaSettings();
+  if (state.mode !== "demo" && media.mediaMode === "video" && file.size > media.nativeVideoMaxBytes) {
+    return showError(`当前强制使用原生视频，文件不能超过 ${formatBytes(media.nativeVideoMaxBytes)}。请压缩视频或改用 auto 模式。`);
   }
   showError("");
   state.file = file;
@@ -270,9 +319,9 @@ async function handleFile(file) {
   elements.frameStatus.textContent = "正在抽取关键帧…";
   elements.run.disabled = true;
   try {
-    const shouldReadNativeVideo = state.mode === "mimo"
-      && state.mediaMode !== "frames"
-      && file.size <= state.nativeVideoMaxBytes;
+    const shouldReadNativeVideo = state.mode !== "demo"
+      && media.mediaMode !== "frames"
+      && file.size <= media.nativeVideoMaxBytes;
     const [sampled, videoDataUrl] = await Promise.all([
       sampleVideo(file, 10),
       shouldReadNativeVideo ? readFileAsDataUrl(file) : Promise.resolve(null)
@@ -284,7 +333,7 @@ async function handleFile(file) {
     elements.frames.innerHTML = sampled.frames.map((frame, index) => `<div class="frame"><img src="${frame.dataUrl}" alt="采样画面 ${index + 1}"><span>F${index + 1} · ${formatTime(frame.timestamp)}</span></div>`).join("");
     const mediaNote = videoDataUrl
       ? "原生视频已就绪"
-      : state.mode === "mimo" && state.mediaMode !== "frames" && file.size > state.nativeVideoMaxBytes
+      : state.mode !== "demo" && media.mediaMode !== "frames" && file.size > media.nativeVideoMaxBytes
         ? "视频较大，使用关键帧"
         : "关键帧模式";
     elements.frameStatus.textContent = `已抽取 ${sampled.frames.length} 帧 · ${mediaNote}`;
@@ -378,9 +427,14 @@ async function runWorkflow() {
   elements.empty.classList.add("hidden");
   elements.resultStack.classList.remove("hidden");
   [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants].forEach((element) => { element.innerHTML = ""; element.classList.add("hidden"); });
+  const media = analysisMediaSettings();
+  const canSendNativeVideo = Boolean(state.videoDataUrl)
+    && state.mode !== "demo"
+    && media.mediaMode !== "frames"
+    && state.file?.size <= media.nativeVideoMaxBytes;
   const shared = {
     frames: state.frames,
-    ...(state.videoDataUrl ? { video: { dataUrl: state.videoDataUrl, mimeType: state.file.type, size: state.file.size } } : {}),
+    ...(canSendNativeVideo ? { video: { dataUrl: state.videoDataUrl, mimeType: state.file.type, size: state.file.size } } : {}),
     metadata: state.metadata,
     transcript: elements.transcript.value.trim(),
     creatorProfile
@@ -434,14 +488,14 @@ async function runWorkflow() {
 }
 
 async function api(path, body) {
-  const response = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const response = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(withModelOverrides(body)) });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) throw new Error(data.detail ? `${data.error}：${data.detail.slice(0, 240)}` : data.error || `请求失败（${response.status}）`);
   return data.result;
 }
 
 async function streamJsonEvents(path, body, onEvent) {
-  const response = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const response = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(withModelOverrides(body)) });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     throw new Error(data.detail ? `${data.error}：${data.detail.slice(0, 240)}` : data.error || `请求失败（${response.status}）`);
@@ -795,12 +849,16 @@ function renderAnimationPlan(data) {
       <div class="rule"><strong>负面视觉规则</strong><p>${escape((visual.negativeVisualRules || []).join("；"))}</p></div>
     </div>`)}
     ${actionBlock("角色参考提示词", renderCharacterReferencePrompts(data.characterReferencePrompts || []), `<button class="round-add-button" type="button" data-open-character-image-generator aria-label="用即梦生成角色参考图">+</button>`)}
+    ${block("场景参考提示词", `<div class="rule-list">${(data.sceneReferencePrompts || []).map((item) => `<div class="rule">
+      <strong>${escape(item.sceneName || item.sceneId)}<br><small>${escape(item.sceneId)}</small></strong>
+      <p>${escape(item.environmentPrompt)}<br><b>功能：</b>${escape(item.storyFunction)}<br><b>连续性锚点：</b>${escape((item.continuityAnchors || []).join(" / "))}<br><b>禁止：</b>${escape((item.negativeSceneRules || []).join(" / "))}</p>
+    </div>`).join("") || "<p class=\"long-copy\">无单独场景参考提示词。</p>"}</div>`)}
     ${block("关键资产提示词", `<div class="rule-list">${(data.assetPrompts || []).map((item) => `<div class="rule">
       <strong>${escape(item.assetName)}</strong>
       <p>${escape(item.imagePrompt)}<br><b>功能：</b>${escape(item.storyFunction)}<br><b>一致性：</b>${escape((item.consistencyTags || []).join(" / "))}</p>
     </div>`).join("") || "<p class=\"long-copy\">无单独资产提示词。</p>"}</div>`)}
     ${block("首尾帧镜头计划", `<div class="shot-list">${(data.shotPlan || []).map((shot) => `<div class="shot-card">
-      <div class="scene-head"><strong>${escape(shot.shotId)} · ${escape(shot.sourceSceneId)}</strong><span>${escape(shot.durationSeconds)} 秒 · ${escape(shot.emotionalTarget)}</span></div>
+      <div class="scene-head"><strong>${escape(shot.shotId)} · ${escape(shot.sourceSceneId)} · ${escape(shot.sceneId || "")}</strong><span>${escape(shot.durationSeconds)} 秒 · ${escape(shot.emotionalTarget)}</span></div>
       <p><b>剧情功能：</b>${escape(shot.storyPurpose)}</p>
       <div class="prompt-grid">
         ${renderShotFramePromptCard(shot.shotId, "start", "首帧 prompt", shot.startFramePrompt)}
@@ -1274,6 +1332,7 @@ function updateShotFrameImageGeneratorPreview() {
   const { shot, plan } = context;
   const label = frameKind === "end" ? "尾帧" : "首帧";
   const characterReferences = shotRelatedCharacterReferences(shot, plan.characterReferencePrompts || []);
+  const sceneReference = sceneReferenceForShot(plan, shot);
   state.shotFrameImageGeneration.frameKind = frameKind;
   elements.shotFrameImageModalTitle.textContent = `生成${label}镜头`;
   elements.confirmGenerateShotFrameImageLabel.textContent = `生成${label}`;
@@ -1283,7 +1342,8 @@ function updateShotFrameImageGeneratorPreview() {
     frameKind,
     shot,
     visualBible: plan.visualBible || {},
-    characterReferences
+    characterReferences,
+    sceneReference
   });
   renderShotFrameImageResults();
   return true;
@@ -1294,6 +1354,12 @@ function shotFrameContext(shotId) {
   const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
   const shot = (plan?.shotPlan || []).find((item) => String(item.shotId) === String(shotId));
   return shot && plan ? { variant, plan, shot } : null;
+}
+function sceneReferenceForShot(plan = {}, shot = {}) {
+  const scenes = Array.isArray(plan.sceneReferencePrompts) ? plan.sceneReferencePrompts : [];
+  return scenes.find((item) => String(item.sceneId || "") === String(shot.sceneId || ""))
+    || scenes.find((item) => String(item.sceneId || "") === String(shot.sourceSceneId || ""))
+    || null;
 }
 
 function closeShotFrameImageGenerator() {
@@ -1632,7 +1698,8 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
       ...(promptOverride ? { prompt: promptOverride } : {}),
       shot,
       visualBible: plan.visualBible || {},
-      characterReferences
+      characterReferences,
+      sceneReference: sceneReferenceForShot(plan, shot)
     });
     const images = Array.isArray(result.images) && result.images.length ? result.images : [result];
     result.images = await Promise.all(images.map(async (image) => ({ ...image, dataUrl: await urlToDataUrl(image.url) })));
@@ -1899,6 +1966,208 @@ function setAnimationStatus(message, tone = "") {
 }
 function storyModelLabel() { return modelDisplayLabel(state.storyProvider, state.storyModel); }
 function animationModelLabel() { return modelDisplayLabel(state.animationProvider, state.animationModel); }
+function openModelSettings() {
+  renderModelSettings();
+  elements.modelSettingsModal.classList.remove("hidden");
+  elements.modelSettingsModal.setAttribute("aria-hidden", "false");
+}
+function closeModelSettings() {
+  elements.modelSettingsModal.classList.add("hidden");
+  elements.modelSettingsModal.setAttribute("aria-hidden", "true");
+}
+function renderModelSettings() {
+  if (!elements.modelStageList) return;
+  const providers = availableModelProviders();
+  elements.modelStageList.innerHTML = MODEL_STAGE_DEFS.map((stage) => {
+    const current = effectiveStageSetting(stage.key);
+    const defaultSetting = state.modelStages[stage.key] || {};
+    const providerOptions = stage.providerLocked ? [current.provider || defaultSetting.provider].filter(Boolean) : providers;
+    return `<div class="model-stage-row" data-model-stage="${escape(stage.key)}">
+      <div class="model-stage-label"><strong>${escape(stage.label)}</strong><small>默认：${escape(modelDisplayLabel(defaultSetting.provider, defaultSetting.model))}<br>${escape(stage.hint)}</small></div>
+      <select data-model-provider="${escape(stage.key)}"${stage.providerLocked ? " disabled" : ""}>
+        ${providerOptions.map((provider) => `<option value="${escape(provider)}"${provider === current.provider ? " selected" : ""}>${escape(provider)}</option>`).join("")}
+      </select>
+      <select data-model-name="${escape(stage.key)}">
+        ${renderModelOptions(stage, current.provider, current.model, defaultSetting)}
+      </select>
+    </div>`;
+  }).join("");
+}
+function handleModelStageListChange(event) {
+  const providerSelect = event.target.closest("[data-model-provider]");
+  if (!providerSelect) return;
+  const row = providerSelect.closest("[data-model-stage]");
+  if (!row) return;
+  const stage = MODEL_STAGE_DEFS.find((item) => item.key === row.dataset.modelStage);
+  const modelSelect = row.querySelector("[data-model-name]");
+  if (!stage || !modelSelect) return;
+  const provider = providerSelect.value;
+  const defaultSetting = state.modelStages[stage.key] || {};
+  const selectedModel = defaultSetting.provider === provider ? defaultSetting.model : providerDefaultModel(provider, stage.key);
+  modelSelect.innerHTML = renderModelOptions(stage, provider, selectedModel, defaultSetting);
+}
+function saveModelSettings() {
+  const next = {};
+  for (const stage of MODEL_STAGE_DEFS) {
+    const row = elements.modelStageList.querySelector(`[data-model-stage="${stage.key}"]`);
+    if (!row) continue;
+    const defaults = state.modelStages[stage.key] || {};
+    const provider = row.querySelector("[data-model-provider]")?.value || defaults.provider || "";
+    const model = row.querySelector("[data-model-name]")?.value.trim() || defaults.model || "";
+    if (provider && model && (provider !== defaults.provider || model !== defaults.model)) {
+      next[stage.key] = { provider, model };
+    }
+  }
+  state.modelOverrides = next;
+  localStorage.setItem("directorModelOverrides", JSON.stringify(next));
+  applyEffectiveModelState();
+  renderModelSettings();
+  updateModelStateLabel();
+  updateModelActionLabels();
+  elements.storyModelName.textContent = modelDisplayLabel(state.storyProvider, state.storyModel);
+  setModelSettingsStatus("已应用。之后所有生成请求都会使用当前模型路由。", "ready");
+}
+function resetModelSettings() {
+  state.modelOverrides = {};
+  localStorage.removeItem("directorModelOverrides");
+  applyEffectiveModelState();
+  renderModelSettings();
+  updateModelStateLabel();
+  updateModelActionLabels();
+  elements.storyModelName.textContent = modelDisplayLabel(state.storyProvider, state.storyModel);
+  setModelSettingsStatus("已恢复后端默认模型。", "ready");
+}
+function setModelSettingsStatus(message, tone = "") {
+  elements.modelSettingsStatus.textContent = message;
+  elements.modelSettingsStatus.className = `story-status ${tone}`;
+}
+function readModelOverrides() {
+  try {
+    const value = JSON.parse(localStorage.getItem("directorModelOverrides") || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? sanitizeStoredModelOverrides(value) : {};
+  } catch {
+    return {};
+  }
+}
+function withModelOverrides(body = {}) {
+  const overrides = sanitizedModelOverrides();
+  return Object.keys(overrides).length ? { ...body, modelOverrides: overrides } : body;
+}
+function sanitizedModelOverrides() {
+  return Object.fromEntries(Object.entries(state.modelOverrides || {}).filter(([, value]) => value?.provider && value?.model));
+}
+function sanitizeStoredModelOverrides(overrides = {}) {
+  return Object.fromEntries(Object.entries(overrides).filter(([stage, value]) => {
+    if (!value?.provider || !value?.model) return false;
+    return !(MEDIA_INPUT_MODEL_STAGES.has(stage) && value.provider === "Qwen" && isKnownQwenTextOnlyModel(value.model));
+  }));
+}
+function isKnownQwenTextOnlyModel(model = "") {
+  return /^qwen(?:\d+(?:\.\d+)?)?-max(?:-|$)/iu.test(String(model).trim());
+}
+function applyEffectiveModelState() {
+  const analysis = effectiveStageSetting("analysis");
+  const story = effectiveStageSetting("fullStory");
+  const animation = effectiveStageSetting("animationPlan");
+  state.analysisProvider = analysis.provider || "MiMo";
+  state.analysisModel = analysis.model || "mimo-v2.5";
+  state.storyProvider = story.provider || state.analysisProvider;
+  state.storyModel = story.model || state.analysisModel;
+  state.animationProvider = animation.provider || state.storyProvider;
+  state.animationModel = animation.model || state.storyModel;
+  const media = analysisMediaSettings();
+  state.mediaMode = media.mediaMode;
+  state.nativeVideoMaxBytes = media.nativeVideoMaxBytes;
+}
+function effectiveStageSetting(stage) {
+  return {
+    ...(state.modelStages[stage] || {}),
+    ...(state.modelOverrides[stage] || {})
+  };
+}
+function availableModelProviders() {
+  const llmProviders = new Set(["Qwen", "MiMo"]);
+  const configured = Object.entries(state.providers || {})
+    .filter(([provider, value]) => llmProviders.has(provider) && value?.configured)
+    .map(([provider]) => provider);
+  const fromStages = MODEL_STAGE_DEFS
+    .filter((stage) => !stage.providerLocked)
+    .map((stage) => state.modelStages?.[stage.key]?.provider)
+    .filter((provider) => llmProviders.has(provider));
+  return [...new Set([...configured, ...fromStages, "Qwen", "MiMo"])];
+}
+function renderModelOptions(stage, provider, selectedModel, defaultSetting = {}) {
+  const options = modelOptionsForStage(stage, provider, selectedModel, defaultSetting);
+  return options.map((model) => `<option value="${escape(model)}"${model === selectedModel ? " selected" : ""}>${escape(model)}</option>`).join("");
+}
+function modelOptionsForStage(stage, provider, selectedModel = "", defaultSetting = {}) {
+  const key = typeof stage === "string" ? stage : stage.key;
+  const catalog = modelCatalogFor(provider, key);
+  const providerModels = Array.isArray(state.providers?.[provider]?.modelIds) ? state.providers[provider].modelIds : [];
+  const candidates = [
+    selectedModel,
+    defaultSetting.provider === provider ? defaultSetting.model : "",
+    state.providers?.[provider]?.defaultModel || "",
+    ...catalog,
+    ...providerModels
+  ];
+  const filtered = uniqueModels(candidates)
+    .filter((model) => modelAllowedForStage(model, provider, key))
+    .slice(0, 120);
+  return filtered.length ? filtered : uniqueModels(catalog);
+}
+function modelCatalogFor(provider, stageKey) {
+  const catalog = MODEL_OPTION_CATALOG[provider] || {};
+  if (catalog[stageKey]) return catalog[stageKey];
+  if (MEDIA_INPUT_MODEL_STAGES.has(stageKey)) return catalog.media || catalog.text || [];
+  return catalog.text || catalog.media || [];
+}
+function providerDefaultModel(provider, stageKey) {
+  const catalog = modelCatalogFor(provider, stageKey);
+  return catalog[0] || state.providers?.[provider]?.defaultModel || "";
+}
+function modelAllowedForStage(model, provider, stageKey) {
+  if (!model) return false;
+  if (provider !== "Qwen" || !MEDIA_INPUT_MODEL_STAGES.has(stageKey)) return true;
+  return !isKnownQwenTextOnlyModel(model) && /(?:plus|vl|omni)/iu.test(model);
+}
+function uniqueModels(values = []) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const model = String(value || "").trim();
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    result.push(model);
+  }
+  return result;
+}
+function analysisMediaSettings() {
+  const provider = effectiveStageSetting("analysis").provider || state.analysisProvider || "MiMo";
+  const source = state.providers?.[provider] || {};
+  return {
+    mediaMode: source.mediaMode || state.mediaMode || "auto",
+    nativeVideoMaxBytes: Number(source.nativeVideoMaxBytes || state.nativeVideoMaxBytes || 0)
+  };
+}
+function modelStagesReady() {
+  return MODEL_STAGE_DEFS.every((stage) => {
+    if (stage.optional) return true;
+    const setting = effectiveStageSetting(stage.key);
+    const provider = state.providers?.[setting.provider];
+    if (!provider?.configured) return false;
+    if (state.modelOverrides?.[stage.key]) return true;
+    const health = state.stageHealth?.[stage.key];
+    return !health || health.modelAvailable !== false;
+  });
+}
+function updateModelStateLabel() {
+  elements.modelState.lastElementChild.textContent = `${modelDisplayLabel(state.analysisProvider, state.analysisModel)} 解析 · 剧情 ${modelDisplayLabel(state.storyProvider, state.storyModel)} · 动画 ${modelDisplayLabel(state.animationProvider, state.animationModel)}`;
+}
+function updateModelActionLabels() {
+  if (!state.storyRunning) elements.storyGenerate.querySelector("span").textContent = `用 ${storyModelLabel()} 生成完整剧情`;
+  if (!state.animationRunning) elements.animationGenerate.textContent = "生成首尾帧动画生产包";
+}
 function modelDisplayLabel(provider, model) {
   const name = modelName(model);
   return provider && !name.toLowerCase().includes(String(provider).toLowerCase()) ? `${provider} ${name}` : name;
@@ -1914,6 +2183,18 @@ function currentFullStory() {
   const variant = selectedVariant();
   return variant ? state.fullStories[variant.id] || state.output.fullStory || null : state.output.fullStory || null;
 }
+function currentModelInfo() {
+  return {
+    stages: Object.fromEntries(MODEL_STAGE_DEFS.map((stage) => [stage.key, effectiveStageSetting(stage.key)])),
+    overrides: sanitizedModelOverrides(),
+    analysisProvider: state.analysisProvider,
+    analysisModel: state.analysisModel,
+    storyProvider: state.storyProvider,
+    storyModel: state.storyModel,
+    animationProvider: state.animationProvider,
+    animationModel: state.animationModel
+  };
+}
 
 function selectedStoryPackage() {
   const variant = selectedVariant();
@@ -1923,7 +2204,7 @@ function selectedStoryPackage() {
     packageVersion: "1.0",
     exportedAt: new Date().toISOString(),
     mode: state.mode,
-    modelInfo: { storyProvider: state.storyProvider, storyModel: state.storyModel, animationProvider: state.animationProvider, animationModel: state.animationModel },
+    modelInfo: currentModelInfo(),
     sourceVideo: state.metadata,
     creatorProfile: profile(),
     referenceAnalysis: state.output.referenceAnalysis || null,
@@ -1952,7 +2233,7 @@ function updateStoryExportActions() {
 }
 
 function exportJson() {
-  const payload = { exportedAt: new Date().toISOString(), mode: state.mode, sourceVideo: state.metadata, creatorProfile: profile(), ...state.output };
+  const payload = { exportedAt: new Date().toISOString(), mode: state.mode, modelInfo: currentModelInfo(), sourceVideo: state.metadata, creatorProfile: profile(), ...state.output };
   const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
   const link = document.createElement("a");
   link.href = url;
@@ -2003,11 +2284,18 @@ function restoreStoryPackage(payload) {
     validateReady();
   }
   if (payload.modelInfo) {
-    state.storyProvider = payload.modelInfo.storyProvider || state.storyProvider;
-    state.storyModel = payload.modelInfo.storyModel || state.storyModel;
-    state.animationProvider = payload.modelInfo.animationProvider || state.animationProvider;
-    state.animationModel = payload.modelInfo.animationModel || state.animationModel;
+    if (payload.modelInfo.overrides && typeof payload.modelInfo.overrides === "object") {
+      state.modelOverrides = payload.modelInfo.overrides;
+      localStorage.setItem("directorModelOverrides", JSON.stringify(state.modelOverrides));
+    } else {
+      state.storyProvider = payload.modelInfo.storyProvider || state.storyProvider;
+      state.storyModel = payload.modelInfo.storyModel || state.storyModel;
+      state.animationProvider = payload.modelInfo.animationProvider || state.animationProvider;
+      state.animationModel = payload.modelInfo.animationModel || state.animationModel;
+    }
+    applyEffectiveModelState();
     elements.storyModelName.textContent = modelDisplayLabel(state.storyProvider, state.storyModel);
+    renderModelSettings();
   }
 
   state.metadata = payload.sourceVideo || payload.metadata || state.metadata;
@@ -2136,11 +2424,25 @@ function formatAnimationPackMarkdown(pack) {
   for (const item of plan.assetPrompts || []) {
     lines.push("", `### ${item.assetName || "资产"}`, item.imagePrompt || "", `功能：${item.storyFunction || ""}`, `一致性标签：${(item.consistencyTags || []).join(" / ")}`);
   }
+  lines.push("", "## 场景参考 Prompt");
+  for (const item of plan.sceneReferencePrompts || []) {
+    lines.push(
+      "",
+      `### ${item.sceneName || item.sceneId || "场景"}`,
+      `场景 ID：${item.sceneId || ""}`,
+      item.environmentPrompt || "",
+      `功能：${item.storyFunction || ""}`,
+      `连续性锚点：${(item.continuityAnchors || []).join(" / ")}`,
+      `场景负面规则：${(item.negativeSceneRules || []).join(" / ")}`,
+      `关联镜头：${(item.relatedShotIds || []).join(" / ")}`
+    );
+  }
   lines.push("", "## 镜头生产任务");
   for (const shot of plan.shotPlan || []) {
     lines.push(
       "",
       `### ${shot.shotId || "镜头"} · ${shot.sourceSceneId || ""} · ${shot.durationSeconds || 4} 秒`,
+      `场景 ID：${shot.sceneId || ""}`,
       `剧情功能：${shot.storyPurpose || ""}`,
       `情绪目标：${shot.emotionalTarget || ""}`,
       "",

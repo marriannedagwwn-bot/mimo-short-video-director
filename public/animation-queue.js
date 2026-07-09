@@ -26,6 +26,7 @@ export function buildVideoGenerationQueue(pack = {}) {
   };
   const videoOutputs = [];
   const reviewOutputs = [];
+  const sceneOutputKeys = new Map();
 
   for (const [index, character] of (plan.characterReferencePrompts || []).entries()) {
     queue.jobs.push({
@@ -53,6 +54,24 @@ export function buildVideoGenerationQueue(pack = {}) {
     });
   }
 
+  for (const [index, scene] of (plan.sceneReferencePrompts || []).entries()) {
+    const sceneId = scene.sceneId || `LOC${String(index + 1).padStart(2, "0")}`;
+    const outputKey = `scenes.${slug(sceneId || scene.sceneName || `scene_${index + 1}`)}`;
+    sceneOutputKeys.set(String(sceneId), outputKey);
+    queue.jobs.push({
+      taskId: `SCENE-${String(index + 1).padStart(2, "0")}`,
+      type: "scene_reference_image",
+      inputType: "text_to_image",
+      outputKey,
+      sceneId,
+      sceneName: scene.sceneName || "",
+      prompt: scene.environmentPrompt || "",
+      negativePrompt: joinList(scene.negativeSceneRules || []),
+      consistencyTags: scene.continuityAnchors || [],
+      acceptanceCriteria: [`${scene.sceneName || sceneId}地点、室内外属性和背景层级清楚`, "可作为后续首尾帧生成的场景参考"]
+    });
+  }
+
   for (const shot of plan.shotPlan || []) {
     const shotId = shot.shotId || `SHOT-${String(queue.jobs.length + 1).padStart(2, "0")}`;
     const startOutput = `frames.${shotId}.start`;
@@ -62,6 +81,8 @@ export function buildVideoGenerationQueue(pack = {}) {
     const sharedShot = {
       shotId,
       sourceSceneId: shot.sourceSceneId || "",
+      sceneId: shot.sceneId || "",
+      sceneName: sceneNameForShot(plan, shot),
       durationSeconds: Number(shot.durationSeconds) || 4,
       aspectRatio,
       storyPurpose: shot.storyPurpose || "",
@@ -75,9 +96,9 @@ export function buildVideoGenerationQueue(pack = {}) {
       inputType: "text_to_image",
       outputKey: startOutput,
       ...sharedShot,
-      prompt: shot.startFramePrompt || "",
-      negativePrompt: shotNegativePrompt,
-      requiredInputs: collectReferenceKeys(queue),
+	      prompt: shot.startFramePrompt || "",
+	      negativePrompt: shotNegativePrompt,
+	      requiredInputs: collectReferenceKeys(queue, sceneOutputKeys, shot.sceneId),
       acceptanceCriteria: ["首帧角色、服装、地点、构图、光线和道具清楚", ...(shot.acceptanceCriteria || [])]
     });
 
@@ -87,9 +108,9 @@ export function buildVideoGenerationQueue(pack = {}) {
       inputType: "text_to_image",
       outputKey: endOutput,
       ...sharedShot,
-      prompt: shot.endFramePrompt || "",
-      negativePrompt: shotNegativePrompt,
-      requiredInputs: collectReferenceKeys(queue),
+	      prompt: shot.endFramePrompt || "",
+	      negativePrompt: shotNegativePrompt,
+	      requiredInputs: collectReferenceKeys(queue, sceneOutputKeys, shot.sceneId),
       acceptanceCriteria: ["尾帧与首帧形成明确动作终点", ...(shot.acceptanceCriteria || [])]
     });
 
@@ -157,10 +178,17 @@ export function formatQueueJsonl(queue = {}) {
   return (queue.jobs || []).map((job) => JSON.stringify(job)).join("\n");
 }
 
-function collectReferenceKeys(queue) {
-  return (queue.jobs || [])
+function collectReferenceKeys(queue, sceneOutputKeys = new Map(), sceneId = "") {
+  const base = (queue.jobs || [])
     .filter((job) => job.type === "reference_image" || job.type === "asset_image")
     .map((job) => job.outputKey);
+  const sceneKey = sceneOutputKeys.get(String(sceneId || ""));
+  return sceneKey ? [...base, sceneKey] : base;
+}
+
+function sceneNameForShot(plan = {}, shot = {}) {
+  const scene = (plan.sceneReferencePrompts || []).find((item) => String(item.sceneId || "") === String(shot.sceneId || ""));
+  return scene?.sceneName || "";
 }
 
 function joinList(value) {

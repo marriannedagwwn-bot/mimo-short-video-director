@@ -75,27 +75,22 @@ export async function runVideoCommand(argv, { stdout = process.stdout, stderr = 
     const client = config.mimo.enabled ? new MimoClient(config.mimo) : null;
     const qwenClient = config.qwen.enabled ? new QwenClient(config.qwen) : null;
     await assertMimoState(client, config, options);
+    const stageDefaults = buildCommandStageDefaults(config, qwenClient ? "Qwen" : "MiMo");
+    const analysisMedia = qwenClient ? config.qwen : config.mimo;
 
     stdout.write(`读取视频：${path.resolve(options.videoPath)}\n`);
     const videoInput = await prepareVideoInput(options.videoPath, {
       frameCount: options.frameCount,
-      nativeVideoMaxBytes: config.mimo.nativeVideoMaxBytes,
-      includeNativeVideo: Boolean(client) && config.mimo.mediaMode !== "frames"
+      nativeVideoMaxBytes: analysisMedia.nativeVideoMaxBytes,
+      includeNativeVideo: Boolean(qwenClient || client) && analysisMedia.mediaMode !== "frames"
     });
     stdout.write(`已抽取 ${videoInput.frames.length} 张关键帧；${videoInput.nativeVideo.reason}\n`);
 
     const workflow = new WorkflowService({
-      client,
-      storyClient: qwenClient || client,
-      storyProvider: qwenClient ? "Qwen" : "MiMo",
-      storyModel: qwenClient ? config.qwen.storyModel : config.mimo.storyModel,
-      storyMaxCompletionTokens: qwenClient ? config.qwen.storyMaxCompletionTokens : config.mimo.storyMaxCompletionTokens,
-      animationClient: qwenClient || client,
-      animationProvider: qwenClient ? "Qwen" : "MiMo",
-      animationModel: qwenClient ? config.qwen.animationModel : config.mimo.animationModel,
-      animationMaxCompletionTokens: qwenClient ? config.qwen.animationMaxCompletionTokens : config.mimo.animationMaxCompletionTokens
+      clients: { MiMo: client, Qwen: qwenClient },
+      stageDefaults
     });
-    stdout.write(`运行模式：${workflow.mode === "mimo" ? `MiMo 实分析；剧情 ${workflow.storyProvider} ${workflow.storyModel}；动画 ${workflow.animationProvider} ${workflow.animationModel}` : "演示模式"}\n`);
+    stdout.write(`运行模式：${workflow.mode === "live" ? `${stageDefaults.analysis.provider} 实分析；剧情 ${stageDefaults.fullStory.provider} ${stageDefaults.fullStory.model}；动画 ${stageDefaults.animationPlan.provider} ${stageDefaults.animationPlan.model}` : "演示模式"}\n`);
     const result = await workflow.run({
       frames: videoInput.frames,
       video: videoInput.video,
@@ -139,6 +134,28 @@ export async function runVideoCommand(argv, { stdout = process.stdout, stderr = 
     stderr.write(formatError(error));
     return 1;
   }
+}
+
+function buildCommandStageDefaults(config, provider) {
+  const source = provider === "Qwen" ? config.qwen : config.mimo;
+  return {
+    analysis: commandStage(provider, source.analysisModel || source.videoModel || source.model, source.analysisMaxCompletionTokens || source.maxCompletionTokens),
+    reconstruction: commandStage(provider, source.reconstructionModel || source.videoModel || source.model, source.reconstructionMaxCompletionTokens || source.maxCompletionTokens),
+    brief: commandStage(provider, source.briefModel || source.model, source.briefMaxCompletionTokens || source.maxCompletionTokens),
+    visualGuardrails: commandStage(provider, source.visualModel || source.videoModel || source.model, source.visualMaxCompletionTokens || source.maxCompletionTokens),
+    variants: commandStage(provider, source.variantsModel || source.model, source.variantsMaxCompletionTokens || source.maxCompletionTokens),
+    fullStory: commandStage(provider, source.storyModel || source.model, source.storyMaxCompletionTokens || source.maxCompletionTokens),
+    animationPlan: commandStage(provider, source.animationModel || source.storyModel || source.model, source.animationMaxCompletionTokens || source.maxCompletionTokens),
+    characterReference: commandStage(provider, source.characterReferenceModel || source.videoModel || source.model, source.characterReferenceMaxCompletionTokens || source.maxCompletionTokens)
+  };
+}
+
+function commandStage(provider, model, maxCompletionTokens) {
+  return {
+    provider,
+    model,
+    maxCompletionTokens: Number.isFinite(Number(maxCompletionTokens)) ? Math.round(Number(maxCompletionTokens)) : null
+  };
 }
 
 function assignOption(options, name, value) {

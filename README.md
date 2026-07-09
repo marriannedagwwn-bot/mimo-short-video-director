@@ -38,26 +38,38 @@ MIMO_ANIMATION_MODEL=mimo-v2.5-pro
 MIMO_MEDIA_MODE=auto
 ```
 
-连接成功后，页面右上角会显示“MiMo 已连接”。
+连接成功后，页面右上角会显示当前解析、剧情和动画阶段使用的模型。
 
 `MIMO_MEDIA_MODE=auto` 会优先通过 `video_url` 发送原生视频；请求中会按 MiMo V2.5 文档携带 `fps` 与 `media_resolution`，默认 `MIMO_VIDEO_FPS=2`、`MIMO_VIDEO_MEDIA_RESOLUTION=default`。若服务返回不支持媒体类型的 400/415/422，再自动回退为带时间戳关键帧。超过 `MIMO_NATIVE_VIDEO_MAX_MB` 的视频直接使用关键帧，避免 base64 请求占用过多内存。
 
-当前分析/拆解/简报/主题变体请求参数默认为 `temperature=0.3`、`top_p=0.95`、`max_completion_tokens=8192`、`thinking=disabled`、`stream=false`。这四个阶段继续使用 `MIMO_MODEL=mimo-v2.5`，用于理解参考视频、还原脚本、生成 creativeBrief 和主题变体。
+MiMo 请求参数默认为 `temperature=0.3`、`top_p=0.95`、`max_completion_tokens=8192`、`thinking=disabled`、`stream=false`。如果没有配置 Qwen，参考片分析、脚本还原、creativeBrief、主题变体、完整剧情和动画生产包都会回退到 MiMo 的对应模型。
 
 `MIMO_THINKING=disabled` 时，MiMo 用户消息末尾会追加 `/no_think`；改成 `MIMO_THINKING=enabled` 后，请求体会发送 `thinking={"type":"enabled"}`，并且不会再追加 `/no_think`。
 
-如果希望完整剧情和首尾帧动画生产包改用千问 3.7 Max，同时保留 MiMo V2.5 做视频理解，继续增加：
+如果希望参考视频解析和后续文本阶段默认改用千问，继续增加：
 
 ```dotenv
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_API_KEY=你的 DashScope 或 Model Studio key
 QWEN_MODEL=qwen3.7-max
+QWEN_VIDEO_MODEL=qwen3.7-plus
+QWEN_ANALYSIS_MODEL=qwen3.7-plus
+QWEN_RECONSTRUCTION_MODEL=qwen3.7-plus
+QWEN_BRIEF_MODEL=qwen3.7-max
+QWEN_VISUAL_MODEL=qwen3.7-plus
+QWEN_VARIANTS_MODEL=qwen3.7-max
 QWEN_STORY_MODEL=qwen3.7-max
 QWEN_ANIMATION_MODEL=qwen3.7-max
+QWEN_CHARACTER_REFERENCE_MODEL=qwen3.7-plus
+QWEN_MEDIA_MODE=auto
+QWEN_NATIVE_VIDEO_MAX_MB=7
+QWEN_VIDEO_FPS=2
 QWEN_ENABLE_THINKING=false
 ```
 
-配置 `QWEN_API_KEY` 后，完整剧情页会调用 `QWEN_STORY_MODEL`，动画生产包会调用 `QWEN_ANIMATION_MODEL`；未配置 Qwen 时自动回退为 `MIMO_STORY_MODEL` / `MIMO_ANIMATION_MODEL`。完整剧情和动画包会分别保留模型信息，方便导出生产包追踪。接口依据：[MiMo V2.5 模型说明](https://mimo.mi.com/docs/en-US/product/introduction/models#MiMo-V25)、[MiMo OpenAI API](https://mimo.mi.com/docs/en-US/api/chat/openai-api)、[MiMo 视频理解文档](https://mimo.mi.com/docs/en-US/use-cases/video-understanding) 以及阿里云 Model Studio OpenAI 兼容接口文档。
+配置 `QWEN_API_KEY` 后，只要 Qwen 可用，参考片分析、脚本还原、创意简报、视觉规则、主题变体、完整剧情、动画生产包和人物参考修正默认都会调用 Qwen 对应阶段模型；未配置 Qwen 时自动回退为 MiMo。`qwen3.7-max` 是纯文本阶段的默认选择；会传入视频或图片的参考片分析、脚本还原、视觉规则和人物参考修正默认使用 `qwen3.7-plus`，也可以改成账号可用的 Qwen-VL / Qwen-Omni 模型。页面顶部“模型设置”按钮可以按阶段临时切换 provider 和模型名，覆盖值会随之后所有生成请求发送给后端，也会写入导出的生产包。LLM 阶段支持在 Qwen / MiMo 间切换；图片生成和首尾帧视频生成固定使用已配置的即梦 / HTTP 视频供应商，但可以在同一个面板里临时改模型名。
+
+Qwen 视频解析遵循阿里云百炼 OpenAI 兼容 Chat Completions 的多模态格式：小视频优先以 `video_url` 发送 Base64 Data URL，大于 `QWEN_NATIVE_VIDEO_MAX_MB` 或 `QWEN_MEDIA_MODE=frames` 时改用关键帧图片列表 `video`。阿里云文档说明 `video_url` 支持公网 URL 或 Base64 Data URL，`fps` 可控制抽帧频率；同时 Base64 视频编码后需小于 10MB，所以默认把原始视频上限设为 7MB。Qwen-VL 只能理解视频视觉信息；如果需要理解视频里的音频，需要选择支持音频的 Qwen-Omni 模型。接口依据：[MiMo V2.5 模型说明](https://mimo.mi.com/docs/en-US/product/introduction/models#MiMo-V25)、[MiMo OpenAI API](https://mimo.mi.com/docs/en-US/api/chat/openai-api)、[MiMo 视频理解文档](https://mimo.mi.com/docs/en-US/use-cases/video-understanding)、[阿里云百炼 OpenAI Chat 兼容文档](https://www.alibabacloud.com/help/zh/model-studio/qwen-api-via-openai-chat-completions) 和 [阿里云图像与视频理解文档](https://help.aliyun.com/zh/model-studio/vision)。
 
 ## 接入即梦 5.0 Lite 角色参考图生成
 
@@ -83,10 +95,10 @@ JIMENG_MAX_IMAGES=6
 动画生产包生成后，剧情页提供两个执行出口：
 
 - 导出当前生产包 JSON：保留完整剧情、主题变体、动画生产包和模型信息，适合进入后续自动化队列。
-- 复制视频模型生产包：输出 Markdown 格式的角色参考、资产提示词和逐镜首帧/尾帧/video prompt，适合手动粘贴到支持首尾帧或关键帧的视频生成工具。
-- 导出视频任务队列 JSONL：把动画计划拆成逐行任务，包括参考图、资产图、首帧、尾帧、首尾帧视频、质检和最终剪辑任务，适合后续脚本或视频 API worker 消费。最终剪辑任务会依赖所有逐镜视频输出和质检结果，并携带剪辑节奏、字幕、音乐音效和整片验收标准。
+- 复制视频模型生产包：输出 Markdown 格式的角色参考、场景参考、资产提示词和逐镜首帧/尾帧/video prompt，适合手动粘贴到支持首尾帧或关键帧的视频生成工具。
+- 导出视频任务队列 JSONL：把动画计划拆成逐行任务，包括角色参考图、场景参考图、资产图、首帧、尾帧、首尾帧视频、质检和最终剪辑任务，适合后续脚本或视频 API worker 消费。最终剪辑任务会依赖所有逐镜视频输出和质检结果，并携带剪辑节奏、字幕、音乐音效和整片验收标准。
 
-如果只想在页面里快速试单个镜头，动画生产包的每个 shot 卡片都有“生成此镜头视频”按钮。点击后会打开视频生成弹窗：左侧锁定已经选中的首帧/尾帧参考图，右侧展示可编辑的视频 prompt，并可一次生成 1–4 条候选视频。生成时会把两张关键帧、编辑后的 `videoPrompt`、负面 prompt 和结构化参数发送给通用 HTTP 视频 worker，并把结果保存到 `public/generated-videos/` 后在页面内播放。使用前至少配置：
+如果只想在页面里快速试单个镜头，动画生产包的每个 shot 卡片都有“生成此镜头视频”按钮。点击后会打开视频生成弹窗：左侧锁定已经选中的首帧/尾帧参考图，右侧展示可编辑的视频 prompt，并可一次生成 1–4 条候选视频。生成时会把两张关键帧、编辑后的 `videoPrompt`、负面 prompt、模型设置里的首尾帧视频模型名和结构化参数发送给通用 HTTP 视频 worker，并把结果保存到 `public/generated-videos/` 后在页面内播放。使用前至少配置：
 
 ```dotenv
 VIDEO_HTTP_IMAGE_ENDPOINT=https://provider.example.com/v1/images

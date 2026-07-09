@@ -294,14 +294,14 @@ export function animationPlanPrompt(input) {
 
 推荐策略：
 - 每个镜头单独生成 3–6 秒，不要一次生成整条片。
-- 先用 visualBible 和 characterReferencePrompts 锁定角色、世界观、色彩和动画风格；这些是全局锁定层，只写一次。
+- 先用 visualBible、characterReferencePrompts 和 sceneReferencePrompts 锁定角色、世界观、色彩、动画风格和可复用场景；这些是全局锁定层，只写一次。
 - 每个 shot 必须同时给出 startFramePrompt、endFramePrompt、videoPrompt、negativePrompt 和 acceptanceCriteria，但 negativePrompt 与 acceptanceCriteria 只作为局部例外和 QA 备注，不要承担主要生成控制。
 - 首帧负责镜头起点，尾帧负责镜头终点，videoPrompt 只描述中间运动、镜头运动和情绪变化。
 - 输出应保持模型无关，可用于支持首尾帧/关键帧驱动的视频模型。
 
 三层简化结构（必须执行）：
-- 第 1 层 identity lock：只在 characterReferencePrompts 中完整锁定角色姓名、身份、年龄感、服装/外观、核心性格和一致性标签；只在 visualBible 中完整锁定风格、色彩、镜头语言、世界规则和全局 negativeVisualRules。
-- 第 2 层 shot frame：startFramePrompt 只写人物状态、场景、镜头三类信息，保留 1-2 个动作语义；endFramePrompt 只写相对首帧发生变化的动作、表情、位置，但必须用一句短锚点复述与首帧相同的地点/室内外属性/背景/景别/机位，不要重复完整身份和全套风格。
+- 第 1 层 identity / scene lock：只在 characterReferencePrompts 中完整锁定角色姓名、身份、年龄感、服装/外观、核心性格和一致性标签；只在 sceneReferencePrompts 中完整锁定可复用地点、室内外属性、背景层级、空间锚点和场景负面规则；只在 visualBible 中完整锁定风格、色彩、镜头语言、世界规则和全局 negativeVisualRules。
+- 第 2 层 shot frame：每个 shot 必须引用 sceneReferencePrompts 中的 sceneId；startFramePrompt 只写人物状态、场景锚点、镜头三类信息，保留 1-2 个动作语义；endFramePrompt 只写相对首帧发生变化的动作、表情、位置，但必须用一句短锚点复述同一个 sceneId 的地点/室内外属性/背景/景别/机位，不要重复完整身份和全套风格。
 - 第 3 层 video prompt：videoPrompt 只写动作和镜头运动，不重复环境，不写身份设定，不写负面规则，不写验收标准。
 - 每条 startFramePrompt 控制在 80-150 个汉字；每条 endFramePrompt 控制在 40-120 个汉字；videoPrompt 控制在 40-120 个汉字。
 
@@ -325,7 +325,7 @@ creativeBrief：${JSON.stringify(input.creativeBrief || {})}
 硬约束：
 - selectedVariantId 必须等于选中主题变体 id：${variant.id || fullStory.selectedVariantId || "未指定"}。
 - animationPlan 只能服务当前 fullStory，不得改剧情、不得换主题、不得更换固定角色。
-- characterReferencePrompts 中必须锁定固定角色姓名、身份、年龄感、服装/外观和核心性格；shot 里的正向画面提示词只用角色名承接全局锁定，不要每个镜头重复完整外观。
+- characterReferencePrompts 中必须锁定固定角色姓名、身份、年龄感、服装/外观和核心性格；sceneReferencePrompts 中必须锁定每个复用场景的地点、室内外属性、背景层级、光线和禁止跳变规则；shot 里的正向画面提示词只用角色名和 sceneId 承接全局锁定，不要每个镜头重复完整外观和完整场景设定。
 - 视觉提示词必须服从“固定角色外观边界”：用户明写的特征可以正向使用；用户没有明写的尾巴、爪子、肉垫、翅膀、脚蹼等身体特征不得自动新增。
 - 如果固定角色只包含“狼耳/猫耳/兽耳”等耳朵类设定，含义是“人物 + 头顶耳朵特征/发箍式耳朵”，不能自动推导为尾巴、爪子、肉垫、狼嘴、獠牙、四足姿态或动物化动作。
 - startFramePrompt、endFramePrompt、videoPrompt、assetPrompts.imagePrompt 不得出现上方黑名单词；如果 fullStory 已经换成新道具/新仪式，只能沿用 fullStory 的新表达。
@@ -362,25 +362,35 @@ creativeBrief：${JSON.stringify(input.creativeBrief || {})}
     "characterConsistencyRules":[],
     "negativeVisualRules":[]
   },
-  "characterReferencePrompts":[{
-    "characterName":"",
-    "storyRole":"",
-    "identity":"",
-    "appearancePrompt":"",
-    "consistencyTags":[],
-    "forbiddenChanges":[]
-  }],
-  "assetPrompts":[{
+	  "characterReferencePrompts":[{
+	    "characterName":"",
+	    "storyRole":"",
+	    "identity":"",
+	    "appearancePrompt":"",
+	    "consistencyTags":[],
+	    "forbiddenChanges":[]
+	  }],
+	  "sceneReferencePrompts":[{
+	    "sceneId":"LOC01",
+	    "sceneName":"",
+	    "storyFunction":"",
+	    "environmentPrompt":"",
+	    "continuityAnchors":[],
+	    "negativeSceneRules":[],
+	    "relatedShotIds":[]
+	  }],
+	  "assetPrompts":[{
     "assetName":"",
     "storyFunction":"",
     "imagePrompt":"",
     "consistencyTags":[],
     "avoidSimilarityNote":""
   }],
-  "shotPlan":[{
-    "shotId":"A01",
-    "sourceSceneId":"",
-    "durationSeconds":4,
+	  "shotPlan":[{
+	    "shotId":"A01",
+	    "sourceSceneId":"",
+	    "sceneId":"LOC01",
+	    "durationSeconds":4,
     "storyPurpose":"",
     "emotionalTarget":"",
     "startFramePrompt":"",
@@ -413,7 +423,7 @@ creativeBrief：${JSON.stringify(input.creativeBrief || {})}
   "uncertainties":[{"field":"", "reason":"", "safeFallback":""}]
 }
 
-shotPlan 的 startFramePrompt、endFramePrompt、videoPrompt 应该是精简、可复制给图像/视频模型的中文提示词。身份、风格和全局负面由 characterReferencePrompts 与 visualBible 承担，shot 内不要重复堆叠。遇到“指路互动 + 主角反应强化”的组合时，按方案 B 拆成中景互动镜头和表情强化镜头。${JSON_ONLY}`;
+shotPlan 的 startFramePrompt、endFramePrompt、videoPrompt 应该是精简、可复制给图像/视频模型的中文提示词。身份由 characterReferencePrompts 承担，场景由 sceneReferencePrompts 承担，风格和全局负面由 visualBible 承担，shot 内不要重复堆叠。遇到“指路互动 + 主角反应强化”的组合时，按方案 B 拆成中景互动镜头和表情强化镜头。${JSON_ONLY}`;
 }
 
 export function characterReferenceRefinePrompt(input) {

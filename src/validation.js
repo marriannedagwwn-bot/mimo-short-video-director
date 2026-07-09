@@ -48,7 +48,7 @@ const outputContracts = {
   visualGuardrails: ["fixedCharacterBoundary", "allowedPositiveTraits", "forbiddenPositiveTraits", "sourceSurfaceExpressions", "commonNegativePrompt", "stageInstructions", "rationale", "uncertainties"],
   themeVariants: ["variants"],
   fullStory: ["selectedVariantId", "title", "oneLinePremise", "targetDurationSeconds", "shootingSynopsis", "characterBible", "beatSheet", "sceneScript", "keyProps", "shootingPlan", "dialogueStyleGuide", "retentionPlan", "experienceFidelity", "transformationProof", "continuityAndSafetyCheck", "uncertainties"],
-  animationPlan: ["selectedVariantId", "title", "productionStrategy", "visualBible", "characterReferencePrompts", "assetPrompts", "shotPlan", "editPlan", "generationChecklist", "modelAgnosticNotes", "continuityAndSafetyCheck", "uncertainties"]
+  animationPlan: ["selectedVariantId", "title", "productionStrategy", "visualBible", "characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "editPlan", "generationChecklist", "modelAgnosticNotes", "continuityAndSafetyCheck", "uncertainties"]
 };
 
 export function ensureOutputContract(value, contract) {
@@ -62,7 +62,7 @@ export function ensureOutputContract(value, contract) {
     visualGuardrails: ["allowedPositiveTraits", "forbiddenPositiveTraits", "sourceSurfaceExpressions", "commonNegativePrompt", "uncertainties"],
     themeVariants: ["variants"],
     fullStory: ["beatSheet", "sceneScript", "keyProps", "shootingPlan", "retentionPlan", "uncertainties"],
-    animationPlan: ["characterReferencePrompts", "assetPrompts", "shotPlan", "generationChecklist", "modelAgnosticNotes", "uncertainties"]
+    animationPlan: ["characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "generationChecklist", "modelAgnosticNotes", "uncertainties"]
   }[contract] || [];
   const wrongArrays = arrayFields.filter((key) => !Array.isArray(value[key]));
   if (wrongArrays.length) throw new OutputContractError(`${contract} 字段类型无效：${wrongArrays.join("、")} 必须是数组`);
@@ -84,6 +84,7 @@ export function ensureOutputContract(value, contract) {
   }
   if (contract === "animationPlan") {
     if (value.characterReferencePrompts.length < 1) throw new OutputContractError("animationPlan 至少需要一个角色参考提示词");
+    if (value.sceneReferencePrompts.length < 1) throw new OutputContractError("animationPlan 至少需要一个场景参考提示词");
     if (value.shotPlan.length < 1) throw new OutputContractError("animationPlan 至少需要一个镜头生产任务");
   }
   return value;
@@ -451,6 +452,12 @@ function collectAnimationStrictPositiveFields(value = {}) {
     pushField(fields, `assetPrompts[${index}].imagePrompt`, item?.imagePrompt);
     pushArrayFields(fields, `assetPrompts[${index}].consistencyTags`, item?.consistencyTags);
   });
+  (value.sceneReferencePrompts || []).forEach((item, index) => {
+    pushField(fields, `sceneReferencePrompts[${index}].sceneName`, item?.sceneName);
+    pushField(fields, `sceneReferencePrompts[${index}].storyFunction`, item?.storyFunction);
+    pushField(fields, `sceneReferencePrompts[${index}].environmentPrompt`, item?.environmentPrompt);
+    pushArrayFields(fields, `sceneReferencePrompts[${index}].continuityAnchors`, item?.continuityAnchors);
+  });
   (value.shotPlan || []).forEach((shot, index) => {
     pushField(fields, `shotPlan[${index}].startFramePrompt`, shot?.startFramePrompt);
     pushField(fields, `shotPlan[${index}].endFramePrompt`, shot?.endFramePrompt);
@@ -465,6 +472,9 @@ function collectAnimationRuleFields(value = {}) {
   const fields = [];
   pushArrayFields(fields, "visualBible.worldRules", value.visualBible?.worldRules);
   pushArrayFields(fields, "visualBible.characterConsistencyRules", value.visualBible?.characterConsistencyRules);
+  (value.sceneReferencePrompts || []).forEach((item, index) => {
+    pushArrayFields(fields, `sceneReferencePrompts[${index}].negativeSceneRules`, item?.negativeSceneRules);
+  });
   (value.shotPlan || []).forEach((shot, index) => {
     pushField(fields, `shotPlan[${index}].storyPurpose`, shot?.storyPurpose);
     pushField(fields, `shotPlan[${index}].emotionalTarget`, shot?.emotionalTarget);

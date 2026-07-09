@@ -5,8 +5,10 @@ export function buildShotFrameImagePrompt(input = {}) {
   const frameLabel = frameKind === "end" ? "尾帧" : "首帧";
   const framePrompt = frameKind === "end" ? shot.endFramePrompt : shot.startFramePrompt;
   const characterReferences = Array.isArray(input.characterReferences) ? input.characterReferences : [];
+  const sceneReference = input.sceneReference || null;
   const framePromptText = buildFramePromptText(framePrompt, characterReferences, frameLabel);
-  const sceneContinuityText = buildSceneContinuityText(shot, characterReferences, frameKind);
+  const sceneReferenceText = buildSceneReferenceText(sceneReference);
+  const sceneContinuityText = buildSceneContinuityText(shot, characterReferences, frameKind, sceneReference);
   const characterReferenceText = buildCharacterReferenceText(characterReferences);
   const hasReferenceImage = characterReferences.some((item) => item.referenceImageDataUrl);
   const referenceNote = hasReferenceImage
@@ -24,11 +26,12 @@ export function buildShotFrameImagePrompt(input = {}) {
     `${frameLabel}是静态关键帧，不是连续动作图。只画这一帧被冻结的一瞬间，不要把动作前后两个状态同时画进同一张图。`,
     "严格锁定画幅、景别、机位、主体位置、手部/道具状态、视线方向、表情、背景层级和光线；不要自行改成其它景别或镜头角度。"
   ].join("\n");
-  const negativePrompt = buildNegativePrompt(visualBible, shot, noTextRule, frameKind);
+  const negativePrompt = buildNegativePrompt(visualBible, shot, noTextRule, frameKind, sceneReference);
   const prompt = [
     `生成竖屏 9:16 动画短视频分镜${frameLabel}图。`,
     referenceNote,
     styleText,
+    sceneReferenceText,
     characterReferenceText ? `角色参考：\n${characterReferenceText}` : "",
     staticFrameRule,
     sceneContinuityText,
@@ -40,9 +43,10 @@ export function buildShotFrameImagePrompt(input = {}) {
   return prompt;
 }
 
-function buildNegativePrompt(visualBible = {}, shot = {}, noTextRule = "", frameKind = "start") {
+function buildNegativePrompt(visualBible = {}, shot = {}, noTextRule = "", frameKind = "start", sceneReference = null) {
   const parts = [
     ...(Array.isArray(visualBible.negativeVisualRules) ? visualBible.negativeVisualRules : []),
+    ...(Array.isArray(sceneReference?.negativeSceneRules) ? sceneReference.negativeSceneRules : []),
     shot.negativePrompt,
     frameKind === "end" ? "换场景、室内外切换、背景重绘成另一个地点、机位大幅变化、景别大幅变化" : "",
     noTextRule
@@ -71,13 +75,33 @@ function buildFramePromptText(framePrompt = "", characterReferences = [], frameL
   return `${frameLabel}画面提示词（人物外观、服装、发型、年龄感和身份特征以 @图 为准；以下只保留场景、动作、道具和情绪）：${sanitized}`;
 }
 
-function buildSceneContinuityText(shot = {}, characterReferences = [], frameKind = "start") {
-  if (frameKind !== "end") return "";
-  const anchor = extractSceneAnchor(shot.startFramePrompt, characterReferences);
+function buildSceneReferenceText(sceneReference = null) {
+  if (!sceneReference) return "";
+  const lines = [
+    `场景参考（必须继承，不要重新设计地点）：${sceneReference.sceneId || ""} ${sceneReference.sceneName || ""}`.trim(),
+    sceneReference.environmentPrompt ? `场景画面：${sceneReference.environmentPrompt}` : "",
+    Array.isArray(sceneReference.continuityAnchors) && sceneReference.continuityAnchors.length ? `场景连续性锚点：${sceneReference.continuityAnchors.join(" / ")}` : "",
+    Array.isArray(sceneReference.negativeSceneRules) && sceneReference.negativeSceneRules.length ? `场景禁止项：${sceneReference.negativeSceneRules.join(" / ")}` : ""
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+function buildSceneContinuityText(shot = {}, characterReferences = [], frameKind = "start", sceneReference = null) {
+  const referenceAnchor = sceneReferenceAnchor(sceneReference);
+  if (frameKind !== "end") return referenceAnchor ? `当前镜头场景锚点：${referenceAnchor}` : "";
+  const anchor = referenceAnchor || extractSceneAnchor(shot.startFramePrompt, characterReferences);
   const baseRule = "同镜头连续性锁定：尾帧必须与首帧保持同一地点、同一室内/户外属性、同一背景层级、同一景别、同一机位方向和同一光线；只改变人物动作、表情、手部和道具状态，不要重新设计环境。";
   const guard = sceneTransitionGuard(anchor);
   if (!anchor) return `${baseRule}\n${guard}`;
   return `${baseRule}\n首帧场景锚点（只用于继承场景，不要画首帧动作）：${anchor}\n${guard}`;
+}
+
+function sceneReferenceAnchor(sceneReference = null) {
+  if (!sceneReference) return "";
+  return uniqueNonEmpty([
+    sceneReference.sceneName,
+    ...(Array.isArray(sceneReference.continuityAnchors) ? sceneReference.continuityAnchors : [])
+  ]).join("，").slice(0, 220);
 }
 
 function extractSceneAnchor(framePrompt = "", characterReferences = []) {

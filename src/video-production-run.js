@@ -36,6 +36,7 @@ export function buildProductionRun(queue = {}, options = {}) {
       failurePath,
       promptPath: defaultPromptPath(outputRoot, job),
       requestPath: defaultRequestPath(outputRoot, job),
+      model: job.model || "",
       acceptanceCriteria: job.acceptanceCriteria || []
     };
   });
@@ -246,6 +247,7 @@ function formatJobRequest(queueJob = {}, runJob = {}, jobsByOutputKey = new Map(
     outputKey: runJob.outputKey,
     outputPath: runJob.outputPath,
     failurePath: runJob.failurePath,
+    model: queueJob.model || runJob.model || "",
     prompt: queueJob.prompt || "",
     negativePrompt: queueJob.negativePrompt || "",
     inputArtifacts: (runJob.requiredInputs || []).map((key) => {
@@ -264,7 +266,7 @@ function formatJobRequest(queueJob = {}, runJob = {}, jobsByOutputKey = new Map(
 }
 
 function capabilityFor(type, inputType) {
-  if (type === "reference_image" || type === "asset_image" || type === "start_frame_image" || type === "end_frame_image") return "image_generation";
+  if (type === "reference_image" || type === "asset_image" || type === "scene_reference_image" || type === "start_frame_image" || type === "end_frame_image") return "image_generation";
   if (type === "first_last_frame_video") return "first_last_frame_video_generation";
   if (type === "quality_check") return "video_quality_review";
   if (type === "final_edit") return "video_assembly";
@@ -275,9 +277,11 @@ function requestParameters(queueJob = {}, runJob = {}) {
   return {
     aspectRatio: queueJob.aspectRatio || "",
     durationSeconds: queueJob.durationSeconds || "",
-    shotId: queueJob.shotId || "",
-    sourceSceneId: queueJob.sourceSceneId || "",
-    cameraMotion: queueJob.cameraMotion || "",
+	    shotId: queueJob.shotId || "",
+	    sourceSceneId: queueJob.sourceSceneId || "",
+	    sceneId: queueJob.sceneId || "",
+	    sceneName: queueJob.sceneName || "",
+	    cameraMotion: queueJob.cameraMotion || "",
     characterAction: queueJob.characterAction || "",
     dialogueOrSubtitle: queueJob.dialogueOrSubtitle || "",
     soundDesign: queueJob.soundDesign || "",
@@ -294,9 +298,11 @@ function requestParameters(queueJob = {}, runJob = {}) {
 
 function detailEntries(job = {}) {
   return [
-    ["镜头 ID", job.shotId],
-    ["源场景", job.sourceSceneId],
-    ["时长", job.durationSeconds ? `${job.durationSeconds} 秒` : ""],
+	    ["镜头 ID", job.shotId],
+	    ["源场景", job.sourceSceneId],
+	    ["场景 ID", job.sceneId],
+	    ["场景名称", job.sceneName],
+	    ["时长", job.durationSeconds ? `${job.durationSeconds} 秒` : ""],
     ["画幅", job.aspectRatio],
     ["剧情功能", job.storyPurpose],
     ["情绪目标", job.emotionalTarget],
@@ -317,7 +323,8 @@ function detailEntries(job = {}) {
 function jobTypeLabel(type) {
   return ({
     reference_image: "角色参考图",
-    asset_image: "关键资产图",
+	    asset_image: "关键资产图",
+	    scene_reference_image: "场景参考图",
     start_frame_image: "首帧图",
     end_frame_image: "尾帧图",
     first_last_frame_video: "首尾帧视频",
