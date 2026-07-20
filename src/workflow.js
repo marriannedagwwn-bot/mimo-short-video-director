@@ -1,6 +1,6 @@
 import { analysisPrompt, animationPlanPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "./mock.js";
-import { InputError, OutputContractError, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, requireFrames, requireObject, requireText } from "./validation.js";
+import { InputError, OutputContractError, ensureAnimationPlanMatchesProfile, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
 
 export class WorkflowService {
   constructor({
@@ -203,7 +203,7 @@ export class WorkflowService {
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
     const settings = this.resolveStage("animationPlan", input);
-    if (!this.hasLiveClient) return ensureAnimationPlanContract(ensureOutputContract(mockAnimationPlan(input), "animationPlan"), input.variant);
+    if (!this.hasLiveClient) return validateAnimationPlanOutput(mockAnimationPlan(input), input);
     this.assertStageClient(settings, "首尾帧动画生产包");
     const prompt = animationPlanPrompt({ ...input, targetProvider: settings.provider, targetModel: settings.model });
     return this.generateValidatedJson({
@@ -211,7 +211,7 @@ export class WorkflowService {
       prompt,
       model: settings.model,
       maxCompletionTokens: settings.maxCompletionTokens,
-      validate: (result) => ensureAnimationPlanContract(ensureOutputContract(result, "animationPlan"), input.variant)
+      validate: (result) => validateAnimationPlanOutput(result, input)
     });
   }
 
@@ -275,11 +275,17 @@ function normalizeStringArray(value, fallback = []) {
   return Array.isArray(source) ? source.map((item) => String(item || "").trim()).filter(Boolean) : [];
 }
 
-function ensureAnimationPlanContract(value, variant = null) {
-  if (variant?.id && String(value.selectedVariantId || "") !== String(variant.id)) {
-    throw new OutputContractError(`animationPlan.selectedVariantId 必须等于选中的主题变体 ${variant.id}`);
-  }
-  return value;
+function validateAnimationPlanOutput(result, input = {}) {
+  const structured = ensureOutputContract(result, "animationPlan");
+  const pruned = pruneAnimationPlanNegativePrompts(structured, input);
+  return ensureAnimationPlanMatchesProfile(
+    pruned,
+    input.creatorProfile,
+    input.creativeBrief,
+    input.variant,
+    input.visualGuardrails,
+    input
+  );
 }
 
 function normalizeClients(clients = null) {
@@ -352,7 +358,7 @@ function stageLabel(stage) {
     analysis: "参考片分析",
     reconstruction: "原片脚本还原",
     brief: "创意简报",
-    visualGuardrails: "视觉负面提示词",
+    visualGuardrails: "角色与表达边界",
     variants: "主题变体",
     fullStory: "完整剧情",
     animationPlan: "首尾帧动画生产包",
@@ -361,6 +367,12 @@ function stageLabel(stage) {
 }
 
 function validationRetryPrompt(originalPrompt, validationError) {
+  const animationCorrection = originalPrompt.includes('"negativePrompts"')
+    ? `
+- 每个 shot 必须输出 negativePrompts.image 和 negativePrompts.video 数组，数组允许为空。
+- 每个保留条目必须有当前镜头的具体 triggerEvidence、受支持的 reasonCode、正确的 appliesTo 和 priority；不要复制通用负面词，不要用“未声明/未提及”作为唯一理由。
+- dialogueRules 不进入图片/视频负面提示词；sourceSimilarityRules 只有在当前生成确实传入视觉参考时才可按 reference_leak 使用。`
+    : "";
   return `${originalPrompt}
 
 上一次输出已经是 JSON，但没有通过系统校验：
@@ -369,9 +381,10 @@ ${validationError}
 请基于同一个任务重新输出一份完整合法 JSON，并修复上述问题。
 关键要求：
 - 不要更换用户固定角色，不要改名，不要降级为配角。
-- 不要复用被禁止的原片表面表达，例如企鹅、企鹅服、企鹅快递员、动物身份或玩偶外壳。
-- 只能使用固定角色文本里已经明确写出的身体/外观特征；如果只写“狼耳/猫耳/兽耳”，不要自动补尾巴、爪子、肉垫、翅膀、脚蹼等身体特征。若原始任务已经明确允许某个特征（例如固定角色写了“有狼尾巴”），重试时必须保留该允许特征。
+- 不要复用有明确证据的原片表面表达。
+- 正向提示词只能使用固定角色文本已经明确授权的身份与外观；未授权信息保持不写，且不得把“未声明”转换成渲染负面提示词。
 - 可以保留送达任务、旅途结构、帮助、天气阻力和仪式化结尾，但必须换成新人物、新任务、新道具、新对白和新画面表达。
+- 规则必须保持分类：角色正向边界、原片规避、台词规则和逐镜渲染负面提示词不得混写。${animationCorrection}
 - 只输出一个完整 JSON 对象，不要 Markdown，不要解释。`;
 }
 

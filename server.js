@@ -6,6 +6,7 @@ import { loadEnv, getConfig } from "./src/config.js";
 import { MimoClient, ModelResponseError } from "./src/mimo-client.js";
 import { QwenClient } from "./src/qwen-client.js";
 import { JimengImageClient, JimengImageConfigError, JimengImageProviderError, buildCharacterReferenceImagePrompt, buildShotFrameImagePrompt } from "./src/jimeng-client.js";
+import { compileShotFrameNegativePrompt } from "./public/shot-frame-prompt.js";
 import { WorkflowService } from "./src/workflow.js";
 import { InputError, OutputContractError } from "./src/validation.js";
 import { generateShotVideo, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
@@ -339,22 +340,25 @@ async function generateShotFrameImage(body = {}) {
   if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
   const frameKind = body.frameKind === "end" ? "end" : "start";
   const shot = body.shot || {};
-	  const prompt = String(body.prompt || "").trim() || buildShotFrameImagePrompt({
+	  const negativePromptDelivery = compileShotFrameNegativePrompt(shot);
+	  const basePrompt = String(body.prompt || "").trim() || buildShotFrameImagePrompt({
 	    frameKind,
 	    shot,
 	    visualBible: body.visualBible,
 	    characterReferences: body.characterReferences,
 	    sceneReference: body.sceneReference
 	  });
+	  const prompt = appendMissingLines(basePrompt, negativePromptDelivery.positiveConstraints);
   const count = clampFrameImageCount(body.count);
   const imageModel = modelOverrideFor(body, "imageGeneration") || config.jimeng.model;
   const uploadedReferences = referenceImages(body.characterReferences);
   const images = [];
-  await jimengClient.generateImagesStream({
+  const requestReceipt = await jimengClient.generateImagesStream({
     count,
     prompt: buildShotFrameMultiImagePrompt(prompt, count),
     referenceImageDataUrls: uploadedReferences,
-    model: imageModel
+    model: imageModel,
+    negativePromptDelivery
   }, async (event) => {
     if (event.type === "image_generation.partial_succeeded") {
       images.push(await persistGeneratedImage(event, {
@@ -392,8 +396,17 @@ async function generateShotFrameImage(body = {}) {
       referenceImageCount: uploadedReferences.length
     })),
     referenceImageCount: uploadedReferences.length,
+    negativePromptDelivery: requestReceipt?.negativePromptDelivery || {},
+    requestPreview: requestReceipt?.requestPreview || {},
     generatedAt: new Date().toISOString()
   };
+}
+
+function appendMissingLines(prompt, lines = []) {
+  const additions = (Array.isArray(lines) ? lines : [])
+    .map((line) => String(line || "").trim())
+    .filter((line) => line && !String(prompt || "").includes(line));
+  return additions.length ? [String(prompt || "").trim(), ...additions].filter(Boolean).join("\n") : String(prompt || "").trim();
 }
 
 function buildShotFrameMultiImagePrompt(prompt, totalCount) {

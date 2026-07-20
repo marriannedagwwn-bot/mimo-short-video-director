@@ -51,7 +51,9 @@ npm run make:video -- ./production/V1 --config ./provider.json
 
 - `taskId`：任务 ID。
 - `capability`：能力类型。
-- `prompt` / `negativePrompt`：正负向提示词。
+- `prompt`：正向提示词。
+- `negativePromptEntries[]`：当前任务、当前媒介已启用的结构化负向条目。
+- `compiledNegativePrompt` / `negativePrompt`：由这些条目编译出的最终文本；`negativePrompt` 保留为兼容字段。
 - `inputArtifacts[]`：依赖产物路径。
 - `outputPath`：建议输出路径。
 - `parameters`：时长、画幅、镜头运动、字幕、声音等结构化参数。
@@ -127,6 +129,17 @@ npm run exec:video -- ./production/V1 \
   --capability image_generation \
   --capability first_last_frame_video_generation
 ```
+
+自定义模板只有在实际使用 `{{request.compiledNegativePrompt}}`、`{{request.negativePrompt}}`，或通过 `negativePromptFields.<capability>` 明确目标字段时，才会被视为支持独立负向提示词。未映射时 worker 不会把负向条目塞进 `rawRequest`。
+
+内置传递模式：
+
+- 通用默认请求：独立字段 `negativePrompt`，`appliedMode=native_negative`。
+- Kling 图生视频：独立字段 `negative_prompt`，`appliedMode=native_negative`。
+- ModelArk / Dreamina 内容生成：没有独立负向字段；只把 `priority=high` 且 `reasonCode=explicit_identity_conflict` 的条目收敛为正向身份锁定，`appliedMode=positive_constraint`，其它条目标记为 ignored。
+- 空负向提示词不会生成空字段。
+
+provider receipt 会包含 `negativePromptDelivery` 与脱敏后的 `requestPreview`。其中 `providerIgnored` 明确表示是否有负向条目未被供应商应用；预览会移除 data URL、base64、API key、token、鉴权头和 URL query，可用于核对 `compiledNegativePrompt` 是否真实进入供应商字段。
 
 - 图像生成任务优先保证角色、服装、道具一致，不要过度追求画面复杂度。
 - 首尾帧视频任务必须使用 `inputArtifacts` 中的 start/end 两张图；不要让模型重新发明镜头起点和终点。

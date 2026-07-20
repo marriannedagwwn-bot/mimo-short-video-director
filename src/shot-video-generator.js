@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { compileShotNegativePrompt } from "../public/negative-prompts.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -117,6 +118,7 @@ async function prepareOneFrameArtifact(context) {
 
 function buildFrameRequest(shot = {}, context = {}) {
   const label = context.frameKind === "start" ? "START" : "END";
+  const negativePrompt = compileShotNegativePrompt(shot, "image");
   return {
     version: "1.0",
     providerMode: "provider_agnostic",
@@ -128,7 +130,9 @@ function buildFrameRequest(shot = {}, context = {}) {
     outputKey: context.outputKey,
     outputPath: context.outputPath,
     prompt: context.prompt || framePromptFallback(shot, context.frameKind),
-    negativePrompt: shot.negativePrompt || "",
+    negativePromptEntries: negativePrompt.negativePromptEntries,
+    compiledNegativePrompt: negativePrompt.compiledNegativePrompt,
+    negativePrompt: negativePrompt.compiledNegativePrompt,
     inputArtifacts: [],
     parameters: {
       aspectRatio: shot.aspectRatio || "9:16",
@@ -149,6 +153,7 @@ function buildShotVideoRequest(shot = {}, context = {}) {
   const candidateIndex = Number(context.candidateIndex) || 0;
   const candidateCount = Number(context.candidateCount) || 1;
   const candidateSuffix = candidateCount > 1 ? `-${candidateIndex + 1}` : "";
+  const negativePrompt = compileShotNegativePrompt(shot, "video");
   return {
     version: "1.0",
     providerMode: "provider_agnostic",
@@ -161,7 +166,9 @@ function buildShotVideoRequest(shot = {}, context = {}) {
     outputPath: context.outputPath,
     model: context.model || "",
     prompt: shot.videoPrompt || "",
-    negativePrompt: shot.negativePrompt || "",
+    negativePromptEntries: negativePrompt.negativePromptEntries,
+    compiledNegativePrompt: negativePrompt.compiledNegativePrompt,
+    negativePrompt: negativePrompt.compiledNegativePrompt,
     inputArtifacts: context.inputArtifacts || [],
     parameters: {
       aspectRatio: shot.aspectRatio || "9:16",

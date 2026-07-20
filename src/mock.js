@@ -123,21 +123,48 @@ export function mockBrief(input) {
 export function mockVisualGuardrails(input) {
   const fixed = input.creatorProfile?.fixedCharacter || "固定主角";
   const fixedName = fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
-  const hasWolfTail = /狼尾|狼尾巴|有[^，,。；;\n]{0,6}尾巴/u.test(fixed);
+  const hasWolfTail = /狼尾|狼尾巴/u.test(fixed);
   const hasCatTail = /猫尾|猫尾巴/u.test(fixed);
   const allowedBodyFeatures = [
     /狼耳/u.test(fixed) ? "狼耳" : "",
-    /猫耳|猫娘/u.test(fixed) ? "猫娘风格参考" : "",
+    /猫耳/u.test(fixed) ? "猫耳" : "",
+    /猫娘/u.test(fixed) ? "猫娘" : "",
     hasWolfTail ? "狼尾巴" : "",
     hasCatTail ? "猫尾巴" : ""
   ].filter(Boolean);
-  const forbiddenPositiveTraits = [
-    hasWolfTail ? { term: "猫尾", reason: "固定角色明确为狼尾巴，不能替换成猫尾。", severity: "block" } : null,
-    hasWolfTail ? { term: "猫尾巴", reason: "固定角色明确为狼尾巴，不能替换成猫尾巴。", severity: "block" } : null,
-    !/爪|肉垫/u.test(fixed) ? { term: "爪子", reason: "固定角色未声明爪子，不能从兽耳或猫娘风格自动推导。", severity: "block" } : null,
-    !/兽爪/u.test(fixed) ? { term: "兽爪", reason: "固定角色未声明兽爪。", severity: "block" } : null,
-    !/肉垫/u.test(fixed) ? { term: "肉垫", reason: "固定角色未声明肉垫。", severity: "block" } : null
-  ].filter(Boolean);
+  const evidence = [{ sourcePath: "creatorProfile.fixedCharacter", evidence: fixed }];
+  const sourceSimilarityRules = [];
+  const dialogueRules = [];
+  for (const [index, item] of (input.creativeBrief?.protectedExpressions || []).entries()) {
+    const sourceExpression = String(item?.sourceExpression || "").trim();
+    if (!sourceExpression) continue;
+    const triggerEvidence = [{
+      sourcePath: `creativeBrief.protectedExpressions[${index}].sourceExpression`,
+      evidence: sourceExpression
+    }];
+    if (/台词|对白|口癖|拟声/u.test(String(item?.expressionType || "")) || /咕嘎/u.test(sourceExpression)) {
+      dialogueRules.push({
+        text: /咕嘎/u.test(sourceExpression)
+          ? "主角不得使用“咕嘎”；主角说话必须服从用户明确设定。"
+          : `不得复用原片台词表达“${sourceExpression}”。`,
+        triggerEvidence
+      });
+      continue;
+    }
+    sourceSimilarityRules.push({
+      text: `主题变体、完整故事和分镜结构不得复用原片表面表达“${sourceExpression}”。`,
+      sourceExpression,
+      triggerEvidence,
+      appliesWhenReferenceUsed: true
+    });
+  }
+  const constraints = String(input.creatorProfile?.constraints || "").trim();
+  if (constraints && /台词|对白|说话|说|口癖|拟声|表达|句子|语气|发声|行为|动作/u.test(constraints)) {
+    dialogueRules.push({
+      text: constraints,
+      triggerEvidence: [{ sourcePath: "creatorProfile.constraints", evidence: constraints }]
+    });
+  }
   return {
     fixedCharacterBoundary: {
       characterName: fixedName,
@@ -145,30 +172,29 @@ export function mockVisualGuardrails(input) {
       allowedIdentity: fixed,
       allowedAppearance: allowedBodyFeatures.length ? `允许使用：${allowedBodyFeatures.join("、")}` : "只使用固定角色文本明写的人物外观。",
       allowedBodyFeatures,
-      styleNotes: fixed.includes("猫娘") ? "猫娘只作为萌系/二次元风格参考，不自动等于猫尾、猫爪或肉垫。" : "不自动扩展未声明动物化身体特征。",
+      styleNotes: fixed.includes("猫娘") ? "猫娘仅按用户明确写出的风格与外观特征呈现。" : "外观以用户明确设定为准。",
       explicitUserPresets: fixed.split(/[，,；;、。\n\r]/u).map((item) => item.trim()).filter(Boolean),
-      doNotInfer: "不要把原片动物服、玩偶外壳或类比词扩展成固定角色没有明写的身体部位。"
+      doNotInfer: "后续正向提示词不得把类比词或原片表面元素扩展成用户没有授权的角色特征；未声明不等于渲染负面词。"
     },
     allowedPositiveTraits: [
       { term: fixedName, scope: "identity", reason: "固定角色姓名必须锁定。" },
-      ...allowedBodyFeatures.map((term) => ({ term, scope: "bodyFeature", reason: "来自用户固定角色预设或安全风格说明。" }))
+      ...allowedBodyFeatures.map((term) => ({ term, scope: "bodyFeature", reason: "来自用户固定角色文本的明确设定。" }))
     ],
-    forbiddenPositiveTraits,
-    sourceSurfaceExpressions: [
-      { term: "企鹅", source: "creativeBrief", reason: "原片表面身份只能提炼剧作功能，不能映射给固定角色。", mustAvoid: true },
-      { term: "企鹅服", source: "creativeBrief", reason: "原片服装拟态属于具体表面表达。", mustAvoid: true },
-      { term: "企鹅快递员", source: "modelRisk", reason: "模型容易把原片表面职业外壳套给固定角色。", mustAvoid: true }
+    positivePromptBoundary: [
+      {
+        rule: `${fixedName}保持用户明确设定的身份与外观；后续正向提示词不得擅自添加其他生物结构、服装符号或身份外壳。`,
+        triggerEvidence: evidence,
+        severity: "block"
+      }
     ],
-    commonNegativePrompt: [
-      "不要企鹅、企鹅服、企鹅快递员、玩偶服、动物外壳",
-      ...forbiddenPositiveTraits.map((item) => `不要${item.term}`)
-    ],
+    sourceSimilarityRules,
+    dialogueRules,
     stageInstructions: {
-      themeVariants: "主题变体只写固定角色允许身份和外观，不把负面词写成新设定。",
-      fullStory: "完整剧情不得把负面词写入主角身份、动作、道具或剧情正向内容。",
-      animationPlan: "动画生产包阶段不使用 visualGuardrails 做 AI 检测，只保留结构校验。"
+      themeVariants: "按 positivePromptBoundary 审查角色正向设定，并按 sourceSimilarityRules 改写原片表面表达。",
+      fullStory: "分别执行角色正向边界、原片表达规避和 dialogueRules，不把三类规则混成渲染负面词。",
+      animationPlan: "结合当前镜头动作、道具、参考输入和真实失败记录，逐镜生成可为空的图片/视频 render negative。"
     },
-    rationale: "先由固定角色文本确定允许项，再把原片表面表达和未声明联想项放入通用负面提示词。",
+    rationale: "本阶段只锁定正向角色边界、原片表达规避与台词行为，不生成最终图片或视频负面提示词。",
     uncertainties: []
   };
 }
@@ -389,7 +415,8 @@ export function mockAnimationPlan(input) {
   const targetRuntime = Number(fullStory.targetDurationSeconds) || 60;
   const protagonistIdentity = fullStory.characterBible?.protagonist?.identity || fixed;
   const careRecipient = fullStory.characterBible?.careRecipient?.nameOrLabel || variant.characterSetup?.careRecipient || "被关爱对象";
-  const protagonistPrompt = `${fixedName}，人类儿童形象，${protagonistIdentity}，圆润可爱的 2.5D 动画造型，干净朴素的日常衣服，表情活泼但懂事，动作小而认真，始终保持同一发型、同一服装、同一年龄感。`;
+  const explicitIdentity = [...new Set([fixed, protagonistIdentity].map((item) => String(item || "").trim()).filter(Boolean))].join("，");
+  const protagonistPrompt = `${fixedName}，${explicitIdentity}，圆润可爱的 2.5D 动画造型，严格保持用户明确设定的身份、外观、服装、发型和年龄感，表情活泼但懂事，动作小而认真。`;
   const sceneScript = Array.isArray(fullStory.sceneScript) && fullStory.sceneScript.length ? fullStory.sceneScript : [
     { sceneId: "S1", timeRange: "00:00-00:05", location: "出发点", visibleAction: `${fixedName}确认任务物后出发。`, emotionNode: "任务启动", dramaticFunction: "建立任务" },
     { sceneId: "S2", timeRange: "00:05-00:14", location: "途中", visibleAction: `${fixedName}在环境压力中保护任务物。`, emotionNode: "压力上升", dramaticFunction: "增加成本" },
@@ -407,7 +434,7 @@ export function mockAnimationPlan(input) {
       storyFunction: scene.dramaticFunction || "承载剧情动作和情绪变化",
       environmentPrompt: `竖屏 9:16，${location}，治愈生活流 2.5D 动画场景参考图，空间真实可信，背景层级清楚，光线自然，适合${fixedName}在其中完成短镜头动作。`,
       continuityAnchors: [location, "同一室内外属性", "同一背景层级", "同一光线方向", "同一竖屏构图逻辑"],
-      negativeSceneRules: ["不要室内外跳变", "不要改成无关地点", "不要现代城市或商业影棚感", "不要背景漂移"],
+      sceneContinuityRules: ["室内外属性保持一致", "地点与背景层级保持一致", "光线方向保持连续"],
       relatedShotIds: [`A${String(index + 1).padStart(2, "0")}`]
     };
   });
@@ -431,7 +458,10 @@ export function mockAnimationPlan(input) {
       dialogueOrSubtitle: Array.isArray(scene.dialogue) && scene.dialogue.length ? scene.dialogue.map((item) => `${item.speaker}：${item.line}`).join(" / ") : "无对白或短字幕，靠动作推进",
       soundDesign: scene.shotAndSound || "轻环境声，动作音效克制",
       continuityNotes: `承接 ${scene.sceneId || `S${baseId}`}，保持${fixedName}外观、道具和情绪递进连续。`,
-      negativePrompt: "不要改变主角年龄、服装、脸型；不要新增动物拟态、玩偶感、夸张服装；不要跳切到无关场景；不要出现多余手指或畸形肢体。",
+      negativePrompts: buildMockShotNegativePrompts(scene, {
+        shotId: `A${String(baseId).padStart(2, "0")}`,
+        sourceSceneId: scene.sceneId || `S${baseId}`
+      }),
       acceptanceCriteria: [
         `${fixedName}身份和外观稳定`,
         "首帧与尾帧动作因果清楚",
@@ -461,8 +491,7 @@ export function mockAnimationPlan(input) {
       lighting: "自然散射光，情绪低点偏冷，帮助和结尾逐步转暖。",
       worldRules: ["村庄/生活空间真实可信", "道具比例稳定", "角色不突然换装", "天气变化服务情绪，不抢戏"],
       cameraLanguage: "竖屏近中景为主，少量跟拍，关键情绪用静态停顿。",
-      characterConsistencyRules: [`${fixedName}始终是同一名人类儿童`, "同一发型、同一衣服、同一身高比例", "表情变化克制，动作先于语言"],
-      negativeVisualRules: ["不要动物化主角", "不要玩偶服或夸张拟态", "不要让道具变形或漂移", "不要电影大片式过度运镜"]
+      characterConsistencyRules: [`${fixedName}始终保持用户明确设定的同一身份`, "同一发型、同一衣服、同一身高比例", "表情变化克制，动作先于语言"]
     },
 	    characterReferencePrompts: [
       {
@@ -470,8 +499,8 @@ export function mockAnimationPlan(input) {
         storyRole: "主角 / 任务执行者 / 善意连接者",
         identity: protagonistIdentity,
         appearancePrompt: protagonistPrompt,
-        consistencyTags: [fixedName, "人类儿童", "朴素日常衣服", "活泼懂事", "同一发型", "同一年龄感"],
-        forbiddenChanges: ["不能改名", "不能变成动物或玩偶", "不能更换年龄段", "不能更换核心服装"]
+        consistencyTags: [fixedName, "用户明确身份", "活泼懂事", "同一发型", "同一服装", "同一年龄感"],
+        forbiddenChanges: ["保持用户明确身份", "保持同一年龄段", "保持同一核心服装"]
       },
       {
         characterName: careRecipient,
@@ -499,7 +528,7 @@ export function mockAnimationPlan(input) {
       hookAndEndingNotes: "开场必须让观众知道任务和期限；结尾保留 1 秒无对白停顿。"
     },
     generationChecklist: [
-      { check: "角色一致性", passCriteria: `${fixedName}每个镜头都是同一名人类儿童，脸、发型、服装、年龄感一致。` },
+      { check: "角色一致性", passCriteria: `${fixedName}每个镜头都保持用户明确设定的同一身份，脸、发型、服装、年龄感一致。` },
       { check: "首尾帧因果", passCriteria: "首帧和尾帧之间只发生一个清楚动作，不跳剧情。" },
       { check: "情绪曲线", passCriteria: "镜头情绪按紧迫、担心、温暖、释然推进。" },
       { check: "可剪辑性", passCriteria: "每个镜头 3–6 秒，动作结束点可作为剪辑点。" },
@@ -518,6 +547,57 @@ export function mockAnimationPlan(input) {
       readyForVideoGeneration: "可以进入角色参考图、道具参考图、首尾帧和短视频候选生成。"
     },
     uncertainties: []
+  };
+}
+
+function buildMockShotNegativePrompts(scene = {}, context = {}) {
+  const action = String(scene.visibleAction || "").trim();
+  const sourceSceneId = context.sourceSceneId || scene.sceneId || "S1";
+  const triggerEvidence = action ? [{
+    sourcePath: `fullStory.sceneScript[${sourceSceneId}].visibleAction`,
+    evidence: action
+  }] : [];
+  const showsGlassSlide = /玻璃(?:幻灯)?片|透明玻璃片|幻灯片/u.test(action);
+  const hasHandInteraction = /打开|拿起|取出|手持|握住|捏住|举起|对着|观察/u.test(action);
+  if (!showsGlassSlide || !hasHandInteraction || !triggerEvidence.length) return { image: [], video: [] };
+
+  return {
+    image: [
+      {
+        text: "手指与透明玻璃片融合",
+        appliesTo: "image",
+        triggerEvidence,
+        reasonCode: "shot_interaction_failure",
+        priority: "high",
+        enabled: true
+      },
+      {
+        text: "玻璃幻灯片被错误生成成手机屏幕",
+        appliesTo: "image",
+        triggerEvidence,
+        reasonCode: "shot_object_confusion",
+        priority: "medium",
+        enabled: true
+      }
+    ],
+    video: [
+      {
+        text: "拿起过程中手指与透明玻璃片融合",
+        appliesTo: "video",
+        triggerEvidence,
+        reasonCode: "shot_interaction_failure",
+        priority: "high",
+        enabled: true
+      },
+      {
+        text: "玻璃幻灯片在动作过程中变形",
+        appliesTo: "video",
+        triggerEvidence,
+        reasonCode: "temporal_consistency_failure",
+        priority: "medium",
+        enabled: true
+      }
+    ]
   };
 }
 

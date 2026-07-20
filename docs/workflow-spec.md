@@ -17,12 +17,13 @@ flowchart LR
     B --> C[referenceAnalysis]
     C --> D[sourceScriptReconstruction]
     D --> E[creativeBrief]
-    E --> F[themeVariants]
+    E --> V[visualGuardrails]
+    V --> F[themeVariants]
     F --> H[选择主题变体]
     H --> I[fullStory]
     I --> J[animationPlan]
     G[固定角色与垂直赛道] --> E
-    G --> F
+    G --> V
     G --> I
     G --> J
 ```
@@ -59,7 +60,18 @@ flowchart LR
 - `allowedNarrativeComponents`：七类通用构件的安全复用方式。
 - `nonNegotiableExperience`：五项体验保真要求。
 
-### 阶段四：themeVariants
+### 阶段四：visualGuardrails
+
+`visualGuardrails` 只负责创作边界，不负责生成最终图片或视频负面提示词。输出必须拆成：
+
+- `fixedCharacterBoundary` 与 `allowedPositiveTraits`：锁定固定角色身份和用户明确允许的外观。
+- `positivePromptBoundary`：审查后续正向提示词是否擅自增加角色特征。“用户未声明”只意味着不能写进正向提示词，不会因此产生负面词。
+- `sourceSimilarityRules`：防止主题、故事和分镜复制原片的服装、动作、道具或镜头组合。只有生成请求实际传入原片视觉参考时，相关表面元素才可能在该次请求中以 `reference_leak` 进入渲染负面词。
+- `dialogueRules`：角色口癖、可用拟声词和禁用对白。台词规则不得进入图片负面提示词。
+
+该阶段没有 `commonNegativePrompt`，也不维护“未声明身体部件”的完整枚举。数组可以为空，不得为满足格式补充低相关规则。
+
+### 阶段五：themeVariants
 
 每个主题变体必须可独立拍摄，并提供两组验收证据：
 
@@ -68,7 +80,7 @@ flowchart LR
 
 只替换姓名或职业不算主题变体。变体必须产生新的具体任务、环境压力、情感媒介、帮助方式和结尾仪式。
 
-### 阶段五：fullStory
+### 阶段六：fullStory
 
 用户选择一个 `themeVariants.variants[]` 后，进入独立完整剧情页。该阶段不重新发散主题，只围绕被选中的主题变体扩写，输出：
 
@@ -81,20 +93,31 @@ flowchart LR
 
 完整剧情阶段可单独切换文本模型：配置 `QWEN_API_KEY` 后调用 `QWEN_STORY_MODEL=qwen3.7-max`；未配置 Qwen 时回退 `MIMO_STORY_MODEL=mimo-v2.5-pro`。其余四阶段默认仍用 `MIMO_MODEL=mimo-v2.5`。
 
-### 阶段六：animationPlan
+### 阶段七：animationPlan
 
 完整剧情生成后，可以继续生成用于 AI 视频制作的 `animationPlan`。该阶段不直接调用具体视频模型，而是输出模型无关的首尾帧生产包：
 
 - `productionStrategy`：默认采用 `first_last_frame_video`，单镜头控制在 3–6 秒，竖屏 9:16。
-- `visualBible`：动画风格、色彩、光线、世界规则、镜头语言、角色一致性规则和负面视觉规则。
+- `visualBible`：动画风格、色彩、光线、世界规则、镜头语言和角色一致性规则；不存放全局渲染负面词。
 - `characterReferencePrompts`：固定角色、被关爱对象和帮助者的参考图提示词，用于先锁定视觉一致性。
-- `sceneReferencePrompts`：可复用地点/场景参考提示词，用于锁定室内外属性、背景层级、光线、空间锚点和场景负面规则。
+- `sceneReferencePrompts`：可复用地点/场景参考提示词，用于锁定室内外属性、背景层级、光线、空间锚点和连续性规则。
 - `assetPrompts`：关键道具提示词。
-- `shotPlan`：逐镜头引用 `sceneId`，并提供首帧 prompt、尾帧 prompt、video prompt、负面 prompt、镜头运动、角色动作、声音设计和验收标准。
+- `shotPlan`：逐镜头引用 `sceneId`，提供首帧 prompt、尾帧 prompt、video prompt、镜头运动、角色动作、声音设计、验收标准，以及分别面向静态图片和动态视频的 `negativePrompts.image` / `negativePrompts.video`。
 - `editPlan`：剪辑节奏、转场、字幕、音乐音效、开头钩子和结尾停顿。
 - `generationChecklist`：角色稳定、首尾帧因果、情绪曲线、可剪辑性和表达原创的质检标准。
 
 动画阶段的核心原则是：先稳定视觉，再逐镜生成，不追求一次生成整条片。首尾帧用于锁定每个短镜头的起点和终点，视频模型只负责补中间运动。
+
+每条逐镜渲染负面词必须包含：
+
+- `text`：最终负面描述；
+- `appliesTo`：`image`、`video` 或 `both`；
+- `triggerEvidence`：一个或多个 `{ sourcePath, evidence }`，指向固定角色、当前分场动作、当前 shot prompt、真实参考输入或真实供应商失败记录；
+- `reasonCode`：仅允许 `explicit_identity_conflict`、`shot_object_confusion`、`shot_interaction_failure`、`temporal_consistency_failure`、`reference_leak`、`proven_provider_failure`；
+- `priority`：`high`、`medium` 或 `low`；
+- 可选 `enabled`：设为 `false` 时不下发。
+
+图片和视频数组都允许为 `[]`，不设最少条目数。没有可解析证据、仅以“用户未声明/未提及”为理由、媒介不匹配、把台词规则混入画面、或在没有实际原片参考输入时使用 `reference_leak` 的候选项，会在工作流相关性裁剪中删除；保留下来的非法结构会触发现有模型纠偏重试。不同 shot 不得无差别复制同一组负面词。
 
 剧情页必须提供两个生产出口：
 
@@ -121,7 +144,7 @@ npm run plan:video -- ./视频任务队列.jsonl --root ./production/V1 --worksp
 - `README.md`：当前可执行任务、任务类型统计和执行顺序。
 - `production-run.json`：机器可读运行状态。
 - `prompts/**/<taskId>.md`：逐任务 prompt 卡，包含依赖输入、正向 prompt、负向 prompt、验收标准和原始任务 JSON。
-- `requests/**/<taskId>.json`：供应商无关请求包，包含能力类型、依赖产物路径、输出路径、参数和验收标准，供后续 API worker 消费。
+- `requests/**/<taskId>.json`：供应商无关请求包，包含能力类型、依赖产物路径、输出路径、参数、验收标准、已过滤的 `negativePromptEntries` 和 `compiledNegativePrompt`，供后续 API worker 消费。
 - `outputs/**/`：按任务类型划分的建议产物目录。
 
 制作过程中可以反复运行：
@@ -166,6 +189,22 @@ npm run exec:video -- ./production/V1 --provider command --command node --comman
 
 通用 HTTP worker 位于 `workers/generic-http-worker.mjs`，支持分能力 endpoint、data URL 输入、异步任务轮询和 mediaUrl/base64 产物写入，推荐只执行 `image_generation` 和 `first_last_frame_video_generation`。视频片段完成后，用 `workers/local-postprocess-worker.mjs` 执行 `video_quality_review` 和 `video_assembly`，本地通过基础检查和 ffmpeg 生成最终成片。占位协议模板位于 `workers/command-worker-template.mjs`，详细协议见 `docs/video-worker-protocol.md`。
 
+供应商回执必须包含脱敏的 `requestPreview` 和 `negativePromptDelivery`，明确记录 `compiledNegativePrompt`、实际请求字段、是否被忽略及以下应用模式：
+
+| provider 路径 | 独立 negative 支持 | 字段 / 策略 | `appliedMode` |
+| --- | --- | --- | --- |
+| Kling `kling_image_to_video` | 支持 | `negative_prompt` | `native_negative` |
+| 通用默认请求 | 支持，由适配端确认 | `negativePrompt` | `native_negative` |
+| 自定义 body template | 仅模板显式映射时支持 | 模板中的实际字段 | `native_negative` 或 `not_supported` |
+| ModelArk / Dreamina 内容生成 | 不支持独立字段 | 仅高优先级身份冲突可改写成正向身份锁定，其余忽略 | `positive_constraint` 或 `not_supported` |
+| 即梦 / Seedream 图片接口 | 不支持独立字段 | 仅高优先级身份冲突可改写成正向身份锁定，其余忽略 | `positive_constraint` 或 `not_supported` |
+
+当当前媒介数组为空时，原生字段不会发送空字符串；回执保留 provider 支持能力并标记 `appliedMode=not_applied`。
+
+不支持独立负面词时不得伪造字段，也不得通过 `rawRequest` 旁路泄漏。`requestPreview` 必须遮盖鉴权信息、data URL/base64 和带敏感查询参数的 URL。
+
+本次重构的猫娘 visualGuardrails 前后 JSON、三个 shot 对比以及图片/视频供应商脱敏请求快照见 `docs/negative-prompt-refactor-examples.md`。对应回归测试位于 `test/negative-prompts.test.js`，实际 HTTP 字段传递快照位于 `test/workflow.test.js`。
+
 失败任务会写入 `<output>.error.json`，并在状态刷新后显示为 `failed`；其下游任务继续保持 `blocked`。`--continue-on-error` 可让互不依赖的其它 ready 任务继续执行；修复 worker 或供应商问题后，可用 `--retry-failed` 清理失败回执并重试。
 
 生产状态报告入口：
@@ -176,7 +215,7 @@ npm run report:video -- ./production/V1
 
 报告包含总进度、按类型统计、ready 任务、failed 任务错误摘要、blocked 任务缺失依赖、最终成片路径和下一步建议命令；`--json` 可输出机器可读结果。
 
-自动视频生成尚未绑定具体供应商。接入真实视频模型前，需要明确：
+项目不绑定唯一供应商；已提供 Kling、ModelArk/Dreamina 和通用/自定义 HTTP 路径。接入真实账号前，需要明确：
 
 - 视频模型是否支持首尾帧、单首帧图生视频，还是只支持文生视频。
 - 首帧/尾帧图片由哪个图像模型生成，是否需要角色参考图或 LoRA/一致性参考。
@@ -195,4 +234,4 @@ npm run report:video -- ./production/V1
 
 - 原生视频过大或推理服务不支持 `video_url` 时会回退浏览器抽帧；快速剪辑、声音设计和未出现在采样帧中的动作可能遗漏。
 - 音频尚未自动转写。需要准确对白时，应粘贴字幕/转写，或后续增加 ASR 阶段。
-- 模型输出经过 JSON 解析和输入约束，但还没有完整 JSON Schema 自动修复循环。
+- 模型输出经过 JSON 解析、嵌套契约校验和一次纠偏重试；当前仍未采用外部 JSON Schema 引擎。

@@ -38,25 +38,27 @@ async function executeRequest(request, options, config) {
   if (!endpoint) throw new Error(`缺少 ${request.capability || "unknown"} 的 HTTP endpoint`);
 
   const context = {
-    request,
+    request: normalizeRequestNegativePrompt(request),
     model: request.model || modelFor(request.capability, config),
     inputArtifacts: await loadInputArtifacts(request.inputArtifacts || [], config),
     root: options.root || "",
     output: options.output
   };
-  const body = buildRequestBody(context, config);
+  const { body, negativePromptDelivery } = buildRequestBody(context, config);
   const startedAt = Date.now();
   const first = await postJson(endpoint, body, config);
-  const resolved = await resolveProviderResult(first, request, { ...config, resolvedEndpoint: endpoint });
+  const resolved = await resolveProviderResult(first, context.request, { ...config, resolvedEndpoint: endpoint });
   await writeOutput(resolved, options.output, config);
   return {
     provider: "generic-http-worker",
-    taskId: request.taskId,
-    capability: request.capability,
-    outputKey: request.outputKey,
+    taskId: context.request.taskId,
+    capability: context.request.capability,
+    outputKey: context.request.outputKey,
     outputPath: options.output,
-    endpoint,
+    endpoint: redactUrl(endpoint),
     model: context.model,
+    negativePromptDelivery,
+    requestPreview: buildRequestPreview(endpoint, body, config),
     resultKind: resolved.kind,
     providerTaskId: resolved.providerTaskId || "",
     elapsedMs: Date.now() - startedAt,
@@ -87,20 +89,237 @@ function modelFor(capability, config) {
 
 function buildRequestBody(context, config) {
   const template = config.bodyTemplates?.[context.request.capability] || config.bodyTemplate;
-  if (template) return renderTemplate(template, context);
-  if (isModelArkContentGeneration(context.request.capability, config)) return buildModelArkContentGenerationBody(context, config);
-  if (isKlingImageToVideo(context.request.capability, config)) return buildKlingImageToVideoBody(context, config);
-  return {
+  const negativePromptDelivery = resolveNegativePromptDelivery(context, config, template);
+  const providerContext = contextForNegativePromptDelivery(context, negativePromptDelivery);
+  if (template) {
+    const body = renderTemplate(template, providerContext);
+    const configuredFields = negativePromptFieldsFor(context.request.capability, config);
+    if (negativePromptDelivery.appliedMode === "native_negative" && negativePromptDelivery.appliedText) {
+      for (const field of configuredFields) setPath(body, field, negativePromptDelivery.appliedText);
+    } else if (!negativePromptDelivery.appliedText) {
+      for (const field of uniquePaths([
+        ...configuredFields,
+        ...templateNegativePromptPaths(template)
+      ])) deletePath(body, field);
+    }
+    return { body, negativePromptDelivery };
+  }
+  if (isModelArkContentGeneration(context.request.capability, config)) {
+    return {
+      body: buildModelArkContentGenerationBody(providerContext, config, negativePromptDelivery),
+      negativePromptDelivery
+    };
+  }
+  if (isKlingImageToVideo(context.request.capability, config)) {
+    return {
+      body: buildKlingImageToVideoBody(providerContext, config, negativePromptDelivery),
+      negativePromptDelivery
+    };
+  }
+  const body = {
     taskId: context.request.taskId,
     capability: context.request.capability,
     model: context.model || undefined,
     prompt: context.request.prompt || "",
-    negativePrompt: context.request.negativePrompt || "",
+    negativePrompt: negativePromptDelivery.appliedText || undefined,
     parameters: context.request.parameters || {},
     acceptanceCriteria: context.request.acceptanceCriteria || [],
     inputArtifacts: context.inputArtifacts,
-    rawRequest: config.includeRawRequest === false ? undefined : context.request
+    rawRequest: config.includeRawRequest === true ? providerContext.request : undefined
   };
+  return { body, negativePromptDelivery };
+}
+
+function normalizeRequestNegativePrompt(request = {}) {
+  const hasEntries = Object.hasOwn(request, "negativePromptEntries");
+  const entries = normalizeNegativePromptEntries(request.negativePromptEntries);
+  let compiledNegativePrompt = "";
+  if (Object.hasOwn(request, "compiledNegativePrompt")) {
+    compiledNegativePrompt = String(request.compiledNegativePrompt || "").trim();
+    if (!compiledNegativePrompt && entries.length) compiledNegativePrompt = compileNegativePromptEntries(entries);
+  } else if (hasEntries) {
+    compiledNegativePrompt = compileNegativePromptEntries(entries);
+  } else if (Object.hasOwn(request, "negativePrompt")) {
+    compiledNegativePrompt = String(request.negativePrompt || "").trim();
+  } else {
+    compiledNegativePrompt = compileNegativePromptEntries(entries);
+  }
+  return {
+    ...request,
+    negativePromptEntries: entries,
+    compiledNegativePrompt,
+    negativePrompt: compiledNegativePrompt
+  };
+}
+
+function normalizeNegativePromptEntries(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => {
+    if (typeof entry === "string") return { text: entry.trim(), enabled: true };
+    if (!entry || typeof entry !== "object") return null;
+    return {
+      ...entry,
+      text: String(entry.text || "").trim(),
+      enabled: entry.enabled !== false
+    };
+  }).filter((entry) => entry?.text);
+}
+
+function activeNegativePromptEntries(entries = []) {
+  return entries.filter((entry) => entry?.enabled !== false && String(entry?.text || "").trim());
+}
+
+function compileNegativePromptEntries(entries = []) {
+  return uniqueText(activeNegativePromptEntries(entries).map((entry) => entry.text)).join("；");
+}
+
+function resolveNegativePromptDelivery(context, config, template) {
+  const capability = context.request.capability;
+  const compiled = String(context.request.compiledNegativePrompt || "").trim();
+  const entries = activeNegativePromptEntries(context.request.negativePromptEntries);
+
+  if (template) {
+    const templateFields = templateNegativePromptPaths(template);
+    const configuredFields = negativePromptFieldsFor(capability, config);
+    const providerFields = uniquePaths([...templateFields, ...configuredFields]);
+    if (!providerFields.length) return unsupportedNegativePromptDelivery(compiled, entries);
+    return nativeNegativePromptDelivery(compiled, providerFields.join(", "));
+  }
+
+  if (isModelArkContentGeneration(capability, config)) {
+    const eligible = entries.filter((entry) => entry.priority === "high" && entry.reasonCode === "explicit_identity_conflict");
+    const ignored = entries.filter((entry) => !eligible.includes(entry));
+    if (!eligible.length) return unsupportedNegativePromptDelivery(compiled, entries);
+    return {
+      supported: false,
+      appliedMode: "positive_constraint",
+      providerField: "content[0].text",
+      compiledNegativePrompt: compiled,
+      appliedText: "固定角色身份锁定：严格保持当前镜头中已明确角色的身份、物种、人形结构、外观与参考图一致，不改变角色身份。",
+      providerIgnored: ignored.length > 0,
+      ignored: ignoredNegativePromptEntries(ignored, compiled, entries)
+    };
+  }
+
+  if (isKlingImageToVideo(capability, config)) {
+    const maxChars = Number(config.negativePromptMaxChars || process.env.VIDEO_HTTP_NEGATIVE_PROMPT_MAX_CHARS || 2500);
+    return nativeNegativePromptDelivery(truncateText(compiled, maxChars), "negative_prompt");
+  }
+
+  return nativeNegativePromptDelivery(compiled, "negativePrompt");
+}
+
+function nativeNegativePromptDelivery(compiled = "", providerField = "") {
+  const text = String(compiled || "").trim();
+  return {
+    supported: true,
+    appliedMode: text ? "native_negative" : "not_applied",
+    providerField,
+    compiledNegativePrompt: text,
+    appliedText: text,
+    providerIgnored: false,
+    ignored: []
+  };
+}
+
+function unsupportedNegativePromptDelivery(compiled = "", entries = []) {
+  const text = String(compiled || "").trim();
+  const ignored = ignoredNegativePromptEntries(entries, text, entries);
+  return {
+    supported: false,
+    appliedMode: "not_supported",
+    providerField: "",
+    compiledNegativePrompt: text,
+    appliedText: "",
+    providerIgnored: Boolean(text || ignored.length),
+    ignored
+  };
+}
+
+function ignoredNegativePromptEntries(entries = [], compiled = "", allEntries = []) {
+  const ignored = entries.map((entry) => ({
+    text: entry.text,
+    reasonCode: entry.reasonCode || "",
+    priority: entry.priority || "",
+    triggerEvidence: entry.triggerEvidence || ""
+  }));
+  if (!ignored.length && compiled && !allEntries.length) {
+    ignored.push({
+      text: compiled,
+      reasonCode: "",
+      priority: "",
+      triggerEvidence: "",
+      ignoredReason: "missing_structured_evidence"
+    });
+  }
+  return ignored;
+}
+
+function contextForNegativePromptDelivery(context, delivery = {}) {
+  const {
+    negativePromptEntries: _entries,
+    compiledNegativePrompt: _compiled,
+    negativePrompt: _legacy,
+    rawJob: _rawJob,
+    ...request
+  } = context.request || {};
+  if (delivery.appliedMode === "native_negative" && delivery.appliedText) {
+    request.compiledNegativePrompt = delivery.appliedText;
+    request.negativePrompt = delivery.appliedText;
+  }
+  return { ...context, request };
+}
+
+function templateNegativePromptPaths(template, prefix = []) {
+  if (Array.isArray(template)) {
+    return template.flatMap((item, index) => templateNegativePromptPaths(item, [...prefix, String(index)]));
+  }
+  if (template && typeof template === "object") {
+    return Object.entries(template).flatMap(([key, item]) => templateNegativePromptPaths(item, [...prefix, key]));
+  }
+  if (typeof template !== "string") return [];
+  const mapped = /\{\{\s*request\.(?:compiledNegativePrompt|negativePrompt)\s*\}\}/u.test(template);
+  return mapped && prefix.length ? [prefix.join(".")] : [];
+}
+
+function negativePromptFieldsFor(capability, config = {}) {
+  const configured = config.negativePromptFields;
+  let value = configured;
+  if (configured && !Array.isArray(configured) && typeof configured === "object") {
+    value = configured[capability] ?? configured.default ?? configured.field;
+  }
+  if (value === undefined || value === null || value === "") value = config.negativePromptField;
+  if (Array.isArray(value)) return uniqueText(value.map(String));
+  if (value && typeof value === "object") value = value.field || value.path || "";
+  return value ? [String(value).trim()].filter(Boolean) : [];
+}
+
+function setPath(target, dottedPath, value) {
+  const keys = String(dottedPath || "").split(".").filter(Boolean);
+  if (!keys.length || !target || typeof target !== "object") return;
+  let cursor = target;
+  for (let index = 0; index < keys.length - 1; index += 1) {
+    const key = keys[index];
+    if (!cursor[key] || typeof cursor[key] !== "object") cursor[key] = /^\d+$/u.test(keys[index + 1]) ? [] : {};
+    cursor = cursor[key];
+  }
+  cursor[keys.at(-1)] = value;
+}
+
+function deletePath(target, dottedPath) {
+  const keys = String(dottedPath || "").split(".").filter(Boolean);
+  if (!keys.length || !target || typeof target !== "object") return;
+  let cursor = target;
+  for (const key of keys.slice(0, -1)) {
+    if (!cursor[key] || typeof cursor[key] !== "object") return;
+    cursor = cursor[key];
+  }
+  if (Array.isArray(cursor) && /^\d+$/u.test(keys.at(-1))) cursor[Number(keys.at(-1))] = undefined;
+  else delete cursor[keys.at(-1)];
+}
+
+function uniqueText(values = []) {
+  return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
 }
 
 async function resolveProviderResult(first, request, config) {
@@ -256,14 +475,14 @@ function normalizeEndpointForPreset(capability, endpoint, config) {
   return endpoint;
 }
 
-function buildModelArkContentGenerationBody(context, config) {
+function buildModelArkContentGenerationBody(context, config, negativePromptDelivery = {}) {
   const artifacts = context.inputArtifacts || [];
   const startFrame = firstArtifactDataUrl(artifacts[0]);
   const endFrame = firstArtifactDataUrl(artifacts[1]);
   if (!startFrame || !endFrame) throw new Error("ModelArk/Dreamina 首尾帧视频任务需要首帧和尾帧两张图片 dataUrl。");
   const prompt = [
     context.request.prompt || "",
-    context.request.negativePrompt ? `负面要求：${context.request.negativePrompt}` : ""
+    negativePromptDelivery.appliedMode === "positive_constraint" ? negativePromptDelivery.appliedText : ""
   ].filter(Boolean).join("\n");
   const parameters = context.request.parameters || {};
   const body = {
@@ -285,7 +504,7 @@ function buildModelArkContentGenerationBody(context, config) {
   return body;
 }
 
-function buildKlingImageToVideoBody(context, config) {
+function buildKlingImageToVideoBody(context, config, negativePromptDelivery = {}) {
   const artifacts = context.inputArtifacts || [];
   const startFrame = firstArtifactImagePayload(artifacts[0]);
   const endFrame = firstArtifactImagePayload(artifacts[1]);
@@ -297,7 +516,7 @@ function buildKlingImageToVideoBody(context, config) {
     image: startFrame || undefined,
     image_tail: endFrame || undefined,
     prompt: truncateText(context.request.prompt || "", Number(config.promptMaxChars || process.env.VIDEO_HTTP_PROMPT_MAX_CHARS || 2500)),
-    negative_prompt: truncateText(context.request.negativePrompt || "", Number(config.negativePromptMaxChars || process.env.VIDEO_HTTP_NEGATIVE_PROMPT_MAX_CHARS || 2500)),
+    negative_prompt: negativePromptDelivery.appliedText || undefined,
     mode: process.env.VIDEO_HTTP_VIDEO_MODE || config.mode || (hasTail ? "pro" : "std"),
     duration: String(process.env.VIDEO_HTTP_VIDEO_DURATION || config.duration || normalizeKlingDuration(parameters.durationSeconds))
   };
@@ -455,6 +674,59 @@ function headersFor(config) {
   }
   const extra = parseJsonEnv("VIDEO_HTTP_EXTRA_HEADERS", {});
   return { ...headers, ...extra };
+}
+
+function buildRequestPreview(endpoint, body, config) {
+  return {
+    method: "POST",
+    endpoint: redactUrl(endpoint),
+    headers: redactPreviewValue({ "content-type": "application/json", ...headersFor(config) }),
+    body: redactPreviewValue(removeUndefined(body))
+  };
+}
+
+function redactPreviewValue(value, key = "") {
+  if (Array.isArray(value)) return value.map((item) => redactPreviewValue(item, key));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([childKey, item]) => [
+      childKey,
+      sensitivePreviewKey(childKey) ? "[REDACTED]" : redactPreviewValue(item, childKey)
+    ]));
+  }
+  if (typeof value !== "string") return value;
+  const text = value.trim();
+  if (/^data:[^;,]+;base64,/iu.test(text)) return `[REDACTED_DATA_URL length=${value.length}]`;
+  if (/^(?:bearer|basic)\s+\S+/iu.test(text)) return "[REDACTED]";
+  if (base64PreviewKey(key) && looksLikeBase64Text(text)) return `[REDACTED_BASE64 length=${value.length}]`;
+  if (/^https?:\/\//iu.test(text)) return redactUrl(text);
+  return value;
+}
+
+function sensitivePreviewKey(key = "") {
+  const compact = String(key || "").toLowerCase().replace(/[^a-z0-9]+/gu, "");
+  return /(apikey|accesskey|secret|token|authorization|auth|password|credential|signature)/u.test(compact);
+}
+
+function base64PreviewKey(key = "") {
+  return /(?:base64|b64|image(?:_tail)?|image_data|video_data|file_data)/iu.test(String(key));
+}
+
+function looksLikeBase64Text(value = "") {
+  const text = String(value || "").replace(/\s+/gu, "");
+  return text.length >= 16 && text.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/u.test(text);
+}
+
+function redactUrl(value = "") {
+  const text = String(value || "");
+  try {
+    const url = new URL(text);
+    if (url.username) url.username = "REDACTED";
+    if (url.password) url.password = "REDACTED";
+    if (url.search) url.search = "?REDACTED";
+    return url.toString();
+  } catch {
+    return text.replace(/\?.*$/u, "?[REDACTED]");
+  }
 }
 
 async function loadConfig(configPath) {

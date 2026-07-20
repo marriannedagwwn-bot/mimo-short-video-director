@@ -1,3 +1,5 @@
+import { compileShotNegativePrompt } from "./negative-prompts.js";
+
 export function buildShotFrameImagePrompt(input = {}) {
   const shot = input.shot || {};
   const visualBible = input.visualBible || {};
@@ -26,7 +28,8 @@ export function buildShotFrameImagePrompt(input = {}) {
     `${frameLabel}是静态关键帧，不是连续动作图。只画这一帧被冻结的一瞬间，不要把动作前后两个状态同时画进同一张图。`,
     "严格锁定画幅、景别、机位、主体位置、手部/道具状态、视线方向、表情、背景层级和光线；不要自行改成其它景别或镜头角度。"
   ].join("\n");
-  const negativePrompt = buildNegativePrompt(visualBible, shot, noTextRule, frameKind, sceneReference);
+  const negativePromptApplication = compileShotFrameNegativePrompt(shot);
+  const positiveIdentityConstraint = negativePromptApplication.positiveConstraints.join("\n");
   const prompt = [
     `生成竖屏 9:16 动画短视频分镜${frameLabel}图。`,
     referenceNote,
@@ -36,22 +39,32 @@ export function buildShotFrameImagePrompt(input = {}) {
     staticFrameRule,
     sceneContinuityText,
     framePromptText,
-    `负面提示词：${negativePrompt}`,
+    positiveIdentityConstraint,
     `要求：单张清晰可用的关键帧图片；构图稳定；不要生成多格漫画、分屏、动作轨迹、连环画或前后对比图；${noTextRule}；不要改变角色身份。`
   ].filter(Boolean).join("\n");
   if (!framePrompt) throw new Error(`${frameLabel}提示词为空，无法生成镜头图。`);
   return prompt;
 }
 
-function buildNegativePrompt(visualBible = {}, shot = {}, noTextRule = "", frameKind = "start", sceneReference = null) {
-  const parts = [
-    ...(Array.isArray(visualBible.negativeVisualRules) ? visualBible.negativeVisualRules : []),
-    ...(Array.isArray(sceneReference?.negativeSceneRules) ? sceneReference.negativeSceneRules : []),
-    shot.negativePrompt,
-    frameKind === "end" ? "换场景、室内外切换、背景重绘成另一个地点、机位大幅变化、景别大幅变化" : "",
-    noTextRule
-  ];
-  return uniqueNonEmpty(parts).join("；");
+export function compileShotFrameNegativePrompt(shot = {}) {
+  const compiled = compileShotNegativePrompt(shot, "image");
+  const positiveConstraintEntries = compiled.negativePromptEntries.filter((entry) => (
+    entry.priority === "high" && entry.reasonCode === "explicit_identity_conflict"
+  ));
+  const ignoredEntries = compiled.negativePromptEntries.filter((entry) => !positiveConstraintEntries.includes(entry));
+  return {
+    provider: "Jimeng",
+    target: "image",
+    negativePromptEntries: compiled.negativePromptEntries,
+    compiledNegativePrompt: compiled.compiledNegativePrompt,
+    appliedMode: positiveConstraintEntries.length ? "positive_constraint" : "not_supported",
+    positiveConstraintEntries,
+    ignoredEntries,
+    providerIgnored: ignoredEntries.length > 0,
+    positiveConstraints: positiveConstraintEntries.length
+      ? ["角色身份正向锁定：严格沿用当前正向角色设定与参考图中的身份、物种和已授权外观特征。"]
+      : []
+  };
 }
 
 function uniqueNonEmpty(values = []) {
@@ -80,8 +93,7 @@ function buildSceneReferenceText(sceneReference = null) {
   const lines = [
     `场景参考（必须继承，不要重新设计地点）：${sceneReference.sceneId || ""} ${sceneReference.sceneName || ""}`.trim(),
     sceneReference.environmentPrompt ? `场景画面：${sceneReference.environmentPrompt}` : "",
-    Array.isArray(sceneReference.continuityAnchors) && sceneReference.continuityAnchors.length ? `场景连续性锚点：${sceneReference.continuityAnchors.join(" / ")}` : "",
-    Array.isArray(sceneReference.negativeSceneRules) && sceneReference.negativeSceneRules.length ? `场景禁止项：${sceneReference.negativeSceneRules.join(" / ")}` : ""
+    Array.isArray(sceneReference.continuityAnchors) && sceneReference.continuityAnchors.length ? `场景连续性锚点：${sceneReference.continuityAnchors.join(" / ")}` : ""
   ].filter(Boolean);
   return lines.join("\n");
 }

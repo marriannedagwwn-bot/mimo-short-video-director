@@ -111,13 +111,14 @@ export function visualGuardrailsPrompt(input) {
   const deterministicHint = fixedCharacterVisualPolicyText(fixedCharacter);
   return `${SYSTEM_PROMPT}
 
-你现在是“角色外观与负面提示词审查 AI”。请参考原片画面/脚本分析、creativeBrief，以及用户自己预设的固定角色内容，生成后续“主题变体”和“完整剧情”要共用的 visualGuardrails。首尾帧动画生产包阶段不使用这套 AI 检测，只做结构校验。
+你现在是“角色边界与创作规则审查 AI”。请参考原片画面/脚本分析、creativeBrief，以及用户自己预设的固定角色内容，生成后续主题变体、完整剧情和动画生产包共用的 visualGuardrails。
 
 目标：
 - 明确固定角色哪些视觉/身份特征可以正向使用。
-- 明确哪些原片表面表达、误读扩展、未声明动物化身体特征必须进入负面提示词或禁止正向出现。
-- 重点区分“用户明写的设定”和“模型可能自行联想的设定”。例如用户写“形象类似猫娘，有狼尾巴”，可以保留猫娘风格参考和狼尾巴，但不能自动新增猫尾、猫爪、兽爪、肉垫，除非用户明确写了这些。
-- 你的输出将作为主题变体、完整剧情的通用视觉边界，不是只给某一个镜头使用。动画生产包可以参考剧情结果自行写 negativePrompt，但不会因为本 visualGuardrails 再次拦截。
+- 生成 positivePromptBoundary，用来审查后续正向提示词是否擅自添加用户未授权的身份、外观或身体特征。
+- 生成 sourceSimilarityRules，用来约束创意简报、完整故事和分镜不得复制原片可识别的表面表达。
+- 生成 dialogueRules，用来约束角色能说什么、不能说什么，以及台词表达方式。
+- 本阶段不生成图片或视频模型的最终负面提示词。未声明只表示后续正向提示词不得擅自添加，不等于要写入负面提示词。
 
 固定角色：${fixedCharacter}
 垂直赛道：${input.creatorProfile?.vertical || "未指定"}
@@ -130,11 +131,13 @@ creativeBrief 已识别黑名单：${protectedText}
 
 判断规则：
 - 固定角色文本优先级最高；creativeBrief 和原片不得覆盖固定角色。
-- allowedPositiveTraits 只能放用户固定角色明确允许或安全推导出的正向特征。
-- forbiddenPositiveTraits 必须放“不能写进正向剧情/正向画面提示词”的词，term 必须是短词，不要写长句。
-- sourceSurfaceExpressions 放来自原片或 creativeBrief 的表面表达，例如原片动物服、玩偶外壳、快递员外壳、独特动作、独特道具。抽象叙事结构不要放进去。
-- commonNegativePrompt 只写真正要给图像/视频模型的负面提示词，可以是短句；不得把允许特征写入 commonNegativePrompt。
-- 如果某个词只是允许特征的错误变体，也要列入 forbiddenPositiveTraits，例如允许“狼尾巴”时，可禁止“猫尾、猫尾巴、兽爪、肉垫”等未声明变体。
+- allowedPositiveTraits 只能放用户固定角色文本明确允许的身份与外观特征；不得从类比词、画风或物种印象补全新身体结构。
+- positivePromptBoundary 写审查规则，不写理论上可能出现的身体部件词库；每条规则必须由具体用户输入提供证据。
+- sourceSimilarityRules 只收录 referenceAnalysis、sourceScriptReconstruction 或 creativeBrief 中真实出现的可识别表面表达；抽象叙事结构不得列入。
+- sourceSimilarityRules.appliesWhenReferenceUsed 固定为 true，表示只有该原片画面实际作为某次图片/视频生成参考输入时，才可把对应表面表达转换为该次渲染负面提示词；在此之前它只是创意与正向提示词边界。
+- dialogueRules 只处理台词和说话方式，不得混入图片或视频渲染负面提示词。
+- triggerEvidence 必须逐项给出 sourcePath 和 evidence。sourcePath 必须指向具体输入字段，evidence 必须摘录或准确概括该字段中的明确内容。
+- 所有规则数组允许为空；不得为了显得完整而补充低相关条目。
 
 输出 visualGuardrails，严格使用以下结构：
 {
@@ -148,20 +151,20 @@ creativeBrief 已识别黑名单：${protectedText}
     "explicitUserPresets":[],
     "doNotInfer":""
   },
-  "allowedPositiveTraits":[{"term":"", "scope":"identity|appearance|bodyFeature|clothing|personality|speech", "reason":""}],
-  "forbiddenPositiveTraits":[{"term":"", "reason":"", "severity":"block|warn"}],
-  "sourceSurfaceExpressions":[{"term":"", "source":"referenceAnalysis|sourceScriptReconstruction|creativeBrief|modelRisk", "reason":"", "mustAvoid":true}],
-  "commonNegativePrompt":[],
+  "allowedPositiveTraits":[{"term":"", "scope":"identity", "reason":""}],
+  "positivePromptBoundary":[{"rule":"", "triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter", "evidence":""}], "severity":"block"}],
+  "sourceSimilarityRules":[{"text":"", "sourceExpression":"", "triggerEvidence":[{"sourcePath":"creativeBrief.protectedExpressions[0].sourceExpression", "evidence":""}], "appliesWhenReferenceUsed":true}],
+  "dialogueRules":[{"text":"", "triggerEvidence":[{"sourcePath":"creatorProfile.constraints", "evidence":""}]}],
   "stageInstructions":{
     "themeVariants":"",
     "fullStory":"",
-    "animationPlan":"本阶段不使用 visualGuardrails 做 AI 检测，只保留动画包结构校验。"
+    "animationPlan":"正向提示词服从角色边界；渲染负面提示词由 animationPlan 按当前镜头和明确证据逐镜生成。"
   },
   "rationale":"",
   "uncertainties":[{"field":"", "reason":"", "safeFallback":""}]
 }
 
-commonNegativePrompt、forbiddenPositiveTraits 和 sourceSurfaceExpressions 不能包含固定角色已经明确允许的特征。term 保持原子化短词，方便程序校验。${JSON_ONLY}`;
+顶层只能包含上述字段，不得额外输出旧版字段或任何图片/视频 render negative prompt。${JSON_ONLY}`;
 }
 
 export function variantsPrompt(input) {
@@ -180,7 +183,7 @@ export function variantsPrompt(input) {
 creativeBrief：${JSON.stringify(input.creativeBrief)}
 禁止复用原片具体表达黑名单：${forbiddenText}
 固定角色外观边界：${visualPolicyText}
-AI 视觉负面提示词通用规则：${visualGuardrailsText}
+角色正向边界、原片规避与台词规则：${visualGuardrailsText}
 
 固定角色硬约束：
 - 每个 variant 必须使用上方“固定角色”作为唯一主角，不得改名、换昵称、另起主角名，也不得把固定角色降级为旁观者或帮助者。
@@ -189,7 +192,8 @@ AI 视觉负面提示词通用规则：${visualGuardrailsText}
 - 如果 creativeBrief 中出现“人物必须改”，它只表示原片人物表达必须改写，不能覆盖用户指定的固定角色。
 - 如果 creativeBrief 或 protectedExpressions 提到原片表面形象（如企鹅服、动物外观、玩偶服、特定拟声词、原片独有动作），这些都是禁止复用的表达；不得写入 characterSetup.protagonist、logline、storyOutline 或结尾动作。固定角色如果是“小女孩/儿童/学生/村民”，就必须保持用户设定的人物身份，不能变成企鹅、玩偶、快递员外壳或未声明的动物化身体。
 - creativeBrief.controlledRewriteVariables 中 mustChange=true 的 sourceValue 已合并到上方黑名单；不得把黑名单词写入 newTask、emotionalMedium、storyOutline、endingRitual 或任何正片剧情字段。若需要说明改写，只在 transformationProof 中用“已替换为……”描述新表达，尽量不要重复原词。
-- 必须服从 AI 视觉负面提示词通用规则；forbiddenPositiveTraits、sourceSurfaceExpressions 和 commonNegativePrompt 中的内容不得作为新故事正向设定出现。
+- 必须服从 positivePromptBoundary，不得在正向设定中擅自添加用户未授权的身份、外观或身体特征。
+- sourceSimilarityRules 中有明确原片证据的表面表达不得作为新故事正向设定；dialogueRules 只约束对白，不得误当成画面负面提示词。
 
 输出结构：
 {
@@ -230,16 +234,16 @@ referenceAnalysis 摘要：${JSON.stringify(input.referenceAnalysis || {})}
 sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstruction || {})}
 禁止复用原片具体表达黑名单：${forbiddenText}
 固定角色外观边界：${visualPolicyText}
-AI 视觉负面提示词通用规则：${visualGuardrailsText}
+角色正向边界、原片规避与台词规则：${visualGuardrailsText}
 
 硬约束：
 - selectedVariantId 必须等于选中主题变体 id：${variant.id || "未指定"}。
 - 主角必须锁定为上方固定角色，不能改名、不能换身份、不能降级为旁观者或帮助者。
-- 固定角色的姓名、年龄感、身份、性格和外观必须以“固定角色外观边界”为准；只能使用用户明确写出的身体特征，不得继承原片表面形象、服装拟态、动物身份、玩偶身份、快递员外壳或未声明的动物化身体动作。
+- 固定角色的姓名、年龄感、身份、性格和外观必须以“固定角色外观边界”为准；只能使用用户明确写出的身体特征，不得继承原片表面形象或擅自扩展未授权外观。
 - 可以继续使用送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾，但要完全重写人物、任务细节、道具、对白、场面调度和镜头表达。
 - 上方黑名单里的词不得进入 title、oneLinePremise、shootingSynopsis、characterBible、beatSheet、sceneScript、keyProps 的正向剧情内容；特别是 creativeBrief.controlledRewriteVariables 中 mustChange=true 的 sourceValue 必须换成新道具/新仪式/新任务。
-- visualGuardrails.forbiddenPositiveTraits、sourceSurfaceExpressions 和 commonNegativePrompt 是本阶段也必须遵守的通用边界；不得把这些词作为剧情正向动作、身份、道具或外观。
-- 如果用户限制了角色说话方式，例如“只用嗷/嗷呜表达”，对白必须服从该限制；可以用动作备注补足信息，不要让角色突然说完整成人台词。
+- visualGuardrails.positivePromptBoundary 和 sourceSimilarityRules 是本阶段必须遵守的正向创作边界；不得把受限内容写成剧情动作、身份、道具或外观。
+- 对白必须服从 visualGuardrails.dialogueRules 与用户限制；可以用动作备注补足信息，不要让角色突然改变说话方式。
 - 每场戏都要能拍：写清地点、人物、动作、对白/声画信息、镜头建议、情绪节点和剧作功能。
 
 输出 fullStory，严格使用以下结构：
@@ -286,6 +290,7 @@ export function animationPlanPrompt(input) {
   const forbiddenTerms = collectProtectedTermsFromBrief(input.creativeBrief, input.creatorProfile?.fixedCharacter || "");
   const forbiddenText = forbiddenTerms.length ? forbiddenTerms.join("、") : "无";
   const visualPolicyText = fixedCharacterVisualPolicyText(input.creatorProfile?.fixedCharacter || "");
+  const visualGuardrailsText = formatVisualGuardrailsForPrompt(input.visualGuardrails);
   return `${SYSTEM_PROMPT}
 
 你现在进入 AI 动画导演阶段。上游已经有完整剧情 fullStory。你的任务不是继续写剧情，而是把剧情转换成“首尾帧 AI 视频生产包”：先稳定视觉，再按短镜头生成首帧、尾帧和视频生成提示词。
@@ -295,20 +300,20 @@ export function animationPlanPrompt(input) {
 推荐策略：
 - 每个镜头单独生成 3–6 秒，不要一次生成整条片。
 - 先用 visualBible、characterReferencePrompts 和 sceneReferencePrompts 锁定角色、世界观、色彩、动画风格和可复用场景；这些是全局锁定层，只写一次。
-- 每个 shot 必须同时给出 startFramePrompt、endFramePrompt、videoPrompt、negativePrompt 和 acceptanceCriteria，但 negativePrompt 与 acceptanceCriteria 只作为局部例外和 QA 备注，不要承担主要生成控制。
+- 每个 shot 必须同时给出 startFramePrompt、endFramePrompt、videoPrompt、negativePrompts.image、negativePrompts.video 和 acceptanceCriteria。两个负面数组都允许为空，不设置最少条目数。
 - 首帧负责镜头起点，尾帧负责镜头终点，videoPrompt 只描述中间运动、镜头运动和情绪变化。
 - 输出应保持模型无关，可用于支持首尾帧/关键帧驱动的视频模型。
 
 三层简化结构（必须执行）：
-- 第 1 层 identity / scene lock：只在 characterReferencePrompts 中完整锁定角色姓名、身份、年龄感、服装/外观、核心性格和一致性标签；只在 sceneReferencePrompts 中完整锁定可复用地点、室内外属性、背景层级、空间锚点和场景负面规则；只在 visualBible 中完整锁定风格、色彩、镜头语言、世界规则和全局 negativeVisualRules。
+- 第 1 层 identity / scene lock：只在 characterReferencePrompts 中完整锁定角色姓名、身份、年龄感、服装/外观、核心性格和一致性标签；只在 sceneReferencePrompts 中完整锁定可复用地点、室内外属性、背景层级和空间锚点；只在 visualBible 中完整锁定风格、色彩、镜头语言和世界规则。
 - 第 2 层 shot frame：每个 shot 必须引用 sceneReferencePrompts 中的 sceneId；startFramePrompt 只写人物状态、场景锚点、镜头三类信息，保留 1-2 个动作语义；endFramePrompt 只写相对首帧发生变化的动作、表情、位置，但必须用一句短锚点复述同一个 sceneId 的地点/室内外属性/背景/景别/机位，不要重复完整身份和全套风格。
-- 第 3 层 video prompt：videoPrompt 只写动作和镜头运动，不重复环境，不写身份设定，不写负面规则，不写验收标准。
+- 第 3 层 video prompt：videoPrompt 只写动作和镜头运动，不重复环境，不写身份设定，不写负面规则，不写验收标准。渲染负面提示词只进入当前 shot 的 negativePrompts。
 - 每条 startFramePrompt 控制在 80-150 个汉字；每条 endFramePrompt 控制在 40-120 个汉字；videoPrompt 控制在 40-120 个汉字。
 
 拆镜头方案 B（必须优先执行）：
 - 如果一个剧情段落同时包含“角色 A 指路/递物/示意 + 角色 B 转头/看见目标 + 角色 B 眼睛一亮/点头/握拳/摆尾/开心回应”等连续状态变化，必须拆成相邻 2 个或更多 shot，不要塞进同一组首尾帧。
 - 第 1 个 shot 做中景互动镜头：只表达外部互动与视线转向，例如 A 指向远方，B 跟随方向看过去。
-- 第 2 个 shot 做表情强化镜头：只表达 B 的反应终点，例如眼睛一亮、点头、握拳或开心回应。若固定角色没有明确写“尾巴/狼尾巴/猫尾巴”等特征，禁止写任何尾巴动作。
+- 第 2 个 shot 做表情强化镜头：只表达 B 的反应终点，例如眼睛一亮、点头、握拳或开心回应。任何依赖额外身体特征的动作都必须先由固定角色文本明确授权。
 - 每个 shot 只能有一个主要动作目标；如果出现“先……随后……然后……”“镜头从中景切到近景”“过肩切特写”“转头后又点头握拳”等组合，必须继续拆分。
 - 同一个 shot 的 startFramePrompt 与 endFramePrompt 必须保持同一地点、同一镜头景别、同一机位高度、同一镜头方向和同一主体构图；不能在同一 shot 里从中景变近景、从过肩变特写、从室外变室内。
 - videoPrompt 只能描述首帧到尾帧之间的微动作与镜头运动，不得包含“切换镜头、切到特写、转场、闪回、跳到下一个场景”。
@@ -321,16 +326,23 @@ export function animationPlanPrompt(input) {
 creativeBrief：${JSON.stringify(input.creativeBrief || {})}
 禁止复用原片具体表达黑名单：${forbiddenText}
 固定角色外观边界：${visualPolicyText}
+visualGuardrails 分类规则：${visualGuardrailsText}
 
 硬约束：
 - selectedVariantId 必须等于选中主题变体 id：${variant.id || fullStory.selectedVariantId || "未指定"}。
 - animationPlan 只能服务当前 fullStory，不得改剧情、不得换主题、不得更换固定角色。
 - characterReferencePrompts 中必须锁定固定角色姓名、身份、年龄感、服装/外观和核心性格；sceneReferencePrompts 中必须锁定每个复用场景的地点、室内外属性、背景层级、光线和禁止跳变规则；shot 里的正向画面提示词只用角色名和 sceneId 承接全局锁定，不要每个镜头重复完整外观和完整场景设定。
-- 视觉提示词必须服从“固定角色外观边界”：用户明写的特征可以正向使用；用户没有明写的尾巴、爪子、肉垫、翅膀、脚蹼等身体特征不得自动新增。
-- 如果固定角色只包含“狼耳/猫耳/兽耳”等耳朵类设定，含义是“人物 + 头顶耳朵特征/发箍式耳朵”，不能自动推导为尾巴、爪子、肉垫、狼嘴、獠牙、四足姿态或动物化动作。
+- 视觉提示词必须服从“固定角色外观边界”和 visualGuardrails.positivePromptBoundary：用户明写的特征可以正向使用；未授权特征保持不写，不得自行扩展。
 - startFramePrompt、endFramePrompt、videoPrompt、assetPrompts.imagePrompt 不得出现上方黑名单词；如果 fullStory 已经换成新道具/新仪式，只能沿用 fullStory 的新表达。
-- visualBible.negativeVisualRules 是全局负面提示词，只写一次；shot.negativePrompt 默认留空，只在该镜头有独有禁忌时写 1 条短语。
-- negativePrompt 可以写禁止项；但 startFramePrompt、endFramePrompt、videoPrompt、appearancePrompt 中不得把禁止项写成正向画面。
+- visualBible、characterReferencePrompts 和 sceneReferencePrompts 不生成渲染负面提示词。图片与视频负面提示词只能逐镜写入 shot.negativePrompts.image 或 shot.negativePrompts.video。
+- 每个负面条目必须包含 text、appliesTo、triggerEvidence、reasonCode、priority；enabled 可选且默认为 true。triggerEvidence 必须至少包含一个 {sourcePath,evidence}，直接指向当前镜头动作/提示词、明确角色身份、实际传入的视觉参考或真实供应商失败记录。
+- 仅在真实风险成立时添加条目，单条结构固定为 {"text":"具体负面描述","appliesTo":"image 或 video 或 both","triggerEvidence":[{"sourcePath":"具体字段路径","evidence":"该字段中的明确内容"}],"reasonCode":"允许的原因代码","priority":"high 或 medium 或 low","enabled":true}。
+- reasonCode 只允许 explicit_identity_conflict、shot_object_confusion、shot_interaction_failure、temporal_consistency_failure、reference_leak、proven_provider_failure。
+- appliesTo 只允许 image、video、both；image 数组只能放 image/both，video 数组只能放 video/both。
+- “用户未声明”或“用户未提及”本身不是负面提示词证据。不得为填满格式枚举理论风险、通用故障词或与镜头无关的身体特征；没有高相关风险时直接输出空数组。
+- 图片负面只处理当前静态画面直接相关的问题；视频负面只增加当前镜头真实相关的时序、运动、增殖、数量变化或接触融合问题。不得把同一组通用负面词复制到不同 shot。
+- sourceSimilarityRules 与 dialogueRules 不直接进入渲染负面提示词。只有原片视觉参考实际传入当前生成请求时，sourceSimilarityRules 中对应视觉表达才可用 reference_leak 进入当前媒体数组；台词禁用词始终不得混入图片/视频负面提示词。
+- 任何负面条目都不得被写入 startFramePrompt、endFramePrompt、videoPrompt 或 appearancePrompt 的正向画面描述。
 - 角色一致性优先于动作复杂度；每个镜头只允许一个主要动作目标。
 - 镜头数量应覆盖完整剧情关键动作，默认 8–12 个镜头；若 fullStory.sceneScript 少于 6 场，也要拆出至少 6 个镜头。
 - 不能为了维持 8–12 个镜头而合并复合动作；拆镜头方案 B 优先级更高，必要时可以扩展到 14 个以内。
@@ -357,10 +369,9 @@ creativeBrief：${JSON.stringify(input.creativeBrief || {})}
     "animationStyle":"",
     "colorPalette":[],
     "lighting":"",
-    "worldRules":[],
-    "cameraLanguage":"",
-    "characterConsistencyRules":[],
-    "negativeVisualRules":[]
+	    "worldRules":[],
+	    "cameraLanguage":"",
+	    "characterConsistencyRules":[]
   },
 	  "characterReferencePrompts":[{
 	    "characterName":"",
@@ -376,7 +387,6 @@ creativeBrief：${JSON.stringify(input.creativeBrief || {})}
 	    "storyFunction":"",
 	    "environmentPrompt":"",
 	    "continuityAnchors":[],
-	    "negativeSceneRules":[],
 	    "relatedShotIds":[]
 	  }],
 	  "assetPrompts":[{
@@ -399,10 +409,13 @@ creativeBrief：${JSON.stringify(input.creativeBrief || {})}
     "cameraMotion":"",
     "characterAction":"",
     "dialogueOrSubtitle":"",
-    "soundDesign":"",
-    "continuityNotes":"",
-    "negativePrompt":"",
-    "acceptanceCriteria":[]
+	    "soundDesign":"",
+	    "continuityNotes":"",
+	    "negativePrompts":{
+	      "image":[],
+	      "video":[]
+	    },
+	    "acceptanceCriteria":[]
   }],
   "editPlan":{
     "sequenceRhythm":"",
@@ -423,7 +436,7 @@ creativeBrief：${JSON.stringify(input.creativeBrief || {})}
   "uncertainties":[{"field":"", "reason":"", "safeFallback":""}]
 }
 
-shotPlan 的 startFramePrompt、endFramePrompt、videoPrompt 应该是精简、可复制给图像/视频模型的中文提示词。身份由 characterReferencePrompts 承担，场景由 sceneReferencePrompts 承担，风格和全局负面由 visualBible 承担，shot 内不要重复堆叠。遇到“指路互动 + 主角反应强化”的组合时，按方案 B 拆成中景互动镜头和表情强化镜头。${JSON_ONLY}`;
+shotPlan 的 startFramePrompt、endFramePrompt、videoPrompt 应该是精简、可复制给图像/视频模型的中文正向提示词。身份由 characterReferencePrompts 承担，场景由 sceneReferencePrompts 承担，风格由 visualBible 承担；负面提示词只按当前 shot 的直接证据逐镜生成，允许 image/video 均为 []。遇到“指路互动 + 主角反应强化”的组合时，按方案 B 拆成中景互动镜头和表情强化镜头。${JSON_ONLY}`;
 }
 
 export function characterReferenceRefinePrompt(input) {
@@ -457,7 +470,7 @@ AI 视觉负面提示词通用规则：${visualGuardrailsText}
 - storyRole 和 identity 只能在不改变剧情功能的前提下微调。
 - appearancePrompt 必须是可直接给图像模型使用的中文正向提示词。
 - 不要把角色改成企鹅、玩偶、快递员外壳、动物身份或原片表面形象。
-- appearancePrompt 必须服从“固定角色外观边界”：用户明写的身体特征可以保留；未明写的尾巴、爪子、翅膀、脚蹼等不要自动添加。
+- appearancePrompt 必须服从“固定角色外观边界”和 positivePromptBoundary：用户明写的身体特征可以保留；未授权特征保持不写。
 - forbiddenChanges 应包含“不要偏离参考图中的人物外观”和必要的一致性禁止项。
 
 输出结构：
@@ -486,9 +499,9 @@ function formatVisualGuardrailsForPrompt(visualGuardrails) {
   return JSON.stringify({
     fixedCharacterBoundary: visualGuardrails.fixedCharacterBoundary || {},
     allowedPositiveTraits: visualGuardrails.allowedPositiveTraits || [],
-    forbiddenPositiveTraits: visualGuardrails.forbiddenPositiveTraits || [],
-    sourceSurfaceExpressions: visualGuardrails.sourceSurfaceExpressions || [],
-    commonNegativePrompt: visualGuardrails.commonNegativePrompt || [],
+    positivePromptBoundary: visualGuardrails.positivePromptBoundary || [],
+    sourceSimilarityRules: visualGuardrails.sourceSimilarityRules || [],
+    dialogueRules: visualGuardrails.dialogueRules || [],
     stageInstructions: visualGuardrails.stageInstructions || {}
   });
 }

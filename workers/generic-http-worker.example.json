@@ -19,14 +19,14 @@
     "image_generation": {
       "model": "{{model}}",
       "prompt": "{{request.prompt}}",
-      "negative_prompt": "{{request.negativePrompt}}",
+      "negative_prompt": "{{request.compiledNegativePrompt}}",
       "aspect_ratio": "{{request.parameters.aspectRatio}}",
       "input_references": "{{json inputArtifacts}}"
     },
     "first_last_frame_video_generation": {
       "model": "{{model}}",
       "prompt": "{{request.prompt}}",
-      "negative_prompt": "{{request.negativePrompt}}",
+      "negative_prompt": "{{request.compiledNegativePrompt}}",
       "duration": "{{request.parameters.durationSeconds}}",
       "aspect_ratio": "{{request.parameters.aspectRatio}}",
       "start_frame": "{{inputArtifacts.0.dataUrl}}",

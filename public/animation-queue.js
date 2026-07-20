@@ -1,14 +1,15 @@
+import { compileShotNegativePrompt } from "./negative-prompts.js";
+
 export function buildVideoGenerationQueue(pack = {}) {
   const plan = pack.animationPlan || {};
   const strategy = plan.productionStrategy || {};
   const visual = plan.visualBible || {};
   const editPlan = plan.editPlan || {};
   const selectedVariant = pack.selectedVariant || {};
-  const negativeVisualRules = visual.negativeVisualRules || [];
   const generatedAt = pack.exportedAt || new Date().toISOString();
   const aspectRatio = strategy.targetAspectRatio || "9:16";
   const queue = {
-    version: "1.1",
+    version: "2.0",
     generatedAt,
     providerMode: "provider_agnostic",
     selectedVariantId: selectedVariant.id || plan.selectedVariantId || "",
@@ -19,8 +20,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       recommendedShotDurationSeconds: strategy.recommendedShotDurationSeconds || { min: 3, max: 6 },
       visualStyle: visual.animationStyle || visual.overallStyle || "",
       cameraLanguage: visual.cameraLanguage || "",
-      characterConsistencyRules: visual.characterConsistencyRules || [],
-      negativeVisualRules
+      characterConsistencyRules: visual.characterConsistencyRules || []
     },
     jobs: []
   };
@@ -35,7 +35,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       inputType: "text_to_image",
       outputKey: `references.${slug(character.characterName || `character_${index + 1}`)}`,
       prompt: character.appearancePrompt || "",
-      negativePrompt: joinList(character.forbiddenChanges),
+      ...emptyNegativePromptFields(),
       consistencyTags: character.consistencyTags || [],
       acceptanceCriteria: [`${character.characterName || "角色"}外观与身份一致`, "可作为后续首尾帧生成的角色参考"]
     });
@@ -48,7 +48,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       inputType: "text_to_image",
       outputKey: `assets.${slug(asset.assetName || `asset_${index + 1}`)}`,
       prompt: asset.imagePrompt || "",
-      negativePrompt: asset.avoidSimilarityNote || "",
+      ...emptyNegativePromptFields(),
       consistencyTags: asset.consistencyTags || [],
       acceptanceCriteria: [`${asset.assetName || "资产"}外观清楚`, "道具或场景能在后续镜头中保持一致"]
     });
@@ -66,7 +66,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       sceneId,
       sceneName: scene.sceneName || "",
       prompt: scene.environmentPrompt || "",
-      negativePrompt: joinList(scene.negativeSceneRules || []),
+      ...emptyNegativePromptFields(),
       consistencyTags: scene.continuityAnchors || [],
       acceptanceCriteria: [`${scene.sceneName || sceneId}地点、室内外属性和背景层级清楚`, "可作为后续首尾帧生成的场景参考"]
     });
@@ -77,7 +77,8 @@ export function buildVideoGenerationQueue(pack = {}) {
     const startOutput = `frames.${shotId}.start`;
     const endOutput = `frames.${shotId}.end`;
     const videoOutput = `videos.${shotId}`;
-    const shotNegativePrompt = joinList([...negativeVisualRules, shot.negativePrompt].filter(Boolean));
+    const imageNegativePrompt = negativePromptFields(shot, "image");
+    const videoNegativePrompt = negativePromptFields(shot, "video");
     const sharedShot = {
       shotId,
       sourceSceneId: shot.sourceSceneId || "",
@@ -96,9 +97,9 @@ export function buildVideoGenerationQueue(pack = {}) {
       inputType: "text_to_image",
       outputKey: startOutput,
       ...sharedShot,
-	      prompt: shot.startFramePrompt || "",
-	      negativePrompt: shotNegativePrompt,
-	      requiredInputs: collectReferenceKeys(queue, sceneOutputKeys, shot.sceneId),
+      prompt: shot.startFramePrompt || "",
+      ...imageNegativePrompt,
+      requiredInputs: collectReferenceKeys(queue, sceneOutputKeys, shot.sceneId),
       acceptanceCriteria: ["首帧角色、服装、地点、构图、光线和道具清楚", ...(shot.acceptanceCriteria || [])]
     });
 
@@ -108,9 +109,9 @@ export function buildVideoGenerationQueue(pack = {}) {
       inputType: "text_to_image",
       outputKey: endOutput,
       ...sharedShot,
-	      prompt: shot.endFramePrompt || "",
-	      negativePrompt: shotNegativePrompt,
-	      requiredInputs: collectReferenceKeys(queue, sceneOutputKeys, shot.sceneId),
+      prompt: shot.endFramePrompt || "",
+      ...imageNegativePrompt,
+      requiredInputs: collectReferenceKeys(queue, sceneOutputKeys, shot.sceneId),
       acceptanceCriteria: ["尾帧与首帧形成明确动作终点", ...(shot.acceptanceCriteria || [])]
     });
 
@@ -121,7 +122,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       outputKey: videoOutput,
       ...sharedShot,
       prompt: shot.videoPrompt || "",
-      negativePrompt: shotNegativePrompt,
+      ...videoNegativePrompt,
       requiredInputs: [startOutput, endOutput],
       cameraMotion: shot.cameraMotion || "",
       characterAction: shot.characterAction || "",
@@ -139,7 +140,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       ...sharedShot,
       requiredInputs: [videoOutput],
       prompt: `检查 ${shotId} 是否符合角色一致性、首尾帧因果、动作目标、情绪目标和可剪辑性。`,
-      negativePrompt: "",
+      ...emptyNegativePromptFields(),
       acceptanceCriteria: [...(shot.acceptanceCriteria || []), "没有角色漂移、服装漂移、场景跳变或肢体严重变形"]
     });
     reviewOutputs.push(`reviews.${shotId}`);
@@ -155,7 +156,7 @@ export function buildVideoGenerationQueue(pack = {}) {
       aspectRatio,
       requiredInputs: [...videoOutputs, ...reviewOutputs],
       prompt: buildFinalEditPrompt(editPlan, plan.generationChecklist),
-      negativePrompt: joinList(queue.common.negativeVisualRules),
+      ...emptyNegativePromptFields(),
       sequenceRhythm: editPlan.sequenceRhythm || "",
       transitions: editPlan.transitions || [],
       subtitlePlan: editPlan.subtitlePlan || "",
@@ -191,9 +192,21 @@ function sceneNameForShot(plan = {}, shot = {}) {
   return scene?.sceneName || "";
 }
 
-function joinList(value) {
-  if (Array.isArray(value)) return value.join("；");
-  return String(value || "");
+function negativePromptFields(shot = {}, target = "image") {
+  const compiled = compileShotNegativePrompt(shot, target);
+  return {
+    negativePromptEntries: compiled.negativePromptEntries,
+    compiledNegativePrompt: compiled.compiledNegativePrompt,
+    negativePrompt: compiled.compiledNegativePrompt
+  };
+}
+
+function emptyNegativePromptFields() {
+  return {
+    negativePromptEntries: [],
+    compiledNegativePrompt: "",
+    negativePrompt: ""
+  };
 }
 
 function buildFinalEditPrompt(editPlan = {}, checklist = []) {

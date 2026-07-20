@@ -195,6 +195,8 @@ function formatJobPromptCard(queueJob = {}, runJob = {}, jobsByOutputKey = new M
     : ["- 无"];
   const detailLines = detailEntries(queueJob).map(([label, value]) => `- ${label}：${formatValue(value)}`);
   const acceptanceLines = runJob.acceptanceCriteria?.length ? runJob.acceptanceCriteria.map((item) => `- ${item}`) : ["- 按任务 prompt 和项目视觉规则验收"];
+  const negativePrompt = negativePromptContractForJob(queueJob);
+  const negativeEntryLines = formatNegativePromptEntries(negativePrompt.entries);
   return [
     `# ${runJob.taskId} · ${jobTypeLabel(runJob.type)}`,
     "",
@@ -218,9 +220,13 @@ function formatJobPromptCard(queueJob = {}, runJob = {}, jobsByOutputKey = new M
     "",
     queueJob.prompt || "无",
     "",
-    "## 负向 Prompt",
+    "## 已编译负向 Prompt",
     "",
-    queueJob.negativePrompt || "无",
+    negativePrompt.compiled || "无",
+    "",
+    "## 结构化负向 Prompt 条目",
+    "",
+    ...(negativeEntryLines.length ? negativeEntryLines : ["- 无"]),
     "",
     "## 验收标准",
     "",
@@ -236,6 +242,7 @@ function formatJobPromptCard(queueJob = {}, runJob = {}, jobsByOutputKey = new M
 }
 
 function formatJobRequest(queueJob = {}, runJob = {}, jobsByOutputKey = new Map()) {
+  const negativePrompt = negativePromptContractForJob(queueJob);
   return {
     version: "1.0",
     providerMode: "provider_agnostic",
@@ -249,7 +256,9 @@ function formatJobRequest(queueJob = {}, runJob = {}, jobsByOutputKey = new Map(
     failurePath: runJob.failurePath,
     model: queueJob.model || runJob.model || "",
     prompt: queueJob.prompt || "",
-    negativePrompt: queueJob.negativePrompt || "",
+    negativePromptEntries: negativePrompt.entries,
+    compiledNegativePrompt: negativePrompt.compiled,
+    negativePrompt: negativePrompt.compiled,
     inputArtifacts: (runJob.requiredInputs || []).map((key) => {
       const dependency = jobsByOutputKey.get(key);
       return {
@@ -263,6 +272,51 @@ function formatJobRequest(queueJob = {}, runJob = {}, jobsByOutputKey = new Map(
     acceptanceCriteria: runJob.acceptanceCriteria || [],
     rawJob: queueJob
   };
+}
+
+function negativePromptContractForJob(job = {}) {
+  const hasEntries = Object.hasOwn(job, "negativePromptEntries");
+  const entries = normalizeNegativePromptEntries(job.negativePromptEntries);
+  let compiled = "";
+  if (Object.hasOwn(job, "compiledNegativePrompt")) {
+    compiled = String(job.compiledNegativePrompt || "").trim();
+    if (!compiled && entries.length) compiled = compileNegativePromptEntries(entries);
+  }
+  else if (hasEntries) compiled = compileNegativePromptEntries(entries);
+  else compiled = String(job.negativePrompt || "").trim();
+  return { entries, compiled };
+}
+
+function normalizeNegativePromptEntries(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => {
+    if (typeof entry === "string") return { text: entry.trim(), enabled: true };
+    if (!entry || typeof entry !== "object") return null;
+    const text = String(entry.text || "").trim();
+    if (!text) return null;
+    return { ...entry, text, enabled: entry.enabled !== false };
+  }).filter(Boolean);
+}
+
+function compileNegativePromptEntries(entries = []) {
+  const texts = entries
+    .filter((entry) => entry.enabled !== false)
+    .map((entry) => entry.text)
+    .filter(Boolean);
+  return [...new Set(texts)].join("；");
+}
+
+function formatNegativePromptEntries(entries = []) {
+  return entries.map((entry) => {
+    const metadata = [
+      entry.appliesTo ? `appliesTo=${formatValue(entry.appliesTo)}` : "",
+      entry.reasonCode ? `reasonCode=${entry.reasonCode}` : "",
+      entry.priority ? `priority=${entry.priority}` : "",
+      entry.triggerEvidence ? `triggerEvidence=${formatValue(entry.triggerEvidence)}` : "",
+      entry.enabled === false ? "enabled=false" : "enabled=true"
+    ].filter(Boolean).join("；");
+    return `- ${entry.text}${metadata ? `（${metadata}）` : ""}`;
+  });
 }
 
 function capabilityFor(type, inputType) {
@@ -346,7 +400,13 @@ function hasValue(value) {
 }
 
 function formatValue(value) {
-  return Array.isArray(value) ? value.join("；") : String(value ?? "");
+  if (Array.isArray(value)) return value.map((item) => formatScalarValue(item)).join("；");
+  return formatScalarValue(value);
+}
+
+function formatScalarValue(value) {
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return String(value ?? "");
 }
 
 function defaultOutputPath(root, job = {}) {

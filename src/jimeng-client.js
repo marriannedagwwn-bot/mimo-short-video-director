@@ -42,6 +42,7 @@ export class JimengImageClient {
     }
     const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/images/generations`;
     const body = buildJimengImageRequestBody(this.config, input);
+    const requestReceipt = buildJimengImageRequestReceipt(body, input.negativePromptDelivery);
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -60,10 +61,11 @@ export class JimengImageClient {
     if (!contentType.includes("text/event-stream")) {
       const envelope = await response.json();
       await emitNonStreamingEnvelope(envelope, onEvent);
-      return;
+      return requestReceipt;
     }
     if (!response.body) throw new JimengImageProviderError("即梦没有返回可读取的流式响应");
     await parseSseStream(response.body, onEvent);
+    return requestReceipt;
   }
 }
 
@@ -110,6 +112,38 @@ export function buildJimengImageRequestBody(config = {}, input = {}) {
   }
   if (count > 1) body.sequential_image_generation_options = { max_images: count };
   return body;
+}
+
+export function buildJimengImageRequestReceipt(body = {}, delivery = null) {
+  const source = delivery && typeof delivery === "object" ? delivery : {};
+  const positiveConstraints = Array.isArray(source.positiveConstraints) ? source.positiveConstraints.filter(Boolean) : [];
+  const ignoredEntries = Array.isArray(source.ignoredEntries) ? source.ignoredEntries : [];
+  const negativePromptEntries = Array.isArray(source.negativePromptEntries) ? source.negativePromptEntries : [];
+  return {
+    negativePromptDelivery: {
+      supported: false,
+      appliedMode: positiveConstraints.length ? "positive_constraint" : "not_supported",
+      providerField: positiveConstraints.length ? "prompt" : "",
+      compiledNegativePrompt: String(source.compiledNegativePrompt || ""),
+      appliedText: positiveConstraints.join("\n"),
+      ignored: ignoredEntries.map((entry) => entry?.text || String(entry || "")).filter(Boolean),
+      providerIgnored: ignoredEntries.length > 0
+    },
+    requestPreview: redactJimengRequestPreview(body),
+    negativePromptEntries
+  };
+}
+
+function redactJimengRequestPreview(body = {}) {
+  const redact = (value) => {
+    if (Array.isArray(value)) return value.map(redact);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redact(item)]));
+    if (typeof value !== "string") return value;
+    if (/^data:[^;,]+;base64,/u.test(value)) return "[REDACTED_DATA_URL]";
+    if (value.length > 512 && /^[A-Za-z0-9+/=_-]+$/u.test(value)) return "[REDACTED_BASE64]";
+    return value;
+  };
+  return redact(body);
 }
 
 async function parseSseStream(body, onEvent) {

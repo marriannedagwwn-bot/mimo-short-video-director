@@ -1,6 +1,7 @@
 import { buildVideoGenerationQueue, formatQueueJsonl } from "./animation-queue.js";
 import { syncShotCharacterReference } from "./character-reference-sync.js";
-import { buildShotFrameImagePrompt } from "./shot-frame-prompt.js";
+import { compileShotNegativePrompt } from "./negative-prompts.js";
+import { buildShotFrameImagePrompt, compileShotFrameNegativePrompt } from "./shot-frame-prompt.js";
 import { shotRelatedCharacterReferences, uploadedReferenceImages } from "./shot-reference-images.js";
 
 const state = {
@@ -107,7 +108,7 @@ const MODEL_STAGE_DEFS = [
   { key: "analysis", label: "参考片分析", hint: "视频解析、定位、人物、节奏" },
   { key: "reconstruction", label: "脚本还原", hint: "分场、动作、镜头、转折" },
   { key: "brief", label: "创意简报", hint: "保留价值、受控变量" },
-  { key: "visualGuardrails", label: "视觉规则", hint: "固定角色边界、负面联想" },
+  { key: "visualGuardrails", label: "视觉规则", hint: "角色边界、原片规避、台词规则" },
   { key: "variants", label: "主题变体", hint: "新故事方向" },
   { key: "fullStory", label: "完整剧情", hint: "可拍分场剧本" },
   { key: "animationPlan", label: "动画生产包", hint: "首尾帧、镜头与视频提示词" },
@@ -586,8 +587,8 @@ function renderBrief(data) {
 
 function renderVisualGuardrails(data) {
   const boundary = data.fixedCharacterBoundary || {};
-  elements.guardrails.innerHTML = `${resultHeader("VISUAL GUARDRAILS", "AI 视觉负面提示词", "通用规则")}
-    <div class="summary-strip">${escape(data.rationale || boundary.doNotInfer || "已生成固定角色外观边界与通用负面提示词。")}</div>
+  elements.guardrails.innerHTML = `${resultHeader("VISUAL GUARDRAILS", "角色与创作边界", "非渲染负面")}
+    <div class="summary-strip">${escape(data.rationale || boundary.doNotInfer || "已锁定固定角色身份、允许特征、正向提示词边界、原片规避和台词行为规则。")}</div>
     <div class="data-grid">
       ${cell("角色锁定", boundary.identityLock || boundary.characterName)}
       ${cell("允许身份", boundary.allowedIdentity)}
@@ -596,17 +597,72 @@ function renderVisualGuardrails(data) {
       ${cell("风格说明", boundary.styleNotes)}
       ${cell("禁止推导", boundary.doNotInfer)}
     </div>
-    ${block("允许正向使用", `<div class="tag-row">${(data.allowedPositiveTraits || []).map((item) => `<span class="tag">${escape(item.term)} · ${escape(item.scope || "")}</span>`).join("") || "<span class=\"tag\">无额外允许项</span>"}</div>`)}
-    ${block("禁止写进正向内容", `<div class="rule-list">${(data.forbiddenPositiveTraits || []).map((item) => `<div class="rule"><strong>${escape(item.term)} · ${escape(item.severity || "block")}</strong><p>${escape(item.reason)}</p></div>`).join("") || "<p class=\"long-copy\">无额外禁止项。</p>"}</div>`)}
-    ${block("原片表面表达", `<div class="rule-list">${(data.sourceSurfaceExpressions || []).map((item) => `<div class="rule"><strong>${escape(item.term)}${item.mustAvoid === false ? " · 可说明但不正向复用" : " · 禁止正向复用"}</strong><p>${escape(item.reason)}<br><b>来源：</b>${escape(item.source)}</p></div>`).join("") || "<p class=\"long-copy\">无。</p>"}</div>`)}
-    ${block("通用负面 Prompt", `<div class="warning-box">${escape((data.commonNegativePrompt || []).join("；") || "无")}</div>`)}
-    ${block("阶段使用说明", `<div class="data-grid">
-      ${cell("主题变体", data.stageInstructions?.themeVariants)}
-      ${cell("完整剧情", data.stageInstructions?.fullStory)}
-      ${cell("首尾帧动画", data.stageInstructions?.animationPlan)}
-    </div>`)}
+    ${block("允许正向使用", renderAllowedPositiveTraits(data.allowedPositiveTraits))}
+    ${block("正向提示词边界", renderGuardrailRuleList(data.positivePromptBoundary, "无额外正向提示词边界。"))}
+    ${block("原片相似规避规则", renderGuardrailRuleList(data.sourceSimilarityRules, "无原片表面表达规避项。"))}
+    ${block("台词与行为规则", renderGuardrailRuleList(data.dialogueRules, "无额外台词或行为规则。"))}
+    <div class="warning-box"><b>渲染负面提示词不在本阶段生成。</b> 图片与视频负面提示词只在 animationPlan 中按当前镜头分别生成，并必须附带触发证据。</div>
     ${uncertainties(data.uncertainties)}`;
   reveal(elements.guardrails);
+}
+
+function renderAllowedPositiveTraits(value = []) {
+  const items = Array.isArray(value) ? value : [];
+  if (!items.length) return `<div class="tag-row"><span class="tag">无额外允许项</span></div>`;
+  return `<div class="tag-row">${items.map((item) => {
+    if (typeof item === "string") return `<span class="tag">${escape(item)}</span>`;
+    const text = item?.term || item?.text || item?.rule || "未命名特征";
+    return `<span class="tag">${escape(text)}${item?.scope ? ` · ${escape(item.scope)}` : ""}</span>`;
+  }).join("")}</div>`;
+}
+
+function renderGuardrailRuleList(value, emptyText) {
+  const items = normalizeRuleItems(value);
+  if (!items.length) return `<div class="rule-list"><p class="long-copy">${escape(emptyText)}</p></div>`;
+  return `<div class="rule-list">${items.map((item) => {
+    if (typeof item === "string") return `<div class="rule"><strong>${escape(item)}</strong></div>`;
+    const title = firstRuleValue(item, ["text", "rule", "term", "name", "requirement", "boundary", "prohibition", "category"]) || "规则";
+    const details = ruleDetailPairs(item).map(([label, detail]) => `<b>${escape(label)}：</b>${escape(structuredValue(detail))}`).join("<br>");
+    return `<div class="rule"><strong>${escape(title)}</strong>${details ? `<p>${details}</p>` : ""}</div>`;
+  }).join("")}</div>`;
+}
+
+function normalizeRuleItems(value) {
+  if (Array.isArray(value)) return value.filter((item) => item !== null && item !== undefined && item !== "");
+  if (typeof value === "string") return value.trim() ? [value.trim()] : [];
+  if (!value || typeof value !== "object") return [];
+  if (firstRuleValue(value, ["text", "rule", "term", "name", "requirement", "boundary", "prohibition"])) return [value];
+  return Object.entries(value).flatMap(([category, nested]) => {
+    if (Array.isArray(nested)) return nested.map((item) => typeof item === "object" && item !== null ? { category, ...item } : { category, text: item });
+    if (nested && typeof nested === "object") return [{ category, ...nested }];
+    return nested === null || nested === undefined || nested === "" ? [] : [{ category, text: nested }];
+  });
+}
+
+function firstRuleValue(item, keys = []) {
+  for (const key of keys) {
+    const value = item?.[key];
+    if (value !== null && value !== undefined && value !== "") return structuredValue(value);
+  }
+  return "";
+}
+
+function ruleDetailPairs(item = {}) {
+  const labels = {
+    scope: "范围", reason: "原因", source: "来源", triggerEvidence: "触发证据",
+    priority: "优先级", appliesTo: "适用目标", severity: "级别", allowed: "允许",
+    forbidden: "禁止", behavior: "行为", note: "说明", description: "说明"
+  };
+  const titleKeys = new Set(["text", "rule", "term", "name", "requirement", "boundary", "prohibition", "category"]);
+  return Object.entries(item)
+    .filter(([key, value]) => !titleKeys.has(key) && value !== null && value !== undefined && value !== "")
+    .map(([key, value]) => [labels[key] || key, value]);
+}
+
+function structuredValue(value) {
+  if (Array.isArray(value)) return value.map(structuredValue).filter(Boolean).join(" / ");
+  if (value && typeof value === "object") return Object.entries(value).map(([key, item]) => `${key}=${structuredValue(item)}`).join("；");
+  return String(value ?? "");
 }
 
 function renderVariants(data) {
@@ -803,6 +859,7 @@ async function generateAnimationPlan({ force = false } = {}) {
   try {
     const animationPlan = await api("/api/animation-plan", {
       creativeBrief: state.output.creativeBrief,
+      visualGuardrails: state.output.visualGuardrails,
       variant,
       fullStory,
       creatorProfile: profile()
@@ -846,12 +903,11 @@ function renderAnimationPlan(data) {
       <div class="rule"><strong>整体风格</strong><p>${escape(visual.overallStyle)}<br><b>光线：</b>${escape(visual.lighting)}</p></div>
       <div class="rule"><strong>世界规则</strong><p>${escape((visual.worldRules || []).join("；"))}</p></div>
       <div class="rule"><strong>角色一致性</strong><p>${escape((visual.characterConsistencyRules || []).join("；"))}</p></div>
-      <div class="rule"><strong>负面视觉规则</strong><p>${escape((visual.negativeVisualRules || []).join("；"))}</p></div>
     </div>`)}
     ${actionBlock("角色参考提示词", renderCharacterReferencePrompts(data.characterReferencePrompts || []), `<button class="round-add-button" type="button" data-open-character-image-generator aria-label="用即梦生成角色参考图">+</button>`)}
     ${block("场景参考提示词", `<div class="rule-list">${(data.sceneReferencePrompts || []).map((item) => `<div class="rule">
       <strong>${escape(item.sceneName || item.sceneId)}<br><small>${escape(item.sceneId)}</small></strong>
-      <p>${escape(item.environmentPrompt)}<br><b>功能：</b>${escape(item.storyFunction)}<br><b>连续性锚点：</b>${escape((item.continuityAnchors || []).join(" / "))}<br><b>禁止：</b>${escape((item.negativeSceneRules || []).join(" / "))}</p>
+      <p>${escape(item.environmentPrompt)}<br><b>功能：</b>${escape(item.storyFunction)}<br><b>连续性锚点：</b>${escape((item.continuityAnchors || []).join(" / "))}</p>
     </div>`).join("") || "<p class=\"long-copy\">无单独场景参考提示词。</p>"}</div>`)}
     ${block("关键资产提示词", `<div class="rule-list">${(data.assetPrompts || []).map((item) => `<div class="rule">
       <strong>${escape(item.assetName)}</strong>
@@ -864,7 +920,8 @@ function renderAnimationPlan(data) {
         ${renderShotFramePromptCard(shot.shotId, "start", "首帧 prompt", shot.startFramePrompt)}
         ${renderShotFramePromptCard(shot.shotId, "end", "尾帧 prompt", shot.endFramePrompt)}
         <div class="prompt-card"><span class="prompt-label">视频 prompt</span><p>${escape(shot.videoPrompt)}</p></div>
-        <div class="prompt-card"><span class="prompt-label">负面 prompt</span><p>${escape(shot.negativePrompt)}</p></div>
+        ${renderShotNegativePromptCard(shot, "image", "图片负面提示词")}
+        ${renderShotNegativePromptCard(shot, "video", "视频负面提示词")}
       </div>
       <p><b>镜头运动：</b>${escape(shot.cameraMotion)}<br><b>动作：</b>${escape(shot.characterAction)}<br><b>对白/字幕：</b>${escape(shot.dialogueOrSubtitle)}<br><b>声音：</b>${escape(shot.soundDesign)}</p>
       <div class="tag-row">${(shot.acceptanceCriteria || []).map((item) => `<span class="tag">${escape(item)}</span>`).join("")}</div>
@@ -891,6 +948,24 @@ function renderAnimationPlan(data) {
     <div class="warning-box"><b>动画连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
     ${uncertainties(data.uncertainties)}`;
   reveal(elements.animationPlan);
+}
+
+function renderShotNegativePromptCard(shot = {}, target = "image", label = "负面提示词") {
+  const entries = Array.isArray(shot?.negativePrompts?.[target]) ? shot.negativePrompts[target] : [];
+  const content = entries.length
+    ? `<div class="rule-list">${entries.map((entry) => renderShotNegativePromptEntry(entry)).join("")}</div>`
+    : `<p class="long-copy">无</p>`;
+  return `<div class="prompt-card"><span class="prompt-label">${escape(label)}</span>${content}</div>`;
+}
+
+function renderShotNegativePromptEntry(entry = {}) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return `<div class="rule"><strong>无效条目</strong></div>`;
+  const status = entry.enabled === false ? "已停用" : "已启用";
+  return `<div class="rule">
+    <strong>${escape(entry.text || "未填写负面描述")}</strong>
+    <p><b>状态：</b>${escape(status)} · <b>目标：</b>${escape(entry.appliesTo || "-")} · <b>优先级：</b>${escape(entry.priority || "-")}<br>
+    <b>原因：</b>${escape(entry.reasonCode || "-")}<br><b>触发证据：</b>${escape(structuredValue(entry.triggerEvidence) || "-")}</p>
+  </div>`;
 }
 
 function renderCharacterReferencePrompts(items = []) {
@@ -1577,14 +1652,21 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
       frameCandidateDataUrl(startFrame),
       frameCandidateDataUrl(endFrame)
     ]);
-    const globalNegativePrompt = buildGlobalNegativePrompt(plan?.visualBible || {});
+    const videoNegativePrompt = compileShotNegativePrompt(shot, "video");
+    const videoShot = { ...shot };
+    delete videoShot.negativePrompt;
+    delete videoShot.negativePromptEntries;
+    delete videoShot.compiledNegativePrompt;
+    videoShot.negativePrompts = { video: videoNegativePrompt.negativePromptEntries };
     const result = await api("/api/generate-shot-video", {
       selectedVariantId: variant?.id || "",
       count,
       shot: {
-        ...shot,
+        ...videoShot,
         videoPrompt: promptOverride || shot.videoPrompt || "",
-        negativePrompt: joinPromptParts([globalNegativePrompt, shot.negativePrompt])
+        negativePromptEntries: videoNegativePrompt.negativePromptEntries,
+        compiledNegativePrompt: videoNegativePrompt.compiledNegativePrompt,
+        negativePrompt: videoNegativePrompt.compiledNegativePrompt
       },
       startFrameDataUrl,
       endFrameDataUrl
@@ -1609,23 +1691,6 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
   updateShotVideoResult(shotId);
   renderShotVideoModalResults();
   return true;
-}
-
-function buildGlobalNegativePrompt(visualBible = {}) {
-  return joinPromptParts(Array.isArray(visualBible.negativeVisualRules) ? visualBible.negativeVisualRules : []);
-}
-
-function joinPromptParts(parts = []) {
-  const seen = new Set();
-  return parts
-    .flatMap((item) => String(item || "").split(/[；;\n]+/u))
-    .map((item) => item.trim())
-    .filter((item) => {
-      if (!item || seen.has(item)) return false;
-      seen.add(item);
-      return true;
-    })
-    .join("；");
 }
 
 async function frameCandidateDataUrl(candidate = {}) {
@@ -1691,12 +1756,19 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
   setAnimationStatus(`${shotId} ${frameKind === "end" ? "尾帧" : "首帧"}正在用即梦生成…`, "active");
   try {
     const characterReferences = shotRelatedCharacterReferences(shot, plan.characterReferencePrompts || []);
+    const negativePromptApplication = compileShotFrameNegativePrompt(shot);
+    const frameShot = { ...shot };
+    delete frameShot.negativePrompt;
+    delete frameShot.negativePromptEntries;
+    delete frameShot.compiledNegativePrompt;
+    frameShot.negativePrompts = { image: negativePromptApplication.negativePromptEntries };
     const result = await api("/api/generate-shot-frame-image", {
       selectedVariantId: variant?.id || "",
       frameKind,
       count,
       ...(promptOverride ? { prompt: promptOverride } : {}),
-      shot,
+      shot: frameShot,
+      negativePromptApplication,
       visualBible: plan.visualBible || {},
       characterReferences,
       sceneReference: sceneReferenceForShot(plan, shot)
@@ -2201,7 +2273,7 @@ function selectedStoryPackage() {
   if (!variant) return null;
   const pack = {
     packageType: "story-production-test-package",
-    packageVersion: "1.0",
+    packageVersion: "2.0",
     exportedAt: new Date().toISOString(),
     mode: state.mode,
     modelInfo: currentModelInfo(),
@@ -2390,6 +2462,8 @@ function formatAnimationPackMarkdown(pack) {
   const plan = pack.animationPlan || {};
   const strategy = plan.productionStrategy || {};
   const visual = plan.visualBible || {};
+  const guardrails = pack.visualGuardrails || {};
+  const boundary = guardrails.fixedCharacterBoundary || {};
   const lines = [
     `# ${plan.title || pack.fullStory?.title || "首尾帧动画生产包"}`,
     "",
@@ -2398,6 +2472,36 @@ function formatAnimationPackMarkdown(pack) {
     `- 单镜头时长：${strategy.recommendedShotDurationSeconds?.min || 3}-${strategy.recommendedShotDurationSeconds?.max || 6} 秒`,
     `- 工作流：${strategy.format || "first_last_frame_video"}`,
     "",
+    "## 角色身份锁定与允许特征",
+    ...formatObjectMarkdown(boundary),
+    ...formatAllowedTraitsMarkdown(guardrails.allowedPositiveTraits),
+    "",
+    "## 四类约束",
+    "",
+    "### 1. 正向提示词边界",
+    ...formatRuleCollectionMarkdown(guardrails.positivePromptBoundary),
+    "",
+    "### 2. 原片相似规避规则",
+    ...formatRuleCollectionMarkdown(guardrails.sourceSimilarityRules),
+    "",
+    "### 3. 台词与行为规则",
+    ...formatRuleCollectionMarkdown(guardrails.dialogueRules),
+    "",
+    "### 4. 实际渲染负面提示词（逐镜）"
+  ];
+  for (const shot of plan.shotPlan || []) {
+    lines.push(
+      "",
+      `#### ${shot.shotId || "镜头"}`,
+      "图片：",
+      ...formatShotNegativeEntriesMarkdown(shot, "image"),
+      "",
+      "视频：",
+      ...formatShotNegativeEntriesMarkdown(shot, "video")
+    );
+  }
+  lines.push(
+    "",
     "## 视觉圣经",
     `- 整体风格：${visual.overallStyle || ""}`,
     `- 动画风格：${visual.animationStyle || ""}`,
@@ -2405,10 +2509,9 @@ function formatAnimationPackMarkdown(pack) {
     `- 光线：${visual.lighting || ""}`,
     `- 镜头语言：${visual.cameraLanguage || ""}`,
     `- 角色一致性：${(visual.characterConsistencyRules || []).join("；")}`,
-    `- 负面视觉规则：${(visual.negativeVisualRules || []).join("；")}`,
     "",
     "## 角色参考图 Prompt"
-  ];
+  );
   for (const item of plan.characterReferencePrompts || []) {
     lines.push(
       "",
@@ -2416,8 +2519,7 @@ function formatAnimationPackMarkdown(pack) {
       item.referenceImageAdded ? `参考图：已添加人物参考图${item.referenceImageName ? `（${item.referenceImageName}）` : ""}` : "参考图：未添加",
       item.appearancePrompt || "",
       item.referenceImageNotes ? `参考图吸收：${item.referenceImageNotes}` : "",
-      `一致性标签：${(item.consistencyTags || []).join(" / ")}`,
-      `禁止变化：${(item.forbiddenChanges || []).join(" / ")}`
+      `一致性标签：${(item.consistencyTags || []).join(" / ")}`
     );
   }
   lines.push("", "## 关键资产 Prompt");
@@ -2433,7 +2535,6 @@ function formatAnimationPackMarkdown(pack) {
       item.environmentPrompt || "",
       `功能：${item.storyFunction || ""}`,
       `连续性锚点：${(item.continuityAnchors || []).join(" / ")}`,
-      `场景负面规则：${(item.negativeSceneRules || []).join(" / ")}`,
       `关联镜头：${(item.relatedShotIds || []).join(" / ")}`
     );
   }
@@ -2455,9 +2556,6 @@ function formatAnimationPackMarkdown(pack) {
       "视频 prompt：",
       shot.videoPrompt || "",
       "",
-      "负面 prompt：",
-      shot.negativePrompt || "",
-      "",
       `镜头运动：${shot.cameraMotion || ""}`,
       `角色动作：${shot.characterAction || ""}`,
       `对白/字幕：${shot.dialogueOrSubtitle || ""}`,
@@ -2469,6 +2567,41 @@ function formatAnimationPackMarkdown(pack) {
   lines.push("", "## 生成检查清单");
   for (const item of plan.generationChecklist || []) lines.push(`- ${item.check || ""}：${item.passCriteria || ""}`);
   return lines.join("\n");
+}
+
+function formatObjectMarkdown(value = {}) {
+  const entries = Object.entries(value || {}).filter(([, item]) => item !== null && item !== undefined && item !== "");
+  return entries.length ? entries.map(([key, item]) => `- ${key}：${structuredValue(item)}`) : ["- 无"];
+}
+
+function formatAllowedTraitsMarkdown(value = []) {
+  const entries = Array.isArray(value) ? value : [];
+  if (!entries.length) return ["- 允许特征：无额外允许项"];
+  return entries.map((item) => {
+    if (typeof item === "string") return `- 允许特征：${item}`;
+    const text = item?.term || item?.text || item?.rule || "未命名特征";
+    const details = [item?.scope ? `scope=${item.scope}` : "", item?.reason ? `reason=${item.reason}` : ""].filter(Boolean).join("；");
+    return `- 允许特征：${text}${details ? `（${details}）` : ""}`;
+  });
+}
+
+function formatRuleCollectionMarkdown(value) {
+  const items = normalizeRuleItems(value);
+  if (!items.length) return ["- 无"];
+  return items.map((item) => {
+    if (typeof item === "string") return `- ${item}`;
+    const title = firstRuleValue(item, ["text", "rule", "term", "name", "requirement", "boundary", "prohibition", "category"]) || "规则";
+    const details = ruleDetailPairs(item).map(([label, detail]) => `${label}=${structuredValue(detail)}`).join("；");
+    return `- ${title}${details ? `（${details}）` : ""}`;
+  });
+}
+
+function formatShotNegativeEntriesMarkdown(shot = {}, target = "image") {
+  const compiled = compileShotNegativePrompt(shot, target);
+  if (!compiled.negativePromptEntries.length) return ["- 无"];
+  return compiled.negativePromptEntries.map((entry) => (
+    `- [${entry.priority}] ${entry.text}（appliesTo=${entry.appliesTo}；reasonCode=${entry.reasonCode}；triggerEvidence=${structuredValue(entry.triggerEvidence)}）`
+  ));
 }
 
 function escape(value) {

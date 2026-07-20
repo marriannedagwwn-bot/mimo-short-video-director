@@ -45,11 +45,23 @@ const outputContracts = {
   referenceAnalysis: ["contentPositioning", "targetAudience", "storySynopsis", "characters", "protagonistIdentity", "careRecipient", "dialogueStyle", "shotRhythm", "emotionCurve", "retentionDrivers", "whyWatchToEnd", "analysisConfidence", "uncertainties"],
   sourceScriptReconstruction: ["scenes", "coreEventSequence", "relationshipPattern", "endingAction", "turningPoints", "uncertainties"],
   creativeBrief: ["contentType", "targetAudience", "coreEmotion", "storyEngine", "emotionStructure", "roleAndOccupationMapping", "reusableHighValueBeats", "controlledRewriteVariables", "protectedExpressions", "minimumTransformationRules", "allowedNarrativeComponents", "nonNegotiableExperience", "creativeDistancePolicy"],
-  visualGuardrails: ["fixedCharacterBoundary", "allowedPositiveTraits", "forbiddenPositiveTraits", "sourceSurfaceExpressions", "commonNegativePrompt", "stageInstructions", "rationale", "uncertainties"],
+  visualGuardrails: ["fixedCharacterBoundary", "allowedPositiveTraits", "positivePromptBoundary", "sourceSimilarityRules", "dialogueRules", "stageInstructions", "rationale", "uncertainties"],
   themeVariants: ["variants"],
   fullStory: ["selectedVariantId", "title", "oneLinePremise", "targetDurationSeconds", "shootingSynopsis", "characterBible", "beatSheet", "sceneScript", "keyProps", "shootingPlan", "dialogueStyleGuide", "retentionPlan", "experienceFidelity", "transformationProof", "continuityAndSafetyCheck", "uncertainties"],
   animationPlan: ["selectedVariantId", "title", "productionStrategy", "visualBible", "characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "editPlan", "generationChecklist", "modelAgnosticNotes", "continuityAndSafetyCheck", "uncertainties"]
 };
+
+const visualGuardrailTopLevelFields = new Set(outputContracts.visualGuardrails);
+const negativePromptReasonCodes = new Set([
+  "explicit_identity_conflict",
+  "shot_object_confusion",
+  "shot_interaction_failure",
+  "temporal_consistency_failure",
+  "reference_leak",
+  "proven_provider_failure"
+]);
+const negativePromptPriorities = new Set(["high", "medium", "low"]);
+const negativePromptMedia = new Set(["image", "video", "both"]);
 
 export function ensureOutputContract(value, contract) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new OutputContractError(`${contract} 必须是对象`);
@@ -59,7 +71,7 @@ export function ensureOutputContract(value, contract) {
     referenceAnalysis: ["characters", "emotionCurve", "retentionDrivers", "uncertainties"],
     sourceScriptReconstruction: ["scenes", "coreEventSequence", "turningPoints", "uncertainties"],
     creativeBrief: ["emotionStructure", "roleAndOccupationMapping", "reusableHighValueBeats", "controlledRewriteVariables", "protectedExpressions", "minimumTransformationRules", "allowedNarrativeComponents"],
-    visualGuardrails: ["allowedPositiveTraits", "forbiddenPositiveTraits", "sourceSurfaceExpressions", "commonNegativePrompt", "uncertainties"],
+    visualGuardrails: ["allowedPositiveTraits", "positivePromptBoundary", "sourceSimilarityRules", "dialogueRules", "uncertainties"],
     themeVariants: ["variants"],
     fullStory: ["beatSheet", "sceneScript", "keyProps", "shootingPlan", "retentionPlan", "uncertainties"],
     animationPlan: ["characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "generationChecklist", "modelAgnosticNotes", "uncertainties"]
@@ -72,10 +84,7 @@ export function ensureOutputContract(value, contract) {
     validateProtectedExpressions(value.protectedExpressions);
   }
   if (contract === "visualGuardrails") {
-    if (!value.stageInstructions || typeof value.stageInstructions !== "object" || Array.isArray(value.stageInstructions)) {
-      throw new OutputContractError("visualGuardrails.stageInstructions 必须是对象");
-    }
-    if (!value.commonNegativePrompt.length) throw new OutputContractError("visualGuardrails 至少需要一条通用负面提示词");
+    validateVisualGuardrailsContract(value);
   }
   if (contract === "themeVariants" && value.variants.length < 1) throw new OutputContractError("themeVariants 至少需要一个主题方案");
   if (contract === "fullStory") {
@@ -86,8 +95,113 @@ export function ensureOutputContract(value, contract) {
     if (value.characterReferencePrompts.length < 1) throw new OutputContractError("animationPlan 至少需要一个角色参考提示词");
     if (value.sceneReferencePrompts.length < 1) throw new OutputContractError("animationPlan 至少需要一个场景参考提示词");
     if (value.shotPlan.length < 1) throw new OutputContractError("animationPlan 至少需要一个镜头生产任务");
+    validateAnimationPlanNegativePromptContract(value);
   }
   return value;
+}
+
+function validateVisualGuardrailsContract(value) {
+  const unexpected = Object.keys(value).filter((key) => !visualGuardrailTopLevelFields.has(key));
+  if (unexpected.length) {
+    throw new OutputContractError(`visualGuardrails 包含未允许的顶层字段：${unexpected.join("、")}`);
+  }
+  if (!value.fixedCharacterBoundary || typeof value.fixedCharacterBoundary !== "object" || Array.isArray(value.fixedCharacterBoundary)) {
+    throw new OutputContractError("visualGuardrails.fixedCharacterBoundary 必须是对象");
+  }
+  if (!value.stageInstructions || typeof value.stageInstructions !== "object" || Array.isArray(value.stageInstructions)) {
+    throw new OutputContractError("visualGuardrails.stageInstructions 必须是对象");
+  }
+  value.allowedPositiveTraits.forEach((item, index) => {
+    requireRuleObject(item, `visualGuardrails.allowedPositiveTraits[${index}]`, ["term", "scope", "reason"]);
+  });
+  value.positivePromptBoundary.forEach((item, index) => {
+    const path = `visualGuardrails.positivePromptBoundary[${index}]`;
+    requireRuleObject(item, path, ["rule", "triggerEvidence", "severity"]);
+    if (!String(item.rule || "").trim()) throw new OutputContractError(`${path}.rule 不能为空`);
+    if (!["block", "warn"].includes(item.severity)) throw new OutputContractError(`${path}.severity 只允许 block 或 warn`);
+    validateTriggerEvidenceShape(item.triggerEvidence, `${path}.triggerEvidence`, { requireNonEmpty: true });
+  });
+  value.sourceSimilarityRules.forEach((item, index) => {
+    const path = `visualGuardrails.sourceSimilarityRules[${index}]`;
+    requireRuleObject(item, path, ["text", "sourceExpression", "triggerEvidence", "appliesWhenReferenceUsed"]);
+    if (!String(item.text || "").trim() || !String(item.sourceExpression || "").trim()) {
+      throw new OutputContractError(`${path}.text 和 sourceExpression 不能为空`);
+    }
+    if (item.appliesWhenReferenceUsed !== true) {
+      throw new OutputContractError(`${path}.appliesWhenReferenceUsed 必须为 true`);
+    }
+    validateTriggerEvidenceShape(item.triggerEvidence, `${path}.triggerEvidence`, { requireNonEmpty: true });
+  });
+  value.dialogueRules.forEach((item, index) => {
+    const path = `visualGuardrails.dialogueRules[${index}]`;
+    requireRuleObject(item, path, ["text", "triggerEvidence"]);
+    if (!String(item.text || "").trim()) throw new OutputContractError(`${path}.text 不能为空`);
+    validateTriggerEvidenceShape(item.triggerEvidence, `${path}.triggerEvidence`, { requireNonEmpty: true });
+  });
+}
+
+function validateAnimationPlanNegativePromptContract(value) {
+  if (!value.visualBible || typeof value.visualBible !== "object" || Array.isArray(value.visualBible)) {
+    throw new OutputContractError("animationPlan.visualBible 必须是对象");
+  }
+  if (Object.prototype.hasOwnProperty.call(value.visualBible, "negativeVisualRules")) {
+    throw new OutputContractError("animationPlan.visualBible 不再允许 negativeVisualRules；负面提示词必须逐镜输出");
+  }
+  value.sceneReferencePrompts.forEach((scene, index) => {
+    if (scene && Object.prototype.hasOwnProperty.call(scene, "negativeSceneRules")) {
+      throw new OutputContractError(`animationPlan.sceneReferencePrompts[${index}] 不再允许 negativeSceneRules`);
+    }
+  });
+  value.shotPlan.forEach((shot, shotIndex) => {
+    const path = `animationPlan.shotPlan[${shotIndex}]`;
+    if (!shot || typeof shot !== "object" || Array.isArray(shot)) throw new OutputContractError(`${path} 必须是对象`);
+    if (Object.prototype.hasOwnProperty.call(shot, "negativePrompt")) {
+      throw new OutputContractError(`${path} 不再允许 negativePrompt 字符串`);
+    }
+    const negativePrompts = shot.negativePrompts;
+    if (!negativePrompts || typeof negativePrompts !== "object" || Array.isArray(negativePrompts)) {
+      throw new OutputContractError(`${path}.negativePrompts 必须是对象`);
+    }
+    const unexpected = Object.keys(negativePrompts).filter((key) => !["image", "video"].includes(key));
+    if (unexpected.length) throw new OutputContractError(`${path}.negativePrompts 包含未知字段：${unexpected.join("、")}`);
+    for (const media of ["image", "video"]) {
+      const items = negativePrompts[media];
+      if (!Array.isArray(items)) throw new OutputContractError(`${path}.negativePrompts.${media} 必须是数组`);
+      items.forEach((item, itemIndex) => validateNegativePromptItemShape(item, `${path}.negativePrompts.${media}[${itemIndex}]`));
+    }
+  });
+}
+
+function validateNegativePromptItemShape(item, path) {
+  requireRuleObject(item, path, ["text", "appliesTo", "triggerEvidence", "reasonCode", "priority"]);
+  if (!String(item.text || "").trim()) throw new OutputContractError(`${path}.text 不能为空`);
+  if (!negativePromptMedia.has(item.appliesTo)) throw new OutputContractError(`${path}.appliesTo 只允许 image、video 或 both`);
+  if (!negativePromptReasonCodes.has(item.reasonCode)) throw new OutputContractError(`${path}.reasonCode 不受支持`);
+  if (!negativePromptPriorities.has(item.priority)) throw new OutputContractError(`${path}.priority 只允许 high、medium 或 low`);
+  if (Object.prototype.hasOwnProperty.call(item, "enabled") && typeof item.enabled !== "boolean") {
+    throw new OutputContractError(`${path}.enabled 必须是布尔值`);
+  }
+  validateTriggerEvidenceShape(item.triggerEvidence, `${path}.triggerEvidence`, { requireNonEmpty: true });
+}
+
+function requireRuleObject(item, path, requiredFields) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) throw new OutputContractError(`${path} 必须是对象`);
+  const missing = requiredFields.filter((field) => !Object.prototype.hasOwnProperty.call(item, field));
+  if (missing.length) throw new OutputContractError(`${path} 缺少字段：${missing.join("、")}`);
+}
+
+function validateTriggerEvidenceShape(triggerEvidence, path, { requireNonEmpty = false } = {}) {
+  if (!Array.isArray(triggerEvidence)) throw new OutputContractError(`${path} 必须是数组`);
+  if (requireNonEmpty && !triggerEvidence.length) throw new OutputContractError(`${path} 至少需要一条明确证据`);
+  triggerEvidence.forEach((entry, index) => {
+    requireRuleObject(entry, `${path}[${index}]`, ["sourcePath", "evidence"]);
+    if (typeof entry.sourcePath !== "string" || typeof entry.evidence !== "string") {
+      throw new OutputContractError(`${path}[${index}] 的 sourcePath 和 evidence 必须是字符串`);
+    }
+    if (!entry.sourcePath.trim() || !entry.evidence.trim()) {
+      throw new OutputContractError(`${path}[${index}] 的 sourcePath 和 evidence 不能为空`);
+    }
+  });
 }
 
 export function ensureVisualGuardrailsMatchesProfile(value, creatorProfile = {}) {
@@ -97,7 +211,6 @@ export function ensureVisualGuardrailsMatchesProfile(value, creatorProfile = {})
 
   const boundaryText = JSON.stringify(value.fixedCharacterBoundary || {});
   const allText = JSON.stringify(value);
-  const forbiddenTerms = collectVisualGuardrailForbiddenTerms(value, fixedProfile);
   const conflictTerms = collectVisualGuardrailRawForbiddenTerms(value)
     .filter((term) => isAllowedByFixedProfile(term, fixedProfile, value));
 
@@ -105,11 +218,11 @@ export function ensureVisualGuardrailsMatchesProfile(value, creatorProfile = {})
   if (!allText.includes(fixedName) && !boundaryText.includes(fixedName)) {
     mismatches.push(`未围绕固定角色「${fixedName}」生成外观规则`);
   }
-  if (!forbiddenTerms.length) {
-    mismatches.push("缺少可用于后续校验的 forbiddenPositiveTraits 或 sourceSurfaceExpressions");
+  if (!value.positivePromptBoundary.length) {
+    mismatches.push("缺少用于后续正向提示词审查的 positivePromptBoundary");
   }
   if (conflictTerms.length) {
-    mismatches.push(`把固定角色已明确允许的特征误列为禁止项：${[...new Set(conflictTerms)].join("、")}`);
+    mismatches.push(`sourceSimilarityRules 与固定角色已明确允许的特征冲突：${[...new Set(conflictTerms)].join("、")}`);
   }
   if (mismatches.length) throw new OutputContractError(`visualGuardrails 未锁定固定角色：${mismatches.join("；")}`);
   return value;
@@ -150,8 +263,10 @@ export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}, crea
   const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
   if (!fixedName) return value;
   const fixedProfile = String(creatorProfile.fixedCharacter || "");
-  const protagonistLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
-  const visibleLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
+  const sourceLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
+  const positiveBoundaryTerms = collectPositivePromptBoundaryTerms(fixedProfile);
+  const protagonistLeakTerms = [...new Set([...sourceLeakTerms, ...positiveBoundaryTerms])];
+  const visibleLeakTerms = protagonistLeakTerms;
   const mismatches = [];
   value.variants.forEach((variant, index) => {
     const label = variant?.id || `V${index + 1}`;
@@ -193,8 +308,10 @@ export function ensureFullStoryMatchesProfile(value, creatorProfile = {}, creati
   if (!fixedName) return value;
 
   const fixedProfile = String(creatorProfile.fixedCharacter || "");
-  const protagonistLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
-  const visibleLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
+  const sourceLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
+  const positiveBoundaryTerms = collectPositivePromptBoundaryTerms(fixedProfile);
+  const protagonistLeakTerms = [...new Set([...sourceLeakTerms, ...positiveBoundaryTerms])];
+  const visibleLeakTerms = protagonistLeakTerms;
   const protagonist = value.characterBible?.protagonist || {};
   const protagonistText = JSON.stringify(protagonist);
   const fullText = JSON.stringify(value);
@@ -230,16 +347,19 @@ export function ensureFullStoryMatchesProfile(value, creatorProfile = {}, creati
   return value;
 }
 
-export function ensureAnimationPlanMatchesProfile(value, creatorProfile = {}, creativeBrief = null, variant = null, visualGuardrails = null) {
+export function ensureAnimationPlanMatchesProfile(value, creatorProfile = {}, creativeBrief = null, variant = null, visualGuardrails = null, context = {}) {
   const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
   if (variant?.id && String(value.selectedVariantId || "") !== String(variant.id)) {
     throw new OutputContractError(`animationPlan.selectedVariantId 必须等于选中的主题变体 ${variant.id}`);
   }
-  if (!fixedName) return value;
+  const semanticContext = { ...context, creatorProfile, creativeBrief, variant, visualGuardrails };
+  if (!fixedName) return ensureAnimationPlanNegativePrompts(value, semanticContext);
 
   const fixedProfile = String(creatorProfile.fixedCharacter || "");
-  const protagonistLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
-  const visibleLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
+  const sourceLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
+  const positiveBoundaryTerms = collectPositivePromptBoundaryTerms(fixedProfile);
+  const protagonistLeakTerms = [...new Set([...sourceLeakTerms, ...positiveBoundaryTerms])];
+  const visibleLeakTerms = protagonistLeakTerms;
   const referenceFields = collectAnimationReferenceFields(value);
   const strictPositiveFields = collectAnimationStrictPositiveFields(value);
   const rulePositiveFields = collectAnimationRuleFields(value);
@@ -265,7 +385,352 @@ export function ensureAnimationPlanMatchesProfile(value, creatorProfile = {}, cr
     mismatches.push(`正向画面提示词复用了禁止表面表达：${formatFieldTermHits(positiveHits)}`);
   }
   if (mismatches.length) throw new OutputContractError(`animationPlan 未锁定固定角色：${mismatches.join("；")}`);
+  return ensureAnimationPlanNegativePrompts(value, semanticContext);
+}
+
+export function pruneAnimationPlanNegativePrompts(value, context = {}) {
+  const plan = value && typeof value === "object" ? value : {};
+  const sourceTerms = collectRenderSourceOnlyTerms(context);
+  return {
+    ...plan,
+    shotPlan: (plan.shotPlan || []).map((shot, shotIndex) => {
+      const negativePrompts = shot?.negativePrompts || {};
+      const pruneMedia = (media) => (Array.isArray(negativePrompts[media]) ? negativePrompts[media] : [])
+        .map((item) => normalizeNegativePromptItem(item))
+        .map((item) => {
+          if (!item) return null;
+          const triggerEvidence = item.triggerEvidence.filter((entry) => isUsableNegativePromptEvidence(entry, {
+            context,
+            plan,
+            shot,
+            shotIndex,
+            media,
+            reasonCode: item.reasonCode
+          }));
+          const candidate = { ...item, triggerEvidence };
+          return isNegativePromptCandidateRelevant(candidate, {
+            context,
+            plan,
+            shot,
+            shotIndex,
+            media,
+            sourceTerms
+          }) ? candidate : null;
+        })
+        .filter(Boolean);
+      return {
+        ...shot,
+        negativePrompts: {
+          image: pruneMedia("image"),
+          video: pruneMedia("video")
+        }
+      };
+    })
+  };
+}
+
+export function ensureAnimationPlanNegativePrompts(value, context = {}) {
+  const sourceTerms = collectRenderSourceOnlyTerms(context);
+  const duplicateSignatures = new Map();
+  (value.shotPlan || []).forEach((shot, shotIndex) => {
+    for (const media of ["image", "video"]) {
+      const items = shot?.negativePrompts?.[media] || [];
+      items.forEach((item, itemIndex) => {
+        if (!isNegativePromptCandidateRelevant(item, {
+          context,
+          plan: value,
+          shot,
+          shotIndex,
+          media,
+          sourceTerms
+        })) {
+          throw new OutputContractError(`animationPlan.shotPlan[${shotIndex}].negativePrompts.${media}[${itemIndex}] 缺少与当前镜头直接相关的有效证据`);
+        }
+      });
+    }
+    const signature = negativePromptSignature(shot?.negativePrompts);
+    if (!signature) return;
+    const previous = duplicateSignatures.get(signature);
+    if (previous) {
+      throw new OutputContractError(`animationPlan 的 ${previous} 与 ${shot?.shotId || `shotPlan[${shotIndex}]`} 使用了完全相同的非空逐镜负面提示词数组`);
+    }
+    duplicateSignatures.set(signature, shot?.shotId || `shotPlan[${shotIndex}]`);
+  });
   return value;
+}
+
+function normalizeNegativePromptItem(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+  return {
+    ...item,
+    text: String(item.text || "").trim(),
+    triggerEvidence: Array.isArray(item.triggerEvidence)
+      ? item.triggerEvidence
+        .filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry))
+        .map((entry) => ({
+          sourcePath: String(entry.sourcePath || "").trim(),
+          evidence: String(entry.evidence || "").trim()
+        }))
+      : []
+  };
+}
+
+function isNegativePromptCandidateRelevant(item, { context, plan, shot, shotIndex, media, sourceTerms }) {
+  if (!item || !String(item.text || "").trim()) return false;
+  if (!negativePromptMedia.has(item.appliesTo) || !negativePromptReasonCodes.has(item.reasonCode) || !negativePromptPriorities.has(item.priority)) return false;
+  if (media === "image" && !["image", "both"].includes(item.appliesTo)) return false;
+  if (media === "video" && !["video", "both"].includes(item.appliesTo)) return false;
+  if (/咕嘎/u.test(item.text)) return false;
+
+  const evidence = (item.triggerEvidence || []).filter((entry) => isUsableNegativePromptEvidence(entry, {
+    context,
+    plan,
+    shot,
+    shotIndex,
+    media,
+    reasonCode: item.reasonCode
+  }));
+  if (!evidence.length || isUnspecifiedFeatureEvidenceOnly(evidence, item.text)) return false;
+
+  const actualReferenceUsed = hasActualVisualReference(context, shot, media);
+  const sourceHits = findTerms(item.text, sourceTerms);
+  if (item.reasonCode === "reference_leak" && !actualReferenceUsed) return false;
+  if (sourceHits.length && (!actualReferenceUsed || item.reasonCode !== "reference_leak")) return false;
+
+  const bodyHits = findTerms(item.text, bodySurfaceTerms);
+  if (bodyHits.length && !bodyTermsHaveConcreteEvidence(bodyHits, evidence)) return false;
+  if (bodyHits.some((term) => /爪|肉垫/u.test(term)) && !limbAnimalizationRiskIsProven(evidence, shot, context, media)) return false;
+
+  return true;
+}
+
+function isUsableNegativePromptEvidence(entry, { context, plan, shot, shotIndex, media, reasonCode }) {
+  const sourcePath = String(entry?.sourcePath || "").trim();
+  const evidence = String(entry?.evidence || "").trim();
+  if (!sourcePath || !evidence) return false;
+
+  const shotMatch = sourcePath.match(/^animationPlan\.(?:shotPlan|shots)\[([^\]]+)\]\.(startFramePrompt|endFramePrompt|videoPrompt|characterAction)$/u);
+  if (shotMatch) {
+    const token = normalizeEvidencePathToken(shotMatch[1]);
+    if (!evidenceShotTokenMatches(token, shot, shotIndex)) return false;
+    return evidenceMatchesSourceValue(shot?.[shotMatch[2]], evidence);
+  }
+
+  const sceneMatch = sourcePath.match(/^fullStory\.sceneScript\[([^\]]+)\]\.(visibleAction|dialogue|shotAndSound|shootingNotes|location|characters)$/u);
+  if (sceneMatch) {
+    const token = normalizeEvidencePathToken(sceneMatch[1]);
+    const scenes = Array.isArray(context.fullStory?.sceneScript) ? context.fullStory.sceneScript : [];
+    const sceneIndex = /^\d+$/u.test(token) ? Number(token) : -1;
+    const scene = sceneIndex >= 0
+      ? scenes[sceneIndex]
+      : scenes.find((item) => String(item?.sceneId || "") === token);
+    if (!scene || !scene[sceneMatch[2]]) return false;
+    if (shot?.sourceSceneId && String(shot.sourceSceneId) !== String(scene.sceneId || token)) return false;
+    return evidenceMatchesSourceValue(scene[sceneMatch[2]], evidence);
+  }
+
+  if (sourcePath === "creatorProfile.fixedCharacter") {
+    return evidenceMatchesSourceValue(context.creatorProfile?.fixedCharacter, evidence);
+  }
+  if (sourcePath === "creatorProfile.constraints") {
+    return false;
+  }
+  const propMatch = sourcePath.match(/^fullStory\.keyProps\[([^\]]+)\]\.(prop|storyFunction|visualUse)$/u);
+  if (propMatch) {
+    const token = normalizeEvidencePathToken(propMatch[1]);
+    const props = Array.isArray(context.fullStory?.keyProps) ? context.fullStory.keyProps : [];
+    const prop = /^\d+$/u.test(token)
+      ? props[Number(token)]
+      : props.find((item) => String(item?.prop || "") === token);
+    return evidenceMatchesSourceValue(prop?.[propMatch[2]], evidence) && shotContainsEvidenceSubject(shot, evidence);
+  }
+  const similarityMatch = sourcePath.match(/^visualGuardrails\.sourceSimilarityRules\[([^\]]+)\]\.(text|sourceExpression)$/u);
+  if (similarityMatch) {
+    const rules = Array.isArray(context.visualGuardrails?.sourceSimilarityRules) ? context.visualGuardrails.sourceSimilarityRules : [];
+    const token = normalizeEvidencePathToken(similarityMatch[1]);
+    const rule = /^\d+$/u.test(token) ? rules[Number(token)] : null;
+    return reasonCode === "reference_leak"
+      && hasActualVisualReference(context, shot, media)
+      && evidenceMatchesSourceValue(rule?.[similarityMatch[2]], evidence);
+  }
+  if (isProviderFailureEvidencePath(sourcePath)) {
+    return providerFailureValues(context).some((value) => evidenceMatchesSourceValue(value, evidence));
+  }
+  if (isActualReferenceEvidencePath(sourcePath)) {
+    return hasActualVisualReference(context, shot, media)
+      && actualReferenceValues(context, shot, media).some((value) => evidenceMatchesSourceValue(value, evidence));
+  }
+  return false;
+}
+
+function normalizeEvidencePathToken(value) {
+  return String(value || "").trim().replace(/^["']|["']$/gu, "");
+}
+
+function evidenceShotTokenMatches(token, shot, shotIndex) {
+  if (token === String(shotIndex)) return true;
+  return token === String(shot?.shotId || "");
+}
+
+function evidenceMatchesSourceValue(sourceValue, evidence) {
+  if (sourceValue === undefined || sourceValue === null) return false;
+  const sourceText = typeof sourceValue === "string" ? sourceValue : JSON.stringify(sourceValue);
+  const normalize = (text) => String(text || "")
+    .toLocaleLowerCase()
+    .replace(/[\s，,。；;：:！!？?、（）()【】\[\]「」『』“”"']/gu, "");
+  const source = normalize(sourceText);
+  const excerpt = normalize(evidence);
+  return excerpt.length >= 2 && (source.includes(excerpt) || excerpt.includes(source));
+}
+
+function isUnspecifiedFeatureEvidenceOnly(evidence, text) {
+  const hasUnspecifiedWording = /未声明|未提及|没有声明|没有提及|未设定|没有设定/u.test(String(text || ""))
+    || evidence.some((entry) => /未声明|未提及|没有声明|没有提及|未设定|没有设定/u.test(entry.evidence));
+  if (!hasUnspecifiedWording) return false;
+  const hasConcreteIndependentEvidence = evidence.some((entry) => {
+    const usesUnspecifiedWording = /未声明|未提及|没有声明|没有提及|未设定|没有设定/u.test(entry.evidence);
+    if (!usesUnspecifiedWording) return true;
+    if (entry.sourcePath === "creatorProfile.fixedCharacter") return false;
+    const remainder = entry.evidence
+      .replace(/用户|固定角色|角色|该特征|此特征|身体特征|外观特征/gu, "")
+      .replace(/未声明|未提及|没有声明|没有提及|未设定|没有设定/gu, "")
+      .replace(/[\s，,。；;：:！!？?、]/gu, "");
+    return remainder.length >= 4 && /镜头|画面|动作|道具|接触|融合|混淆|漂移|变化|增殖|参考|失败|生成/u.test(remainder);
+  });
+  return !hasConcreteIndependentEvidence;
+}
+
+function collectRenderSourceOnlyTerms(context = {}) {
+  const fixedProfile = String(context.creatorProfile?.fixedCharacter || "");
+  const terms = new Set(["企鹅", "企鹅服"]);
+  for (const term of collectProtectedTermsFromBrief(context.creativeBrief, fixedProfile)) terms.add(term);
+  for (const rule of context.visualGuardrails?.sourceSimilarityRules || []) {
+    const term = normalizeProtectedTerm(rule?.sourceExpression);
+    if (term) terms.add(term);
+  }
+  return [...terms].filter((term) => term && !fixedProfile.includes(term));
+}
+
+function bodyTermsHaveConcreteEvidence(bodyHits, evidence) {
+  const evidenceText = evidence.map((entry) => entry.evidence).join("\n");
+  return bodyHits.every((term) => evidenceSupportsBodyTerm(term, evidenceText));
+}
+
+function evidenceSupportsBodyTerm(term, evidenceText) {
+  if (String(evidenceText).includes(term)) return true;
+  if (/爪|肉垫/u.test(term)) return /爪|肉垫/u.test(evidenceText);
+  if (/尾/u.test(term)) return /尾/u.test(evidenceText);
+  if (/鸟喙|鸟嘴/u.test(term)) return /鸟喙|鸟嘴/u.test(evidenceText);
+  if (/脚蹼|蹼/u.test(term)) return /脚蹼|蹼/u.test(evidenceText);
+  return false;
+}
+
+function limbAnimalizationRiskIsProven(evidence, shot, context, media) {
+  const shotText = [shot?.startFramePrompt, shot?.endFramePrompt, shot?.videoPrompt, shot?.characterAction].filter(Boolean).join("\n");
+  const explicitlyShowsLimbs = /手|手指|指尖|脚|足/u.test(shotText);
+  const requestsHumanLimbs = /正常.{0,4}(?:人类)?(?:手|手指|脚|足)|人类(?:手|手指|脚|足)|五指/u.test(shotText);
+  const provenFailure = evidence.some((entry) => isProviderFailureEvidencePath(entry.sourcePath)) && hasProviderFailureRecords(context);
+  const referencePollution = evidence.some((entry) => isActualReferenceEvidencePath(entry.sourcePath) || /reference|参考|sourceSimilarityRules/u.test(entry.sourcePath))
+    && hasActualVisualReference(context, shot, media);
+  return explicitlyShowsLimbs && requestsHumanLimbs && (provenFailure || referencePollution);
+}
+
+function shotContainsEvidenceSubject(shot, evidence) {
+  const shotText = [shot?.startFramePrompt, shot?.endFramePrompt, shot?.videoPrompt, shot?.characterAction].filter(Boolean).join("\n");
+  if (!shotText) return false;
+  const subjects = String(evidence || "").split(/[，,。；;：:\s、]/u).filter((part) => part.length >= 2);
+  return subjects.some((part) => shotText.includes(part));
+}
+
+function isProviderFailureEvidencePath(sourcePath) {
+  return /(?:provider|供应商).*(?:failure|失败)|(?:failure|失败).*(?:provider|供应商)|provenProviderFailure|generationFailures?/iu.test(sourcePath);
+}
+
+function hasProviderFailureRecords(context = {}) {
+  return providerFailureValues(context).some(hasMeaningfulSignal);
+}
+
+function providerFailureValues(context = {}) {
+  return [
+    context.providerFailures,
+    context.providerFailureRecords,
+    context.generationFailures,
+    context.provenProviderFailures
+  ].filter(hasMeaningfulSignal);
+}
+
+function isActualReferenceEvidencePath(sourcePath) {
+  return /actualReferenceInputs?|renderReferenceInputs?|referenceInputsUsed|providerRequest\.(?:images?|videos?|reference)/iu.test(sourcePath);
+}
+
+function hasActualVisualReference(context = {}, shot = {}, media = "") {
+  const mediaReferences = context.actualReferenceInputs?.[media]
+    || context.renderReferenceInputs?.[media]
+    || context.referenceInputsUsed?.[media];
+  return [
+    context.actualReferenceUsed,
+    context.referenceInputUsed,
+    mediaReferences,
+    context.actualReferenceInputs,
+    context.renderReferenceInputs,
+    context.referenceInputsUsed,
+    context.referenceUsage,
+    context.generationRequest?.referenceInputs,
+    context.providerRequest?.referenceInputs,
+    context.providerRequest?.images,
+    context.providerRequest?.videos,
+    shot?.actualReferenceInputs,
+    shot?.renderReferenceInputs,
+    shot?.referenceInputsUsed
+  ].some(hasMeaningfulSignal);
+}
+
+function actualReferenceValues(context = {}, shot = {}, media = "") {
+  const mediaReferences = context.actualReferenceInputs?.[media]
+    || context.renderReferenceInputs?.[media]
+    || context.referenceInputsUsed?.[media];
+  return [
+    mediaReferences,
+    context.actualReferenceInputs,
+    context.renderReferenceInputs,
+    context.referenceInputsUsed,
+    context.referenceUsage,
+    context.generationRequest?.referenceInputs,
+    context.providerRequest?.referenceInputs,
+    context.providerRequest?.images,
+    context.providerRequest?.videos,
+    shot?.actualReferenceInputs,
+    shot?.renderReferenceInputs,
+    shot?.referenceInputsUsed
+  ].filter(hasMeaningfulSignal);
+}
+
+function hasMeaningfulSignal(value) {
+  if (value === true) return true;
+  if (!value) return false;
+  if (typeof value === "string") return Boolean(value.trim()) && !/^(?:false|none|null|not[_ -]?used|not[_ -]?supported|未使用|不支持|无)$/iu.test(value.trim());
+  if (Array.isArray(value)) return value.some(hasMeaningfulSignal);
+  if (typeof value === "object") return Object.values(value).some(hasMeaningfulSignal);
+  return false;
+}
+
+function negativePromptSignature(negativePrompts = {}) {
+  const normalize = (items) => (items || [])
+    .map((item) => JSON.stringify({
+      text: String(item?.text || "").trim(),
+      appliesTo: item?.appliesTo,
+      reasonCode: item?.reasonCode,
+      priority: item?.priority,
+      enabled: item?.enabled !== false,
+      triggerEvidence: (item?.triggerEvidence || [])
+        .map((entry) => ({ sourcePath: entry?.sourcePath || "", evidence: entry?.evidence || "" }))
+        .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+    }))
+    .sort();
+  const image = normalize(negativePrompts.image);
+  const video = normalize(negativePrompts.video);
+  if (!image.length && !video.length) return "";
+  return JSON.stringify({ image, video });
 }
 
 export function extractFixedCharacterName(fixedCharacter) {
@@ -348,14 +813,12 @@ export function collectProtectedTermsFromBrief(brief, fixedProfile = "") {
 
 export function collectForbiddenVisualTerms(brief, fixedProfile = "", visualGuardrails = null) {
   const terms = new Set(collectProtectedTermsFromBrief(brief, fixedProfile));
-  const guardrailTerms = collectVisualGuardrailForbiddenTerms(visualGuardrails, fixedProfile);
-  if (guardrailTerms.length) {
-    for (const term of guardrailTerms) terms.add(term);
-  } else {
-    for (const term of incompatibleBodySurfaceTerms(fixedProfile)) terms.add(term);
-    for (const term of incompatibleProtagonistSurfaceTerms(fixedProfile)) terms.add(term);
-  }
+  for (const term of collectVisualGuardrailForbiddenTerms(visualGuardrails, fixedProfile)) terms.add(term);
   return [...terms].filter((term) => term && !isAllowedByFixedProfile(term, fixedProfile, visualGuardrails));
+}
+
+function collectPositivePromptBoundaryTerms(fixedProfile = "") {
+  return incompatibleBodySurfaceTerms(fixedProfile);
 }
 
 export function collectVisualGuardrailForbiddenTerms(visualGuardrails, fixedProfile = "") {
@@ -377,12 +840,8 @@ export function collectVisualGuardrailAllowedTerms(visualGuardrails, fixedProfil
 
 function collectVisualGuardrailRawForbiddenTerms(visualGuardrails) {
   const terms = new Set();
-  for (const item of visualGuardrails?.forbiddenPositiveTraits || []) {
-    for (const term of extractGuardrailTerms(item)) terms.add(term);
-  }
-  for (const item of visualGuardrails?.sourceSurfaceExpressions || []) {
-    if (item?.mustAvoid === false) continue;
-    for (const term of extractGuardrailTerms(item)) terms.add(term);
+  for (const item of visualGuardrails?.sourceSimilarityRules || []) {
+    for (const term of extractGuardrailTerms({ sourceExpression: item?.sourceExpression })) terms.add(term);
   }
   return [...terms];
 }
@@ -472,9 +931,6 @@ function collectAnimationRuleFields(value = {}) {
   const fields = [];
   pushArrayFields(fields, "visualBible.worldRules", value.visualBible?.worldRules);
   pushArrayFields(fields, "visualBible.characterConsistencyRules", value.visualBible?.characterConsistencyRules);
-  (value.sceneReferencePrompts || []).forEach((item, index) => {
-    pushArrayFields(fields, `sceneReferencePrompts[${index}].negativeSceneRules`, item?.negativeSceneRules);
-  });
   (value.shotPlan || []).forEach((shot, index) => {
     pushField(fields, `shotPlan[${index}].storyPurpose`, shot?.storyPurpose);
     pushField(fields, `shotPlan[${index}].emotionalTarget`, shot?.emotionalTarget);
@@ -607,14 +1063,13 @@ export function collectFixedCharacterVisualPolicy(fixedCharacter = "") {
 
 export function fixedCharacterVisualPolicyText(fixedCharacter = "") {
   const fixedProfile = String(fixedCharacter || "");
-  const { allowedBodyTerms, forbiddenBodyTerms } = collectFixedCharacterVisualPolicy(fixedProfile);
+  const { allowedBodyTerms } = collectFixedCharacterVisualPolicy(fixedProfile);
   const hasEarOnlySignal = /[狼猫狐兔]耳|兽耳/u.test(fixedProfile);
   const allowedText = allowedBodyTerms.length ? allowedBodyTerms.join("、") : "无额外动物化身体特征";
-  const forbiddenText = forbiddenBodyTerms.length ? forbiddenBodyTerms.join("、") : "无";
   const earNote = hasEarOnlySignal
-    ? "耳朵类设定只代表用户写明的耳朵/发箍式耳朵；尾巴、爪子、肉垫、翅膀等必须另有明写才可使用。"
-    : "任何动物化身体特征都必须由固定角色文本明写后才可使用。";
-  return `允许正向使用的身体特征：${allowedText}。禁止自动新增未声明的身体特征：${forbiddenText}。${earNote}`;
+    ? "耳朵类设定只授权用户写明的耳朵表现，不代表可以扩展其他身体结构。"
+    : "任何额外身体特征都必须由固定角色文本明确授权后才可写入正向提示词。";
+  return `允许正向使用的身体特征：${allowedText}。未授权信息保持不写，不得据此生成渲染负面提示词。${earNote}`;
 }
 
 function assertNoTerms(text, terms, label) {

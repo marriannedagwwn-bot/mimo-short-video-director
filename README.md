@@ -225,6 +225,8 @@ npm run exec:video -- ./production/V1 \
   --capability first_last_frame_video_generation
 ```
 
+渲染负面提示词只来自当前 `shot.negativePrompts.image/video`；每个条目必须携带 `triggerEvidence`、`reasonCode`、`priority` 和媒介范围，数组可以为空。worker 回执通过 `negativePromptDelivery.appliedMode` 区分原生字段 `native_negative`、改写为正向身份锁定 `positive_constraint` 和不支持 `not_supported`，并附带脱敏 `requestPreview`。完整契约见 [docs/workflow-spec.md](docs/workflow-spec.md)，猫娘案例与供应商请求快照见 [docs/negative-prompt-refactor-examples.md](docs/negative-prompt-refactor-examples.md)。
+
 视频片段生成完成后，推荐用本地后处理 worker 做基础质检和最终剪辑。最终剪辑依赖本机 `ffmpeg`：
 
 ```bash

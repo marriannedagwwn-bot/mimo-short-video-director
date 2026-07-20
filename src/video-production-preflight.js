@@ -171,6 +171,27 @@ function genericHttpConfigIssues(run = {}, requestsByTaskId = new Map(), command
         suggestion: endpointSuggestion(capability)
       });
     }
+    const negativeRequests = ready
+      .map((job) => requestsByTaskId.get(job.taskId))
+      .filter((request) => request?.capability === capability && requestHasNegativePrompt(request));
+    if (negativeRequests.length) {
+      const support = negativePromptSupportFor(capability, config);
+      if (support.mode === "not_supported") {
+        issues.push({
+          severity: "warning",
+          code: "negative_prompt_not_supported",
+          message: `${capability} 有 ${negativeRequests.length} 个 ready 任务包含负向 prompt，但当前 bodyTemplate 未映射负向字段，供应商请求会忽略这些条目。`,
+          suggestion: "在模板中映射 {{request.compiledNegativePrompt}} / {{request.negativePrompt}}，或配置 negativePromptFields.<capability>。"
+        });
+      } else if (support.mode === "positive_constraint") {
+        issues.push({
+          severity: "warning",
+          code: "negative_prompt_positive_constraint",
+          message: `${capability} 使用 ${support.preset}，不发送独立 negative prompt；仅 high + explicit_identity_conflict 条目会改写为正向身份锁定，其余条目会被忽略。`,
+          suggestion: "执行后检查 provider receipt 的 negativePromptDelivery 和脱敏 requestPreview。"
+        });
+      }
+    }
   }
   if (capabilities.length && !hasApiKey(config)) {
     issues.push({
@@ -181,6 +202,51 @@ function genericHttpConfigIssues(run = {}, requestsByTaskId = new Map(), command
     });
   }
   return issues;
+}
+
+function requestHasNegativePrompt(request = {}) {
+  if (String(request.compiledNegativePrompt || request.negativePrompt || "").trim()) return true;
+  return Array.isArray(request.negativePromptEntries)
+    && request.negativePromptEntries.some((entry) => entry?.enabled !== false && String(entry?.text || entry || "").trim());
+}
+
+function negativePromptSupportFor(capability, config = {}) {
+  const template = config.bodyTemplates?.[capability] || config.bodyTemplate;
+  if (template) {
+    const mapped = templateMapsNegativePrompt(template) || negativePromptFieldsFor(capability, config).length > 0;
+    return { mode: mapped ? "native_negative" : "not_supported", preset: "custom_template" };
+  }
+  const preset = presetFor(capability, config);
+  if (capability === "first_last_frame_video_generation" && ["modelark", "modelark_content_generation", "dreamina", "jimeng"].includes(preset)) {
+    return { mode: "positive_constraint", preset };
+  }
+  if (capability === "first_last_frame_video_generation" && ["kling", "kling_image_to_video", "kling_image2video", "klingai"].includes(preset)) {
+    return { mode: "native_negative", preset };
+  }
+  return { mode: "native_negative", preset: preset || "generic_default" };
+}
+
+function templateMapsNegativePrompt(template) {
+  if (Array.isArray(template)) return template.some(templateMapsNegativePrompt);
+  if (template && typeof template === "object") return Object.values(template).some(templateMapsNegativePrompt);
+  return typeof template === "string"
+    && /\{\{\s*request\.(?:compiledNegativePrompt|negativePrompt)\s*\}\}/u.test(template);
+}
+
+function negativePromptFieldsFor(capability, config = {}) {
+  const configured = config.negativePromptFields;
+  let value = configured;
+  if (configured && !Array.isArray(configured) && typeof configured === "object") {
+    value = configured[capability] ?? configured.default ?? configured.field;
+  }
+  if (value === undefined || value === null || value === "") value = config.negativePromptField;
+  if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
+  if (value && typeof value === "object") value = value.field || value.path || "";
+  return value ? [String(value).trim()].filter(Boolean) : [];
+}
+
+function presetFor(capability, config = {}) {
+  return String(config.presets?.[capability] || config.providerPreset || config.preset || process.env.VIDEO_HTTP_PRESET || "").trim().toLowerCase();
 }
 
 function endpointFor(capability, config = {}) {
