@@ -1,4 +1,3 @@
-import { buildVideoGenerationQueue, formatQueueJsonl } from "./animation-queue.js";
 import { syncShotCharacterReference } from "./character-reference-sync.js";
 import { compileShotNegativePrompt } from "./negative-prompts.js";
 import { buildShotFrameImagePrompt, compileShotFrameNegativePrompt } from "./shot-frame-prompt.js";
@@ -76,7 +75,7 @@ const elements = {
   selectedVariantSummary: $("#selectedVariantSummary"), storyStatus: $("#storyStatus"),
   storyGenerate: $("#generateFullStory"), fullStory: $("#fullStoryResult"), backToResults: $("#backToResults"),
   animationGenerate: $("#generateAnimationPlan"), animationStatus: $("#animationStatus"), animationPlan: $("#animationPlanResult"),
-  exportStoryPackage: $("#exportStoryPackage"), copyAnimationPack: $("#copyAnimationPack"), exportVideoQueue: $("#exportVideoQueue"),
+  exportStoryPackage: $("#exportStoryPackage"), copyAnimationPack: $("#copyAnimationPack"),
   importStoryPackage: $("#importStoryPackage"), exportStoryTestPackage: $("#exportStoryTestPackage"),
   storyPackageFile: $("#storyPackageFile"), storyPackageStatus: $("#storyPackageStatus"),
   characterImageModal: $("#characterImageModal"), closeCharacterImageModal: $("#closeCharacterImageModal"),
@@ -114,7 +113,7 @@ const MODEL_STAGE_DEFS = [
   { key: "animationPlan", label: "动画生产包", hint: "首尾帧、镜头与视频提示词" },
   { key: "characterReference", label: "人物图修正", hint: "根据上传图片修正角色描述" },
   { key: "imageGeneration", label: "图片生成", hint: "角色参考图、镜头首尾帧图片", providerLocked: true, optional: true },
-  { key: "shotVideo", label: "首尾帧视频", hint: "单镜头图生视频候选", providerLocked: true, optional: true }
+  { key: "shotVideo", label: "首尾帧视频", hint: "可灵单镜头首尾帧视频候选", providerLocked: true, optional: true }
 ];
 const MEDIA_INPUT_MODEL_STAGES = new Set(["analysis", "reconstruction", "visualGuardrails", "characterReference"]);
 const MODEL_OPTION_CATALOG = {
@@ -130,7 +129,7 @@ const MODEL_OPTION_CATALOG = {
     imageGeneration: ["doubao-seedream-5-0-260128", "seedream-5-0-lite-260128"]
   },
   VideoHTTP: {
-    shotVideo: ["kling-v2-1", "dreamina-seedance-2-0-260128", "seedance-1-0-lite-i2v-250428", "seedance-1-0-pro-i2v-250528"]
+    shotVideo: ["kling-v2-1"]
   }
 };
 
@@ -194,7 +193,6 @@ function bindEvents() {
   elements.animationGenerate.addEventListener("click", () => generateAnimationPlan({ force: true }));
   elements.exportStoryPackage.addEventListener("click", exportCurrentStoryPackage);
   elements.copyAnimationPack.addEventListener("click", copyAnimationProductionPack);
-  elements.exportVideoQueue.addEventListener("click", exportVideoGenerationQueue);
   elements.importStoryPackage.addEventListener("click", () => elements.storyPackageFile.click());
   elements.exportStoryTestPackage.addEventListener("click", exportStoryTestPackage);
   elements.storyPackageFile.addEventListener("change", (event) => {
@@ -882,12 +880,6 @@ async function generateAnimationPlan({ force = false } = {}) {
 function renderAnimationPlan(data) {
   const strategy = data.productionStrategy || {};
   const visual = data.visualBible || {};
-  const queue = buildVideoGenerationQueue({
-    exportedAt: new Date().toISOString(),
-    selectedVariant: selectedVariant() || {},
-    fullStory: currentFullStory(),
-    animationPlan: data
-  });
   elements.animationPlan.innerHTML = `${resultHeader("ANIMATION PLAN", data.title || "首尾帧动画生产包", strategy.format || "first_last_frame_video")}
     <div class="summary-strip">${escape(strategy.whyThisWorkflow || "按首尾帧拆镜头，逐镜生成短视频，优先控制角色一致性。")}</div>
     <div class="data-grid">
@@ -927,7 +919,7 @@ function renderAnimationPlan(data) {
       <div class="tag-row">${(shot.acceptanceCriteria || []).map((item) => `<span class="tag">${escape(item)}</span>`).join("")}</div>
       <div class="shot-video-action">
         <div class="shot-action-row">
-          <button class="outline-button shot-video-button" type="button" data-generate-shot-video="${escape(shot.shotId)}"${state.shotVideoResults[shot.shotId]?.status === "running" ? " disabled" : ""}>生成此镜头视频</button>
+          <button class="outline-button shot-video-button" type="button" data-generate-shot-video="${escape(shot.shotId)}"${state.shotVideoResults[shot.shotId]?.status === "running" ? " disabled" : ""}>用可灵 AI 生成此镜头视频</button>
           <button class="outline-button shot-video-button" type="button" data-open-shot-frame-generator="${escape(shot.shotId)}"${shotFrameIsRunning(shot.shotId) ? " disabled" : ""}>生成首尾帧</button>
         </div>
         <div class="shot-frame-result" data-shot-frame-result="${escape(shot.shotId)}">${renderShotFrameResult(shot.shotId)}</div>
@@ -942,8 +934,6 @@ function renderAnimationPlan(data) {
       ${cell("开头结尾", data.editPlan?.hookAndEndingNotes)}
       ${cell("模型无关说明", (data.modelAgnosticNotes || []).join("；"))}
     </div>`)}
-    ${block("视频生成任务队列", renderQueueSummary(queue))}
-    ${block("本地制作步骤", renderLocalProductionGuide(queue))}
     ${block("生成验收清单", `<div class="rule-list">${(data.generationChecklist || []).map((item) => `<div class="rule"><strong>${escape(item.check)}</strong><p>${escape(item.passCriteria)}</p></div>`).join("")}</div>`)}
     <div class="warning-box"><b>动画连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
     ${uncertainties(data.uncertainties)}`;
@@ -1555,12 +1545,12 @@ function updateShotVideoGeneratorPreview() {
   const { shot } = context;
   const count = Math.max(1, Math.min(4, Number(state.shotVideoGeneration.count) || Number(elements.shotVideoCount.value) || 1));
   elements.shotVideoCount.value = String(count);
-  elements.shotVideoModalTitle.textContent = `生成 ${shot.shotId || "镜头"} 视频`;
+  elements.shotVideoModalTitle.textContent = `用可灵 AI 生成 ${shot.shotId || "镜头"} 视频`;
   elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || 4} 秒 · 自动锁定已添加的首帧/尾帧`;
   elements.shotVideoReferenceList.innerHTML = renderShotVideoReferenceList(shotId);
   elements.shotVideoPromptPreview.value = buildShotVideoPromptPreview(shot);
   const hasFrames = Boolean(selectedShotFrameCandidate(shotId, "start") && selectedShotFrameCandidate(shotId, "end"));
-  setShotVideoStatus(hasFrames ? "确认提示词和数量后即可生成视频。" : "请先生成并选择该镜头的首帧和尾帧参考图。", hasFrames ? "" : "error");
+  setShotVideoStatus(hasFrames ? "确认提示词和数量后即可交给可灵 AI 生成。" : "请先生成并选择该镜头的首帧和尾帧参考图。", hasFrames ? "" : "error");
   elements.confirmGenerateShotVideo.disabled = !hasFrames;
   return true;
 }
@@ -1580,7 +1570,7 @@ async function confirmGenerateShotVideo() {
   const count = Math.max(1, Math.min(4, Number(elements.shotVideoCount.value) || 1));
   state.shotVideoGeneration.count = count;
   setShotVideoGeneratorRunning(true);
-  setShotVideoStatus(`正在生成 ${count} 条视频候选…`, "active");
+  setShotVideoStatus(`可灵 AI 正在生成 ${count} 条视频候选…`, "active");
   try {
     await generateShotVideo(shotId, prompt, { count, throwOnError: true });
     const actualCount = state.shotVideoResults[shotId]?.result?.videos?.length || count;
@@ -1599,7 +1589,7 @@ function setShotVideoGeneratorRunning(running) {
   elements.confirmGenerateShotVideo.disabled = running;
   elements.closeShotVideoModal.disabled = running;
   elements.confirmGenerateShotVideo.classList.toggle("running", running);
-  elements.confirmGenerateShotVideo.querySelector("span").textContent = running ? "视频生成中…" : "生成视频";
+  elements.confirmGenerateShotVideo.querySelector("span").textContent = running ? "可灵 AI 生成中…" : "用可灵 AI 生成";
 }
 
 function setShotVideoStatus(message, tone = "") {
@@ -1619,7 +1609,7 @@ function renderShotVideoReferenceList(shotId) {
       ${frame("首帧", start)}
       ${frame("尾帧", end)}
     </div>
-    <p class="shot-video-reference-note">生成视频时会把这两张图片连同右侧视频提示词一起上传给视频模型。</p>
+    <p class="shot-video-reference-note">生成视频时会把这两张已选图片连同右侧视频提示词一起传给可灵 AI。</p>
   </div>`;
 }
 
@@ -1640,10 +1630,10 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
   const shot = (plan?.shotPlan || []).find((item) => String(item.shotId) === String(shotId));
   if (!shot) return setAnimationStatus("没有找到对应镜头。", "error");
   const count = Math.max(1, Math.min(4, Number(options.count) || 1));
-  state.shotVideoResults[shotId] = { status: "running", message: `正在调用视频生成服务 · ${count} 条…`, expectedCount: count };
+  state.shotVideoResults[shotId] = { status: "running", message: `正在调用可灵 AI · ${count} 条…`, expectedCount: count };
   updateShotVideoResult(shotId);
   renderShotVideoModalResults();
-  setAnimationStatus(`正在生成 ${shotId} 镜头视频 · ${count} 条候选…`, "active");
+  setAnimationStatus(`正在用可灵 AI 生成 ${shotId} 镜头视频 · ${count} 条候选…`, "active");
   try {
     const startFrame = selectedShotFrameCandidate(shotId, "start");
     const endFrame = selectedShotFrameCandidate(shotId, "end");
@@ -1720,7 +1710,7 @@ function renderShotVideoModalResults() {
   const selectedIndex = Number.isFinite(Number(stateItem.selectedIndex ?? stateItem.result?.selectedIndex)) ? Number(stateItem.selectedIndex ?? stateItem.result?.selectedIndex) : 0;
   elements.shotVideoResults.innerHTML = videos.map((video, index) => `<div class="generated-reference-card shot-video-candidate${index === selectedIndex ? " selected" : ""}">
     <video src="${escape(video.outputUrl || video.url || "")}" controls playsinline></video>
-    <small>候选 ${escape(index + 1)} · ${escape(video.model || stateItem.result?.model || "视频模型")} · ${escape(video.generatedAt || stateItem.result?.generatedAt || "")}</small>
+    <small>候选 ${escape(index + 1)} · ${escape(video.model || stateItem.result?.model || "可灵 AI")} · ${escape(video.generatedAt || stateItem.result?.generatedAt || "")}</small>
     <button class="outline-button" type="button" data-use-shot-video="${escape(shotId)}" data-candidate-index="${escape(index)}">${index === selectedIndex ? "已设为当前镜头视频" : "设为当前镜头视频"}</button>
   </div>`).join("");
 }
@@ -1860,7 +1850,7 @@ function renderOneShotFramePreview(shotId, frameKind, stateItem) {
 
 function renderShotVideoResult(shotId) {
   const stateItem = state.shotVideoResults[shotId];
-  if (!stateItem) return "<p>配置视频供应商后，可直接生成该镜头视频。</p>";
+  if (!stateItem) return "<p>先选择首帧和尾帧，即可用可灵 AI 生成该镜头视频。</p>";
   if (stateItem.status === "running") return `<p class="active">生成中：正在生成 ${escape(stateItem.expectedCount || 1)} 条视频候选…</p>`;
   if (stateItem.status === "error") return `<p class="error">${escape(stateItem.message)}</p>`;
   const startFrameUrl = stateItem.result?.startFrameUrl || "";
@@ -1897,116 +1887,6 @@ function cell(label, value) { return `<div class="data-cell"><span>${label}</spa
 function uncertainties(items = []) { return items.length ? `<div class="warning-box"><b>待确认：</b> ${items.map((item) => escape(item.reason || item.unknown)).join("；")}</div>` : ""; }
 function joinParts(object = {}, keys = []) { return keys.map((key) => object?.[key]).filter(Boolean).join(" · "); }
 function reveal(element) { element.classList.remove("hidden"); }
-
-function renderQueueSummary(queue) {
-  const counts = countBy(queue.jobs || [], "type");
-  const typeLabels = {
-    reference_image: "角色参考图",
-    asset_image: "关键资产图",
-    start_frame_image: "首帧图",
-    end_frame_image: "尾帧图",
-    first_last_frame_video: "首尾帧视频",
-    quality_check: "质检",
-    final_edit: "最终剪辑"
-  };
-  const chips = Object.entries(typeLabels)
-    .map(([type, label]) => `<span class="queue-chip"><b>${escape(counts[type] || 0)}</b>${escape(label)}</span>`)
-    .join("");
-  const orderedJobs = (queue.jobs || []).filter((job) => ["reference_image", "asset_image", "first_last_frame_video", "quality_check", "final_edit"].includes(job.type));
-  return `<div class="queue-panel">
-    <div class="queue-overview">${chips}</div>
-    <div class="queue-meta">
-      <span>队列版本 ${escape(queue.version)}</span>
-      <span>${escape(queue.common?.aspectRatio || "9:16")}</span>
-      <span>${escape(queue.common?.targetRuntimeSeconds || 60)} 秒</span>
-      <span>${escape(queue.providerMode || "provider_agnostic")}</span>
-    </div>
-    <div class="queue-job-list">${orderedJobs.map((job) => `<div class="queue-job">
-      <strong>${escape(job.taskId)} · ${escape(typeLabels[job.type] || job.type)}</strong>
-      <p>${escape(job.inputType)} → ${escape(job.outputKey)}${job.requiredInputs?.length ? `<br>依赖：${escape(job.requiredInputs.join(" / "))}` : ""}</p>
-    </div>`).join("")}</div>
-  </div>`;
-}
-
-function renderLocalProductionGuide(queue = {}) {
-  const runId = localRunId(queue.selectedVariantId || "V1");
-  const queueFilename = `视频任务队列-${runId}.jsonl`;
-  const productionRoot = `./production/${runId}`;
-  const commandWorker = "./workers/generic-http-worker.mjs";
-  const postprocessWorker = "./workers/local-postprocess-worker.mjs";
-  const steps = [
-    {
-      label: "1",
-      title: "导出任务队列",
-      body: `点击“导出视频任务队列 JSONL”，然后把下载文件改名为 ${queueFilename} 并放到项目根目录。`,
-      command: null
-    },
-    {
-      label: "2",
-      title: "生成本地制作工作区",
-      body: "把每个图像、视频、质检、最终剪辑任务拆成 request JSON、prompt card 和输出目录。",
-      command: `npm run plan:video -- ./${queueFilename} --root ${productionRoot} --workspace`
-    },
-    {
-      label: "3",
-      title: "先跑 mock 验证链路",
-      body: "只验证依赖、输出路径、收据和最终剪辑链路；不会生成真实视频。",
-      command: `npm run exec:video -- ${productionRoot} --provider mock --all`
-    },
-    {
-      label: "4",
-      title: "真实执行前预检",
-      body: "检查是否还残留 mock/占位产物、ready 任务是否会吃到 mock 输入，以及 HTTP worker endpoint/key 是否已配置。",
-      command: `npm run preflight:video -- ${productionRoot} --strict`
-    },
-    {
-      label: "5",
-      title: "一键制作到最终视频",
-      body: "配置 provider config 后，一条命令串起预检、图像/首尾帧视频生成、本地质检和 ffmpeg 合成。",
-      command: `npm run make:video -- ${productionRoot} --config ./provider.json`
-    },
-    {
-      label: "6",
-      title: "分段调试命令",
-      body: "如果某一段失败，可以拆开执行：先生成素材和视频片段，再本地质检和合成。",
-      command: `npm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${commandWorker} --all --capability image_generation --capability first_last_frame_video_generation\nnpm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${postprocessWorker} --all --capability video_quality_review --capability video_assembly`
-    },
-    {
-      label: "7",
-      title: "查看进度或重试失败任务",
-      body: "失败任务会留下 .error.json，修好 worker 或模型参数后可以只重试失败项。",
-      command: `npm run report:video -- ${productionRoot}\nnpm run preflight:video -- ${productionRoot} --strict\nnpm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${commandWorker} --all --retry-failed --capability image_generation --capability first_last_frame_video_generation\nnpm run exec:video -- ${productionRoot} --provider command --command node --command-arg ${postprocessWorker} --all --retry-failed --capability video_quality_review --capability video_assembly`
-    }
-  ];
-  return `<div class="production-guide">
-    <p class="long-copy">这一步把浏览器生成的首尾帧计划落到本地制作流水线。当前项目已经支持 mock 执行和 command worker；真实视频生成需要把 worker 接到你选定的图像/视频模型。</p>
-    <div class="production-step-list">${steps.map((step) => `<div class="production-step">
-      <span class="step-badge">${escape(step.label)}</span>
-      <div>
-        <strong>${escape(step.title)}</strong>
-        <p>${escape(step.body)}</p>
-        ${step.command ? `<pre class="command-box"><code>${escape(step.command)}</code></pre>` : ""}
-      </div>
-    </div>`).join("")}</div>
-  </div>`;
-}
-
-function localRunId(value) {
-  return String(value || "V1")
-    .trim()
-    .replace(/\s+/g, "_")
-    .replace(/[^\p{L}\p{N}_-]+/gu, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 32) || "V1";
-}
-
-function countBy(items, key) {
-  return items.reduce((acc, item) => {
-    const value = item?.[key] || "";
-    acc[value] = (acc[value] || 0) + 1;
-    return acc;
-  }, {});
-}
 
 function setStage(stage, status) {
   const element = document.querySelector(`[data-stage="${stage}"]`);
@@ -2126,12 +2006,20 @@ function withModelOverrides(body = {}) {
   return Object.keys(overrides).length ? { ...body, modelOverrides: overrides } : body;
 }
 function sanitizedModelOverrides() {
-  return Object.fromEntries(Object.entries(state.modelOverrides || {}).filter(([, value]) => value?.provider && value?.model));
+  const allowedStages = new Set(MODEL_STAGE_DEFS.map((stage) => stage.key));
+  return Object.fromEntries(Object.entries(state.modelOverrides || {}).filter(([stage, value]) => (
+    allowedStages.has(stage)
+    && value?.provider
+    && value?.model
+    && modelAllowedForStage(value.model, value.provider, stage)
+  )));
 }
 function sanitizeStoredModelOverrides(overrides = {}) {
+  const allowedStages = new Set(MODEL_STAGE_DEFS.map((stage) => stage.key));
   return Object.fromEntries(Object.entries(overrides).filter(([stage, value]) => {
+    if (!allowedStages.has(stage)) return false;
     if (!value?.provider || !value?.model) return false;
-    return !(MEDIA_INPUT_MODEL_STAGES.has(stage) && value.provider === "Qwen" && isKnownQwenTextOnlyModel(value.model));
+    return modelAllowedForStage(value.model, value.provider, stage);
   }));
 }
 function isKnownQwenTextOnlyModel(model = "") {
@@ -2200,6 +2088,7 @@ function providerDefaultModel(provider, stageKey) {
 }
 function modelAllowedForStage(model, provider, stageKey) {
   if (!model) return false;
+  if (stageKey === "shotVideo") return provider === "VideoHTTP" && /^kling(?:-|$)/iu.test(model);
   if (provider !== "Qwen" || !MEDIA_INPUT_MODEL_STAGES.has(stageKey)) return true;
   return !isKnownQwenTextOnlyModel(model) && /(?:plus|vl|omni)/iu.test(model);
 }
@@ -2290,7 +2179,6 @@ function selectedStoryPackage() {
     shotFrameResults: state.shotFrameResults || {},
     shotVideoResults: state.shotVideoResults || {}
   };
-  if (pack.animationPlan) pack.videoGenerationQueue = buildVideoGenerationQueue(pack);
   return pack;
 }
 
@@ -2301,7 +2189,6 @@ function updateStoryExportActions() {
   elements.exportStoryPackage.disabled = !hasStory;
   elements.exportStoryTestPackage.disabled = !hasStory;
   elements.copyAnimationPack.disabled = !hasAnimation;
-  elements.exportVideoQueue.disabled = !hasAnimation;
 }
 
 function exportJson() {
@@ -2357,7 +2244,7 @@ function restoreStoryPackage(payload) {
   }
   if (payload.modelInfo) {
     if (payload.modelInfo.overrides && typeof payload.modelInfo.overrides === "object") {
-      state.modelOverrides = payload.modelInfo.overrides;
+      state.modelOverrides = sanitizeStoredModelOverrides(payload.modelInfo.overrides);
       localStorage.setItem("directorModelOverrides", JSON.stringify(state.modelOverrides));
     } else {
       state.storyProvider = payload.modelInfo.storyProvider || state.storyProvider;
@@ -2425,25 +2312,13 @@ function setStoryPackageStatus(message, tone = "") {
   elements.storyPackageStatus.className = tone;
 }
 
-function exportVideoGenerationQueue() {
-  const pack = selectedStoryPackage();
-  if (!pack?.videoGenerationQueue) return setAnimationStatus("请先生成动画生产包，再导出视频任务队列。", "error");
-  const jsonl = formatQueueJsonl(pack.videoGenerationQueue);
-  const url = URL.createObjectURL(new Blob([jsonl], { type: "application/x-ndjson" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `视频任务队列-${pack.selectedVariant?.id || "variant"}-${Date.now()}.jsonl`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
 async function copyAnimationProductionPack() {
   const pack = selectedStoryPackage();
-  if (!pack?.animationPlan) return setAnimationStatus("请先生成动画生产包，再复制给视频模型使用。", "error");
+  if (!pack?.animationPlan) return setAnimationStatus("请先生成动画生产包，再复制给供应商程序使用。", "error");
   const text = formatAnimationPackMarkdown(pack);
   try {
     await navigator.clipboard.writeText(text);
-    setAnimationStatus("已复制视频模型生产包，可直接粘贴到图像/视频生成工具。", "ready");
+    setAnimationStatus("已复制动画生产包 Markdown，可直接粘贴到供应商程序。", "ready");
   } catch {
     setAnimationStatus("浏览器拒绝访问剪贴板，请使用“导出当前生产包 JSON”。", "error");
   }

@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildVideoGenerationQueue } from "../public/animation-queue.js";
 import { compileShotFrameNegativePrompt } from "../public/shot-frame-prompt.js";
 import { buildJimengImageRequestBody, buildJimengImageRequestReceipt } from "../src/jimeng-client.js";
 import { mockAnimationPlan, mockVisualGuardrails } from "../src/mock.js";
@@ -178,17 +177,14 @@ test("不同 shot 不得无差别复制完全相同的非空负面数组", () =>
   assert.throws(() => ensureAnimationPlanNegativePrompts(plan, context), /完全相同的非空逐镜负面提示词数组/);
 });
 
-test("任务队列只编译当前 shot、当前媒介且已启用的负面词", () => {
+test("首尾帧图片只编译当前 shot 中已启用的图片负面词", () => {
   const context = buildContext({ actions: ["小白子拿起透明玻璃幻灯片，对着夕阳观察。"] });
   const plan = validatePlan(buildPlan(context), context);
   plan.shotPlan[0].negativePrompts.image[1].enabled = false;
-  const queue = buildVideoGenerationQueue({ selectedVariant: variant, fullStory: context.fullStory, animationPlan: plan });
-  const start = queue.jobs.find((job) => job.type === "start_frame_image");
-  const video = queue.jobs.find((job) => job.type === "first_last_frame_video");
-  assert.equal(start.compiledNegativePrompt, "手指与透明玻璃片融合");
-  assert.doesNotMatch(start.compiledNegativePrompt, /手机屏幕|动作过程/u);
-  assert.match(video.compiledNegativePrompt, /拿起过程|动作过程/u);
-  assert.doesNotMatch(video.compiledNegativePrompt, /手机屏幕/u);
+  const compiled = compileShotFrameNegativePrompt(plan.shotPlan[0]);
+  assert.equal(compiled.compiledNegativePrompt, "手指与透明玻璃片融合");
+  assert.deepEqual(compiled.negativePromptEntries.map((entry) => entry.text), ["手指与透明玻璃片融合"]);
+  assert.doesNotMatch(compiled.compiledNegativePrompt, /手机屏幕|动作过程/u);
 });
 
 test("不支持独立 negative 字段的即梦不伪造字段，回执明确转换与忽略结果", () => {

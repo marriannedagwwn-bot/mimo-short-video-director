@@ -116,7 +116,7 @@ flowchart LR
 2. 按 `fullStory.sceneScript` 每 2 场分批生成仅含 `{ "shotPlan": [...] }` 的镜头结果。每批只能覆盖指定 `sourceSceneId`，且 shot 必须使用基础阶段锁定的对应 `sceneId`。当前批会与前面已通过的镜头一起校验；包括跨批重复负面词在内的错误，都只使用现有纠偏机制重试当前批。
 3. 服务端按剧情顺序合并，统一编号 `A01...`，同步重写逐镜负面词的 shot 证据路径，重算 `sceneReferencePrompts.relatedShotIds`，然后再执行一次完整 `animationPlan` 契约、正向边界和负面词相关性校验。
 
-分阶段结果是服务端私有结构，不写入前端状态、导出文件或任务队列。前端仍只读取合并后的原 `animationPlan` 结构。
+分阶段结果是服务端私有结构，不写入前端状态或导出文件。前端和外部供应商程序仍只读取合并后的原 `animationPlan` 结构。
 
 每条逐镜渲染负面词必须包含：
 
@@ -125,112 +125,18 @@ flowchart LR
 - `triggerEvidence`：一个或多个 `{ sourcePath, evidence }`，指向固定角色、当前分场动作、当前 shot prompt、真实参考输入或真实供应商失败记录；
 - `reasonCode`：仅允许 `explicit_identity_conflict`、`shot_object_confusion`、`shot_interaction_failure`、`temporal_consistency_failure`、`reference_leak`、`proven_provider_failure`；
 - `priority`：`high`、`medium` 或 `low`；
-- 可选 `enabled`：设为 `false` 时不下发。
+- 可选 `enabled`：设为 `false` 时表示停用，内置单镜头生成和外部供应商程序都不应将它编译进请求。
 
 图片和视频数组都允许为 `[]`，不设最少条目数。没有可解析证据、仅以“用户未声明/未提及”为理由、媒介不匹配、把台词规则混入画面、或在没有实际原片参考输入时使用 `reference_leak` 的候选项，会在工作流相关性裁剪中删除；保留下来的非法结构会触发现有模型纠偏重试。不同 shot 不得无差别复制同一组负面词。
 
-剧情页必须提供两个生产出口：
+剧情页必须提供两个供应商交付出口：
 
-- JSON 导出：保留完整结构化数据，供后续自动视频队列或外部工具读取。
-- Markdown 复制：把角色参考、场景参考、资产提示词和逐镜首尾帧/video prompt 合并成可直接粘贴到视频生成工具的生产包。
-- JSONL 任务队列导出：将 `animationPlan` 拆成机器可读任务，任务类型包括 `reference_image`、`scene_reference_image`、`asset_image`、`start_frame_image`、`end_frame_image`、`first_last_frame_video`、`quality_check` 和 `final_edit`。`final_edit` 依赖所有逐镜视频输出和质检结果，负责按 `editPlan` 生成最终竖屏短片。
+- JSON 导出：保留完整剧情、选中变体、合并后的 `animationPlan`、模型信息和已选首尾帧图片，供外部程序结构化读取。
+- Markdown 复制：把角色参考、场景参考、资产提示词和逐镜首帧／尾帧／`videoPrompt` 整理成可直接粘贴到供应商程序的生产包。
 
-浏览器导出的生产包或 JSONL 队列可以继续通过本地命令生成生产运行状态：
+页面内保留单镜头可灵 AI 试片链路。用户为当前 shot 选定首帧和尾帧后，`POST /api/generate-shot-video` 会将两张图、`videoPrompt`、镜头参数和当前 `negativePrompts.video` 发送给可灵 `image2video`。可灵 preset 使用 `image`、`image_tail`、`prompt` 和 `negative_prompt`，支持异步轮询、下载 mp4 及 1–4 个候选结果。回执的 `negativePromptDelivery` 和脱敏 `requestPreview` 用于核对负面词是否真实写入 `negative_prompt`。
 
-```bash
-npm run plan:video -- ./视频任务队列.jsonl --out ./production/V1/production-run.json --root ./production/V1
-```
-
-该运行状态不会调用具体供应商 API，只负责解析任务依赖、标记可执行任务、列出阻塞输入和建议产物路径；后续真实视频 API worker 应读取同一份运行状态并写回产物。
-
-如果要进入手动制作或 API worker 开发，可以使用 `--workspace` 物料化生产工作区：
-
-```bash
-npm run plan:video -- ./视频任务队列.jsonl --root ./production/V1 --workspace
-```
-
-该命令会生成：
-
-- `README.md`：当前可执行任务、任务类型统计和执行顺序。
-- `production-run.json`：机器可读运行状态。
-- `prompts/**/<taskId>.md`：逐任务 prompt 卡，包含依赖输入、正向 prompt、负向 prompt、验收标准和原始任务 JSON。
-- `requests/**/<taskId>.json`：供应商无关请求包，包含能力类型、依赖产物路径、输出路径、参数、验收标准、已过滤的 `negativePromptEntries` 和 `compiledNegativePrompt`，供后续 API worker 消费。
-- `outputs/**/`：按任务类型划分的建议产物目录。
-
-制作过程中可以反复运行：
-
-```bash
-npm run plan:video -- ./视频任务队列.jsonl --root ./production/V1 --workspace --scan-existing
-```
-
-`--scan-existing` 会扫描预期 `outputs/` 路径上的非空文件，自动把对应任务标记为 `done`，并重新计算下一批 `ready` 任务；这使人工制作和未来 API worker 都能通过落盘产物推进同一条依赖链。
-
-本地执行器入口：
-
-```bash
-npm run exec:video -- ./production/V1 --provider mock --all
-```
-
-当前 `mock` provider 只生成占位产物和执行回执，用于验证 ready → done → 释放下一批任务的链路；真实图像/视频 provider 必须遵守同一份 request JSON 输入、outputPath 落盘和 `production-run.json` 状态刷新约定。
-
-真实执行前预检：
-
-```bash
-npm run preflight:video -- ./production/V1 --strict
-```
-
-预检会检查 mock/占位产物是否已经被标记为 `done`、ready 任务是否依赖 mock 输入、generic HTTP worker 是否缺少对应 capability 的 endpoint/API key。这样可以避免 mock 链路验证后的占位文件被误送进真实视频模型。
-
-一键制作入口：
-
-```bash
-npm run make:video -- ./production/V1 --config ./provider.json
-```
-
-`make:video` 会先执行预检，再调用通用 HTTP worker 生成图像和首尾帧视频，最后调用本地后处理 worker 做基础质检与 ffmpeg 合成。分段执行命令仍可用于调试和重试。
-
-外部 API worker 可通过 `command` provider 接入：
-
-```bash
-npm run exec:video -- ./production/V1 --provider command --command node --command-arg ./workers/generic-http-worker.mjs --all --capability image_generation --capability first_last_frame_video_generation
-```
-
-执行器为每个 ready 任务调用外部命令，并追加 `--request`、`--output`、`--receipt`、`--root` 参数，同时注入 `VIDEO_TASK_REQUEST`、`VIDEO_TASK_OUTPUT`、`VIDEO_TASK_RECEIPT`、`VIDEO_TASK_ROOT`、`VIDEO_TASK_ID`、`VIDEO_TASK_CAPABILITY` 环境变量。worker 只要读取 request JSON、调用具体供应商并把结果写入 `--output`，主执行器就会通过落盘产物继续推进依赖链。
-
-通用 HTTP worker 位于 `workers/generic-http-worker.mjs`，支持分能力 endpoint、data URL 输入、异步任务轮询和 mediaUrl/base64 产物写入，推荐只执行 `image_generation` 和 `first_last_frame_video_generation`。视频片段完成后，用 `workers/local-postprocess-worker.mjs` 执行 `video_quality_review` 和 `video_assembly`，本地通过基础检查和 ffmpeg 生成最终成片。占位协议模板位于 `workers/command-worker-template.mjs`，详细协议见 `docs/video-worker-protocol.md`。
-
-供应商回执必须包含脱敏的 `requestPreview` 和 `negativePromptDelivery`，明确记录 `compiledNegativePrompt`、实际请求字段、是否被忽略及以下应用模式：
-
-| provider 路径 | 独立 negative 支持 | 字段 / 策略 | `appliedMode` |
-| --- | --- | --- | --- |
-| Kling `kling_image_to_video` | 支持 | `negative_prompt` | `native_negative` |
-| 通用默认请求 | 支持，由适配端确认 | `negativePrompt` | `native_negative` |
-| 自定义 body template | 仅模板显式映射时支持 | 模板中的实际字段 | `native_negative` 或 `not_supported` |
-| ModelArk / Dreamina 内容生成 | 不支持独立字段 | 仅高优先级身份冲突可改写成正向身份锁定，其余忽略 | `positive_constraint` 或 `not_supported` |
-| 即梦 / Seedream 图片接口 | 不支持独立字段 | 仅高优先级身份冲突可改写成正向身份锁定，其余忽略 | `positive_constraint` 或 `not_supported` |
-
-当当前媒介数组为空时，原生字段不会发送空字符串；回执保留 provider 支持能力并标记 `appliedMode=not_applied`。
-
-不支持独立负面词时不得伪造字段，也不得通过 `rawRequest` 旁路泄漏。`requestPreview` 必须遮盖鉴权信息、data URL/base64 和带敏感查询参数的 URL。
-
-本次重构的猫娘 visualGuardrails 前后 JSON、三个 shot 对比以及图片/视频供应商脱敏请求快照见 `docs/negative-prompt-refactor-examples.md`。对应回归测试位于 `test/negative-prompts.test.js`，实际 HTTP 字段传递快照位于 `test/workflow.test.js`。
-
-失败任务会写入 `<output>.error.json`，并在状态刷新后显示为 `failed`；其下游任务继续保持 `blocked`。`--continue-on-error` 可让互不依赖的其它 ready 任务继续执行；修复 worker 或供应商问题后，可用 `--retry-failed` 清理失败回执并重试。
-
-生产状态报告入口：
-
-```bash
-npm run report:video -- ./production/V1
-```
-
-报告包含总进度、按类型统计、ready 任务、failed 任务错误摘要、blocked 任务缺失依赖、最终成片路径和下一步建议命令；`--json` 可输出机器可读结果。
-
-项目不绑定唯一供应商；已提供 Kling、ModelArk/Dreamina 和通用/自定义 HTTP 路径。接入真实账号前，需要明确：
-
-- 视频模型是否支持首尾帧、单首帧图生视频，还是只支持文生视频。
-- 首帧/尾帧图片由哪个图像模型生成，是否需要角色参考图或 LoRA/一致性参考。
-- 视频任务的异步轮询、失败重试、候选片数量、存储路径和人工挑片规则。
-- 每个镜头是否允许自动重试，以及重试时优先修改 prompt、首尾帧还是视频参数。
+仓库不提供 JSONL 任务队列、production workspace、批量执行器、本地质检、失败队列重试或 ffmpeg 成片合成。整片批量生成时，外部供应商程序负责把 `shotPlan[]` 中的首尾帧、`videoPrompt`、`negativePrompts.video` 和验收标准映射到它自身的请求协议。
 
 ## 3. 模型与媒体策略
 

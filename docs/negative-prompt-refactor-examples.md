@@ -167,34 +167,11 @@
 
 这里没有鸟喙、脚蹼、鳍、羽毛、其它尾巴、企鹅或台词词汇；A01/A03 没有明确生成风险，所以保持空数组。
 
-## 3. 脱敏后的供应商请求示例
+## 3. 单镜头可灵请求快照
 
-通用图片 provider 显式支持独立 `negativePrompt` 时：
+仓库保留页面内的单镜头首尾帧生成链路。对于 A02，服务端只编译当前 shot 中 `enabled !== false` 且 `appliesTo` 为 `video` 或 `both` 的条目，并通过 `kling_image_to_video` preset 把它们写入 `negative_prompt`。
 
-```json
-{
-  "model": "[REDACTED_MODEL]",
-  "prompt": "小白子拿起透明玻璃幻灯片，对着夕阳观察",
-  "negativePrompt": "手指与透明玻璃片融合；玻璃幻灯片被错误生成成手机屏幕",
-  "parameters": { "aspectRatio": "9:16", "frameKind": "start" },
-  "inputArtifacts": []
-}
-```
-
-```json
-{
-  "negativePromptDelivery": {
-    "supported": true,
-    "appliedMode": "native_negative",
-    "providerField": "negativePrompt",
-    "compiledNegativePrompt": "手指与透明玻璃片融合；玻璃幻灯片被错误生成成手机屏幕",
-    "ignored": [],
-    "providerIgnored": false
-  }
-}
-```
-
-Kling 首尾帧视频 preset：
+脱敏后的实际可灵请求体示例：
 
 ```json
 {
@@ -208,21 +185,29 @@ Kling 首尾帧视频 preset：
 }
 ```
 
+供应商回执中的传递证明：
+
 ```json
 {
+  "provider": "generic-http-worker",
+  "capability": "first_last_frame_video_generation",
   "negativePromptDelivery": {
     "supported": true,
     "appliedMode": "native_negative",
     "providerField": "negative_prompt",
     "compiledNegativePrompt": "拿起过程中手指与透明玻璃片融合；玻璃幻灯片在动作过程中变形",
-    "ignored": [],
-    "providerIgnored": false
+    "appliedText": "拿起过程中手指与透明玻璃片融合；玻璃幻灯片在动作过程中变形",
+    "providerIgnored": false,
+    "ignored": []
   },
   "requestPreview": {
-    "image": "[REDACTED_BASE64]",
-    "image_tail": "[REDACTED_BASE64]"
+    "body": {
+      "image": "[REDACTED_BASE64]",
+      "image_tail": "[REDACTED_BASE64]",
+      "negative_prompt": "拿起过程中手指与透明玻璃片融合；玻璃幻灯片在动作过程中变形"
+    }
   }
 }
 ```
 
-ModelArk/Dreamina 视频和即梦图片没有独立 negative 字段。对上述“手与玻璃片融合/玻璃片变形”条目，它们必须返回 `appliedMode: "not_supported"` 并列入 `ignored`，不能向请求体伪造字段。只有 `priority: "high"` 且 `reasonCode: "explicit_identity_conflict"` 的极少量条目可以改写为正向身份锁定，并标记 `positive_constraint`。
+回归测试会同时检查可灵 POST 请求体、轮询返回的 mp4 和回执快照，因此这一结论不只依赖 LLM 输出。该能力仅用于页面单镜头试片；JSONL 任务队列、整片批处理、本地质检和成片合成仍不在仓库内。

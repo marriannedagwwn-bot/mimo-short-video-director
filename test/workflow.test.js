@@ -4,8 +4,6 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { WorkflowService } from "../src/workflow.js";
 import { getConfig } from "../src/config.js";
 import { InputError, OutputContractError } from "../src/validation.js";
@@ -19,12 +17,6 @@ import { generateShotVideo, ShotVideoConfigError, ShotVideoProviderError } from 
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
 import { collectFixedCharacterVisualPolicy, extractFixedCharacterName, fixedCharacterVisualPolicyText } from "../src/validation.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockVisualGuardrails } from "../src/mock.js";
-import { executeProductionWorkspace } from "../src/video-production-executor.js";
-import { formatMakeVideoMarkdown, makeProductionVideo } from "../src/video-production-maker.js";
-import { buildProductionReport, formatProductionReportMarkdown, loadProductionReport } from "../src/video-production-report.js";
-import { formatProductionPreflightMarkdown, loadProductionPreflight } from "../src/video-production-preflight.js";
-import { buildArtifactsFromExistingOutputs, buildProductionRun, buildProductionWorkspaceFiles, parseQueueJsonl } from "../src/video-production-run.js";
-import { buildVideoGenerationQueue, formatQueueJsonl } from "../public/animation-queue.js";
 import { syncShotCharacterReference } from "../public/character-reference-sync.js";
 import { shotRelatedCharacterReferences, uploadedReferenceImages } from "../public/shot-reference-images.js";
 
@@ -32,7 +24,6 @@ const frames = Array.from({ length: 8 }, (_, index) => ({
   timestamp: index * 5,
   dataUrl: "data:image/jpeg;base64,AA=="
 }));
-const execFileAsync = promisify(execFile);
 const closeServer = (server) => new Promise((resolve, reject) => {
   server.close((error) => error ? reject(error) : resolve());
 });
@@ -43,27 +34,6 @@ const input = {
   creatorProfile: { fixedCharacter: "阿岚，社区修理师", vertical: "家电维修", constraints: "60 秒内" },
   count: 3
 };
-
-function buildQueueFixture() {
-  const creativeBrief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  const variant = {
-    id: "V1",
-    title: "最后一格电",
-    characterSetup: { protagonist: "阿岚，社区修理师", careRecipient: "独居老人", helper: "夜班便利店员" },
-    newTask: "修复并送回旧设备",
-    emotionalMedium: "一段旧录音",
-    environmentPressure: "暴雨停电",
-    endingRitual: "老人按下播放键"
-  };
-  const fullStory = mockFullStory({ ...input, creativeBrief, variant });
-  const animationPlan = mockAnimationPlan({ ...input, creativeBrief, variant, fullStory });
-  return buildVideoGenerationQueue({
-    exportedAt: "2026-06-25T00:00:00.000Z",
-    selectedVariant: variant,
-    fullStory,
-    animationPlan
-  });
-}
 
 function stagedAnimationResponse(plan, prompt = "") {
   if (prompt.includes("本阶段只生成可供所有镜头批次复用")) return animationFoundationFixture(plan);
@@ -499,542 +469,83 @@ test("人物参考图同步不会把地点所有者写成出场角色", () => {
   assert.doesNotMatch(plan.shotPlan[1].startFramePrompt, /外婆（和蔼的老年女性[^）]+）院子/);
 });
 
-test("动画生产包可转换为视频生成任务队列", () => {
-  const queue = buildQueueFixture();
-  assert.equal(queue.providerMode, "provider_agnostic");
-  assert.equal(queue.selectedVariantId, "V1");
-  assert.ok(queue.jobs.some((job) => job.type === "reference_image"));
-  assert.ok(queue.jobs.some((job) => job.type === "start_frame_image"));
-  assert.ok(queue.jobs.some((job) => job.type === "end_frame_image"));
-  assert.ok(queue.jobs.some((job) => job.type === "first_last_frame_video"));
-  assert.ok(queue.jobs.some((job) => job.type === "quality_check"));
-  assert.ok(queue.jobs.some((job) => job.type === "final_edit"));
-  const videoJob = queue.jobs.find((job) => job.type === "first_last_frame_video");
-  assert.deepEqual(videoJob.requiredInputs, [`frames.${videoJob.shotId}.start`, `frames.${videoJob.shotId}.end`]);
-  assert.deepEqual(videoJob.negativePromptEntries, []);
-  assert.equal(videoJob.compiledNegativePrompt, "");
-  assert.deepEqual(queue.jobs.find((job) => job.type === "start_frame_image").negativePromptEntries, []);
-  const videoOutputs = queue.jobs.filter((job) => job.type === "first_last_frame_video").map((job) => job.outputKey);
-  const reviewOutputs = queue.jobs.filter((job) => job.type === "quality_check").map((job) => job.outputKey);
-  const finalEditJob = queue.jobs.find((job) => job.type === "final_edit");
-  assert.deepEqual(finalEditJob.requiredInputs, [...videoOutputs, ...reviewOutputs]);
-  assert.match(finalEditJob.prompt, /竖屏短片|字幕|音乐音效/);
-  const jsonl = formatQueueJsonl(queue);
-  assert.equal(jsonl.split("\n").length, queue.jobs.length);
-  assert.equal(JSON.parse(jsonl.split("\n")[0]).taskId, queue.jobs[0].taskId);
-});
-
-test("视频任务队列不再合并 visualGuardrails 通用负面 prompt", () => {
-  const creatorProfile = { fixedCharacter: "小白子，q版狼耳少女，有狼尾巴", vertical: "治愈日常", constraints: "" };
-  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  const variant = {
-    id: "V1",
-    title: "风车",
-    characterSetup: { protagonist: creatorProfile.fixedCharacter, careRecipient: "奶奶", helper: "叔叔" },
-    newTask: "送风车",
-    emotionalMedium: "手工风车",
-    environmentPressure: "阵雨",
-    endingRitual: "插好风车"
-  };
-  const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief });
-  visualGuardrails.positivePromptBoundary.push({
-    rule: "正向提示词不得擅自添加彩虹披风。",
-    triggerEvidence: [{ sourcePath: "creatorProfile.fixedCharacter", evidence: creatorProfile.fixedCharacter }],
-    severity: "block"
-  });
-  const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant, visualGuardrails });
-  const animationPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory, visualGuardrails });
-  const queue = buildVideoGenerationQueue({
-    exportedAt: "2026-06-25T00:00:00.000Z",
-    selectedVariant: variant,
-    fullStory,
-    animationPlan,
-    visualGuardrails
-  });
-
-  const sceneJob = queue.jobs.find((job) => job.type === "scene_reference_image");
-  assert.ok(sceneJob);
-  assert.equal(sceneJob.capability || "image_generation", "image_generation");
-  const firstFrameJob = queue.jobs.find((job) => job.type === "start_frame_image");
-  assert.ok(firstFrameJob.requiredInputs.includes(sceneJob.outputKey));
-  assert.equal(Object.hasOwn(queue.common, "negativeVisualRules"), false);
-  for (const job of queue.jobs.filter((item) => ["reference_image", "start_frame_image", "end_frame_image", "first_last_frame_video"].includes(item.type))) {
-    assert.doesNotMatch(job.compiledNegativePrompt, /彩虹披风/);
-    assert.deepEqual(job.negativePromptEntries, []);
-  }
-});
-
-test("视频生产运行状态按任务依赖释放下一步", () => {
-  const queue = buildQueueFixture();
-  const initialRun = buildProductionRun(queue, { createdAt: "2026-06-25T00:00:00.000Z", outputRoot: "production/V1" });
-  assert.equal(initialRun.counts.done, 0);
-	  assert.ok(initialRun.nextTaskIds.includes("REF-01"));
-	  assert.ok(initialRun.nextTaskIds.includes("ASSET-01"));
-	  assert.ok(initialRun.nextTaskIds.includes("SCENE-01"));
-	  assert.equal(initialRun.jobs.find((job) => job.type === "start_frame_image").status, "blocked");
-  assert.equal(initialRun.jobs.find((job) => job.type === "final_edit").status, "blocked");
-
-	  const referenceOutputs = queue.jobs
-	    .filter((job) => job.type === "reference_image" || job.type === "asset_image" || job.type === "scene_reference_image")
-	    .map((job) => job.outputKey);
-  const frameRun = buildProductionRun(queue, { completedOutputs: referenceOutputs });
-  assert.ok(frameRun.jobs.filter((job) => job.type === "start_frame_image").every((job) => job.status === "ready"));
-  assert.ok(frameRun.jobs.filter((job) => job.type === "end_frame_image").every((job) => job.status === "ready"));
-  assert.ok(frameRun.jobs.filter((job) => job.type === "first_last_frame_video").every((job) => job.status === "blocked"));
-
-	  const videoReadyOutputs = queue.jobs
-	    .filter((job) => ["reference_image", "asset_image", "scene_reference_image", "start_frame_image", "end_frame_image"].includes(job.type))
-	    .map((job) => job.outputKey);
-  const videoRun = buildProductionRun(queue, { completedOutputs: videoReadyOutputs });
-  assert.ok(videoRun.jobs.filter((job) => job.type === "first_last_frame_video").every((job) => job.status === "ready"));
-
-  const videoAndReviewOutputs = queue.jobs
-    .filter((job) => job.type === "first_last_frame_video" || job.type === "quality_check")
-    .map((job) => job.outputKey);
-  const finalRun = buildProductionRun(queue, { completedOutputs: [...videoReadyOutputs, ...videoAndReviewOutputs] });
-  assert.equal(finalRun.jobs.find((job) => job.type === "final_edit").status, "ready");
-
-  const parsed = parseQueueJsonl(formatQueueJsonl(queue));
-  assert.equal(parsed.jobs.length, queue.jobs.length);
-});
-
-test("视频生产运行状态可从已存在输出路径自动识别完成产物", () => {
-  const queue = buildQueueFixture();
-  const initialRun = buildProductionRun(queue, { outputRoot: "production/V1" });
-	  const existingOutputPaths = initialRun.jobs
-	    .filter((job) => job.type === "reference_image" || job.type === "asset_image" || job.type === "scene_reference_image")
-	    .map((job) => job.outputPath);
-  const artifacts = buildArtifactsFromExistingOutputs(queue, {
-    outputRoot: "production/V1",
-    existingOutputPaths
-  });
-  assert.equal(Object.keys(artifacts).length, existingOutputPaths.length);
-  const scannedRun = buildProductionRun(queue, { outputRoot: "production/V1", artifacts });
-	  assert.ok(scannedRun.jobs.filter((job) => job.type === "reference_image" || job.type === "asset_image" || job.type === "scene_reference_image").every((job) => job.status === "done"));
-  assert.ok(scannedRun.jobs.filter((job) => job.type === "start_frame_image").every((job) => job.status === "ready"));
-});
-
-test("视频生产运行状态可从失败回执识别 failed 任务", () => {
-  const queue = buildQueueFixture();
-  const initialRun = buildProductionRun(queue, { outputRoot: "production/V1" });
-  const failedJob = initialRun.jobs.find((job) => job.type === "reference_image");
-  const artifacts = buildArtifactsFromExistingOutputs(queue, {
-    outputRoot: "production/V1",
-    existingFailurePaths: [failedJob.failurePath]
-  });
-  const scannedRun = buildProductionRun(queue, { outputRoot: "production/V1", artifacts });
-  assert.equal(scannedRun.jobs.find((job) => job.taskId === failedJob.taskId).status, "failed");
-  assert.ok(scannedRun.jobs.filter((job) => job.type === "start_frame_image").some((job) => job.status === "blocked"));
-});
-
-test("视频生产工作区导出 README、运行状态和逐任务 prompt 卡", () => {
-  const queue = buildQueueFixture();
-  const run = buildProductionRun(queue, {
-    createdAt: "2026-06-25T00:00:00.000Z",
-    outputRoot: "production/V1"
-  });
-  const files = buildProductionWorkspaceFiles(queue, run);
-  assert.ok(files.some((file) => file.path === "production/V1/README.md" && file.content.includes("执行顺序")));
-  assert.ok(files.some((file) => file.path === "production/V1/production-run.json" && file.content.includes('"nextTaskIds"')));
-  const promptCards = files.filter((file) => file.path.includes("/prompts/") && file.path.endsWith(".md"));
-  const requestFiles = files.filter((file) => file.path.includes("/requests/") && file.path.endsWith(".json"));
-  assert.equal(promptCards.length, queue.jobs.length);
-  assert.equal(requestFiles.length, queue.jobs.length);
-  const videoCard = promptCards.find((file) => file.path.includes("first_last_frame_video"));
-  assert.match(videoCard.content, /正向 Prompt/);
-  assert.match(videoCard.content, /依赖输入/);
-  assert.match(videoCard.content, /验收标准/);
-  const videoRequest = JSON.parse(requestFiles.find((file) => file.path.includes("first_last_frame_video")).content);
-  assert.equal(videoRequest.capability, "first_last_frame_video_generation");
-  assert.equal(videoRequest.inputArtifacts.length, 2);
-  assert.ok(videoRequest.inputArtifacts.every((item) => item.path.includes("/outputs/")));
-  const finalCard = promptCards.find((file) => file.path.includes("final_edit"));
-  assert.match(finalCard.content, /最终剪辑/);
-  assert.match(finalCard.content, /quality_check|reviews\./);
-  const finalRequest = JSON.parse(requestFiles.find((file) => file.path.includes("final_edit")).content);
-  assert.equal(finalRequest.capability, "video_assembly");
-  assert.ok(finalRequest.inputArtifacts.some((item) => item.outputKey.startsWith("reviews.")));
-});
-
-test("mock 视频生产执行器可按依赖链跑完整个工作区", async () => {
-  const queue = buildQueueFixture();
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-exec-"));
-  const run = buildProductionRun(queue, {
-    createdAt: "2026-06-26T00:00:00.000Z",
-    outputRoot: root
-  });
-  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
-
-  const result = await executeProductionWorkspace({ root, provider: "mock", all: true });
-  assert.equal(result.executed.length, queue.jobs.length);
-  assert.equal(result.run.counts.done, queue.jobs.length);
-  assert.equal(result.run.counts.ready, 0);
-  assert.equal(result.run.counts.blocked, 0);
-  const finalJob = result.run.jobs.find((job) => job.type === "final_edit");
-  const finalBody = await fs.readFile(finalJob.outputPath, "utf8");
-  assert.match(finalBody, /MOCK ARTIFACT/);
-  const finalReceipt = JSON.parse(await fs.readFile(`${finalJob.outputPath}.mock.json`, "utf8"));
-  assert.equal(finalReceipt.capability, "video_assembly");
-});
-
-test("command 视频生产执行器可调用外部 worker 生成产物", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-command-"));
-  const workerPath = path.join(root, "worker.mjs");
-  const queue = {
-    version: "test",
-    providerMode: "provider_agnostic",
-    title: "command worker test",
-    selectedVariantId: "V1",
-    jobs: [
-      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" },
-      { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", requiredInputs: ["references.hero"], prompt: "首帧" }
-    ]
-  };
-  const run = buildProductionRun(queue, { outputRoot: root });
-  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
-  await fs.writeFile(workerPath, `
-import fs from "node:fs/promises";
-const args = process.argv.slice(2);
-const value = (flag) => args[args.indexOf(flag) + 1];
-const requestPath = value("--request");
-const outputPath = value("--output");
-const receiptPath = value("--receipt");
-const request = JSON.parse(await fs.readFile(requestPath, "utf8"));
-await fs.writeFile(outputPath, "worker output:" + request.taskId + ":" + process.env.VIDEO_TASK_CAPABILITY);
-await fs.writeFile(receiptPath, JSON.stringify({ provider: "command-test", taskId: request.taskId, capability: request.capability }) + "\\n");
-`);
-
-  const result = await executeProductionWorkspace({
-    root,
-    provider: "command",
-    command: process.execPath,
-    commandArgs: [workerPath],
-    all: true
-  });
-  assert.equal(result.executed.length, 2);
-  assert.equal(result.run.counts.done, 2);
-  const startJob = result.run.jobs.find((job) => job.taskId === "S01-START");
-  assert.match(await fs.readFile(startJob.outputPath, "utf8"), /worker output:S01-START:image_generation/);
-  const receipt = JSON.parse(await fs.readFile(`${startJob.outputPath}.provider.json`, "utf8"));
-  assert.equal(receipt.provider, "command-test");
-});
-
-test("内置 command worker 模板可作为 command provider 执行任务", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-template-"));
-  const queue = {
-    version: "test",
-    providerMode: "provider_agnostic",
-    title: "template worker test",
-    selectedVariantId: "V1",
-    jobs: [
-      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" }
-    ]
-  };
-  const run = buildProductionRun(queue, { outputRoot: root });
-  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
-
-  const result = await executeProductionWorkspace({
-    root,
-    provider: "command",
-    command: process.execPath,
-    commandArgs: ["workers/command-worker-template.mjs"],
-    all: true
-  });
-  assert.equal(result.run.counts.done, 1);
-  const output = await fs.readFile(result.run.jobs[0].outputPath, "utf8");
-  assert.match(output, /PLACEHOLDER ARTIFACT/);
-  const receipt = JSON.parse(await fs.readFile(`${result.run.jobs[0].outputPath}.provider.json`, "utf8"));
-  assert.equal(receipt.provider, "command-worker-template");
-});
-
-test("通用 HTTP worker 可调用供应商接口生成图片产物", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-http-image-"));
+test("单镜头首尾帧视频可通过通用 HTTP worker 传递逐镜负面词", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-http-"));
   let receivedBody = null;
-  let receivedAuth = "";
-  const server = http.createServer(async (request, response) => {
+  const provider = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     receivedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    receivedAuth = request.headers.authorization || "";
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ data: { b64_json: Buffer.from("http image bytes").toString("base64") } }));
+    response.end(JSON.stringify({ data: { videoBase64: Buffer.from("shot video bytes").toString("base64") } }));
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => closeServer(server));
-  const address = server.address();
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  t.after(() => closeServer(provider));
+  const address = provider.address();
   const configPath = path.join(root, "provider.json");
   await fs.writeFile(configPath, JSON.stringify({
-    endpoints: { image_generation: `http://127.0.0.1:${address.port}/images` },
-    apiKey: "test-key",
-    model: "test-image-model"
+    videoEndpoint: `http://127.0.0.1:${address.port}/videos`,
+    videoModel: "provider-video-model",
+    apiKey: "test-key"
   }));
-  const queue = {
-    version: "test",
-    providerMode: "provider_agnostic",
-    title: "generic http image worker test",
-    selectedVariantId: "V1",
-    jobs: [
-      {
-        taskId: "REF-01",
-        type: "reference_image",
-        inputType: "text_to_image",
-        outputKey: "references.hero",
-        prompt: "角色参考图",
-        negativePromptEntries: [{
-          text: "角色身份漂移",
-          appliesTo: "image",
-          triggerEvidence: [{ sourcePath: "creatorProfile.fixedCharacter", evidence: "阿岚，社区修理师" }],
-          reasonCode: "explicit_identity_conflict",
-          priority: "high",
-          enabled: true
-        }],
-        compiledNegativePrompt: "角色身份漂移"
-      }
-    ]
-  };
-  const run = buildProductionRun(queue, { outputRoot: root });
-  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
+  const frameDataUrl = `data:image/png;base64,${Buffer.from("frame image bytes").toString("base64")}`;
 
-  const result = await executeProductionWorkspace({
-    root,
-    provider: "command",
-    command: process.execPath,
-    commandArgs: ["workers/generic-http-worker.mjs", "--config", configPath],
-    all: true
-  });
-  assert.equal(result.run.counts.done, 1);
-  assert.equal(receivedAuth, "Bearer test-key");
-  assert.equal(receivedBody.prompt, "角色参考图");
-  assert.equal(receivedBody.negativePrompt, "角色身份漂移");
-  assert.equal(receivedBody.model, "test-image-model");
-  assert.match(await fs.readFile(result.run.jobs[0].outputPath, "utf8"), /http image bytes/);
-  const receipt = JSON.parse(await fs.readFile(`${result.run.jobs[0].outputPath}.provider.json`, "utf8"));
-  assert.equal(receipt.provider, "generic-http-worker");
-  assert.equal(receipt.resultKind, "base64");
-  assert.deepEqual(receipt.negativePromptDelivery, {
-    supported: true,
-    appliedMode: "native_negative",
-    providerField: "negativePrompt",
-    compiledNegativePrompt: "角色身份漂移",
-    appliedText: "角色身份漂移",
-    providerIgnored: false,
-    ignored: []
-  });
-  assert.equal(receipt.requestPreview.body.negativePrompt, "角色身份漂移");
-  assert.equal(receipt.requestPreview.headers.Authorization, "[REDACTED]");
-});
-
-test("通用 HTTP worker 支持首尾帧视频提交、轮询和下载", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-http-video-"));
-  let postBody = null;
-  let pollCount = 0;
-  const server = http.createServer(async (request, response) => {
-    if (request.url === "/videos") {
-      const chunks = [];
-      for await (const chunk of request) chunks.push(chunk);
-      postBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ task_id: "provider-task-1", status: "queued" }));
-      return;
-    }
-    if (request.url === "/tasks/provider-task-1") {
-      pollCount += 1;
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify(pollCount < 2
-        ? { task_id: "provider-task-1", status: "processing" }
-        : { task_id: "provider-task-1", status: "succeeded", video_url: `http://127.0.0.1:${server.address().port}/media/clip.mp4` }));
-      return;
-    }
-    if (request.url === "/media/clip.mp4") {
-      response.writeHead(200, { "content-type": "video/mp4" });
-      response.end("video bytes");
-      return;
-    }
-    response.writeHead(404);
-    response.end("not found");
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => closeServer(server));
-  const address = server.address();
-  const queue = {
-    version: "test",
-    providerMode: "provider_agnostic",
-    title: "generic http video worker test",
-    selectedVariantId: "V1",
-    jobs: [
-      { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", prompt: "首帧" },
-      { taskId: "S01-END", type: "end_frame_image", inputType: "text_to_image", outputKey: "frames.S01.end", prompt: "尾帧" },
-      { taskId: "S01-VIDEO", type: "first_last_frame_video", inputType: "image_pair_to_video", outputKey: "videos.S01", requiredInputs: ["frames.S01.start", "frames.S01.end"], model: "override-video-model", prompt: "让人物从首帧走到尾帧", durationSeconds: 4, aspectRatio: "9:16" }
-    ]
-  };
-  const initialRun = buildProductionRun(queue, { outputRoot: root });
-  const startJob = initialRun.jobs.find((job) => job.taskId === "S01-START");
-  const endJob = initialRun.jobs.find((job) => job.taskId === "S01-END");
-  await fs.mkdir(path.dirname(startJob.outputPath), { recursive: true });
-  await fs.mkdir(path.dirname(endJob.outputPath), { recursive: true });
-  await fs.writeFile(startJob.outputPath, "start frame bytes");
-  await fs.writeFile(endJob.outputPath, "end frame bytes");
-  const artifacts = buildArtifactsFromExistingOutputs(queue, {
-    outputRoot: root,
-    existingOutputPaths: [startJob.outputPath, endJob.outputPath]
-  });
-  const run = buildProductionRun(queue, { outputRoot: root, artifacts });
-  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
-  const configPath = path.join(root, "provider.json");
-  await fs.writeFile(configPath, JSON.stringify({
-    endpoints: { first_last_frame_video_generation: `http://127.0.0.1:${address.port}/videos` },
-    models: { first_last_frame_video_generation: "test-video-model" },
-    pollEndpointTemplate: `http://127.0.0.1:${address.port}/tasks/{taskId}`,
-    pollIntervalMs: 1,
-    pollTimeoutMs: 1000
-  }));
-
-  const result = await executeProductionWorkspace({
-    root,
-    provider: "command",
-    command: process.execPath,
-    commandArgs: ["workers/generic-http-worker.mjs", "--config", configPath],
-    all: true
-  });
-  const videoJob = result.run.jobs.find((job) => job.taskId === "S01-VIDEO");
-  assert.equal(result.executed.length, 1);
-  assert.equal(videoJob.status, "done");
-  assert.equal(postBody.model, "override-video-model");
-  assert.equal(postBody.parameters.durationSeconds, 4);
-  assert.equal(postBody.inputArtifacts.length, 2);
-  assert.match(postBody.inputArtifacts[0].dataUrl, /^data:image\/png;base64,/);
-  assert.equal(await fs.readFile(videoJob.outputPath, "utf8"), "video bytes");
-  const receipt = JSON.parse(await fs.readFile(`${videoJob.outputPath}.provider.json`, "utf8"));
-  assert.equal(receipt.providerTaskId, "provider-task-1");
-  assert.equal(receipt.resultKind, "url");
-});
-
-test("通用 HTTP worker 支持 ModelArk/Dreamina 首尾帧视频任务 preset", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-modelark-"));
-  let postBody = null;
-  const server = http.createServer(async (request, response) => {
-    if (request.method === "POST" && request.url === "/api/v3/contents/generations/tasks") {
-      const chunks = [];
-      for await (const chunk of request) chunks.push(chunk);
-      postBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ id: "cgt-test-1", status: "queued" }));
-      return;
-    }
-    if (request.method === "GET" && request.url === "/api/v3/contents/generations/tasks/cgt-test-1") {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ id: "cgt-test-1", status: "succeeded", content: { video_url: `http://127.0.0.1:${server.address().port}/media/modelark.mp4` } }));
-      return;
-    }
-    if (request.url === "/media/modelark.mp4") {
-      response.writeHead(200, { "content-type": "video/mp4" });
-      response.end("modelark video bytes");
-      return;
-    }
-    response.writeHead(404);
-    response.end("not found");
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => closeServer(server));
-  const address = server.address();
-  const queue = {
-    version: "test",
-    providerMode: "provider_agnostic",
-    title: "modelark video worker test",
-    selectedVariantId: "V1",
-    jobs: [
-      { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", prompt: "首帧" },
-      { taskId: "S01-END", type: "end_frame_image", inputType: "text_to_image", outputKey: "frames.S01.end", prompt: "尾帧" },
-      {
-        taskId: "S01-VIDEO",
-        type: "first_last_frame_video",
-        inputType: "image_pair_to_video",
-        outputKey: "videos.S01",
-        requiredInputs: ["frames.S01.start", "frames.S01.end"],
-        prompt: "让人物从首帧走到尾帧",
-        negativePromptEntries: [{
-          text: "道具在动作过程中变形",
+  const result = await generateShotVideo({
+    configPath,
+    outputRoot: path.join(root, "generated-videos"),
+    publicBasePath: "/generated-videos",
+    startFrameDataUrl: frameDataUrl,
+    endFrameDataUrl: frameDataUrl,
+    shot: {
+      shotId: "S01",
+      durationSeconds: 4,
+      startFramePrompt: "小白子抱着包裹准备出发",
+      endFramePrompt: "小白子把包裹交到老人手里",
+      videoPrompt: "小白子从首帧动作平稳过渡到尾帧",
+      negativePrompts: {
+        image: [],
+        video: [{
+          text: "交接过程中包裹变形",
           appliesTo: "video",
-          triggerEvidence: [{ sourcePath: "animationPlan.shotPlan[S01].videoPrompt", evidence: "人物从首帧走到尾帧并保持道具" }],
+          triggerEvidence: [{ sourcePath: "animationPlan.shotPlan[S01].videoPrompt", evidence: "小白子完成包裹交接" }],
           reasonCode: "temporal_consistency_failure",
           priority: "medium",
           enabled: true
-        }],
-        compiledNegativePrompt: "道具在动作过程中变形",
-        durationSeconds: 4,
-        aspectRatio: "9:16"
-      }
-    ]
-  };
-  const initialRun = buildProductionRun(queue, { outputRoot: root });
-  const startJob = initialRun.jobs.find((job) => job.taskId === "S01-START");
-  const endJob = initialRun.jobs.find((job) => job.taskId === "S01-END");
-  await fs.mkdir(path.dirname(startJob.outputPath), { recursive: true });
-  await fs.mkdir(path.dirname(endJob.outputPath), { recursive: true });
-  await fs.writeFile(startJob.outputPath, "start frame bytes");
-  await fs.writeFile(endJob.outputPath, "end frame bytes");
-  const artifacts = buildArtifactsFromExistingOutputs(queue, {
-    outputRoot: root,
-    existingOutputPaths: [startJob.outputPath, endJob.outputPath]
+        }]
+      },
+      cameraMotion: "缓慢推进"
+    }
   });
-  const run = buildProductionRun(queue, { outputRoot: root, artifacts });
-  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
-  const configPath = path.join(root, "provider.json");
-  await fs.writeFile(configPath, JSON.stringify({
-    videoEndpoint: `http://127.0.0.1:${address.port}/api/v3`,
-    providerPreset: "modelark_content_generation",
-    videoModel: "dreamina-seedance-2-0-260128",
-    pollIntervalMs: 1,
-    pollTimeoutMs: 1000
-  }));
 
-  const result = await executeProductionWorkspace({
-    root,
-    provider: "command",
-    command: process.execPath,
-    commandArgs: ["workers/generic-http-worker.mjs", "--config", configPath],
-    all: true
+  assert.equal(result.shotId, "S01");
+  assert.match(result.startFrameUrl, /^\/generated-videos\/S01-start-/u);
+  assert.match(result.endFrameUrl, /^\/generated-videos\/S01-end-/u);
+  assert.match(result.outputUrl, /^\/generated-videos\/S01-/u);
+  assert.equal(await fs.readFile(result.outputPath, "utf8"), "shot video bytes");
+  assert.equal(receivedBody.capability, "first_last_frame_video_generation");
+  assert.equal(receivedBody.model, "provider-video-model");
+  assert.equal(receivedBody.prompt, "小白子从首帧动作平稳过渡到尾帧");
+  assert.equal(receivedBody.negativePrompt, "交接过程中包裹变形");
+  assert.equal(receivedBody.parameters.cameraMotion, "缓慢推进");
+  assert.equal(receivedBody.inputArtifacts.length, 2);
+  assert.match(receivedBody.inputArtifacts[0].dataUrl, /^data:image\/png;base64,/u);
+  assert.deepEqual(result.receipt.negativePromptDelivery, {
+    supported: true,
+    appliedMode: "native_negative",
+    providerField: "negativePrompt",
+    compiledNegativePrompt: "交接过程中包裹变形",
+    appliedText: "交接过程中包裹变形",
+    providerIgnored: false,
+    ignored: []
   });
-  const videoJob = result.run.jobs.find((job) => job.taskId === "S01-VIDEO");
-  assert.equal(videoJob.status, "done");
-  assert.equal(postBody.model, "dreamina-seedance-2-0-260128");
-  assert.equal(postBody.ratio, "9:16");
-  assert.equal(postBody.duration, 4);
-  assert.equal(postBody.generate_audio, false);
-  assert.deepEqual(postBody.content.map((item) => item.type), ["text", "image_url", "image_url"]);
-  assert.deepEqual(postBody.content.map((item) => item.role || ""), ["", "first_frame", "last_frame"]);
-  assert.match(postBody.content[1].image_url.url, /^data:image\/png;base64,/);
-  assert.match(postBody.content[2].image_url.url, /^data:image\/png;base64,/);
-  assert.doesNotMatch(postBody.content[0].text, /道具在动作过程中变形/);
-  assert.equal(await fs.readFile(videoJob.outputPath, "utf8"), "modelark video bytes");
-  const receipt = JSON.parse(await fs.readFile(`${videoJob.outputPath}.provider.json`, "utf8"));
-  assert.equal(receipt.negativePromptDelivery.appliedMode, "not_supported");
-  assert.equal(receipt.negativePromptDelivery.compiledNegativePrompt, "道具在动作过程中变形");
-  assert.equal(receipt.negativePromptDelivery.ignored[0].text, "道具在动作过程中变形");
-  assert.doesNotMatch(JSON.stringify(receipt.requestPreview.body), /道具在动作过程中变形/);
+  assert.equal(result.receipt.requestPreview.body.negativePrompt, "交接过程中包裹变形");
+  assert.equal(result.receipt.requestPreview.headers.Authorization, "[REDACTED]");
 });
 
-test("通用 HTTP worker 支持 Kling 首尾帧视频任务 preset", async (t) => {
-  const savedEnv = pickEnv([
-    "VIDEO_HTTP_ENDPOINT",
-    "VIDEO_HTTP_IMAGE_ENDPOINT",
-    "VIDEO_HTTP_VIDEO_ENDPOINT",
-    "VIDEO_HTTP_VIDEO_MODEL",
-    "VIDEO_HTTP_PRESET",
-    "VIDEO_HTTP_API_KEY",
-    "VIDEO_HTTP_CONFIG",
-    "VIDEO_HTTP_VIDEO_DURATION",
-    "VIDEO_HTTP_VIDEO_MODE",
-    "VIDEO_HTTP_GENERATE_AUDIO",
-    "VIDEO_HTTP_VIDEO_ASPECT_RATIO",
-    "VIDEO_HTTP_CFG_SCALE"
-  ]);
-  for (const key of Object.keys(savedEnv)) delete process.env[key];
-  t.after(() => restoreEnv(savedEnv));
-
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-kling-"));
+test("单镜头首尾帧视频支持可灵 preset、轮询与 negative_prompt 真实传递", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-kling-"));
   let postBody = null;
-  const server = http.createServer(async (request, response) => {
+  const provider = http.createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/v1/videos/image2video") {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
@@ -1050,7 +561,7 @@ test("通用 HTTP worker 支持 Kling 首尾帧视频任务 preset", async (t) =
         data: {
           task_id: "kling-task-1",
           task_status: "succeed",
-          task_result: { videos: [{ url: `http://127.0.0.1:${server.address().port}/media/kling.mp4` }] }
+          task_result: { videos: [{ url: `http://127.0.0.1:${provider.address().port}/media/kling.mp4` }] }
         }
       }));
       return;
@@ -1063,603 +574,137 @@ test("通用 HTTP worker 支持 Kling 首尾帧视频任务 preset", async (t) =
     response.writeHead(404);
     response.end("not found");
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => closeServer(server));
-  const address = server.address();
-  const queue = {
-    version: "test",
-    providerMode: "provider_agnostic",
-    title: "kling video worker test",
-    selectedVariantId: "V1",
-    jobs: [
-      { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", prompt: "首帧" },
-      { taskId: "S01-END", type: "end_frame_image", inputType: "text_to_image", outputKey: "frames.S01.end", prompt: "尾帧" },
-      {
-        taskId: "S01-VIDEO",
-        type: "first_last_frame_video",
-        inputType: "image_pair_to_video",
-        outputKey: "videos.S01",
-        requiredInputs: ["frames.S01.start", "frames.S01.end"],
-        prompt: "让人物从首帧走到尾帧",
-        negativePromptEntries: [{
-          text: "道具在动作过程中变形",
-          appliesTo: "video",
-          triggerEvidence: [{ sourcePath: "animationPlan.shotPlan[S01].videoPrompt", evidence: "人物从首帧走到尾帧并保持道具" }],
-          reasonCode: "temporal_consistency_failure",
-          priority: "medium",
-          enabled: true
-        }],
-        compiledNegativePrompt: "道具在动作过程中变形",
-        durationSeconds: 4,
-        aspectRatio: "9:16"
-      }
-    ]
-  };
-  const initialRun = buildProductionRun(queue, { outputRoot: root });
-  const startJob = initialRun.jobs.find((job) => job.taskId === "S01-START");
-  const endJob = initialRun.jobs.find((job) => job.taskId === "S01-END");
-  await fs.mkdir(path.dirname(startJob.outputPath), { recursive: true });
-  await fs.mkdir(path.dirname(endJob.outputPath), { recursive: true });
-  await fs.writeFile(startJob.outputPath, "start frame bytes");
-  await fs.writeFile(endJob.outputPath, "end frame bytes");
-  const artifacts = buildArtifactsFromExistingOutputs(queue, {
-    outputRoot: root,
-    existingOutputPaths: [startJob.outputPath, endJob.outputPath]
-  });
-  const run = buildProductionRun(queue, { outputRoot: root, artifacts });
-  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
-  const configPath = path.join(root, "provider.json");
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  t.after(() => closeServer(provider));
+  const address = provider.address();
+  const configPath = path.join(root, "kling.json");
   await fs.writeFile(configPath, JSON.stringify({
     videoEndpoint: `http://127.0.0.1:${address.port}/v1`,
     providerPreset: "kling_image_to_video",
     videoModel: "kling-v2-1",
+    apiKey: "test-key",
     pollIntervalMs: 1,
     pollTimeoutMs: 1000
   }));
+  const startFrameDataUrl = `data:image/png;base64,${Buffer.from("start frame bytes").toString("base64")}`;
+  const endFrameDataUrl = `data:image/png;base64,${Buffer.from("end frame bytes").toString("base64")}`;
 
-  const result = await executeProductionWorkspace({
-    root,
-    provider: "command",
-    command: process.execPath,
-    commandArgs: ["workers/generic-http-worker.mjs", "--config", configPath],
-    all: true
+  const result = await generateShotVideo({
+    configPath,
+    outputRoot: path.join(root, "generated-videos"),
+    publicBasePath: "/generated-videos",
+    startFrameDataUrl,
+    endFrameDataUrl,
+    shot: {
+      shotId: "S02",
+      durationSeconds: 4,
+      videoPrompt: "小白子平稳拿起玻璃幻灯片并举到夕阳前",
+      negativePrompts: {
+        image: [],
+        video: [{
+          text: "拿起过程中手指与透明玻璃片融合",
+          appliesTo: "video",
+          triggerEvidence: [{ sourcePath: "animationPlan.shotPlan[S02].videoPrompt", evidence: "小白子拿起透明玻璃片" }],
+          reasonCode: "shot_interaction_failure",
+          priority: "high",
+          enabled: true
+        }]
+      }
+    }
   });
-  const videoJob = result.run.jobs.find((job) => job.taskId === "S01-VIDEO");
-  assert.equal(videoJob.status, "done");
+
   assert.equal(postBody.model_name, "kling-v2-1");
   assert.equal(postBody.image, Buffer.from("start frame bytes").toString("base64"));
   assert.equal(postBody.image_tail, Buffer.from("end frame bytes").toString("base64"));
-  assert.equal(postBody.prompt, "让人物从首帧走到尾帧");
-  assert.equal(postBody.negative_prompt, "道具在动作过程中变形");
+  assert.equal(postBody.prompt, "小白子平稳拿起玻璃幻灯片并举到夕阳前");
+  assert.equal(postBody.negative_prompt, "拿起过程中手指与透明玻璃片融合");
   assert.equal(postBody.mode, "pro");
   assert.equal(postBody.duration, "5");
-  assert.equal(await fs.readFile(videoJob.outputPath, "utf8"), "kling video bytes");
-  const receipt = JSON.parse(await fs.readFile(`${videoJob.outputPath}.provider.json`, "utf8"));
-  assert.equal(receipt.providerTaskId, "kling-task-1");
-  assert.equal(receipt.resultKind, "url");
-  assert.equal(receipt.negativePromptDelivery.appliedMode, "native_negative");
-  assert.equal(receipt.negativePromptDelivery.providerField, "negative_prompt");
-  assert.equal(receipt.negativePromptDelivery.compiledNegativePrompt, "道具在动作过程中变形");
-  assert.equal(receipt.requestPreview.body.negative_prompt, "道具在动作过程中变形");
+  assert.equal(await fs.readFile(result.outputPath, "utf8"), "kling video bytes");
+  assert.equal(result.receipt.providerTaskId, "kling-task-1");
+  assert.equal(result.receipt.resultKind, "url");
+  assert.equal(result.receipt.negativePromptDelivery.appliedMode, "native_negative");
+  assert.equal(result.receipt.negativePromptDelivery.providerField, "negative_prompt");
+  assert.equal(result.receipt.negativePromptDelivery.compiledNegativePrompt, "拿起过程中手指与透明玻璃片融合");
+  assert.equal(result.receipt.requestPreview.body.negative_prompt, "拿起过程中手指与透明玻璃片融合");
 });
 
-test("单镜头首尾帧视频接口可调用供应商并返回播放地址", async (t) => {
-  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_IMAGE_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_API_KEY", "VIDEO_HTTP_CONFIG"]);
-  delete process.env.VIDEO_HTTP_ENDPOINT;
-  delete process.env.VIDEO_HTTP_IMAGE_ENDPOINT;
-  delete process.env.VIDEO_HTTP_VIDEO_ENDPOINT;
-  delete process.env.VIDEO_HTTP_API_KEY;
-  delete process.env.VIDEO_HTTP_CONFIG;
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-"));
-  const imageBodies = [];
-  let videoBody = null;
-  const server = http.createServer(async (request, response) => {
-    const chunks = [];
-    for await (const chunk of request) chunks.push(chunk);
-    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    response.writeHead(200, { "content-type": "application/json" });
-    if (request.url === "/images") {
-      imageBodies.push(body);
-      response.end(JSON.stringify({ data: { imageBase64: Buffer.from(`shot image ${imageBodies.length}`).toString("base64") } }));
-      return;
-    }
-    videoBody = body;
-    response.end(JSON.stringify({ data: { videoBase64: Buffer.from("shot video bytes").toString("base64") } }));
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => closeServer(server));
-  t.after(() => restoreEnv(savedEnv));
-  const address = server.address();
-  process.env.VIDEO_HTTP_IMAGE_ENDPOINT = `http://127.0.0.1:${address.port}/images`;
-  process.env.VIDEO_HTTP_VIDEO_ENDPOINT = `http://127.0.0.1:${address.port}/videos`;
-  process.env.VIDEO_HTTP_API_KEY = "test-key";
-
-  const result = await generateShotVideo({
-    outputRoot: path.join(root, "generated-videos"),
-    publicBasePath: "/generated-videos",
-    shot: {
-      shotId: "S01",
-      durationSeconds: 4,
-      startFramePrompt: "小白子站在村口，抱着包裹准备出发",
-      endFramePrompt: "小白子把包裹交到老人手里，老人露出笑容",
-      videoPrompt: "从首帧走到尾帧",
-      negativePrompts: {
-        image: [{
-          text: "手指与包裹融合",
-          appliesTo: "image",
-          triggerEvidence: [{ sourcePath: "animationPlan.shotPlan[S01].startFramePrompt", evidence: "小白子抱着包裹" }],
-          reasonCode: "shot_interaction_failure",
-          priority: "high"
-        }],
-        video: [{
-          text: "交接过程中包裹变形",
-          appliesTo: "video",
-          triggerEvidence: [{ sourcePath: "animationPlan.shotPlan[S01].videoPrompt", evidence: "从首帧走到尾帧并完成包裹交接" }],
-          reasonCode: "temporal_consistency_failure",
-          priority: "medium"
-        }]
-      },
-      cameraMotion: "缓慢推进"
-    }
-  });
-
-  assert.equal(result.shotId, "S01");
-  assert.match(result.startFrameUrl, /^\/generated-videos\/S01-start-/);
-  assert.match(result.endFrameUrl, /^\/generated-videos\/S01-end-/);
-  assert.match(result.outputUrl, /^\/generated-videos\/S01-/);
-  assert.equal(await fs.readFile(result.startFramePath, "utf8"), "shot image 1");
-  assert.equal(await fs.readFile(result.endFramePath, "utf8"), "shot image 2");
-  assert.equal(await fs.readFile(result.outputPath, "utf8"), "shot video bytes");
-  assert.equal(imageBodies.length, 2);
-  assert.equal(imageBodies[0].capability, "image_generation");
-  assert.equal(imageBodies[0].prompt, "小白子站在村口，抱着包裹准备出发");
-  assert.equal(imageBodies[0].negativePrompt, "手指与包裹融合");
-  assert.equal(imageBodies[1].prompt, "小白子把包裹交到老人手里，老人露出笑容");
-  assert.equal(imageBodies[1].negativePrompt, "手指与包裹融合");
-  assert.equal(videoBody.capability, "first_last_frame_video_generation");
-  assert.equal(videoBody.prompt, "从首帧走到尾帧");
-  assert.equal(videoBody.negativePrompt, "交接过程中包裹变形");
-  assert.equal(videoBody.parameters.cameraMotion, "缓慢推进");
-  assert.equal(videoBody.inputArtifacts.length, 2);
-  assert.match(videoBody.inputArtifacts[0].dataUrl, /^data:image\/png;base64,/);
-  assert.match(videoBody.inputArtifacts[1].dataUrl, /^data:image\/png;base64,/);
-});
-
-test("单镜头首尾帧视频接口按请求数量返回多个候选视频", async (t) => {
-  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_IMAGE_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_API_KEY", "VIDEO_HTTP_CONFIG"]);
-  delete process.env.VIDEO_HTTP_ENDPOINT;
-  delete process.env.VIDEO_HTTP_IMAGE_ENDPOINT;
-  delete process.env.VIDEO_HTTP_VIDEO_ENDPOINT;
-  delete process.env.VIDEO_HTTP_API_KEY;
-  delete process.env.VIDEO_HTTP_CONFIG;
+test("单镜头视频生成可返回多个候选", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-count-"));
   const videoBodies = [];
-  const server = http.createServer(async (request, response) => {
+  const provider = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
-    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    videoBodies.push(body);
+    videoBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ data: { videoBase64: Buffer.from(`shot video bytes ${videoBodies.length}`).toString("base64") } }));
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => closeServer(server));
-  t.after(() => restoreEnv(savedEnv));
-  const address = server.address();
-  process.env.VIDEO_HTTP_VIDEO_ENDPOINT = `http://127.0.0.1:${address.port}/videos`;
-  process.env.VIDEO_HTTP_API_KEY = "test-key";
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  t.after(() => closeServer(provider));
+  const configPath = path.join(root, "provider.json");
+  await fs.writeFile(configPath, JSON.stringify({ videoEndpoint: `http://127.0.0.1:${provider.address().port}/videos` }));
+  const frameDataUrl = `data:image/png;base64,${Buffer.from("frame image bytes").toString("base64")}`;
 
-  const imageDataUrl = `data:image/png;base64,${Buffer.from("frame image bytes").toString("base64")}`;
   const result = await generateShotVideo({
+    configPath,
     outputRoot: path.join(root, "generated-videos"),
     publicBasePath: "/generated-videos",
     count: 2,
-    startFrameDataUrl: imageDataUrl,
-    endFrameDataUrl: imageDataUrl,
-    shot: {
-      shotId: "S01",
-      durationSeconds: 4,
-      videoPrompt: "从首帧走到尾帧"
-    }
+    startFrameDataUrl: frameDataUrl,
+    endFrameDataUrl: frameDataUrl,
+    shot: { shotId: "S03", durationSeconds: 4, videoPrompt: "从首帧过渡到尾帧" }
   });
 
   assert.equal(result.count, 2);
   assert.equal(result.actualCount, 2);
   assert.equal(result.videos.length, 2);
-  assert.match(result.outputUrl, /^\/generated-videos\/S01-/);
-  assert.match(result.videos[0].outputUrl, /-1\.mp4$/);
-  assert.match(result.videos[1].outputUrl, /-2\.mp4$/);
+  assert.match(result.videos[0].outputUrl, /-1\.mp4$/u);
+  assert.match(result.videos[1].outputUrl, /-2\.mp4$/u);
   assert.equal(await fs.readFile(result.videos[0].outputPath, "utf8"), "shot video bytes 1");
   assert.equal(await fs.readFile(result.videos[1].outputPath, "utf8"), "shot video bytes 2");
-  assert.equal(videoBodies.length, 2);
   assert.equal(videoBodies[0].parameters.candidateIndex, 0);
   assert.equal(videoBodies[0].parameters.candidateCount, 2);
   assert.equal(videoBodies[1].parameters.candidateIndex, 1);
 });
 
 test("单镜头视频生成不会把供应商纯文本确认当成 mp4", async (t) => {
-  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_IMAGE_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_API_KEY", "VIDEO_HTTP_CONFIG"]);
-  delete process.env.VIDEO_HTTP_ENDPOINT;
-  delete process.env.VIDEO_HTTP_IMAGE_ENDPOINT;
-  delete process.env.VIDEO_HTTP_VIDEO_ENDPOINT;
-  delete process.env.VIDEO_HTTP_API_KEY;
-  delete process.env.VIDEO_HTTP_CONFIG;
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-text-"));
-  const server = http.createServer(async (request, response) => {
+  const provider = http.createServer(async (request, response) => {
     for await (const _chunk of request) {
-      // drain body
+      // drain request body
     }
     response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
     response.end("ok");
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => closeServer(server));
-  t.after(() => restoreEnv(savedEnv));
-  const address = server.address();
-  process.env.VIDEO_HTTP_VIDEO_ENDPOINT = `http://127.0.0.1:${address.port}/videos`;
-  process.env.VIDEO_HTTP_API_KEY = "test-key";
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  t.after(() => closeServer(provider));
+  const configPath = path.join(root, "provider.json");
+  await fs.writeFile(configPath, JSON.stringify({ videoEndpoint: `http://127.0.0.1:${provider.address().port}/videos` }));
+  const frameDataUrl = `data:image/png;base64,${Buffer.from("frame image bytes").toString("base64")}`;
 
-  const imageDataUrl = `data:image/png;base64,${Buffer.from("frame image bytes").toString("base64")}`;
-  await assert.rejects(
-    () => generateShotVideo({
-      outputRoot: path.join(root, "generated-videos"),
-      publicBasePath: "/generated-videos",
-      startFrameDataUrl: imageDataUrl,
-      endFrameDataUrl: imageDataUrl,
-      shot: { shotId: "S01", videoPrompt: "测试视频" }
-    }),
-    ShotVideoProviderError
-  );
+  await assert.rejects(() => generateShotVideo({
+    configPath,
+    outputRoot: path.join(root, "generated-videos"),
+    publicBasePath: "/generated-videos",
+    startFrameDataUrl: frameDataUrl,
+    endFrameDataUrl: frameDataUrl,
+    shot: { shotId: "S04", videoPrompt: "测试视频" }
+  }), ShotVideoProviderError);
 });
 
 test("单镜头视频生成未配置供应商时给出明确错误", async () => {
-  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_IMAGE_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_CONFIG"]);
+  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_CONFIG"]);
   delete process.env.VIDEO_HTTP_ENDPOINT;
-  delete process.env.VIDEO_HTTP_IMAGE_ENDPOINT;
   delete process.env.VIDEO_HTTP_VIDEO_ENDPOINT;
   delete process.env.VIDEO_HTTP_CONFIG;
   try {
     await assert.rejects(
-      () => generateShotVideo({ shot: { shotId: "S01", videoPrompt: "测试" } }),
+      () => generateShotVideo({ shot: { shotId: "S05", videoPrompt: "测试" } }),
       ShotVideoConfigError
     );
   } finally {
     restoreEnv(savedEnv);
   }
-});
-
-test("本地后处理 worker 可完成质检并合成最终视频", async () => {
-  const savedEnv = pickEnv(["LOCAL_POSTPROCESS_FFMPEG", "LOCAL_POSTPROCESS_REENCODE"]);
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-local-post-"));
-  const fakeFfmpegPath = path.join(root, "fake-ffmpeg.mjs");
-  await fs.writeFile(fakeFfmpegPath, `#!/usr/bin/env node
-import fs from "node:fs/promises";
-const output = process.argv.at(-1);
-await fs.writeFile(output, "assembled video bytes");
-`);
-  await fs.chmod(fakeFfmpegPath, 0o755);
-  process.env.LOCAL_POSTPROCESS_FFMPEG = fakeFfmpegPath;
-  delete process.env.LOCAL_POSTPROCESS_REENCODE;
-  const queue = {
-    version: "test",
-    providerMode: "provider_agnostic",
-    title: "local postprocess test",
-    selectedVariantId: "V1",
-    jobs: [
-      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" },
-      { taskId: "S01-VIDEO", type: "first_last_frame_video", inputType: "image_pair_to_video", outputKey: "videos.S01", prompt: "视频片段" },
-      { taskId: "S01-QA", type: "quality_check", inputType: "video_review", outputKey: "reviews.S01", requiredInputs: ["videos.S01"], prompt: "检查视频" },
-      { taskId: "FINAL-EDIT", type: "final_edit", inputType: "video_assembly", outputKey: "exports.final_cut", requiredInputs: ["videos.S01", "reviews.S01"], prompt: "合成最终视频" }
-    ]
-  };
-  try {
-    const initialRun = buildProductionRun(queue, { outputRoot: root });
-    const videoJob = initialRun.jobs.find((job) => job.taskId === "S01-VIDEO");
-    await fs.mkdir(path.dirname(videoJob.outputPath), { recursive: true });
-    await fs.writeFile(videoJob.outputPath, "real video bytes");
-    const artifacts = buildArtifactsFromExistingOutputs(queue, {
-      outputRoot: root,
-      existingOutputPaths: [videoJob.outputPath]
-    });
-    const run = buildProductionRun(queue, { outputRoot: root, artifacts });
-    await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
-
-    const result = await executeProductionWorkspace({
-      root,
-      provider: "command",
-      command: process.execPath,
-      commandArgs: ["workers/local-postprocess-worker.mjs"],
-      all: true,
-      capabilities: ["video_quality_review", "video_assembly"]
-    });
-    assert.equal(result.executed.length, 2);
-    assert.equal(result.run.jobs.find((job) => job.taskId === "REF-01").status, "ready");
-    assert.equal(result.run.jobs.find((job) => job.taskId === "S01-QA").status, "done");
-    const finalJob = result.run.jobs.find((job) => job.taskId === "FINAL-EDIT");
-    assert.equal(finalJob.status, "done");
-    assert.equal(await fs.readFile(finalJob.outputPath, "utf8"), "assembled video bytes");
-    const finalReceipt = JSON.parse(await fs.readFile(`${finalJob.outputPath}.provider.json`, "utf8"));
-    assert.equal(finalReceipt.provider, "local-postprocess-worker");
-    assert.equal(finalReceipt.inputCount, 1);
-  } finally {
-    restoreEnv(savedEnv);
-  }
-});
-
-test("make:video 可编排预检、HTTP 生成、本地质检和最终剪辑", async (t) => {
-  const savedEnv = pickEnv(["VIDEO_HTTP_API_KEY", "LOCAL_POSTPROCESS_FFMPEG", "LOCAL_POSTPROCESS_REENCODE"]);
-  delete process.env.VIDEO_HTTP_API_KEY;
-  delete process.env.LOCAL_POSTPROCESS_REENCODE;
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-make-"));
-  const fakeFfmpegPath = path.join(root, "fake-ffmpeg.mjs");
-  await fs.writeFile(fakeFfmpegPath, `#!/usr/bin/env node
-import fs from "node:fs/promises";
-const output = process.argv.at(-1);
-await fs.writeFile(output, "final cut bytes");
-`);
-  await fs.chmod(fakeFfmpegPath, 0o755);
-  process.env.LOCAL_POSTPROCESS_FFMPEG = fakeFfmpegPath;
-  const server = http.createServer(async (request, response) => {
-    const chunks = [];
-    for await (const chunk of request) chunks.push(chunk);
-    const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
-    response.writeHead(200, { "content-type": "application/json" });
-    if (request.url === "/images") {
-      response.end(JSON.stringify({ data: { b64_json: Buffer.from(`image:${body.taskId}`).toString("base64") } }));
-      return;
-    }
-    if (request.url === "/videos") {
-      response.end(JSON.stringify({ data: { videoBase64: Buffer.from(`video:${body.taskId}`).toString("base64") } }));
-      return;
-    }
-    response.end("{}");
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => closeServer(server));
-  t.after(() => restoreEnv(savedEnv));
-  const address = server.address();
-  const queue = {
-    version: "test",
-    providerMode: "provider_agnostic",
-    title: "make video test",
-    selectedVariantId: "V1",
-    jobs: [
-      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" },
-      { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", requiredInputs: ["references.hero"], prompt: "首帧" },
-      { taskId: "S01-END", type: "end_frame_image", inputType: "text_to_image", outputKey: "frames.S01.end", requiredInputs: ["references.hero"], prompt: "尾帧" },
-      { taskId: "S01-VIDEO", type: "first_last_frame_video", inputType: "image_pair_to_video", outputKey: "videos.S01", requiredInputs: ["frames.S01.start", "frames.S01.end"], prompt: "视频片段" },
-      { taskId: "S01-QA", type: "quality_check", inputType: "video_review", outputKey: "reviews.S01", requiredInputs: ["videos.S01"], prompt: "检查视频" },
-      { taskId: "FINAL-EDIT", type: "final_edit", inputType: "video_assembly", outputKey: "exports.final_cut", requiredInputs: ["videos.S01", "reviews.S01"], prompt: "合成最终视频" }
-    ]
-  };
-  const run = buildProductionRun(queue, { outputRoot: root });
-  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
-  const configPath = path.join(root, "provider.json");
-  await fs.writeFile(configPath, JSON.stringify({
-    endpoints: {
-      image_generation: `http://127.0.0.1:${address.port}/images`,
-      first_last_frame_video_generation: `http://127.0.0.1:${address.port}/videos`
-    },
-    apiKey: "test-key"
-  }));
-
-  const result = await makeProductionVideo({ root, configPath, command: process.execPath });
-  assert.equal(result.preflight.passed, true);
-  assert.equal(result.stages.media.executed, 4);
-  assert.equal(result.stages.postprocess.executed, 2);
-  assert.equal(result.report.progress.done, 6);
-  assert.equal(result.report.progress.percent, 100);
-  const finalJob = result.report.finalOutputs.find((item) => item.taskId === "FINAL-EDIT");
-  assert.equal(finalJob.status, "done");
-  assert.equal(await fs.readFile(finalJob.outputPath, "utf8"), "final cut bytes");
-  assert.match(formatMakeVideoMarkdown(result), /最终成片/);
-});
-
-test("command 视频生产执行失败会写入失败回执并刷新 failed 状态", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-command-fail-"));
-  const workerPath = path.join(root, "failing-worker.mjs");
-  const queue = {
-    version: "test",
-    providerMode: "provider_agnostic",
-    title: "command worker failure test",
-    selectedVariantId: "V1",
-    jobs: [
-      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" },
-      { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", requiredInputs: ["references.hero"], prompt: "首帧" }
-    ]
-  };
-  const run = buildProductionRun(queue, { outputRoot: root });
-  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
-  await fs.writeFile(workerPath, "console.error('provider down'); process.exit(7);");
-
-  const result = await executeProductionWorkspace({
-    root,
-    provider: "command",
-    command: process.execPath,
-    commandArgs: [workerPath],
-    all: true,
-    continueOnError: true
-  });
-  assert.equal(result.failed.length, 1);
-  assert.equal(result.run.counts.failed, 1);
-  assert.equal(result.run.jobs.find((job) => job.taskId === "REF-01").status, "failed");
-  assert.equal(result.run.jobs.find((job) => job.taskId === "S01-START").status, "blocked");
-  const failure = JSON.parse(await fs.readFile(result.failed[0].failurePath, "utf8"));
-  assert.equal(failure.taskId, "REF-01");
-  assert.match(failure.error.stderr, /provider down/);
-});
-
-test("command 视频生产执行器可重试 failed 任务并释放下游", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-command-retry-"));
-  const failingWorkerPath = path.join(root, "failing-worker.mjs");
-  const successWorkerPath = path.join(root, "success-worker.mjs");
-  const queue = {
-    version: "test",
-    providerMode: "provider_agnostic",
-    title: "command worker retry test",
-    selectedVariantId: "V1",
-    jobs: [
-      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" },
-      { taskId: "S01-START", type: "start_frame_image", inputType: "text_to_image", outputKey: "frames.S01.start", requiredInputs: ["references.hero"], prompt: "首帧" }
-    ]
-  };
-  const run = buildProductionRun(queue, { outputRoot: root });
-  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
-  await fs.writeFile(failingWorkerPath, "console.error('temporary outage'); process.exit(8);");
-  await fs.writeFile(successWorkerPath, `
-import fs from "node:fs/promises";
-const args = process.argv.slice(2);
-const value = (flag) => args[args.indexOf(flag) + 1];
-const request = JSON.parse(await fs.readFile(value("--request"), "utf8"));
-await fs.writeFile(value("--output"), "retry ok:" + request.taskId);
-await fs.writeFile(value("--receipt"), JSON.stringify({ provider: "retry-worker", taskId: request.taskId }) + "\\n");
-`);
-
-  const failedRun = await executeProductionWorkspace({
-    root,
-    provider: "command",
-    command: process.execPath,
-    commandArgs: [failingWorkerPath],
-    all: true,
-    continueOnError: true
-  });
-  assert.equal(failedRun.run.counts.failed, 1);
-
-  const retriedRun = await executeProductionWorkspace({
-    root,
-    provider: "command",
-    command: process.execPath,
-    commandArgs: [successWorkerPath],
-    all: true,
-    retryFailed: true
-  });
-  assert.equal(retriedRun.retried.length, 1);
-  assert.equal(retriedRun.run.counts.done, 2);
-  assert.equal(retriedRun.run.counts.failed, 0);
-  const startJob = retriedRun.run.jobs.find((job) => job.taskId === "S01-START");
-  assert.match(await fs.readFile(startJob.outputPath, "utf8"), /retry ok:S01-START/);
-});
-
-test("视频生产报告输出进度、失败、阻塞和建议命令", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-report-"));
-  const queue = buildQueueFixture();
-  const initialRun = buildProductionRun(queue, { outputRoot: root });
-  const readyReference = initialRun.jobs.find((job) => job.type === "reference_image");
-  const failedAsset = initialRun.jobs.find((job) => job.type === "asset_image");
-  await fs.mkdir(path.dirname(readyReference.outputPath), { recursive: true });
-  await fs.writeFile(readyReference.outputPath, "done reference");
-  await fs.mkdir(path.dirname(failedAsset.failurePath), { recursive: true });
-  await fs.writeFile(failedAsset.failurePath, JSON.stringify({
-    taskId: failedAsset.taskId,
-    error: { message: "asset provider failed" }
-  }));
-  const artifacts = buildArtifactsFromExistingOutputs(queue, {
-    outputRoot: root,
-    existingOutputPaths: [readyReference.outputPath],
-    existingFailurePaths: [failedAsset.failurePath]
-  });
-  const run = buildProductionRun(queue, { outputRoot: root, artifacts });
-  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
-
-  const report = await loadProductionReport(root);
-  assert.equal(report.progress.done, 1);
-  assert.equal(report.progress.failed, 1);
-  assert.ok(report.failedTasks.some((task) => task.error.message === "asset provider failed"));
-  assert.ok(report.blockedTasks.length > 0);
-  assert.match(report.recommendedCommands[1], /--retry-failed/);
-  const markdown = formatProductionReportMarkdown(report);
-  assert.match(markdown, /失败任务/);
-  assert.match(markdown, /asset provider failed/);
-
-  const directReport = buildProductionReport(run);
-  assert.equal(directReport.progress.total, run.jobs.length);
-  assert.match(report.recommendedCommands[0], /preflight:video/);
-});
-
-test("视频生产预检会阻止 mock 产物进入真实执行", async () => {
-  const queue = buildQueueFixture();
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-preflight-mock-"));
-  const run = buildProductionRun(queue, { outputRoot: root });
-  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
-  await executeProductionWorkspace({ root, provider: "mock", all: false, limit: 1 });
-
-  const report = await loadProductionPreflight(root, {
-    command: process.execPath,
-    commandArgs: ["workers/generic-http-worker.mjs"]
-  });
-  assert.equal(report.passed, false);
-  assert.ok(report.issues.some((issue) => issue.code === "mock_artifact_marked_done"));
-  assert.match(formatProductionPreflightMarkdown(report), /mock\/占位产物/);
-});
-
-test("视频生产预检会检查 generic HTTP worker endpoint 配置", async () => {
-  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_IMAGE_ENDPOINT", "VIDEO_HTTP_API_KEY"]);
-  delete process.env.VIDEO_HTTP_ENDPOINT;
-  delete process.env.VIDEO_HTTP_IMAGE_ENDPOINT;
-  delete process.env.VIDEO_HTTP_API_KEY;
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-preflight-config-"));
-  const queue = {
-    version: "test",
-    providerMode: "provider_agnostic",
-    title: "preflight config test",
-    selectedVariantId: "V1",
-    jobs: [
-      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" }
-    ]
-  };
-  const run = buildProductionRun(queue, { outputRoot: root });
-  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
-
-  try {
-    const missing = await loadProductionPreflight(root, {
-      command: process.execPath,
-      commandArgs: ["workers/generic-http-worker.mjs"]
-    });
-    assert.equal(missing.passed, false);
-    assert.ok(missing.issues.some((issue) => issue.code === "missing_http_endpoint" && /image_generation/.test(issue.message)));
-
-    const configPath = path.join(root, "provider.json");
-    await fs.writeFile(configPath, JSON.stringify({
-      endpoints: { image_generation: "http://127.0.0.1:9/images" },
-      apiKey: "test-key"
-    }));
-    const configured = await loadProductionPreflight(root, {
-      command: process.execPath,
-      commandArgs: ["workers/generic-http-worker.mjs", "--config", configPath]
-    });
-    assert.equal(configured.passed, true);
-    assert.equal(configured.command.configLoaded, true);
-    assert.ok(configured.recommendedCommands.some((command) => command.includes("exec:video")));
-  } finally {
-    restoreEnv(savedEnv);
-  }
-});
-
-test("preflight CLI strict 模式在错误时返回非零状态", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-prod-preflight-cli-"));
-  const queue = {
-    version: "test",
-    providerMode: "provider_agnostic",
-    title: "preflight cli test",
-    selectedVariantId: "V1",
-    jobs: [
-      { taskId: "REF-01", type: "reference_image", inputType: "text_to_image", outputKey: "references.hero", prompt: "角色参考图" }
-    ]
-  };
-  const run = buildProductionRun(queue, { outputRoot: root });
-  await writeTestWorkspace(buildProductionWorkspaceFiles(queue, run));
-
-  await assert.rejects(
-    () => execFileAsync(process.execPath, ["bin/preflight-video-production.js", root, "--strict"], {
-      cwd: process.cwd(),
-      env: withoutEnv(process.env, ["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_IMAGE_ENDPOINT", "VIDEO_HTTP_API_KEY"])
-    }),
-    (error) => {
-      assert.equal(error.code, 2);
-      assert.match(error.stdout, /missing_http_endpoint/);
-      return true;
-    }
-  );
 });
 
 test("少于三张画面时拒绝分析", async () => {
@@ -2878,13 +1923,6 @@ test("视频工具选择稳定采样时间点并识别常见 MIME 类型", () =>
   assert.equal(mimeTypeFor("/tmp/a.unknown"), "application/octet-stream");
 });
 
-async function writeTestWorkspace(files) {
-  for (const file of files) {
-    await fs.mkdir(path.dirname(file.path), { recursive: true });
-    await fs.writeFile(file.path, file.content);
-  }
-}
-
 function pickEnv(keys) {
   return Object.fromEntries(keys.map((key) => [key, process.env[key]]));
 }
@@ -2894,10 +1932,4 @@ function restoreEnv(values) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
-}
-
-function withoutEnv(env, keys) {
-  const copy = { ...env };
-  for (const key of keys) delete copy[key];
-  return copy;
 }
