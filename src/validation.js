@@ -51,6 +51,26 @@ const outputContracts = {
   animationPlan: ["selectedVariantId", "title", "productionStrategy", "visualBible", "characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "editPlan", "generationChecklist", "modelAgnosticNotes", "continuityAndSafetyCheck", "uncertainties"]
 };
 
+const animationFoundationFields = outputContracts.animationPlan.filter((field) => field !== "shotPlan");
+const animationShotFields = [
+  "shotId",
+  "sourceSceneId",
+  "sceneId",
+  "durationSeconds",
+  "storyPurpose",
+  "emotionalTarget",
+  "startFramePrompt",
+  "endFramePrompt",
+  "videoPrompt",
+  "cameraMotion",
+  "characterAction",
+  "dialogueOrSubtitle",
+  "soundDesign",
+  "continuityNotes",
+  "negativePrompts",
+  "acceptanceCriteria"
+];
+
 const visualGuardrailTopLevelFields = new Set(outputContracts.visualGuardrails);
 const negativePromptReasonCodes = new Set([
   "explicit_identity_conflict",
@@ -98,6 +118,104 @@ export function ensureOutputContract(value, contract) {
     validateAnimationPlanNegativePromptContract(value);
   }
   return value;
+}
+
+/**
+ * Validate the private first phase of animation generation. The public
+ * animationPlan contract stays unchanged; this object is only merged on the
+ * server with validated shot batches.
+ */
+export function ensureAnimationFoundationContract(value, { sourceSceneIds = [] } = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new OutputContractError("animationFoundation 必须是对象");
+  }
+  const missing = animationFoundationFields.filter((key) => !Object.prototype.hasOwnProperty.call(value, key));
+  if (missing.length) throw new OutputContractError(`animationFoundation 缺少必要字段：${missing.join("、")}`);
+  const unexpected = Object.keys(value).filter((key) => !animationFoundationFields.includes(key));
+  if (unexpected.length) throw new OutputContractError(`animationFoundation 包含未允许的顶层字段：${unexpected.join("、")}`);
+
+  for (const field of ["characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "generationChecklist", "modelAgnosticNotes", "uncertainties"]) {
+    if (!Array.isArray(value[field])) throw new OutputContractError(`animationFoundation.${field} 必须是数组`);
+  }
+  if (!value.characterReferencePrompts.length) throw new OutputContractError("animationFoundation 至少需要一个角色参考提示词");
+  if (!value.sceneReferencePrompts.length) throw new OutputContractError("animationFoundation 至少需要一个场景参考提示词");
+  ensureUniqueNonEmptyField(value.sceneReferencePrompts, "sceneId", "animationFoundation.sceneReferencePrompts");
+  const mappedSourceScenes = new Map();
+  value.sceneReferencePrompts.forEach((scene, index) => {
+    if (!Array.isArray(scene?.relatedShotIds)) {
+      throw new OutputContractError(`animationFoundation.sceneReferencePrompts[${index}].relatedShotIds 必须是数组`);
+    }
+    if (scene.relatedShotIds.length) {
+      throw new OutputContractError(`animationFoundation.sceneReferencePrompts[${index}].relatedShotIds 在镜头生成前必须为空数组`);
+    }
+    if (!Array.isArray(scene?.sourceSceneIds) || !scene.sourceSceneIds.length) {
+      throw new OutputContractError(`animationFoundation.sceneReferencePrompts[${index}].sourceSceneIds 至少需要一个剧情场次`);
+    }
+    scene.sourceSceneIds.forEach((sourceSceneId, sourceIndex) => {
+      const normalized = String(sourceSceneId || "").trim();
+      if (!normalized) {
+        throw new OutputContractError(`animationFoundation.sceneReferencePrompts[${index}].sourceSceneIds[${sourceIndex}] 不能为空`);
+      }
+      if (mappedSourceScenes.has(normalized)) {
+        throw new OutputContractError(`animationFoundation.sourceSceneIds 不能重复映射：${normalized}`);
+      }
+      mappedSourceScenes.set(normalized, scene.sceneId);
+    });
+  });
+  const expectedSourceScenes = [...new Set(sourceSceneIds.map((item) => String(item || "").trim()).filter(Boolean))];
+  if (expectedSourceScenes.length) {
+    const unknown = [...mappedSourceScenes.keys()].filter((sceneId) => !expectedSourceScenes.includes(sceneId));
+    if (unknown.length) throw new OutputContractError(`animationFoundation.sourceSceneIds 包含未知剧情场次：${unknown.join("、")}`);
+    const missing = expectedSourceScenes.filter((sceneId) => !mappedSourceScenes.has(sceneId));
+    if (missing.length) throw new OutputContractError(`animationFoundation.sourceSceneIds 未覆盖剧情场次：${missing.join("、")}`);
+  }
+  validateAnimationPlanNegativePromptContract({
+    visualBible: value.visualBible,
+    sceneReferencePrompts: value.sceneReferencePrompts,
+    shotPlan: []
+  });
+  return value;
+}
+
+/** Validate one private shot-only response before it is merged. */
+export function ensureAnimationShotBatchContract(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new OutputContractError("animationShotBatch 必须是对象");
+  }
+  const unexpected = Object.keys(value).filter((key) => key !== "shotPlan");
+  if (unexpected.length) throw new OutputContractError(`animationShotBatch 只允许 shotPlan 顶层字段，收到：${unexpected.join("、")}`);
+  if (!Array.isArray(value.shotPlan)) throw new OutputContractError("animationShotBatch.shotPlan 必须是数组");
+  if (!value.shotPlan.length) throw new OutputContractError("animationShotBatch 至少需要一个镜头");
+  ensureUniqueNonEmptyField(value.shotPlan, "shotId", "animationShotBatch.shotPlan");
+  value.shotPlan.forEach((shot, index) => {
+    if (!shot || typeof shot !== "object" || Array.isArray(shot)) {
+      throw new OutputContractError(`animationShotBatch.shotPlan[${index}] 必须是对象`);
+    }
+    const missing = animationShotFields.filter((field) => !Object.prototype.hasOwnProperty.call(shot, field));
+    if (missing.length) throw new OutputContractError(`animationShotBatch.shotPlan[${index}] 缺少字段：${missing.join("、")}`);
+    for (const field of ["shotId", "sourceSceneId", "sceneId", "startFramePrompt", "endFramePrompt", "videoPrompt", "characterAction"]) {
+      if (!String(shot[field] || "").trim()) throw new OutputContractError(`animationShotBatch.shotPlan[${index}].${field} 不能为空`);
+    }
+    const duration = Number(shot.durationSeconds);
+    if (!Number.isFinite(duration) || duration <= 0) {
+      throw new OutputContractError(`animationShotBatch.shotPlan[${index}].durationSeconds 必须是正数`);
+    }
+    if (!Array.isArray(shot.acceptanceCriteria)) {
+      throw new OutputContractError(`animationShotBatch.shotPlan[${index}].acceptanceCriteria 必须是数组`);
+    }
+  });
+  validateAnimationPlanNegativePromptContract({ visualBible: {}, sceneReferencePrompts: [], shotPlan: value.shotPlan });
+  return value;
+}
+
+function ensureUniqueNonEmptyField(items, field, path) {
+  const seen = new Set();
+  items.forEach((item, index) => {
+    const value = String(item?.[field] || "").trim();
+    if (!value) throw new OutputContractError(`${path}[${index}].${field} 不能为空`);
+    if (seen.has(value)) throw new OutputContractError(`${path}.${field} 不能重复：${value}`);
+    seen.add(value);
+  });
 }
 
 function validateVisualGuardrailsContract(value) {

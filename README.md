@@ -269,7 +269,7 @@ npm run report:video -- ./production/V1
 - `public/`：上传、浏览器抽帧、角色配置、结果展示与 JSON 导出。
 - `src/prompts.js`：四阶段导演提示词和结构化输出契约。
 - `src/mimo-client.js`：MiMo OpenAI 兼容适配器。
-- `src/workflow.js`：四阶段编排、选中主题后的完整剧情生成、动画生产包生成与输入验证。
+- `src/workflow.js`：四阶段编排、选中主题后的完整剧情生成，以及“动画基础锁定 → 逐场次分批 shotPlan → 服务端合并”的动画生产包生成与验证。
 - `src/mock.js`：未配置模型时的演示结果。
 - `docs/workflow-spec.md`：产品原则、字段要求和验收标准。
 - `test/`：工作流和核心叙事约束测试。

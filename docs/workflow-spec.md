@@ -21,7 +21,9 @@ flowchart LR
     V --> F[themeVariants]
     F --> H[选择主题变体]
     H --> I[fullStory]
-    I --> J[animationPlan]
+    I --> J1[animationFoundation]
+    J1 --> J2[shotPlan batches]
+    J2 --> J[merge animationPlan]
     G[固定角色与垂直赛道] --> E
     G --> V
     G --> I
@@ -107,6 +109,14 @@ flowchart LR
 - `generationChecklist`：角色稳定、首尾帧因果、情绪曲线、可剪辑性和表达原创的质检标准。
 
 动画阶段的核心原则是：先稳定视觉，再逐镜生成，不追求一次生成整条片。首尾帧用于锁定每个短镜头的起点和终点，视频模型只负责补中间运动。
+
+服务端内部将该阶段拆成三步，但 `POST /api/animation-plan` 的请求和最终响应保持不变：
+
+1. 生成 `animationFoundation`：只生成 `visualBible`、角色/场景/资产参考和其他全局字段，不生成、占位或推测 `shotPlan`。场景参考使用服务端私有 `sourceSceneIds` 锁定剧情场次与 `sceneId` 的唯一映射；共享地点可将多个场次映射到同一场景。
+2. 按 `fullStory.sceneScript` 每 2 场分批生成仅含 `{ "shotPlan": [...] }` 的镜头结果。每批只能覆盖指定 `sourceSceneId`，且 shot 必须使用基础阶段锁定的对应 `sceneId`。当前批会与前面已通过的镜头一起校验；包括跨批重复负面词在内的错误，都只使用现有纠偏机制重试当前批。
+3. 服务端按剧情顺序合并，统一编号 `A01...`，同步重写逐镜负面词的 shot 证据路径，重算 `sceneReferencePrompts.relatedShotIds`，然后再执行一次完整 `animationPlan` 契约、正向边界和负面词相关性校验。
+
+分阶段结果是服务端私有结构，不写入前端状态、导出文件或任务队列。前端仍只读取合并后的原 `animationPlan` 结构。
 
 每条逐镜渲染负面词必须包含：
 

@@ -439,6 +439,255 @@ visualGuardrails 分类规则：${visualGuardrailsText}
 shotPlan 的 startFramePrompt、endFramePrompt、videoPrompt 应该是精简、可复制给图像/视频模型的中文正向提示词。身份由 characterReferencePrompts 承担，场景由 sceneReferencePrompts 承担，风格由 visualBible 承担；负面提示词只按当前 shot 的直接证据逐镜生成，允许 image/video 均为 []。遇到“指路互动 + 主角反应强化”的组合时，按方案 B 拆成中景互动镜头和表情强化镜头。${JSON_ONLY}`;
 }
 
+/**
+ * Generate the stable, reusable part of an animation plan. The caller can merge
+ * this object with one or more shotPlan batches before running the existing
+ * animationPlan validation and downstream production flow.
+ */
+export function animationFoundationPrompt(input) {
+  const variant = input.variant || {};
+  const fullStory = input.fullStory || {};
+  const forbiddenTerms = collectProtectedTermsFromBrief(input.creativeBrief, input.creatorProfile?.fixedCharacter || "");
+  const forbiddenText = forbiddenTerms.length ? forbiddenTerms.join("、") : "无";
+  const visualPolicyText = fixedCharacterVisualPolicyText(input.creatorProfile?.fixedCharacter || "");
+  const visualGuardrailsText = formatVisualGuardrailsForPrompt(input.visualGuardrails);
+  return `${SYSTEM_PROMPT}
+
+你现在进入 AI 动画导演的“动画基础锁定”阶段。上游已经有完整剧情 fullStory。本阶段只生成可供所有镜头批次复用的动画基础信息，不生成、推测或占位任何 shotPlan 镜头。
+
+使用目标模型：${input.targetProvider || "MiMo"} ${input.targetModel || "mimo-v2.5-pro"}。
+
+本阶段职责：
+- 锁定 selectedVariantId、标题、生产策略和全片元数据。
+- 用 visualBible 锁定整体风格、动画质感、色彩、光线、世界规则与镜头语言。
+- 为完整剧情中会实际出镜的角色生成 characterReferencePrompts；身份、年龄感、服装/外观、核心性格和一致性标签只在这里完整描述一次。
+- 为 fullStory.sceneScript 中每个需要复用的地点生成 sceneReferencePrompts；每个地点使用稳定且唯一的 LOC 编号，并通过私有 sourceSceneIds 字段明确列出它服务的 fullStory 场次，锁定室内外属性、背景层级、光线和空间锚点。
+- 为 fullStory.keyProps 以及跨镜头需要保持外观一致的关键物件生成 assetPrompts。
+- 生成 editPlan、generationChecklist、modelAgnosticNotes、continuityAndSafetyCheck 和 uncertainties；这些字段必须在后续合并 shotPlan 前已经完整可用。
+
+固定角色：${input.creatorProfile?.fixedCharacter || "未指定"}
+垂直赛道：${input.creatorProfile?.vertical || "未指定"}
+创作限制：${input.creatorProfile?.constraints || "无"}
+选中主题变体：${JSON.stringify(variant)}
+完整剧情 fullStory：${JSON.stringify(fullStory)}
+creativeBrief：${JSON.stringify(input.creativeBrief || {})}
+禁止复用原片具体表达黑名单：${forbiddenText}
+固定角色外观边界：${visualPolicyText}
+visualGuardrails 分类规则：${visualGuardrailsText}
+
+硬约束：
+- selectedVariantId 必须等于选中主题变体 id：${variant.id || fullStory.selectedVariantId || "未指定"}。
+- 只能服务当前 fullStory，不得重写剧情、换主题、换主角、改角色关系或新增 fullStory 不需要的角色、地点和关键道具。
+- 必须覆盖 fullStory.sceneScript 的全部地点。每个 fullStory.sceneScript[].sceneId 必须在某一个且只能一个 sceneReferencePrompts[].sourceSceneIds 中出现。相同地点应复用同一个 sceneId，并将多个 source scene 放入同一 sourceSceneIds 数组；不同地点不得错误合并。
+- sceneReferencePrompts.relatedShotIds 在本阶段统一输出 []。镜头编号尚未生成，不得预造 shotId；合并全部 shotPlan 批次后再由程序回填关联关系。
+- characterReferencePrompts、sceneReferencePrompts、assetPrompts 和 visualBible 都只能写正向锁定信息，不得输出图片或视频渲染负面提示词。
+- 必须服从 visualGuardrails.positivePromptBoundary。用户明确写出的身份与外观可以正向使用；未授权特征保持不写，不得依据物种印象、画风或类比擅自扩展身体结构。
+- 上方黑名单及 sourceSimilarityRules 中的原片表面表达不得进入任何正向视觉提示词。dialogueRules 只影响后续镜头对白，不得转写成视觉负面词。
+- assetPrompts 只收录剧情真实使用且需要跨镜头一致的物件，不得为了显得完整补充装饰性资产。
+- productionStrategy.generationOrder 写全片生产顺序，但不得在其中枚举尚未生成的 shotId。
+- continuityAndSafetyCheck.firstLastFrameContinuity、shotDurationControlled 和 readyForVideoGeneration 都应如实说明“基础锁定已完成，仍需合并并校验全部 shotPlan 批次”，不得在尚未看到镜头时虚称连续性、时长和生成准备已经通过。
+- 顶层不得包含 shotPlan、shots、negativePrompts 或任何镜头占位数组。
+
+输出动画基础对象，严格使用以下结构：
+{
+  "selectedVariantId":"",
+  "title":"",
+  "productionStrategy":{
+    "format":"first_last_frame_video",
+    "targetAspectRatio":"9:16",
+    "targetRuntimeSeconds":60,
+    "recommendedShotDurationSeconds":{"min":3, "max":6},
+    "generationOrder":[],
+    "whyThisWorkflow":""
+  },
+  "visualBible":{
+    "overallStyle":"",
+    "animationStyle":"",
+    "colorPalette":[],
+    "lighting":"",
+    "worldRules":[],
+    "cameraLanguage":"",
+    "characterConsistencyRules":[]
+  },
+  "characterReferencePrompts":[{
+    "characterName":"",
+    "storyRole":"",
+    "identity":"",
+    "appearancePrompt":"",
+    "consistencyTags":[],
+    "forbiddenChanges":[]
+  }],
+  "sceneReferencePrompts":[{
+    "sceneId":"LOC01",
+    "sourceSceneIds":["S1"],
+    "sceneName":"",
+    "storyFunction":"",
+    "environmentPrompt":"",
+    "continuityAnchors":[],
+    "relatedShotIds":[]
+  }],
+  "assetPrompts":[{
+    "assetName":"",
+    "storyFunction":"",
+    "imagePrompt":"",
+    "consistencyTags":[],
+    "avoidSimilarityNote":""
+  }],
+  "editPlan":{
+    "sequenceRhythm":"",
+    "transitions":[],
+    "subtitlePlan":"",
+    "musicAndSfx":"",
+    "hookAndEndingNotes":""
+  },
+  "generationChecklist":[{"check":"", "passCriteria":""}],
+  "modelAgnosticNotes":[],
+  "continuityAndSafetyCheck":{
+    "fixedCharacterLocked":"",
+    "positivePromptsAvoidSourceSurface":"",
+    "firstLastFrameContinuity":"",
+    "shotDurationControlled":"",
+    "readyForVideoGeneration":""
+  },
+  "uncertainties":[{"field":"", "reason":"", "safeFallback":""}]
+}
+
+这是后续逐批生成镜头的唯一全局锁定层。内容应完整、稳定、可直接合并，但绝对不要输出 shotPlan。${JSON_ONLY}`;
+}
+
+/**
+ * Generate only the shots belonging to an explicitly selected source-scene
+ * batch. Evidence paths already use the final animationPlan namespace so the
+ * merged result remains compatible with the existing validator.
+ */
+export function animationShotBatchPrompt(input) {
+  const variant = input.variant || {};
+  const fullStory = input.fullStory || {};
+  const foundation = input.animationFoundation || input.foundation || input.animationPlanFoundation || {};
+  const sourceScenes = resolveAnimationBatchScenes(input, fullStory);
+  const sourceSceneIds = sourceScenes.map((scene) => typeof scene === "string" ? scene : scene?.sceneId).filter(Boolean);
+  const forbiddenTerms = collectProtectedTermsFromBrief(input.creativeBrief, input.creatorProfile?.fixedCharacter || "");
+  const forbiddenText = forbiddenTerms.length ? forbiddenTerms.join("、") : "无";
+  const visualPolicyText = fixedCharacterVisualPolicyText(input.creatorProfile?.fixedCharacter || "");
+  const visualGuardrailsText = formatVisualGuardrailsForPrompt(input.visualGuardrails);
+  const batchLabel = input.batchLabel || (input.batchIndex !== undefined ? `第 ${Number(input.batchIndex) + 1} 批` : "当前批次");
+  const shotIdInstruction = formatShotIdInstruction(input);
+  const previousShotContext = input.previousShotContext || input.continuityContext || null;
+  return `${SYSTEM_PROMPT}
+
+你现在进入 AI 动画导演的“逐场景镜头批次”阶段。动画基础锁定已经生成；本阶段只能把指定的 fullStory source scenes 转换成 shotPlan，不得重新输出或修改任何其它动画顶层字段。
+
+使用目标模型：${input.targetProvider || "MiMo"} ${input.targetModel || "mimo-v2.5-pro"}。
+批次：${batchLabel}
+本批允许的 sourceSceneId：${sourceSceneIds.length ? sourceSceneIds.join("、") : "未提供；不得自行选择其它场景"}
+镜头编号要求：${shotIdInstruction}
+
+固定角色：${input.creatorProfile?.fixedCharacter || "未指定"}
+垂直赛道：${input.creatorProfile?.vertical || "未指定"}
+创作限制：${input.creatorProfile?.constraints || "无"}
+选中主题变体：${JSON.stringify(variant)}
+全剧必要上下文：${JSON.stringify({
+    selectedVariantId: fullStory.selectedVariantId,
+    title: fullStory.title,
+    oneLinePremise: fullStory.oneLinePremise,
+    targetDurationSeconds: fullStory.targetDurationSeconds,
+    characterBible: fullStory.characterBible,
+    keyProps: fullStory.keyProps,
+    dialogueStyleGuide: fullStory.dialogueStyleGuide
+  })}
+本批指定 source scenes：${JSON.stringify(sourceScenes)}
+动画基础锁定：${JSON.stringify(foundation)}
+上一批末镜头连续性上下文：${JSON.stringify(previousShotContext || {})}
+creativeBrief：${JSON.stringify(input.creativeBrief || {})}
+禁止复用原片具体表达黑名单：${forbiddenText}
+固定角色外观边界：${visualPolicyText}
+visualGuardrails 分类规则：${visualGuardrailsText}
+
+批次范围硬约束：
+- 顶层只能输出 shotPlan。不得输出 selectedVariantId、title、productionStrategy、visualBible、角色/场景/资产参考、editPlan、checklist、uncertainties 或其它字段。
+- 每个 shot.sourceSceneId 必须逐字等于本批允许列表中的一个 sceneId；不得生成其它 source scene 的镜头，不得提前生成下一批内容。
+- 如果本批允许的 sourceSceneId 列表为空，只能输出 {"shotPlan":[]}，不得自行从完整剧情选择场景。
+- 本批每个指定 source scene 至少生成一个镜头，并保持 source scenes 及场内动作的原始顺序。不得遗漏剧情动作，也不得重复上一批已经完成的动作。
+- sceneId 必须精确引用动画基础锁定中 sourceSceneIds 包含当前 shot.sourceSceneId 的那一条 sceneReferencePrompts.sceneId。不得引用其他剧情场次的场景，不得在本阶段新建、重命名或重写场景参考。
+- 角色只用 characterReferencePrompts 中的 characterName 承接身份锁定；道具只使用 fullStory.keyProps 和 assetPrompts 已有定义。不得在逐镜提示词中重复完整角色外观、完整场景描述或全套画风。
+- ${shotIdInstruction}
+- 若提供上一批末镜头上下文，本批首镜头必须延续其角色位置、持有物、服装、时间、天气和情绪状态；不得重复上一批末动作。
+
+拆镜与正向提示词规则：
+- 每个 shot 只允许一个主要动作目标，时长建议 3–6 秒。任何“先……随后……然后……”、镜头内切换景别/机位/地点或连续多个反应，都必须拆成相邻镜头。
+- 遇到“角色 A 指路/递物/示意 + 角色 B 转头看目标 + 角色 B 眼睛一亮/点头/握拳/开心回应”，优先使用方案 B：中景互动镜头与表情强化镜头分开生成。
+- 同一 shot 的首尾帧必须保持同一地点、室内外属性、景别、机位高度、镜头方向和主体构图。不能从室外跳室内、从中景切特写或从过肩切正面。
+- startFramePrompt 控制在 80–150 个汉字，只写 sceneId 对应地点的短锚点、景别/机位、主体位置与静止状态、手部/道具、视线/表情、背景层级和光线，并保留 1–2 个动作语义。
+- endFramePrompt 控制在 40–120 个汉字，只写相对首帧的变化，但必须用一句短锚点复述同一地点/室内外属性/背景/景别/机位。
+- videoPrompt 控制在 40–120 个汉字，只描述首帧到尾帧之间的单一动作、微动作、物理变化与镜头运动；不得重复环境和身份，不得写负面规则、验收标准、切镜、转场或跳到下一场。
+- startFramePrompt 和 endFramePrompt 是静态关键帧规格，不写对白、音效或连续动作；dialogueOrSubtitle、soundDesign 只作视频理解参考。
+- 所有正向提示词必须服从 positivePromptBoundary；未授权角色特征保持不写。上方黑名单不得进入 startFramePrompt、endFramePrompt、videoPrompt。
+
+逐镜负面提示词规则：
+- 每个 shot 必须包含 negativePrompts.image 和 negativePrompts.video；两个数组都允许为 []，不设置最少条目数。
+- 只保留与当前 shot 直接相关的真实风险。不得复制通用故障词，不得为了填格式枚举理论风险，不得把同一组非空负面词无差别复制到多个镜头。
+- 单条结构固定为 {"text":"具体负面描述","appliesTo":"image 或 video 或 both","triggerEvidence":[{"sourcePath":"具体字段路径","evidence":"该字段中的明确内容"}],"reasonCode":"允许的原因代码","priority":"high 或 medium 或 low","enabled":true}。
+- reasonCode 只允许 explicit_identity_conflict、shot_object_confusion、shot_interaction_failure、temporal_consistency_failure、reference_leak、proven_provider_failure。
+- appliesTo 只允许 image、video、both；image 数组只能放 image/both，video 数组只能放 video/both。
+- triggerEvidence 必须指向具体输入。引用本批剧情时使用 fullStory.sceneScript[sceneId].visibleAction/location/characters/shotAndSound/shootingNotes；引用当前镜头自身时必须预先使用最终路径 animationPlan.shotPlan[shotId].startFramePrompt/endFramePrompt/videoPrompt/characterAction。不得使用“本批提示”“模型常识”或不存在的路径。
+- “用户未声明/未提及”不能成为负面词证据。dialogueRules 永远不得进入图片/视频负面提示词。sourceSimilarityRules 只有在当前生成请求真实传入原片视觉参考时，才可按 reference_leak 条件性进入对应媒体数组。
+- 图片数组只处理当前静态构图中的身份冲突、道具混淆和接触融合；视频数组只增加当前镜头真实相关的时序漂移、道具变形、角色增殖、数量变化或运动接触问题。
+- acceptanceCriteria 只写 1–3 条可观察、可判定的短标准，不要复述提示词。
+
+输出严格使用以下唯一结构：
+{
+  "shotPlan":[{
+    "shotId":"A01",
+    "sourceSceneId":"S1",
+    "sceneId":"LOC01",
+    "durationSeconds":4,
+    "storyPurpose":"",
+    "emotionalTarget":"",
+    "startFramePrompt":"",
+    "endFramePrompt":"",
+    "videoPrompt":"",
+    "cameraMotion":"",
+    "characterAction":"",
+    "dialogueOrSubtitle":"",
+    "soundDesign":"",
+    "continuityNotes":"",
+    "negativePrompts":{"image":[], "video":[]},
+    "acceptanceCriteria":[]
+  }]
+}
+
+只输出本批镜头。不要回显动画基础对象，不要输出本批之外的 sourceSceneId。${JSON_ONLY}`;
+}
+
+function resolveAnimationBatchScenes(input, fullStory) {
+  const allScenes = Array.isArray(fullStory?.sceneScript) ? fullStory.sceneScript : [];
+  const explicitScenes = [input.sourceScenes, input.sourceSceneBatch, input.sceneBatch, input.batchScenes]
+    .find((value) => Array.isArray(value) && value.length);
+  if (explicitScenes) {
+    return explicitScenes.map((scene) => {
+      if (scene && typeof scene === "object") return scene;
+      return allScenes.find((item) => String(item?.sceneId || "") === String(scene)) || { sceneId: String(scene || "") };
+    }).filter((scene) => scene?.sceneId);
+  }
+
+  const explicitIds = [input.sourceSceneIds, input.sceneIds, input.batchSceneIds]
+    .find((value) => Array.isArray(value) && value.length) || [];
+  return explicitIds.map((sceneId) => (
+    allScenes.find((scene) => String(scene?.sceneId || "") === String(sceneId)) || { sceneId: String(sceneId || "") }
+  )).filter((scene) => scene.sceneId);
+}
+
+function formatShotIdInstruction(input) {
+  if (input.shotIdRange) return `所有 shotId 必须落在 ${String(input.shotIdRange)}，按剧情顺序连续使用且不得重复。`;
+  const prefix = String(input.shotIdPrefix || "A").trim() || "A";
+  const rawStart = input.shotIdStartIndex ?? input.startShotIndex ?? input.shotStartIndex;
+  const start = Number.isFinite(Number(rawStart)) ? Math.max(1, Math.round(Number(rawStart))) : null;
+  if (start !== null) {
+    return `从 ${prefix}${String(start).padStart(2, "0")} 开始，按剧情顺序连续编号，不得与其它批次重复。`;
+  }
+  return `使用 ${prefix} 加两位以上数字的格式；必须服从调用方提供的批次编号范围，并确保与其它批次全局唯一。`;
+}
+
 export function characterReferenceRefinePrompt(input) {
   const character = input.characterReference || {};
   const visualPolicyText = fixedCharacterVisualPolicyText(input.creatorProfile?.fixedCharacter || "");

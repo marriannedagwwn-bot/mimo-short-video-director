@@ -1,6 +1,8 @@
-import { analysisPrompt, animationPlanPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { analysisPrompt, animationFoundationPrompt, animationShotBatchPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "./mock.js";
-import { InputError, OutputContractError, ensureAnimationPlanMatchesProfile, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
+import { InputError, OutputContractError, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
+
+const DEFAULT_ANIMATION_BATCH_SCENE_COUNT = 2;
 
 export class WorkflowService {
   constructor({
@@ -14,7 +16,8 @@ export class WorkflowService {
     animationClient = null,
     animationModel = "mimo-v2.5-pro",
     animationMaxCompletionTokens = 12288,
-    animationProvider = "MiMo"
+    animationProvider = "MiMo",
+    animationShotBatchSceneCount = DEFAULT_ANIMATION_BATCH_SCENE_COUNT
   } = {}) {
     this.clients = normalizeClients(clients);
     if (client && !Object.keys(this.clients).length) this.clients.MiMo = client;
@@ -40,6 +43,7 @@ export class WorkflowService {
     this.animationModel = animationStage.model;
     this.animationMaxCompletionTokens = animationStage.maxCompletionTokens;
     this.animationProvider = animationStage.provider;
+    this.animationShotBatchSceneCount = normalizeBatchSize(animationShotBatchSceneCount);
   }
 
   get mode() {
@@ -205,14 +209,46 @@ export class WorkflowService {
     const settings = this.resolveStage("animationPlan", input);
     if (!this.hasLiveClient) return validateAnimationPlanOutput(mockAnimationPlan(input), input);
     this.assertStageClient(settings, "首尾帧动画生产包");
-    const prompt = animationPlanPrompt({ ...input, targetProvider: settings.provider, targetModel: settings.model });
-    return this.generateValidatedJson({
+    const promptInput = { ...input, targetProvider: settings.provider, targetModel: settings.model };
+    const foundation = await this.generateValidatedJson({
       client: settings.client,
-      prompt,
+      prompt: animationFoundationPrompt(promptInput),
       model: settings.model,
       maxCompletionTokens: settings.maxCompletionTokens,
-      validate: (result) => validateAnimationPlanOutput(result, input)
+      validate: (result) => validateAnimationFoundationOutput(result, input)
     });
+
+    const sourceScenes = Array.isArray(input.fullStory.sceneScript) ? input.fullStory.sceneScript : [];
+    const sceneBatches = chunkItems(sourceScenes, this.animationShotBatchSceneCount);
+    const shotPlan = [];
+    for (let batchIndex = 0; batchIndex < sceneBatches.length; batchIndex += 1) {
+      const batchScenes = sceneBatches[batchIndex];
+      const shotIdStartIndex = shotPlan.length + 1;
+      const prompt = animationShotBatchPrompt({
+        ...promptInput,
+        animationFoundation: foundation,
+        sourceScenes: batchScenes,
+        batchIndex,
+        shotIdStartIndex,
+        previousShotContext: animationContinuityContext(shotPlan.at(-1))
+      });
+      const batch = await this.generateValidatedJson({
+        client: settings.client,
+        prompt,
+        model: settings.model,
+        maxCompletionTokens: settings.maxCompletionTokens,
+        validate: (result) => validateAnimationShotBatchOutput(result, {
+          input,
+          foundation,
+          sourceScenes: batchScenes,
+          shotIdStartIndex,
+          previousShots: shotPlan
+        })
+      });
+      shotPlan.push(...batch.shotPlan);
+    }
+
+    return validateAnimationPlanOutput(mergeAnimationPlan(foundation, shotPlan, input), input);
   }
 
   async refineCharacterReference(input) {
@@ -286,6 +322,201 @@ function validateAnimationPlanOutput(result, input = {}) {
     input.visualGuardrails,
     input
   );
+}
+
+function validateAnimationFoundationOutput(result, input = {}) {
+  const sourceSceneIds = (input.fullStory?.sceneScript || []).map((scene) => scene?.sceneId);
+  const foundation = ensureAnimationFoundationContract(result, { sourceSceneIds });
+  const checked = ensureAnimationPlanMatchesProfile(
+    { ...foundation, shotPlan: [] },
+    input.creatorProfile,
+    input.creativeBrief,
+    input.variant,
+    input.visualGuardrails,
+    input
+  );
+  const { shotPlan: ignoredShotPlan, ...validatedFoundation } = checked;
+  return validatedFoundation;
+}
+
+function validateAnimationShotBatchOutput(result, { input, foundation, sourceScenes, shotIdStartIndex, previousShots = [] }) {
+  const sourceSceneIds = sourceScenes.map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean);
+  const rawBatch = ensureAnimationShotBatchContract(result);
+  const normalized = normalizeAnimationShotBatchResult(rawBatch, shotIdStartIndex);
+  const batch = ensureAnimationShotBatchContract(normalized);
+  const allowedSourceScenes = new Set(sourceSceneIds);
+  const knownSceneIds = new Set((foundation.sceneReferencePrompts || []).map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean));
+  const sceneIdBySourceScene = new Map((foundation.sceneReferencePrompts || []).flatMap((scene) => (
+    (scene.sourceSceneIds || []).map((sourceSceneId) => [String(sourceSceneId || "").trim(), String(scene.sceneId || "").trim()])
+  )));
+  const sourceOrder = new Map(sourceSceneIds.map((sceneId, index) => [sceneId, index]));
+  let previousSourceIndex = -1;
+
+  batch.shotPlan.forEach((shot, index) => {
+    if (!allowedSourceScenes.has(shot.sourceSceneId)) {
+      throw new OutputContractError(`animationShotBatch.shotPlan[${index}].sourceSceneId 不属于当前批次：${shot.sourceSceneId}`);
+    }
+    const currentSourceIndex = sourceOrder.get(shot.sourceSceneId);
+    if (currentSourceIndex < previousSourceIndex) {
+      throw new OutputContractError("animationShotBatch.shotPlan 必须按当前批次的剧情场次顺序输出");
+    }
+    previousSourceIndex = currentSourceIndex;
+    if (!knownSceneIds.has(shot.sceneId)) {
+      throw new OutputContractError(`animationShotBatch.shotPlan[${index}].sceneId 未引用已生成的场景参考：${shot.sceneId}`);
+    }
+    const expectedSceneId = sceneIdBySourceScene.get(shot.sourceSceneId);
+    if (shot.sceneId !== expectedSceneId) {
+      throw new OutputContractError(`animationShotBatch.shotPlan[${index}].sceneId 必须使用 ${shot.sourceSceneId} 映射的场景参考 ${expectedSceneId || "未映射"}`);
+    }
+    ensureShotDurationWithinFoundation(shot, index, foundation);
+  });
+
+  const covered = new Set(batch.shotPlan.map((shot) => shot.sourceSceneId));
+  const missingScenes = sourceSceneIds.filter((sceneId) => !covered.has(sceneId));
+  if (missingScenes.length) {
+    throw new OutputContractError(`animationShotBatch 未覆盖当前批次剧情场次：${missingScenes.join("、")}`);
+  }
+
+  const previousCount = previousShots.length;
+  const pruned = pruneAnimationPlanNegativePrompts({ ...foundation, shotPlan: [...previousShots, ...batch.shotPlan] }, input);
+  const checked = ensureAnimationPlanMatchesProfile(
+    pruned,
+    input.creatorProfile,
+    input.creativeBrief,
+    input.variant,
+    input.visualGuardrails,
+    input
+  );
+  return { shotPlan: checked.shotPlan.slice(previousCount) };
+}
+
+function normalizeAnimationShotBatchResult(result, shotIdStartIndex) {
+  return {
+    shotPlan: result.shotPlan.map((shot, index) => canonicalizeAnimationShot(shot, shotIdStartIndex + index))
+  };
+}
+
+function canonicalizeAnimationShot(shot = {}, shotNumber) {
+  const shotId = `A${String(shotNumber).padStart(2, "0")}`;
+  return {
+    shotId,
+    sourceSceneId: String(shot.sourceSceneId || "").trim(),
+    sceneId: String(shot.sceneId || "").trim(),
+    durationSeconds: shot.durationSeconds,
+    storyPurpose: shot.storyPurpose,
+    emotionalTarget: shot.emotionalTarget,
+    startFramePrompt: shot.startFramePrompt,
+    endFramePrompt: shot.endFramePrompt,
+    videoPrompt: shot.videoPrompt,
+    cameraMotion: shot.cameraMotion,
+    characterAction: shot.characterAction,
+    dialogueOrSubtitle: shot.dialogueOrSubtitle,
+    soundDesign: shot.soundDesign,
+    continuityNotes: shot.continuityNotes,
+    negativePrompts: rewriteShotNegativePromptEvidence(shot.negativePrompts, shotId),
+    acceptanceCriteria: shot.acceptanceCriteria
+  };
+}
+
+function rewriteShotNegativePromptEvidence(negativePrompts = {}, shotId) {
+  const rewriteItems = (items) => Array.isArray(items) ? items.map((item) => ({
+    ...item,
+    triggerEvidence: Array.isArray(item?.triggerEvidence) ? item.triggerEvidence.map((entry) => ({
+      ...entry,
+      sourcePath: String(entry?.sourcePath || "").replace(
+        /^animationPlan\.(?:shotPlan|shots)\[[^\]]+\](?=\.)/u,
+        `animationPlan.shotPlan[${shotId}]`
+      )
+    })) : item?.triggerEvidence
+  })) : items;
+  return {
+    image: rewriteItems(negativePrompts?.image),
+    video: rewriteItems(negativePrompts?.video)
+  };
+}
+
+function ensureShotDurationWithinFoundation(shot, index, foundation) {
+  const recommendation = foundation.productionStrategy?.recommendedShotDurationSeconds || {};
+  const minimum = Number(recommendation.min);
+  const maximum = Number(recommendation.max);
+  const duration = Number(shot.durationSeconds);
+  if (Number.isFinite(minimum) && duration < minimum) {
+    throw new OutputContractError(`animationShotBatch.shotPlan[${index}].durationSeconds 不得小于 ${minimum}`);
+  }
+  if (Number.isFinite(maximum) && duration > maximum) {
+    throw new OutputContractError(`animationShotBatch.shotPlan[${index}].durationSeconds 不得大于 ${maximum}`);
+  }
+}
+
+function mergeAnimationPlan(foundation, shotPlan, input = {}) {
+  const knownSceneIds = new Set((foundation.sceneReferencePrompts || []).map((scene) => String(scene?.sceneId || "").trim()));
+  const knownSourceSceneIds = new Set((input.fullStory?.sceneScript || []).map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean));
+  const shotIds = new Set();
+  const coveredSourceSceneIds = new Set();
+  shotPlan.forEach((shot, index) => {
+    if (shotIds.has(shot.shotId)) throw new OutputContractError(`animationPlan.shotPlan 镜头编号重复：${shot.shotId}`);
+    shotIds.add(shot.shotId);
+    if (!knownSceneIds.has(shot.sceneId)) {
+      throw new OutputContractError(`animationPlan.shotPlan[${index}].sceneId 未引用有效场景：${shot.sceneId}`);
+    }
+    if (!knownSourceSceneIds.has(shot.sourceSceneId)) {
+      throw new OutputContractError(`animationPlan.shotPlan[${index}].sourceSceneId 未引用有效剧情场次：${shot.sourceSceneId}`);
+    }
+    coveredSourceSceneIds.add(shot.sourceSceneId);
+  });
+  const missingSourceScenes = [...knownSourceSceneIds].filter((sceneId) => !coveredSourceSceneIds.has(sceneId));
+  if (missingSourceScenes.length) throw new OutputContractError(`animationPlan 未覆盖剧情场次：${missingSourceScenes.join("、")}`);
+
+  const relatedByScene = new Map();
+  shotPlan.forEach((shot) => {
+    if (!relatedByScene.has(shot.sceneId)) relatedByScene.set(shot.sceneId, []);
+    relatedByScene.get(shot.sceneId).push(shot.shotId);
+  });
+  const recommendedDuration = foundation.productionStrategy?.recommendedShotDurationSeconds || {};
+  const durationRange = Number.isFinite(Number(recommendedDuration.min)) && Number.isFinite(Number(recommendedDuration.max))
+    ? `${recommendedDuration.min}–${recommendedDuration.max} 秒`
+    : "建议时长范围";
+  return {
+    ...foundation,
+    sceneReferencePrompts: foundation.sceneReferencePrompts.map((scene) => {
+      const { sourceSceneIds: ignoredSourceSceneIds, ...publicScene } = scene;
+      return {
+        ...publicScene,
+        relatedShotIds: relatedByScene.get(String(scene.sceneId || "")) || []
+      };
+    }),
+    shotPlan,
+    continuityAndSafetyCheck: {
+      ...foundation.continuityAndSafetyCheck,
+      firstLastFrameContinuity: `已合并 ${shotPlan.length} 个镜头，每镜均已通过首帧、尾帧、场景引用和连续性字段校验。`,
+      shotDurationControlled: `${shotPlan.length} 个镜头的时长均已通过 ${durationRange} 约束校验。`,
+      readyForVideoGeneration: "全部逐镜 shotPlan 已在服务端合并并通过最终契约校验，可进入图片与视频生成。"
+    }
+  };
+}
+
+function animationContinuityContext(shot) {
+  if (!shot) return null;
+  return {
+    shotId: shot.shotId,
+    sourceSceneId: shot.sourceSceneId,
+    sceneId: shot.sceneId,
+    endFramePrompt: shot.endFramePrompt,
+    characterAction: shot.characterAction,
+    continuityNotes: shot.continuityNotes
+  };
+}
+
+function chunkItems(items, size) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) chunks.push(items.slice(index, index + size));
+  return chunks;
+}
+
+function normalizeBatchSize(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return DEFAULT_ANIMATION_BATCH_SCENE_COUNT;
+  return Math.min(6, Math.max(1, Math.round(number)));
 }
 
 function normalizeClients(clients = null) {
@@ -391,5 +622,6 @@ ${validationError}
 function retryTokenLimit(value) {
   const current = Number(value || 12288);
   if (!Number.isFinite(current)) return 12288;
-  return Math.min(32768, Math.max(12288, Math.ceil(current * 1.25)));
+  const grownWithinDefaultCap = Math.min(32768, Math.max(12288, Math.ceil(current * 1.25)));
+  return Math.max(current, grownWithinDefaultCap);
 }

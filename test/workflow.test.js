@@ -65,6 +65,25 @@ function buildQueueFixture() {
   });
 }
 
+function stagedAnimationResponse(plan, prompt = "") {
+  if (prompt.includes("本阶段只生成可供所有镜头批次复用")) return animationFoundationFixture(plan);
+  const match = prompt.match(/本批允许的 sourceSceneId：([^\n]+)/u);
+  const sourceSceneIds = String(match?.[1] || "").split("、").map((item) => item.trim()).filter(Boolean);
+  return {
+    shotPlan: structuredClone(plan.shotPlan.filter((shot) => sourceSceneIds.includes(String(shot.sourceSceneId))))
+  };
+}
+
+function animationFoundationFixture(plan) {
+  const copy = structuredClone(plan);
+  const { shotPlan, ...foundation } = copy;
+  foundation.sceneReferencePrompts.forEach((scene) => {
+    scene.relatedShotIds = [];
+    scene.sourceSceneIds = [...new Set(shotPlan.filter((shot) => shot.sceneId === scene.sceneId).map((shot) => shot.sourceSceneId))];
+  });
+  return foundation;
+}
+
 test("演示模式跑通完整工作流并分离角色边界与逐镜渲染负面提示词", async () => {
   const workflow = new WorkflowService();
   const result = await workflow.run(input);
@@ -203,7 +222,8 @@ test("完整剧情和动画生产包可切换到 Qwen，同时保留 MiMo 基础
     async generateJson(args) {
       calls.push(args);
       if (args.model === "qwen3.7-max-story") return mockFullStory({ ...input, creativeBrief, variant });
-      return mockAnimationPlan({ ...input, creativeBrief, variant, fullStory: mockFullStory({ ...input, creativeBrief, variant }) });
+      const plan = mockAnimationPlan({ ...input, creativeBrief, variant, fullStory: mockFullStory({ ...input, creativeBrief, variant }) });
+      return stagedAnimationResponse(plan, args.prompt);
     }
   };
   const workflow = new WorkflowService({
@@ -338,7 +358,7 @@ test("完整剧情后可生成首尾帧动画生产包", async () => {
     client: {
       async generateJson(args) {
         captured = args;
-        return mockAnimationPlan({ ...input, creativeBrief, variant, fullStory });
+        return stagedAnimationResponse(mockAnimationPlan({ ...input, creativeBrief, variant, fullStory }), args.prompt);
       }
     }
   });
@@ -2571,7 +2591,7 @@ test("动画生产包正向提示词复用原片表面形象时会被边界校�
   const leakedPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory });
   leakedPlan.shotPlan[0].startFramePrompt = "企鹅快递员小白子站在村口，翅膀微拍，准备送画。";
   const workflow = new WorkflowService({
-    client: { async generateJson() { return leakedPlan; } },
+    client: { async generateJson(args) { return stagedAnimationResponse(leakedPlan, args.prompt); } },
     animationModel: "mimo-v2.5-pro"
   });
   await assert.rejects(
@@ -2601,7 +2621,7 @@ test("动画生产包不得把狼耳少女正向扩展成狼尾、狼爪和肉�
   leakedPlan.characterReferencePrompts[0].appearancePrompt = "小白子，狼耳少女，带狼尾和肉垫，狼爪轻轻扒着风车。";
   leakedPlan.shotPlan[0].startFramePrompt = "小白子带着狼尾站在村口，狼爪扶住风车。";
   const workflow = new WorkflowService({
-    client: { async generateJson() { return leakedPlan; } },
+    client: { async generateJson(args) { return stagedAnimationResponse(leakedPlan, args.prompt); } },
     animationModel: "qwen3.7-max"
   });
   await assert.rejects(
@@ -2635,7 +2655,7 @@ test("固定角色显式写狼尾巴时允许尾巴动作但不自动允许爪�
   tailPlan.characterReferencePrompts[0].appearancePrompt = "小白子，q版狼耳少女，有狼尾巴，穿浅蓝背带裙，尾巴轻轻摇动。";
   tailPlan.shotPlan[0].startFramePrompt = "小白子站在村口，狼耳竖起，狼尾巴轻轻摇动，双手扶住手工风车。";
   const workflow = new WorkflowService({
-    client: { async generateJson() { return tailPlan; } },
+    client: { async generateJson(args) { return stagedAnimationResponse(tailPlan, args.prompt); } },
     animationModel: "qwen3.7-max"
   });
   await assert.doesNotReject(
@@ -2646,7 +2666,7 @@ test("固定角色显式写狼尾巴时允许尾巴动作但不自动允许爪�
   clawPlan.characterReferencePrompts[0].appearancePrompt = "小白子，q版狼耳少女，有狼尾巴，狼爪和肉垫清晰可见。";
   clawPlan.shotPlan[0].startFramePrompt = "小白子站在村口，狼尾巴轻摇，狼爪扶住风车，肉垫贴着木柄。";
   const rejectingWorkflow = new WorkflowService({
-    client: { async generateJson() { return clawPlan; } },
+    client: { async generateJson(args) { return stagedAnimationResponse(clawPlan, args.prompt); } },
     animationModel: "qwen3.7-max"
   });
   await assert.rejects(
@@ -2706,7 +2726,7 @@ test("动画生产包会按 positivePromptBoundary 拦截正向画面越界", as
   const leakedPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory, visualGuardrails });
   leakedPlan.shotPlan[0].startFramePrompt += " 小白子突然长出翅膀。";
   const workflow = new WorkflowService({
-    client: { async generateJson() { return leakedPlan; } },
+    client: { async generateJson(args) { return stagedAnimationResponse(leakedPlan, args.prompt); } },
     animationModel: "qwen3.7-max"
   });
 
@@ -2747,7 +2767,7 @@ test("台词规则不会进入逐镜渲染负面提示词，混入时会被相�
     priority: "high"
   });
   const pruningWorkflow = new WorkflowService({
-    client: { async generateJson() { return leakedPlan; } },
+    client: { async generateJson(args) { return stagedAnimationResponse(leakedPlan, args.prompt); } },
     animationModel: "qwen3.7-max"
   });
   const result = await pruningWorkflow.createAnimationPlan({ creativeBrief, visualGuardrails, creatorProfile, variant, fullStory });
