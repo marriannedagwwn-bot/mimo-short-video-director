@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const options = parseArgs(process.argv.slice(2));
-
-if (options.help || !options.request || !options.output) {
-  console.log(`用法：
+async function main(argv = process.argv.slice(2)) {
+  const options = parseArgs(argv);
+  if (options.help || !options.request || !options.output) {
+    console.log(`用法：
   node workers/generic-http-worker.mjs --config provider.json --request <request.json> --output <target-file> --receipt <receipt.json> --root <production-root>
 
 这是一个通用 HTTP worker，用于把 command provider 的 request JSON 转发给图像/首尾帧视频 API。
@@ -20,17 +21,35 @@ if (options.help || !options.request || !options.output) {
   VIDEO_HTTP_VIDEO_ENDPOINT=...
   VIDEO_HTTP_REVIEW_ENDPOINT=...
   VIDEO_HTTP_ASSEMBLY_ENDPOINT=...`);
-  process.exit(options.help ? 0 : 1);
+    process.exitCode = options.help ? 0 : 1;
+    return;
+  }
+
+  try {
+    await executeGenericHttpWorker(options);
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
 }
 
-try {
-  const request = JSON.parse(await fs.readFile(options.request, "utf8"));
+export async function executeGenericHttpWorker(options = {}) {
+  const request = typeof options.request === "string"
+    ? JSON.parse(await fs.readFile(options.request, "utf8"))
+    : options.request;
+  if (!request || typeof request !== "object" || Array.isArray(request)) throw new Error("worker request 必须是对象或 JSON 文件路径");
+  if (!options.output) throw new Error("worker output 不能为空");
   const config = await loadConfig(options.config || process.env.VIDEO_HTTP_CONFIG || "");
   const result = await executeRequest(request, options, mergeEnvConfig(config));
   await writeReceipt(options.receipt, result);
-} catch (error) {
-  console.error(error.message);
-  process.exit(1);
+  return result;
+}
+
+if (isMainModule()) await main();
+
+function isMainModule() {
+  const entry = process.argv[1];
+  return Boolean(entry) && path.resolve(entry) === fileURLToPath(import.meta.url);
 }
 
 async function executeRequest(request, options, config) {

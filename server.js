@@ -92,7 +92,12 @@ const server = http.createServer(async (request, response) => {
         imageProviderReachable: imageProvider.reachable,
         imageModelAvailable: imageProvider.modelAvailable,
         mediaMode: analysisMedia.mediaMode,
-        nativeVideoMaxBytes: analysisMedia.nativeVideoMaxBytes
+        nativeVideoMaxBytes: analysisMedia.nativeVideoMaxBytes,
+        timeouts: {
+          serverRequestMs: config.serverRequestTimeoutMs,
+          qwenGenerationMs: config.qwen.requestTimeoutMs,
+          mimoGenerationMs: config.mimo.requestTimeoutMs
+        }
       });
     }
     if (request.method === "POST" && url.pathname === "/api/generate-character-reference-images") {
@@ -124,9 +129,12 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
+server.requestTimeout = config.serverRequestTimeoutMs;
+
 server.listen(config.port, () => {
   console.log(`AI 短视频导演：http://localhost:${config.port}`);
   console.log(`运行模式：${workflow.mode === "live" ? `${stageDefaults.analysis.provider} (${stageDefaults.analysis.model}) / 剧情 ${stageDefaults.fullStory.provider} ${stageDefaults.fullStory.model} / 动画 ${stageDefaults.animationPlan.provider} ${stageDefaults.animationPlan.model}` : "演示数据（配置 .env 后接入模型服务）"}`);
+  console.log(`生成请求超时：${Math.round(config.qwen.requestTimeoutMs / 60000)} 分钟（Qwen）/ ${Math.round(config.mimo.requestTimeoutMs / 60000)} 分钟（MiMo）`);
 });
 
 function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {}) {

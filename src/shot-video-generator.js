@@ -45,7 +45,7 @@ export async function generateShotVideo(options = {}) {
       const suffix = count > 1 ? `-${index + 1}` : "";
       const outputPath = path.join(outputRoot, `${shotId}-${stamp}${suffix}.mp4`);
       const request = buildShotVideoRequest(shot, { outputPath, inputArtifacts, candidateIndex: index, candidateCount: count, model: options.videoModel });
-      const receipt = await runGenericWorker({ request, outputPath, workDir, configPath });
+      const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: options.workerRunner });
       await assertUsableVideoOutput(outputPath);
       videos.push({
         candidateIndex: index,
@@ -105,7 +105,7 @@ async function prepareOneFrameArtifact(context) {
 
   const outputPath = path.join(outputRoot, `${shotId}-${frameKind}-${stamp}.png`);
   const request = buildFrameRequest(shot, { frameKind, outputPath, outputKey, prompt });
-  const receipt = await runGenericWorker({ request, outputPath, workDir, configPath });
+  const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: context.options.workerRunner });
   return {
     outputKey,
     path: outputPath,
@@ -230,7 +230,7 @@ async function writeDataUrlArtifact({ outputRoot, publicBasePath, outputKey, bas
   };
 }
 
-async function runGenericWorker({ request, outputPath, workDir, configPath }) {
+async function runGenericWorker({ request, outputPath, workDir, configPath, workerRunner = null }) {
   const requestPath = path.join(workDir, `${safeSegment(request.taskId)}.request.json`);
   const receiptPath = path.join(workDir, `${safeSegment(request.taskId)}.receipt.json`);
   await fs.writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`);
@@ -243,7 +243,17 @@ async function runGenericWorker({ request, outputPath, workDir, configPath }) {
     "--root", process.cwd()
   ];
   try {
-    await execFileAsync(process.execPath, args, { maxBuffer: 10 * 1024 * 1024 });
+    if (typeof workerRunner === "function") {
+      await workerRunner({
+        config: configPath,
+        request: requestPath,
+        output: outputPath,
+        receipt: receiptPath,
+        root: process.cwd()
+      });
+    } else {
+      await execFileAsync(process.execPath, args, { maxBuffer: 10 * 1024 * 1024 });
+    }
   } catch (error) {
     const message = String(error.stderr || error.message || "生成失败").trim();
     throw new ShotVideoProviderError(message);

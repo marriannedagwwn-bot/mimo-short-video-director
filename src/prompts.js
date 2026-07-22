@@ -13,6 +13,151 @@ export const SYSTEM_PROMPT = `你是短视频导演与叙事分析师。你的�
 
 送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾是可复用叙事构件，不能因为原片使用过就一刀切禁止。真正禁止的是可识别的具体表达，例如独特台词、专有名称、罕见动作组合、镜头逐一对应和高度独特的道具组合。`;
 
+const ANIMATION_PROMPT_SCHEMA_VERSION = "2.0";
+
+const STRUCTURED_ANIMATION_SHOT_EXAMPLE = `{
+  "shotId":"A01",
+  "sourceSceneId":"S1",
+  "sceneId":"LOC01",
+  "durationSeconds":4,
+  "storyPurpose":"",
+  "emotionalTarget":"",
+  "startFrame":{
+    "timeAndWeather":"",
+    "characters":[{
+      "name":"",
+      "screenPosition":"",
+      "bodyOrientation":"",
+      "pose":"",
+      "actionState":"",
+      "handPropState":"",
+      "gaze":"",
+      "emotionState":"",
+      "expression":""
+    }],
+    "environment":{
+      "sceneId":"LOC01",
+      "foreground":"",
+      "midground":"",
+      "background":"",
+      "atmosphere":""
+    },
+    "camera":{
+      "shotSize":"",
+      "height":"",
+      "angle":"",
+      "viewDirection":"",
+      "lensFeel":"",
+      "depthOfField":"",
+      "composition":""
+    },
+    "lighting":{
+      "source":"",
+      "direction":"",
+      "colorAndContrast":""
+    },
+    "styleModifiers":[],
+    "continuityLocks":[]
+  },
+  "endFrame":{
+    "timeAndWeather":"",
+    "characters":[{
+      "name":"",
+      "screenPosition":"",
+      "bodyOrientation":"",
+      "pose":"",
+      "actionState":"",
+      "handPropState":"",
+      "gaze":"",
+      "emotionState":"",
+      "expression":""
+    }],
+    "environment":{
+      "sceneId":"LOC01",
+      "foreground":"",
+      "midground":"",
+      "background":"",
+      "atmosphere":""
+    },
+    "camera":{
+      "shotSize":"",
+      "height":"",
+      "angle":"",
+      "viewDirection":"",
+      "lensFeel":"",
+      "depthOfField":"",
+      "composition":""
+    },
+    "lighting":{
+      "source":"",
+      "direction":"",
+      "colorAndContrast":""
+    },
+    "styleModifiers":[],
+    "continuityLocks":[]
+  },
+  "motion":{
+    "mode":"continuous_action",
+    "primaryAction":"",
+    "cameraMove":{
+      "mode":"locked",
+      "technique":"固定机位",
+      "path":"固定机位，保持首帧构图",
+      "speed":"slow",
+      "motivation":"让动作清晰可读"
+    },
+    "emotionArc":{
+      "from":"",
+      "visibleProgression":"",
+      "to":""
+    },
+    "environmentChange":"",
+    "lightingChange":"",
+    "timingBeats":[{
+      "fromPercent":0,
+      "toPercent":100,
+      "action":"",
+      "camera":"",
+      "emotion":"",
+      "environment":"",
+      "soundCue":""
+    }],
+    "audio":{
+      "dialogue":[],
+      "ambience":"",
+      "soundEffects":[],
+      "musicCue":""
+    },
+    "preserve":[],
+    "endStateRef":"endFrame",
+    "stopCondition":"",
+    "postRetime":{
+      "recommended":false,
+      "speedCurve":"",
+      "reason":""
+    }
+  },
+  "negativePrompts":{"image":[],"video":[]},
+  "acceptanceCriteria":[]
+}`;
+
+const STRUCTURED_ANIMATION_SHOT_RULES = `
+结构化镜头 v2 规则（必须逐条执行）：
+- startFrame 和 endFrame 都是静态冻结关键帧，只描述该时刻可见的状态；不得写连续过程、先后两个状态、对白、旁白或音效。
+- 两帧必须完整输出 timeAndWeather、characters、environment、camera、lighting、styleModifiers 和 continuityLocks，不得用“同首帧”“保持不变”代替结构字段。
+- startFrame.environment.sceneId 和 endFrame.environment.sceneId 必须都逐字等于 shot.sceneId；两帧必须保持同一地点、室内外属性、角色身份、服装以及道具的身份/数量。时段天气、环境状态、光线和道具位置只能在剧情真实需要时连续变化，并必须同时写入 motion.environmentChange、lightingChange 或 timingBeats；禁止未声明的跳变。
+- characters 只列出当前帧真实可见的角色；每个角色必须完整输出 name、screenPosition、bodyOrientation、pose、actionState、handPropState、gaze、emotionState 和 expression。
+- motion 只能连接当前 startFrame 到 endFrame，primaryAction 只允许一个主要动作；不得加入第二任务、切镜、转场、闪回、跳时、地点切换或未声明的景别跳变。cameraMove.mode=continuous 时允许沿唯一路径逐渐重构图或缓慢改变景别，但必须在 cameraMove 和 timingBeats 中明写连续过程。
+- motion.mode 只允许 continuous_action、camera_move、object_transform、loop；cameraMove.mode 只允许 locked 或 continuous；cameraMove.speed 只允许 slow、medium、fast。postRetime.recommended 必须是布尔值。
+- 默认使用 cameraMove.mode=locked：当角色或道具动作在固定构图中已足够清楚时，startFrame.camera 与 endFrame.camera 的 7 个字段必须完全相同，cameraMove.technique/path/motivation 要明写固定机位、保持首帧构图和动作可读性；speed 仍填允许的 slow。
+- 只有当当前单一动作必须被跟随、显示或连续重构图时才使用 cameraMove.mode=continuous；必须写出唯一连续的 technique、path、speed 和 motivation，不得在运镜中切镜、跳轴、切换镜头或瞬移机位。
+- emotionArc.from 必须逐字等于 startFrame.characters[0].emotionState，emotionArc.to 必须逐字等于 endFrame.characters[0].emotionState；visibleProgression 只描述这两个可见状态之间的进展。
+- timingBeats 必须有 1–4 条，第一条 fromPercent=0，最后一条 toPercent=100；每条满足 0<=fromPercent<toPercent<=100，相邻两条的前一条 toPercent 必须等于后一条 fromPercent，不得重叠或留空档。
+- 每个 timingBeat 都只能描述同一 primaryAction 的一个连续阶段，camera 必须与 cameraMove 一致；emotion、environment、soundCue 必须是该时段真实发生的状态，没有变化时明写“保持”或“无”。
+- audio 是唯一音频信息源；dialogue 每条必须含 speaker、text、delivery，并服从 dialogueRules；无对白时输出 []，不得将对白写入静态帧。
+- preserve 列出从首帧到尾帧不能漂移的身份、道具、空间、构图和光线锁；endStateRef 必须等于 endFrame；stopCondition 必须要求达到 endFrame 状态后立即停止，不追加动作。
+- 模型绝对不得输出 startFramePrompt、endFramePrompt、videoPrompt、cameraMotion、characterAction、dialogueOrSubtitle、soundDesign 或 continuityNotes。这些旧字段由服务端在校验结构化字段后统一编译，不得双写、占位或推测。`;
+
 export function analysisPrompt(input) {
   const timeline = input.frames.map((frame, index) => `画面 F${index + 1}：${formatTime(frame.timestamp)}`).join("；");
   return `${SYSTEM_PROMPT}
@@ -293,30 +438,31 @@ export function animationPlanPrompt(input) {
   const visualGuardrailsText = formatVisualGuardrailsForPrompt(input.visualGuardrails);
   return `${SYSTEM_PROMPT}
 
-你现在进入 AI 动画导演阶段。上游已经有完整剧情 fullStory。你的任务不是继续写剧情，而是把剧情转换成“首尾帧 AI 视频生产包”：先稳定视觉，再按短镜头生成首帧、尾帧和视频生成提示词。
+你现在进入 AI 动画导演阶段。上游已经有完整剧情 fullStory。你的任务不是继续写剧情，而是把剧情转换成“首尾帧 AI 视频生产包”：先稳定视觉，再按短镜头生成结构化首帧、尾帧与两帧之间的运动规格。
 
 使用目标模型：${input.targetProvider || "MiMo"} ${input.targetModel || "mimo-v2.5-pro"}。
 
 推荐策略：
 - 每个镜头单独生成 3–6 秒，不要一次生成整条片。
 - 先用 visualBible、characterReferencePrompts 和 sceneReferencePrompts 锁定角色、世界观、色彩、动画风格和可复用场景；这些是全局锁定层，只写一次。
-- 每个 shot 必须同时给出 startFramePrompt、endFramePrompt、videoPrompt、negativePrompts.image、negativePrompts.video 和 acceptanceCriteria。两个负面数组都允许为空，不设置最少条目数。
-- 首帧负责镜头起点，尾帧负责镜头终点，videoPrompt 只描述中间运动、镜头运动和情绪变化。
+- 顶层 promptSchemaVersion 必须等于 ${ANIMATION_PROMPT_SCHEMA_VERSION}。每个 shot 只输出结构化 startFrame、endFrame、motion，再附带镜头元数据、negativePrompts.image、negativePrompts.video 和 acceptanceCriteria。两个负面数组都允许为空，不设置最少条目数。
+- startFrame 负责镜头起点，endFrame 负责镜头终点，motion 只负责两帧之间的单一动作、连续运镜、情绪进展和音频。
 - 输出应保持模型无关，可用于支持首尾帧/关键帧驱动的视频模型。
 
 三层简化结构（必须执行）：
 - 第 1 层 identity / scene lock：只在 characterReferencePrompts 中完整锁定角色姓名、身份、年龄感、服装/外观、核心性格和一致性标签；只在 sceneReferencePrompts 中完整锁定可复用地点、室内外属性、背景层级和空间锚点；只在 visualBible 中完整锁定风格、色彩、镜头语言和世界规则。
-- 第 2 层 shot frame：每个 shot 必须引用 sceneReferencePrompts 中的 sceneId；startFramePrompt 只写人物状态、场景锚点、镜头三类信息，保留 1-2 个动作语义；endFramePrompt 只写相对首帧发生变化的动作、表情、位置，但必须用一句短锚点复述同一个 sceneId 的地点/室内外属性/背景/景别/机位，不要重复完整身份和全套风格。
-- 第 3 层 video prompt：videoPrompt 只写动作和镜头运动，不重复环境，不写身份设定，不写负面规则，不写验收标准。渲染负面提示词只进入当前 shot 的 negativePrompts。
-- 每条 startFramePrompt 控制在 80-150 个汉字；每条 endFramePrompt 控制在 40-120 个汉字；videoPrompt 控制在 40-120 个汉字。
+- 第 2 层 shot frame：每个 shot 必须引用 sceneReferencePrompts 中的 sceneId；startFrame 和 endFrame 用结构化字段锁定该时刻的角色、场景、镜头、光线和连续性。
+- 第 3 层 motion：motion 只写从 startFrame 到 endFrame 的一个连续动作，通过 1–4 个无缝 timingBeats 分配动作、运镜、情绪和声音。渲染负面提示词只进入当前 shot 的 negativePrompts。
+
+${STRUCTURED_ANIMATION_SHOT_RULES}
 
 拆镜头方案 B（必须优先执行）：
 - 如果一个剧情段落同时包含“角色 A 指路/递物/示意 + 角色 B 转头/看见目标 + 角色 B 眼睛一亮/点头/握拳/摆尾/开心回应”等连续状态变化，必须拆成相邻 2 个或更多 shot，不要塞进同一组首尾帧。
 - 第 1 个 shot 做中景互动镜头：只表达外部互动与视线转向，例如 A 指向远方，B 跟随方向看过去。
 - 第 2 个 shot 做表情强化镜头：只表达 B 的反应终点，例如眼睛一亮、点头、握拳或开心回应。任何依赖额外身体特征的动作都必须先由固定角色文本明确授权。
 - 每个 shot 只能有一个主要动作目标；如果出现“先……随后……然后……”“镜头从中景切到近景”“过肩切特写”“转头后又点头握拳”等组合，必须继续拆分。
-- 同一个 shot 的 startFramePrompt 与 endFramePrompt 必须保持同一地点、同一镜头景别、同一机位高度、同一镜头方向和同一主体构图；不能在同一 shot 里从中景变近景、从过肩变特写、从室外变室内。
-- videoPrompt 只能描述首帧到尾帧之间的微动作与镜头运动，不得包含“切换镜头、切到特写、转场、闪回、跳到下一个场景”。
+- 同一个 shot 的 startFrame 与 endFrame 必须保持同一地点、室内外属性和空间轴线；固定机位时两帧 camera 必须逐字一致。时段天气、环境、光线或景别只能按 motion 中已声明的连续过程变化，不得未声明跳变。
+- motion 只能描述 startFrame 到 endFrame 之间的单一连续动作，不得包含切换镜头、切到特写、转场、闪回或跳到下一场景。
 
 固定角色：${input.creatorProfile?.fixedCharacter || "未指定"}
 垂直赛道：${input.creatorProfile?.vertical || "未指定"}
@@ -331,29 +477,28 @@ visualGuardrails 分类规则：${visualGuardrailsText}
 硬约束：
 - selectedVariantId 必须等于选中主题变体 id：${variant.id || fullStory.selectedVariantId || "未指定"}。
 - animationPlan 只能服务当前 fullStory，不得改剧情、不得换主题、不得更换固定角色。
-- characterReferencePrompts 中必须锁定固定角色姓名、身份、年龄感、服装/外观和核心性格；sceneReferencePrompts 中必须锁定每个复用场景的地点、室内外属性、背景层级、光线和禁止跳变规则；shot 里的正向画面提示词只用角色名和 sceneId 承接全局锁定，不要每个镜头重复完整外观和完整场景设定。
+- characterReferencePrompts 中必须锁定固定角色姓名、身份、年龄感、服装/外观和核心性格；sceneReferencePrompts 中必须锁定每个复用场景的地点、室内外属性、背景层级、光线和禁止跳变规则；shot.startFrame/endFrame 只用角色名和 sceneId 承接全局锁定，不要每个镜头重复完整外观和完整场景设定。
 - 视觉提示词必须服从“固定角色外观边界”和 visualGuardrails.positivePromptBoundary：用户明写的特征可以正向使用；未授权特征保持不写，不得自行扩展。
-- startFramePrompt、endFramePrompt、videoPrompt、assetPrompts.imagePrompt 不得出现上方黑名单词；如果 fullStory 已经换成新道具/新仪式，只能沿用 fullStory 的新表达。
+- startFrame、endFrame、motion 的所有字符串字段以及 assetPrompts.imagePrompt 不得出现上方黑名单词；如果 fullStory 已经换成新道具/新仪式，只能沿用 fullStory 的新表达。
 - visualBible、characterReferencePrompts 和 sceneReferencePrompts 不生成渲染负面提示词。图片与视频负面提示词只能逐镜写入 shot.negativePrompts.image 或 shot.negativePrompts.video。
-- 每个负面条目必须包含 text、appliesTo、triggerEvidence、reasonCode、priority；enabled 可选且默认为 true。triggerEvidence 必须至少包含一个 {sourcePath,evidence}，直接指向当前镜头动作/提示词、明确角色身份、实际传入的视觉参考或真实供应商失败记录。
+- 每个负面条目必须包含 text、appliesTo、triggerEvidence、reasonCode、priority；enabled 可选且默认为 true。triggerEvidence 必须至少包含一个 {sourcePath,evidence}，直接指向当前镜头的结构化动作/帧状态、明确角色身份、实际传入的视觉参考或真实供应商失败记录。
 - 仅在真实风险成立时添加条目，单条结构固定为 {"text":"具体负面描述","appliesTo":"image 或 video 或 both","triggerEvidence":[{"sourcePath":"具体字段路径","evidence":"该字段中的明确内容"}],"reasonCode":"允许的原因代码","priority":"high 或 medium 或 low","enabled":true}。
 - reasonCode 只允许 explicit_identity_conflict、shot_object_confusion、shot_interaction_failure、temporal_consistency_failure、reference_leak、proven_provider_failure。
 - appliesTo 只允许 image、video、both；image 数组只能放 image/both，video 数组只能放 video/both。
 - “用户未声明”或“用户未提及”本身不是负面提示词证据。不得为填满格式枚举理论风险、通用故障词或与镜头无关的身体特征；没有高相关风险时直接输出空数组。
 - 图片负面只处理当前静态画面直接相关的问题；视频负面只增加当前镜头真实相关的时序、运动、增殖、数量变化或接触融合问题。不得把同一组通用负面词复制到不同 shot。
 - sourceSimilarityRules 与 dialogueRules 不直接进入渲染负面提示词。只有原片视觉参考实际传入当前生成请求时，sourceSimilarityRules 中对应视觉表达才可用 reference_leak 进入当前媒体数组；台词禁用词始终不得混入图片/视频负面提示词。
-- 任何负面条目都不得被写入 startFramePrompt、endFramePrompt、videoPrompt 或 appearancePrompt 的正向画面描述。
+- 任何负面条目都不得被写入 startFrame、endFrame、motion 或 appearancePrompt 的正向字段。
 - 角色一致性优先于动作复杂度；每个镜头只允许一个主要动作目标。
 - 镜头数量应覆盖完整剧情关键动作，默认 8–12 个镜头；若 fullStory.sceneScript 少于 6 场，也要拆出至少 6 个镜头。
 - 不能为了维持 8–12 个镜头而合并复合动作；拆镜头方案 B 优先级更高，必要时可以扩展到 14 个以内。
-- startFramePrompt 和 endFramePrompt 必须写成“静态关键帧规格”，不是剧情散文。startFramePrompt 只包含：地点/时间/天气、景别/机位、主体位置与状态、手部/道具、视线/表情、背景层级/光线。endFramePrompt 只包含变化项。
-- endFramePrompt 即使只写变化项，也必须显式保留首帧的地点和空间属性：例如“仍在同一户外农家院落，中景平视，背景绿植和木栅栏不变”。禁止只写人物动作导致模型切到室内、另一个房间或另一条路。
-- startFramePrompt 与 endFramePrompt 不要写对白，不要写音效，不要写“正在变化”的连续动作；只写该帧被冻结的一瞬间。
-- characterAction 只写该 shot 的单一动作目标；dialogueOrSubtitle 和 soundDesign 只作视频理解参考，不要让它们污染画面文字。
+- startFrame 和 endFrame 必须是完整静态关键帧规格，不是剧情散文；两帧都必须显式保留地点、室内外属性、景别、机位和背景层级，不得只写变化项。
+- motion.primaryAction 只写该 shot 的单一动作目标；对白、环境声、音效和音乐只写入 motion.audio，不得污染静态帧。
 - acceptanceCriteria 只用于 QA/debug，控制在 1-3 条短标准；不要把生成提示词复述进 acceptanceCriteria。
 
 输出 animationPlan，严格使用以下结构：
 {
+  "promptSchemaVersion":"${ANIMATION_PROMPT_SCHEMA_VERSION}",
   "selectedVariantId":"",
   "title":"",
   "productionStrategy":{
@@ -396,27 +541,7 @@ visualGuardrails 分类规则：${visualGuardrailsText}
     "consistencyTags":[],
     "avoidSimilarityNote":""
   }],
-	  "shotPlan":[{
-	    "shotId":"A01",
-	    "sourceSceneId":"",
-	    "sceneId":"LOC01",
-	    "durationSeconds":4,
-    "storyPurpose":"",
-    "emotionalTarget":"",
-    "startFramePrompt":"",
-    "endFramePrompt":"",
-    "videoPrompt":"",
-    "cameraMotion":"",
-    "characterAction":"",
-    "dialogueOrSubtitle":"",
-	    "soundDesign":"",
-	    "continuityNotes":"",
-	    "negativePrompts":{
-	      "image":[],
-	      "video":[]
-	    },
-	    "acceptanceCriteria":[]
-  }],
+	  "shotPlan":[${STRUCTURED_ANIMATION_SHOT_EXAMPLE}],
   "editPlan":{
     "sequenceRhythm":"",
     "transitions":[],
@@ -436,7 +561,7 @@ visualGuardrails 分类规则：${visualGuardrailsText}
   "uncertainties":[{"field":"", "reason":"", "safeFallback":""}]
 }
 
-shotPlan 的 startFramePrompt、endFramePrompt、videoPrompt 应该是精简、可复制给图像/视频模型的中文正向提示词。身份由 characterReferencePrompts 承担，场景由 sceneReferencePrompts 承担，风格由 visualBible 承担；负面提示词只按当前 shot 的直接证据逐镜生成，允许 image/video 均为 []。遇到“指路互动 + 主角反应强化”的组合时，按方案 B 拆成中景互动镜头和表情强化镜头。${JSON_ONLY}`;
+shotPlan 只提供结构化的 startFrame、endFrame 和 motion。身份由 characterReferencePrompts 承担，场景由 sceneReferencePrompts 承担，风格由 visualBible 承担；负面提示词只按当前 shot 的直接证据逐镜生成，允许 image/video 均为 []。遇到“指路互动 + 主角反应强化”的组合时，按方案 B 拆成中景互动镜头和表情强化镜头。服务端会在结构校验通过后编译旧字段，模型不得输出任何旧字段。${JSON_ONLY}`;
 }
 
 /**
@@ -458,7 +583,7 @@ export function animationFoundationPrompt(input) {
 使用目标模型：${input.targetProvider || "MiMo"} ${input.targetModel || "mimo-v2.5-pro"}。
 
 本阶段职责：
-- 锁定 selectedVariantId、标题、生产策略和全片元数据。
+- 锁定 promptSchemaVersion=${ANIMATION_PROMPT_SCHEMA_VERSION}、selectedVariantId、标题、生产策略和全片元数据。
 - 用 visualBible 锁定整体风格、动画质感、色彩、光线、世界规则与镜头语言。
 - 为完整剧情中会实际出镜的角色生成 characterReferencePrompts；身份、年龄感、服装/外观、核心性格和一致性标签只在这里完整描述一次。
 - 为 fullStory.sceneScript 中每个需要复用的地点生成 sceneReferencePrompts；每个地点使用稳定且唯一的 LOC 编号，并通过私有 sourceSceneIds 字段明确列出它服务的 fullStory 场次，锁定室内外属性、背景层级、光线和空间锚点。
@@ -476,6 +601,7 @@ creativeBrief：${JSON.stringify(input.creativeBrief || {})}
 visualGuardrails 分类规则：${visualGuardrailsText}
 
 硬约束：
+- promptSchemaVersion 必须逐字等于 ${ANIMATION_PROMPT_SCHEMA_VERSION}，不得省略、更名或改为数字。
 - selectedVariantId 必须等于选中主题变体 id：${variant.id || fullStory.selectedVariantId || "未指定"}。
 - 只能服务当前 fullStory，不得重写剧情、换主题、换主角、改角色关系或新增 fullStory 不需要的角色、地点和关键道具。
 - 必须覆盖 fullStory.sceneScript 的全部地点。每个 fullStory.sceneScript[].sceneId 必须在某一个且只能一个 sceneReferencePrompts[].sourceSceneIds 中出现。相同地点应复用同一个 sceneId，并将多个 source scene 放入同一 sourceSceneIds 数组；不同地点不得错误合并。
@@ -490,6 +616,7 @@ visualGuardrails 分类规则：${visualGuardrailsText}
 
 输出动画基础对象，严格使用以下结构：
 {
+  "promptSchemaVersion":"${ANIMATION_PROMPT_SCHEMA_VERSION}",
   "selectedVariantId":"",
   "title":"",
   "productionStrategy":{
@@ -604,24 +731,22 @@ creativeBrief：${JSON.stringify(input.creativeBrief || {})}
 visualGuardrails 分类规则：${visualGuardrailsText}
 
 批次范围硬约束：
-- 顶层只能输出 shotPlan。不得输出 selectedVariantId、title、productionStrategy、visualBible、角色/场景/资产参考、editPlan、checklist、uncertainties 或其它字段。
+- 动画基础锁定的 promptSchemaVersion 必须为 ${ANIMATION_PROMPT_SCHEMA_VERSION}。本批顶层仍只能输出 shotPlan，不得回显 promptSchemaVersion、selectedVariantId、title、productionStrategy、visualBible、角色/场景/资产参考、editPlan、checklist、uncertainties 或其它字段。
 - 每个 shot.sourceSceneId 必须逐字等于本批允许列表中的一个 sceneId；不得生成其它 source scene 的镜头，不得提前生成下一批内容。
 - 如果本批允许的 sourceSceneId 列表为空，只能输出 {"shotPlan":[]}，不得自行从完整剧情选择场景。
 - 本批每个指定 source scene 至少生成一个镜头，并保持 source scenes 及场内动作的原始顺序。不得遗漏剧情动作，也不得重复上一批已经完成的动作。
 - sceneId 必须精确引用动画基础锁定中 sourceSceneIds 包含当前 shot.sourceSceneId 的那一条 sceneReferencePrompts.sceneId。不得引用其他剧情场次的场景，不得在本阶段新建、重命名或重写场景参考。
-- 角色只用 characterReferencePrompts 中的 characterName 承接身份锁定；道具只使用 fullStory.keyProps 和 assetPrompts 已有定义。不得在逐镜提示词中重复完整角色外观、完整场景描述或全套画风。
+- 角色只用 characterReferencePrompts 中的 characterName 承接身份锁定；道具只使用 fullStory.keyProps 和 assetPrompts 已有定义。不得在逐镜结构化字段中重复完整角色外观、完整场景描述或全套画风。
 - ${shotIdInstruction}
 - 若提供上一批末镜头上下文，本批首镜头必须延续其角色位置、持有物、服装、时间、天气和情绪状态；不得重复上一批末动作。
 
-拆镜与正向提示词规则：
+拆镜与结构化帧/运动规则：
 - 每个 shot 只允许一个主要动作目标，时长建议 3–6 秒。任何“先……随后……然后……”、镜头内切换景别/机位/地点或连续多个反应，都必须拆成相邻镜头。
 - 遇到“角色 A 指路/递物/示意 + 角色 B 转头看目标 + 角色 B 眼睛一亮/点头/握拳/开心回应”，优先使用方案 B：中景互动镜头与表情强化镜头分开生成。
-- 同一 shot 的首尾帧必须保持同一地点、室内外属性、景别、机位高度、镜头方向和主体构图。不能从室外跳室内、从中景切特写或从过肩切正面。
-- startFramePrompt 控制在 80–150 个汉字，只写 sceneId 对应地点的短锚点、景别/机位、主体位置与静止状态、手部/道具、视线/表情、背景层级和光线，并保留 1–2 个动作语义。
-- endFramePrompt 控制在 40–120 个汉字，只写相对首帧的变化，但必须用一句短锚点复述同一地点/室内外属性/背景/景别/机位。
-- videoPrompt 控制在 40–120 个汉字，只描述首帧到尾帧之间的单一动作、微动作、物理变化与镜头运动；不得重复环境和身份，不得写负面规则、验收标准、切镜、转场或跳到下一场。
-- startFramePrompt 和 endFramePrompt 是静态关键帧规格，不写对白、音效或连续动作；dialogueOrSubtitle、soundDesign 只作视频理解参考。
-- 所有正向提示词必须服从 positivePromptBoundary；未授权角色特征保持不写。上方黑名单不得进入 startFramePrompt、endFramePrompt、videoPrompt。
+- startFrame 和 endFrame 必须是完整静态帧，motion 必须用 1–4 个连续时段从前者到达后者。
+- 所有结构化正向字段必须服从 positivePromptBoundary；未授权角色特征保持不写。上方黑名单不得进入 startFrame、endFrame、motion。
+
+${STRUCTURED_ANIMATION_SHOT_RULES}
 
 逐镜负面提示词规则：
 - 每个 shot 必须包含 negativePrompts.image 和 negativePrompts.video；两个数组都允许为 []，不设置最少条目数。
@@ -629,34 +754,17 @@ visualGuardrails 分类规则：${visualGuardrailsText}
 - 单条结构固定为 {"text":"具体负面描述","appliesTo":"image 或 video 或 both","triggerEvidence":[{"sourcePath":"具体字段路径","evidence":"该字段中的明确内容"}],"reasonCode":"允许的原因代码","priority":"high 或 medium 或 low","enabled":true}。
 - reasonCode 只允许 explicit_identity_conflict、shot_object_confusion、shot_interaction_failure、temporal_consistency_failure、reference_leak、proven_provider_failure。
 - appliesTo 只允许 image、video、both；image 数组只能放 image/both，video 数组只能放 video/both。
-- triggerEvidence 必须指向具体输入。引用本批剧情时使用 fullStory.sceneScript[sceneId].visibleAction/location/characters/shotAndSound/shootingNotes；引用当前镜头自身时必须预先使用最终路径 animationPlan.shotPlan[shotId].startFramePrompt/endFramePrompt/videoPrompt/characterAction。不得使用“本批提示”“模型常识”或不存在的路径。
+- triggerEvidence 必须指向具体输入。引用本批剧情时使用 fullStory.sceneScript[sceneId].visibleAction/location/characters/shotAndSound/shootingNotes；引用当前镜头自身时必须使用最终结构路径，例如 animationPlan.shotPlan[shotId].startFrame.characters[0].handPropState、animationPlan.shotPlan[shotId].endFrame.characters[0].actionState、animationPlan.shotPlan[shotId].motion.primaryAction 或 animationPlan.shotPlan[shotId].motion.timingBeats[0].action。不得引用服务端尚未编译的旧字段，不得使用“本批提示”“模型常识”或不存在的路径。
 - “用户未声明/未提及”不能成为负面词证据。dialogueRules 永远不得进入图片/视频负面提示词。sourceSimilarityRules 只有在当前生成请求真实传入原片视觉参考时，才可按 reference_leak 条件性进入对应媒体数组。
 - 图片数组只处理当前静态构图中的身份冲突、道具混淆和接触融合；视频数组只增加当前镜头真实相关的时序漂移、道具变形、角色增殖、数量变化或运动接触问题。
 - acceptanceCriteria 只写 1–3 条可观察、可判定的短标准，不要复述提示词。
 
 输出严格使用以下唯一结构：
 {
-  "shotPlan":[{
-    "shotId":"A01",
-    "sourceSceneId":"S1",
-    "sceneId":"LOC01",
-    "durationSeconds":4,
-    "storyPurpose":"",
-    "emotionalTarget":"",
-    "startFramePrompt":"",
-    "endFramePrompt":"",
-    "videoPrompt":"",
-    "cameraMotion":"",
-    "characterAction":"",
-    "dialogueOrSubtitle":"",
-    "soundDesign":"",
-    "continuityNotes":"",
-    "negativePrompts":{"image":[], "video":[]},
-    "acceptanceCriteria":[]
-  }]
+  "shotPlan":[${STRUCTURED_ANIMATION_SHOT_EXAMPLE}]
 }
 
-只输出本批镜头。不要回显动画基础对象，不要输出本批之外的 sourceSceneId。${JSON_ONLY}`;
+只输出本批镜头。不要回显动画基础对象，不要输出本批之外的 sourceSceneId。旧提示词和动作/声音字段由服务端从 v2 结构编译，模型不得输出。${JSON_ONLY}`;
 }
 
 function resolveAnimationBatchScenes(input, fullStory) {

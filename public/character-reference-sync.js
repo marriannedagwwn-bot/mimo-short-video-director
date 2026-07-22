@@ -6,6 +6,10 @@ export function syncShotCharacterReference(plan, previousCharacter, updatedChara
   const fields = ["startFramePrompt", "endFramePrompt", "videoPrompt", "characterAction", "continuityNotes"];
   let changed = 0;
   for (const shot of plan.shotPlan) {
+    // animationPlan v2 keeps structured frame/motion data as the source of truth.
+    // Character appearance is supplied by characterReferencePrompts/reference images,
+    // so mutating compiled aliases here would make them diverge from the server compiler.
+    if (hasStructuredPromptSource(shot)) continue;
     if (!shot || !fields.some((field) => String(shot[field] || "").includes(characterName))) continue;
     let shotChanged = false;
     for (const field of fields) {
@@ -18,6 +22,10 @@ export function syncShotCharacterReference(plan, previousCharacter, updatedChara
     if (shotChanged) changed += 1;
   }
   return changed;
+}
+
+function hasStructuredPromptSource(shot) {
+  return Boolean(shot?.startFrame && shot?.endFrame && shot?.motion);
 }
 
 export function buildCharacterVisualAnchor(character, characterName = "") {

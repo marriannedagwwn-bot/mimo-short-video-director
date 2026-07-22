@@ -1615,6 +1615,9 @@ function renderShotVideoReferenceList(shotId) {
 
 function buildShotVideoPromptPreview(shot = {}) {
   const noTextRule = "禁止新增字幕、对白文字、标题、说明字、Logo、水印、UI 文本或漫画拟声词；对白只用于理解动作和情绪，不要渲染成画面文字。";
+  if (shot.startFrame && shot.endFrame && shot.motion) {
+    return [shot.videoPrompt || "", noTextRule].filter(Boolean).join("\n");
+  }
   return [
     shot.videoPrompt || "",
     shot.cameraMotion ? `镜头运动：${shot.cameraMotion}` : "",
@@ -2162,7 +2165,7 @@ function selectedStoryPackage() {
   if (!variant) return null;
   const pack = {
     packageType: "story-production-test-package",
-    packageVersion: "2.0",
+    packageVersion: "2.1",
     exportedAt: new Date().toISOString(),
     mode: state.mode,
     modelInfo: currentModelInfo(),
@@ -2346,6 +2349,7 @@ function formatAnimationPackMarkdown(pack) {
     `- 目标时长：${strategy.targetRuntimeSeconds || pack.fullStory?.targetDurationSeconds || 60} 秒`,
     `- 单镜头时长：${strategy.recommendedShotDurationSeconds?.min || 3}-${strategy.recommendedShotDurationSeconds?.max || 6} 秒`,
     `- 工作流：${strategy.format || "first_last_frame_video"}`,
+    `- Prompt Schema：${plan.promptSchemaVersion || "legacy"}`,
     "",
     "## 角色身份锁定与允许特征",
     ...formatObjectMarkdown(boundary),

@@ -79,7 +79,7 @@ export class MimoClient {
           ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {})
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(180_000)
+        signal: AbortSignal.timeout(this.config.requestTimeoutMs || 900_000)
       });
       const raw = await response.text();
       if (!response.ok) {

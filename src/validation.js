@@ -71,6 +71,71 @@ const animationShotFields = [
   "acceptanceCriteria"
 ];
 
+const animationPromptSchemaVersion = "2.0";
+const animationV2ShotFields = [
+  "shotId",
+  "sourceSceneId",
+  "sceneId",
+  "durationSeconds",
+  "storyPurpose",
+  "emotionalTarget",
+  "startFrame",
+  "endFrame",
+  "motion",
+  "negativePrompts",
+  "acceptanceCriteria"
+];
+const animationFrameFields = [
+  "timeAndWeather",
+  "characters",
+  "environment",
+  "camera",
+  "lighting",
+  "styleModifiers",
+  "continuityLocks"
+];
+const animationFrameCharacterFields = [
+  "name",
+  "screenPosition",
+  "bodyOrientation",
+  "pose",
+  "actionState",
+  "handPropState",
+  "gaze",
+  "emotionState",
+  "expression"
+];
+const animationFrameEnvironmentFields = ["sceneId", "foreground", "midground", "background", "atmosphere"];
+const animationFrameCameraFields = ["shotSize", "height", "angle", "viewDirection", "lensFeel", "depthOfField", "composition"];
+const animationFrameLightingFields = ["source", "direction", "colorAndContrast"];
+const animationMotionFields = [
+  "mode",
+  "primaryAction",
+  "cameraMove",
+  "emotionArc",
+  "environmentChange",
+  "lightingChange",
+  "timingBeats",
+  "audio",
+  "preserve",
+  "endStateRef",
+  "stopCondition",
+  "postRetime"
+];
+const animationMotionModes = new Set(["continuous_action", "camera_move", "object_transform", "loop"]);
+const animationCameraMoveModes = new Set(["locked", "continuous"]);
+const animationCameraMoveSpeeds = new Set(["slow", "medium", "fast"]);
+const animationAliasFields = [
+  "startFramePrompt",
+  "endFramePrompt",
+  "videoPrompt",
+  "cameraMotion",
+  "characterAction",
+  "dialogueOrSubtitle",
+  "soundDesign",
+  "continuityNotes"
+];
+
 const visualGuardrailTopLevelFields = new Set(outputContracts.visualGuardrails);
 const negativePromptReasonCodes = new Set([
   "explicit_identity_conflict",
@@ -115,6 +180,7 @@ export function ensureOutputContract(value, contract) {
     if (value.characterReferencePrompts.length < 1) throw new OutputContractError("animationPlan 至少需要一个角色参考提示词");
     if (value.sceneReferencePrompts.length < 1) throw new OutputContractError("animationPlan 至少需要一个场景参考提示词");
     if (value.shotPlan.length < 1) throw new OutputContractError("animationPlan 至少需要一个镜头生产任务");
+    ensureAnimationPlanV2Contract(value);
     validateAnimationPlanNegativePromptContract(value);
   }
   return value;
@@ -129,10 +195,11 @@ export function ensureAnimationFoundationContract(value, { sourceSceneIds = [] }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new OutputContractError("animationFoundation 必须是对象");
   }
-  const missing = animationFoundationFields.filter((key) => !Object.prototype.hasOwnProperty.call(value, key));
+  const missing = [...animationFoundationFields, "promptSchemaVersion"].filter((key) => !Object.prototype.hasOwnProperty.call(value, key));
   if (missing.length) throw new OutputContractError(`animationFoundation 缺少必要字段：${missing.join("、")}`);
-  const unexpected = Object.keys(value).filter((key) => !animationFoundationFields.includes(key));
+  const unexpected = Object.keys(value).filter((key) => ![...animationFoundationFields, "promptSchemaVersion"].includes(key));
   if (unexpected.length) throw new OutputContractError(`animationFoundation 包含未允许的顶层字段：${unexpected.join("、")}`);
+  ensureAnimationPromptSchemaVersion(value.promptSchemaVersion, "animationFoundation.promptSchemaVersion");
 
   for (const field of ["characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "generationChecklist", "modelAgnosticNotes", "uncertainties"]) {
     if (!Array.isArray(value[field])) throw new OutputContractError(`animationFoundation.${field} 必须是数组`);
@@ -186,14 +253,19 @@ export function ensureAnimationShotBatchContract(value) {
   if (unexpected.length) throw new OutputContractError(`animationShotBatch 只允许 shotPlan 顶层字段，收到：${unexpected.join("、")}`);
   if (!Array.isArray(value.shotPlan)) throw new OutputContractError("animationShotBatch.shotPlan 必须是数组");
   if (!value.shotPlan.length) throw new OutputContractError("animationShotBatch 至少需要一个镜头");
+  const isV2 = value.shotPlan.some(hasStructuredAnimationShotFields);
   ensureUniqueNonEmptyField(value.shotPlan, "shotId", "animationShotBatch.shotPlan");
   value.shotPlan.forEach((shot, index) => {
     if (!shot || typeof shot !== "object" || Array.isArray(shot)) {
       throw new OutputContractError(`animationShotBatch.shotPlan[${index}] 必须是对象`);
     }
-    const missing = animationShotFields.filter((field) => !Object.prototype.hasOwnProperty.call(shot, field));
+    const requiredFields = isV2 ? animationV2ShotFields : animationShotFields;
+    const missing = requiredFields.filter((field) => !Object.prototype.hasOwnProperty.call(shot, field));
     if (missing.length) throw new OutputContractError(`animationShotBatch.shotPlan[${index}] 缺少字段：${missing.join("、")}`);
-    for (const field of ["shotId", "sourceSceneId", "sceneId", "startFramePrompt", "endFramePrompt", "videoPrompt", "characterAction"]) {
+    const requiredTextFields = isV2
+      ? ["shotId", "sourceSceneId", "sceneId", "storyPurpose", "emotionalTarget"]
+      : ["shotId", "sourceSceneId", "sceneId", "startFramePrompt", "endFramePrompt", "videoPrompt", "characterAction"];
+    for (const field of requiredTextFields) {
       if (!String(shot[field] || "").trim()) throw new OutputContractError(`animationShotBatch.shotPlan[${index}].${field} 不能为空`);
     }
     const duration = Number(shot.durationSeconds);
@@ -204,8 +276,412 @@ export function ensureAnimationShotBatchContract(value) {
       throw new OutputContractError(`animationShotBatch.shotPlan[${index}].acceptanceCriteria 必须是数组`);
     }
   });
+  if (isV2) ensureAnimationPlanV2Contract(value, { path: "animationShotBatch", allowVersionlessStructured: true });
   validateAnimationPlanNegativePromptContract({ visualBible: {}, sceneReferencePrompts: [], shotPlan: value.shotPlan });
   return value;
+}
+
+/**
+ * Validate the structured animation prompt contract without importing the
+ * compiler. Legacy containers (no version and no structured shots) pass
+ * through unchanged. A compile hook may be supplied by workflow/compiler code
+ * to additionally prove that all legacy UI aliases are deterministic.
+ */
+export function ensureAnimationPlanV2Contract(value, {
+  compileShotPrompts,
+  path = "animationPlan",
+  allowVersionlessStructured = false
+} = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new OutputContractError(`${path} 必须是对象`);
+  }
+  const isV2 = detectAnimationV2Container(value, path, { allowVersionlessStructured });
+  if (!isV2) return value;
+  if (!Array.isArray(value.shotPlan)) throw new OutputContractError(`${path}.shotPlan 必须是数组`);
+  value.shotPlan.forEach((shot, index) => {
+    const shotPath = `${path}.shotPlan[${index}]`;
+    ensureAnimationShotV2Contract(shot, shotPath);
+    if (compileShotPrompts !== undefined) {
+      if (typeof compileShotPrompts !== "function") {
+        throw new OutputContractError(`${path} 的 compileShotPrompts 必须是函数`);
+      }
+      const compiledAliases = compileShotPrompts(shot);
+      if (compiledAliases && typeof compiledAliases.then === "function") {
+        throw new OutputContractError(`${path} 的 compileShotPrompts 必须同步返回别名对象`);
+      }
+      ensureAnimationShotPromptAliases(shot, compiledAliases, shotPath);
+    }
+  });
+  return value;
+}
+
+/** Validate one approved v2 structured shot. */
+export function ensureAnimationShotV2Contract(shot, path = "animationPlan.shotPlan[0]") {
+  if (!shot || typeof shot !== "object" || Array.isArray(shot)) {
+    throw new OutputContractError(`${path} 必须是对象`);
+  }
+  const missing = animationV2ShotFields.filter((field) => !Object.prototype.hasOwnProperty.call(shot, field));
+  if (missing.length) throw new OutputContractError(`${path} 缺少 v2 字段：${missing.join("、")}`);
+  for (const field of ["shotId", "sourceSceneId", "sceneId", "storyPurpose", "emotionalTarget"]) {
+    requireNonEmptyContractString(shot[field], `${path}.${field}`);
+  }
+  const duration = Number(shot.durationSeconds);
+  if (!Number.isFinite(duration) || duration <= 0) throw new OutputContractError(`${path}.durationSeconds 必须是正数`);
+
+  validateAnimationFrameV2(shot.startFrame, `${path}.startFrame`, shot.sceneId);
+  validateAnimationFrameV2(shot.endFrame, `${path}.endFrame`, shot.sceneId);
+  validateAnimationMotionV2(shot.motion, `${path}.motion`, shot.startFrame, shot.endFrame);
+  return shot;
+}
+
+/**
+ * Compiler integration hook. The caller compiles a shot, merges the aliases,
+ * then passes the compiler result here; validation itself stays dependency
+ * free and therefore cannot introduce a compiler/validation import cycle.
+ */
+export function ensureAnimationShotPromptAliases(shot, compiledAliases, path = "animationPlan.shotPlan[0]") {
+  if (!compiledAliases || typeof compiledAliases !== "object" || Array.isArray(compiledAliases)) {
+    throw new OutputContractError(`${path} 的编译结果必须是对象`);
+  }
+  for (const field of animationAliasFields) {
+    if (!Object.prototype.hasOwnProperty.call(compiledAliases, field)) {
+      throw new OutputContractError(`${path} 的编译结果缺少别名 ${field}`);
+    }
+    if (!Object.prototype.hasOwnProperty.call(shot, field)) {
+      throw new OutputContractError(`${path} 缺少已编译别名 ${field}`);
+    }
+    if (shot[field] !== compiledAliases[field]) {
+      throw new OutputContractError(`${path}.${field} 与结构化 prompt 的编译结果不一致`);
+    }
+  }
+  return shot;
+}
+
+function detectAnimationV2Container(value, path, { allowVersionlessStructured = false } = {}) {
+  const hasVersion = Object.prototype.hasOwnProperty.call(value, "promptSchemaVersion");
+  const shots = Array.isArray(value.shotPlan) ? value.shotPlan : [];
+  const hasStructuredShots = shots.some(hasStructuredAnimationShotFields);
+  if (hasVersion) ensureAnimationPromptSchemaVersion(value.promptSchemaVersion, `${path}.promptSchemaVersion`);
+  if (hasStructuredShots && !hasVersion && !allowVersionlessStructured) {
+    throw new OutputContractError(`${path}.promptSchemaVersion 缺失；结构化镜头必须声明 ${animationPromptSchemaVersion}`);
+  }
+  return hasVersion || hasStructuredShots;
+}
+
+function hasStructuredAnimationShotFields(shot) {
+  return Boolean(shot && typeof shot === "object" && !Array.isArray(shot)
+    && ["startFrame", "endFrame", "motion"].some((field) => Object.prototype.hasOwnProperty.call(shot, field)));
+}
+
+function ensureAnimationPromptSchemaVersion(value, path) {
+  if (value !== animationPromptSchemaVersion) {
+    throw new OutputContractError(`${path} 必须严格等于 "${animationPromptSchemaVersion}"`);
+  }
+}
+
+function validateAnimationFrameV2(frame, path, shotSceneId) {
+  requireExactContractObject(frame, path, animationFrameFields);
+  requireNonEmptyContractString(frame.timeAndWeather, `${path}.timeAndWeather`);
+  if (!Array.isArray(frame.characters)) throw new OutputContractError(`${path}.characters 必须是数组`);
+  const characterNames = new Set();
+  frame.characters.forEach((character, index) => {
+    const characterPath = `${path}.characters[${index}]`;
+    requireExactContractObject(character, characterPath, animationFrameCharacterFields);
+    animationFrameCharacterFields.forEach((field) => requireNonEmptyContractString(character[field], `${characterPath}.${field}`));
+    const normalizedName = character.name.trim();
+    if (characterNames.has(normalizedName)) throw new OutputContractError(`${path}.characters 角色名不能重复：${normalizedName}`);
+    characterNames.add(normalizedName);
+  });
+
+  requireExactContractObject(frame.environment, `${path}.environment`, animationFrameEnvironmentFields);
+  animationFrameEnvironmentFields.forEach((field) => requireNonEmptyContractString(frame.environment[field], `${path}.environment.${field}`));
+  if (frame.environment.sceneId !== shotSceneId) {
+    throw new OutputContractError(`${path}.environment.sceneId 必须与镜头 sceneId ${shotSceneId} 完全一致`);
+  }
+
+  requireExactContractObject(frame.camera, `${path}.camera`, animationFrameCameraFields);
+  animationFrameCameraFields.forEach((field) => requireNonEmptyContractString(frame.camera[field], `${path}.camera.${field}`));
+  requireExactContractObject(frame.lighting, `${path}.lighting`, animationFrameLightingFields);
+  animationFrameLightingFields.forEach((field) => requireNonEmptyContractString(frame.lighting[field], `${path}.lighting.${field}`));
+  validateContractStringArray(frame.styleModifiers, `${path}.styleModifiers`);
+  validateContractStringArray(frame.continuityLocks, `${path}.continuityLocks`);
+  validateStaticAnimationFrame(frame, path);
+}
+
+function validateAnimationMotionV2(motion, path, startFrame, endFrame) {
+  requireExactContractObject(motion, path, animationMotionFields);
+  if (!animationMotionModes.has(motion.mode)) {
+    throw new OutputContractError(`${path}.mode 只允许 continuous_action、camera_move、object_transform 或 loop`);
+  }
+  requireNonEmptyContractString(motion.primaryAction, `${path}.primaryAction`);
+
+  requireExactContractObject(motion.cameraMove, `${path}.cameraMove`, ["mode", "technique", "path", "speed", "motivation"]);
+  if (!animationCameraMoveModes.has(motion.cameraMove.mode)) {
+    throw new OutputContractError(`${path}.cameraMove.mode 只允许 locked 或 continuous`);
+  }
+  if (!animationCameraMoveSpeeds.has(motion.cameraMove.speed)) {
+    throw new OutputContractError(`${path}.cameraMove.speed 只允许 slow、medium 或 fast`);
+  }
+  for (const field of ["technique", "path", "motivation"]) {
+    requireNonEmptyContractString(motion.cameraMove[field], `${path}.cameraMove.${field}`);
+  }
+  if (motion.cameraMove.mode === "locked") {
+    assertCameraCoreEquality(startFrame.camera, endFrame.camera, path);
+  }
+
+  requireExactContractObject(motion.emotionArc, `${path}.emotionArc`, ["from", "visibleProgression", "to"]);
+  for (const field of ["from", "visibleProgression", "to"]) {
+    requireNonEmptyContractString(motion.emotionArc[field], `${path}.emotionArc.${field}`);
+  }
+  validateEmotionEndpoints(motion.emotionArc, startFrame, endFrame, path);
+
+  requireNonEmptyContractString(motion.environmentChange, `${path}.environmentChange`);
+  requireNonEmptyContractString(motion.lightingChange, `${path}.lightingChange`);
+  validateAnimationTimingBeats(motion.timingBeats, `${path}.timingBeats`);
+  validateAnimationAudio(motion.audio, `${path}.audio`);
+  validateContractStringArray(motion.preserve, `${path}.preserve`);
+  if (motion.endStateRef !== "endFrame") throw new OutputContractError(`${path}.endStateRef 必须严格等于 "endFrame"`);
+  requireNonEmptyContractString(motion.stopCondition, `${path}.stopCondition`);
+
+  requireExactContractObject(motion.postRetime, `${path}.postRetime`, ["recommended", "speedCurve", "reason"]);
+  if (typeof motion.postRetime.recommended !== "boolean") {
+    throw new OutputContractError(`${path}.postRetime.recommended 必须是布尔值`);
+  }
+  requireContractString(motion.postRetime.speedCurve, `${path}.postRetime.speedCurve`);
+  requireContractString(motion.postRetime.reason, `${path}.postRetime.reason`);
+  if (motion.postRetime.recommended) {
+    requireNonEmptyContractString(motion.postRetime.speedCurve, `${path}.postRetime.speedCurve`);
+    requireNonEmptyContractString(motion.postRetime.reason, `${path}.postRetime.reason`);
+  }
+
+  if (motion.mode === "loop") {
+    validateLoopEndpointCompatibility(startFrame, endFrame, motion, path);
+  } else {
+    validateNormalShotHasNoCutOrLocationJump(motion, path);
+  }
+}
+
+function validateAnimationTimingBeats(beats, path) {
+  if (!Array.isArray(beats) || beats.length < 1 || beats.length > 4) {
+    throw new OutputContractError(`${path} 必须包含 1–4 个连续节拍`);
+  }
+  let expectedFrom = 0;
+  beats.forEach((beat, index) => {
+    const beatPath = `${path}[${index}]`;
+    requireExactContractObject(beat, beatPath, ["fromPercent", "toPercent", "action", "camera", "emotion", "environment", "soundCue"]);
+    const from = beat.fromPercent;
+    const to = beat.toPercent;
+    if (!Number.isFinite(from) || !Number.isFinite(to)) {
+      throw new OutputContractError(`${beatPath}.fromPercent 和 toPercent 必须是数字`);
+    }
+    if (from < 0 || to > 100 || from >= to) {
+      throw new OutputContractError(`${beatPath} 必须满足 0 <= fromPercent < toPercent <= 100`);
+    }
+    if (!percentEquals(from, expectedFrom)) {
+      throw new OutputContractError(`${beatPath}.fromPercent 必须与上一节拍无缝相接于 ${expectedFrom}`);
+    }
+    for (const field of ["action", "camera", "emotion", "environment"]) {
+      requireNonEmptyContractString(beat[field], `${beatPath}.${field}`);
+    }
+    requireContractString(beat.soundCue, `${beatPath}.soundCue`);
+    expectedFrom = to;
+  });
+  if (!percentEquals(expectedFrom, 100)) throw new OutputContractError(`${path} 必须连续覆盖 0..100，末节拍必须结束于 100`);
+}
+
+function validateAnimationAudio(audio, path) {
+  requireExactContractObject(audio, path, ["dialogue", "ambience", "soundEffects", "musicCue"]);
+  if (!Array.isArray(audio.dialogue)) throw new OutputContractError(`${path}.dialogue 必须是数组`);
+  audio.dialogue.forEach((line, index) => {
+    const linePath = `${path}.dialogue[${index}]`;
+    requireExactContractObject(line, linePath, ["speaker", "text", "delivery"]);
+    for (const field of ["speaker", "text", "delivery"]) requireNonEmptyContractString(line[field], `${linePath}.${field}`);
+  });
+  requireContractString(audio.ambience, `${path}.ambience`);
+  validateContractStringArray(audio.soundEffects, `${path}.soundEffects`);
+  requireContractString(audio.musicCue, `${path}.musicCue`);
+}
+
+function validateEmotionEndpoints(emotionArc, startFrame, endFrame, path) {
+  const primary = startFrame.characters[0];
+  if (!primary) return;
+  const endCharacter = endFrame.characters.find((character) => character.name === primary.name);
+  if (!endCharacter) {
+    throw new OutputContractError(`${path}.emotionArc 无法在 endFrame 找到主角色「${primary.name}」`);
+  }
+  if (emotionArc.from !== primary.emotionState) {
+    throw new OutputContractError(`${path}.emotionArc.from 必须等于 startFrame 主角色 emotionState`);
+  }
+  if (emotionArc.to !== endCharacter.emotionState) {
+    throw new OutputContractError(`${path}.emotionArc.to 必须等于 endFrame 主角色 emotionState`);
+  }
+}
+
+function validateStaticAnimationFrame(frame, path) {
+  const fields = [];
+  collectStructuredFramePositiveFields(fields, path, frame);
+  const processOrAudioTerms = ["逐渐", "随后", "然后", "镜头移动", "运镜", "对白", "音效"];
+  for (const field of fields) {
+    const hit = processOrAudioTerms.find((term) => hasStaticFrameLintOccurrence(field.value, term));
+    if (hit) {
+      throw new OutputContractError(`${field.path} 是静态帧字段，不得包含过程、运镜、对白或音效措辞：${hit}`);
+    }
+  }
+}
+
+function hasStaticFrameLintOccurrence(value, term) {
+  const text = String(value || "");
+  if (["随后", "然后"].includes(term)) {
+    return new RegExp(`(?:^|[\\s，,。；;！!？?])${term}`, "u").test(text);
+  }
+  return hasForbiddenOccurrence(text, term, { allowNegativeContext: true });
+}
+
+function assertCameraCoreEquality(startCamera, endCamera, path) {
+  const changed = animationFrameCameraFields.filter((field) => startCamera[field] !== endCamera[field]);
+  if (changed.length) {
+    throw new OutputContractError(`${path}.cameraMove.mode=locked 时首尾 camera 核心必须完全相等；变化字段：${changed.join("、")}`);
+  }
+}
+
+function validateLoopEndpointCompatibility(startFrame, endFrame, motion, path) {
+  if (!/(?:回到|回归|恢复|闭环|循环|首帧|起始|初始|start\s*frame)/iu.test(motion.stopCondition)) {
+    throw new OutputContractError(`${path}.stopCondition 必须明确循环回到起始/首帧状态后停止`);
+  }
+  if (startFrame.environment.sceneId !== endFrame.environment.sceneId) {
+    throw new OutputContractError(`${path} 循环镜头首尾 environment.sceneId 必须相同`);
+  }
+  assertCameraCoreEquality(startFrame.camera, endFrame.camera, path);
+
+  const startNames = startFrame.characters.map((character) => character.name).sort();
+  const endNames = endFrame.characters.map((character) => character.name).sort();
+  if (JSON.stringify(startNames) !== JSON.stringify(endNames)) {
+    throw new OutputContractError(`${path} 循环镜头首尾角色名单必须一致`);
+  }
+  startFrame.characters.forEach((startCharacter) => {
+    const endCharacter = endFrame.characters.find((character) => character.name === startCharacter.name);
+    const changed = animationFrameCharacterFields.filter((field) => startCharacter[field] !== endCharacter[field]);
+    if (changed.length) {
+      throw new OutputContractError(`${path} 循环镜头角色「${startCharacter.name}」首尾状态不兼容：${changed.join("、")}`);
+    }
+  });
+}
+
+function validateNormalShotHasNoCutOrLocationJump(motion, path) {
+  const fields = collectMotionVisualContinuityFields(motion, path);
+  const prohibitedTerms = [
+    "切镜",
+    "转场",
+    "跳切",
+    "硬切",
+    "镜头切换",
+    "画面切换",
+    "场景切换",
+    "地点切换",
+    "镜头切到",
+    "画面切到",
+    "换景",
+    "地点跳转",
+    "场景跳转",
+    "场景突变",
+    "地点突变",
+    "跳转到另一",
+    "跳转到下一个",
+    "瞬移到",
+    "切到另一地点",
+    "切到另一个地点",
+    "切到下一地点",
+    "切到另一场景",
+    "切到另一个场景",
+    "切到下一场景",
+    "切至另一地点",
+    "切至另一个地点",
+    "切至另一场景",
+    "切至另一个场景",
+    "换到另一地点",
+    "换到另一个地点",
+    "换到另一场景",
+    "换到另一个场景",
+    "跳到另一地点",
+    "跳到另一个地点",
+    "跳到另一场景",
+    "跳到另一个场景",
+    "跳到下一场景",
+    "转至另一地点",
+    "转至另一个地点",
+    "转至另一场景",
+    "转至另一个场景"
+  ];
+  for (const field of fields) {
+    const hit = prohibitedTerms.find((term) => hasPositiveContinuityTerm(field.value, term));
+    const englishCut = /\b(?:cut\s+to|jump\s+cut|smash\s+cut)\b/iu.test(field.value);
+    if (hit || englishCut) {
+      throw new OutputContractError(`${field.path} 普通镜头不得写切镜、转场或地点跳转`);
+    }
+  }
+}
+
+function hasPositiveContinuityTerm(value, term) {
+  const text = String(value || "");
+  let index = text.indexOf(term);
+  while (index !== -1) {
+    const before = text.slice(0, index);
+    const segment = before.slice(Math.max(
+      before.lastIndexOf("。"),
+      before.lastIndexOf("！"),
+      before.lastIndexOf("？"),
+      before.lastIndexOf("；"),
+      before.lastIndexOf(";"),
+      before.lastIndexOf("，"),
+      before.lastIndexOf(","),
+      before.lastIndexOf("\n")
+    ) + 1).trim();
+    if (!/(?:不|无|禁止|避免|不得|不能|不可|勿|严禁|不应|不允许|切勿)$/u.test(segment)) return true;
+    index = text.indexOf(term, index + term.length);
+  }
+  return false;
+}
+
+function collectMotionVisualContinuityFields(motion, path) {
+  const fields = [];
+  pushField(fields, `${path}.primaryAction`, motion.primaryAction);
+  pushField(fields, `${path}.cameraMove.technique`, motion.cameraMove?.technique);
+  pushField(fields, `${path}.cameraMove.path`, motion.cameraMove?.path);
+  pushField(fields, `${path}.cameraMove.motivation`, motion.cameraMove?.motivation);
+  pushField(fields, `${path}.environmentChange`, motion.environmentChange);
+  pushField(fields, `${path}.lightingChange`, motion.lightingChange);
+  (motion.timingBeats || []).forEach((beat, index) => {
+    for (const field of ["action", "camera", "environment"]) {
+      pushField(fields, `${path}.timingBeats[${index}].${field}`, beat?.[field]);
+    }
+  });
+  return fields;
+}
+
+function requireExactContractObject(value, path, fields) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new OutputContractError(`${path} 必须是对象`);
+  const missing = fields.filter((field) => !Object.prototype.hasOwnProperty.call(value, field));
+  if (missing.length) throw new OutputContractError(`${path} 缺少字段：${missing.join("、")}`);
+  const unexpected = Object.keys(value).filter((field) => !fields.includes(field));
+  if (unexpected.length) throw new OutputContractError(`${path} 包含未知字段：${unexpected.join("、")}`);
+}
+
+function requireContractString(value, path) {
+  if (typeof value !== "string") throw new OutputContractError(`${path} 必须是字符串`);
+}
+
+function requireNonEmptyContractString(value, path) {
+  requireContractString(value, path);
+  if (!value.trim()) throw new OutputContractError(`${path} 不能为空`);
+}
+
+function validateContractStringArray(value, path) {
+  if (!Array.isArray(value)) throw new OutputContractError(`${path} 必须是数组`);
+  value.forEach((item, index) => requireNonEmptyContractString(item, `${path}[${index}]`));
+}
+
+function percentEquals(left, right) {
+  return Math.abs(left - right) < 1e-9;
 }
 
 function ensureUniqueNonEmptyField(items, field, path) {
@@ -634,6 +1110,16 @@ function isUsableNegativePromptEvidence(entry, { context, plan, shot, shotIndex,
     return evidenceMatchesSourceValue(shot?.[shotMatch[2]], evidence);
   }
 
+  const structuredShotMatch = sourcePath.match(
+    /^animationPlan\.(?:shotPlan|shots)\[([^\]]+)\]\.((?:startFrame|endFrame|motion)(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\[\d+\])*)$/u
+  );
+  if (structuredShotMatch) {
+    const token = normalizeEvidencePathToken(structuredShotMatch[1]);
+    const nestedPath = structuredShotMatch[2];
+    if (!evidenceShotTokenMatches(token, shot, shotIndex) || !isStructuredVisualEvidencePath(nestedPath)) return false;
+    return evidenceMatchesSourceValue(resolveStructuredEvidenceValue(shot, nestedPath), evidence);
+  }
+
   const sceneMatch = sourcePath.match(/^fullStory\.sceneScript\[([^\]]+)\]\.(visibleAction|dialogue|shotAndSound|shootingNotes|location|characters)$/u);
   if (sceneMatch) {
     const token = normalizeEvidencePathToken(sceneMatch[1]);
@@ -690,6 +1176,51 @@ function evidenceShotTokenMatches(token, shot, shotIndex) {
   return token === String(shot?.shotId || "");
 }
 
+function isStructuredVisualEvidencePath(path) {
+  if (/^motion\.audio(?:\.|\[|$)/u.test(path)) return false;
+  if (/^motion\.timingBeats\[\d+\]\.soundCue$/u.test(path)) return false;
+  return /^(?:startFrame|endFrame|motion)(?:\.|\[|$)/u.test(path);
+}
+
+function resolveStructuredEvidenceValue(root, path) {
+  const tokens = String(path || "").split(/\.|\[|\]/u).filter(Boolean);
+  let current = root;
+  for (const token of tokens) {
+    if (["__proto__", "prototype", "constructor"].includes(token)) return undefined;
+    if (current === undefined || current === null) return undefined;
+    current = current[token];
+  }
+  return current;
+}
+
+function collectShotVisualEvidenceText(shot = {}) {
+  const values = [shot.startFramePrompt, shot.endFramePrompt, shot.videoPrompt, shot.characterAction];
+  if (shot.startFrame) values.push(JSON.stringify(shot.startFrame));
+  if (shot.endFrame) values.push(JSON.stringify(shot.endFrame));
+  if (shot.motion) {
+    values.push(JSON.stringify({
+      mode: shot.motion.mode,
+      primaryAction: shot.motion.primaryAction,
+      cameraMove: shot.motion.cameraMove,
+      emotionArc: shot.motion.emotionArc,
+      environmentChange: shot.motion.environmentChange,
+      lightingChange: shot.motion.lightingChange,
+      timingBeats: (shot.motion.timingBeats || []).map((beat) => ({
+        fromPercent: beat?.fromPercent,
+        toPercent: beat?.toPercent,
+        action: beat?.action,
+        camera: beat?.camera,
+        emotion: beat?.emotion,
+        environment: beat?.environment
+      })),
+      preserve: shot.motion.preserve,
+      endStateRef: shot.motion.endStateRef,
+      stopCondition: shot.motion.stopCondition
+    }));
+  }
+  return values.filter(Boolean).join("\n");
+}
+
 function evidenceMatchesSourceValue(sourceValue, evidence) {
   if (sourceValue === undefined || sourceValue === null) return false;
   const sourceText = typeof sourceValue === "string" ? sourceValue : JSON.stringify(sourceValue);
@@ -744,7 +1275,7 @@ function evidenceSupportsBodyTerm(term, evidenceText) {
 }
 
 function limbAnimalizationRiskIsProven(evidence, shot, context, media) {
-  const shotText = [shot?.startFramePrompt, shot?.endFramePrompt, shot?.videoPrompt, shot?.characterAction].filter(Boolean).join("\n");
+  const shotText = collectShotVisualEvidenceText(shot);
   const explicitlyShowsLimbs = /手|手指|指尖|脚|足/u.test(shotText);
   const requestsHumanLimbs = /正常.{0,4}(?:人类)?(?:手|手指|脚|足)|人类(?:手|手指|脚|足)|五指/u.test(shotText);
   const provenFailure = evidence.some((entry) => isProviderFailureEvidencePath(entry.sourcePath)) && hasProviderFailureRecords(context);
@@ -754,7 +1285,7 @@ function limbAnimalizationRiskIsProven(evidence, shot, context, media) {
 }
 
 function shotContainsEvidenceSubject(shot, evidence) {
-  const shotText = [shot?.startFramePrompt, shot?.endFramePrompt, shot?.videoPrompt, shot?.characterAction].filter(Boolean).join("\n");
+  const shotText = collectShotVisualEvidenceText(shot);
   if (!shotText) return false;
   const subjects = String(evidence || "").split(/[，,。；;：:\s、]/u).filter((part) => part.length >= 2);
   return subjects.some((part) => shotText.includes(part));
@@ -1036,11 +1567,17 @@ function collectAnimationStrictPositiveFields(value = {}) {
     pushArrayFields(fields, `sceneReferencePrompts[${index}].continuityAnchors`, item?.continuityAnchors);
   });
   (value.shotPlan || []).forEach((shot, index) => {
-    pushField(fields, `shotPlan[${index}].startFramePrompt`, shot?.startFramePrompt);
-    pushField(fields, `shotPlan[${index}].endFramePrompt`, shot?.endFramePrompt);
-    pushField(fields, `shotPlan[${index}].videoPrompt`, shot?.videoPrompt);
-    pushField(fields, `shotPlan[${index}].cameraMotion`, shot?.cameraMotion);
-    pushField(fields, `shotPlan[${index}].characterAction`, shot?.characterAction);
+    if (hasStructuredAnimationShotFields(shot)) {
+      collectStructuredFramePositiveFields(fields, `shotPlan[${index}].startFrame`, shot?.startFrame);
+      collectStructuredFramePositiveFields(fields, `shotPlan[${index}].endFrame`, shot?.endFrame);
+      collectStructuredMotionPositiveFields(fields, `shotPlan[${index}].motion`, shot?.motion);
+    } else {
+      pushField(fields, `shotPlan[${index}].startFramePrompt`, shot?.startFramePrompt);
+      pushField(fields, `shotPlan[${index}].endFramePrompt`, shot?.endFramePrompt);
+      pushField(fields, `shotPlan[${index}].videoPrompt`, shot?.videoPrompt);
+      pushField(fields, `shotPlan[${index}].cameraMotion`, shot?.cameraMotion);
+      pushField(fields, `shotPlan[${index}].characterAction`, shot?.characterAction);
+    }
   });
   return fields;
 }
@@ -1052,9 +1589,44 @@ function collectAnimationRuleFields(value = {}) {
   (value.shotPlan || []).forEach((shot, index) => {
     pushField(fields, `shotPlan[${index}].storyPurpose`, shot?.storyPurpose);
     pushField(fields, `shotPlan[${index}].emotionalTarget`, shot?.emotionalTarget);
-    pushField(fields, `shotPlan[${index}].continuityNotes`, shot?.continuityNotes);
+    if (hasStructuredAnimationShotFields(shot)) {
+      pushArrayFields(fields, `shotPlan[${index}].startFrame.continuityLocks`, shot?.startFrame?.continuityLocks);
+      pushArrayFields(fields, `shotPlan[${index}].endFrame.continuityLocks`, shot?.endFrame?.continuityLocks);
+      pushArrayFields(fields, `shotPlan[${index}].motion.preserve`, shot?.motion?.preserve);
+      pushField(fields, `shotPlan[${index}].motion.stopCondition`, shot?.motion?.stopCondition);
+    } else {
+      pushField(fields, `shotPlan[${index}].continuityNotes`, shot?.continuityNotes);
+    }
   });
   return fields;
+}
+
+function collectStructuredFramePositiveFields(fields, path, frame = {}) {
+  pushField(fields, `${path}.timeAndWeather`, frame?.timeAndWeather);
+  (frame?.characters || []).forEach((character, index) => {
+    animationFrameCharacterFields.forEach((field) => pushField(fields, `${path}.characters[${index}].${field}`, character?.[field]));
+  });
+  animationFrameEnvironmentFields.forEach((field) => pushField(fields, `${path}.environment.${field}`, frame?.environment?.[field]));
+  animationFrameCameraFields.forEach((field) => pushField(fields, `${path}.camera.${field}`, frame?.camera?.[field]));
+  animationFrameLightingFields.forEach((field) => pushField(fields, `${path}.lighting.${field}`, frame?.lighting?.[field]));
+  pushArrayFields(fields, `${path}.styleModifiers`, frame?.styleModifiers);
+}
+
+function collectStructuredMotionPositiveFields(fields, path, motion = {}) {
+  pushField(fields, `${path}.primaryAction`, motion?.primaryAction);
+  for (const field of ["technique", "path", "motivation"]) {
+    pushField(fields, `${path}.cameraMove.${field}`, motion?.cameraMove?.[field]);
+  }
+  for (const field of ["from", "visibleProgression", "to"]) {
+    pushField(fields, `${path}.emotionArc.${field}`, motion?.emotionArc?.[field]);
+  }
+  pushField(fields, `${path}.environmentChange`, motion?.environmentChange);
+  pushField(fields, `${path}.lightingChange`, motion?.lightingChange);
+  (motion?.timingBeats || []).forEach((beat, index) => {
+    for (const field of ["action", "camera", "emotion", "environment"]) {
+      pushField(fields, `${path}.timingBeats[${index}].${field}`, beat?.[field]);
+    }
+  });
 }
 
 function pushArrayFields(fields, basePath, value) {

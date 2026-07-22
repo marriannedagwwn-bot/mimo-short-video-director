@@ -19,6 +19,7 @@ export function loadEnv(file = path.resolve(".env")) {
 }
 
 export function getConfig() {
+  const serverRequestTimeoutMs = Math.round(clampNumber(process.env.SERVER_REQUEST_TIMEOUT_MS, 900000, 30000, 3600000));
   const baseUrl = process.env.MIMO_BASE_URL?.trim() || "";
   const requestedMediaMode = process.env.MIMO_MEDIA_MODE?.trim().toLowerCase() || "auto";
   const mediaMode = ["auto", "video", "frames"].includes(requestedMediaMode) ? requestedMediaMode : "auto";
@@ -32,6 +33,7 @@ export function getConfig() {
   const storyMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_STORY_MAX_COMPLETION_TOKENS, 12288, 1024, 32768));
   const animationMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_ANIMATION_MAX_COMPLETION_TOKENS, 12288, 1024, 32768));
   const jsonRetryAttempts = Math.round(clampNumber(process.env.MIMO_JSON_RETRY_ATTEMPTS, 2, 0, 3));
+  const mimoRequestTimeoutMs = Math.round(clampNumber(process.env.MIMO_REQUEST_TIMEOUT_MS, 900000, 30000, 900000));
   const qwenBaseUrl = process.env.QWEN_BASE_URL?.trim() || "";
   const qwenBaseModel = process.env.QWEN_MODEL?.trim() || "qwen3.7-max";
   const qwenVisionFallbackModel = "qwen3.7-plus";
@@ -61,6 +63,7 @@ export function getConfig() {
   const qwenAnimationMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_ANIMATION_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
   const qwenCharacterReferenceMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_CHARACTER_REFERENCE_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
   const qwenJsonRetryAttempts = Math.round(clampNumber(process.env.QWEN_JSON_RETRY_ATTEMPTS, 2, 0, 3));
+  const qwenRequestTimeoutMs = Math.round(clampNumber(process.env.QWEN_REQUEST_TIMEOUT_MS, 900000, 30000, 900000));
   const qwenEnableThinkingValue = process.env.QWEN_ENABLE_THINKING?.trim().toLowerCase();
   const qwenEnableThinking = qwenEnableThinkingValue === "true" ? true : qwenEnableThinkingValue === "false" ? false : false;
   const jimengBaseUrl = process.env.JIMENG_BASE_URL?.trim() || "https://ark.cn-beijing.volces.com/api/v3";
@@ -69,6 +72,7 @@ export function getConfig() {
   const jimengTimeoutMs = Math.round(clampNumber(process.env.JIMENG_TIMEOUT_MS, 300000, 30000, 900000));
   return {
     port: Number(process.env.PORT || 4173),
+    serverRequestTimeoutMs,
     mimo: {
       baseUrl,
       apiKey: process.env.MIMO_API_KEY?.trim() || "",
@@ -90,6 +94,7 @@ export function getConfig() {
       storyMaxCompletionTokens,
       animationMaxCompletionTokens,
       jsonRetryAttempts,
+      requestTimeoutMs: mimoRequestTimeoutMs,
       thinking,
       enabled: Boolean(baseUrl)
     },
@@ -116,6 +121,7 @@ export function getConfig() {
       animationMaxCompletionTokens: qwenAnimationMaxCompletionTokens,
       characterReferenceMaxCompletionTokens: qwenCharacterReferenceMaxCompletionTokens,
       jsonRetryAttempts: qwenJsonRetryAttempts,
+      requestTimeoutMs: qwenRequestTimeoutMs,
       enableThinking: qwenEnableThinking,
       jsonMode: process.env.QWEN_JSON_MODE === "true",
       mediaMode: qwenMediaMode,

@@ -1,6 +1,7 @@
 import { analysisPrompt, animationFoundationPrompt, animationShotBatchPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "./mock.js";
-import { InputError, OutputContractError, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
+import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts } from "./animation-prompt-compiler.js";
+import { InputError, OutputContractError, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
 
 const DEFAULT_ANIMATION_BATCH_SCENE_COUNT = 2;
 
@@ -313,7 +314,9 @@ function normalizeStringArray(value, fallback = []) {
 
 function validateAnimationPlanOutput(result, input = {}) {
   const structured = ensureOutputContract(result, "animationPlan");
-  const pruned = pruneAnimationPlanNegativePrompts(structured, input);
+  const normalized = normalizeAnimationPlanPromptAliases(structured);
+  ensureAnimationPlanV2Contract(normalized, { compileShotPrompts: compileAnimationShotPrompts });
+  const pruned = pruneAnimationPlanNegativePrompts(normalized, input);
   return ensureAnimationPlanMatchesProfile(
     pruned,
     input.creatorProfile,
@@ -342,8 +345,19 @@ function validateAnimationFoundationOutput(result, input = {}) {
 function validateAnimationShotBatchOutput(result, { input, foundation, sourceScenes, shotIdStartIndex, previousShots = [] }) {
   const sourceSceneIds = sourceScenes.map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean);
   const rawBatch = ensureAnimationShotBatchContract(result);
+  if (foundation?.promptSchemaVersion === "2.0") {
+    rawBatch.shotPlan.forEach((shot, index) => {
+      if (hasStructuredAnimationPromptSource(shot)) return;
+      throw new OutputContractError(`animationShotBatch.shotPlan[${index}] 必须输出 v2 结构化字段：startFrame、endFrame、motion`);
+    });
+  }
   const normalized = normalizeAnimationShotBatchResult(rawBatch, shotIdStartIndex);
   const batch = ensureAnimationShotBatchContract(normalized);
+  ensureAnimationPlanV2Contract(batch, {
+    path: "animationShotBatch",
+    allowVersionlessStructured: true,
+    compileShotPrompts: compileAnimationShotPrompts
+  });
   const allowedSourceScenes = new Set(sourceSceneIds);
   const knownSceneIds = new Set((foundation.sceneReferencePrompts || []).map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean));
   const sceneIdBySourceScene = new Map((foundation.sceneReferencePrompts || []).flatMap((scene) => (
@@ -398,24 +412,48 @@ function normalizeAnimationShotBatchResult(result, shotIdStartIndex) {
 
 function canonicalizeAnimationShot(shot = {}, shotNumber) {
   const shotId = `A${String(shotNumber).padStart(2, "0")}`;
-  return {
+  const canonical = {
     shotId,
     sourceSceneId: String(shot.sourceSceneId || "").trim(),
     sceneId: String(shot.sceneId || "").trim(),
     durationSeconds: shot.durationSeconds,
     storyPurpose: shot.storyPurpose,
     emotionalTarget: shot.emotionalTarget,
-    startFramePrompt: shot.startFramePrompt,
-    endFramePrompt: shot.endFramePrompt,
-    videoPrompt: shot.videoPrompt,
-    cameraMotion: shot.cameraMotion,
-    characterAction: shot.characterAction,
-    dialogueOrSubtitle: shot.dialogueOrSubtitle,
-    soundDesign: shot.soundDesign,
-    continuityNotes: shot.continuityNotes,
+    ...(hasStructuredAnimationPromptSource(shot) ? {
+      startFrame: shot.startFrame,
+      endFrame: shot.endFrame,
+      motion: shot.motion
+    } : {}),
+    ...Object.fromEntries(COMPILED_ANIMATION_SHOT_ALIAS_FIELDS
+      .filter((field) => Object.prototype.hasOwnProperty.call(shot, field))
+      .map((field) => [field, shot[field]])),
     negativePrompts: rewriteShotNegativePromptEvidence(shot.negativePrompts, shotId),
     acceptanceCriteria: shot.acceptanceCriteria
   };
+  return hasStructuredAnimationPromptSource(canonical)
+    ? normalizeAnimationShotPromptAliases(canonical, "2.0")
+    : canonical;
+}
+
+function normalizeAnimationPlanPromptAliases(plan) {
+  if (plan?.promptSchemaVersion !== "2.0" || !Array.isArray(plan.shotPlan)) return plan;
+  return {
+    ...plan,
+    shotPlan: plan.shotPlan.map((shot) => normalizeAnimationShotPromptAliases(shot, plan))
+  };
+}
+
+function normalizeAnimationShotPromptAliases(shot, versionOrPlan) {
+  try {
+    return normalizeAnimationShotPrompts(shot, versionOrPlan);
+  } catch (error) {
+    if (!(error instanceof AnimationPromptCompilerError)) throw error;
+    throw new OutputContractError(error.message);
+  }
+}
+
+function hasStructuredAnimationPromptSource(shot) {
+  return Boolean(shot?.startFrame && shot?.endFrame && shot?.motion);
 }
 
 function rewriteShotNegativePromptEvidence(negativePrompts = {}, shotId) {
@@ -497,10 +535,19 @@ function mergeAnimationPlan(foundation, shotPlan, input = {}) {
 
 function animationContinuityContext(shot) {
   if (!shot) return null;
+  const finalBeat = Array.isArray(shot.motion?.timingBeats) ? shot.motion.timingBeats.at(-1) : null;
   return {
     shotId: shot.shotId,
     sourceSceneId: shot.sourceSceneId,
     sceneId: shot.sceneId,
+    endFrame: shot.endFrame,
+    motionEndState: shot.motion ? {
+      completedAction: shot.motion.primaryAction,
+      finalBeat,
+      cameraMove: shot.motion.cameraMove,
+      emotion: shot.motion.emotionArc?.to,
+      stopCondition: shot.motion.stopCondition
+    } : null,
     endFramePrompt: shot.endFramePrompt,
     characterAction: shot.characterAction,
     continuityNotes: shot.continuityNotes

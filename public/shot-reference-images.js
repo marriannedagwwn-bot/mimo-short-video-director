@@ -3,6 +3,7 @@ export function shotRelatedCharacterReferences(shot = {}, characterReferences = 
   if (!references.length) return [];
   const shotText = normalizeShotText(shot);
   const matched = references.filter((item) => characterMatchesShot(item, shotText));
+  if (hasStructuredPromptSource(shot)) return matched;
   return matched.length ? matched : references;
 }
 
@@ -34,8 +35,23 @@ function normalizeShotText(shot = {}) {
     shot.dialogueOrSubtitle,
     shot.soundDesign,
     shot.emotionalTarget,
+    structuredPromptText(shot.startFrame),
+    structuredPromptText(shot.endFrame),
+    structuredPromptText(shot.motion),
     ...(Array.isArray(shot.acceptanceCriteria) ? shot.acceptanceCriteria : [])
   ].map((item) => String(item || "")).join("\n");
+}
+
+function hasStructuredPromptSource(shot) {
+  return Boolean(shot?.startFrame && shot?.endFrame && shot?.motion);
+}
+
+function structuredPromptText(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(structuredPromptText).filter(Boolean).join("\n");
+  if (typeof value === "object") return Object.values(value).map(structuredPromptText).filter(Boolean).join("\n");
+  return "";
 }
 
 function mentionsTermAsCharacter(text = "", term = "") {

@@ -104,19 +104,28 @@ flowchart LR
 - `characterReferencePrompts`：固定角色、被关爱对象和帮助者的参考图提示词，用于先锁定视觉一致性。
 - `sceneReferencePrompts`：可复用地点/场景参考提示词，用于锁定室内外属性、背景层级、光线、空间锚点和连续性规则。
 - `assetPrompts`：关键道具提示词。
-- `shotPlan`：逐镜头引用 `sceneId`，提供首帧 prompt、尾帧 prompt、video prompt、镜头运动、角色动作、声音设计、验收标准，以及分别面向静态图片和动态视频的 `negativePrompts.image` / `negativePrompts.video`。
+- `shotPlan`：逐镜头引用 `sceneId`，以 `startFrame`、`endFrame` 和 `motion` 作为 Prompt 单一事实源；服务端派生首帧、尾帧、视频和既有展示字段，并保留逐镜验收标准与 `negativePrompts.image` / `negativePrompts.video`。
 - `editPlan`：剪辑节奏、转场、字幕、音乐音效、开头钩子和结尾停顿。
 - `generationChecklist`：角色稳定、首尾帧因果、情绪曲线、可剪辑性和表达原创的质检标准。
 
-动画阶段的核心原则是：先稳定视觉，再逐镜生成，不追求一次生成整条片。首尾帧用于锁定每个短镜头的起点和终点，视频模型只负责补中间运动。
+动画阶段的核心原则是：先稳定视觉，再逐镜生成，不追求一次生成整条片。首尾帧用于锁定每个短镜头的完整静态起点和终点，`motion` 只描述图片无法表达的动作、时间、摄影机、光线、情绪和声音变化。
+
+新生成的计划携带 `promptSchemaVersion: "2.0"`。逐镜结构如下：
+
+- `startFrame` / `endFrame`：`timeAndWeather`、逐角色位置/朝向/姿态/手持物/视线/表情、前中后景、摄影机规格、物理光源、风格修饰和连续性锁；两端都必须是可独立生成的完整静态规格。
+- `motion`：一个 `primaryAction`，`locked` 或 `continuous` 摄影机，起止情绪与可见表演，环境/光线变化，1–4 个连续覆盖 0–100% 的 `timingBeats`，对白/环境声/音效，以及到达尾帧后的停止条件。
+- 固定摄影机要求两端核心机位一致；连续摄影机允许机位变化，但必须声明技术、路径、速度和动机。普通 shot 不允许切镜或更换地点；循环镜头必须回到兼容首帧的状态。
+- `postRetime` 只记录后期变速建议，不发送给生成模型。项目配乐仍在后期统一，逐镜音频只负责对白、环境声和同步音效意图。
+
+兼容字段 `startFramePrompt`、`endFramePrompt`、`videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes` 全部由共享编译器确定性生成。模型不得同时撰写第二套字符串；若导入的 v2 数据同时带结构和不一致的兼容字段，契约校验直接失败。
 
 服务端内部将该阶段拆成三步，但 `POST /api/animation-plan` 的请求和最终响应保持不变：
 
 1. 生成 `animationFoundation`：只生成 `visualBible`、角色/场景/资产参考和其他全局字段，不生成、占位或推测 `shotPlan`。场景参考使用服务端私有 `sourceSceneIds` 锁定剧情场次与 `sceneId` 的唯一映射；共享地点可将多个场次映射到同一场景。
-2. 按 `fullStory.sceneScript` 每 2 场分批生成仅含 `{ "shotPlan": [...] }` 的镜头结果。每批只能覆盖指定 `sourceSceneId`，且 shot 必须使用基础阶段锁定的对应 `sceneId`。当前批会与前面已通过的镜头一起校验；包括跨批重复负面词在内的错误，都只使用现有纠偏机制重试当前批。
-3. 服务端按剧情顺序合并，统一编号 `A01...`，同步重写逐镜负面词的 shot 证据路径，重算 `sceneReferencePrompts.relatedShotIds`，然后再执行一次完整 `animationPlan` 契约、正向边界和负面词相关性校验。
+2. 按 `fullStory.sceneScript` 每 2 场分批生成仅含 `{ "shotPlan": [...] }` 的结构化镜头结果。每批只能覆盖指定 `sourceSceneId`，且 shot 必须使用基础阶段锁定的对应 `sceneId`。当前批会与前面已通过的镜头一起校验；包括跨批重复负面词在内的错误，都只使用现有纠偏机制重试当前批。
+3. 服务端按剧情顺序合并，统一编号 `A01...`，保留三类结构化对象，编译兼容字符串，同步重写逐镜负面词的 shot 证据路径，重算 `sceneReferencePrompts.relatedShotIds`，然后再执行一次完整 `animationPlan` 契约、正向边界和负面词相关性校验。下一批会收到上一镜完整 `endFrame` 与运动终态，而不是只收到一段尾帧散文。
 
-分阶段结果是服务端私有结构，不写入前端状态或导出文件。前端和外部供应商程序仍只读取合并后的原 `animationPlan` 结构。
+分阶段结果是服务端私有结构，不写入前端状态或导出文件。合并后的公开 `animationPlan` 同时包含 v2 结构和兼容字符串；现有前端与供应商程序无需立即迁移。无 `promptSchemaVersion` 的旧计划继续按 legacy 字符串读取，不尝试从散文反推结构。
 
 每条逐镜渲染负面词必须包含：
 
@@ -131,7 +140,7 @@ flowchart LR
 
 剧情页必须提供两个供应商交付出口：
 
-- JSON 导出：保留完整剧情、选中变体、合并后的 `animationPlan`、模型信息和已选首尾帧图片，供外部程序结构化读取。
+- JSON 导出：生产包版本为 `2.1`，保留完整剧情、选中变体、合并后的 v2 `animationPlan`、兼容字符串、模型信息和已选首尾帧图片；旧 `2.0` 包仍可导入。
 - Markdown 复制：把角色参考、场景参考、资产提示词和逐镜首帧／尾帧／`videoPrompt` 整理成可直接粘贴到供应商程序的生产包。
 
 页面内保留单镜头可灵 AI 试片链路。用户为当前 shot 选定首帧和尾帧后，`POST /api/generate-shot-video` 会将两张图、`videoPrompt`、镜头参数和当前 `negativePrompts.video` 发送给可灵 `image2video`。可灵 preset 使用 `image`、`image_tail`、`prompt` 和 `negative_prompt`，支持异步轮询、下载 mp4 及 1–4 个候选结果。回执的 `negativePromptDelivery` 和脱敏 `requestPreview` 用于核对负面词是否真实写入 `negative_prompt`。
@@ -148,6 +157,7 @@ flowchart LR
 
 ## 4. 当前边界
 
+- 项目固定使用 Node.js 24 LTS（见 `.nvmrc`，`package.json` 限定 `>=24 <25`）；验收测试应在该版本执行，避免把非支持版本或受限沙箱禁止监听本地回环端口造成的 native assertion 误判为业务失败。
 - 原生视频过大或推理服务不支持 `video_url` 时会回退浏览器抽帧；快速剪辑、声音设计和未出现在采样帧中的动作可能遗漏。
 - 音频尚未自动转写。需要准确对白时，应粘贴字幕/转写，或后续增加 ASR 阶段。
 - 模型输出经过 JSON 解析、嵌套契约校验和一次纠偏重试；当前仍未采用外部 JSON Schema 引擎。

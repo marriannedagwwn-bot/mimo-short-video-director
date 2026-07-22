@@ -1,9 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
+import { compileAnimationShotPrompts } from "../src/animation-prompt-compiler.js";
 import { animationFoundationPrompt, animationShotBatchPrompt } from "../src/prompts.js";
 import { ensureAnimationFoundationContract, ensureAnimationShotBatchContract } from "../src/validation.js";
 import { WorkflowService } from "../src/workflow.js";
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
 
 function fixture() {
   const creatorProfile = {
@@ -50,7 +55,7 @@ test("动画基础与镜头批次 prompt 职责分离", () => {
   assert.match(foundationPrompt, /动画基础锁定/);
   assert.match(foundationPrompt, /不生成、推测或占位任何 shotPlan/);
   assert.match(batchPrompt, /逐场景镜头批次/);
-  assert.match(batchPrompt, /顶层只能输出 shotPlan/);
+  assert.match(batchPrompt, /顶层.*只能输出 shotPlan/);
   assert.match(batchPrompt, /S1、S2/);
 });
 
@@ -93,6 +98,109 @@ test("服务端先生成基础锁定，再按场次分批生成并合并原 anim
   assert.deepEqual(result.sceneReferencePrompts.map((scene) => scene.relatedShotIds), [["A01"], ["A02"], ["A03"], ["A04"], ["A05"], ["A06"]]);
   assert.ok(result.sceneReferencePrompts.every((scene) => !Object.hasOwn(scene, "sourceSceneIds")));
   assert.deepEqual(Object.keys(result).sort(), Object.keys(context.animationPlan).sort());
+  result.shotPlan.forEach((shot) => {
+    assert.ok(shot.startFrame);
+    assert.ok(shot.endFrame);
+    assert.ok(shot.motion);
+    assert.deepEqual(
+      Object.fromEntries(Object.keys(compileAnimationShotPrompts(shot)).map((field) => [field, shot[field]])),
+      compileAnimationShotPrompts(shot)
+    );
+  });
+});
+
+test("下一批提示词继承上一镜完整尾帧与运动终态", async () => {
+  const context = fixture();
+  const prompts = [];
+  const workflow = new WorkflowService({
+    animationShotBatchSceneCount: 1,
+    client: {
+      async generateJson(args) {
+        prompts.push(args.prompt);
+        if (args.prompt.includes("本阶段只生成可供所有镜头批次复用")) return foundationFrom(context.animationPlan);
+        const sourceSceneId = args.prompt.match(/本批允许的 sourceSceneId：([^\n]+)/u)?.[1]?.trim();
+        const shot = context.animationPlan.shotPlan.find((item) => item.sourceSceneId === sourceSceneId);
+        return { shotPlan: [structuredClone(shot)] };
+      }
+    }
+  });
+
+  await workflow.createAnimationPlan(context);
+  const secondBatchPrompt = prompts.find((prompt) => prompt.includes("本批允许的 sourceSceneId：S2"));
+  const previous = context.animationPlan.shotPlan[0];
+  assert.match(secondBatchPrompt, new RegExp(escapeRegExp(JSON.stringify(previous.endFrame)), "u"));
+  assert.match(secondBatchPrompt, new RegExp(escapeRegExp(JSON.stringify(previous.motion.cameraMove)), "u"));
+  assert.match(secondBatchPrompt, new RegExp(escapeRegExp(previous.motion.stopCondition), "u"));
+});
+
+test("v2 结构与兼容字符串不一致时只纠偏当前镜头批次", async () => {
+  const context = fixture();
+  let firstBatchAttempts = 0;
+  const prompts = [];
+  const workflow = new WorkflowService({
+    animationShotBatchSceneCount: 2,
+    client: {
+      async generateJson(args) {
+        prompts.push(args.prompt);
+        if (args.prompt.includes("本阶段只生成可供所有镜头批次复用")) return foundationFrom(context.animationPlan);
+        if (args.prompt.includes("本批允许的 sourceSceneId：S1、S2")) {
+          firstBatchAttempts += 1;
+          const shots = structuredClone(context.animationPlan.shotPlan.slice(0, 2));
+          if (firstBatchAttempts === 1) shots[0].videoPrompt = "与结构化 motion 不一致的旧字符串";
+          return { shotPlan: shots };
+        }
+        if (args.prompt.includes("本批允许的 sourceSceneId：S3、S4")) {
+          return { shotPlan: structuredClone(context.animationPlan.shotPlan.slice(2, 4)) };
+        }
+        return { shotPlan: structuredClone(context.animationPlan.shotPlan.slice(4, 6)) };
+      }
+    }
+  });
+
+  const result = await workflow.createAnimationPlan(context);
+  assert.equal(firstBatchAttempts, 2);
+  assert.equal(prompts.filter((prompt) => prompt.includes("本阶段只生成可供所有镜头批次复用")).length, 1);
+  assert.match(prompts[2], /已存在别名 videoPrompt 与编译结果不一致/u);
+  assert.equal(result.shotPlan[0].videoPrompt, compileAnimationShotPrompts(result.shotPlan[0]).videoPrompt);
+});
+
+test("v2 foundation 收到 legacy 镜头时立即纠偏当前批次", async () => {
+  const context = fixture();
+  let firstBatchAttempts = 0;
+  const prompts = [];
+  const workflow = new WorkflowService({
+    animationShotBatchSceneCount: 2,
+    client: {
+      async generateJson(args) {
+        prompts.push(args.prompt);
+        if (args.prompt.includes("本阶段只生成可供所有镜头批次复用")) return foundationFrom(context.animationPlan);
+        if (args.prompt.includes("本批允许的 sourceSceneId：S1、S2")) {
+          firstBatchAttempts += 1;
+          const shots = structuredClone(context.animationPlan.shotPlan.slice(0, 2));
+          if (firstBatchAttempts === 1) {
+            return { shotPlan: shots.map((shot) => {
+              const legacy = { ...shot, ...compileAnimationShotPrompts(shot) };
+              delete legacy.startFrame;
+              delete legacy.endFrame;
+              delete legacy.motion;
+              return legacy;
+            }) };
+          }
+          return { shotPlan: shots };
+        }
+        if (args.prompt.includes("本批允许的 sourceSceneId：S3、S4")) {
+          return { shotPlan: structuredClone(context.animationPlan.shotPlan.slice(2, 4)) };
+        }
+        return { shotPlan: structuredClone(context.animationPlan.shotPlan.slice(4, 6)) };
+      }
+    }
+  });
+
+  const result = await workflow.createAnimationPlan(context);
+  assert.equal(firstBatchAttempts, 2);
+  assert.match(prompts[2], /必须输出 v2 结构化字段/u);
+  assert.equal(result.shotPlan.length, 6);
+  assert.ok(result.shotPlan.every((shot) => shot.startFrame && shot.endFrame && shot.motion));
 });
 
 test("镜头批次校验失败时只纠偏当前批次，不重生基础锁定", async () => {
@@ -138,21 +246,21 @@ test("服务端重编镜头 ID 时同步重写负面词证据路径", async () =
     text: "录音设备被错误生成手机屏幕",
     appliesTo: "image",
     triggerEvidence: [{
-      sourcePath: "animationPlan.shotPlan[LOCAL-1].startFramePrompt",
-      evidence: batches[0][0].startFramePrompt
+      sourcePath: "animationPlan.shotPlan[LOCAL-1].motion.primaryAction",
+      evidence: batches[0][0].motion.primaryAction
     }],
     reasonCode: "shot_object_confusion",
     priority: "medium",
     enabled: true
   }];
-  let call = 0;
   const workflow = new WorkflowService({
     animationShotBatchSceneCount: 2,
     client: {
-      async generateJson() {
-        call += 1;
-        if (call === 1) return foundationFrom(context.animationPlan);
-        return { shotPlan: batches[call - 2] };
+      async generateJson(args) {
+        if (args.prompt.includes("本阶段只生成可供所有镜头批次复用")) return foundationFrom(context.animationPlan);
+        if (args.prompt.includes("本批允许的 sourceSceneId：S1、S2")) return { shotPlan: batches[0] };
+        if (args.prompt.includes("本批允许的 sourceSceneId：S3、S4")) return { shotPlan: batches[1] };
+        return { shotPlan: batches[2] };
       }
     }
   });
@@ -161,7 +269,7 @@ test("服务端重编镜头 ID 时同步重写负面词证据路径", async () =
   assert.equal(result.shotPlan[0].shotId, "A01");
   assert.equal(
     result.shotPlan[0].negativePrompts.image[0].triggerEvidence[0].sourcePath,
-    "animationPlan.shotPlan[A01].startFramePrompt"
+    "animationPlan.shotPlan[A01].motion.primaryAction"
   );
 });
 

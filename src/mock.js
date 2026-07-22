@@ -443,24 +443,29 @@ export function mockAnimationPlan(input) {
     const location = scene.location || "生活化场景";
     const action = scene.visibleAction || `${fixedName}继续完成任务。`;
     const emotion = scene.emotionNode || "克制温暖";
+    const shotId = `A${String(baseId).padStart(2, "0")}`;
+    const sourceSceneId = scene.sceneId || `S${baseId}`;
+    const sceneId = sceneReferencePrompts[index]?.sceneId || `LOC${String(baseId).padStart(2, "0")}`;
+    const structured = buildMockStructuredAnimationShot({
+      fixedName,
+      scene,
+      sceneId,
+      location,
+      action,
+      emotion,
+      cameraMode: baseId <= 2 ? "continuous" : "locked"
+    });
     const first = {
-      shotId: `A${String(baseId).padStart(2, "0")}`,
-      sourceSceneId: scene.sceneId || `S${baseId}`,
-      sceneId: sceneReferencePrompts[index]?.sceneId || `LOC${String(baseId).padStart(2, "0")}`,
+      shotId,
+      sourceSceneId,
+      sceneId,
       durationSeconds: baseId === 1 ? 4 : 5,
       storyPurpose: scene.dramaticFunction || "推进任务和情绪",
       emotionalTarget: emotion,
-      startFramePrompt: `竖屏 9:16，温暖治愈 2.5D 动画。${protagonistPrompt}${fixedName}位于${location}，画面开始时刚准备执行动作：${action}，中近景构图，柔和自然光，关键道具清晰但不夸张。`,
-      endFramePrompt: `竖屏 9:16，保持同一 2.5D 动画风格和同一角色设定。${fixedName}完成这一镜头的动作节点，身体姿态从紧张转为更坚定，${location}环境保持连续，关键道具位置与上一帧逻辑一致。`,
-      videoPrompt: `从首帧过渡到尾帧：${fixedName}只完成一个主要动作，节奏自然，镜头轻微跟随或推进，保持角色脸型、服装、年龄感和道具不变，不新增无关角色，不改变场景。`,
-      cameraMotion: baseId <= 2 ? "轻微跟拍，保持稳定竖屏构图" : baseId === sceneScript.length ? "静态近景，保留情绪停顿" : "缓慢推进到动作细节",
-      characterAction: action,
-      dialogueOrSubtitle: Array.isArray(scene.dialogue) && scene.dialogue.length ? scene.dialogue.map((item) => `${item.speaker}：${item.line}`).join(" / ") : "无对白或短字幕，靠动作推进",
-      soundDesign: scene.shotAndSound || "轻环境声，动作音效克制",
-      continuityNotes: `承接 ${scene.sceneId || `S${baseId}`}，保持${fixedName}外观、道具和情绪递进连续。`,
+      ...structured,
       negativePrompts: buildMockShotNegativePrompts(scene, {
-        shotId: `A${String(baseId).padStart(2, "0")}`,
-        sourceSceneId: scene.sceneId || `S${baseId}`
+        shotId,
+        sourceSceneId
       }),
       acceptanceCriteria: [
         `${fixedName}身份和外观稳定`,
@@ -474,6 +479,7 @@ export function mockAnimationPlan(input) {
   });
 
   return {
+    promptSchemaVersion: "2.0",
     selectedVariantId: variant.id || fullStory.selectedVariantId || "V1",
     title: `${title} · 首尾帧动画生产包`,
     productionStrategy: {
@@ -535,8 +541,8 @@ export function mockAnimationPlan(input) {
       { check: "表达原创", passCriteria: "不复用参考片具体人物、台词、道具组合和镜头连续设计。" }
     ],
     modelAgnosticNotes: [
-      "如果视频模型支持首尾帧，先分别生成首帧和尾帧，再用同一镜头的 videoPrompt 生成短视频。",
-      "如果视频模型只支持图生视频，优先用 startFramePrompt 生成视频，再用 endFramePrompt 做结果验收。",
+      "服务端从 startFrame、endFrame 和 motion 统一编译图像/视频提示词，结构化字段是唯一事实源。",
+      "如果视频模型只支持图生视频，优先用编译后的首帧生成，再用编译后的尾帧做结果验收。",
       "每个镜头至少生成 2 个候选，优先选择角色稳定而不是动作最复杂的版本。"
     ],
     continuityAndSafetyCheck: {
@@ -547,6 +553,152 @@ export function mockAnimationPlan(input) {
       readyForVideoGeneration: "可以进入角色参考图、道具参考图、首尾帧和短视频候选生成。"
     },
     uncertainties: []
+  };
+}
+
+function buildMockStructuredAnimationShot({ fixedName, scene = {}, sceneId, location, action, emotion, cameraMode }) {
+  const timeAndWeather = `${scene.timeRange || "当前剧情时段"}，天气与本场剧情连续`;
+  const startEmotion = String(emotion || "克制温暖");
+  const endEmotion = `${startEmotion}中更坚定`;
+  const startCamera = {
+    shotSize: "中近景",
+    height: "与主体视线齐平",
+    angle: "平视",
+    viewDirection: "沿同一空间轴线看向主体",
+    lensFeel: "自然视角，无广角畸变",
+    depthOfField: "主体和关键道具清晰，背景轻微柔化",
+    composition: `${fixedName}位于竖屏中心偏左，预留动作方向空间`
+  };
+  const endCamera = cameraMode === "locked"
+    ? { ...startCamera }
+    : {
+      ...startCamera,
+      composition: `${fixedName}位于竖屏中心，连续跟随后保留动作终点空间`
+    };
+  const environment = {
+    sceneId,
+    foreground: "少量生活化前景，不遮挡手部和关键道具",
+    midground: `${location}中的主要行动区域`,
+    background: `${location}的稳定空间锚点和清晰背景层级`,
+    atmosphere: "治愈生活流，空间真实可信，氛围克制"
+  };
+  const lighting = {
+    source: "单一稳定的自然散射光",
+    direction: "画面侧前方柔和入射",
+    colorAndContrast: "低饱和暖中性色，柔和对比，关键道具可读"
+  };
+  const styleModifiers = ["竖屏 9:16", "温暖治愈 2.5D 动画", "轻微手绘质感", "细节干净"];
+  const continuityLocks = [
+    `${fixedName}身份、年龄感、发型和服装不变`,
+    `${location}的室内外属性、空间轴线和背景层级不变`,
+    "关键道具外观、尺寸和数量不变",
+    "光源方向和色彩对比不跳变"
+  ];
+  const dialogue = Array.isArray(scene.dialogue)
+    ? scene.dialogue.map((item) => ({
+      speaker: String(item?.speaker || "").trim(),
+      text: String(item?.line || item?.text || "").trim(),
+      delivery: String(item?.deliveryOrSubtext || item?.delivery || "短句、克制、自然").trim()
+    })).filter((item) => item.speaker && item.text)
+    : [];
+  const isLocked = cameraMode === "locked";
+  const cameraMove = isLocked ? {
+    mode: "locked",
+    technique: "固定机位",
+    path: "固定机位，保持首帧构图",
+    speed: "slow",
+    motivation: "让单一动作和手部道具状态清晰可读"
+  } : {
+    mode: "continuous",
+    technique: "轻微跟随",
+    path: "沿同一空间轴线缓慢向前并跟随主体，全程不切镜",
+    speed: "slow",
+    motivation: "在不破坏空间连续性的前提下让主要动作保持清晰"
+  };
+  const cameraBeat = isLocked ? "固定机位，保持首帧构图" : "沿同一轴线连续轻微跟随，不切镜";
+
+  return {
+    startFrame: {
+      timeAndWeather,
+      characters: [{
+        name: fixedName,
+        screenPosition: "画面中心偏左",
+        bodyOrientation: "身体略朝动作方向",
+        pose: "稳定站立，重心清楚，处于动作起点",
+        actionState: `刚准备执行“${action}”，动作尚未启动`,
+        handPropState: "双手与关键道具保持清晰分离，道具处于动作起始位置",
+        gaze: "视线锁定当前动作目标",
+        emotionState: startEmotion,
+        expression: "表情克制专注，可见情绪与当前剧情一致"
+      }],
+      environment: { ...environment },
+      camera: startCamera,
+      lighting: { ...lighting },
+      styleModifiers: [...styleModifiers],
+      continuityLocks: [...continuityLocks]
+    },
+    endFrame: {
+      timeAndWeather,
+      characters: [{
+        name: fixedName,
+        screenPosition: isLocked ? "画面中心偏左" : "画面中心",
+        bodyOrientation: "身体稳定停在主要动作的终点方向",
+        pose: "完成同一主要动作后稳定收住重心",
+        actionState: `已完成“${action}”，定格在该动作的唯一终点`,
+        handPropState: "双手与关键道具的接触逻辑清楚，道具稳定停在动作完成位置",
+        gaze: "视线停在主要动作的结果上",
+        emotionState: endEmotion,
+        expression: "表情仍克制，但目标完成后的坚定感可见"
+      }],
+      environment: { ...environment },
+      camera: endCamera,
+      lighting: { ...lighting },
+      styleModifiers: [...styleModifiers],
+      continuityLocks: [...continuityLocks]
+    },
+    motion: {
+      mode: "continuous_action",
+      primaryAction: action,
+      cameraMove,
+      emotionArc: {
+        from: startEmotion,
+        visibleProgression: `${fixedName}在完成同一动作的过程中，情绪从${startEmotion}逐步显露出更坚定的结果感`,
+        to: endEmotion
+      },
+      environmentChange: `无地点或空间结构变化，${location}的前中后景保持连续`,
+      lightingChange: "无，光源方向、色温和对比保持连续",
+      timingBeats: [{
+        fromPercent: 0,
+        toPercent: 45,
+        action: `${fixedName}从 startFrame 的冻结姿态自然启动同一主要动作`,
+        camera: cameraBeat,
+        emotion: `保持${startEmotion}，只出现微小进展`,
+        environment: `${location}空间和道具位置连续，无跳变`,
+        soundCue: "轻微环境底噪和动作启动声"
+      }, {
+        fromPercent: 45,
+        toPercent: 100,
+        action: `${fixedName}连续完成同一主要动作并稳定停在 endFrame 状态`,
+        camera: cameraBeat,
+        emotion: `可见过渡到${endEmotion}，不追加第二反应`,
+        environment: `${location}空间、背景层级和光线保持不变`,
+        soundCue: "主要动作完成声后立即收止"
+      }],
+      audio: {
+        dialogue,
+        ambience: `${location}的轻微生活环境声`,
+        soundEffects: [scene.shotAndSound || "克制的手部与道具动作声"],
+        musicCue: "轻钢琴或木吉他底色，不抢动作节奏"
+      },
+      preserve: [...continuityLocks],
+      endStateRef: "endFrame",
+      stopCondition: "达到 endFrame 定义的姿态、手部道具和表情状态后立即停止，不追加动作",
+      postRetime: {
+        recommended: false,
+        speedCurve: "原速连续播放",
+        reason: "当前单一动作已能在镜头时长内清晰完成"
+      }
+    }
   };
 }
 

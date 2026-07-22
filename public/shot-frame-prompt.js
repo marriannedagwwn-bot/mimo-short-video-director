@@ -102,7 +102,10 @@ function buildSceneContinuityText(shot = {}, characterReferences = [], frameKind
   const referenceAnchor = sceneReferenceAnchor(sceneReference);
   if (frameKind !== "end") return referenceAnchor ? `当前镜头场景锚点：${referenceAnchor}` : "";
   const anchor = referenceAnchor || extractSceneAnchor(shot.startFramePrompt, characterReferences);
-  const baseRule = "同镜头连续性锁定：尾帧必须与首帧保持同一地点、同一室内/户外属性、同一背景层级、同一景别、同一机位方向和同一光线；只改变人物动作、表情、手部和道具状态，不要重新设计环境。";
+  const continuousCamera = shot?.motion?.cameraMove?.mode === "continuous";
+  const baseRule = continuousCamera
+    ? "同镜头连续性锁定：尾帧必须保持同一地点、同一室内/户外属性、同一角色、道具和场景逻辑；摄影机只沿 motion.cameraMove 声明的连续路径到达尾帧机位，严格采用尾帧指定的景别、角度和构图，不得跳切或重新设计环境。"
+    : "同镜头连续性锁定：尾帧必须与首帧保持同一地点、同一室内/户外属性、同一背景层级、同一景别、同一机位方向和同一光线；只改变人物动作、表情、手部和道具状态，不要重新设计环境。";
   const guard = sceneTransitionGuard(anchor);
   if (!anchor) return `${baseRule}\n${guard}`;
   return `${baseRule}\n首帧场景锚点（只用于继承场景，不要画首帧动作）：${anchor}\n${guard}`;
