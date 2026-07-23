@@ -42,7 +42,7 @@ export function requireText(value, name, { optional = false, max = 12000 } = {})
 }
 
 const outputContracts = {
-  referenceAnalysis: ["contentPositioning", "targetAudience", "storySynopsis", "characters", "protagonistIdentity", "careRecipient", "dialogueStyle", "shotRhythm", "emotionCurve", "retentionDrivers", "whyWatchToEnd", "analysisConfidence", "uncertainties"],
+  referenceAnalysis: ["contentPositioning", "targetAudience", "storySynopsis", "characters", "protagonistIdentity", "careRecipient", "dialogueStyle", "shotRhythm", "emotionCurve", "retentionDrivers", "whyWatchToEnd", "analysisConfidence", "observedFacts", "uncertainties"],
   sourceScriptReconstruction: ["scenes", "coreEventSequence", "relationshipPattern", "endingAction", "turningPoints", "uncertainties"],
   creativeBrief: ["contentType", "targetAudience", "coreEmotion", "storyEngine", "emotionStructure", "roleAndOccupationMapping", "reusableHighValueBeats", "controlledRewriteVariables", "protectedExpressions", "minimumTransformationRules", "allowedNarrativeComponents", "nonNegotiableExperience", "creativeDistancePolicy"],
   visualGuardrails: ["fixedCharacterBoundary", "allowedPositiveTraits", "positivePromptBoundary", "sourceSimilarityRules", "dialogueRules", "stageInstructions", "rationale", "uncertainties"],
@@ -153,7 +153,7 @@ export function ensureOutputContract(value, contract) {
   const missing = (outputContracts[contract] || []).filter((key) => !(key in value));
   if (missing.length) throw new OutputContractError(`${contract} 缺少必要字段：${missing.join("、")}`);
   const arrayFields = {
-    referenceAnalysis: ["characters", "emotionCurve", "retentionDrivers", "uncertainties"],
+    referenceAnalysis: ["characters", "emotionCurve", "retentionDrivers", "observedFacts", "uncertainties"],
     sourceScriptReconstruction: ["scenes", "coreEventSequence", "turningPoints", "uncertainties"],
     creativeBrief: ["emotionStructure", "roleAndOccupationMapping", "reusableHighValueBeats", "controlledRewriteVariables", "protectedExpressions", "minimumTransformationRules", "allowedNarrativeComponents"],
     visualGuardrails: ["allowedPositiveTraits", "positivePromptBoundary", "sourceSimilarityRules", "dialogueRules", "uncertainties"],
@@ -163,7 +163,7 @@ export function ensureOutputContract(value, contract) {
   }[contract] || [];
   const wrongArrays = arrayFields.filter((key) => !Array.isArray(value[key]));
   if (wrongArrays.length) throw new OutputContractError(`${contract} 字段类型无效：${wrongArrays.join("、")} 必须是数组`);
-  if (contract === "sourceScriptReconstruction" && value.scenes.length < 1) throw new OutputContractError("sourceScriptReconstruction 至少需要一个分场");
+  if (contract === "sourceScriptReconstruction") validateSourceScriptReconstructionContract(value);
   if (contract === "creativeBrief") {
     validateNarrativeComponents(value.allowedNarrativeComponents);
     validateProtectedExpressions(value.protectedExpressions);
@@ -184,6 +184,54 @@ export function ensureOutputContract(value, contract) {
     validateAnimationPlanNegativePromptContract(value);
   }
   return value;
+}
+
+function validateSourceScriptReconstructionContract(value) {
+  if (value.scenes.length < 1) throw new OutputContractError("sourceScriptReconstruction 至少需要一个分场");
+  if (typeof value.relationshipPattern !== "string") {
+    throw new OutputContractError("sourceScriptReconstruction.relationshipPattern 必须是字符串");
+  }
+  if (!value.endingAction || typeof value.endingAction !== "object" || Array.isArray(value.endingAction)) {
+    throw new OutputContractError("sourceScriptReconstruction.endingAction 必须是对象");
+  }
+  requireContractFields(value.endingAction, ["action", "emotionalMeaning", "evidence"], "sourceScriptReconstruction.endingAction");
+  if (!Array.isArray(value.endingAction.evidence)) {
+    throw new OutputContractError("sourceScriptReconstruction.endingAction.evidence 必须是数组");
+  }
+
+  value.scenes.forEach((scene, index) => {
+    const path = `sourceScriptReconstruction.scenes[${index}]`;
+    if (!scene || typeof scene !== "object" || Array.isArray(scene)) {
+      throw new OutputContractError(`${path} 必须是对象`);
+    }
+    requireContractFields(scene, [
+      "sceneId",
+      "timeRange",
+      "location",
+      "characters",
+      "visibleActions",
+      "dialogueGist",
+      "shotDesign",
+      "emotionNode",
+      "dramaticFunction",
+      "turningPoint",
+      "keyProps",
+      "sourceEvidence",
+      "confidence"
+    ], path);
+    const arrays = ["characters", "visibleActions", "shotDesign", "keyProps", "sourceEvidence"];
+    const wrong = arrays.filter((field) => !Array.isArray(scene[field]));
+    if (wrong.length) throw new OutputContractError(`${path} 字段类型无效：${wrong.join("、")} 必须是数组`);
+    const confidence = Number(scene.confidence);
+    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 100) {
+      throw new OutputContractError(`${path}.confidence 必须是 0-100`);
+    }
+  });
+}
+
+function requireContractFields(value, fields, path) {
+  const missing = fields.filter((field) => !(field in value));
+  if (missing.length) throw new OutputContractError(`${path} 缺少必要字段：${missing.join("、")}`);
 }
 
 /**
@@ -834,20 +882,32 @@ export function ensureCreativeBriefMatchesProfile(value, creatorProfile = {}) {
 
   const protectedTerms = collectProtectedTermsFromBrief(value, fixedProfile);
   const identityLeakTerms = incompatibleProtagonistSurfaceTerms(fixedProfile);
-  const protagonistMappings = (value.roleAndOccupationMapping || []).filter((mapping) => {
-    const text = JSON.stringify(mapping || {});
-    return text.includes(fixedName) || /主角|信使|任务执行|行动承担|固定角色/u.test(text);
-  });
-  for (const mapping of protagonistMappings) {
-    assertNoTerms(
-      JSON.stringify({
-        newRole: mapping?.newRole,
-        newOccupationOrIdentity: mapping?.newOccupationOrIdentity,
-        mappingLogic: mapping?.mappingLogic
-      }),
-      [...protectedTerms, ...identityLeakTerms],
-      `creativeBrief.roleAndOccupationMapping 中固定角色「${fixedName}」的身份映射`
+  const identityAuthorizations = getFixedCharacterIdentityAuthorizations(fixedProfile);
+  if (!String(value.roleAndOccupationMapping?.[0]?.newRole || "").includes(fixedName)) {
+    throw new OutputContractError(
+      `creativeBrief.roleAndOccupationMapping[0].newRole 必须保留固定角色姓名“${fixedName}”，不得更换或重命名主角`
     );
+  }
+  const protagonistMappings = (value.roleAndOccupationMapping || []).map((mapping, index) => ({ mapping, index })).filter(({ mapping, index }) => {
+    const text = JSON.stringify(mapping || {});
+    return index === 0 || text.includes(fixedName) || /主角|信使|任务执行|行动承担|固定角色/u.test(text);
+  });
+  for (const { mapping, index } of protagonistMappings) {
+    const basePath = `creativeBrief.roleAndOccupationMapping[${index}]`;
+    const terms = [...new Set([...protectedTerms, ...identityLeakTerms])];
+    const strictIdentityHits = findCreativeBriefMappingTermHits([
+      { path: `${basePath}.newRole`, value: String(mapping?.newRole || "") },
+      { path: `${basePath}.newOccupationOrIdentity`, value: String(mapping?.newOccupationOrIdentity || "") }
+    ], terms, identityAuthorizations);
+    const mappingLogicHits = findCreativeBriefMappingTermHits([
+      { path: `${basePath}.mappingLogic`, value: String(mapping?.mappingLogic || "") }
+    ], terms, identityAuthorizations, { allowNegativeContext: true });
+    const hits = dedupeFieldTermHits([...strictIdentityHits, ...mappingLogicHits]);
+    if (hits.length) {
+      throw new OutputContractError(
+        `${basePath} 中固定角色「${fixedName}」的身份映射复用了禁止表面表达或非用户设定身份：${formatFieldTermHits(hits)}`
+      );
+    }
   }
 
   return value;
@@ -1074,7 +1134,6 @@ function isNegativePromptCandidateRelevant(item, { context, plan, shot, shotInde
   if (!negativePromptMedia.has(item.appliesTo) || !negativePromptReasonCodes.has(item.reasonCode) || !negativePromptPriorities.has(item.priority)) return false;
   if (media === "image" && !["image", "both"].includes(item.appliesTo)) return false;
   if (media === "video" && !["video", "both"].includes(item.appliesTo)) return false;
-  if (/咕嘎/u.test(item.text)) return false;
 
   const evidence = (item.triggerEvidence || []).filter((entry) => isUsableNegativePromptEvidence(entry, {
     context,
@@ -1395,8 +1454,15 @@ export function extractFixedCharacterName(fixedCharacter) {
 
 const sourceSurfaceIdentityTerms = [
   "一只", "企鹅", "企鹅服", "企鹅形象", "动物", "动物形象", "动物服", "玩偶", "玩偶服",
-  "人偶", "人偶服", "兽装", "头套"
+  "人偶", "人偶服", "兽装", "头套", "拟人动物", "拟人化动物", "动物角色", "动物形象少女",
+  "兽类角色", "兽人", "快递员", "送货员"
 ];
+
+const fixedCharacterIdentitySpecies = ["猫", "狼", "狐", "兔", "犬", "狗", "鹿", "熊", "虎", "豹", "羊", "龙"];
+const fixedCharacterOccupationTerms = ["快递员", "送货员"];
+const semanticCharacterIdentityTerms = fixedCharacterIdentitySpecies.flatMap((species) => [
+  `${species}娘`, `${species}耳少女`, `${species}尾少女`, `${species}系少女`
+]);
 
 const bodyFeatureRules = [
   { label: "尾巴", terms: ["尾巴"], allowSignals: [/尾巴|有尾|带尾|尾部/u] },
@@ -1418,7 +1484,7 @@ const bodyFeatureRules = [
 ];
 
 const bodySurfaceTerms = [...new Set(bodyFeatureRules.flatMap((rule) => rule.terms))];
-const protagonistSurfaceTerms = [...sourceSurfaceIdentityTerms, ...bodySurfaceTerms];
+const protagonistSurfaceTerms = [...sourceSurfaceIdentityTerms, ...semanticCharacterIdentityTerms, ...bodySurfaceTerms];
 
 const protectedTermStopWords = new Set([
   "台词", "视觉元素", "特定动作", "禁止", "直接使用", "高度相似", "表述", "形象", "服装", "动作", "约定", "一只", "动物"
@@ -1653,6 +1719,46 @@ function findFieldTermHits(fields, terms, { allowNegativeContext = false } = {})
   return dedupeFieldTermHits(hits);
 }
 
+function findCreativeBriefMappingTermHits(fields, terms, identityAuthorizations, { allowNegativeContext = false } = {}) {
+  const hits = [];
+  for (const field of fields || []) {
+    for (const term of terms || []) {
+      if (!term || !hasForbiddenCreativeBriefOccurrence(field.value, term, identityAuthorizations, { allowNegativeContext })) continue;
+      hits.push({ term, path: field.path });
+    }
+  }
+  return dedupeFieldTermHits(hits);
+}
+
+function hasForbiddenCreativeBriefOccurrence(value, term, identityAuthorizations, { allowNegativeContext = false } = {}) {
+  const text = String(value || "");
+  const needle = String(term || "");
+  if (!needle) return false;
+  let index = text.indexOf(needle);
+  while (index !== -1) {
+    const inNegativeContext = allowNegativeContext && isNegatedTermOccurrence(text, index);
+    const authorizedIdentityTerm = [
+      ...(identityAuthorizations.authorizedIdentityTerms || []),
+      ...(identityAuthorizations.authorizedOccupationTerms || [])
+    ].includes(needle);
+    const literalFixedCharacterOccurrence = isInsideLiteralFixedCharacter(text, index, needle, identityAuthorizations.fixedCharacterText);
+    if (!inNegativeContext && !authorizedIdentityTerm && !literalFixedCharacterOccurrence) return true;
+    index = text.indexOf(needle, index + needle.length);
+  }
+  return false;
+}
+
+function isInsideLiteralFixedCharacter(value, termIndex, term, fixedCharacterText) {
+  const fixedText = String(fixedCharacterText || "");
+  if (!fixedText || !fixedText.includes(term)) return false;
+  let profileIndex = value.indexOf(fixedText);
+  while (profileIndex !== -1) {
+    if (termIndex >= profileIndex && termIndex + term.length <= profileIndex + fixedText.length) return true;
+    profileIndex = value.indexOf(fixedText, profileIndex + fixedText.length);
+  }
+  return false;
+}
+
 function hasForbiddenOccurrence(value, term, { allowNegativeContext = false } = {}) {
   const text = String(value || "");
   const needle = String(term || "");
@@ -1677,7 +1783,14 @@ function isNegatedTermOccurrence(text, index) {
     before.lastIndexOf(","),
     before.lastIndexOf("\n")
   ) + 1);
-  return /(不要|禁止|避免|不得|不能|不可|勿|严禁|不应|不可以|不允许|切勿|杜绝|无|没有|不带|未出现|不出现)(?:出现|使用|写入|新增|自动新增|复用|继承|加入|添加|变成|带有|拥有|呈现|包含|有)?[^。！？；;，,\n]{0,24}$/u.test(segment);
+  const directives = [...segment.matchAll(/(不要|禁止|避免|不得|不能|不可|勿|严禁|不应|不可以|不允许|切勿|杜绝|无|没有|不带|未出现|不出现|不(?:再)?(?:使用|复用|继承|保留|沿用|采用|新增|添加|加入|呈现|包含|带有|拥有|变成|成为|写入))(?:出现|使用|写入|新增|自动新增|复用|继承|加入|添加|变成|带有|拥有|呈现|包含|有)?/gu)];
+  const directive = directives.at(-1);
+  if (!directive) return false;
+  const trailing = segment.slice((directive.index || 0) + directive[0].length);
+  if (trailing.length > 64) return false;
+  if (/(?:但(?:是)?|然而|可是|却|而是|仍(?:然)?|继续|同时|随后|之后|然后|接着|继而|转而|并(?:让|由|使)|改为|改成|变成|成为|转为|新增|添加|采用|保留|继承|使用|拥有|实际(?:上)?|反而)/u.test(trailing)) return false;
+  if (/(?:主角|角色|人物|新身份|新职业)[^。！？；;\n]{0,8}(?:是|作为|使用|继承|拥有|变成|保留)/u.test(trailing)) return false;
+  return true;
 }
 
 function dedupeFieldTermHits(hits) {
@@ -1720,10 +1833,81 @@ function addProtectedTerm(terms, raw, fixedProfile) {
 
 function incompatibleProtagonistSurfaceTerms(fixedProfile) {
   const incompatibleBodyTerms = new Set(incompatibleBodySurfaceTerms(fixedProfile));
+  const authorizedIdentityTerms = new Set(getFixedCharacterIdentityAuthorizations(fixedProfile).authorizedIdentityTerms);
   return [
-    ...sourceSurfaceIdentityTerms.filter((term) => term.length >= 2 && !fixedProfile.includes(term)),
+    ...sourceSurfaceIdentityTerms.filter((term) => term.length >= 2),
+    ...semanticCharacterIdentityTerms.filter((term) => !authorizedIdentityTerms.has(term)),
     ...bodySurfaceTerms.filter((term) => term.length >= 2 && incompatibleBodyTerms.has(term))
   ];
+}
+
+export function getFixedCharacterIdentityAuthorizations(fixedCharacter = "") {
+  const fixedProfile = String(fixedCharacter || "");
+  const authorizedIdentityTerms = new Set();
+  const originalIdentityExpressions = new Set();
+  const authorizedSpecies = new Set();
+  const authorizedOccupationTerms = new Set();
+  const segments = fixedProfile.split(/[，,；;。\n\r]/u).map((item) => item.trim()).filter(Boolean);
+
+  for (const species of fixedCharacterIdentitySpecies) {
+    const identityTerms = [`${species}娘`, `${species}耳少女`, `${species}尾少女`, `${species}系少女`];
+    const explicitIdentitySegments = segments.filter((segment) => identityTerms.some((term) => (
+      segment.includes(term) && isIntrinsicFixedIdentityMention(segment, term)
+    )));
+    const explicitTerms = identityTerms.filter((term) => explicitIdentitySegments.some((segment) => segment.includes(term)));
+    const intrinsicPair = new RegExp(
+      `(?:有|拥有|长着|生有|天生|固定身体特征|身体设定)[^，,。；;\\n]{0,20}${species}耳[^，,。；;\\n]{0,20}${species}(?:尾|尾巴)|${species}耳[^，,。；;\\n]{0,20}${species}(?:尾|尾巴)[^，,。；;\\n]{0,20}(?:固定身体特征|身体设定)`,
+      "u"
+    );
+    const intrinsicIdentitySegments = segments.filter((segment) => (
+      intrinsicPair.test(segment) && !hasRemovableAnimalFeatureContext(segment)
+    ));
+    if (!explicitTerms.length && !intrinsicIdentitySegments.length) continue;
+    authorizedSpecies.add(species);
+    identityTerms.forEach((term) => authorizedIdentityTerms.add(term));
+    [...explicitIdentitySegments, ...intrinsicIdentitySegments]
+      .forEach((segment) => originalIdentityExpressions.add(segment));
+  }
+
+  for (const occupation of fixedCharacterOccupationTerms) {
+    const matchingSegments = segments.filter((segment) => isIntrinsicFixedOccupationMention(segment, occupation));
+    if (!matchingSegments.length) continue;
+    authorizedOccupationTerms.add(occupation);
+    matchingSegments.forEach((segment) => originalIdentityExpressions.add(segment));
+  }
+
+  return {
+    fixedCharacterText: fixedProfile,
+    authorizedSpecies: [...authorizedSpecies],
+    authorizedIdentityTerms: [...authorizedIdentityTerms],
+    authorizedOccupationTerms: [...authorizedOccupationTerms],
+    originalIdentityExpressions: [...originalIdentityExpressions]
+  };
+}
+
+function isIntrinsicFixedOccupationMention(segment, occupation) {
+  const index = segment.indexOf(occupation);
+  if (index < 0) return false;
+  const before = segment.slice(0, index);
+  if (/(?:不是|并非|不当|不做|喜欢|研究|采访|遇到|帮助|模仿)[^，,。；;\n]{0,12}$/u.test(before)) return false;
+  if (!before) return true;
+  return /(?:是|为|作为|职业(?:是|为)|身份(?:是|为)|担任|从事|里的|中的)[^，,。；;\n]{0,8}$/u.test(before);
+}
+
+function isIntrinsicFixedIdentityMention(segment, term) {
+  const index = segment.indexOf(term);
+  if (index < 0) return false;
+  const before = segment.slice(Math.max(0, index - 16), index);
+  const after = segment.slice(index + term.length, index + term.length + 16);
+  if (/(?:不是|并非|非|不属于|不设定为|拒绝成为|喜欢|研究|讨论|创作|画过|画了|设计|收藏|关注|网名叫|昵称叫|称号为)[^，,。；;\n]{0,12}$/u.test(before)) return false;
+  if (/(?:穿着|身穿|穿戴|戴着|套着|披着|换上|装扮成?|角色扮演|临时扮演|扮演|假扮|模仿|印有|画有|绘有|贴有|绣有)[^，,。；;\n]{0,12}$/u.test(before)) return false;
+  if (/^(?:(?:风格|风|文化|题材|作品|图案|图像|印花|贴纸|徽章|配饰|头饰|发箍|面具|头套|服装|服饰|衣服|套装|装扮|造型|网名|昵称|称号|头像|周边))/u.test(after)) return false;
+  if (!before) return true;
+  return /(?:(?:是|为|作为|属于|设定为|固定为|身份(?:是|为)|本体(?:是|为)|形象类似|整体(?:是|为))(?:(?:一名|一个|一位)?(?:Q版|q版|可爱(?:的)?|活泼(?:的)?|年轻(?:的)?)*)|^(?:(?:Q版|q版|可爱(?:的)?|活泼(?:的)?|年轻(?:的)?)+))$/u.test(before);
+}
+
+function hasRemovableAnimalFeatureContext(segment) {
+  return /(?:发箍|头饰|配饰|饰品|挂件|尾饰|假尾|服装|服饰|衣服|套装|装扮|造型|玩偶服|面具|头套|可拆卸|临时扮演|角色扮演|不是固定身体特征|喜欢|研究|讨论|创作|画过|设计|收藏|题材|文化|作品)/u.test(segment);
 }
 
 function incompatibleBodySurfaceTerms(fixedProfile) {
@@ -1760,11 +1944,6 @@ export function fixedCharacterVisualPolicyText(fixedCharacter = "") {
     ? "耳朵类设定只授权用户写明的耳朵表现，不代表可以扩展其他身体结构。"
     : "任何额外身体特征都必须由固定角色文本明确授权后才可写入正向提示词。";
   return `允许正向使用的身体特征：${allowedText}。未授权信息保持不写，不得据此生成渲染负面提示词。${earNote}`;
-}
-
-function assertNoTerms(text, terms, label) {
-  const hits = findTerms(text, terms);
-  if (hits.length) throw new OutputContractError(`${label} 复用了禁止表面表达或非用户设定身份：${hits.join("、")}`);
 }
 
 function findTerms(text, terms) {

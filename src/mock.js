@@ -43,6 +43,12 @@ export function mockAnalysis(input) {
     ],
     whyWatchToEnd: "观众同时等待任务结果与关系真相，结尾小动作提供可感知但不过度煽情的回报。",
     analysisConfidence: 62,
+    observedFacts: (input.frames || []).map((frame, index, items) => ({
+      factType: "visible_state",
+      observation: `采样画面 F${index + 1} 记录了 ${time(frame.timestamp)} 时刻的可见状态`,
+      importance: index === 0 || index === items.length - 1 ? "core" : "supporting",
+      evidenceRefs: [{ source: "frame", frameNumber: index + 1 }]
+    })),
     uncertainties: [{ field: "原声对白与准确职业", reason: "演示模式仅依据采样画面结构生成，未进行音频转写", neededEvidence: "接入 MiMo 并补充字幕或转写文本" }]
   };
 }

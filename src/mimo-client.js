@@ -33,22 +33,25 @@ export class MimoClient {
     }
   }
 
-  async generateJson({ prompt, frames = [], model = null, maxCompletionTokens = null } = {}) {
-    return this.generateJsonWithMedia({ prompt, frames, model, maxCompletionTokens });
+  async generateJson({ prompt, frames = [], model = null, maxCompletionTokens = null, systemPrompt = null } = {}) {
+    return this.generateJsonWithMedia({ prompt, frames, model, maxCompletionTokens, systemPrompt });
   }
 
-  async generateJsonWithMedia({ prompt, frames = [], video = null, model = null, maxCompletionTokens = null }) {
+  async generateJsonWithMedia({ prompt, frames = [], video = null, model = null, maxCompletionTokens = null, systemPrompt = null, onResolvedMediaMode = null }) {
     const canUseVideo = Boolean(video?.dataUrl) && this.config.mediaMode !== "frames";
     try {
-      return await this.requestJson({
+      const result = await this.requestJson({
         prompt,
         frames,
         video,
         useVideo: canUseVideo,
         model,
         maxCompletionTokens,
+        systemPrompt,
         jsonRetryAttempts: canUseVideo && this.config.mediaMode === "auto" && frames.length > 0 ? 0 : null
       });
+      notifyResolvedMediaMode(onResolvedMediaMode, canUseVideo ? "video" : frames.length ? "frames" : "text");
+      return result;
     } catch (error) {
       const canFallback = canUseVideo
         && this.config.mediaMode === "auto"
@@ -56,11 +59,13 @@ export class MimoClient {
         && error instanceof ModelResponseError
         && ([400, 415, 422].includes(error.status) || isRecoverableVideoJsonError(error));
       if (!canFallback) throw error;
-      return this.requestJson({ prompt, frames, useVideo: false, model, maxCompletionTokens });
+      const result = await this.requestJson({ prompt, frames, useVideo: false, model, maxCompletionTokens, systemPrompt });
+      notifyResolvedMediaMode(onResolvedMediaMode, "frames");
+      return result;
     }
   }
 
-  async requestJson({ prompt, frames = [], video = null, useVideo = false, model = null, maxCompletionTokens = null, jsonRetryAttempts = null }) {
+  async requestJson({ prompt, frames = [], video = null, useVideo = false, model = null, maxCompletionTokens = null, systemPrompt = null, jsonRetryAttempts = null }) {
     const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`;
     const retryAttempts = jsonRetryAttempts === null
       ? Number.isFinite(Number(this.config.jsonRetryAttempts)) ? Number(this.config.jsonRetryAttempts) : 2
@@ -70,7 +75,7 @@ export class MimoClient {
     let lastJsonError = null;
 
     for (let attempt = 0; attempt <= retryAttempts; attempt += 1) {
-      const body = buildRequestBody(this.config, { prompt: activePrompt, frames, video, useVideo }, { model, maxCompletionTokens: activeMaxCompletionTokens });
+      const body = buildRequestBody(this.config, { prompt: activePrompt, frames, video, useVideo }, { model, maxCompletionTokens: activeMaxCompletionTokens, systemPrompt });
 
       const response = await fetch(endpoint, {
         method: "POST",
@@ -106,6 +111,10 @@ export class MimoClient {
 
     throw lastJsonError || new ModelResponseError("MiMo 未返回合法 JSON");
   }
+}
+
+function notifyResolvedMediaMode(callback, mode) {
+  if (typeof callback === "function") callback(mode);
 }
 
 function jsonRetryPrompt(originalPrompt, failedContent) {
@@ -148,7 +157,12 @@ export function buildRequestBody(config, { prompt, frames = [], video = null, us
     stream: false,
     thinking: { type: thinkingType },
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "system",
+        content: typeof overrides.systemPrompt === "string" && overrides.systemPrompt.trim()
+          ? overrides.systemPrompt
+          : SYSTEM_PROMPT
+      },
       { role: "user", content: [...visualContent, { type: "text", text: promptText }] }
     ]
   };

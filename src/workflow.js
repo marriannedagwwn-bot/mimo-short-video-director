@@ -1,7 +1,16 @@
-import { analysisPrompt, animationFoundationPrompt, animationShotBatchPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { ANALYSIS_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationFoundationPrompt, animationShotBatchPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts } from "./animation-prompt-compiler.js";
-import { InputError, OutputContractError, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
+import { InputError, OutputContractError, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, getFixedCharacterIdentityAuthorizations, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
+import {
+  ReconstructionGroundingError,
+  createGroundingKey,
+  groundingContextDigest,
+  sealReconstruction,
+  sealReferenceAnalysis,
+  verifyReconstructionSeal,
+  verifyReferenceAnalysis
+} from "./reconstruction-grounding.js";
 
 const DEFAULT_ANIMATION_BATCH_SCENE_COUNT = 2;
 
@@ -18,7 +27,8 @@ export class WorkflowService {
     animationModel = "mimo-v2.5-pro",
     animationMaxCompletionTokens = 12288,
     animationProvider = "MiMo",
-    animationShotBatchSceneCount = DEFAULT_ANIMATION_BATCH_SCENE_COUNT
+    animationShotBatchSceneCount = DEFAULT_ANIMATION_BATCH_SCENE_COUNT,
+    groundingKey = null
   } = {}) {
     this.clients = normalizeClients(clients);
     if (client && !Object.keys(this.clients).length) this.clients.MiMo = client;
@@ -45,6 +55,7 @@ export class WorkflowService {
     this.animationMaxCompletionTokens = animationStage.maxCompletionTokens;
     this.animationProvider = animationStage.provider;
     this.animationShotBatchSceneCount = normalizeBatchSize(animationShotBatchSceneCount);
+    this.groundingKey = groundingKey || createGroundingKey();
   }
 
   get mode() {
@@ -76,30 +87,79 @@ export class WorkflowService {
   async analyze(input) {
     requireObject(input, "请求");
     requireFrames(input.frames);
-    const result = !this.hasLiveClient
-      ? mockAnalysis(input)
-      : await this.generateStageJson("analysis", input, {
+    let resolvedMediaMode = this.hasLiveClient ? null : "frames";
+    const validate = (value) => {
+      if (Object.prototype.hasOwnProperty.call(value || {}, "groundingSeal")) {
+        throw new OutputContractError("referenceAnalysis.groundingSeal 由服务端附加，模型不得输出");
+      }
+      const analysis = ensureOutputContract(value, "referenceAnalysis");
+      try {
+        return sealReferenceAnalysis(analysis, input, this.groundingKey, {
+          allowedEvidenceSources: evidenceSourcesForMediaMode(resolvedMediaMode)
+        });
+      } catch (error) {
+        if (error instanceof ReconstructionGroundingError) throw new OutputContractError(error.message);
+        throw error;
+      }
+    };
+    if (!this.hasLiveClient) return validate(mockAnalysis(input));
+    return this.generateStageJson("analysis", input, {
         prompt: analysisPrompt(input),
+        systemPrompt: ANALYSIS_SYSTEM_PROMPT,
         frames: input.frames,
         video: input.video,
-        validate: (value) => ensureOutputContract(value, "referenceAnalysis")
+        onResolvedMediaMode: (mode) => { resolvedMediaMode = mode; },
+        retryContext: { stage: "referenceAnalysis" },
+        validate
       });
-    return ensureOutputContract(result, "referenceAnalysis");
   }
 
   async reconstruct(input) {
     requireObject(input, "请求");
     requireFrames(input.frames);
     requireObject(input.referenceAnalysis, "referenceAnalysis");
-    const result = !this.hasLiveClient
-      ? mockReconstruction(input)
-      : await this.generateStageJson("reconstruction", input, {
-        prompt: reconstructionPrompt(input),
-        frames: input.frames,
-        video: input.video,
-        validate: (value) => ensureOutputContract(value, "sourceScriptReconstruction")
-      });
-    return ensureOutputContract(result, "sourceScriptReconstruction");
+    const groundingContext = {
+      transcript: input.transcript || "",
+      frames: input.frames,
+      video: input.video,
+      metadata: input.metadata || {}
+    };
+    let contextDigest = groundingContextDigest(groundingContext);
+    let trustedReferenceAnalysis = input.referenceAnalysis;
+    try {
+      if (input.referenceAnalysis.groundingSeal) {
+        const verified = verifyReferenceAnalysis(input.referenceAnalysis, this.groundingKey, groundingContext);
+        trustedReferenceAnalysis = verified.referenceAnalysis;
+        contextDigest = verified.contextDigest;
+      } else if (Array.isArray(input.referenceAnalysis.observedFacts) && input.referenceAnalysis.observedFacts.length) {
+        throw new ReconstructionGroundingError("referenceAnalysis.observedFacts 未经服务端签名；请重新运行参考片分析");
+      }
+    } catch (error) {
+      if (error instanceof ReconstructionGroundingError) throw new InputError(error.message);
+      throw error;
+    }
+    const validate = (value) => {
+      if (Object.prototype.hasOwnProperty.call(value || {}, "groundingSeal")) {
+        throw new OutputContractError("sourceScriptReconstruction.groundingSeal 由服务端附加，模型不得输出");
+      }
+      try {
+        const validated = ensureOutputContract(value, "sourceScriptReconstruction");
+        return sealReconstruction(validated, this.groundingKey, contextDigest);
+      } catch (error) {
+        if (error instanceof ReconstructionGroundingError) throw new OutputContractError(error.message);
+        throw error;
+      }
+    };
+    const reconstructionInput = { ...input, referenceAnalysis: trustedReferenceAnalysis };
+    if (!this.hasLiveClient) return validate(mockReconstruction(reconstructionInput));
+    return this.generateStageJson("reconstruction", input, {
+      prompt: reconstructionPrompt(reconstructionInput),
+      systemPrompt: RECONSTRUCTION_SYSTEM_PROMPT,
+      frames: input.frames,
+      video: input.video,
+      retryContext: { stage: "sourceScriptReconstruction" },
+      validate
+    });
   }
 
   async createBrief(input) {
@@ -107,10 +167,12 @@ export class WorkflowService {
     requireObject(input.referenceAnalysis, "referenceAnalysis");
     requireObject(input.sourceScriptReconstruction, "sourceScriptReconstruction");
     requireObject(input.creatorProfile || {}, "creatorProfile");
-    if (!this.hasLiveClient) return ensureCreativeBriefMatchesProfile(ensureOutputContract(mockBrief(input), "creativeBrief"), input.creatorProfile);
-    const prompt = briefPrompt(input);
-    return this.generateStageJson("brief", input, {
+    const groundedInput = groundedStageInput(input, this.groundingKey);
+    if (!this.hasLiveClient) return ensureCreativeBriefMatchesProfile(ensureOutputContract(mockBrief(groundedInput), "creativeBrief"), input.creatorProfile);
+    const prompt = briefPrompt(groundedInput);
+    return this.generateStageJson("brief", groundedInput, {
       prompt,
+      retryContext: { stage: "creativeBrief", fixedCharacter: input.creatorProfile?.fixedCharacter || "" },
       validate: (result) => ensureCreativeBriefMatchesProfile(ensureOutputContract(result, "creativeBrief"), input.creatorProfile)
     });
   }
@@ -137,9 +199,10 @@ export class WorkflowService {
     const profile = requireObject(input.creatorProfile, "creatorProfile");
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
-    if (!this.hasLiveClient) return ensureVisualGuardrailsMatchesProfile(ensureOutputContract(mockVisualGuardrails(input), "visualGuardrails"), profile);
-    const prompt = visualGuardrailsPrompt(input);
-    return this.generateStageJson("visualGuardrails", input, {
+    const groundedInput = groundedStageInput(input, this.groundingKey);
+    if (!this.hasLiveClient) return ensureVisualGuardrailsMatchesProfile(ensureOutputContract(mockVisualGuardrails(groundedInput), "visualGuardrails"), profile);
+    const prompt = visualGuardrailsPrompt(groundedInput);
+    return this.generateStageJson("visualGuardrails", groundedInput, {
       prompt,
       frames: input.frames || [],
       video: input.video || null,
@@ -154,10 +217,11 @@ export class WorkflowService {
     const profile = requireObject(input.creatorProfile, "creatorProfile");
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
-    const settings = this.resolveStage("fullStory", input);
-    if (!this.hasLiveClient) return ensureFullStoryMatchesProfile(ensureOutputContract(mockFullStory(input), "fullStory"), profile, input.creativeBrief, input.variant, input.visualGuardrails);
+    const groundedInput = groundedStageInput(input, this.groundingKey);
+    const settings = this.resolveStage("fullStory", groundedInput);
+    if (!this.hasLiveClient) return ensureFullStoryMatchesProfile(ensureOutputContract(mockFullStory(groundedInput), "fullStory"), profile, input.creativeBrief, input.variant, input.visualGuardrails);
     this.assertStageClient(settings, "完整剧情");
-    const prompt = fullStoryPrompt({ ...input, targetProvider: settings.provider, targetModel: settings.model });
+    const prompt = fullStoryPrompt({ ...groundedInput, targetProvider: settings.provider, targetModel: settings.model });
     return this.generateValidatedJson({
       client: settings.client,
       prompt,
@@ -178,8 +242,8 @@ export class WorkflowService {
     });
   }
 
-  async generateValidatedJson({ client = this.client, prompt, model = null, maxCompletionTokens = null, frames = [], video = null, validate }) {
-    const request = { prompt, model, maxCompletionTokens };
+  async generateValidatedJson({ client = this.client, prompt, systemPrompt = null, model = null, maxCompletionTokens = null, frames = [], video = null, validate, retryContext = null, onResolvedMediaMode = null }) {
+    const request = { prompt, systemPrompt, model, maxCompletionTokens, onResolvedMediaMode };
     const first = frames.length || video
       ? await client.generateJsonWithMedia({ ...request, frames, video })
       : await client.generateJson(request);
@@ -188,9 +252,11 @@ export class WorkflowService {
     } catch (error) {
       if (!(error instanceof OutputContractError)) throw error;
       const retryRequest = {
-        prompt: validationRetryPrompt(prompt, error.message),
+        prompt: validationRetryPrompt(prompt, error.message, retryContext, first),
+        systemPrompt,
         model,
-        maxCompletionTokens: retryTokenLimit(maxCompletionTokens)
+        maxCompletionTokens: retryTokenLimit(maxCompletionTokens),
+        onResolvedMediaMode
       };
       const second = frames.length || video
         ? await client.generateJsonWithMedia({ ...retryRequest, frames, video })
@@ -284,6 +350,36 @@ export class WorkflowService {
   assertStageClient(settings, label) {
     if (settings.client) return;
     throw new InputError(`${label} 选择了 ${settings.provider || "未知 provider"}，但该 provider 未配置或不可用。`);
+  }
+}
+
+function groundedStageInput(input, groundingKey) {
+  const reconstruction = input.sourceScriptReconstruction;
+  if (!reconstruction || typeof reconstruction !== "object" || Array.isArray(reconstruction) || !Object.keys(reconstruction).length) {
+    throw new InputError("下游 AI 导演阶段必须使用已签名的 sourceScriptReconstruction；请先重新运行脚本还原");
+  }
+  try {
+    let projectedAnalysis = {};
+    let expectedContextDigest = null;
+    const referenceAnalysis = input.referenceAnalysis;
+    if (referenceAnalysis && typeof referenceAnalysis === "object" && !Array.isArray(referenceAnalysis) && Object.keys(referenceAnalysis).length) {
+      if (referenceAnalysis.groundingSeal) {
+        const verified = verifyReferenceAnalysis(referenceAnalysis, groundingKey);
+        expectedContextDigest = verified.contextDigest;
+        projectedAnalysis = verified.referenceAnalysis;
+      } else {
+        projectedAnalysis = referenceAnalysis;
+      }
+    }
+    const projectedReconstruction = verifyReconstructionSeal(reconstruction, groundingKey, { expectedContextDigest });
+    return {
+      ...input,
+      referenceAnalysis: projectedAnalysis,
+      sourceScriptReconstruction: projectedReconstruction
+    };
+  } catch (error) {
+    if (error instanceof ReconstructionGroundingError) throw new InputError(error.message);
+    throw error;
   }
 }
 
@@ -631,6 +727,12 @@ function finiteNumber(value, fallback = null) {
   return fallback ?? null;
 }
 
+function evidenceSourcesForMediaMode(mode) {
+  if (mode === "video") return ["video"];
+  if (mode === "frames") return ["frame"];
+  return null;
+}
+
 function stageLabel(stage) {
   return ({
     analysis: "参考片分析",
@@ -644,26 +746,93 @@ function stageLabel(stage) {
   })[stage] || stage;
 }
 
-function validationRetryPrompt(originalPrompt, validationError) {
+function validationRetryPrompt(originalPrompt, validationError, retryContext = null, failedOutput = null) {
+  if (retryContext?.stage === "referenceAnalysis") {
+    return analysisValidationRetryPrompt(originalPrompt, validationError, failedOutput);
+  }
+  if (retryContext?.stage === "sourceScriptReconstruction") {
+    return reconstructionValidationRetryPrompt(originalPrompt, validationError, retryContext, failedOutput);
+  }
   const animationCorrection = originalPrompt.includes('"negativePrompts"')
     ? `
 - 每个 shot 必须输出 negativePrompts.image 和 negativePrompts.video 数组，数组允许为空。
 - 每个保留条目必须有当前镜头的具体 triggerEvidence、受支持的 reasonCode、正确的 appliesTo 和 priority；不要复制通用负面词，不要用“未声明/未提及”作为唯一理由。
 - dialogueRules 不进入图片/视频负面提示词；sourceSimilarityRules 只有在当前生成确实传入视觉参考时才可按 reference_leak 使用。`
     : "";
+  const creativeBriefCorrection = retryContext?.stage === "creativeBrief"
+    ? creativeBriefValidationCorrection(retryContext.fixedCharacter)
+    : "";
+  const transformationCorrection = retryContext?.stage === "creativeBrief"
+    ? "- 返回完整 JSON 对象，但内容上只修正越界字段；其余已经合格的 Creative Brief 字段保持不变。"
+    : "- 可以保留送达任务、旅途结构、帮助、天气阻力和仪式化结尾，但必须换成新人物、新任务、新道具、新对白和新画面表达。";
+  const failedOutputReference = retryContext?.stage === "creativeBrief" && failedOutput
+    ? `\n上一次待修 JSON（只改校验命中的字段，其他字段保持不变）：\n${JSON.stringify(failedOutput)}`
+    : "";
   return `${originalPrompt}
 
 上一次输出已经是 JSON，但没有通过系统校验：
 ${validationError}
+${failedOutputReference}
 
 请基于同一个任务重新输出一份完整合法 JSON，并修复上述问题。
 关键要求：
 - 不要更换用户固定角色，不要改名，不要降级为配角。
 - 不要复用有明确证据的原片表面表达。
 - 正向提示词只能使用固定角色文本已经明确授权的身份与外观；未授权信息保持不写，且不得把“未声明”转换成渲染负面提示词。
-- 可以保留送达任务、旅途结构、帮助、天气阻力和仪式化结尾，但必须换成新人物、新任务、新道具、新对白和新画面表达。
+${transformationCorrection}
 - 规则必须保持分类：角色正向边界、原片规避、台词规则和逐镜渲染负面提示词不得混写。${animationCorrection}
+${creativeBriefCorrection}
 - 只输出一个完整 JSON 对象，不要 Markdown，不要解释。`;
+}
+
+function analysisValidationRetryPrompt(originalPrompt, validationError, failedOutput) {
+  return `${originalPrompt}
+
+上一次 referenceAnalysis 已经是 JSON，但没有通过证据契约校验：
+${validationError}
+
+上一次待修 JSON：
+${JSON.stringify(failedOutput || {})}
+
+请返回完整 referenceAnalysis JSON，但只修正校验消息指出的 schema 或 evidence 字段：
+- observedFacts.observation 只能记录本次画面或原生视频中直接可见的单一事实。
+- 不得改名，不得替换人物、地点、道具、动作、对白或结尾，也不得把不确定内容补成事实。
+- frame evidence 必须引用实际提供的 frameNumber；video evidence 必须使用合法的 startMs/endMs。
+- 不要为了避开校验而改写素材事实；无法确认的内容移入 uncertainties。
+- 只输出一个完整 JSON 对象，不要 Markdown，不要解释。`;
+}
+
+function reconstructionValidationRetryPrompt(originalPrompt, validationError, retryContext, failedOutput) {
+  return `${originalPrompt}
+
+上一次 sourceScriptReconstruction 已经是 JSON，但没有通过完整脚本契约校验：
+${validationError}
+
+上一次待修 JSON：
+${JSON.stringify(failedOutput || {})}
+
+请返回完整 sourceScriptReconstruction JSON，并只修正校验消息指出的字段：
+- scenes 必须是非空数组，每个 scene 保留 sceneId、timeRange、location、characters、visibleActions、dialogueGist、shotDesign、emotionNode、dramaticFunction、turningPoint、keyProps、sourceEvidence 和 confidence。
+- coreEventSequence、turningPoints 和 uncertainties 必须是数组；relationshipPattern 必须是字符串；endingAction 必须包含 action、emotionalMeaning 和 evidence。
+- 只能依据原视频、采样画面、referenceAnalysis 和用户补充还原原片；不得改编人物、道具、对白、动作或结尾。
+- 无法确认的对白和采样间隙进入 uncertainties，不要为了字段完整而虚构事实。
+- 不要输出 schemaVersion、sourceFacts、globalFactRefs、factRefs 或 groundingSeal。
+- 只输出一个完整 JSON 对象，不要 Markdown，不要解释。`;
+}
+
+function creativeBriefValidationCorrection(fixedCharacter = "") {
+  const authorizations = getFixedCharacterIdentityAuthorizations(fixedCharacter);
+  const authorizedExpressions = authorizations.originalIdentityExpressions.length
+    ? authorizations.originalIdentityExpressions.join("；")
+    : "未识别到可泛化的动物身份；只能逐字使用 fixedCharacter 已声明内容";
+  return `
+Creative Brief 专用纠偏：
+- 校验消息已经给出精确字段路径和具体命中词，只修正越界字段，不要重写整个 Creative Brief。
+- fixedCharacter 原文：${fixedCharacter || "未指定"}
+- fixedCharacter 中已授权的原始身份表达：${authorizedExpressions}
+- 保留用户的姓名与全部固定角色设定；尤其不得把用户声明的猫耳少女、猫娘或猫尾设定删掉、降级或换成别的身份。
+- newRole 和 newOccupationOrIdentity 只写目标角色最终身份；mappingLogic 只解释剧作功能迁移。
+- mappingLogic 中“不继承原片动物形象”等否定来源说明不等于给目标角色指定动物身份；不要为了消除否定来源词而改动 fixedCharacter，只需用清楚的剧作功能语言修正真正越界的字段。`;
 }
 
 function retryTokenLimit(value) {

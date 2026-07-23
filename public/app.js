@@ -553,17 +553,40 @@ function renderAnalysis(data) {
 }
 
 function renderScript(data) {
+  const isCompleteScript = (data.scenes || []).some((scene) =>
+    Object.prototype.hasOwnProperty.call(scene || {}, "visibleActions")
+    || Object.prototype.hasOwnProperty.call(scene || {}, "location")
+  );
+  if (isCompleteScript) {
+    elements.script.innerHTML = `${resultHeader("SOURCE SCRIPT RECONSTRUCTION", "原片完整脚本还原")}
+      <div class="summary-strip">${escape(data.relationshipPattern || "关系模式待确认")}</div>
+      <div class="timeline">${(data.scenes || []).map((scene) => `<div class="scene">
+        <span class="scene-id">${escape(scene.sceneId)}</span>
+        <div class="scene-head"><strong>${escape(scene.location || "地点待确认")}</strong><span>${escape(scene.timeRange)}</span></div>
+        <p>${escape((scene.visibleActions || []).join(" → ") || "无可确认动作")}</p>
+        <p><b>对白大意：</b>${escape(scene.dialogueGist || "无可确认对白")}</p>
+        <div class="scene-meta"><span>${escape(scene.emotionNode)}</span><span>${escape(scene.dramaticFunction)}</span><span>置信度 ${escape(scene.confidence)}%</span>${(scene.keyProps || []).map((prop) => `<span>${escape(prop)}</span>`).join("")}</div>
+      </div>`).join("")}</div>
+      ${block("核心事件顺序", `<div class="tag-row">${(data.coreEventSequence || []).map((item) => `<span class="tag orange">${escape(item.order)} · ${escape(item.event)}</span>`).join("")}</div>`)}
+      ${block("结尾动作", `<div class="beat"><strong>${escape(data.endingAction?.action || "无可确认结尾")}</strong><p>${escape(data.endingAction?.emotionalMeaning)}</p></div>`)}
+      ${uncertainties(data.uncertainties)}`;
+    reveal(elements.script);
+    return;
+  }
+  const factMap = new Map((data.sourceFacts || []).map((fact) => [fact.factId, fact]));
+  const factIdOf = (reference) => typeof reference === "string" ? reference : reference?.factId;
+  const claims = (refs) => (refs || []).map((reference) => factMap.get(factIdOf(reference))?.sourceText).filter(Boolean);
+  const relationshipClaims = claims(data.relationshipPattern?.factRefs);
   elements.script.innerHTML = `${resultHeader("SOURCE SCRIPT RECONSTRUCTION", "原片完整脚本还原")}
-    <div class="summary-strip">${escape(data.relationshipPattern)}</div>
+    <div class="summary-strip">${escape(relationshipClaims.join("；") || "关系事实待确认")}</div>
     <div class="timeline">${(data.scenes || []).map((scene) => `<div class="scene">
       <span class="scene-id">${escape(scene.sceneId)}</span>
-      <div class="scene-head"><strong>${escape(scene.location)}</strong><span>${escape(scene.timeRange)}</span></div>
-      <p>${escape((scene.visibleActions || []).join(" → "))}</p>
-      <p><b>对白大意：</b>${escape(scene.dialogueGist || "无可确认对白")}</p>
-      <div class="scene-meta"><span>${escape(scene.emotionNode)}</span><span>${escape(scene.dramaticFunction)}</span><span>置信度 ${escape(scene.confidence)}%</span>${(scene.keyProps || []).map((prop) => `<span>${escape(prop)}</span>`).join("")}</div>
+      <div class="scene-head"><strong>${escape(scene.structureRole)}</strong><span>${formatTime(scene.startMs / 1000)}-${formatTime(scene.endMs / 1000)}</span></div>
+      <p>${escape(claims(scene.factRefs).join(" → ") || "无可确认事实")}</p>
+      <div class="scene-meta">${(scene.factRefs || []).map((reference) => `<span>${escape(factIdOf(reference))}${reference?.evidenceId ? ` @ ${escape(reference.evidenceId)}` : ""}</span>`).join("")}</div>
     </div>`).join("")}</div>
-    ${block("核心事件顺序", `<div class="tag-row">${(data.coreEventSequence || []).map((item) => `<span class="tag orange">${escape(item.order)} · ${escape(item.event)}</span>`).join("")}</div>`)}
-    ${block("结尾动作", `<div class="beat"><strong>${escape(data.endingAction?.action)}</strong><p>${escape(data.endingAction?.emotionalMeaning)}</p></div>`)}
+    ${block("核心事件顺序", `<div class="tag-row">${(data.coreEventSequence || []).map((item) => `<span class="tag orange">${escape(item.order)} · ${escape(claims(item.factRefs).join("；"))}</span>`).join("")}</div>`)}
+    ${block("结尾事实", `<div class="beat"><strong>${escape(claims(data.endingAction?.factRefs).join("；") || "无可确认结尾")}</strong></div>`)}
     ${uncertainties(data.uncertainties)}`;
   reveal(elements.script);
 }
@@ -2165,7 +2188,7 @@ function selectedStoryPackage() {
   if (!variant) return null;
   const pack = {
     packageType: "story-production-test-package",
-    packageVersion: "2.1",
+    packageVersion: "2.2",
     exportedAt: new Date().toISOString(),
     mode: state.mode,
     modelInfo: currentModelInfo(),
