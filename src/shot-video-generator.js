@@ -4,6 +4,13 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { compileShotNegativePrompt } from "../public/negative-prompts.js";
+import {
+  inferShotVideoProvider,
+  isShotVideoModelAllowed,
+  normalizeShotVideoProvider,
+  resolveShotVideoSetting,
+  shotVideoRuntimeConfig
+} from "./shot-video-providers.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -12,10 +19,42 @@ export class ShotVideoProviderError extends Error {}
 
 export async function generateShotVideo(options = {}) {
   const shot = options.shot || {};
-  const configPath = options.configPath || process.env.VIDEO_HTTP_CONFIG || "";
+  const requestedSetting = resolveShotVideoSetting({
+    provider: options.videoProvider,
+    model: options.videoModel
+  });
+  const requestedRuntime = shotVideoRuntimeConfig(requestedSetting.provider, process.env, requestedSetting.model);
+  const configPath = options.configPath
+    || requestedRuntime.configPath
+    || (requestedSetting.provider === "VideoHTTP" ? process.env.VIDEO_HTTP_CONFIG : "")
+    || "";
   const config = await loadProviderConfig(configPath);
-  if (!videoEndpointConfigured(config)) {
-    throw new ShotVideoConfigError("未配置首尾帧视频生成服务。请设置 VIDEO_HTTP_VIDEO_ENDPOINT / VIDEO_HTTP_ENDPOINT，或设置 VIDEO_HTTP_CONFIG 指向 provider.json。");
+  const explicitProvider = normalizeShotVideoProvider(options.videoProvider);
+  const configProvider = inferShotVideoProvider({
+    model: options.videoModel || config.videoModel || config.model,
+    preset: config.providerPreset || config.preset
+  });
+  const videoProvider = explicitProvider
+    || configProvider
+    || (options.configPath ? "VideoHTTP" : requestedSetting.provider);
+  const providerDefaultModel = shotVideoRuntimeConfig(videoProvider).model;
+  const videoModel = String(
+    options.videoModel
+    || config.videoModel
+    || config.model
+    || (videoProvider === "VideoHTTP" ? "" : providerDefaultModel || requestedSetting.model)
+    || ""
+  ).trim();
+  const providerRuntime = shotVideoRuntimeConfig(videoProvider, process.env, videoModel);
+  assertProviderProtocolCompatibility(videoProvider, videoModel, config);
+  if (videoProvider !== "VideoHTTP" && !isShotVideoModelAllowed(videoProvider, videoModel)) {
+    throw new ShotVideoConfigError(`${videoProvider} 不支持首尾帧视频模型“${videoModel}”。`);
+  }
+  if (videoProvider !== "VideoHTTP" && !providerAuthConfigured(config, providerRuntime)) {
+    throw new ShotVideoConfigError(`未配置 ${videoProvider} API Key。请设置对应 provider API Key，或在 provider config 中提供认证信息。`);
+  }
+  if (!videoEndpointConfigured(config, providerRuntime, videoProvider)) {
+    throw new ShotVideoConfigError(`未配置 ${videoProvider} 首尾帧视频生成服务。请设置对应 provider endpoint/API Key，或设置 provider config 指向有效 JSON。`);
   }
   if (!hasBothInputFrames(options) && !imageEndpointConfigured(config)) {
     throw new ShotVideoConfigError("未配置首尾帧图片生成服务。请设置 VIDEO_HTTP_IMAGE_ENDPOINT / VIDEO_HTTP_ENDPOINT，或设置 VIDEO_HTTP_CONFIG 指向 provider.json；如果已在外部生成图片，也可以传入 startFrameDataUrl 和 endFrameDataUrl。");
@@ -44,11 +83,20 @@ export async function generateShotVideo(options = {}) {
     for (let index = 0; index < count; index += 1) {
       const suffix = count > 1 ? `-${index + 1}` : "";
       const outputPath = path.join(outputRoot, `${shotId}-${stamp}${suffix}.mp4`);
-      const request = buildShotVideoRequest(shot, { outputPath, inputArtifacts, candidateIndex: index, candidateCount: count, model: options.videoModel });
+      const request = buildShotVideoRequest(shot, {
+        outputPath,
+        inputArtifacts,
+        candidateIndex: index,
+        candidateCount: count,
+        provider: videoProvider,
+        model: videoModel
+      });
       const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: options.workerRunner });
       await assertUsableVideoOutput(outputPath);
       videos.push({
         candidateIndex: index,
+        provider: videoProvider,
+        model: videoModel,
         taskId: request.taskId,
         outputUrl: `${publicBasePath}/${path.basename(outputPath)}`,
         outputPath,
@@ -60,6 +108,8 @@ export async function generateShotVideo(options = {}) {
     return {
       taskId: firstVideo.taskId || `${shot.shotId || "SHOT"}-VIDEO-PREVIEW`,
       shotId: shot.shotId || "",
+      provider: videoProvider,
+      model: videoModel,
       startFrameUrl: frames.start.url,
       startFramePath: frames.start.path,
       endFrameUrl: frames.end.url,
@@ -164,6 +214,7 @@ function buildShotVideoRequest(shot = {}, context = {}) {
     inputType: "image_pair_to_video",
     outputKey: `preview.${safeSegment(shot.shotId || "shot")}`,
     outputPath: context.outputPath,
+    provider: context.provider || "",
     model: context.model || "",
     prompt: shot.videoPrompt || "",
     negativePromptEntries: negativePrompt.negativePromptEntries,
@@ -290,14 +341,32 @@ function imageEndpointConfigured(config = {}) {
   );
 }
 
-function videoEndpointConfigured(config = {}) {
+function videoEndpointConfigured(config = {}, runtime = {}, provider = "") {
   return Boolean(
     config.endpoints?.first_last_frame_video_generation
     || config.videoEndpoint
     || config.endpoint
-    || process.env.VIDEO_HTTP_VIDEO_ENDPOINT
-    || process.env.VIDEO_HTTP_ENDPOINT
+    || runtime.endpoint
+    || (provider === "VideoHTTP" && (process.env.VIDEO_HTTP_VIDEO_ENDPOINT || process.env.VIDEO_HTTP_ENDPOINT))
   );
+}
+
+function providerAuthConfigured(config = {}, runtime = {}) {
+  return Boolean(
+    config.apiKey
+    || runtime.apiKey
+    || config.headers?.Authorization
+    || config.headers?.authorization
+  );
+}
+
+function assertProviderProtocolCompatibility(provider, model, config = {}) {
+  if (provider !== "Kling" || model !== "kling-v3") return;
+  const preset = String(config.providerPreset || config.preset || "").trim().toLowerCase();
+  const endpoint = String(config.videoEndpoint || config.endpoint || "").trim();
+  if (["kling_image_to_video", "kling_image2video"].includes(preset) || /\/v1(?:\/|$)/u.test(endpoint)) {
+    throw new ShotVideoConfigError("Kling 3.0 新版接口不能复用 2.1/Legacy provider config；请配置 KLING_V3_API_KEY，并使用 /image-to-video/kling-3.0 endpoint。");
+  }
 }
 
 function framePromptFallback(shot = {}, frameKind = "start") {

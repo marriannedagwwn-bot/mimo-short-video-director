@@ -69,7 +69,7 @@ QWEN_VIDEO_FPS=2
 QWEN_ENABLE_THINKING=false
 ```
 
-配置 `QWEN_API_KEY` 后，只要 Qwen 可用，参考片分析、脚本还原、创意简报、视觉规则、主题变体、完整剧情、动画生产包和人物参考修正默认都会调用 Qwen 对应阶段模型；未配置 Qwen 时自动回退为 MiMo。`qwen3.7-max` 是纯文本阶段的默认选择；会传入视频或图片的参考片分析、脚本还原、视觉规则和人物参考修正默认使用 `qwen3.7-plus`，也可以改成账号可用的 Qwen-VL / Qwen-Omni 模型。页面顶部“模型设置”按钮可以按阶段临时切换 provider 和模型名，覆盖值会随之后所有生成请求发送给后端，也会写入导出的生产包。角色和首尾帧图片仍由已配置的即梦图片服务生成；选中首尾帧后可在页面调用可灵 AI 生成单镜头候选视频。
+配置 `QWEN_API_KEY` 后，只要 Qwen 可用，参考片分析、脚本还原、创意简报、视觉规则、主题变体、完整剧情、动画生产包和人物参考修正默认都会调用 Qwen 对应阶段模型；未配置 Qwen 时自动回退为 MiMo。`qwen3.7-max` 是纯文本阶段的默认选择；会传入视频或图片的参考片分析、脚本还原、视觉规则和人物参考修正默认使用 `qwen3.7-plus`，也可以改成账号可用的 Qwen-VL / Qwen-Omni 模型。页面顶部“模型设置”按钮可以按阶段临时切换 provider 和模型名，覆盖值会随之后所有生成请求发送给后端，也会写入导出的生产包。角色和首尾帧图片仍由已配置的即梦图片服务生成；选中首尾帧后可在页面选择 Kling 或 Seedance 生成单镜头候选视频。
 
 动画逐镜 batch 在结构修复之后会经过独立的 Static Frame Compiler，把“准备、即将、正在”等剧情叙事语言转换为单帧可直接观察的姿态、手部与道具状态和动作结果。该阶段复用已配置的 Qwen 或 MiMo 客户端与凭据，但 provider/model 不继承动画规划阶段，也不会静默回退：
 
@@ -112,22 +112,51 @@ JIMENG_MAX_IMAGES=6
 - 导出当前生产包 JSON：保留完整剧情、主题变体、`animationPlan`、模型信息和已选首尾帧图片，供外部程序读取。
 - 复制动画生产包 Markdown：输出 Markdown 格式的角色参考、场景参考、资产提示词和逐镜首帧／尾帧／`videoPrompt`，可直接粘贴到供应商程序。
 
-## 单镜头首尾帧 → 可灵 AI
+## 单镜头首尾帧 → Kling 3.0 / Seedance 2.0
 
-动画生产包的每个 shot 可以使用已选首帧和尾帧生成 1–4 个候选视频。服务端调用可灵 `image2video` 任务接口，自动轮询结果，将 mp4 保存到 `public/generated-videos/` 并在页面播放。
+动画生产包的每个 shot 可以使用已选首帧和尾帧生成 1–4 个候选视频。页面“模型设置”中的“首尾帧视频”阶段可在 Kling 和 Seedance 之间切换。服务端提交异步任务、轮询终态、立即下载 mp4 到 `public/generated-videos/` 并在页面播放。
 
-最小配置：
+可灵 3.0 使用新版独立协议和 API Key：
+
+```dotenv
+KLING_V3_ENDPOINT=https://api-singapore.klingai.com/image-to-video/kling-3.0
+KLING_V3_API_KEY=你的可灵新版 API Key
+KLING_V3_AUDIO=native
+KLING_VIDEO_RESOLUTION=720p
+KLING_VIDEO_MULTI_SHOT=false
+KLING_VIDEO_POLL_INTERVAL_MS=3000
+KLING_VIDEO_POLL_TIMEOUT_MS=900000
+```
+
+应用把首帧和尾帧分别写入 `contents` 的 `first_frame` / `last_frame`，显式请求 `audio=native`，并通过 `GET /tasks?task_ids=...` 轮询 `submitted → processing → succeeded/failed`。3.0 的模型版本编码在 endpoint 中，请求不会发送 Legacy 的 `model_name`、`negative_prompt` 或 `aspect_ratio`。3.0 新版 API Key 与旧 AK/SK/JWT token 的兼容性没有官方保证，所以代码会拒绝把旧 `/v1` provider config 与新版 `contents` 协议混用。
+
+Seedance 2.0 使用火山方舟内容生成任务：
+
+```dotenv
+SEEDANCE_VIDEO_ENDPOINT=https://ark.cn-beijing.volces.com/api/v3
+SEEDANCE_API_KEY=你的火山方舟 Ark API Key
+SEEDANCE_VIDEO_MODEL=doubao-seedance-2-0-260128
+SEEDANCE_VIDEO_RESOLUTION=720p
+SEEDANCE_GENERATE_AUDIO=true
+SEEDANCE_WATERMARK=false
+SEEDANCE_VIDEO_POLL_INTERVAL_MS=3000
+SEEDANCE_VIDEO_POLL_TIMEOUT_MS=900000
+```
+
+`SEEDANCE_API_KEY` 留空时会复用同一火山方舟账号的 `JIMENG_API_KEY`。可选模型包括 Standard `doubao-seedance-2-0-260128`、Fast `doubao-seedance-2-0-fast-260128` 和 Mini `doubao-seedance-2-0-mini-260615`。请求使用 `first_frame` / `last_frame`，默认 `generate_audio=true`；轮询把 `succeeded`、`failed`、`expired`、`cancelled` 全部视为终态，避免过期或取消后永久卡住。
+
+旧可灵 2.1 仍保持兼容：
 
 ```dotenv
 VIDEO_HTTP_VIDEO_ENDPOINT=https://api-beijing.klingai.com
 VIDEO_HTTP_VIDEO_MODEL=kling-v2-1
 VIDEO_HTTP_PRESET=kling_image_to_video
-VIDEO_HTTP_API_KEY=你的可灵 API Key
+VIDEO_HTTP_API_KEY=你的可灵 Legacy token
 VIDEO_HTTP_POLL_INTERVAL_MS=3000
 VIDEO_HTTP_POLL_TIMEOUT_MS=600000
 ```
 
-可灵 preset 会把首帧写入 `image`、尾帧写入 `image_tail`、动画镜头提示词写入 `prompt`，并将当前 shot 中已启用的 `negativePrompts.video` 编译到 `negative_prompt`。时长会按可灵支持的 5 或 10 秒归一，使用首尾帧时默认 `mode=pro`。服务端回执保留脱敏 `requestPreview` 和 `negativePromptDelivery`，用于证明负面词确实进入可灵请求。
+旧 preset 会把首帧写入 `image`、尾帧写入 `image_tail`、动画镜头提示词写入 `prompt`，并将当前 shot 中已启用的 `negativePrompts.video` 编译到 `negative_prompt`。时长按 5 或 10 秒归一，使用首尾帧时默认 `mode=pro`。服务端回执为所有 provider 保留脱敏 `requestPreview`、实际 provider/model、是否请求音频和 `negativePromptDelivery`。
 
 该内置链路只服务于页面内的单镜头试片。仓库仍不提供 JSONL 任务队列、production workspace、批量执行器、本地质检或 ffmpeg 成片合成；整片批量生成和后期由外部供应商程序负责。
 
@@ -137,8 +166,9 @@ VIDEO_HTTP_POLL_TIMEOUT_MS=600000
 - `src/prompts.js`：各导演阶段的提示词和结构化输出契约。
 - `src/mimo-client.js`：MiMo OpenAI 兼容适配器。
 - `src/workflow.js`：完整创意工作流编排，以及“动画基础锁定 → 逐场次分批 shotPlan → 服务端合并”的动画生产包生成与验证。
-- `src/shot-video-generator.js`：将当前 shot 的已选首尾帧、`videoPrompt` 和逐镜视频负面词交给可灵。
-- `workers/generic-http-worker.mjs`：单镜头视频请求、可灵 preset、异步轮询、产物下载和脱敏回执。
+- `src/shot-video-generator.js`：将当前 shot 的已选首尾帧、`videoPrompt` 和逐镜视频负面词路由到所选视频 provider。
+- `src/shot-video-providers.js`：Kling / Seedance 模型白名单、默认选择及互相隔离的运行配置。
+- `workers/generic-http-worker.mjs`：Kling 3.0、Kling 2.1、Seedance 2.0 请求体、异步轮询、产物下载和脱敏回执。
 - `src/mock.js`：未配置模型时的演示结果。
 - `docs/workflow-spec.md`：产品原则、字段要求和验收标准。
 - `test/`：工作流和核心叙事约束测试。

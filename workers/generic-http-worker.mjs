@@ -2,6 +2,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  inferShotVideoProvider,
+  normalizeShotVideoProvider,
+  shotVideoRuntimeConfig
+} from "../src/shot-video-providers.js";
 
 async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
@@ -40,7 +45,7 @@ export async function executeGenericHttpWorker(options = {}) {
   if (!request || typeof request !== "object" || Array.isArray(request)) throw new Error("worker request 必须是对象或 JSON 文件路径");
   if (!options.output) throw new Error("worker output 不能为空");
   const config = await loadConfig(options.config || process.env.VIDEO_HTTP_CONFIG || "");
-  const result = await executeRequest(request, options, mergeEnvConfig(config));
+  const result = await executeRequest(request, options, mergeEnvConfig(config, request));
   await writeReceipt(options.receipt, result);
   return result;
 }
@@ -70,12 +75,14 @@ async function executeRequest(request, options, config) {
   await writeOutput(resolved, options.output, config);
   return {
     provider: "generic-http-worker",
+    videoProvider: context.request.provider || config.videoProvider || "",
     taskId: context.request.taskId,
     capability: context.request.capability,
     outputKey: context.request.outputKey,
     outputPath: options.output,
     endpoint: redactUrl(endpoint),
     model: context.model,
+    audioRequested: body.generate_audio === true || body.settings?.audio === "native" || body.sound === "on",
     negativePromptDelivery,
     requestPreview: buildRequestPreview(endpoint, body, config),
     resultKind: resolved.kind,
@@ -88,10 +95,10 @@ async function executeRequest(request, options, config) {
 function endpointFor(capability, config) {
   const endpoints = config.endpoints || {};
   let endpoint = endpoints[capability] || "";
-  if (!endpoint && capability === "image_generation") endpoint = config.imageEndpoint || process.env.VIDEO_HTTP_IMAGE_ENDPOINT || config.endpoint;
-  if (!endpoint && capability === "first_last_frame_video_generation") endpoint = config.videoEndpoint || process.env.VIDEO_HTTP_VIDEO_ENDPOINT || config.endpoint;
-  if (!endpoint && capability === "video_quality_review") endpoint = config.reviewEndpoint || process.env.VIDEO_HTTP_REVIEW_ENDPOINT || config.endpoint;
-  if (!endpoint && capability === "video_assembly") endpoint = config.assemblyEndpoint || process.env.VIDEO_HTTP_ASSEMBLY_ENDPOINT || config.endpoint;
+  if (!endpoint && capability === "image_generation") endpoint = config.imageEndpoint || config.endpoint;
+  if (!endpoint && capability === "first_last_frame_video_generation") endpoint = config.videoEndpoint || config.endpoint;
+  if (!endpoint && capability === "video_quality_review") endpoint = config.reviewEndpoint || config.endpoint;
+  if (!endpoint && capability === "video_assembly") endpoint = config.assemblyEndpoint || config.endpoint;
   if (!endpoint) endpoint = config.endpoint;
   return normalizeEndpointForPreset(capability, endpoint, config);
 }
@@ -99,10 +106,10 @@ function endpointFor(capability, config) {
 function modelFor(capability, config) {
   const models = config.models || {};
   if (models[capability]) return models[capability];
-  if (capability === "image_generation") return config.imageModel || process.env.VIDEO_HTTP_IMAGE_MODEL || config.model || "";
-  if (capability === "first_last_frame_video_generation") return config.videoModel || process.env.VIDEO_HTTP_VIDEO_MODEL || config.model || "";
-  if (capability === "video_quality_review") return config.reviewModel || process.env.VIDEO_HTTP_REVIEW_MODEL || config.model || "";
-  if (capability === "video_assembly") return config.assemblyModel || process.env.VIDEO_HTTP_ASSEMBLY_MODEL || config.model || "";
+  if (capability === "image_generation") return config.imageModel || config.model || "";
+  if (capability === "first_last_frame_video_generation") return config.videoModel || config.model || "";
+  if (capability === "video_quality_review") return config.reviewModel || config.model || "";
+  if (capability === "video_assembly") return config.assemblyModel || config.model || "";
   return config.model || "";
 }
 
@@ -126,6 +133,12 @@ function buildRequestBody(context, config) {
   if (isModelArkContentGeneration(context.request.capability, config)) {
     return {
       body: buildModelArkContentGenerationBody(providerContext, config, negativePromptDelivery),
+      negativePromptDelivery
+    };
+  }
+  if (isKlingV3ImageToVideo(context.request.capability, config)) {
+    return {
+      body: buildKlingV3ImageToVideoBody(providerContext, config, negativePromptDelivery),
       negativePromptDelivery
     };
   }
@@ -220,8 +233,12 @@ function resolveNegativePromptDelivery(context, config, template) {
     };
   }
 
+  if (isKlingV3ImageToVideo(capability, config)) {
+    return unsupportedNegativePromptDelivery(compiled, entries);
+  }
+
   if (isKlingImageToVideo(capability, config)) {
-    const maxChars = Number(config.negativePromptMaxChars || process.env.VIDEO_HTTP_NEGATIVE_PROMPT_MAX_CHARS || 2500);
+    const maxChars = Number(config.negativePromptMaxChars || 2500);
     return nativeNegativePromptDelivery(truncateText(compiled, maxChars), "negative_prompt");
   }
 
@@ -386,6 +403,13 @@ async function resolveProviderResult(first, request, config) {
 }
 
 function extractArtifact(data, request, config) {
+  if (isKlingV3ImageToVideo(request.capability, config)) {
+    const tasks = Array.isArray(data?.data) ? data.data : [];
+    const video = tasks
+      .flatMap((task) => Array.isArray(task?.outputs) ? task.outputs : [])
+      .find((output) => output?.type === "video" && typeof output.url === "string" && output.url.trim());
+    return video ? { kind: "url", url: video.url } : null;
+  }
   const url = firstValue(data, resultUrlPathsFor(request, config));
   if (typeof url === "string" && url.trim()) {
     if (url.startsWith("data:")) return { kind: "data_url", dataUrl: url };
@@ -401,6 +425,9 @@ function extractArtifact(data, request, config) {
 
 function taskIdPathsFor(request, config) {
   if (config.taskIdPaths) return config.taskIdPaths;
+  if (isKlingV3ImageToVideo(request.capability, config)) {
+    return uniquePaths(["data.id", "data.0.id", ...defaultTaskIdPaths()]);
+  }
   if (isKlingImageToVideo(request.capability, config)) {
     return uniquePaths(["data.task_id", "data.taskId", "data.id", ...defaultTaskIdPaths()]);
   }
@@ -409,6 +436,9 @@ function taskIdPathsFor(request, config) {
 
 function statusPathsFor(request, config) {
   if (config.statusPaths) return config.statusPaths;
+  if (isKlingV3ImageToVideo(request.capability, config)) {
+    return uniquePaths(["data.0.status", "data.status", ...defaultStatusPaths()]);
+  }
   if (isKlingImageToVideo(request.capability, config)) {
     return uniquePaths(["data.task_status", "data.taskStatus", ...defaultStatusPaths()]);
   }
@@ -417,6 +447,12 @@ function statusPathsFor(request, config) {
 
 function resultUrlPathsFor(request, config) {
   if (config.resultUrlPaths) return config.resultUrlPaths;
+  if (isKlingV3ImageToVideo(request.capability, config)) {
+    return uniquePaths([
+      "data.0.outputs.0.url",
+      ...defaultResultUrlPaths()
+    ]);
+  }
   if (isKlingImageToVideo(request.capability, config)) {
     return uniquePaths([
       "data.task_result.videos.0.url",
@@ -431,12 +467,14 @@ function resultUrlPathsFor(request, config) {
 
 function successStatusesFor(request, config) {
   if (config.successStatuses) return config.successStatuses;
+  if (isKlingV3ImageToVideo(request.capability, config)) return ["succeeded"];
   if (isKlingImageToVideo(request.capability, config)) return uniquePaths(["succeed", ...defaultSuccessStatuses()]);
   return defaultSuccessStatuses();
 }
 
 function failureStatusesFor(request, config) {
   if (config.failureStatuses) return config.failureStatuses;
+  if (isKlingV3ImageToVideo(request.capability, config)) return ["failed"];
   if (isKlingImageToVideo(request.capability, config)) return uniquePaths(["failed", ...defaultFailureStatuses()]);
   return defaultFailureStatuses();
 }
@@ -449,8 +487,12 @@ function textArtifactAllowed(request, config) {
 function pollTargetFor(data, providerTaskId, config) {
   const pollUrl = firstValue(data, config.pollUrlPaths || defaultPollUrlPaths());
   if (typeof pollUrl === "string" && pollUrl.trim()) return pollUrl;
-  const template = config.pollEndpointTemplate || process.env.VIDEO_HTTP_POLL_ENDPOINT_TEMPLATE || "";
+  const template = config.pollEndpointTemplate || "";
   if (template && providerTaskId) return template.replace(/\{taskId\}/gu, encodeURIComponent(providerTaskId));
+  if (isKlingV3ImageToVideo("first_last_frame_video_generation", config) && providerTaskId && config.resolvedEndpoint) {
+    const origin = new URL(String(config.resolvedEndpoint)).origin;
+    return `${origin}/tasks?task_ids=${encodeURIComponent(providerTaskId)}`;
+  }
   if (isModelArkContentGeneration("first_last_frame_video_generation", config) && providerTaskId && config.resolvedEndpoint) {
     return `${String(config.resolvedEndpoint).replace(/\/$/u, "")}/${encodeURIComponent(providerTaskId)}`;
   }
@@ -462,7 +504,7 @@ function pollTargetFor(data, providerTaskId, config) {
 
 function presetFor(capability, config) {
   const presets = config.presets || {};
-  return String(presets[capability] || config.providerPreset || config.preset || process.env.VIDEO_HTTP_PRESET || "").trim().toLowerCase();
+  return String(presets[capability] || config.providerPreset || config.preset || "").trim().toLowerCase();
 }
 
 function isModelArkContentGeneration(capability, config) {
@@ -473,13 +515,34 @@ function isModelArkContentGeneration(capability, config) {
 function isKlingImageToVideo(capability, config) {
   if (capability !== "first_last_frame_video_generation") return false;
   const preset = presetFor(capability, config);
-  if (["kling", "kling_image_to_video", "kling_image2video", "klingai"].includes(preset)) return true;
-  const endpoint = String(config.resolvedEndpoint || config.videoEndpoint || process.env.VIDEO_HTTP_VIDEO_ENDPOINT || config.endpoint || "");
+  if (["kling", "kling_image_to_video", "kling_image2video", "klingai", "kling_3_0_image_to_video"].includes(preset)) return true;
+  const endpoint = String(config.resolvedEndpoint || config.videoEndpoint || config.endpoint || "");
   return /(^|\.)klingai\.com\b/u.test(hostnameFor(endpoint));
+}
+
+function isKlingV3ImageToVideo(capability, config) {
+  if (capability !== "first_last_frame_video_generation") return false;
+  const preset = presetFor(capability, config);
+  const model = String(config.videoModel || config.model || "").trim().toLowerCase();
+  return preset === "kling_3_0_image_to_video"
+    || model === "kling-v3"
+    || /\/image-to-video\/kling-3\.0\/?$/u.test(String(config.resolvedEndpoint || config.videoEndpoint || config.endpoint || ""));
 }
 
 function normalizeEndpointForPreset(capability, endpoint, config) {
   if (!endpoint) return endpoint;
+  if (isKlingV3ImageToVideo(capability, { ...config, videoEndpoint: endpoint, endpoint })) {
+    const clean = String(endpoint).replace(/\/$/u, "");
+    if (/\/image-to-video\/kling-3\.0$/u.test(clean)) return clean;
+    if (/\/image-to-video$/u.test(clean)) return `${clean}/kling-3.0`;
+    try {
+      const parsed = new URL(clean);
+      if (!parsed.pathname || parsed.pathname === "/") return `${clean}/image-to-video/kling-3.0`;
+    } catch {
+      // Custom relative/mock endpoints are already fully qualified by their config.
+    }
+    return clean;
+  }
   if (isKlingImageToVideo(capability, { ...config, videoEndpoint: endpoint, endpoint })) {
     const clean = String(endpoint).replace(/\/$/u, "");
     if (/\/v1\/videos\/image2video$/u.test(clean)) return clean;
@@ -511,16 +574,55 @@ function buildModelArkContentGenerationBody(context, config, negativePromptDeliv
       { type: "image_url", image_url: { url: startFrame }, role: "first_frame" },
       { type: "image_url", image_url: { url: endFrame }, role: "last_frame" }
     ],
-    ratio: parameters.aspectRatio || config.ratio || "9:16",
-    duration: Number(parameters.durationSeconds) || Number(config.duration) || 4,
+    ratio: normalizeSeedanceRatio(parameters.aspectRatio || config.ratio),
+    duration: normalizeSeedanceDuration(parameters.durationSeconds || config.duration),
     watermark: config.watermark === true,
-    generate_audio: config.generateAudio === true || process.env.VIDEO_HTTP_GENERATE_AUDIO === "1",
+    generate_audio: config.generateAudio !== false,
     return_last_frame: config.returnLastFrame === true
   };
-  if (config.resolution || process.env.VIDEO_HTTP_VIDEO_RESOLUTION) body.resolution = process.env.VIDEO_HTTP_VIDEO_RESOLUTION || config.resolution;
-  if (config.serviceTier || process.env.VIDEO_HTTP_SERVICE_TIER) body.service_tier = process.env.VIDEO_HTTP_SERVICE_TIER || config.serviceTier;
-  if (config.executionExpiresAfter || process.env.VIDEO_HTTP_EXECUTION_EXPIRES_AFTER) body.execution_expires_after = Number(process.env.VIDEO_HTTP_EXECUTION_EXPIRES_AFTER || config.executionExpiresAfter);
+  body.resolution = normalizeSeedanceResolution(config.resolution, body.model);
+  if (config.serviceTier) {
+    if (config.serviceTier !== "default") throw new Error("Seedance 2.0 仅支持 service_tier=default。");
+    body.service_tier = config.serviceTier;
+  }
+  if (config.executionExpiresAfter) {
+    const expiresAfter = Math.round(Number(config.executionExpiresAfter));
+    if (!Number.isFinite(expiresAfter) || expiresAfter < 3600 || expiresAfter > 259200) {
+      throw new Error("Seedance execution_expires_after 必须是 3600–259200 秒的整数。");
+    }
+    body.execution_expires_after = expiresAfter;
+  }
   return body;
+}
+
+function buildKlingV3ImageToVideoBody(context, config) {
+  const artifacts = context.inputArtifacts || [];
+  const startFrame = firstArtifactImagePayload(artifacts[0]);
+  const endFrame = firstArtifactImagePayload(artifacts[1]);
+  if (!startFrame) throw new Error("Kling 3.0 图生视频任务必须提供首帧图片。");
+  const parameters = context.request.parameters || {};
+  const contents = [
+    {
+      type: "prompt",
+      text: truncateText(context.request.prompt || "", Number(config.promptMaxChars || 2500))
+    },
+    { type: "first_frame", url: startFrame }
+  ];
+  if (endFrame) contents.push({ type: "last_frame", url: endFrame });
+  return {
+    contents,
+    settings: {
+      multi_shot: config.multiShot === true,
+      audio: config.audio === "off" ? "off" : "native",
+      resolution: normalizeKlingV3Resolution(config.resolution),
+      duration: normalizeKlingV3Duration(parameters.durationSeconds || config.duration)
+    },
+    options: {
+      watermark_info: {
+        enabled: config.watermark === true
+      }
+    }
+  };
 }
 
 function buildKlingImageToVideoBody(context, config, negativePromptDelivery = {}) {
@@ -534,17 +636,17 @@ function buildKlingImageToVideoBody(context, config, negativePromptDelivery = {}
     model_name: context.model || config.model || "kling-v2-1",
     image: startFrame || undefined,
     image_tail: endFrame || undefined,
-    prompt: truncateText(context.request.prompt || "", Number(config.promptMaxChars || process.env.VIDEO_HTTP_PROMPT_MAX_CHARS || 2500)),
+    prompt: truncateText(context.request.prompt || "", Number(config.promptMaxChars || 2500)),
     negative_prompt: negativePromptDelivery.appliedText || undefined,
-    mode: process.env.VIDEO_HTTP_VIDEO_MODE || config.mode || (hasTail ? "pro" : "std"),
-    duration: String(process.env.VIDEO_HTTP_VIDEO_DURATION || config.duration || normalizeKlingDuration(parameters.durationSeconds))
+    mode: config.mode || (hasTail ? "pro" : "std"),
+    duration: String(config.duration || normalizeKlingDuration(parameters.durationSeconds))
   };
-  const aspectRatio = process.env.VIDEO_HTTP_VIDEO_ASPECT_RATIO || config.aspectRatio || "";
-  if (aspectRatio) body.aspect_ratio = aspectRatio;
-  const sound = process.env.VIDEO_HTTP_VIDEO_SOUND || config.sound;
+  const sound = config.sound;
   if (sound) body.sound = sound;
-  const cfgScale = process.env.VIDEO_HTTP_CFG_SCALE || config.cfgScale;
-  if (cfgScale !== undefined && cfgScale !== "") body.cfg_scale = Number(cfgScale);
+  const cfgScale = config.cfgScale;
+  if (cfgScale !== undefined && cfgScale !== "" && !/^kling-v2(?:-|$)/iu.test(String(body.model_name))) {
+    body.cfg_scale = Number(cfgScale);
+  }
   return body;
 }
 
@@ -557,6 +659,38 @@ function firstArtifactImagePayload(artifact = {}) {
 function normalizeKlingDuration(value) {
   const seconds = Math.round(Number(value) || 5);
   return seconds <= 5 ? 5 : 10;
+}
+
+function normalizeKlingV3Duration(value) {
+  const seconds = Math.round(Number(value) || 5);
+  return Math.min(15, Math.max(3, seconds));
+}
+
+function normalizeKlingV3Resolution(value) {
+  const resolution = String(value || "720p").trim().toLowerCase();
+  return ["720p", "1080p", "4k"].includes(resolution) ? resolution : "720p";
+}
+
+function normalizeSeedanceDuration(value) {
+  const number = Math.round(Number(value));
+  if (number === -1) return -1;
+  if (!Number.isFinite(number)) return 5;
+  return Math.min(15, Math.max(4, number));
+}
+
+function normalizeSeedanceRatio(value) {
+  const ratio = String(value || "adaptive").trim().toLowerCase();
+  return ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"].includes(ratio)
+    ? ratio
+    : "adaptive";
+}
+
+function normalizeSeedanceResolution(value, model) {
+  const resolution = String(value || "720p").trim().toLowerCase();
+  const allowed = /-(?:fast|mini)-/iu.test(String(model || ""))
+    ? ["480p", "720p"]
+    : ["480p", "720p", "1080p", "4k"];
+  return allowed.includes(resolution) ? resolution : "720p";
 }
 
 function truncateText(value, maxChars) {
@@ -685,14 +819,13 @@ async function writeReceipt(receiptPath, result) {
 
 function headersFor(config) {
   const headers = { ...(config.headers || {}) };
-  const apiKey = config.apiKey || process.env.VIDEO_HTTP_API_KEY || "";
+  const apiKey = config.apiKey || "";
   if (apiKey) {
-    const header = config.authHeader || process.env.VIDEO_HTTP_AUTH_HEADER || "Authorization";
-    const scheme = config.authScheme ?? process.env.VIDEO_HTTP_AUTH_SCHEME ?? "Bearer";
+    const header = config.authHeader || "Authorization";
+    const scheme = config.authScheme ?? "Bearer";
     headers[header] = scheme ? `${scheme} ${apiKey}` : apiKey;
   }
-  const extra = parseJsonEnv("VIDEO_HTTP_EXTRA_HEADERS", {});
-  return { ...headers, ...extra };
+  return { ...headers, ...(config.extraHeaders || {}) };
 }
 
 function buildRequestPreview(endpoint, body, config) {
@@ -716,7 +849,9 @@ function redactPreviewValue(value, key = "") {
   const text = value.trim();
   if (/^data:[^;,]+;base64,/iu.test(text)) return `[REDACTED_DATA_URL length=${value.length}]`;
   if (/^(?:bearer|basic)\s+\S+/iu.test(text)) return "[REDACTED]";
-  if (base64PreviewKey(key) && looksLikeBase64Text(text)) return `[REDACTED_BASE64 length=${value.length}]`;
+  if (looksLikeBase64Text(text) && (base64PreviewKey(key) || text.length >= 256)) {
+    return `[REDACTED_BASE64 length=${value.length}]`;
+  }
   if (/^https?:\/\//iu.test(text)) return redactUrl(text);
   return value;
 }
@@ -754,20 +889,59 @@ async function loadConfig(configPath) {
   return JSON.parse(text);
 }
 
-function mergeEnvConfig(config) {
+function mergeEnvConfig(config, request = {}) {
+  const requestedProvider = normalizeShotVideoProvider(request.provider);
+  const inferredProvider = inferShotVideoProvider({
+    model: request.model || config.videoModel || config.model,
+    preset: config.providerPreset || config.preset
+  });
+  const provider = requestedProvider || inferredProvider || "VideoHTTP";
+  const runtime = shotVideoRuntimeConfig(provider, process.env, request.model || config.videoModel || config.model);
+  assertWorkerProtocolCompatibility(provider, request.model || config.videoModel || config.model, config);
+  const base = provider === "VideoHTTP"
+    ? {
+        endpoint: process.env.VIDEO_HTTP_ENDPOINT || "",
+        videoEndpoint: process.env.VIDEO_HTTP_VIDEO_ENDPOINT || "",
+        imageEndpoint: process.env.VIDEO_HTTP_IMAGE_ENDPOINT || "",
+        videoModel: process.env.VIDEO_HTTP_VIDEO_MODEL || "",
+        imageModel: process.env.VIDEO_HTTP_IMAGE_MODEL || "",
+        model: process.env.VIDEO_HTTP_MODEL || "",
+        apiKey: process.env.VIDEO_HTTP_API_KEY || "",
+        authHeader: process.env.VIDEO_HTTP_AUTH_HEADER || "",
+        authScheme: process.env.VIDEO_HTTP_AUTH_SCHEME,
+        providerPreset: process.env.VIDEO_HTTP_PRESET || "",
+        timeoutMs: process.env.VIDEO_HTTP_TIMEOUT_MS,
+        pollIntervalMs: process.env.VIDEO_HTTP_POLL_INTERVAL_MS,
+        pollTimeoutMs: process.env.VIDEO_HTTP_POLL_TIMEOUT_MS,
+        pollEndpointTemplate: process.env.VIDEO_HTTP_POLL_ENDPOINT_TEMPLATE || "",
+        negativePromptMaxChars: process.env.VIDEO_HTTP_NEGATIVE_PROMPT_MAX_CHARS,
+        promptMaxChars: process.env.VIDEO_HTTP_PROMPT_MAX_CHARS,
+        extraHeaders: parseJsonEnv("VIDEO_HTTP_EXTRA_HEADERS", {})
+      }
+    : runtime;
   return {
+    ...compactConfig(base),
     ...config,
-    endpoint: process.env.VIDEO_HTTP_ENDPOINT || config.endpoint || "",
-    model: process.env.VIDEO_HTTP_MODEL || config.model || "",
-    timeoutMs: process.env.VIDEO_HTTP_TIMEOUT_MS || config.timeoutMs,
-    pollIntervalMs: process.env.VIDEO_HTTP_POLL_INTERVAL_MS || config.pollIntervalMs,
-    pollTimeoutMs: process.env.VIDEO_HTTP_POLL_TIMEOUT_MS || config.pollTimeoutMs,
+    videoProvider: provider,
+    videoModel: request.model || config.videoModel || base.videoModel || base.model || "",
     maxInputDataUrlBytes: process.env.VIDEO_HTTP_MAX_INPUT_DATA_URL_BYTES || config.maxInputDataUrlBytes,
     includeInputDataUrls: process.env.VIDEO_HTTP_INCLUDE_INPUT_DATA_URLS === "0" ? false : config.includeInputDataUrls,
     writeJsonWhenNoMedia: process.env.VIDEO_HTTP_WRITE_JSON_WHEN_NO_MEDIA === "1" || config.writeJsonWhenNoMedia,
-    allowTextArtifact: process.env.VIDEO_HTTP_ALLOW_TEXT_ARTIFACT === "1" || config.allowTextArtifact,
-    providerPreset: process.env.VIDEO_HTTP_PRESET || config.providerPreset || config.preset || ""
+    allowTextArtifact: process.env.VIDEO_HTTP_ALLOW_TEXT_ARTIFACT === "1" || config.allowTextArtifact
   };
+}
+
+function compactConfig(value = {}) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null && item !== ""));
+}
+
+function assertWorkerProtocolCompatibility(provider, model, config = {}) {
+  if (provider !== "Kling" || String(model || "").trim() !== "kling-v3") return;
+  const preset = String(config.providerPreset || config.preset || "").trim().toLowerCase();
+  const endpoint = String(config.videoEndpoint || config.endpoint || "").trim();
+  if (["kling_image_to_video", "kling_image2video"].includes(preset) || /\/v1(?:\/|$)/u.test(endpoint)) {
+    throw new Error("Kling 3.0 新版 contents 协议不能发送到 2.1/Legacy /v1 endpoint。");
+  }
 }
 
 function renderTemplate(value, context) {

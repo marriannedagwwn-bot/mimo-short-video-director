@@ -113,6 +113,7 @@ const elements = {
   confirmGenerateShotFrameImage: $("#confirmGenerateShotFrameImage"), confirmGenerateShotFrameImageLabel: $("#confirmGenerateShotFrameImageLabel"),
   shotFrameImageResults: $("#shotFrameImageResults"),
   shotVideoModal: $("#shotVideoModal"), closeShotVideoModal: $("#closeShotVideoModal"),
+  shotVideoEyebrow: $("#shotVideoModal .eyebrow"),
   shotVideoModalTitle: $("#shotVideoModalTitle"), shotVideoMeta: $("#shotVideoMeta"),
   shotVideoReferenceList: $("#shotVideoReferenceList"), shotVideoCount: $("#shotVideoCount"),
   shotVideoPromptPreview: $("#shotVideoPromptPreview"), shotVideoStatus: $("#shotVideoStatus"),
@@ -132,9 +133,19 @@ const MODEL_STAGE_DEFS = [
   { key: "staticFrameCompiler", label: "静态帧编译器", hint: "叙事语言到静态视觉语言的语义合法化" },
   { key: "characterReference", label: "人物图修正", hint: "根据上传图片修正角色描述" },
   { key: "imageGeneration", label: "图片生成", hint: "角色参考图、镜头首尾帧图片", providerLocked: true, optional: true },
-  { key: "shotVideo", label: "首尾帧视频", hint: "可灵单镜头首尾帧视频候选", providerLocked: true, optional: true }
+  { key: "shotVideo", label: "首尾帧视频", hint: "可灵或 Seedance 单镜头首尾帧视频候选", providers: ["Kling", "Seedance"], optional: true }
 ];
 const MEDIA_INPUT_MODEL_STAGES = new Set(["analysis", "reconstruction", "visualGuardrails", "characterReference"]);
+const SHOT_VIDEO_PROVIDER_LABELS = {
+  Kling: "可灵 AI",
+  Seedance: "Seedance 2.0",
+  VideoHTTP: "自定义 HTTP"
+};
+const SHOT_VIDEO_PROVIDER_EYEBROWS = {
+  Kling: "KLING AI",
+  Seedance: "SEEDANCE 2.0",
+  VideoHTTP: "CUSTOM VIDEO HTTP"
+};
 const MODEL_OPTION_CATALOG = {
   Qwen: {
     media: ["qwen3.7-plus", "qwen-vl-max-latest", "qwen-vl-plus-latest", "qwen-omni-turbo-latest"],
@@ -147,8 +158,18 @@ const MODEL_OPTION_CATALOG = {
   Jimeng: {
     imageGeneration: ["doubao-seedream-5-0-260128", "seedream-5-0-lite-260128"]
   },
+  Kling: {
+    shotVideo: ["kling-v3", "kling-v2-1"]
+  },
+  Seedance: {
+    shotVideo: [
+      "doubao-seedance-2-0-260128",
+      "doubao-seedance-2-0-fast-260128",
+      "doubao-seedance-2-0-mini-260615"
+    ]
+  },
   VideoHTTP: {
-    shotVideo: ["kling-v2-1"]
+    shotVideo: []
   }
 };
 
@@ -1001,7 +1022,7 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
       <div class="tag-row">${(shot.acceptanceCriteria || []).map((item) => `<span class="tag">${escape(item)}</span>`).join("")}</div>
       <div class="shot-video-action">
         <div class="shot-action-row">
-          <button class="outline-button shot-video-button" type="button" data-generate-shot-video="${escape(shot.shotId)}"${state.shotVideoResults[shot.shotId]?.status === "running" ? " disabled" : ""}>用可灵 AI 生成此镜头视频</button>
+          <button class="outline-button shot-video-button" type="button" data-generate-shot-video="${escape(shot.shotId)}"${state.shotVideoResults[shot.shotId]?.status === "running" ? " disabled" : ""}>用 ${escape(shotVideoProviderLabel())} 生成此镜头视频</button>
           <button class="outline-button shot-video-button" type="button" data-open-shot-frame-generator="${escape(shot.shotId)}"${shotFrameIsRunning(shot.shotId) ? " disabled" : ""}>生成首尾帧</button>
           ${renderPreviousTailReuseButton(data, shot, shotIndex)}
         </div>
@@ -2041,7 +2062,7 @@ async function updateShotVideoGeneratorPreview() {
   const { shot } = context;
   const count = Math.max(1, Math.min(4, Number(state.shotVideoGeneration.count) || Number(elements.shotVideoCount.value) || 1));
   elements.shotVideoCount.value = String(count);
-  elements.shotVideoModalTitle.textContent = `用可灵 AI 生成 ${shot.shotId || "镜头"} 视频`;
+  elements.shotVideoModalTitle.textContent = `用 ${shotVideoProviderLabel()} 生成 ${shot.shotId || "镜头"} 视频`;
   elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || 4} 秒 · 自动锁定已添加的首帧/尾帧`;
   elements.shotVideoReferenceList.innerHTML = renderShotVideoReferenceList(shotId);
   elements.shotVideoPromptPreview.value = buildShotVideoPromptPreview(shot);
@@ -2168,7 +2189,7 @@ async function confirmGenerateShotVideo() {
   const count = Math.max(1, Math.min(4, Number(elements.shotVideoCount.value) || 1));
   state.shotVideoGeneration.count = count;
   setShotVideoGeneratorRunning(true);
-  setShotVideoStatus(`可灵 AI 正在生成 ${count} 条视频候选…`, "active");
+  setShotVideoStatus(`${shotVideoProviderLabel()} 正在生成 ${count} 条视频候选…`, "active");
   try {
     await generateShotVideo(shotId, prompt, { count, throwOnError: true });
     const actualCount = state.shotVideoResults[shotId]?.result?.videos?.length || count;
@@ -2187,7 +2208,7 @@ function setShotVideoGeneratorRunning(running) {
   elements.confirmGenerateShotVideo.disabled = running;
   elements.closeShotVideoModal.disabled = running;
   elements.confirmGenerateShotVideo.classList.toggle("running", running);
-  elements.confirmGenerateShotVideo.querySelector("span").textContent = running ? "可灵 AI 生成中…" : "用可灵 AI 生成";
+  elements.confirmGenerateShotVideo.querySelector("span").textContent = running ? `${shotVideoProviderLabel()} 生成中…` : `用 ${shotVideoProviderLabel()} 生成`;
 }
 
 function setShotVideoStatus(message, tone = "") {
@@ -2208,7 +2229,7 @@ function renderShotVideoReferenceList(shotId) {
       ${frame("首帧", start)}
       ${frame("尾帧", end, endStatus)}
     </div>
-    <p class="shot-video-reference-note">生成视频时会把这两张已选图片连同右侧视频提示词一起传给可灵 AI。</p>
+    <p class="shot-video-reference-note">生成视频时会把这两张已选图片连同右侧视频提示词一起传给 ${escape(shotVideoProviderLabel())}。</p>
   </div>`;
 }
 
@@ -2239,10 +2260,10 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
   const shot = (plan?.shotPlan || []).find((item) => String(item.shotId) === String(shotId));
   if (!shot) return setAnimationStatus("没有找到对应镜头。", "error");
   const count = Math.max(1, Math.min(4, Number(options.count) || 1));
-  state.shotVideoResults[shotId] = { status: "running", message: `正在调用可灵 AI · ${count} 条…`, expectedCount: count };
+  state.shotVideoResults[shotId] = { status: "running", message: `正在调用 ${shotVideoProviderLabel()} · ${count} 条…`, expectedCount: count };
   updateShotVideoResult(shotId);
   renderShotVideoModalResults();
-  setAnimationStatus(`正在用可灵 AI 生成 ${shotId} 镜头视频 · ${count} 条候选…`, "active");
+  setAnimationStatus(`正在用 ${shotVideoProviderLabel()} 生成 ${shotId} 镜头视频 · ${count} 条候选…`, "active");
   try {
     const endpointValidation = await evaluateShotVideoEndpoints(shotId);
     if (!endpointValidation.ok) throw new Error(endpointValidation.message);
@@ -2321,7 +2342,7 @@ function renderShotVideoModalResults() {
   const selectedIndex = Number.isFinite(Number(stateItem.selectedIndex ?? stateItem.result?.selectedIndex)) ? Number(stateItem.selectedIndex ?? stateItem.result?.selectedIndex) : 0;
   elements.shotVideoResults.innerHTML = videos.map((video, index) => `<div class="generated-reference-card shot-video-candidate${index === selectedIndex ? " selected" : ""}">
     <video src="${escape(video.outputUrl || video.url || "")}" controls playsinline></video>
-    <small>候选 ${escape(index + 1)} · ${escape(video.model || stateItem.result?.model || "可灵 AI")} · ${escape(video.generatedAt || stateItem.result?.generatedAt || "")}</small>
+    <small>候选 ${escape(index + 1)} · ${escape(shotVideoResultLabel(video, stateItem.result))} · ${escape(video.generatedAt || stateItem.result?.generatedAt || "")}</small>
     <button class="outline-button" type="button" data-use-shot-video="${escape(shotId)}" data-candidate-index="${escape(index)}">${index === selectedIndex ? "已设为当前镜头视频" : "设为当前镜头视频"}</button>
   </div>`).join("");
 }
@@ -2518,7 +2539,7 @@ function renderOneShotFramePreview(shotId, frameKind, stateItem) {
 
 function renderShotVideoResult(shotId) {
   const stateItem = state.shotVideoResults[shotId];
-  if (!stateItem) return "<p>先选择首帧和尾帧，即可用可灵 AI 生成该镜头视频。</p>";
+  if (!stateItem) return `<p>先选择首帧和尾帧，即可用 ${escape(shotVideoProviderLabel())} 生成该镜头视频。</p>`;
   if (stateItem.status === "running") return `<p class="active">生成中：正在生成 ${escape(stateItem.expectedCount || 1)} 条视频候选…</p>`;
   if (stateItem.status === "error") return `<p class="error">${escape(stateItem.message)}</p>`;
   const startFrameUrl = stateItem.result?.startFrameUrl || "";
@@ -2587,6 +2608,23 @@ function setAnimationStatus(message, tone = "") {
 function storyModelLabel() { return modelDisplayLabel(state.storyProvider, state.storyModel); }
 function animationModelLabel() { return modelDisplayLabel(state.animationProvider, state.animationModel); }
 function staticFrameCompilerModelLabel() { return modelDisplayLabel(state.staticFrameCompilerProvider, state.staticFrameCompilerModel); }
+function normalizeShotVideoProvider(provider = "") {
+  return provider;
+}
+function shotVideoSetting() {
+  const setting = effectiveStageSetting("shotVideo");
+  return { ...setting, provider: normalizeShotVideoProvider(setting.provider) || "Kling" };
+}
+function shotVideoProviderLabel(provider = shotVideoSetting().provider) {
+  const normalized = normalizeShotVideoProvider(provider);
+  return SHOT_VIDEO_PROVIDER_LABELS[normalized] || normalized || "视频模型";
+}
+function shotVideoResultLabel(video = {}, result = {}) {
+  const setting = shotVideoSetting();
+  const provider = normalizeShotVideoProvider(video.provider || result.provider || setting.provider);
+  const model = video.model || result.model || setting.model || "";
+  return model ? `${shotVideoProviderLabel(provider)} ${modelName(model)}` : shotVideoProviderLabel(provider);
+}
 function openModelSettings() {
   renderModelSettings();
   elements.modelSettingsModal.classList.remove("hidden");
@@ -2601,15 +2639,24 @@ function renderModelSettings() {
   const providers = availableModelProviders();
   elements.modelStageList.innerHTML = MODEL_STAGE_DEFS.map((stage) => {
     const current = effectiveStageSetting(stage.key);
-    const defaultSetting = state.modelStages[stage.key] || {};
-    const providerOptions = stage.providerLocked ? [current.provider || defaultSetting.provider].filter(Boolean) : providers;
+    const defaultSetting = normalizeStageSetting(stage.key, state.modelStages[stage.key] || {});
+    const providerOptions = stage.providers
+      ? [...new Set([
+          ...(current.provider === "VideoHTTP" || defaultSetting.provider === "VideoHTTP" ? ["VideoHTTP"] : []),
+          ...stage.providers
+        ])]
+      : (stage.providerLocked ? [current.provider || defaultSetting.provider].filter(Boolean) : providers);
+    const selectedProvider = providerOptions.includes(current.provider) ? current.provider : providerOptions[0] || current.provider;
+    const selectedModel = modelAllowedForStage(current.model, selectedProvider, stage.key)
+      ? current.model
+      : providerDefaultModel(selectedProvider, stage.key);
     return `<div class="model-stage-row" data-model-stage="${escape(stage.key)}">
       <div class="model-stage-label"><strong>${escape(stage.label)}</strong><small>默认：${escape(modelDisplayLabel(defaultSetting.provider, defaultSetting.model))}<br>${escape(stage.hint)}</small></div>
       <select data-model-provider="${escape(stage.key)}"${stage.providerLocked ? " disabled" : ""}>
-        ${providerOptions.map((provider) => `<option value="${escape(provider)}"${provider === current.provider ? " selected" : ""}>${escape(provider)}</option>`).join("")}
+        ${providerOptions.map((provider) => `<option value="${escape(provider)}"${provider === selectedProvider ? " selected" : ""}>${escape(provider)}</option>`).join("")}
       </select>
       <select data-model-name="${escape(stage.key)}">
-        ${renderModelOptions(stage, current.provider, current.model, defaultSetting)}
+        ${renderModelOptions(stage, selectedProvider, selectedModel, defaultSetting)}
       </select>
     </div>`;
   }).join("");
@@ -2623,7 +2670,7 @@ function handleModelStageListChange(event) {
   const modelSelect = row.querySelector("[data-model-name]");
   if (!stage || !modelSelect) return;
   const provider = providerSelect.value;
-  const defaultSetting = state.modelStages[stage.key] || {};
+  const defaultSetting = normalizeStageSetting(stage.key, state.modelStages[stage.key] || {});
   const selectedModel = defaultSetting.provider === provider ? defaultSetting.model : providerDefaultModel(provider, stage.key);
   modelSelect.innerHTML = renderModelOptions(stage, provider, selectedModel, defaultSetting);
 }
@@ -2632,7 +2679,7 @@ function saveModelSettings() {
   for (const stage of MODEL_STAGE_DEFS) {
     const row = elements.modelStageList.querySelector(`[data-model-stage="${stage.key}"]`);
     if (!row) continue;
-    const defaults = state.modelStages[stage.key] || {};
+    const defaults = normalizeStageSetting(stage.key, state.modelStages[stage.key] || {});
     const provider = row.querySelector("[data-model-provider]")?.value || defaults.provider || "";
     const model = row.querySelector("[data-model-name]")?.value.trim() || defaults.model || "";
     if (provider && model && (provider !== defaults.provider || model !== defaults.model)) {
@@ -2712,10 +2759,13 @@ function applyEffectiveModelState() {
   state.nativeVideoMaxBytes = media.nativeVideoMaxBytes;
 }
 function effectiveStageSetting(stage) {
-  return {
+  return normalizeStageSetting(stage, {
     ...(state.modelStages[stage] || {}),
     ...(state.modelOverrides[stage] || {})
-  };
+  });
+}
+function normalizeStageSetting(stage, setting = {}) {
+  return setting;
 }
 function availableModelProviders() {
   const llmProviders = new Set(["Qwen", "MiMo"]);
@@ -2760,7 +2810,9 @@ function providerDefaultModel(provider, stageKey) {
 }
 function modelAllowedForStage(model, provider, stageKey) {
   if (!model) return false;
-  if (stageKey === "shotVideo") return provider === "VideoHTTP" && /^kling(?:-|$)/iu.test(model);
+  if (stageKey === "shotVideo") {
+    return provider === "VideoHTTP" || modelCatalogFor(provider, stageKey).includes(model);
+  }
   if (provider !== "Qwen" || !MEDIA_INPUT_MODEL_STAGES.has(stageKey)) return true;
   return !isKnownQwenTextOnlyModel(model) && /(?:plus|vl|omni)/iu.test(model);
 }
@@ -2804,9 +2856,25 @@ function modelStateSummary() {
 function updateModelActionLabels() {
   if (!state.storyRunning) elements.storyGenerate.querySelector("span").textContent = `用 ${storyModelLabel()} 生成完整剧情`;
   if (!state.animationRunning) elements.animationGenerate.textContent = "生成首尾帧动画生产包";
+  updateShotVideoProviderUi();
+}
+function updateShotVideoProviderUi() {
+  const setting = shotVideoSetting();
+  const label = shotVideoProviderLabel(setting.provider);
+  if (elements.shotVideoEyebrow) elements.shotVideoEyebrow.textContent = SHOT_VIDEO_PROVIDER_EYEBROWS[setting.provider] || String(setting.provider || "VIDEO").toUpperCase();
+  if (!state.shotVideoGeneration.running) elements.confirmGenerateShotVideo.querySelector("span").textContent = `用 ${label} 生成`;
+  elements.animationPlan.querySelectorAll("[data-generate-shot-video]").forEach((button) => {
+    button.textContent = `用 ${label} 生成此镜头视频`;
+  });
+  if (state.shotVideoGeneration.open) {
+    const context = shotFrameContext(state.shotVideoGeneration.shotId);
+    elements.shotVideoModalTitle.textContent = `用 ${label} 生成 ${context?.shot?.shotId || "镜头"} 视频`;
+    elements.shotVideoReferenceList.innerHTML = renderShotVideoReferenceList(state.shotVideoGeneration.shotId);
+  }
 }
 function modelDisplayLabel(provider, model) {
   const name = modelName(model);
+  if (!name) return String(provider || "");
   return provider && !name.toLowerCase().includes(String(provider).toLowerCase()) ? `${provider} ${name}` : name;
 }
 function modelName(model) { return String(model || "").split("/").pop(); }

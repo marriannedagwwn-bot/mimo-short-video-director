@@ -14,6 +14,15 @@ import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./s
 import { WorkflowService } from "./src/workflow.js";
 import { ensureFrameReferenceModeCompatibility, InputError, OutputContractError } from "./src/validation.js";
 import { generateShotVideo, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
+import {
+  inferShotVideoProvider,
+  isShotVideoModelAllowed,
+  normalizeShotVideoProvider,
+  resolveShotVideoSetting,
+  shotVideoDefaultSetting,
+  shotVideoProviderCatalog,
+  shotVideoRuntimeConfig
+} from "./src/shot-video-providers.js";
 import { StaticFrameCompilerError } from "./src/static-frame-compiler.js";
 
 loadEnv();
@@ -42,10 +51,14 @@ const routes = {
     ? workflow.createAnimationPlanWithMetadata(body)
     : workflow.createAnimationPlan(body),
   "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
-  "/api/generate-shot-video": (body) => generateShotVideo({
-    ...body,
-    videoModel: modelOverrideFor(body, "shotVideo") || body.videoModel
-  }),
+  "/api/generate-shot-video": (body) => {
+    const setting = shotVideoRequestSetting(body);
+    return generateShotVideo({
+      ...body,
+      videoProvider: setting.provider,
+      videoModel: setting.model
+    });
+  },
   "/api/run": (body) => workflow.run(body)
 };
 
@@ -65,10 +78,19 @@ const server = http.createServer(async (request, response) => {
       const storyHealth = stageHealth.fullStory || { reachable: false, modelAvailable: false, status: 0 };
       const animationHealth = stageHealth.animationPlan || { reachable: false, modelAvailable: false, status: 0 };
       const analysisMedia = mediaSettingsForProvider(analysisStage.provider, config);
+      const shotVideoStage = modelStages.shotVideo || {};
+      const shotVideoHealth = providerHealth[shotVideoStage.provider] || {};
       const fullStageHealth = {
         ...stageHealth,
         imageGeneration: compactHealth(imageProvider),
-        shotVideo: { reachable: videoGenerationConfigured(), modelAvailable: Boolean(videoHttpModel()), status: videoGenerationConfigured() ? 200 : 0 }
+        shotVideo: {
+          reachable: Boolean(shotVideoHealth.reachable),
+          modelAvailable: Boolean(
+            shotVideoHealth.modelAvailable
+            && isShotVideoModelAllowed(shotVideoStage.provider, shotVideoStage.model)
+          ),
+          status: Number(shotVideoHealth.status) || 0
+        }
       };
       return json(response, 200, {
         ok: true,
@@ -177,10 +199,11 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
 }
 
 function buildModelStages(stageDefaults, config) {
+  const shotVideo = shotVideoDefaultSetting();
   return {
     ...stageDefaults,
     imageGeneration: stageSetting("Jimeng", config.jimeng.model, null),
-    shotVideo: stageSetting("VideoHTTP", videoHttpModel(), null)
+    shotVideo: stageSetting(shotVideo.provider, shotVideo.model, null)
   };
 }
 
@@ -189,12 +212,56 @@ function modelOverrideFor(body = {}, stage) {
   return typeof value === "object" ? String(value.model || "").trim() : "";
 }
 
-function videoHttpModel() {
-  return process.env.VIDEO_HTTP_VIDEO_MODEL?.trim() || process.env.VIDEO_HTTP_MODEL?.trim() || "";
+function shotVideoRequestSetting(body = {}) {
+  const rawOverride = body.modelOverrides?.shotVideo;
+  if (rawOverride !== undefined && (!rawOverride || typeof rawOverride !== "object" || Array.isArray(rawOverride))) {
+    throw new ShotVideoConfigError("首尾帧视频模型覆盖必须同时包含 provider 和 model。");
+  }
+  const overrideProvider = String(rawOverride?.provider || "").trim();
+  const overrideModel = String(rawOverride?.model || "").trim();
+  if (rawOverride !== undefined && (!overrideProvider || !overrideModel)) {
+    throw new ShotVideoConfigError("首尾帧视频模型覆盖必须同时包含 provider 和 model。");
+  }
+
+  const requestedProvider = overrideProvider || String(body.videoProvider || "").trim();
+  const requestedModel = overrideModel || String(body.videoModel || "").trim();
+  const normalizedProvider = normalizeShotVideoProvider(requestedProvider);
+  if (requestedProvider && !normalizedProvider) {
+    throw new ShotVideoConfigError(`不支持首尾帧视频提供商“${requestedProvider}”。`);
+  }
+
+  // Keep an explicitly configured legacy generic worker route intact. Named
+  // providers still go through the strict provider/model compatibility check.
+  if (body.configPath && !requestedProvider) {
+    return { provider: "", model: requestedModel };
+  }
+  if (normalizedProvider === "VideoHTTP") {
+    const inferredProvider = inferShotVideoProvider({ model: requestedModel });
+    if (inferredProvider) {
+      if (!isShotVideoModelAllowed(inferredProvider, requestedModel)) {
+        throw new ShotVideoConfigError(`${inferredProvider} 不支持首尾帧视频模型“${requestedModel}”。`);
+      }
+      return { provider: inferredProvider, model: requestedModel };
+    }
+    return { provider: "VideoHTTP", model: requestedModel };
+  }
+
+  const setting = resolveShotVideoSetting({
+    provider: requestedProvider,
+    model: requestedModel
+  });
+  if (setting.provider === "VideoHTTP") return setting;
+  if (!["Kling", "Seedance"].includes(setting.provider)) {
+    throw new ShotVideoConfigError(`不支持首尾帧视频提供商“${setting.provider || requestedProvider}”。`);
+  }
+  if (!isShotVideoModelAllowed(setting.provider, setting.model)) {
+    throw new ShotVideoConfigError(`${setting.provider} 不支持首尾帧视频模型“${setting.model}”。`);
+  }
+  return setting;
 }
 
-function videoGenerationConfigured() {
-  return Boolean(process.env.VIDEO_HTTP_VIDEO_ENDPOINT || process.env.VIDEO_HTTP_ENDPOINT || process.env.VIDEO_HTTP_CONFIG);
+function videoHttpModel() {
+  return process.env.VIDEO_HTTP_VIDEO_MODEL?.trim() || process.env.VIDEO_HTTP_MODEL?.trim() || "";
 }
 
 function stageSetting(provider, model, maxCompletionTokens, requestTimeoutMs = null) {
@@ -229,6 +296,17 @@ async function healthByProvider(clients, config) {
       status: health.status
     }];
   }));
+  const shotVideoProviders = shotVideoProviderCatalog();
+  const defaultShotVideo = shotVideoDefaultSetting();
+  const genericVideoRuntime = shotVideoRuntimeConfig("VideoHTTP");
+  const genericVideoConfigured = Boolean(genericVideoRuntime.configPath || genericVideoRuntime.endpoint);
+  const genericVideoHealth = {
+    configured: genericVideoConfigured,
+    defaultModel: genericVideoRuntime.model,
+    reachable: Boolean(genericVideoRuntime.endpoint),
+    modelAvailable: Boolean(genericVideoRuntime.model),
+    status: genericVideoRuntime.endpoint ? 200 : 0
+  };
   return {
     ...Object.fromEntries(entries),
     Jimeng: {
@@ -238,12 +316,12 @@ async function healthByProvider(clients, config) {
       modelAvailable: config.jimeng.enabled,
       status: 0
     },
+    ...shotVideoProviders,
     VideoHTTP: {
-      configured: videoGenerationConfigured(),
-      defaultModel: videoHttpModel(),
-      reachable: videoGenerationConfigured(),
-      modelAvailable: Boolean(videoHttpModel()),
-      status: videoGenerationConfigured() ? 200 : 0
+      ...genericVideoHealth,
+      defaultModel: defaultShotVideo.provider === "VideoHTTP"
+        ? defaultShotVideo.model || genericVideoRuntime.model
+        : videoHttpModel()
     }
   };
 }

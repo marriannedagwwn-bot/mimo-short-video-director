@@ -1,0 +1,183 @@
+export const KLING_VIDEO_MODELS = Object.freeze([
+  "kling-v3",
+  "kling-v2-1"
+]);
+
+export const SEEDANCE_VIDEO_MODELS = Object.freeze([
+  "doubao-seedance-2-0-260128",
+  "doubao-seedance-2-0-fast-260128",
+  "doubao-seedance-2-0-mini-260615"
+]);
+
+const SHOT_VIDEO_PROVIDERS = Object.freeze(["Kling", "Seedance"]);
+
+export function normalizeShotVideoProvider(value = "") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["kling", "klingai", "kuaishou"].includes(normalized)) return "Kling";
+  if (["seedance", "volcengine", "ark", "modelark", "dreamina"].includes(normalized)) return "Seedance";
+  if (["videohttp", "video_http", "generic", "custom"].includes(normalized)) return "VideoHTTP";
+  return "";
+}
+
+export function inferShotVideoProvider({ model = "", preset = "" } = {}) {
+  const modelName = String(model || "").trim();
+  const presetName = String(preset || "").trim().toLowerCase();
+  if (/^kling(?:-|$)/iu.test(modelName) || /kling/u.test(presetName)) return "Kling";
+  if (/^(?:doubao|dreamina)-seedance-/iu.test(modelName) || /(?:seedance|modelark|dreamina)/u.test(presetName)) return "Seedance";
+  return "";
+}
+
+export function shotVideoDefaultSetting(env = process.env) {
+  const explicitProvider = normalizeShotVideoProvider(env.SHOT_VIDEO_PROVIDER);
+  const legacyModel = clean(env.VIDEO_HTTP_VIDEO_MODEL || env.VIDEO_HTTP_MODEL);
+  if ((!explicitProvider || explicitProvider === "VideoHTTP") && !legacyModel && clean(env.VIDEO_HTTP_CONFIG)) {
+    return {
+      provider: "VideoHTTP",
+      model: ""
+    };
+  }
+  const inferredProvider = inferShotVideoProvider({
+    model: legacyModel,
+    preset: env.VIDEO_HTTP_PRESET
+  });
+  const provider = explicitProvider && explicitProvider !== "VideoHTTP"
+    ? explicitProvider
+    : inferredProvider || (hasSeedanceSpecificConfig(env) ? "Seedance" : "Kling");
+  const runtime = shotVideoRuntimeConfig(provider, env);
+  return {
+    provider,
+    model: runtime.model
+  };
+}
+
+export function resolveShotVideoSetting(input = {}, env = process.env) {
+  const defaults = shotVideoDefaultSetting(env);
+  const model = clean(input.model);
+  const requestedProvider = normalizeShotVideoProvider(input.provider);
+  const inferredProvider = inferShotVideoProvider({
+    model,
+    preset: input.preset
+  });
+  const provider = requestedProvider === "VideoHTTP"
+    ? inferredProvider || "VideoHTTP"
+    : requestedProvider || inferredProvider || defaults.provider;
+  const runtime = shotVideoRuntimeConfig(provider, env, model);
+  return {
+    provider,
+    model: model || runtime.model || defaults.model
+  };
+}
+
+export function shotVideoRuntimeConfig(provider, env = process.env, requestedModel = "") {
+  const normalized = normalizeShotVideoProvider(provider);
+  if (normalized === "Seedance") {
+    const model = clean(requestedModel || env.SEEDANCE_VIDEO_MODEL) || SEEDANCE_VIDEO_MODELS[0];
+    return {
+      provider: "Seedance",
+      configPath: clean(env.SEEDANCE_VIDEO_CONFIG),
+      endpoint: clean(env.SEEDANCE_VIDEO_ENDPOINT || env.SEEDANCE_BASE_URL || env.JIMENG_BASE_URL),
+      model,
+      apiKey: clean(env.SEEDANCE_API_KEY || env.JIMENG_API_KEY),
+      providerPreset: clean(env.SEEDANCE_VIDEO_PRESET) || "modelark_content_generation",
+      timeoutMs: clean(env.SEEDANCE_VIDEO_TIMEOUT_MS),
+      pollIntervalMs: clean(env.SEEDANCE_VIDEO_POLL_INTERVAL_MS),
+      pollTimeoutMs: clean(env.SEEDANCE_VIDEO_POLL_TIMEOUT_MS),
+      resolution: clean(env.SEEDANCE_VIDEO_RESOLUTION) || "720p",
+      duration: clean(env.SEEDANCE_VIDEO_DURATION),
+      ratio: clean(env.SEEDANCE_VIDEO_ASPECT_RATIO),
+      generateAudio: booleanEnv(env.SEEDANCE_GENERATE_AUDIO, true),
+      watermark: booleanEnv(env.SEEDANCE_WATERMARK, false),
+      returnLastFrame: booleanEnv(env.SEEDANCE_RETURN_LAST_FRAME, false),
+      serviceTier: clean(env.SEEDANCE_SERVICE_TIER),
+      executionExpiresAfter: clean(env.SEEDANCE_EXECUTION_EXPIRES_AFTER)
+    };
+  }
+  if (normalized === "Kling") {
+    const model = clean(requestedModel || env.KLING_VIDEO_MODEL || env.VIDEO_HTTP_VIDEO_MODEL || env.VIDEO_HTTP_MODEL) || KLING_VIDEO_MODELS[0];
+    const isV3 = model === "kling-v3";
+    return {
+      provider: "Kling",
+      configPath: isV3
+        ? clean(env.KLING_V3_CONFIG || env.KLING_VIDEO_CONFIG)
+        : clean(env.KLING_VIDEO_CONFIG || env.VIDEO_HTTP_CONFIG),
+      endpoint: isV3
+        ? clean(env.KLING_V3_ENDPOINT || env.KLING_VIDEO_ENDPOINT) || "https://api-singapore.klingai.com/image-to-video/kling-3.0"
+        : clean(env.KLING_VIDEO_ENDPOINT || env.VIDEO_HTTP_VIDEO_ENDPOINT || env.VIDEO_HTTP_ENDPOINT),
+      model,
+      apiKey: isV3
+        ? clean(env.KLING_V3_API_KEY || env.KLING_API_KEY)
+        : clean(env.KLING_API_KEY || env.VIDEO_HTTP_API_KEY),
+      providerPreset: isV3
+        ? clean(env.KLING_V3_PRESET || env.KLING_VIDEO_PRESET) || "kling_3_0_image_to_video"
+        : clean(env.KLING_VIDEO_PRESET || env.VIDEO_HTTP_PRESET) || "kling_image_to_video",
+      pollEndpointTemplate: isV3
+        ? clean(env.KLING_V3_POLL_ENDPOINT_TEMPLATE || env.KLING_VIDEO_POLL_ENDPOINT_TEMPLATE)
+        : clean(env.KLING_VIDEO_POLL_ENDPOINT_TEMPLATE || env.VIDEO_HTTP_POLL_ENDPOINT_TEMPLATE),
+      timeoutMs: clean(env.KLING_VIDEO_TIMEOUT_MS || env.VIDEO_HTTP_TIMEOUT_MS),
+      pollIntervalMs: clean(env.KLING_VIDEO_POLL_INTERVAL_MS || env.VIDEO_HTTP_POLL_INTERVAL_MS),
+      pollTimeoutMs: clean(env.KLING_VIDEO_POLL_TIMEOUT_MS || env.VIDEO_HTTP_POLL_TIMEOUT_MS),
+      duration: clean(env.KLING_VIDEO_DURATION || env.VIDEO_HTTP_VIDEO_DURATION),
+      mode: clean(env.KLING_VIDEO_MODE || env.VIDEO_HTTP_VIDEO_MODE) || "pro",
+      aspectRatio: clean(env.KLING_VIDEO_ASPECT_RATIO || env.VIDEO_HTTP_VIDEO_ASPECT_RATIO),
+      sound: clean(env.KLING_VIDEO_SOUND || env.VIDEO_HTTP_VIDEO_SOUND),
+      audio: isV3 ? clean(env.KLING_V3_AUDIO || env.KLING_VIDEO_AUDIO) || "native" : "",
+      resolution: clean(env.KLING_VIDEO_RESOLUTION) || "720p",
+      multiShot: booleanEnv(env.KLING_VIDEO_MULTI_SHOT, false),
+      cfgScale: clean(env.KLING_CFG_SCALE || env.VIDEO_HTTP_CFG_SCALE),
+      promptMaxChars: clean(env.KLING_PROMPT_MAX_CHARS || env.VIDEO_HTTP_PROMPT_MAX_CHARS),
+      negativePromptMaxChars: clean(env.KLING_NEGATIVE_PROMPT_MAX_CHARS || env.VIDEO_HTTP_NEGATIVE_PROMPT_MAX_CHARS)
+    };
+  }
+  return {
+    provider: "VideoHTTP",
+    configPath: clean(env.VIDEO_HTTP_CONFIG),
+    endpoint: clean(env.VIDEO_HTTP_VIDEO_ENDPOINT || env.VIDEO_HTTP_ENDPOINT),
+    model: clean(env.VIDEO_HTTP_VIDEO_MODEL || env.VIDEO_HTTP_MODEL),
+    apiKey: clean(env.VIDEO_HTTP_API_KEY),
+    providerPreset: clean(env.VIDEO_HTTP_PRESET),
+    timeoutMs: clean(env.VIDEO_HTTP_TIMEOUT_MS),
+    pollIntervalMs: clean(env.VIDEO_HTTP_POLL_INTERVAL_MS),
+    pollTimeoutMs: clean(env.VIDEO_HTTP_POLL_TIMEOUT_MS)
+  };
+}
+
+export function shotVideoProviderCatalog(env = process.env) {
+  return Object.fromEntries(SHOT_VIDEO_PROVIDERS.map((provider) => {
+    const runtime = shotVideoRuntimeConfig(provider, env);
+    const modelIds = provider === "Kling" ? KLING_VIDEO_MODELS : SEEDANCE_VIDEO_MODELS;
+    const directConfigured = Boolean(runtime.endpoint && runtime.apiKey && runtime.model);
+    const configured = Boolean(runtime.configPath || directConfigured);
+    return [provider, {
+      configured,
+      defaultModel: runtime.model,
+      modelIds: [...modelIds],
+      reachable: directConfigured,
+      modelAvailable: modelIds.includes(runtime.model) || isShotVideoModelAllowed(provider, runtime.model),
+      status: directConfigured ? 200 : 0
+    }];
+  }));
+}
+
+export function isShotVideoModelAllowed(provider, model) {
+  const normalized = normalizeShotVideoProvider(provider);
+  const modelName = clean(model);
+  if (normalized === "Kling") return /^kling-v(?:2-1|3)$/iu.test(modelName);
+  if (normalized === "Seedance") return /^doubao-seedance-2-0(?:-(?:fast|mini))?-\d{6}$/iu.test(modelName);
+  return normalized === "VideoHTTP" && Boolean(modelName);
+}
+
+function hasSeedanceSpecificConfig(env = process.env) {
+  return Boolean(env.SEEDANCE_VIDEO_ENDPOINT || env.SEEDANCE_BASE_URL || env.SEEDANCE_VIDEO_CONFIG || env.SEEDANCE_VIDEO_MODEL);
+}
+
+function booleanEnv(value, fallback) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function clean(value) {
+  return String(value || "").trim();
+}
