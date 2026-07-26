@@ -66,6 +66,20 @@ export function getConfig() {
   const qwenRequestTimeoutMs = Math.round(clampNumber(process.env.QWEN_REQUEST_TIMEOUT_MS, 900000, 30000, 900000));
   const qwenEnableThinkingValue = process.env.QWEN_ENABLE_THINKING?.trim().toLowerCase();
   const qwenEnableThinking = qwenEnableThinkingValue === "true" ? true : qwenEnableThinkingValue === "false" ? false : false;
+  const staticFrameCompilerProvider = normalizeCompilerProvider(process.env.STATIC_FRAME_COMPILER_PROVIDER);
+  const staticFrameCompilerModel = process.env.STATIC_FRAME_COMPILER_MODEL?.trim() || "";
+  const staticFrameCompilerMaxCompletionTokens = Math.round(clampNumber(
+    process.env.STATIC_FRAME_COMPILER_MAX_COMPLETION_TOKENS,
+    4096,
+    512,
+    65536
+  ));
+  const staticFrameCompilerRequestTimeoutMs = Math.round(clampNumber(
+    process.env.STATIC_FRAME_COMPILER_TIMEOUT_MS,
+    300000,
+    30000,
+    900000
+  ));
   const jimengBaseUrl = process.env.JIMENG_BASE_URL?.trim() || "https://ark.cn-beijing.volces.com/api/v3";
   const jimengApiKey = process.env.JIMENG_API_KEY?.trim() || process.env.ARK_API_KEY?.trim() || process.env.VOLCENGINE_ARK_API_KEY?.trim() || "";
   const jimengMaxImages = Math.round(clampNumber(process.env.JIMENG_MAX_IMAGES, 6, 1, 15));
@@ -132,6 +146,13 @@ export function getConfig() {
       totalPixels: qwenTotalPixels,
       enabled: Boolean(qwenBaseUrl && (process.env.QWEN_API_KEY?.trim() || process.env.DASHSCOPE_API_KEY?.trim()))
     },
+    staticFrameCompiler: {
+      provider: staticFrameCompilerProvider,
+      model: staticFrameCompilerModel,
+      maxCompletionTokens: staticFrameCompilerMaxCompletionTokens,
+      requestTimeoutMs: staticFrameCompilerRequestTimeoutMs,
+      configured: Boolean(staticFrameCompilerProvider && staticFrameCompilerModel)
+    },
     jimeng: {
       baseUrl: jimengBaseUrl,
       apiKey: jimengApiKey,
@@ -168,4 +189,11 @@ function qwenMediaModel(value, fallback) {
 
 function isKnownQwenTextOnlyModel(model = "") {
   return /^qwen(?:\d+(?:\.\d+)?)?-max(?:-|$)/iu.test(String(model).trim());
+}
+
+function normalizeCompilerProvider(value) {
+  const provider = String(value || "").trim();
+  if (provider.toLowerCase() === "qwen") return "Qwen";
+  if (provider.toLowerCase() === "mimo") return "MiMo";
+  return provider;
 }

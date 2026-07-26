@@ -8,13 +8,24 @@ export function buildShotFrameImagePrompt(input = {}) {
   const framePrompt = frameKind === "end" ? shot.endFramePrompt : shot.startFramePrompt;
   const characterReferences = Array.isArray(input.characterReferences) ? input.characterReferences : [];
   const sceneReference = input.sceneReference || null;
-  const framePromptText = buildFramePromptText(framePrompt, characterReferences, frameLabel);
+  const referenceManifest = normalizeReferenceManifest(input.referenceManifest);
+  const frameReferenceMode = normalizeFrameReferenceMode(input.frameReferenceMode, frameKind);
+  const characterMappings = manifestCharacterMappings(referenceManifest);
+  const framePromptText = buildFramePromptText(framePrompt, characterMappings, frameLabel);
   const sceneReferenceText = buildSceneReferenceText(sceneReference);
-  const sceneContinuityText = buildSceneContinuityText(shot, characterReferences, frameKind, sceneReference);
-  const characterReferenceText = buildCharacterReferenceText(characterReferences);
-  const hasReferenceImage = characterReferences.some((item) => item.referenceImageDataUrl);
+  const sceneContinuityText = buildFrameReferenceModeText({
+    shot,
+    frameKind,
+    frameReferenceMode,
+    referenceManifest,
+    sceneReference
+  });
+  const characterReferenceText = buildCharacterReferenceText(characterReferences, characterMappings);
+  const promptBindingsText = buildPromptBindingsText(referenceManifest);
+  const hasReferenceImage = referenceManifest.providerImages.length > 0
+    || characterReferences.some((item) => item?.referenceImageDataUrl);
   const referenceNote = hasReferenceImage
-    ? "已提供角色参考图。@图一=第1张输入图片，@图二=第2张输入图片，依此类推。带 @图 的角色必须完全沿用对应输入参考图中的人物外观、服装、发型、配色、年龄感和可见身份特征，不再使用文字外观描述，不得重新设计成普通新角色。"
+    ? "参考图只承担下方绑定声明的角色或端点职责；不得交换角色、改写绑定或让一张图控制未声明的内容。"
     : "未提供角色参考图，请严格依据角色文字设定保持一致。";
   const styleText = [
     visualBible.overallStyle ? `整体风格：${visualBible.overallStyle}` : "",
@@ -26,13 +37,14 @@ export function buildShotFrameImagePrompt(input = {}) {
   const noTextRule = "画面禁止出现任何字幕、对白文字、旁白文字、中文、英文、标题、说明字、对白气泡、漫画拟声词、Logo、水印、UI 文本或边框；对白/字幕信息只用于理解人物情绪和动作，不得渲染成画面文字。";
   const staticFrameRule = [
     `${frameLabel}是静态关键帧，不是连续动作图。只画这一帧被冻结的一瞬间，不要把动作前后两个状态同时画进同一张图。`,
-    "严格锁定画幅、景别、机位、主体位置、手部/道具状态、视线方向、表情、背景层级和光线；不要自行改成其它景别或镜头角度。"
+    `${frameKind === "end" ? "只描述 EndState 的可见结果" : "只描述 StartState 的可见起点"}；不要写“准备、即将、将要、想要、试图”等无法直接画出的意图，也不要展示变化过程。`
   ].join("\n");
   const negativePromptApplication = compileShotFrameNegativePrompt(shot);
   const positiveIdentityConstraint = negativePromptApplication.positiveConstraints.join("\n");
   const prompt = [
     `生成竖屏 9:16 动画短视频分镜${frameLabel}图。`,
     referenceNote,
+    promptBindingsText,
     styleText,
     sceneReferenceText,
     characterReferenceText ? `角色参考：\n${characterReferenceText}` : "",
@@ -44,6 +56,65 @@ export function buildShotFrameImagePrompt(input = {}) {
   ].filter(Boolean).join("\n");
   if (!framePrompt) throw new Error(`${frameLabel}提示词为空，无法生成镜头图。`);
   return prompt;
+}
+
+export function buildFramePromptText(framePrompt = "", characterMappings = [], frameLabel = "首帧") {
+  const text = stripLocationOwnerAppearance(String(framePrompt || "").trim());
+  if (!text) return "";
+  if (!characterMappings.length) return `${frameLabel}画面提示词：${text}`;
+  const sanitized = sanitizeImageMappedFramePrompt(text, characterMappings);
+  return `${frameLabel}画面提示词（人物身份和外观以参考图绑定为准；以下只保留可见场景、姿态、手部、道具、视线和表情）：${sanitized}`;
+}
+
+export function buildFrameReferenceModeText(input = {}) {
+  const frameKind = input.frameKind === "end" ? "end" : "start";
+  const sceneReference = input.sceneReference || null;
+  const referenceAnchor = sceneReferenceAnchor(sceneReference);
+  if (frameKind !== "end") {
+    return [
+      "StartState：生成动作开始时已经可见的静态状态，不描述动作意图或后续过程。",
+      referenceAnchor ? `当前镜头场景锚点：${referenceAnchor}` : ""
+    ].filter(Boolean).join("\n");
+  }
+
+  const shot = input.shot || {};
+  const frameReferenceMode = normalizeFrameReferenceMode(input.frameReferenceMode, "end");
+  const referenceManifest = normalizeReferenceManifest(input.referenceManifest);
+  const startFrameToken = referenceManifest.providerImages
+    .find((item) => item?.role === "start_frame" && item?.token)?.token || "";
+  const sceneId = String(shot?.endFrame?.environment?.sceneId || shot?.sceneId || sceneReference?.sceneId || "").trim();
+  const sameSceneRule = sceneId
+    ? `场景边界：尾帧仍属于 sceneId=${sceneId}，不得切换地点或进入其它 sceneId。`
+    : "场景边界：不得切换地点；跨场景不属于当前普通镜头。";
+
+  if (frameReferenceMode === "inherit") {
+    return [
+      startFrameToken ? `${startFrameToken} 是当前镜头首帧视觉基底。` : "当前镜头首帧是尾帧的强视觉基底。",
+      "只生成 EndState 的单张静态结果；保持首帧的场景结构、机位、景别、构图和光线，只改变 EndState 明确写出的角色姿态、手部、道具、视线、表情和位置。",
+      sameSceneRule,
+      "不要展示动作过程。"
+    ].join("\n");
+  }
+  if (frameReferenceMode === "transition") {
+    return [
+      startFrameToken ? `${startFrameToken} 用于锁定人物、服装、道具、同一场景内容和视觉风格。` : "当前镜头首帧只用于锁定人物、服装、道具、同一场景内容和视觉风格。",
+      "只生成 EndState 的单张静态结果；采用 EndState 指定的新机位、构图、光线或同场景物体状态，不要求与首帧像素级一致。",
+      sameSceneRule,
+      "不要展示变化过程。"
+    ].join("\n");
+  }
+  if (frameReferenceMode === "independent") {
+    return [
+      "独立生成 EndState 的单张静态尾帧，不使用首帧作为视觉参考。",
+      "只读取 EndState 中可见的角色状态、场景、摄影机和光线；角色身份只由角色参考图或文字设定锁定。",
+      sameSceneRule,
+      "不要展示动作过程。"
+    ].join("\n");
+  }
+  return [
+    "只生成 EndState 的单张静态结果，不复述 StartState，不展示动作过程。",
+    sameSceneRule
+  ].join("\n");
 }
 
 export function compileShotFrameNegativePrompt(shot = {}) {
@@ -79,15 +150,6 @@ function uniqueNonEmpty(values = []) {
   return output;
 }
 
-function buildFramePromptText(framePrompt = "", characterReferences = [], frameLabel = "首帧") {
-  const text = stripLocationOwnerAppearance(String(framePrompt || "").trim());
-  if (!text) return "";
-  const imageReferences = characterReferences.filter((item) => item?.referenceImageDataUrl);
-  if (!imageReferences.length) return `${frameLabel}画面提示词：${text}`;
-  const sanitized = sanitizeImageMappedFramePrompt(text, imageReferences);
-  return `${frameLabel}画面提示词（人物外观、服装、发型、年龄感和身份特征以 @图 为准；以下只保留场景、动作、道具和情绪）：${sanitized}`;
-}
-
 function buildSceneReferenceText(sceneReference = null) {
   if (!sceneReference) return "";
   const lines = [
@@ -98,19 +160,6 @@ function buildSceneReferenceText(sceneReference = null) {
   return lines.join("\n");
 }
 
-function buildSceneContinuityText(shot = {}, characterReferences = [], frameKind = "start", sceneReference = null) {
-  const referenceAnchor = sceneReferenceAnchor(sceneReference);
-  if (frameKind !== "end") return referenceAnchor ? `当前镜头场景锚点：${referenceAnchor}` : "";
-  const anchor = referenceAnchor || extractSceneAnchor(shot.startFramePrompt, characterReferences);
-  const continuousCamera = shot?.motion?.cameraMove?.mode === "continuous";
-  const baseRule = continuousCamera
-    ? "同镜头连续性锁定：尾帧必须保持同一地点、同一室内/户外属性、同一角色、道具和场景逻辑；摄影机只沿 motion.cameraMove 声明的连续路径到达尾帧机位，严格采用尾帧指定的景别、角度和构图，不得跳切或重新设计环境。"
-    : "同镜头连续性锁定：尾帧必须与首帧保持同一地点、同一室内/户外属性、同一背景层级、同一景别、同一机位方向和同一光线；只改变人物动作、表情、手部和道具状态，不要重新设计环境。";
-  const guard = sceneTransitionGuard(anchor);
-  if (!anchor) return `${baseRule}\n${guard}`;
-  return `${baseRule}\n首帧场景锚点（只用于继承场景，不要画首帧动作）：${anchor}\n${guard}`;
-}
-
 function sceneReferenceAnchor(sceneReference = null) {
   if (!sceneReference) return "";
   return uniqueNonEmpty([
@@ -119,48 +168,20 @@ function sceneReferenceAnchor(sceneReference = null) {
   ]).join("，").slice(0, 220);
 }
 
-function extractSceneAnchor(framePrompt = "", characterReferences = []) {
-  let text = stripLocationOwnerAppearance(String(framePrompt || "").trim());
-  const imageReferences = characterReferences.filter((item) => item?.referenceImageDataUrl);
-  if (imageReferences.length) text = sanitizeImageMappedFramePrompt(text, imageReferences);
-  const clauses = text
-    .split(/([。；;])/u)
-    .flatMap((part) => String(part || "").split(/[，,]/u))
-    .map((item) => item.replace(/[。；;,，]+$/gu, "").trim())
-    .filter(Boolean);
-  const sceneClauses = clauses.filter(isSceneClause);
-  const anchor = uniqueNonEmpty(sceneClauses).slice(0, 5).join("，");
-  if (anchor) return anchor.slice(0, 180);
-  return clauses.slice(0, 2).join("，").slice(0, 120);
-}
-
-function isSceneClause(value = "") {
-  return /(地点|时间|天气|背景|光线|阳光|晨光|夕阳|阴天|雨|雪|雾|夜晚|清晨|黄昏|室内|室外|户外|屋内|屋外|院子|小院|院落|庭院|村庄|石板路|路边|村口|街道|摊位|公交|车站|山洞|梯田|草地|草堆|田地|农田|森林|树林|绿植|树|木质|栅栏|围栏|院墙|家|客厅|房间|卧室|厨房|木工房|门口|门前|窗户|走廊|玄关|中景|近景|远景|特写|平视|俯视|仰视|机位|景别|镜头)/u.test(String(value || ""));
-}
-
-function sceneTransitionGuard(anchor = "") {
-  const text = String(anchor || "");
-  const outdoor = /(室外|户外|院子|小院|院落|庭院|村庄|石板路|路边|村口|街道|摊位|车站|山洞|梯田|草地|草堆|田地|农田|森林|树林|绿植|树|栅栏|围栏|院墙)/u.test(text);
-  const indoor = /(室内|屋内|客厅|房间|卧室|厨房|木工房|走廊|玄关|窗户|门内)/u.test(text);
-  if (outdoor && !indoor) return "禁止切换到室内、屋内、玄关、客厅、厨房、走廊、门内或窗边等新场景。";
-  if (indoor && !outdoor) return "禁止切换到室外、院子、街道、山野、天空或其它户外新场景。";
-  return "禁止从室外切到室内，或从室内切到室外；禁止更换地点。";
-}
-
-function sanitizeImageMappedFramePrompt(framePrompt = "", imageReferences = []) {
+function sanitizeImageMappedFramePrompt(framePrompt = "", characterMappings = []) {
   let text = String(framePrompt || "").trim();
-  imageReferences.forEach((item, index) => {
+  characterMappings.forEach((item) => {
     const name = String(item.characterName || "").trim();
-    if (!name) return;
-    const imageLabel = `@图${toChineseNumber(index + 1)}`;
+    const token = String(item.token || "").trim();
+    if (!name || !token) return;
     const namePattern = new RegExp(`${escapeRegExp(name)}(?:（[^）]*）)?`, "gu");
     text = text.replace(namePattern, (match, offset, fullText) => {
       const after = suffixAfterOptionalParenthetical(fullText, offset + match.length);
       if (isLocationOwnerSuffix(after)) return String(name);
-      return `${name}（${imageLabel}）`;
+      return `${name}（${token}）`;
     });
   });
-  text = stripMappedCharacterAppearancePrefix(text, imageReferences);
+  text = stripMappedCharacterAppearancePrefix(text, characterMappings);
   return removeAppearanceClauses(text);
 }
 
@@ -181,12 +202,13 @@ function removeAppearanceClauses(text = "") {
   return cleaned || text;
 }
 
-function stripMappedCharacterAppearancePrefix(text = "", imageReferences = []) {
+function stripMappedCharacterAppearancePrefix(text = "", characterMappings = []) {
   let output = String(text || "");
-  imageReferences.forEach((item, index) => {
+  characterMappings.forEach((item) => {
     const name = String(item.characterName || "").trim();
-    if (!name) return;
-    const mappedName = `${name}（@图${toChineseNumber(index + 1)}）`;
+    const token = String(item.token || "").trim();
+    if (!name || !token) return;
+    const mappedName = `${name}（${token}）`;
     const pattern = new RegExp(`(^|[，。；,;])([^，。；,;]{1,40})${escapeRegExp(mappedName)}`, "gu");
     output = output.replace(pattern, (match, delimiter, prefix) => {
       if (!isAppearanceClause(prefix)) return match;
@@ -217,25 +239,59 @@ function isLocationOwnerSuffix(value = "") {
   return /^(?:的)?(?:家|家里|院子|小院|院落|庭院|院|屋子|屋|房间|厨房|客厅|卧室|门口|门前|花园|菜园|农田|田地|学校|教室|办公室|店铺|店|摊位|摊|路边|村口|院墙|餐桌|房子|宅院)/u.test(String(value || ""));
 }
 
-function buildCharacterReferenceText(characterReferences = []) {
-  let imageIndex = 0;
+function buildCharacterReferenceText(characterReferences = [], characterMappings = []) {
+  const mappingByName = new Map(characterMappings.map((item) => [item.characterName, item]));
   const lines = characterReferences.map((item) => {
-    if (item?.referenceImageDataUrl) {
-      imageIndex += 1;
-      return `${item.characterName || `角色${imageIndex}`}：@图${toChineseNumber(imageIndex)}（第${imageIndex}张输入参考图）`;
+    const characterName = String(item?.characterName || "").trim();
+    const mapping = mappingByName.get(characterName);
+    if (mapping?.token) {
+      return `${characterName || "角色"}：${mapping.token}（身份与外观参考）`;
     }
     return [
-      item.characterName ? `角色：${item.characterName}` : "",
+      characterName ? `角色：${characterName}` : "",
       item.appearancePrompt ? `外观：${item.appearancePrompt}` : "",
       item.consistencyTags?.length ? `一致性标签：${item.consistencyTags.join(" / ")}` : ""
     ].filter(Boolean).join("；");
   }).filter(Boolean);
-  if (imageIndex) {
-    lines.unshift("图片映射如下，请按映射识别人物：");
-  }
   return lines.join("\n");
 }
 
-function toChineseNumber(value) {
-  return ["零", "一", "二", "三", "四", "五", "六"][Number(value)] || String(value);
+function normalizeFrameReferenceMode(mode, frameKind) {
+  if (frameKind !== "end") return "";
+  return ["inherit", "transition", "independent"].includes(mode) ? mode : "";
+}
+
+function normalizeReferenceManifest(manifest) {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    return { providerImages: [], promptBindings: [] };
+  }
+  return {
+    ...manifest,
+    providerImages: Array.isArray(manifest.providerImages) ? manifest.providerImages.filter(Boolean) : [],
+    promptBindings: Array.isArray(manifest.promptBindings) ? manifest.promptBindings.filter(Boolean) : []
+  };
+}
+
+function manifestCharacterMappings(referenceManifest) {
+  const seen = new Set();
+  return referenceManifest.providerImages.flatMap((item) => {
+    const characterName = String(item?.characterName || "").trim();
+    const token = String(item?.token || "").trim();
+    if (!characterName || !token || item?.role === "start_frame") return [];
+    const key = `${characterName}\u0000${token}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ characterName, token }];
+  });
+}
+
+function buildPromptBindingsText(referenceManifest) {
+  if (!referenceManifest.promptBindings.length) return "";
+  const lines = referenceManifest.promptBindings.flatMap((binding) => {
+    const token = String(binding?.token || "").trim();
+    if (!token) return [];
+    const description = String(binding?.description || binding?.role || "参考图").trim();
+    return [`${token}：${description}`];
+  });
+  return lines.length ? `参考图绑定（顺序与服务端上传顺序一致）：\n${lines.join("\n")}` : "";
 }

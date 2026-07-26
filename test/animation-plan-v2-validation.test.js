@@ -4,6 +4,7 @@ import {
   ensureAnimationPlanMatchesProfile,
   ensureAnimationPlanNegativePrompts,
   ensureAnimationPlanV2Contract,
+  ensureFrameReferenceModeCompatibility,
   ensureAnimationShotBatchContract,
   ensureAnimationShotPromptAliases,
   ensureAnimationShotV2Contract
@@ -17,7 +18,7 @@ function frame({ end = false } = {}) {
       screenPosition: "画面左侧三分之一",
       bodyOrientation: "身体朝向画面右侧",
       pose: end ? "双脚站稳，右手抬至眼前" : "双脚站稳，右手靠近木箱",
-      actionState: end ? "拿起玻璃幻灯片对着夕阳观察" : "打开木箱并看向玻璃幻灯片",
+      actionState: "",
       handPropState: end ? "右手夹持透明玻璃幻灯片" : "双手打开木箱，玻璃幻灯片仍在箱内",
       gaze: end ? "视线穿过玻璃幻灯片看向夕阳" : "视线落在木箱内部",
       emotionState: end ? "安心" : "期待",
@@ -187,8 +188,20 @@ test("v2 frame schema requires exact scene ids and complete character objects", 
 
 test("v2 frame fields remain static and keep process, camera motion and audio in motion", () => {
   const process = v2Shot();
-  process.startFrame.characters[0].actionState = "随后拿起玻璃幻灯片";
+  process.startFrame.characters[0].pose = "随后拿起玻璃幻灯片";
   assert.throws(() => validateShot(process), /静态帧字段.*过程、运镜、对白或音效措辞：随后/);
+
+  const actionStateProcess = v2Shot();
+  actionStateProcess.startFrame.characters[0].actionState = "随后拿起玻璃幻灯片";
+  assert.throws(() => validateShot(actionStateProcess), /actionState.*过程、运镜、对白或音效措辞：随后/);
+
+  const actionStateProgressive = v2Shot();
+  actionStateProgressive.startFrame.characters[0].actionState = "正在按下按钮";
+  assert.throws(() => validateShot(actionStateProgressive), /actionState.*过程、运镜、对白或音效措辞：正在/);
+
+  const actionStateIntent = v2Shot();
+  actionStateIntent.startFrame.characters[0].actionState = "准备按按钮";
+  assert.throws(() => validateShot(actionStateIntent), /actionState.*无法直接画出的意图措辞：准备/);
 
   const audio = v2Shot();
   audio.endFrame.environment.atmosphere = "室内响起木箱音效";
@@ -197,6 +210,95 @@ test("v2 frame fields remain static and keep process, camera motion and audio in
   const frozenContact = v2Shot();
   frozenContact.startFrame.characters[0].actionState = "右手刚触到木箱搭扣";
   assert.equal(validateShot(frozenContact), frozenContact);
+
+  for (const intent of ["准备", "即将", "将要", "想要", "试图"]) {
+    const invisibleIntent = v2Shot();
+    invisibleIntent.startFrame.characters[0].pose = `角色${intent}拿起玻璃幻灯片`;
+    assert.throws(() => validateShot(invisibleIntent), new RegExp(`静态帧字段.*无法直接画出的意图措辞：${intent}`));
+  }
+});
+
+test("v2 actionState keeps its key and string type but may be empty", () => {
+  const empty = v2Shot();
+  empty.startFrame.characters[0].actionState = "";
+  assert.equal(validateShot(empty), empty);
+
+  const whitespace = v2Shot();
+  whitespace.endFrame.characters[0].actionState = "   ";
+  assert.equal(validateShot(whitespace), whitespace);
+
+  const wrongType = v2Shot();
+  wrongType.startFrame.characters[0].actionState = null;
+  assert.throws(() => validateShot(wrongType), /actionState 必须是字符串/);
+
+  const emptyPose = v2Shot();
+  emptyPose.startFrame.characters[0].pose = "";
+  assert.throws(() => validateShot(emptyPose), /pose 不能为空/);
+
+  const emptyHandPropState = v2Shot();
+  emptyHandPropState.startFrame.characters[0].handPropState = "";
+  assert.throws(() => validateShot(emptyHandPropState), /handPropState 不能为空/);
+});
+
+test("v2 separates visible prop and walking poses from temporal motion", () => {
+  const invisiblePropIntent = v2Shot();
+  invisiblePropIntent.startFrame.characters[0].pose = "准备打开盒子";
+  assert.throws(() => validateShot(invisiblePropIntent), /pose.*意图措辞：准备/);
+
+  const visiblePropPose = v2Shot();
+  visiblePropPose.startFrame.characters[0].pose = "半蹲在木盒旁，右手停在盒盖边缘";
+  assert.equal(validateShot(visiblePropPose), visiblePropPose);
+
+  const invisibleWalkingIntent = v2Shot();
+  invisibleWalkingIntent.startFrame.characters[0].pose = "准备走向门口";
+  assert.throws(() => validateShot(invisibleWalkingIntent), /pose.*意图措辞：准备/);
+
+  const visibleWalkingPose = v2Shot();
+  visibleWalkingPose.startFrame.characters[0].pose = "站在门前，身体朝向门口，左脚略微前伸";
+  assert.equal(validateShot(visibleWalkingPose), visibleWalkingPose);
+
+  const visibleMotion = v2Shot();
+  visibleMotion.motion.primaryAction = "打开盒盖";
+  assert.equal(validateShot(visibleMotion), visibleMotion);
+});
+
+test("frame reference modes enforce start-image stages and same-scene endpoint compatibility", () => {
+  const inheritShot = v2Shot();
+  assert.equal(ensureFrameReferenceModeCompatibility(inheritShot, "inherit"), "inherit");
+  assert.throws(
+    () => ensureFrameReferenceModeCompatibility(inheritShot, "inherit", { hasStartFrame: false }),
+    (error) => error.details?.[0]?.code === "FRAME_START_IMAGE_REQUIRED"
+  );
+  assert.equal(
+    ensureFrameReferenceModeCompatibility(inheritShot, "independent", { hasStartFrame: false }),
+    "independent"
+  );
+
+  const transitionShot = v2Shot();
+  transitionShot.endFrame.camera.composition = "角色位于画面中心，窗户留在右侧";
+  transitionShot.motion.cameraMove.mode = "continuous";
+  transitionShot.motion.cameraMove.technique = "缓慢侧移";
+  transitionShot.motion.cameraMove.path = "沿同一空间轴线向右侧移动";
+  assert.equal(ensureFrameReferenceModeCompatibility(transitionShot, "transition"), "transition");
+  assert.throws(
+    () => ensureFrameReferenceModeCompatibility(transitionShot, "inherit"),
+    (error) => error.details?.[0]?.code === "FRAME_INHERIT_INCOMPATIBLE"
+  );
+
+  const crossScene = v2Shot();
+  crossScene.endFrame.environment.sceneId = "LOC02";
+  assert.throws(
+    () => ensureFrameReferenceModeCompatibility(crossScene, "transition"),
+    (error) => error.details?.[0]?.code === "FRAME_CROSS_SCENE_NOT_ALLOWED"
+  );
+
+  const undeclaredLighting = v2Shot();
+  undeclaredLighting.endFrame.lighting.colorAndContrast = "冷蓝色高反差";
+  undeclaredLighting.motion.lightingChange = "无，保持首帧光线";
+  assert.throws(
+    () => ensureFrameReferenceModeCompatibility(undeclaredLighting, "transition"),
+    (error) => error.details?.[0]?.code === "FRAME_TRANSITION_LIGHTING_CHANGE_UNDECLARED"
+  );
 });
 
 test("v2 motion validates enums and 1-4 contiguous timing beats covering 0..100", () => {
@@ -239,6 +341,27 @@ test("emotion endpoints, locked camera core and continuous camera intent remain 
   continuousWithoutPath.motion.cameraMove.path = "";
   assert.throws(() => validateShot(continuousWithoutPath), /cameraMove.path 不能为空/);
 
+  const continuousWithoutEndpoint = v2Shot();
+  continuousWithoutEndpoint.motion.cameraMove.mode = "continuous";
+  continuousWithoutEndpoint.motion.cameraMove.technique = "平稳横移跟拍";
+  continuousWithoutEndpoint.motion.cameraMove.path = "从左向右平行移动";
+  assert.throws(
+    () => validateShot(continuousWithoutEndpoint),
+    (error) => {
+      assert.match(error.message, /EndState\.camera 必须留下.*可见差异/u);
+      assert.deepEqual(error.details, [{
+        code: "CONTINUOUS_CAMERA_ENDPOINT_MISSING",
+        path: "animationPlan.shotPlan[0].endFrame.camera",
+        reason: "连续运镜已声明，但 EndState.camera 的景别、机位、角度、观察方向、镜头质感、景深和构图与 StartState.camera 完全相同；请只重建可见的终点 camera 状态"
+      }]);
+      return true;
+    }
+  );
+
+  const continuousWithEndpoint = structuredClone(continuousWithoutEndpoint);
+  continuousWithEndpoint.endFrame.camera.composition = "角色位于右侧三分线，左侧保留行进空间";
+  assert.equal(validateShot(continuousWithEndpoint), continuousWithEndpoint);
+
   const wrongEndRef = v2Shot();
   wrongEndRef.motion.endStateRef = "lastFrame";
   assert.throws(() => validateShot(wrongEndRef), /endStateRef 必须严格等于 "endFrame"/);
@@ -252,6 +375,27 @@ test("loop shots declare a return stop condition and compatible endpoint state",
   loop.motion.emotionArc.visibleProgression = "期待短暂变化后回归期待";
   loop.motion.stopCondition = "角色、道具与镜头回到首帧起始状态后停止";
   assert.equal(validateShot(loop), loop);
+
+  const movingLoop = structuredClone(loop);
+  movingLoop.motion.cameraMove.mode = "continuous";
+  movingLoop.motion.cameraMove.technique = "环绕一周";
+  movingLoop.motion.cameraMove.path = "围绕角色完成一周闭环并回到起始机位";
+  assert.equal(validateShot(movingLoop), movingLoop);
+  assert.equal(ensureFrameReferenceModeCompatibility(movingLoop, "inherit"), "inherit");
+
+  const changedLoopLighting = structuredClone(movingLoop);
+  changedLoopLighting.endFrame.lighting.colorAndContrast = "冷蓝色高反差";
+  assert.throws(
+    () => validateShot(changedLoopLighting),
+    /循环镜头首尾 lighting 必须完全相同.*colorAndContrast/u
+  );
+
+  const changedLoopEnvironment = structuredClone(movingLoop);
+  changedLoopEnvironment.endFrame.environment.atmosphere = "雨雾加重";
+  assert.throws(
+    () => validateShot(changedLoopEnvironment),
+    /循环镜头首尾 environment 必须完全相同.*atmosphere/u
+  );
 
   const reorderedCharacters = structuredClone(loop);
   const supporting = { ...reorderedCharacters.startFrame.characters[0], name: "外婆" };

@@ -1,7 +1,9 @@
-import { ANALYSIS_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationFoundationPrompt, animationShotBatchPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { ANALYSIS_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "./mock.js";
-import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts } from "./animation-prompt-compiler.js";
-import { InputError, OutputContractError, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, getFixedCharacterIdentityAuthorizations, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
+import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
+import { ModelResponseError } from "./mimo-client.js";
+import { STATIC_FRAME_COMPILER_VERSION, compileStaticFrames } from "./static-frame-compiler.js";
+import { InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, getFixedCharacterIdentityAuthorizations, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
 import {
   ReconstructionGroundingError,
   createGroundingKey,
@@ -27,6 +29,10 @@ export class WorkflowService {
     animationModel = "mimo-v2.5-pro",
     animationMaxCompletionTokens = 12288,
     animationProvider = "MiMo",
+    staticFrameCompilerModel = "",
+    staticFrameCompilerMaxCompletionTokens = 4096,
+    staticFrameCompilerTimeoutMs = 300000,
+    staticFrameCompilerProvider = "",
     animationShotBatchSceneCount = DEFAULT_ANIMATION_BATCH_SCENE_COUNT,
     groundingKey = null
   } = {}) {
@@ -41,7 +47,11 @@ export class WorkflowService {
       storyMaxCompletionTokens,
       animationProvider,
       animationModel,
-      animationMaxCompletionTokens
+      animationMaxCompletionTokens,
+      staticFrameCompilerProvider,
+      staticFrameCompilerModel,
+      staticFrameCompilerMaxCompletionTokens,
+      staticFrameCompilerTimeoutMs
     });
     this.client = this.resolveStage("analysis").client;
     const storyStage = this.resolveStage("fullStory");
@@ -54,6 +64,12 @@ export class WorkflowService {
     this.animationModel = animationStage.model;
     this.animationMaxCompletionTokens = animationStage.maxCompletionTokens;
     this.animationProvider = animationStage.provider;
+    const staticFrameCompilerStage = this.resolveStage("staticFrameCompiler");
+    this.staticFrameCompilerClient = staticFrameCompilerStage.client;
+    this.staticFrameCompilerModel = staticFrameCompilerStage.model;
+    this.staticFrameCompilerMaxCompletionTokens = staticFrameCompilerStage.maxCompletionTokens;
+    this.staticFrameCompilerTimeoutMs = staticFrameCompilerStage.requestTimeoutMs;
+    this.staticFrameCompilerProvider = staticFrameCompilerStage.provider;
     this.animationShotBatchSceneCount = normalizeBatchSize(animationShotBatchSceneCount);
     this.groundingKey = groundingKey || createGroundingKey();
   }
@@ -80,6 +96,7 @@ export class WorkflowService {
       provider,
       model,
       maxCompletionTokens,
+      requestTimeoutMs: finiteNumber(override.requestTimeoutMs, defaults.requestTimeoutMs),
       client: provider ? this.clients[provider] || null : null
     };
   }
@@ -88,6 +105,12 @@ export class WorkflowService {
     requireObject(input, "请求");
     requireFrames(input.frames);
     let resolvedMediaMode = this.hasLiveClient ? null : "frames";
+    const retryContext = {
+      stage: "referenceAnalysis",
+      mediaMode: resolvedMediaMode,
+      videoDurationMs: Math.max(0, Math.round(Number(input.metadata?.duration) * 1000) || 0),
+      frameCount: input.frames.length
+    };
     const validate = (value) => {
       if (Object.prototype.hasOwnProperty.call(value || {}, "groundingSeal")) {
         throw new OutputContractError("referenceAnalysis.groundingSeal 由服务端附加，模型不得输出");
@@ -108,8 +131,11 @@ export class WorkflowService {
         systemPrompt: ANALYSIS_SYSTEM_PROMPT,
         frames: input.frames,
         video: input.video,
-        onResolvedMediaMode: (mode) => { resolvedMediaMode = mode; },
-        retryContext: { stage: "referenceAnalysis" },
+        onResolvedMediaMode: (mode) => {
+          resolvedMediaMode = mode;
+          retryContext.mediaMode = mode;
+        },
+        retryContext,
         validate
       });
   }
@@ -265,7 +291,329 @@ export class WorkflowService {
     }
   }
 
+  async generateAnimationShotBatch({
+    client,
+    prompt,
+    model = null,
+    maxCompletionTokens = null,
+    compilerSettings,
+    batchIndex = 0,
+    repairContext,
+    validate
+  }) {
+    const firstPolicy = ANIMATION_BATCH_ATTEMPT_POLICIES.first;
+    const retryPolicy = ANIMATION_BATCH_ATTEMPT_POLICIES.retry;
+    assertAnimationBatchAttemptPolicy(firstPolicy);
+    assertAnimationBatchAttemptPolicy(retryPolicy);
+
+    let firstOutcome;
+    try {
+      const firstResponse = await client.generateJson({ prompt, model, maxCompletionTokens });
+      const rawModelOutput = structuredClone(firstResponse);
+      firstOutcome = await this.runAnimationShotBatchAttempt({
+        client,
+        model,
+        maxCompletionTokens,
+        compilerSettings,
+        batchIndex,
+        compilerPhase: "post-generate",
+        rawModelOutput,
+        repairContext,
+        validate,
+        policy: firstPolicy
+      });
+    } catch (error) {
+      if (!isRecoverableAnimationModelOutputError(error)) throw error;
+      firstOutcome = animationBatchAttemptFailure({
+        error,
+        candidate: null,
+        phase: "generate"
+      });
+    }
+
+    if (firstOutcome.status === "success") {
+      return {
+        batch: firstOutcome.batch,
+        compilerRuns: finalizeStaticFrameCompilerRuns(firstOutcome.compilerRuns, firstOutcome.batch, true)
+      };
+    }
+    if (!firstPolicy.allowBatchRetry) throw finalAnimationBatchAttemptError(firstOutcome.error);
+
+    const retryPrompt = animationShotBatchRetryPrompt(prompt, {
+      failedCandidate: firstOutcome.candidate,
+      diagnostics: firstOutcome.diagnostics
+    });
+    let retryRawModelOutput;
+    try {
+      const retryResponse = await client.generateJson({
+        prompt: retryPrompt,
+        model,
+        maxCompletionTokens: retryTokenLimit(maxCompletionTokens)
+      });
+      retryRawModelOutput = structuredClone(retryResponse);
+    } catch (error) {
+      if (!isRecoverableAnimationModelOutputError(error)) throw error;
+      throw finalAnimationBatchAttemptError(error);
+    }
+
+    const retryOutcome = await this.runAnimationShotBatchAttempt({
+      client,
+      model,
+      maxCompletionTokens,
+      compilerSettings,
+      batchIndex,
+      compilerPhase: "second-pass",
+      rawModelOutput: retryRawModelOutput,
+      repairContext,
+      validate,
+      policy: retryPolicy
+    });
+    if (retryOutcome.status === "success") {
+      return {
+        batch: retryOutcome.batch,
+        compilerRuns: [
+          ...finalizeStaticFrameCompilerRuns(firstOutcome.compilerRuns, null, false),
+          ...finalizeStaticFrameCompilerRuns(retryOutcome.compilerRuns, retryOutcome.batch, true)
+        ]
+      };
+    }
+    throw finalAnimationBatchAttemptError(retryOutcome.error);
+  }
+
+  async runAnimationShotBatchAttempt({
+    client,
+    model,
+    maxCompletionTokens,
+    compilerSettings,
+    batchIndex,
+    compilerPhase,
+    rawModelOutput,
+    repairContext,
+    validate,
+    policy
+  }) {
+    assertAnimationBatchAttemptPolicy(policy);
+    let candidate;
+    let compilerRuns = [];
+    try {
+      const prepared = await this.prepareAnimationShotBatchCandidate({
+        rawModelOutput,
+        repairContext,
+        compilerSettings,
+        batchIndex,
+        phase: compilerPhase
+      });
+      candidate = prepared.candidate;
+      compilerRuns = prepared.compilerRuns;
+    } catch (error) {
+      if (Array.isArray(error?.staticFrameCompilerRuns)) {
+        compilerRuns = [...compilerRuns, ...error.staticFrameCompilerRuns];
+      }
+      if (!isRecoverableAnimationModelOutputError(error)) throw error;
+      return animationBatchAttemptFailure({
+        error,
+        candidate: null,
+        phase: "structural_repair_or_alias",
+        compilerRuns
+      });
+    }
+
+    const initialOutcome = await this.evaluateAnimationShotBatchCandidate({
+      client,
+      model,
+      maxCompletionTokens,
+      candidate,
+      validate,
+      policy
+    });
+    initialOutcome.compilerRuns = compilerRuns;
+    if (initialOutcome.status === "success" || !policy.allowPatch) return initialOutcome;
+    if (initialOutcome.kind === "audit_protocol") return initialOutcome;
+
+    let trustedDetail;
+    try {
+      trustedDetail = trustedAnimationPatchDetail(initialOutcome.error, candidate);
+    } catch (error) {
+      if (!isRecoverableAnimationModelOutputError(error)) throw error;
+      return animationBatchAttemptFailure({
+        error,
+        candidate,
+        phase: "patch_target",
+        diagnostics: initialOutcome.diagnostics,
+        compilerRuns
+      });
+    }
+    if (!trustedDetail) return initialOutcome;
+
+    let appliedCandidate;
+    let patchedCandidate;
+    try {
+      const patchResponse = await client.generateJson({
+        prompt: animationShotBatchPatchPrompt({
+          failedBatch: candidate,
+          path: trustedDetail.path,
+          reason: trustedDetail.reason
+        }),
+        model,
+        maxCompletionTokens: animationAuditTokenLimit(maxCompletionTokens)
+      });
+      const patch = validateAnimationShotBatchPatchResponse(patchResponse, trustedDetail.path);
+      appliedCandidate = applyAnimationShotBatchPatch(candidate, patch);
+      const preparedPatch = await this.prepareAnimationShotBatchCandidate({
+        rawModelOutput: appliedCandidate,
+        repairContext,
+        compilerSettings,
+        batchIndex,
+        phase: "post-patch"
+      });
+      patchedCandidate = preparedPatch.candidate;
+      compilerRuns = [...compilerRuns, ...preparedPatch.compilerRuns];
+    } catch (error) {
+      if (Array.isArray(error?.staticFrameCompilerRuns)) {
+        compilerRuns = [...compilerRuns, ...error.staticFrameCompilerRuns];
+      }
+      if (!isRecoverableAnimationModelOutputError(error)) throw error;
+      return animationBatchAttemptFailure({
+        error,
+        candidate: patchedCandidate || appliedCandidate || candidate,
+        phase: "patch",
+        diagnostics: initialOutcome.diagnostics,
+        compilerRuns
+      });
+    }
+
+    const patchedOutcome = await this.evaluateAnimationShotBatchCandidate({
+      client,
+      model,
+      maxCompletionTokens,
+      candidate: patchedCandidate,
+      validate,
+      policy
+    });
+    patchedOutcome.compilerRuns = compilerRuns;
+    if (patchedOutcome.status === "success") return patchedOutcome;
+    return animationBatchAttemptFailure({
+      error: patchedOutcome.error,
+      candidate: patchedOutcome.candidate,
+      phase: patchedOutcome.phase,
+      kind: patchedOutcome.kind,
+      diagnostics: initialOutcome.diagnostics,
+      compilerRuns
+    });
+  }
+
+  async prepareAnimationShotBatchCandidate({
+    rawModelOutput,
+    repairContext,
+    compilerSettings,
+    batchIndex,
+    phase
+  }) {
+    const repairedStructure = repairAnimationShotBatchStructure(rawModelOutput, repairContext);
+    if (!isPlainObject(repairedStructure) || !Array.isArray(repairedStructure.shotPlan)) {
+      throw new OutputContractError("animationShotBatch structural repair 后必须包含 shotPlan 数组");
+    }
+    const structurallyRepaired = stripAnimationShotBatchAliases(repairedStructure);
+    const compiled = await compileStaticFrames({
+      candidate: structurallyRepaired,
+      client: compilerSettings.client,
+      provider: compilerSettings.provider,
+      model: compilerSettings.model,
+      maxCompletionTokens: compilerSettings.maxCompletionTokens,
+      timeoutMs: compilerSettings.requestTimeoutMs,
+      batchIndex,
+      phase
+    });
+    try {
+      return {
+        candidate: rebuildAnimationShotBatchAliases(compiled.compiledCandidate),
+        compilerRuns: [compiled.metadata]
+      };
+    } catch (error) {
+      if (error && typeof error === "object") {
+        error.staticFrameCompilerRuns = [compiled.metadata];
+      }
+      throw error;
+    }
+  }
+
+  async evaluateAnimationShotBatchCandidate({
+    client,
+    model,
+    maxCompletionTokens,
+    candidate,
+    validate,
+    policy
+  }) {
+    let validatedBatch;
+    try {
+      validatedBatch = validate(structuredClone(candidate));
+    } catch (error) {
+      if (!isRecoverableAnimationModelOutputError(error)) throw error;
+      return animationBatchAttemptFailure({
+        error,
+        candidate,
+        phase: "validation"
+      });
+    }
+
+    const review = await this.reviewAnimationShotBatch({
+      client,
+      model,
+      maxCompletionTokens,
+      validatedBatch
+    });
+    if (review.status === "pass") return animationBatchAttemptSuccess(validatedBatch);
+    return animationBatchAttemptFailure({
+      error: review.error,
+      candidate,
+      phase: review.status === "protocol_failure" ? "action_state_review_protocol" : "action_state_review",
+      kind: review.status === "protocol_failure" ? "audit_protocol" : "semantic"
+    });
+  }
+
+  async reviewAnimationShotBatch({ client, model, maxCompletionTokens, validatedBatch }) {
+    const auditEntries = collectAnimationActionStateAuditEntries(validatedBatch);
+    if (!auditEntries.length) return { status: "pass" };
+
+    const auditItems = auditEntries.map(({ id, actionState, frameKind }) => ({ id, actionState, frameKind }));
+    let auditResult;
+    try {
+      auditResult = await client.generateJson({
+        prompt: animationActionStateAuditPrompt(auditItems),
+        model,
+        maxCompletionTokens: animationAuditTokenLimit(maxCompletionTokens)
+      });
+    } catch (error) {
+      if (!isRecoverableAnimationModelOutputError(error)) throw error;
+      return {
+        status: "protocol_failure",
+        error: actionStateAuditProtocolError(error)
+      };
+    }
+
+    let failures;
+    try {
+      failures = validateAnimationActionStateAuditResult(auditResult, auditEntries);
+    } catch (error) {
+      if (!(error instanceof OutputContractError)) throw error;
+      const semanticFailures = collectTrustedAnimationActionStateAuditFailures(auditResult, auditEntries);
+      if (semanticFailures.length) return animationActionStateSemanticFailure(semanticFailures);
+      return {
+        status: "protocol_failure",
+        error: actionStateAuditProtocolError(error)
+      };
+    }
+    if (!failures.length) return { status: "pass" };
+    return animationActionStateSemanticFailure(failures);
+  }
+
   async createAnimationPlan(input) {
+    const result = await this.createAnimationPlanWithMetadata(input);
+    return result.animationPlan;
+  }
+
+  async createAnimationPlanWithMetadata(input) {
     requireObject(input, "请求");
     requireObject(input.creativeBrief, "creativeBrief");
     requireObject(input.variant, "variant");
@@ -274,8 +622,22 @@ export class WorkflowService {
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
     const settings = this.resolveStage("animationPlan", input);
-    if (!this.hasLiveClient) return validateAnimationPlanOutput(mockAnimationPlan(input), input);
+    const compilerSettings = this.resolveStage("staticFrameCompiler", input);
+    if (!this.hasLiveClient) {
+      return {
+        animationPlan: validateAnimationPlanOutput(mockAnimationPlan(input), input),
+        metadata: {
+          staticFrameCompiler: {
+            version: STATIC_FRAME_COMPILER_VERSION,
+            provider: compilerSettings.provider || "",
+            model: compilerSettings.model || "",
+            runs: []
+          }
+        }
+      };
+    }
     this.assertStageClient(settings, "首尾帧动画生产包");
+    assertStaticFrameCompilerSettings(compilerSettings);
     const promptInput = { ...input, targetProvider: settings.provider, targetModel: settings.model };
     const foundation = await this.generateValidatedJson({
       client: settings.client,
@@ -288,6 +650,7 @@ export class WorkflowService {
     const sourceScenes = Array.isArray(input.fullStory.sceneScript) ? input.fullStory.sceneScript : [];
     const sceneBatches = chunkItems(sourceScenes, this.animationShotBatchSceneCount);
     const shotPlan = [];
+    const compilerRuns = [];
     for (let batchIndex = 0; batchIndex < sceneBatches.length; batchIndex += 1) {
       const batchScenes = sceneBatches[batchIndex];
       const shotIdStartIndex = shotPlan.length + 1;
@@ -299,23 +662,39 @@ export class WorkflowService {
         shotIdStartIndex,
         previousShotContext: animationContinuityContext(shotPlan.at(-1))
       });
-      const batch = await this.generateValidatedJson({
+      const batchContext = {
+        input,
+        foundation,
+        sourceScenes: batchScenes,
+        shotIdStartIndex,
+        previousShots: shotPlan
+      };
+      const batchResult = await this.generateAnimationShotBatch({
         client: settings.client,
         prompt,
         model: settings.model,
         maxCompletionTokens: settings.maxCompletionTokens,
-        validate: (result) => validateAnimationShotBatchOutput(result, {
-          input,
-          foundation,
-          sourceScenes: batchScenes,
-          shotIdStartIndex,
-          previousShots: shotPlan
-        })
+        compilerSettings,
+        batchIndex,
+        repairContext: createAnimationShotBatchRepairContext(batchContext),
+        validate: (result) => validateAnimationShotBatchOutput(result, batchContext)
       });
-      shotPlan.push(...batch.shotPlan);
+      shotPlan.push(...batchResult.batch.shotPlan);
+      compilerRuns.push(...batchResult.compilerRuns);
     }
 
-    return validateAnimationPlanOutput(mergeAnimationPlan(foundation, shotPlan, input), input);
+    const animationPlan = validateAnimationPlanOutput(mergeAnimationPlan(foundation, shotPlan, input), input);
+    return {
+      animationPlan,
+      metadata: {
+        staticFrameCompiler: {
+          version: STATIC_FRAME_COMPILER_VERSION,
+          provider: compilerSettings.provider,
+          model: compilerSettings.model,
+          runs: compilerRuns
+        }
+      }
+    };
   }
 
   async refineCharacterReference(input) {
@@ -409,9 +788,17 @@ function normalizeStringArray(value, fallback = []) {
 }
 
 function validateAnimationPlanOutput(result, input = {}) {
-  const structured = ensureOutputContract(result, "animationPlan");
+  const primaryCharacterName = resolveExplicitAnimationPrimaryCharacterName(input, result);
+  ensureOutputContract(
+    createAnimationEmotionValidationProjection(result, primaryCharacterName),
+    "animationPlan"
+  );
+  const structured = structuredClone(result);
   const normalized = normalizeAnimationPlanPromptAliases(structured);
-  ensureAnimationPlanV2Contract(normalized, { compileShotPrompts: compileAnimationShotPrompts });
+  ensureAnimationPlanV2Contract(
+    createAnimationEmotionValidationProjection(normalized, primaryCharacterName, { compileAliases: true }),
+    { compileShotPrompts: compileAnimationShotPrompts }
+  );
   const pruned = pruneAnimationPlanNegativePrompts(normalized, input);
   return ensureAnimationPlanMatchesProfile(
     pruned,
@@ -440,20 +827,30 @@ function validateAnimationFoundationOutput(result, input = {}) {
 
 function validateAnimationShotBatchOutput(result, { input, foundation, sourceScenes, shotIdStartIndex, previousShots = [] }) {
   const sourceSceneIds = sourceScenes.map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean);
-  const rawBatch = ensureAnimationShotBatchContract(result);
+  const primaryCharacterName = resolveExplicitAnimationPrimaryCharacterName(input, foundation);
+  ensureAnimationShotBatchContract(
+    createAnimationEmotionValidationProjection(result, primaryCharacterName, {
+      path: "animationShotBatch"
+    })
+  );
+  const batch = structuredClone(result);
   if (foundation?.promptSchemaVersion === "2.0") {
-    rawBatch.shotPlan.forEach((shot, index) => {
+    batch.shotPlan.forEach((shot, index) => {
       if (hasStructuredAnimationPromptSource(shot)) return;
       throw new OutputContractError(`animationShotBatch.shotPlan[${index}] 必须输出 v2 结构化字段：startFrame、endFrame、motion`);
     });
   }
-  const normalized = normalizeAnimationShotBatchResult(rawBatch, shotIdStartIndex);
-  const batch = ensureAnimationShotBatchContract(normalized);
-  ensureAnimationPlanV2Contract(batch, {
-    path: "animationShotBatch",
-    allowVersionlessStructured: true,
-    compileShotPrompts: compileAnimationShotPrompts
-  });
+  ensureAnimationPlanV2Contract(
+    createAnimationEmotionValidationProjection(batch, primaryCharacterName, {
+      compileAliases: true,
+      path: "animationShotBatch"
+    }),
+    {
+      path: "animationShotBatch",
+      allowVersionlessStructured: true,
+      compileShotPrompts: compileAnimationShotPrompts
+    }
+  );
   const allowedSourceScenes = new Set(sourceSceneIds);
   const knownSceneIds = new Set((foundation.sceneReferencePrompts || []).map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean));
   const sceneIdBySourceScene = new Map((foundation.sceneReferencePrompts || []).flatMap((scene) => (
@@ -500,35 +897,223 @@ function validateAnimationShotBatchOutput(result, { input, foundation, sourceSce
   return { shotPlan: checked.shotPlan.slice(previousCount) };
 }
 
-function normalizeAnimationShotBatchResult(result, shotIdStartIndex) {
+function resolveExplicitAnimationPrimaryCharacterName(input = {}, foundation = {}) {
+  const primaryCharacterName = String(input?.fullStory?.characterBible?.protagonist?.name || "").trim();
+  if (!primaryCharacterName) return "";
+  const matchingReferences = (foundation?.characterReferencePrompts || []).filter(
+    (reference) => String(reference?.characterName || "").trim() === primaryCharacterName
+  );
+  return matchingReferences.length === 1 ? primaryCharacterName : "";
+}
+
+function createAnimationEmotionValidationProjection(value, primaryCharacterName, {
+  compileAliases = false,
+  path = "animationPlan"
+} = {}) {
+  const projected = structuredClone(value);
+  if (!primaryCharacterName || !isPlainObject(projected) || !Array.isArray(projected.shotPlan)) {
+    return projected;
+  }
+
+  projected.shotPlan.forEach((shot, shotIndex) => {
+    if (!isPlainObject(shot?.motion?.emotionArc)) return;
+    const startCharacters = Array.isArray(shot?.startFrame?.characters) ? shot.startFrame.characters : null;
+    const endCharacters = Array.isArray(shot?.endFrame?.characters) ? shot.endFrame.characters : null;
+    if (!startCharacters || !endCharacters) return;
+    const matchesPrimary = (character) => (
+      isPlainObject(character)
+      && String(character.name || "").trim() === primaryCharacterName
+    );
+    const startMatches = startCharacters.filter(matchesPrimary);
+    const endMatches = endCharacters.filter(matchesPrimary);
+    const motionPath = `${path}.shotPlan[${shotIndex}].motion`;
+    if (startMatches.length !== 1 || endMatches.length !== 1) {
+      throw new OutputContractError(
+        `${motionPath}.emotionArc 无法唯一匹配明确主角「${primaryCharacterName}」`
+      );
+    }
+    if (shot.motion.emotionArc.from !== startMatches[0].emotionState) {
+      throw new OutputContractError(
+        `${motionPath}.emotionArc.from 必须等于明确主角「${primaryCharacterName}」的 startFrame emotionState`
+      );
+    }
+    if (shot.motion.emotionArc.to !== endMatches[0].emotionState) {
+      throw new OutputContractError(
+        `${motionPath}.emotionArc.to 必须等于明确主角「${primaryCharacterName}」的 endFrame emotionState`
+      );
+    }
+
+    // validation.js still checks characters[0]. This private projection keeps
+    // the real candidate/order untouched while adapting only that legacy check.
+    const legacyStartCharacter = startCharacters[0];
+    let legacyEndCharacter = endCharacters.find(
+      (character) => character?.name === legacyStartCharacter?.name
+    );
+    if (
+      shot.motion.mode !== "loop"
+      && isPlainObject(legacyStartCharacter)
+      && !legacyEndCharacter
+    ) {
+      legacyEndCharacter = structuredClone(legacyStartCharacter);
+      endCharacters.push(legacyEndCharacter);
+    }
+    if (legacyStartCharacter && legacyEndCharacter) {
+      shot.motion.emotionArc.from = legacyStartCharacter.emotionState;
+      shot.motion.emotionArc.to = legacyEndCharacter.emotionState;
+      if (compileAliases && hasCompilableStructuredAnimationPromptSource(shot)) {
+        try {
+          Object.assign(shot, compileAnimationShotPrompts(shot));
+        } catch (error) {
+          if (!(error instanceof AnimationPromptCompilerError)) throw error;
+          throw new OutputContractError(error.message);
+        }
+      }
+    }
+  });
+  return projected;
+}
+
+function createAnimationShotBatchRepairContext({ input, foundation, shotIdStartIndex }) {
+  const mappedSceneIds = new Map();
+  for (const scene of foundation?.sceneReferencePrompts || []) {
+    const sceneId = String(scene?.sceneId || "").trim();
+    for (const sourceSceneIdValue of scene?.sourceSceneIds || []) {
+      const sourceSceneId = String(sourceSceneIdValue || "").trim();
+      if (!sourceSceneId || !sceneId) continue;
+      if (!mappedSceneIds.has(sourceSceneId)) mappedSceneIds.set(sourceSceneId, []);
+      mappedSceneIds.get(sourceSceneId).push(sceneId);
+    }
+  }
+  const sceneIdBySourceScene = [...mappedSceneIds.entries()]
+    .filter(([, sceneIds]) => sceneIds.length === 1)
+    .map(([sourceSceneId, sceneIds]) => Object.freeze([sourceSceneId, sceneIds[0]]));
+
+  return Object.freeze({
+    shotIdStartIndex: Number(shotIdStartIndex),
+    sceneIdBySourceScene: Object.freeze(sceneIdBySourceScene),
+    primaryCharacterName: resolveExplicitAnimationPrimaryCharacterName(input, foundation)
+  });
+}
+
+export function repairAnimationShotBatchCandidate(candidate, immutableContext = {}) {
+  return rebuildAnimationShotBatchAliases(
+    repairAnimationShotBatchStructure(candidate, immutableContext)
+  );
+}
+
+export function repairAnimationShotBatchStructure(candidate, immutableContext = {}) {
+  const repaired = structuredClone(candidate);
+  if (!isPlainObject(repaired) || !Array.isArray(repaired.shotPlan)) return repaired;
+
+  const sceneIdBySourceScene = new Map(immutableContext.sceneIdBySourceScene || []);
+  const shotIdStartIndex = Number(immutableContext.shotIdStartIndex);
+  const primaryCharacterName = String(immutableContext.primaryCharacterName || "");
   return {
-    shotPlan: result.shotPlan.map((shot, index) => canonicalizeAnimationShot(shot, shotIdStartIndex + index))
+    ...repaired,
+    shotPlan: repaired.shotPlan.map((shot, index) => {
+      if (!isPlainObject(shot)) return shot;
+      const nextShot = structuredClone(shot);
+      const shotNumber = (Number.isFinite(shotIdStartIndex) ? shotIdStartIndex : 1) + index;
+      const shotId = `A${String(shotNumber).padStart(2, "0")}`;
+      nextShot.shotId = shotId;
+
+      const mappedSceneId = sceneIdBySourceScene.get(nextShot.sourceSceneId);
+      if (mappedSceneId) {
+        nextShot.sceneId = mappedSceneId;
+        for (const frameKind of ["startFrame", "endFrame"]) {
+          if (isPlainObject(nextShot[frameKind]?.environment)) {
+            nextShot[frameKind].environment.sceneId = mappedSceneId;
+          }
+        }
+      }
+
+      if (isPlainObject(nextShot.motion)) {
+        nextShot.motion.endStateRef = "endFrame";
+        repairLockedAnimationCamera(nextShot);
+        repairAnimationEmotionArc(nextShot, primaryCharacterName);
+      }
+
+      if (isPlainObject(nextShot.negativePrompts)) {
+        nextShot.negativePrompts = rewriteShotNegativePromptEvidence(nextShot.negativePrompts, shotId);
+      }
+      return nextShot;
+    })
   };
 }
 
-function canonicalizeAnimationShot(shot = {}, shotNumber) {
-  const shotId = `A${String(shotNumber).padStart(2, "0")}`;
-  const canonical = {
-    shotId,
-    sourceSceneId: String(shot.sourceSceneId || "").trim(),
-    sceneId: String(shot.sceneId || "").trim(),
-    durationSeconds: shot.durationSeconds,
-    storyPurpose: shot.storyPurpose,
-    emotionalTarget: shot.emotionalTarget,
-    ...(hasStructuredAnimationPromptSource(shot) ? {
-      startFrame: shot.startFrame,
-      endFrame: shot.endFrame,
-      motion: shot.motion
-    } : {}),
-    ...Object.fromEntries(COMPILED_ANIMATION_SHOT_ALIAS_FIELDS
-      .filter((field) => Object.prototype.hasOwnProperty.call(shot, field))
-      .map((field) => [field, shot[field]])),
-    negativePrompts: rewriteShotNegativePromptEvidence(shot.negativePrompts, shotId),
-    acceptanceCriteria: shot.acceptanceCriteria
+export function rebuildAnimationShotBatchAliases(candidate) {
+  const rebuilt = structuredClone(candidate);
+  if (!isPlainObject(rebuilt) || !Array.isArray(rebuilt.shotPlan)) return rebuilt;
+  return {
+    ...rebuilt,
+    shotPlan: rebuilt.shotPlan.map((shot) => {
+      if (!hasCompilableStructuredAnimationPromptSource(shot)) return shot;
+      try {
+        return rebuildAnimationShotPrompts(shot);
+      } catch (error) {
+        if (!(error instanceof AnimationPromptCompilerError)) throw error;
+        throw new OutputContractError(error.message);
+      }
+    })
   };
-  return hasStructuredAnimationPromptSource(canonical)
-    ? normalizeAnimationShotPromptAliases(canonical, "2.0")
-    : canonical;
+}
+
+function stripAnimationShotBatchAliases(candidate) {
+  const stripped = structuredClone(candidate);
+  if (!isPlainObject(stripped) || !Array.isArray(stripped.shotPlan)) return stripped;
+  stripped.shotPlan.forEach((shot) => {
+    if (!isPlainObject(shot)) return;
+    for (const field of COMPILED_ANIMATION_SHOT_ALIAS_FIELDS) delete shot[field];
+  });
+  return stripped;
+}
+
+function repairLockedAnimationCamera(shot) {
+  if (shot?.motion?.cameraMove?.mode !== "locked") return;
+  const startCamera = shot?.startFrame?.camera;
+  const endFrame = shot?.endFrame;
+  if (!hasExactCompleteAnimationCamera(startCamera) || !isPlainObject(endFrame)) return;
+  const existingEndCamera = isPlainObject(endFrame.camera) ? structuredClone(endFrame.camera) : {};
+  endFrame.camera = {
+    ...existingEndCamera,
+    ...structuredClone(startCamera)
+  };
+}
+
+function hasExactCompleteAnimationCamera(camera) {
+  if (!isPlainObject(camera)) return false;
+  const fields = ["shotSize", "height", "angle", "viewDirection", "lensFeel", "depthOfField", "composition"];
+  const keys = Object.keys(camera).sort();
+  return JSON.stringify(keys) === JSON.stringify([...fields].sort())
+    && fields.every((field) => typeof camera[field] === "string" && camera[field].trim());
+}
+
+function repairAnimationEmotionArc(shot, primaryCharacterName) {
+  if (!primaryCharacterName || !isPlainObject(shot?.motion?.emotionArc)) return;
+  const startCharacters = Array.isArray(shot?.startFrame?.characters) ? shot.startFrame.characters : [];
+  const endCharacters = Array.isArray(shot?.endFrame?.characters) ? shot.endFrame.characters : [];
+  const matchesPrimary = (character) => (
+    isPlainObject(character)
+    && String(character.name || "").trim() === primaryCharacterName
+  );
+  const startMatches = startCharacters.filter(matchesPrimary);
+  const endMatches = endCharacters.filter(matchesPrimary);
+  if (startMatches.length !== 1 || endMatches.length !== 1) return;
+  const from = startMatches[0].emotionState;
+  const to = endMatches[0].emotionState;
+  if (typeof from !== "string" || !from.trim() || typeof to !== "string" || !to.trim()) return;
+  shot.motion.emotionArc.from = from;
+  shot.motion.emotionArc.to = to;
+}
+
+function hasCompilableStructuredAnimationPromptSource(shot) {
+  return isPlainObject(shot?.startFrame)
+    && isPlainObject(shot?.endFrame)
+    && isPlainObject(shot?.motion);
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function normalizeAnimationPlanPromptAliases(plan) {
@@ -553,20 +1138,27 @@ function hasStructuredAnimationPromptSource(shot) {
 }
 
 function rewriteShotNegativePromptEvidence(negativePrompts = {}, shotId) {
-  const rewriteItems = (items) => Array.isArray(items) ? items.map((item) => ({
-    ...item,
-    triggerEvidence: Array.isArray(item?.triggerEvidence) ? item.triggerEvidence.map((entry) => ({
-      ...entry,
-      sourcePath: String(entry?.sourcePath || "").replace(
-        /^animationPlan\.(?:shotPlan|shots)\[[^\]]+\](?=\.)/u,
-        `animationPlan.shotPlan[${shotId}]`
-      )
-    })) : item?.triggerEvidence
-  })) : items;
-  return {
-    image: rewriteItems(negativePrompts?.image),
-    video: rewriteItems(negativePrompts?.video)
-  };
+  const rewriteItems = (items) => Array.isArray(items) ? items.map((item) => {
+    if (!isPlainObject(item) || !Array.isArray(item.triggerEvidence)) return item;
+    return {
+      ...item,
+      triggerEvidence: item.triggerEvidence.map((entry) => {
+        if (!isPlainObject(entry) || typeof entry.sourcePath !== "string") return entry;
+        return {
+          ...entry,
+          sourcePath: entry.sourcePath.replace(
+            /^animationPlan\.(?:shotPlan|shots)\[[^\]]+\](?=\.)/u,
+            `animationPlan.shotPlan[${shotId}]`
+          )
+        };
+      })
+    };
+  }) : items;
+  const rewritten = structuredClone(negativePrompts);
+  for (const media of ["image", "video"]) {
+    if (Array.isArray(rewritten[media])) rewritten[media] = rewriteItems(rewritten[media]);
+  }
+  return rewritten;
 }
 
 function ensureShotDurationWithinFoundation(shot, index, foundation) {
@@ -681,6 +1273,12 @@ function normalizeStageDefaults(stageDefaults = null, fallback = {}) {
     variants: { provider, model: "", maxCompletionTokens: null },
     fullStory: { provider: fallback.storyProvider || provider, model: fallback.storyModel || "", maxCompletionTokens: fallback.storyMaxCompletionTokens || null },
     animationPlan: { provider: fallback.animationProvider || fallback.storyProvider || provider, model: fallback.animationModel || fallback.storyModel || "", maxCompletionTokens: fallback.animationMaxCompletionTokens || null },
+    staticFrameCompiler: {
+      provider: fallback.staticFrameCompilerProvider || "",
+      model: fallback.staticFrameCompilerModel || "",
+      maxCompletionTokens: fallback.staticFrameCompilerMaxCompletionTokens || 4096,
+      requestTimeoutMs: fallback.staticFrameCompilerTimeoutMs || 300000
+    },
     characterReference: { provider, model: "", maxCompletionTokens: null }
   };
   const merged = { ...defaults, ...(stageDefaults || {}) };
@@ -691,7 +1289,8 @@ function normalizeStageSetting(value = {}, fallback = {}) {
   return {
     provider: canonicalProvider(value.provider || fallback.provider),
     model: String(value.model || fallback.model || "").trim(),
-    maxCompletionTokens: finiteNumber(value.maxCompletionTokens, fallback.maxCompletionTokens)
+    maxCompletionTokens: finiteNumber(value.maxCompletionTokens, fallback.maxCompletionTokens),
+    requestTimeoutMs: finiteNumber(value.requestTimeoutMs, fallback.requestTimeoutMs)
   };
 }
 
@@ -742,13 +1341,489 @@ function stageLabel(stage) {
     variants: "主题变体",
     fullStory: "完整剧情",
     animationPlan: "首尾帧动画生产包",
+    staticFrameCompiler: "Static Frame Compiler",
     characterReference: "人物参考修正"
   })[stage] || stage;
 }
 
+function assertStaticFrameCompilerSettings(settings = {}) {
+  if (!settings.provider) {
+    throw new InputError("Static Frame Compiler 未配置 provider；请设置 STATIC_FRAME_COMPILER_PROVIDER");
+  }
+  if (!["Qwen", "MiMo"].includes(settings.provider)) {
+    throw new InputError(`Static Frame Compiler provider 无效：${settings.provider}`);
+  }
+  if (!settings.model) {
+    throw new InputError("Static Frame Compiler 未配置 model；请设置 STATIC_FRAME_COMPILER_MODEL");
+  }
+  if (!settings.client) {
+    throw new InputError(`Static Frame Compiler 选择了 ${settings.provider} ${settings.model}，但该 provider 客户端未配置或不可用`);
+  }
+}
+
+const ANIMATION_BATCH_ATTEMPT_POLICIES = Object.freeze({
+  first: Object.freeze({
+    name: "first",
+    attempt: 1,
+    allowPatch: true,
+    allowBatchRetry: true
+  }),
+  retry: Object.freeze({
+    name: "retry",
+    attempt: 2,
+    allowPatch: false,
+    allowBatchRetry: false
+  })
+});
+
+function assertAnimationBatchAttemptPolicy(policy) {
+  const valid = policy === ANIMATION_BATCH_ATTEMPT_POLICIES.first
+    || policy === ANIMATION_BATCH_ATTEMPT_POLICIES.retry;
+  if (!valid) throw new Error("animationShotBatch attempt policy 无效");
+  if (policy.attempt === 1 && (!policy.allowPatch || !policy.allowBatchRetry)) {
+    throw new Error("animationShotBatch first-pass policy 配置无效");
+  }
+  if (policy.attempt === 2 && (policy.allowPatch || policy.allowBatchRetry)) {
+    throw new Error("animationShotBatch second-pass policy 配置无效");
+  }
+}
+
+function animationBatchAttemptSuccess(batch, compilerRuns = []) {
+  return {
+    status: "success",
+    batch,
+    compilerRuns
+  };
+}
+
+function animationBatchAttemptFailure({
+  error,
+  candidate,
+  phase,
+  kind = "contract",
+  diagnostics = [],
+  compilerRuns = []
+}) {
+  return {
+    status: "recoverable_failure",
+    error,
+    candidate: cloneAnimationBatchDebugValue(candidate),
+    phase,
+    kind,
+    compilerRuns,
+    diagnostics: [
+      ...diagnostics,
+      animationBatchErrorDiagnostic(error, phase, candidate)
+    ]
+  };
+}
+
+function finalizeStaticFrameCompilerRuns(runs = [], finalBatch = null, runAccepted = false) {
+  return (Array.isArray(runs) ? runs : []).map((run) => ({
+    ...structuredClone(run),
+    runAccepted: Boolean(runAccepted),
+    modifications: (Array.isArray(run?.modifications) ? run.modifications : []).map((change) => ({
+      ...structuredClone(change),
+      finalAccepted: Boolean(
+        runAccepted
+        && change?.applied
+        && typeof change?.path === "string"
+        && animationBatchValueAtPath(finalBatch, change.path) === change.after
+      )
+    }))
+  }));
+}
+
+function animationBatchErrorDiagnostic(error, phase, candidate) {
+  const details = Array.isArray(error?.details)
+    ? error.details.map((detail) => ({
+        ...detail,
+        actual: detail?.path ? animationBatchValueAtPath(candidate, detail.path) : undefined
+      }))
+    : [];
+  return {
+    phase,
+    name: String(error?.name || "Error"),
+    message: String(error?.message || error || "未知错误"),
+    ...(details.length ? { details } : {})
+  };
+}
+
+function animationBatchValueAtPath(candidate, path) {
+  if (!candidate || typeof path !== "string") return undefined;
+  const relative = path.replace(/^animationShotBatch\./u, "");
+  const segments = [...relative.matchAll(/(?:^|\.)([^.[\]]+)|\[(\d+)\]/gu)]
+    .map((match) => match[1] ?? Number(match[2]));
+  let current = candidate;
+  for (const segment of segments) {
+    if (current === null || current === undefined) return undefined;
+    current = current[segment];
+  }
+  return cloneAnimationBatchDebugValue(current);
+}
+
+function cloneAnimationBatchDebugValue(value) {
+  if (value === undefined) return undefined;
+  try {
+    return structuredClone(value);
+  } catch {
+    return null;
+  }
+}
+
+function isRecoverableAnimationModelOutputError(error) {
+  return error instanceof OutputContractError
+    || (error instanceof ModelResponseError && Number(error.status) === 0);
+}
+
+function finalAnimationBatchAttemptError(error) {
+  if (error instanceof OutputContractError) {
+    return new OutputContractError(
+      `animationShotBatch second-pass 失败：${error.message}`,
+      Array.isArray(error.details) ? error.details : []
+    );
+  }
+  if (error instanceof ModelResponseError && Number(error.status) === 0) {
+    return new OutputContractError(`animationShotBatch second-pass 失败：${error.message}`);
+  }
+  return error;
+}
+
+function animationShotBatchRetryPrompt(originalPrompt, { failedCandidate, diagnostics } = {}) {
+  return `${originalPrompt}
+
+ANIMATION_SHOT_BATCH_RETRY_V1
+
+当前失败 batch：
+${JSON.stringify(failedCandidate ?? null)}
+
+错误诊断：
+${JSON.stringify(Array.isArray(diagnostics) ? diagnostics : [])}
+
+second-pass retry 约束：
+- 这是当前 animationShotBatch 唯一一次完整重试；只返回完整的当前 batch JSON，不得返回 patch。
+- 必须修复上述诊断指出的全部问题，并重新输出当前批次的全部 shotPlan。
+- 不得修改动画基础对象、已完成的前序 batch、当前 sourceSceneId 集合、批次边界或连续性上下文。
+- 不得输出当前 batch 之外的镜头，不得解释，不得输出 Markdown。`;
+}
+
+const ACTION_STATE_AUDIT_REASON_CODES = new Set([
+  "visible_state",
+  "narrative_cognition",
+  "psychological_activity",
+  "future_intent",
+  "goal_stage",
+  "ambiguous_nonvisual"
+]);
+const TRUSTED_ANIMATION_PATCH_CODES = new Set([
+  "STATIC_FRAME_REQUIRED",
+  "STATIC_FRAME_PROCESS_OR_AUDIO",
+  "STATIC_FRAME_INVISIBLE_INTENT",
+  "ACTION_STATE_NOT_VISIBLE",
+  "CONTINUOUS_CAMERA_ENDPOINT_MISSING"
+]);
+const ACTION_STATE_AUDIT_REASON_TEXT = Object.freeze({
+  narrative_cognition: "该句描述剧情认知，不能由单张静态画面直接确认",
+  psychological_activity: "该句描述心理活动或决定，不能由单张静态画面直接确认",
+  future_intent: "该句描述未来意图，不能由当前单张静态画面直接确认",
+  goal_stage: "该句描述目标或阶段推进，不属于当前静态端点",
+  ambiguous_nonvisual: "该句无法明确对应单张静态画面可直接观察的信息"
+});
+
+function collectAnimationActionStateAuditEntries(batch = {}) {
+  const entries = [];
+  const shots = Array.isArray(batch?.shotPlan) ? batch.shotPlan : [];
+  shots.forEach((shot, shotIndex) => {
+    for (const frameKind of ["startFrame", "endFrame"]) {
+      const characters = Array.isArray(shot?.[frameKind]?.characters) ? shot[frameKind].characters : [];
+      characters.forEach((character, characterIndex) => {
+        const actionState = typeof character?.actionState === "string" ? character.actionState.trim() : "";
+        if (!actionState) return;
+        entries.push({
+          id: `AS-${String(entries.length + 1).padStart(4, "0")}`,
+          actionState,
+          frameKind,
+          path: `animationShotBatch.shotPlan[${shotIndex}].${frameKind}.characters[${characterIndex}].actionState`
+        });
+      });
+    }
+  });
+  return entries;
+}
+
+function validateAnimationActionStateAuditResult(result, entries) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new OutputContractError("actionState 语义审核结果必须是对象");
+  }
+  const topLevelKeys = Object.keys(result);
+  if (topLevelKeys.length !== 1 || topLevelKeys[0] !== "results") {
+    throw new OutputContractError("actionState 语义审核结果顶层只能包含 results");
+  }
+  if (!Array.isArray(result.results)) {
+    throw new OutputContractError("actionState 语义审核 results 必须是数组");
+  }
+  if (result.results.length !== entries.length) {
+    throw new OutputContractError(`actionState 语义审核结果数量必须为 ${entries.length}`);
+  }
+
+  const entryById = new Map(entries.map((entry) => [entry.id, entry]));
+  const resultById = new Map();
+  result.results.forEach((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new OutputContractError(`actionState 语义审核 results[${index}] 必须是对象`);
+    }
+    const keys = Object.keys(item).sort();
+    if (JSON.stringify(keys) !== JSON.stringify(["id", "reasonCode", "verdict"])) {
+      throw new OutputContractError(`actionState 语义审核 results[${index}] 只能包含 id、verdict、reasonCode`);
+    }
+    const id = typeof item.id === "string" ? item.id : "";
+    if (!entryById.has(id)) throw new OutputContractError(`actionState 语义审核返回未知 id：${id || "空"}`);
+    if (resultById.has(id)) throw new OutputContractError(`actionState 语义审核 id 不能重复：${id}`);
+    if (!["pass", "fail"].includes(item.verdict)) {
+      throw new OutputContractError(`actionState 语义审核 ${id}.verdict 只允许 pass 或 fail`);
+    }
+    if (!ACTION_STATE_AUDIT_REASON_CODES.has(item.reasonCode)) {
+      throw new OutputContractError(`actionState 语义审核 ${id}.reasonCode 无效`);
+    }
+    if (item.verdict === "pass" && item.reasonCode !== "visible_state") {
+      throw new OutputContractError(`actionState 语义审核 ${id} 通过时 reasonCode 必须为 visible_state`);
+    }
+    if (item.verdict === "fail" && item.reasonCode === "visible_state") {
+      throw new OutputContractError(`actionState 语义审核 ${id} 失败时 reasonCode 不得为 visible_state`);
+    }
+    resultById.set(id, item);
+  });
+
+  return entries.flatMap((entry) => {
+    const item = resultById.get(entry.id);
+    if (!item) throw new OutputContractError(`actionState 语义审核缺少 id：${entry.id}`);
+    if (item.verdict === "pass") return [];
+    return [{
+      ...entry,
+      reasonCode: item.reasonCode
+    }];
+  });
+}
+
+function collectTrustedAnimationActionStateAuditFailures(result, entries) {
+  if (!isPlainObject(result) || !Array.isArray(result.results)) return [];
+  const entryById = new Map(entries.map((entry) => [entry.id, entry]));
+  const seen = new Set();
+  const failures = [];
+  for (const item of result.results) {
+    if (!isPlainObject(item)) continue;
+    const entry = entryById.get(item.id);
+    if (!entry || seen.has(item.id)) continue;
+    if (item.verdict !== "fail") continue;
+    if (!ACTION_STATE_AUDIT_REASON_CODES.has(item.reasonCode) || item.reasonCode === "visible_state") continue;
+    seen.add(item.id);
+    failures.push({
+      ...entry,
+      reasonCode: item.reasonCode
+    });
+  }
+  return failures;
+}
+
+function animationActionStateSemanticFailure(failures) {
+  const details = failures.map((failure) => ({
+    code: "ACTION_STATE_NOT_VISIBLE",
+    path: failure.path,
+    reason: actionStateAuditReason(failure.reasonCode)
+  }));
+  return {
+    status: "semantic_failure",
+    error: new OutputContractError(
+      failures.length === 1
+        ? `${failures[0].path} 不属于单张静态画面可直接观察的信息`
+        : `animationShotBatch 中有 ${failures.length} 个 actionState 不属于单张静态画面可直接观察的信息`,
+      details
+    )
+  };
+}
+
+function actionStateAuditReason(reasonCode) {
+  return ACTION_STATE_AUDIT_REASON_TEXT[reasonCode]
+    || ACTION_STATE_AUDIT_REASON_TEXT.ambiguous_nonvisual;
+}
+
+function actionStateAuditProtocolError(error) {
+  return new OutputContractError(`actionState 语义审核协议失败：${String(error?.message || error || "未知错误")}`);
+}
+
+function trustedAnimationPatchDetail(error, rawBatch) {
+  const details = Array.isArray(error?.details) ? error.details : [];
+  if (details.length !== 1) return null;
+  return validateTrustedAnimationPatchDetail(details[0], rawBatch);
+}
+
+function validateTrustedAnimationPatchDetail(detail, rawBatch) {
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) {
+    throw new OutputContractError("animationShotBatch 校验返回的单字段错误元数据无效");
+  }
+  const keys = Object.keys(detail).sort();
+  if (JSON.stringify(keys) !== JSON.stringify(["code", "path", "reason"])) {
+    throw new OutputContractError("animationShotBatch 校验返回的单字段错误元数据只能包含 code、path、reason");
+  }
+  if (!TRUSTED_ANIMATION_PATCH_CODES.has(detail.code)) {
+    throw new OutputContractError(`animationShotBatch 校验错误代码不允许执行单字段 patch：${String(detail.code || "空代码")}`);
+  }
+  if (typeof detail.path !== "string" || !detail.path) {
+    throw new OutputContractError("animationShotBatch 校验返回的单字段错误路径无效");
+  }
+  if (typeof detail.reason !== "string" || !detail.reason) {
+    throw new OutputContractError("animationShotBatch 校验返回的单字段错误原因无效");
+  }
+  if (detail.code === "ACTION_STATE_NOT_VISIBLE" && !detail.path.endsWith(".actionState")) {
+    throw new OutputContractError("ACTION_STATE_NOT_VISIBLE 只能定位 actionState 字段");
+  }
+  const parsed = parseAnimationShotBatchPatchPath(detail.path);
+  if (!parsed) {
+    throw new OutputContractError(`animationShotBatch 单字段 patch 路径不允许修改：${detail.path}`);
+  }
+  if (detail.code === "CONTINUOUS_CAMERA_ENDPOINT_MISSING" && parsed.valueKind !== "camera") {
+    throw new OutputContractError("CONTINUOUS_CAMERA_ENDPOINT_MISSING 只能定位完整 endFrame.camera");
+  }
+  if (parsed.valueKind === "camera" && detail.code !== "CONTINUOUS_CAMERA_ENDPOINT_MISSING") {
+    throw new OutputContractError("完整 endFrame.camera 只允许用于修复连续运镜终点");
+  }
+  resolveAnimationShotBatchPatchTarget(rawBatch, parsed, detail.path);
+  return {
+    code: detail.code,
+    path: detail.path,
+    reason: detail.reason
+  };
+}
+
+function parseAnimationShotBatchPatchPath(path) {
+  const cameraMatch = String(path || "").match(
+    /^animationShotBatch\.shotPlan\[(\d+)\]\.endFrame\.camera$/u
+  );
+  if (cameraMatch) {
+    return {
+      shotIndex: Number(cameraMatch[1]),
+      frameKind: "endFrame",
+      section: "frame",
+      field: "camera",
+      valueKind: "camera"
+    };
+  }
+
+  const characterMatch = String(path || "").match(
+    /^animationShotBatch\.shotPlan\[(\d+)\]\.(startFrame|endFrame)\.characters\[(\d+)\]\.(screenPosition|bodyOrientation|pose|actionState|handPropState|gaze|emotionState|expression)$/u
+  );
+  if (characterMatch) {
+    return {
+      shotIndex: Number(characterMatch[1]),
+      frameKind: characterMatch[2],
+      characterIndex: Number(characterMatch[3]),
+      section: "characters",
+      field: characterMatch[4],
+      valueKind: "string"
+    };
+  }
+
+  const frameMatch = String(path || "").match(
+    /^animationShotBatch\.shotPlan\[(\d+)\]\.(startFrame|endFrame)\.(timeAndWeather)$/u
+  );
+  if (frameMatch) {
+    return {
+      shotIndex: Number(frameMatch[1]),
+      frameKind: frameMatch[2],
+      section: "frame",
+      field: frameMatch[3],
+      valueKind: "string"
+    };
+  }
+
+  const sectionMatch = String(path || "").match(
+    /^animationShotBatch\.shotPlan\[(\d+)\]\.(startFrame|endFrame)\.(environment|lighting)\.(foreground|midground|background|atmosphere|source|direction|colorAndContrast)$/u
+  );
+  if (!sectionMatch) return null;
+  const section = sectionMatch[3];
+  const field = sectionMatch[4];
+  if (section === "environment" && !["foreground", "midground", "background", "atmosphere"].includes(field)) return null;
+  if (section === "lighting" && !["source", "direction", "colorAndContrast"].includes(field)) return null;
+  return {
+    shotIndex: Number(sectionMatch[1]),
+    frameKind: sectionMatch[2],
+    section,
+    field,
+    valueKind: "string"
+  };
+}
+
+function validateAnimationShotBatchPatchResponse(response, trustedPath) {
+  if (!response || typeof response !== "object" || Array.isArray(response)) {
+    throw new OutputContractError("animationShotBatch 单字段 patch 必须是对象");
+  }
+  const keys = Object.keys(response).sort();
+  if (JSON.stringify(keys) !== JSON.stringify(["path", "value"])) {
+    throw new OutputContractError("animationShotBatch 单字段 patch 只能包含 path、value");
+  }
+  if (typeof response.path !== "string" || response.path !== trustedPath) {
+    throw new OutputContractError("animationShotBatch 单字段 patch path 与服务端可信路径不一致");
+  }
+  const parsed = parseAnimationShotBatchPatchPath(trustedPath);
+  if (parsed?.valueKind === "camera") {
+    if (!response.value || typeof response.value !== "object" || Array.isArray(response.value)) {
+      throw new OutputContractError("animationShotBatch camera patch value 必须是 camera 对象");
+    }
+    const actualKeys = Object.keys(response.value).sort();
+    const expectedKeys = [...animationFrameCameraFields].sort();
+    if (JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) {
+      throw new OutputContractError(`animationShotBatch camera patch value 必须且只能包含：${animationFrameCameraFields.join("、")}`);
+    }
+    for (const field of animationFrameCameraFields) {
+      if (typeof response.value[field] !== "string" || !response.value[field].trim()) {
+        throw new OutputContractError(`animationShotBatch camera patch value.${field} 必须是非空字符串`);
+      }
+    }
+    return { path: response.path, value: structuredClone(response.value) };
+  }
+  if (typeof response.value !== "string") {
+    throw new OutputContractError("animationShotBatch 单字段 patch value 必须是字符串");
+  }
+  return { path: response.path, value: response.value };
+}
+
+function applyAnimationShotBatchPatch(rawBatch, patch) {
+  const parsed = parseAnimationShotBatchPatchPath(patch.path);
+  if (!parsed) throw new OutputContractError(`animationShotBatch 单字段 patch 路径不允许修改：${patch.path}`);
+  const next = structuredClone(rawBatch);
+  const target = resolveAnimationShotBatchPatchTarget(next, parsed, patch.path);
+  target[parsed.field] = parsed.valueKind === "camera"
+    ? structuredClone(patch.value)
+    : patch.value;
+  return next;
+}
+
+function resolveAnimationShotBatchPatchTarget(batch, parsed, path) {
+  const shot = batch?.shotPlan?.[parsed.shotIndex];
+  const frame = shot?.[parsed.frameKind];
+  let target;
+  if (parsed.section === "characters") target = frame?.characters?.[parsed.characterIndex];
+  else if (parsed.section === "frame") target = frame;
+  else target = frame?.[parsed.section];
+  const currentValue = target?.[parsed.field];
+  const validTarget = parsed.valueKind === "camera"
+    ? currentValue && typeof currentValue === "object" && !Array.isArray(currentValue)
+    : typeof currentValue === "string";
+  if (!target || typeof target !== "object" || Array.isArray(target)
+    || !Object.prototype.hasOwnProperty.call(target, parsed.field)
+    || !validTarget) {
+    throw new OutputContractError(`animationShotBatch 单字段 patch 无法定位允许的叶子：${path}`);
+  }
+  return target;
+}
+
+function animationAuditTokenLimit() {
+  return 2048;
+}
+
 function validationRetryPrompt(originalPrompt, validationError, retryContext = null, failedOutput = null) {
   if (retryContext?.stage === "referenceAnalysis") {
-    return analysisValidationRetryPrompt(originalPrompt, validationError, failedOutput);
+    return analysisValidationRetryPrompt(originalPrompt, validationError, failedOutput, retryContext);
   }
   if (retryContext?.stage === "sourceScriptReconstruction") {
     return reconstructionValidationRetryPrompt(originalPrompt, validationError, retryContext, failedOutput);
@@ -785,7 +1860,14 @@ ${creativeBriefCorrection}
 - 只输出一个完整 JSON 对象，不要 Markdown，不要解释。`;
 }
 
-function analysisValidationRetryPrompt(originalPrompt, validationError, failedOutput) {
+function analysisValidationRetryPrompt(originalPrompt, validationError, failedOutput, retryContext = {}) {
+  const videoDurationMs = Math.max(0, Math.round(Number(retryContext.videoDurationMs)) || 0);
+  const frameCount = Math.max(0, Math.round(Number(retryContext.frameCount)) || 0);
+  const evidenceModeCorrection = retryContext.mediaMode === "video"
+    ? `- 本次成功媒体请求使用原生视频：所有 observedFacts.evidenceRefs 只能写 {"source":"video","startMs":整数,"endMs":整数}，必须满足 0 <= startMs < endMs${videoDurationMs ? ` <= ${videoDurationMs}` : ""}；endMs 不得超过输入视频时长。不得保留任何 frame 或 frameNumber。`
+    : retryContext.mediaMode === "frames"
+      ? `- 本次成功媒体请求使用采样画面：所有 observedFacts.evidenceRefs 只能写 {"source":"frame","frameNumber":实际提供的正整数}，frameNumber 必须落在 1${frameCount ? `-${frameCount}` : " 到实际提供帧数"}；不得保留任何 video、startMs 或 endMs。`
+      : "- evidenceRefs 必须严格服从上方校验错误指出的本次媒体证据来源。";
   return `${originalPrompt}
 
 上一次 referenceAnalysis 已经是 JSON，但没有通过证据契约校验：
@@ -797,7 +1879,7 @@ ${JSON.stringify(failedOutput || {})}
 请返回完整 referenceAnalysis JSON，但只修正校验消息指出的 schema 或 evidence 字段：
 - observedFacts.observation 只能记录本次画面或原生视频中直接可见的单一事实。
 - 不得改名，不得替换人物、地点、道具、动作、对白或结尾，也不得把不确定内容补成事实。
-- frame evidence 必须引用实际提供的 frameNumber；video evidence 必须使用合法的 startMs/endMs。
+${evidenceModeCorrection}
 - 不要为了避开校验而改写素材事实；无法确认的内容移入 uncertainties。
 - 只输出一个完整 JSON 对象，不要 Markdown，不要解释。`;
 }

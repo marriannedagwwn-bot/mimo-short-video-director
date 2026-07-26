@@ -1,7 +1,15 @@
 import { syncShotCharacterReference } from "./character-reference-sync.js";
 import { compileShotNegativePrompt } from "./negative-prompts.js";
 import { buildShotFrameImagePrompt, compileShotFrameNegativePrompt } from "./shot-frame-prompt.js";
-import { shotRelatedCharacterReferences, uploadedReferenceImages } from "./shot-reference-images.js";
+import {
+  buildFrameReferenceManifest,
+  canReusePreviousEndFrameAsStart,
+  resolveFrameReferenceMode,
+  validateFrameReferenceMode,
+  shotRelatedCharacterReferences
+} from "./shot-reference-images.js";
+import { computeDependencyHash, computePromptHash } from "./frame-dependency.js";
+import { buildShotFrameMultiImagePrompt } from "./shot-frame-multi-image-prompt.js";
 
 const state = {
   file: null,
@@ -13,6 +21,7 @@ const state = {
   selectedVariantId: null,
   fullStories: {},
   animationPlans: {},
+  animationPlanMetadata: {},
   shotVideoResults: {},
   shotFrameResults: {},
   characterReferenceStatuses: {},
@@ -30,20 +39,26 @@ const state = {
     running: false,
     shotId: "",
     frameKind: "start",
-    count: 4
+    count: 4,
+    frameReferenceMode: "",
+    referenceManifest: null,
+    previewRevision: 0
   },
   shotVideoGeneration: {
     open: false,
     running: false,
     shotId: "",
-    count: 1
+    count: 1,
+    validationRevision: 0
   },
   mode: "demo",
   mediaMode: "auto",
   storyModel: "mimo-v2.5-pro",
   animationModel: "mimo-v2.5-pro",
+  staticFrameCompilerModel: "",
   storyProvider: "MiMo",
   animationProvider: "MiMo",
+  staticFrameCompilerProvider: "",
   analysisProvider: "MiMo",
   analysisModel: "mimo-v2.5",
   modelStages: {},
@@ -91,6 +106,9 @@ const elements = {
   shotFrameReferenceList: $("#shotFrameReferenceList"),
   shotFrameImageKind: $("#shotFrameImageKind"),
   shotFrameImageCount: $("#shotFrameImageCount"),
+  shotFrameReferenceModeField: $("#shotFrameReferenceModeField"),
+  shotFrameReferenceMode: $("#shotFrameReferenceMode"),
+  shotFrameReferenceModeHint: $("#shotFrameReferenceModeHint"),
   shotFrameImagePromptPreview: $("#shotFrameImagePromptPreview"), shotFrameImageStatus: $("#shotFrameImageStatus"),
   confirmGenerateShotFrameImage: $("#confirmGenerateShotFrameImage"), confirmGenerateShotFrameImageLabel: $("#confirmGenerateShotFrameImageLabel"),
   shotFrameImageResults: $("#shotFrameImageResults"),
@@ -111,6 +129,7 @@ const MODEL_STAGE_DEFS = [
   { key: "variants", label: "主题变体", hint: "新故事方向" },
   { key: "fullStory", label: "完整剧情", hint: "可拍分场剧本" },
   { key: "animationPlan", label: "动画生产包", hint: "首尾帧、镜头与视频提示词" },
+  { key: "staticFrameCompiler", label: "静态帧编译器", hint: "叙事语言到静态视觉语言的语义合法化" },
   { key: "characterReference", label: "人物图修正", hint: "根据上传图片修正角色描述" },
   { key: "imageGeneration", label: "图片生成", hint: "角色参考图、镜头首尾帧图片", providerLocked: true, optional: true },
   { key: "shotVideo", label: "首尾帧视频", hint: "可灵单镜头首尾帧视频候选", providerLocked: true, optional: true }
@@ -157,7 +176,7 @@ async function init() {
     const connected = health.mode !== "demo" && modelStagesReady();
     elements.modelState.className = `model-state ${connected ? "ready" : health.mode !== "demo" ? "" : "demo"}`;
     elements.modelState.lastElementChild.textContent = connected
-      ? `${modelDisplayLabel(state.analysisProvider, state.analysisModel)} 解析 · 剧情 ${modelDisplayLabel(state.storyProvider, state.storyModel)} · 动画 ${modelDisplayLabel(state.animationProvider, state.animationModel)}`
+      ? modelStateSummary()
       : health.mode !== "demo"
         ? "模型已配置，但部分阶段不可用"
         : "演示模式 · 配置模型后启用真实分析";
@@ -216,7 +235,14 @@ function bindEvents() {
     const selectButton = event.target.closest("[data-select-modal-shot-frame]");
     if (selectButton) return useModalShotFrameCandidate(selectButton.dataset.selectModalShotFrame, selectButton.dataset.frameKind, selectButton.dataset.candidateIndex);
   });
-  elements.shotFrameImageKind.addEventListener("change", () => updateShotFrameImageGeneratorPreview());
+  elements.shotFrameImageKind.addEventListener("change", () => {
+    elements.confirmGenerateShotFrameImage.disabled = true;
+    updateShotFrameImageGeneratorPreview({ resetMode: true });
+  });
+  elements.shotFrameReferenceMode.addEventListener("change", () => {
+    elements.confirmGenerateShotFrameImage.disabled = true;
+    updateShotFrameImageGeneratorPreview();
+  });
   elements.confirmGenerateShotFrameImage.addEventListener("click", confirmGenerateShotFrameImage);
   elements.closeShotVideoModal.addEventListener("click", closeShotVideoGenerator);
   elements.shotVideoModal.addEventListener("click", (event) => {
@@ -269,6 +295,8 @@ function bindEvents() {
     if (shotFramePreview) return openShotFramePreview(shotFramePreview.dataset.previewShotFrame, shotFramePreview.dataset.frameKind, shotFramePreview.dataset.candidateIndex);
     const frameButton = event.target.closest("[data-open-shot-frame-generator]");
     if (frameButton) return openShotFrameImageGenerator(frameButton.dataset.openShotFrameGenerator);
+    const reuseFrameButton = event.target.closest("[data-reuse-previous-tail]");
+    if (reuseFrameButton) return reusePreviousTailAsStart(reuseFrameButton.dataset.reusePreviousTail);
     const button = event.target.closest("[data-generate-shot-video]");
     if (button) return openShotVideoGenerator(button.dataset.generateShotVideo);
     if (event.target.closest("[data-character-reference-input]")) return;
@@ -416,6 +444,7 @@ async function runWorkflow() {
   state.output = {};
   state.fullStories = {};
   state.animationPlans = {};
+  state.animationPlanMetadata = {};
   state.shotVideoResults = {};
   state.shotFrameResults = {};
   state.characterReferenceStatuses = {};
@@ -878,17 +907,22 @@ async function generateAnimationPlan({ force = false } = {}) {
   setAnimationRunning(true);
   setAnimationStatus(`正在调用 ${animationModelLabel()} 生成首尾帧动画生产包…`, "active");
   try {
-    const animationPlan = await api("/api/animation-plan", {
+    const result = await api("/api/animation-plan", {
       creativeBrief: state.output.creativeBrief,
       visualGuardrails: state.output.visualGuardrails,
       variant,
       fullStory,
-      creatorProfile: profile()
+      creatorProfile: profile(),
+      includeCompilerMetadata: true
     });
+    const { animationPlan, metadata } = normalizeAnimationPlanResponse(result);
     state.animationPlans[variant.id] = animationPlan;
+    if (metadata?.staticFrameCompiler) state.animationPlanMetadata[variant.id] = metadata;
+    else delete state.animationPlanMetadata[variant.id];
     state.output.animationPlans = state.animationPlans;
+    state.output.animationPlanMetadata = state.animationPlanMetadata;
     state.output.animationPlan = animationPlan;
-    renderAnimationPlan(animationPlan);
+    renderAnimationPlan(animationPlan, metadata);
     setAnimationStatus(`动画生产包已生成 · ${animationModelLabel()}`, "ready");
     updateStoryExportActions();
     elements.export.classList.remove("hidden");
@@ -900,7 +934,31 @@ async function generateAnimationPlan({ force = false } = {}) {
   }
 }
 
-function renderAnimationPlan(data) {
+function normalizeAnimationPlanResponse(result) {
+  if (
+    result
+    && typeof result === "object"
+    && !Array.isArray(result)
+    && result.animationPlan
+    && typeof result.animationPlan === "object"
+    && !Array.isArray(result.animationPlan)
+  ) {
+    return {
+      animationPlan: result.animationPlan,
+      metadata: result.metadata && typeof result.metadata === "object" && !Array.isArray(result.metadata)
+        ? result.metadata
+        : null
+    };
+  }
+  return { animationPlan: result, metadata: null };
+}
+
+function selectedAnimationPlanMetadata() {
+  const variant = selectedVariant();
+  return variant ? state.animationPlanMetadata[variant.id] || null : null;
+}
+
+function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
   const strategy = data.productionStrategy || {};
   const visual = data.visualBible || {};
   elements.animationPlan.innerHTML = `${resultHeader("ANIMATION PLAN", data.title || "首尾帧动画生产包", strategy.format || "first_last_frame_video")}
@@ -913,6 +971,7 @@ function renderAnimationPlan(data) {
       ${cell("色彩", (visual.colorPalette || []).join(" / "))}
       ${cell("镜头语言", visual.cameraLanguage)}
     </div>
+    ${renderStaticFrameCompilerLog(metadata)}
     ${block("生产顺序", `<div class="tag-row">${(strategy.generationOrder || []).map((item, index) => `<span class="tag orange">${index + 1} · ${escape(item)}</span>`).join("")}</div>`)}
     ${block("视觉圣经", `<div class="rule-list">
       <div class="rule"><strong>整体风格</strong><p>${escape(visual.overallStyle)}<br><b>光线：</b>${escape(visual.lighting)}</p></div>
@@ -928,7 +987,7 @@ function renderAnimationPlan(data) {
       <strong>${escape(item.assetName)}</strong>
       <p>${escape(item.imagePrompt)}<br><b>功能：</b>${escape(item.storyFunction)}<br><b>一致性：</b>${escape((item.consistencyTags || []).join(" / "))}</p>
     </div>`).join("") || "<p class=\"long-copy\">无单独资产提示词。</p>"}</div>`)}
-    ${block("首尾帧镜头计划", `<div class="shot-list">${(data.shotPlan || []).map((shot) => `<div class="shot-card">
+    ${block("首尾帧镜头计划", `<div class="shot-list">${(data.shotPlan || []).map((shot, shotIndex) => `<div class="shot-card">
       <div class="scene-head"><strong>${escape(shot.shotId)} · ${escape(shot.sourceSceneId)} · ${escape(shot.sceneId || "")}</strong><span>${escape(shot.durationSeconds)} 秒 · ${escape(shot.emotionalTarget)}</span></div>
       <p><b>剧情功能：</b>${escape(shot.storyPurpose)}</p>
       <div class="prompt-grid">
@@ -944,6 +1003,7 @@ function renderAnimationPlan(data) {
         <div class="shot-action-row">
           <button class="outline-button shot-video-button" type="button" data-generate-shot-video="${escape(shot.shotId)}"${state.shotVideoResults[shot.shotId]?.status === "running" ? " disabled" : ""}>用可灵 AI 生成此镜头视频</button>
           <button class="outline-button shot-video-button" type="button" data-open-shot-frame-generator="${escape(shot.shotId)}"${shotFrameIsRunning(shot.shotId) ? " disabled" : ""}>生成首尾帧</button>
+          ${renderPreviousTailReuseButton(data, shot, shotIndex)}
         </div>
         <div class="shot-frame-result" data-shot-frame-result="${escape(shot.shotId)}">${renderShotFrameResult(shot.shotId)}</div>
         <div class="shot-video-result" data-shot-video-result="${escape(shot.shotId)}">${renderShotVideoResult(shot.shotId)}</div>
@@ -961,6 +1021,148 @@ function renderAnimationPlan(data) {
     <div class="warning-box"><b>动画连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
     ${uncertainties(data.uncertainties)}`;
   reveal(elements.animationPlan);
+}
+
+function renderStaticFrameCompilerLog(metadata = null) {
+  const compiler = metadata?.staticFrameCompiler;
+  if (!compiler || typeof compiler !== "object" || Array.isArray(compiler)) return "";
+  const runs = Array.isArray(compiler.runs) ? compiler.runs : [];
+  const modificationCount = runs.reduce((total, run) => total + compilerRunModifications(run).length, 0);
+  const identity = [compiler.provider, compiler.model].filter(Boolean).join(" · ") || "模型信息未记录";
+  const version = compiler.version ? ` · v${compiler.version}` : "";
+  const summary = `<div class="compiler-log-summary">
+    <span>${escape(identity)}${escape(version)}</span>
+    <span>${escape(runs.length)} 次运行 · ${escape(modificationCount)} 条修改</span>
+  </div>`;
+  const content = runs.length
+    ? `<div class="compiler-run-list">${runs.map((run, index) => renderStaticFrameCompilerRun(run, index)).join("")}</div>`
+    : `<p class="compiler-log-empty">已返回 Static Frame Compiler metadata，但没有运行记录。</p>`;
+  return block("Static Frame Compiler 修改日志", `<div class="compiler-log">${summary}${content}</div>`);
+}
+
+function renderStaticFrameCompilerRun(run = {}, index = 0) {
+  const modifications = compilerRunModifications(run);
+  const phase = {
+    "post-generate": "生成后",
+    "post-patch": "Patch 后",
+    "second-pass": "Second-pass"
+  }[run.phase] || run.phase || "未标注阶段";
+  const runIdentity = [run.provider, run.model].filter(Boolean).join(" · ");
+  const batch = run.batchIndex === 0 || run.batchIndex ? `Batch ${run.batchIndex}` : "Batch 未标注";
+  const noOp = run.noOp === true || (run.noOp === undefined && modifications.length === 0 && compilerRunSucceeded(run));
+  return `<section class="compiler-run-card">
+    <div class="compiler-run-head">
+      <div><strong>Run ${escape(index + 1)} · ${escape(batch)} · ${escape(phase)}</strong>${runIdentity ? `<small>${escape(runIdentity)}</small>` : ""}</div>
+      <div class="compiler-flag-row">
+        ${compilerFlag(noOp, "no-op", "非 no-op", "neutral")}
+        ${compilerFlag(run.runAccepted, "runAccepted", "runRejected")}
+      </div>
+    </div>
+    ${renderCompilerProtocolLog(run)}
+    ${modifications.length
+      ? `<div class="compiler-modification-list">${modifications.map((item) => renderCompilerModification(item)).join("")}</div>`
+      : `<p class="compiler-log-empty">${noOp ? "输入已经满足静态帧契约，原字段保持不变。" : "本次运行没有可展示的字段修改。"}</p>`}
+  </section>`;
+}
+
+function compilerRunSucceeded(run = {}) {
+  const result = String(run.finalResult || run.result || run.status || "").toLowerCase();
+  return !result || ["success", "succeeded", "accepted", "ok", "completed"].includes(result);
+}
+
+function compilerRunModifications(run = {}) {
+  for (const key of ["modifications", "changes", "patches", "patchLog"]) {
+    if (Array.isArray(run[key])) return run[key];
+  }
+  return [];
+}
+
+function renderCompilerModification(item = {}) {
+  const before = item.before ?? "";
+  const after = item.after ?? item.value ?? "";
+  return `<article class="compiler-modification">
+    <div class="compiler-modification-head">
+      <strong>${escape(item.path || "未记录 path")}</strong>
+      <div class="compiler-flag-row">
+        ${compilerFlag(item.applied, "applied", "not applied")}
+        ${compilerFlag(item.finalAccepted, "finalAccepted", "not final")}
+      </div>
+    </div>
+    <div class="compiler-before-after">
+      <div><span>Before</span><p>${escape(before)}</p></div>
+      <div><span>After</span><p>${escape(after)}</p></div>
+    </div>
+    <p class="compiler-reason"><b>reasonCode</b> ${escape(item.reasonCode || "-")}</p>
+    ${renderCompilerEvidence("triggerSpans", item.triggerSpans)}
+    ${renderCompilerEvidence("visibleFacts", item.visibleFacts)}
+  </article>`;
+}
+
+function renderCompilerEvidence(label, spans) {
+  const values = Array.isArray(spans) ? spans : [];
+  return `<div class="compiler-evidence"><b>${escape(label)}</b><div>${values.length
+    ? values.map((value) => `<span>${escape(value)}</span>`).join("")
+    : "<span class=\"empty\">无</span>"}</div></div>`;
+}
+
+function renderCompilerProtocolLog(run = {}) {
+  const attempts = Array.isArray(run.protocolAttempts)
+    ? run.protocolAttempts
+    : Array.isArray(run.attempts)
+      ? run.attempts
+      : [];
+  if (attempts.length) {
+    return `<div class="compiler-protocol-list">${attempts.map((attempt, index) => renderCompilerProtocolAttempt(attempt, index)).join("")}</div>`;
+  }
+  const transportAttempts = compilerTransportAttempts(run);
+  if (!transportAttempts.length && run.protocolAttempt === undefined) return "";
+  return `<div class="compiler-protocol-list">${renderCompilerProtocolAttempt({
+    protocolAttempt: run.protocolAttempt,
+    transportAttempts,
+    finalResult: run.finalResult,
+    errorCategory: run.errorCategory,
+    retryDecision: run.retryDecision
+  }, 0)}</div>`;
+}
+
+function renderCompilerProtocolAttempt(attempt = {}, index = 0) {
+  const attemptNumber = attempt.protocolAttempt ?? attempt.attempt ?? index + 1;
+  const result = attempt.finalResult || attempt.result || attempt.status || attempt.errorCategory || "未记录结果";
+  const retryDecision = attempt.retryDecision ?? attempt.retry;
+  const transportAttempts = compilerTransportAttempts(attempt);
+  return `<div class="compiler-protocol-card">
+    <div class="compiler-protocol-head"><strong>Protocol attempt ${escape(attemptNumber)}</strong><span>${escape(structuredValue(result))}</span></div>
+    ${attempt.protocolError ? `<p><b>Protocol error：</b>${escape(structuredValue(attempt.protocolError))}</p>` : ""}
+    ${retryDecision === undefined ? "" : `<p><b>Protocol retry：</b>${escape(structuredValue(retryDecision))}</p>`}
+    ${transportAttempts.length
+      ? `<div class="compiler-transport-list">${transportAttempts.map((transport, transportIndex) => renderCompilerTransportAttempt(transport, transportIndex)).join("")}</div>`
+      : `<p class="compiler-transport-empty">无 transport 明细</p>`}
+  </div>`;
+}
+
+function compilerTransportAttempts(value = {}) {
+  for (const key of ["transportAttempts", "transport", "requests"]) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  return [];
+}
+
+function renderCompilerTransportAttempt(transport = {}, index = 0) {
+  const attempt = transport.transportAttempt ?? transport.attempt ?? index + 1;
+  const result = transport.finalResult || transport.result || transport.status || "未记录结果";
+  const category = transport.errorClassification || transport.errorCategory || transport.classification || transport.errorClass || "";
+  const retryDecision = transport.retryDecision ?? transport.retry;
+  return `<div class="compiler-transport-row">
+    <strong>Transport ${escape(attempt)}</strong>
+    <span>${escape(structuredValue(result))}${category ? ` · ${escape(structuredValue(category))}` : ""}</span>
+    <span>${retryDecision === undefined ? "retry 未记录" : `retry ${escape(structuredValue(retryDecision))}`}</span>
+  </div>`;
+}
+
+function compilerFlag(value, trueLabel, falseLabel, falseTone = "no") {
+  const label = value === true ? trueLabel : value === false ? falseLabel : "未记录";
+  const tone = value === true ? "yes" : value === false ? falseTone : "neutral";
+  return `<span class="compiler-flag ${tone}">${escape(label)}</span>`;
 }
 
 function renderShotNegativePromptCard(shot = {}, target = "image", label = "负面提示词") {
@@ -1015,7 +1217,21 @@ function renderShotFramePromptCard(shotId, frameKind, label, prompt) {
 
 function renderShotFrameStatusBadge(shotId, frameKind) {
   const status = shotFrameStatus(shotId, frameKind);
-  const label = status === "ready" ? "已添加参考图" : status === "pending" ? "待选择" : status === "running" ? "生成中" : status === "error" ? "生成失败" : "";
+  const label = status === "ready"
+    ? "已添加参考图"
+    : status === "pending"
+      ? "待选择"
+      : status === "running"
+        ? "生成中"
+        : status === "error"
+          ? "生成失败"
+          : status === "stale"
+            ? "依赖已失效"
+            : status === "prompt_changed"
+              ? "Prompt 已变化"
+              : status === "legacy_unverified"
+                ? "旧结果待验证"
+                : "";
   return `<span class="shot-frame-status-badge ${escape(status || "idle")}" data-shot-frame-badge="${escape(shotFrameKey(shotId, frameKind))}">${escape(label)}</span>`;
 }
 
@@ -1338,6 +1554,62 @@ function setCharacterImageStatus(message, tone = "") {
   elements.characterImageStatus.className = `story-status ${tone}`;
 }
 
+function renderPreviousTailReuseButton(plan = {}, shot = {}, shotIndex = -1) {
+  const previousShot = Array.isArray(plan.shotPlan) && shotIndex > 0 ? plan.shotPlan[shotIndex - 1] : null;
+  if (!previousShot || !canReusePreviousEndFrameAsStart(previousShot, shot)) return "";
+  const previousTail = selectedShotFrameCandidate(previousShot.shotId, "end");
+  const title = !previousTail
+    ? `请先选择上一镜头 ${previousShot.shotId} 的尾帧`
+    : `直接把 ${previousShot.shotId} 的已选尾帧复用为本镜头首帧`;
+  return `<button class="outline-button shot-video-button" type="button" data-reuse-previous-tail="${escape(shot.shotId)}" title="${escape(title)}">复用上一尾帧为首帧</button>`;
+}
+
+function reusePreviousTailAsStart(shotId) {
+  const context = shotFrameContext(shotId);
+  const shots = context?.plan?.shotPlan || [];
+  const shotIndex = shots.findIndex((shot) => String(shot.shotId) === String(shotId));
+  const previousShot = shotIndex > 0 ? shots[shotIndex - 1] : null;
+  const currentShot = shots[shotIndex];
+  if (!previousShot || !currentShot || !canReusePreviousEndFrameAsStart(previousShot, currentShot)) {
+    return setAnimationStatus("只有同 source scene、同 sceneId 且摄影机一致的相邻镜头才能复用上一尾帧。", "error");
+  }
+  const previousTail = selectedShotFrameCandidate(previousShot.shotId, "end");
+  if (!previousTail) return setAnimationStatus(`请先选择 ${previousShot.shotId} 的尾帧。`, "error");
+  const previousStartIdentity = frameCandidateIdentity(selectedShotFrameCandidate(shotId, "start"));
+  const {
+    dependencyHash: _dependencyHash,
+    promptHash: _promptHash,
+    frameReferenceMode: _frameReferenceMode,
+    usedStartFrameReference: _usedStartFrameReference,
+    ...startImage
+  } = previousTail;
+  startImage.reusedFromShotId = String(previousShot.shotId || "");
+  const result = {
+    images: [startImage],
+    selectedIndex: 0,
+    url: startImage.url || "",
+    dataUrl: startImage.dataUrl || "",
+    size: startImage.size || "",
+    model: startImage.model || "",
+    count: 1,
+    actualCount: 1,
+    reusedFromShotId: String(previousShot.shotId || ""),
+    generatedAt: startImage.generatedAt || new Date().toISOString()
+  };
+  state.shotFrameResults[shotFrameKey(shotId, "start")] = {
+    status: "ready",
+    frameKind: "start",
+    result,
+    selectedIndex: 0,
+    message: `已复用 ${previousShot.shotId} 的尾帧作为本镜头首帧。`
+  };
+  const videoModalOpen = state.shotVideoGeneration.open && String(state.shotVideoGeneration.shotId) === String(shotId);
+  if (previousStartIdentity !== frameCandidateIdentity(startImage) && !videoModalOpen) refreshEndFrameDependencyState(shotId);
+  updateShotFrameResult(shotId);
+  if (videoModalOpen) updateShotVideoGeneratorPreview();
+  setAnimationStatus(`${shotId} 已复用 ${previousShot.shotId} 的尾帧作为首帧；后续尾帧会把它计入硬依赖。`, "ready");
+}
+
 function shotFrameKey(shotId, frameKind) {
   return `${shotId}:${frameKind === "end" ? "end" : "start"}`;
 }
@@ -1352,9 +1624,14 @@ function shotFrameIsRunning(shotId) {
 
 function selectedShotFrameCandidate(shotId, frameKind) {
   const stateItem = state.shotFrameResults[shotFrameKey(shotId, frameKind)];
-  if (stateItem?.status !== "ready") return null;
+  if (!["ready", "prompt_changed", "legacy_unverified"].includes(stateItem?.status)) return null;
+  return storedShotFrameCandidate(shotId, frameKind);
+}
+
+function storedShotFrameCandidate(shotId, frameKind) {
+  const stateItem = state.shotFrameResults[shotFrameKey(shotId, frameKind)];
   const images = stateItem?.result?.images || [];
-  const index = Number(stateItem?.selectedIndex || stateItem?.result?.selectedIndex || 0);
+  const index = Number(stateItem?.selectedIndex ?? stateItem?.result?.selectedIndex ?? 0);
   return images[index] || stateItem?.result || null;
 }
 
@@ -1365,14 +1642,35 @@ function selectShotFrameCandidate(shotId, frameKindValue, candidateIndexValue) {
   const images = stateItem?.result?.images || [];
   const selectedIndex = Number(candidateIndexValue);
   if (!images[selectedIndex]) return;
-  stateItem.status = "ready";
+  const previousCandidate = selectedShotFrameCandidate(shotId, frameKind);
+  stateItem.status = frameKind === "end" && !images[selectedIndex].dependencyHash && !stateItem.result?.dependencyHash
+    ? "legacy_unverified"
+    : "ready";
   stateItem.selectedIndex = selectedIndex;
   stateItem.result.selectedIndex = selectedIndex;
   stateItem.result.url = images[selectedIndex].url;
   stateItem.result.dataUrl = images[selectedIndex].dataUrl;
+  if (frameKind === "end") {
+    stateItem.result.frameReferenceMode = images[selectedIndex].frameReferenceMode || stateItem.result.frameReferenceMode || "";
+    stateItem.result.dependencyHash = images[selectedIndex].dependencyHash || stateItem.result.dependencyHash || "";
+    stateItem.result.promptHash = images[selectedIndex].promptHash || stateItem.result.promptHash || "";
+  }
   state.shotFrameResults[key] = stateItem;
+  const selectionChanged = frameCandidateIdentity(previousCandidate) !== frameCandidateIdentity(images[selectedIndex]);
+  const videoModalOpen = state.shotVideoGeneration.open && String(state.shotVideoGeneration.shotId) === String(shotId);
+  if (frameKind === "start" && selectionChanged && !videoModalOpen) refreshEndFrameDependencyState(shotId);
   updateShotFrameResult(shotId);
+  if (videoModalOpen) updateShotVideoGeneratorPreview();
   setAnimationStatus(`${shotId} ${frameKind === "end" ? "尾帧" : "首帧"}已切换为第 ${selectedIndex + 1} 张，并添加到镜头。`, "ready");
+}
+
+function frameCandidateIdentity(candidate = {}) {
+  return String(candidate.dataUrl || candidate.url || "");
+}
+
+async function refreshEndFrameDependencyState(shotId) {
+  if (!state.shotFrameResults[shotFrameKey(shotId, "end")]) return;
+  await evaluateShotVideoEndpoints(shotId);
 }
 
 function useModalShotFrameCandidate(shotId, frameKindValue, candidateIndexValue) {
@@ -1387,29 +1685,29 @@ function cssEscape(value) {
   return String(value).replace(/["\\]/gu, "\\$&");
 }
 
-function chineseNumber(value) {
-  return ["零", "一", "二", "三", "四", "五", "六"][Number(value)] || String(value);
-}
-
-function openShotFrameImageGenerator(shotId, frameKindValue = "start") {
+async function openShotFrameImageGenerator(shotId, frameKindValue = "start") {
   const frameKind = frameKindValue === "end" ? "end" : "start";
   state.shotFrameImageGeneration.open = true;
   state.shotFrameImageGeneration.running = false;
   state.shotFrameImageGeneration.shotId = String(shotId);
   state.shotFrameImageGeneration.frameKind = frameKind;
+  state.shotFrameImageGeneration.frameReferenceMode = "";
+  state.shotFrameImageGeneration.referenceManifest = null;
   state.shotFrameImageGeneration.count = Number(elements.shotFrameImageCount.value) || 4;
   elements.shotFrameImageKind.value = frameKind;
-  if (!updateShotFrameImageGeneratorPreview()) return;
-  setShotFrameImageStatus("", "");
-  setShotFrameImageGeneratorRunning(false);
   elements.shotFrameImageModal.classList.remove("hidden");
   elements.shotFrameImageModal.setAttribute("aria-hidden", "false");
+  setShotFrameImageStatus("正在整理端点状态与参考图…", "active");
+  if (!await updateShotFrameImageGeneratorPreview({ resetMode: true })) return;
+  setShotFrameImageGeneratorRunning(false);
   renderShotFrameImageResults();
   elements.shotFrameImagePromptPreview.focus();
 }
 
-function updateShotFrameImageGeneratorPreview() {
+async function updateShotFrameImageGeneratorPreview(options = {}) {
   if (!state.shotFrameImageGeneration.open) return true;
+  const revision = ++state.shotFrameImageGeneration.previewRevision;
+  elements.confirmGenerateShotFrameImage.disabled = true;
   const shotId = state.shotFrameImageGeneration.shotId;
   const frameKind = elements.shotFrameImageKind.value === "end" ? "end" : "start";
   const context = shotFrameContext(shotId);
@@ -1419,22 +1717,137 @@ function updateShotFrameImageGeneratorPreview() {
   }
   const { shot, plan } = context;
   const label = frameKind === "end" ? "尾帧" : "首帧";
-  const characterReferences = shotRelatedCharacterReferences(shot, plan.characterReferencePrompts || []);
-  const sceneReference = sceneReferenceForShot(plan, shot);
+  const structuredEndpointShot = hasStructuredEndpointState(shot);
   state.shotFrameImageGeneration.frameKind = frameKind;
   elements.shotFrameImageModalTitle.textContent = `生成${label}镜头`;
   elements.confirmGenerateShotFrameImageLabel.textContent = `生成${label}`;
-  elements.shotFrameImageMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || ""} 秒 · 自动锁定相关角色参考图`;
-  elements.shotFrameReferenceList.innerHTML = renderShotFrameReferenceUploadList(characterReferences);
-  elements.shotFrameImagePromptPreview.value = buildShotFrameImagePrompt({
+  elements.shotFrameImageMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || ""} 秒 · 参考顺序由统一清单锁定`;
+  elements.shotFrameReferenceModeField.classList.toggle("hidden", frameKind !== "end" || !structuredEndpointShot);
+  elements.shotFrameReferenceModeHint.classList.toggle("hidden", frameKind !== "end" || !structuredEndpointShot);
+  let frameReferenceMode = "";
+  if (frameKind === "end" && structuredEndpointShot) {
+    try {
+      const inferredMode = resolveFrameReferenceMode(shot);
+      const currentMode = elements.shotFrameReferenceMode.value;
+      frameReferenceMode = options.resetMode || !["inherit", "transition", "independent"].includes(currentMode)
+        ? inferredMode
+        : currentMode;
+      elements.shotFrameReferenceMode.value = frameReferenceMode;
+      state.shotFrameImageGeneration.frameReferenceMode = frameReferenceMode;
+      elements.shotFrameReferenceModeHint.textContent = frameReferenceModeHint(frameReferenceMode);
+    } catch (error) {
+      elements.confirmGenerateShotFrameImage.disabled = true;
+      setShotFrameImageStatus(error.message || "首尾帧场景关系无效。", "error");
+      return false;
+    }
+  } else {
+    state.shotFrameImageGeneration.frameReferenceMode = "";
+  }
+  let referenceContext;
+  try {
+    referenceContext = await buildShotFrameReferenceContext({ shot, plan, frameKind, frameReferenceMode });
+  } catch (error) {
+    if (revision !== state.shotFrameImageGeneration.previewRevision) return false;
+    elements.confirmGenerateShotFrameImage.disabled = true;
+    elements.shotFrameImagePromptPreview.value = "";
+    elements.shotFrameReferenceList.innerHTML = "<p>当前策略需要先选择首帧视觉参考；系统不会自动改成 independent。</p>";
+    setShotFrameImageStatus(error.message || "参考图读取失败。", "error");
+    return false;
+  }
+  if (revision !== state.shotFrameImageGeneration.previewRevision) return false;
+  const { characterReferences, sceneReference, manifest, startFrameDataUrl } = referenceContext;
+  state.shotFrameImageGeneration.referenceManifest = manifest;
+  elements.shotFrameReferenceList.innerHTML = renderShotFrameReferenceUploadList(manifest, {
+    frameKind,
+    frameReferenceMode,
+    missingStartFrame: frameKind === "end" && frameReferenceMode !== "independent" && !startFrameDataUrl
+  });
+  const basePrompt = buildShotFrameImagePrompt({
     frameKind,
     shot,
     visualBible: plan.visualBible || {},
     characterReferences,
-    sceneReference
+    sceneReference,
+    referenceManifest: manifest,
+    frameReferenceMode
   });
+  const negativePromptApplication = compileShotFrameNegativePrompt(shot);
+  elements.shotFrameImagePromptPreview.value = appendMissingPromptLines(basePrompt, negativePromptApplication.positiveConstraints);
   renderShotFrameImageResults();
+  const blockReason = shotFrameGenerationBlockReason({ shot, frameKind, frameReferenceMode, startFrameDataUrl });
+  elements.confirmGenerateShotFrameImage.disabled = Boolean(blockReason);
+  setShotFrameImageStatus(
+    blockReason || (!structuredEndpointShot && frameKind === "end"
+      ? "旧版镜头按兼容流程生成；结果可预览，但需重新生成 v2 动画计划后才能获得视频硬依赖校验。"
+      : frameKind === "end" && frameReferenceMode === "independent" && !selectedShotFrameCandidate(shotId, "start")
+      ? "可以独立生成尾帧；生成视频前仍需选择首帧。"
+      : ""),
+    blockReason ? "error" : ""
+  );
   return true;
+}
+
+async function buildShotFrameReferenceContext({ shot, plan, frameKind, frameReferenceMode }) {
+  const characterReferences = shotRelatedCharacterReferences(shot, plan.characterReferencePrompts || [], { frameKind });
+  const sceneReference = sceneReferenceForShot(plan, shot);
+  let startFrameDataUrl = "";
+  let endpointReference = null;
+  if (frameKind === "end" && ["inherit", "transition"].includes(frameReferenceMode)) {
+    const selectedStart = selectedShotFrameCandidate(shot.shotId, "start");
+    if (selectedStart) {
+      startFrameDataUrl = await frameCandidateDataUrl(selectedStart);
+      endpointReference = {
+        role: "start_frame",
+        dataUrl: startFrameDataUrl,
+        sourceShotId: String(shot.shotId || "")
+      };
+    }
+  }
+  const manifest = await buildFrameReferenceManifest({
+    frameKind: frameKind === "end" && !hasStructuredEndpointState(shot) ? "start" : frameKind,
+    frameReferenceMode,
+    endpointReference,
+    characterReferences,
+    maxProviderImages: 6
+  });
+  return { characterReferences, sceneReference, manifest, startFrameDataUrl, endpointReference };
+}
+
+function frameReferenceModeHint(mode) {
+  if (mode === "inherit") return "首帧作为强视觉基底；保持同一场景、机位、构图和光线，只改变 EndState 声明的可见状态。";
+  if (mode === "transition") return "仅限同一 sceneId；首帧锁定身份与场景内容，尾帧可采用 EndState 声明的新机位、构图或光线。";
+  return "尾帧只读取 EndState 和角色参考图，不上传首帧；最终生成视频时仍必须选择首帧。";
+}
+
+function shotFrameGenerationBlockReason({ shot, frameKind, frameReferenceMode, startFrameDataUrl }) {
+  if (frameKind !== "end") return "";
+  if (!hasStructuredEndpointState(shot)) {
+    return shot?.endFramePrompt ? "" : "旧版镜头缺少尾帧提示词，无法生成。";
+  }
+  if (!shot?.endFrame) return "尾帧缺少 EndState，无法生成。";
+  if (!["inherit", "transition", "independent"].includes(frameReferenceMode)) return "请选择有效的尾帧参考策略。";
+  if (frameReferenceMode !== "independent" && !startFrameDataUrl) return "当前策略需要已选择的首帧；请先生成并选择首帧，或显式切换为“独立尾帧”。";
+  try {
+    validateFrameReferenceMode(shot, frameReferenceMode, {
+      hasStartFrameReference: Boolean(startFrameDataUrl)
+    });
+  } catch (error) {
+    return error.message || "当前尾帧参考策略与端点状态不兼容。";
+  }
+  return "";
+}
+
+function hasStructuredEndpointState(shot = {}) {
+  return Boolean(shot?.startFrame && shot?.endFrame && shot?.motion);
+}
+
+function appendMissingPromptLines(prompt, lines = []) {
+  const additions = (Array.isArray(lines) ? lines : [])
+    .map((line) => String(line || "").trim())
+    .filter((line) => line && !String(prompt || "").includes(line));
+  return additions.length
+    ? [String(prompt || "").trim(), ...additions].filter(Boolean).join("\n")
+    : String(prompt || "").trim();
 }
 
 function shotFrameContext(shotId) {
@@ -1453,23 +1866,59 @@ function sceneReferenceForShot(plan = {}, shot = {}) {
 function closeShotFrameImageGenerator() {
   if (state.shotFrameImageGeneration.running) return setShotFrameImageStatus("镜头帧图片仍在生成中，完成后再关闭。", "active");
   state.shotFrameImageGeneration.open = false;
+  state.shotFrameImageGeneration.previewRevision += 1;
   elements.shotFrameImageModal.classList.add("hidden");
   elements.shotFrameImageModal.setAttribute("aria-hidden", "true");
 }
 
 async function confirmGenerateShotFrameImage() {
   if (state.shotFrameImageGeneration.running) return;
-  const prompt = elements.shotFrameImagePromptPreview.value.trim();
-  if (!prompt) return setShotFrameImageStatus("提示词不能为空。", "error");
   const shotId = state.shotFrameImageGeneration.shotId;
   const frameKind = elements.shotFrameImageKind.value === "end" ? "end" : "start";
   state.shotFrameImageGeneration.frameKind = frameKind;
-  setShotFrameImageGeneratorRunning(true);
-  setShotFrameImageStatus(`正在用即梦生成${frameKind === "end" ? "尾帧" : "首帧"}图片…`, "active");
   try {
+    const context = shotFrameContext(shotId);
+    if (!context) throw new Error("没有找到对应镜头。");
+    const frameReferenceMode = frameKind === "end" && hasStructuredEndpointState(context.shot)
+      ? elements.shotFrameReferenceMode.value
+      : "";
+    const referenceContext = await buildShotFrameReferenceContext({
+      ...context,
+      frameKind,
+      frameReferenceMode
+    });
+    const blockReason = shotFrameGenerationBlockReason({
+      shot: context.shot,
+      frameKind,
+      frameReferenceMode,
+      startFrameDataUrl: referenceContext.startFrameDataUrl
+    });
+    if (blockReason) throw new Error(blockReason);
+    const prompt = elements.shotFrameImagePromptPreview.value.trim();
+    if (!prompt) throw new Error("提示词不能为空。");
     const count = Math.max(1, Math.min(6, Number(elements.shotFrameImageCount.value) || 1));
+    const dependencyHash = frameKind === "end" && frameReferenceMode
+      ? await computeDependencyHash({
+        startImageDataUrl: referenceContext.startFrameDataUrl,
+        endState: context.shot.endFrame,
+        referenceImages: referenceContext.manifest.additionalReferences,
+        frameReferenceMode
+      })
+      : "";
+    const promptHash = frameKind === "end" && frameReferenceMode
+      ? await computePromptHash(buildShotFrameMultiImagePrompt(prompt, count))
+      : "";
+    setShotFrameImageGeneratorRunning(true);
+    setShotFrameImageStatus(`正在用即梦生成${frameKind === "end" ? "尾帧" : "首帧"}图片…`, "active");
     state.shotFrameImageGeneration.count = count;
-    await generateShotFrameImage(shotId, frameKind, prompt, { count, throwOnError: true });
+    await generateShotFrameImage(shotId, frameKind, prompt, {
+      count,
+      throwOnError: true,
+      frameReferenceMode,
+      referenceContext,
+      dependencyHash,
+      promptHash
+    });
     const actualCount = state.shotFrameResults[shotFrameKey(shotId, frameKind)]?.result?.images?.length || count;
     setShotFrameImageStatus(`已生成 ${actualCount} 张${frameKind === "end" ? "尾帧" : "首帧"}候选图，请选择一张添加到镜头。`, "ready");
     setShotFrameImageGeneratorRunning(false);
@@ -1483,9 +1932,24 @@ async function confirmGenerateShotFrameImage() {
 function setShotFrameImageGeneratorRunning(running) {
   state.shotFrameImageGeneration.running = running;
   elements.shotFrameImageKind.disabled = running;
+  elements.shotFrameReferenceMode.disabled = running;
   elements.shotFrameImagePromptPreview.disabled = running;
   elements.shotFrameImageCount.disabled = running;
-  elements.confirmGenerateShotFrameImage.disabled = running;
+  if (running) {
+    elements.confirmGenerateShotFrameImage.disabled = true;
+  } else {
+    const context = shotFrameContext(state.shotFrameImageGeneration.shotId);
+    const frameKind = elements.shotFrameImageKind.value === "end" ? "end" : "start";
+    const mode = frameKind === "end" ? elements.shotFrameReferenceMode.value : "";
+    const manifest = state.shotFrameImageGeneration.referenceManifest;
+    const hasStart = Boolean(manifest?.endpointReference?.dataUrl);
+    elements.confirmGenerateShotFrameImage.disabled = Boolean(context && shotFrameGenerationBlockReason({
+      shot: context.shot,
+      frameKind,
+      frameReferenceMode: mode,
+      startFrameDataUrl: hasStart ? manifest.endpointReference.dataUrl : ""
+    }));
+  }
   elements.closeShotFrameImageModal.disabled = running;
 }
 
@@ -1519,46 +1983,55 @@ function renderShotFrameImageResults() {
   }
   const selectedIndex = Number.isFinite(Number(stateItem.selectedIndex)) ? Number(stateItem.selectedIndex) : -1;
   const referenceCountText = Number.isFinite(Number(stateItem.result?.referenceImageCount)) ? ` · 参考图 ${Number(stateItem.result.referenceImageCount)} 张` : "";
-  elements.shotFrameImageResults.innerHTML = images.map((image, index) => `<div class="generated-reference-card shot-frame-candidate${index === selectedIndex ? " selected" : ""}">
+  const stateNotice = ["stale", "prompt_changed", "legacy_unverified"].includes(stateItem.status)
+    ? `<p class="${escape(stateItem.status)}">${escape(stateItem.message || frameStatusDescription(stateItem.status))}</p>`
+    : "";
+  elements.shotFrameImageResults.innerHTML = `${stateNotice}${images.map((image, index) => `<div class="generated-reference-card shot-frame-candidate${index === selectedIndex ? " selected" : ""}">
     <button class="generated-reference-preview-button" type="button" data-preview-modal-shot-frame="${escape(shotId)}" data-frame-kind="${escape(frameKind)}" data-candidate-index="${escape(index)}" aria-label="放大预览 ${escape(shotId)} ${label}第 ${escape(index + 1)} 张">
       <img src="${escape(image.url)}" alt="${escape(shotId)} ${label}候选 ${index + 1}">
     </button>
     <small>${escape(label)}候选 ${escape(index + 1)} · ${escape(image.size || stateItem.result?.size || "")} · ${escape(modelName(image.model || stateItem.result?.model || state.imageModel))}${escape(referenceCountText)}</small>
     <button class="outline-button" type="button" data-select-modal-shot-frame="${escape(shotId)}" data-frame-kind="${escape(frameKind)}" data-candidate-index="${escape(index)}">${index === selectedIndex ? `已设为${label}参考图` : `设为${label}参考图`}</button>
-  </div>`).join("");
+  </div>`).join("")}`;
 }
 
-function renderShotFrameReferenceUploadList(characterReferences = []) {
-  const images = uploadedReferenceImages(characterReferences);
+function renderShotFrameReferenceUploadList(manifest = {}, options = {}) {
+  const images = Array.isArray(manifest.providerImages) ? manifest.providerImages : [];
+  const warning = options.missingStartFrame
+    ? "<p>当前策略需要首帧视觉参考，但尚未选择首帧。系统不会自动降级为独立模式。</p>"
+    : "";
   if (!images.length) {
-    return "<p>当前镜头没有可上传的人物参考图；这次只会使用文字角色描述生成。请先在角色列表添加人物参考图。</p>";
+    return `${warning}<p>当前没有可上传的视觉参考；图片只会读取结构化端点状态与文字角色设定。</p>`;
   }
   return `<div>
-    <span class="block-label">角色参考匹配 · ${escape(images.length)} 张图片</span>
+    ${warning}
+    <span class="block-label">统一参考图清单 · ${escape(images.length)} 张图片</span>
     <div class="shot-frame-reference-grid">
-      ${images.map((item, index) => `<div class="shot-frame-reference-card">
-        <strong>${escape(item.characterName || "角色")}</strong>
-        <small>已匹配 @图${escape(chineseNumber(index + 1))}</small>
+      ${images.map((item) => `<div class="shot-frame-reference-card">
+        <strong>${escape(item.role === "start_frame" ? "已选首帧 · 视觉基底" : item.characterName || "角色参考")}</strong>
+        <small>${escape(item.token)} · ${escape(item.role === "start_frame" ? "端点参考" : "身份参考")}</small>
       </div>`).join("")}
     </div>
   </div>`;
 }
 
-function openShotVideoGenerator(shotId) {
+async function openShotVideoGenerator(shotId) {
   state.shotVideoGeneration.open = true;
   state.shotVideoGeneration.running = false;
   state.shotVideoGeneration.shotId = String(shotId);
   state.shotVideoGeneration.count = Number(elements.shotVideoCount.value) || 1;
   setShotVideoGeneratorRunning(false);
-  if (!updateShotVideoGeneratorPreview()) return;
   elements.shotVideoModal.classList.remove("hidden");
   elements.shotVideoModal.setAttribute("aria-hidden", "false");
+  setShotVideoStatus("正在校验首尾帧依赖…", "active");
+  if (!await updateShotVideoGeneratorPreview()) return;
   renderShotVideoModalResults();
   elements.shotVideoPromptPreview.focus();
 }
 
-function updateShotVideoGeneratorPreview() {
+async function updateShotVideoGeneratorPreview() {
   if (!state.shotVideoGeneration.open) return true;
+  const validationRevision = ++state.shotVideoGeneration.validationRevision;
   const shotId = state.shotVideoGeneration.shotId;
   const context = shotFrameContext(shotId);
   if (!context) {
@@ -1572,15 +2045,115 @@ function updateShotVideoGeneratorPreview() {
   elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || 4} 秒 · 自动锁定已添加的首帧/尾帧`;
   elements.shotVideoReferenceList.innerHTML = renderShotVideoReferenceList(shotId);
   elements.shotVideoPromptPreview.value = buildShotVideoPromptPreview(shot);
-  const hasFrames = Boolean(selectedShotFrameCandidate(shotId, "start") && selectedShotFrameCandidate(shotId, "end"));
-  setShotVideoStatus(hasFrames ? "确认提示词和数量后即可交给可灵 AI 生成。" : "请先生成并选择该镜头的首帧和尾帧参考图。", hasFrames ? "" : "error");
-  elements.confirmGenerateShotVideo.disabled = !hasFrames;
+  const validation = await evaluateShotVideoEndpoints(shotId);
+  if (validationRevision !== state.shotVideoGeneration.validationRevision || validation.cancelled) return false;
+  elements.shotVideoReferenceList.innerHTML = renderShotVideoReferenceList(shotId);
+  setShotVideoStatus(validation.message, validation.ok ? (validation.status === "prompt_changed" ? "active" : "") : "error");
+  elements.confirmGenerateShotVideo.disabled = !validation.ok;
   return true;
+}
+
+async function evaluateShotVideoEndpoints(shotId) {
+  const context = shotFrameContext(shotId);
+  if (!context) return { ok: false, message: "没有找到对应镜头。" };
+  const startCandidate = selectedShotFrameCandidate(shotId, "start");
+  if (!startCandidate) return { ok: false, message: "请先生成并选择该镜头的首帧参考图。" };
+  const endKey = shotFrameKey(shotId, "end");
+  const endStateItem = state.shotFrameResults[endKey];
+  if (!endStateItem) return { ok: false, message: "请先生成并选择该镜头的尾帧参考图。" };
+  if (endStateItem.status === "running") return { ok: false, message: "尾帧仍在生成中，请等待完成。" };
+  if (endStateItem.status === "error") return { ok: false, message: endStateItem.message || "尾帧生成失败，请重新生成。" };
+  const endCandidate = storedShotFrameCandidate(shotId, "end");
+  if (!frameCandidateIdentity(endCandidate)) return { ok: false, message: "请先从候选图中选择一张尾帧。" };
+  const dependencyHash = endCandidate?.dependencyHash || endStateItem.result?.dependencyHash || "";
+  const frameReferenceMode = endCandidate?.frameReferenceMode || endStateItem.result?.frameReferenceMode || "";
+  const endpointIdentity = currentVideoEndpointIdentity(shotId);
+  const endpointsUnchanged = () => currentVideoEndpointIdentity(shotId) === endpointIdentity;
+  if (!dependencyHash || !["inherit", "transition", "independent"].includes(frameReferenceMode)) {
+    endStateItem.status = "legacy_unverified";
+    endStateItem.message = "旧尾帧没有硬依赖校验信息；可以预览，但生成新视频前必须重新生成尾帧。";
+    state.shotFrameResults[endKey] = endStateItem;
+    updateShotFrameResult(shotId);
+    return { ok: false, status: "legacy_unverified", message: endStateItem.message };
+  }
+  let referenceContext;
+  let currentDependencyHash;
+  try {
+    referenceContext = await buildShotFrameReferenceContext({
+      shot: context.shot,
+      plan: context.plan,
+      frameKind: "end",
+      frameReferenceMode
+    });
+    currentDependencyHash = await computeDependencyHash({
+      startImageDataUrl: referenceContext.startFrameDataUrl,
+      endState: context.shot.endFrame,
+      referenceImages: referenceContext.manifest.additionalReferences,
+      frameReferenceMode
+    });
+  } catch (error) {
+    if (!endpointsUnchanged()) return { ok: false, cancelled: true, message: "首尾帧选择已变化，正在重新校验。" };
+    return { ok: false, status: endStateItem.status, message: error.message || "当前无法验证尾帧硬依赖，请检查首帧和角色参考图。" };
+  }
+  if (!endpointsUnchanged()) return { ok: false, cancelled: true, message: "首尾帧选择已变化，正在重新校验。" };
+  if (currentDependencyHash !== dependencyHash) {
+    endStateItem.status = "stale";
+    endStateItem.message = "尾帧的首图、EndState、角色参考图或参考策略已变化，请重新生成尾帧。";
+    state.shotFrameResults[endKey] = endStateItem;
+    updateShotFrameResult(shotId);
+    return { ok: false, status: "stale", message: endStateItem.message };
+  }
+  try {
+    const currentPrompt = appendMissingPromptLines(buildShotFrameImagePrompt({
+      frameKind: "end",
+      shot: context.shot,
+      visualBible: context.plan.visualBible || {},
+      characterReferences: referenceContext.characterReferences,
+      sceneReference: referenceContext.sceneReference,
+      referenceManifest: referenceContext.manifest,
+      frameReferenceMode
+    }), compileShotFrameNegativePrompt(context.shot).positiveConstraints);
+    const generatedCount = Math.max(1, Number(endStateItem.result?.count) || 1);
+    const currentPromptHash = await computePromptHash(buildShotFrameMultiImagePrompt(currentPrompt, generatedCount));
+    if (!endpointsUnchanged()) return { ok: false, cancelled: true, message: "首尾帧选择已变化，正在重新校验。" };
+    const generatedPromptHash = endCandidate?.promptHash || endStateItem.result?.promptHash || "";
+    if (generatedPromptHash && currentPromptHash !== generatedPromptHash) {
+      endStateItem.status = "prompt_changed";
+      endStateItem.message = "当前尾帧 Prompt 与生成时不同，但硬依赖仍匹配，可以继续生成视频。";
+      state.shotFrameResults[endKey] = endStateItem;
+      updateShotFrameResult(shotId);
+      return { ok: true, status: "prompt_changed", message: endStateItem.message };
+    }
+  } catch (error) {
+    if (!endpointsUnchanged()) return { ok: false, cancelled: true, message: "首尾帧选择已变化，正在重新校验。" };
+    // promptHash is provenance only; a prompt-compilation problem must not invalidate hard endpoint dependencies.
+  }
+  endStateItem.status = "ready";
+  endStateItem.message = "首尾帧硬依赖已验证，可以生成视频。";
+  state.shotFrameResults[endKey] = endStateItem;
+  updateShotFrameResult(shotId);
+  return { ok: true, status: "ready", message: "首尾帧硬依赖已验证，确认提示词和数量后即可生成视频。" };
+}
+
+function currentVideoEndpointIdentity(shotId) {
+  const startStateItem = state.shotFrameResults[shotFrameKey(shotId, "start")];
+  const endStateItem = state.shotFrameResults[shotFrameKey(shotId, "end")];
+  const startCandidate = storedShotFrameCandidate(shotId, "start");
+  const endCandidate = storedShotFrameCandidate(shotId, "end");
+  return [
+    startStateItem?.selectedIndex ?? startStateItem?.result?.selectedIndex ?? "",
+    frameCandidateIdentity(startCandidate),
+    endStateItem?.selectedIndex ?? endStateItem?.result?.selectedIndex ?? "",
+    frameCandidateIdentity(endCandidate),
+    endCandidate?.dependencyHash || endStateItem?.result?.dependencyHash || "",
+    endCandidate?.frameReferenceMode || endStateItem?.result?.frameReferenceMode || ""
+  ].join("\u0000");
 }
 
 function closeShotVideoGenerator() {
   if (state.shotVideoGeneration.running) return setShotVideoStatus("镜头视频仍在生成中，完成后再关闭。", "active");
   state.shotVideoGeneration.open = false;
+  state.shotVideoGeneration.validationRevision += 1;
   elements.shotVideoModal.classList.add("hidden");
   elements.shotVideoModal.setAttribute("aria-hidden", "true");
 }
@@ -1590,6 +2163,8 @@ async function confirmGenerateShotVideo() {
   const prompt = elements.shotVideoPromptPreview.value.trim();
   if (!prompt) return setShotVideoStatus("视频提示词不能为空。", "error");
   const shotId = state.shotVideoGeneration.shotId;
+  const validation = await evaluateShotVideoEndpoints(shotId);
+  if (!validation.ok) return setShotVideoStatus(validation.message, "error");
   const count = Math.max(1, Math.min(4, Number(elements.shotVideoCount.value) || 1));
   state.shotVideoGeneration.count = count;
   setShotVideoGeneratorRunning(true);
@@ -1622,18 +2197,26 @@ function setShotVideoStatus(message, tone = "") {
 
 function renderShotVideoReferenceList(shotId) {
   const start = selectedShotFrameCandidate(shotId, "start");
-  const end = selectedShotFrameCandidate(shotId, "end");
-  const frame = (label, item) => item?.url
-    ? `<figure class="shot-video-reference-frame"><img src="${escape(item.url)}" alt="${escape(label)}"><figcaption>${escape(label)} · 已锁定参考图</figcaption></figure>`
+  const end = storedShotFrameCandidate(shotId, "end");
+  const endStatus = state.shotFrameResults[shotFrameKey(shotId, "end")]?.status || "";
+  const frame = (label, item, status = "ready") => item?.url
+    ? `<figure class="shot-video-reference-frame ${escape(status)}"><img src="${escape(item.url)}" alt="${escape(label)}"><figcaption>${escape(label)} · ${escape(frameStatusDescription(status))}</figcaption></figure>`
     : `<figure class="shot-video-reference-frame empty"><span>${escape(label)}</span><p>未添加参考图</p></figure>`;
   return `<div>
     <span class="block-label">首尾帧参考图</span>
     <div class="shot-video-reference-grid">
       ${frame("首帧", start)}
-      ${frame("尾帧", end)}
+      ${frame("尾帧", end, endStatus)}
     </div>
     <p class="shot-video-reference-note">生成视频时会把这两张已选图片连同右侧视频提示词一起传给可灵 AI。</p>
   </div>`;
+}
+
+function frameStatusDescription(status) {
+  if (status === "stale") return "硬依赖已失效";
+  if (status === "prompt_changed") return "Prompt 已变化，仍可使用";
+  if (status === "legacy_unverified") return "旧结果，依赖未验证";
+  return "已锁定参考图";
 }
 
 function buildShotVideoPromptPreview(shot = {}) {
@@ -1661,6 +2244,8 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
   renderShotVideoModalResults();
   setAnimationStatus(`正在用可灵 AI 生成 ${shotId} 镜头视频 · ${count} 条候选…`, "active");
   try {
+    const endpointValidation = await evaluateShotVideoEndpoints(shotId);
+    if (!endpointValidation.ok) throw new Error(endpointValidation.message);
     const startFrame = selectedShotFrameCandidate(shotId, "start");
     const endFrame = selectedShotFrameCandidate(shotId, "end");
     if (!startFrame || !endFrame) throw new Error("请先生成并选择首帧和尾帧参考图。");
@@ -1771,8 +2356,35 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
   renderShotFrameImageResults();
   setAnimationStatus(`${shotId} ${frameKind === "end" ? "尾帧" : "首帧"}正在用即梦生成…`, "active");
   try {
-    const characterReferences = shotRelatedCharacterReferences(shot, plan.characterReferencePrompts || []);
+    const characterReferences = shotRelatedCharacterReferences(shot, plan.characterReferencePrompts || [], { frameKind });
     const negativePromptApplication = compileShotFrameNegativePrompt(shot);
+    const frameReferenceMode = frameKind === "end" && hasStructuredEndpointState(shot)
+      ? options.frameReferenceMode || state.shotFrameImageGeneration.frameReferenceMode || resolveFrameReferenceMode(shot)
+      : "";
+    const referenceContext = options.referenceContext || await buildShotFrameReferenceContext({
+      shot,
+      plan,
+      frameKind,
+      frameReferenceMode
+    });
+    const dependencyHash = frameKind === "end" && frameReferenceMode
+      ? options.dependencyHash || await computeDependencyHash({
+        startImageDataUrl: referenceContext.startFrameDataUrl,
+        endState: shot.endFrame,
+        referenceImages: referenceContext.manifest.additionalReferences,
+        frameReferenceMode
+      })
+      : "";
+    const promptHash = frameKind === "end" && frameReferenceMode
+      ? options.promptHash || await computePromptHash(buildShotFrameMultiImagePrompt(promptOverride, count))
+      : "";
+    const endpointReferences = frameKind === "end" && ["inherit", "transition"].includes(frameReferenceMode)
+      ? [{
+        role: "start_frame",
+        dataUrl: referenceContext.startFrameDataUrl,
+        sourceShotId: String(shot.shotId || "")
+      }]
+      : [];
     const frameShot = { ...shot };
     delete frameShot.negativePrompt;
     delete frameShot.negativePromptEntries;
@@ -1787,10 +2399,27 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
       negativePromptApplication,
       visualBible: plan.visualBible || {},
       characterReferences,
-      sceneReference: sceneReferenceForShot(plan, shot)
+      sceneReference: sceneReferenceForShot(plan, shot),
+      ...(frameKind === "end" && frameReferenceMode ? {
+        frameReferenceMode,
+        referenceImages: endpointReferences,
+        dependencyHash,
+        promptHash
+      } : {})
     });
     const images = Array.isArray(result.images) && result.images.length ? result.images : [result];
-    result.images = await Promise.all(images.map(async (image) => ({ ...image, dataUrl: await urlToDataUrl(image.url) })));
+    const authority = {
+      frameReferenceMode: result.frameReferenceMode || frameReferenceMode,
+      dependencyHash: result.dependencyHash || dependencyHash,
+      promptHash: result.promptHash || promptHash,
+      usedStartFrameReference: Boolean(result.usedStartFrameReference)
+    };
+    result.images = await Promise.all(images.map(async (image) => ({
+      ...image,
+      ...(frameKind === "end" && frameReferenceMode ? authority : {}),
+      dataUrl: await urlToDataUrl(image.url)
+    })));
+    if (frameKind === "end" && frameReferenceMode) Object.assign(result, authority);
     result.selectedIndex = -1;
     result.url = "";
     result.dataUrl = "";
@@ -1845,6 +2474,19 @@ function renderShotFrameResult(shotId) {
     { label: "首帧", stateItem: start },
     { label: "尾帧", stateItem: end }
   ].filter((item) => item.stateItem?.status && item.stateItem.status !== "ready");
+  if (
+    end?.status === "ready"
+    && end?.result?.frameReferenceMode === "independent"
+    && !selectedShotFrameCandidate(shotId, "start")
+  ) {
+    visibleItems.push({
+      label: "尾帧",
+      stateItem: {
+        status: "waiting_start",
+        message: "独立尾帧已就绪，尚未选择视频首帧；选择首帧后无需重新生成尾帧。"
+      }
+    });
+  }
   if (!visibleItems.length) return "";
   return `<div class="shot-frame-status-list">
     ${visibleItems.map((item) => `<p class="${escape(item.stateItem.status)}">${escape(item.label)}：${escape(item.stateItem.message || (item.stateItem.status === "running" ? "生成中…" : "生成失败"))}</p>`).join("")}
@@ -1944,6 +2586,7 @@ function setAnimationStatus(message, tone = "") {
 }
 function storyModelLabel() { return modelDisplayLabel(state.storyProvider, state.storyModel); }
 function animationModelLabel() { return modelDisplayLabel(state.animationProvider, state.animationModel); }
+function staticFrameCompilerModelLabel() { return modelDisplayLabel(state.staticFrameCompilerProvider, state.staticFrameCompilerModel); }
 function openModelSettings() {
   renderModelSettings();
   elements.modelSettingsModal.classList.remove("hidden");
@@ -2055,12 +2698,15 @@ function applyEffectiveModelState() {
   const analysis = effectiveStageSetting("analysis");
   const story = effectiveStageSetting("fullStory");
   const animation = effectiveStageSetting("animationPlan");
+  const staticFrameCompiler = effectiveStageSetting("staticFrameCompiler");
   state.analysisProvider = analysis.provider || "MiMo";
   state.analysisModel = analysis.model || "mimo-v2.5";
   state.storyProvider = story.provider || state.analysisProvider;
   state.storyModel = story.model || state.analysisModel;
   state.animationProvider = animation.provider || state.storyProvider;
   state.animationModel = animation.model || state.storyModel;
+  state.staticFrameCompilerProvider = staticFrameCompiler.provider || "";
+  state.staticFrameCompilerModel = staticFrameCompiler.model || "";
   const media = analysisMediaSettings();
   state.mediaMode = media.mediaMode;
   state.nativeVideoMaxBytes = media.nativeVideoMaxBytes;
@@ -2149,7 +2795,11 @@ function modelStagesReady() {
   });
 }
 function updateModelStateLabel() {
-  elements.modelState.lastElementChild.textContent = `${modelDisplayLabel(state.analysisProvider, state.analysisModel)} 解析 · 剧情 ${modelDisplayLabel(state.storyProvider, state.storyModel)} · 动画 ${modelDisplayLabel(state.animationProvider, state.animationModel)}`;
+  elements.modelState.lastElementChild.textContent = modelStateSummary();
+}
+function modelStateSummary() {
+  const compiler = staticFrameCompilerModelLabel();
+  return `${modelDisplayLabel(state.analysisProvider, state.analysisModel)} 解析 · 剧情 ${modelDisplayLabel(state.storyProvider, state.storyModel)} · 动画 ${modelDisplayLabel(state.animationProvider, state.animationModel)}${compiler ? ` · 静态帧 ${compiler}` : ""}`;
 }
 function updateModelActionLabels() {
   if (!state.storyRunning) elements.storyGenerate.querySelector("span").textContent = `用 ${storyModelLabel()} 生成完整剧情`;
@@ -2179,13 +2829,16 @@ function currentModelInfo() {
     storyProvider: state.storyProvider,
     storyModel: state.storyModel,
     animationProvider: state.animationProvider,
-    animationModel: state.animationModel
+    animationModel: state.animationModel,
+    staticFrameCompilerProvider: state.staticFrameCompilerProvider,
+    staticFrameCompilerModel: state.staticFrameCompilerModel
   };
 }
 
 function selectedStoryPackage() {
   const variant = selectedVariant();
   if (!variant) return null;
+  const staticFrameCompiler = state.animationPlanMetadata[variant.id]?.staticFrameCompiler;
   const pack = {
     packageType: "story-production-test-package",
     packageVersion: "2.2",
@@ -2202,6 +2855,7 @@ function selectedStoryPackage() {
     visualGuardrails: state.output.visualGuardrails,
     fullStory: state.fullStories[variant.id] || state.output.fullStory || null,
     animationPlan: state.animationPlans[variant.id] || state.output.animationPlan || null,
+    ...(staticFrameCompiler ? { metadata: { staticFrameCompiler } } : {}),
     shotFrameResults: state.shotFrameResults || {},
     shotVideoResults: state.shotVideoResults || {}
   };
@@ -2277,13 +2931,15 @@ function restoreStoryPackage(payload) {
       state.storyModel = payload.modelInfo.storyModel || state.storyModel;
       state.animationProvider = payload.modelInfo.animationProvider || state.animationProvider;
       state.animationModel = payload.modelInfo.animationModel || state.animationModel;
+      state.staticFrameCompilerProvider = payload.modelInfo.staticFrameCompilerProvider || state.staticFrameCompilerProvider;
+      state.staticFrameCompilerModel = payload.modelInfo.staticFrameCompilerModel || state.staticFrameCompilerModel;
     }
     applyEffectiveModelState();
     elements.storyModelName.textContent = modelDisplayLabel(state.storyProvider, state.storyModel);
     renderModelSettings();
   }
 
-  state.metadata = payload.sourceVideo || payload.metadata || state.metadata;
+  state.metadata = payload.sourceVideo || legacySourceVideoMetadata(payload.metadata) || state.metadata;
   state.output.referenceAnalysis = payload.referenceAnalysis || payload.output?.referenceAnalysis || state.output.referenceAnalysis;
   state.output.sourceScriptReconstruction = payload.sourceScriptReconstruction || payload.output?.sourceScriptReconstruction || state.output.sourceScriptReconstruction;
   state.output.creativeBrief = payload.creativeBrief || payload.output?.creativeBrief || state.output.creativeBrief;
@@ -2293,6 +2949,10 @@ function restoreStoryPackage(payload) {
 
   state.fullStories = { ...(payload.fullStories || {}), ...state.fullStories };
   state.animationPlans = { ...(payload.animationPlans || {}), ...state.animationPlans };
+  state.animationPlanMetadata = {
+    ...(payload.animationPlanMetadata || payload.output?.animationPlanMetadata || {}),
+    ...state.animationPlanMetadata
+  };
   state.shotFrameResults = { ...(payload.shotFrameResults || payload.output?.shotFrameResults || {}), ...state.shotFrameResults };
   state.shotVideoResults = { ...(payload.shotVideoResults || payload.output?.shotVideoResults || {}), ...state.shotVideoResults };
   if (fullStory) {
@@ -2303,12 +2963,29 @@ function restoreStoryPackage(payload) {
     state.animationPlans[id] = animationPlan;
     state.output.animationPlan = animationPlan;
   }
+  const staticFrameCompiler = payload.metadata?.staticFrameCompiler
+    || payload.output?.metadata?.staticFrameCompiler
+    || payload.animationPlanMetadata?.[id]?.staticFrameCompiler
+    || payload.output?.animationPlanMetadata?.[id]?.staticFrameCompiler;
+  if (staticFrameCompiler && typeof staticFrameCompiler === "object" && !Array.isArray(staticFrameCompiler)) {
+    state.animationPlanMetadata[id] = {
+      ...(state.animationPlanMetadata[id] || {}),
+      staticFrameCompiler
+    };
+  }
   state.output.fullStories = state.fullStories;
   state.output.animationPlans = state.animationPlans;
+  state.output.animationPlanMetadata = state.animationPlanMetadata;
   elements.export.classList.remove("hidden");
   history.replaceState({ storyVariantId: id }, "", `/story/${encodeURIComponent(id)}`);
   renderStoryPage({ autoGenerate: false });
   return { id, hasStory: Boolean(fullStory), hasAnimation: Boolean(animationPlan) };
+}
+
+function legacySourceVideoMetadata(metadata) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata) || metadata.staticFrameCompiler) return null;
+  const videoKeys = ["name", "size", "type", "duration", "width", "height"];
+  return videoKeys.some((key) => metadata[key] !== undefined) ? metadata : null;
 }
 
 function normalizeImportedVariant(payload) {

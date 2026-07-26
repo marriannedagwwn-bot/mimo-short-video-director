@@ -71,6 +71,17 @@ QWEN_ENABLE_THINKING=false
 
 配置 `QWEN_API_KEY` 后，只要 Qwen 可用，参考片分析、脚本还原、创意简报、视觉规则、主题变体、完整剧情、动画生产包和人物参考修正默认都会调用 Qwen 对应阶段模型；未配置 Qwen 时自动回退为 MiMo。`qwen3.7-max` 是纯文本阶段的默认选择；会传入视频或图片的参考片分析、脚本还原、视觉规则和人物参考修正默认使用 `qwen3.7-plus`，也可以改成账号可用的 Qwen-VL / Qwen-Omni 模型。页面顶部“模型设置”按钮可以按阶段临时切换 provider 和模型名，覆盖值会随之后所有生成请求发送给后端，也会写入导出的生产包。角色和首尾帧图片仍由已配置的即梦图片服务生成；选中首尾帧后可在页面调用可灵 AI 生成单镜头候选视频。
 
+动画逐镜 batch 在结构修复之后会经过独立的 Static Frame Compiler，把“准备、即将、正在”等剧情叙事语言转换为单帧可直接观察的姿态、手部与道具状态和动作结果。该阶段复用已配置的 Qwen 或 MiMo 客户端与凭据，但 provider/model 不继承动画规划阶段，也不会静默回退：
+
+```dotenv
+STATIC_FRAME_COMPILER_PROVIDER=Qwen
+STATIC_FRAME_COMPILER_MODEL=qwen3.7-max
+STATIC_FRAME_COMPILER_MAX_COMPLETION_TOKENS=4096
+STATIC_FRAME_COMPILER_TIMEOUT_MS=300000
+```
+
+`STATIC_FRAME_COMPILER_PROVIDER` 仅支持 `Qwen` 或 `MiMo`，对应 provider 必须已经配置可用。配置缺失或模型不可用时，健康检查和动画生产包接口会明确报告 Static Frame Compiler 不可用。
+
 Qwen 和 MiMo 的单次生成请求默认都允许等待 15 分钟，分别由 `QWEN_REQUEST_TIMEOUT_MS=900000` 和 `MIMO_REQUEST_TIMEOUT_MS=900000` 控制。`SERVER_REQUEST_TIMEOUT_MS=900000` 同步限制服务端接收请求体的时间；它不替代模型请求超时设置。
 
 Qwen 视频解析遵循阿里云百炼 OpenAI 兼容 Chat Completions 的多模态格式：小视频优先以 `video_url` 发送 Base64 Data URL，大于 `QWEN_NATIVE_VIDEO_MAX_MB` 或 `QWEN_MEDIA_MODE=frames` 时改用关键帧图片列表 `video`。阿里云文档说明 `video_url` 支持公网 URL 或 Base64 Data URL，`fps` 可控制抽帧频率；同时 Base64 视频编码后需小于 10MB，所以默认把原始视频上限设为 7MB。Qwen-VL 只能理解视频视觉信息；如果需要理解视频里的音频，需要选择支持音频的 Qwen-Omni 模型。接口依据：[MiMo V2.5 模型说明](https://mimo.mi.com/docs/en-US/product/introduction/models#MiMo-V25)、[MiMo OpenAI API](https://mimo.mi.com/docs/en-US/api/chat/openai-api)、[MiMo 视频理解文档](https://mimo.mi.com/docs/en-US/use-cases/video-understanding)、[阿里云百炼 OpenAI Chat 兼容文档](https://www.alibabacloud.com/help/zh/model-studio/qwen-api-via-openai-chat-completions) 和 [阿里云图像与视频理解文档](https://help.aliyun.com/zh/model-studio/vision)。

@@ -1,0 +1,60 @@
+{
+  "shotPlan": [
+    {
+      "shotId": "A01",
+      "sceneId": "LOC-MUSIC-BOX",
+      "startFrame": {
+        "timeAndWeather": "午后，晴",
+        "characters": [
+          {
+            "name": "女孩",
+            "screenPosition": "画面中央",
+            "bodyOrientation": "面向桌面",
+            "pose": "女孩准备打开八音盒",
+            "actionState": "正在按下按钮",
+            "handPropState": "双手随后拿起八音盒盖",
+            "gaze": "看向八音盒",
+            "emotionState": "专注",
+            "expression": "嘴唇轻抿"
+          }
+        ],
+        "environment": {
+          "sceneId": "LOC-MUSIC-BOX",
+          "foreground": "木桌边缘",
+          "midground": "女孩与关闭的八音盒",
+          "background": "旧书架",
+          "atmosphere": "安静"
+        }
+      },
+      "endFrame": {
+        "timeAndWeather": "午后，晴",
+        "characters": [
+          {
+            "name": "女孩",
+            "screenPosition": "画面中央",
+            "bodyOrientation": "面向桌面",
+            "pose": "女孩坐在桌前，身体保持前倾，双肘弯曲",
+            "actionState": "右手停留在按钮表面",
+            "handPropState": "左手扶住盒身，右手贴在按钮表面，盒盖保持关闭",
+            "gaze": "视线落在八音盒上",
+            "emotionState": "专注",
+            "expression": "嘴唇轻抿"
+          }
+        ],
+        "environment": {
+          "sceneId": "LOC-MUSIC-BOX",
+          "foreground": "木桌边缘",
+          "midground": "女孩与关闭的八音盒",
+          "background": "旧书架",
+          "atmosphere": "安静"
+        }
+      },
+      "motion": {
+        "primaryAction": "女孩按下按钮并打开八音盒",
+        "stopCondition": "盒盖打开后停止"
+      },
+      "startFramePrompt": "STALE_ALIAS_SHOULD_NOT_ENTER_COMPILER_CONTEXT",
+      "futureAlias": "FUTURE_ALIAS_SHOULD_NOT_ENTER_COMPILER_CONTEXT"
+    }
+  ]
+}

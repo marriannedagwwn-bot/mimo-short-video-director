@@ -7,9 +7,10 @@ export class InputError extends Error {
 }
 
 export class OutputContractError extends Error {
-  constructor(message) {
+  constructor(message, details = []) {
     super(message);
     this.name = "OutputContractError";
+    this.details = Array.isArray(details) ? details : [];
   }
 }
 
@@ -106,7 +107,15 @@ const animationFrameCharacterFields = [
   "expression"
 ];
 const animationFrameEnvironmentFields = ["sceneId", "foreground", "midground", "background", "atmosphere"];
-const animationFrameCameraFields = ["shotSize", "height", "angle", "viewDirection", "lensFeel", "depthOfField", "composition"];
+export const animationFrameCameraFields = Object.freeze([
+  "shotSize",
+  "height",
+  "angle",
+  "viewDirection",
+  "lensFeel",
+  "depthOfField",
+  "composition"
+]);
 const animationFrameLightingFields = ["source", "direction", "colorAndContrast"];
 const animationMotionFields = [
   "mode",
@@ -125,6 +134,8 @@ const animationMotionFields = [
 const animationMotionModes = new Set(["continuous_action", "camera_move", "object_transform", "loop"]);
 const animationCameraMoveModes = new Set(["locked", "continuous"]);
 const animationCameraMoveSpeeds = new Set(["slow", "medium", "fast"]);
+export const frameReferenceModes = Object.freeze(["inherit", "transition", "independent"]);
+const frameReferenceModeSet = new Set(frameReferenceModes);
 const animationAliasFields = [
   "startFramePrompt",
   "endFramePrompt",
@@ -383,6 +394,176 @@ export function ensureAnimationShotV2Contract(shot, path = "animationPlan.shotPl
 }
 
 /**
+ * Validate the runtime strategy used to generate one shot's end-frame image.
+ * `hasStartFrame` describes the selected start-frame image, not the structured
+ * StartState, which remains part of every v2 shot.
+ */
+export function ensureFrameReferenceModeCompatibility(
+  shot,
+  frameReferenceMode,
+  { hasStartFrame = true } = {}
+) {
+  if (!frameReferenceModeSet.has(frameReferenceMode)) {
+    throw frameReferenceModeError(
+      `frameReferenceMode 只允许 ${frameReferenceModes.join("、")}`,
+      "FRAME_REFERENCE_MODE_INVALID"
+    );
+  }
+  if (!shot || typeof shot !== "object" || Array.isArray(shot)) {
+    throw frameReferenceModeError("shot 必须是对象", "FRAME_REFERENCE_SHOT_INVALID");
+  }
+  const startFrame = shot.startFrame;
+  const endFrame = shot.endFrame;
+  if (!endFrame || typeof endFrame !== "object" || Array.isArray(endFrame)) {
+    throw frameReferenceModeError("缺少有效 EndState，无法生成尾帧", "FRAME_END_STATE_REQUIRED");
+  }
+  if (!startFrame || typeof startFrame !== "object" || Array.isArray(startFrame)) {
+    throw frameReferenceModeError("缺少结构化 StartState，无法验证同镜头场景边界", "FRAME_START_STATE_REQUIRED");
+  }
+
+  assertFrameReferenceSceneBoundary(shot, startFrame, endFrame);
+
+  if (frameReferenceMode === "independent") return frameReferenceMode;
+  if (!hasStartFrame) {
+    throw frameReferenceModeError(
+      `${frameReferenceMode} 模式生成尾帧前必须先选择首帧图片`,
+      "FRAME_START_IMAGE_REQUIRED"
+    );
+  }
+
+  const motion = shot.motion || {};
+  const cameraChanged = animationFieldsChanged(startFrame.camera, endFrame.camera, animationFrameCameraFields);
+  const lightingChanged = animationFieldsChanged(startFrame.lighting, endFrame.lighting, animationFrameLightingFields);
+  const environmentChanged = animationFieldsChanged(startFrame.environment, endFrame.environment, animationFrameEnvironmentFields);
+  const charactersChanged = !sameCanonicalValue(startFrame.characters, endFrame.characters);
+  const timeAndWeatherChanged = startFrame.timeAndWeather !== endFrame.timeAndWeather;
+  const styleChanged = !sameCanonicalValue(startFrame.styleModifiers, endFrame.styleModifiers);
+
+  if (frameReferenceMode === "inherit") {
+    const incompatible = [
+      cameraChanged ? "camera" : "",
+      environmentChanged ? "environment" : "",
+      lightingChanged ? "lighting" : "",
+      timeAndWeatherChanged ? "timeAndWeather" : "",
+      styleChanged ? "styleModifiers" : "",
+      motion?.cameraMove?.mode === "continuous" && motion?.mode !== "loop" ? "cameraMove.mode" : "",
+      motion?.mode === "object_transform" ? "motion.mode" : ""
+    ].filter(Boolean);
+    if (incompatible.length) {
+      throw frameReferenceModeError(
+        `inherit 模式要求首尾场景结构、摄影机、光线、时段天气和风格一致；不兼容字段：${incompatible.join("、")}`,
+        "FRAME_INHERIT_INCOMPATIBLE"
+      );
+    }
+    return frameReferenceMode;
+  }
+
+  if (styleChanged) {
+    throw frameReferenceModeError(
+      "transition 模式不得改变同一镜头的视觉风格",
+      "FRAME_TRANSITION_STYLE_CHANGE"
+    );
+  }
+  if (!(cameraChanged || lightingChanged || environmentChanged || charactersChanged || timeAndWeatherChanged)) {
+    throw frameReferenceModeError(
+      "transition 模式必须在 EndState 中声明至少一个可见终点变化",
+      "FRAME_TRANSITION_END_STATE_CHANGE_REQUIRED"
+    );
+  }
+  if (cameraChanged && motion?.cameraMove?.mode !== "continuous") {
+    throw frameReferenceModeError(
+      "transition 的摄影机变化必须同时由 motion.cameraMove.mode=continuous 声明",
+      "FRAME_TRANSITION_CAMERA_CHANGE_UNDECLARED"
+    );
+  }
+  if (motion?.cameraMove?.mode === "continuous" && !cameraChanged) {
+    throw frameReferenceModeError(
+      "transition 的连续运镜必须在 EndState.camera 中留下可见终点差异",
+      "FRAME_TRANSITION_CAMERA_END_STATE_REQUIRED"
+    );
+  }
+  if (lightingChanged && !hasDeclaredFrameChange(motion?.lightingChange)) {
+    throw frameReferenceModeError(
+      "transition 的光线变化必须同时写入 motion.lightingChange",
+      "FRAME_TRANSITION_LIGHTING_CHANGE_UNDECLARED"
+    );
+  }
+  if (environmentChanged && !hasDeclaredFrameChange(motion?.environmentChange)) {
+    throw frameReferenceModeError(
+      "transition 的环境变化必须同时写入 motion.environmentChange",
+      "FRAME_TRANSITION_ENVIRONMENT_CHANGE_UNDECLARED"
+    );
+  }
+  if (timeAndWeatherChanged
+    && !hasDeclaredFrameChange(motion?.environmentChange)
+    && !hasDeclaredFrameChange(motion?.lightingChange)) {
+    throw frameReferenceModeError(
+      "transition 的时段或天气变化必须同时写入 motion.environmentChange 或 motion.lightingChange",
+      "FRAME_TRANSITION_TIME_CHANGE_UNDECLARED"
+    );
+  }
+  if (charactersChanged && !String(motion?.primaryAction || "").trim()) {
+    throw frameReferenceModeError(
+      "transition 的角色终点变化必须同时由 motion.primaryAction 声明",
+      "FRAME_TRANSITION_CHARACTER_CHANGE_UNDECLARED"
+    );
+  }
+  if (motion?.mode === "object_transform" && !(environmentChanged || charactersChanged)) {
+    throw frameReferenceModeError(
+      "object_transform 必须在 EndState 中留下可见物体状态差异",
+      "FRAME_TRANSITION_OBJECT_END_STATE_REQUIRED"
+    );
+  }
+  return frameReferenceMode;
+}
+
+function frameReferenceModeError(message, code) {
+  return new InputError(message, [{ code }]);
+}
+
+function assertFrameReferenceSceneBoundary(shot, startFrame, endFrame) {
+  const shotSceneId = String(shot.sceneId || "").trim();
+  const startSceneId = String(startFrame?.environment?.sceneId || "").trim();
+  const endSceneId = String(endFrame?.environment?.sceneId || "").trim();
+  if (!shotSceneId || !startSceneId || !endSceneId) {
+    throw frameReferenceModeError(
+      "shot.sceneId、StartState.environment.sceneId 和 EndState.environment.sceneId 均不能为空",
+      "FRAME_SCENE_ID_REQUIRED"
+    );
+  }
+  if (shotSceneId !== startSceneId || shotSceneId !== endSceneId) {
+    throw frameReferenceModeError(
+      "尾帧参考模式只允许同一 sceneId；跨 sceneId 不得使用 transition 或普通镜头首尾帧策略",
+      "FRAME_CROSS_SCENE_NOT_ALLOWED"
+    );
+  }
+}
+
+function animationFieldsChanged(startValue, endValue, fields) {
+  if (!startValue || !endValue) return true;
+  return fields.some((field) => startValue[field] !== endValue[field]);
+}
+
+function sameCanonicalValue(left, right) {
+  return JSON.stringify(sortContractValue(left)) === JSON.stringify(sortContractValue(right));
+}
+
+function sortContractValue(value) {
+  if (Array.isArray(value)) return value.map(sortContractValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.keys(value).sort().reduce((result, key) => {
+    result[key] = sortContractValue(value[key]);
+    return result;
+  }, {});
+}
+
+function hasDeclaredFrameChange(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return !/^(?:无|不变|没有变化|保持(?:不变|一致|连续|原样)?|同首帧)/u.test(text);
+}
+
+/**
  * Compiler integration hook. The caller compiles a shot, merges the aliases,
  * then passes the compiler result here; validation itself stays dependency
  * free and therefore cannot introduce a compiler/validation import cycle.
@@ -429,20 +610,29 @@ function ensureAnimationPromptSchemaVersion(value, path) {
 
 function validateAnimationFrameV2(frame, path, shotSceneId) {
   requireExactContractObject(frame, path, animationFrameFields);
-  requireNonEmptyContractString(frame.timeAndWeather, `${path}.timeAndWeather`);
+  requireNonEmptyAnimationStaticLeaf(frame.timeAndWeather, `${path}.timeAndWeather`);
   if (!Array.isArray(frame.characters)) throw new OutputContractError(`${path}.characters 必须是数组`);
   const characterNames = new Set();
   frame.characters.forEach((character, index) => {
     const characterPath = `${path}.characters[${index}]`;
     requireExactContractObject(character, characterPath, animationFrameCharacterFields);
-    animationFrameCharacterFields.forEach((field) => requireNonEmptyContractString(character[field], `${characterPath}.${field}`));
+    animationFrameCharacterFields.forEach((field) => {
+      const fieldPath = `${characterPath}.${field}`;
+      if (field === "actionState") requireContractString(character[field], fieldPath);
+      else if (field === "name") requireNonEmptyContractString(character[field], fieldPath);
+      else requireNonEmptyAnimationStaticLeaf(character[field], fieldPath);
+    });
     const normalizedName = character.name.trim();
     if (characterNames.has(normalizedName)) throw new OutputContractError(`${path}.characters 角色名不能重复：${normalizedName}`);
     characterNames.add(normalizedName);
   });
 
   requireExactContractObject(frame.environment, `${path}.environment`, animationFrameEnvironmentFields);
-  animationFrameEnvironmentFields.forEach((field) => requireNonEmptyContractString(frame.environment[field], `${path}.environment.${field}`));
+  animationFrameEnvironmentFields.forEach((field) => {
+    const fieldPath = `${path}.environment.${field}`;
+    if (field === "sceneId") requireNonEmptyContractString(frame.environment[field], fieldPath);
+    else requireNonEmptyAnimationStaticLeaf(frame.environment[field], fieldPath);
+  });
   if (frame.environment.sceneId !== shotSceneId) {
     throw new OutputContractError(`${path}.environment.sceneId 必须与镜头 sceneId ${shotSceneId} 完全一致`);
   }
@@ -450,7 +640,7 @@ function validateAnimationFrameV2(frame, path, shotSceneId) {
   requireExactContractObject(frame.camera, `${path}.camera`, animationFrameCameraFields);
   animationFrameCameraFields.forEach((field) => requireNonEmptyContractString(frame.camera[field], `${path}.camera.${field}`));
   requireExactContractObject(frame.lighting, `${path}.lighting`, animationFrameLightingFields);
-  animationFrameLightingFields.forEach((field) => requireNonEmptyContractString(frame.lighting[field], `${path}.lighting.${field}`));
+  animationFrameLightingFields.forEach((field) => requireNonEmptyAnimationStaticLeaf(frame.lighting[field], `${path}.lighting.${field}`));
   validateContractStringArray(frame.styleModifiers, `${path}.styleModifiers`);
   validateContractStringArray(frame.continuityLocks, `${path}.continuityLocks`);
   validateStaticAnimationFrame(frame, path);
@@ -475,6 +665,8 @@ function validateAnimationMotionV2(motion, path, startFrame, endFrame) {
   }
   if (motion.cameraMove.mode === "locked") {
     assertCameraCoreEquality(startFrame.camera, endFrame.camera, path);
+  } else if (motion.mode !== "loop") {
+    assertContinuousCameraEndpointDifference(startFrame.camera, endFrame.camera, path);
   }
 
   requireExactContractObject(motion.emotionArc, `${path}.emotionArc`, ["from", "visibleProgression", "to"]);
@@ -565,14 +757,42 @@ function validateEmotionEndpoints(emotionArc, startFrame, endFrame, path) {
   }
 }
 
+export const STATIC_FRAME_PROCESS_OR_AUDIO_TERMS = Object.freeze([
+  "逐渐",
+  "随后",
+  "然后",
+  "正在",
+  "镜头移动",
+  "运镜",
+  "对白",
+  "音效"
+]);
+
+export const STATIC_FRAME_INVISIBLE_INTENT_TERMS = Object.freeze([
+  "准备",
+  "即将",
+  "将要",
+  "想要",
+  "试图"
+]);
+
 function validateStaticAnimationFrame(frame, path) {
   const fields = [];
   collectStructuredFramePositiveFields(fields, path, frame);
-  const processOrAudioTerms = ["逐渐", "随后", "然后", "镜头移动", "运镜", "对白", "音效"];
   for (const field of fields) {
-    const hit = processOrAudioTerms.find((term) => hasStaticFrameLintOccurrence(field.value, term));
+    const hit = STATIC_FRAME_PROCESS_OR_AUDIO_TERMS.find((term) => hasStaticFrameLintOccurrence(field.value, term));
     if (hit) {
-      throw new OutputContractError(`${field.path} 是静态帧字段，不得包含过程、运镜、对白或音效措辞：${hit}`);
+      throw new OutputContractError(
+        `${field.path} 是静态帧字段，不得包含过程、运镜、对白或音效措辞：${hit}`,
+        [{ code: "STATIC_FRAME_PROCESS_OR_AUDIO", path: field.path, reason: `命中静态帧不允许的过程、运镜、对白或音效措辞：${hit}` }]
+      );
+    }
+    const intentHit = STATIC_FRAME_INVISIBLE_INTENT_TERMS.find((term) => String(field.value || "").includes(term));
+    if (intentHit) {
+      throw new OutputContractError(
+        `${field.path} 是静态帧字段，不得包含无法直接画出的意图措辞：${intentHit}`,
+        [{ code: "STATIC_FRAME_INVISIBLE_INTENT", path: field.path, reason: `命中单张画面无法直接观察的意图措辞：${intentHit}` }]
+      );
     }
   }
 }
@@ -592,14 +812,47 @@ function assertCameraCoreEquality(startCamera, endCamera, path) {
   }
 }
 
+function assertContinuousCameraEndpointDifference(startCamera, endCamera, path) {
+  const changed = animationFrameCameraFields.filter((field) => startCamera[field] !== endCamera[field]);
+  if (changed.length) return;
+  const shotPath = String(path || "").replace(/\.motion$/u, "");
+  const cameraPath = `${shotPath}.endFrame.camera`;
+  throw new OutputContractError(
+    `${path}.cameraMove.mode=continuous 时 EndState.camera 必须留下与运镜终点一致的可见差异`,
+    [{
+      code: "CONTINUOUS_CAMERA_ENDPOINT_MISSING",
+      path: cameraPath,
+      reason: "连续运镜已声明，但 EndState.camera 的景别、机位、角度、观察方向、镜头质感、景深和构图与 StartState.camera 完全相同；请只重建可见的终点 camera 状态"
+    }]
+  );
+}
+
 function validateLoopEndpointCompatibility(startFrame, endFrame, motion, path) {
   if (!/(?:回到|回归|恢复|闭环|循环|首帧|起始|初始|start\s*frame)/iu.test(motion.stopCondition)) {
     throw new OutputContractError(`${path}.stopCondition 必须明确循环回到起始/首帧状态后停止`);
   }
-  if (startFrame.environment.sceneId !== endFrame.environment.sceneId) {
-    throw new OutputContractError(`${path} 循环镜头首尾 environment.sceneId 必须相同`);
+  if (startFrame.timeAndWeather !== endFrame.timeAndWeather) {
+    throw new OutputContractError(`${path} 循环镜头首尾 timeAndWeather 必须完全相同`);
+  }
+  const environmentChanged = animationFrameEnvironmentFields.filter(
+    (field) => startFrame.environment[field] !== endFrame.environment[field]
+  );
+  if (environmentChanged.length) {
+    throw new OutputContractError(`${path} 循环镜头首尾 environment 必须完全相同；变化字段：${environmentChanged.join("、")}`);
   }
   assertCameraCoreEquality(startFrame.camera, endFrame.camera, path);
+  const lightingChanged = animationFrameLightingFields.filter(
+    (field) => startFrame.lighting[field] !== endFrame.lighting[field]
+  );
+  if (lightingChanged.length) {
+    throw new OutputContractError(`${path} 循环镜头首尾 lighting 必须完全相同；变化字段：${lightingChanged.join("、")}`);
+  }
+  if (!sameCanonicalValue(startFrame.styleModifiers, endFrame.styleModifiers)) {
+    throw new OutputContractError(`${path} 循环镜头首尾 styleModifiers 必须完全相同`);
+  }
+  if (!sameCanonicalValue(startFrame.continuityLocks, endFrame.continuityLocks)) {
+    throw new OutputContractError(`${path} 循环镜头首尾 continuityLocks 必须完全相同`);
+  }
 
   const startNames = startFrame.characters.map((character) => character.name).sort();
   const endNames = endFrame.characters.map((character) => character.name).sort();
@@ -721,6 +974,16 @@ function requireContractString(value, path) {
 function requireNonEmptyContractString(value, path) {
   requireContractString(value, path);
   if (!value.trim()) throw new OutputContractError(`${path} 不能为空`);
+}
+
+function requireNonEmptyAnimationStaticLeaf(value, path) {
+  requireContractString(value, path);
+  if (!value.trim()) {
+    throw new OutputContractError(
+      `${path} 不能为空`,
+      [{ code: "STATIC_FRAME_REQUIRED", path, reason: "静态端点字段不能为空，必须改写为单张画面可直接观察的状态" }]
+    );
+  }
 }
 
 function validateContractStringArray(value, path) {
@@ -1465,7 +1728,7 @@ const semanticCharacterIdentityTerms = fixedCharacterIdentitySpecies.flatMap((sp
 ]);
 
 const bodyFeatureRules = [
-  { label: "尾巴", terms: ["尾巴"], allowSignals: [/尾巴|有尾|带尾|尾部/u] },
+  { label: "尾巴", terms: ["尾巴"], allowSignals: [/尾巴|有尾|带尾|尾部|[狼猫狐兔龙]尾/u] },
   { label: "狼尾", terms: ["狼尾", "狼尾巴"], allowSignals: [/狼尾|狼尾巴|狼[^，,。；;\n]{0,6}尾巴/u] },
   { label: "猫尾", terms: ["猫尾", "猫尾巴"], allowSignals: [/猫尾|猫尾巴|猫[^，,。；;\n]{0,6}尾巴/u] },
   { label: "狐尾", terms: ["狐尾", "狐尾巴"], allowSignals: [/狐尾|狐尾巴|狐狸尾|狐狸尾巴|狐[^，,。；;\n]{0,6}尾巴/u] },

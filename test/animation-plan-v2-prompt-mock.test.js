@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mockAnimationPlan } from "../src/mock.js";
-import { animationFoundationPrompt, animationPlanPrompt, animationShotBatchPrompt } from "../src/prompts.js";
+import {
+  animationActionStateAuditPrompt,
+  animationFoundationPrompt,
+  animationPlanPrompt,
+  animationShotBatchPatchPrompt,
+  animationShotBatchPrompt
+} from "../src/prompts.js";
 
 const creatorProfile = {
   fixedCharacter: "小白子，Q版猫耳少女人形，猫耳和蓬松猫尾巴",
@@ -97,8 +103,90 @@ test("生产批次 prompt 只要求结构化 shot，旧字段由服务端编译"
   assert.match(prompt, /cameraMove\.mode=locked/u);
   assert.match(prompt, /cameraMove\.mode=continuous/u);
   assert.match(prompt, /达到 endFrame 状态后立即停止/u);
+  assert.match(prompt, /pose 只描述单张画面中可见的身体姿态/u);
+  assert.match(prompt, /handPropState 只描述左右手与道具在当前画面的静态关系/u);
+  assert.match(prompt, /actionState 字段必须保留，但允许写空字符串/u);
+  assert.match(prompt, /除 characters\[\]\.actionState 明确允许为 "" 外，startFrame\/endFrame 的所有字符串字段都必须填入非空/u);
+  assert.match(prompt, /角色没有手持道具时，handPropState 也必须明确写出.*未持有、未接触或道具不在画面内，绝不能留空/u);
+  assert.match(prompt, /不要求包含位置、距离、接触等固定表达/u);
+  assert.match(prompt, /StartState\.pose=.*半蹲在木盒旁/u);
+  assert.match(prompt, /非道具移动“走向门口”/u);
+  assert.match(prompt, /输出前必须逐镜执行 camera 一致性自检/u);
+  assert.match(prompt, /cameraMove\.mode="locked"，令 endFrame\.camera 等于 startFrame\.camera 的逐字深拷贝/u);
+  assert.match(prompt, /若 cameraMove\.mode="continuous"，endFrame\.camera 至少一个字段必须与 startFrame\.camera 不同/u);
+  assert.match(prompt, /loop 是唯一例外.*endFrame 必须完整回到 startFrame/u);
+  assert.match(prompt, /必须先写好首尾帧第一个主角色的 emotionState，再逐字复制/u);
+  assert.match(prompt, /emotionArc\.from 必须是 startFrame\.characters\[0\]\.emotionState 的原样字符串，emotionArc\.to 必须是 endFrame\.characters\[0\]\.emotionState 的原样字符串/u);
+  assert.match(prompt, /输出前必须逐镜执行 emotionArc 一致性自检/u);
+  assert.match(prompt, /不得复制示例中的角色、道具、地点或动作/u);
   assert.match(prompt, /旧提示词和动作\/声音字段由服务端/u);
   for (const field of legacyShotFields) assert.doesNotMatch(prompt, new RegExp(`"${field}"\\s*:`));
+});
+
+test("actionState 语义审核 prompt 只提交最小单句输入", () => {
+  const prompt = animationActionStateAuditPrompt([{
+    id: "AS-0001",
+    actionState: "角色脸上露出惊讶表情",
+    frameKind: "startFrame",
+    pose: "不应进入审核的姿态值",
+    handPropState: "不应进入审核的道具值",
+    gaze: "不应进入审核的视线值",
+    expression: "不应进入审核的表情字段值"
+  }]);
+
+  assert.match(prompt, /只判断每条 actionState 单句本身/u);
+  assert.match(prompt, /不判断整个角色状态是否完整/u);
+  assert.match(prompt, /不必包含位置、距离、接触等固定词语/u);
+  assert.match(prompt, /"id":"AS-0001","actionState":"角色脸上露出惊讶表情","frameKind":"startFrame"/u);
+  assert.doesNotMatch(prompt, /不应进入审核/u);
+  assert.match(prompt, /小鸟停在女孩掌心，翅膀轻微展开/u);
+  assert.match(prompt, /发现盒子里的小鸟，决定帮助它/u);
+  assert.match(prompt, /不得复制示例中的角色、道具、地点或动作/u);
+  assert.match(prompt, /不得根据固定关键词或固定句式机械判定/u);
+  assert.doesNotMatch(prompt, /animationShotBatch\.shotPlan/u);
+  assert.match(prompt, /"id":"AS-0001","verdict":"pass","reasonCode":"visible_state"/u);
+  assert.doesNotMatch(prompt, /"reason":/u);
+});
+
+test("单字段 patch prompt 强制 pose 消除失败原因且 handPropState 不得留空", () => {
+  const failedBatch = {
+    shotPlan: [{
+      startFrame: {
+        characters: [{
+          pose: "准备打开盒子",
+          handPropState: ""
+        }]
+      }
+    }]
+  };
+  const posePrompt = animationShotBatchPatchPrompt({
+    failedBatch,
+    path: "animationShotBatch.shotPlan[0].startFrame.characters[0].pose",
+    reason: "命中单张画面无法直接观察的意图措辞：准备"
+  });
+
+  assert.match(posePrompt, /必须先消除“校验失败原因”指出的问题/u);
+  assert.match(posePrompt, /不得保留或换序复述触发失败的意图、过程、运镜、对白或音效措辞/u);
+  assert.match(posePrompt, /路径以 \.pose 结尾时，只写此刻可见的身体朝向、支撑、重心、关节弯曲和肢体停留位置/u);
+  assert.match(posePrompt, /不写角色试图、准备、想要或将要完成什么/u);
+
+  const handPropPrompt = animationShotBatchPatchPrompt({
+    failedBatch,
+    path: "animationShotBatch.shotPlan[0].startFrame.characters[0].handPropState",
+    reason: "静态端点字段不能为空"
+  });
+  assert.match(handPropPrompt, /路径以 \.handPropState 结尾时，只写此刻手部\/前肢\/身体与道具的接触、距离和道具状态/u);
+  assert.match(handPropPrompt, /即使未持有道具也必须写出可见的未持有或未接触关系，不得留空/u);
+
+  const cameraPrompt = animationShotBatchPatchPrompt({
+    failedBatch,
+    path: "animationShotBatch.shotPlan[0].endFrame.camera",
+    reason: "连续运镜没有留下可见 camera 终点"
+  });
+  assert.match(cameraPrompt, /完整 EndState\.camera 对象/u);
+  assert.match(cameraPrompt, /"value":\{"shotSize":"","height":"","angle":"","viewDirection":"","lensFeel":"","depthOfField":"","composition":""\}/u);
+  assert.match(cameraPrompt, /至少一个字段必须与 StartState\.camera 逐字不同/u);
+  assert.match(cameraPrompt, /不得把“推、拉、移动、跟拍、环绕、升降”等运动过程原样塞入静态 camera/u);
 });
 
 test("mock animationPlan 输出完整 v2 shot 与无缝 timing beats", () => {

@@ -6,10 +6,15 @@ import { loadEnv, getConfig } from "./src/config.js";
 import { MimoClient, ModelResponseError } from "./src/mimo-client.js";
 import { QwenClient } from "./src/qwen-client.js";
 import { JimengImageClient, JimengImageConfigError, JimengImageProviderError, buildCharacterReferenceImagePrompt, buildShotFrameImagePrompt } from "./src/jimeng-client.js";
-import { compileShotFrameNegativePrompt } from "./public/shot-frame-prompt.js";
+import { buildFrameReferenceModeText, compileShotFrameNegativePrompt } from "./public/shot-frame-prompt.js";
+import { buildFrameReferenceManifest } from "./public/shot-reference-images.js";
+import { buildShotFrameMultiImagePrompt } from "./public/shot-frame-multi-image-prompt.js";
+import { computeDependencyHash, computePromptHash } from "./src/frame-dependency.js";
+import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./src/frame-reference-request.js";
 import { WorkflowService } from "./src/workflow.js";
-import { InputError, OutputContractError } from "./src/validation.js";
+import { ensureFrameReferenceModeCompatibility, InputError, OutputContractError } from "./src/validation.js";
 import { generateShotVideo, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
+import { StaticFrameCompilerError } from "./src/static-frame-compiler.js";
 
 loadEnv();
 const config = getConfig();
@@ -33,7 +38,9 @@ const routes = {
   "/api/visual-guardrails": (body) => workflow.createVisualGuardrails(body),
   "/api/variants": (body) => workflow.createVariants(body),
   "/api/full-story": (body) => workflow.createFullStory(body),
-  "/api/animation-plan": (body) => workflow.createAnimationPlan(body),
+  "/api/animation-plan": (body) => body?.includeCompilerMetadata
+    ? workflow.createAnimationPlanWithMetadata(body)
+    : workflow.createAnimationPlan(body),
   "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
   "/api/generate-shot-video": (body) => generateShotVideo({
     ...body,
@@ -96,7 +103,8 @@ const server = http.createServer(async (request, response) => {
         timeouts: {
           serverRequestMs: config.serverRequestTimeoutMs,
           qwenGenerationMs: config.qwen.requestTimeoutMs,
-          mimoGenerationMs: config.mimo.requestTimeoutMs
+          mimoGenerationMs: config.mimo.requestTimeoutMs,
+          staticFrameCompilerMs: config.staticFrameCompiler.requestTimeoutMs
         }
       });
     }
@@ -121,6 +129,16 @@ const server = http.createServer(async (request, response) => {
     if (error instanceof ShotVideoProviderError) return json(response, 502, { ok: false, error: "视频生成服务调用失败", detail: error.message });
     if (error instanceof JimengImageConfigError) return json(response, 400, { ok: false, error: error.message });
     if (error instanceof JimengImageProviderError) return json(response, 502, { ok: false, error: "即梦图片生成服务调用失败", detail: error.raw || error.message });
+    if (error instanceof StaticFrameCompilerError) {
+      const status = error.category === "config" ? 400 : error.category === "timeout" ? 504 : 502;
+      return json(response, status, {
+        ok: false,
+        error: error.message,
+        stage: "staticFrameCompiler",
+        category: error.category,
+        metadata: error.metadata || null
+      });
+    }
     if (error instanceof OutputContractError) return json(response, 502, { ok: false, error: `模型输出不完整：${error.message}` });
     if (error instanceof ModelResponseError) return json(response, 502, { ok: false, error: error.message, detail: error.raw });
     if (error.name === "AbortError" || error.name === "TimeoutError") return json(response, 504, { ok: false, error: "模型响应超时" });
@@ -133,7 +151,7 @@ server.requestTimeout = config.serverRequestTimeoutMs;
 
 server.listen(config.port, () => {
   console.log(`AI 短视频导演：http://localhost:${config.port}`);
-  console.log(`运行模式：${workflow.mode === "live" ? `${stageDefaults.analysis.provider} (${stageDefaults.analysis.model}) / 剧情 ${stageDefaults.fullStory.provider} ${stageDefaults.fullStory.model} / 动画 ${stageDefaults.animationPlan.provider} ${stageDefaults.animationPlan.model}` : "演示数据（配置 .env 后接入模型服务）"}`);
+  console.log(`运行模式：${workflow.mode === "live" ? `${stageDefaults.analysis.provider} (${stageDefaults.analysis.model}) / 剧情 ${stageDefaults.fullStory.provider} ${stageDefaults.fullStory.model} / 动画 ${stageDefaults.animationPlan.provider} ${stageDefaults.animationPlan.model} / 静态帧编译 ${stageDefaults.staticFrameCompiler.provider || "未配置"} ${stageDefaults.staticFrameCompiler.model || ""}` : "演示数据（配置 .env 后接入模型服务）"}`);
   console.log(`生成请求超时：${Math.round(config.qwen.requestTimeoutMs / 60000)} 分钟（Qwen）/ ${Math.round(config.mimo.requestTimeoutMs / 60000)} 分钟（MiMo）`);
 });
 
@@ -148,6 +166,12 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
     variants: stageSetting(provider, source.variantsModel || source.model, source.variantsMaxCompletionTokens || source.maxCompletionTokens),
     fullStory: stageSetting(provider, source.storyModel || source.model, source.storyMaxCompletionTokens || source.maxCompletionTokens),
     animationPlan: stageSetting(provider, source.animationModel || source.storyModel || source.model, source.animationMaxCompletionTokens || source.maxCompletionTokens),
+    staticFrameCompiler: stageSetting(
+      config.staticFrameCompiler.provider,
+      config.staticFrameCompiler.model,
+      config.staticFrameCompiler.maxCompletionTokens,
+      config.staticFrameCompiler.requestTimeoutMs
+    ),
     characterReference: stageSetting(provider, source.characterReferenceModel || source.videoModel || source.model, source.characterReferenceMaxCompletionTokens || source.maxCompletionTokens)
   };
 }
@@ -173,14 +197,18 @@ function videoGenerationConfigured() {
   return Boolean(process.env.VIDEO_HTTP_VIDEO_ENDPOINT || process.env.VIDEO_HTTP_ENDPOINT || process.env.VIDEO_HTTP_CONFIG);
 }
 
-function stageSetting(provider, model, maxCompletionTokens) {
+function stageSetting(provider, model, maxCompletionTokens, requestTimeoutMs = null) {
   const tokenNumber = maxCompletionTokens === null || maxCompletionTokens === undefined || maxCompletionTokens === ""
     ? null
     : Number(maxCompletionTokens);
+  const timeoutNumber = requestTimeoutMs === null || requestTimeoutMs === undefined || requestTimeoutMs === ""
+    ? null
+    : Number(requestTimeoutMs);
   return {
     provider,
     model,
-    maxCompletionTokens: Number.isFinite(tokenNumber) ? Math.round(tokenNumber) : null
+    maxCompletionTokens: Number.isFinite(tokenNumber) ? Math.round(tokenNumber) : null,
+    requestTimeoutMs: Number.isFinite(timeoutNumber) ? Math.round(timeoutNumber) : null
   };
 }
 
@@ -348,22 +376,75 @@ async function generateShotFrameImage(body = {}) {
   if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
   const frameKind = body.frameKind === "end" ? "end" : "start";
   const shot = body.shot || {};
-	  const negativePromptDelivery = compileShotFrameNegativePrompt(shot);
-	  const basePrompt = String(body.prompt || "").trim() || buildShotFrameImagePrompt({
-	    frameKind,
-	    shot,
-	    visualBible: body.visualBible,
-	    characterReferences: body.characterReferences,
-	    sceneReference: body.sceneReference
-	  });
-	  const prompt = appendMissingLines(basePrompt, negativePromptDelivery.positiveConstraints);
+  const frameReferenceMode = String(body.frameReferenceMode || "").trim();
+  if (frameReferenceMode && frameKind !== "end") {
+    throw new InputError("frameReferenceMode 只允许用于尾帧生成");
+  }
+  const endpointReferences = normalizeEndpointReferenceImages(body.referenceImages, {
+    frameKind,
+    frameReferenceMode,
+    shotId: shot.shotId
+  });
+  if (frameReferenceMode) {
+    ensureFrameReferenceModeCompatibility(shot, frameReferenceMode, {
+      hasStartFrame: endpointReferences.length === 1,
+      hasStartFrameReference: endpointReferences.length === 1
+    });
+  }
+  let manifest;
+  try {
+    manifest = await buildFrameReferenceManifest({
+      frameKind: frameReferenceMode ? frameKind : "start",
+      frameReferenceMode: frameReferenceMode || undefined,
+      endpointReference: endpointReferences[0] || null,
+      characterReferences: body.characterReferences,
+      maxProviderImages: 6
+    });
+  } catch (error) {
+    if (error instanceof InputError) throw error;
+    throw new InputError(error.message || "参考图清单无效");
+  }
+  const negativePromptDelivery = compileShotFrameNegativePrompt(shot);
+  const basePrompt = String(body.prompt || "").trim() || buildShotFrameImagePrompt({
+    frameKind,
+    shot,
+    visualBible: body.visualBible,
+    characterReferences: body.characterReferences,
+    sceneReference: body.sceneReference,
+    referenceManifest: manifest,
+    frameReferenceMode
+  });
+  const prompt = appendMissingLines(basePrompt, [
+    ...frameReferenceManifestPromptLines(manifest, frameReferenceMode, {
+      shot,
+      frameKind,
+      sceneReference: body.sceneReference
+    }),
+    ...negativePromptDelivery.positiveConstraints
+  ]);
+  let authoritativeDependencyHash = "";
+  try {
+    authoritativeDependencyHash = frameReferenceMode
+      ? await computeDependencyHash({
+        startImageDataUrl: manifest.endpointReference?.dataUrl || "",
+        endState: shot.endFrame,
+        referenceImages: manifest.additionalReferences,
+        frameReferenceMode
+      })
+      : "";
+  } catch (error) {
+    throw new InputError(error.message || "尾帧依赖哈希无法计算");
+  }
+  if (frameReferenceMode) assertFrameDependencyHash(body.dependencyHash, authoritativeDependencyHash);
   const count = clampFrameImageCount(body.count);
+  const providerPrompt = buildShotFrameMultiImagePrompt(prompt, count);
+  const authoritativePromptHash = frameReferenceMode ? await computePromptHash(providerPrompt) : "";
   const imageModel = modelOverrideFor(body, "imageGeneration") || config.jimeng.model;
-  const uploadedReferences = referenceImages(body.characterReferences);
+  const uploadedReferences = manifest.providerImages.map((item) => item.dataUrl);
   const images = [];
   const requestReceipt = await jimengClient.generateImagesStream({
     count,
-    prompt: buildShotFrameMultiImagePrompt(prompt, count),
+    prompt: providerPrompt,
     referenceImageDataUrls: uploadedReferences,
     model: imageModel,
     negativePromptDelivery
@@ -390,6 +471,7 @@ async function generateShotFrameImage(body = {}) {
     frameKind,
     shotId: shot.shotId || "",
     prompt,
+    providerPrompt,
     model: imageModel,
     url: image.url,
     filename: image.filename,
@@ -401,13 +483,47 @@ async function generateShotFrameImage(body = {}) {
       filename: item.filename,
       size: item.size || "",
       model: imageModel,
-      referenceImageCount: uploadedReferences.length
+      referenceImageCount: uploadedReferences.length,
+      ...(frameReferenceMode ? {
+        frameReferenceMode,
+        dependencyHash: authoritativeDependencyHash,
+        promptHash: authoritativePromptHash,
+        usedStartFrameReference: Boolean(manifest.endpointReference?.usedByProvider)
+      } : {})
     })),
     referenceImageCount: uploadedReferences.length,
+    referenceImageManifest: manifest.providerImages.map(({ index, token, role, contentHash, characterName = "", sourceShotId = "" }) => ({
+      index,
+      token,
+      role,
+      contentHash,
+      characterName,
+      sourceShotId
+    })),
+    ...(frameReferenceMode ? {
+      frameReferenceMode,
+      dependencyHash: authoritativeDependencyHash,
+      promptHash: authoritativePromptHash,
+      usedStartFrameReference: Boolean(manifest.endpointReference?.usedByProvider),
+      clientPromptHashMatched: !body.promptHash || body.promptHash === authoritativePromptHash
+    } : {}),
     negativePromptDelivery: requestReceipt?.negativePromptDelivery || {},
     requestPreview: requestReceipt?.requestPreview || {},
     generatedAt: new Date().toISOString()
   };
+}
+
+function frameReferenceManifestPromptLines(manifest = {}, frameReferenceMode = "", context = {}) {
+  const bindings = Array.isArray(manifest.promptBindings) ? manifest.promptBindings : [];
+  const lines = bindings.map((binding) => `${binding.token}：${binding.description}`);
+  const modeText = buildFrameReferenceModeText({
+    shot: context.shot,
+    frameKind: context.frameKind,
+    frameReferenceMode,
+    referenceManifest: manifest,
+    sceneReference: context.sceneReference
+  });
+  return [...lines, ...String(modeText || "").split("\n").map((line) => line.trim()).filter(Boolean)];
 }
 
 function appendMissingLines(prompt, lines = []) {
@@ -415,17 +531,6 @@ function appendMissingLines(prompt, lines = []) {
     .map((line) => String(line || "").trim())
     .filter((line) => line && !String(prompt || "").includes(line));
   return additions.length ? [String(prompt || "").trim(), ...additions].filter(Boolean).join("\n") : String(prompt || "").trim();
-}
-
-function buildShotFrameMultiImagePrompt(prompt, totalCount) {
-  if (totalCount <= 1) return prompt;
-  return [
-    prompt,
-    `本次必须一次性输出 ${totalCount} 张候选图，作为同一镜头的备选首尾帧。`,
-    `这 ${totalCount} 张图必须保持同一镜头目标、角色、道具、画风、画幅、景别、机位、主体位置和动作状态一致，只允许表情细节、手指细节或光影有极轻微差异。`,
-    `不要把候选图画成不同分镜，不要改变角色站位、镜头距离、视角或动作阶段。`,
-    `不要只输出 1 张图。最终返回图片数量必须等于 ${totalCount} 张。`
-  ].join("\n\n");
 }
 
 function clampFrameImageCount(value) {
@@ -458,13 +563,6 @@ async function persistGeneratedImage(event, characterReference = {}) {
     path: file,
     size: event.size || ""
   };
-}
-
-function referenceImages(characterReferences = []) {
-  return (Array.isArray(characterReferences) ? characterReferences : [])
-    .map((item) => item?.referenceImageDataUrl)
-    .filter(Boolean)
-    .slice(0, 6);
 }
 
 async function serveStatic(pathname, response, headOnly) {

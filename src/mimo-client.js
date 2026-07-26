@@ -33,11 +33,40 @@ export class MimoClient {
     }
   }
 
-  async generateJson({ prompt, frames = [], model = null, maxCompletionTokens = null, systemPrompt = null } = {}) {
-    return this.generateJsonWithMedia({ prompt, frames, model, maxCompletionTokens, systemPrompt });
+  async generateJson({
+    prompt,
+    frames = [],
+    model = null,
+    maxCompletionTokens = null,
+    systemPrompt = null,
+    requestTimeoutMs = null,
+    jsonRetryAttempts = null,
+    strictJson = false
+  } = {}) {
+    return this.generateJsonWithMedia({
+      prompt,
+      frames,
+      model,
+      maxCompletionTokens,
+      systemPrompt,
+      requestTimeoutMs,
+      jsonRetryAttempts,
+      strictJson
+    });
   }
 
-  async generateJsonWithMedia({ prompt, frames = [], video = null, model = null, maxCompletionTokens = null, systemPrompt = null, onResolvedMediaMode = null }) {
+  async generateJsonWithMedia({
+    prompt,
+    frames = [],
+    video = null,
+    model = null,
+    maxCompletionTokens = null,
+    systemPrompt = null,
+    onResolvedMediaMode = null,
+    requestTimeoutMs = null,
+    jsonRetryAttempts = null,
+    strictJson = false
+  }) {
     const canUseVideo = Boolean(video?.dataUrl) && this.config.mediaMode !== "frames";
     try {
       const result = await this.requestJson({
@@ -48,7 +77,11 @@ export class MimoClient {
         model,
         maxCompletionTokens,
         systemPrompt,
-        jsonRetryAttempts: canUseVideo && this.config.mediaMode === "auto" && frames.length > 0 ? 0 : null
+        requestTimeoutMs,
+        strictJson,
+        jsonRetryAttempts: jsonRetryAttempts === null && canUseVideo && this.config.mediaMode === "auto" && frames.length > 0
+          ? 0
+          : jsonRetryAttempts
       });
       notifyResolvedMediaMode(onResolvedMediaMode, canUseVideo ? "video" : frames.length ? "frames" : "text");
       return result;
@@ -59,13 +92,34 @@ export class MimoClient {
         && error instanceof ModelResponseError
         && ([400, 415, 422].includes(error.status) || isRecoverableVideoJsonError(error));
       if (!canFallback) throw error;
-      const result = await this.requestJson({ prompt, frames, useVideo: false, model, maxCompletionTokens, systemPrompt });
+      const result = await this.requestJson({
+        prompt,
+        frames,
+        useVideo: false,
+        model,
+        maxCompletionTokens,
+        systemPrompt,
+        requestTimeoutMs,
+        jsonRetryAttempts,
+        strictJson
+      });
       notifyResolvedMediaMode(onResolvedMediaMode, "frames");
       return result;
     }
   }
 
-  async requestJson({ prompt, frames = [], video = null, useVideo = false, model = null, maxCompletionTokens = null, systemPrompt = null, jsonRetryAttempts = null }) {
+  async requestJson({
+    prompt,
+    frames = [],
+    video = null,
+    useVideo = false,
+    model = null,
+    maxCompletionTokens = null,
+    systemPrompt = null,
+    requestTimeoutMs = null,
+    jsonRetryAttempts = null,
+    strictJson = false
+  }) {
     const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`;
     const retryAttempts = jsonRetryAttempts === null
       ? Number.isFinite(Number(this.config.jsonRetryAttempts)) ? Number(this.config.jsonRetryAttempts) : 2
@@ -84,7 +138,7 @@ export class MimoClient {
           ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {})
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.config.requestTimeoutMs || 900_000)
+        signal: AbortSignal.timeout(requestTimeoutMs ?? this.config.requestTimeoutMs ?? 900_000)
       });
       const raw = await response.text();
       if (!response.ok) {
@@ -100,7 +154,9 @@ export class MimoClient {
       const content = envelope.choices?.[0]?.message?.content;
       if (typeof content !== "string") throw new ModelResponseError("MiMo 响应缺少 message.content", raw.slice(0, 2000));
       try {
-        return parseModelJson(content, "MiMo");
+        return strictJson
+          ? parseStrictModelJson(content, "MiMo")
+          : parseModelJson(content, "MiMo");
       } catch (error) {
         if (!(error instanceof ModelResponseError) || attempt >= retryAttempts) throw error;
         lastJsonError = error;
@@ -187,5 +243,14 @@ export function parseModelJson(content, providerName = "模型") {
       } catch {}
     }
     throw new ModelResponseError(`${providerName} 未返回合法 JSON`, content.slice(0, 3000));
+  }
+}
+
+export function parseStrictModelJson(content, providerName = "模型") {
+  const raw = typeof content === "string" ? content : "";
+  try {
+    return JSON.parse(raw.trim());
+  } catch {
+    throw new ModelResponseError(`${providerName} 未返回严格 JSON`, raw.slice(0, 3000));
   }
 }

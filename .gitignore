@@ -5,3 +5,11 @@ coverage/
 exports/
 public/generated-images/
 public/generated-videos/
+
+# Large local reference videos; keep them out of Git/Codex workspace snapshots.
+测试文件/*.mp4
+测试文件/*.MP4
+测试文件/*.mov
+测试文件/*.MOV
+测试文件/*.rtf
+测试文件/*.RTF

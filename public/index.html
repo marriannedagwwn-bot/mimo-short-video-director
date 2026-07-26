@@ -261,7 +261,16 @@
                 <option value="6">6 张</option>
               </select>
             </label>
+            <label class="field shot-frame-reference-mode-field hidden" id="shotFrameReferenceModeField">
+              <span>尾帧参考策略</span>
+              <select id="shotFrameReferenceMode">
+                <option value="inherit">强继承</option>
+                <option value="transition">同场景变化</option>
+                <option value="independent">独立尾帧</option>
+              </select>
+            </label>
           </div>
+          <p class="shot-frame-reference-mode-hint hidden" id="shotFrameReferenceModeHint"></p>
           <div class="shot-frame-reference-list" id="shotFrameReferenceList"></div>
         </div>
         <div class="modal-panel">

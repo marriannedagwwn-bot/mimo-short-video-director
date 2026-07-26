@@ -1,0 +1,41 @@
+{
+  "shotPlan": [
+    {
+      "shotId": "A01",
+      "sceneId": "LOC-MUSIC-BOX",
+      "startFrame": {
+        "characters": [
+          {
+            "name": "女孩",
+            "pose": "女孩坐在桌前，身体微微前倾，双肘弯曲，视线落在八音盒上",
+            "actionState": "右手停留在按钮表面",
+            "handPropState": "左手扶住盒身，右手贴在按钮表面，盒盖保持关闭"
+          }
+        ],
+        "environment": {
+          "sceneId": "LOC-MUSIC-BOX",
+          "midground": "女孩与关闭的八音盒"
+        }
+      },
+      "endFrame": {
+        "characters": [
+          {
+            "name": "女孩",
+            "pose": "女孩坐在桌前，身体保持前倾，双肘抬高，头部朝向八音盒",
+            "actionState": "",
+            "handPropState": "双手托住盒盖两侧，盒盖停在打开七十度的位置"
+          }
+        ],
+        "environment": {
+          "sceneId": "LOC-MUSIC-BOX",
+          "midground": "女孩与打开的八音盒"
+        }
+      },
+      "motion": {
+        "primaryAction": "女孩抬起盒盖至七十度",
+        "stopCondition": "盒盖达到七十度时停止"
+      },
+      "startFramePrompt": "EXISTING_ALIAS_IS_OUTSIDE_COMPILER_SCOPE"
+    }
+  ]
+}

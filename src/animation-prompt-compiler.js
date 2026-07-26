@@ -42,6 +42,11 @@ export function compileAnimationShotPrompts(shot) {
   };
 }
 
+export function rebuildAnimationShotPrompts(shot) {
+  assertRecord(shot, "shot");
+  return { ...shot, ...compileAnimationShotPrompts(shot) };
+}
+
 export function normalizeAnimationShotPrompts(shot, versionOrPlan) {
   if (!isStructuredAnimationShot(shot, versionOrPlan)) return shot;
 
