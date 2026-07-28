@@ -1660,6 +1660,95 @@ test("emotionArc repair 在主角标识缺失或 frame 同名重复时保持原�
   assert.equal(duplicateResult.shotPlan[0].motion.emotionArc.from, "重复匹配时不得修复");
 });
 
+test("animationShotBatch 主角诊断区分缺失、重复和名称不精确", async (t) => {
+  const scenarios = [
+    {
+      name: "缺失",
+      category: "missing",
+      reason: "明确主角缺失",
+      actualNames: ["明确配角"],
+      mutate(shot) {
+        shot.startFrame.characters = [{
+          ...structuredClone(shot.startFrame.characters[0]),
+          name: "明确配角"
+        }];
+      }
+    },
+    {
+      name: "重复",
+      category: "duplicate",
+      reason: "明确主角重复",
+      actualNames: ["阿岚", "阿岚"],
+      mutate(shot) {
+        shot.startFrame.characters.push(structuredClone(shot.startFrame.characters[0]));
+      }
+    },
+    {
+      name: "名称不精确",
+      category: "inexact",
+      reason: "主角名称不精确",
+      actualNames: ["阿岚（社区修理师）"],
+      mutate(shot) {
+        shot.startFrame.characters[0].name = "阿岚（社区修理师）";
+      }
+    }
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const context = fixture();
+      const rawBatch = modelBatchFrom(context);
+      scenario.mutate(rawBatch.shotPlan[0]);
+      let batchCalls = 0;
+      let patchCalls = 0;
+      const workflow = animationWorkflow({
+        animationShotBatchSceneCount: 6,
+        client: {
+          async generateJson(args) {
+            if (args.prompt.includes("本阶段只生成可供所有镜头批次复用")) {
+              return foundationFrom(context.animationPlan);
+            }
+            if (args.prompt.includes("ANIMATION_SHOT_BATCH_SINGLE_FIELD_PATCH_V1")) {
+              patchCalls += 1;
+              return {};
+            }
+            batchCalls += 1;
+            return structuredClone(rawBatch);
+          }
+        }
+      });
+
+      let finalError;
+      await assert.rejects(async () => {
+        try {
+          await workflow.createAnimationPlan(context);
+        } catch (error) {
+          finalError = error;
+          throw error;
+        }
+      }, new RegExp(`second-pass 失败.*${scenario.reason}`, "u"));
+
+      assert.equal(batchCalls, 2);
+      assert.equal(patchCalls, 0);
+      assert.match(finalError.message, /批次：1/u);
+      assert.match(finalError.message, /shotId：A01/u);
+      assert.match(finalError.message, /sourceSceneId：S1/u);
+      assert.match(finalError.message, /sourceSceneIds：\["S1","S2","S3","S4","S5","S6"\]/u);
+      assert.match(finalError.message, /animationShotBatch\.shotPlan\[0\]\.startFrame\.characters/u);
+      assert.match(finalError.message, /预期唯一主角：阿岚/u);
+      assert.match(finalError.message, /精确匹配数量：/u);
+      assert.ok(Array.isArray(finalError.details));
+      assert.equal(finalError.details.length, 1);
+      assert.deepEqual(finalError.details[0].actualCharacterNames, scenario.actualNames);
+      assert.equal(finalError.details[0].exactMatchCount, scenario.category === "duplicate" ? 2 : 0);
+      assert.equal(finalError.details[0].category, scenario.category);
+      assert.equal(finalError.details[0].path, "animationShotBatch.shotPlan[0].startFrame.characters");
+      assert.equal(finalError.details[0].expectedPrimaryCharacterName, "阿岚");
+      assert.deepEqual(finalError.details[0].sourceSceneIds, ["S1", "S2", "S3", "S4", "S5", "S6"]);
+    });
+  }
+});
+
 test("emotionArc repair 按明确主角标识匹配并允许主角不在 characters[0]", async () => {
   const context = fixture();
   const firstRaw = modelBatchFrom(context);

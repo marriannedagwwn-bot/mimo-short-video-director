@@ -3,7 +3,7 @@ import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstr
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, compileStaticFrames } from "./static-frame-compiler.js";
-import { InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, getFixedCharacterIdentityAuthorizations, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
+import { InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, getFixedCharacterIdentityAuthorizations, hasExplicitStandardNameSuffix, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
 import {
   ReconstructionGroundingError,
   createGroundingKey,
@@ -253,7 +253,8 @@ export class WorkflowService {
       prompt,
       model: settings.model,
       maxCompletionTokens: settings.maxCompletionTokens,
-      validate: (result) => ensureFullStoryMatchesProfile(ensureOutputContract(result, "fullStory"), profile, input.creativeBrief, input.variant, input.visualGuardrails)
+      validate: (result) => ensureFullStoryMatchesProfile(ensureOutputContract(result, "fullStory"), profile, input.creativeBrief, input.variant, input.visualGuardrails),
+      retryContext: { stage: "fullStory" }
     });
   }
 
@@ -278,7 +279,7 @@ export class WorkflowService {
     } catch (error) {
       if (!(error instanceof OutputContractError)) throw error;
       const retryRequest = {
-        prompt: validationRetryPrompt(prompt, error.message, retryContext, first),
+        prompt: validationRetryPrompt(prompt, error.message, retryContext, first, error.details),
         systemPrompt,
         model,
         maxCompletionTokens: retryTokenLimit(maxCompletionTokens),
@@ -621,11 +622,19 @@ export class WorkflowService {
     const profile = requireObject(input.creatorProfile, "creatorProfile");
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
-    const settings = this.resolveStage("animationPlan", input);
-    const compilerSettings = this.resolveStage("staticFrameCompiler", input);
+    const fullStory = ensureFullStoryMatchesProfile(
+      ensureOutputContract(input.fullStory, "fullStory"),
+      profile,
+      input.creativeBrief,
+      input.variant,
+      input.visualGuardrails
+    );
+    const validatedInput = { ...input, fullStory };
+    const settings = this.resolveStage("animationPlan", validatedInput);
+    const compilerSettings = this.resolveStage("staticFrameCompiler", validatedInput);
     if (!this.hasLiveClient) {
       return {
-        animationPlan: validateAnimationPlanOutput(mockAnimationPlan(input), input),
+        animationPlan: validateAnimationPlanOutput(mockAnimationPlan(validatedInput), validatedInput),
         metadata: {
           staticFrameCompiler: {
             version: STATIC_FRAME_COMPILER_VERSION,
@@ -638,16 +647,16 @@ export class WorkflowService {
     }
     this.assertStageClient(settings, "首尾帧动画生产包");
     assertStaticFrameCompilerSettings(compilerSettings);
-    const promptInput = { ...input, targetProvider: settings.provider, targetModel: settings.model };
+    const promptInput = { ...validatedInput, targetProvider: settings.provider, targetModel: settings.model };
     const foundation = await this.generateValidatedJson({
       client: settings.client,
       prompt: animationFoundationPrompt(promptInput),
       model: settings.model,
       maxCompletionTokens: settings.maxCompletionTokens,
-      validate: (result) => validateAnimationFoundationOutput(result, input)
+      validate: (result) => validateAnimationFoundationOutput(result, validatedInput)
     });
 
-    const sourceScenes = Array.isArray(input.fullStory.sceneScript) ? input.fullStory.sceneScript : [];
+    const sourceScenes = Array.isArray(validatedInput.fullStory.sceneScript) ? validatedInput.fullStory.sceneScript : [];
     const sceneBatches = chunkItems(sourceScenes, this.animationShotBatchSceneCount);
     const shotPlan = [];
     const compilerRuns = [];
@@ -663,9 +672,10 @@ export class WorkflowService {
         previousShotContext: animationContinuityContext(shotPlan.at(-1))
       });
       const batchContext = {
-        input,
+        input: validatedInput,
         foundation,
         sourceScenes: batchScenes,
+        batchIndex,
         shotIdStartIndex,
         previousShots: shotPlan
       };
@@ -683,7 +693,10 @@ export class WorkflowService {
       compilerRuns.push(...batchResult.compilerRuns);
     }
 
-    const animationPlan = validateAnimationPlanOutput(mergeAnimationPlan(foundation, shotPlan, input), input);
+    const animationPlan = validateAnimationPlanOutput(
+      mergeAnimationPlan(foundation, shotPlan, validatedInput),
+      validatedInput
+    );
     return {
       animationPlan,
       metadata: {
@@ -825,12 +838,21 @@ function validateAnimationFoundationOutput(result, input = {}) {
   return validatedFoundation;
 }
 
-function validateAnimationShotBatchOutput(result, { input, foundation, sourceScenes, shotIdStartIndex, previousShots = [] }) {
+function validateAnimationShotBatchOutput(result, {
+  input,
+  foundation,
+  sourceScenes,
+  batchIndex = null,
+  shotIdStartIndex,
+  previousShots = []
+}) {
   const sourceSceneIds = sourceScenes.map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean);
   const primaryCharacterName = resolveExplicitAnimationPrimaryCharacterName(input, foundation);
   ensureAnimationShotBatchContract(
     createAnimationEmotionValidationProjection(result, primaryCharacterName, {
-      path: "animationShotBatch"
+      path: "animationShotBatch",
+      batchIndex,
+      sourceSceneIds
     })
   );
   const batch = structuredClone(result);
@@ -843,7 +865,9 @@ function validateAnimationShotBatchOutput(result, { input, foundation, sourceSce
   ensureAnimationPlanV2Contract(
     createAnimationEmotionValidationProjection(batch, primaryCharacterName, {
       compileAliases: true,
-      path: "animationShotBatch"
+      path: "animationShotBatch",
+      batchIndex,
+      sourceSceneIds
     }),
     {
       path: "animationShotBatch",
@@ -908,7 +932,9 @@ function resolveExplicitAnimationPrimaryCharacterName(input = {}, foundation = {
 
 function createAnimationEmotionValidationProjection(value, primaryCharacterName, {
   compileAliases = false,
-  path = "animationPlan"
+  path = "animationPlan",
+  batchIndex = null,
+  sourceSceneIds = []
 } = {}) {
   const projected = structuredClone(value);
   if (!primaryCharacterName || !isPlainObject(projected) || !Array.isArray(projected.shotPlan)) {
@@ -920,16 +946,57 @@ function createAnimationEmotionValidationProjection(value, primaryCharacterName,
     const startCharacters = Array.isArray(shot?.startFrame?.characters) ? shot.startFrame.characters : null;
     const endCharacters = Array.isArray(shot?.endFrame?.characters) ? shot.endFrame.characters : null;
     if (!startCharacters || !endCharacters) return;
-    const matchesPrimary = (character) => (
-      isPlainObject(character)
-      && String(character.name || "").trim() === primaryCharacterName
-    );
-    const startMatches = startCharacters.filter(matchesPrimary);
-    const endMatches = endCharacters.filter(matchesPrimary);
+    const startDiagnostic = animationPrimaryCharacterFrameDiagnostic({
+      characters: startCharacters,
+      frameKind: "startFrame",
+      path,
+      shotIndex,
+      primaryCharacterName
+    });
+    const endDiagnostic = animationPrimaryCharacterFrameDiagnostic({
+      characters: endCharacters,
+      frameKind: "endFrame",
+      path,
+      shotIndex,
+      primaryCharacterName
+    });
+    const startMatches = startDiagnostic.matches;
+    const endMatches = endDiagnostic.matches;
     const motionPath = `${path}.shotPlan[${shotIndex}].motion`;
     if (startMatches.length !== 1 || endMatches.length !== 1) {
+      const shotId = String(shot?.shotId || "").trim();
+      const sourceSceneId = String(shot?.sourceSceneId || "").trim();
+      const batchNumber = Number.isInteger(batchIndex) ? batchIndex + 1 : null;
+      const normalizedSourceSceneIds = (Array.isArray(sourceSceneIds) ? sourceSceneIds : [])
+        .map((sceneId) => String(sceneId || "").trim())
+        .filter(Boolean);
+      const invalidDiagnostics = [startDiagnostic, endDiagnostic].filter(
+        (diagnostic) => diagnostic.exactMatchCount !== 1
+      );
+      const frameSummary = [startDiagnostic, endDiagnostic].map((diagnostic) => (
+        `${diagnostic.path} 实际角色：${JSON.stringify(diagnostic.actualCharacterNames)}，`
+        + `精确匹配数量：${diagnostic.exactMatchCount}，原因：${diagnostic.reason}`
+      )).join("；");
       throw new OutputContractError(
-        `${motionPath}.emotionArc 无法唯一匹配明确主角「${primaryCharacterName}」`
+        `${path}.shotPlan[${shotIndex}] 主角唯一匹配失败；`
+        + `批次：${batchNumber || "未提供"}；shotId：${shotId || "未提供"}；`
+        + `sourceSceneId：${sourceSceneId || "未提供"}；`
+        + `sourceSceneIds：${JSON.stringify(normalizedSourceSceneIds)}；`
+        + `预期唯一主角：${primaryCharacterName}；${frameSummary}`,
+        invalidDiagnostics.map((diagnostic) => ({
+          code: "ANIMATION_PRIMARY_CHARACTER_MATCH_FAILURE",
+          path: diagnostic.path,
+          reason: diagnostic.reason,
+          batch: batchNumber,
+          shotIndex,
+          shotId,
+          sourceSceneId,
+          sourceSceneIds: normalizedSourceSceneIds,
+          expectedPrimaryCharacterName: primaryCharacterName,
+          actualCharacterNames: diagnostic.actualCharacterNames,
+          exactMatchCount: diagnostic.exactMatchCount,
+          category: diagnostic.category
+        }))
       );
     }
     if (shot.motion.emotionArc.from !== startMatches[0].emotionState) {
@@ -971,6 +1038,45 @@ function createAnimationEmotionValidationProjection(value, primaryCharacterName,
     }
   });
   return projected;
+}
+
+function animationPrimaryCharacterFrameDiagnostic({
+  characters,
+  frameKind,
+  path,
+  shotIndex,
+  primaryCharacterName
+}) {
+  const matches = characters.filter((character) => (
+    isPlainObject(character)
+    && String(character.name || "").trim() === primaryCharacterName
+  ));
+  const actualCharacterNames = characters.map((character) => (
+    typeof character?.name === "string" ? character.name : ""
+  ));
+  const inexactNames = actualCharacterNames.filter((name) => (
+    hasExplicitStandardNameSuffix(name, primaryCharacterName)
+  ));
+  let category = "matched";
+  let reason = "精确匹配";
+  if (matches.length > 1) {
+    category = "duplicate";
+    reason = "明确主角重复";
+  } else if (matches.length === 0 && inexactNames.length) {
+    category = "inexact";
+    reason = `主角名称不精确：${JSON.stringify(inexactNames)}`;
+  } else if (matches.length === 0) {
+    category = "missing";
+    reason = "明确主角缺失";
+  }
+  return {
+    path: `${path}.shotPlan[${shotIndex}].${frameKind}.characters`,
+    matches,
+    actualCharacterNames,
+    exactMatchCount: matches.length,
+    category,
+    reason
+  };
 }
 
 function createAnimationShotBatchRepairContext({ input, foundation, shotIdStartIndex }) {
@@ -1653,6 +1759,9 @@ function actionStateAuditProtocolError(error) {
 
 function trustedAnimationPatchDetail(error, rawBatch) {
   const details = Array.isArray(error?.details) ? error.details : [];
+  if (details.some((detail) => detail?.code === "ANIMATION_PRIMARY_CHARACTER_MATCH_FAILURE")) {
+    return null;
+  }
   if (details.length !== 1) return null;
   return validateTrustedAnimationPatchDetail(details[0], rawBatch);
 }
@@ -1821,12 +1930,26 @@ function animationAuditTokenLimit() {
   return 2048;
 }
 
-function validationRetryPrompt(originalPrompt, validationError, retryContext = null, failedOutput = null) {
+function validationRetryPrompt(
+  originalPrompt,
+  validationError,
+  retryContext = null,
+  failedOutput = null,
+  validationDetails = []
+) {
   if (retryContext?.stage === "referenceAnalysis") {
     return analysisValidationRetryPrompt(originalPrompt, validationError, failedOutput, retryContext);
   }
   if (retryContext?.stage === "sourceScriptReconstruction") {
     return reconstructionValidationRetryPrompt(originalPrompt, validationError, retryContext, failedOutput);
+  }
+  if (retryContext?.stage === "fullStory") {
+    return fullStoryValidationRetryPrompt(
+      originalPrompt,
+      validationError,
+      validationDetails,
+      failedOutput
+    );
   }
   const animationCorrection = originalPrompt.includes('"negativePrompts"')
     ? `
@@ -1857,6 +1980,38 @@ ${failedOutputReference}
 ${transformationCorrection}
 - 规则必须保持分类：角色正向边界、原片规避、台词规则和逐镜渲染负面提示词不得混写。${animationCorrection}
 ${creativeBriefCorrection}
+- 只输出一个完整 JSON 对象，不要 Markdown，不要解释。`;
+}
+
+function fullStoryValidationRetryPrompt(
+  originalPrompt,
+  validationError,
+  validationDetails,
+  failedOutput
+) {
+  return `${originalPrompt}
+
+FULL_STORY_SCENE_CONTRACT_RETRY_V1
+
+上一次 fullStory 已经是 JSON，但没有通过系统校验（完整剧情与 Scene Contract）：
+${validationError}
+
+结构化错误详情：
+${JSON.stringify(Array.isArray(validationDetails) ? validationDetails : [])}
+
+上一次待修完整 JSON：
+${JSON.stringify(failedOutput || {})}
+
+请基于同一个主题和角色设定重新输出一份完整 fullStory JSON，并完整修复 sceneScript：
+- 返回全部 fullStory 顶层字段和完整 sceneScript，不得只返回 patch、单个场次或解释文字。
+- 每场 sceneId、location 和 visibleAction 必须是非空字符串；sceneId 在 sceneScript 中唯一。
+- 每场 characters 必须是非空角色名称字符串数组，角色名不能为空或重复。
+- 已锁定角色只能使用 characterBible 中的标准名称，不得追加括号、身份、外观说明、空格后缀、别名或昵称；场次型临时配角使用独立明确名称。
+- visibleAction 或 shotAndSound 明确写到已锁定标准角色时，该精确名称必须存在于同场 characters。
+- dialogue 只使用结构化数组，每条非空 speaker 必须逐字存在于同场 characters；不要根据台词正文猜测在场角色。
+- 当前 fullStory schema 没有画外音、旁白或 offscreen speaker 标记，不得要求系统从 dialogue 或 shotAndSound 猜测画外身份。
+- dialogue、shotAndSound、shootingNotes、emotionNode 和 dramaticFunction 只能补充场次结构，不能替代 location、characters 或 visibleAction。
+- Validation 只会重新校验，不会自动补写、改名、归一化或接受别名。
 - 只输出一个完整 JSON 对象，不要 Markdown，不要解释。`;
 }
 

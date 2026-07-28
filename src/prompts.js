@@ -444,6 +444,10 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - visualGuardrails.positivePromptBoundary 和 sourceSimilarityRules 是本阶段必须遵守的正向创作边界；不得把受限内容写成剧情动作、身份、道具或外观。
 - 对白必须服从 visualGuardrails.dialogueRules 与用户限制；可以用动作备注补足信息，不要让角色突然改变说话方式。
 - 每场戏都要能拍：写清地点、人物、动作、对白/声画信息、镜头建议、情绪节点和剧作功能。
+- sceneScript 每场的 location、characters 和 visibleAction 都必须完整填写：location、visibleAction 必须是非空字符串，characters 必须是非空角色名称字符串数组。
+- characters 中已锁定的主角、被关爱对象和已登记帮助者必须使用 characterBible 中的标准名称，不得添加括号、身份、外观说明、空格后缀、别名或昵称。场次型临时配角可以使用独立且明确的名称，不必强行加入 helpers。
+- dialogue 只使用结构化数组；每条 speaker 必须逐字存在于同场 characters。当前结构不支持 offscreen、voiceOver、narrator 或 isVisible 标记，不得要求系统根据台词正文或 shotAndSound 猜测画外说话人。
+- 所有地点、实际参与本场的人物和关键可见动作必须写入 location、characters、visibleAction；dialogue、shotAndSound、shootingNotes、emotionNode、dramaticFunction 等字段只能补充，不能替代这些结构字段。
 
 输出 fullStory，严格使用以下结构：
 {
@@ -462,7 +466,7 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
     "sceneId":"S1",
     "timeRange":"",
     "location":"",
-    "characters":[],
+    "characters":["标准角色名"],
     "visibleAction":"",
     "dialogue":[{"speaker":"", "line":"", "deliveryOrSubtext":""}],
     "shotAndSound":"",

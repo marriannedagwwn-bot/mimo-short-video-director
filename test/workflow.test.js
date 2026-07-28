@@ -1680,6 +1680,229 @@ test("fullStory 不完整时拒绝通过校验", () => {
   assert.throws(() => ensureOutputContract(shortScenes, "fullStory"), /至少需要 6 个可拍摄分场/);
 });
 
+test("fullStory Scene Contract 聚合校验逐场必填字段与唯一性", async (t) => {
+  const storyFixture = () => mockFullStory({
+    ...input,
+    variant: {
+      id: "V1",
+      characterSetup: {
+        protagonist: "阿岚，社区修理师",
+        careRecipient: "独居老人",
+        helper: "夜班便利店员"
+      }
+    }
+  });
+  const cases = [
+    {
+      name: "location 为空",
+      mutate(story) {
+        story.sceneScript[3].location = "";
+      },
+      path: "fullStory.sceneScript[3].location"
+    },
+    {
+      name: "characters 为空",
+      mutate(story) {
+        story.sceneScript[3].characters = [];
+      },
+      path: "fullStory.sceneScript[3].characters"
+    },
+    {
+      name: "visibleAction 为空",
+      mutate(story) {
+        story.sceneScript[3].visibleAction = "";
+      },
+      path: "fullStory.sceneScript[3].visibleAction"
+    },
+    {
+      name: "sceneId 重复",
+      mutate(story) {
+        story.sceneScript[3].sceneId = story.sceneScript[2].sceneId;
+      },
+      path: "fullStory.sceneScript[3].sceneId"
+    },
+    {
+      name: "角色名为空",
+      mutate(story) {
+        story.sceneScript[3].characters.push("   ");
+      },
+      path: "fullStory.sceneScript[3].characters[2]"
+    },
+    {
+      name: "角色名重复",
+      mutate(story) {
+        story.sceneScript[3].characters.push(story.sceneScript[3].characters[0]);
+      },
+      path: "fullStory.sceneScript[3].characters[2]"
+    }
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, () => {
+      const story = storyFixture();
+      scenario.mutate(story);
+      assert.throws(
+        () => ensureOutputContract(story, "fullStory"),
+        (error) => error instanceof OutputContractError
+          && error.message.includes("Scene Contract")
+          && error.details.some((detail) => detail.path === scenario.path)
+      );
+    });
+  }
+
+  await t.test("同一场次的多个缺陷一次完整报告", () => {
+    const story = storyFixture();
+    story.sceneScript[3].location = "";
+    story.sceneScript[3].characters = [];
+    story.sceneScript[3].visibleAction = "";
+    assert.throws(
+      () => ensureOutputContract(story, "fullStory"),
+      (error) => error instanceof OutputContractError
+        && error.message.includes("fullStory.sceneScript[3].location")
+        && error.message.includes("fullStory.sceneScript[3].characters")
+        && error.message.includes("fullStory.sceneScript[3].visibleAction")
+    );
+  });
+});
+
+test("fullStory Scene Contract 只校验可确定的视觉角色和结构化说话人", async (t) => {
+  const storyFixture = () => mockFullStory({
+    ...input,
+    variant: {
+      id: "V1",
+      characterSetup: {
+        protagonist: "阿岚，社区修理师",
+        careRecipient: "独居老人",
+        helper: "夜班便利店员"
+      }
+    }
+  });
+
+  await t.test("visibleAction 提到锁定角色但 characters 缺失时失败", () => {
+    const story = storyFixture();
+    Object.assign(story.sceneScript[0], {
+      characters: ["吴奶奶"],
+      visibleAction: "阿岚观察窗边的灯光。",
+      dialogue: [],
+      shotAndSound: "固定机位记录室内环境。"
+    });
+    assert.throws(
+      () => ensureOutputContract(story, "fullStory"),
+      /visibleAction.*标准角色「阿岚」.*characters/u
+    );
+  });
+
+  await t.test("shotAndSound 提到锁定角色但 characters 缺失时失败", () => {
+    const story = storyFixture();
+    Object.assign(story.sceneScript[0], {
+      characters: ["吴奶奶"],
+      visibleAction: "吴奶奶抚摸墙上的光斑。",
+      dialogue: [],
+      shotAndSound: "特写阿岚靠在老人膝边的侧脸。"
+    });
+    assert.throws(
+      () => ensureOutputContract(story, "fullStory"),
+      /shotAndSound.*标准角色「阿岚」.*characters/u
+    );
+  });
+
+  await t.test("对白正文和非视觉字段谈论不在场角色时不误报", () => {
+    const story = storyFixture();
+    Object.assign(story.sceneScript[0], {
+      characters: ["吴奶奶"],
+      visibleAction: "吴奶奶独自望向门外，手指轻触墙上的光斑。",
+      dialogue: [{
+        speaker: "吴奶奶",
+        line: "阿岚已经回家了吗？",
+        deliveryOrSubtext: "谈论不在场的人。"
+      }],
+      shotAndSound: "单人近景，保留室内环境声。",
+      purpose: "延续阿岚的善意所产生的影响。",
+      dramaticFunction: "表现阿岚不在场时留下的情绪回响。",
+      emotionNode: "想起阿岚后的安心",
+      shootingNotes: "不要让阿岚在画面中出现。"
+    });
+    assert.doesNotThrow(() => ensureOutputContract(story, "fullStory"));
+  });
+
+  await t.test("结构化说话人必须存在于 characters", () => {
+    const story = storyFixture();
+    Object.assign(story.sceneScript[0], {
+      characters: ["吴奶奶"],
+      visibleAction: "吴奶奶望向门外。",
+      dialogue: [{
+        speaker: "张姨",
+        line: "门外已经安静了。",
+        deliveryOrSubtext: "平静"
+      }],
+      shotAndSound: "单人固定近景。"
+    });
+    assert.throws(
+      () => ensureOutputContract(story, "fullStory"),
+      /dialogue\[0\]\.speaker.*张姨.*characters/u
+    );
+  });
+
+  await t.test("未登记场次型配角允许使用", () => {
+    const story = storyFixture();
+    Object.assign(story.sceneScript[0], {
+      characters: ["张姨", "放学孩童们"],
+      visibleAction: "张姨带着放学孩童们从巷口经过。",
+      dialogue: [{
+        speaker: "张姨",
+        line: "慢一点走。",
+        deliveryOrSubtext: "提醒孩子"
+      }],
+      shotAndSound: "中景记录两类临时配角经过。"
+    });
+    assert.doesNotThrow(() => ensureOutputContract(story, "fullStory"));
+  });
+});
+
+test("标准角色说明后缀使用锚定分隔符诊断且不误伤独立前缀名称", () => {
+  const story = mockFullStory({
+    ...input,
+    variant: {
+      id: "V1",
+      characterSetup: {
+        protagonist: "阿岚，社区修理师",
+        careRecipient: "独居老人",
+        helper: "夜班便利店员"
+      }
+    }
+  });
+  Object.assign(story.sceneScript[0], {
+    characters: ["阿岚（社区修理师）"],
+    visibleAction: "阿岚（社区修理师）整理工具。",
+    dialogue: [],
+    shotAndSound: "阿岚（社区修理师）的手部特写。"
+  });
+  assert.throws(
+    () => ensureOutputContract(story, "fullStory"),
+    (error) => error instanceof OutputContractError
+      && error.details.some((detail) => detail.code === "FULL_STORY_SCENE_CHARACTER_NAME_INEXACT")
+  );
+
+  const independentName = mockFullStory({
+    ...input,
+    variant: {
+      id: "V1",
+      characterSetup: {
+        protagonist: "阿岚，社区修理师",
+        careRecipient: "独居老人",
+        helper: "夜班便利店员"
+      }
+    }
+  });
+  Object.assign(independentName.sceneScript[0], {
+    characters: ["阿岚莎"],
+    visibleAction: "阿岚莎独自整理桌上的物品。",
+    dialogue: [],
+    shotAndSound: "阿岚莎的手部固定特写。"
+  });
+  assert.doesNotThrow(() => ensureOutputContract(independentName, "fullStory"));
+});
+
 test("creativeBrief 接受 fixedCharacter 明确授权的猫娘身份", () => {
   const creatorProfile = {
     fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾，学生/村民，村里的热心帮手",
@@ -2319,6 +2542,168 @@ test("完整剧情校验失败时会自动要求模型纠偏一次", async () =>
   assert.doesNotMatch(JSON.stringify(result), /尾巴/);
 });
 
+test("Scene Contract 失败会携带全部路径重试完整 fullStory 一次", async () => {
+  const creatorProfile = {
+    fixedCharacter: "阿岚，社区修理师",
+    vertical: "家电维修",
+    constraints: "60 秒内"
+  };
+  const creativeBrief = mockBrief({
+    ...input,
+    creatorProfile,
+    referenceAnalysis: {},
+    sourceScriptReconstruction: {}
+  });
+  const variant = {
+    id: "V1",
+    title: "最后一格电",
+    characterSetup: {
+      protagonist: "阿岚，社区修理师",
+      careRecipient: "独居老人",
+      helper: "夜班便利店员"
+    },
+    newTask: "修复并送回旧设备",
+    emotionalMedium: "一段旧录音",
+    environmentPressure: "暴雨停电",
+    endingRitual: "老人按下播放键"
+  };
+  const invalidStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  invalidStory.sceneScript[3].location = "";
+  invalidStory.sceneScript[3].characters = [];
+  invalidStory.sceneScript[3].visibleAction = "";
+  const validStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  const prompts = [];
+  const workflow = new WorkflowService({
+    client: {
+      async generateJson(args) {
+        prompts.push(args.prompt);
+        return prompts.length === 1 ? structuredClone(invalidStory) : structuredClone(validStory);
+      }
+    }
+  });
+
+  const result = await workflow.createFullStory({
+    ...groundedUpstreamFixture(workflow),
+    creativeBrief,
+    creatorProfile,
+    variant
+  });
+
+  assert.equal(prompts.length, 2);
+  assert.equal(result.selectedVariantId, variant.id);
+  assert.match(prompts[1], /FULL_STORY_SCENE_CONTRACT_RETRY_V1/u);
+  assert.match(prompts[1], /fullStory\.sceneScript\[3\]\.location/u);
+  assert.match(prompts[1], /fullStory\.sceneScript\[3\]\.characters/u);
+  assert.match(prompts[1], /fullStory\.sceneScript\[3\]\.visibleAction/u);
+  assert.match(prompts[1], /上一次待修完整 JSON/u);
+});
+
+test("Full Story 第二次 Scene Contract 仍失败时终止且不产生第三次请求", async () => {
+  const creatorProfile = {
+    fixedCharacter: "阿岚，社区修理师",
+    vertical: "家电维修",
+    constraints: "60 秒内"
+  };
+  const creativeBrief = mockBrief({
+    ...input,
+    creatorProfile,
+    referenceAnalysis: {},
+    sourceScriptReconstruction: {}
+  });
+  const variant = {
+    id: "V1",
+    title: "最后一格电",
+    characterSetup: {
+      protagonist: "阿岚，社区修理师",
+      careRecipient: "独居老人",
+      helper: "夜班便利店员"
+    },
+    newTask: "修复并送回旧设备",
+    emotionalMedium: "一段旧录音",
+    environmentPressure: "暴雨停电",
+    endingRitual: "老人按下播放键"
+  };
+  const invalidStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  invalidStory.sceneScript[3].location = "";
+  invalidStory.sceneScript[3].characters = [];
+  invalidStory.sceneScript[3].visibleAction = "";
+  let calls = 0;
+  const workflow = new WorkflowService({
+    client: {
+      async generateJson() {
+        calls += 1;
+        if (calls > 2) throw new Error("禁止第三次完整剧情请求");
+        return structuredClone(invalidStory);
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => workflow.createFullStory({
+      ...groundedUpstreamFixture(workflow),
+      creativeBrief,
+      creatorProfile,
+      variant
+    }),
+    /fullStory Scene Contract 校验失败/u
+  );
+  assert.equal(calls, 2);
+});
+
+test("动画入口在任何模型与 Compiler 调用前拒绝残缺 Full Story", async () => {
+  const context = {
+    creatorProfile: {
+      fixedCharacter: "阿岚，社区修理师",
+      vertical: "家电维修",
+      constraints: "60 秒内"
+    }
+  };
+  const creativeBrief = mockBrief({
+    ...context,
+    referenceAnalysis: {},
+    sourceScriptReconstruction: {}
+  });
+  const variant = {
+    id: "V1",
+    title: "最后一格电",
+    characterSetup: {
+      protagonist: "阿岚，社区修理师",
+      careRecipient: "独居老人",
+      helper: "夜班便利店员"
+    },
+    newTask: "修复并送回旧设备",
+    emotionalMedium: "一段旧录音",
+    environmentPressure: "暴雨停电",
+    endingRitual: "老人按下播放键"
+  };
+  const fullStory = mockFullStory({ ...context, creativeBrief, variant });
+  fullStory.sceneScript[3].location = "";
+  fullStory.sceneScript[3].characters = [];
+  fullStory.sceneScript[3].visibleAction = "";
+  let modelCalls = 0;
+  const workflow = new WorkflowService({
+    client: {
+      async generateJson() {
+        modelCalls += 1;
+        throw new Error("残缺 Full Story 不得调用任何模型或 Compiler");
+      }
+    },
+    staticFrameCompilerProvider: "MiMo",
+    staticFrameCompilerModel: TEST_STATIC_FRAME_COMPILER_MODEL
+  });
+
+  await assert.rejects(
+    () => workflow.createAnimationPlan({
+      ...context,
+      creativeBrief,
+      variant,
+      fullStory
+    }),
+    /fullStory Scene Contract 校验失败/u
+  );
+  assert.equal(modelCalls, 0);
+});
+
 test("动画生产包正向提示词复用原片表面形象时会被边界校验拦截", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
@@ -2588,6 +2973,11 @@ test("完整剧情提示词要求围绕选中变体并锁定固定角色", () =>
   assert.match(prompt, /录取通知书/);
   assert.match(prompt, /孔明灯/);
   assert.match(prompt, /sceneScript 至少 6 场/);
+  assert.match(prompt, /location、characters 和 visibleAction 都必须完整填写/u);
+  assert.match(prompt, /speaker 必须逐字存在于同场 characters/u);
+  assert.match(prompt, /不支持 offscreen、voiceOver、narrator 或 isVisible/u);
+  assert.match(prompt, /只能补充，不能替代这些结构字段/u);
+  assert.match(prompt, /"characters":\["标准角色名"\]/u);
 });
 
 test("动画提示词要求输出首尾帧视频生产包", () => {

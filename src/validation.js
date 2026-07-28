@@ -158,6 +158,18 @@ const negativePromptReasonCodes = new Set([
 ]);
 const negativePromptPriorities = new Set(["high", "medium", "low"]);
 const negativePromptMedia = new Set(["image", "video", "both"]);
+const explicitStandardNameSuffixSeparatorPattern = "[（(【\\[\\s,，:：—–\\-]";
+
+export function hasExplicitStandardNameSuffix(value, standardName) {
+  if (typeof value !== "string" || typeof standardName !== "string") return false;
+  const candidate = value.trim();
+  const canonical = standardName.trim();
+  if (!candidate || !canonical) return false;
+  return new RegExp(
+    `^${escapeContractRegExp(canonical)}${explicitStandardNameSuffixSeparatorPattern}`,
+    "u"
+  ).test(candidate);
+}
 
 export function ensureOutputContract(value, contract) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new OutputContractError(`${contract} 必须是对象`);
@@ -186,6 +198,7 @@ export function ensureOutputContract(value, contract) {
   if (contract === "fullStory") {
     if (value.beatSheet.length < 6) throw new OutputContractError("fullStory 至少需要 6 个剧情节拍");
     if (value.sceneScript.length < 6) throw new OutputContractError("fullStory 至少需要 6 个可拍摄分场");
+    validateFullStorySceneContract(value);
   }
   if (contract === "animationPlan") {
     if (value.characterReferencePrompts.length < 1) throw new OutputContractError("animationPlan 至少需要一个角色参考提示词");
@@ -195,6 +208,258 @@ export function ensureOutputContract(value, contract) {
     validateAnimationPlanNegativePromptContract(value);
   }
   return value;
+}
+
+function validateFullStorySceneContract(value) {
+  const details = [];
+  const seenSceneIds = new Map();
+  const standardNames = collectFullStoryStandardCharacterNames(value.characterBible);
+
+  value.sceneScript.forEach((scene, sceneIndex) => {
+    const scenePath = `fullStory.sceneScript[${sceneIndex}]`;
+    if (!scene || typeof scene !== "object" || Array.isArray(scene)) {
+      pushFullStorySceneViolation(details, {
+        code: "FULL_STORY_SCENE_OBJECT_REQUIRED",
+        path: scenePath,
+        reason: "场次必须是对象"
+      });
+      return;
+    }
+
+    const sceneId = validateFullStorySceneRequiredString(
+      scene.sceneId,
+      `${scenePath}.sceneId`,
+      "sceneId",
+      details
+    );
+    if (sceneId) {
+      const firstIndex = seenSceneIds.get(sceneId);
+      if (firstIndex !== undefined) {
+        pushFullStorySceneViolation(details, {
+          code: "FULL_STORY_SCENE_ID_DUPLICATE",
+          path: `${scenePath}.sceneId`,
+          reason: `sceneId「${sceneId}」与 fullStory.sceneScript[${firstIndex}].sceneId 重复`,
+          sceneId
+        });
+      } else {
+        seenSceneIds.set(sceneId, sceneIndex);
+      }
+    }
+
+    validateFullStorySceneRequiredString(
+      scene.location,
+      `${scenePath}.location`,
+      "location",
+      details,
+      sceneId
+    );
+    validateFullStorySceneRequiredString(
+      scene.visibleAction,
+      `${scenePath}.visibleAction`,
+      "visibleAction",
+      details,
+      sceneId
+    );
+
+    const characterNames = validateFullStorySceneCharacters(
+      scene.characters,
+      `${scenePath}.characters`,
+      standardNames,
+      details,
+      sceneId
+    );
+    validateFullStoryVisualCharacterReferences({
+      scene,
+      scenePath,
+      sceneId,
+      standardNames,
+      characterNames,
+      details
+    });
+    validateFullStoryDialogueSpeakers({
+      dialogue: scene.dialogue,
+      scenePath,
+      sceneId,
+      characterNames,
+      details
+    });
+  });
+
+  if (details.length) {
+    throw new OutputContractError(
+      `fullStory Scene Contract 校验失败：${details.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+      details
+    );
+  }
+}
+
+function validateFullStorySceneRequiredString(value, path, field, details, sceneId = "") {
+  if (typeof value !== "string") {
+    pushFullStorySceneViolation(details, {
+      code: "FULL_STORY_SCENE_STRING_REQUIRED",
+      path,
+      reason: `${field} 必须是非空字符串`,
+      sceneId
+    });
+    return "";
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    pushFullStorySceneViolation(details, {
+      code: "FULL_STORY_SCENE_STRING_REQUIRED",
+      path,
+      reason: `${field} 不能为空`,
+      sceneId
+    });
+  }
+  return normalized;
+}
+
+function validateFullStorySceneCharacters(value, path, standardNames, details, sceneId) {
+  if (!Array.isArray(value)) {
+    pushFullStorySceneViolation(details, {
+      code: "FULL_STORY_SCENE_CHARACTERS_REQUIRED",
+      path,
+      reason: "characters 必须是非空字符串数组",
+      sceneId
+    });
+    return new Set();
+  }
+  if (!value.length) {
+    pushFullStorySceneViolation(details, {
+      code: "FULL_STORY_SCENE_CHARACTERS_REQUIRED",
+      path,
+      reason: "characters 不能为空数组",
+      sceneId
+    });
+  }
+
+  const names = new Set();
+  value.forEach((characterName, characterIndex) => {
+    const characterPath = `${path}[${characterIndex}]`;
+    if (typeof characterName !== "string" || !characterName.trim()) {
+      pushFullStorySceneViolation(details, {
+        code: "FULL_STORY_SCENE_CHARACTER_NAME_REQUIRED",
+        path: characterPath,
+        reason: "角色名必须是非空字符串",
+        sceneId
+      });
+      return;
+    }
+    const normalized = characterName.trim();
+    if (names.has(normalized)) {
+      pushFullStorySceneViolation(details, {
+        code: "FULL_STORY_SCENE_CHARACTER_DUPLICATE",
+        path: characterPath,
+        reason: `同一场次角色名不能重复：${normalized}`,
+        sceneId
+      });
+      return;
+    }
+    names.add(normalized);
+    const decoratedStandardName = standardNames.find((standardName) => (
+      hasExplicitStandardNameSuffix(normalized, standardName)
+    ));
+    if (decoratedStandardName) {
+      pushFullStorySceneViolation(details, {
+        code: "FULL_STORY_SCENE_CHARACTER_NAME_INEXACT",
+        path: characterPath,
+        reason: `角色名「${normalized}」不是标准名称「${decoratedStandardName}」；不得添加身份、外观或别名后缀`,
+        sceneId
+      });
+    }
+  });
+  return names;
+}
+
+function validateFullStoryVisualCharacterReferences({
+  scene,
+  scenePath,
+  sceneId,
+  standardNames,
+  characterNames,
+  details
+}) {
+  for (const field of ["visibleAction", "shotAndSound"]) {
+    const value = scene[field];
+    if (typeof value !== "string" || !value) continue;
+    standardNames.forEach((standardName) => {
+      if (
+        !fullStoryVisualTextMentionsStandardName(value, standardName, characterNames)
+        || characterNames.has(standardName)
+      ) return;
+      pushFullStorySceneViolation(details, {
+        code: "FULL_STORY_SCENE_VISUAL_CHARACTER_MISSING",
+        path: `${scenePath}.${field}`,
+        reason: `视觉字段明确提到标准角色「${standardName}」，但 characters 未包含该精确名称`,
+        sceneId
+      });
+    });
+  }
+}
+
+function fullStoryVisualTextMentionsStandardName(text, standardName, characterNames) {
+  let remaining = text;
+  characterNames.forEach((characterName) => {
+    if (
+      characterName === standardName
+      || hasExplicitStandardNameSuffix(characterName, standardName)
+      || !new RegExp(`^${escapeContractRegExp(standardName)}.`, "u").test(characterName)
+    ) return;
+    remaining = remaining.replace(
+      new RegExp(escapeContractRegExp(characterName), "gu"),
+      ""
+    );
+  });
+  return literalContractTextIncludes(remaining, standardName);
+}
+
+function validateFullStoryDialogueSpeakers({
+  dialogue,
+  scenePath,
+  sceneId,
+  characterNames,
+  details
+}) {
+  if (!Array.isArray(dialogue)) return;
+  dialogue.forEach((line, dialogueIndex) => {
+    const speaker = typeof line?.speaker === "string" ? line.speaker.trim() : "";
+    if (!speaker || characterNames.has(speaker)) return;
+    pushFullStorySceneViolation(details, {
+      code: "FULL_STORY_SCENE_DIALOGUE_SPEAKER_MISSING",
+      path: `${scenePath}.dialogue[${dialogueIndex}].speaker`,
+      reason: `结构化说话人「${speaker}」必须精确存在于当前场次 characters`,
+      sceneId
+    });
+  });
+}
+
+function collectFullStoryStandardCharacterNames(characterBible = {}) {
+  const names = [
+    characterBible?.protagonist?.name,
+    characterBible?.careRecipient?.nameOrLabel,
+    ...(Array.isArray(characterBible?.helpers)
+      ? characterBible.helpers.map((helper) => helper?.nameOrLabel)
+      : [])
+  ];
+  return [...new Set(names.map((name) => String(name || "").trim()).filter(Boolean))];
+}
+
+function pushFullStorySceneViolation(details, detail) {
+  details.push({
+    code: detail.code,
+    path: detail.path,
+    reason: detail.reason,
+    ...(detail.sceneId ? { sceneId: detail.sceneId } : {})
+  });
+}
+
+function literalContractTextIncludes(text, literal) {
+  return new RegExp(escapeContractRegExp(literal), "u").test(text);
+}
+
+function escapeContractRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 function validateSourceScriptReconstructionContract(value) {
