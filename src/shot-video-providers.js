@@ -9,6 +9,8 @@ export const SEEDANCE_VIDEO_MODELS = Object.freeze([
   "doubao-seedance-2-0-mini-260615"
 ]);
 
+export const KLING_CN_V3_ENDPOINT = "https://api-beijing.klingai.com/image-to-video/kling-3.0";
+
 const SHOT_VIDEO_PROVIDERS = Object.freeze(["Kling", "Seedance"]);
 
 export function normalizeShotVideoProvider(value = "") {
@@ -101,11 +103,11 @@ export function shotVideoRuntimeConfig(provider, env = process.env, requestedMod
         ? clean(env.KLING_V3_CONFIG || env.KLING_VIDEO_CONFIG)
         : clean(env.KLING_VIDEO_CONFIG || env.VIDEO_HTTP_CONFIG),
       endpoint: isV3
-        ? clean(env.KLING_V3_ENDPOINT || env.KLING_VIDEO_ENDPOINT) || "https://api-singapore.klingai.com/image-to-video/kling-3.0"
+        ? KLING_CN_V3_ENDPOINT
         : clean(env.KLING_VIDEO_ENDPOINT || env.VIDEO_HTTP_VIDEO_ENDPOINT || env.VIDEO_HTTP_ENDPOINT),
       model,
       apiKey: isV3
-        ? clean(env.KLING_V3_API_KEY || env.KLING_API_KEY)
+        ? clean(env.KLING_API_KEY || env.KLING_V3_API_KEY)
         : clean(env.KLING_API_KEY || env.VIDEO_HTTP_API_KEY),
       providerPreset: isV3
         ? clean(env.KLING_V3_PRESET || env.KLING_VIDEO_PRESET) || "kling_3_0_image_to_video"
@@ -164,6 +166,17 @@ export function isShotVideoModelAllowed(provider, model) {
   if (normalized === "Kling") return /^kling-v(?:2-1|3)$/iu.test(modelName);
   if (normalized === "Seedance") return /^doubao-seedance-2-0(?:-(?:fast|mini))?-\d{6}$/iu.test(modelName);
   return normalized === "VideoHTTP" && Boolean(modelName);
+}
+
+export function isNonDomesticKlingApiEndpoint(value = "") {
+  let hostname = "";
+  try {
+    hostname = new URL(String(value || "")).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return /^api(?:-[a-z0-9-]+)?\.klingai\.com$/u.test(hostname)
+    && hostname !== "api-beijing.klingai.com";
 }
 
 function hasSeedanceSpecificConfig(env = process.env) {

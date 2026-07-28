@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   inferShotVideoProvider,
+  isNonDomesticKlingApiEndpoint,
   normalizeShotVideoProvider,
   shotVideoRuntimeConfig
 } from "../src/shot-video-providers.js";
@@ -939,8 +940,11 @@ function assertWorkerProtocolCompatibility(provider, model, config = {}) {
   if (provider !== "Kling" || String(model || "").trim() !== "kling-v3") return;
   const preset = String(config.providerPreset || config.preset || "").trim().toLowerCase();
   const endpoint = String(config.videoEndpoint || config.endpoint || "").trim();
+  if (isNonDomesticKlingApiEndpoint(endpoint)) {
+    throw new Error("Kling 3.0 仅支持国内官方 api-beijing.klingai.com，不支持其他地区的 Kling API endpoint。");
+  }
   if (["kling_image_to_video", "kling_image2video"].includes(preset) || /\/v1(?:\/|$)/u.test(endpoint)) {
-    throw new Error("Kling 3.0 新版 contents 协议不能发送到 2.1/Legacy /v1 endpoint。");
+    throw new Error("Kling 3.0 国内新版 contents 协议不能发送到 2.1/Legacy /v1 endpoint。");
   }
 }
 

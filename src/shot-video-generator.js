@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { compileShotNegativePrompt } from "../public/negative-prompts.js";
 import {
   inferShotVideoProvider,
+  isNonDomesticKlingApiEndpoint,
   isShotVideoModelAllowed,
   normalizeShotVideoProvider,
   resolveShotVideoSetting,
@@ -364,8 +365,11 @@ function assertProviderProtocolCompatibility(provider, model, config = {}) {
   if (provider !== "Kling" || model !== "kling-v3") return;
   const preset = String(config.providerPreset || config.preset || "").trim().toLowerCase();
   const endpoint = String(config.videoEndpoint || config.endpoint || "").trim();
+  if (isNonDomesticKlingApiEndpoint(endpoint)) {
+    throw new ShotVideoConfigError("Kling 3.0 仅支持国内官方 API；请使用 api-beijing.klingai.com，并配置国内控制台签发的 KLING_API_KEY（兼容 KLING_V3_API_KEY）。");
+  }
   if (["kling_image_to_video", "kling_image2video"].includes(preset) || /\/v1(?:\/|$)/u.test(endpoint)) {
-    throw new ShotVideoConfigError("Kling 3.0 新版接口不能复用 2.1/Legacy provider config；请配置 KLING_V3_API_KEY，并使用 /image-to-video/kling-3.0 endpoint。");
+    throw new ShotVideoConfigError("Kling 3.0 国内新版接口不能复用 2.1/Legacy provider config；请配置国内 KLING_API_KEY（兼容 KLING_V3_API_KEY），并使用 api-beijing.klingai.com/image-to-video/kling-3.0。");
   }
 }
 

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   isShotVideoModelAllowed,
+  KLING_CN_V3_ENDPOINT,
   SEEDANCE_VIDEO_MODELS,
   shotVideoDefaultSetting,
   shotVideoProviderCatalog,
@@ -17,16 +18,18 @@ const closeServer = (server) => new Promise((resolve, reject) => {
   server.close((error) => error ? reject(error) : resolve());
 });
 
-test("Kling 3.0 使用新版首尾帧、原生音频和 tasks 轮询协议", async (t) => {
+test("Kling 3.0 国内官方 API 使用新版首尾帧、Bearer API Key 和 tasks 轮询协议", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "kling-v3-interface-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   let postedBody = null;
   let pollRequestUrl = "";
+  let authorization = "";
   const provider = http.createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/image-to-video/kling-3.0") {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       postedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      authorization = request.headers.authorization || "";
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({
         code: 0,
@@ -110,6 +113,7 @@ test("Kling 3.0 使用新版首尾帧、原生音频和 tasks 轮询协议", asy
   assert.equal(Object.hasOwn(postedBody, "model_name"), false);
   assert.equal(Object.hasOwn(postedBody, "negative_prompt"), false);
   assert.equal(Object.hasOwn(postedBody, "aspect_ratio"), false);
+  assert.equal(authorization, "Bearer test-key");
   assert.equal(pollRequestUrl, "/tasks?task_ids=kling-v3-task");
   assert.equal(await fs.readFile(outputPath, "utf8"), "kling v3 video bytes");
   assert.equal(receipt.videoProvider, "Kling");
@@ -258,19 +262,47 @@ test("Seedance expired/cancelled 都是终态，且当前官方三个 Model ID �
   }), /供应商任务失败：expired/u);
 });
 
-test("Kling 3.0 不继承 Legacy endpoint、token 或 provider config", () => {
+test("Kling 3.0 锁定国内官方 endpoint，不继承海外、Legacy endpoint、token 或 provider config", () => {
   const runtime = shotVideoRuntimeConfig("Kling", {
+    KLING_V3_ENDPOINT: "https://api-singapore.klingai.com/image-to-video/kling-3.0",
+    KLING_VIDEO_ENDPOINT: "https://api-singapore.klingai.com",
+    KLING_API_KEY: "domestic-api-key",
+    KLING_V3_API_KEY: "model-specific-key",
     VIDEO_HTTP_VIDEO_ENDPOINT: "https://legacy.example.com/v1",
     VIDEO_HTTP_API_KEY: "legacy-token",
     VIDEO_HTTP_CONFIG: "/legacy/provider.json",
     VIDEO_HTTP_VIDEO_MODEL: "kling-v2-1"
   }, "kling-v3");
 
-  assert.equal(runtime.endpoint, "https://api-singapore.klingai.com/image-to-video/kling-3.0");
-  assert.equal(runtime.apiKey, "");
+  assert.equal(runtime.endpoint, KLING_CN_V3_ENDPOINT);
+  assert.equal(runtime.apiKey, "domestic-api-key");
   assert.equal(runtime.configPath, "");
   assert.equal(runtime.providerPreset, "kling_3_0_image_to_video");
   assert.equal(runtime.audio, "native");
+});
+
+test("Kling 3.0 provider config 明确拒绝新加坡 endpoint", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "kling-v3-overseas-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, "provider.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    videoEndpoint: "https://api-singapore.klingai.com/image-to-video/kling-3.0",
+    providerPreset: "kling_3_0_image_to_video",
+    videoModel: "kling-v3",
+    apiKey: "overseas-key"
+  }));
+
+  await assert.rejects(() => executeGenericHttpWorker({
+    config: configPath,
+    request: videoRequest({
+      provider: "Kling",
+      model: "kling-v3",
+      startPath: path.join(root, "start.png"),
+      endPath: path.join(root, "end.png")
+    }),
+    output: path.join(root, "output.mp4"),
+    root
+  }), /仅支持国内官方 api-beijing\.klingai\.com/u);
 });
 
 test("旧 provider.json-only 路由保持 generic，未校验配置文件不谎报 reachable", () => {
