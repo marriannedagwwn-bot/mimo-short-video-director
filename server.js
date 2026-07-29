@@ -151,14 +151,16 @@ const server = http.createServer(async (request, response) => {
     if (error instanceof ShotVideoProviderError) return json(response, 502, { ok: false, error: "视频生成服务调用失败", detail: error.message });
     if (error instanceof JimengImageConfigError) return json(response, 400, { ok: false, error: error.message });
     if (error instanceof JimengImageProviderError) return json(response, 502, { ok: false, error: "即梦图片生成服务调用失败", detail: error.raw || error.message });
-    if (error instanceof StaticFrameCompilerError) {
-      const status = error.category === "config" ? 400 : error.category === "timeout" ? 504 : 502;
+    const compilerStage = inferCompilerErrorStage(error);
+    if (compilerStage) {
+      const status = compilerErrorStatus(error);
       return json(response, status, {
         ok: false,
         error: error.message,
-        stage: "staticFrameCompiler",
-        category: error.category,
-        metadata: error.metadata || null
+        status,
+        stage: compilerStage,
+        category: compilerErrorCategory(error),
+        metadata: compilerErrorMetadata(error)
       });
     }
     if (error instanceof OutputContractError) return json(response, 502, { ok: false, error: `模型输出不完整：${error.message}` });
@@ -426,12 +428,11 @@ async function streamCharacterReferenceImages(request, response) {
         return;
       }
       if (event.type === "image_generation.partial_failed") {
-        send("image-error", {
+        send("image-error", streamErrorPayload(event.error, "单张图片生成失败", {
           type: "image-error",
           imageIndex: Number(event.image_index) || 0,
-          error: event.error?.message || event.error?.code || "单张图片生成失败",
           code: event.error?.code || ""
-        });
+        }));
         return;
       }
       if (event.type === "image_generation.completed") {
@@ -439,12 +440,12 @@ async function streamCharacterReferenceImages(request, response) {
         return;
       }
       if (event.error) {
-        send("error", { type: "error", error: event.error?.message || "即梦图片生成失败", code: event.error?.code || "" });
+        send("error", streamErrorPayload(event.error, "即梦图片生成失败"));
       }
     });
     send("done", { type: "done" });
   } catch (error) {
-    send("error", { type: "error", error: error.message || "角色参考图生成失败", detail: error.raw || "" });
+    send("error", streamErrorPayload(error, "角色参考图生成失败"));
   } finally {
     response.end();
   }
@@ -665,6 +666,76 @@ async function serveStatic(pathname, response, headOnly) {
 function json(response, status, body) {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
+}
+
+function inferCompilerErrorStage(error = {}) {
+  if (error instanceof StaticFrameCompilerError) return "staticFrameCompiler";
+  for (const value of [
+    error.stage,
+    error.metadata?.stage,
+    error.details?.stage,
+    error.name,
+    error.constructor?.name
+  ]) {
+    const normalized = String(value || "").replace(/[\s_-]+/gu, "").toLowerCase();
+    if (normalized.includes("staticframecompiler")) return "staticFrameCompiler";
+    if (normalized.includes("characterfeaturecompiler")) return "characterFeatureCompiler";
+  }
+  return "";
+}
+
+function compilerErrorCategory(error = {}) {
+  return String(error.category || error.details?.category || error.metadata?.category || "protocol");
+}
+
+function compilerErrorMetadata(error = {}) {
+  if (error.metadata && typeof error.metadata === "object" && !Array.isArray(error.metadata)) {
+    return error.metadata;
+  }
+  if (error.details?.metadata && typeof error.details.metadata === "object" && !Array.isArray(error.details.metadata)) {
+    return error.details.metadata;
+  }
+  return null;
+}
+
+function compilerErrorStatus(error = {}) {
+  const explicitStatus = Number(error.status || error.statusCode);
+  if (Number.isInteger(explicitStatus) && explicitStatus >= 400 && explicitStatus <= 599) return explicitStatus;
+  const category = compilerErrorCategory(error).toLowerCase();
+  if (category === "config" || category === "input") return 400;
+  if (category === "timeout") return 504;
+  return 502;
+}
+
+function streamErrorPayload(error = {}, fallbackMessage, extra = {}) {
+  const source = error && typeof error === "object" ? error : {};
+  const stage = inferCompilerErrorStage(source) || String(source.stage || "");
+  const status = streamErrorStatus(source, stage);
+  return {
+    type: "error",
+    ...extra,
+    error: source.message || source.code || fallbackMessage,
+    ...(status ? { status } : {}),
+    ...(stage ? { stage } : {}),
+    ...(source.category ? { category: String(source.category) } : {}),
+    ...(source.metadata && typeof source.metadata === "object" && !Array.isArray(source.metadata)
+      ? { metadata: source.metadata }
+      : {}),
+    ...(source.code ? { code: String(source.code) } : {})
+  };
+}
+
+function streamErrorStatus(error = {}, compilerStage = "") {
+  const explicitStatus = Number(error.status || error.statusCode);
+  if (Number.isInteger(explicitStatus) && explicitStatus >= 400 && explicitStatus <= 599) return explicitStatus;
+  if (compilerStage) return compilerErrorStatus(error);
+  if (
+    error instanceof InputError
+    || error instanceof JimengImageConfigError
+    || error instanceof ShotVideoConfigError
+  ) return 400;
+  if (error.name === "AbortError" || error.name === "TimeoutError") return 504;
+  return 502;
 }
 
 function mime(extension) {

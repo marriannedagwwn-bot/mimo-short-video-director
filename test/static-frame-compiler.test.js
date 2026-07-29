@@ -1,53 +1,44 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { ModelResponseError } from "../src/mimo-client.js";
 import {
+  STATIC_FRAME_CANDIDATE_ERROR_CODES,
+  StaticFrameCompilerCandidateError,
   StaticFrameCompilerProtocolError,
   StaticFrameCompilerTransportError,
-  buildStaticFrameCompilerPrompt,
+  auditStaticFrameSourceCatalog,
+  buildStaticFrameCompileTargets,
+  buildStaticFrameSourceCatalog,
   compileStaticFrames,
-  validateStaticFrameCompilerResponse
+  enumerateGroundedPatchCombinations,
+  reviewSelectedStaticFrameEvidence,
+  validateStaticFrameEvidenceEnvelope
 } from "../src/static-frame-compiler.js";
 
-const invalidFixture = JSON.parse(readFileSync(
-  new URL("./fixtures/static-frame-compiler-invalid.json", import.meta.url),
-  "utf8"
-));
-const validFixture = JSON.parse(readFileSync(
-  new URL("./fixtures/static-frame-compiler-valid.json", import.meta.url),
-  "utf8"
-));
-
-const posePath = "animationShotBatch.shotPlan[0].startFrame.characters[0].pose";
-const handPropPath = "animationShotBatch.shotPlan[0].startFrame.characters[0].handPropState";
-const actionPath = "animationShotBatch.shotPlan[0].startFrame.characters[0].actionState";
-
-function validCompilerResponse() {
+function animationCandidate({
+  name = "小白子",
+  characterId = "character-xiaobaizi",
+  pose = "躯干保持直立",
+  bodyOrientation,
+  handPropState = "双手自然垂在身体两侧，无道具",
+  actionState = ""
+} = {}) {
   return {
-    patches: [
-      {
-        path: posePath,
-        value: "女孩坐在桌前，身体微微前倾，双手放在八音盒盖子两侧，视线落在八音盒上",
-        reasonCode: "future_intent",
-        triggerSpans: ["准备"],
-        visibleFacts: ["身体微微前倾", "双手放在八音盒盖子两侧", "视线落在八音盒上"]
+    shotPlan: [{
+      shotId: "shot-1",
+      startFrame: {
+        characters: [{
+          name,
+          characterId,
+          pose,
+          ...(bodyOrientation === undefined ? {} : { bodyOrientation }),
+          handPropState,
+          actionState
+        }]
       },
-      {
-        path: handPropPath,
-        value: "双手停在八音盒盖子两侧，八音盒盖保持闭合",
-        reasonCode: "temporal_process",
-        triggerSpans: ["随后"],
-        visibleFacts: ["双手停在八音盒盖子两侧", "八音盒盖保持闭合"]
-      },
-      {
-        path: actionPath,
-        value: "右手停留在按钮表面",
-        reasonCode: "temporal_process",
-        triggerSpans: ["正在"],
-        visibleFacts: ["右手停留在按钮表面"]
-      }
-    ]
+      endFrame: { characters: [] },
+      motion: {}
+    }]
   };
 }
 
@@ -59,180 +50,802 @@ function compilerOptions(candidate, client, overrides = {}) {
     model: "qwen-static-frame-compiler",
     maxCompletionTokens: 4096,
     timeoutMs: 300_000,
-    batchIndex: 2,
-    phase: "post-generate",
+    runId: "run-test",
     ...overrides
   };
 }
 
-test("固定非法 batch 被语义合法化，原输入与 alias 均不被 Compiler 修改", async () => {
-  const input = structuredClone(invalidFixture);
-  const original = structuredClone(input);
-  const requests = [];
+function groundingContext(candidate, {
+  runId = "run-test",
+  characterFeatureProfile = null
+} = {}) {
+  const targets = buildStaticFrameCompileTargets(candidate, { runId });
+  const catalog = buildStaticFrameSourceCatalog(candidate, targets, {
+    runId,
+    characterFeatureProfile
+  });
+  const audit = auditStaticFrameSourceCatalog(catalog, targets, {
+    characterFeatureProfile
+  });
+  const targetId = [...targets.keys()][0];
+  return {
+    candidate,
+    targetId,
+    target: targets.get(targetId),
+    targets,
+    catalog,
+    audit,
+    characterFeatureProfile
+  };
+}
+
+function candidateSpan(context, text, occurrence = 0) {
+  const matches = [...context.catalog.spans.values()].filter((span) => (
+    span.targetId === context.targetId
+    && span.text === text
+    && context.audit.candidateSpanIdsByTarget.get(context.targetId)?.has(span.spanId)
+  ));
+  assert.ok(matches[occurrence], `找不到已授权 candidate span：${JSON.stringify(text)}`);
+  return matches[occurrence];
+}
+
+function selectionForSpan(span) {
+  return {
+    segmentId: span.segmentId,
+    spanIds: [span.spanId]
+  };
+}
+
+function selectionForSpans(...spans) {
+  assert.ok(spans.length > 0);
+  assert.ok(spans.every((span) => span.segmentId === spans[0].segmentId));
+  return {
+    segmentId: spans[0].segmentId,
+    spanIds: spans.map((span) => span.spanId)
+  };
+}
+
+function initialEnvelope(context, selections) {
+  return {
+    targets: [{
+      targetId: context.targetId,
+      evidenceSelections: selections
+    }]
+  };
+}
+
+function repairEnvelope(context, repairMode, selections) {
+  return {
+    repairMode,
+    targets: [{
+      targetId: context.targetId,
+      evidenceSelections: selections
+    }]
+  };
+}
+
+function normalizeAndReview(context, selections, {
+  attempt = 1,
+  repairMode = null
+} = {}) {
+  const response = repairMode
+    ? repairEnvelope(context, repairMode, selections)
+    : initialEnvelope(context, selections);
+  const normalizedTargets = validateStaticFrameEvidenceEnvelope(response, {
+    expectedTargetIds: [context.targetId],
+    audit: context.audit,
+    repairMode,
+    requireRepairMode: Boolean(repairMode)
+  });
+  return reviewSelectedStaticFrameEvidence({
+    normalizedTargets,
+    targets: context.targets,
+    audit: context.audit,
+    characterFeatureProfile: context.characterFeatureProfile,
+    attempt
+  }).get(context.targetId);
+}
+
+function wolfFeatureProfile(characterId = "character-xiaobaizi") {
+  return {
+    characters: [{
+      characterId,
+      features: [{
+        featureId: `${characterId}.wolf_tail`,
+        suggestedFeatureKey: "wolf_tail",
+        terms: ["狼尾", "尾巴"],
+        evidenceLevel: "inferred"
+      }]
+    }]
+  };
+}
+
+test("无真实违规 target 时确定性 no-op，完全不调用模型且不要求模型配置", async () => {
+  const candidate = animationCandidate({
+    pose: "躯干保持直立",
+    handPropState: "双手垂在身体两侧",
+    actionState: ""
+  });
+  let calls = 0;
   const client = {
-    async generateJson(request) {
-      requests.push(request);
-      return validCompilerResponse();
+    async generateJson() {
+      calls += 1;
+      throw new Error("不应调用");
     }
   };
 
-  const { compiledCandidate, metadata } = await compileStaticFrames(
-    compilerOptions(input, client)
-  );
+  const result = await compileStaticFrames({
+    candidate,
+    client,
+    runId: "run-noop"
+  });
 
-  assert.deepEqual(input, original);
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].model, "qwen-static-frame-compiler");
-  assert.equal(requests[0].maxCompletionTokens, 4096);
-  assert.equal(requests[0].requestTimeoutMs, 300_000);
-  assert.equal(requests[0].jsonRetryAttempts, 0);
-  assert.equal(requests[0].strictJson, true);
-  assert.match(requests[0].systemPrompt, /合格字段[\s\S]*no-op/u);
-  assert.doesNotMatch(requests[0].prompt, /STALE_ALIAS_SHOULD_NOT_ENTER_COMPILER_CONTEXT/u);
-  assert.doesNotMatch(requests[0].prompt, /FUTURE_ALIAS_SHOULD_NOT_ENTER_COMPILER_CONTEXT/u);
-
-  const character = compiledCandidate.shotPlan[0].startFrame.characters[0];
-  assert.equal(
-    character.pose,
-    "女孩坐在桌前，身体微微前倾，双手放在八音盒盖子两侧，视线落在八音盒上"
-  );
-  assert.equal(character.handPropState, "双手停在八音盒盖子两侧，八音盒盖保持闭合");
-  assert.equal(character.actionState, "右手停留在按钮表面");
-  assert.equal(compiledCandidate.shotPlan[0].startFramePrompt, original.shotPlan[0].startFramePrompt);
-  assert.equal(compiledCandidate.shotPlan[0].futureAlias, original.shotPlan[0].futureAlias);
-
-  assert.equal(metadata.noOp, false);
-  assert.equal(metadata.requestCount, 1);
-  assert.equal(metadata.finalResult, "accepted");
-  assert.equal(metadata.runAccepted, false);
-  assert.equal(metadata.protocolAttempts.length, 1);
-  assert.equal(metadata.protocolAttempts[0].transportAttempts.length, 1);
-  assert.equal(metadata.modifications.length, 3);
-  assert.ok(metadata.modifications.every((change) => change.applied === true));
-  assert.ok(metadata.modifications.every((change) => change.finalAccepted === false));
+  assert.equal(calls, 0);
+  assert.deepEqual(result.compiledCandidate, candidate);
+  assert.equal(result.metadata.noOp, true);
+  assert.equal(result.metadata.skipReason, "NO_VIOLATING_TARGET");
+  assert.equal(result.metadata.protocolCallCount, 0);
+  assert.equal(result.metadata.requestCount, 0);
 });
 
-test("合格 batch 支持 no-op：空 patches 不润色、不触发第二次 protocol attempt", async () => {
-  const input = structuredClone(validFixture);
-  const requests = [];
+test("空 pose 属于真实违规 target，只能由已签发的相邻静态证据补齐", async () => {
+  const candidate = animationCandidate({
+    pose: "",
+    bodyOrientation: "身体朝向门口"
+  });
+  const context = groundingContext(candidate);
+  const orientation = candidateSpan(context, "身体朝向门口");
   const client = {
-    async generateJson(request) {
-      requests.push(request);
-      return { patches: [] };
+    async generateJson() {
+      return initialEnvelope(context, [selectionForSpan(orientation)]);
     }
   };
 
-  const { compiledCandidate, metadata } = await compileStaticFrames(
-    compilerOptions(input, client)
+  const result = await compileStaticFrames(compilerOptions(candidate, client));
+
+  assert.equal(context.target.reasonCode, "static_frame_required");
+  assert.equal(result.compiledCandidate.shotPlan[0].startFrame.characters[0].pose, "身体朝向门口");
+  assert.equal(result.metadata.protocolCallCount, 1);
+});
+
+test("Evidence Selection 所有层级执行 exact schema，非法/跨范围 ID 属于 protocol", () => {
+  const context = groundingContext(animationCandidate({
+    pose: "小白子准备转身，躯干前倾"
+  }));
+  const safe = candidateSpan(context, "躯干前倾");
+
+  assert.throws(
+    () => validateStaticFrameEvidenceEnvelope({
+      targets: [{
+        targetId: context.targetId,
+        evidenceSelections: [{
+          segmentId: safe.segmentId,
+          spanIds: [safe.spanId],
+          text: "模型不得回传文本"
+        }]
+      }]
+    }, {
+      expectedTargetIds: [context.targetId],
+      audit: context.audit
+    }),
+    (error) => {
+      assert.equal(error.category, "protocol");
+      assert.match(error.message, /只能包含 segmentId、spanIds/u);
+      return true;
+    }
   );
 
-  assert.deepEqual(compiledCandidate, input);
-  assert.equal(requests.length, 1);
-  assert.equal(metadata.noOp, true);
-  assert.equal(metadata.requestCount, 1);
-  assert.deepEqual(metadata.modifications, []);
-  assert.equal(metadata.protocolAttempts.length, 1);
-  assert.equal(metadata.protocolAttempts[0].finalResult, "accepted");
+  assert.throws(
+    () => validateStaticFrameEvidenceEnvelope(initialEnvelope(context, [{
+      segmentId: safe.segmentId,
+      spanIds: ["span-run-other-forged"]
+    }]), {
+      expectedTargetIds: [context.targetId],
+      audit: context.audit
+    }),
+    (error) => {
+      assert.equal(error.category, "protocol");
+      assert.match(error.message, /非法、跨 segment、跨 target、过期或未经授权/u);
+      return true;
+    }
+  );
 });
 
-test("prompt 只投影结构化 frame/motion 上下文，不枚举或携带 alias", () => {
-  const prompt = buildStaticFrameCompilerPrompt(invalidFixture);
-  assert.match(prompt, /STATIC_FRAME_COMPILER_V1/u);
-  assert.match(prompt, /"path":"animationShotBatch\.shotPlan\[0\]\.startFrame\.characters\[0\]\.pose"/u);
-  assert.match(prompt, /"before":"女孩准备打开八音盒","patchEligibility":"compiler-review"/u);
-  assert.match(prompt, /"before":"女孩坐在桌前，身体保持前倾，双肘弯曲","patchEligibility":"must-no-op"/u);
-  assert.match(prompt, /"motion":/u);
-  assert.doesNotMatch(prompt, /startFramePrompt|futureAlias|STALE_ALIAS/u);
-});
-
-test("润色式 patch 的唯一 protocol retry 会明确删除该 path 并接受 no-op", async () => {
+test("非法首次 envelope 只允许一次 envelope_repair，修复后使用原始已签发 ID", async () => {
+  const candidate = animationCandidate({
+    pose: "小白子准备转身，躯干前倾"
+  });
+  const context = groundingContext(candidate);
+  const safe = candidateSpan(context, "躯干前倾");
   const requests = [];
   const client = {
     async generateJson(request) {
       requests.push(request);
       if (requests.length === 1) {
         return {
-          patches: [{
-            path: posePath,
-            value: "女孩端坐于桌前，身体轻微前倾，双手平放，视线落在八音盒上",
-            reasonCode: "ambiguous_nonvisual",
-            triggerSpans: ["女孩坐在桌前"],
-            visibleFacts: ["身体轻微前倾", "双手平放", "视线落在八音盒上"]
-          }]
+          targets: [{
+            targetId: context.targetId,
+            evidenceSelections: [selectionForSpan(safe)]
+          }],
+          visibleFacts: ["禁止的额外字段"]
         };
       }
-      return { patches: [] };
+      return repairEnvelope(context, "envelope_repair", [selectionForSpan(safe)]);
     }
   };
 
   const { compiledCandidate, metadata } = await compileStaticFrames(
-    compilerOptions(structuredClone(validFixture), client)
+    compilerOptions(candidate, client)
   );
 
   assert.equal(requests.length, 2);
-  assert.match(requests[1].prompt, /已明确满足静态帧契约/u);
-  assert.match(requests[1].prompt, new RegExp(posePath.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
-  assert.match(requests[1].prompt, /从 patches 删除该精确 path/u);
-  assert.deepEqual(compiledCandidate, validFixture);
-  assert.equal(metadata.noOp, true);
-  assert.equal(metadata.protocolAttempts[0].retryDecision, "retry");
-  assert.equal(metadata.protocolAttempts[1].finalResult, "accepted");
-  assert.equal(metadata.modifications.length, 1);
-  assert.equal(metadata.modifications[0].applied, false);
+  assert.match(requests[1].prompt, /STATIC_FRAME_ENVELOPE_REPAIR_V2/u);
+  assert.match(requests[1].prompt, new RegExp(safe.spanId, "u"));
+  assert.equal(metadata.repairMode, "envelope_repair");
+  assert.equal(metadata.protocolCallCount, 2);
+  assert.equal(metadata.finalResult, "accepted");
+  assert.equal(compiledCandidate.shotPlan[0].startFrame.characters[0].pose, "躯干前倾");
 });
 
-test("第一次 protocol 错误在同一 batch 上纠偏一次，第二次成功", async () => {
-  const requests = [];
-  const client = {
-    async generateJson(request) {
-      requests.push(request);
-      if (requests.length === 1) return { patches: "not-an-array" };
-      return validCompilerResponse();
-    }
-  };
-
-  const { metadata } = await compileStaticFrames(
-    compilerOptions(structuredClone(invalidFixture), client)
-  );
-
-  assert.equal(requests.length, 2);
-  assert.match(requests[1].prompt, /STATIC_FRAME_COMPILER_PROTOCOL_RETRY_V1/u);
-  assert.match(requests[1].prompt, /patches 必须是数组/u);
-  assert.equal(
-    requests[0].prompt.split("允许路径与原值：\n")[1].split("\n\n去除 alias")[0],
-    requests[1].prompt.split("允许路径与原值：\n")[1].split("\n\n去除 alias")[0]
-  );
-  assert.equal(metadata.protocolAttempts.length, 2);
-  assert.equal(metadata.protocolAttempts[0].finalResult, "protocol-error");
-  assert.equal(metadata.protocolAttempts[0].errorClassification, "protocol");
-  assert.equal(metadata.protocolAttempts[0].retryDecision, "retry");
-  assert.equal(metadata.protocolAttempts[1].finalResult, "accepted");
-  assert.equal(metadata.protocolAttempts[1].retryDecision, "none");
-});
-
-test("两次 protocol 错误明确终止 Compiler stage", async () => {
+test("两次 envelope 均非法时终止为 protocol，不能伪装为 candidate-level 错误", async () => {
+  const candidate = animationCandidate({
+    pose: "小白子准备转身，躯干前倾"
+  });
   let calls = 0;
   const client = {
     async generateJson() {
       calls += 1;
-      return { patches: "still-invalid" };
+      return { targets: "not-an-array" };
     }
   };
 
   await assert.rejects(
-    () => compileStaticFrames(compilerOptions(structuredClone(invalidFixture), client)),
+    () => compileStaticFrames(compilerOptions(candidate, client)),
     (error) => {
       assert.ok(error instanceof StaticFrameCompilerProtocolError);
       assert.equal(error.category, "protocol");
-      assert.equal(error.metadata.requestCount, 2);
-      assert.equal(error.metadata.protocolAttempts.length, 2);
+      assert.equal(error.candidateLevel, undefined);
+      assert.equal(error.metadata.errorCode, "PROTOCOL_ENVELOPE_INVALID");
+      assert.equal(error.metadata.protocolCallCount, 2);
       return true;
     }
   );
   assert.equal(calls, 2);
 });
 
-test("每个 protocol attempt 各有一次 transport retry，总请求上限为四次", async () => {
+test("envelope repair 后仍有未选 candidate 时不得误报 NO_STATIC_EVIDENCE_IN_SOURCE", async () => {
+  const profile = wolfFeatureProfile();
+  const candidate = animationCandidate({
+    pose: "小白子准备观察，狼尾，双手自然下垂"
+  });
+  const context = groundingContext(candidate, {
+    characterFeatureProfile: profile
+  });
+  const tailOnly = candidateSpan(context, "狼尾");
+  let calls = 0;
+  const client = {
+    async generateJson() {
+      calls += 1;
+      if (calls === 1) return { targets: [] };
+      return repairEnvelope(
+        context,
+        "envelope_repair",
+        [selectionForSpan(tailOnly)]
+      );
+    }
+  };
+
+  await assert.rejects(
+    () => compileStaticFrames(compilerOptions(candidate, client, {
+      characterFeatureProfile: profile
+    })),
+    (error) => {
+      assert.ok(error instanceof StaticFrameCompilerCandidateError);
+      assert.equal(error.errorCode, "EVIDENCE_RESELECTION_EXHAUSTED");
+      assert.notEqual(error.errorCode, "NO_STATIC_EVIDENCE_IN_SOURCE");
+      return true;
+    }
+  );
+  assert.equal(calls, 2);
+});
+
+test("Candidate Audit 不为未选择 candidate 生成 dimension 或 state slot", () => {
+  const context = groundingContext(animationCandidate({
+    pose: "小白子准备转身，躯干前倾，双手自然下垂"
+  }));
+  const body = candidateSpan(context, "躯干前倾");
+  const review = normalizeAndReview(context, [selectionForSpan(body)]);
+
+  assert.ok(context.audit.countForTarget(context.targetId) > 1);
+  assert.equal(review.slots.length, 1);
+  assert.equal(review.slots[0].primaryDimensionKey, "body");
+  assert.ok(review.unselectedCandidateSpanIds.length > 0);
+  assert.ok(review.unselectedCandidateSpanIds.every((spanId) => (
+    !review.slots.some((slot) => slot.sourceSpanIds.includes(spanId))
+  )));
+  for (const spanId of review.unselectedCandidateSpanIds) {
+    assert.equal(Object.hasOwn(context.catalog.spans.get(spanId), "primaryDimensionKey"), false);
+  }
+});
+
+test("只有 selectedValidatedEvidence 能生成 slot，审核拒绝的已选 span 也不能生成", () => {
+  const context = groundingContext(animationCandidate({
+    pose: "小白子准备转身，躯干，双手自然下垂"
+  }));
+  const unsafeAnchor = candidateSpan(context, "躯干");
+  const safeLimbs = candidateSpan(context, "双手自然下垂");
+  const review = normalizeAndReview(context, [
+    selectionForSpan(unsafeAnchor),
+    selectionForSpan(safeLimbs)
+  ]);
+
+  assert.equal(review.selectedSpanIds.length, 2);
+  assert.equal(review.selectedValidatedEvidence, 1);
+  assert.equal(review.slots.length, 1);
+  assert.deepEqual(review.slots[0].sourceSpanIds, [safeLimbs.spanId]);
+  assert.deepEqual(review.rejectedSelections, [{
+    selectionIndex: 0,
+    reason: "NO_SAFE_PRIMARY_DIMENSION"
+  }]);
+});
+
+test("requiredDimensionCount 仅按当前 attempt 的安全 slot 池计算，少选不会强制补第二维", () => {
+  const context = groundingContext(animationCandidate({
+    pose: "小白子准备转身，躯干前倾，双手自然下垂"
+  }));
+  const body = candidateSpan(context, "躯干前倾");
+  const limbs = candidateSpan(context, "双手自然下垂");
+
+  const oneDimension = normalizeAndReview(context, [selectionForSpan(body)], {
+    attempt: 1
+  });
+  assert.equal(oneDimension.requiredDimensionCount, 1);
+  assert.deepEqual(
+    [...new Set(oneDimension.slots.map((slot) => slot.primaryDimensionKey))],
+    ["body"]
+  );
+
+  const twoDimensions = normalizeAndReview(context, [
+    selectionForSpan(body),
+    selectionForSpan(limbs)
+  ], { attempt: 1 });
+  assert.equal(twoDimensions.requiredDimensionCount, 2);
+
+  const attemptTwo = normalizeAndReview(context, [selectionForSpan(limbs)], {
+    attempt: 2,
+    repairMode: "evidence_reselection"
+  });
+  assert.equal(attemptTwo.requiredDimensionCount, 1);
+  assert.equal(attemptTwo.slots[0].stateSlotId.startsWith("state-slot-a2-"), true);
+  assert.equal(attemptTwo.slots.some((slot) => slot.sourceSpanIds.includes(body.spanId)), false);
+});
+
+test("动态角色 feature 精确命中优先于 body，且必须唯一绑定当前角色", () => {
+  const candidate = animationCandidate({
+    pose: "小白子准备保持姿势，狼尾垂在身体后侧"
+  });
+  const boundProfile = wolfFeatureProfile();
+  const bound = groundingContext(candidate, {
+    characterFeatureProfile: boundProfile
+  });
+  const boundState = candidateSpan(bound, "狼尾垂在身体后侧");
+  const boundReview = normalizeAndReview(bound, [selectionForSpan(boundState)]);
+  assert.equal(
+    boundReview.slots[0].primaryDimensionKey,
+    "characterFeature:character-xiaobaizi.wolf_tail"
+  );
+
+  const wrongRole = groundingContext(candidate, {
+    characterFeatureProfile: wolfFeatureProfile("character-other")
+  });
+  const wrongRoleState = candidateSpan(wrongRole, "狼尾垂在身体后侧");
+  const wrongRoleReview = normalizeAndReview(wrongRole, [selectionForSpan(wrongRoleState)]);
+  assert.equal(wrongRoleReview.slots.length, 0);
+  assert.equal(
+    wrongRoleReview.rejectedSelections[0].reason,
+    "NO_SAFE_PRIMARY_DIMENSION"
+  );
+});
+
+test("wing 等特殊身体词不属于固定 limbs 枚举，只有冻结动态 feature 才能计数", () => {
+  const candidate = animationCandidate({
+    pose: "小白子准备调整，翅膀展开"
+  });
+  const withoutProfile = groundingContext(candidate);
+  const unprofiledWing = candidateSpan(withoutProfile, "翅膀展开");
+  const unprofiledReview = normalizeAndReview(
+    withoutProfile,
+    [selectionForSpan(unprofiledWing)]
+  );
+  assert.equal(unprofiledReview.slots.length, 0);
+
+  const wingProfile = {
+    characters: [{
+      characterId: "character-xiaobaizi",
+      features: [{
+        featureId: "character-xiaobaizi.wing",
+        suggestedFeatureKey: "wing",
+        terms: ["翅膀"],
+        evidenceLevel: "explicit"
+      }]
+    }]
+  };
+  const withProfile = groundingContext(candidate, {
+    characterFeatureProfile: wingProfile
+  });
+  const profiledWing = candidateSpan(withProfile, "翅膀展开");
+  const profiledReview = normalizeAndReview(
+    withProfile,
+    [selectionForSpan(profiledWing)]
+  );
+  assert.equal(
+    profiledReview.slots[0].primaryDimensionKey,
+    "characterFeature:character-xiaobaizi.wing"
+  );
+});
+
+test("同一 selection 不得把角色 feature term 与另一身体主体的状态拼成新事实", () => {
+  const profile = wolfFeatureProfile();
+  const context = groundingContext(animationCandidate({
+    pose: "尾巴正在摆动，双手放在身体右侧"
+  }), {
+    characterFeatureProfile: profile
+  });
+  const tail = candidateSpan(context, "尾巴");
+  const hands = candidateSpan(context, "双手放在身体右侧");
+  const review = normalizeAndReview(context, [{
+    segmentId: tail.segmentId,
+    spanIds: [tail.spanId, hands.spanId]
+  }]);
+
+  assert.equal(review.slots.length, 0);
+  assert.deepEqual(
+    review.rejectedSelections.map((selection) => selection.reason),
+    ["NON_DELETION_GAP_BETWEEN_SPANS"]
+  );
+});
+
+test("Candidate Audit 使用当前画面全部角色名，不能把无违规 target 的其他角色事实绑定给当前角色", () => {
+  const candidate = animationCandidate({
+    pose: "小黑站立，小白子担心"
+  });
+  candidate.shotPlan[0].startFrame.characters.push({
+    name: "小黑",
+    characterId: "character-xiaohei",
+    pose: "身体站立",
+    handPropState: "双手自然垂在身体两侧，无道具",
+    actionState: ""
+  });
+  const context = groundingContext(candidate);
+  const crossCharacterSpans = [...context.catalog.spans.values()].filter((span) => (
+    span.targetId === context.targetId && span.text.includes("小黑")
+  ));
+
+  assert.ok(crossCharacterSpans.length > 0);
+  crossCharacterSpans.forEach((span) => {
+    assert.equal(
+      context.audit.candidateSpanIdsByTarget.get(context.targetId).has(span.spanId),
+      false
+    );
+    assert.equal(
+      context.audit.rejectionBySpanId.get(span.spanId),
+      "AMBIGUOUS_OR_CROSS_CHARACTER_EVIDENCE"
+    );
+  });
+});
+
+test("服务端可从心理前缀后签发精确静态后缀，不需要模型改写原文", () => {
+  const context = groundingContext(animationCandidate({
+    pose: "小白子担心地双手自然下垂"
+  }));
+  const groundedSuffix = candidateSpan(context, "双手自然下垂");
+  const review = normalizeAndReview(context, [selectionForSpan(groundedSuffix)]);
+
+  assert.equal(review.slots.length, 1);
+  assert.equal(review.slots[0].groundedText, "双手自然下垂");
+  assert.equal(review.slots[0].primaryDimensionKey, "limbs");
+});
+
+test("句中过程词通过前后两个精确 span 删除式整理，不把空间参照误计为 body", () => {
+  const profile = wolfFeatureProfile();
+  const tailContext = groundingContext(animationCandidate({
+    pose: "尾巴随后停在身体右侧"
+  }), {
+    runId: "run-inline-tail-process",
+    characterFeatureProfile: profile
+  });
+  const tail = candidateSpan(tailContext, "尾巴");
+  const tailState = candidateSpan(tailContext, "停在身体右侧");
+  const suffixOnly = normalizeAndReview(
+    tailContext,
+    [selectionForSpan(tailState)]
+  );
+  assert.equal(suffixOnly.slots.length, 0);
+  assert.equal(suffixOnly.rejectedSelections[0].reason, "NO_SAFE_PRIMARY_DIMENSION");
+
+  const tailReview = normalizeAndReview(
+    tailContext,
+    [selectionForSpans(tail, tailState)]
+  );
+  assert.equal(tailReview.slots.length, 1);
+  assert.equal(
+    tailReview.slots[0].primaryDimensionKey,
+    "characterFeature:character-xiaobaizi.wolf_tail"
+  );
+  assert.equal(tailReview.slots[0].groundedText, "尾巴停在身体右侧");
+
+  const limbsContext = groundingContext(animationCandidate({
+    pose: "双手随后自然下垂"
+  }), { runId: "run-inline-limbs-process" });
+  const hands = candidateSpan(limbsContext, "双手");
+  const handState = candidateSpan(limbsContext, "自然下垂");
+  const limbsReview = normalizeAndReview(
+    limbsContext,
+    [selectionForSpans(hands, handState)]
+  );
+  assert.equal(limbsReview.slots.length, 1);
+  assert.equal(limbsReview.slots[0].primaryDimensionKey, "limbs");
+  assert.equal(limbsReview.slots[0].groundedText, "双手自然下垂");
+});
+
+test("handPropState 接受静态手—道具状态，但绝不把它计为 bodyContact", () => {
+  const context = groundingContext(animationCandidate({
+    handPropState: "双手随后握住盒子"
+  }), { runId: "run-static-hand-prop" });
+  const hands = candidateSpan(context, "双手");
+  const heldProp = candidateSpan(context, "握住盒子");
+  const review = normalizeAndReview(
+    context,
+    [selectionForSpans(hands, heldProp)]
+  );
+
+  assert.equal(review.slots.length, 1);
+  assert.equal(review.slots[0].primaryDimensionKey, "limbs");
+  assert.equal(review.slots[0].groundedText, "双手握住盒子");
+  assert.notEqual(review.slots[0].primaryDimensionKey, "bodyContact");
+});
+
+test("bodyContact 仅计算环境支撑；handPropState 和手—道具关系均不计 bodyContact", () => {
+  const poseContext = groundingContext(animationCandidate({
+    pose: "小白子准备支撑身体，双手按在地面"
+  }), { runId: "run-body-contact" });
+  const groundContact = candidateSpan(poseContext, "双手按在地面");
+  const poseReview = normalizeAndReview(poseContext, [selectionForSpan(groundContact)]);
+  assert.equal(poseReview.slots[0].primaryDimensionKey, "bodyContact");
+
+  const handPropContext = groundingContext(animationCandidate({
+    pose: "躯干保持直立",
+    handPropState: "双手随后移动，双手按在地面"
+  }), { runId: "run-hand-prop" });
+  const handPropGround = [...handPropContext.catalog.spans.values()].find((span) => (
+    span.targetId === handPropContext.targetId
+    && span.text === "双手按在地面"
+  ));
+  assert.ok(handPropGround);
+  assert.equal(
+    handPropContext.audit.candidateSpanIdsByTarget
+      .get(handPropContext.targetId)
+      ?.has(handPropGround.spanId),
+    false
+  );
+  assert.equal(
+    handPropContext.audit.rejectionBySpanId.get(handPropGround.spanId),
+    "HAND_PROP_BODY_CONTACT_EXCLUDED"
+  );
+
+  const propRelationContext = groundingContext(animationCandidate({
+    pose: "小白子准备调整动作，双手按在盒盖"
+  }), { runId: "run-prop-relation" });
+  const propContact = candidateSpan(propRelationContext, "双手按在盒盖");
+  const propReview = normalizeAndReview(
+    propRelationContext,
+    [selectionForSpan(propContact)]
+  );
+  assert.equal(propReview.slots[0].primaryDimensionKey, "limbs");
+});
+
+test("组合搜索先单 slot 后双 slot，并按原文顺序确定性选择首个满足维度数的组合", () => {
+  const context = groundingContext(animationCandidate({
+    pose: "小白子准备转身，躯干前倾，双手自然下垂"
+  }));
+  const body = candidateSpan(context, "躯干前倾");
+  const limbs = candidateSpan(context, "双手自然下垂");
+  const review = normalizeAndReview(context, [
+    selectionForSpan(limbs),
+    selectionForSpan(body)
+  ]);
+  const result = enumerateGroundedPatchCombinations(context.target, review, {
+    candidate: context.candidate
+  });
+
+  assert.equal(review.requiredDimensionCount, 2);
+  assert.equal(result.search.length, 3);
+  assert.deepEqual(
+    result.search.map((entry) => entry.stateSlotIds.length),
+    [1, 1, 2]
+  );
+  assert.deepEqual(
+    result.search.map((entry) => entry.accepted),
+    [false, false, true]
+  );
+  assert.ok(result.search.every(
+    (entry) => entry.validationScope === "target-scoped-applied-candidate"
+  ));
+  assert.deepEqual(result.patch.visibleFacts, ["躯干前倾", "双手自然下垂"]);
+  assert.equal(result.patch.value, "躯干前倾，双手自然下垂");
+});
+
+test("target-scoped 完整复检拒绝首个互斥组合后继续选择下一组合", () => {
+  const context = groundingContext(animationCandidate({
+    pose: "小白子准备调整姿态，身体面向门口同时背对窗户，身体面向窗户"
+  }), { runId: "run-target-validation" });
+  const contradictory = candidateSpan(context, "身体面向门口同时背对窗户");
+  const safe = candidateSpan(context, "身体面向窗户");
+  const review = normalizeAndReview(context, [
+    selectionForSpan(contradictory),
+    selectionForSpan(safe)
+  ]);
+  const result = enumerateGroundedPatchCombinations(context.target, review, {
+    candidate: context.candidate
+  });
+
+  assert.equal(review.requiredDimensionCount, 1);
+  assert.equal(result.search[0].rejection, "MUTUALLY_EXCLUSIVE_STATE");
+  assert.equal(result.search[1].accepted, true);
+  assert.equal(result.patch.value, "身体面向窗户");
+});
+
+test("首次选择不完整时仅进行一次 evidence_reselection，attempt-2 独立替代并成功", async () => {
+  const candidate = animationCandidate({
+    pose: "小白子准备转身，躯干，双手自然下垂"
+  });
+  const context = groundingContext(candidate);
+  const unsafe = candidateSpan(context, "躯干");
+  const safe = candidateSpan(context, "双手自然下垂");
+  const requests = [];
+  const client = {
+    async generateJson(request) {
+      requests.push(request);
+      if (requests.length === 1) {
+        return initialEnvelope(context, [selectionForSpan(unsafe)]);
+      }
+      return repairEnvelope(
+        context,
+        "evidence_reselection",
+        [selectionForSpan(safe)]
+      );
+    }
+  };
+
+  const { compiledCandidate, metadata } = await compileStaticFrames(
+    compilerOptions(candidate, client)
+  );
+
+  assert.equal(requests.length, 2);
+  assert.match(requests[1].prompt, /STATIC_FRAME_EVIDENCE_RESELECTION_V2/u);
+  assert.equal(metadata.repairMode, "evidence_reselection");
+  assert.equal(metadata.attempts.length, 2);
+  assert.equal(metadata.attempts[0].targets[0].requiredDimensionCount, 0);
+  assert.equal(metadata.attempts[1].targets[0].requiredDimensionCount, 1);
+  assert.equal(
+    metadata.attempts[1].targets[0].stateSlots
+      .some((slot) => slot.sourceSpanIds.includes(unsafe.spanId)),
+    false
+  );
+  assert.equal(compiledCandidate.shotPlan[0].startFrame.characters[0].pose, "双手自然下垂");
+});
+
+test("evidence_reselection 仍无安全组合时返回 EVIDENCE_RESELECTION_EXHAUSTED 且不允许第三次", async () => {
+  const candidate = animationCandidate({
+    pose: "准备凝固，躯干，双手"
+  });
+  const context = groundingContext(candidate);
+  const firstUnsafe = candidateSpan(context, "凝固");
+  const secondUnsafe = candidateSpan(context, "躯干");
+  let calls = 0;
+  const client = {
+    async generateJson() {
+      calls += 1;
+      if (calls === 1) {
+        return initialEnvelope(context, [selectionForSpan(firstUnsafe)]);
+      }
+      return repairEnvelope(
+        context,
+        "evidence_reselection",
+        [selectionForSpan(secondUnsafe)]
+      );
+    }
+  };
+
+  await assert.rejects(
+    () => compileStaticFrames(compilerOptions(candidate, client)),
+    (error) => {
+      assert.ok(error instanceof StaticFrameCompilerCandidateError);
+      assert.equal(error.errorCode, "EVIDENCE_RESELECTION_EXHAUSTED");
+      assert.equal(error.category, "candidate");
+      assert.equal(error.candidateLevel, true);
+      assert.equal(error.status, 422);
+      assert.equal(error.metadata.protocolCallCount, 2);
+      return true;
+    }
+  );
+  assert.equal(calls, 2);
+});
+
+test("Catalog 没有授权 candidate 时返回 NO_STATIC_EVIDENCE_IN_SOURCE 且跳过模型", async () => {
+  const candidate = animationCandidate({
+    pose: "小白子准备打开门"
+  });
+  let calls = 0;
+  const client = {
+    async generateJson() {
+      calls += 1;
+      return {};
+    }
+  };
+
+  await assert.rejects(
+    () => compileStaticFrames(compilerOptions(candidate, client)),
+    (error) => {
+      assert.ok(error instanceof StaticFrameCompilerCandidateError);
+      assert.equal(error.errorCode, "NO_STATIC_EVIDENCE_IN_SOURCE");
+      assert.equal(error.metadata.skipReason, "CATALOG_HAS_NO_AUTHORIZED_CANDIDATE");
+      assert.equal(error.metadata.protocolCallCount, 0);
+      return true;
+    }
+  );
+  assert.equal(calls, 0);
+});
+
+test("安全 slots 存在但合法组合全部失败且无未选 candidate 时返回 NO_VALID_GROUNDED_COMBINATION", async () => {
+  const profile = wolfFeatureProfile();
+  const candidate = animationCandidate({
+    pose: "小白子准备观察，狼尾张开，双手闭合"
+  });
+  const context = groundingContext(candidate, {
+    runId: "run-test",
+    characterFeatureProfile: profile
+  });
+  const everyCandidate = [...context.audit.candidateSpanIdsByTarget.get(context.targetId)]
+    .map((spanId) => selectionForSpan(context.catalog.spans.get(spanId)));
+  let calls = 0;
+  const client = {
+    async generateJson() {
+      calls += 1;
+      return initialEnvelope(context, everyCandidate);
+    }
+  };
+
+  await assert.rejects(
+    () => compileStaticFrames(compilerOptions(candidate, client, {
+      characterFeatureProfile: profile
+    })),
+    (error) => {
+      assert.ok(error instanceof StaticFrameCompilerCandidateError);
+      assert.equal(error.errorCode, "NO_VALID_GROUNDED_COMBINATION");
+      assert.equal(error.metadata.protocolCallCount, 1);
+      assert.equal(error.metadata.attempts[0].targets[0].requiredDimensionCount, 2);
+      assert.equal(error.metadata.attempts[0].targets[0].stateSlots.length, 2);
+      return true;
+    }
+  );
+  assert.equal(calls, 1);
+});
+
+test("candidate-level 错误码集合只包含可交给 Animation Batch Retry 的三类", () => {
+  assert.deepEqual(STATIC_FRAME_CANDIDATE_ERROR_CODES, [
+    "NO_STATIC_EVIDENCE_IN_SOURCE",
+    "NO_VALID_GROUNDED_COMBINATION",
+    "EVIDENCE_RESELECTION_EXHAUSTED"
+  ]);
+});
+
+test("单次 protocol attempt 只进行一次瞬态 transport retry，成功后不消费第二协议模式", async () => {
+  const candidate = animationCandidate({
+    pose: "小白子准备转身，躯干前倾"
+  });
+  const context = groundingContext(candidate);
+  const safe = candidateSpan(context, "躯干前倾");
   let calls = 0;
   const client = {
     async generateJson() {
@@ -242,376 +855,42 @@ test("每个 protocol attempt 各有一次 transport retry，总请求上限为�
         error.code = "ECONNRESET";
         throw error;
       }
-      if (calls === 2) return { patches: "protocol-invalid" };
-      if (calls === 3) throw new ModelResponseError("provider overloaded", "", 503);
-      return validCompilerResponse();
+      return initialEnvelope(context, [selectionForSpan(safe)]);
     }
   };
 
-  const { metadata } = await compileStaticFrames(
-    compilerOptions(structuredClone(invalidFixture), client)
-  );
+  const { metadata } = await compileStaticFrames(compilerOptions(candidate, client));
 
-  assert.equal(calls, 4);
-  assert.equal(metadata.requestCount, 4);
-  assert.equal(metadata.protocolAttempts.length, 2);
-  assert.deepEqual(
-    metadata.protocolAttempts.map((attempt) => attempt.transportAttempts.length),
-    [2, 2]
-  );
-  assert.equal(metadata.protocolAttempts[0].transportAttempts[0].retryDecision, "retry");
-  assert.equal(metadata.protocolAttempts[1].transportAttempts[0].retryDecision, "retry");
+  assert.equal(calls, 2);
+  assert.equal(metadata.protocolCallCount, 1);
+  assert.equal(metadata.requestCount, 2);
+  assert.equal(metadata.protocolAttempts[0].transportAttempts.length, 2);
+  assert.equal(metadata.repairMode, null);
 });
 
-test("单个 protocol attempt 两次 transport 均失败后立即终止，不转入 protocol attempt 2", async () => {
+test("provider/transport 最终错误保持非 candidate，不能触发候选内容恢复语义", async () => {
+  const candidate = animationCandidate({
+    pose: "小白子准备转身，躯干前倾"
+  });
   let calls = 0;
   const client = {
     async generateJson() {
       calls += 1;
-      const error = new Error("network unavailable");
-      error.code = "ENETUNREACH";
-      throw error;
+      throw new ModelResponseError("provider overloaded", "", 503);
     }
   };
 
   await assert.rejects(
-    () => compileStaticFrames(compilerOptions(structuredClone(invalidFixture), client)),
+    () => compileStaticFrames(compilerOptions(candidate, client)),
     (error) => {
       assert.ok(error instanceof StaticFrameCompilerTransportError);
-      assert.equal(error.classification, "transport");
+      assert.equal(error.category, "provider");
+      assert.equal(error.classification, "provider");
+      assert.equal(error.candidateLevel, undefined);
+      assert.equal(error.metadata.protocolCallCount, 1);
       assert.equal(error.metadata.requestCount, 2);
-      assert.equal(error.metadata.protocolAttempts.length, 1);
       return true;
     }
-  );
-  assert.equal(calls, 2);
-});
-
-test("auth/provider 配置类错误不执行 transport retry", async () => {
-  let calls = 0;
-  const client = {
-    async generateJson() {
-      calls += 1;
-      throw new ModelResponseError("invalid API key", "", 401);
-    }
-  };
-
-  await assert.rejects(
-    () => compileStaticFrames(compilerOptions(structuredClone(validFixture), client)),
-    (error) => {
-      assert.ok(error instanceof StaticFrameCompilerTransportError);
-      assert.equal(error.classification, "auth");
-      assert.equal(error.metadata.requestCount, 1);
-      return true;
-    }
-  );
-  assert.equal(calls, 1);
-});
-
-test("无 HTTP status 的 invalid model/provider/config 也不得误判为 transient transport", async (t) => {
-  for (const scenario of [
-    { message: "invalid model: compiler-x", classification: "provider" },
-    { message: "unknown provider: custom", classification: "provider" },
-    { message: "missing configuration for compiler", classification: "config" }
-  ]) {
-    await t.test(scenario.message, async () => {
-      let calls = 0;
-      const client = {
-        async generateJson() {
-          calls += 1;
-          throw new Error(scenario.message);
-        }
-      };
-      await assert.rejects(
-        () => compileStaticFrames(compilerOptions(structuredClone(validFixture), client)),
-        (error) => {
-          assert.ok(error instanceof StaticFrameCompilerTransportError);
-          assert.equal(error.classification, scenario.classification);
-          assert.equal(error.metadata.requestCount, 1);
-          return true;
-        }
-      );
-      assert.equal(calls, 1);
-    });
-  }
-});
-
-test("客户端模型 JSON 解析错误属于 protocol 错误，不消耗 transport retry", async () => {
-  let calls = 0;
-  const client = {
-    async generateJson() {
-      calls += 1;
-      if (calls === 1) throw new ModelResponseError("Qwen 未返回合法 JSON", "bad", 0);
-      return { patches: [] };
-    }
-  };
-
-  const { metadata } = await compileStaticFrames(
-    compilerOptions(structuredClone(validFixture), client)
-  );
-  assert.equal(calls, 2);
-  assert.deepEqual(
-    metadata.protocolAttempts.map((attempt) => attempt.transportAttempts.length),
-    [1, 1]
-  );
-  assert.equal(metadata.protocolAttempts[0].transportAttempts[0].errorClassification, "protocol");
-});
-
-test("actionState 沿用现有空值契约，可合法转换为空且不虚构 visibleFacts", () => {
-  const candidate = structuredClone(validFixture);
-  candidate.shotPlan[0].startFrame.characters[0].actionState = "准备按下按钮";
-  const patches = validateStaticFrameCompilerResponse({
-    patches: [{
-      path: actionPath,
-      value: "",
-      reasonCode: "future_intent",
-      triggerSpans: ["准备"],
-      visibleFacts: []
-    }]
-  }, { candidate });
-
-  assert.equal(patches.length, 1);
-  assert.equal(patches[0].value, "");
-});
-
-test("严格 patch schema、白名单、原子性和证据协议", async (t) => {
-  await t.test("额外键被拒绝", () => {
-    const response = validCompilerResponse();
-    response.patches[0].styleNote = "更生动";
-    assert.throws(
-      () => validateStaticFrameCompilerResponse(response, { candidate: invalidFixture }),
-      /只能包含 path、value、reasonCode、triggerSpans、visibleFacts/u
-    );
-  });
-
-  await t.test("未知字段路径被拒绝", () => {
-    const response = validCompilerResponse();
-    response.patches[0].path = "animationShotBatch.shotPlan[0].startFrame.characters[0].gaze";
-    assert.throws(
-      () => validateStaticFrameCompilerResponse(response, { candidate: invalidFixture }),
-      /不在允许路径白名单/u
-    );
-  });
-
-  await t.test("重复路径被拒绝", () => {
-    const response = validCompilerResponse();
-    response.patches.push(structuredClone(response.patches[0]));
-    assert.throws(
-      () => validateStaticFrameCompilerResponse(response, { candidate: invalidFixture }),
-      /path 重复/u
-    );
-  });
-
-  await t.test("triggerSpans 必须逐字来自 before", () => {
-    const response = validCompilerResponse();
-    response.patches[0].triggerSpans = ["打算"];
-    assert.throws(
-      () => validateStaticFrameCompilerResponse(response, { candidate: invalidFixture }),
-      /逐字来自对应文本/u
-    );
-  });
-
-  await t.test("相邻 triggerSpans 可共同证明一个连续问题表达", () => {
-    const candidate = structuredClone(validFixture);
-    candidate.shotPlan[0].startFrame.characters[0].actionState = "右手正在按下按钮";
-    const response = {
-      patches: [{
-        path: actionPath,
-        value: "右手停留在按钮表面",
-        reasonCode: "temporal_process",
-        triggerSpans: ["正在", "按下按钮"],
-        visibleFacts: ["右手停留在按钮表面"]
-      }]
-    };
-
-    assert.equal(
-      validateStaticFrameCompilerResponse(response, { candidate })[0].value,
-      "右手停留在按钮表面"
-    );
-  });
-
-  await t.test("reasonCode 保持枚举约束，triggerSpans 独立证明静态帧问题", () => {
-    const candidate = structuredClone(validFixture);
-    candidate.shotPlan[0].startFrame.characters[0].actionState = "右手正在按下按钮";
-    const response = {
-      patches: [{
-        path: actionPath,
-        value: "右手停留在按钮表面",
-        reasonCode: "narrative_cognition",
-        triggerSpans: ["正在"],
-        visibleFacts: ["右手停留在按钮表面"]
-      }]
-    };
-
-    assert.equal(
-      validateStaticFrameCompilerResponse(response, { candidate })[0].reasonCode,
-      "narrative_cognition"
-    );
-    response.patches[0].reasonCode = "not_allowed";
-    assert.throws(
-      () => validateStaticFrameCompilerResponse(response, { candidate }),
-      /reasonCode 无效/u
-    );
-  });
-
-  await t.test("证据片段不得重复、包含或重叠", () => {
-    const response = validCompilerResponse();
-    response.patches[0].visibleFacts = ["身体微微前倾", "微微前倾"];
-    assert.throws(
-      () => validateStaticFrameCompilerResponse(response, { candidate: invalidFixture }),
-      /包含关系/u
-    );
-  });
-
-  await t.test("pose 必须覆盖至少两个不同可观察维度", () => {
-    const response = validCompilerResponse();
-    response.patches[0].value = "女孩身体微微前倾，身体保持直立";
-    response.patches[0].visibleFacts = ["身体微微前倾", "身体保持直立"];
-    assert.throws(
-      () => validateStaticFrameCompilerResponse(response, { candidate: invalidFixture }),
-      /至少两个不同可观察维度/u
-    );
-  });
-
-  await t.test("value 不得残留意图、时间推进或进行态", () => {
-    const response = validCompilerResponse();
-    response.patches[2].value = "右手正在按下按钮";
-    response.patches[2].visibleFacts = ["右手正在按下按钮"];
-    assert.throws(
-      () => validateStaticFrameCompilerResponse(response, { candidate: invalidFixture }),
-      /仍包含静态帧不允许的表达：正在/u
-    );
-  });
-
-  await t.test("机械删除关键词被拒绝", () => {
-    const response = validCompilerResponse();
-    response.patches[0].value = "女孩打开八音盒";
-    response.patches[0].visibleFacts = ["女孩打开", "八音盒"];
-    assert.throws(
-      () => validateStaticFrameCompilerResponse(response, { candidate: invalidFixture }),
-      /机械删除意图或过程词/u
-    );
-  });
-
-  await t.test("机械删词后只添加体貌助词仍被拒绝", () => {
-    const candidate = structuredClone(invalidFixture);
-    candidate.shotPlan[0].startFrame.characters[0].handPropState = "双手准备打开八音盒";
-    const response = {
-      patches: [{
-        path: handPropPath,
-        value: "双手打开了八音盒",
-        reasonCode: "future_intent",
-        triggerSpans: ["准备"],
-        visibleFacts: ["双手打开了八音盒"]
-      }]
-    };
-    assert.throws(
-      () => validateStaticFrameCompilerResponse(response, { candidate }),
-      /机械删除意图或过程词/u
-    );
-  });
-
-  await t.test("无问题 triggerSpan 的润色式 patch 被拒绝", () => {
-    const responses = [{
-      patches: [{
-        path: posePath,
-        value: "女孩端坐于桌前，身体轻微前倾，双手平放，视线落在八音盒上",
-        reasonCode: "ambiguous_nonvisual",
-        triggerSpans: ["女孩坐在桌前"],
-        visibleFacts: ["身体轻微前倾", "双手平放", "视线落在八音盒上"]
-      }]
-    }, {
-      patches: [{
-        path: handPropPath,
-        value: "双手扶稳八音盒，盒盖保持关闭",
-        reasonCode: "ambiguous_nonvisual",
-        triggerSpans: ["左手扶住盒身"],
-        visibleFacts: ["双手扶稳八音盒", "盒盖保持关闭"]
-      }]
-    }, {
-      patches: [{
-        path: actionPath,
-        value: "右手平贴按钮表面",
-        reasonCode: "ambiguous_nonvisual",
-        triggerSpans: ["右手停留在按钮表面"],
-        visibleFacts: ["右手平贴按钮表面"]
-      }]
-    }];
-    for (const response of responses) {
-      assert.throws(
-        () => validateStaticFrameCompilerResponse(response, { candidate: validFixture }),
-        /禁止润色式 patch/u
-      );
-    }
-  });
-
-  await t.test("单一维度但合格的 pose 仍必须 no-op，禁止丰富细节", () => {
-    const candidate = structuredClone(validFixture);
-    candidate.shotPlan[0].startFrame.characters[0].pose = "女孩站在桌前";
-    const response = {
-      patches: [{
-        path: posePath,
-        value: "女孩站在桌前，身体微微前倾，双手放在桌边",
-        reasonCode: "ambiguous_nonvisual",
-        triggerSpans: ["女孩站在桌前"],
-        visibleFacts: ["身体微微前倾", "双手放在桌边"]
-      }]
-    };
-    assert.throws(
-      () => validateStaticFrameCompilerResponse(response, { candidate }),
-      /必须从 patches 省略，禁止润色式 patch/u
-    );
-  });
-
-  await t.test("明确心理意图不依赖 pose 维度启发式，允许 LLM 静态化", () => {
-    const candidate = structuredClone(validFixture);
-    candidate.shotPlan[0].startFrame.characters[0].pose = "女孩站在桌前，双手想打开八音盒";
-    const response = {
-      patches: [{
-        path: posePath,
-        value: "女孩站在桌前，身体微微前倾，双手停在八音盒盖子两侧，视线落在八音盒上",
-        reasonCode: "psychological_activity",
-        triggerSpans: ["想打开"],
-        visibleFacts: ["身体微微前倾", "双手停在八音盒盖子两侧", "视线落在八音盒上"]
-      }]
-    };
-    assert.equal(
-      validateStaticFrameCompilerResponse(response, { candidate })[0].value,
-      response.patches[0].value
-    );
-  });
-
-  await t.test("triggerSpans 必须覆盖明确违规证据，不能复制无关上下文", () => {
-    const response = validCompilerResponse();
-    response.patches[0].triggerSpans = ["女孩"];
-    assert.throws(
-      () => validateStaticFrameCompilerResponse(response, { candidate: invalidFixture }),
-      /必须至少有一个片段包含 before 中的明确静态帧违规表达/u
-    );
-  });
-
-  await t.test("含明确违规表达的字段不得从 patches 遗漏", () => {
-    const response = validCompilerResponse();
-    response.patches = response.patches.filter((patch) => patch.path !== actionPath);
-    assert.throws(
-      () => validateStaticFrameCompilerResponse(response, { candidate: invalidFixture }),
-      /遗漏了含明确静态帧违规表达/u
-    );
-  });
-});
-
-test("非法 no-op 会执行唯一 protocol retry，仍 no-op 时明确失败", async () => {
-  let calls = 0;
-  const client = {
-    async generateJson() {
-      calls += 1;
-      return { patches: [] };
-    }
-  };
-
-  await assert.rejects(
-    () => compileStaticFrames(compilerOptions(structuredClone(invalidFixture), client)),
-    /遗漏了含明确静态帧违规表达/u
   );
   assert.equal(calls, 2);
 });

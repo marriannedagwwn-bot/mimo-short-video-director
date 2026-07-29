@@ -1,8 +1,9 @@
 import { ANALYSIS_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
+import { compileCharacterFeatures } from "./character-feature-compiler.js";
 import { ModelResponseError } from "./mimo-client.js";
-import { STATIC_FRAME_COMPILER_VERSION, compileStaticFrames } from "./static-frame-compiler.js";
+import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
 import { InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, getFixedCharacterIdentityAuthorizations, hasExplicitStandardNameSuffix, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
 import {
   ReconstructionGroundingError,
@@ -298,6 +299,7 @@ export class WorkflowService {
     model = null,
     maxCompletionTokens = null,
     compilerSettings,
+    characterFeatureProfile,
     batchIndex = 0,
     repairContext,
     validate
@@ -316,6 +318,7 @@ export class WorkflowService {
         model,
         maxCompletionTokens,
         compilerSettings,
+        characterFeatureProfile,
         batchIndex,
         compilerPhase: "post-generate",
         rawModelOutput,
@@ -353,22 +356,36 @@ export class WorkflowService {
       });
       retryRawModelOutput = structuredClone(retryResponse);
     } catch (error) {
-      if (!isRecoverableAnimationModelOutputError(error)) throw error;
-      throw finalAnimationBatchAttemptError(error);
+      const finalError = isRecoverableAnimationModelOutputError(error)
+        ? finalAnimationBatchAttemptError(error)
+        : error;
+      throw attachStaticFrameCompilerRuns(
+        finalError,
+        finalizeStaticFrameCompilerRuns(firstOutcome.compilerRuns, null, false)
+      );
     }
 
-    const retryOutcome = await this.runAnimationShotBatchAttempt({
-      client,
-      model,
-      maxCompletionTokens,
-      compilerSettings,
-      batchIndex,
-      compilerPhase: "second-pass",
-      rawModelOutput: retryRawModelOutput,
-      repairContext,
-      validate,
-      policy: retryPolicy
-    });
+    let retryOutcome;
+    try {
+      retryOutcome = await this.runAnimationShotBatchAttempt({
+        client,
+        model,
+        maxCompletionTokens,
+        compilerSettings,
+        characterFeatureProfile,
+        batchIndex,
+        compilerPhase: "second-pass",
+        rawModelOutput: retryRawModelOutput,
+        repairContext,
+        validate,
+        policy: retryPolicy
+      });
+    } catch (error) {
+      throw attachStaticFrameCompilerRuns(error, [
+        ...finalizeStaticFrameCompilerRuns(firstOutcome.compilerRuns, null, false),
+        ...finalizeStaticFrameCompilerRuns(staticFrameCompilerRunsFromError(error), null, false)
+      ]);
+    }
     if (retryOutcome.status === "success") {
       return {
         batch: retryOutcome.batch,
@@ -378,7 +395,13 @@ export class WorkflowService {
         ]
       };
     }
-    throw finalAnimationBatchAttemptError(retryOutcome.error);
+    throw attachStaticFrameCompilerRuns(
+      finalAnimationBatchAttemptError(retryOutcome.error),
+      [
+        ...finalizeStaticFrameCompilerRuns(firstOutcome.compilerRuns, null, false),
+        ...finalizeStaticFrameCompilerRuns(retryOutcome.compilerRuns, null, false)
+      ]
+    );
   }
 
   async runAnimationShotBatchAttempt({
@@ -386,6 +409,7 @@ export class WorkflowService {
     model,
     maxCompletionTokens,
     compilerSettings,
+    characterFeatureProfile,
     batchIndex,
     compilerPhase,
     rawModelOutput,
@@ -401,15 +425,18 @@ export class WorkflowService {
         rawModelOutput,
         repairContext,
         compilerSettings,
+        characterFeatureProfile,
         batchIndex,
         phase: compilerPhase
       });
       candidate = prepared.candidate;
       compilerRuns = prepared.compilerRuns;
     } catch (error) {
-      if (Array.isArray(error?.staticFrameCompilerRuns)) {
-        compilerRuns = [...compilerRuns, ...error.staticFrameCompilerRuns];
-      }
+      annotateStaticFrameBatchRetry(error, {
+        phase: compilerPhase,
+        retryEligible: policy.allowBatchRetry
+      });
+      compilerRuns = [...compilerRuns, ...staticFrameCompilerRunsFromError(error)];
       if (!isRecoverableAnimationModelOutputError(error)) throw error;
       return animationBatchAttemptFailure({
         error,
@@ -464,15 +491,18 @@ export class WorkflowService {
         rawModelOutput: appliedCandidate,
         repairContext,
         compilerSettings,
+        characterFeatureProfile,
         batchIndex,
         phase: "post-patch"
       });
       patchedCandidate = preparedPatch.candidate;
       compilerRuns = [...compilerRuns, ...preparedPatch.compilerRuns];
     } catch (error) {
-      if (Array.isArray(error?.staticFrameCompilerRuns)) {
-        compilerRuns = [...compilerRuns, ...error.staticFrameCompilerRuns];
-      }
+      annotateStaticFrameBatchRetry(error, {
+        phase: compilerPhase,
+        retryEligible: policy.allowBatchRetry
+      });
+      compilerRuns = [...compilerRuns, ...staticFrameCompilerRunsFromError(error)];
       if (!isRecoverableAnimationModelOutputError(error)) throw error;
       return animationBatchAttemptFailure({
         error,
@@ -507,6 +537,7 @@ export class WorkflowService {
     rawModelOutput,
     repairContext,
     compilerSettings,
+    characterFeatureProfile,
     batchIndex,
     phase
   }) {
@@ -522,6 +553,7 @@ export class WorkflowService {
       model: compilerSettings.model,
       maxCompletionTokens: compilerSettings.maxCompletionTokens,
       timeoutMs: compilerSettings.requestTimeoutMs,
+      characterFeatureProfile,
       batchIndex,
       phase
     });
@@ -648,13 +680,42 @@ export class WorkflowService {
     this.assertStageClient(settings, "首尾帧动画生产包");
     assertStaticFrameCompilerSettings(compilerSettings);
     const promptInput = { ...validatedInput, targetProvider: settings.provider, targetModel: settings.model };
-    const foundation = await this.generateValidatedJson({
-      client: settings.client,
-      prompt: animationFoundationPrompt(promptInput),
-      model: settings.model,
-      maxCompletionTokens: settings.maxCompletionTokens,
-      validate: (result) => validateAnimationFoundationOutput(result, validatedInput)
-    });
+    const [foundationResult, characterFeatureResult] = await Promise.allSettled([
+      this.generateValidatedJson({
+        client: settings.client,
+        prompt: animationFoundationPrompt(promptInput),
+        model: settings.model,
+        maxCompletionTokens: settings.maxCompletionTokens,
+        validate: (result) => validateAnimationFoundationOutput(result, validatedInput)
+      }),
+      compileCharacterFeatures({
+        creatorProfile: structuredClone(profile),
+        visualGuardrails: structuredClone(validatedInput.visualGuardrails || {}),
+        fullStory: structuredClone(fullStory),
+        temporaryCharacters: Array.isArray(validatedInput.temporaryCharacters)
+          ? structuredClone(validatedInput.temporaryCharacters)
+          : [],
+        client: compilerSettings.client,
+        provider: compilerSettings.provider,
+        model: compilerSettings.model,
+        maxCompletionTokens: compilerSettings.maxCompletionTokens,
+        timeoutMs: compilerSettings.requestTimeoutMs,
+        cachedProfile: input.privateSidecars?.characterFeatureProfile || null
+      })
+    ]);
+    const foundation = settledParallelValue(
+      foundationResult,
+      characterFeatureResult,
+      "Animation Foundation",
+      "Character Feature Compiler"
+    );
+    const characterFeatureCompilation = settledParallelValue(
+      characterFeatureResult,
+      foundationResult,
+      "Character Feature Compiler",
+      "Animation Foundation"
+    );
+    const characterFeatureProfile = freezeClone(characterFeatureCompilation.profile);
 
     const sourceScenes = Array.isArray(validatedInput.fullStory.sceneScript) ? validatedInput.fullStory.sceneScript : [];
     const sceneBatches = chunkItems(sourceScenes, this.animationShotBatchSceneCount);
@@ -685,6 +746,7 @@ export class WorkflowService {
         model: settings.model,
         maxCompletionTokens: settings.maxCompletionTokens,
         compilerSettings,
+        characterFeatureProfile,
         batchIndex,
         repairContext: createAnimationShotBatchRepairContext(batchContext),
         validate: (result) => validateAnimationShotBatchOutput(result, batchContext)
@@ -700,6 +762,10 @@ export class WorkflowService {
     return {
       animationPlan,
       metadata: {
+        characterFeatureCompiler: structuredClone(characterFeatureCompilation.metadata || {}),
+        privateSidecars: {
+          characterFeatureProfile: structuredClone(characterFeatureProfile)
+        },
         staticFrameCompiler: {
           version: STATIC_FRAME_COMPILER_VERSION,
           provider: compilerSettings.provider,
@@ -1354,6 +1420,37 @@ function chunkItems(items, size) {
   return chunks;
 }
 
+function settledParallelValue(result, companionResult, label, companionLabel) {
+  if (result?.status === "fulfilled") return result.value;
+  const error = result?.reason instanceof Error
+    ? result.reason
+    : new Error(`${label} 失败：${String(result?.reason || "未知错误")}`);
+  if (companionResult?.status !== "rejected") throw error;
+  const companionError = companionResult.reason instanceof Error
+    ? companionResult.reason
+    : new Error(`${companionLabel} 失败：${String(companionResult.reason || "未知错误")}`);
+  const characterFeatureError = [error, companionError].find((failure) => (
+    String(failure?.stage || failure?.details?.stage || "")
+      .replace(/[\s_-]+/gu, "")
+      .toLowerCase() === "characterfeaturecompiler"
+  ));
+  if (characterFeatureError) throw characterFeatureError;
+  throw new AggregateError(
+    [error, companionError],
+    `${label} 与 ${companionLabel} 并行阶段均失败`
+  );
+}
+
+function freezeClone(value) {
+  return freezeRecursively(structuredClone(value));
+}
+
+function freezeRecursively(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const item of Object.values(value)) freezeRecursively(item);
+  return Object.freeze(value);
+}
+
 function normalizeBatchSize(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return DEFAULT_ANIMATION_BATCH_SCENE_COUNT;
@@ -1540,6 +1637,58 @@ function finalizeStaticFrameCompilerRuns(runs = [], finalBatch = null, runAccept
   }));
 }
 
+function staticFrameCompilerRunsFromError(error) {
+  if (Array.isArray(error?.staticFrameCompilerRuns)) {
+    return error.staticFrameCompilerRuns.map((run) => structuredClone(run));
+  }
+  if (
+    error instanceof StaticFrameCompilerCandidateError
+    && error.metadata
+    && typeof error.metadata === "object"
+    && !Array.isArray(error.metadata)
+  ) {
+    return [structuredClone(error.metadata)];
+  }
+  return [];
+}
+
+function attachStaticFrameCompilerRuns(error, runs = []) {
+  if (!error || typeof error !== "object" || !Array.isArray(runs) || runs.length === 0) {
+    return error;
+  }
+  const clonedRuns = runs.map((run) => structuredClone(run));
+  error.staticFrameCompilerRuns = clonedRuns;
+  if (error.metadata && typeof error.metadata === "object" && !Array.isArray(error.metadata)) {
+    error.metadata.batchCompilerRuns = clonedRuns.map((run) => structuredClone(run));
+  }
+  return error;
+}
+
+function annotateStaticFrameBatchRetry(error, { phase, retryEligible }) {
+  if (!(error instanceof StaticFrameCompilerCandidateError)) return;
+  const errorCode = String(error.errorCode || error.code || "");
+  if (!RECOVERABLE_STATIC_FRAME_CANDIDATE_CODES.has(errorCode)) return;
+  const retryWasTriggered = phase === "second-pass" || Boolean(retryEligible);
+  const annotation = {
+    batchRetryEligible: Boolean(retryEligible),
+    batchRetryTriggered: retryWasTriggered,
+    batchRetryPass: phase === "second-pass" ? "second-pass" : "first-pass",
+    batchRetryBudgetRemaining: retryEligible ? 1 : 0,
+    batchRetryPropagationResult: retryEligible
+      ? "ANIMATION_BATCH_RETRY"
+      : "FINAL_FAILURE_NO_RETRY_BUDGET"
+  };
+  if (error.metadata && typeof error.metadata === "object" && !Array.isArray(error.metadata)) {
+    error.metadata.candidateLevelBatchRetry = annotation;
+  }
+  if (Array.isArray(error.staticFrameCompilerRuns)) {
+    error.staticFrameCompilerRuns = error.staticFrameCompilerRuns.map((run) => ({
+      ...structuredClone(run),
+      candidateLevelBatchRetry: structuredClone(annotation)
+    }));
+  }
+}
+
 function animationBatchErrorDiagnostic(error, phase, candidate) {
   const details = Array.isArray(error?.details)
     ? error.details.map((detail) => ({
@@ -1577,9 +1726,19 @@ function cloneAnimationBatchDebugValue(value) {
   }
 }
 
+const RECOVERABLE_STATIC_FRAME_CANDIDATE_CODES = new Set([
+  "NO_STATIC_EVIDENCE_IN_SOURCE",
+  "NO_VALID_GROUNDED_COMBINATION",
+  "EVIDENCE_RESELECTION_EXHAUSTED"
+]);
+
 function isRecoverableAnimationModelOutputError(error) {
   return error instanceof OutputContractError
-    || (error instanceof ModelResponseError && Number(error.status) === 0);
+    || (error instanceof ModelResponseError && Number(error.status) === 0)
+    || (
+      error instanceof StaticFrameCompilerCandidateError
+      && RECOVERABLE_STATIC_FRAME_CANDIDATE_CODES.has(String(error.errorCode || error.code || ""))
+    );
 }
 
 function finalAnimationBatchAttemptError(error) {

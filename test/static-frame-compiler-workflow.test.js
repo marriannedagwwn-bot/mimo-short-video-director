@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { compileAnimationShotPrompts } from "../src/animation-prompt-compiler.js";
 import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
 import {
+  StaticFrameCompilerCandidateError,
   StaticFrameCompilerProtocolError,
   StaticFrameCompilerTransportError
 } from "../src/static-frame-compiler.js";
@@ -63,9 +64,170 @@ function trustedPoseError() {
   }]);
 }
 
+function groundedEvidenceResponse(request) {
+  const prompt = String(request?.prompt || "");
+  const markers = [
+    "不可变 Source Catalog（displayText 只读，不得回传）：\n",
+    "首次调用前签发的不可变 Source Catalog：\n",
+    "原始不可变 Source Catalog：\n"
+  ];
+  const marker = markers.find((item) => prompt.includes(item));
+  if (!marker) throw new Error("Static Frame Compiler prompt 缺少签发 Catalog");
+  const catalog = JSON.parse(prompt.split(marker)[1]);
+  const response = {
+    targets: catalog.map((target) => ({
+      targetId: target.targetId,
+      evidenceSelections: target.segments
+        .filter((segment) => /身体|手|腿|脚|朝向|面向|背对/u.test(segment.displayText))
+        .map((segment) => {
+          const longest = [...segment.spans]
+            .sort((left, right) => right.displayText.length - left.displayText.length)[0];
+          return {
+            segmentId: segment.segmentId,
+            spanIds: [longest.spanId]
+          };
+        })
+    }))
+  };
+  if (prompt.includes("STATIC_FRAME_ENVELOPE_REPAIR_V2")) response.repairMode = "envelope_repair";
+  if (prompt.includes("STATIC_FRAME_EVIDENCE_RESELECTION_V2")) response.repairMode = "evidence_reselection";
+  return response;
+}
+
+const RETRYABLE_CANDIDATE_CODES = [
+  "NO_STATIC_EVIDENCE_IN_SOURCE",
+  "NO_VALID_GROUNDED_COMBINATION",
+  "EVIDENCE_RESELECTION_EXHAUSTED"
+];
+
+test("只有三个 candidate errorCode 可触发 first-pass 唯一 Batch Retry", async (t) => {
+  for (const errorCode of RETRYABLE_CANDIDATE_CODES) {
+    await t.test(errorCode, async () => {
+      const rawBatch = animationBatchFixture();
+      let animationRequests = 0;
+      let compilerAttempts = 0;
+      const workflow = new WorkflowService();
+      workflow.prepareAnimationShotBatchCandidate = async () => {
+        compilerAttempts += 1;
+        throw new StaticFrameCompilerCandidateError(errorCode, {
+          errorCode,
+          metadata: { errorCode, modifications: [] }
+        });
+      };
+
+      await assert.rejects(
+        () => workflow.generateAnimationShotBatch({
+          client: {
+            async generateJson() {
+              animationRequests += 1;
+              return structuredClone(rawBatch);
+            }
+          },
+          prompt: "ORIGINAL_BATCH",
+          compilerSettings: compilerSettings({ async generateJson() {} }),
+          repairContext: {},
+          validate: (candidate) => candidate
+        }),
+        (error) => {
+          assert.ok(error instanceof StaticFrameCompilerCandidateError);
+          assert.equal(error.errorCode, errorCode);
+          assert.equal(error.staticFrameCompilerRuns.length, 2);
+          assert.equal(error.metadata.batchCompilerRuns.length, 2);
+          assert.equal(error.metadata.batchCompilerRuns[0].candidateLevelBatchRetry.batchRetryPass, "first-pass");
+          assert.equal(error.metadata.batchCompilerRuns[1].candidateLevelBatchRetry.batchRetryPass, "second-pass");
+          return true;
+        }
+      );
+      assert.equal(animationRequests, 2);
+      assert.equal(compilerAttempts, 2);
+    });
+  }
+});
+
+test("非白名单 candidate code 直接终止，不进入 Batch Retry", async () => {
+  const rawBatch = animationBatchFixture();
+  let animationRequests = 0;
+  let compilerAttempts = 0;
+  const workflow = new WorkflowService();
+  workflow.prepareAnimationShotBatchCandidate = async () => {
+    compilerAttempts += 1;
+    throw new StaticFrameCompilerCandidateError("ILLEGAL_SIGNED_ID", {
+      errorCode: "ILLEGAL_SIGNED_ID",
+      metadata: { errorCode: "ILLEGAL_SIGNED_ID", modifications: [] }
+    });
+  };
+
+  await assert.rejects(
+    () => workflow.generateAnimationShotBatch({
+      client: {
+        async generateJson() {
+          animationRequests += 1;
+          return structuredClone(rawBatch);
+        }
+      },
+      prompt: "ORIGINAL_BATCH",
+      compilerSettings: compilerSettings({ async generateJson() {} }),
+      repairContext: {},
+      validate: (candidate) => candidate
+    }),
+    (error) => error instanceof StaticFrameCompilerCandidateError
+      && error.errorCode === "ILLEGAL_SIGNED_ID"
+  );
+  assert.equal(animationRequests, 1);
+  assert.equal(compilerAttempts, 1);
+});
+
+test("candidate first-pass metadata 在 Batch Retry 成功后保留，second-pass run 才最终接受", async () => {
+  const rawBatch = animationBatchFixture();
+  let animationRequests = 0;
+  let compilerAttempts = 0;
+  const workflow = new WorkflowService();
+  workflow.prepareAnimationShotBatchCandidate = async ({ rawModelOutput, phase }) => {
+    compilerAttempts += 1;
+    if (compilerAttempts === 1) {
+      throw new StaticFrameCompilerCandidateError("NO_STATIC_EVIDENCE_IN_SOURCE", {
+        errorCode: "NO_STATIC_EVIDENCE_IN_SOURCE",
+        metadata: {
+          phase,
+          errorCode: "NO_STATIC_EVIDENCE_IN_SOURCE",
+          modifications: []
+        }
+      });
+    }
+    return {
+      candidate: structuredClone(rawModelOutput),
+      compilerRuns: [{
+        phase,
+        finalResult: "accepted",
+        modifications: []
+      }]
+    };
+  };
+
+  const result = await workflow.generateAnimationShotBatch({
+    client: {
+      async generateJson() {
+        animationRequests += 1;
+        return structuredClone(rawBatch);
+      }
+    },
+    prompt: "ORIGINAL_BATCH",
+    compilerSettings: compilerSettings({ async generateJson() {} }),
+    repairContext: {},
+    validate: (candidate) => ensureAnimationShotBatchContract(candidate)
+  });
+
+  assert.equal(animationRequests, 2);
+  assert.equal(result.compilerRuns.length, 2);
+  assert.equal(result.compilerRuns[0].errorCode, "NO_STATIC_EVIDENCE_IN_SOURCE");
+  assert.equal(result.compilerRuns[0].runAccepted, false);
+  assert.equal(result.compilerRuns[1].phase, "second-pass");
+  assert.equal(result.compilerRuns[1].runAccepted, true);
+});
+
 test("workflow 在 Compiler 后统一重建 alias，并标记最终接受的修改", async () => {
   const rawBatch = animationBatchFixture();
-  rawBatch.shotPlan[0].startFrame.characters[0].pose = "女孩准备打开八音盒";
+  rawBatch.shotPlan[0].startFrame.characters[0].pose = "女孩准备打开八音盒，身体前倾，双手停在八音盒两侧";
   rawBatch.shotPlan[0].startFrame.characters[0].actionState = "右手停留在按钮表面";
   rawBatch.shotPlan[0].startFrame.environment.foreground = "木桌边缘";
   rawBatch.shotPlan[0].startFramePrompt = "STALE_ALIAS";
@@ -91,15 +253,7 @@ test("workflow 在 Compiler 后统一重建 alias，并标记最终接受的修�
   const compilerClient = {
     async generateJson(request) {
       compilerRequests.push(request);
-      return {
-        patches: [{
-          path: STATIC_PATH,
-          value: "女孩坐在桌前，身体微微前倾，双手放在八音盒盖子两侧，视线落在八音盒上",
-          reasonCode: "future_intent",
-          triggerSpans: ["准备打开"],
-          visibleFacts: ["身体微微前倾", "双手放在八音盒盖子两侧", "视线落在八音盒上"]
-        }]
-      };
+      return groundedEvidenceResponse(request);
     }
   };
 
@@ -115,6 +269,7 @@ test("workflow 在 Compiler 后统一重建 alias，并标记最终接受的修�
       const expected = compileAnimationShotPrompts(candidate.shotPlan[0]);
       assert.equal(candidate.shotPlan[0].startFramePrompt, expected.startFramePrompt);
       assert.notEqual(candidate.shotPlan[0].startFramePrompt, "STALE_ALIAS");
+      assert.doesNotMatch(candidate.shotPlan[0].startFrame.characters[0].pose, /准备/u);
       return ensureAnimationShotBatchContract(candidate);
     }
   });
@@ -133,6 +288,7 @@ test("workflow 在 Compiler 后统一重建 alias，并标记最终接受的修�
 
 test("Compiler protocol 最终失败会终止 stage，不触发 animationShotBatch second-pass", async () => {
   const rawBatch = animationBatchFixture();
+  rawBatch.shotPlan[0].startFrame.characters[0].pose = "女孩准备打开八音盒，身体前倾，双手停在八音盒两侧";
   let animationRequests = 0;
   let compilerRequests = 0;
   const animationClient = {
@@ -164,6 +320,7 @@ test("Compiler protocol 最终失败会终止 stage，不触发 animationShotBat
 
 test("Compiler transient transport 用完一次 retry 后直接终止，不触发 batch retry", async () => {
   const rawBatch = animationBatchFixture();
+  rawBatch.shotPlan[0].startFrame.characters[0].pose = "女孩准备打开八音盒，身体前倾，双手停在八音盒两侧";
   let animationRequests = 0;
   let compilerRequests = 0;
   const animationClient = {
@@ -208,7 +365,7 @@ test("raw batch 缺少 shotPlan 属于候选结构失败，只重生 batch，不
   const compilerClient = {
     async generateJson() {
       compilerRequests += 1;
-      return { patches: [] };
+      throw new Error("该用例不应调用 Static Frame Evidence Selector");
     }
   };
 
@@ -223,7 +380,7 @@ test("raw batch 缺少 shotPlan 属于候选结构失败，只重生 batch，不
   assert.equal(result.batch.shotPlan.length, 1);
   assert.equal(animationPrompts.length, 2);
   assert.match(animationPrompts[1], /ANIMATION_SHOT_BATCH_RETRY_V1/u);
-  assert.equal(compilerRequests, 1);
+  assert.equal(compilerRequests, 0);
 });
 
 test("合法 Compiler 后候选失败才允许一次 patch 和唯一 second-pass，second-pass 禁止 patch", async () => {
@@ -246,7 +403,7 @@ test("合法 Compiler 后候选失败才允许一次 patch 和唯一 second-pass
   const compilerClient = {
     async generateJson() {
       compilerRequests += 1;
-      return { patches: [] };
+      throw new Error("该用例不应调用 Static Frame Evidence Selector");
     }
   };
 
@@ -265,7 +422,7 @@ test("合法 Compiler 后候选失败才允许一次 patch 和唯一 second-pass
   );
 
   assert.equal(validationCalls, 3);
-  assert.equal(compilerRequests, 3);
+  assert.equal(compilerRequests, 0);
   assert.equal(animationPrompts.filter((prompt) => prompt.includes("ANIMATION_SHOT_BATCH_SINGLE_FIELD_PATCH_V1")).length, 1);
   assert.equal(animationPrompts.filter((prompt) => prompt.includes("ANIMATION_SHOT_BATCH_RETRY_V1")).length, 1);
   assert.equal(animationPrompts.length, 3);
@@ -274,8 +431,8 @@ test("合法 Compiler 后候选失败才允许一次 patch 和唯一 second-pass
 test("second-pass 成功时只接受 retry run，并区分 finalAccepted", async () => {
   const firstBatch = animationBatchFixture();
   const retryBatch = animationBatchFixture();
-  firstBatch.shotPlan[0].startFrame.characters[0].pose = "女孩准备打开八音盒";
-  retryBatch.shotPlan[0].startFrame.characters[0].pose = "女孩即将打开八音盒";
+  firstBatch.shotPlan[0].startFrame.characters[0].pose = "女孩准备打开八音盒，身体前倾，双手停在八音盒两侧";
+  retryBatch.shotPlan[0].startFrame.characters[0].pose = "女孩即将打开八音盒，身体前倾，双手停在八音盒两侧";
   let animationRequests = 0;
   let validationCalls = 0;
   const animationClient = {
@@ -286,18 +443,7 @@ test("second-pass 成功时只接受 retry run，并区分 finalAccepted", async
   };
   const compilerClient = {
     async generateJson(request) {
-      const retry = String(request.prompt).includes("即将打开");
-      return {
-        patches: [{
-          path: STATIC_PATH,
-          value: retry
-            ? "女孩站在桌前，身体微微前倾，双手停在八音盒盖子两侧，视线落在八音盒上"
-            : "女孩坐在桌前，身体微微前倾，双手停在八音盒盖子两侧，视线落在八音盒上",
-          reasonCode: "future_intent",
-          triggerSpans: [retry ? "即将" : "准备"],
-          visibleFacts: ["身体微微前倾", "双手停在八音盒盖子两侧", "视线落在八音盒上"]
-        }]
-      };
+      return groundedEvidenceResponse(request);
     }
   };
 
@@ -338,7 +484,7 @@ test("alias 重建失败后 second-pass 成功时，已完成的 first Compiler 
   };
   const compilerClient = {
     async generateJson() {
-      return { patches: [] };
+      throw new Error("no-op Static Frame Compiler 不应调用模型");
     }
   };
 

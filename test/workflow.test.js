@@ -48,8 +48,43 @@ function animationWorkflow(options = {}) {
   });
 }
 
+function stagedStaticFrameResponse(prompt = "") {
+  const marker = [
+    "不可变 Source Catalog（displayText 只读，不得回传）：\n",
+    "首次调用前签发的不可变 Source Catalog：\n",
+    "原始不可变 Source Catalog：\n"
+  ].find((candidate) => prompt.includes(candidate));
+  if (!marker) return null;
+  const catalog = JSON.parse(prompt.split(marker)[1]);
+  const response = {
+    targets: catalog.map((target) => ({
+      targetId: target.targetId,
+      evidenceSelections: target.segments.flatMap((segment) =>
+        segment.spans.map((span) => ({
+          segmentId: segment.segmentId,
+          spanIds: [span.spanId]
+        }))
+      )
+    }))
+  };
+  if (prompt.includes("STATIC_FRAME_ENVELOPE_REPAIR_V2")) response.repairMode = "envelope_repair";
+  if (prompt.includes("STATIC_FRAME_EVIDENCE_RESELECTION_V2")) response.repairMode = "evidence_reselection";
+  return response;
+}
+
 function stagedAnimationResponse(plan, prompt = "") {
-  if (prompt.includes("STATIC_FRAME_COMPILER_V1")) return { patches: [] };
+  if (prompt.includes("CHARACTER_FEATURE_COMPILER_V1")) {
+    const marker = "服务端签发输入：\n";
+    const payload = JSON.parse(String(prompt).split(marker)[1].split("\n\nCHARACTER_FEATURE_COMPILER_PROTOCOL_RETRY_V1")[0]);
+    return {
+      characters: payload.characterTargets.map(({ characterTargetId }) => ({
+        characterTargetId,
+        features: []
+      }))
+    };
+  }
+  const staticFrameResponse = stagedStaticFrameResponse(prompt);
+  if (staticFrameResponse) return staticFrameResponse;
   if (prompt.includes("ACTION_STATE_SEMANTIC_AUDIT_V1")) {
     const marker = "待审核条目（每项严格只有 id、actionState、frameKind）：\n";
     const items = JSON.parse(String(prompt).split(marker)[1].split("\n")[0]);
@@ -506,7 +541,8 @@ test("完整剧情后可生成首尾帧动画生产包", async () => {
       async generateJson(args) {
         if (
           !args.prompt.includes("ACTION_STATE_SEMANTIC_AUDIT_V1")
-          && !args.prompt.includes("STATIC_FRAME_COMPILER_V1")
+          && !/STATIC_FRAME_(?:EVIDENCE_SELECTION|EVIDENCE_RESELECTION|ENVELOPE_REPAIR)_V2/u.test(args.prompt)
+          && !args.prompt.includes("CHARACTER_FEATURE_COMPILER_V1")
         ) captured = args;
         return stagedAnimationResponse(mockAnimationPlan({ ...input, creativeBrief, variant, fullStory }), args.prompt);
       }

@@ -2,6 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
 import { compileAnimationShotPrompts } from "../src/animation-prompt-compiler.js";
+import {
+  CharacterFeatureCompilerTransportError,
+  clearCharacterFeatureCompilerCache
+} from "../src/character-feature-compiler.js";
 import { ModelResponseError } from "../src/mimo-client.js";
 import { animationFoundationPrompt, animationShotBatchPrompt } from "../src/prompts.js";
 import { ensureAnimationFoundationContract, ensureAnimationShotBatchContract } from "../src/validation.js";
@@ -10,7 +14,54 @@ import { WorkflowService, repairAnimationShotBatchCandidate } from "../src/workf
 const TEST_STATIC_FRAME_COMPILER_MODEL = "static-frame-compiler-test";
 
 function isStaticFrameCompilerRequest(args = {}) {
-  return String(args.prompt || "").includes("STATIC_FRAME_COMPILER_V1");
+  return /STATIC_FRAME_(?:EVIDENCE_SELECTION|EVIDENCE_RESELECTION|ENVELOPE_REPAIR)_V2/u
+    .test(String(args.prompt || ""));
+}
+
+function isCharacterFeatureCompilerRequest(args = {}) {
+  return String(args.prompt || "").includes("CHARACTER_FEATURE_COMPILER_V1");
+}
+
+function emptyCharacterFeatureResponse(args = {}) {
+  const marker = "服务端签发输入：\n";
+  const payload = JSON.parse(
+    String(args.prompt || "").split(marker)[1].split("\n\nCHARACTER_FEATURE_COMPILER_PROTOCOL_RETRY_V1")[0]
+  );
+  return {
+    characters: payload.characterTargets.map(({ characterTargetId }) => ({
+      characterTargetId,
+      features: []
+    }))
+  };
+}
+
+function staticFrameEvidenceResponse(args = {}) {
+  const prompt = String(args.prompt || "");
+  const marker = [
+    "不可变 Source Catalog（displayText 只读，不得回传）：\n",
+    "首次调用前签发的不可变 Source Catalog：\n",
+    "原始不可变 Source Catalog：\n"
+  ].find((candidate) => prompt.includes(candidate));
+  if (!marker) throw new Error("Static Frame Compiler prompt 缺少签发 Catalog");
+  const catalog = JSON.parse(prompt.split(marker)[1]);
+  const response = {
+    targets: catalog.map((target) => ({
+      targetId: target.targetId,
+      evidenceSelections: target.segments.flatMap((segment) =>
+        segment.spans.map((span) => ({
+          segmentId: segment.segmentId,
+          spanIds: [span.spanId]
+        }))
+      )
+    }))
+  };
+  if (prompt.includes("STATIC_FRAME_ENVELOPE_REPAIR_V2")) {
+    response.repairMode = "envelope_repair";
+  }
+  if (prompt.includes("STATIC_FRAME_EVIDENCE_RESELECTION_V2")) {
+    response.repairMode = "evidence_reselection";
+  }
+  return response;
 }
 
 function animationWorkflow(options = {}) {
@@ -25,7 +76,8 @@ function animationWorkflow(options = {}) {
   const routedClient = {
     ...originalClient,
     async generateJson(args) {
-      if (isStaticFrameCompilerRequest(args)) return { patches: [] };
+      if (isCharacterFeatureCompilerRequest(args)) return emptyCharacterFeatureResponse(args);
+      if (isStaticFrameCompilerRequest(args)) return staticFrameEvidenceResponse(args);
       return originalClient.generateJson(args);
     }
   };
@@ -181,6 +233,108 @@ test("服务端先生成基础锁定，再按场次分批生成并合并原 anim
       compileAnimationShotPrompts(shot)
     );
   });
+});
+
+test("Full Story 校验后并行生成 Foundation 与冻结角色特征 Profile，Feature 输入不读取 Foundation", async () => {
+  clearCharacterFeatureCompilerCache();
+  const context = fixture();
+  const foundation = foundationFrom(context.animationPlan);
+  foundation.characterReferencePrompts[0].appearancePrompt += " FOUNDATION_ONLY_SENTINEL";
+  let resolveFoundation;
+  let foundationStarted = false;
+  let featureStarted = false;
+  let featurePrompt = "";
+  let nextBatchIndex = 0;
+  const client = {
+    async generateJson(args) {
+      const prompt = String(args.prompt || "");
+      if (prompt.includes("CHARACTER_FEATURE_COMPILER_V1")) {
+        featureStarted = true;
+        featurePrompt = prompt;
+        return emptyCharacterFeatureResponse(args);
+      }
+      if (isStaticFrameCompilerRequest(args)) return staticFrameEvidenceResponse(args);
+      if (prompt.includes("本阶段只生成可供所有镜头批次复用")) {
+        foundationStarted = true;
+        return new Promise((resolve) => {
+          resolveFoundation = () => resolve(structuredClone(foundation));
+        });
+      }
+      const batch = {
+        shotPlan: structuredClone(
+          context.animationPlan.shotPlan.slice(nextBatchIndex * 2, nextBatchIndex * 2 + 2)
+        )
+      };
+      nextBatchIndex += 1;
+      return batch;
+    }
+  };
+  const workflow = new WorkflowService({
+    client,
+    staticFrameCompilerProvider: "MiMo",
+    staticFrameCompilerModel: TEST_STATIC_FRAME_COMPILER_MODEL,
+    animationShotBatchSceneCount: 2
+  });
+  const characterFeatureProfiles = [];
+  const prepareCandidate = workflow.prepareAnimationShotBatchCandidate.bind(workflow);
+  workflow.prepareAnimationShotBatchCandidate = async (args) => {
+    characterFeatureProfiles.push(args.characterFeatureProfile);
+    return prepareCandidate(args);
+  };
+
+  const pending = workflow.createAnimationPlanWithMetadata(context);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(foundationStarted, true);
+  assert.equal(featureStarted, true);
+  assert.doesNotMatch(featurePrompt, /FOUNDATION_ONLY_SENTINEL/u);
+  resolveFoundation();
+
+  const result = await pending;
+  assert.equal(result.metadata.characterFeatureCompiler.finalResult, "accepted");
+  assert.equal(result.metadata.characterFeatureCompiler.counts.characterCount, 3);
+  assert.equal(result.animationPlan.shotPlan.length, 6);
+  assert.equal(characterFeatureProfiles.length, 3);
+  assert.ok(characterFeatureProfiles.every((profile) => profile === characterFeatureProfiles[0]));
+  assert.ok(Object.isFrozen(characterFeatureProfiles[0]));
+  assert.ok(Object.isFrozen(characterFeatureProfiles[0].characters));
+  assert.ok(Object.isFrozen(characterFeatureProfiles[0].characters[0]));
+  assert.deepEqual(
+    result.metadata.privateSidecars.characterFeatureProfile,
+    characterFeatureProfiles[0]
+  );
+});
+
+test("Foundation 与 Character Feature 并行阶段同时失败时保留 Character Feature 结构化错误", async () => {
+  clearCharacterFeatureCompilerCache();
+  const context = fixture();
+  const client = {
+    async generateJson(args) {
+      const prompt = String(args.prompt || "");
+      if (prompt.includes("CHARACTER_FEATURE_COMPILER_V1")) {
+        throw new Error("feature provider unavailable");
+      }
+      if (prompt.includes("本阶段只生成可供所有镜头批次复用")) {
+        throw new Error("foundation provider unavailable");
+      }
+      throw new Error("unexpected request");
+    }
+  };
+  const workflow = new WorkflowService({
+    client,
+    staticFrameCompilerProvider: "MiMo",
+    staticFrameCompilerModel: TEST_STATIC_FRAME_COMPILER_MODEL
+  });
+
+  await assert.rejects(
+    () => workflow.createAnimationPlanWithMetadata(context),
+    (error) => {
+      assert.ok(error instanceof CharacterFeatureCompilerTransportError);
+      assert.equal(error.stage, "characterFeatureCompiler");
+      assert.equal(error.metadata.stage, "characterFeatureCompiler");
+      return true;
+    }
+  );
 });
 
 test("下一批提示词继承上一镜完整尾帧与运动终态", async () => {
@@ -733,7 +887,7 @@ test("actionState 审核判定语义失败时只修复一个字段", async (t) =
   }
 });
 
-test("静态 pose 失败使用可信单字段 patch 且 motion 与其余批次完全不变", async () => {
+test("空 pose 只使用 Static Frame 已签发证据补齐，motion 与其余批次完全不变", async () => {
   const context = fixture();
   const rawBatch = modelBatchFrom(context);
   rawBatch.shotPlan[0].startFrame.characters[0].pose = "";
@@ -761,8 +915,8 @@ test("静态 pose 失败使用可信单字段 patch 且 motion 与其余批次�
 
   const result = await workflow.createAnimationPlan(context);
   const expected = structuredClone(originalBatch);
-  expected.shotPlan[0].startFrame.characters[0].pose = "半蹲在木盒旁，右手停在盒盖边缘";
-  assert.equal(patchCalls, 1);
+  expected.shotPlan[0].startFrame.characters[0].pose = "身体略朝动作方向";
+  assert.equal(patchCalls, 0);
   assert.deepEqual(batchWithoutCompiledAliases(result), expected);
   assert.deepEqual(result.shotPlan[0].motion, originalBatch.shotPlan[0].motion);
 });
@@ -873,13 +1027,11 @@ test("camera 终点 patch 协议错误进入唯一 second-pass，且 second-pass
   assert.equal(result.shotPlan[0].endFrame.camera.depthOfField, "角色面部清晰，背景明显虚化");
 });
 
-test("handPropState 为空时只 patch 可信叶子且不重生整批", async () => {
+test("handPropState 为空且无签发证据时触发唯一 Batch Retry，不允许自由文本 patch", async () => {
   const context = fixture();
   const rawBatch = modelBatchFrom(context);
   rawBatch.shotPlan[0].startFrame.characters[0].handPropState = "";
-  const originalBatch = structuredClone(rawBatch);
-  const trustedPath = "animationShotBatch.shotPlan[0].startFrame.characters[0].handPropState";
-  const repairedValue = "双手停在工具箱边缘，工具箱闭合";
+  const validRetry = modelBatchFrom(context);
   let batchGenerationCalls = 0;
   let patchCalls = 0;
   let auditCalls = 0;
@@ -891,31 +1043,24 @@ test("handPropState 为空时只 patch 可信叶子且不重生整批", async ()
         if (args.prompt.includes("本阶段只生成可供所有镜头批次复用")) return foundationFrom(context.animationPlan);
         if (args.prompt.includes("ANIMATION_SHOT_BATCH_SINGLE_FIELD_PATCH_V1")) {
           patchCalls += 1;
-          if (patchCalls > 1) throw new Error("同一批次不得执行第二次 patch");
-          assert.match(args.prompt, new RegExp(trustedPath.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
-          const patch = { path: trustedPath, value: repairedValue };
-          assert.deepEqual(Object.keys(patch).sort(), ["path", "value"]);
-          return patch;
+          throw new Error("空 handPropState 不得进入自由文本 patch");
         }
         if (args.prompt.includes("ACTION_STATE_SEMANTIC_AUDIT_V1")) {
           auditCalls += 1;
           throw new Error("全部 actionState 为空时不得审核");
         }
         batchGenerationCalls += 1;
-        if (batchGenerationCalls > 1) throw new Error("结构失败不得触发整批重生");
-        return structuredClone(rawBatch);
+        if (batchGenerationCalls > 2) throw new Error("不得触发第三次整批生成");
+        return structuredClone(batchGenerationCalls === 1 ? rawBatch : validRetry);
       }
     }
   });
 
   const result = await workflow.createAnimationPlan(context);
-  const expected = structuredClone(originalBatch);
-  expected.shotPlan[0].startFrame.characters[0].handPropState = repairedValue;
-  assert.equal(batchGenerationCalls, 1);
-  assert.equal(patchCalls, 1);
+  assert.equal(batchGenerationCalls, 2);
+  assert.equal(patchCalls, 0);
   assert.equal(auditCalls, 0);
-  assert.deepEqual(batchWithoutCompiledAliases(result), expected);
-  assert.deepEqual(result.shotPlan[0].motion, originalBatch.shotPlan[0].motion);
+  assert.deepEqual(batchWithoutCompiledAliases(result), validRetry);
 });
 
 test("actionState 单字段 patch 为非空可见状态后只复审一次并通过", async () => {
@@ -1390,12 +1535,12 @@ test("batch ModelResponseError 仅 status=0 属于模型输出恢复路径", asy
   });
 });
 
-test("second-pass 遇到原本可 patch 的可信叶子时直接最终失败", async () => {
+test("second-pass 遇到 candidate-level 无证据错误时直接最终失败", async () => {
   const context = fixture();
   const firstInvalid = modelBatchFrom(context);
   firstInvalid.shotPlan[0].durationSeconds = 0;
   const retryInvalid = modelBatchFrom(context);
-  retryInvalid.shotPlan[0].startFrame.characters[0].pose = "";
+  retryInvalid.shotPlan[0].startFrame.characters[0].handPropState = "";
   let batchCalls = 0;
   let patchCalls = 0;
   const workflow = animationWorkflow({
@@ -1407,10 +1552,7 @@ test("second-pass 遇到原本可 patch 的可信叶子时直接最终失败", a
         }
         if (args.prompt.includes("ANIMATION_SHOT_BATCH_SINGLE_FIELD_PATCH_V1")) {
           patchCalls += 1;
-          return {
-            path: "animationShotBatch.shotPlan[0].startFrame.characters[0].pose",
-            value: "半蹲在木盒旁"
-          };
+          throw new Error("second-pass 不得执行自由文本 patch");
         }
         batchCalls += 1;
         return structuredClone(batchCalls === 1 ? firstInvalid : retryInvalid);
@@ -1418,12 +1560,15 @@ test("second-pass 遇到原本可 patch 的可信叶子时直接最终失败", a
     }
   });
 
-  await assert.rejects(() => workflow.createAnimationPlan(context), /second-pass 失败.*pose/);
+  await assert.rejects(
+    () => workflow.createAnimationPlan(context),
+    /NO_STATIC_EVIDENCE_IN_SOURCE/u
+  );
   assert.equal(batchCalls, 2);
   assert.equal(patchCalls, 0);
 });
 
-test("patch 修复原错误后出现新 validation 错误时直接进入 second-pass", async () => {
+test("Static Frame grounded 修复后出现其他 validation 错误时直接进入 second-pass", async () => {
   const context = fixture();
   const firstInvalid = modelBatchFrom(context);
   firstInvalid.shotPlan[0].startFrame.characters[0].pose = "";
@@ -1440,10 +1585,7 @@ test("patch 修复原错误后出现新 validation 错误时直接进入 second-
         }
         if (args.prompt.includes("ANIMATION_SHOT_BATCH_SINGLE_FIELD_PATCH_V1")) {
           patchCalls += 1;
-          return {
-            path: "animationShotBatch.shotPlan[0].startFrame.characters[0].pose",
-            value: "半蹲在木盒旁，右手停在盒盖边缘"
-          };
+          throw new Error("Static Frame grounded 修复不得进入自由文本 patch");
         }
         batchCalls += 1;
         return structuredClone(batchCalls === 1 ? firstInvalid : validRetry);
@@ -1454,7 +1596,7 @@ test("patch 修复原错误后出现新 validation 错误时直接进入 second-
   const result = await workflow.createAnimationPlan(context);
   assert.equal(result.shotPlan.length, 6);
   assert.equal(batchCalls, 2);
-  assert.equal(patchCalls, 1);
+  assert.equal(patchCalls, 0);
 });
 
 test("first/retry raw 输出保持不可变且不泄漏到生产包或 retry prompt", async () => {

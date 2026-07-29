@@ -1,11 +1,34 @@
 import { ModelResponseError } from "./mimo-client.js";
 import {
-  STATIC_FRAME_INVISIBLE_INTENT_TERMS,
-  STATIC_FRAME_PROCESS_OR_AUDIO_TERMS
-} from "./validation.js";
+  STATIC_FRAME_CANDIDATE_ERROR_CODES,
+  STATIC_FRAME_META_DIMENSIONS,
+  applyGroundedStaticFramePatches,
+  auditStaticFrameSourceCatalog,
+  buildStaticFrameCompileTargets,
+  buildStaticFrameSourceCatalog,
+  createStaticFrameRunId,
+  enumerateGroundedPatchCombinations,
+  publicStaticFrameCatalogView,
+  reviewSelectedStaticFrameEvidence,
+  staticFrameTargetPromptView,
+  summarizeReviewForMetadata,
+  validateStaticFrameEvidenceEnvelope
+} from "./static-frame-grounding.js";
 
-export const STATIC_FRAME_COMPILER_VERSION = "1.0";
+export {
+  STATIC_FRAME_CANDIDATE_ERROR_CODES,
+  STATIC_FRAME_META_DIMENSIONS,
+  auditStaticFrameSourceCatalog,
+  buildStaticFrameCompileTargets,
+  buildStaticFrameSourceCatalog,
+  enumerateGroundedPatchCombinations,
+  reviewSelectedStaticFrameEvidence,
+  validateStaticFrameEvidenceEnvelope
+} from "./static-frame-grounding.js";
+
+export const STATIC_FRAME_COMPILER_VERSION = "2.0";
 export const STATIC_FRAME_COMPILER_REASON_CODES = Object.freeze([
+  "static_frame_required",
   "narrative_cognition",
   "psychological_activity",
   "future_intent",
@@ -14,47 +37,21 @@ export const STATIC_FRAME_COMPILER_REASON_CODES = Object.freeze([
   "temporal_process"
 ]);
 
-const REASON_CODE_SET = new Set(STATIC_FRAME_COMPILER_REASON_CODES);
-const TARGET_FIELDS = new Set(["pose", "handPropState", "actionState"]);
-const PATCH_KEYS = Object.freeze([
-  "path",
-  "value",
-  "reasonCode",
-  "triggerSpans",
-  "visibleFacts"
-]);
-const PATH_PATTERN = /^animationShotBatch\.shotPlan\[(\d+)\]\.(startFrame|endFrame)\.characters\[(\d+)\]\.(pose|handPropState|actionState)$/u;
+const SYSTEM_PROMPT = `你是 Static Frame Evidence Selector。
 
-const REASON_TRIGGER_PATTERNS = Object.freeze({
-  narrative_cognition: /发现|意识到|知道|明白|认出|想起|回忆|察觉|理解|确认|判断出/u,
-  psychological_activity: /决定|希望|担心|害怕|期待|犹豫|想要|(?<![理思设幻])想(?![象法])|试图|打算|计划|愿意|内心|心里/u,
-  future_intent: /准备|即将|将要|想要|试图|打算|计划|马上会|下一步/u,
-  goal_stage: /为了|以便|目标|目的|准备|阶段|接下来|下一步|完成后|成功后/u,
-  ambiguous_nonvisual: /似乎|仿佛|好像|意图|目的|念头|意识|认知|心理|情绪变化|做出反应|镜头移动|运镜|对白|音效/u,
-  temporal_process: /逐渐|随后|然后|正在|开始|继续|慢慢|逐步|过程中|一边.+一边|先.+再/u
-});
-
-const POSE_DIMENSION_PATTERNS = Object.freeze({
-  body: /坐|站|蹲|跪|躺|趴|俯身|前倾|后仰|弯腰|挺直|躯干|身体|重心/u,
-  limbs: /手|掌|指|腕|臂|肘|肩|腿|膝|脚|足|前肢|后肢|翅膀|爪/u,
-  gaze: /视线|目光|注视|看向|望向|凝视|头部|低头|抬头/u,
-  orientation: /朝向|面向|背对|侧身|转向|正对|偏向/u,
-  contact: /接触|贴在|放在|落在|停留|握住|扶住|托住|按在|悬停|距离|两侧|表面/u
-});
-
-const SYSTEM_PROMPT = `你是 Static Frame Compiler，只负责把不符合静态帧契约的叙事语言转换为单帧可直接观察的视觉状态。
-
-你不做业务决策，不改剧情，不创作新动作，不优化文风，不润色，不扩写合格字段。
-若所有允许字段均已合格，必须原样 no-op，只返回 {"patches":[]}。
+你只能从服务端签发的不可变 Source Catalog 中选择 targetId、segmentId 和 spanId。
+你不能返回、改写或创造状态文本，也不能返回 path、offset、角色 ID、字段、维度、value、visibleFacts 或 delete。
+服务端将独立审核所选 evidence、生成 state slots、编译 canonical patch 并执行最终校验。
 只输出一个严格 JSON 对象，不要 Markdown，不要解释。`;
 
 export class StaticFrameCompilerError extends Error {
   constructor(message, { category = "compiler", metadata = null, cause = null } = {}) {
     super(message, cause ? { cause } : undefined);
     this.name = "StaticFrameCompilerError";
+    this.stage = "staticFrameCompiler";
     this.category = category;
     this.metadata = metadata;
-    this.details = { category, metadata };
+    this.details = { stage: this.stage, category, metadata };
   }
 }
 
@@ -80,12 +77,27 @@ export class StaticFrameCompilerConfigError extends StaticFrameCompilerError {
   }
 }
 
+export class StaticFrameCompilerCandidateError extends StaticFrameCompilerError {
+  constructor(message, { errorCode, metadata = null, ...options } = {}) {
+    super(message, { ...options, category: "candidate", metadata });
+    this.name = "StaticFrameCompilerCandidateError";
+    this.errorCode = errorCode;
+    this.code = errorCode;
+    this.status = 422;
+    this.candidateLevel = true;
+    this.staticFrameCompilerRuns = metadata ? [metadata] : [];
+    this.details = {
+      stage: this.stage,
+      category: this.category,
+      errorCode,
+      metadata
+    };
+  }
+}
+
 /**
- * Compile narrative character endpoint fields into directly observable static facts.
- *
- * The supplied client must expose generateJson(). Client-level JSON retries are
- * explicitly disabled. This function owns exactly two protocol attempts, and
- * each protocol attempt owns at most one transient transport retry.
+ * Compile only service-grounded, model-selected evidence into static frame
+ * fields. The model never returns a patch or any free state text.
  */
 export async function compileStaticFrames({
   candidate,
@@ -95,338 +107,643 @@ export async function compileStaticFrames({
   maxCompletionTokens = 4096,
   timeoutMs = 300_000,
   batchIndex = 0,
-  phase = "post-generate"
+  phase = "post-generate",
+  characterFeatureProfile = null,
+  runId: suppliedRunId = null
 } = {}) {
-  validateCompilerConfiguration({ candidate, client, model, maxCompletionTokens, timeoutMs });
-
+  if (!isRecord(candidate) || !Array.isArray(candidate.shotPlan)) {
+    throw new StaticFrameCompilerConfigError("Static Frame Compiler 缺少有效 animationShotBatch");
+  }
   const sourceCandidate = structuredClone(candidate);
-  const targets = collectStaticFrameTargets(sourceCandidate);
-  const basePrompt = buildStaticFrameCompilerPrompt(sourceCandidate, targets);
+  const runId = suppliedRunId || createStaticFrameRunId();
+  let targets;
+  try {
+    targets = buildStaticFrameCompileTargets(sourceCandidate, { runId });
+  } catch (error) {
+    throw new StaticFrameCompilerConfigError(String(error?.message || error), { cause: error });
+  }
   const metadata = createRunMetadata({
     provider: provider || inferProvider(client),
     model,
     batchIndex,
-    phase
+    phase,
+    runId
   });
-  let protocolDiagnostic = "";
-
-  for (let protocolAttempt = 1; protocolAttempt <= 2; protocolAttempt += 1) {
-    const protocolLog = {
-      protocolAttempt,
-      transportAttempts: [],
-      errorClassification: null,
-      retryDecision: "none",
-      finalResult: "pending"
-    };
-    metadata.protocolAttempts.push(protocolLog);
-    const prompt = protocolAttempt === 1
-      ? basePrompt
-      : buildProtocolRetryPrompt(basePrompt, protocolDiagnostic);
-
-    let response;
-    try {
-      response = await requestWithTransportRetry({
-        client,
-        prompt,
-        model,
-        maxCompletionTokens,
-        timeoutMs,
-        protocolLog
-      });
-    } catch (error) {
-      if (error instanceof StaticFrameCompilerProtocolError) {
-        protocolDiagnostic = error.message;
-        protocolLog.errorClassification = "protocol";
-        protocolLog.retryDecision = protocolAttempt < 2 ? "retry" : "fail";
-        protocolLog.finalResult = "protocol-error";
-        protocolLog.protocolError = protocolDiagnostic;
-        if (protocolAttempt < 2) continue;
-        metadata.requestCount = countTransportAttempts(metadata);
-        metadata.finalResult = "failed";
-        throw new StaticFrameCompilerProtocolError(
-          `Static Frame Compiler 两次 protocol attempt 均失败：${protocolDiagnostic}`,
-          { metadata, cause: error }
-        );
-      }
-      metadata.requestCount = countTransportAttempts(metadata);
-      metadata.finalResult = "failed";
-      if (error instanceof StaticFrameCompilerTransportError) {
-        error.metadata = metadata;
-        error.details = { category: error.category, metadata };
-      }
-      throw error;
-    }
-
-    try {
-      const validatedPatches = validateStaticFrameCompilerResponse(response, {
-        candidate: sourceCandidate,
-        targets
-      });
-      const compiledCandidate = applyStaticFrameCompilerPatches(sourceCandidate, validatedPatches, targets);
-      metadata.noOp = validatedPatches.length === 0;
-      metadata.modifications.push(...validatedPatches.map((patch) => ({
-        protocolAttempt,
-        path: patch.path,
-        before: targets.get(patch.path).before,
-        after: patch.value,
-        reasonCode: patch.reasonCode,
-        triggerSpans: [...patch.triggerSpans],
-        visibleFacts: [...patch.visibleFacts],
-        applied: true,
-        finalAccepted: false
-      })));
-      metadata.requestCount = countTransportAttempts(metadata);
-      metadata.finalResult = "accepted";
-      protocolLog.finalResult = "accepted";
-      return { compiledCandidate, metadata };
-    } catch (error) {
-      const protocolError = asProtocolError(error);
-      protocolDiagnostic = protocolError.message;
-      protocolLog.errorClassification = "protocol";
-      protocolLog.retryDecision = protocolAttempt < 2 ? "retry" : "fail";
-      protocolLog.finalResult = "protocol-error";
-      protocolLog.protocolError = protocolDiagnostic;
-      metadata.modifications.push(...rejectedPatchMetadata(response, targets, protocolAttempt));
-      if (protocolAttempt < 2) continue;
-      metadata.requestCount = countTransportAttempts(metadata);
-      metadata.finalResult = "failed";
-      throw new StaticFrameCompilerProtocolError(
-        `Static Frame Compiler 两次 protocol attempt 均失败：${protocolDiagnostic}`,
-        { metadata, cause: protocolError }
-      );
-    }
-  }
-
-  metadata.requestCount = countTransportAttempts(metadata);
-  metadata.finalResult = "failed";
-  throw new StaticFrameCompilerProtocolError("Static Frame Compiler 超过 protocol attempt 预算", { metadata });
-}
-
-export function buildStaticFrameCompilerPrompt(candidate, suppliedTargets = null) {
-  const targets = suppliedTargets instanceof Map
-    ? suppliedTargets
-    : collectStaticFrameTargets(candidate);
-  const allowedPaths = [...targets.values()].map(({ path, field, before }) => ({
-    path,
-    field,
-    before,
-    patchEligibility: containsStaticFrameViolation(before)
-      ? "compiler-review"
-      : "must-no-op",
-    requiredTriggerEvidence: firstStaticFrameViolation(before) || null
+  metadata.targetCount = targets.size;
+  metadata.targets = [...targets.values()].map((target) => ({
+    targetId: target.targetId,
+    path: target.path,
+    characterLabel: target.characterLabel,
+    frameKind: target.frameKind,
+    field: target.field
   }));
-  const projectedCandidate = projectCompilerContext(candidate);
 
-  return `STATIC_FRAME_COMPILER_V1
-
-目标：
-- 只把叙事、心理、未来意图、时间推进或无法直接观察的语言，转换为当前单帧已经存在的可见状态。
-- 合格字段必须保持逐字不变，并从 patches 省略。若全部合格，返回 {"patches":[]}。
-- 禁止风格优化、文学润色、同义改写、丰富细节或重新创作。
-- 不得新增输入中不存在的角色、道具、接触关系或环境事实。
-
-字段职责：
-- pose：身体、四肢、朝向、重心、头部和视线姿态。修改 pose 时 visibleFacts 至少给出两个不同可观察维度。
-- handPropState：手与道具的接触、握持、距离和道具当前可见状态。
-- actionState：只描述当前画面已经发生且可观察的动作结果。允许“右手停留在按钮表面”；禁止“正在按下按钮”“即将按下按钮”“准备按按钮”。
-- 字段是否允许空值沿用输入契约；不得为了填空而虚构事实。
-
-输出协议：
-{
-  "patches": [
-    {
-      "path": "必须逐字取自允许路径",
-      "value": "转换后的完整字段字符串",
-      "reasonCode": "六种允许代码之一",
-      "triggerSpans": ["从 before 逐字复制的连续问题片段"],
-      "visibleFacts": ["从 value 逐字复制的连续可见事实片段"]
-    }
-  ]
-}
-
-reasonCode 仅允许：
-${JSON.stringify(STATIC_FRAME_COMPILER_REASON_CODES)}
-
-reasonCode 与 triggerSpans 的对应关系：
-- narrative_cognition：发现、意识到、知道、明白、认出、想起、回忆、察觉、理解、确认、判断出。
-- psychological_activity：决定、希望、担心、害怕、期待、犹豫、想要、试图、打算、计划、内心、心里。
-- future_intent：准备、即将、将要、想要、试图、打算、计划、马上会、下一步。
-- goal_stage：为了、以便、目标、目的、准备、阶段、接下来、下一步、完成后、成功后。
-- ambiguous_nonvisual：似乎、仿佛、好像、意图、目的、念头、意识、认知、心理、情绪变化、做出反应。
-- temporal_process：逐渐、随后、然后、正在、开始、继续、慢慢、逐步、过程中、“一边…一边…”、“先…再…”。
-
-强约束：
-- 顶层只能有 patches；每个 patch 只能有 path、value、reasonCode、triggerSpans、visibleFacts。
-- path 不得重复，不得修改允许路径以外的字段。
-- patchEligibility 为 "must-no-op" 的字段已明确满足静态帧契约，必须逐字保留并从 patches 省略；不得用其他 reasonCode 改写。
-- patchEligibility 为 "compiler-review" 时，requiredTriggerEvidence 给出 before 中一个可逐字复制的明确违规证据；至少一个 triggerSpan 必须包含该证据或 before 中另一处明确的非静态意图/过程证据。
-- 每条 patch 只选择一个可由 triggerSpans 直接证明的 reasonCode。
-- triggerSpans 必须指出真实问题；无法给出 triggerSpans 就不得修改。每组相邻 span 必须共同构成包含对应 reasonCode 的连续问题表达；不含问题词的片段只有在与问题片段直接相邻、共同组成该表达时才可保留。
-- 禁止把与问题表达不连续的角色名、道具名、正常动作或其他上下文单独列为 span。
-- triggerSpans 应使用能证明问题的最小连续片段，通常只需要一个。只有 before 中存在多个彼此独立、且都匹配同一 reasonCode 的问题片段时才可给多个。
-- visibleFacts 与 triggerSpans 都必须逐字连续、去重、互不重叠，禁止用包含片段凑数量。
-- 禁止只删除“准备、即将、正在”等词后保留动作短语；必须改成单帧可观察状态。
-- 输出会被原子应用；任一 patch 不合法会使整次输出失败。
-
-协议示例：
-- before 为“女孩准备打开八音盒”时，可使用 reasonCode "future_intent"、triggerSpans ["准备打开"]，value 可为“女孩坐在桌前，身体微微前倾，双手放在八音盒盖子两侧，视线落在八音盒上”，visibleFacts 可为 ["身体微微前倾","双手放在八音盒盖子两侧","视线落在八音盒上"]。
-- 不得把“女孩”“八音盒”或“打开”各自作为额外 triggerSpan；它们本身不能证明 future_intent。
-- 已满足静态帧契约的字段不得 patch；全部合格时只返回 {"patches":[]}。
-
-允许路径与原值：
-${JSON.stringify(allowedPaths)}
-
-去除 alias 后的结构化 batch 上下文：
-${JSON.stringify(projectedCandidate)}`;
-}
-
-export function validateStaticFrameCompilerResponse(
-  response,
-  { candidate, targets: suppliedTargets = null } = {}
-) {
-  if (!isRecord(response)) {
-    throw new StaticFrameCompilerProtocolError("Compiler 输出必须是 JSON 对象");
-  }
-  requireExactKeys(response, ["patches"], "Compiler 输出顶层");
-  if (!Array.isArray(response.patches)) {
-    throw new StaticFrameCompilerProtocolError("Compiler 输出 patches 必须是数组");
-  }
-  if (!isRecord(candidate)) {
-    throw new StaticFrameCompilerProtocolError("缺少用于校验 patch 的 animationShotBatch");
+  if (targets.size === 0) {
+    metadata.noOp = true;
+    metadata.finalResult = "accepted";
+    metadata.skipReason = "NO_VIOLATING_TARGET";
+    return { compiledCandidate: sourceCandidate, metadata };
   }
 
-  const targets = suppliedTargets instanceof Map
-    ? suppliedTargets
-    : collectStaticFrameTargets(candidate);
-  const seenPaths = new Set();
-  const patches = response.patches.map((patch, index) => {
-    const patchPath = `patches[${index}]`;
-    if (!isRecord(patch)) {
-      throw new StaticFrameCompilerProtocolError(`${patchPath} 必须是对象`);
-    }
-    requireExactKeys(patch, PATCH_KEYS, patchPath);
-    if (typeof patch.path !== "string" || !targets.has(patch.path)) {
-      throw new StaticFrameCompilerProtocolError(`${patchPath}.path 不在允许路径白名单中：${String(patch.path || "空")}`);
-    }
-    if (!PATH_PATTERN.test(patch.path)) {
-      throw new StaticFrameCompilerProtocolError(`${patchPath}.path 不是受支持的静态字段路径`);
-    }
-    if (seenPaths.has(patch.path)) {
-      throw new StaticFrameCompilerProtocolError(`${patchPath}.path 重复：${patch.path}`);
-    }
-    seenPaths.add(patch.path);
-
-    const target = targets.get(patch.path);
-    if (!TARGET_FIELDS.has(target.field)) {
-      throw new StaticFrameCompilerProtocolError(`${patchPath}.path 试图修改非静态目标字段`);
-    }
-    if (typeof patch.value !== "string") {
-      throw new StaticFrameCompilerProtocolError(`${patchPath}.value 必须是字符串`);
-    }
-    if (patch.value === target.before) {
-      throw new StaticFrameCompilerProtocolError(`${patchPath}.value 与 before 完全相同，无需 patch`);
-    }
-    if (target.field !== "actionState" && patch.value.trim() === "") {
-      throw new StaticFrameCompilerProtocolError(`${patchPath}.value 违反现有 ${target.field} 非空契约`);
-    }
-    if (!REASON_CODE_SET.has(patch.reasonCode)) {
-      throw new StaticFrameCompilerProtocolError(`${patchPath}.reasonCode 无效`);
-    }
-    if (!containsStaticFrameViolation(target.before)) {
-      throw new StaticFrameCompilerProtocolError(
-        `${patchPath} path=${JSON.stringify(patch.path)} before=${JSON.stringify(target.before)} 已明确满足静态帧契约，必须从 patches 省略，禁止润色式 patch`
-      );
-    }
-    validateEvidenceSpans(patch.triggerSpans, target.before, `${patchPath}.triggerSpans`, {
-      requireAtLeastOne: true
-    });
-    if (!patch.triggerSpans.some((span) => containsStaticFrameViolation(span))) {
-      throw new StaticFrameCompilerProtocolError(
-        `${patchPath}.triggerSpans 必须至少有一个片段包含 before 中的明确静态帧违规表达，例如 ${JSON.stringify(firstStaticFrameViolation(target.before))}`
-      );
-    }
-    validateEvidenceSpans(patch.visibleFacts, patch.value, `${patchPath}.visibleFacts`, {
-      requireAtLeastOne: patch.value.trim() !== ""
-    });
-    validateCompiledValue(patch, target, patchPath);
-    return {
-      path: patch.path,
-      value: patch.value,
-      reasonCode: patch.reasonCode,
-      triggerSpans: [...patch.triggerSpans],
-      visibleFacts: [...patch.visibleFacts]
-    };
+  try {
+    validateCompilerConfiguration({ candidate, client, model, maxCompletionTokens, timeoutMs });
+  } catch (error) {
+    attachRunMetadata(error, metadata);
+    throw error;
+  }
+  const catalog = buildStaticFrameSourceCatalog(sourceCandidate, targets, {
+    runId,
+    characterFeatureProfile
   });
+  const audit = auditStaticFrameSourceCatalog(catalog, targets, {
+    characterFeatureProfile
+  });
+  metadata.catalogCandidateEvidenceCount = audit.totalCount;
+  metadata.catalogCandidateEvidenceByTarget = [...targets.keys()].map((targetId) => ({
+    targetId,
+    count: audit.countForTarget(targetId)
+  }));
 
-  const knownInvalidPaths = [...targets.values()]
-    .filter((target) => containsStaticFrameViolation(target.before))
-    .map((target) => target.path);
-  const omittedInvalidPath = knownInvalidPaths.find((path) => !seenPaths.has(path));
-  if (omittedInvalidPath) {
-    throw new StaticFrameCompilerProtocolError(
-      `Compiler 遗漏了含明确静态帧违规表达的字段：${omittedInvalidPath}`
+  const targetWithoutCandidates = [...targets.keys()]
+    .find((targetId) => audit.countForTarget(targetId) === 0);
+  if (targetWithoutCandidates) {
+    throwCandidateError(
+      "NO_STATIC_EVIDENCE_IN_SOURCE",
+      "Source Catalog 中没有可授权给 Evidence Selector 的静态证据候选",
+      metadata,
+      { targetId: targetWithoutCandidates, skipReason: "CATALOG_HAS_NO_AUTHORIZED_CANDIDATE" }
     );
   }
 
-  return patches;
-}
-
-export function applyStaticFrameCompilerPatches(candidate, patches, suppliedTargets = null) {
-  const targets = suppliedTargets instanceof Map
-    ? suppliedTargets
-    : collectStaticFrameTargets(candidate);
-  const compiled = structuredClone(candidate);
-
-  // Validation above completes before this loop, so application is atomic.
-  for (const patch of patches) {
-    const target = targets.get(patch.path);
-    if (!target) {
-      throw new StaticFrameCompilerProtocolError(`patch path 不在允许路径白名单中：${patch.path}`);
-    }
-    const parsed = patch.path.match(PATH_PATTERN);
-    if (!parsed) {
-      throw new StaticFrameCompilerProtocolError(`patch path 格式无效：${patch.path}`);
-    }
-    const shotIndex = Number(parsed[1]);
-    const frameKind = parsed[2];
-    const characterIndex = Number(parsed[3]);
-    const field = parsed[4];
-    const character = compiled.shotPlan?.[shotIndex]?.[frameKind]?.characters?.[characterIndex];
-    if (!isRecord(character) || !Object.hasOwn(character, field)) {
-      throw new StaticFrameCompilerProtocolError(`patch path 在候选中不存在：${patch.path}`);
-    }
-    character[field] = patch.value;
-  }
-  return compiled;
-}
-
-export function collectStaticFrameTargets(candidate) {
-  if (!isRecord(candidate) || !Array.isArray(candidate.shotPlan)) {
-    throw new StaticFrameCompilerConfigError("animationShotBatch 必须包含 shotPlan 数组");
-  }
-  const targets = new Map();
-  candidate.shotPlan.forEach((shot, shotIndex) => {
-    for (const frameKind of ["startFrame", "endFrame"]) {
-      const characters = shot?.[frameKind]?.characters;
-      if (!Array.isArray(characters)) continue;
-      characters.forEach((character, characterIndex) => {
-        if (!isRecord(character)) return;
-        for (const field of TARGET_FIELDS) {
-          if (!Object.hasOwn(character, field) || typeof character[field] !== "string") continue;
-          const path = `animationShotBatch.shotPlan[${shotIndex}].${frameKind}.characters[${characterIndex}].${field}`;
-          targets.set(path, {
-            path,
-            field,
-            before: character[field],
-            shotIndex,
-            frameKind,
-            characterIndex
-          });
-        }
-      });
-    }
+  const initialPrompt = buildEvidenceSelectionPrompt({
+    targets,
+    audit,
+    characterFeatureProfile
   });
-  return targets;
+  let initialResponse;
+  let initialEnvelope;
+  try {
+    initialResponse = await runStaticFrameProtocolAttempt({
+      client,
+      prompt: initialPrompt,
+      model,
+      maxCompletionTokens,
+      timeoutMs,
+      metadata,
+      protocolAttempt: 1,
+      repairMode: null
+    });
+    initialEnvelope = validateStaticFrameEvidenceEnvelope(initialResponse, {
+      expectedTargetIds: [...targets.keys()],
+      audit
+    });
+  } catch (error) {
+    if (!(error instanceof StaticFrameCompilerProtocolError) && error?.category !== "protocol") {
+      attachRunMetadata(error, metadata);
+      throw error;
+    }
+    markLastProtocolFailure(metadata, error, "envelope_repair");
+    const envelopePrompt = buildEnvelopeRepairPrompt({
+      targets,
+      audit,
+      characterFeatureProfile,
+      diagnostic: error.message
+    });
+    let repairedResponse;
+    try {
+      repairedResponse = await runStaticFrameProtocolAttempt({
+        client,
+        prompt: envelopePrompt,
+        model,
+        maxCompletionTokens,
+        timeoutMs,
+        metadata,
+        protocolAttempt: 2,
+        repairMode: "envelope_repair"
+      });
+      const repairedEnvelope = validateStaticFrameEvidenceEnvelope(repairedResponse, {
+        expectedTargetIds: [...targets.keys()],
+        audit,
+        repairMode: "envelope_repair",
+        requireRepairMode: true
+      });
+      const repairedEvaluation = evaluateGroundedAttempt({
+        sourceCandidate,
+        normalizedTargets: repairedEnvelope,
+        targets,
+        audit,
+        characterFeatureProfile,
+        attempt: 2,
+        metadata,
+        repairMode: "envelope_repair"
+      });
+      if (repairedEvaluation.failedTargetIds.length > 0) {
+        const failedReview = repairedEvaluation.reviews.get(
+          repairedEvaluation.failedTargetIds[0]
+        );
+        const code = failedReview?.slots.length === 0
+          ? failedReview.unselectedCandidateSpanIds.length === 0
+            ? "NO_STATIC_EVIDENCE_IN_SOURCE"
+            : "EVIDENCE_RESELECTION_EXHAUSTED"
+          : "NO_VALID_GROUNDED_COMBINATION";
+        throwCandidateError(
+          code,
+          "Envelope 修复成功，但授权证据仍无法安全编译为 canonical patch",
+          metadata,
+          {
+            targetId: repairedEvaluation.failedTargetIds[0],
+            skipReason: "ENVELOPE_REPAIR_CONSUMED_SECOND_PROTOCOL_CALL"
+          }
+        );
+      }
+      return acceptGroundedEvaluation(sourceCandidate, targets, repairedEvaluation, metadata);
+    } catch (repairError) {
+      if (repairError instanceof StaticFrameCompilerCandidateError) throw repairError;
+      if (!(repairError instanceof StaticFrameCompilerProtocolError) && repairError?.category !== "protocol") {
+        attachRunMetadata(repairError, metadata);
+        throw repairError;
+      }
+      markLastProtocolFailure(metadata, repairError, "fail");
+      metadata.errorCode = "PROTOCOL_ENVELOPE_INVALID";
+      metadata.finalResult = "failed";
+      metadata.requestCount = countTransportAttempts(metadata);
+      throw new StaticFrameCompilerProtocolError(
+        `Static Frame Compiler 两次 protocol attempt 均失败：${repairError.message}`,
+        { metadata, cause: repairError }
+      );
+    }
+  }
+
+  const initialEvaluation = evaluateGroundedAttempt({
+    sourceCandidate,
+    normalizedTargets: initialEnvelope,
+    targets,
+    audit,
+    characterFeatureProfile,
+    attempt: 1,
+    metadata,
+    repairMode: null
+  });
+  if (initialEvaluation.failedTargetIds.length === 0) {
+    return acceptGroundedEvaluation(sourceCandidate, targets, initialEvaluation, metadata);
+  }
+
+  const terminalNoEvidenceTarget = initialEvaluation.failedTargetIds.find((targetId) => {
+    const review = initialEvaluation.reviews.get(targetId);
+    return review.slots.length === 0 && review.unselectedCandidateSpanIds.length === 0;
+  });
+  if (terminalNoEvidenceTarget) {
+    throwCandidateError(
+      "NO_STATIC_EVIDENCE_IN_SOURCE",
+      "所选证据完整审核后没有安全单帧状态，且 Source Catalog 候选已耗尽",
+      metadata,
+      { targetId: terminalNoEvidenceTarget, skipReason: "ALL_CANDIDATES_AUDITED_WITHOUT_SAFE_SLOT" }
+    );
+  }
+
+  const reselectableTargetIds = initialEvaluation.failedTargetIds.filter((targetId) => (
+    initialEvaluation.reviews.get(targetId)?.unselectedCandidateSpanIds.length > 0
+  ));
+  if (reselectableTargetIds.length !== initialEvaluation.failedTargetIds.length) {
+    throwCandidateError(
+      "NO_VALID_GROUNDED_COMBINATION",
+      "已验证 state slot 的全部合法组合均未通过完整校验",
+      metadata,
+      {
+        targetId: initialEvaluation.failedTargetIds[0],
+        skipReason: "NO_UNSELECTED_CANDIDATE_FOR_RESELECTION"
+      }
+    );
+  }
+
+  metadata.errorCode = "EVIDENCE_SELECTION_INCOMPLETE";
+  metadata.intermediateErrorCodes.push("EVIDENCE_SELECTION_INCOMPLETE");
+  const initialAttemptMetadata = metadata.attempts.at(-1);
+  if (initialAttemptMetadata) {
+    initialAttemptMetadata.errorCode = "EVIDENCE_SELECTION_INCOMPLETE";
+  }
+  metadata.repairMode = "evidence_reselection";
+  metadata.skipReason = null;
+  const reselectionPrompt = buildEvidenceReselectionPrompt({
+    targets,
+    audit,
+    targetIds: reselectableTargetIds,
+    characterFeatureProfile,
+    diagnostics: summarizeReviewForMetadata(initialEvaluation.reviews)
+      .filter((review) => reselectableTargetIds.includes(review.targetId))
+  });
+  let reselectionResponse;
+  let reselectionEnvelope;
+  try {
+    reselectionResponse = await runStaticFrameProtocolAttempt({
+      client,
+      prompt: reselectionPrompt,
+      model,
+      maxCompletionTokens,
+      timeoutMs,
+      metadata,
+      protocolAttempt: 2,
+      repairMode: "evidence_reselection"
+    });
+    reselectionEnvelope = validateStaticFrameEvidenceEnvelope(reselectionResponse, {
+      expectedTargetIds: reselectableTargetIds,
+      audit,
+      repairMode: "evidence_reselection",
+      requireRepairMode: true
+    });
+  } catch (error) {
+    if (!(error instanceof StaticFrameCompilerProtocolError) && error?.category !== "protocol") {
+      attachRunMetadata(error, metadata);
+      throw error;
+    }
+    markLastProtocolFailure(metadata, error, "fail");
+    metadata.errorCode = "PROTOCOL_ENVELOPE_INVALID";
+    metadata.finalResult = "failed";
+    metadata.requestCount = countTransportAttempts(metadata);
+    throw new StaticFrameCompilerProtocolError(
+      `Static Frame Compiler evidence_reselection 协议失败且不允许第三次调用：${error.message}`,
+      { metadata, cause: error }
+    );
+  }
+
+  const reselectionEvaluation = evaluateGroundedAttempt({
+    sourceCandidate,
+    normalizedTargets: reselectionEnvelope,
+    targets,
+    audit,
+    characterFeatureProfile,
+    attempt: 2,
+    metadata,
+    repairMode: "evidence_reselection"
+  });
+  if (reselectionEvaluation.failedTargetIds.length > 0) {
+    throwCandidateError(
+      "EVIDENCE_RESELECTION_EXHAUSTED",
+      "evidence_reselection 后仍无通过完整校验的 grounded combination",
+      metadata,
+      {
+        targetId: reselectionEvaluation.failedTargetIds[0],
+        skipReason: "SECOND_PROTOCOL_CALL_EXHAUSTED"
+      }
+    );
+  }
+
+  const retainedPatches = initialEvaluation.patches
+    .filter((patch) => !reselectableTargetIds.includes(patch.targetId));
+  const mergedEvaluation = {
+    ...reselectionEvaluation,
+    patches: [...retainedPatches, ...reselectionEvaluation.patches]
+  };
+  return acceptGroundedEvaluation(sourceCandidate, targets, mergedEvaluation, metadata);
+}
+
+export function buildStaticFrameCompilerPrompt(
+  candidate,
+  suppliedTargets = null,
+  { characterFeatureProfile = null, runId = createStaticFrameRunId() } = {}
+) {
+  const targets = suppliedTargets instanceof Map
+    && [...suppliedTargets.values()].every((target) => typeof target.targetId === "string")
+    ? suppliedTargets
+    : buildStaticFrameCompileTargets(candidate, { runId });
+  const catalog = buildStaticFrameSourceCatalog(candidate, targets, {
+    runId,
+    characterFeatureProfile
+  });
+  const audit = auditStaticFrameSourceCatalog(catalog, targets, {
+    characterFeatureProfile
+  });
+  return buildEvidenceSelectionPrompt({
+    targets,
+    audit,
+    characterFeatureProfile
+  });
+}
+
+function buildEvidenceSelectionPrompt({ targets, audit, characterFeatureProfile = null }) {
+  return `STATIC_FRAME_EVIDENCE_SELECTION_V2
+
+任务：
+- 为每个服务端签发的 targetId，从它自己的不可变 Source Catalog 中选择可能独立表达单帧状态的 evidence。
+- 应尽量完整选择所有安全候选；允许少选，但绝对禁止创造输入中不存在的事实。
+- 只能引用下方展示的 targetId、segmentId、spanId。
+
+输出协议（所有层级禁止额外字段）：
+{"targets":[{"targetId":"compile-target-...","evidenceSelections":[{"segmentId":"seg-...","spanIds":["span-..."]}]}]}
+
+强约束：
+- 每个必需 targetId 恰好出现一次；不得遗漏、重复、新增或跨 target 引用。
+- 每个 target 最多 12 个 evidenceSelections；每项最多 4 个 spanId。
+- 同一 selection 的 spanId 必须属于同一 segmentId。
+- 不得返回文本、path、offset、角色、字段、dimension、stateSlotId、value、visibleFacts、reasonCode、trigger 或 delete。
+- 叙事认知、心理、意图、未来、目标、过程、对白、音效不是单帧状态。
+- handPropState 的手—道具关系不能作为 bodyContact。
+- 你只负责选择；服务端负责完整语义审核、维度、组合、最终文本与 patch。
+
+服务端固定审核规则：
+${staticEvidencePolicyText()}
+
+冻结 Character Feature 词库（只读，不得回传或据此注入当前镜头）：
+${JSON.stringify(publicCharacterFeatureDictionary(characterFeatureProfile, targets))}
+
+服务端签发的 compile targets：
+${JSON.stringify(staticFrameTargetPromptView(targets))}
+
+不可变 Source Catalog（displayText 只读，不得回传）：
+${JSON.stringify(publicStaticFrameCatalogView(audit, targets))}`;
+}
+
+function buildEvidenceReselectionPrompt({
+  targets,
+  audit,
+  targetIds,
+  characterFeatureProfile = null,
+  diagnostics = []
+}) {
+  return `STATIC_FRAME_EVIDENCE_RESELECTION_V2
+
+首次 envelope 合法，但首次 Evidence Selection 未形成可通过的 grounded combination。
+这是唯一一次 evidence_reselection，也是最后一次 protocol 调用。
+
+输出协议（所有层级禁止额外字段）：
+{"repairMode":"evidence_reselection","targets":[{"targetId":"compile-target-...","evidenceSelections":[{"segmentId":"seg-...","spanIds":["span-..."]}]}]}
+
+强约束：
+- 只覆盖下方列出的 targetId，且每个恰好一次。
+- attempt-2 完整替代这些 target 的 attempt-1 selection，不隐式合并。
+- 只能从首次调用前已签发的不可变 Catalog ID 中重选。
+- 不得新增 Catalog、文本、角色、字段、offset、dimension、stateSlot、value 或 visibleFacts。
+- 不得修改已通过 target；不得请求第三次调用。
+
+首次选择的结构化审核结果：
+${JSON.stringify(diagnostics)}
+
+服务端固定审核规则：
+${staticEvidencePolicyText()}
+
+冻结 Character Feature 词库（只读）：
+${JSON.stringify(publicCharacterFeatureDictionary(characterFeatureProfile, targets, targetIds))}
+
+需要重新选择的 targets：
+${JSON.stringify(staticFrameTargetPromptView(new Map(
+    targetIds.map((targetId) => [targetId, targets.get(targetId)])
+  )))}
+
+原始不可变 Source Catalog：
+${JSON.stringify(publicStaticFrameCatalogView(audit, targets, { targetIds }))}`;
+}
+
+function buildEnvelopeRepairPrompt({
+  targets,
+  audit,
+  characterFeatureProfile = null,
+  diagnostic
+}) {
+  return `STATIC_FRAME_ENVELOPE_REPAIR_V2
+
+第一次输出无法形成可信 Evidence Selection envelope：
+${JSON.stringify(String(diagnostic || "未知协议错误"))}
+
+这是唯一一次 envelope_repair，也是最后一次 protocol 调用。
+只能修复 JSON、Schema、必需 target 覆盖和已签发 ID 引用；不得改变任务、Catalog 或证据边界。
+
+输出协议（所有层级禁止额外字段）：
+{"repairMode":"envelope_repair","targets":[{"targetId":"compile-target-...","evidenceSelections":[{"segmentId":"seg-...","spanIds":["span-..."]}]}]}
+
+服务端固定审核规则：
+${staticEvidencePolicyText()}
+
+冻结 Character Feature 词库（只读）：
+${JSON.stringify(publicCharacterFeatureDictionary(characterFeatureProfile, targets))}
+
+服务端签发的 compile targets：
+${JSON.stringify(staticFrameTargetPromptView(targets))}
+
+首次调用前签发的不可变 Source Catalog：
+${JSON.stringify(publicStaticFrameCatalogView(audit, targets))}`;
+}
+
+function staticEvidencePolicyText() {
+  return `- 禁止叙事认知：发现、意识到、知道、明白、认出、想起、回忆、察觉、理解、确认、判断。
+- 禁止心理/意图/未来/目标：决定、希望、担心、害怕、期待、犹豫、想要、试图、打算、计划、准备、即将、将要、为了、以便、下一步。
+- 禁止过程/非视觉：逐渐、随后、然后、正在、开始、继续、慢慢、逐步、过程中、对白、音效、运镜。
+- 同一 segment 可用多个不重叠 span 做删除式整理，但 span 间隔必须只含上述禁止词、语法连接词或标点；不得跨主体、跨事实拼接新状态。
+- 每个安全 slot 只会得到一个 primaryDimensionKey；优先级为当前角色精确 feature → orientation → bodyContact → limbs → body。
+- bodyContact 只接受身体或肢体与地面、墙面、座椅等环境支撑关系；手—道具接触、handPropState、握持、托举、按压道具、悬停和道具距离均排除。
+- inferred feature 只有当本次局部原文字面出现冻结 term 时才可选择；词库不是当前镜头事实。`;
+}
+
+function publicCharacterFeatureDictionary(profile, targets, targetIds = [...targets.keys()]) {
+  if (!profile || !Array.isArray(profile.characters)) return [];
+  return targetIds.flatMap((targetId) => {
+    const target = targets.get(targetId);
+    const character = resolveProfileCharacterForTarget(profile, target);
+    if (!target || !character || !Array.isArray(character.features)) return [];
+    return [{
+      targetId,
+      characterLabel: target.characterLabel,
+      features: character.features.map((feature) => ({
+        suggestedFeatureKey: feature.suggestedFeatureKey,
+        canonicalName: feature.canonicalName,
+        terms: Array.isArray(feature.matcherTerms)
+          ? [...feature.matcherTerms]
+          : Array.isArray(feature.terms) ? [...feature.terms] : [],
+        featureKind: feature.featureKind,
+        semanticSubtype: feature.semanticSubtype,
+        evidenceLevel: feature.evidenceLevel
+      }))
+    }];
+  });
+}
+
+function resolveProfileCharacterForTarget(profile, target) {
+  if (!target) return null;
+  const idMatches = profile.characters.filter((character) => (
+    character?.characterId === target.characterId
+  ));
+  if (idMatches.length === 1) return idMatches[0];
+  if (idMatches.length > 1 || target.characterLabelUniqueInFrame === false) return null;
+  const nameMatches = profile.characters.filter((character) => (
+    character?.name === target.characterLabel
+    || character?.characterLabel === target.characterLabel
+    || character?.characterName === target.characterLabel
+    || character?.canonicalName === target.characterLabel
+  ));
+  return nameMatches.length === 1 ? nameMatches[0] : null;
+}
+
+async function runStaticFrameProtocolAttempt({
+  client,
+  prompt,
+  model,
+  maxCompletionTokens,
+  timeoutMs,
+  metadata,
+  protocolAttempt,
+  repairMode
+}) {
+  const protocolLog = {
+    protocolAttempt,
+    repairMode,
+    transportAttempts: [],
+    errorClassification: null,
+    retryDecision: "none",
+    finalResult: "pending"
+  };
+  metadata.protocolAttempts.push(protocolLog);
+  metadata.protocolCallCount = metadata.protocolAttempts.length;
+  try {
+    const response = await requestWithTransportRetry({
+      client,
+      prompt,
+      model,
+      maxCompletionTokens,
+      timeoutMs,
+      protocolLog
+    });
+    protocolLog.finalResult = "response";
+    return response;
+  } catch (error) {
+    if (error instanceof StaticFrameCompilerProtocolError) {
+      protocolLog.errorClassification = "protocol";
+      protocolLog.finalResult = "protocol-error";
+      protocolLog.protocolError = error.message;
+    }
+    throw error;
+  }
+}
+
+function evaluateGroundedAttempt({
+  sourceCandidate,
+  normalizedTargets,
+  targets,
+  audit,
+  characterFeatureProfile,
+  attempt,
+  metadata,
+  repairMode
+}) {
+  const reviews = reviewSelectedStaticFrameEvidence({
+    normalizedTargets,
+    targets,
+    audit,
+    characterFeatureProfile,
+    attempt
+  });
+  const patches = [];
+  const failedTargetIds = [];
+  const searches = [];
+  for (const entry of normalizedTargets) {
+    const target = targets.get(entry.targetId);
+    const review = reviews.get(entry.targetId);
+    const result = enumerateGroundedPatchCombinations(target, review, {
+      candidate: sourceCandidate
+    });
+    searches.push({
+      targetId: entry.targetId,
+      combinations: result.search,
+      combinationTriedCount: result.search.length,
+      combinationAccepted: Boolean(result.patch),
+      acceptedStateSlotIds: result.combination
+        ? result.combination.map((slot) => slot.stateSlotId)
+        : []
+    });
+    if (result.patch) patches.push(result.patch);
+    else failedTargetIds.push(entry.targetId);
+  }
+
+  const reviewSummary = summarizeReviewForMetadata(reviews);
+  metadata.attempts.push({
+    attempt,
+    repairMode,
+    targets: reviewSummary,
+    combinationSearch: searches
+  });
+  metadata.selectedValidatedEvidenceCount = reviewSummary
+    .reduce((total, item) => total + item.selectedValidatedEvidenceCount, 0);
+  metadata.unselectedCandidateEvidenceCount = reviewSummary
+    .reduce((total, item) => total + item.unselectedCandidateEvidenceCount, 0);
+  metadata.currentAttemptRequiredDimensionCount = reviewSummary.map((item) => ({
+    targetId: item.targetId,
+    requiredDimensionCount: item.requiredDimensionCount,
+    safeDimensions: [...item.safeDimensions]
+  }));
+  metadata.combinationSearch = searches;
+  const protocolLog = metadata.protocolAttempts.at(-1);
+  if (protocolLog) {
+    protocolLog.finalResult = failedTargetIds.length === 0 ? "grounded-accepted" : "grounded-rejected";
+    protocolLog.errorClassification = failedTargetIds.length === 0 ? null : "candidate";
+    protocolLog.retryDecision = failedTargetIds.length > 0 && attempt === 1
+      ? "evidence_reselection-or-fail"
+      : "none";
+  }
+  return { patches, failedTargetIds, reviews, searches };
+}
+
+function acceptGroundedEvaluation(sourceCandidate, targets, evaluation, metadata) {
+  const compiledCandidate = applyGroundedStaticFramePatches(
+    sourceCandidate,
+    evaluation.patches,
+    targets
+  );
+  metadata.noOp = evaluation.patches.length === 0;
+  metadata.modifications.push(...evaluation.patches.map((patch) => {
+    const target = targets.get(patch.targetId);
+    return {
+      targetId: patch.targetId,
+      path: patch.path,
+      before: target.before,
+      after: patch.value,
+      reasonCode: patch.reasonCode,
+      triggerSpans: [...patch.triggerSpans],
+      visibleFacts: [...patch.visibleFacts],
+      stateSlotIds: [...patch.stateSlotIds],
+      applied: true,
+      finalAccepted: false
+    };
+  }));
+  metadata.errorCode = null;
+  metadata.requestCount = countTransportAttempts(metadata);
+  metadata.finalResult = "accepted";
+  return { compiledCandidate, metadata };
+}
+
+function throwCandidateError(errorCode, message, metadata, extras = {}) {
+  if (!STATIC_FRAME_CANDIDATE_ERROR_CODES.includes(errorCode)) {
+    throw new StaticFrameCompilerConfigError(`未知 candidate-level errorCode：${errorCode}`);
+  }
+  metadata.errorCode = errorCode;
+  metadata.finalResult = "failed";
+  metadata.requestCount = countTransportAttempts(metadata);
+  Object.assign(metadata, extras);
+  throw new StaticFrameCompilerCandidateError(
+    `Static Frame Compiler ${errorCode}：${message}`,
+    { errorCode, metadata }
+  );
+}
+
+function markLastProtocolFailure(metadata, error, retryDecision) {
+  const protocolLog = metadata.protocolAttempts.at(-1);
+  if (!protocolLog) return;
+  protocolLog.errorClassification = "protocol";
+  protocolLog.retryDecision = retryDecision;
+  protocolLog.finalResult = "protocol-error";
+  protocolLog.protocolError = String(error?.message || error);
+  metadata.repairMode = retryDecision === "envelope_repair" ? "envelope_repair" : metadata.repairMode;
+}
+
+function attachRunMetadata(error, metadata) {
+  metadata.requestCount = countTransportAttempts(metadata);
+  metadata.finalResult = "failed";
+  if (error && typeof error === "object") {
+    error.metadata = metadata;
+    error.details = {
+      ...(isRecord(error.details) ? error.details : {}),
+      stage: "staticFrameCompiler",
+      category: error.category || "transport",
+      metadata
+    };
+  }
 }
 
 function validateCompilerConfiguration({ candidate, client, model, maxCompletionTokens, timeoutMs }) {
@@ -506,188 +823,10 @@ async function requestWithTransportRetry({
   );
 }
 
-function validateEvidenceSpans(spans, source, path, { requireAtLeastOne = false } = {}) {
-  if (!Array.isArray(spans)) {
-    throw new StaticFrameCompilerProtocolError(`${path} 必须是数组`);
-  }
-  if (requireAtLeastOne && spans.length === 0) {
-    throw new StaticFrameCompilerProtocolError(`${path} 至少需要一个连续证据片段`);
-  }
-  const seen = new Set();
-  spans.forEach((span, index) => {
-    if (typeof span !== "string" || !span || span.trim() !== span) {
-      throw new StaticFrameCompilerProtocolError(`${path}[${index}] 必须是非空且无首尾空白的字符串`);
-    }
-    if (seen.has(span)) {
-      throw new StaticFrameCompilerProtocolError(`${path} 不得包含重复证据片段：${span}`);
-    }
-    seen.add(span);
-  });
-  for (let left = 0; left < spans.length; left += 1) {
-    for (let right = left + 1; right < spans.length; right += 1) {
-      if (spans[left].includes(spans[right]) || spans[right].includes(spans[left])) {
-        throw new StaticFrameCompilerProtocolError(
-          `${path} 不得使用存在包含关系的片段凑数量：${spans[left]} / ${spans[right]}`
-        );
-      }
-    }
-  }
-  if (!canAssignNonOverlappingOccurrences(String(source), spans)) {
-    throw new StaticFrameCompilerProtocolError(`${path} 必须逐字来自对应文本且可分配为互不重叠的连续区间`);
-  }
-}
-
-function canAssignNonOverlappingOccurrences(source, spans) {
-  if (spans.length === 0) return true;
-  const occurrences = spans.map((span) => {
-    const found = [];
-    let offset = 0;
-    while (offset <= source.length - span.length) {
-      const index = source.indexOf(span, offset);
-      if (index < 0) break;
-      found.push([index, index + span.length]);
-      offset = index + 1;
-    }
-    return found;
-  });
-  if (occurrences.some((items) => items.length === 0)) return false;
-
-  const assigned = [];
-  const visit = (spanIndex) => {
-    if (spanIndex >= occurrences.length) return true;
-    for (const interval of occurrences[spanIndex]) {
-      const overlaps = assigned.some(([start, end]) => interval[0] < end && start < interval[1]);
-      if (overlaps) continue;
-      assigned.push(interval);
-      if (visit(spanIndex + 1)) return true;
-      assigned.pop();
-    }
-    return false;
-  };
-  return visit(0);
-}
-
-function validateCompiledValue(patch, target, patchPath) {
-  const forbidden = firstStaticFrameViolation(patch.value);
-  if (forbidden) {
-    throw new StaticFrameCompilerProtocolError(
-      `${patchPath}.value 仍包含静态帧不允许的表达：${forbidden}`
-    );
-  }
-  if (isMechanicalDeletion(target.before, patch.value)) {
-    throw new StaticFrameCompilerProtocolError(
-      `${patchPath}.value 只是从 before 机械删除意图或过程词`
-    );
-  }
-  if (target.field === "pose") {
-    if (patch.visibleFacts.length < 2) {
-      throw new StaticFrameCompilerProtocolError(
-        `${patchPath}.visibleFacts 修改 pose 时至少需要两个不同的可见事实`
-      );
-    }
-    const dimensions = new Set();
-    patch.visibleFacts.forEach((fact) => {
-      Object.entries(POSE_DIMENSION_PATTERNS).forEach(([dimension, pattern]) => {
-        if (pattern.test(fact)) dimensions.add(dimension);
-      });
-    });
-    if (dimensions.size < 2) {
-      throw new StaticFrameCompilerProtocolError(
-        `${patchPath}.visibleFacts 修改 pose 时必须覆盖至少两个不同可观察维度`
-      );
-    }
-  }
-}
-
-function containsStaticFrameViolation(value) {
-  return Boolean(firstStaticFrameViolation(value));
-}
-
-function firstStaticFrameViolation(value) {
-  const text = String(value || "");
-  const shared = [...STATIC_FRAME_PROCESS_OR_AUDIO_TERMS, ...STATIC_FRAME_INVISIBLE_INTENT_TERMS]
-    .find((term) => text.includes(term));
-  if (shared) return shared;
-  for (const pattern of Object.values(REASON_TRIGGER_PATTERNS)) {
-    const match = text.match(pattern);
-    if (match?.[0]) return match[0];
-  }
-  return "";
-}
-
-function isMechanicalDeletion(before, after) {
-  const normalizedBefore = normalizeMechanicalComparisonText(before);
-  const normalizedAfter = normalizeMechanicalComparisonText(after);
-  if (!normalizedAfter) return false;
-  const strippedBefore = normalizeMechanicalComparisonText(stripNarrativeMarkers(before));
-  return strippedBefore === normalizedAfter && normalizedBefore !== normalizedAfter;
-}
-
-function stripNarrativeMarkers(value) {
-  let text = String(value || "");
-  const literalTerms = [
-    ...STATIC_FRAME_PROCESS_OR_AUDIO_TERMS,
-    ...STATIC_FRAME_INVISIBLE_INTENT_TERMS,
-    "打算",
-    "计划",
-    "决定",
-    "开始",
-    "继续",
-    "接下来",
-    "下一步",
-    "逐步",
-    "慢慢"
-  ].sort((left, right) => right.length - left.length);
-  literalTerms.forEach((term) => {
-    text = text.split(term).join("");
-  });
-  return text;
-}
-
-function normalizeComparisonText(value) {
-  return String(value || "")
-    .normalize("NFKC")
-    .replace(/[\s，,。；;：:！!？?、"'“”‘’（）()[\]{}《》〈〉·—…-]/gu, "")
-    .toLowerCase();
-}
-
-function normalizeMechanicalComparisonText(value) {
-  return normalizeComparisonText(value).replace(/[了着过已]/gu, "");
-}
-
-function projectCompilerContext(candidate) {
-  return {
-    shotPlan: candidate.shotPlan.map((shot) => ({
-      ...(Object.hasOwn(shot || {}, "shotId") ? { shotId: shot.shotId } : {}),
-      ...(Object.hasOwn(shot || {}, "sceneId") ? { sceneId: shot.sceneId } : {}),
-      startFrame: shot?.startFrame,
-      endFrame: shot?.endFrame,
-      motion: shot?.motion
-    }))
-  };
-}
-
-function buildProtocolRetryPrompt(basePrompt, diagnostic) {
-  return `${basePrompt}
-
-STATIC_FRAME_COMPILER_PROTOCOL_RETRY_V1
-
-上一次输出未通过协议校验：
-${JSON.stringify(String(diagnostic || "未知协议错误"))}
-
-这是同一 animationShotBatch 的唯一一次 compiler 协议纠偏。
-- 输入 batch、允许路径和字段原值完全不变。
-- 只修复上述 JSON/schema/path/patch protocol 错误。
-- 如果诊断指出某个 before 已明确满足静态帧契约、必须省略或禁止润色：从 patches 删除该精确 path，逐字保留原字段；不得换 reasonCode、triggerSpans 或 value 再次改写它。若删除后没有其他真实违规字段，返回 {"patches":[]}。
-- 如果诊断指出 triggerSpans 不能证明 reasonCode：选择与问题词直接匹配的 reasonCode；删除与问题表达不连续的上下文 span，不要添加更多上下文来凑证据。
-- triggerSpans 通常只保留一个最小问题片段；角色、道具和正常动作不得单独作为 triggerSpan。
-- 不得重新生成 animationShotBatch，不得扩大 patch 范围。
-- 仍只输出严格 JSON 对象。`;
-}
-
-function createRunMetadata({ provider, model, batchIndex, phase }) {
+function createRunMetadata({ provider, model, batchIndex, phase, runId = null }) {
   return {
     version: STATIC_FRAME_COMPILER_VERSION,
+    runId,
     provider,
     model,
     batchIndex,
@@ -695,34 +834,21 @@ function createRunMetadata({ provider, model, batchIndex, phase }) {
     noOp: false,
     runAccepted: false,
     requestCount: 0,
+    protocolCallCount: 0,
     finalResult: "pending",
+    errorCode: null,
+    intermediateErrorCodes: [],
+    repairMode: null,
+    skipReason: null,
+    targetCount: 0,
+    catalogCandidateEvidenceCount: 0,
+    selectedValidatedEvidenceCount: 0,
+    unselectedCandidateEvidenceCount: 0,
     protocolAttempts: [],
+    attempts: [],
+    combinationSearch: [],
     modifications: []
   };
-}
-
-function rejectedPatchMetadata(response, targets, protocolAttempt) {
-  if (!isRecord(response) || !Array.isArray(response.patches)) return [];
-  return response.patches.flatMap((patch) => {
-    if (!isRecord(patch)) return [];
-    const path = typeof patch.path === "string" ? patch.path : "";
-    const target = targets.get(path);
-    return [{
-      protocolAttempt,
-      path,
-      before: target?.before ?? null,
-      after: typeof patch.value === "string" ? patch.value : null,
-      reasonCode: typeof patch.reasonCode === "string" ? patch.reasonCode : null,
-      triggerSpans: Array.isArray(patch.triggerSpans)
-        ? patch.triggerSpans.filter((span) => typeof span === "string")
-        : [],
-      visibleFacts: Array.isArray(patch.visibleFacts)
-        ? patch.visibleFacts.filter((span) => typeof span === "string")
-        : [],
-      applied: false,
-      finalAccepted: false
-    }];
-  });
 }
 
 function countTransportAttempts(metadata) {
@@ -803,24 +929,6 @@ function isTransientTransportError(error, classification) {
   }
   return classification === "transport"
     && /FETCH FAILED|NETWORK (?:UNAVAILABLE|ERROR)|SOCKET|CONNECTION (?:RESET|REFUSED)|DNS/u.test(message);
-}
-
-function asProtocolError(error) {
-  if (error instanceof StaticFrameCompilerProtocolError) return error;
-  return new StaticFrameCompilerProtocolError(
-    String(error?.message || error || "未知 compiler protocol 错误"),
-    { cause: error }
-  );
-}
-
-function requireExactKeys(value, expectedKeys, path) {
-  const actual = Object.keys(value).sort();
-  const expected = [...expectedKeys].sort();
-  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
-    throw new StaticFrameCompilerProtocolError(
-      `${path} 只能包含 ${expectedKeys.join("、")}`
-    );
-  }
 }
 
 function isRecord(value) {

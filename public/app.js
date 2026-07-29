@@ -10,6 +10,10 @@ import {
 } from "./shot-reference-images.js";
 import { computeDependencyHash, computePromptHash } from "./frame-dependency.js";
 import { buildShotFrameMultiImagePrompt } from "./shot-frame-multi-image-prompt.js";
+import {
+  createApiRequestError,
+  renderCompilerFailureDetails
+} from "./compiler-observability.js";
 
 const state = {
   file: null,
@@ -539,7 +543,9 @@ async function runWorkflow() {
 async function api(path, body) {
   const response = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(withModelOverrides(body)) });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.ok) throw new Error(data.detail ? `${data.error}：${data.detail.slice(0, 240)}` : data.error || `请求失败（${response.status}）`);
+  if (!response.ok || !data.ok) {
+    throw createApiRequestError(data, response.status, `请求失败（${response.status}）`);
+  }
   return data.result;
 }
 
@@ -547,7 +553,7 @@ async function streamJsonEvents(path, body, onEvent) {
   const response = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(withModelOverrides(body)) });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw new Error(data.detail ? `${data.error}：${data.detail.slice(0, 240)}` : data.error || `请求失败（${response.status}）`);
+    throw createApiRequestError(data, response.status, `请求失败（${response.status}）`);
   }
   if (!response.body) throw new Error("浏览器不支持流式读取。");
   const reader = response.body.getReader();
@@ -561,11 +567,17 @@ async function streamJsonEvents(path, body, onEvent) {
     buffer = blocks.pop() || "";
     for (const block of blocks) {
       const event = parseEventStreamBlock(block);
+      if (event?.type === "error") {
+        throw createApiRequestError(event, event.status, "流式请求失败。");
+      }
       if (event) onEvent(event);
     }
   }
   buffer += decoder.decode();
   const tail = parseEventStreamBlock(buffer);
+  if (tail?.type === "error") {
+    throw createApiRequestError(tail, tail.status, "流式请求失败。");
+  }
   if (tail) onEvent(tail);
 }
 
@@ -928,12 +940,16 @@ async function generateAnimationPlan({ force = false } = {}) {
   setAnimationRunning(true);
   setAnimationStatus(`正在调用 ${animationModelLabel()} 生成首尾帧动画生产包…`, "active");
   try {
+    const previousPrivateSidecars = state.animationPlanMetadata[variant.id]?.privateSidecars;
     const result = await api("/api/animation-plan", {
       creativeBrief: state.output.creativeBrief,
       visualGuardrails: state.output.visualGuardrails,
       variant,
       fullStory,
       creatorProfile: profile(),
+      ...(previousPrivateSidecars && typeof previousPrivateSidecars === "object" && !Array.isArray(previousPrivateSidecars)
+        ? { privateSidecars: structuredClone(previousPrivateSidecars) }
+        : {}),
       includeCompilerMetadata: true
     });
     const { animationPlan, metadata } = normalizeAnimationPlanResponse(result);
@@ -949,6 +965,11 @@ async function generateAnimationPlan({ force = false } = {}) {
     elements.export.classList.remove("hidden");
   } catch (error) {
     setAnimationStatus(error.message || "动画生产包生成失败", "error");
+    const compilerFailure = renderCompilerFailureDetails(error);
+    if (compilerFailure) {
+      elements.animationPlan.innerHTML = `${resultHeader("COMPILER FAILURE", "动画生产包未能安全编译")}${compilerFailure}`;
+      reveal(elements.animationPlan);
+    }
   } finally {
     state.animationRunning = false;
     setAnimationRunning(false);
@@ -1080,10 +1101,60 @@ function renderStaticFrameCompilerRun(run = {}, index = 0) {
       </div>
     </div>
     ${renderCompilerProtocolLog(run)}
+    ${renderStaticGroundingLog(run)}
     ${modifications.length
       ? `<div class="compiler-modification-list">${modifications.map((item) => renderCompilerModification(item)).join("")}</div>`
       : `<p class="compiler-log-empty">${noOp ? "输入已经满足静态帧契约，原字段保持不变。" : "本次运行没有可展示的字段修改。"}</p>`}
   </section>`;
+}
+
+function renderStaticGroundingLog(run = {}) {
+  const attempts = Array.isArray(run.attempts) ? run.attempts : [];
+  const intermediateCodes = Array.isArray(run.intermediateErrorCodes)
+    ? run.intermediateErrorCodes
+    : [];
+  const retry = run.candidateLevelBatchRetry && typeof run.candidateLevelBatchRetry === "object"
+    ? run.candidateLevelBatchRetry
+    : null;
+  const summary = [
+    `candidate ${Number(run.catalogCandidateEvidenceCount) || 0}`,
+    `selected ${Number(run.selectedValidatedEvidenceCount) || 0}`,
+    `unselected ${Number(run.unselectedCandidateEvidenceCount) || 0}`,
+    run.repairMode ? `repairMode ${run.repairMode}` : "",
+    run.errorCode ? `error ${run.errorCode}` : "",
+    ...intermediateCodes.map((code) => `intermediate ${code}`),
+    retry ? `Batch Retry ${retry.batchRetryTriggered ? "已触发" : "未触发"}` : ""
+  ].filter(Boolean);
+  if (!attempts.length && summary.length <= 3 && !run.errorCode && !run.repairMode && !retry) {
+    return "";
+  }
+  const attemptCards = attempts.map((attempt, attemptIndex) => {
+    const targetResults = Array.isArray(attempt.targets) ? attempt.targets : [];
+    const searches = new Map(
+      (Array.isArray(attempt.combinationSearch) ? attempt.combinationSearch : [])
+        .map((search) => [search.targetId, search])
+    );
+    const targetRows = targetResults.map((target) => {
+      const search = searches.get(target.targetId) || {};
+      const dimensions = Array.isArray(target.safeDimensions) ? target.safeDimensions : [];
+      return `<div class="compiler-transport-row">
+        <strong>${escape(target.targetId || "target")}</strong>
+        <span>required ${escape(target.requiredDimensionCount ?? 0)} · selected ${escape(target.selectedValidatedEvidenceCount ?? 0)} · unselected ${escape(target.unselectedCandidateEvidenceCount ?? 0)}</span>
+        <span>${dimensions.length ? `safe ${escape(dimensions.join(" / "))}` : "safe 无"} · combinations ${escape(search.combinationTriedCount ?? 0)} · ${search.combinationAccepted ? "accepted" : "rejected"}</span>
+      </div>`;
+    }).join("");
+    return `<div class="compiler-protocol-card">
+      <div class="compiler-protocol-head">
+        <strong>Grounding attempt ${escape(attempt.attempt ?? attemptIndex + 1)}</strong>
+        <span>${escape(attempt.errorCode || attempt.repairMode || "validated")}</span>
+      </div>
+      ${targetRows || "<p class=\"compiler-transport-empty\">无 target 审核明细</p>"}
+    </div>`;
+  }).join("");
+  return `<div class="compiler-grounding-log">
+    <p class="compiler-reason"><b>Grounding</b> ${summary.map(escape).join(" · ")}</p>
+    ${attemptCards ? `<div class="compiler-protocol-list">${attemptCards}</div>` : ""}
+  </div>`;
 }
 
 function compilerRunSucceeded(run = {}) {
@@ -1465,7 +1536,9 @@ function handleCharacterImageStreamEvent(event) {
     if (generated) setCharacterImageStatus(`即梦生成完成：${generated} 张。`, "ready");
     return;
   }
-  if (event.type === "error") throw new Error(event.error || "角色参考图生成失败。");
+  if (event.type === "error") {
+    throw createApiRequestError(event, event.status, "角色参考图生成失败。");
+  }
 }
 
 function renderCharacterImageResults() {
@@ -2906,7 +2979,14 @@ function currentModelInfo() {
 function selectedStoryPackage() {
   const variant = selectedVariant();
   if (!variant) return null;
-  const staticFrameCompiler = state.animationPlanMetadata[variant.id]?.staticFrameCompiler;
+  const animationMetadata = state.animationPlanMetadata[variant.id] || {};
+  const staticFrameCompiler = animationMetadata.staticFrameCompiler;
+  const characterFeatureCompiler = animationMetadata.characterFeatureCompiler;
+  const privateSidecars = animationMetadata.privateSidecars;
+  const compilerMetadata = {
+    ...(staticFrameCompiler ? { staticFrameCompiler } : {}),
+    ...(characterFeatureCompiler ? { characterFeatureCompiler } : {})
+  };
   const pack = {
     packageType: "story-production-test-package",
     packageVersion: "2.2",
@@ -2923,7 +3003,10 @@ function selectedStoryPackage() {
     visualGuardrails: state.output.visualGuardrails,
     fullStory: state.fullStories[variant.id] || state.output.fullStory || null,
     animationPlan: state.animationPlans[variant.id] || state.output.animationPlan || null,
-    ...(staticFrameCompiler ? { metadata: { staticFrameCompiler } } : {}),
+    ...(Object.keys(compilerMetadata).length ? { metadata: compilerMetadata } : {}),
+    ...(privateSidecars && typeof privateSidecars === "object" && !Array.isArray(privateSidecars)
+      ? { privateSidecars: structuredClone(privateSidecars) }
+      : {}),
     shotFrameResults: state.shotFrameResults || {},
     shotVideoResults: state.shotVideoResults || {}
   };
@@ -3039,6 +3122,25 @@ function restoreStoryPackage(payload) {
     state.animationPlanMetadata[id] = {
       ...(state.animationPlanMetadata[id] || {}),
       staticFrameCompiler
+    };
+  }
+  const characterFeatureCompiler = payload.metadata?.characterFeatureCompiler
+    || payload.output?.metadata?.characterFeatureCompiler
+    || payload.animationPlanMetadata?.[id]?.characterFeatureCompiler
+    || payload.output?.animationPlanMetadata?.[id]?.characterFeatureCompiler;
+  const privateSidecars = payload.privateSidecars
+    || payload.metadata?.privateSidecars
+    || payload.output?.privateSidecars
+    || payload.animationPlanMetadata?.[id]?.privateSidecars
+    || payload.output?.animationPlanMetadata?.[id]?.privateSidecars;
+  if (
+    (characterFeatureCompiler && typeof characterFeatureCompiler === "object" && !Array.isArray(characterFeatureCompiler))
+    || (privateSidecars && typeof privateSidecars === "object" && !Array.isArray(privateSidecars))
+  ) {
+    state.animationPlanMetadata[id] = {
+      ...(state.animationPlanMetadata[id] || {}),
+      ...(characterFeatureCompiler ? { characterFeatureCompiler } : {}),
+      ...(privateSidecars ? { privateSidecars } : {})
     };
   }
   state.output.fullStories = state.fullStories;
