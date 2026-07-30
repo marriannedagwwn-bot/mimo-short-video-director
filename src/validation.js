@@ -1,3 +1,5 @@
+import { validateLegacyFullStoryStrict } from "./contracts/contract-validator.js";
+
 export class InputError extends Error {
   constructor(message, details = []) {
     super(message);
@@ -173,6 +175,15 @@ export function hasExplicitStandardNameSuffix(value, standardName) {
 
 export function ensureOutputContract(value, contract) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new OutputContractError(`${contract} 必须是对象`);
+  if (contract === "fullStory") {
+    const schemaResult = validateLegacyFullStoryStrict(value);
+    if (!schemaResult.ok) {
+      throw new OutputContractError(
+        `fullStory 结构校验失败：${schemaResult.diagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+        schemaResult.diagnostics
+      );
+    }
+  }
   const missing = (outputContracts[contract] || []).filter((key) => !(key in value));
   if (missing.length) throw new OutputContractError(`${contract} 缺少必要字段：${missing.join("、")}`);
   const arrayFields = {

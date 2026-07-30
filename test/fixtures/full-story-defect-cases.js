@@ -39,8 +39,8 @@ export const fullStoryDefectCases = Object.freeze([
   },
   {
     id: "FS-08",
-    expectation: "current-accepts-deeply-incomplete-story",
-    description: "顶层键存在时，title 和 beatSheet 深层内容没有递归校验"
+    expectation: "phase-1-rejects-deeply-incomplete-story",
+    description: "Phase 1 内部 strict schema 递归拒绝 title=null 和无效 beatSheet 项"
   }
 ]);
 

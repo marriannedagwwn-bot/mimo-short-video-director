@@ -48,8 +48,13 @@ test("FS-04 characterization: care-recipient drift remains candidate-self-consis
   ));
 });
 
-test("FS-08 characterization: deep null and invalid beat entries currently pass", () => {
-  assert.doesNotThrow(() => ensureOutputContract(fs08DeeplyIncompleteFixture(), "fullStory"));
+test("FS-08 characterization: Phase 1 strict schema rejects deep null and invalid beat entries", () => {
+  assert.throws(
+    () => ensureOutputContract(fs08DeeplyIncompleteFixture(), "fullStory"),
+    (error) => error instanceof OutputContractError
+      && error.details.some((detail) => detail.path === "/title")
+      && error.details.some((detail) => detail.path === "/beatSheet/0")
+  );
 });
 
 test("RC-01 characterization: finish_reason=length is currently ignored", async () => {

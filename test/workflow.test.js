@@ -1853,7 +1853,6 @@ test("fullStory Scene Contract 只校验可确定的视觉角色和结构化说�
         deliveryOrSubtext: "谈论不在场的人。"
       }],
       shotAndSound: "单人近景，保留室内环境声。",
-      purpose: "延续阿岚的善意所产生的影响。",
       dramaticFunction: "表现阿岚不在场时留下的情绪回响。",
       emotionNode: "想起阿岚后的安心",
       shootingNotes: "不要让阿岚在画面中出现。"

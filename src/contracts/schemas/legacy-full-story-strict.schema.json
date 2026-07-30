@@ -1,0 +1,288 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "internal://legacy-full-story-strict",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "selectedVariantId",
+    "title",
+    "oneLinePremise",
+    "targetDurationSeconds",
+    "shootingSynopsis",
+    "characterBible",
+    "beatSheet",
+    "sceneScript",
+    "keyProps",
+    "shootingPlan",
+    "dialogueStyleGuide",
+    "retentionPlan",
+    "experienceFidelity",
+    "transformationProof",
+    "continuityAndSafetyCheck",
+    "uncertainties"
+  ],
+  "properties": {
+    "selectedVariantId": { "$ref": "#/$defs/nonEmptyString" },
+    "title": { "$ref": "#/$defs/nonEmptyString" },
+    "oneLinePremise": { "$ref": "#/$defs/nonEmptyString" },
+    "targetDurationSeconds": { "type": "number", "exclusiveMinimum": 0 },
+    "shootingSynopsis": { "$ref": "#/$defs/nonEmptyString" },
+    "characterBible": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protagonist", "careRecipient", "helpers"],
+      "properties": {
+        "protagonist": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "identity", "traits", "speechRules", "signatureBehaviors"],
+          "properties": {
+            "name": { "$ref": "#/$defs/nonEmptyString" },
+            "identity": { "$ref": "#/$defs/nonEmptyString" },
+            "traits": { "$ref": "#/$defs/nonEmptyStringArray" },
+            "speechRules": { "$ref": "#/$defs/nonEmptyString" },
+            "signatureBehaviors": { "$ref": "#/$defs/nonEmptyStringArray" }
+          }
+        },
+        "careRecipient": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "nameOrLabel",
+            "identity",
+            "explicitNeed",
+            "implicitNeed",
+            "relationshipToProtagonist"
+          ],
+          "properties": {
+            "nameOrLabel": { "$ref": "#/$defs/nonEmptyString" },
+            "identity": { "$ref": "#/$defs/nonEmptyString" },
+            "explicitNeed": { "$ref": "#/$defs/nonEmptyString" },
+            "implicitNeed": { "$ref": "#/$defs/nonEmptyString" },
+            "relationshipToProtagonist": { "$ref": "#/$defs/nonEmptyString" }
+          }
+        },
+        "helpers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "nameOrLabel",
+              "functionInStory",
+              "relationshipToProtagonist",
+              "helpingAction"
+            ],
+            "properties": {
+              "nameOrLabel": { "$ref": "#/$defs/nonEmptyString" },
+              "functionInStory": { "$ref": "#/$defs/nonEmptyString" },
+              "relationshipToProtagonist": { "$ref": "#/$defs/nonEmptyString" },
+              "helpingAction": { "$ref": "#/$defs/nonEmptyString" }
+            }
+          }
+        }
+      }
+    },
+    "beatSheet": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "beat",
+          "timeRange",
+          "storyAction",
+          "emotion",
+          "dramaticFunction",
+          "retainedValueFromBrief"
+        ],
+        "properties": {
+          "beat": { "type": "integer", "minimum": 1 },
+          "timeRange": { "$ref": "#/$defs/nonEmptyString" },
+          "storyAction": { "$ref": "#/$defs/nonEmptyString" },
+          "emotion": { "$ref": "#/$defs/nonEmptyString" },
+          "dramaticFunction": { "$ref": "#/$defs/nonEmptyString" },
+          "retainedValueFromBrief": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "sceneScript": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sceneId",
+          "timeRange",
+          "location",
+          "characters",
+          "visibleAction",
+          "dialogue",
+          "shotAndSound",
+          "emotionNode",
+          "dramaticFunction",
+          "shootingNotes"
+        ],
+        "properties": {
+          "sceneId": { "type": "string" },
+          "timeRange": { "$ref": "#/$defs/nonEmptyString" },
+          "location": { "type": "string" },
+          "characters": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "visibleAction": { "type": "string" },
+          "dialogue": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["speaker", "line", "deliveryOrSubtext"],
+              "properties": {
+                "speaker": { "$ref": "#/$defs/nonEmptyString" },
+                "line": { "$ref": "#/$defs/nonEmptyString" },
+                "deliveryOrSubtext": { "$ref": "#/$defs/nonEmptyString" }
+              }
+            }
+          },
+          "shotAndSound": { "$ref": "#/$defs/nonEmptyString" },
+          "emotionNode": { "$ref": "#/$defs/nonEmptyString" },
+          "dramaticFunction": { "$ref": "#/$defs/nonEmptyString" },
+          "shootingNotes": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "keyProps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["prop", "storyFunction", "visualUse", "avoidSimilarityNote"],
+        "properties": {
+          "prop": { "$ref": "#/$defs/nonEmptyString" },
+          "storyFunction": { "$ref": "#/$defs/nonEmptyString" },
+          "visualUse": { "$ref": "#/$defs/nonEmptyString" },
+          "avoidSimilarityNote": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "shootingPlan": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["unit", "setup", "mustCapture", "practicalNote"],
+        "properties": {
+          "unit": { "$ref": "#/$defs/nonEmptyString" },
+          "setup": { "$ref": "#/$defs/nonEmptyString" },
+          "mustCapture": { "$ref": "#/$defs/nonEmptyString" },
+          "practicalNote": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "dialogueStyleGuide": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "overallTone",
+        "protagonistSpeechRule",
+        "supportingCharactersSpeechRule",
+        "forbiddenDialoguePatterns"
+      ],
+      "properties": {
+        "overallTone": { "$ref": "#/$defs/nonEmptyString" },
+        "protagonistSpeechRule": { "$ref": "#/$defs/nonEmptyString" },
+        "supportingCharactersSpeechRule": { "$ref": "#/$defs/nonEmptyString" },
+        "forbiddenDialoguePatterns": { "$ref": "#/$defs/nonEmptyStringArray" }
+      }
+    },
+    "retentionPlan": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["moment", "viewerQuestion", "payoff", "approxTime"],
+        "properties": {
+          "moment": { "$ref": "#/$defs/nonEmptyString" },
+          "viewerQuestion": { "$ref": "#/$defs/nonEmptyString" },
+          "payoff": { "$ref": "#/$defs/nonEmptyString" },
+          "approxTime": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "experienceFidelity": {
+      "$ref": "#/$defs/transformationSummary"
+    },
+    "transformationProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "changedCharacters",
+        "changedTask",
+        "changedDetailsAndProps",
+        "changedDialogue",
+        "changedVisualExpression"
+      ],
+      "properties": {
+        "changedCharacters": { "$ref": "#/$defs/nonEmptyString" },
+        "changedTask": { "$ref": "#/$defs/nonEmptyString" },
+        "changedDetailsAndProps": { "$ref": "#/$defs/nonEmptyString" },
+        "changedDialogue": { "$ref": "#/$defs/nonEmptyString" },
+        "changedVisualExpression": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "continuityAndSafetyCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixedCharacterLocked",
+        "verticalFit",
+        "sourceSurfaceAvoided",
+        "protectedExpressionsAvoided",
+        "shootableWithinConstraints"
+      ],
+      "properties": {
+        "fixedCharacterLocked": { "$ref": "#/$defs/nonEmptyString" },
+        "verticalFit": { "$ref": "#/$defs/nonEmptyString" },
+        "sourceSurfaceAvoided": { "$ref": "#/$defs/nonEmptyString" },
+        "protectedExpressionsAvoided": { "$ref": "#/$defs/nonEmptyString" },
+        "shootableWithinConstraints": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "uncertainties": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "reason", "safeFallback"],
+        "properties": {
+          "field": { "$ref": "#/$defs/nonEmptyString" },
+          "reason": { "$ref": "#/$defs/nonEmptyString" },
+          "safeFallback": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "nonEmptyStringArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "transformationSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["positioning", "audience", "emotion", "plotDriver", "highValueBeats"],
+      "properties": {
+        "positioning": { "$ref": "#/$defs/nonEmptyString" },
+        "audience": { "$ref": "#/$defs/nonEmptyString" },
+        "emotion": { "$ref": "#/$defs/nonEmptyString" },
+        "plotDriver": { "$ref": "#/$defs/nonEmptyString" },
+        "highValueBeats": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  }
+}
