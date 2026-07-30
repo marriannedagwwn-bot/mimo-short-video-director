@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv, getConfig } from "./src/config.js";
-import { MimoClient, ModelResponseError } from "./src/mimo-client.js";
+import { MimoClient } from "./src/mimo-client.js";
 import { QwenClient } from "./src/qwen-client.js";
 import { JimengImageClient, JimengImageConfigError, JimengImageProviderError, buildCharacterReferenceImagePrompt, buildShotFrameImagePrompt } from "./src/jimeng-client.js";
 import { buildFrameReferenceModeText, compileShotFrameNegativePrompt } from "./public/shot-frame-prompt.js";
@@ -12,7 +12,7 @@ import { buildShotFrameMultiImagePrompt } from "./public/shot-frame-multi-image-
 import { computeDependencyHash, computePromptHash } from "./src/frame-dependency.js";
 import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./src/frame-reference-request.js";
 import { WorkflowService } from "./src/workflow.js";
-import { ensureFrameReferenceModeCompatibility, InputError, OutputContractError } from "./src/validation.js";
+import { ensureFrameReferenceModeCompatibility, InputError } from "./src/validation.js";
 import { generateShotVideo, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
 import {
   inferShotVideoProvider,
@@ -23,7 +23,13 @@ import {
   shotVideoProviderCatalog,
   shotVideoRuntimeConfig
 } from "./src/shot-video-providers.js";
-import { StaticFrameCompilerError } from "./src/static-frame-compiler.js";
+import { AttemptStore } from "./src/attempt-store.js";
+import {
+  compilerErrorMetadata,
+  compilerErrorStatus,
+  inferCompilerErrorStage,
+  serializeServerError
+} from "./src/server-error.js";
 
 loadEnv();
 const config = getConfig();
@@ -37,6 +43,7 @@ const workflow = new WorkflowService({
   clients,
   stageDefaults
 });
+const attemptStore = new AttemptStore();
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, "public");
 
@@ -146,28 +153,9 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "GET" || request.method === "HEAD") return serveStatic(url.pathname, response, request.method === "HEAD");
     return json(response, 404, { ok: false, error: "接口不存在" });
   } catch (error) {
-    if (error instanceof InputError) return json(response, 400, { ok: false, error: error.message, details: error.details });
-    if (error instanceof ShotVideoConfigError) return json(response, 400, { ok: false, error: error.message });
-    if (error instanceof ShotVideoProviderError) return json(response, 502, { ok: false, error: "视频生成服务调用失败", detail: error.message });
-    if (error instanceof JimengImageConfigError) return json(response, 400, { ok: false, error: error.message });
-    if (error instanceof JimengImageProviderError) return json(response, 502, { ok: false, error: "即梦图片生成服务调用失败", detail: error.raw || error.message });
-    const compilerStage = inferCompilerErrorStage(error);
-    if (compilerStage) {
-      const status = compilerErrorStatus(error);
-      return json(response, status, {
-        ok: false,
-        error: error.message,
-        status,
-        stage: compilerStage,
-        category: compilerErrorCategory(error),
-        metadata: compilerErrorMetadata(error)
-      });
-    }
-    if (error instanceof OutputContractError) return json(response, 502, { ok: false, error: `模型输出不完整：${error.message}` });
-    if (error instanceof ModelResponseError) return json(response, 502, { ok: false, error: error.message, detail: error.raw });
-    if (error.name === "AbortError" || error.name === "TimeoutError") return json(response, 504, { ok: false, error: "模型响应超时" });
-    console.error(error);
-    return json(response, 500, { ok: false, error: "服务器内部错误" });
+    const serialized = serializeServerError(error, { attemptStore });
+    if (serialized.log) console.error(serialized.log);
+    return json(response, serialized.status, serialized.body);
   }
 });
 
@@ -668,49 +656,11 @@ function json(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-function inferCompilerErrorStage(error = {}) {
-  if (error instanceof StaticFrameCompilerError) return "staticFrameCompiler";
-  for (const value of [
-    error.stage,
-    error.metadata?.stage,
-    error.details?.stage,
-    error.name,
-    error.constructor?.name
-  ]) {
-    const normalized = String(value || "").replace(/[\s_-]+/gu, "").toLowerCase();
-    if (normalized.includes("staticframecompiler")) return "staticFrameCompiler";
-    if (normalized.includes("characterfeaturecompiler")) return "characterFeatureCompiler";
-  }
-  return "";
-}
-
-function compilerErrorCategory(error = {}) {
-  return String(error.category || error.details?.category || error.metadata?.category || "protocol");
-}
-
-function compilerErrorMetadata(error = {}) {
-  if (error.metadata && typeof error.metadata === "object" && !Array.isArray(error.metadata)) {
-    return error.metadata;
-  }
-  if (error.details?.metadata && typeof error.details.metadata === "object" && !Array.isArray(error.details.metadata)) {
-    return error.details.metadata;
-  }
-  return null;
-}
-
-function compilerErrorStatus(error = {}) {
-  const explicitStatus = Number(error.status || error.statusCode);
-  if (Number.isInteger(explicitStatus) && explicitStatus >= 400 && explicitStatus <= 599) return explicitStatus;
-  const category = compilerErrorCategory(error).toLowerCase();
-  if (category === "config" || category === "input") return 400;
-  if (category === "timeout") return 504;
-  return 502;
-}
-
 function streamErrorPayload(error = {}, fallbackMessage, extra = {}) {
   const source = error && typeof error === "object" ? error : {};
   const stage = inferCompilerErrorStage(source) || String(source.stage || "");
   const status = streamErrorStatus(source, stage);
+  const metadata = compilerErrorMetadata(source);
   return {
     type: "error",
     ...extra,
@@ -718,9 +668,7 @@ function streamErrorPayload(error = {}, fallbackMessage, extra = {}) {
     ...(status ? { status } : {}),
     ...(stage ? { stage } : {}),
     ...(source.category ? { category: String(source.category) } : {}),
-    ...(source.metadata && typeof source.metadata === "object" && !Array.isArray(source.metadata)
-      ? { metadata: source.metadata }
-      : {}),
+    ...(metadata ? { metadata } : {}),
     ...(source.code ? { code: String(source.code) } : {})
   };
 }
