@@ -80,6 +80,12 @@ export function getConfig() {
     30000,
     900000
   ));
+  const fullStoryV2CastConfirmationTtlMs = Math.round(clampNumber(
+    process.env.FULL_STORY_V2_CAST_CONFIRMATION_TTL_MS,
+    30 * 60 * 1000,
+    60 * 1000,
+    24 * 60 * 60 * 1000
+  ));
   const jimengBaseUrl = process.env.JIMENG_BASE_URL?.trim() || "https://ark.cn-beijing.volces.com/api/v3";
   const jimengApiKey = process.env.JIMENG_API_KEY?.trim() || process.env.ARK_API_KEY?.trim() || process.env.VOLCENGINE_ARK_API_KEY?.trim() || "";
   const jimengMaxImages = Math.round(clampNumber(process.env.JIMENG_MAX_IMAGES, 6, 1, 15));
@@ -152,6 +158,14 @@ export function getConfig() {
       maxCompletionTokens: staticFrameCompilerMaxCompletionTokens,
       requestTimeoutMs: staticFrameCompilerRequestTimeoutMs,
       configured: Boolean(staticFrameCompilerProvider && staticFrameCompilerModel)
+    },
+    fullStoryV2Pipeline: {
+      enabled: process.env.FULL_STORY_V2_PIPELINE_ENABLED === "true",
+      environment: process.env.FULL_STORY_V2_ENVIRONMENT?.trim()
+        || process.env.NODE_ENV?.trim()
+        || "development",
+      audience: process.env.FULL_STORY_V2_AUDIENCE?.trim() || "full-story-v2",
+      castConfirmationTtlMs: fullStoryV2CastConfirmationTtlMs
     },
     jimeng: {
       baseUrl: jimengBaseUrl,

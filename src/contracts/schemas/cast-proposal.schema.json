@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "internal://cast-proposal-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["roles"],
+  "properties": {
+    "roles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "proposalRef",
+          "entityClass",
+          "identityMode",
+          "proposedDisplayName",
+          "proposedAliases",
+          "scopePolicy",
+          "maxSceneCount",
+          "narrativeImportance",
+          "relationshipMode",
+          "dialoguePolicy",
+          "shotEmphasis",
+          "continuityRequired",
+          "requiresReferenceAsset",
+          "sceneHint"
+        ],
+        "properties": {
+          "proposalRef": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "\\S"
+          },
+          "entityClass": {
+            "enum": [
+              "anonymous-extra",
+              "anonymous-group",
+              "crowd",
+              "single-scene-functional",
+              "persistent-character"
+            ]
+          },
+          "identityMode": {
+            "enum": ["anonymous", "generic-label", "named"]
+          },
+          "proposedDisplayName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "\\S"
+          },
+          "proposedAliases": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "pattern": "\\S"
+            }
+          },
+          "scopePolicy": {
+            "enum": ["scene-limited", "story-wide"]
+          },
+          "maxSceneCount": {
+            "anyOf": [
+              { "type": "integer", "minimum": 1, "maximum": 100 },
+              { "type": "null" }
+            ]
+          },
+          "narrativeImportance": {
+            "enum": ["ambient", "functional", "supporting", "key"]
+          },
+          "relationshipMode": {
+            "enum": ["none", "transient", "persistent"]
+          },
+          "dialoguePolicy": {
+            "enum": ["none", "one-functional-line", "multiple-lines"]
+          },
+          "shotEmphasis": {
+            "enum": ["background", "normal", "close-up"]
+          },
+          "continuityRequired": {
+            "type": "boolean"
+          },
+          "requiresReferenceAsset": {
+            "type": "boolean"
+          },
+          "sceneHint": {
+            "type": "string",
+            "maxLength": 500
+          }
+        }
+      }
+    }
+  }
+}

@@ -25,6 +25,12 @@ import {
 } from "./src/shot-video-providers.js";
 import { AttemptStore } from "./src/attempt-store.js";
 import {
+  CAST_CONFIRMATION_API_PATH,
+  CAST_PROPOSAL_API_PATH,
+  handleCastApiRequest
+} from "./src/cast-api.js";
+import { CastOrchestrationService } from "./src/cast-orchestration.js";
+import {
   compilerErrorMetadata,
   compilerErrorStatus,
   inferCompilerErrorStage,
@@ -44,6 +50,12 @@ const workflow = new WorkflowService({
   clients,
   stageDefaults,
   attemptStore
+});
+const castOrchestration = new CastOrchestrationService({
+  environment: config.fullStoryV2Pipeline.environment,
+  audience: config.fullStoryV2Pipeline.audience,
+  confirmationTtlMs: config.fullStoryV2Pipeline.castConfirmationTtlMs,
+  storyProvider: workflow.storyClient
 });
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, "public");
@@ -145,6 +157,21 @@ const server = http.createServer(async (request, response) => {
       const body = await readJson(request);
       const result = await generateShotFrameImage(body);
       return json(response, 200, { ok: true, mode: workflow.mode, result });
+    }
+    if (request.method === "POST"
+      && [CAST_PROPOSAL_API_PATH, CAST_CONFIRMATION_API_PATH].includes(url.pathname)) {
+      const body = await readJson(request);
+      const outcome = handleCastApiRequest({
+        enabled: config.fullStoryV2Pipeline.enabled,
+        path: url.pathname,
+        body,
+        service: castOrchestration
+      });
+      return json(response, outcome.httpStatus, {
+        ok: true,
+        mode: workflow.mode,
+        result: outcome.result
+      });
     }
     if (request.method === "POST" && routes[url.pathname]) {
       const body = await readJson(request);

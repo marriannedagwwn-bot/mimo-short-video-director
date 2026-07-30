@@ -1,4 +1,10 @@
 import { AttemptStore } from "./attempt-store.js";
+import {
+  CastOperationError,
+  CastPipelineDisabledError,
+  CastProposalValidationError,
+  CharacterRegistryError
+} from "./cast-errors.js";
 import { JimengImageConfigError, JimengImageProviderError } from "./jimeng-client.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { ModelPipelineError, sanitizePublicMetadata } from "./model-errors.js";
@@ -30,6 +36,44 @@ export function serializeServerError(error, {
       code: "INPUT_INVALID",
       origin: "client",
       details: sanitizePublicMetadata(error.details) || []
+    }));
+  }
+
+  if (error instanceof CastPipelineDisabledError) {
+    return response(error.httpStatus, observabilityBody({
+      error: error.message,
+      category: "feature-gate",
+      code: error.code,
+      origin: "server"
+    }));
+  }
+
+  if (error instanceof CastProposalValidationError) {
+    return response(error.httpStatus, observabilityBody({
+      error: error.message,
+      category: "cast-proposal",
+      code: error.code,
+      origin: "model",
+      details: sanitizePublicMetadata(error.details) || []
+    }));
+  }
+
+  if (error instanceof CharacterRegistryError) {
+    return response(error.httpStatus, observabilityBody({
+      error: error.message,
+      category: "character-registry",
+      code: error.code,
+      origin: "server",
+      details: sanitizePublicMetadata(error.details) || []
+    }));
+  }
+
+  if (error instanceof CastOperationError) {
+    return response(error.httpStatus, observabilityBody({
+      error: error.message,
+      category: "cast-operation",
+      code: error.code,
+      origin: "client"
     }));
   }
 

@@ -5,7 +5,7 @@
 - 基线 HEAD：`a178c230edb01657f67d44e11174df6da37de2b0`
 - 最低运行时：Node `>=24 <25`
 - 实施规则：逐 Phase 实施、测试、提交和汇报；没有明确批准不得进入下一 Phase
-- 当前进度：Phase 0 已验收；Phase 1 已实施并等待阶段验收；Phase 2 尚未开始
+- 当前进度：Phase 0、Phase 1 已验收；Phase 2 已实施并等待阶段验收；Phase 3 尚未开始
 
 ## 1. 最终架构决策
 
@@ -139,19 +139,29 @@ Cast Proposal 临时角色条目：
 {
   "proposalRef": "cast-proposal-1",
   "entityClass": "single-scene-functional",
+  "identityMode": "generic-label",
   "proposedDisplayName": "快递员",
+  "proposedAliases": [],
   "scopePolicy": "scene-limited",
   "maxSceneCount": 1,
+  "narrativeImportance": "functional",
+  "relationshipMode": "transient",
+  "dialoguePolicy": "one-functional-line",
+  "shotEmphasis": "normal",
+  "continuityRequired": false,
+  "requiresReferenceAsset": false,
   "sceneHint": "送包裹的短暂场面"
 }
 ```
 
 规则：
 
+- `evaluateCastProposalPolicy(...)` 只能根据上述结构化政策事实确定 `automatic` 或 `confirmation-required`；输入相同则输出相同。
+- 模型不得输出 `characterId`、`requiresConfirmation`、`approvalDecision`、`approved`、`sceneId` 或 `sceneScope`，模型对批准结果的任何声明均没有授权效力。
 - `scopePolicy` 只允许 `story-wide` 或 `scene-limited`。
 - `story-wide` 的 `maxSceneCount` 为 `null`；`scene-limited` 为正整数。
-- `sceneHint` 不得解释为 sceneId、JSON Pointer 或授权范围。
-- Schema 拒绝 `sceneScope`、`boundSceneIds` 和 `/sceneScript/*`。
+- `sceneHint` 只作为非权威创作提示，不得解释为 sceneId、JSON Pointer 或授权范围，也不参与批准判断。
+- Schema 拒绝 `sceneScope`、`boundSceneIds`、上述服务端字段和任意 `/sceneScript/*` 引用。
 - Story 完成后根据 canonical presence/speaker 绑定实际 sceneId；超过 `maxSceneCount` 时拒绝。
 
 自动批准：
@@ -162,7 +172,24 @@ Cast Proposal 临时角色条目：
 - 无正式名字、仅一场、无剧情转折、无长期关系、无跨场连续性、无独立参考资产的功能角色
 - 单场功能角色最多一条不超过 80 Unicode code points 的功能性台词
 
-具名、多场、多行对白、特写、人物弧、关键剧情、长期关系或独立参考资产必须确认；不得静默降级为匿名实体。
+服务端必须将自动批准的使用约束写入 Registry：
+
+```json
+{
+  "approvalMode": "automatic",
+  "isEphemeral": true,
+  "maxSceneCount": 1,
+  "maxDialogueLines": 1,
+  "maxDialogueCodePoints": 80,
+  "allowedNarrativeImportance": ["ambient", "functional"],
+  "allowCloseUp": false,
+  "allowPersistentRelationship": false,
+  "allowReferenceAsset": false,
+  "assetPolicy": "none"
+}
+```
+
+具名、多场、多行对白、特写、人物弧、关键剧情、长期关系或独立参考资产必须确认；字段矛盾或无法确定时也必须确认，不得猜测批准或静默降级为匿名实体。Phase 3 若发现 Story 超出约束，只能进入 Supplemental Cast Proposal 或用户确认，不得提升现有角色权限。
 
 Character ID 来源：
 
@@ -177,11 +204,32 @@ helper 数组索引不得进入 ID。重排通过 declaration/source identifier 
 
 确认 API：
 
-- 初始或 Supplemental 确认返回 HTTP 202：`status`、`operationId`、`proposalToken`、`storyContextDigest`、`castProposal`、`expiresAt`。
+- `POST /api/full-story/cast-proposals` 验证 proposal；全部自动批准时返回冻结 Registry，需要确认时返回 HTTP 202。
+- 初始或 Supplemental 确认返回 HTTP 202：`status`、`operationId`、`proposalToken`、`proposalDigest`、`storyContextDigest`、`environment`、`audience`、`castProposal`、`expiresAt`。
 - `POST /api/full-story/cast-confirmations` 接收 `approve`、`reject` 或 `modify`。
 - token 默认 30 分钟、单次消费，绑定 operation、proposal digest、context digest、environment 和 audience。
 - 仅 token 过期、上下文变化、重复使用、签名不匹配或进程状态丢失返回 409。
 - 进程重启后统一返回 `409 OPERATION_EXPIRED`。
+- `modify` 必须重新运行服务端 policy；`reject` 明确结束，不产生 Registry，也不进行匿名降级。
+
+Phase 2 实施记录：
+
+- 两个 API 与编排由 `FULL_STORY_V2_PIPELINE_ENABLED` 控制，默认关闭；Phase 2 不调用 Cast 或 Story provider。
+- 当前 legacy `POST /api/full-story` 不经过 Cast 编排，正常成功路径仍为 1 次 Story provider call，响应 wire shape 不变。
+- Character ID 按固定系统槽位、`declarationId`、稳定 source identifier、服务端 UUID 持久绑定的顺序生成；名称和 helper 数组索引不参与 ID。
+- 单进程 confirmation store 的默认 TTL 为 30 分钟；token 单次消费并绑定 operation/proposal/context/environment/audience；重启丢失状态后返回 `409 OPERATION_EXPIRED`。
+- 聚焦验收：
+
+```bash
+node --test \
+  test/cast-proposal-policy.test.js \
+  test/character-registry.test.js \
+  test/cast-confirmation.test.js \
+  test/phase2-legacy-compatibility.test.js
+
+npm test
+git diff --check
+```
 
 ### Phase 3：Presence、Evidence canonicalization 和 Supplemental 检测
 
