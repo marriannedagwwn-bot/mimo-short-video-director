@@ -47,23 +47,23 @@ export const fullStoryDefectCases = Object.freeze([
 export const recoveryDefectCases = Object.freeze([
   {
     id: "RC-01",
-    expectation: "current-ignores-finish-reason-length"
+    expectation: "phase-1-handles-finish-reason-length-before-parse"
   },
   {
     id: "RC-02",
-    expectation: "current-removes-think-tags-inside-json-string"
+    expectation: "phase-1-preserves-think-tags-inside-json-string"
   },
   {
     id: "RC-03",
-    expectation: "current-extracts-json-object-from-surrounding-text"
+    expectation: "phase-1-rejects-json-object-surrounded-by-text"
   },
   {
     id: "RC-04",
-    expectation: "current-does-not-retry-invalid-envelope"
+    expectation: "phase-1-coordinator-retries-invalid-envelope-once"
   },
   {
     id: "RC-05",
-    expectation: "current-does-not-retry-transient-http"
+    expectation: "phase-1-coordinator-retries-transient-http-once"
   }
 ]);
 

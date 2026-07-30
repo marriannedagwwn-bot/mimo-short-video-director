@@ -2,6 +2,8 @@ import { ANALYSIS_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, a
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { compileCharacterFeatures } from "./character-feature-compiler.js";
+import { AttemptStore } from "./attempt-store.js";
+import { ModelCallCoordinator } from "./model-call-coordinator.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
 import { InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, getFixedCharacterIdentityAuthorizations, hasExplicitStandardNameSuffix, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
@@ -35,7 +37,9 @@ export class WorkflowService {
     staticFrameCompilerTimeoutMs = 300000,
     staticFrameCompilerProvider = "",
     animationShotBatchSceneCount = DEFAULT_ANIMATION_BATCH_SCENE_COUNT,
-    groundingKey = null
+    groundingKey = null,
+    attemptStore = null,
+    modelCallCoordinator = null
   } = {}) {
     this.clients = normalizeClients(clients);
     if (client && !Object.keys(this.clients).length) this.clients.MiMo = client;
@@ -73,6 +77,12 @@ export class WorkflowService {
     this.staticFrameCompilerProvider = staticFrameCompilerStage.provider;
     this.animationShotBatchSceneCount = normalizeBatchSize(animationShotBatchSceneCount);
     this.groundingKey = groundingKey || createGroundingKey();
+    this.attemptStore = attemptStore instanceof AttemptStore
+      ? attemptStore
+      : new AttemptStore();
+    this.modelCallCoordinator = modelCallCoordinator instanceof ModelCallCoordinator
+      ? modelCallCoordinator
+      : new ModelCallCoordinator({ attemptStore: this.attemptStore });
   }
 
   get mode() {
@@ -255,7 +265,7 @@ export class WorkflowService {
       model: settings.model,
       maxCompletionTokens: settings.maxCompletionTokens,
       validate: (result) => ensureFullStoryMatchesProfile(ensureOutputContract(result, "fullStory"), profile, input.creativeBrief, input.variant, input.visualGuardrails),
-      retryContext: { stage: "fullStory" }
+      retryContext: { stage: "fullStory", provider: settings.provider }
     });
   }
 
@@ -272,6 +282,27 @@ export class WorkflowService {
 
   async generateValidatedJson({ client = this.client, prompt, systemPrompt = null, model = null, maxCompletionTokens = null, frames = [], video = null, validate, retryContext = null, onResolvedMediaMode = null }) {
     const request = { prompt, systemPrompt, model, maxCompletionTokens, onResolvedMediaMode };
+    if (retryContext?.stage === "fullStory") {
+      return this.modelCallCoordinator.runJson({
+        client,
+        request,
+        provider: retryContext.provider || "",
+        stage: "fullStory",
+        validate,
+        retryTokenLimit,
+        retryPrompt: ({ error, issue, candidate }) => (
+          issue.category === "schema" || issue.category === "output-contract"
+            ? validationRetryPrompt(
+              prompt,
+              error.message,
+              retryContext,
+              candidate,
+              error.details
+            )
+            : fullStoryCompletionRetryPrompt(prompt, issue)
+        )
+      });
+    }
     const first = frames.length || video
       ? await client.generateJsonWithMedia({ ...request, frames, video })
       : await client.generateJson(request);
@@ -809,6 +840,23 @@ export class WorkflowService {
     if (settings.client) return;
     throw new InputError(`${label} 选择了 ${settings.provider || "未知 provider"}，但该 provider 未配置或不可用。`);
   }
+}
+
+function fullStoryCompletionRetryPrompt(originalPrompt, issue = {}) {
+  return `${originalPrompt}
+
+FULL_STORY_COMPLETION_RETRY_V1
+
+上一次 Full Story completion 没有形成可校验的完整 JSON 对象。
+错误类别：${String(issue.category || "unknown")}
+错误代码：${String(issue.code || "MODEL_COMPLETION_INVALID")}
+
+请重新输出一份完整 fullStory：
+- 只输出一个 JSON object；对象前后不得有 Markdown、解释、前缀、后缀或额外 JSON。
+- 不得使用 <think> 包裹正文。
+- 必须输出原任务要求的全部顶层和嵌套字段。
+- 内容可以精炼，但不得省略结构字段或以 null 占位。
+- 只输出 JSON。`;
 }
 
 function groundedStageInput(input, groundingKey) {

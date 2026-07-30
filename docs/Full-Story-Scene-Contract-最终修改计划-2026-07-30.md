@@ -5,6 +5,7 @@
 - 基线 HEAD：`a178c230edb01657f67d44e11174df6da37de2b0`
 - 最低运行时：Node `>=24 <25`
 - 实施规则：逐 Phase 实施、测试、提交和汇报；没有明确批准不得进入下一 Phase
+- 当前进度：Phase 0 已验收；Phase 1 已实施并等待阶段验收；Phase 2 尚未开始
 
 ## 1. 最终架构决策
 
@@ -88,6 +89,11 @@ git diff --check
 
 完整测试必须使用 Node 24。Phase 0 完成并汇报后停止。
 
+实施记录：
+
+- Phase 0 commit：`87d9adacf49685ade08ab0cd601bdb9dc549f0d1`。
+- Node `24.14.0` 下 `test/shot-video-provider-interfaces.test.js` 和 `test/workflow.test.js` 的原生 `node::InternalCallbackScope::Close()` assertion 已在 Phase 0 父提交与 Phase 0 commit 上逐条复现，退出方式、断言和崩溃源码位置一致，登记为 pre-existing Node runtime baseline issue。
+
 ### Phase 1：严格门禁和最小 Coordinator
 
 - 新增内部 `legacy-full-story-strict` exact schema，递归拒绝缺字段、`null`、错误类型和 unknown fields。
@@ -98,6 +104,32 @@ git diff --check
 - 提前建立最小 `ModelCallCoordinator`，统一预算、attempt、错误分类和 retry policy。
 - provider client 内部 Full Story retry 固定为 0；Phase 4 扩展同一个 Coordinator，不另建 retry 体系。
 - Animation 入口复用同一 Full Story validator；失败时下游 provider 调用数为 0。
+
+实施约束与调用数：
+
+- 内部 schema 使用 Ajv `8.20.0` 编译；错误只投影为稳定 diagnostic code 和 JSON Pointer，不返回内部 schema id。
+- 原有 Scene Contract 的语义规则、聚合错误和路径继续保留在共享 validator 中；strict schema 在其前面拦截深层缺字段、`null`、错误类型和 unknown fields。
+- 既有非 Full Story `generateJson` / `requestJson` 调用仍使用原 client retry 配置；只有 Full Story 走单次 `requestCompletion`。
+- 正常合法 Full Story：1 次 provider call。
+- 可重试的 truncation、envelope、JSON syntax、暂时性 HTTP 或 schema/contract 失败：最多 2 次 provider call（primary + 1 次 Coordinator retry）。
+- 永久性 provider 4xx：1 次 provider call 后终止。
+- Full Story strict gate 失败的 Animation 请求：0 次下游 provider/compiler call。
+- Phase 1 不引入 `FULL_STORY_V2_PIPELINE_ENABLED`；该 flag 仍保持未启用，留待 Phase 3 与 Phase 4 同一发布窗口。
+
+Phase 1 聚焦验收：
+
+```bash
+node --test \
+  test/full-story-schema-strict.test.js \
+  test/model-completion.test.js \
+  test/model-call-coordinator.test.js \
+  test/full-story-defect-characterization.test.js \
+  test/model-errors.test.js \
+  test/attempt-store.test.js
+
+npm test
+git diff --check
+```
 
 ### Phase 2：Cast Proposal、Registry 和确认状态机
 

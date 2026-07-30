@@ -39,11 +39,12 @@ const jimengClient = config.jimeng.enabled ? new JimengImageClient(config.jimeng
 const stageDefaults = buildStageDefaults(config, { mimoClient, qwenClient });
 const modelStages = buildModelStages(stageDefaults, config);
 const clients = { MiMo: mimoClient, Qwen: qwenClient };
+const attemptStore = new AttemptStore();
 const workflow = new WorkflowService({
   clients,
-  stageDefaults
+  stageDefaults,
+  attemptStore
 });
-const attemptStore = new AttemptStore();
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, "public");
 

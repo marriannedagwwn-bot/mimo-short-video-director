@@ -253,11 +253,13 @@ test("选择主题变体后可用 mimo-v2.5-pro 生成完整剧情", async () =>
     endingRitual: "老人按下播放键"
   };
   let captured;
+  let providerCalls = 0;
   const workflow = new WorkflowService({
     storyModel: "mimo-v2.5-pro",
     storyMaxCompletionTokens: 12345,
     client: {
       async generateJson(args) {
+        providerCalls += 1;
         captured = args;
         return mockFullStory({ ...input, creativeBrief, variant });
       }
@@ -266,6 +268,9 @@ test("选择主题变体后可用 mimo-v2.5-pro 生成完整剧情", async () =>
   const result = await workflow.createFullStory({ ...input, ...groundedUpstreamFixture(workflow), creativeBrief, variant });
   assert.equal(captured.model, "mimo-v2.5-pro");
   assert.equal(captured.maxCompletionTokens, 12345);
+  assert.equal(captured.jsonRetryAttempts, 0);
+  assert.equal(captured.strictJson, true);
+  assert.equal(providerCalls, 1);
   assert.equal(result.selectedVariantId, "V1");
   assert.ok(result.sceneScript.length >= 6);
   assert.match(result.characterBible.protagonist.identity, /阿岚/);

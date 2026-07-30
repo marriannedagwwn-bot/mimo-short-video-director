@@ -110,7 +110,6 @@ export class QwenClient {
     jsonRetryAttempts = null,
     strictJson = false
   }) {
-    const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`;
     const retryAttempts = jsonRetryAttempts === null
       ? Number.isFinite(Number(this.config.jsonRetryAttempts)) ? Number(this.config.jsonRetryAttempts) : 2
       : Math.max(0, Number(jsonRetryAttempts) || 0);
@@ -119,29 +118,17 @@ export class QwenClient {
     let lastJsonError = null;
 
     for (let attempt = 0; attempt <= retryAttempts; attempt += 1) {
-      const body = buildQwenRequestBody(this.config, { prompt: activePrompt, frames, video, useVideo }, { model, maxCompletionTokens: activeMaxTokens, systemPrompt });
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {})
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(requestTimeoutMs ?? this.config.requestTimeoutMs ?? 900_000)
+      const completion = await this.requestCompletion({
+        prompt: activePrompt,
+        frames,
+        video,
+        useVideo,
+        model,
+        maxCompletionTokens: activeMaxTokens,
+        systemPrompt,
+        requestTimeoutMs
       });
-      const raw = await response.text();
-      if (!response.ok) {
-        throw new ModelResponseError(`Qwen 请求失败（${response.status}）`, raw.slice(0, 2000), response.status);
-      }
-
-      let envelope;
-      try {
-        envelope = JSON.parse(raw);
-      } catch {
-        throw new ModelResponseError("Qwen 返回了无法解析的响应包", raw.slice(0, 2000));
-      }
-      const content = envelope.choices?.[0]?.message?.content;
-      if (typeof content !== "string") throw new ModelResponseError("Qwen 响应缺少 message.content", raw.slice(0, 2000));
+      const content = completion.content;
       try {
         return strictJson
           ? parseStrictModelJson(content, "Qwen")
@@ -155,6 +142,93 @@ export class QwenClient {
     }
 
     throw lastJsonError || new ModelResponseError("Qwen 未返回合法 JSON");
+  }
+
+  async requestCompletion({
+    prompt,
+    frames = [],
+    video = null,
+    useVideo = false,
+    model = null,
+    maxCompletionTokens = null,
+    systemPrompt = null,
+    requestTimeoutMs = null
+  } = {}) {
+    const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`;
+    const body = buildQwenRequestBody(
+      this.config,
+      { prompt, frames, video, useVideo },
+      { model, maxCompletionTokens, systemPrompt }
+    );
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {})
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(requestTimeoutMs ?? this.config.requestTimeoutMs ?? 900_000)
+    });
+    const raw = await response.text();
+    const headerRequestId = response.headers.get("x-request-id")
+      || response.headers.get("request-id")
+      || "";
+    if (!response.ok) {
+      throw new ModelResponseError(
+        `Qwen 请求失败（${response.status}）`,
+        raw,
+        response.status,
+        {
+          provider: "Qwen",
+          code: "MODEL_HTTP_ERROR",
+          requestId: headerRequestId
+        }
+      );
+    }
+
+    let envelope;
+    try {
+      envelope = JSON.parse(raw);
+    } catch {
+      throw new ModelResponseError(
+        "Qwen 返回了无法解析的响应包",
+        raw,
+        0,
+        {
+          provider: "Qwen",
+          code: "MODEL_ENVELOPE_INVALID",
+          requestId: headerRequestId
+        }
+      );
+    }
+    const choice = envelope.choices?.[0];
+    const content = choice?.message?.content;
+    const requestId = headerRequestId || String(envelope.id || "");
+    const usage = envelope.usage && typeof envelope.usage === "object"
+      ? envelope.usage
+      : null;
+    const finishReason = String(choice?.finish_reason || "");
+    if (typeof content !== "string") {
+      throw new ModelResponseError(
+        "Qwen 响应缺少 message.content",
+        raw,
+        0,
+        {
+          provider: "Qwen",
+          code: "MODEL_CONTENT_MISSING",
+          requestId,
+          finishReason,
+          usage
+        }
+      );
+    }
+    return {
+      content,
+      finishReason,
+      requestId,
+      usage,
+      raw
+    };
   }
 }
 

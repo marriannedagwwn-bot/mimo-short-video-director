@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MimoClient, ModelResponseError, parseModelJson } from "../src/mimo-client.js";
+import { ModelCallCoordinator } from "../src/model-call-coordinator.js";
+import { MimoClient, parseSingleJsonObject } from "../src/mimo-client.js";
 import {
   ensureFullStoryMatchesProfile,
   ensureOutputContract,
@@ -57,33 +58,36 @@ test("FS-08 characterization: Phase 1 strict schema rejects deep null and invali
   );
 });
 
-test("RC-01 characterization: finish_reason=length is currently ignored", async () => {
+test("RC-01 characterization: Phase 1 handles finish_reason=length before parse and retries once", async () => {
   let calls = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     calls += 1;
     return new Response(JSON.stringify({
       choices: [{
-        finish_reason: "length",
+        finish_reason: calls === 1 ? "length" : "stop",
         message: { content: "{\"ok\":true}" }
       }]
     }), { status: 200 });
   };
   try {
     const client = new MimoClient(mimoConfig());
-    assert.deepEqual(await client.generateJson({ prompt: "return json", jsonRetryAttempts: 0 }), { ok: true });
-    assert.equal(calls, 1);
+    assert.deepEqual(await runFullStoryCoordinator(client), { ok: true });
+    assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("RC-02 and RC-03 characterization: current parser mutates/extracts content", () => {
-  assert.deepEqual(parseModelJson("{\"text\":\"A<think>keep</think>B\"}"), { text: "AB" });
-  assert.deepEqual(parseModelJson("prefix {\"ok\":true} suffix"), { ok: true });
+test("RC-02 and RC-03 characterization: Phase 1 strict parser preserves strings and rejects extraction", () => {
+  assert.deepEqual(
+    parseSingleJsonObject("{\"text\":\"A<think>keep</think>B\"}"),
+    { text: "A<think>keep</think>B" }
+  );
+  assert.throws(() => parseSingleJsonObject("prefix {\"ok\":true} suffix"));
 });
 
-test("RC-04 characterization: invalid provider envelope does not consume JSON retry", async () => {
+test("RC-04 characterization: Phase 1 Coordinator retries an invalid provider envelope once", async () => {
   let calls = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
@@ -94,17 +98,14 @@ test("RC-04 characterization: invalid provider envelope does not consume JSON re
   };
   try {
     const client = new MimoClient(mimoConfig());
-    await assert.rejects(
-      () => client.generateJson({ prompt: "return json", jsonRetryAttempts: 1 }),
-      (error) => error instanceof ModelResponseError
-    );
-    assert.equal(calls, 1);
+    assert.deepEqual(await runFullStoryCoordinator(client), { ok: true });
+    assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("RC-05 characterization: transient HTTP failure does not consume JSON retry", async () => {
+test("RC-05 characterization: Phase 1 Coordinator retries a transient HTTP failure once", async () => {
   let calls = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
@@ -115,11 +116,8 @@ test("RC-05 characterization: transient HTTP failure does not consume JSON retry
   };
   try {
     const client = new MimoClient(mimoConfig());
-    await assert.rejects(
-      () => client.generateJson({ prompt: "return json", jsonRetryAttempts: 1 }),
-      (error) => error instanceof ModelResponseError && error.status === 503
-    );
-    assert.equal(calls, 1);
+    assert.deepEqual(await runFullStoryCoordinator(client), { ok: true });
+    assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -160,4 +158,19 @@ function jsonResponse(value) {
       message: { content: JSON.stringify(value) }
     }]
   }), { status: 200 });
+}
+
+function runFullStoryCoordinator(client) {
+  return new ModelCallCoordinator().runJson({
+    client,
+    request: {
+      prompt: "return json",
+      model: "test-model",
+      maxCompletionTokens: 1_000
+    },
+    provider: "MiMo",
+    stage: "fullStory",
+    validate: (value) => value,
+    retryPrompt: () => "retry with strict json"
+  });
 }

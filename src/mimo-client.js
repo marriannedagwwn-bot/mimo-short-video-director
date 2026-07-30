@@ -1,11 +1,18 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
 
 export class ModelResponseError extends Error {
-  constructor(message, raw = "", status = 0) {
+  constructor(message, raw = "", status = 0, metadata = {}) {
     super(message);
     this.name = "ModelResponseError";
     this.raw = raw;
     this.status = status;
+    this.provider = String(metadata.provider || "");
+    this.code = String(metadata.code || "");
+    this.requestId = String(metadata.requestId || "");
+    this.finishReason = String(metadata.finishReason || "");
+    this.usage = metadata.usage && typeof metadata.usage === "object"
+      ? metadata.usage
+      : null;
   }
 }
 
@@ -120,7 +127,6 @@ export class MimoClient {
     jsonRetryAttempts = null,
     strictJson = false
   }) {
-    const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`;
     const retryAttempts = jsonRetryAttempts === null
       ? Number.isFinite(Number(this.config.jsonRetryAttempts)) ? Number(this.config.jsonRetryAttempts) : 2
       : Math.max(0, Number(jsonRetryAttempts) || 0);
@@ -129,30 +135,17 @@ export class MimoClient {
     let lastJsonError = null;
 
     for (let attempt = 0; attempt <= retryAttempts; attempt += 1) {
-      const body = buildRequestBody(this.config, { prompt: activePrompt, frames, video, useVideo }, { model, maxCompletionTokens: activeMaxCompletionTokens, systemPrompt });
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {})
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(requestTimeoutMs ?? this.config.requestTimeoutMs ?? 900_000)
+      const completion = await this.requestCompletion({
+        prompt: activePrompt,
+        frames,
+        video,
+        useVideo,
+        model,
+        maxCompletionTokens: activeMaxCompletionTokens,
+        systemPrompt,
+        requestTimeoutMs
       });
-      const raw = await response.text();
-      if (!response.ok) {
-        throw new ModelResponseError(`MiMo 请求失败（${response.status}）`, raw.slice(0, 2000), response.status);
-      }
-
-      let envelope;
-      try {
-        envelope = JSON.parse(raw);
-      } catch {
-        throw new ModelResponseError("MiMo 返回了无法解析的响应包", raw.slice(0, 2000));
-      }
-      const content = envelope.choices?.[0]?.message?.content;
-      if (typeof content !== "string") throw new ModelResponseError("MiMo 响应缺少 message.content", raw.slice(0, 2000));
+      const content = completion.content;
       try {
         return strictJson
           ? parseStrictModelJson(content, "MiMo")
@@ -166,6 +159,93 @@ export class MimoClient {
     }
 
     throw lastJsonError || new ModelResponseError("MiMo 未返回合法 JSON");
+  }
+
+  async requestCompletion({
+    prompt,
+    frames = [],
+    video = null,
+    useVideo = false,
+    model = null,
+    maxCompletionTokens = null,
+    systemPrompt = null,
+    requestTimeoutMs = null
+  } = {}) {
+    const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`;
+    const body = buildRequestBody(
+      this.config,
+      { prompt, frames, video, useVideo },
+      { model, maxCompletionTokens, systemPrompt }
+    );
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {})
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(requestTimeoutMs ?? this.config.requestTimeoutMs ?? 900_000)
+    });
+    const raw = await response.text();
+    const headerRequestId = response.headers.get("x-request-id")
+      || response.headers.get("request-id")
+      || "";
+    if (!response.ok) {
+      throw new ModelResponseError(
+        `MiMo 请求失败（${response.status}）`,
+        raw,
+        response.status,
+        {
+          provider: "MiMo",
+          code: "MODEL_HTTP_ERROR",
+          requestId: headerRequestId
+        }
+      );
+    }
+
+    let envelope;
+    try {
+      envelope = JSON.parse(raw);
+    } catch {
+      throw new ModelResponseError(
+        "MiMo 返回了无法解析的响应包",
+        raw,
+        0,
+        {
+          provider: "MiMo",
+          code: "MODEL_ENVELOPE_INVALID",
+          requestId: headerRequestId
+        }
+      );
+    }
+    const choice = envelope.choices?.[0];
+    const content = choice?.message?.content;
+    const requestId = headerRequestId || String(envelope.id || "");
+    const usage = envelope.usage && typeof envelope.usage === "object"
+      ? envelope.usage
+      : null;
+    const finishReason = String(choice?.finish_reason || "");
+    if (typeof content !== "string") {
+      throw new ModelResponseError(
+        "MiMo 响应缺少 message.content",
+        raw,
+        0,
+        {
+          provider: "MiMo",
+          code: "MODEL_CONTENT_MISSING",
+          requestId,
+          finishReason,
+          usage
+        }
+      );
+    }
+    return {
+      content,
+      finishReason,
+      requestId,
+      usage,
+      raw
+    };
   }
 }
 
@@ -253,4 +333,21 @@ export function parseStrictModelJson(content, providerName = "模型") {
   } catch {
     throw new ModelResponseError(`${providerName} 未返回严格 JSON`, raw.slice(0, 3000));
   }
+}
+
+export function parseSingleJsonObject(content, providerName = "模型") {
+  const value = parseStrictModelJson(content, providerName);
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    const raw = typeof content === "string" ? content : "";
+    throw new ModelResponseError(
+      `${providerName} 必须只返回一个 JSON 对象`,
+      raw,
+      0,
+      {
+        provider: providerName,
+        code: "MODEL_JSON_OBJECT_REQUIRED"
+      }
+    );
+  }
+  return value;
 }
