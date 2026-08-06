@@ -127,17 +127,17 @@ const elements = {
 };
 
 const MODEL_STAGE_DEFS = [
-  { key: "analysis", label: "参考片分析", hint: "视频解析、定位、人物、节奏" },
-  { key: "reconstruction", label: "脚本还原", hint: "分场、动作、镜头、转折" },
-  { key: "brief", label: "创意简报", hint: "保留价值、受控变量" },
-  { key: "visualGuardrails", label: "视觉规则", hint: "角色边界、原片规避、台词规则" },
-  { key: "variants", label: "主题变体", hint: "新故事方向" },
-  { key: "fullStory", label: "完整剧情", hint: "可拍分场剧本" },
-  { key: "animationPlan", label: "动画生产包", hint: "首尾帧、镜头与视频提示词" },
-  { key: "staticFrameCompiler", label: "静态帧编译器", hint: "叙事语言到静态视觉语言的语义合法化" },
-  { key: "characterReference", label: "人物图修正", hint: "根据上传图片修正角色描述" },
-  { key: "imageGeneration", label: "图片生成", hint: "角色参考图、镜头首尾帧图片", providerLocked: true, optional: true },
-  { key: "shotVideo", label: "首尾帧视频", hint: "可灵或 Seedance 单镜头首尾帧视频候选", providers: ["Kling", "Seedance"], optional: true }
+  { key: "analysis", label: "参考片分析", hint: "视频解析、定位、人物、节奏", capability: "视觉模型", capabilityKind: "vision" },
+  { key: "reconstruction", label: "脚本还原", hint: "分场、动作、镜头、转折", capability: "视觉模型", capabilityKind: "vision" },
+  { key: "brief", label: "创意简报", hint: "保留价值、受控变量", capability: "文本模型", capabilityKind: "text" },
+  { key: "visualGuardrails", label: "视觉规则", hint: "角色边界、原片规避、台词规则", capability: "视觉模型", capabilityKind: "vision" },
+  { key: "variants", label: "主题变体", hint: "新故事方向", capability: "文本模型", capabilityKind: "text" },
+  { key: "fullStory", label: "完整剧情", hint: "可拍分场剧本", capability: "文本模型", capabilityKind: "text" },
+  { key: "animationPlan", label: "动画生产包", hint: "首尾帧、镜头与视频提示词", capability: "文本模型", capabilityKind: "text" },
+  { key: "staticFrameCompiler", label: "静态帧编译器", hint: "叙事语言到静态视觉语言的语义合法化", capability: "文本模型", capabilityKind: "text" },
+  { key: "characterReference", label: "人物图修正", hint: "根据上传图片修正角色描述", capability: "视觉模型", capabilityKind: "vision" },
+  { key: "imageGeneration", label: "图片生成", hint: "角色参考图、镜头首尾帧图片", capability: "图片生成", capabilityKind: "image", providerLocked: true, optional: true },
+  { key: "shotVideo", label: "首尾帧视频", hint: "可灵或 Seedance 单镜头首尾帧视频候选", capability: "视频生成", capabilityKind: "video", providers: ["Kling", "Seedance"], optional: true }
 ];
 const MEDIA_INPUT_MODEL_STAGES = new Set(["analysis", "reconstruction", "visualGuardrails", "characterReference"]);
 const SHOT_VIDEO_PROVIDER_LABELS = {
@@ -158,6 +158,9 @@ const MODEL_OPTION_CATALOG = {
   MiMo: {
     media: ["mimo-v2.5", "mimo-v2.5-pro"],
     text: ["mimo-v2.5", "mimo-v2.5-pro"]
+  },
+  DeepSeek: {
+    text: ["deepseek-v4-flash", "deepseek-v4-pro"]
   },
   Jimeng: {
     imageGeneration: ["doubao-seedream-5-0-260128", "seedream-5-0-lite-260128"]
@@ -2718,18 +2721,22 @@ function renderModelSettings() {
   elements.modelStageList.innerHTML = MODEL_STAGE_DEFS.map((stage) => {
     const current = effectiveStageSetting(stage.key);
     const defaultSetting = normalizeStageSetting(stage.key, state.modelStages[stage.key] || {});
+    const eligibleProviders = providers.filter((provider) => providerAllowedForStage(provider, stage.key));
     const providerOptions = stage.providers
       ? [...new Set([
           ...(current.provider === "VideoHTTP" || defaultSetting.provider === "VideoHTTP" ? ["VideoHTTP"] : []),
           ...stage.providers
         ])]
-      : (stage.providerLocked ? [current.provider || defaultSetting.provider].filter(Boolean) : providers);
+      : (stage.providerLocked ? [current.provider || defaultSetting.provider].filter(Boolean) : eligibleProviders);
     const selectedProvider = providerOptions.includes(current.provider) ? current.provider : providerOptions[0] || current.provider;
     const selectedModel = modelAllowedForStage(current.model, selectedProvider, stage.key)
       ? current.model
       : providerDefaultModel(selectedProvider, stage.key);
     return `<div class="model-stage-row" data-model-stage="${escape(stage.key)}">
-      <div class="model-stage-label"><strong>${escape(stage.label)}</strong><small>默认：${escape(modelDisplayLabel(defaultSetting.provider, defaultSetting.model))}<br>${escape(stage.hint)}</small></div>
+      <div class="model-stage-label">
+        <div class="model-stage-title"><strong>${escape(stage.label)}</strong><span class="model-capability-tag ${escape(stage.capabilityKind)}">${escape(stage.capability)}</span></div>
+        <small>默认：${escape(modelDisplayLabel(defaultSetting.provider, defaultSetting.model))}<br>${escape(stage.hint)}</small>
+      </div>
       <select data-model-provider="${escape(stage.key)}"${stage.providerLocked ? " disabled" : ""}>
         ${providerOptions.map((provider) => `<option value="${escape(provider)}"${provider === selectedProvider ? " selected" : ""}>${escape(provider)}</option>`).join("")}
       </select>
@@ -2846,7 +2853,7 @@ function normalizeStageSetting(stage, setting = {}) {
   return setting;
 }
 function availableModelProviders() {
-  const llmProviders = new Set(["Qwen", "MiMo"]);
+  const llmProviders = new Set(["Qwen", "MiMo", "DeepSeek"]);
   const configured = Object.entries(state.providers || {})
     .filter(([provider, value]) => llmProviders.has(provider) && value?.configured)
     .map(([provider]) => provider);
@@ -2854,7 +2861,7 @@ function availableModelProviders() {
     .filter((stage) => !stage.providerLocked)
     .map((stage) => state.modelStages?.[stage.key]?.provider)
     .filter((provider) => llmProviders.has(provider));
-  return [...new Set([...configured, ...fromStages, "Qwen", "MiMo"])];
+  return [...new Set([...configured, ...fromStages, "Qwen", "MiMo", "DeepSeek"])];
 }
 function renderModelOptions(stage, provider, selectedModel, defaultSetting = {}) {
   const options = modelOptionsForStage(stage, provider, selectedModel, defaultSetting);
@@ -2862,6 +2869,7 @@ function renderModelOptions(stage, provider, selectedModel, defaultSetting = {})
 }
 function modelOptionsForStage(stage, provider, selectedModel = "", defaultSetting = {}) {
   const key = typeof stage === "string" ? stage : stage.key;
+  if (!providerAllowedForStage(provider, key)) return [];
   const catalog = modelCatalogFor(provider, key);
   const providerModels = Array.isArray(state.providers?.[provider]?.modelIds) ? state.providers[provider].modelIds : [];
   const candidates = [
@@ -2888,11 +2896,15 @@ function providerDefaultModel(provider, stageKey) {
 }
 function modelAllowedForStage(model, provider, stageKey) {
   if (!model) return false;
+  if (!providerAllowedForStage(provider, stageKey)) return false;
   if (stageKey === "shotVideo") {
     return provider === "VideoHTTP" || modelCatalogFor(provider, stageKey).includes(model);
   }
   if (provider !== "Qwen" || !MEDIA_INPUT_MODEL_STAGES.has(stageKey)) return true;
   return !isKnownQwenTextOnlyModel(model) && /(?:plus|vl|omni)/iu.test(model);
+}
+function providerAllowedForStage(provider, stageKey) {
+  return !(provider === "DeepSeek" && MEDIA_INPUT_MODEL_STAGES.has(stageKey));
 }
 function uniqueModels(values = []) {
   const seen = new Set();

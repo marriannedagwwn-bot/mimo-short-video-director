@@ -4,7 +4,7 @@
 
 ## 启动
 
-要求 Node.js 20 或更高版本，无第三方依赖。
+要求 Node.js 24，`package.json` 明确限制为 `>=24 <25`。
 
 ```bash
 npm start
@@ -71,7 +71,26 @@ QWEN_ENABLE_THINKING=false
 
 配置 `QWEN_API_KEY` 后，只要 Qwen 可用，参考片分析、脚本还原、创意简报、视觉规则、主题变体、完整剧情、动画生产包和人物参考修正默认都会调用 Qwen 对应阶段模型；未配置 Qwen 时自动回退为 MiMo。`qwen3.7-max` 是纯文本阶段的默认选择；会传入视频或图片的参考片分析、脚本还原、视觉规则和人物参考修正默认使用 `qwen3.7-plus`，也可以改成账号可用的 Qwen-VL / Qwen-Omni 模型。页面顶部“模型设置”按钮可以按阶段临时切换 provider 和模型名，覆盖值会随之后所有生成请求发送给后端，也会写入导出的生产包。角色和首尾帧图片仍由已配置的即梦图片服务生成；选中首尾帧后可在页面选择 Kling 或 Seedance 生成单镜头候选视频。
 
-动画逐镜 batch 在结构修复之后会经过独立的 Static Frame Compiler，把“准备、即将、正在”等剧情叙事语言转换为单帧可直接观察的姿态、手部与道具状态和动作结果。该阶段复用已配置的 Qwen 或 MiMo 客户端与凭据，但 provider/model 不继承动画规划阶段，也不会静默回退：
+## 接入 DeepSeek-V4 纯文本模型
+
+DeepSeek 只作为显式可选的纯文本 provider，不会因为配置了 API Key 就自动接管 Qwen/MiMo 的默认阶段路由。页面“模型设置”只会在创意简报、主题变体、Legacy Full Story、Animation Plan 和 Static Frame Compiler 中提供 DeepSeek；参考片分析、脚本还原、视觉规则和人物图修正仍必须使用支持图片或视频输入的 Qwen/MiMo。前端隐藏不兼容选项，服务端也会在调用 provider 前明确拒绝媒体阶段绕过请求。
+
+```dotenv
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_API_KEY=你的 DeepSeek key
+DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_MAX_COMPLETION_TOKENS=16384
+DEEPSEEK_REQUEST_TIMEOUT_MS=900000
+DEEPSEEK_JSON_RETRY_ATTEMPTS=2
+DEEPSEEK_THINKING=disabled
+DEEPSEEK_TEMPERATURE=1
+DEEPSEEK_TOP_P=1
+DEEPSEEK_JSON_MODE=true
+```
+
+可选模型为 `deepseek-v4-flash` 和 `deepseek-v4-pro`，页面默认把 Flash 放在首位，Pro 保留为显式对照选择，不做静默回退。客户端使用官方 OpenAI 兼容 `/chat/completions` 与 JSON Output；空内容、非法 JSON、鉴权失败和媒体输入都会明确失败或按既有受控次数重试，不会返回默认值掩盖错误。接口依据：[DeepSeek V4 模型与价格](https://api-docs.deepseek.com/quick_start/pricing)、[Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/) 和 [JSON Output](https://api-docs.deepseek.com/guides/json_mode/)。模型设置中的阶段标题会显示“视觉模型”或“文本模型”标签，图片和视频生成阶段保留独立标签。
+
+动画逐镜 batch 在结构修复之后会经过独立的 Static Frame Compiler，把“准备、即将、正在”等剧情叙事语言转换为单帧可直接观察的姿态、手部与道具状态和动作结果。该阶段复用已配置的 Qwen、MiMo 或 DeepSeek 客户端与凭据，但 provider/model 不继承动画规划阶段，也不会静默回退：
 
 ```dotenv
 STATIC_FRAME_COMPILER_PROVIDER=Qwen
@@ -80,9 +99,9 @@ STATIC_FRAME_COMPILER_MAX_COMPLETION_TOKENS=4096
 STATIC_FRAME_COMPILER_TIMEOUT_MS=300000
 ```
 
-`STATIC_FRAME_COMPILER_PROVIDER` 仅支持 `Qwen` 或 `MiMo`，对应 provider 必须已经配置可用。配置缺失或模型不可用时，健康检查和动画生产包接口会明确报告 Static Frame Compiler 不可用。
+`STATIC_FRAME_COMPILER_PROVIDER` 仅支持 `Qwen`、`MiMo` 或 `DeepSeek`，对应 provider 必须已经配置可用。配置缺失或模型不可用时，健康检查和动画生产包接口会明确报告 Static Frame Compiler 不可用。
 
-Qwen 和 MiMo 的单次生成请求默认都允许等待 15 分钟，分别由 `QWEN_REQUEST_TIMEOUT_MS=900000` 和 `MIMO_REQUEST_TIMEOUT_MS=900000` 控制。`SERVER_REQUEST_TIMEOUT_MS=900000` 同步限制服务端接收请求体的时间；它不替代模型请求超时设置。
+Qwen、MiMo 和 DeepSeek 的单次生成请求默认都允许等待 15 分钟，分别由 `QWEN_REQUEST_TIMEOUT_MS=900000`、`MIMO_REQUEST_TIMEOUT_MS=900000` 和 `DEEPSEEK_REQUEST_TIMEOUT_MS=900000` 控制。`SERVER_REQUEST_TIMEOUT_MS=900000` 同步限制服务端接收请求体的时间；它不替代模型请求超时设置。
 
 Qwen 视频解析遵循阿里云百炼 OpenAI 兼容 Chat Completions 的多模态格式：小视频优先以 `video_url` 发送 Base64 Data URL，大于 `QWEN_NATIVE_VIDEO_MAX_MB` 或 `QWEN_MEDIA_MODE=frames` 时改用关键帧图片列表 `video`。阿里云文档说明 `video_url` 支持公网 URL 或 Base64 Data URL，`fps` 可控制抽帧频率；同时 Base64 视频编码后需小于 10MB，所以默认把原始视频上限设为 7MB。Qwen-VL 只能理解视频视觉信息；如果需要理解视频里的音频，需要选择支持音频的 Qwen-Omni 模型。接口依据：[MiMo V2.5 模型说明](https://mimo.mi.com/docs/en-US/product/introduction/models#MiMo-V25)、[MiMo OpenAI API](https://mimo.mi.com/docs/en-US/api/chat/openai-api)、[MiMo 视频理解文档](https://mimo.mi.com/docs/en-US/use-cases/video-understanding)、[阿里云百炼 OpenAI Chat 兼容文档](https://www.alibabacloud.com/help/zh/model-studio/qwen-api-via-openai-chat-completions) 和 [阿里云图像与视频理解文档](https://help.aliyun.com/zh/model-studio/vision)。
 
@@ -165,6 +184,8 @@ VIDEO_HTTP_POLL_TIMEOUT_MS=600000
 - `public/`：上传、浏览器抽帧、角色配置、结果展示与 JSON 导出。
 - `src/prompts.js`：各导演阶段的提示词和结构化输出契约。
 - `src/mimo-client.js`：MiMo OpenAI 兼容适配器。
+- `src/qwen-client.js`：Qwen OpenAI 兼容多模态适配器。
+- `src/deepseek-client.js`：DeepSeek-V4 OpenAI 兼容纯文本适配器。
 - `src/workflow.js`：完整创意工作流编排，以及“动画基础锁定 → 逐场次分批 shotPlan → 服务端合并”的动画生产包生成与验证。
 - `src/shot-video-generator.js`：将当前 shot 的已选首尾帧、`videoPrompt` 和逐镜视频负面词路由到所选视频 provider。
 - `src/shot-video-providers.js`：Kling / Seedance 模型白名单、默认选择及互相隔离的运行配置。

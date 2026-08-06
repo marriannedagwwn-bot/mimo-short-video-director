@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { loadEnv, getConfig } from "./src/config.js";
 import { MimoClient } from "./src/mimo-client.js";
 import { QwenClient } from "./src/qwen-client.js";
+import { DeepSeekClient } from "./src/deepseek-client.js";
 import { JimengImageClient, JimengImageConfigError, JimengImageProviderError, buildCharacterReferenceImagePrompt, buildShotFrameImagePrompt } from "./src/jimeng-client.js";
 import { buildFrameReferenceModeText, compileShotFrameNegativePrompt } from "./public/shot-frame-prompt.js";
 import { buildFrameReferenceManifest } from "./public/shot-reference-images.js";
@@ -41,10 +42,11 @@ loadEnv();
 const config = getConfig();
 const mimoClient = config.mimo.enabled ? new MimoClient(config.mimo) : null;
 const qwenClient = config.qwen.enabled ? new QwenClient(config.qwen) : null;
+const deepseekClient = config.deepseek.enabled ? new DeepSeekClient(config.deepseek) : null;
 const jimengClient = config.jimeng.enabled ? new JimengImageClient(config.jimeng) : null;
 const stageDefaults = buildStageDefaults(config, { mimoClient, qwenClient });
 const modelStages = buildModelStages(stageDefaults, config);
-const clients = { MiMo: mimoClient, Qwen: qwenClient };
+const clients = { MiMo: mimoClient, Qwen: qwenClient, DeepSeek: deepseekClient };
 const attemptStore = new AttemptStore();
 const workflow = new WorkflowService({
   clients,
@@ -146,6 +148,7 @@ const server = http.createServer(async (request, response) => {
           serverRequestMs: config.serverRequestTimeoutMs,
           qwenGenerationMs: config.qwen.requestTimeoutMs,
           mimoGenerationMs: config.mimo.requestTimeoutMs,
+          deepseekGenerationMs: config.deepseek.requestTimeoutMs,
           staticFrameCompilerMs: config.staticFrameCompiler.requestTimeoutMs
         }
       });
@@ -192,7 +195,7 @@ server.requestTimeout = config.serverRequestTimeoutMs;
 server.listen(config.port, () => {
   console.log(`AI 短视频导演：http://localhost:${config.port}`);
   console.log(`运行模式：${workflow.mode === "live" ? `${stageDefaults.analysis.provider} (${stageDefaults.analysis.model}) / 剧情 ${stageDefaults.fullStory.provider} ${stageDefaults.fullStory.model} / 动画 ${stageDefaults.animationPlan.provider} ${stageDefaults.animationPlan.model} / 静态帧编译 ${stageDefaults.staticFrameCompiler.provider || "未配置"} ${stageDefaults.staticFrameCompiler.model || ""}` : "演示数据（配置 .env 后接入模型服务）"}`);
-  console.log(`生成请求超时：${Math.round(config.qwen.requestTimeoutMs / 60000)} 分钟（Qwen）/ ${Math.round(config.mimo.requestTimeoutMs / 60000)} 分钟（MiMo）`);
+  console.log(`生成请求超时：${Math.round(config.qwen.requestTimeoutMs / 60000)} 分钟（Qwen）/ ${Math.round(config.mimo.requestTimeoutMs / 60000)} 分钟（MiMo）/ ${Math.round(config.deepseek.requestTimeoutMs / 60000)} 分钟（DeepSeek）`);
 });
 
 function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {}) {
@@ -300,7 +303,8 @@ function stageSetting(provider, model, maxCompletionTokens, requestTimeoutMs = n
 async function healthByProvider(clients, config) {
   const entries = await Promise.all(Object.entries({
     MiMo: { client: clients.MiMo, model: config.mimo.model, media: mediaSettingsForProvider("MiMo", config) },
-    Qwen: { client: clients.Qwen, model: config.qwen.model, media: mediaSettingsForProvider("Qwen", config) }
+    Qwen: { client: clients.Qwen, model: config.qwen.model, media: mediaSettingsForProvider("Qwen", config) },
+    DeepSeek: { client: clients.DeepSeek, model: config.deepseek.model, media: mediaSettingsForProvider("DeepSeek", config) }
   }).map(async ([provider, value]) => {
     const health = value.client
       ? await value.client.checkHealth(value.model)
@@ -311,7 +315,8 @@ async function healthByProvider(clients, config) {
       ...value.media,
       reachable: health.reachable,
       modelAvailable: health.modelAvailable,
-      status: health.status
+      status: health.status,
+      modelIds: Array.isArray(health.modelIds) ? health.modelIds : []
     }];
   }));
   const shotVideoProviders = shotVideoProviderCatalog();
@@ -368,6 +373,13 @@ function compactHealth(health = {}) {
 }
 
 function mediaSettingsForProvider(provider, config) {
+  if (provider === "DeepSeek") {
+    return {
+      mediaMode: "text-only",
+      nativeVideoMaxBytes: 0,
+      videoFps: 0
+    };
+  }
   if (provider === "Qwen") {
     return {
       mediaMode: config.qwen.mediaMode,

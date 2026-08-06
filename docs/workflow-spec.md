@@ -102,7 +102,7 @@ flowchart LR
 - `experienceFidelity` 与 `transformationProof`：继续证明同定位、同受众、同情绪、同类驱动力、同款高价值桥段，同时重写具体表达。
 - `continuityAndSafetyCheck`：确认固定角色没有被原片表面身份污染，也没有复用 protectedExpressions。
 
-完整剧情阶段可单独切换文本模型：配置 `QWEN_API_KEY` 后调用 `QWEN_STORY_MODEL=qwen3.7-max`；未配置 Qwen 时回退 `MIMO_STORY_MODEL=mimo-v2.5-pro`。其余四阶段默认仍用 `MIMO_MODEL=mimo-v2.5`。
+完整剧情阶段可单独切换文本模型：默认路由由现有 Qwen/MiMo 配置决定；配置 `DEEPSEEK_API_KEY` 后，页面可以显式选择 `deepseek-v4-flash` 或 `deepseek-v4-pro`。DeepSeek 不自动接管默认路由，不允许用于任何带图片或视频输入的阶段。
 
 ### 阶段七：animationPlan
 
@@ -161,8 +161,9 @@ flowchart LR
 - 浏览器从本地视频均匀采样 6–10 张关键帧，最长边压缩到 720px；在 MiMo `auto/video` 模式且文件大小允许时，同时用 base64 `video_url` 发送原生视频。应用不持久化视频。
 - `auto` 模式下，推理服务不接受原生视频时自动回退关键帧；超出大小限制时直接走关键帧。
 - MiMo 多模态视觉输入必须在文本指令之前；用户消息末尾保留 `/no_think`，请求体同时设置 `thinking={"type":"disabled"}`。
-- 默认四阶段使用 `mimo-v2.5`。完整剧情阶段和动画生产包阶段优先使用 `QWEN_STORY_MODEL` / `QWEN_ANIMATION_MODEL`，默认 `qwen3.7-max`；未配置 Qwen 时使用 `MIMO_STORY_MODEL` / `MIMO_ANIMATION_MODEL`。基础推理参数 `temperature=0.3`、`top_p=0.95`、`stream=false`；MiMo 四阶段默认 `max_completion_tokens=8192`，Qwen 文本阶段默认 `max_tokens=16384`。
-- 当前实现通过小米 OpenAI 兼容 `/chat/completions` 接口连接 MiMo V2.5；原生视频使用 `video_url`，并携带 `fps=2`、`media_resolution=default`。Qwen 通过阿里云 Model Studio OpenAI 兼容 `/chat/completions` 文本接口生成完整剧情和动画生产包。未配置服务时使用明确标注的演示模式。
+- 默认阶段路由保持 Qwen 优先、MiMo 回退。DeepSeek 只在页面按阶段显式选择后参与创意简报、主题变体、Legacy Full Story、Animation Plan 或 Static Frame Compiler；默认模型为 `deepseek-v4-flash`，`deepseek-v4-pro` 为显式可选项，不静默回退。
+- DeepSeek 请求只发送字符串文本，使用官方 OpenAI 兼容 `/chat/completions`、`max_tokens`、`thinking` 和 JSON Output。参考片分析、脚本还原、视觉规则、人物图修正属于媒体输入阶段，前端不提供 DeepSeek，服务端也会在 provider 调用前拒绝绕过请求。
+- 当前实现通过小米 OpenAI 兼容 `/chat/completions` 接口连接 MiMo V2.5；原生视频使用 `video_url`，并携带 `fps=2`、`media_resolution=default`。Qwen 通过阿里云 Model Studio OpenAI 兼容 `/chat/completions` 接收文本、图片或视频。未配置服务时使用明确标注的演示模式。
 
 ## 4. 当前边界
 

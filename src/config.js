@@ -66,6 +66,16 @@ export function getConfig() {
   const qwenRequestTimeoutMs = Math.round(clampNumber(process.env.QWEN_REQUEST_TIMEOUT_MS, 900000, 30000, 900000));
   const qwenEnableThinkingValue = process.env.QWEN_ENABLE_THINKING?.trim().toLowerCase();
   const qwenEnableThinking = qwenEnableThinkingValue === "true" ? true : qwenEnableThinkingValue === "false" ? false : false;
+  const deepseekBaseUrl = process.env.DEEPSEEK_BASE_URL?.trim() || "https://api.deepseek.com";
+  const deepseekApiKey = process.env.DEEPSEEK_API_KEY?.trim() || "";
+  const deepseekModel = process.env.DEEPSEEK_MODEL?.trim() || "deepseek-v4-flash";
+  const deepseekMaxCompletionTokens = Math.round(clampNumber(process.env.DEEPSEEK_MAX_COMPLETION_TOKENS, 16384, 1024, 65536));
+  const deepseekJsonRetryAttempts = Math.round(clampNumber(process.env.DEEPSEEK_JSON_RETRY_ATTEMPTS, 2, 0, 3));
+  const deepseekRequestTimeoutMs = Math.round(clampNumber(process.env.DEEPSEEK_REQUEST_TIMEOUT_MS, 900000, 30000, 900000));
+  const requestedDeepseekThinking = process.env.DEEPSEEK_THINKING?.trim().toLowerCase() || "disabled";
+  const deepseekThinking = ["disabled", "enabled"].includes(requestedDeepseekThinking) ? requestedDeepseekThinking : "disabled";
+  const deepseekTemperature = clampNumber(process.env.DEEPSEEK_TEMPERATURE, 1, 0, 2);
+  const deepseekTopP = clampNumber(process.env.DEEPSEEK_TOP_P, 1, 0, 1);
   const staticFrameCompilerProvider = normalizeCompilerProvider(process.env.STATIC_FRAME_COMPILER_PROVIDER);
   const staticFrameCompilerModel = process.env.STATIC_FRAME_COMPILER_MODEL?.trim() || "";
   const staticFrameCompilerMaxCompletionTokens = Math.round(clampNumber(
@@ -152,6 +162,19 @@ export function getConfig() {
       totalPixels: qwenTotalPixels,
       enabled: Boolean(qwenBaseUrl && (process.env.QWEN_API_KEY?.trim() || process.env.DASHSCOPE_API_KEY?.trim()))
     },
+    deepseek: {
+      baseUrl: deepseekBaseUrl,
+      apiKey: deepseekApiKey,
+      model: deepseekModel,
+      maxCompletionTokens: deepseekMaxCompletionTokens,
+      jsonRetryAttempts: deepseekJsonRetryAttempts,
+      requestTimeoutMs: deepseekRequestTimeoutMs,
+      thinking: deepseekThinking,
+      temperature: deepseekTemperature,
+      topP: deepseekTopP,
+      jsonMode: process.env.DEEPSEEK_JSON_MODE !== "false",
+      enabled: Boolean(deepseekBaseUrl && deepseekApiKey)
+    },
     staticFrameCompiler: {
       provider: staticFrameCompilerProvider,
       model: staticFrameCompilerModel,
@@ -209,5 +232,6 @@ function normalizeCompilerProvider(value) {
   const provider = String(value || "").trim();
   if (provider.toLowerCase() === "qwen") return "Qwen";
   if (provider.toLowerCase() === "mimo") return "MiMo";
+  if (provider.toLowerCase() === "deepseek") return "DeepSeek";
   return provider;
 }

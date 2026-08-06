@@ -271,6 +271,9 @@ export class WorkflowService {
 
   async generateStageJson(stage, input, options) {
     const settings = this.resolveStage(stage, input);
+    if (requiresMediaModel(stage) && settings.provider === "DeepSeek") {
+      throw new InputError(`${stageLabel(stage)}需要图片或视频输入，DeepSeek-V4 仅允许用于纯文本阶段`);
+    }
     this.assertStageClient(settings, stageLabel(stage));
     return this.generateValidatedJson({
       ...options,
@@ -1655,6 +1658,7 @@ function canonicalProvider(provider = "") {
   if (!value) return "";
   if (/qwen|千问|通义/iu.test(value)) return "Qwen";
   if (/mimo|小米/iu.test(value)) return "MiMo";
+  if (/deepseek|深度求索/iu.test(value)) return "DeepSeek";
   return value;
 }
 
@@ -1692,7 +1696,7 @@ function assertStaticFrameCompilerSettings(settings = {}) {
   if (!settings.provider) {
     throw new InputError("Static Frame Compiler 未配置 provider；请设置 STATIC_FRAME_COMPILER_PROVIDER");
   }
-  if (!["Qwen", "MiMo"].includes(settings.provider)) {
+  if (!["Qwen", "MiMo", "DeepSeek"].includes(settings.provider)) {
     throw new InputError(`Static Frame Compiler provider 无效：${settings.provider}`);
   }
   if (!settings.model) {

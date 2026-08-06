@@ -59,6 +59,33 @@ Video Generation
 
 ---
 
+## 当前模型 provider 边界
+
+工作流 LLM provider 包括：
+
+- Qwen
+- MiMo
+- DeepSeek
+
+DeepSeek 当前只允许用于纯文本阶段：
+
+- Brief
+- Variants
+- Legacy Full Story
+- Animation Plan
+- Static Frame Compiler
+
+禁止将 DeepSeek 用于需要图片或视频输入的阶段：
+
+- Analyze
+- Reconstruct
+- Visual Guardrails
+- Character Reference
+
+当前 DeepSeek 模型 ID 只登记 `deepseek-v4-flash` 和 `deepseek-v4-pro`。Flash 是页面首选项，Pro 只能显式选择；不得静默切换 provider/model。配置 `DEEPSEEK_API_KEY` 不改变现有 Qwen/MiMo 默认路由。
+
+---
+
 # 2. Full Story 架构说明
 
 ## 当前存在

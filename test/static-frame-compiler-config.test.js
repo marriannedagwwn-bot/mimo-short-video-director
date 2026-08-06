@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { getConfig } from "../src/config.js";
 import { MimoClient, ModelResponseError } from "../src/mimo-client.js";
 import { QwenClient } from "../src/qwen-client.js";
+import { DeepSeekClient } from "../src/deepseek-client.js";
 
 const COMPILER_ENV_KEYS = [
   "STATIC_FRAME_COMPILER_PROVIDER",
@@ -70,10 +71,17 @@ test("Static Frame Compiler 显式配置被规范化并保持独立模型参数"
     assert.equal(mimoConfig.staticFrameCompiler.provider, "MiMo");
     assert.equal(mimoConfig.staticFrameCompiler.model, "mimo-compiler-only");
     assert.equal(mimoConfig.staticFrameCompiler.configured, true);
+
+    process.env.STATIC_FRAME_COMPILER_PROVIDER = "deepseek";
+    process.env.STATIC_FRAME_COMPILER_MODEL = "deepseek-v4-flash";
+    const deepseekConfig = getConfig();
+    assert.equal(deepseekConfig.staticFrameCompiler.provider, "DeepSeek");
+    assert.equal(deepseekConfig.staticFrameCompiler.model, "deepseek-v4-flash");
+    assert.equal(deepseekConfig.staticFrameCompiler.configured, true);
   });
 });
 
-test("Qwen 与 MiMo 显式禁用 JSON 内容重试，并使用单次请求的 timeout 覆盖", async () => {
+test("Qwen、MiMo 与 DeepSeek 显式禁用 JSON 内容重试，并使用单次请求的 timeout 覆盖", async () => {
   const originalFetch = globalThis.fetch;
   const originalTimeout = AbortSignal.timeout;
   const fetchCalls = [];
@@ -124,7 +132,18 @@ test("Qwen 与 MiMo 显式禁用 JSON 内容重试，并使用单次请求的 ti
       (error) => error instanceof ModelResponseError && /MiMo 未返回严格 JSON/u.test(error.message)
     );
     assert.equal(fetchCalls.length, 2);
-    assert.deepEqual(observedTimeouts, [61_111, 72_222]);
+
+    await assert.rejects(
+      new DeepSeekClient(sharedConfig).generateJson({
+        prompt: "只返回 JSON",
+        requestTimeoutMs: 83_333,
+        jsonRetryAttempts: 0,
+        strictJson: true
+      }),
+      (error) => error instanceof ModelResponseError && /DeepSeek 未返回严格 JSON/u.test(error.message)
+    );
+    assert.equal(fetchCalls.length, 3);
+    assert.deepEqual(observedTimeouts, [61_111, 72_222, 83_333]);
   } finally {
     globalThis.fetch = originalFetch;
     AbortSignal.timeout = originalTimeout;
