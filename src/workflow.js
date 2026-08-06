@@ -915,7 +915,9 @@ function normalizeStringArray(value, fallback = []) {
 }
 
 function validateAnimationPlanOutput(result, input = {}) {
-  const primaryCharacterName = resolveExplicitAnimationPrimaryCharacterName(input, result);
+  const primaryCharacterName = resolveExplicitAnimationPrimaryCharacterName(input, result, {
+    path: "animationPlan"
+  });
   ensureOutputContract(
     createAnimationEmotionValidationProjection(result, primaryCharacterName),
     "animationPlan"
@@ -940,6 +942,9 @@ function validateAnimationPlanOutput(result, input = {}) {
 function validateAnimationFoundationOutput(result, input = {}) {
   const sourceSceneIds = (input.fullStory?.sceneScript || []).map((scene) => scene?.sceneId);
   const foundation = ensureAnimationFoundationContract(result, { sourceSceneIds });
+  resolveExplicitAnimationPrimaryCharacterName(input, foundation, {
+    path: "animationFoundation"
+  });
   const checked = ensureAnimationPlanMatchesProfile(
     { ...foundation, shotPlan: [] },
     input.creatorProfile,
@@ -1035,13 +1040,35 @@ function validateAnimationShotBatchOutput(result, {
   return { shotPlan: checked.shotPlan.slice(previousCount) };
 }
 
-function resolveExplicitAnimationPrimaryCharacterName(input = {}, foundation = {}) {
+function resolveExplicitAnimationPrimaryCharacterName(input = {}, foundation = {}, {
+  path = "animationFoundation"
+} = {}) {
   const primaryCharacterName = String(input?.fullStory?.characterBible?.protagonist?.name || "").trim();
   if (!primaryCharacterName) return "";
-  const matchingReferences = (foundation?.characterReferencePrompts || []).filter(
+  const characterReferences = Array.isArray(foundation?.characterReferencePrompts)
+    ? foundation.characterReferencePrompts
+    : [];
+  const matchingReferences = characterReferences.filter(
     (reference) => String(reference?.characterName || "").trim() === primaryCharacterName
   );
-  return matchingReferences.length === 1 ? primaryCharacterName : "";
+  if (matchingReferences.length !== 1) {
+    const referencePath = `${path}.characterReferencePrompts`;
+    const actualCharacterNames = characterReferences.map(
+      (reference) => String(reference?.characterName || "").trim()
+    );
+    throw new OutputContractError(
+      `${referencePath} 中全剧主角「${primaryCharacterName}」必须以 characterName 精确出现一次，实际 ${matchingReferences.length} 次`,
+      [{
+        code: "ANIMATION_PRIMARY_CHARACTER_REFERENCE_MATCH_FAILURE",
+        path: referencePath,
+        reason: `全剧主角「${primaryCharacterName}」的角色参考必须唯一且使用标准姓名`,
+        expectedPrimaryCharacterName: primaryCharacterName,
+        exactMatchCount: matchingReferences.length,
+        actualCharacterNames
+      }]
+    );
+  }
+  return primaryCharacterName;
 }
 
 function createAnimationEmotionValidationProjection(value, primaryCharacterName, {
@@ -1051,107 +1078,170 @@ function createAnimationEmotionValidationProjection(value, primaryCharacterName,
   sourceSceneIds = []
 } = {}) {
   const projected = structuredClone(value);
-  if (!primaryCharacterName || !isPlainObject(projected) || !Array.isArray(projected.shotPlan)) {
+  if (!isPlainObject(projected) || !Array.isArray(projected.shotPlan)) {
     return projected;
   }
 
+  let canonicalProtagonistAppearanceCount = 0;
   projected.shotPlan.forEach((shot, shotIndex) => {
     if (!isPlainObject(shot?.motion?.emotionArc)) return;
     const startCharacters = Array.isArray(shot?.startFrame?.characters) ? shot.startFrame.characters : null;
     const endCharacters = Array.isArray(shot?.endFrame?.characters) ? shot.endFrame.characters : null;
     if (!startCharacters || !endCharacters) return;
+
+    if (primaryCharacterName) {
+      const canonicalDiagnostics = ["startFrame", "endFrame"].map((frameKind) => (
+        animationPrimaryCharacterFrameDiagnostic({
+          characters: frameKind === "startFrame" ? startCharacters : endCharacters,
+          frameKind,
+          path,
+          shotIndex,
+          primaryCharacterName,
+          roleLabel: "全剧主角"
+        })
+      ));
+      const invalidCanonicalDiagnostics = canonicalDiagnostics.filter((diagnostic) => (
+        diagnostic.category === "duplicate" || diagnostic.category === "inexact"
+      ));
+      canonicalProtagonistAppearanceCount += canonicalDiagnostics.reduce(
+        (count, diagnostic) => count + diagnostic.exactMatchCount,
+        0
+      );
+      if (invalidCanonicalDiagnostics.length > 0) {
+        throw animationCharacterMatchError({
+          shot,
+          shotIndex,
+          path,
+          batchIndex,
+          sourceSceneIds,
+          expectedName: primaryCharacterName,
+          expectationLabel: "标准主角",
+          failureLabel: "主角身份精确匹配失败",
+          code: "ANIMATION_PRIMARY_CHARACTER_MATCH_FAILURE",
+          diagnostics: invalidCanonicalDiagnostics
+        });
+      }
+    }
+
+    const shotPrimaryCharacterName = String(startCharacters[0]?.name || "").trim();
+    if (!shotPrimaryCharacterName) return;
     const startDiagnostic = animationPrimaryCharacterFrameDiagnostic({
       characters: startCharacters,
       frameKind: "startFrame",
       path,
       shotIndex,
-      primaryCharacterName
+      primaryCharacterName: shotPrimaryCharacterName,
+      roleLabel: "镜头主角色"
     });
     const endDiagnostic = animationPrimaryCharacterFrameDiagnostic({
       characters: endCharacters,
       frameKind: "endFrame",
       path,
       shotIndex,
-      primaryCharacterName
+      primaryCharacterName: shotPrimaryCharacterName,
+      roleLabel: "镜头主角色"
     });
     const startMatches = startDiagnostic.matches;
     const endMatches = endDiagnostic.matches;
     const motionPath = `${path}.shotPlan[${shotIndex}].motion`;
     if (startMatches.length !== 1 || endMatches.length !== 1) {
-      const shotId = String(shot?.shotId || "").trim();
-      const sourceSceneId = String(shot?.sourceSceneId || "").trim();
-      const batchNumber = Number.isInteger(batchIndex) ? batchIndex + 1 : null;
-      const normalizedSourceSceneIds = (Array.isArray(sourceSceneIds) ? sourceSceneIds : [])
-        .map((sceneId) => String(sceneId || "").trim())
-        .filter(Boolean);
       const invalidDiagnostics = [startDiagnostic, endDiagnostic].filter(
         (diagnostic) => diagnostic.exactMatchCount !== 1
       );
-      const frameSummary = [startDiagnostic, endDiagnostic].map((diagnostic) => (
-        `${diagnostic.path} 实际角色：${JSON.stringify(diagnostic.actualCharacterNames)}，`
-        + `精确匹配数量：${diagnostic.exactMatchCount}，原因：${diagnostic.reason}`
-      )).join("；");
-      throw new OutputContractError(
-        `${path}.shotPlan[${shotIndex}] 主角唯一匹配失败；`
-        + `批次：${batchNumber || "未提供"}；shotId：${shotId || "未提供"}；`
-        + `sourceSceneId：${sourceSceneId || "未提供"}；`
-        + `sourceSceneIds：${JSON.stringify(normalizedSourceSceneIds)}；`
-        + `预期唯一主角：${primaryCharacterName}；${frameSummary}`,
-        invalidDiagnostics.map((diagnostic) => ({
-          code: "ANIMATION_PRIMARY_CHARACTER_MATCH_FAILURE",
-          path: diagnostic.path,
-          reason: diagnostic.reason,
-          batch: batchNumber,
-          shotIndex,
-          shotId,
-          sourceSceneId,
-          sourceSceneIds: normalizedSourceSceneIds,
-          expectedPrimaryCharacterName: primaryCharacterName,
-          actualCharacterNames: diagnostic.actualCharacterNames,
-          exactMatchCount: diagnostic.exactMatchCount,
-          category: diagnostic.category
-        }))
-      );
+      throw animationCharacterMatchError({
+        shot,
+        shotIndex,
+        path,
+        batchIndex,
+        sourceSceneIds,
+        expectedName: shotPrimaryCharacterName,
+        expectationLabel: "镜头主角色",
+        failureLabel: "镜头主角色唯一匹配失败",
+        code: "ANIMATION_SHOT_PRIMARY_CHARACTER_MATCH_FAILURE",
+        diagnostics: invalidDiagnostics
+      });
     }
     if (shot.motion.emotionArc.from !== startMatches[0].emotionState) {
       throw new OutputContractError(
-        `${motionPath}.emotionArc.from 必须等于明确主角「${primaryCharacterName}」的 startFrame emotionState`
+        `${motionPath}.emotionArc.from 必须等于镜头主角色「${shotPrimaryCharacterName}」的 startFrame emotionState`
       );
     }
     if (shot.motion.emotionArc.to !== endMatches[0].emotionState) {
       throw new OutputContractError(
-        `${motionPath}.emotionArc.to 必须等于明确主角「${primaryCharacterName}」的 endFrame emotionState`
+        `${motionPath}.emotionArc.to 必须等于镜头主角色「${shotPrimaryCharacterName}」的 endFrame emotionState`
       );
     }
 
-    // validation.js still checks characters[0]. This private projection keeps
-    // the real candidate/order untouched while adapting only that legacy check.
-    const legacyStartCharacter = startCharacters[0];
-    let legacyEndCharacter = endCharacters.find(
-      (character) => character?.name === legacyStartCharacter?.name
-    );
-    if (
-      shot.motion.mode !== "loop"
-      && isPlainObject(legacyStartCharacter)
-      && !legacyEndCharacter
-    ) {
-      legacyEndCharacter = structuredClone(legacyStartCharacter);
-      endCharacters.push(legacyEndCharacter);
-    }
-    if (legacyStartCharacter && legacyEndCharacter) {
-      shot.motion.emotionArc.from = legacyStartCharacter.emotionState;
-      shot.motion.emotionArc.to = legacyEndCharacter.emotionState;
-      if (compileAliases && hasCompilableStructuredAnimationPromptSource(shot)) {
-        try {
-          Object.assign(shot, compileAnimationShotPrompts(shot));
-        } catch (error) {
-          if (!(error instanceof AnimationPromptCompilerError)) throw error;
-          throw new OutputContractError(error.message);
-        }
+    if (compileAliases && hasCompilableStructuredAnimationPromptSource(shot)) {
+      try {
+        Object.assign(shot, compileAnimationShotPrompts(shot));
+      } catch (error) {
+        if (!(error instanceof AnimationPromptCompilerError)) throw error;
+        throw new OutputContractError(error.message);
       }
     }
   });
+  if (
+    primaryCharacterName
+    && path === "animationPlan"
+    && projected.shotPlan.length > 0
+    && canonicalProtagonistAppearanceCount === 0
+  ) {
+    throw new OutputContractError(
+      `${path}.shotPlan 必须至少有一个镜头让全剧主角「${primaryCharacterName}」实际出镜`,
+      [{
+        code: "ANIMATION_PRIMARY_CHARACTER_MISSING_FROM_SHOT_PLAN",
+        path: `${path}.shotPlan`,
+        reason: `全剧主角「${primaryCharacterName}」不能只存在于 characterReferencePrompts，必须至少在一个真实镜头首帧或尾帧中出现`
+      }]
+    );
+  }
   return projected;
+}
+
+function animationCharacterMatchError({
+  shot,
+  shotIndex,
+  path,
+  batchIndex,
+  sourceSceneIds,
+  expectedName,
+  expectationLabel,
+  failureLabel,
+  code,
+  diagnostics
+}) {
+  const shotId = String(shot?.shotId || "").trim();
+  const sourceSceneId = String(shot?.sourceSceneId || "").trim();
+  const batchNumber = Number.isInteger(batchIndex) ? batchIndex + 1 : null;
+  const normalizedSourceSceneIds = (Array.isArray(sourceSceneIds) ? sourceSceneIds : [])
+    .map((sceneId) => String(sceneId || "").trim())
+    .filter(Boolean);
+  const frameSummary = diagnostics.map((diagnostic) => (
+    `${diagnostic.path} 实际角色：${JSON.stringify(diagnostic.actualCharacterNames)}，`
+    + `精确匹配数量：${diagnostic.exactMatchCount}，原因：${diagnostic.reason}`
+  )).join("；");
+  return new OutputContractError(
+    `${path}.shotPlan[${shotIndex}] ${failureLabel}；`
+    + `批次：${batchNumber || "未提供"}；shotId：${shotId || "未提供"}；`
+    + `sourceSceneId：${sourceSceneId || "未提供"}；`
+    + `sourceSceneIds：${JSON.stringify(normalizedSourceSceneIds)}；`
+    + `预期${expectationLabel}：${expectedName}；${frameSummary}`,
+    diagnostics.map((diagnostic) => ({
+      code,
+      path: diagnostic.path,
+      reason: diagnostic.reason,
+      batch: batchNumber,
+      shotIndex,
+      shotId,
+      sourceSceneId,
+      sourceSceneIds: normalizedSourceSceneIds,
+      expectedPrimaryCharacterName: expectedName,
+      actualCharacterNames: diagnostic.actualCharacterNames,
+      exactMatchCount: diagnostic.exactMatchCount,
+      category: diagnostic.category
+    }))
+  );
 }
 
 function animationPrimaryCharacterFrameDiagnostic({
@@ -1159,7 +1249,8 @@ function animationPrimaryCharacterFrameDiagnostic({
   frameKind,
   path,
   shotIndex,
-  primaryCharacterName
+  primaryCharacterName,
+  roleLabel = "主角"
 }) {
   const matches = characters.filter((character) => (
     isPlainObject(character)
@@ -1175,13 +1266,13 @@ function animationPrimaryCharacterFrameDiagnostic({
   let reason = "精确匹配";
   if (matches.length > 1) {
     category = "duplicate";
-    reason = "明确主角重复";
-  } else if (matches.length === 0 && inexactNames.length) {
+    reason = `${roleLabel}重复`;
+  } else if (inexactNames.length) {
     category = "inexact";
-    reason = `主角名称不精确：${JSON.stringify(inexactNames)}`;
+    reason = `${roleLabel}名称不精确：${JSON.stringify(inexactNames)}`;
   } else if (matches.length === 0) {
     category = "missing";
-    reason = "明确主角缺失";
+    reason = `${roleLabel}缺失`;
   }
   return {
     path: `${path}.shotPlan[${shotIndex}].${frameKind}.characters`,
@@ -1193,7 +1284,7 @@ function animationPrimaryCharacterFrameDiagnostic({
   };
 }
 
-function createAnimationShotBatchRepairContext({ input, foundation, shotIdStartIndex }) {
+function createAnimationShotBatchRepairContext({ foundation, shotIdStartIndex }) {
   const mappedSceneIds = new Map();
   for (const scene of foundation?.sceneReferencePrompts || []) {
     const sceneId = String(scene?.sceneId || "").trim();
@@ -1210,8 +1301,7 @@ function createAnimationShotBatchRepairContext({ input, foundation, shotIdStartI
 
   return Object.freeze({
     shotIdStartIndex: Number(shotIdStartIndex),
-    sceneIdBySourceScene: Object.freeze(sceneIdBySourceScene),
-    primaryCharacterName: resolveExplicitAnimationPrimaryCharacterName(input, foundation)
+    sceneIdBySourceScene: Object.freeze(sceneIdBySourceScene)
   });
 }
 
@@ -1227,7 +1317,6 @@ export function repairAnimationShotBatchStructure(candidate, immutableContext = 
 
   const sceneIdBySourceScene = new Map(immutableContext.sceneIdBySourceScene || []);
   const shotIdStartIndex = Number(immutableContext.shotIdStartIndex);
-  const primaryCharacterName = String(immutableContext.primaryCharacterName || "");
   return {
     ...repaired,
     shotPlan: repaired.shotPlan.map((shot, index) => {
@@ -1250,7 +1339,7 @@ export function repairAnimationShotBatchStructure(candidate, immutableContext = 
       if (isPlainObject(nextShot.motion)) {
         nextShot.motion.endStateRef = "endFrame";
         repairLockedAnimationCamera(nextShot);
-        repairAnimationEmotionArc(nextShot, primaryCharacterName);
+        repairAnimationEmotionArc(nextShot);
       }
 
       if (isPlainObject(nextShot.negativePrompts)) {
@@ -1308,16 +1397,18 @@ function hasExactCompleteAnimationCamera(camera) {
     && fields.every((field) => typeof camera[field] === "string" && camera[field].trim());
 }
 
-function repairAnimationEmotionArc(shot, primaryCharacterName) {
-  if (!primaryCharacterName || !isPlainObject(shot?.motion?.emotionArc)) return;
+function repairAnimationEmotionArc(shot) {
+  if (!isPlainObject(shot?.motion?.emotionArc)) return;
   const startCharacters = Array.isArray(shot?.startFrame?.characters) ? shot.startFrame.characters : [];
   const endCharacters = Array.isArray(shot?.endFrame?.characters) ? shot.endFrame.characters : [];
-  const matchesPrimary = (character) => (
+  const shotPrimaryCharacterName = String(startCharacters[0]?.name || "").trim();
+  if (!shotPrimaryCharacterName) return;
+  const matchesShotPrimary = (character) => (
     isPlainObject(character)
-    && String(character.name || "").trim() === primaryCharacterName
+    && String(character.name || "").trim() === shotPrimaryCharacterName
   );
-  const startMatches = startCharacters.filter(matchesPrimary);
-  const endMatches = endCharacters.filter(matchesPrimary);
+  const startMatches = startCharacters.filter(matchesShotPrimary);
+  const endMatches = endCharacters.filter(matchesShotPrimary);
   if (startMatches.length !== 1 || endMatches.length !== 1) return;
   const from = startMatches[0].emotionState;
   const to = endMatches[0].emotionState;
@@ -1966,7 +2057,10 @@ function actionStateAuditProtocolError(error) {
 
 function trustedAnimationPatchDetail(error, rawBatch) {
   const details = Array.isArray(error?.details) ? error.details : [];
-  if (details.some((detail) => detail?.code === "ANIMATION_PRIMARY_CHARACTER_MATCH_FAILURE")) {
+  if (details.some((detail) => [
+    "ANIMATION_PRIMARY_CHARACTER_MATCH_FAILURE",
+    "ANIMATION_SHOT_PRIMARY_CHARACTER_MATCH_FAILURE"
+  ].includes(detail?.code))) {
     return null;
   }
   if (details.length !== 1) return null;

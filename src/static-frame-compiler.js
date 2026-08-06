@@ -26,22 +26,18 @@ export {
   validateStaticFrameEvidenceEnvelope
 } from "./static-frame-grounding.js";
 
-export const STATIC_FRAME_COMPILER_VERSION = "2.0";
+export const STATIC_FRAME_COMPILER_VERSION = "3.0";
 export const STATIC_FRAME_COMPILER_REASON_CODES = Object.freeze([
   "static_frame_required",
-  "narrative_cognition",
-  "psychological_activity",
-  "future_intent",
-  "goal_stage",
-  "ambiguous_nonvisual",
-  "temporal_process"
+  "field_semantic_organization"
 ]);
 
-const SYSTEM_PROMPT = `你是 Static Frame Evidence Selector。
+const SYSTEM_PROMPT = `你是 Grounded Static Frame Field Organizer，专门整理单帧角色字段。
 
-你只能从服务端签发的不可变 Source Catalog 中选择 targetId、segmentId 和 spanId。
-你不能返回、改写或创造状态文本，也不能返回 path、offset、角色 ID、字段、维度、value、visibleFacts 或 delete。
-服务端将独立审核所选 evidence、生成 state slots、编译 canonical patch 并执行最终校验。
+你负责理解完整短语的语义，并把原文证据归入服务端允许的字段类别；参考文字只是非穷尽示例，绝不是关键词表。
+你只能从服务端签发的不可变 Source Catalog 中选择 targetId、segmentId、spanId、category 和冻结的 featureId。
+你不能返回、改写或创造状态文本，也不能返回 path、offset、角色 ID、字段、value、visibleFacts 或 delete。
+服务端只负责证据范围、角色、镜头、字段职责、Character Feature 绑定、非空和 patch 原子性校验，不会用本地中文词表替你做语义分类。
 只输出一个严格 JSON 对象，不要 Markdown，不要解释。`;
 
 export class StaticFrameCompilerError extends Error {
@@ -96,7 +92,7 @@ export class StaticFrameCompilerCandidateError extends StaticFrameCompilerError 
 }
 
 /**
- * Compile only service-grounded, model-selected evidence into static frame
+ * Organize only service-grounded, model-classified evidence into static frame
  * fields. The model never returns a patch or any free state text.
  */
 export async function compileStaticFrames({
@@ -141,7 +137,7 @@ export async function compileStaticFrames({
   if (targets.size === 0) {
     metadata.noOp = true;
     metadata.finalResult = "accepted";
-    metadata.skipReason = "NO_VIOLATING_TARGET";
+    metadata.skipReason = "NO_ORGANIZABLE_TARGET";
     return { compiledCandidate: sourceCandidate, metadata };
   }
 
@@ -169,7 +165,7 @@ export async function compileStaticFrames({
   if (targetWithoutCandidates) {
     throwCandidateError(
       "NO_STATIC_EVIDENCE_IN_SOURCE",
-      "Source Catalog 中没有可授权给 Evidence Selector 的静态证据候选",
+      "Source Catalog 中没有可授权给 Field Organizer 的原文证据候选",
       metadata,
       { targetId: targetWithoutCandidates, skipReason: "CATALOG_HAS_NO_AUTHORIZED_CANDIDATE" }
     );
@@ -420,30 +416,60 @@ export function buildStaticFrameCompilerPrompt(
   });
 }
 
+function strictOutputEnvelopeGuide(targetIds, { repairMode = null } = {}) {
+  const orderedTargetIds = [...targetIds];
+  const envelopeSkeleton = {
+    ...(repairMode ? { repairMode } : {}),
+    targets: orderedTargetIds.map((targetId) => ({
+      targetId,
+      evidenceSelections: []
+    }))
+  };
+
+  return `本次必须输出 ${orderedTargetIds.length} 个 targets。
+必需 targetId 的固定顺序：
+${JSON.stringify(orderedTargetIds)}
+
+严格 JSON 骨架（必须完整保留 targets 数组及每个 targetId；不得增删、改名或重排，只填写 evidenceSelections）：
+${JSON.stringify(envelopeSkeleton, null, 2)}
+
+输出前强制自检：
+- targets.length 必须等于 ${orderedTargetIds.length}。
+- 输出的 targetId 数组必须与上方固定顺序逐项完全一致。
+- 每个必需 targetId 必须恰好出现一次；不得遗漏、重复、新增、改名或跨 target 引用。
+- 骨架中的 evidenceSelections: [] 只是待填写位置，不是合法最终值；每个 target 都必须从自己的 Source Catalog 选择证据并填入。
+- 每个 target 只选择“最小充分证据”：若一个 source 或 clause span 已完整表达合法静态状态，只输出这一项，不得再重复选择与它重叠的 clause/word span；只有必须删除不合法成分时才拆为最少的有序 span。
+- 顶层、target 对象和 evidenceSelections 对象都不得添加输出协议以外的字段。
+- 最终回复的第一个字符必须是 {，最后一个字符必须是 }；输出紧凑 JSON，不要 Markdown 代码块、<think>、解释、清单、骨架说明或 Source Catalog。`;
+}
+
 function buildEvidenceSelectionPrompt({ targets, audit, characterFeatureProfile = null }) {
-  return `STATIC_FRAME_EVIDENCE_SELECTION_V2
+  return `STATIC_FRAME_FIELD_ORGANIZATION_V3
 
 任务：
-- 为每个服务端签发的 targetId，从它自己的不可变 Source Catalog 中选择可能独立表达单帧状态的 evidence。
-- 应尽量完整选择所有安全候选；允许少选，但绝对禁止创造输入中不存在的事实。
-- 只能引用下方展示的 targetId、segmentId、spanId。
+- 你是专门整理字段的 AI 工具。请理解完整短语，把剧本中的单帧可见事实整理进 target 指定的 pose 或 handPropState。
+- 从每个 target 自己的不可变 Source Catalog 选择原文 span，并为每组 span 标注 category。
+- 可以删除叙事、过程或意图成分，但不得改写、补写、反转否定、交换主体或创造输入中不存在的事实。
+- 只能引用下方展示的 targetId、segmentId、spanId、category 和冻结 featureId。
 
 输出协议（所有层级禁止额外字段）：
-{"targets":[{"targetId":"compile-target-...","evidenceSelections":[{"segmentId":"seg-...","spanIds":["span-..."]}]}]}
+{"targets":[{"targetId":"compile-target-...","evidenceSelections":[{"segmentId":"seg-...","spanIds":["span-..."],"category":"pose_body","featureId":null}]}]}
+
+${strictOutputEnvelopeGuide(targets.keys())}
 
 强约束：
 - 每个必需 targetId 恰好出现一次；不得遗漏、重复、新增或跨 target 引用。
-- 每个 target 最多 12 个 evidenceSelections；每项最多 4 个 spanId。
+- 每个 target 最多 12 个 evidenceSelections；每项最多 32 个 spanId。
 - 同一 selection 的 spanId 必须属于同一 segmentId。
-- 不得返回文本、path、offset、角色、字段、dimension、stateSlotId、value、visibleFacts、reasonCode、trigger 或 delete。
-- 叙事认知、心理、意图、未来、目标、过程、对白、音效不是单帧状态。
-- handPropState 的手—道具关系不能作为 bodyContact。
-- 你只负责选择；服务端负责完整语义审核、维度、组合、最终文本与 patch。
+- category 必须来自 target 的 allowedCategories；pose_character_feature 必须回传冻结 featureId，其他 category 的 featureId 必须为 null。
+- 不得返回文本、path、offset、角色、字段、stateSlotId、value、visibleFacts、reasonCode、trigger 或 delete。
+- 原字段已经正确时，也必须选择能完整保留其语义的原文 span；不得因为“看起来不用改”而返回空 selection。
+- 你负责语义判断；服务端只会做证据与结构校验并从已签发 span 确定性生成最终文本。
 
-服务端固定审核规则：
-${staticEvidencePolicyText()}
+字段语义说明（参考文字均为非穷尽示例，不是关键词表，禁止按 includes/命中与否机械分类）：
+${staticFieldOrganizerPolicyText()}
 
-冻结 Character Feature 词库（只读，不得回传或据此注入当前镜头）：
+冻结 Character Feature 字典（只允许 pose_character_feature 引用；字典不是当前镜头事实）：
 ${JSON.stringify(publicCharacterFeatureDictionary(characterFeatureProfile, targets))}
 
 服务端签发的 compile targets：
@@ -460,26 +486,26 @@ function buildEvidenceReselectionPrompt({
   characterFeatureProfile = null,
   diagnostics = []
 }) {
-  return `STATIC_FRAME_EVIDENCE_RESELECTION_V2
+  return `STATIC_FRAME_FIELD_REORGANIZATION_V3
 
-首次 envelope 合法，但首次 Evidence Selection 未形成可通过的 grounded combination。
-这是唯一一次 evidence_reselection，也是最后一次 protocol 调用。
+首次 envelope 合法，但首次字段整理未形成可通过证据与结构校验的 grounded combination。
+这是唯一一次 field_reorganization，也是最后一次 protocol 调用。
 
 输出协议（所有层级禁止额外字段）：
-{"repairMode":"evidence_reselection","targets":[{"targetId":"compile-target-...","evidenceSelections":[{"segmentId":"seg-...","spanIds":["span-..."]}]}]}
+{"repairMode":"evidence_reselection","targets":[{"targetId":"compile-target-...","evidenceSelections":[{"segmentId":"seg-...","spanIds":["span-..."],"category":"pose_body","featureId":null}]}]}
 
 强约束：
 - 只覆盖下方列出的 targetId，且每个恰好一次。
 - attempt-2 完整替代这些 target 的 attempt-1 selection，不隐式合并。
 - 只能从首次调用前已签发的不可变 Catalog ID 中重选。
-- 不得新增 Catalog、文本、角色、字段、offset、dimension、stateSlot、value 或 visibleFacts。
+- 不得新增 Catalog、文本、角色、字段、offset、stateSlot、value 或 visibleFacts。
 - 不得修改已通过 target；不得请求第三次调用。
 
 首次选择的结构化审核结果：
 ${JSON.stringify(diagnostics)}
 
-服务端固定审核规则：
-${staticEvidencePolicyText()}
+字段语义说明（所有例子非穷尽，禁止关键词机械匹配）：
+${staticFieldOrganizerPolicyText()}
 
 冻结 Character Feature 词库（只读）：
 ${JSON.stringify(publicCharacterFeatureDictionary(characterFeatureProfile, targets, targetIds))}
@@ -499,19 +525,21 @@ function buildEnvelopeRepairPrompt({
   characterFeatureProfile = null,
   diagnostic
 }) {
-  return `STATIC_FRAME_ENVELOPE_REPAIR_V2
+  return `STATIC_FRAME_ORGANIZER_ENVELOPE_REPAIR_V3
 
-第一次输出无法形成可信 Evidence Selection envelope：
+第一次输出无法形成可信 Field Organizer envelope：
 ${JSON.stringify(String(diagnostic || "未知协议错误"))}
 
 这是唯一一次 envelope_repair，也是最后一次 protocol 调用。
 只能修复 JSON、Schema、必需 target 覆盖和已签发 ID 引用；不得改变任务、Catalog 或证据边界。
 
 输出协议（所有层级禁止额外字段）：
-{"repairMode":"envelope_repair","targets":[{"targetId":"compile-target-...","evidenceSelections":[{"segmentId":"seg-...","spanIds":["span-..."]}]}]}
+{"repairMode":"envelope_repair","targets":[{"targetId":"compile-target-...","evidenceSelections":[{"segmentId":"seg-...","spanIds":["span-..."],"category":"pose_body","featureId":null}]}]}
 
-服务端固定审核规则：
-${staticEvidencePolicyText()}
+${strictOutputEnvelopeGuide(targets.keys(), { repairMode: "envelope_repair" })}
+
+字段语义说明（所有例子非穷尽，禁止关键词机械匹配）：
+${staticFieldOrganizerPolicyText()}
 
 冻结 Character Feature 词库（只读）：
 ${JSON.stringify(publicCharacterFeatureDictionary(characterFeatureProfile, targets))}
@@ -523,14 +551,18 @@ ${JSON.stringify(staticFrameTargetPromptView(targets))}
 ${JSON.stringify(publicStaticFrameCatalogView(audit, targets))}`;
 }
 
-function staticEvidencePolicyText() {
-  return `- 禁止叙事认知：发现、意识到、知道、明白、认出、想起、回忆、察觉、理解、确认、判断。
-- 禁止心理/意图/未来/目标：决定、希望、担心、害怕、期待、犹豫、想要、试图、打算、计划、准备、即将、将要、为了、以便、下一步。
-- 禁止过程/非视觉：逐渐、随后、然后、正在、开始、继续、慢慢、逐步、过程中、对白、音效、运镜。
-- 同一 segment 可用多个不重叠 span 做删除式整理，但 span 间隔必须只含上述禁止词、语法连接词或标点；不得跨主体、跨事实拼接新状态。
-- 每个安全 slot 只会得到一个 primaryDimensionKey；优先级为当前角色精确 feature → orientation → bodyContact → limbs → body。
-- bodyContact 只接受身体或肢体与地面、墙面、座椅等环境支撑关系；手—道具接触、handPropState、握持、托举、按压道具、悬停和道具距离均排除。
-- inferred feature 只有当本次局部原文字面出现冻结 term 时才可选择；词库不是当前镜头事实。`;
+function staticFieldOrganizerPolicyText() {
+  return `- sequence_marker：只组织叙述先后，不是当前单帧状态。参考文字：然后、接着、最后。
+- dynamic_process：必须随时间展开的动作或变化，不能原样留在静态字段。参考文字：摆动、摇摆、挥动、移动。
+- narrative_or_intent：角色的认知、心理、目的、计划或未来状态，不是可直接画出的当前事实。参考文字：想起、担心、为了、准备。
+- pose_body：当前画面中躯干、重心或整体姿态的静态状态。
+- pose_limbs：当前画面中肢体的姿势或位置关系。
+- pose_orientation：当前画面中身体、头部、脸或视线的朝向。
+- pose_body_contact：身体或肢体与环境支撑物的当前接触/距离关系；具体环境物可以是任意物体，不限于示例。
+- pose_character_feature：冻结 Character Feature 的当前可见状态；必须引用同一 target 下的精确 featureId，且所选原文必须字面含有该 feature 的 term。
+- hand_prop_state：当前画面中手、前肢或身体与任意具体道具的持有、接触、距离及道具状态。参考文字：抱着相册、持蒲扇、未持道具。
+- pose 与 handPropState 是不同职责：与环境支撑的身体接触归 pose_body_contact；与剧情道具的关系归 hand_prop_state。
+- spanIds 按原文顺序编译，只允许删除式整理。不得通过删除否定词、数量、主体、客体或关键关系改变事实。`;
 }
 
 function publicCharacterFeatureDictionary(profile, targets, targetIds = [...targets.keys()]) {
@@ -543,6 +575,7 @@ function publicCharacterFeatureDictionary(profile, targets, targetIds = [...targ
       targetId,
       characterLabel: target.characterLabel,
       features: character.features.map((feature) => ({
+        featureId: feature.featureId || feature.id,
         suggestedFeatureKey: feature.suggestedFeatureKey,
         canonicalName: feature.canonicalName,
         terms: Array.isArray(feature.matcherTerms)
@@ -686,8 +719,11 @@ function acceptGroundedEvaluation(sourceCandidate, targets, evaluation, metadata
     evaluation.patches,
     targets
   );
-  metadata.noOp = evaluation.patches.length === 0;
-  metadata.modifications.push(...evaluation.patches.map((patch) => {
+  const changedPatches = evaluation.patches.filter((patch) => (
+    targets.get(patch.targetId)?.before !== patch.value
+  ));
+  metadata.noOp = changedPatches.length === 0;
+  metadata.modifications.push(...changedPatches.map((patch) => {
     const target = targets.get(patch.targetId);
     return {
       targetId: patch.targetId,

@@ -1,7 +1,9 @@
 # Character Feature Compiler 与 Static Frame Compiler 改造说明
 
 日期：2026-07-29
-状态：已实施；专项测试通过，提交信息以 Git 历史为准。
+状态：Character Feature 部分仍有效；第 4 节起的 Static Frame v2 说明已由
+[`Static-Frame-Grounded-Field-Organizer-v3-2026-08-04.md`](./Static-Frame-Grounded-Field-Organizer-v3-2026-08-04.md)
+取代。以下 v2 内容仅保留为历史设计记录。
 
 ## 1. 改造目标
 

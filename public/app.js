@@ -1072,14 +1072,19 @@ function renderStaticFrameCompilerLog(metadata = null) {
   const modificationCount = runs.reduce((total, run) => total + compilerRunModifications(run).length, 0);
   const identity = [compiler.provider, compiler.model].filter(Boolean).join(" · ") || "模型信息未记录";
   const version = compiler.version ? ` · v${compiler.version}` : "";
-  const summary = `<div class="compiler-log-summary">
-    <span>${escape(identity)}${escape(version)}</span>
-    <span>${escape(runs.length)} 次运行 · ${escape(modificationCount)} 条修改</span>
-  </div>`;
   const content = runs.length
     ? `<div class="compiler-run-list">${runs.map((run, index) => renderStaticFrameCompilerRun(run, index)).join("")}</div>`
     : `<p class="compiler-log-empty">已返回 Static Frame Compiler metadata，但没有运行记录。</p>`;
-  return block("Static Frame Compiler 修改日志", `<div class="compiler-log">${summary}${content}</div>`);
+  return `<details class="result-block compiler-log-disclosure">
+    <summary class="compiler-log-toggle">
+      <span>
+        <span class="block-label">Static Frame Compiler 修改日志</span>
+        <span class="compiler-log-toggle-summary">${escape(identity)}${escape(version)} · ${escape(runs.length)} 次运行 · ${escape(modificationCount)} 条修改</span>
+      </span>
+      <span class="compiler-log-toggle-action" aria-hidden="true"></span>
+    </summary>
+    <div class="compiler-log">${content}</div>
+  </details>`;
 }
 
 function renderStaticFrameCompilerRun(run = {}, index = 0) {

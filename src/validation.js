@@ -1052,10 +1052,17 @@ export const STATIC_FRAME_INVISIBLE_INTENT_TERMS = Object.freeze([
   "试图"
 ]);
 
+const AI_REVIEWED_STATIC_CHARACTER_FIELDS = Object.freeze([
+  "pose",
+  "handPropState",
+  "actionState"
+]);
+
 function validateStaticAnimationFrame(frame, path) {
   const fields = [];
   collectStructuredFramePositiveFields(fields, path, frame);
   for (const field of fields) {
+    if (isAiReviewedStaticCharacterField(field.path)) continue;
     const hit = STATIC_FRAME_PROCESS_OR_AUDIO_TERMS.find((term) => hasStaticFrameLintOccurrence(field.value, term));
     if (hit) {
       throw new OutputContractError(
@@ -1071,6 +1078,13 @@ function validateStaticAnimationFrame(frame, path) {
       );
     }
   }
+}
+
+function isAiReviewedStaticCharacterField(path) {
+  const value = String(path || "");
+  return AI_REVIEWED_STATIC_CHARACTER_FIELDS.some((field) => (
+    value.endsWith(`.${field}`) && value.includes(".characters[")
+  ));
 }
 
 function hasStaticFrameLintOccurrence(value, term) {

@@ -115,8 +115,9 @@ test("生产批次 prompt 只要求结构化 shot，旧字段由服务端编译"
   assert.match(prompt, /cameraMove\.mode="locked"，令 endFrame\.camera 等于 startFrame\.camera 的逐字深拷贝/u);
   assert.match(prompt, /若 cameraMove\.mode="continuous"，endFrame\.camera 至少一个字段必须与 startFrame\.camera 不同/u);
   assert.match(prompt, /loop 是唯一例外.*endFrame 必须完整回到 startFrame/u);
-  assert.match(prompt, /必须先写好首尾帧第一个主角色的 emotionState，再逐字复制/u);
-  assert.match(prompt, /emotionArc\.from 必须是 startFrame\.characters\[0\]\.emotionState 的原样字符串，emotionArc\.to 必须是 endFrame\.characters\[0\]\.emotionState 的原样字符串/u);
+  assert.match(prompt, /必须先确定当前镜头的主角色并放在 startFrame\.characters\[0\]/u);
+  assert.match(prompt, /emotionArc\.from 必须是 startFrame\.characters\[0\]\.emotionState 的原样字符串，emotionArc\.to 必须是 endFrame 中该同名角色 emotionState 的原样字符串/u);
+  assert.match(prompt, /不要为了满足该规则把全剧 protagonist 强行加入配角单人反应镜头/u);
   assert.match(prompt, /输出前必须逐镜执行 emotionArc 一致性自检/u);
   assert.match(prompt, /不得复制示例中的角色、道具、地点或动作/u);
   assert.match(prompt, /旧提示词和动作\/声音字段由服务端/u);

@@ -14,7 +14,7 @@ import { WorkflowService, repairAnimationShotBatchCandidate } from "../src/workf
 const TEST_STATIC_FRAME_COMPILER_MODEL = "static-frame-compiler-test";
 
 function isStaticFrameCompilerRequest(args = {}) {
-  return /STATIC_FRAME_(?:EVIDENCE_SELECTION|EVIDENCE_RESELECTION|ENVELOPE_REPAIR)_V2/u
+  return /STATIC_FRAME_(?:FIELD_ORGANIZATION|FIELD_REORGANIZATION|ORGANIZER_ENVELOPE_REPAIR)_V3/u
     .test(String(args.prompt || ""));
 }
 
@@ -47,18 +47,26 @@ function staticFrameEvidenceResponse(args = {}) {
   const response = {
     targets: catalog.map((target) => ({
       targetId: target.targetId,
-      evidenceSelections: target.segments.flatMap((segment) =>
-        segment.spans.map((span) => ({
+      evidenceSelections: (() => {
+        const segment = target.segments.find((item) => item.sourceField === target.fieldLabel)
+          || target.segments[0];
+        const span = segment?.spans.find((item) => item.unit === "source")
+          || segment?.spans.find((item) => item.unit === "clause")
+          || segment?.spans[0];
+        if (!segment || !span) return [];
+        return [{
           segmentId: segment.segmentId,
-          spanIds: [span.spanId]
-        }))
-      )
+          spanIds: [span.spanId],
+          category: target.fieldLabel === "handPropState" ? "hand_prop_state" : "pose_body",
+          featureId: null
+        }];
+      })()
     }))
   };
-  if (prompt.includes("STATIC_FRAME_ENVELOPE_REPAIR_V2")) {
+  if (prompt.includes("STATIC_FRAME_ORGANIZER_ENVELOPE_REPAIR_V3")) {
     response.repairMode = "envelope_repair";
   }
-  if (prompt.includes("STATIC_FRAME_EVIDENCE_RESELECTION_V2")) {
+  if (prompt.includes("STATIC_FRAME_FIELD_REORGANIZATION_V3")) {
     response.repairMode = "evidence_reselection";
   }
   return response;
@@ -197,6 +205,79 @@ test("分阶段内部契约允许镜头负面词为空", () => {
   shot.negativePrompts = { image: [], video: [] };
   const batch = { shotPlan: [shot] };
   assert.equal(ensureAnimationShotBatchContract(batch), batch);
+});
+
+test("Animation Foundation 必须唯一登记 Full Story 标准主角", async (t) => {
+  const scenarios = [
+    {
+      name: "主角参考缺失",
+      expectedCount: 0,
+      mutate(foundation, protagonistName) {
+        foundation.characterReferencePrompts = foundation.characterReferencePrompts.filter(
+          (reference) => reference.characterName !== protagonistName
+        );
+      }
+    },
+    {
+      name: "主角参考重复",
+      expectedCount: 2,
+      mutate(foundation, protagonistName) {
+        const protagonistReference = foundation.characterReferencePrompts.find(
+          (reference) => reference.characterName === protagonistName
+        );
+        foundation.characterReferencePrompts.push(structuredClone(protagonistReference));
+      }
+    }
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const context = fixture();
+      const invalidFoundation = foundationFrom(context.animationPlan);
+      const protagonistName = context.fullStory.characterBible.protagonist.name;
+      scenario.mutate(invalidFoundation, protagonistName);
+      let foundationCalls = 0;
+      let batchCalls = 0;
+      const workflow = animationWorkflow({
+        client: {
+          async generateJson(args) {
+            if (args.prompt.includes("本阶段只生成可供所有镜头批次复用")) {
+              foundationCalls += 1;
+              return structuredClone(invalidFoundation);
+            }
+            batchCalls += 1;
+            return modelBatchFrom(context);
+          }
+        }
+      });
+
+      let finalError;
+      await assert.rejects(async () => {
+        try {
+          await workflow.createAnimationPlan(context);
+        } catch (error) {
+          finalError = error;
+          throw error;
+        }
+      }, new RegExp(
+        `animationFoundation\\.characterReferencePrompts 中全剧主角「${protagonistName}」必须以 characterName 精确出现一次，实际 ${scenario.expectedCount} 次`,
+        "u"
+      ));
+
+      assert.equal(foundationCalls, 2);
+      assert.equal(batchCalls, 0);
+      assert.deepEqual(finalError.details, [{
+        code: "ANIMATION_PRIMARY_CHARACTER_REFERENCE_MATCH_FAILURE",
+        path: "animationFoundation.characterReferencePrompts",
+        reason: `全剧主角「${protagonistName}」的角色参考必须唯一且使用标准姓名`,
+        expectedPrimaryCharacterName: protagonistName,
+        exactMatchCount: scenario.expectedCount,
+        actualCharacterNames: invalidFoundation.characterReferencePrompts.map(
+          (reference) => reference.characterName
+        )
+      }]);
+    });
+  }
 });
 
 test("服务端先生成基础锁定，再按场次分批生成并合并原 animationPlan", async () => {
@@ -1742,8 +1823,7 @@ test("deterministic repair 是纯函数且重复执行深度幂等", () => {
     shotIdStartIndex: 1,
     sceneIdBySourceScene: Object.freeze(foundation.sceneReferencePrompts.flatMap((scene) => (
       scene.sourceSceneIds.map((sourceSceneId) => Object.freeze([sourceSceneId, scene.sceneId]))
-    ))),
-    primaryCharacterName: context.fullStory.characterBible.protagonist.name
+    )))
   });
   const rawSnapshot = structuredClone(rawBatch);
 
@@ -1773,7 +1853,7 @@ test("deterministic repair 是纯函数且重复执行深度幂等", () => {
   );
 });
 
-test("emotionArc repair 在主角标识缺失或 frame 同名重复时保持原值", () => {
+test("emotionArc repair 绑定镜头首角色，只有首尾唯一同名时才修复", () => {
   const context = fixture();
   const foundation = foundationFrom(context.animationPlan);
   const baseContext = {
@@ -1783,53 +1863,150 @@ test("emotionArc repair 在主角标识缺失或 frame 同名重复时保持原�
     ))
   };
 
-  const missingPrimary = modelBatchFrom(context);
-  missingPrimary.shotPlan[0].motion.emotionArc.from = "缺失标识时不得修复";
-  const missingResult = repairAnimationShotBatchCandidate(missingPrimary, {
-    ...baseContext,
-    primaryCharacterName: ""
-  });
-  assert.equal(missingResult.shotPlan[0].motion.emotionArc.from, "缺失标识时不得修复");
+  const noGlobalAnchor = modelBatchFrom(context);
+  noGlobalAnchor.shotPlan[0].motion.emotionArc.from = "应按镜头首角色修复";
+  const noGlobalAnchorResult = repairAnimationShotBatchCandidate(noGlobalAnchor, baseContext);
+  assert.equal(
+    noGlobalAnchorResult.shotPlan[0].motion.emotionArc.from,
+    noGlobalAnchorResult.shotPlan[0].startFrame.characters[0].emotionState
+  );
 
-  const duplicatePrimary = modelBatchFrom(context);
-  const duplicateShot = duplicatePrimary.shotPlan[0];
-  duplicateShot.motion.emotionArc.from = "重复匹配时不得修复";
-  duplicateShot.startFrame.characters.push(structuredClone(duplicateShot.startFrame.characters[0]));
-  const duplicateResult = repairAnimationShotBatchCandidate(duplicatePrimary, {
-    ...baseContext,
-    primaryCharacterName: context.fullStory.characterBible.protagonist.name
-  });
-  assert.equal(duplicateResult.shotPlan[0].motion.emotionArc.from, "重复匹配时不得修复");
+  const duplicateEndPrimary = modelBatchFrom(context);
+  const duplicateShot = duplicateEndPrimary.shotPlan[0];
+  duplicateShot.motion.emotionArc.from = "尾帧重复匹配时不得修复";
+  duplicateShot.endFrame.characters.push(structuredClone(duplicateShot.endFrame.characters[0]));
+  const duplicateResult = repairAnimationShotBatchCandidate(duplicateEndPrimary, baseContext);
+  assert.equal(duplicateResult.shotPlan[0].motion.emotionArc.from, "尾帧重复匹配时不得修复");
 });
 
-test("animationShotBatch 主角诊断区分缺失、重复和名称不精确", async (t) => {
+test("合法配角单人镜头不要求全剧主角逐镜出镜", async () => {
+  const context = fixture();
+  const foundation = foundationFrom(context.animationPlan);
+  const protagonistName = context.fullStory.characterBible.protagonist.name;
+  const companionName = foundation.characterReferencePrompts.find(
+    (reference) => reference.characterName !== protagonistName
+  ).characterName;
+  const rawBatch = modelBatchFrom(context);
+  const shot = rawBatch.shotPlan[0];
+  const startCompanion = {
+    ...structuredClone(shot.startFrame.characters[0]),
+    name: companionName,
+    emotionState: "克制地注视"
+  };
+  const endCompanion = {
+    ...structuredClone(shot.endFrame.characters[0]),
+    name: companionName,
+    emotionState: "眼神柔和"
+  };
+  shot.startFrame.characters = [startCompanion];
+  shot.endFrame.characters = [endCompanion];
+  shot.motion.emotionArc.from = "错误起点";
+  shot.motion.emotionArc.to = "错误终点";
+  let batchCalls = 0;
+  const workflow = animationWorkflow({
+    animationShotBatchSceneCount: 6,
+    client: {
+      async generateJson(args) {
+        if (args.prompt.includes("本阶段只生成可供所有镜头批次复用")) return foundation;
+        batchCalls += 1;
+        return structuredClone(rawBatch);
+      }
+    }
+  });
+
+  const result = await workflow.createAnimationPlan(context);
+  const acceptedShot = result.shotPlan[0];
+  assert.equal(batchCalls, 1);
+  assert.deepEqual(acceptedShot.startFrame.characters.map((item) => item.name), [companionName]);
+  assert.deepEqual(acceptedShot.endFrame.characters.map((item) => item.name), [companionName]);
+  assert.equal(acceptedShot.motion.emotionArc.from, startCompanion.emotionState);
+  assert.equal(acceptedShot.motion.emotionArc.to, endCompanion.emotionState);
+  assert.ok(result.shotPlan.slice(1).some((item) => (
+    item.startFrame.characters.some((character) => character.name === protagonistName)
+  )));
+});
+
+test("允许配角单人镜头但整部 shotPlan 仍必须包含全剧主角", async () => {
+  const context = fixture();
+  const foundation = foundationFrom(context.animationPlan);
+  const protagonistName = context.fullStory.characterBible.protagonist.name;
+  const companionName = foundation.characterReferencePrompts.find(
+    (reference) => reference.characterName !== protagonistName
+  ).characterName;
+  const rawBatch = modelBatchFrom(context);
+  rawBatch.shotPlan.forEach((shot, shotIndex) => {
+    shot.startFrame.characters = [{
+      ...structuredClone(shot.startFrame.characters[0]),
+      name: companionName,
+      emotionState: `配角镜头起点${shotIndex + 1}`
+    }];
+    shot.endFrame.characters = [{
+      ...structuredClone(shot.endFrame.characters[0]),
+      name: companionName,
+      emotionState: `配角镜头终点${shotIndex + 1}`
+    }];
+    shot.motion.emotionArc.from = "错误起点";
+    shot.motion.emotionArc.to = "错误终点";
+  });
+  let batchCalls = 0;
+  const workflow = animationWorkflow({
+    animationShotBatchSceneCount: 6,
+    client: {
+      async generateJson(args) {
+        if (args.prompt.includes("本阶段只生成可供所有镜头批次复用")) return foundation;
+        batchCalls += 1;
+        return structuredClone(rawBatch);
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => workflow.createAnimationPlan(context),
+    /animationPlan\.shotPlan 必须至少有一个镜头让全剧主角「阿岚」实际出镜/u
+  );
+  assert.equal(batchCalls, 1);
+});
+
+test("animationShotBatch 区分镜头主角色连续性与全剧主角身份精确性", async (t) => {
   const scenarios = [
     {
-      name: "缺失",
+      name: "镜头主角色尾帧缺失",
       category: "missing",
-      reason: "明确主角缺失",
+      reason: "镜头主角色缺失",
       actualNames: ["明确配角"],
+      expectedName: "阿岚",
+      expectedPath: "animationShotBatch.shotPlan[0].endFrame.characters",
+      code: "ANIMATION_SHOT_PRIMARY_CHARACTER_MATCH_FAILURE",
       mutate(shot) {
-        shot.startFrame.characters = [{
-          ...structuredClone(shot.startFrame.characters[0]),
+        shot.endFrame.characters = [{
+          ...structuredClone(shot.endFrame.characters[0]),
           name: "明确配角"
         }];
       }
     },
     {
-      name: "重复",
+      name: "镜头主角色同帧重复",
       category: "duplicate",
-      reason: "明确主角重复",
-      actualNames: ["阿岚", "阿岚"],
+      reason: "镜头主角色重复",
+      actualNames: ["明确配角", "明确配角", "阿岚"],
+      expectedName: "明确配角",
+      expectedPath: "animationShotBatch.shotPlan[0].startFrame.characters",
+      code: "ANIMATION_SHOT_PRIMARY_CHARACTER_MATCH_FAILURE",
       mutate(shot) {
-        shot.startFrame.characters.push(structuredClone(shot.startFrame.characters[0]));
+        const startSide = { ...structuredClone(shot.startFrame.characters[0]), name: "明确配角" };
+        const endSide = { ...structuredClone(shot.endFrame.characters[0]), name: "明确配角" };
+        shot.startFrame.characters = [startSide, structuredClone(startSide), ...shot.startFrame.characters];
+        shot.endFrame.characters = [endSide, ...shot.endFrame.characters];
       }
     },
     {
-      name: "名称不精确",
+      name: "全剧主角名称不精确",
       category: "inexact",
-      reason: "主角名称不精确",
+      reason: "全剧主角名称不精确",
       actualNames: ["阿岚（社区修理师）"],
+      expectedName: "阿岚",
+      expectedPath: "animationShotBatch.shotPlan[0].startFrame.characters",
+      code: "ANIMATION_PRIMARY_CHARACTER_MATCH_FAILURE",
       mutate(shot) {
         shot.startFrame.characters[0].name = "阿岚（社区修理师）";
       }
@@ -1876,37 +2053,45 @@ test("animationShotBatch 主角诊断区分缺失、重复和名称不精确", a
       assert.match(finalError.message, /shotId：A01/u);
       assert.match(finalError.message, /sourceSceneId：S1/u);
       assert.match(finalError.message, /sourceSceneIds：\["S1","S2","S3","S4","S5","S6"\]/u);
-      assert.match(finalError.message, /animationShotBatch\.shotPlan\[0\]\.startFrame\.characters/u);
-      assert.match(finalError.message, /预期唯一主角：阿岚/u);
+      assert.match(finalError.message, new RegExp(escapeRegExp(scenario.expectedPath), "u"));
+      assert.match(finalError.message, new RegExp(`预期(?:镜头主角色|标准主角)：${escapeRegExp(scenario.expectedName)}`, "u"));
       assert.match(finalError.message, /精确匹配数量：/u);
       assert.ok(Array.isArray(finalError.details));
       assert.equal(finalError.details.length, 1);
       assert.deepEqual(finalError.details[0].actualCharacterNames, scenario.actualNames);
       assert.equal(finalError.details[0].exactMatchCount, scenario.category === "duplicate" ? 2 : 0);
       assert.equal(finalError.details[0].category, scenario.category);
-      assert.equal(finalError.details[0].path, "animationShotBatch.shotPlan[0].startFrame.characters");
-      assert.equal(finalError.details[0].expectedPrimaryCharacterName, "阿岚");
+      assert.equal(finalError.details[0].path, scenario.expectedPath);
+      assert.equal(finalError.details[0].code, scenario.code);
+      assert.equal(finalError.details[0].expectedPrimaryCharacterName, scenario.expectedName);
       assert.deepEqual(finalError.details[0].sourceSceneIds, ["S1", "S2", "S3", "S4", "S5", "S6"]);
     });
   }
 });
 
-test("emotionArc repair 按明确主角标识匹配并允许主角不在 characters[0]", async () => {
+test("emotionArc repair 绑定镜头首角色并保持真实角色顺序", async () => {
   const context = fixture();
+  const foundation = foundationFrom(context.animationPlan);
+  const protagonistName = context.fullStory.characterBible.protagonist.name;
+  const companionName = foundation.characterReferencePrompts.find(
+    (reference) => reference.characterName !== protagonistName
+  ).characterName;
   const firstRaw = modelBatchFrom(context);
   const shot = firstRaw.shotPlan[0];
   const startPrimary = shot.startFrame.characters[0];
   const endPrimary = shot.endFrame.characters[0];
-  shot.startFrame.characters.unshift({
+  const startCompanion = {
     ...structuredClone(startPrimary),
-    name: "明确配角",
+    name: companionName,
     emotionState: "配角紧张"
-  });
-  shot.endFrame.characters.unshift({
+  };
+  const endCompanion = {
     ...structuredClone(endPrimary),
-    name: "尾帧另一配角",
+    name: companionName,
     emotionState: "配角放松"
-  });
+  };
+  shot.startFrame.characters = [startCompanion, startPrimary];
+  shot.endFrame.characters = [endPrimary, endCompanion];
   shot.motion.emotionArc.from = "错误起点";
   shot.motion.emotionArc.to = "错误终点";
   let batchCalls = 0;
@@ -1926,15 +2111,14 @@ test("emotionArc repair 按明确主角标识匹配并允许主角不在 charact
   const result = await workflow.createAnimationPlan(context);
   const repairedShot = result.shotPlan[0];
   assert.equal(batchCalls, 1);
-  assert.deepEqual(repairedShot.startFrame.characters.map((item) => item.name), ["明确配角", "阿岚"]);
-  assert.deepEqual(repairedShot.endFrame.characters.map((item) => item.name), ["尾帧另一配角", "阿岚"]);
-  assert.equal(repairedShot.motion.emotionArc.from, startPrimary.emotionState);
-  assert.equal(repairedShot.motion.emotionArc.to, endPrimary.emotionState);
-  assert.notEqual(repairedShot.motion.emotionArc.from, repairedShot.startFrame.characters[0].emotionState);
+  assert.deepEqual(repairedShot.startFrame.characters.map((item) => item.name), [companionName, protagonistName]);
+  assert.deepEqual(repairedShot.endFrame.characters.map((item) => item.name), [protagonistName, companionName]);
+  assert.equal(repairedShot.motion.emotionArc.from, startCompanion.emotionState);
+  assert.equal(repairedShot.motion.emotionArc.to, endCompanion.emotionState);
   assert.equal(result.shotPlan.length, 6);
 });
 
-test("显式主角 validation projection 不得补齐 loop 镜头真实角色名单", async () => {
+test("镜头主角色 validation projection 不得补齐 loop 镜头真实角色名单", async () => {
   const context = fixture();
   const invalidLoopBatch = modelBatchFrom(context);
   const shot = invalidLoopBatch.shotPlan[0];
@@ -1965,7 +2149,7 @@ test("显式主角 validation projection 不得补齐 loop 镜头真实角色名
 
   await assert.rejects(
     () => workflow.createAnimationPlan(context),
-    /second-pass 失败.*(?:无法在 endFrame 找到主角色|循环镜头首尾角色名单必须一致)/
+    /second-pass 失败.*(?:镜头主角色唯一匹配失败|循环镜头首尾角色名单必须一致)/
   );
   assert.equal(batchCalls, 2);
 });

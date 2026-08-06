@@ -59,16 +59,24 @@ function stagedStaticFrameResponse(prompt = "") {
   const response = {
     targets: catalog.map((target) => ({
       targetId: target.targetId,
-      evidenceSelections: target.segments.flatMap((segment) =>
-        segment.spans.map((span) => ({
+      evidenceSelections: (() => {
+        const segment = target.segments.find((item) => item.sourceField === target.fieldLabel)
+          || target.segments[0];
+        const span = segment?.spans.find((item) => item.unit === "source")
+          || segment?.spans.find((item) => item.unit === "clause")
+          || segment?.spans[0];
+        if (!segment || !span) return [];
+        return [{
           segmentId: segment.segmentId,
-          spanIds: [span.spanId]
-        }))
-      )
+          spanIds: [span.spanId],
+          category: target.fieldLabel === "handPropState" ? "hand_prop_state" : "pose_body",
+          featureId: null
+        }];
+      })()
     }))
   };
-  if (prompt.includes("STATIC_FRAME_ENVELOPE_REPAIR_V2")) response.repairMode = "envelope_repair";
-  if (prompt.includes("STATIC_FRAME_EVIDENCE_RESELECTION_V2")) response.repairMode = "evidence_reselection";
+  if (prompt.includes("STATIC_FRAME_ORGANIZER_ENVELOPE_REPAIR_V3")) response.repairMode = "envelope_repair";
+  if (prompt.includes("STATIC_FRAME_FIELD_REORGANIZATION_V3")) response.repairMode = "evidence_reselection";
   return response;
 }
 
@@ -546,7 +554,7 @@ test("完整剧情后可生成首尾帧动画生产包", async () => {
       async generateJson(args) {
         if (
           !args.prompt.includes("ACTION_STATE_SEMANTIC_AUDIT_V1")
-          && !/STATIC_FRAME_(?:EVIDENCE_SELECTION|EVIDENCE_RESELECTION|ENVELOPE_REPAIR)_V2/u.test(args.prompt)
+          && !/STATIC_FRAME_(?:FIELD_ORGANIZATION|FIELD_REORGANIZATION|ORGANIZER_ENVELOPE_REPAIR)_V3/u.test(args.prompt)
           && !args.prompt.includes("CHARACTER_FEATURE_COMPILER_V1")
         ) captured = args;
         return stagedAnimationResponse(mockAnimationPlan({ ...input, creativeBrief, variant, fullStory }), args.prompt);

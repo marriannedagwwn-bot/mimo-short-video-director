@@ -186,22 +186,22 @@ test("v2 frame schema requires exact scene ids and complete character objects", 
   assert.equal(validateShot(objectOnly), objectOnly);
 });
 
-test("v2 frame fields remain static and keep process, camera motion and audio in motion", () => {
+test("pose、handPropState、actionState 的文字语义交由 AI，结构校验不再按中文关键词裁决", () => {
   const process = v2Shot();
   process.startFrame.characters[0].pose = "随后拿起玻璃幻灯片";
-  assert.throws(() => validateShot(process), /静态帧字段.*过程、运镜、对白或音效措辞：随后/);
+  assert.equal(validateShot(process), process);
 
   const actionStateProcess = v2Shot();
   actionStateProcess.startFrame.characters[0].actionState = "随后拿起玻璃幻灯片";
-  assert.throws(() => validateShot(actionStateProcess), /actionState.*过程、运镜、对白或音效措辞：随后/);
+  assert.equal(validateShot(actionStateProcess), actionStateProcess);
 
   const actionStateProgressive = v2Shot();
   actionStateProgressive.startFrame.characters[0].actionState = "正在按下按钮";
-  assert.throws(() => validateShot(actionStateProgressive), /actionState.*过程、运镜、对白或音效措辞：正在/);
+  assert.equal(validateShot(actionStateProgressive), actionStateProgressive);
 
   const actionStateIntent = v2Shot();
   actionStateIntent.startFrame.characters[0].actionState = "准备按按钮";
-  assert.throws(() => validateShot(actionStateIntent), /actionState.*无法直接画出的意图措辞：准备/);
+  assert.equal(validateShot(actionStateIntent), actionStateIntent);
 
   const audio = v2Shot();
   audio.endFrame.environment.atmosphere = "室内响起木箱音效";
@@ -214,7 +214,7 @@ test("v2 frame fields remain static and keep process, camera motion and audio in
   for (const intent of ["准备", "即将", "将要", "想要", "试图"]) {
     const invisibleIntent = v2Shot();
     invisibleIntent.startFrame.characters[0].pose = `角色${intent}拿起玻璃幻灯片`;
-    assert.throws(() => validateShot(invisibleIntent), new RegExp(`静态帧字段.*无法直接画出的意图措辞：${intent}`));
+    assert.equal(validateShot(invisibleIntent), invisibleIntent);
   }
 });
 
@@ -240,10 +240,10 @@ test("v2 actionState keeps its key and string type but may be empty", () => {
   assert.throws(() => validateShot(emptyHandPropState), /handPropState 不能为空/);
 });
 
-test("v2 separates visible prop and walking poses from temporal motion", () => {
+test("pose 的道具与行走语义由 Grounded Field Organizer 判定，validation 只守结构", () => {
   const invisiblePropIntent = v2Shot();
   invisiblePropIntent.startFrame.characters[0].pose = "准备打开盒子";
-  assert.throws(() => validateShot(invisiblePropIntent), /pose.*意图措辞：准备/);
+  assert.equal(validateShot(invisiblePropIntent), invisiblePropIntent);
 
   const visiblePropPose = v2Shot();
   visiblePropPose.startFrame.characters[0].pose = "半蹲在木盒旁，右手停在盒盖边缘";
@@ -251,7 +251,7 @@ test("v2 separates visible prop and walking poses from temporal motion", () => {
 
   const invisibleWalkingIntent = v2Shot();
   invisibleWalkingIntent.startFrame.characters[0].pose = "准备走向门口";
-  assert.throws(() => validateShot(invisibleWalkingIntent), /pose.*意图措辞：准备/);
+  assert.equal(validateShot(invisibleWalkingIntent), invisibleWalkingIntent);
 
   const visibleWalkingPose = v2Shot();
   visibleWalkingPose.startFrame.characters[0].pose = "站在门前，身体朝向门口，左脚略微前伸";

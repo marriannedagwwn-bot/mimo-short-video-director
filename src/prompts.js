@@ -180,7 +180,7 @@ const STRUCTURED_ANIMATION_SHOT_RULES = `
 - motion.mode 只允许 continuous_action、camera_move、object_transform、loop；cameraMove.mode 只允许 locked 或 continuous；cameraMove.speed 只允许 slow、medium、fast。postRetime.recommended 必须是布尔值。
 - 默认使用 cameraMove.mode=locked：当角色或道具动作在固定构图中已足够清楚时，必须先完整写好 startFrame.camera，再把该 camera 对象的 7 个字符串逐字复制为 endFrame.camera；禁止同义改写、补充或删除任何字符，尤其不得改变 viewDirection、shotSize、angle 或 composition。cameraMove.technique/path/motivation 要明写固定机位、保持首帧构图和动作可读性；speed 仍填允许的 slow。
 - 只有当当前单一动作必须被跟随、显示或连续重构图时才使用 cameraMove.mode=continuous；必须写出唯一连续的 technique、path、speed 和 motivation，不得在运镜中切镜、跳轴、切换镜头或瞬移机位。
-- 必须先写好首尾帧第一个主角色的 emotionState，再逐字复制：emotionArc.from 必须是 startFrame.characters[0].emotionState 的原样字符串，emotionArc.to 必须是 endFrame.characters[0].emotionState 的原样字符串；禁止同义改写、增删标点或概括。visibleProgression 只描述这两个可见状态之间的进展。
+- 必须先确定当前镜头的主角色并放在 startFrame.characters[0]，endFrame 必须以同一精确名称保留该角色；再逐字复制其 emotionState：emotionArc.from 必须是 startFrame.characters[0].emotionState 的原样字符串，emotionArc.to 必须是 endFrame 中该同名角色 emotionState 的原样字符串。全剧 protagonist 不要求出现在每个镜头，合法的配角单人反应镜头可以只列该配角；但 protagonist 一旦出镜，必须使用 characterReferencePrompts 中的标准名称且同帧不得重复。禁止同义改写、增删标点或概括。visibleProgression 只描述当前镜头主角色这两个可见状态之间的进展。
 - timingBeats 必须有 1–4 条，第一条 fromPercent=0，最后一条 toPercent=100；每条满足 0<=fromPercent<toPercent<=100，相邻两条的前一条 toPercent 必须等于后一条 fromPercent，不得重叠或留空档。
 - 每个 timingBeat 都只能描述同一 primaryAction 的一个连续阶段，camera 必须与 cameraMove 一致；emotion、environment、soundCue 必须是该时段真实发生的状态，没有变化时明写“保持”或“无”。
 - audio 是唯一音频信息源；dialogue 每条必须含 speaker、text、delivery，并服从 dialogueRules；无对白时输出 []，不得将对白写入静态帧。
@@ -819,7 +819,7 @@ ${STRUCTURED_ANIMATION_SHOT_RULES_WITH_FIELD_RESPONSIBILITIES}
 - 输出前必须逐镜执行 camera 一致性自检：若 cameraMove.mode="locked"，令 endFrame.camera 等于 startFrame.camera 的逐字深拷贝；若两者任一字段需要不同，则必须改用符合剧情的 continuous，并在 cameraMove 与 timingBeats 中写明唯一连续变化。不得保留 locked 同时改写任何 camera 字段。
 - 反向约束同样强制：除 loop 外，若 cameraMove.mode="continuous"，endFrame.camera 至少一个字段必须与 startFrame.camera 不同，并准确写出 cameraMove.technique/path 到达后的静态可见终点。不得只在 motion 中写推、拉、横移、跟拍、环绕或升降，却复制完全相同的首尾 camera。
 - loop 是唯一例外：循环镜头可以在过程中连续运镜，但 endFrame 必须完整回到 startFrame 的 timeAndWeather、characters、environment、camera、lighting、styleModifiers 和 continuityLocks；尾帧使用 inherit，不得伪造一个不同 camera 终点。
-- 输出前必须逐镜执行 emotionArc 一致性自检：令 emotionArc.from 等于 startFrame.characters[0].emotionState 的逐字复制，令 emotionArc.to 等于 endFrame.characters[0].emotionState 的逐字复制，不得重新措辞。
+- 输出前必须逐镜执行 emotionArc 一致性自检：以 startFrame.characters[0] 作为当前镜头主角色，令 emotionArc.from 等于它的 emotionState，令 emotionArc.to 等于 endFrame 中同名角色的 emotionState，均须逐字复制且不得重新措辞。不要为了满足该规则把全剧 protagonist 强行加入配角单人反应镜头。
 - 输出前必须逐帧检查空值：只有 actionState 可以为空；任何 pose、handPropState、gaze、expression、screenPosition、bodyOrientation、emotionState、timeAndWeather、environment、camera 或 lighting 字符串为空都必须在输出前补成可见状态，不能依赖服务端纠偏。
 
 输出严格使用以下唯一结构：

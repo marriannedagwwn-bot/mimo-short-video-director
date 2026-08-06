@@ -77,21 +77,36 @@ function groundedEvidenceResponse(request) {
   const response = {
     targets: catalog.map((target) => ({
       targetId: target.targetId,
-      evidenceSelections: target.segments
-        .filter((segment) => /身体|手|腿|脚|朝向|面向|背对/u.test(segment.displayText))
-        .map((segment) => {
-          const longest = [...segment.spans]
-            .sort((left, right) => right.displayText.length - left.displayText.length)[0];
-          return {
-            segmentId: segment.segmentId,
-            spanIds: [longest.spanId]
-          };
-        })
+      evidenceSelections: [groundedOrganizerSelection(target)]
     }))
   };
-  if (prompt.includes("STATIC_FRAME_ENVELOPE_REPAIR_V2")) response.repairMode = "envelope_repair";
-  if (prompt.includes("STATIC_FRAME_EVIDENCE_RESELECTION_V2")) response.repairMode = "evidence_reselection";
+  if (prompt.includes("STATIC_FRAME_ORGANIZER_ENVELOPE_REPAIR_V3")) {
+    response.repairMode = "envelope_repair";
+  }
+  if (prompt.includes("STATIC_FRAME_FIELD_REORGANIZATION_V3")) {
+    response.repairMode = "evidence_reselection";
+  }
   return response;
+}
+
+function groundedOrganizerSelection(target) {
+  const preferredSourceField = target.fieldLabel === "pose"
+    ? "bodyOrientation"
+    : "handPropState";
+  const segment = target.segments.find((item) => item.sourceField === preferredSourceField)
+    || target.segments[0];
+  if (!segment) throw new Error(`Field Organizer target ${target.targetId} 缺少证据 segment`);
+  const longestClause = [...segment.spans]
+    .filter((span) => span.unit === "clause")
+    .sort((left, right) => right.displayText.length - left.displayText.length)[0];
+  const span = longestClause || segment.spans[0];
+  if (!span) throw new Error(`Field Organizer target ${target.targetId} 缺少证据 span`);
+  return {
+    segmentId: segment.segmentId,
+    spanIds: [span.spanId],
+    category: target.fieldLabel === "pose" ? "pose_orientation" : "hand_prop_state",
+    featureId: null
+  };
 }
 
 const RETRYABLE_CANDIDATE_CODES = [
@@ -363,9 +378,9 @@ test("raw batch 缺少 shotPlan 属于候选结构失败，只重生 batch，不
     }
   };
   const compilerClient = {
-    async generateJson() {
+    async generateJson(request) {
       compilerRequests += 1;
-      throw new Error("该用例不应调用 Static Frame Evidence Selector");
+      return groundedEvidenceResponse(request);
     }
   };
 
@@ -380,7 +395,7 @@ test("raw batch 缺少 shotPlan 属于候选结构失败，只重生 batch，不
   assert.equal(result.batch.shotPlan.length, 1);
   assert.equal(animationPrompts.length, 2);
   assert.match(animationPrompts[1], /ANIMATION_SHOT_BATCH_RETRY_V1/u);
-  assert.equal(compilerRequests, 0);
+  assert.equal(compilerRequests, 1);
 });
 
 test("合法 Compiler 后候选失败才允许一次 patch 和唯一 second-pass，second-pass 禁止 patch", async () => {
@@ -401,9 +416,9 @@ test("合法 Compiler 后候选失败才允许一次 patch 和唯一 second-pass
     }
   };
   const compilerClient = {
-    async generateJson() {
+    async generateJson(request) {
       compilerRequests += 1;
-      throw new Error("该用例不应调用 Static Frame Evidence Selector");
+      return groundedEvidenceResponse(request);
     }
   };
 
@@ -422,7 +437,7 @@ test("合法 Compiler 后候选失败才允许一次 patch 和唯一 second-pass
   );
 
   assert.equal(validationCalls, 3);
-  assert.equal(compilerRequests, 0);
+  assert.equal(compilerRequests, 3);
   assert.equal(animationPrompts.filter((prompt) => prompt.includes("ANIMATION_SHOT_BATCH_SINGLE_FIELD_PATCH_V1")).length, 1);
   assert.equal(animationPrompts.filter((prompt) => prompt.includes("ANIMATION_SHOT_BATCH_RETRY_V1")).length, 1);
   assert.equal(animationPrompts.length, 3);
@@ -483,8 +498,8 @@ test("alias 重建失败后 second-pass 成功时，已完成的 first Compiler 
     }
   };
   const compilerClient = {
-    async generateJson() {
-      throw new Error("no-op Static Frame Compiler 不应调用模型");
+    async generateJson(request) {
+      return groundedEvidenceResponse(request);
     }
   };
 
@@ -499,9 +514,9 @@ test("alias 重建失败后 second-pass 成功时，已完成的 first Compiler 
   assert.equal(animationRequests, 2);
   assert.equal(result.compilerRuns.length, 2);
   assert.equal(result.compilerRuns[0].phase, "post-generate");
-  assert.equal(result.compilerRuns[0].noOp, true);
+  assert.equal(result.compilerRuns[0].noOp, false);
   assert.equal(result.compilerRuns[0].runAccepted, false);
   assert.equal(result.compilerRuns[1].phase, "second-pass");
-  assert.equal(result.compilerRuns[1].noOp, true);
+  assert.equal(result.compilerRuns[1].noOp, false);
   assert.equal(result.compilerRuns[1].runAccepted, true);
 });
