@@ -4,6 +4,7 @@ import { mockBrief, mockFullStory } from "../src/mock.js";
 import { serializeServerError } from "../src/server-error.js";
 import { OutputContractError, ensureOutputContract } from "../src/validation.js";
 import { WorkflowService } from "../src/workflow.js";
+import { withGlobalCharacterBoundary } from "./helpers/global-character-boundary.js";
 
 const context = {
   creatorProfile: {
@@ -125,11 +126,11 @@ test("Animation entry applies the same strict Full Story validator before any do
   });
 
   await assert.rejects(
-    () => workflow.createAnimationPlanWithMetadata({
+    () => workflow.createAnimationPlanWithMetadata(withGlobalCharacterBoundary(workflow, {
       ...context,
       creativeBrief,
       fullStory: story
-    }),
+    })),
     (error) => error instanceof OutputContractError
       && error.details.some((detail) => detail.path === "/sceneScript/2/dialogue/0/line")
   );

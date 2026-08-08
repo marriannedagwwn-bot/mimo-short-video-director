@@ -132,6 +132,14 @@ export async function generateShotVideo(options = {}) {
   }
 }
 
+export function shotVideoGenerationPromptText(options = {}) {
+  const shot = options.shot || {};
+  const prompts = [shot.videoPrompt];
+  if (!options.startFrameDataUrl) prompts.push(shot.startFramePrompt || framePromptFallback(shot, "start"));
+  if (!options.endFrameDataUrl) prompts.push(shot.endFramePrompt || framePromptFallback(shot, "end"));
+  return prompts.map((item) => String(item || "").trim()).filter(Boolean).join("\n");
+}
+
 async function prepareFrameArtifacts(context) {
   const start = await prepareOneFrameArtifact({ ...context, frameKind: "start", dataUrl: context.options.startFrameDataUrl });
   const end = await prepareOneFrameArtifact({ ...context, frameKind: "end", dataUrl: context.options.endFrameDataUrl });

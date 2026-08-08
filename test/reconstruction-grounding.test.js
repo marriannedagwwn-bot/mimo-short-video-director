@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mockAnalysis, mockBrief, mockReconstruction } from "../src/mock.js";
-import { RECONSTRUCTION_SYSTEM_PROMPT, reconstructionPrompt } from "../src/prompts.js";
+import { RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, reconstructionPrompt } from "../src/prompts.js";
 import {
   groundingContextDigest,
   sealReconstruction,
@@ -27,6 +27,52 @@ function context(overrides = {}) {
 function completeScript(overrides = {}) {
   return { ...mockReconstruction(context()), ...overrides };
 }
+
+test("analysis prompt 提供原生视频 evidence 的秒级容差上限", () => {
+  const prompt = analysisPrompt(context({
+    metadata: { ...metadata, duration: 96.269932 },
+    video: {
+      dataUrl: "data:video/mp4;base64,AAAA",
+      mimeType: "video/mp4",
+      size: 4
+    }
+  }));
+
+  assert.match(prompt, /时长：01:36/u);
+  assert.match(prompt, /最大整数结束秒为 97/u);
+  assert.match(prompt, /"startSecond":0,"endSecond":3/u);
+  assert.match(prompt, /不得输出毫秒字段/u);
+});
+
+test("原生视频 evidence 按秒接受不足一秒尾差并拒绝远端越界", () => {
+  const workflow = new WorkflowService();
+  const videoContext = context({
+    metadata: { ...metadata, duration: 96.269932 },
+    video: {
+      dataUrl: "data:video/mp4;base64,AAAA",
+      mimeType: "video/mp4",
+      size: 4
+    }
+  });
+  const invalid = mockAnalysis(videoContext);
+  invalid.observedFacts[0].evidenceRefs = [{ source: "video", startSecond: 96, endSecond: 125 }];
+
+  assert.throws(
+    () => sealReferenceAnalysis(invalid, videoContext, workflow.groundingKey),
+    /模型值 125s，允许的最大整数秒为 97s/u
+  );
+
+  const boundary = mockAnalysis(videoContext);
+  boundary.observedFacts[0].evidenceRefs = [{ source: "video", startSecond: 96, endSecond: 97 }];
+  assert.doesNotThrow(() => sealReferenceAnalysis(boundary, videoContext, workflow.groundingKey));
+
+  const legacyMilliseconds = mockAnalysis(videoContext);
+  legacyMilliseconds.observedFacts[0].evidenceRefs = [{ source: "video", startMs: 96000, endMs: 97000 }];
+  assert.throws(
+    () => sealReferenceAnalysis(legacyMilliseconds, videoContext, workflow.groundingKey),
+    /缺少字段：startSecond、endSecond/u
+  );
+});
 
 test("reconstruction prompt 恢复完整脚本字段并移除引用图契约", () => {
   const prompt = reconstructionPrompt({

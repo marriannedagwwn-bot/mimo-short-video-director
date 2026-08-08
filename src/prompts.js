@@ -1,4 +1,4 @@
-import { collectProtectedTermsFromBrief, fixedCharacterVisualPolicyText } from "./validation.js";
+import { collectProtectedTermsFromBrief } from "./validation.js";
 
 const JSON_ONLY = `
 只输出一个合法 JSON 对象，不要 Markdown 代码块，不要解释。不得输出思维过程。
@@ -154,7 +154,10 @@ const STRUCTURED_ANIMATION_SHOT_EXAMPLE = `{
 }`;
 
 const ANIMATION_FRAME_FIELD_RESPONSIBILITIES = `
-角色静态端点字段职责（必须按含义拆分）：
+静态端点字段职责（必须按含义拆分）：
+- environment.foreground / midground / background 只描述画面深度层中的场景结构、空间锚点和未与角色发生持有关系的当前物件状态；midground 不是收纳主要角色动作的备用字段。
+- environment 不得承载当前可见角色的身份、姿态、表情、手部动作或持有关系；这些事实必须写入 characters 中对应角色的字段。地点名中的归属称呼不代表该角色出镜。
+- 若镜头中没有真实环境变化，必须将 startFrame.environment 的五个字符串逐字复制到 endFrame.environment，不得同义改写。若环境真实变化，只修改对应叶子字段，并在 motion.environmentChange 中写清起点、连续过程和终点。
 - pose 只描述单张画面中可见的身体姿态、身体朝向、支撑方式、重心和肢体停留位置；不得写动作目的、未来动作或完整动作过程。
 - handPropState 只描述左右手与道具在当前画面的静态关系，包括接触、距离、握持，以及道具当前的位置、朝向、开合和数量。
 - actionState 字段必须保留，但允许写空字符串；非空时只判断该句本身是否属于当前单张画面能够直接观察的信息，不要求包含位置、距离、接触等固定表达，也不判断整个角色状态是否完整。不得写剧情认知、心理活动、决定、目的、未来意图或目标阶段。
@@ -193,11 +196,22 @@ ${ANIMATION_FRAME_FIELD_RESPONSIBILITIES}`;
 
 export function analysisPrompt(input) {
   const timeline = input.frames.map((frame, index) => `画面 F${index + 1}：${formatTime(frame.timestamp)}`).join("；");
+  const durationSeconds = Number(input.metadata?.duration);
+  const hasNativeVideo = Boolean(input.video?.dataUrl);
+  const maximumWholeEndSecond = Number.isFinite(durationSeconds) && durationSeconds >= 0
+    ? Math.ceil(durationSeconds)
+    : 0;
+  const evidenceExample = hasNativeVideo
+    ? '{"source":"video","startSecond":0,"endSecond":3}'
+    : '{"source":"frame","frameNumber":1}';
+  const evidenceRule = hasNativeVideo
+    ? `\n- 本次提供原生视频：video evidence 只使用整数秒 startSecond/endSecond，不得输出毫秒字段。必须满足 0 <= startSecond < endSecond${maximumWholeEndSecond ? ` <= ${maximumWholeEndSecond}` : ""}；当前允许的最大整数结束秒为 ${maximumWholeEndSecond}，它小于原视频时长加 1 秒。`
+    : "\n- 本次只提供采样画面：evidenceRefs 只使用实际存在的 frameNumber，不得输出 video 时间字段。";
   return `${ANALYSIS_SYSTEM_PROMPT}
 
 你将看到完整参考视频，或按时间顺序采样的参考视频画面。视频信息：
 - 文件名：${input.metadata?.name || "未知"}
-- 时长：${formatTime(input.metadata?.duration || 0)}
+- 时长：${formatTime(input.metadata?.duration || 0)}${evidenceRule}
 - 尺寸：${input.metadata?.width || "?"}×${input.metadata?.height || "?"}
 - 采样时间：${timeline}
 - 用户补充的字幕/对白/背景：${input.transcript || "无"}
@@ -220,7 +234,7 @@ export function analysisPrompt(input) {
     "factType":"visible_action",
     "observation":"只写画面或原生视频中直接可确认的单一事实",
     "importance":"core",
-    "evidenceRefs":[{"source":"frame", "frameNumber":1}]
+    "evidenceRefs":[${evidenceExample}]
   }],
   "uncertainties":[{"field":"", "reason":"", "neededEvidence":""}]
 }
@@ -229,7 +243,7 @@ observedFacts 是 Reconstruction 的结构化视觉证据层，用于签名、�
 - factType 只允许 visible_subject、visible_action、visible_object、visible_location、visible_state、onscreen_text。
 - observation 每项只写一个直接可见事实，不写人物动机、隐性需求、剧情意义、猜测姓名或关系解释。
 - importance 只允许 core 或 supporting；core 表示完整还原不得省略。
-- 使用采样画面时 evidenceRefs 只写 {"source":"frame","frameNumber":1}；使用原生视频时可写 {"source":"video","startMs":0,"endMs":3000}。不要把 F1、时间码或多个证据拼成字符串。
+- 使用采样画面时 evidenceRefs 只写 {"source":"frame","frameNumber":1}；使用原生视频时只写 {"source":"video","startSecond":0,"endSecond":3}。不要输出 startMs/endMs，也不要把 F1、时间码或多个证据拼成字符串。
 - transcript 会原样提供给 Reconstruction，不要把 transcript 内容复制进 observedFacts。
 
 Reconstruction 会同时读取完整 referenceAnalysis，以便恢复 B 版本的可读脚本字段；characters、emotionCurve 等分析字段只能作为带不确定性的解释上下文，不能冒充画面直接证据。intensity 和 analysisConfidence 使用 0-100。不要虚构听不到的对白。${JSON_ONLY}`;
@@ -307,13 +321,13 @@ export function visualGuardrailsPrompt(input) {
   const fixedCharacter = input.creatorProfile?.fixedCharacter || "未指定";
   const protectedTerms = collectProtectedTermsFromBrief(input.creativeBrief, fixedCharacter);
   const protectedText = protectedTerms.length ? protectedTerms.join("、") : "无";
-  const deterministicHint = fixedCharacterVisualPolicyText(fixedCharacter);
   return `${SYSTEM_PROMPT}
 
 你现在是“角色边界与创作规则审查 AI”。请参考原片画面/脚本分析、creativeBrief，以及用户自己预设的固定角色内容，生成后续主题变体、完整剧情和动画生产包共用的 visualGuardrails。
 
 目标：
-- 明确固定角色哪些视觉/身份特征可以正向使用。
+- 只在本阶段对固定角色做一次完整语义判断，形成后续全部阶段共用且不得重算的全局角色边界。
+- 根据用户整段描述和模型常识，明确固定角色必须保持、允许选择和禁止出现的身份、外观、性格、职业与剧情功能。
 - 生成 positivePromptBoundary，用来审查后续正向提示词是否擅自添加用户未授权的身份、外观或身体特征。
 - 生成 sourceSimilarityRules，用来约束创意简报、完整故事和分镜不得复制原片可识别的表面表达。
 - 生成 dialogueRules，用来约束角色能说什么、不能说什么，以及台词表达方式。
@@ -326,12 +340,16 @@ referenceAnalysis：${JSON.stringify(input.referenceAnalysis || {})}
 sourceScriptReconstruction：${JSON.stringify(input.sourceScriptReconstruction || {})}
 creativeBrief：${JSON.stringify(input.creativeBrief || {})}
 creativeBrief 已识别黑名单：${protectedText}
-程序参考边界（只供你校验，不要机械照抄）：${deterministicHint}
 
 判断规则：
 - 固定角色文本优先级最高；creativeBrief 和原片不得覆盖固定角色。
-- allowedPositiveTraits 只能放用户固定角色文本明确允许的身份与外观特征；不得从类比词、画风或物种印象补全新身体结构。
-- positivePromptBoundary 写审查规则，不写理论上可能出现的身体部件词库；每条规则必须由具体用户输入提供证据。
+- 必须理解完整语义，不得按单个关键词机械匹配。角色原型、类比和常见形象可以依据模型常识推断稳定特征；推断项标记 evidenceLevel=inferred，并解释依据。
+- 用户明确肯定或否定的设定高于模型常识。配饰、服装、图案、兴趣、临时扮演和文化风格不得升级为真实器官或固定身份。
+- requiredTraits 是后续必须沿用的全局事实；allowedTraits 是可按剧情选择但不能改变含义的事实；forbiddenTraits 是后续正向内容不得出现的事实。
+- requiredTraits、allowedTraits、forbiddenTraits 中每项自行给出 canonicalName 和 terms；terms 是本次边界签发的同义表达，不来自程序词典，且必须包含 canonicalName。
+- scope 只允许 identity、appearance、personality、occupation、storyFunction；evidenceLevel 只允许 explicit 或 inferred。
+- 用户文字自身存在无法消解的明确冲突时写入 unresolvedConflicts，不得擅自选择一方。存在 unresolvedConflicts 时工作流会阻断，不进入后续阶段。
+- allowedPositiveTraits 和 positivePromptBoundary 由服务端根据全局边界确定性生成。你必须输出空数组，不得自行填写。
 - sourceSimilarityRules 只收录 referenceAnalysis、sourceScriptReconstruction 或 creativeBrief 中真实出现的可识别表面表达；抽象叙事结构不得列入。
 - sourceSimilarityRules.appliesWhenReferenceUsed 固定为 true，表示只有该原片画面实际作为某次图片/视频生成参考输入时，才可把对应表面表达转换为该次渲染负面提示词；在此之前它只是创意与正向提示词边界。
 - dialogueRules 只处理台词和说话方式，不得混入图片或视频渲染负面提示词。
@@ -341,17 +359,17 @@ creativeBrief 已识别黑名单：${protectedText}
 输出 visualGuardrails，严格使用以下结构：
 {
   "fixedCharacterBoundary":{
+    "schemaVersion":"2.0",
     "characterName":"",
-    "identityLock":"",
-    "allowedIdentity":"",
-    "allowedAppearance":"",
-    "allowedBodyFeatures":[],
-    "styleNotes":"",
-    "explicitUserPresets":[],
-    "doNotInfer":""
+    "canonicalDescription":"",
+    "bodyForm":"",
+    "requiredTraits":[{"canonicalName":"", "terms":[""], "scope":"appearance", "evidenceLevel":"explicit", "triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter", "evidence":""}], "reason":""}],
+    "allowedTraits":[{"canonicalName":"", "terms":[""], "scope":"storyFunction", "evidenceLevel":"explicit", "triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter", "evidence":""}], "reason":""}],
+    "forbiddenTraits":[{"canonicalName":"", "terms":[""], "scope":"appearance", "evidenceLevel":"inferred", "triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter", "evidence":""}], "reason":""}],
+    "unresolvedConflicts":[{"topic":"", "evidence":"", "reason":""}]
   },
-  "allowedPositiveTraits":[{"term":"", "scope":"identity", "reason":""}],
-  "positivePromptBoundary":[{"rule":"", "triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter", "evidence":""}], "severity":"block"}],
+  "allowedPositiveTraits":[],
+  "positivePromptBoundary":[],
   "sourceSimilarityRules":[{"text":"", "sourceExpression":"", "triggerEvidence":[{"sourcePath":"creativeBrief.protectedExpressions[0].sourceExpression", "evidence":""}], "appliesWhenReferenceUsed":true}],
   "dialogueRules":[{"text":"", "triggerEvidence":[{"sourcePath":"creatorProfile.constraints", "evidence":""}]}],
   "stageInstructions":{
@@ -363,14 +381,14 @@ creativeBrief 已识别黑名单：${protectedText}
   "uncertainties":[{"field":"", "reason":"", "safeFallback":""}]
 }
 
-顶层只能包含上述字段，不得额外输出旧版字段或任何图片/视频 render negative prompt。${JSON_ONLY}`;
+fixedCharacterBoundary 不得输出 sourceDigest、boundaryDigest 或 boundarySignature；这些字段由服务端签发。顶层只能包含上述字段，不得额外输出旧版字段或任何图片/视频 render negative prompt。${JSON_ONLY}`;
 }
 
 export function variantsPrompt(input) {
   const count = Math.max(1, Math.min(6, Number(input.count) || 3));
   const forbiddenTerms = collectProtectedTermsFromBrief(input.creativeBrief, input.creatorProfile?.fixedCharacter || "");
   const forbiddenText = forbiddenTerms.length ? forbiddenTerms.join("、") : "无";
-  const visualPolicyText = fixedCharacterVisualPolicyText(input.creatorProfile?.fixedCharacter || "");
+  const visualPolicyText = globalCharacterBoundaryText(input.visualGuardrails);
   const visualGuardrailsText = formatVisualGuardrailsForPrompt(input.visualGuardrails);
   return `${SYSTEM_PROMPT}
 
@@ -391,7 +409,7 @@ creativeBrief：${JSON.stringify(input.creativeBrief)}
 - 如果 creativeBrief 中出现“人物必须改”，它只表示原片人物表达必须改写，不能覆盖用户指定的固定角色。
 - 如果 creativeBrief 或 protectedExpressions 提到原片表面形象（如企鹅服、动物外观、玩偶服、特定拟声词、原片独有动作），这些都是禁止复用的表达；不得写入 characterSetup.protagonist、logline、storyOutline 或结尾动作。固定角色如果是“小女孩/儿童/学生/村民”，就必须保持用户设定的人物身份，不能变成企鹅、玩偶、快递员外壳或未声明的动物化身体。
 - creativeBrief.controlledRewriteVariables 中 mustChange=true 的 sourceValue 已合并到上方黑名单；不得把黑名单词写入 newTask、emotionalMedium、storyOutline、endingRitual 或任何正片剧情字段。若需要说明改写，只在 transformationProof 中用“已替换为……”描述新表达，尽量不要重复原词。
-- 必须服从 positivePromptBoundary，不得在正向设定中擅自添加用户未授权的身份、外观或身体特征。
+- 必须逐字服从已签发的全局角色边界；不得重新解释固定角色、重新推断身体结构或改变 requiredTraits。
 - sourceSimilarityRules 中有明确原片证据的表面表达不得作为新故事正向设定；dialogueRules 只约束对白，不得误当成画面负面提示词。
 
 输出结构：
@@ -416,7 +434,7 @@ export function fullStoryPrompt(input) {
   const variant = input.variant || {};
   const forbiddenTerms = collectProtectedTermsFromBrief(input.creativeBrief, input.creatorProfile?.fixedCharacter || "");
   const forbiddenText = forbiddenTerms.length ? forbiddenTerms.join("、") : "无";
-  const visualPolicyText = fixedCharacterVisualPolicyText(input.creatorProfile?.fixedCharacter || "");
+  const visualPolicyText = globalCharacterBoundaryText(input.visualGuardrails);
   const visualGuardrailsText = formatVisualGuardrailsForPrompt(input.visualGuardrails);
   return `${SYSTEM_PROMPT}
 
@@ -438,7 +456,7 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 硬约束：
 - selectedVariantId 必须等于选中主题变体 id：${variant.id || "未指定"}。
 - 主角必须锁定为上方固定角色，不能改名、不能换身份、不能降级为旁观者或帮助者。
-- 固定角色的姓名、年龄感、身份、性格和外观必须以“固定角色外观边界”为准；只能使用用户明确写出的身体特征，不得继承原片表面形象或擅自扩展未授权外观。
+- 固定角色的姓名、身份、性格、职业、剧情功能和外观必须以已签发的全局角色边界为唯一事实来源；不得再次解析 fixedCharacter 或重新推断角色特征。
 - 可以继续使用送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾，但要完全重写人物、任务细节、道具、对白、场面调度和镜头表达。
 - 上方黑名单里的词不得进入 title、oneLinePremise、shootingSynopsis、characterBible、beatSheet、sceneScript、keyProps 的正向剧情内容；特别是 creativeBrief.controlledRewriteVariables 中 mustChange=true 的 sourceValue 必须换成新道具/新仪式/新任务。
 - visualGuardrails.positivePromptBoundary 和 sourceSimilarityRules 是本阶段必须遵守的正向创作边界；不得把受限内容写成剧情动作、身份、道具或外观。
@@ -492,7 +510,7 @@ export function animationPlanPrompt(input) {
   const fullStory = input.fullStory || {};
   const forbiddenTerms = collectProtectedTermsFromBrief(input.creativeBrief, input.creatorProfile?.fixedCharacter || "");
   const forbiddenText = forbiddenTerms.length ? forbiddenTerms.join("、") : "无";
-  const visualPolicyText = fixedCharacterVisualPolicyText(input.creatorProfile?.fixedCharacter || "");
+  const visualPolicyText = globalCharacterBoundaryText(input.visualGuardrails);
   const visualGuardrailsText = formatVisualGuardrailsForPrompt(input.visualGuardrails);
   return `${SYSTEM_PROMPT}
 
@@ -517,7 +535,7 @@ ${STRUCTURED_ANIMATION_SHOT_RULES_WITH_FIELD_RESPONSIBILITIES}
 拆镜头方案 B（必须优先执行）：
 - 如果一个剧情段落同时包含“角色 A 指路/递物/示意 + 角色 B 转头/看见目标 + 角色 B 眼睛一亮/点头/握拳/摆尾/开心回应”等连续状态变化，必须拆成相邻 2 个或更多 shot，不要塞进同一组首尾帧。
 - 第 1 个 shot 做中景互动镜头：只表达外部互动与视线转向，例如 A 指向远方，B 跟随方向看过去。
-- 第 2 个 shot 做表情强化镜头：只表达 B 的反应终点，例如眼睛一亮、点头、握拳或开心回应。任何依赖额外身体特征的动作都必须先由固定角色文本明确授权。
+- 第 2 个 shot 做表情强化镜头：只表达 B 的反应终点，例如眼睛一亮、点头、握拳或开心回应。任何依赖角色身体特征的动作都必须由全局角色边界 requiredTraits 或 allowedTraits 授权。
 - 每个 shot 只能有一个主要动作目标；如果出现“先……随后……然后……”“镜头从中景切到近景”“过肩切特写”“转头后又点头握拳”等组合，必须继续拆分。
 - 同一个 shot 的 startFrame 与 endFrame 必须保持同一地点、室内外属性和空间轴线；固定机位时两帧 camera 必须逐字一致。时段天气、环境、光线或景别只能按 motion 中已声明的连续过程变化，不得未声明跳变。
 - motion 只能描述 startFrame 到 endFrame 之间的单一连续动作，不得包含切换镜头、切到特写、转场、闪回或跳到下一场景。
@@ -536,7 +554,7 @@ visualGuardrails 分类规则：${visualGuardrailsText}
 - selectedVariantId 必须等于选中主题变体 id：${variant.id || fullStory.selectedVariantId || "未指定"}。
 - animationPlan 只能服务当前 fullStory，不得改剧情、不得换主题、不得更换固定角色。
 - characterReferencePrompts 中必须锁定固定角色姓名、身份、年龄感、服装/外观和核心性格；sceneReferencePrompts 中必须锁定每个复用场景的地点、室内外属性、背景层级、光线和禁止跳变规则；shot.startFrame/endFrame 只用角色名和 sceneId 承接全局锁定，不要每个镜头重复完整外观和完整场景设定。
-- 视觉提示词必须服从“固定角色外观边界”和 visualGuardrails.positivePromptBoundary：用户明写的特征可以正向使用；未授权特征保持不写，不得自行扩展。
+- 视觉提示词必须沿用已签发的全局角色边界：characterReferencePrompts 必须完整包含 requiredTraits，不得重新推断、删除、替换或新增固定角色事实。
 - startFrame、endFrame、motion 的所有字符串字段以及 assetPrompts.imagePrompt 不得出现上方黑名单词；如果 fullStory 已经换成新道具/新仪式，只能沿用 fullStory 的新表达。
 - visualBible、characterReferencePrompts 和 sceneReferencePrompts 不生成渲染负面提示词。图片与视频负面提示词只能逐镜写入 shot.negativePrompts.image 或 shot.negativePrompts.video。
 - 每个负面条目必须包含 text、appliesTo、triggerEvidence、reasonCode、priority；enabled 可选且默认为 true。triggerEvidence 必须至少包含一个 {sourcePath,evidence}，直接指向当前镜头的结构化动作/帧状态、明确角色身份、实际传入的视觉参考或真实供应商失败记录。
@@ -632,7 +650,7 @@ export function animationFoundationPrompt(input) {
   const fullStory = input.fullStory || {};
   const forbiddenTerms = collectProtectedTermsFromBrief(input.creativeBrief, input.creatorProfile?.fixedCharacter || "");
   const forbiddenText = forbiddenTerms.length ? forbiddenTerms.join("、") : "无";
-  const visualPolicyText = fixedCharacterVisualPolicyText(input.creatorProfile?.fixedCharacter || "");
+  const visualPolicyText = globalCharacterBoundaryText(input.visualGuardrails);
   const visualGuardrailsText = formatVisualGuardrailsForPrompt(input.visualGuardrails);
   return `${SYSTEM_PROMPT}
 
@@ -665,7 +683,7 @@ visualGuardrails 分类规则：${visualGuardrailsText}
 - 必须覆盖 fullStory.sceneScript 的全部地点。每个 fullStory.sceneScript[].sceneId 必须在某一个且只能一个 sceneReferencePrompts[].sourceSceneIds 中出现。相同地点应复用同一个 sceneId，并将多个 source scene 放入同一 sourceSceneIds 数组；不同地点不得错误合并。
 - sceneReferencePrompts.relatedShotIds 在本阶段统一输出 []。镜头编号尚未生成，不得预造 shotId；合并全部 shotPlan 批次后再由程序回填关联关系。
 - characterReferencePrompts、sceneReferencePrompts、assetPrompts 和 visualBible 都只能写正向锁定信息，不得输出图片或视频渲染负面提示词。
-- 必须服从 visualGuardrails.positivePromptBoundary。用户明确写出的身份与外观可以正向使用；未授权特征保持不写，不得依据物种印象、画风或类比擅自扩展身体结构。
+- characterReferencePrompts 必须把全局角色边界 requiredTraits 完整编译为角色参考描述；本阶段不得再次解析 fixedCharacter、调用模型常识补充身份，或删除、替换、扩展已签发事实。
 - 上方黑名单及 sourceSimilarityRules 中的原片表面表达不得进入任何正向视觉提示词。dialogueRules 只影响后续镜头对白，不得转写成视觉负面词。
 - assetPrompts 只收录剧情真实使用且需要跨镜头一致的物件，不得为了显得完整补充装饰性资产。
 - productionStrategy.generationOrder 写全片生产顺序，但不得在其中枚举尚未生成的 shotId。
@@ -753,7 +771,7 @@ export function animationShotBatchPrompt(input) {
   const sourceSceneIds = sourceScenes.map((scene) => typeof scene === "string" ? scene : scene?.sceneId).filter(Boolean);
   const forbiddenTerms = collectProtectedTermsFromBrief(input.creativeBrief, input.creatorProfile?.fixedCharacter || "");
   const forbiddenText = forbiddenTerms.length ? forbiddenTerms.join("、") : "无";
-  const visualPolicyText = fixedCharacterVisualPolicyText(input.creatorProfile?.fixedCharacter || "");
+  const visualPolicyText = globalCharacterBoundaryText(input.visualGuardrails);
   const visualGuardrailsText = formatVisualGuardrailsForPrompt(input.visualGuardrails);
   const batchLabel = input.batchLabel || (input.batchIndex !== undefined ? `第 ${Number(input.batchIndex) + 1} 批` : "当前批次");
   const shotIdInstruction = formatShotIdInstruction(input);
@@ -802,7 +820,7 @@ visualGuardrails 分类规则：${visualGuardrailsText}
 - 每个 shot 只允许一个主要动作目标，时长建议 3–6 秒。任何“先……随后……然后……”、镜头内切换景别/机位/地点或连续多个反应，都必须拆成相邻镜头。
 - 遇到“角色 A 指路/递物/示意 + 角色 B 转头看目标 + 角色 B 眼睛一亮/点头/握拳/开心回应”，优先使用方案 B：中景互动镜头与表情强化镜头分开生成。
 - startFrame 和 endFrame 必须是完整静态帧，只写可见 StartState / EndState；motion 是唯一 Changes 层，必须用 1–4 个连续时段从前者到达后者。
-- 所有结构化正向字段必须服从 positivePromptBoundary；未授权角色特征保持不写。上方黑名单不得进入 startFrame、endFrame、motion。
+- 所有结构化正向字段必须服从全局角色边界；逐镜阶段只引用角色锁定，不得再次生成或修改固定角色特征。上方黑名单不得进入 startFrame、endFrame、motion。
 
 ${STRUCTURED_ANIMATION_SHOT_RULES_WITH_FIELD_RESPONSIBILITIES}
 
@@ -944,7 +962,14 @@ function formatShotIdInstruction(input) {
 
 export function characterReferenceRefinePrompt(input) {
   const character = input.characterReference || {};
-  const visualPolicyText = fixedCharacterVisualPolicyText(input.creatorProfile?.fixedCharacter || "");
+  const fixedBoundaryApplies = String(character.characterName || "").trim()
+    && String(character.characterName || "").trim() === String(input.visualGuardrails?.fixedCharacterBoundary?.characterName || "").trim();
+  const visualPolicyText = fixedBoundaryApplies
+    ? globalCharacterBoundaryText(input.visualGuardrails)
+    : "当前参考项不是固定角色；不得把固定角色边界移植到该配角。";
+  const boundaryConstraint = fixedBoundaryApplies
+    ? "appearancePrompt 必须完整保留全局角色边界 requiredTraits；参考图只能补充不冲突的发型、服装和色彩，不得重新推断、删除、替换或新增固定角色事实。"
+    : "当前项不是固定角色；只保持该角色已有 identity 与 appearancePrompt，不得套用固定角色的 requiredTraits。";
   const visualGuardrailsText = formatVisualGuardrailsForPrompt(input.visualGuardrails);
   return `${SYSTEM_PROMPT}
 
@@ -973,7 +998,7 @@ AI 视觉负面提示词通用规则：${visualGuardrailsText}
 - storyRole 和 identity 只能在不改变剧情功能的前提下微调。
 - appearancePrompt 必须是可直接给图像模型使用的中文正向提示词。
 - 不要把角色改成企鹅、玩偶、快递员外壳、动物身份或原片表面形象。
-- appearancePrompt 必须服从“固定角色外观边界”和 positivePromptBoundary：用户明写的身体特征可以保留；未授权特征保持不写。
+- ${boundaryConstraint}
 - forbiddenChanges 应包含“不要偏离参考图中的人物外观”和必要的一致性禁止项。
 
 输出结构：
@@ -998,7 +1023,7 @@ function formatTime(seconds) {
 }
 
 function formatVisualGuardrailsForPrompt(visualGuardrails) {
-  if (!visualGuardrails || typeof visualGuardrails !== "object") return "未生成，按固定角色外观边界和 creativeBrief 黑名单执行。";
+  if (!visualGuardrails || typeof visualGuardrails !== "object") return "未生成全局角色边界，禁止继续下游生成。";
   return JSON.stringify({
     fixedCharacterBoundary: visualGuardrails.fixedCharacterBoundary || {},
     allowedPositiveTraits: visualGuardrails.allowedPositiveTraits || [],
@@ -1007,4 +1032,11 @@ function formatVisualGuardrailsForPrompt(visualGuardrails) {
     dialogueRules: visualGuardrails.dialogueRules || [],
     stageInstructions: visualGuardrails.stageInstructions || {}
   });
+}
+
+function globalCharacterBoundaryText(visualGuardrails) {
+  const boundary = visualGuardrails?.fixedCharacterBoundary;
+  return boundary && typeof boundary === "object"
+    ? JSON.stringify(boundary)
+    : "缺少已签发的全局角色边界，禁止重新解析 fixedCharacter 代替。";
 }

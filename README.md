@@ -12,6 +12,12 @@ npm start
 
 打开 <http://localhost:4173>。未配置模型时会显示“演示模式”，完整创意流程仍可运行，但结果不是对视频的真实判断。
 
+## 全局角色边界
+
+`Visual Guardrails` 是固定角色语义唯一生成阶段。视觉模型会结合用户角色描述、参考分析、脚本还原和创意简报，一次性输出 `requiredTraits`、`allowedTraits` 与 `forbiddenTraits`；可以使用模型常识理解“狼娘”等开放概念，但不依赖本地写死的物种关键词字典，且用户明确肯定或否定的设定优先。
+
+服务端会将该边界与当前上游数据摘要绑定并签名。主题变体、Legacy Full Story、Animation Plan、人物参考精修、角色图、首尾帧和视频生成只消费同一份已签发边界，不会在每个阶段重新识别关键词或重新推断角色特征。修改固定角色、赛道、限制、字幕或参考视频会使旧边界失效，页面要求重新运行工作流。
+
 ## 接入 Xiaomi MiMo V2.5
 
 项目默认使用小米官方 OpenAI 兼容接口和 `mimo-v2.5` 模型。先确认模型服务可访问：
@@ -186,6 +192,8 @@ VIDEO_HTTP_POLL_TIMEOUT_MS=600000
 - `src/mimo-client.js`：MiMo OpenAI 兼容适配器。
 - `src/qwen-client.js`：Qwen OpenAI 兼容多模态适配器。
 - `src/deepseek-client.js`：DeepSeek-V4 OpenAI 兼容纯文本适配器。
+- `src/character-boundary.js`：全局角色边界的上游摘要、签发和验签。
+- `src/character-feature-compiler.js`：把已签发的固定角色外观事实编译为动画静态帧侧车，不重新推断主角。
 - `src/workflow.js`：完整创意工作流编排，以及“动画基础锁定 → 逐场次分批 shotPlan → 服务端合并”的动画生产包生成与验证。
 - `src/shot-video-generator.js`：将当前 shot 的已选首尾帧、`videoPrompt` 和逐镜视频负面词路由到所选视频 provider。
 - `src/shot-video-providers.js`：Kling / Seedance 模型白名单、默认选择及互相隔离的运行配置。

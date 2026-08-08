@@ -15,7 +15,7 @@ function shotFixture() {
   const environment = {
     sceneId: "LOC01",
     foreground: "木桌边缘",
-    midground: "角色站在桌旁",
+    midground: "木桌位于画面中层",
     background: "同一扇朝西窗户",
     atmosphere: "安静温暖"
   };
@@ -293,6 +293,17 @@ test("transition validation requires EndState changes to be declared by Changes"
   changedLight.endFrame.lighting.direction = "左前方";
   changedLight.motion.lightingChange = "光线从右后方连续转为左前方";
   assert.equal(validateFrameReferenceMode(changedLight, "transition"), "transition");
+
+  const undeclaredEnvironment = shotFixture();
+  undeclaredEnvironment.endFrame.environment.midground = "角色双手将木盒举起";
+  undeclaredEnvironment.motion.environmentChange = "无";
+  assert.throws(
+    () => validateFrameReferenceMode(undeclaredEnvironment, "transition"),
+    /变化字段：midground/u
+  );
+
+  undeclaredEnvironment.motion.environmentChange = "中景木盒从桌面连续上升到角色胸前";
+  assert.equal(validateFrameReferenceMode(undeclaredEnvironment, "transition"), "transition");
 });
 
 test("generation validation separates independent generation from start-frame requirements", () => {

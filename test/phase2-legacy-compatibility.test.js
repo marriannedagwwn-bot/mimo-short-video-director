@@ -13,6 +13,7 @@ import {
   sealReconstruction
 } from "../src/reconstruction-grounding.js";
 import { WorkflowService } from "../src/workflow.js";
+import { withGlobalCharacterBoundary } from "./helpers/global-character-boundary.js";
 
 const context = {
   creatorProfile: {
@@ -106,11 +107,11 @@ test("当前 legacy Full Story 正常路径仍只调用一次 provider 且成功
     sourceScriptReconstruction: {}
   });
 
-  const result = await workflow.createFullStory({
+  const result = await workflow.createFullStory(withGlobalCharacterBoundary(workflow, {
     ...context,
     ...groundedUpstream(workflow),
     creativeBrief
-  });
+  }));
 
   assert.equal(providerCalls, 1);
   assert.deepEqual(result, expectedStory);

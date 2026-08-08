@@ -6,7 +6,8 @@ import { AttemptStore } from "./attempt-store.js";
 import { ModelCallCoordinator } from "./model-call-coordinator.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
-import { InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, getFixedCharacterIdentityAuthorizations, hasExplicitStandardNameSuffix, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
+import { InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCharacterReferenceMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
+import { CharacterBoundaryError, createCharacterBoundaryKey, sealGlobalCharacterBoundary, verifyGlobalCharacterBoundary } from "./character-boundary.js";
 import {
   ReconstructionGroundingError,
   createGroundingKey,
@@ -38,6 +39,7 @@ export class WorkflowService {
     staticFrameCompilerProvider = "",
     animationShotBatchSceneCount = DEFAULT_ANIMATION_BATCH_SCENE_COUNT,
     groundingKey = null,
+    characterBoundaryKey = null,
     attemptStore = null,
     modelCallCoordinator = null
   } = {}) {
@@ -77,6 +79,7 @@ export class WorkflowService {
     this.staticFrameCompilerProvider = staticFrameCompilerStage.provider;
     this.animationShotBatchSceneCount = normalizeBatchSize(animationShotBatchSceneCount);
     this.groundingKey = groundingKey || createGroundingKey();
+    this.characterBoundaryKey = characterBoundaryKey || createCharacterBoundaryKey();
     this.attemptStore = attemptStore instanceof AttemptStore
       ? attemptStore
       : new AttemptStore();
@@ -119,7 +122,7 @@ export class WorkflowService {
     const retryContext = {
       stage: "referenceAnalysis",
       mediaMode: resolvedMediaMode,
-      videoDurationMs: Math.max(0, Math.round(Number(input.metadata?.duration) * 1000) || 0),
+      videoDurationSeconds: Math.max(0, Number(input.metadata?.duration) || 0),
       frameCount: input.frames.length
     };
     const validate = (value) => {
@@ -132,16 +135,20 @@ export class WorkflowService {
           allowedEvidenceSources: evidenceSourcesForMediaMode(resolvedMediaMode)
         });
       } catch (error) {
-        if (error instanceof ReconstructionGroundingError) throw new OutputContractError(error.message);
+        if (error instanceof ReconstructionGroundingError) {
+          const contractError = new OutputContractError(error.message);
+          contractError.code = error.code;
+          throw contractError;
+        }
         throw error;
       }
     };
     if (!this.hasLiveClient) return validate(mockAnalysis(input));
-    return this.generateStageJson("analysis", input, {
-        prompt: analysisPrompt(input),
+    const runAnalysis = ({ promptInput, video }) => this.generateStageJson("analysis", input, {
+        prompt: analysisPrompt(promptInput),
         systemPrompt: ANALYSIS_SYSTEM_PROMPT,
         frames: input.frames,
-        video: input.video,
+        video,
         onResolvedMediaMode: (mode) => {
           resolvedMediaMode = mode;
           retryContext.mediaMode = mode;
@@ -149,6 +156,18 @@ export class WorkflowService {
         retryContext,
         validate
       });
+    try {
+      return await runAnalysis({ promptInput: input, video: input.video });
+    } catch (error) {
+      const canFallbackToFrames = error instanceof OutputContractError
+        && error.code === "VIDEO_EVIDENCE_TIME_INVALID"
+        && resolvedMediaMode === "video"
+        && input.frames.length > 0;
+      if (!canFallbackToFrames) throw error;
+      resolvedMediaMode = "frames";
+      retryContext.mediaMode = "frames";
+      return runAnalysis({ promptInput: { ...input, video: null }, video: null });
+    }
   }
 
   async reconstruct(input) {
@@ -220,11 +239,13 @@ export class WorkflowService {
     const profile = requireObject(input.creatorProfile, "creatorProfile");
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
-    if (!this.hasLiveClient) return ensureThemeVariantsMatchProfile(ensureOutputContract(mockVariants(input), "themeVariants"), profile, input.creativeBrief, input.visualGuardrails);
-    const prompt = variantsPrompt(input);
-    return this.generateStageJson("variants", input, {
+    const visualGuardrails = this.assertGlobalCharacterBoundary(input);
+    const validatedInput = { ...input, visualGuardrails };
+    if (!this.hasLiveClient) return ensureThemeVariantsMatchProfile(ensureOutputContract(mockVariants(validatedInput), "themeVariants"), profile, input.creativeBrief, visualGuardrails);
+    const prompt = variantsPrompt(validatedInput);
+    return this.generateStageJson("variants", validatedInput, {
       prompt,
-      validate: (result) => ensureThemeVariantsMatchProfile(ensureOutputContract(result, "themeVariants"), profile, input.creativeBrief, input.visualGuardrails)
+      validate: (result) => ensureThemeVariantsMatchProfile(ensureOutputContract(result, "themeVariants"), profile, input.creativeBrief, visualGuardrails)
     });
   }
 
@@ -237,13 +258,30 @@ export class WorkflowService {
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
     const groundedInput = groundedStageInput(input, this.groundingKey);
-    if (!this.hasLiveClient) return ensureVisualGuardrailsMatchesProfile(ensureOutputContract(mockVisualGuardrails(groundedInput), "visualGuardrails"), profile);
+    const finalize = (result) => {
+      const raw = ensureOutputContract(result, "visualGuardrails");
+      const modelSealFields = ["sourceDigest", "boundaryDigest", "boundarySignature"]
+        .filter((field) => Object.prototype.hasOwnProperty.call(raw.fixedCharacterBoundary || {}, field));
+      if (modelSealFields.length) {
+        throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary 的签发字段只能由服务端生成：${modelSealFields.join("、")}`);
+      }
+      if (raw.allowedPositiveTraits.length || raw.positivePromptBoundary.length) {
+        throw new OutputContractError("visualGuardrails.allowedPositiveTraits 与 positivePromptBoundary 必须由服务端从全局角色边界派生，模型必须返回空数组");
+      }
+      const sealed = sealGlobalCharacterBoundary(
+        materializeGlobalCharacterBoundaryViews(raw, profile),
+        groundedInput,
+        this.characterBoundaryKey
+      );
+      return ensureVisualGuardrailsMatchesProfile(ensureOutputContract(sealed, "visualGuardrails"), profile);
+    };
+    if (!this.hasLiveClient) return finalize(mockVisualGuardrails(groundedInput));
     const prompt = visualGuardrailsPrompt(groundedInput);
     return this.generateStageJson("visualGuardrails", groundedInput, {
       prompt,
       frames: input.frames || [],
       video: input.video || null,
-      validate: (result) => ensureVisualGuardrailsMatchesProfile(ensureOutputContract(result, "visualGuardrails"), profile)
+      validate: finalize
     });
   }
 
@@ -255,16 +293,18 @@ export class WorkflowService {
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
     const groundedInput = groundedStageInput(input, this.groundingKey);
-    const settings = this.resolveStage("fullStory", groundedInput);
-    if (!this.hasLiveClient) return ensureFullStoryMatchesProfile(ensureOutputContract(mockFullStory(groundedInput), "fullStory"), profile, input.creativeBrief, input.variant, input.visualGuardrails);
+    const visualGuardrails = this.assertGlobalCharacterBoundary(groundedInput);
+    const validatedInput = { ...groundedInput, visualGuardrails };
+    const settings = this.resolveStage("fullStory", validatedInput);
+    if (!this.hasLiveClient) return ensureFullStoryMatchesProfile(ensureOutputContract(mockFullStory(validatedInput), "fullStory"), profile, input.creativeBrief, input.variant, visualGuardrails);
     this.assertStageClient(settings, "完整剧情");
-    const prompt = fullStoryPrompt({ ...groundedInput, targetProvider: settings.provider, targetModel: settings.model });
+    const prompt = fullStoryPrompt({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
     return this.generateValidatedJson({
       client: settings.client,
       prompt,
       model: settings.model,
       maxCompletionTokens: settings.maxCompletionTokens,
-      validate: (result) => ensureFullStoryMatchesProfile(ensureOutputContract(result, "fullStory"), profile, input.creativeBrief, input.variant, input.visualGuardrails),
+      validate: (result) => ensureFullStoryMatchesProfile(ensureOutputContract(result, "fullStory"), profile, input.creativeBrief, input.variant, visualGuardrails),
       retryContext: { stage: "fullStory", provider: settings.provider }
     });
   }
@@ -688,14 +728,15 @@ export class WorkflowService {
     const profile = requireObject(input.creatorProfile, "creatorProfile");
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
+    const visualGuardrails = this.assertGlobalCharacterBoundary(input);
     const fullStory = ensureFullStoryMatchesProfile(
       ensureOutputContract(input.fullStory, "fullStory"),
       profile,
       input.creativeBrief,
       input.variant,
-      input.visualGuardrails
+      visualGuardrails
     );
-    const validatedInput = { ...input, fullStory };
+    const validatedInput = { ...input, fullStory, visualGuardrails };
     const settings = this.resolveStage("animationPlan", validatedInput);
     const compilerSettings = this.resolveStage("staticFrameCompiler", validatedInput);
     if (!this.hasLiveClient) {
@@ -813,21 +854,35 @@ export class WorkflowService {
   async refineCharacterReference(input) {
     requireObject(input, "请求");
     const characterReference = requireObject(input.characterReference, "characterReference");
+    const visualGuardrails = this.assertGlobalCharacterBoundary(input);
     const imageDataUrl = requireText(input.imageDataUrl, "人物参考图", { max: 16 * 1024 * 1024 });
     if (!imageDataUrl.startsWith("data:image/")) throw new InputError("人物参考图必须是图片 data URL");
-    const prompt = characterReferenceRefinePrompt(input);
+    const validatedInput = { ...input, visualGuardrails };
+    const prompt = characterReferenceRefinePrompt(validatedInput);
     if (!this.hasLiveClient) {
       return normalizeCharacterReference({
         ...characterReference,
         appearancePrompt: `${characterReference.appearancePrompt || ""} 参考用户上传的人物图，保持人物外观、服装和色彩一致。`,
         referenceImageNotes: "演示模式：已标记为使用人物参考图。"
-      }, characterReference, input);
+      }, characterReference, { ...input, visualGuardrails });
     }
-    return this.generateStageJson("characterReference", input, {
+    return this.generateStageJson("characterReference", validatedInput, {
       prompt,
       frames: [{ timestamp: 0, dataUrl: imageDataUrl }],
-      validate: (result) => normalizeCharacterReference(result, characterReference, input)
+      validate: (result) => normalizeCharacterReference(result, characterReference, validatedInput)
     });
+  }
+
+  assertGlobalCharacterBoundary(input = {}) {
+    requireObject(input.visualGuardrails, "visualGuardrails");
+    try {
+      const verified = verifyGlobalCharacterBoundary(input.visualGuardrails, input, this.characterBoundaryKey);
+      const materialized = materializeGlobalCharacterBoundaryViews(verified, input.creatorProfile || {});
+      return ensureVisualGuardrailsMatchesProfile(ensureOutputContract(materialized, "visualGuardrails"), input.creatorProfile || {});
+    } catch (error) {
+      if (error instanceof CharacterBoundaryError) throw new InputError(error.message);
+      throw error;
+    }
   }
 
   async run(input) {
@@ -835,7 +890,7 @@ export class WorkflowService {
     const sourceScriptReconstruction = await this.reconstruct({ ...input, referenceAnalysis });
     const creativeBrief = await this.createBrief({ ...input, referenceAnalysis, sourceScriptReconstruction });
     const visualGuardrails = await this.createVisualGuardrails({ ...input, referenceAnalysis, sourceScriptReconstruction, creativeBrief });
-    const themeVariants = await this.createVariants({ ...input, creativeBrief, visualGuardrails });
+    const themeVariants = await this.createVariants({ ...input, referenceAnalysis, sourceScriptReconstruction, creativeBrief, visualGuardrails });
     return { referenceAnalysis, sourceScriptReconstruction, creativeBrief, visualGuardrails, themeVariants };
   }
 
@@ -898,7 +953,7 @@ function normalizeCharacterReference(result = {}, fallback = {}, input = {}) {
   const appearancePrompt = String(value.appearancePrompt || fallback.appearancePrompt || "").trim();
   if (!characterName) throw new OutputContractError("characterReference 缺少 characterName");
   if (!appearancePrompt) throw new OutputContractError("characterReference 缺少 appearancePrompt");
-  return {
+  return ensureCharacterReferenceMatchesBoundary({
     ...fallback,
     characterName,
     storyRole: String(value.storyRole || fallback.storyRole || "").trim(),
@@ -909,7 +964,7 @@ function normalizeCharacterReference(result = {}, fallback = {}, input = {}) {
     referenceImageAdded: true,
     referenceImageName: String(input.imageName || fallback.referenceImageName || "").trim(),
     referenceImageNotes: String(value.referenceImageNotes || value.imageAnalysis || fallback.referenceImageNotes || "").trim()
-  };
+  }, input.visualGuardrails);
 }
 
 function normalizeStringArray(value, fallback = []) {
@@ -2321,12 +2376,13 @@ ${JSON.stringify(failedOutput || {})}
 }
 
 function analysisValidationRetryPrompt(originalPrompt, validationError, failedOutput, retryContext = {}) {
-  const videoDurationMs = Math.max(0, Math.round(Number(retryContext.videoDurationMs)) || 0);
+  const videoDurationSeconds = Math.max(0, Number(retryContext.videoDurationSeconds) || 0);
+  const maximumWholeEndSecond = videoDurationSeconds ? Math.ceil(videoDurationSeconds) : 0;
   const frameCount = Math.max(0, Math.round(Number(retryContext.frameCount)) || 0);
   const evidenceModeCorrection = retryContext.mediaMode === "video"
-    ? `- 本次成功媒体请求使用原生视频：所有 observedFacts.evidenceRefs 只能写 {"source":"video","startMs":整数,"endMs":整数}，必须满足 0 <= startMs < endMs${videoDurationMs ? ` <= ${videoDurationMs}` : ""}；endMs 不得超过输入视频时长。不得保留任何 frame 或 frameNumber。`
+    ? `- 本次成功媒体请求使用原生视频：所有 observedFacts.evidenceRefs 只能写 {"source":"video","startSecond":整数,"endSecond":整数}，必须满足 0 <= startSecond < endSecond${maximumWholeEndSecond ? ` <= ${maximumWholeEndSecond}` : ""}；不得输出 startMs/endMs，不得保留任何 frame 或 frameNumber。`
     : retryContext.mediaMode === "frames"
-      ? `- 本次成功媒体请求使用采样画面：所有 observedFacts.evidenceRefs 只能写 {"source":"frame","frameNumber":实际提供的正整数}，frameNumber 必须落在 1${frameCount ? `-${frameCount}` : " 到实际提供帧数"}；不得保留任何 video、startMs 或 endMs。`
+      ? `- 本次成功媒体请求使用采样画面：所有 observedFacts.evidenceRefs 只能写 {"source":"frame","frameNumber":实际提供的正整数}，frameNumber 必须落在 1${frameCount ? `-${frameCount}` : " 到实际提供帧数"}；不得保留任何 video、startSecond、endSecond、startMs 或 endMs。`
       : "- evidenceRefs 必须严格服从上方校验错误指出的本次媒体证据来源。";
   return `${originalPrompt}
 
@@ -2363,16 +2419,11 @@ ${JSON.stringify(failedOutput || {})}
 }
 
 function creativeBriefValidationCorrection(fixedCharacter = "") {
-  const authorizations = getFixedCharacterIdentityAuthorizations(fixedCharacter);
-  const authorizedExpressions = authorizations.originalIdentityExpressions.length
-    ? authorizations.originalIdentityExpressions.join("；")
-    : "未识别到可泛化的动物身份；只能逐字使用 fixedCharacter 已声明内容";
   return `
 Creative Brief 专用纠偏：
 - 校验消息已经给出精确字段路径和具体命中词，只修正越界字段，不要重写整个 Creative Brief。
 - fixedCharacter 原文：${fixedCharacter || "未指定"}
-- fixedCharacter 中已授权的原始身份表达：${authorizedExpressions}
-- 保留用户的姓名与全部固定角色设定；尤其不得把用户声明的猫耳少女、猫娘或猫尾设定删掉、降级或换成别的身份。
+- 本阶段只保留用户姓名与完整原始设定，不对角色原型、身体结构或职业做关键词推断；这些语义统一交给后续 Visual Guardrails。
 - newRole 和 newOccupationOrIdentity 只写目标角色最终身份；mappingLogic 只解释剧作功能迁移。
 - mappingLogic 中“不继承原片动物形象”等否定来源说明不等于给目标角色指定动物身份；不要为了消除否定来源词而改动 fixedCharacter，只需用清楚的剧作功能语言修正真正越界的字段。`;
 }

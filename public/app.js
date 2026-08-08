@@ -22,6 +22,7 @@ const state = {
   frames: [],
   metadata: null,
   output: {},
+  characterBoundaryProfile: null,
   selectedVariantId: null,
   fullStories: {},
   animationPlans: {},
@@ -350,11 +351,15 @@ function bindEvents() {
   elements.animationPlan.addEventListener("dragleave", handleCharacterReferenceDragLeave);
   elements.animationPlan.addEventListener("drop", handleCharacterReferenceDrop);
   window.addEventListener("popstate", renderRoute);
-  [elements.fixedCharacter, elements.vertical, elements.constraints].forEach((element) => element.addEventListener("input", () => { saveProfile(); validateReady(); }));
+  [elements.fixedCharacter, elements.vertical, elements.constraints].forEach((element) => element.addEventListener("input", handleProfileInput));
+  elements.transcript.addEventListener("input", () => {
+    if (state.characterBoundaryProfile) invalidateGlobalCharacterBoundary("字幕或台词文本已修改；旧的全局角色边界已失效，请重新运行工作流。");
+  });
 }
 
 async function handleFile(file) {
   if (!file.type.startsWith("video/")) return showError("请选择视频文件。支持 MP4、MOV、WebM 等浏览器可播放格式。");
+  if (state.characterBoundaryProfile) invalidateGlobalCharacterBoundary("参考视频已替换；旧的全局角色边界已失效，请重新运行工作流。");
   const media = analysisMediaSettings();
   if (state.mode !== "demo" && media.mediaMode === "video" && file.size > media.nativeVideoMaxBytes) {
     return showError(`当前强制使用原生视频，文件不能超过 ${formatBytes(media.nativeVideoMaxBytes)}。请压缩视频或改用 auto 模式。`);
@@ -470,6 +475,7 @@ async function runWorkflow() {
   if (state.frames.length < 3 || !creatorProfile.fixedCharacter || !creatorProfile.vertical) return showError("请先上传视频，并填写固定角色和垂直赛道。 ");
   state.running = true;
   state.output = {};
+  state.characterBoundaryProfile = null;
   state.fullStories = {};
   state.animationPlans = {};
   state.animationPlanMetadata = {};
@@ -518,11 +524,14 @@ async function runWorkflow() {
       sourceScriptReconstruction: state.output.sourceScriptReconstruction,
       creativeBrief: state.output.creativeBrief
     });
+    state.characterBoundaryProfile = { ...creatorProfile };
     renderVisualGuardrails(state.output.visualGuardrails);
     setStage("guardrails", "done");
 
     setStage("variants", "active");
     state.output.themeVariants = await api("/api/variants", {
+      referenceAnalysis: state.output.referenceAnalysis,
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
       creativeBrief: state.output.creativeBrief,
       visualGuardrails: state.output.visualGuardrails,
       creatorProfile,
@@ -674,15 +683,17 @@ function renderBrief(data) {
 function renderVisualGuardrails(data) {
   const boundary = data.fixedCharacterBoundary || {};
   elements.guardrails.innerHTML = `${resultHeader("VISUAL GUARDRAILS", "角色与创作边界", "非渲染负面")}
-    <div class="summary-strip">${escape(data.rationale || boundary.doNotInfer || "已锁定固定角色身份、允许特征、正向提示词边界、原片规避和台词行为规则。")}</div>
+    <div class="summary-strip">${escape(data.rationale || "已签发全局角色边界，后续阶段只消费、不重新推断。")}</div>
     <div class="data-grid">
-      ${cell("角色锁定", boundary.identityLock || boundary.characterName)}
-      ${cell("允许身份", boundary.allowedIdentity)}
-      ${cell("允许外观", boundary.allowedAppearance)}
-      ${cell("允许身体特征", (boundary.allowedBodyFeatures || []).join(" / ") || "无额外身体特征")}
-      ${cell("风格说明", boundary.styleNotes)}
-      ${cell("禁止推导", boundary.doNotInfer)}
+      ${cell("角色锁定", boundary.characterName)}
+      ${cell("规范描述", boundary.canonicalDescription)}
+      ${cell("身体形态", boundary.bodyForm)}
+      ${cell("边界版本", boundary.schemaVersion)}
+      ${cell("边界摘要", boundary.boundaryDigest)}
     </div>
+    ${block("必须沿用", renderBoundaryTraits(boundary.requiredTraits))}
+    ${block("允许选择", renderBoundaryTraits(boundary.allowedTraits))}
+    ${block("禁止出现", renderBoundaryTraits(boundary.forbiddenTraits))}
     ${block("允许正向使用", renderAllowedPositiveTraits(data.allowedPositiveTraits))}
     ${block("正向提示词边界", renderGuardrailRuleList(data.positivePromptBoundary, "无额外正向提示词边界。"))}
     ${block("原片相似规避规则", renderGuardrailRuleList(data.sourceSimilarityRules, "无原片表面表达规避项。"))}
@@ -690,6 +701,12 @@ function renderVisualGuardrails(data) {
     <div class="warning-box"><b>渲染负面提示词不在本阶段生成。</b> 图片与视频负面提示词只在 animationPlan 中按当前镜头分别生成，并必须附带触发证据。</div>
     ${uncertainties(data.uncertainties)}`;
   reveal(elements.guardrails);
+}
+
+function renderBoundaryTraits(value = []) {
+  const items = Array.isArray(value) ? value : [];
+  if (!items.length) return `<div class="tag-row"><span class="tag">无</span></div>`;
+  return `<div class="rule-list">${items.map((item) => `<div class="rule"><strong>${escape(item.canonicalName || "未命名事实")}</strong><p>${escape(item.scope || "")} · ${escape(item.evidenceLevel || "")}<br>${escape(item.reason || "")}</p></div>`).join("")}</div>`;
 }
 
 function renderAllowedPositiveTraits(value = []) {
@@ -945,6 +962,8 @@ async function generateAnimationPlan({ force = false } = {}) {
   try {
     const previousPrivateSidecars = state.animationPlanMetadata[variant.id]?.privateSidecars;
     const result = await api("/api/animation-plan", {
+      referenceAnalysis: state.output.referenceAnalysis,
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
       creativeBrief: state.output.creativeBrief,
       visualGuardrails: state.output.visualGuardrails,
       variant,
@@ -1396,6 +1415,9 @@ async function refineCharacterReferenceWithImage(indexValue, file) {
       imageDataUrl,
       characterReference: safeCharacterReference,
       creatorProfile: profile(),
+      referenceAnalysis: state.output.referenceAnalysis,
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+      creativeBrief: state.output.creativeBrief,
       visualGuardrails: state.output.visualGuardrails,
       selectedVariant: variant,
       fullStory: currentFullStory(),
@@ -1509,6 +1531,10 @@ async function generateCharacterReferenceImages() {
       referenceImageName: state.characterImageGeneration.referenceImageName,
       characterReference: stripReferenceImageData(item),
       creatorProfile: profile(),
+      referenceAnalysis: state.output.referenceAnalysis,
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+      creativeBrief: state.output.creativeBrief,
+      visualGuardrails: state.output.visualGuardrails,
       selectedVariant: selectedVariant()
     }, handleCharacterImageStreamEvent);
     const readyCount = state.characterImageGeneration.results.filter((result) => result.status === "ready").length;
@@ -2362,8 +2388,10 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
     delete videoShot.compiledNegativePrompt;
     videoShot.negativePrompts = { video: videoNegativePrompt.negativePromptEntries };
     const result = await api("/api/generate-shot-video", {
+      ...globalCharacterBoundaryContext(),
       selectedVariantId: variant?.id || "",
       count,
+      characterReferences: plan.characterReferencePrompts || [],
       shot: {
         ...videoShot,
         videoPrompt: promptOverride || shot.videoPrompt || "",
@@ -2493,6 +2521,7 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
     delete frameShot.compiledNegativePrompt;
     frameShot.negativePrompts = { image: negativePromptApplication.negativePromptEntries };
     const result = await api("/api/generate-shot-frame-image", {
+      ...globalCharacterBoundaryContext(),
       selectedVariantId: variant?.id || "",
       frameKind,
       count,
@@ -2971,6 +3000,46 @@ function modelName(model) { return String(model || "").split("/").pop(); }
 function validateReady() { if (!state.running) elements.run.disabled = !(state.frames.length >= 3 && elements.fixedCharacter.value.trim() && elements.vertical.value.trim()); }
 function showError(message) { elements.error.textContent = message; }
 function profile() { return { fixedCharacter: elements.fixedCharacter.value.trim(), vertical: elements.vertical.value.trim(), constraints: elements.constraints.value.trim() }; }
+function handleProfileInput() {
+  const currentProfile = profile();
+  if (
+    state.characterBoundaryProfile
+    && JSON.stringify(currentProfile) !== JSON.stringify(state.characterBoundaryProfile)
+  ) {
+    invalidateGlobalCharacterBoundary();
+  }
+  saveProfile();
+  validateReady();
+}
+function invalidateGlobalCharacterBoundary(message = "固定角色或创作设定已修改；旧的全局角色边界已失效，请重新运行工作流。") {
+  state.characterBoundaryProfile = null;
+  delete state.output.creativeBrief;
+  delete state.output.visualGuardrails;
+  delete state.output.themeVariants;
+  delete state.output.fullStory;
+  delete state.output.animationPlan;
+  state.selectedVariantId = null;
+  state.fullStories = {};
+  state.animationPlans = {};
+  state.animationPlanMetadata = {};
+  state.shotFrameResults = {};
+  state.shotVideoResults = {};
+  [elements.brief, elements.guardrails, elements.variants].forEach((element) => {
+    element.innerHTML = "";
+    element.classList.add("hidden");
+  });
+  elements.export.classList.add("hidden");
+  showError(message);
+}
+function globalCharacterBoundaryContext() {
+  return {
+    creatorProfile: profile(),
+    referenceAnalysis: state.output.referenceAnalysis,
+    sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+    creativeBrief: state.output.creativeBrief,
+    visualGuardrails: state.output.visualGuardrails
+  };
+}
 function saveProfile() { localStorage.setItem("directorProfile", JSON.stringify(profile())); }
 function restoreProfile() { try { const data = JSON.parse(localStorage.getItem("directorProfile")); if (data) { elements.fixedCharacter.value = data.fixedCharacter || ""; elements.vertical.value = data.vertical || ""; elements.constraints.value = data.constraints || ""; } } catch {} }
 function selectedVariant() { return (state.output.themeVariants?.variants || []).find((variant) => String(variant.id) === String(state.selectedVariantId)); }
@@ -3112,6 +3181,7 @@ function restoreStoryPackage(payload) {
   state.output.sourceScriptReconstruction = payload.sourceScriptReconstruction || payload.output?.sourceScriptReconstruction || state.output.sourceScriptReconstruction;
   state.output.creativeBrief = payload.creativeBrief || payload.output?.creativeBrief || state.output.creativeBrief;
   state.output.visualGuardrails = payload.visualGuardrails || payload.output?.visualGuardrails || state.output.visualGuardrails;
+  state.characterBoundaryProfile = state.output.visualGuardrails ? { ...profile() } : null;
   state.output.themeVariants = mergeImportedThemeVariants(payload.themeVariants || payload.output?.themeVariants, variant);
   state.selectedVariantId = id;
 

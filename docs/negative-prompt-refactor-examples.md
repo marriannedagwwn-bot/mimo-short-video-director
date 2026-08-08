@@ -28,19 +28,64 @@
 }
 ```
 
-新结构不生成 `commonNegativePrompt`，也不枚举理论身体部件：
+当前结构不生成 `commonNegativePrompt`。Visual Guardrails 只做一次开放语义判断，不使用本地物种关键词字典；下面示例中的猫耳、猫尾和人形四肢由模型结合用户原文与常识签发，后续阶段不再重算：
 
 ```json
 {
   "fixedCharacterBoundary": {
+    "schemaVersion": "2.0",
     "characterName": "小白子",
-    "identityLock": "小白子始终保持 Q 版猫耳少女人形",
-    "allowedIdentity": "Q 版猫耳少女人形",
-    "allowedAppearance": "猫耳和蓬松猫尾巴",
-    "allowedBodyFeatures": ["猫耳", "蓬松猫尾巴"],
-    "styleNotes": "猫娘仅按用户明确写出的风格与外观特征呈现。",
-    "explicitUserPresets": ["Q 版猫耳少女人形", "猫耳", "蓬松猫尾巴"],
-    "doNotInfer": "后续正向提示词不得擅自添加用户没有授权的角色特征；未声明不等于渲染负面词。"
+    "canonicalDescription": "Q 版猫耳少女人形，猫耳与蓬松猫尾稳定存在。",
+    "bodyForm": "人形少女，保持人类双手和双足。",
+    "requiredTraits": [
+      {
+        "canonicalName": "小白子",
+        "terms": ["小白子"],
+        "scope": "identity",
+        "evidenceLevel": "explicit",
+        "triggerEvidence": [{ "sourcePath": "creatorProfile.fixedCharacter", "evidence": "小白子" }],
+        "reason": "用户明确指定固定角色。"
+      },
+      {
+        "canonicalName": "猫耳",
+        "terms": ["猫耳", "猫耳朵"],
+        "scope": "appearance",
+        "evidenceLevel": "explicit",
+        "triggerEvidence": [{ "sourcePath": "creatorProfile.fixedCharacter", "evidence": "猫耳" }],
+        "reason": "用户明确写出猫耳。"
+      },
+      {
+        "canonicalName": "蓬松猫尾巴",
+        "terms": ["蓬松猫尾巴", "猫尾", "猫尾巴", "尾巴"],
+        "scope": "appearance",
+        "evidenceLevel": "explicit",
+        "triggerEvidence": [{ "sourcePath": "creatorProfile.fixedCharacter", "evidence": "蓬松猫尾巴" }],
+        "reason": "用户明确写出蓬松猫尾巴。"
+      },
+      {
+        "canonicalName": "人形四肢",
+        "terms": ["人形四肢", "人类双手", "人类双足"],
+        "scope": "appearance",
+        "evidenceLevel": "inferred",
+        "triggerEvidence": [{ "sourcePath": "creatorProfile.fixedCharacter", "evidence": "猫耳少女人形" }],
+        "reason": "模型依据少女人形语义确定主体仍为人形。"
+      }
+    ],
+    "allowedTraits": [
+      {
+        "canonicalName": "活泼可爱",
+        "terms": ["活泼可爱"],
+        "scope": "personality",
+        "evidenceLevel": "explicit",
+        "triggerEvidence": [{ "sourcePath": "creatorProfile.fixedCharacter", "evidence": "活泼可爱" }],
+        "reason": "用户明确写出性格。"
+      }
+    ],
+    "forbiddenTraits": [],
+    "unresolvedConflicts": [],
+    "sourceDigest": "sha256:[REDACTED]",
+    "boundaryDigest": "sha256:[REDACTED]",
+    "boundarySignature": "[REDACTED]"
   },
   "allowedPositiveTraits": [
     { "term": "小白子", "scope": "identity", "reason": "用户固定角色" },
@@ -49,7 +94,7 @@
   ],
   "positivePromptBoundary": [
     {
-      "rule": "小白子保持 Q 版猫耳少女人形，仅使用用户明确设定的猫耳和蓬松猫尾巴，不擅自添加其他生物结构。",
+      "rule": "必须沿用：小白子、猫耳、蓬松猫尾巴、人形四肢；后续阶段不得重新推断、删除或替换全局角色事实。",
       "triggerEvidence": [
         { "sourcePath": "creatorProfile.fixedCharacter", "evidence": "小白子，Q 版猫耳少女人形，猫耳和蓬松猫尾巴" }
       ],
@@ -79,12 +124,12 @@
     "fullStory": "分别执行正向边界、原片规避与台词规则。",
     "animationPlan": "按当前镜头和明确证据逐镜生成可为空的图片/视频负面词。"
   },
-  "rationale": "本阶段不生成最终渲染负面提示词。",
+  "rationale": "本阶段一次性签发全局角色边界；后续只消费，不重新解析或推断。",
   "uncertainties": []
 }
 ```
 
-`企鹅服` 仍可作为故事与分镜的来源相似规则；由于当前生成请求没有传入原片画面，它不会进入任一 shot 的 render negative。`咕嘎` 只属于 `dialogueRules`。
+`allowedPositiveTraits` 和 `positivePromptBoundary` 由服务端从 `fixedCharacterBoundary` 派生，不是第二份模型事实。`企鹅服` 仍可作为故事与分镜的来源相似规则；由于当前生成请求没有传入原片画面，它不会进入任一 shot 的 render negative。`咕嘎` 只属于 `dialogueRules`。
 
 ## 2. 三个 shot 的逐镜对比
 

@@ -1,4 +1,5 @@
 import { validateLegacyFullStoryStrict } from "./contracts/contract-validator.js";
+import { GLOBAL_CHARACTER_BOUNDARY_VERSION } from "./character-boundary.js";
 
 export class InputError extends Error {
   constructor(message, details = []) {
@@ -150,6 +151,40 @@ const animationAliasFields = [
 ];
 
 const visualGuardrailTopLevelFields = new Set(outputContracts.visualGuardrails);
+const characterBoundaryFields = new Set([
+  "schemaVersion",
+  "characterName",
+  "canonicalDescription",
+  "bodyForm",
+  "requiredTraits",
+  "allowedTraits",
+  "forbiddenTraits",
+  "unresolvedConflicts",
+  "sourceDigest",
+  "boundaryDigest",
+  "boundarySignature"
+]);
+const characterBoundaryModelFields = new Set([
+  "schemaVersion",
+  "characterName",
+  "canonicalDescription",
+  "bodyForm",
+  "requiredTraits",
+  "allowedTraits",
+  "forbiddenTraits",
+  "unresolvedConflicts"
+]);
+const characterBoundarySealFields = ["sourceDigest", "boundaryDigest", "boundarySignature"];
+const characterBoundaryTraitFields = new Set([
+  "canonicalName",
+  "terms",
+  "scope",
+  "evidenceLevel",
+  "triggerEvidence",
+  "reason"
+]);
+const characterBoundaryTraitScopes = new Set(["identity", "appearance", "personality", "occupation", "storyFunction"]);
+const characterBoundaryEvidenceLevels = new Set(["explicit", "inferred"]);
 const negativePromptReasonCodes = new Set([
   "explicit_identity_conflict",
   "shot_object_confusion",
@@ -666,7 +701,25 @@ export function ensureAnimationShotV2Contract(shot, path = "animationPlan.shotPl
   validateAnimationFrameV2(shot.startFrame, `${path}.startFrame`, shot.sceneId);
   validateAnimationFrameV2(shot.endFrame, `${path}.endFrame`, shot.sceneId);
   validateAnimationMotionV2(shot.motion, `${path}.motion`, shot.startFrame, shot.endFrame);
+  validateAnimationEnvironmentChangeDeclaration(shot, path);
   return shot;
+}
+
+function validateAnimationEnvironmentChangeDeclaration(shot, path) {
+  const changedFields = animationFrameEnvironmentFields.filter(
+    (field) => shot.startFrame.environment[field] !== shot.endFrame.environment[field]
+  );
+  if (!changedFields.length || hasDeclaredFrameChange(shot.motion.environmentChange)) return;
+
+  const details = changedFields.map((field) => ({
+    code: "ANIMATION_ENVIRONMENT_CHANGE_UNDECLARED",
+    path: `${path}.endFrame.environment.${field}`,
+    reason: `StartState=${JSON.stringify(shot.startFrame.environment[field])}；EndState=${JSON.stringify(shot.endFrame.environment[field])}。若场景本身没有变化，应逐字复制首帧 environment，并把角色姿态、手部或道具持有变化移入 characters / motion`
+  }));
+  throw new OutputContractError(
+    `${path} 首尾 environment 发生了未声明变化：${changedFields.join("、")}；motion.environmentChange 不得声明为无变化`,
+    details
+  );
 }
 
 /**
@@ -710,7 +763,12 @@ export function ensureFrameReferenceModeCompatibility(
   const motion = shot.motion || {};
   const cameraChanged = animationFieldsChanged(startFrame.camera, endFrame.camera, animationFrameCameraFields);
   const lightingChanged = animationFieldsChanged(startFrame.lighting, endFrame.lighting, animationFrameLightingFields);
-  const environmentChanged = animationFieldsChanged(startFrame.environment, endFrame.environment, animationFrameEnvironmentFields);
+  const environmentChangedFields = changedAnimationFields(
+    startFrame.environment,
+    endFrame.environment,
+    animationFrameEnvironmentFields
+  );
+  const environmentChanged = environmentChangedFields.length > 0;
   const charactersChanged = !sameCanonicalValue(startFrame.characters, endFrame.characters);
   const timeAndWeatherChanged = startFrame.timeAndWeather !== endFrame.timeAndWeather;
   const styleChanged = !sameCanonicalValue(startFrame.styleModifiers, endFrame.styleModifiers);
@@ -766,7 +824,7 @@ export function ensureFrameReferenceModeCompatibility(
   }
   if (environmentChanged && !hasDeclaredFrameChange(motion?.environmentChange)) {
     throw frameReferenceModeError(
-      "transition 的环境变化必须同时写入 motion.environmentChange",
+      `transition 的环境变化必须同时写入 motion.environmentChange；变化字段：${environmentChangedFields.join("、")}`,
       "FRAME_TRANSITION_ENVIRONMENT_CHANGE_UNDECLARED"
     );
   }
@@ -816,8 +874,12 @@ function assertFrameReferenceSceneBoundary(shot, startFrame, endFrame) {
 }
 
 function animationFieldsChanged(startValue, endValue, fields) {
-  if (!startValue || !endValue) return true;
-  return fields.some((field) => startValue[field] !== endValue[field]);
+  return changedAnimationFields(startValue, endValue, fields).length > 0;
+}
+
+function changedAnimationFields(startValue, endValue, fields) {
+  if (!startValue || !endValue) return [...fields];
+  return fields.filter((field) => startValue[field] !== endValue[field]);
 }
 
 function sameCanonicalValue(left, right) {
@@ -1303,6 +1365,7 @@ function validateVisualGuardrailsContract(value) {
   if (!value.fixedCharacterBoundary || typeof value.fixedCharacterBoundary !== "object" || Array.isArray(value.fixedCharacterBoundary)) {
     throw new OutputContractError("visualGuardrails.fixedCharacterBoundary 必须是对象");
   }
+  validateGlobalCharacterBoundary(value.fixedCharacterBoundary);
   if (!value.stageInstructions || typeof value.stageInstructions !== "object" || Array.isArray(value.stageInstructions)) {
     throw new OutputContractError("visualGuardrails.stageInstructions 必须是对象");
   }
@@ -1333,6 +1396,81 @@ function validateVisualGuardrailsContract(value) {
     if (!String(item.text || "").trim()) throw new OutputContractError(`${path}.text 不能为空`);
     validateTriggerEvidenceShape(item.triggerEvidence, `${path}.triggerEvidence`, { requireNonEmpty: true });
   });
+}
+
+function validateGlobalCharacterBoundary(boundary) {
+  const unexpected = Object.keys(boundary).filter((key) => !characterBoundaryFields.has(key));
+  const missing = [...characterBoundaryModelFields].filter((key) => !Object.prototype.hasOwnProperty.call(boundary, key));
+  if (unexpected.length || missing.length) {
+    throw new OutputContractError(
+      "visualGuardrails.fixedCharacterBoundary 字段不符合全局边界契约"
+      + `${unexpected.length ? `；额外字段：${unexpected.join("、")}` : ""}`
+      + `${missing.length ? `；缺少字段：${missing.join("、")}` : ""}`
+    );
+  }
+  if (boundary.schemaVersion !== GLOBAL_CHARACTER_BOUNDARY_VERSION) {
+    throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary.schemaVersion 必须为 ${GLOBAL_CHARACTER_BOUNDARY_VERSION}`);
+  }
+  const presentSealFields = characterBoundarySealFields.filter((field) => Object.prototype.hasOwnProperty.call(boundary, field));
+  if (presentSealFields.length && presentSealFields.length !== characterBoundarySealFields.length) {
+    throw new OutputContractError("visualGuardrails.fixedCharacterBoundary 签发字段必须同时存在");
+  }
+  for (const field of ["characterName", "canonicalDescription", "bodyForm", ...presentSealFields]) {
+    if (typeof boundary[field] !== "string" || !boundary[field].trim()) {
+      throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary.${field} 必须是非空字符串`);
+    }
+  }
+  for (const field of ["requiredTraits", "allowedTraits", "forbiddenTraits", "unresolvedConflicts"]) {
+    if (!Array.isArray(boundary[field])) {
+      throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary.${field} 必须是数组`);
+    }
+  }
+  for (const field of ["requiredTraits", "allowedTraits", "forbiddenTraits"]) {
+    boundary[field].forEach((trait, index) => validateGlobalCharacterBoundaryTrait(trait, `${field}[${index}]`));
+  }
+  boundary.unresolvedConflicts.forEach((conflict, index) => {
+    requireRuleObject(conflict, `visualGuardrails.fixedCharacterBoundary.unresolvedConflicts[${index}]`, ["topic", "evidence", "reason"]);
+    if (![conflict.topic, conflict.evidence, conflict.reason].every((item) => typeof item === "string" && item.trim())) {
+      throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary.unresolvedConflicts[${index}] 字段不能为空`);
+    }
+  });
+  const requiredTerms = new Set(boundary.requiredTraits.flatMap((trait) => trait.terms));
+  const forbiddenTerms = new Set(boundary.forbiddenTraits.flatMap((trait) => trait.terms));
+  const conflicts = [...requiredTerms].filter((term) => forbiddenTerms.has(term));
+  if (conflicts.length) {
+    throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary 同时要求并禁止：${conflicts.join("、")}`);
+  }
+}
+
+function validateGlobalCharacterBoundaryTrait(trait, path) {
+  requireRuleObject(trait, `visualGuardrails.fixedCharacterBoundary.${path}`, [...characterBoundaryTraitFields]);
+  const unexpected = Object.keys(trait).filter((key) => !characterBoundaryTraitFields.has(key));
+  if (unexpected.length) {
+    throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary.${path} 包含未知字段：${unexpected.join("、")}`);
+  }
+  if (typeof trait.canonicalName !== "string" || !trait.canonicalName.trim()) {
+    throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary.${path}.canonicalName 不能为空`);
+  }
+  if (!Array.isArray(trait.terms) || !trait.terms.length || trait.terms.some((term) => typeof term !== "string" || !term.trim())) {
+    throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary.${path}.terms 必须是非空字符串数组`);
+  }
+  if (!trait.terms.includes(trait.canonicalName)) {
+    throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary.${path}.terms 必须包含 canonicalName`);
+  }
+  if (!characterBoundaryTraitScopes.has(trait.scope)) {
+    throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary.${path}.scope 不受支持`);
+  }
+  if (!characterBoundaryEvidenceLevels.has(trait.evidenceLevel)) {
+    throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary.${path}.evidenceLevel 只允许 explicit 或 inferred`);
+  }
+  if (typeof trait.reason !== "string" || !trait.reason.trim()) {
+    throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary.${path}.reason 不能为空`);
+  }
+  validateTriggerEvidenceShape(
+    trait.triggerEvidence,
+    `visualGuardrails.fixedCharacterBoundary.${path}.triggerEvidence`,
+    { requireNonEmpty: true }
+  );
 }
 
 function validateAnimationPlanNegativePromptContract(value) {
@@ -1399,19 +1537,53 @@ function validateTriggerEvidenceShape(triggerEvidence, path, { requireNonEmpty =
   });
 }
 
+export function materializeGlobalCharacterBoundaryViews(value, creatorProfile = {}) {
+  const boundary = value?.fixedCharacterBoundary || {};
+  const fixedEvidence = [{
+    sourcePath: "creatorProfile.fixedCharacter",
+    evidence: String(creatorProfile.fixedCharacter || "").trim()
+  }];
+  const allowedPositiveTraits = [...(boundary.requiredTraits || []), ...(boundary.allowedTraits || [])].map((trait) => ({
+    term: trait.canonicalName,
+    scope: trait.scope,
+    reason: trait.reason
+  }));
+  const requiredNames = (boundary.requiredTraits || []).map((trait) => trait.canonicalName);
+  const forbiddenNames = (boundary.forbiddenTraits || []).map((trait) => trait.canonicalName);
+  const ruleParts = [
+    requiredNames.length ? `必须沿用：${requiredNames.join("、")}` : "",
+    forbiddenNames.length ? `不得出现：${forbiddenNames.join("、")}` : "",
+    "后续阶段不得重新推断、删除或替换全局角色事实"
+  ].filter(Boolean);
+  return {
+    ...value,
+    allowedPositiveTraits,
+    positivePromptBoundary: [{
+      rule: ruleParts.join("；"),
+      triggerEvidence: fixedEvidence,
+      severity: "block"
+    }]
+  };
+}
+
 export function ensureVisualGuardrailsMatchesProfile(value, creatorProfile = {}) {
+  value = materializeGlobalCharacterBoundaryViews(value, creatorProfile);
   const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
-  const fixedProfile = String(creatorProfile.fixedCharacter || "");
   if (!fixedName) return value;
 
-  const boundaryText = JSON.stringify(value.fixedCharacterBoundary || {});
-  const allText = JSON.stringify(value);
+  const boundary = value.fixedCharacterBoundary || {};
   const conflictTerms = collectVisualGuardrailRawForbiddenTerms(value)
-    .filter((term) => isAllowedByFixedProfile(term, fixedProfile, value));
+    .filter((term) => isAllowedByGlobalCharacterBoundary(term, value));
 
   const mismatches = [];
-  if (!allText.includes(fixedName) && !boundaryText.includes(fixedName)) {
+  if (boundary.characterName !== fixedName) {
     mismatches.push(`未围绕固定角色「${fixedName}」生成外观规则`);
+  }
+  if (boundary.unresolvedConflicts?.length) {
+    mismatches.push(`存在未解决的用户设定冲突：${boundary.unresolvedConflicts.map((item) => item.topic).join("、")}`);
+  }
+  if (!boundary.requiredTraits?.length) {
+    mismatches.push("缺少全局必需角色事实 requiredTraits");
   }
   if (!value.positivePromptBoundary.length) {
     mismatches.push("缺少用于后续正向提示词审查的 positivePromptBoundary");
@@ -1425,7 +1597,6 @@ export function ensureVisualGuardrailsMatchesProfile(value, creatorProfile = {})
 
 export function ensureCreativeBriefMatchesProfile(value, creatorProfile = {}) {
   const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
-  const fixedProfile = String(creatorProfile.fixedCharacter || "");
   if (!fixedName) return value;
 
   const mappingText = JSON.stringify(value.roleAndOccupationMapping || []);
@@ -1433,34 +1604,10 @@ export function ensureCreativeBriefMatchesProfile(value, creatorProfile = {}) {
     throw new OutputContractError(`creativeBrief 未将固定角色「${fixedName}」写入角色映射`);
   }
 
-  const protectedTerms = collectProtectedTermsFromBrief(value, fixedProfile);
-  const identityLeakTerms = incompatibleProtagonistSurfaceTerms(fixedProfile);
-  const identityAuthorizations = getFixedCharacterIdentityAuthorizations(fixedProfile);
   if (!String(value.roleAndOccupationMapping?.[0]?.newRole || "").includes(fixedName)) {
     throw new OutputContractError(
       `creativeBrief.roleAndOccupationMapping[0].newRole 必须保留固定角色姓名“${fixedName}”，不得更换或重命名主角`
     );
-  }
-  const protagonistMappings = (value.roleAndOccupationMapping || []).map((mapping, index) => ({ mapping, index })).filter(({ mapping, index }) => {
-    const text = JSON.stringify(mapping || {});
-    return index === 0 || text.includes(fixedName) || /主角|信使|任务执行|行动承担|固定角色/u.test(text);
-  });
-  for (const { mapping, index } of protagonistMappings) {
-    const basePath = `creativeBrief.roleAndOccupationMapping[${index}]`;
-    const terms = [...new Set([...protectedTerms, ...identityLeakTerms])];
-    const strictIdentityHits = findCreativeBriefMappingTermHits([
-      { path: `${basePath}.newRole`, value: String(mapping?.newRole || "") },
-      { path: `${basePath}.newOccupationOrIdentity`, value: String(mapping?.newOccupationOrIdentity || "") }
-    ], terms, identityAuthorizations);
-    const mappingLogicHits = findCreativeBriefMappingTermHits([
-      { path: `${basePath}.mappingLogic`, value: String(mapping?.mappingLogic || "") }
-    ], terms, identityAuthorizations, { allowNegativeContext: true });
-    const hits = dedupeFieldTermHits([...strictIdentityHits, ...mappingLogicHits]);
-    if (hits.length) {
-      throw new OutputContractError(
-        `${basePath} 中固定角色「${fixedName}」的身份映射复用了禁止表面表达或非用户设定身份：${formatFieldTermHits(hits)}`
-      );
-    }
   }
 
   return value;
@@ -1471,8 +1618,7 @@ export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}, crea
   if (!fixedName) return value;
   const fixedProfile = String(creatorProfile.fixedCharacter || "");
   const sourceLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
-  const positiveBoundaryTerms = collectPositivePromptBoundaryTerms(fixedProfile);
-  const protagonistLeakTerms = [...new Set([...sourceLeakTerms, ...positiveBoundaryTerms])];
+  const protagonistLeakTerms = [...new Set(sourceLeakTerms)];
   const visibleLeakTerms = protagonistLeakTerms;
   const mismatches = [];
   value.variants.forEach((variant, index) => {
@@ -1516,8 +1662,7 @@ export function ensureFullStoryMatchesProfile(value, creatorProfile = {}, creati
 
   const fixedProfile = String(creatorProfile.fixedCharacter || "");
   const sourceLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
-  const positiveBoundaryTerms = collectPositivePromptBoundaryTerms(fixedProfile);
-  const protagonistLeakTerms = [...new Set([...sourceLeakTerms, ...positiveBoundaryTerms])];
+  const protagonistLeakTerms = [...new Set(sourceLeakTerms)];
   const visibleLeakTerms = protagonistLeakTerms;
   const protagonist = value.characterBible?.protagonist || {};
   const protagonistText = JSON.stringify(protagonist);
@@ -1564,8 +1709,7 @@ export function ensureAnimationPlanMatchesProfile(value, creatorProfile = {}, cr
 
   const fixedProfile = String(creatorProfile.fixedCharacter || "");
   const sourceLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
-  const positiveBoundaryTerms = collectPositivePromptBoundaryTerms(fixedProfile);
-  const protagonistLeakTerms = [...new Set([...sourceLeakTerms, ...positiveBoundaryTerms])];
+  const protagonistLeakTerms = [...new Set(sourceLeakTerms)];
   const visibleLeakTerms = protagonistLeakTerms;
   const referenceFields = collectAnimationReferenceFields(value);
   const strictPositiveFields = collectAnimationStrictPositiveFields(value);
@@ -1580,6 +1724,10 @@ export function ensureAnimationPlanMatchesProfile(value, creatorProfile = {}, cr
   if (!fullText.includes(fixedName)) {
     mismatches.push(`animationPlan 未使用固定角色「${fixedName}」`);
   }
+  const missingRequiredTraits = findMissingGlobalCharacterTraits(referenceText, visualGuardrails?.fixedCharacterBoundary?.requiredTraits);
+  if (missingRequiredTraits.length) {
+    mismatches.push(`角色参考提示词未沿用全局必需角色事实：${missingRequiredTraits.join("、")}`);
+  }
   const referenceHits = findFieldTermHits(referenceFields, protagonistLeakTerms);
   if (referenceHits.length) {
     mismatches.push(`角色参考提示词混入原片表面身份或非用户设定身份：${formatFieldTermHits(referenceHits)}`);
@@ -1593,6 +1741,46 @@ export function ensureAnimationPlanMatchesProfile(value, creatorProfile = {}, cr
   }
   if (mismatches.length) throw new OutputContractError(`animationPlan 未锁定固定角色：${mismatches.join("；")}`);
   return ensureAnimationPlanNegativePrompts(value, semanticContext);
+}
+
+export function ensureCharacterReferenceMatchesBoundary(value, visualGuardrails = null) {
+  const boundary = visualGuardrails?.fixedCharacterBoundary;
+  if (!boundary || String(value?.characterName || "").trim() !== String(boundary.characterName || "").trim()) return value;
+  const fields = [
+    value.characterName,
+    value.storyRole,
+    value.identity,
+    value.appearancePrompt,
+    ...(Array.isArray(value.consistencyTags) ? value.consistencyTags : [])
+  ].filter(Boolean).join("\n");
+  const forbiddenHits = findTerms(fields, collectGlobalCharacterForbiddenTerms(visualGuardrails));
+  const missingRequiredTraits = findMissingGlobalCharacterTraits(fields, boundary.requiredTraits);
+  const mismatches = [];
+  if (forbiddenHits.length) mismatches.push(`混入全局边界禁止特征：${forbiddenHits.join("、")}`);
+  if (missingRequiredTraits.length) mismatches.push(`缺少全局必需角色事实：${missingRequiredTraits.join("、")}`);
+  if (mismatches.length) throw new OutputContractError(`characterReference 未沿用全局角色边界：${mismatches.join("；")}`);
+  return value;
+}
+
+export function ensureCharacterPromptMatchesBoundary(text, visualGuardrails = null, {
+  characterName = "",
+  requireRequiredTraits = true
+} = {}) {
+  const boundary = visualGuardrails?.fixedCharacterBoundary;
+  if (!boundary) return text;
+  if (characterName && String(characterName).trim() !== String(boundary.characterName || "").trim()) return text;
+  const value = String(text || "");
+  const forbiddenHits = findTerms(value, collectGlobalCharacterForbiddenTerms(visualGuardrails), {
+    allowNegativeContext: true
+  });
+  const missingRequiredTraits = requireRequiredTraits
+    ? findMissingGlobalCharacterTraits(value, boundary.requiredTraits)
+    : [];
+  const mismatches = [];
+  if (forbiddenHits.length) mismatches.push(`混入全局边界禁止特征：${forbiddenHits.join("、")}`);
+  if (missingRequiredTraits.length) mismatches.push(`缺少全局必需角色事实：${missingRequiredTraits.join("、")}`);
+  if (mismatches.length) throw new InputError(`角色生成提示词未沿用全局角色边界：${mismatches.join("；")}`);
+  return value;
 }
 
 export function pruneAnimationPlanNegativePrompts(value, context = {}) {
@@ -1703,7 +1891,7 @@ function isNegativePromptCandidateRelevant(item, { context, plan, shot, shotInde
   if (item.reasonCode === "reference_leak" && !actualReferenceUsed) return false;
   if (sourceHits.length && (!actualReferenceUsed || item.reasonCode !== "reference_leak")) return false;
 
-  const bodyHits = findTerms(item.text, bodySurfaceTerms);
+  const bodyHits = findTerms(item.text, collectGlobalCharacterAppearanceTerms(context.visualGuardrails));
   if (bodyHits.length && !bodyTermsHaveConcreteEvidence(bodyHits, evidence)) return false;
   if (bodyHits.some((term) => /爪|肉垫/u.test(term)) && !limbAnimalizationRiskIsProven(evidence, shot, context, media)) return false;
 
@@ -1849,9 +2037,9 @@ function isUnspecifiedFeatureEvidenceOnly(evidence, text) {
     || evidence.some((entry) => /未声明|未提及|没有声明|没有提及|未设定|没有设定/u.test(entry.evidence));
   if (!hasUnspecifiedWording) return false;
   const hasConcreteIndependentEvidence = evidence.some((entry) => {
+    if (entry.sourcePath === "creatorProfile.fixedCharacter") return false;
     const usesUnspecifiedWording = /未声明|未提及|没有声明|没有提及|未设定|没有设定/u.test(entry.evidence);
     if (!usesUnspecifiedWording) return true;
-    if (entry.sourcePath === "creatorProfile.fixedCharacter") return false;
     const remainder = entry.evidence
       .replace(/用户|固定角色|角色|该特征|此特征|身体特征|外观特征/gu, "")
       .replace(/未声明|未提及|没有声明|没有提及|未设定|没有设定/gu, "")
@@ -2011,33 +2199,7 @@ const sourceSurfaceIdentityTerms = [
   "兽类角色", "兽人", "快递员", "送货员"
 ];
 
-const fixedCharacterIdentitySpecies = ["猫", "狼", "狐", "兔", "犬", "狗", "鹿", "熊", "虎", "豹", "羊", "龙"];
-const fixedCharacterOccupationTerms = ["快递员", "送货员"];
-const semanticCharacterIdentityTerms = fixedCharacterIdentitySpecies.flatMap((species) => [
-  `${species}娘`, `${species}耳少女`, `${species}尾少女`, `${species}系少女`
-]);
-
-const bodyFeatureRules = [
-  { label: "尾巴", terms: ["尾巴"], allowSignals: [/尾巴|有尾|带尾|尾部|[狼猫狐兔龙]尾/u] },
-  { label: "狼尾", terms: ["狼尾", "狼尾巴"], allowSignals: [/狼尾|狼尾巴|狼[^，,。；;\n]{0,6}尾巴/u] },
-  { label: "猫尾", terms: ["猫尾", "猫尾巴"], allowSignals: [/猫尾|猫尾巴|猫[^，,。；;\n]{0,6}尾巴/u] },
-  { label: "狐尾", terms: ["狐尾", "狐尾巴"], allowSignals: [/狐尾|狐尾巴|狐狸尾|狐狸尾巴|狐[^，,。；;\n]{0,6}尾巴/u] },
-  { label: "兔尾", terms: ["兔尾", "兔尾巴"], allowSignals: [/兔尾|兔尾巴|兔[^，,。；;\n]{0,6}尾巴/u] },
-  { label: "龙尾", terms: ["龙尾", "龙尾巴"], allowSignals: [/龙尾|龙尾巴|龙[^，,。；;\n]{0,6}尾巴/u] },
-  { label: "翅膀", terms: ["翅膀"], allowSignals: [/翅膀|有翼|双翼|羽翼/u] },
-  { label: "羽毛", terms: ["羽毛"], allowSignals: [/羽毛|羽饰/u] },
-  { label: "爪子", terms: ["爪子"], allowSignals: [/爪子|小爪|爪部/u] },
-  { label: "狼爪", terms: ["狼爪"], allowSignals: [/狼爪|狼[^，,。；;\n]{0,6}爪/u] },
-  { label: "猫爪", terms: ["猫爪"], allowSignals: [/猫爪|猫[^，,。；;\n]{0,6}爪/u] },
-  { label: "兽爪", terms: ["兽爪"], allowSignals: [/兽爪/u] },
-  { label: "肉垫", terms: ["肉垫"], allowSignals: [/肉垫/u] },
-  { label: "鸟喙", terms: ["鸟喙", "鸟嘴"], allowSignals: [/鸟喙|鸟嘴/u] },
-  { label: "脚蹼", terms: ["脚蹼", "蹼"], allowSignals: [/脚蹼|蹼/u] },
-  { label: "鳍", terms: ["鳍"], allowSignals: [/鳍/u] }
-];
-
-const bodySurfaceTerms = [...new Set(bodyFeatureRules.flatMap((rule) => rule.terms))];
-const protagonistSurfaceTerms = [...sourceSurfaceIdentityTerms, ...semanticCharacterIdentityTerms, ...bodySurfaceTerms];
+const protagonistSurfaceTerms = [...sourceSurfaceIdentityTerms];
 
 const protectedTermStopWords = new Set([
   "台词", "视觉元素", "特定动作", "禁止", "直接使用", "高度相似", "表述", "形象", "服装", "动作", "约定", "一只", "动物"
@@ -2082,28 +2244,50 @@ export function collectProtectedTermsFromBrief(brief, fixedProfile = "") {
 export function collectForbiddenVisualTerms(brief, fixedProfile = "", visualGuardrails = null) {
   const terms = new Set(collectProtectedTermsFromBrief(brief, fixedProfile));
   for (const term of collectVisualGuardrailForbiddenTerms(visualGuardrails, fixedProfile)) terms.add(term);
-  return [...terms].filter((term) => term && !isAllowedByFixedProfile(term, fixedProfile, visualGuardrails));
-}
-
-function collectPositivePromptBoundaryTerms(fixedProfile = "") {
-  return incompatibleBodySurfaceTerms(fixedProfile);
+  for (const term of collectGlobalCharacterForbiddenTerms(visualGuardrails)) terms.add(term);
+  return [...terms].filter((term) => term && !isAllowedByGlobalCharacterBoundary(term, visualGuardrails));
 }
 
 export function collectVisualGuardrailForbiddenTerms(visualGuardrails, fixedProfile = "") {
   if (!visualGuardrails || typeof visualGuardrails !== "object") return [];
   const terms = new Set();
   for (const term of collectVisualGuardrailRawForbiddenTerms(visualGuardrails)) {
-    if (!isAllowedByFixedProfile(term, fixedProfile, visualGuardrails)) terms.add(term);
+    if (!isAllowedByGlobalCharacterBoundary(term, visualGuardrails)) terms.add(term);
   }
   return [...terms];
 }
 
 export function collectVisualGuardrailAllowedTerms(visualGuardrails, fixedProfile = "") {
-  const terms = new Set(collectFixedCharacterVisualPolicy(fixedProfile).allowedBodyTerms);
-  for (const item of visualGuardrails?.allowedPositiveTraits || []) {
-    for (const term of extractGuardrailTerms(item)) terms.add(term);
-  }
+  const terms = new Set(collectGlobalCharacterAllowedTerms(visualGuardrails));
   return [...terms].filter(Boolean);
+}
+
+export function collectGlobalCharacterAllowedTerms(visualGuardrails) {
+  const boundary = visualGuardrails?.fixedCharacterBoundary || {};
+  return uniqueBoundaryTerms([...(boundary.requiredTraits || []), ...(boundary.allowedTraits || [])]);
+}
+
+export function collectGlobalCharacterForbiddenTerms(visualGuardrails) {
+  return uniqueBoundaryTerms(visualGuardrails?.fixedCharacterBoundary?.forbiddenTraits || []);
+}
+
+function collectGlobalCharacterAppearanceTerms(visualGuardrails) {
+  const boundary = visualGuardrails?.fixedCharacterBoundary || {};
+  return uniqueBoundaryTerms([
+    ...(boundary.requiredTraits || []),
+    ...(boundary.allowedTraits || []),
+    ...(boundary.forbiddenTraits || [])
+  ].filter((trait) => trait?.scope === "appearance"));
+}
+
+function uniqueBoundaryTerms(traits = []) {
+  return [...new Set((traits || []).flatMap((trait) => Array.isArray(trait?.terms) ? trait.terms : []).map((term) => String(term || "").trim()).filter(Boolean))];
+}
+
+function findMissingGlobalCharacterTraits(text, traits = []) {
+  const value = String(text || "");
+  return (traits || []).filter((trait) => !(trait.terms || []).some((term) => term && value.includes(term)))
+    .map((trait) => trait.canonicalName);
 }
 
 function collectVisualGuardrailRawForbiddenTerms(visualGuardrails) {
@@ -2145,11 +2329,10 @@ function addGuardrailTerm(terms, raw) {
   terms.add(normalized);
 }
 
-function isAllowedByFixedProfile(term, fixedProfile = "", visualGuardrails = null) {
+function isAllowedByGlobalCharacterBoundary(term, visualGuardrails = null) {
   const value = String(term || "");
   if (!value) return false;
-  if (String(fixedProfile || "").includes(value)) return true;
-  const allowed = new Set(collectVisualGuardrailAllowedTerms(visualGuardrails, fixedProfile));
+  const allowed = new Set(collectGlobalCharacterAllowedTerms(visualGuardrails));
   return allowed.has(value);
 }
 
@@ -2272,46 +2455,6 @@ function findFieldTermHits(fields, terms, { allowNegativeContext = false } = {})
   return dedupeFieldTermHits(hits);
 }
 
-function findCreativeBriefMappingTermHits(fields, terms, identityAuthorizations, { allowNegativeContext = false } = {}) {
-  const hits = [];
-  for (const field of fields || []) {
-    for (const term of terms || []) {
-      if (!term || !hasForbiddenCreativeBriefOccurrence(field.value, term, identityAuthorizations, { allowNegativeContext })) continue;
-      hits.push({ term, path: field.path });
-    }
-  }
-  return dedupeFieldTermHits(hits);
-}
-
-function hasForbiddenCreativeBriefOccurrence(value, term, identityAuthorizations, { allowNegativeContext = false } = {}) {
-  const text = String(value || "");
-  const needle = String(term || "");
-  if (!needle) return false;
-  let index = text.indexOf(needle);
-  while (index !== -1) {
-    const inNegativeContext = allowNegativeContext && isNegatedTermOccurrence(text, index);
-    const authorizedIdentityTerm = [
-      ...(identityAuthorizations.authorizedIdentityTerms || []),
-      ...(identityAuthorizations.authorizedOccupationTerms || [])
-    ].includes(needle);
-    const literalFixedCharacterOccurrence = isInsideLiteralFixedCharacter(text, index, needle, identityAuthorizations.fixedCharacterText);
-    if (!inNegativeContext && !authorizedIdentityTerm && !literalFixedCharacterOccurrence) return true;
-    index = text.indexOf(needle, index + needle.length);
-  }
-  return false;
-}
-
-function isInsideLiteralFixedCharacter(value, termIndex, term, fixedCharacterText) {
-  const fixedText = String(fixedCharacterText || "");
-  if (!fixedText || !fixedText.includes(term)) return false;
-  let profileIndex = value.indexOf(fixedText);
-  while (profileIndex !== -1) {
-    if (termIndex >= profileIndex && termIndex + term.length <= profileIndex + fixedText.length) return true;
-    profileIndex = value.indexOf(fixedText, profileIndex + fixedText.length);
-  }
-  return false;
-}
-
 function hasForbiddenOccurrence(value, term, { allowNegativeContext = false } = {}) {
   const text = String(value || "");
   const needle = String(term || "");
@@ -2384,124 +2527,11 @@ function addProtectedTerm(terms, raw, fixedProfile) {
   }
 }
 
-function incompatibleProtagonistSurfaceTerms(fixedProfile) {
-  const incompatibleBodyTerms = new Set(incompatibleBodySurfaceTerms(fixedProfile));
-  const authorizedIdentityTerms = new Set(getFixedCharacterIdentityAuthorizations(fixedProfile).authorizedIdentityTerms);
-  return [
-    ...sourceSurfaceIdentityTerms.filter((term) => term.length >= 2),
-    ...semanticCharacterIdentityTerms.filter((term) => !authorizedIdentityTerms.has(term)),
-    ...bodySurfaceTerms.filter((term) => term.length >= 2 && incompatibleBodyTerms.has(term))
-  ];
-}
-
-export function getFixedCharacterIdentityAuthorizations(fixedCharacter = "") {
-  const fixedProfile = String(fixedCharacter || "");
-  const authorizedIdentityTerms = new Set();
-  const originalIdentityExpressions = new Set();
-  const authorizedSpecies = new Set();
-  const authorizedOccupationTerms = new Set();
-  const segments = fixedProfile.split(/[，,；;。\n\r]/u).map((item) => item.trim()).filter(Boolean);
-
-  for (const species of fixedCharacterIdentitySpecies) {
-    const identityTerms = [`${species}娘`, `${species}耳少女`, `${species}尾少女`, `${species}系少女`];
-    const explicitIdentitySegments = segments.filter((segment) => identityTerms.some((term) => (
-      segment.includes(term) && isIntrinsicFixedIdentityMention(segment, term)
-    )));
-    const explicitTerms = identityTerms.filter((term) => explicitIdentitySegments.some((segment) => segment.includes(term)));
-    const intrinsicPair = new RegExp(
-      `(?:有|拥有|长着|生有|天生|固定身体特征|身体设定)[^，,。；;\\n]{0,20}${species}耳[^，,。；;\\n]{0,20}${species}(?:尾|尾巴)|${species}耳[^，,。；;\\n]{0,20}${species}(?:尾|尾巴)[^，,。；;\\n]{0,20}(?:固定身体特征|身体设定)`,
-      "u"
-    );
-    const intrinsicIdentitySegments = segments.filter((segment) => (
-      intrinsicPair.test(segment) && !hasRemovableAnimalFeatureContext(segment)
-    ));
-    if (!explicitTerms.length && !intrinsicIdentitySegments.length) continue;
-    authorizedSpecies.add(species);
-    identityTerms.forEach((term) => authorizedIdentityTerms.add(term));
-    [...explicitIdentitySegments, ...intrinsicIdentitySegments]
-      .forEach((segment) => originalIdentityExpressions.add(segment));
-  }
-
-  for (const occupation of fixedCharacterOccupationTerms) {
-    const matchingSegments = segments.filter((segment) => isIntrinsicFixedOccupationMention(segment, occupation));
-    if (!matchingSegments.length) continue;
-    authorizedOccupationTerms.add(occupation);
-    matchingSegments.forEach((segment) => originalIdentityExpressions.add(segment));
-  }
-
-  return {
-    fixedCharacterText: fixedProfile,
-    authorizedSpecies: [...authorizedSpecies],
-    authorizedIdentityTerms: [...authorizedIdentityTerms],
-    authorizedOccupationTerms: [...authorizedOccupationTerms],
-    originalIdentityExpressions: [...originalIdentityExpressions]
-  };
-}
-
-function isIntrinsicFixedOccupationMention(segment, occupation) {
-  const index = segment.indexOf(occupation);
-  if (index < 0) return false;
-  const before = segment.slice(0, index);
-  if (/(?:不是|并非|不当|不做|喜欢|研究|采访|遇到|帮助|模仿)[^，,。；;\n]{0,12}$/u.test(before)) return false;
-  if (!before) return true;
-  return /(?:是|为|作为|职业(?:是|为)|身份(?:是|为)|担任|从事|里的|中的)[^，,。；;\n]{0,8}$/u.test(before);
-}
-
-function isIntrinsicFixedIdentityMention(segment, term) {
-  const index = segment.indexOf(term);
-  if (index < 0) return false;
-  const before = segment.slice(Math.max(0, index - 16), index);
-  const after = segment.slice(index + term.length, index + term.length + 16);
-  if (/(?:不是|并非|非|不属于|不设定为|拒绝成为|喜欢|研究|讨论|创作|画过|画了|设计|收藏|关注|网名叫|昵称叫|称号为)[^，,。；;\n]{0,12}$/u.test(before)) return false;
-  if (/(?:穿着|身穿|穿戴|戴着|套着|披着|换上|装扮成?|角色扮演|临时扮演|扮演|假扮|模仿|印有|画有|绘有|贴有|绣有)[^，,。；;\n]{0,12}$/u.test(before)) return false;
-  if (/^(?:(?:风格|风|文化|题材|作品|图案|图像|印花|贴纸|徽章|配饰|头饰|发箍|面具|头套|服装|服饰|衣服|套装|装扮|造型|网名|昵称|称号|头像|周边))/u.test(after)) return false;
-  if (!before) return true;
-  return /(?:(?:是|为|作为|属于|设定为|固定为|身份(?:是|为)|本体(?:是|为)|形象类似|整体(?:是|为))(?:(?:一名|一个|一位)?(?:Q版|q版|可爱(?:的)?|活泼(?:的)?|年轻(?:的)?)*)|^(?:(?:Q版|q版|可爱(?:的)?|活泼(?:的)?|年轻(?:的)?)+))$/u.test(before);
-}
-
-function hasRemovableAnimalFeatureContext(segment) {
-  return /(?:发箍|头饰|配饰|饰品|挂件|尾饰|假尾|服装|服饰|衣服|套装|装扮|造型|玩偶服|面具|头套|可拆卸|临时扮演|角色扮演|不是固定身体特征|喜欢|研究|讨论|创作|画过|设计|收藏|题材|文化|作品)/u.test(segment);
-}
-
-function incompatibleBodySurfaceTerms(fixedProfile) {
-  return collectFixedCharacterVisualPolicy(fixedProfile).forbiddenBodyTerms;
-}
-
-export function collectFixedCharacterVisualPolicy(fixedCharacter = "") {
-  const fixedProfile = String(fixedCharacter || "");
-  const allowedBodyTerms = new Set();
-  const forbiddenBodyTerms = new Set();
-  for (const rule of bodyFeatureRules) {
-    const allowed = rule.allowSignals.some((signal) => signal.test(fixedProfile));
-    for (const term of rule.terms) {
-      if (allowed || fixedProfile.includes(term)) {
-        allowedBodyTerms.add(term);
-      } else {
-        forbiddenBodyTerms.add(term);
-      }
-    }
-  }
-  for (const term of allowedBodyTerms) forbiddenBodyTerms.delete(term);
-  return {
-    allowedBodyTerms: [...allowedBodyTerms],
-    forbiddenBodyTerms: [...forbiddenBodyTerms]
-  };
-}
-
-export function fixedCharacterVisualPolicyText(fixedCharacter = "") {
-  const fixedProfile = String(fixedCharacter || "");
-  const { allowedBodyTerms } = collectFixedCharacterVisualPolicy(fixedProfile);
-  const hasEarOnlySignal = /[狼猫狐兔]耳|兽耳/u.test(fixedProfile);
-  const allowedText = allowedBodyTerms.length ? allowedBodyTerms.join("、") : "无额外动物化身体特征";
-  const earNote = hasEarOnlySignal
-    ? "耳朵类设定只授权用户写明的耳朵表现，不代表可以扩展其他身体结构。"
-    : "任何额外身体特征都必须由固定角色文本明确授权后才可写入正向提示词。";
-  return `允许正向使用的身体特征：${allowedText}。未授权信息保持不写，不得据此生成渲染负面提示词。${earNote}`;
-}
-
-function findTerms(text, terms) {
+function findTerms(text, terms, { allowNegativeContext = false } = {}) {
   const value = String(text || "");
-  return [...new Set((terms || []).filter((term) => term && value.includes(term)))];
+  return [...new Set((terms || []).filter((term) => (
+    term && hasForbiddenOccurrence(value, term, { allowNegativeContext })
+  )))];
 }
 
 function normalizeProtectedTerm(value) {

@@ -27,7 +27,7 @@ function frame({ end = false } = {}) {
     environment: {
       sceneId: "LOC01",
       foreground: "打开的旧木箱",
-      midground: "小白子站在木桌旁",
+      midground: "木桌位于画面左侧，窗边留出行动空间",
       background: "同一扇朝西窗户与夕阳",
       atmosphere: "安静温暖"
     },
@@ -301,6 +301,23 @@ test("frame reference modes enforce start-image stages and same-scene endpoint c
   );
 });
 
+test("environment endpoint changes must be declared before a v2 shot is accepted", () => {
+  const leakedCharacterAction = v2Shot();
+  leakedCharacterAction.endFrame.environment.midground = "小白子站在木桌旁，双手将玻璃幻灯片举起";
+  leakedCharacterAction.motion.environmentChange = "无，场景保持不变";
+  assert.throws(
+    () => validateShot(leakedCharacterAction),
+    (error) => error.details?.[0]?.code === "ANIMATION_ENVIRONMENT_CHANGE_UNDECLARED"
+      && error.details[0].path === "animationPlan.shotPlan[0].endFrame.environment.midground"
+      && /StartState=.*木桌位于画面左侧.*EndState=.*双手将玻璃幻灯片举起/u.test(error.details[0].reason)
+  );
+
+  const realEnvironmentChange = v2Shot();
+  realEnvironmentChange.endFrame.environment.atmosphere = "浓重雨雾遮住远处屋顶";
+  realEnvironmentChange.motion.environmentChange = "窗外雨雾从稀薄连续加重，终点遮住远处屋顶";
+  assert.equal(validateShot(realEnvironmentChange), realEnvironmentChange);
+});
+
 test("v2 motion validates enums and 1-4 contiguous timing beats covering 0..100", () => {
   const badMode = v2Shot();
   badMode.motion.mode = "cut_sequence";
@@ -490,7 +507,16 @@ test("nested visual leaves enter visual-boundary scans and structured dialogue s
     protectedExpressions: [{ sourceExpression: "企鹅服", prohibition: "不得复用企鹅服" }],
     controlledRewriteVariables: []
   };
-  const visualGuardrails = { allowedPositiveTraits: [], sourceSimilarityRules: [] };
+  const visualGuardrails = {
+    fixedCharacterBoundary: {
+      characterName: "小白子",
+      requiredTraits: [{ canonicalName: "小白子", terms: ["小白子"], scope: "identity" }],
+      allowedTraits: [],
+      forbiddenTraits: [{ canonicalName: "鸟喙", terms: ["鸟喙", "鸟嘴"], scope: "appearance" }]
+    },
+    allowedPositiveTraits: [],
+    sourceSimilarityRules: []
+  };
   const basePlan = {
     promptSchemaVersion: "2.0",
     selectedVariantId: "V1",

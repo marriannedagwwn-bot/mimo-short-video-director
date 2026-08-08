@@ -245,6 +245,7 @@ test("workflow 在 Compiler 后统一重建 alias，并标记最终接受的修�
   rawBatch.shotPlan[0].startFrame.characters[0].pose = "女孩准备打开八音盒，身体前倾，双手停在八音盒两侧";
   rawBatch.shotPlan[0].startFrame.characters[0].actionState = "右手停留在按钮表面";
   rawBatch.shotPlan[0].startFrame.environment.foreground = "木桌边缘";
+  rawBatch.shotPlan[0].endFrame.environment.foreground = "木桌边缘";
   rawBatch.shotPlan[0].startFramePrompt = "STALE_ALIAS";
   const animationRequests = [];
   const compilerRequests = [];

@@ -42,7 +42,7 @@ flowchart LR
 
 所有关键判断需要引用采样画面编号（F1、F2……）或用户补充文本。无法确认的内容进入 `uncertainties`，不得伪装为事实。
 
-`referenceAnalysis.observedFacts[]` 是结构化视觉证据层。每项只保存一个直接可见 observation、受控 `factType`、`core/supporting` 重要度，以及结构化的 frame 或 video `evidenceRefs`。完整 `referenceAnalysis` 会作为下一阶段的分析上下文，但人物动机、隐性需求、叙事意义等判断不能冒充画面直接证据。分析结果由服务端签名并绑定当前 transcript、关键帧与原生视频；客户端改写或跨素材复用后必须重新分析。若原生视频请求回退为关键帧，签名前只接受 frame evidence，不能引用模型本次没有实际收到的 video 时间段。
+`referenceAnalysis.observedFacts[]` 是结构化视觉证据层。每项只保存一个直接可见 observation、受控 `factType`、`core/supporting` 重要度，以及结构化的 frame 或 video `evidenceRefs`。原生视频证据只使用整数 `startSecond/endSecond`，最大整数结束秒必须严格小于输入视频时长加 1 秒；模型不得输出毫秒字段。完整 `referenceAnalysis` 会作为下一阶段的分析上下文，但人物动机、隐性需求、叙事意义等判断不能冒充画面直接证据。分析结果由服务端签名并绑定当前 transcript、关键帧与原生视频；客户端改写或跨素材复用后必须重新分析。若原生视频请求回退为关键帧，或连续两次生成非法视频时间，系统使用同一模型和已提供关键帧重新取证；签名前只接受本次实际媒体模式对应的 evidence，不能引用模型本次没有实际收到的视频时间段。
 
 ### 阶段二：sourceScriptReconstruction
 
@@ -73,14 +73,18 @@ flowchart LR
 
 ### 阶段四：visualGuardrails
 
-`visualGuardrails` 只负责创作边界，不负责生成最终图片或视频负面提示词。输出必须拆成：
+`visualGuardrails` 是固定角色语义唯一生成阶段，只负责一次性确定并签发全局角色边界，不负责生成最终图片或视频负面提示词。它同时读取用户角色描述、参考分析、脚本还原和创意简报，并允许视觉模型用通用常识补全用户采用的角色原型；不使用本地物种关键词字典。用户明确肯定或否定的描述优先于模型常识，无法消解的冲突必须进入 `unresolvedConflicts` 并阻断下游。输出必须拆成：
 
-- `fixedCharacterBoundary` 与 `allowedPositiveTraits`：锁定固定角色身份和用户明确允许的外观。
-- `positivePromptBoundary`：审查后续正向提示词是否擅自增加角色特征。“用户未声明”只意味着不能写进正向提示词，不会因此产生负面词。
+- `fixedCharacterBoundary.requiredTraits`：后续角色参考、剧情扩写、动画规划和生成请求必须沿用的身份、外观、性格、职业或剧情功能事实；每项带 `explicit | inferred` 证据等级和模型生成的同义词。
+- `fixedCharacterBoundary.allowedTraits`：允许按剧情选择使用、但不要求每个角色参考都出现的事实。
+- `fixedCharacterBoundary.forbiddenTraits`：与已确定角色形象冲突、后续正向字段不得出现的事实。
+- `allowedPositiveTraits` 与 `positivePromptBoundary`：由服务端从上述全局边界确定性派生，模型不得另写第二份角色事实。
 - `sourceSimilarityRules`：防止主题、故事和分镜复制原片的服装、动作、道具或镜头组合。只有生成请求实际传入原片视觉参考时，相关表面元素才可能在该次请求中以 `reference_leak` 进入渲染负面词。
 - `dialogueRules`：角色口癖、可用拟声词和禁用对白。台词规则不得进入图片负面提示词。
 
-该阶段没有 `commonNegativePrompt`，也不维护“未声明身体部件”的完整枚举。数组可以为空，不得为满足格式补充低相关规则。
+服务端将边界与当前 `creatorProfile`、`referenceAnalysis`、`sourceScriptReconstruction` 和 `creativeBrief` 的摘要绑定并签名。Variants、Legacy Full Story、Animation Plan、人物参考精修、角色图、首尾帧和视频生成只消费验签后的边界，不再解析 `fixedCharacter` 或调用模型常识重算。Character Feature Compiler 也只编译已签发 `requiredTraits(scope=appearance)`，不能重新推断固定主角。用户修改角色设定、字幕、参考视频或上游创意数据后，旧边界立即失效并要求重新生成。
+
+该阶段没有 `commonNegativePrompt`，也不维护“未声明身体部件”的完整枚举。未声明不等于禁止；只有全局边界明确写入 `forbiddenTraits` 或存在当前镜头的有效失败证据时，相关概念才可参与后续拦截或逐镜负面词判断。
 
 ### 阶段五：themeVariants
 

@@ -7,20 +7,20 @@ import path from "node:path";
 import { WorkflowService } from "../src/workflow.js";
 import { getConfig } from "../src/config.js";
 import { InputError, OutputContractError } from "../src/validation.js";
-import { ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile } from "../src/validation.js";
+import { ensureCharacterPromptMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile, extractFixedCharacterName, materializeGlobalCharacterBoundaryViews } from "../src/validation.js";
 import { buildRequestBody, MimoClient, parseModelJson } from "../src/mimo-client.js";
 import { buildQwenRequestBody, QwenClient } from "../src/qwen-client.js";
 import { JimengImageClient, buildCharacterReferenceImagePrompt, buildJimengImageRequestBody, buildShotFrameImagePrompt } from "../src/jimeng-client.js";
 import { RECONSTRUCTION_SYSTEM_PROMPT, SYSTEM_PROMPT, animationPlanPrompt, briefPrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "../src/prompts.js";
 import { parseRunVideoArgs } from "../src/run-video-command.js";
-import { generateShotVideo, ShotVideoConfigError, ShotVideoProviderError } from "../src/shot-video-generator.js";
+import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError, ShotVideoProviderError } from "../src/shot-video-generator.js";
 import { executeGenericHttpWorker } from "../workers/generic-http-worker.mjs";
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
-import { collectFixedCharacterVisualPolicy, extractFixedCharacterName, fixedCharacterVisualPolicyText } from "../src/validation.js";
-import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVisualGuardrails } from "../src/mock.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "../src/mock.js";
 import { syncShotCharacterReference } from "../public/character-reference-sync.js";
 import { buildFrameReferenceManifest, shotRelatedCharacterReferences, uploadedReferenceImages } from "../public/shot-reference-images.js";
 import { groundingContextDigest, sealReconstruction } from "../src/reconstruction-grounding.js";
+import { sealGlobalCharacterBoundary } from "../src/character-boundary.js";
 
 const frames = Array.from({ length: 8 }, (_, index) => ({
   timestamp: index * 5,
@@ -84,10 +84,34 @@ function stagedAnimationResponse(plan, prompt = "") {
   if (prompt.includes("CHARACTER_FEATURE_COMPILER_V1")) {
     const marker = "服务端签发输入：\n";
     const payload = JSON.parse(String(prompt).split(marker)[1].split("\n\nCHARACTER_FEATURE_COMPILER_PROTOCOL_RETRY_V1")[0]);
+    const lockedByTarget = new Map(
+      (payload.lockedCharacterBoundaries || []).map((entry) => [entry.characterTargetId, entry.requiredAppearanceTraits || []])
+    );
+    const spansByTarget = new Map();
+    for (const segment of payload.sourceCatalog) {
+      spansByTarget.set(segment.characterTargetId, [
+        ...(spansByTarget.get(segment.characterTargetId) || []),
+        ...(segment.spans || [])
+      ]);
+    }
     return {
       characters: payload.characterTargets.map(({ characterTargetId }) => ({
         characterTargetId,
-        features: []
+        features: (lockedByTarget.get(characterTargetId) || []).map((trait, index) => {
+          const spans = spansByTarget.get(characterTargetId) || [];
+          const evidenceSpan = spans.find((span) => [trait.canonicalName, ...(trait.terms || [])]
+            .some((term) => term && String(span.displayText || "").includes(term))) || spans[0];
+          return {
+            suggestedFeatureKey: `locked_feature_${index + 1}`,
+            canonicalName: trait.canonicalName,
+            terms: trait.terms,
+            featureKind: /尾/u.test(trait.canonicalName) ? "special_appendage" : "face_part",
+            semanticSubtype: /尾/u.test(trait.canonicalName) ? "tail" : "locked_appearance",
+            evidenceLevel: trait.evidenceLevel,
+            evidenceSpanIds: trait.evidenceLevel === "explicit" && evidenceSpan ? [evidenceSpan.spanId] : [],
+            inferenceSpanIds: trait.evidenceLevel === "inferred" && evidenceSpan ? [evidenceSpan.spanId] : []
+          };
+        })
       }))
     };
   }
@@ -165,6 +189,66 @@ function groundedUpstreamFixture(workflow) {
   };
 }
 
+function globalBoundaryContext(workflow, overrides = {}, boundary = null) {
+  const grounded = overrides.referenceAnalysis && overrides.sourceScriptReconstruction
+    ? {}
+    : groundedUpstreamFixture(workflow);
+  const context = { ...input, ...grounded, ...overrides };
+  const rawGuardrails = mockVisualGuardrails(context);
+  if (boundary) rawGuardrails.fixedCharacterBoundary = structuredClone(boundary);
+  return sealBoundaryContext(workflow, context, rawGuardrails);
+}
+
+function sealBoundaryContext(workflow, context, rawGuardrails) {
+  const materialized = materializeGlobalCharacterBoundaryViews(rawGuardrails, context.creatorProfile);
+  return {
+    ...context,
+    visualGuardrails: sealGlobalCharacterBoundary(materialized, context, workflow.characterBoundaryKey)
+  };
+}
+
+function boundaryTrait(canonicalName, terms, scope, evidenceLevel = "explicit") {
+  return {
+    canonicalName,
+    terms: [...new Set([canonicalName, ...terms])],
+    scope,
+    evidenceLevel,
+    triggerEvidence: [{ sourcePath: "creatorProfile.fixedCharacter", evidence: canonicalName }],
+    reason: evidenceLevel === "inferred" ? "由视觉模型基于角色语义与常识推导。" : "用户设定明确要求。"
+  };
+}
+
+function xiaobaiziBoundary({ tail = "required", forbidClaws = true } = {}) {
+  const requiredTraits = [
+    boundaryTrait("小白子", [], "identity"),
+    boundaryTrait("狼耳", ["狼耳朵"], "appearance")
+  ];
+  const forbiddenTraits = [];
+  const tailTrait = boundaryTrait("狼尾", ["狼尾巴", "尾巴"], "appearance", "inferred");
+  if (tail === "required") requiredTraits.push(tailTrait);
+  if (tail === "forbidden") forbiddenTraits.push({ ...tailTrait, reason: "用户明确否定尾巴，覆盖常识推导。" });
+  if (forbidClaws) {
+    forbiddenTraits.push(
+      boundaryTrait("兽爪", ["狼爪", "猫爪", "肉垫"], "appearance", "inferred"),
+      boundaryTrait("动物足", ["兽足", "四足"], "appearance", "inferred")
+    );
+  }
+  forbiddenTraits.push(boundaryTrait("翅膀", ["羽翼"], "appearance", "inferred"));
+  return {
+    schemaVersion: "2.0",
+    characterName: "小白子",
+    canonicalDescription: "Q版狼耳少女，保持人形角色结构。",
+    bodyForm: "人形少女，狼耳与狼尾为稳定外观特征。",
+    requiredTraits,
+    allowedTraits: [
+      boundaryTrait("活泼可爱", [], "personality"),
+      boundaryTrait("村里的热心帮手", [], "storyFunction")
+    ],
+    forbiddenTraits,
+    unresolvedConflicts: []
+  };
+}
+
 test("演示模式跑通完整工作流并分离角色边界与逐镜渲染负面提示词", async () => {
   const workflow = new WorkflowService();
   const result = await workflow.run(input);
@@ -179,26 +263,30 @@ test("演示模式跑通完整工作流并分离角色边界与逐镜渲染负�
   assert.equal(result.themeVariants.variants.length, 3);
 });
 
-test("角色边界阶段保留用户显式狼尾巴且不生成未声明特征负面词库", async () => {
+test("演示角色边界不做本地关键词推断，只签发可确定的角色名", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，q版狼耳少女，形象类似猫娘，有狼尾巴，活泼可爱，懂事，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常",
     constraints: "小白子只用嗷呜表达"
   };
   const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  const guardrails = ensureVisualGuardrailsMatchesProfile(
-    ensureOutputContract(mockVisualGuardrails({ ...input, creatorProfile, creativeBrief }), "visualGuardrails"),
-    creatorProfile
-  );
-  assert.deepEqual(guardrails.fixedCharacterBoundary.allowedBodyFeatures.filter((term) => term === "狼尾巴"), ["狼尾巴"]);
-  assert.match(guardrails.positivePromptBoundary[0].rule, /不得擅自添加/);
+  const guardrails = ensureVisualGuardrailsMatchesProfile(ensureOutputContract(
+    materializeGlobalCharacterBoundaryViews(
+      mockVisualGuardrails({ ...input, creatorProfile, creativeBrief }),
+      creatorProfile
+    ),
+    "visualGuardrails"
+  ), creatorProfile);
+  assert.deepEqual(guardrails.fixedCharacterBoundary.requiredTraits.map((trait) => trait.canonicalName), ["小白子"]);
+  assert.match(guardrails.positivePromptBoundary[0].rule, /必须沿用：小白子/);
   assert.deepEqual(guardrails.positivePromptBoundary[0].triggerEvidence, [{
     sourcePath: "creatorProfile.fixedCharacter",
     evidence: creatorProfile.fixedCharacter
   }]);
   assert.equal(Object.hasOwn(guardrails, "forbiddenPositiveTraits"), false);
   assert.equal(Object.hasOwn(guardrails, "commonNegativePrompt"), false);
-  assert.doesNotMatch(JSON.stringify(guardrails), /鸟喙|脚蹼|鳍|羽毛|狐尾|兔尾|龙尾/);
+  assert.deepEqual(guardrails.fixedCharacterBoundary.allowedTraits, []);
+  assert.deepEqual(guardrails.fixedCharacterBoundary.forbiddenTraits, []);
 });
 
 test("角色边界 prompt 明确分类规则且禁止生成全局渲染负面词", () => {
@@ -223,6 +311,120 @@ test("角色边界 prompt 明确分类规则且禁止生成全局渲染负面词
   assert.match(prompt, /本阶段不生成图片或视频模型的最终负面提示词/);
   assert.match(prompt, /未声明只表示后续正向提示词不得擅自添加/);
   assert.match(prompt, /不得额外输出旧版字段/);
+});
+
+test("Visual Guardrails 只推断一次并签发全局边界，用户改设定后旧边界失效", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，q版狼耳少女，形象类似猫娘，活泼可爱，懂事，学生/村民，村里的热心帮手",
+    vertical: "治愈/温情/日常",
+    constraints: "小白子只用嗷呜表达"
+  };
+  const referenceAnalysis = {};
+  const reconstruction = mockReconstruction(input);
+  let variantCalls = 0;
+  let capturedVariantPrompt = "";
+  const rawGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
+  rawGuardrails.fixedCharacterBoundary = xiaobaiziBoundary();
+  const workflow = new WorkflowService({
+    client: {
+      async generateJsonWithMedia() {
+        return structuredClone(rawGuardrails);
+      },
+      async generateJson(args) {
+        variantCalls += 1;
+        capturedVariantPrompt = args.prompt;
+        return mockVariants({ ...input, creatorProfile, count: 1 });
+      }
+    }
+  });
+  const sourceScriptReconstruction = sealReconstruction(
+    reconstruction,
+    workflow.groundingKey,
+    groundingContextDigest({
+      transcript: input.transcript,
+      metadata: input.metadata,
+      frames: input.frames,
+      video: null
+    })
+  );
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis, sourceScriptReconstruction });
+  const stageContext = {
+    ...input,
+    creatorProfile,
+    referenceAnalysis,
+    sourceScriptReconstruction,
+    creativeBrief
+  };
+
+  const visualGuardrails = await workflow.createVisualGuardrails(stageContext);
+  assert.equal(visualGuardrails.fixedCharacterBoundary.requiredTraits[2].canonicalName, "狼尾");
+  assert.equal(visualGuardrails.fixedCharacterBoundary.requiredTraits[2].evidenceLevel, "inferred");
+  assert.match(visualGuardrails.fixedCharacterBoundary.sourceDigest, /^sha256:/u);
+  assert.ok(visualGuardrails.fixedCharacterBoundary.boundarySignature);
+
+  const variants = await workflow.createVariants({ ...stageContext, visualGuardrails, count: 1 });
+  assert.equal(variants.variants.length, 1);
+  assert.match(capturedVariantPrompt, /"canonicalName":"狼尾"/u);
+  assert.equal(variantCalls, 1);
+
+  await assert.rejects(
+    () => workflow.createVariants({
+      ...stageContext,
+      creatorProfile: { ...creatorProfile, fixedCharacter: `${creatorProfile.fixedCharacter}，明确没有尾巴` },
+      visualGuardrails,
+      count: 1
+    }),
+    /全局角色边界与当前用户设定.*不匹配/u
+  );
+  assert.equal(variantCalls, 1);
+});
+
+test("Visual Guardrails 拒绝模型伪造服务端签发字段", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，q版狼耳少女，形象类似猫娘",
+    vertical: "治愈/温情/日常",
+    constraints: ""
+  };
+  const referenceAnalysis = {};
+  let modelCalls = 0;
+  const workflow = new WorkflowService({
+    client: {
+      async generateJsonWithMedia() {
+        modelCalls += 1;
+        const result = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
+        result.fixedCharacterBoundary = {
+          ...xiaobaiziBoundary(),
+          sourceDigest: "sha256:forged-source",
+          boundaryDigest: "sha256:forged-boundary",
+          boundarySignature: "forged-signature"
+        };
+        return result;
+      }
+    }
+  });
+  const sourceScriptReconstruction = sealReconstruction(
+    mockReconstruction(input),
+    workflow.groundingKey,
+    groundingContextDigest({
+      transcript: input.transcript,
+      metadata: input.metadata,
+      frames: input.frames,
+      video: null
+    })
+  );
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis, sourceScriptReconstruction });
+
+  await assert.rejects(
+    () => workflow.createVisualGuardrails({
+      ...input,
+      creatorProfile,
+      referenceAnalysis,
+      sourceScriptReconstruction,
+      creativeBrief
+    }),
+    /签发字段只能由服务端生成/u
+  );
+  assert.equal(modelCalls, 2);
 });
 
 test("creativeBrief 将通用叙事构件列为允许复用而非禁止项", async () => {
@@ -273,7 +475,7 @@ test("选择主题变体后可用 mimo-v2.5-pro 生成完整剧情", async () =>
       }
     }
   });
-  const result = await workflow.createFullStory({ ...input, ...groundedUpstreamFixture(workflow), creativeBrief, variant });
+  const result = await workflow.createFullStory(globalBoundaryContext(workflow, { creativeBrief, variant }));
   assert.equal(captured.model, "mimo-v2.5-pro");
   assert.equal(captured.maxCompletionTokens, 12345);
   assert.equal(captured.jsonRetryAttempts, 0);
@@ -324,8 +526,9 @@ test("完整剧情和动画生产包可切换到 Qwen，同时保留 MiMo 基础
     animationMaxCompletionTokens: 17000
   });
 
-  const fullStory = await workflow.createFullStory({ ...input, ...groundedUpstreamFixture(workflow), creativeBrief, variant });
-  const animationPlan = await workflow.createAnimationPlan({ ...input, creativeBrief, variant, fullStory });
+  const stageContext = globalBoundaryContext(workflow, { creativeBrief, variant });
+  const fullStory = await workflow.createFullStory(stageContext);
+  const animationPlan = await workflow.createAnimationPlan({ ...stageContext, fullStory });
 
   assert.equal(workflow.mode, "live");
   assert.equal(calls[0].model, "qwen3.7-max-story");
@@ -360,15 +563,13 @@ test("工作流阶段可通过 modelOverrides 灵活切换 provider 和模型", 
       fullStory: { provider: "Qwen", model: "qwen-default", maxCompletionTokens: 16000 }
     }
   });
-  const result = await workflow.createFullStory({
-    ...input,
-    ...groundedUpstreamFixture(workflow),
+  const result = await workflow.createFullStory(globalBoundaryContext(workflow, {
     creativeBrief,
     variant,
     modelOverrides: {
       fullStory: { provider: "Qwen", model: "qwen-custom-story", maxCompletionTokens: 22000 }
     }
-  });
+  }));
   assert.equal(result.selectedVariantId, "V1");
   assert.equal(calls[0].model, "qwen-custom-story");
   assert.equal(calls[0].maxCompletionTokens, 22000);
@@ -505,13 +706,13 @@ test("referenceAnalysis 原生视频证据失败后只按 video evidence 纠偏"
         if (calls.length === 1) return analysis;
         assert.match(args.prompt, /本次成功媒体请求使用原生视频/u);
         assert.match(args.prompt, /不得保留任何 frame 或 frameNumber/u);
-        assert.match(args.prompt, /endMs 不得超过输入视频时长/u);
-        assert.match(args.prompt, /endMs <= 40000/u);
+        assert.match(args.prompt, /不得输出 startMs\/endMs/u);
+        assert.match(args.prompt, /endSecond <= 40/u);
         analysis.observedFacts.forEach((fact, index) => {
           fact.evidenceRefs = [{
             source: "video",
-            startMs: index * 1000,
-            endMs: index * 1000 + 500
+            startSecond: index,
+            endSecond: index + 1
           }];
         });
         return analysis;
@@ -531,6 +732,48 @@ test("referenceAnalysis 原生视频证据失败后只按 video evidence 纠偏"
   assert.equal(calls.length, 2);
   assert.ok(result.observedFacts.every((fact) => (
     fact.evidenceRefs.every((reference) => reference.source === "video")
+  )));
+});
+
+test("referenceAnalysis 视频时间连续越界时改用关键帧重新取证", async () => {
+  const calls = [];
+  const videoInput = {
+    ...input,
+    metadata: { ...input.metadata, duration: 96.269932 },
+    video: {
+      dataUrl: "data:video/mp4;base64,AAAA",
+      mimeType: "video/mp4",
+      size: 4
+    }
+  };
+  const workflow = new WorkflowService({
+    client: {
+      async generateJsonWithMedia(args) {
+        calls.push(args);
+        const analysis = mockAnalysis(videoInput);
+        if (args.video) {
+          args.onResolvedMediaMode?.("video");
+          analysis.observedFacts.forEach((fact) => {
+            fact.evidenceRefs = [{ source: "video", startSecond: 96, endSecond: 125 }];
+          });
+          return analysis;
+        }
+        args.onResolvedMediaMode?.("frames");
+        assert.match(args.prompt, /本次只提供采样画面/u);
+        assert.match(args.prompt, /不得输出 video 时间字段/u);
+        return analysis;
+      }
+    }
+  });
+
+  const result = await workflow.analyze(videoInput);
+
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].video, videoInput.video);
+  assert.equal(calls[1].video, videoInput.video);
+  assert.equal(calls[2].video, null);
+  assert.ok(result.observedFacts.every((fact) => (
+    fact.evidenceRefs.every((reference) => reference.source === "frame")
   )));
 });
 
@@ -561,7 +804,7 @@ test("完整剧情后可生成首尾帧动画生产包", async () => {
       }
     }
   });
-  const result = await workflow.createAnimationPlan({ ...input, creativeBrief, variant, fullStory });
+  const result = await workflow.createAnimationPlan(globalBoundaryContext(workflow, { creativeBrief, variant, fullStory }));
   assert.equal(captured.model, "mimo-v2.5-pro");
   assert.equal(captured.maxCompletionTokens, 13000);
   assert.equal(result.productionStrategy.format, "first_last_frame_video");
@@ -596,11 +839,13 @@ test("人物参考图可用 MiMo 修正角色参考提示词", async () => {
       }
     }
   });
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
 
-  const result = await workflow.refineCharacterReference({
+  const result = await workflow.refineCharacterReference(globalBoundaryContext(workflow, {
     imageName: "xiaobaizi.png",
     imageDataUrl: "data:image/png;base64,AA==",
     creatorProfile,
+    creativeBrief,
     selectedVariant: { id: "V1", title: "风车与彩虹" },
     fullStory: { title: "风车与彩虹" },
     characterReference: {
@@ -611,7 +856,7 @@ test("人物参考图可用 MiMo 修正角色参考提示词", async () => {
       consistencyTags: ["儿童"],
       forbiddenChanges: ["不要变成成人"]
     }
-  });
+  }));
 
   assert.equal(captured.frames.length, 1);
   assert.equal(captured.frames[0].dataUrl, "data:image/png;base64,AA==");
@@ -1951,219 +2196,42 @@ test("标准角色说明后缀使用锚定分隔符诊断且不误伤独立前�
   assert.doesNotThrow(() => ensureOutputContract(independentName, "fullStory"));
 });
 
-test("creativeBrief 接受 fixedCharacter 明确授权的猫娘身份", () => {
+test("creativeBrief 将动态身份和来源表面词交给 Visual Guardrails", () => {
   const creatorProfile = {
-    fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾，学生/村民，村里的热心帮手",
-    vertical: "治愈/温情/日常",
-    constraints: "小白子用嗷或嗷呜表达情绪"
+    fixedCharacter: "小白子，q 版狼耳少女，形象类似于猫娘，猫一样的耳朵，整体性格活泼可爱，懂事，学生/村民 · 村里的热心帮手",
+    vertical: "治愈/温情/日常/日系 2.5D 新海诚光景风格",
+    constraints: "小白子基本只用嗷或嗷呜表达情绪"
   };
   const brief = creativeBriefFixture(creatorProfile, {
-    newRole: "小白子，Q版猫耳少女，形象类似猫娘",
-    newOccupationOrIdentity: "猫娘，村里的热心帮手"
+    newRole: "小白子，猫娘、狼耳少女，村里的热心帮手",
+    newOccupationOrIdentity: "学生/村民",
+    mappingLogic: "保留原片快递员承担送达任务和连接人物的剧作功能"
+  });
+  brief.protectedExpressions.push({
+    expressionType: "身份外壳",
+    sourceExpression: "快递员",
+    prohibition: "不得直接复制原片职业外壳",
+    safeAlternativePrinciple: "只保留任务执行功能"
   });
 
   assert.doesNotThrow(() => validateCreativeBrief(brief, creatorProfile));
-});
 
-test("creativeBrief 猫娘语义授权只放行同物种身份别名，不放行泛动物身份", () => {
-  const identityProfiles = [
-    "小白子，猫尾少女，村里的热心帮手",
-    "小白子，猫耳和猫尾作为角色固定身体特征，普通少女，村里的热心帮手"
-  ];
-  for (const fixedCharacter of identityProfiles) {
-    const creatorProfile = { fixedCharacter, vertical: "治愈日常", constraints: "" };
-    const brief = creativeBriefFixture(creatorProfile, {
-      newRole: "小白子，猫娘，保留用户明确声明的猫耳与猫尾",
-      newOccupationOrIdentity: "猫系少女，村里的热心帮手"
-    });
-    assert.doesNotThrow(() => validateCreativeBrief(brief, creatorProfile));
-  }
-
-  const creatorProfile = {
-    fixedCharacter: "小白子，猫耳少女，村里的热心帮手",
-    vertical: "治愈日常",
-    constraints: ""
-  };
-  const generalized = creativeBriefFixture(creatorProfile, {
-    newRole: "小白子，猫娘，拟人动物角色"
+  const guardrailsPrompt = visualGuardrailsPrompt({
+    creatorProfile,
+    referenceAnalysis: { storySynopsis: "原片主角承担快递任务" },
+    sourceScriptReconstruction: { relationshipPattern: "任务执行者连接村民" },
+    creativeBrief: brief
   });
-  assert.throws(
-    () => validateCreativeBrief(generalized, creatorProfile),
-    (error) => error instanceof OutputContractError
-      && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newRole")
-      && /拟人动物|动物角色/u.test(error.message)
+  assert.match(guardrailsPrompt, /角色边界与创作规则审查 AI/u);
+  assert.match(guardrailsPrompt, /q 版狼耳少女/u);
+  assert.match(guardrailsPrompt, /形象类似于猫娘/u);
+  assert.match(guardrailsPrompt, /快递员/u);
+
+  const guardrails = ensureVisualGuardrailsMatchesProfile(
+    ensureOutputContract(mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: brief }), "visualGuardrails"),
+    creatorProfile
   );
-
-  for (const generalizedIdentity of ["动物战士", "动物女孩", "动物精灵", "动物护送者", "动物脸"]) {
-    const generalizedBrief = creativeBriefFixture(creatorProfile, {
-      newRole: `小白子，猫娘，${generalizedIdentity}`
-    });
-    assert.throws(
-      () => validateCreativeBrief(generalizedBrief, creatorProfile),
-      (error) => error instanceof OutputContractError
-        && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newRole")
-        && error.message.includes("动物")
-    );
-  }
-});
-
-test("creativeBrief.mappingLogic 允许明确否定原片动物与玩偶外壳", () => {
-  const creatorProfile = {
-    fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾，学生/村民，村里的热心帮手",
-    vertical: "治愈/温情/日常",
-    constraints: ""
-  };
-  const mappingLogicCases = [
-    "不继承原片拟人化动物身份，只保留主动帮助他人的剧作功能",
-    "不使用原片企鹅服、玩偶服或动物外壳，只保留善意连接者的剧作功能"
-  ];
-
-  for (const mappingLogic of mappingLogicCases) {
-    const brief = creativeBriefFixture(creatorProfile, { mappingLogic });
-    brief.protectedExpressions.push({
-      expressionType: "视觉元素",
-      sourceExpression: "企鹅服、玩偶服或动物外壳",
-      prohibition: "不得继承这些原片外壳。",
-      safeAlternativePrinciple: "只保留剧作功能。"
-    });
-    assert.doesNotThrow(() => validateCreativeBrief(brief, creatorProfile), mappingLogic);
-  }
-});
-
-test("creativeBrief.mappingLogic 的正向来源身份声明仍被拦截并报告字段路径", () => {
-  const creatorProfile = {
-    fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾，学生/村民，村里的热心帮手",
-    vertical: "治愈/温情/日常",
-    constraints: ""
-  };
-  const brief = creativeBriefFixture(creatorProfile, {
-    mappingLogic: "主角继续作为企鹅快递员和拟人动物身份执行送货任务"
-  });
-
-  assert.throws(
-    () => validateCreativeBrief(brief, creatorProfile),
-    (error) => error instanceof OutputContractError
-      && error.message.includes("creativeBrief.roleAndOccupationMapping[0].mappingLogic")
-      && error.message.includes("企鹅")
-  );
-
-  const contrastBrief = creativeBriefFixture(creatorProfile, {
-    mappingLogic: "不继承原片企鹅服，而是改成动物快递员继续送货"
-  });
-  assert.throws(
-    () => validateCreativeBrief(contrastBrief, creatorProfile),
-    (error) => error instanceof OutputContractError
-      && error.message.includes("creativeBrief.roleAndOccupationMapping[0].mappingLogic")
-      && error.message.includes("动物")
-  );
-
-  for (const leakedMappingLogic of [
-    "不继承原片企鹅服，小白子用玩偶服送货",
-    "不继承原片动物身份，小白子随后担任动物快递员",
-    "不继承企鹅服，动物勇士承担帮助功能",
-    "不使用企鹅外壳，动物邮差负责送货",
-    "不保留玩偶服，动物艺人负责表演",
-    "不继承原片企鹅服同时小白子用玩偶服送货",
-    "不继承原片动物身份并让小白子担任动物快递员",
-    "不使用企鹅服之后小白子穿玩偶服行动"
-  ]) {
-    const leakedBrief = creativeBriefFixture(creatorProfile, { mappingLogic: leakedMappingLogic });
-    assert.throws(
-      () => validateCreativeBrief(leakedBrief, creatorProfile),
-      (error) => error instanceof OutputContractError
-        && error.message.includes("creativeBrief.roleAndOccupationMapping[0].mappingLogic")
-    );
-  }
-});
-
-test("creativeBrief 猫娘授权仍拒绝企鹅服、玩偶服和来源职业泄漏并报告字段路径", () => {
-  const creatorProfile = {
-    fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾，学生/村民，村里的热心帮手",
-    vertical: "治愈/温情/日常",
-    constraints: ""
-  };
-
-  for (const leakedIdentity of ["快递员", "送货员", "猫娘快递员", "企鹅快递员", "企鹅服角色", "玩偶服送货员"]) {
-    const brief = creativeBriefFixture(creatorProfile, { newOccupationOrIdentity: leakedIdentity });
-    assert.throws(
-      () => validateCreativeBrief(brief, creatorProfile),
-      (error) => error instanceof OutputContractError
-        && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newOccupationOrIdentity")
-    );
-  }
-
-  const authorizedCourierProfile = {
-    fixedCharacter: "小白子，猫娘，村里的快递员",
-    vertical: "治愈日常",
-    constraints: ""
-  };
-  const authorizedCourierBrief = creativeBriefFixture(authorizedCourierProfile, {
-    newOccupationOrIdentity: "猫娘快递员"
-  });
-  assert.doesNotThrow(() => validateCreativeBrief(authorizedCourierBrief, authorizedCourierProfile));
-});
-
-test("creativeBrief 不为普通人类或猫耳配饰角色开放泛动物身份", () => {
-  const cases = [
-    {
-      fixedCharacter: "小明，普通中学生",
-      leakedIdentity: "动物快递员"
-    },
-    {
-      fixedCharacter: "小雨，戴着猫耳发箍的普通女孩",
-      leakedIdentity: "拟人动物角色"
-    }
-  ];
-
-  for (const { fixedCharacter, leakedIdentity } of cases) {
-    const creatorProfile = { fixedCharacter, vertical: "校园日常", constraints: "" };
-    const brief = creativeBriefFixture(creatorProfile, { newOccupationOrIdentity: leakedIdentity });
-    assert.throws(
-      () => validateCreativeBrief(brief, creatorProfile),
-      (error) => error instanceof OutputContractError
-        && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newOccupationOrIdentity")
-        && error.message.includes("动物")
-    );
-  }
-
-  const accessoryProfile = { fixedCharacter: "小雨，戴着猫耳发箍的普通女孩", vertical: "校园日常", constraints: "" };
-  const catgirlLeak = creativeBriefFixture(accessoryProfile, { newOccupationOrIdentity: "猫娘" });
-  assert.throws(
-    () => validateCreativeBrief(catgirlLeak, accessoryProfile),
-    (error) => error instanceof OutputContractError
-      && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newOccupationOrIdentity")
-      && error.message.includes("猫娘")
-  );
-
-  for (const fixedCharacter of [
-    "小雨，穿着猫娘服装的普通女孩",
-    "小雨，印有猫耳少女图案的T恤，普通女孩",
-    "小雨，临时扮演猫娘的普通女孩",
-    "小雨，有猫耳发箍和猫尾挂件的普通女孩",
-    "小雨，喜欢猫娘文化的普通女孩",
-    "小雨，研究猫娘题材的普通女孩",
-    "小雨，网名叫猫娘的普通女孩",
-    "小雨，画过猫耳少女的普通女孩"
-  ]) {
-    const removableProfile = { fixedCharacter, vertical: "校园日常", constraints: "" };
-    const identityLeak = creativeBriefFixture(removableProfile, { newOccupationOrIdentity: "猫娘" });
-    assert.throws(
-      () => validateCreativeBrief(identityLeak, removableProfile),
-      (error) => error instanceof OutputContractError
-        && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newOccupationOrIdentity")
-        && error.message.includes("猫娘")
-    );
-  }
-
-  const animalHobbyProfile = { fixedCharacter: "小明，喜欢动物的普通中学生", vertical: "校园日常", constraints: "" };
-  assert.doesNotThrow(() => validateCreativeBrief(creativeBriefFixture(animalHobbyProfile), animalHobbyProfile));
-  const animalHobbyLeak = creativeBriefFixture(animalHobbyProfile, { newOccupationOrIdentity: "动物快递员" });
-  assert.throws(
-    () => validateCreativeBrief(animalHobbyLeak, animalHobbyProfile),
-    (error) => error instanceof OutputContractError
-      && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newOccupationOrIdentity")
-      && error.message.includes("动物")
-  );
+  assert.ok(guardrails.sourceSimilarityRules.some((rule) => rule.sourceExpression === "快递员"));
 });
 
 test("creativeBrief 第一项 newRole 必须保留固定角色姓名", () => {
@@ -2184,43 +2252,23 @@ test("creativeBrief 第一项 newRole 必须保留固定角色姓名", () => {
   );
 });
 
-test("creativeBrief 猫耳猫尾授权不扩展为其他动物身体结构", () => {
+test("creativeBrief 固定姓名校验失败后只纠偏一次", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常",
     constraints: ""
   };
-
-  for (const unauthorizedFeature of ["猫爪", "肉垫", "兽爪", "翅膀", "鸟喙", "狼尾巴"]) {
-    const brief = creativeBriefFixture(creatorProfile, {
-      newRole: `小白子，猫娘，长着${unauthorizedFeature}`
-    });
-    assert.throws(
-      () => validateCreativeBrief(brief, creatorProfile),
-      (error) => error instanceof OutputContractError
-        && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newRole")
-        && error.message.includes(unauthorizedFeature)
-    );
-  }
-});
-
-test("creativeBrief 校验失败后只纠偏一次并保留猫娘固定身份", async () => {
-  const creatorProfile = {
-    fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾，学生/村民，村里的热心帮手",
-    vertical: "治愈/温情/日常",
-    constraints: ""
-  };
-  const leakedBrief = creativeBriefFixture(creatorProfile, { newOccupationOrIdentity: "企鹅快递员" });
-  const correctedBrief = creativeBriefFixture(creatorProfile, {
-    newOccupationOrIdentity: "村里的热心帮手",
-    mappingLogic: "不继承原片拟人化动物身份，只保留主动帮助他人的剧作功能"
+  const invalidBrief = creativeBriefFixture(creatorProfile, {
+    newRole: "神秘少女阿花",
+    mappingLogic: "小白子的剧作功能错误地交给了阿花"
   });
+  const correctedBrief = creativeBriefFixture(creatorProfile);
   const prompts = [];
   const workflow = new WorkflowService({
     client: {
       async generateJson(args) {
         prompts.push(args.prompt);
-        return prompts.length === 1 ? leakedBrief : correctedBrief;
+        return prompts.length === 1 ? invalidBrief : correctedBrief;
       }
     }
   });
@@ -2228,28 +2276,27 @@ test("creativeBrief 校验失败后只纠偏一次并保留猫娘固定身份", 
   const result = await workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile });
 
   assert.equal(prompts.length, 2);
-  assert.equal(result.roleAndOccupationMapping[0].newOccupationOrIdentity, "村里的热心帮手");
-  assert.match(prompts[1], /creativeBrief\.roleAndOccupationMapping\[0\]\.newOccupationOrIdentity/u);
-  assert.match(prompts[1], /企鹅/u);
-  assert.match(prompts[1], /猫耳少女/u);
-  assert.match(prompts[1], /猫娘/u);
-  assert.match(prompts[1], /只修正越界字段/u);
-  assert.match(prompts[1], /否定来源/u);
+  assert.match(result.roleAndOccupationMapping[0].newRole, /小白子/u);
+  assert.match(prompts[1], /creativeBrief\.roleAndOccupationMapping\[0\]\.newRole/u);
+  assert.match(prompts[1], /不得更换或重命名主角/u);
 });
 
-test("creativeBrief 第二次输出仍越界时抛出 OutputContractError", async () => {
+test("creativeBrief 第二次输出仍丢失固定姓名时抛出 OutputContractError", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常",
     constraints: ""
   };
-  const leakedBrief = creativeBriefFixture(creatorProfile, { newOccupationOrIdentity: "玩偶服送货员" });
+  const invalidBrief = creativeBriefFixture(creatorProfile, {
+    newRole: "神秘少女阿花",
+    mappingLogic: "小白子的剧作功能错误地交给了阿花"
+  });
   let calls = 0;
   const workflow = new WorkflowService({
     client: {
       async generateJson() {
         calls += 1;
-        return leakedBrief;
+        return invalidBrief;
       }
     }
   });
@@ -2257,12 +2304,12 @@ test("creativeBrief 第二次输出仍越界时抛出 OutputContractError", asyn
   await assert.rejects(
     () => workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile }),
     (error) => error instanceof OutputContractError
-      && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newOccupationOrIdentity")
+      && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newRole")
   );
   assert.equal(calls, 2);
 });
 
-test("creativeBrief 禁止把原片表面形象映射成固定角色身份", async () => {
+test("creativeBrief 动态表面词不会在 Visual Guardrails 前触发自动纠偏", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常",
@@ -2278,14 +2325,14 @@ test("creativeBrief 禁止把原片表面形象映射成固定角色身份", asy
     safeAlternativePrinciple: "只保留任务执行者、信使、善意连接者和萌系情感载体的剧作功能。"
   });
 
+  let calls = 0;
   const workflow = new WorkflowService({
-    client: { async generateJson() { return leakedBrief; } }
+    client: { async generateJson() { calls += 1; return leakedBrief; } }
   });
 
-  await assert.rejects(
-    () => workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile }),
-    /企鹅/
-  );
+  const result = await workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile });
+  assert.equal(calls, 1);
+  assert.match(result.roleAndOccupationMapping[0].newOccupationOrIdentity, /企鹅快递员/u);
 });
 
 test("creativeBrief 的安全改写方向允许提及被替换的原片表达", async () => {
@@ -2354,11 +2401,11 @@ test("主题变体必须锁定用户指定固定角色，不能另起主角名",
     }
   });
   await assert.rejects(
-    () => workflow.createVariants({
+    () => workflow.createVariants(globalBoundaryContext(workflow, {
       creativeBrief: {},
       creatorProfile: { fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事", vertical: "温情/日常" },
       count: 1
-    }),
+    })),
     OutputContractError
   );
 });
@@ -2401,7 +2448,7 @@ test("主题变体禁止继承 creativeBrief 中已保护的表面形象", async
   });
 
   await assert.rejects(
-    () => workflow.createVariants({ creativeBrief, creatorProfile, count: 1 }),
+    () => workflow.createVariants(globalBoundaryContext(workflow, { creativeBrief, creatorProfile, count: 1 })),
     /企鹅|翅膀|尾巴/
   );
 });
@@ -2454,7 +2501,7 @@ test("主题变体禁止复用 mustChange 受控改写变量", async () => {
   });
 
   await assert.rejects(
-    () => workflow.createVariants({ creativeBrief, creatorProfile, count: 1 }),
+    () => workflow.createVariants(globalBoundaryContext(workflow, { creativeBrief, creatorProfile, count: 1 })),
     /录取通知书|孔明灯/
   );
 });
@@ -2489,7 +2536,7 @@ test("完整剧情禁止继承 creativeBrief 中已保护的表面形象", async
     storyModel: "mimo-v2.5-pro"
   });
   await assert.rejects(
-    () => workflow.createFullStory({ ...groundedUpstreamFixture(workflow), creativeBrief, creatorProfile, variant }),
+    () => workflow.createFullStory(globalBoundaryContext(workflow, { creativeBrief, creatorProfile, variant })),
     /企鹅|翅膀/
   );
 });
@@ -2536,7 +2583,7 @@ test("完整剧情禁止复用 mustChange 受控改写变量，但允许在避�
     storyModel: "mimo-v2.5-pro"
   });
   await assert.rejects(
-    () => leakedWorkflow.createFullStory({ ...groundedUpstreamFixture(leakedWorkflow), creativeBrief, creatorProfile, variant }),
+    () => leakedWorkflow.createFullStory(globalBoundaryContext(leakedWorkflow, { creativeBrief, creatorProfile, variant })),
     /录取通知书|孔明灯/
   );
 
@@ -2567,8 +2614,8 @@ test("完整剧情校验失败时会自动要求模型纠偏一次", async () =>
     endingRitual: "一起把风车插在窗边"
   };
   const leakedStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
-  leakedStory.characterBible.protagonist.signatureBehaviors = ["尾巴轻轻摇动表示开心"];
-  leakedStory.sceneScript[0].visibleAction = "小白子尾巴轻摇，抱着风车出发。";
+  leakedStory.characterBible.protagonist.signatureBehaviors = ["狼爪肉垫轻拍表示开心"];
+  leakedStory.sceneScript[0].visibleAction = "小白子用狼爪扶住风车，肉垫清晰可见。";
   const fixedStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
   fixedStory.characterBible.protagonist.signatureBehaviors = ["狼耳轻轻抖动表示开心", "抱紧风车表示认真"];
   fixedStory.sceneScript[0].visibleAction = "小白子抱紧风车，狼耳轻轻抖动，认真出发。";
@@ -2582,12 +2629,16 @@ test("完整剧情校验失败时会自动要求模型纠偏一次", async () =>
     }
   });
 
-  const result = await workflow.createFullStory({ ...groundedUpstreamFixture(workflow), creativeBrief, creatorProfile, variant });
+  const result = await workflow.createFullStory(globalBoundaryContext(
+    workflow,
+    { creativeBrief, creatorProfile, variant },
+    xiaobaiziBoundary()
+  ));
 
   assert.equal(result.selectedVariantId, "V1");
   assert.equal(prompts.length, 2);
   assert.match(prompts[1], /没有通过系统校验/);
-  assert.doesNotMatch(JSON.stringify(result), /尾巴/);
+  assert.doesNotMatch(JSON.stringify(result), /狼爪|肉垫/);
 });
 
 test("Scene Contract 失败会携带全部路径重试完整 fullStory 一次", async () => {
@@ -2630,12 +2681,11 @@ test("Scene Contract 失败会携带全部路径重试完整 fullStory 一次", 
     }
   });
 
-  const result = await workflow.createFullStory({
-    ...groundedUpstreamFixture(workflow),
+  const result = await workflow.createFullStory(globalBoundaryContext(workflow, {
     creativeBrief,
     creatorProfile,
     variant
-  });
+  }));
 
   assert.equal(prompts.length, 2);
   assert.equal(result.selectedVariantId, variant.id);
@@ -2687,12 +2737,11 @@ test("Full Story 第二次 Scene Contract 仍失败时终止且不产生第三�
   });
 
   await assert.rejects(
-    () => workflow.createFullStory({
-      ...groundedUpstreamFixture(workflow),
+    () => workflow.createFullStory(globalBoundaryContext(workflow, {
       creativeBrief,
       creatorProfile,
       variant
-    }),
+    })),
     /fullStory Scene Contract 校验失败/u
   );
   assert.equal(calls, 2);
@@ -2741,12 +2790,12 @@ test("动画入口在任何模型与 Compiler 调用前拒绝残缺 Full Story",
   });
 
   await assert.rejects(
-    () => workflow.createAnimationPlan({
+    () => workflow.createAnimationPlan(globalBoundaryContext(workflow, {
       ...context,
       creativeBrief,
       variant,
       fullStory
-    }),
+    })),
     /fullStory Scene Contract 校验失败/u
   );
   assert.equal(modelCalls, 0);
@@ -2774,7 +2823,12 @@ test("动画生产包正向提示词复用原片表面形象时会被边界校�
     environmentPressure: "大雾",
     endingRitual: "把儿童画摆正"
   };
-  const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  const fullStory = mockFullStory({
+    ...input,
+    creatorProfile: { ...creatorProfile, fixedCharacter: "小白子，q版狼耳少女，活泼可爱，懂事，学生/村民" },
+    creativeBrief,
+    variant
+  });
   const leakedPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory });
   leakedPlan.shotPlan[0].startFrame.characters[0].actionState = "企鹅快递员小白子站在村口，翅膀抬至胸前，手里拿着画。";
   const workflow = animationWorkflow({
@@ -2782,12 +2836,12 @@ test("动画生产包正向提示词复用原片表面形象时会被边界校�
     animationModel: "mimo-v2.5-pro"
   });
   await assert.rejects(
-    () => workflow.createAnimationPlan({ creativeBrief, creatorProfile, variant, fullStory }),
+    () => workflow.createAnimationPlan(globalBoundaryContext(workflow, { creativeBrief, creatorProfile, variant, fullStory })),
     /企鹅|翅膀|正向画面提示词/
   );
 });
 
-test("动画生产包不得把狼耳少女正向扩展成狼尾、狼爪和肉垫", async () => {
+test("Visual Guardrails 推断狼尾后下游直接沿用，并继续禁止兽爪肉垫", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，狼耳少女，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常",
@@ -2803,82 +2857,198 @@ test("动画生产包不得把狼耳少女正向扩展成狼尾、狼爪和肉�
     environmentPressure: "阵雨",
     endingRitual: "一起把风车插在窗边"
   };
-  const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
-  const leakedPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory });
-  leakedPlan.characterReferencePrompts[0].appearancePrompt = "小白子，狼耳少女，带狼尾和肉垫，狼爪轻轻扒着风车。";
-  leakedPlan.shotPlan[0].startFramePrompt = "小白子带着狼尾站在村口，狼爪扶住风车。";
-  const workflow = animationWorkflow({
-    client: { async generateJson(args) { return stagedAnimationResponse(leakedPlan, args.prompt); } },
-    animationModel: "qwen3.7-max"
+  const fullStory = mockFullStory({
+    ...input,
+    creatorProfile: { ...creatorProfile, fixedCharacter: "小白子，q版狼耳少女，活泼可爱，懂事，学生/村民" },
+    creativeBrief,
+    variant
   });
-  await assert.rejects(
-    () => workflow.createAnimationPlan({ creativeBrief, creatorProfile, variant, fullStory }),
-    /狼尾|狼爪|肉垫|非用户设定身份/
-  );
-});
-
-test("固定角色显式写狼尾巴时允许尾巴动作但不自动允许爪子肉垫", async () => {
-  const creatorProfile = {
-    fixedCharacter: "小白子，q版狼耳少女，形象类似猫娘，有狼尾巴，活泼可爱，懂事，学生/村民，村里的热心帮手",
-    vertical: "治愈/温情/日常",
-    constraints: "小白子用嗷或嗷呜表达情绪"
-  };
-  const policy = collectFixedCharacterVisualPolicy(creatorProfile.fixedCharacter);
-  assert.ok(policy.allowedBodyTerms.includes("尾巴"));
-  assert.ok(policy.allowedBodyTerms.includes("狼尾巴"));
-
-  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  const variant = {
-    id: "V1",
-    title: "风车的约定",
-    characterSetup: { protagonist: "小白子，q版狼耳少女，有狼尾巴", careRecipient: "邻居奶奶", helper: "拖拉机叔叔" },
-    newTask: "送风车",
-    emotionalMedium: "手工风车",
-    environmentPressure: "阵雨",
-    endingRitual: "一起把风车插在窗边"
-  };
-  const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
   const tailPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory });
-  tailPlan.characterReferencePrompts[0].appearancePrompt = "小白子，q版狼耳少女，有狼尾巴，穿浅蓝背带裙，尾巴轻轻摇动。";
-  tailPlan.shotPlan[0].startFrame.characters[0].actionState = "小白子站在村口，狼耳竖起，狼尾巴轻轻摇动，双手扶住手工风车。";
+  tailPlan.characterReferencePrompts[0].appearancePrompt = "小白子，狼耳少女，带狼尾站在村口，保持人形双手。";
+  tailPlan.shotPlan[0].startFrame.characters[0].actionState = "小白子狼尾轻轻摇动，双手扶住风车。";
   const workflow = animationWorkflow({
     client: { async generateJson(args) { return stagedAnimationResponse(tailPlan, args.prompt); } },
     animationModel: "qwen3.7-max"
   });
   await assert.doesNotReject(
-    () => workflow.createAnimationPlan({ creativeBrief, creatorProfile, variant, fullStory })
+    () => workflow.createAnimationPlan(globalBoundaryContext(
+      workflow,
+      { creativeBrief, creatorProfile, variant, fullStory },
+      xiaobaiziBoundary()
+    ))
   );
 
-  const clawPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory });
-  clawPlan.characterReferencePrompts[0].appearancePrompt = "小白子，q版狼耳少女，有狼尾巴，狼爪和肉垫清晰可见。";
-  clawPlan.shotPlan[0].startFrame.characters[0].handPropState = "小白子以狼爪扶住风车，肉垫贴着木柄。";
+  const clawPlan = structuredClone(tailPlan);
+  clawPlan.characterReferencePrompts[0].appearancePrompt = "小白子，狼耳少女，带狼尾和肉垫，狼爪轻轻扒着风车。";
   const rejectingWorkflow = animationWorkflow({
     client: { async generateJson(args) { return stagedAnimationResponse(clawPlan, args.prompt); } },
     animationModel: "qwen3.7-max"
   });
   await assert.rejects(
-    () => rejectingWorkflow.createAnimationPlan({ creativeBrief, creatorProfile, variant, fullStory }),
-    /狼爪|肉垫|非用户设定身份/
+    () => rejectingWorkflow.createAnimationPlan(globalBoundaryContext(
+      rejectingWorkflow,
+      { creativeBrief, creatorProfile, variant, fullStory },
+      xiaobaiziBoundary()
+    )),
+    /兽爪|狼爪|肉垫|全局边界禁止特征/
   );
 });
 
-test("固定角色以猫尾缩写授权时允许尾巴同义表达但不扩展其他动物结构", () => {
-  const policy = collectFixedCharacterVisualPolicy(
-    "小白子，Q版猫耳少女，蓬松猫尾与猫耳，活泼可爱，学生/村民"
+test("用户明确否定尾巴时覆盖模型常识并阻止下游重新加入", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，q版狼耳少女，形象类似猫娘，但明确没有尾巴，活泼可爱，懂事，学生/村民",
+    vertical: "治愈/温情/日常",
+    constraints: "小白子用嗷或嗷呜表达情绪"
+  };
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const variant = {
+    id: "V1",
+    title: "风车的约定",
+    characterSetup: { protagonist: "小白子，q版狼耳少女，无尾巴", careRecipient: "邻居奶奶", helper: "拖拉机叔叔" },
+    newTask: "送风车",
+    emotionalMedium: "手工风车",
+    environmentPressure: "阵雨",
+    endingRitual: "一起把风车插在窗边"
+  };
+  const fullStory = mockFullStory({
+    ...input,
+    creatorProfile: { ...creatorProfile, fixedCharacter: "小白子，q版狼耳少女，活泼可爱，懂事，学生/村民" },
+    creativeBrief,
+    variant
+  });
+  const tailPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory });
+  tailPlan.characterReferencePrompts[0].appearancePrompt = "小白子，q版狼耳少女，出现狼尾巴，穿浅蓝背带裙。";
+  const workflow = animationWorkflow({
+    client: { async generateJson(args) { return stagedAnimationResponse(tailPlan, args.prompt); } },
+    animationModel: "qwen3.7-max"
+  });
+  await assert.rejects(
+    () => workflow.createAnimationPlan(globalBoundaryContext(
+      workflow,
+      { creativeBrief, creatorProfile, variant, fullStory },
+      xiaobaiziBoundary({ tail: "forbidden" })
+    )),
+    /狼尾|狼尾巴|尾巴|全局边界禁止特征/
+  );
+});
+
+test("全局边界接受模型生成的新概念与同义词，不依赖本地物种词典", () => {
+  const creatorProfile = { fixedCharacter: "澄星，星海信使", vertical: "幻想日常", constraints: "" };
+  const raw = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
+  raw.fixedCharacterBoundary = {
+    schemaVersion: "2.0",
+    characterName: "澄星",
+    canonicalDescription: "具备水晶触角的星海信使。",
+    bodyForm: "人形角色。",
+    requiredTraits: [
+      boundaryTrait("澄星", [], "identity"),
+      boundaryTrait("水晶触角", ["晶体感应须", "星光触须"], "appearance", "inferred")
+    ],
+    allowedTraits: [],
+    forbiddenTraits: [],
+    unresolvedConflicts: []
+  };
+  const guardrails = ensureVisualGuardrailsMatchesProfile(
+    ensureOutputContract(materializeGlobalCharacterBoundaryViews(raw, creatorProfile), "visualGuardrails"),
+    creatorProfile
+  );
+  assert.deepEqual(guardrails.fixedCharacterBoundary.requiredTraits[1].terms, ["水晶触角", "晶体感应须", "星光触须"]);
+});
+
+test("固定角色生成必须沿用全局事实，配角不继承主角边界，逐镜仍禁止冲突特征", () => {
+  const creatorProfile = { fixedCharacter: "小白子，狼耳少女", vertical: "治愈日常", constraints: "" };
+  const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
+  visualGuardrails.fixedCharacterBoundary = xiaobaiziBoundary();
+  assert.doesNotThrow(() => ensureCharacterPromptMatchesBoundary(
+    "小白子，狼耳少女，带狼尾的全身角色参考图。",
+    visualGuardrails,
+    { characterName: "小白子" }
+  ));
+  assert.doesNotThrow(() => ensureCharacterPromptMatchesBoundary(
+    "邻居奶奶，灰白短发，穿棉布外套。",
+    visualGuardrails,
+    { characterName: "邻居奶奶" }
+  ));
+  assert.throws(() => ensureCharacterPromptMatchesBoundary(
+    "小白子在当前镜头用狼爪抓住风车。",
+    visualGuardrails,
+    { requireRequiredTraits: false }
+  ), /兽爪|狼爪|全局边界禁止特征/u);
+});
+
+test("角色生成边界允许否定提及但仍拒绝正向或转折后的禁止特征", () => {
+  const creatorProfile = { fixedCharacter: "小白子，狼耳少女", vertical: "治愈日常", constraints: "" };
+  const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
+  visualGuardrails.fixedCharacterBoundary = xiaobaiziBoundary();
+  visualGuardrails.fixedCharacterBoundary.forbiddenTraits.push(
+    boundaryTrait("猫耳", ["猫耳朵"], "appearance", "inferred")
   );
 
-  assert.ok(policy.allowedBodyTerms.includes("尾巴"));
-  assert.ok(policy.allowedBodyTerms.includes("猫尾"));
-  assert.ok(policy.allowedBodyTerms.includes("猫尾巴"));
-  for (const unauthorizedFeature of ["狼尾", "狼尾巴", "猫爪", "肉垫", "翅膀"]) {
-    assert.ok(policy.forbiddenBodyTerms.includes(unauthorizedFeature));
-  }
+  assert.doesNotThrow(() => ensureCharacterPromptMatchesBoundary(
+    "小白子保持灰白色狼耳与狼尾，无猫耳变异。",
+    visualGuardrails,
+    { requireRequiredTraits: false }
+  ));
+  assert.throws(() => ensureCharacterPromptMatchesBoundary(
+    "小白子变成猫耳少女。",
+    visualGuardrails,
+    { requireRequiredTraits: false }
+  ), /猫耳|全局边界禁止特征/u);
+  assert.throws(() => ensureCharacterPromptMatchesBoundary(
+    "不得出现猫耳，但小白子实际是猫耳少女。",
+    visualGuardrails,
+    { requireRequiredTraits: false }
+  ), /猫耳|全局边界禁止特征/u);
+
+  const prompt = buildShotFrameImagePrompt({
+    frameKind: "start",
+    shot: {
+      shotId: "A01",
+      startFramePrompt: "小白子保持灰白色狼耳与狼尾，站在墙边。",
+      acceptanceCriteria: ["小白子狼耳保持灰白色毛茸茸形态，无猫耳变异"]
+    }
+  });
+  assert.doesNotMatch(prompt, /猫耳/u);
+  assert.doesNotThrow(() => ensureCharacterPromptMatchesBoundary(
+    prompt,
+    visualGuardrails,
+    { requireRequiredTraits: false }
+  ));
+
+  const videoPrompt = shotVideoGenerationPromptText({
+    shot: {
+      videoPrompt: "小白子保持狼耳与狼尾，抬手贴好信纸。",
+      acceptanceCriteria: ["无猫耳变异"],
+      negativePrompts: { video: [{ text: "猫耳" }] }
+    },
+    startFrameDataUrl: "data:image/png;base64,AA==",
+    endFrameDataUrl: "data:image/png;base64,AA=="
+  });
+  assert.doesNotMatch(videoPrompt, /猫耳/u);
+  assert.doesNotThrow(() => ensureCharacterPromptMatchesBoundary(
+    videoPrompt,
+    visualGuardrails,
+    { requireRequiredTraits: false }
+  ));
+  const videoPromptWithGeneratedFrames = shotVideoGenerationPromptText({
+    shot: {
+      videoPrompt: "小白子抬手贴好信纸。",
+      startFramePrompt: "小白子是猫耳少女，站在墙边。",
+      endFramePrompt: "小白子放下双手。"
+    }
+  });
+  assert.throws(() => ensureCharacterPromptMatchesBoundary(
+    videoPromptWithGeneratedFrames,
+    visualGuardrails,
+    { requireRequiredTraits: false }
+  ), /猫耳|全局边界禁止特征/u);
 });
 
 test("角色边界、原片规避与逐镜渲染负面提示词在 prompt 中保持分类", () => {
   const creatorProfile = { fixedCharacter: "小白子，q版狼耳少女，有狼尾巴", vertical: "治愈日常", constraints: "" };
   const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
   const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief });
+  visualGuardrails.fixedCharacterBoundary = xiaobaiziBoundary();
   visualGuardrails.sourceSimilarityRules.push({
     text: "不得复用原片彩虹披风。",
     sourceExpression: "彩虹披风",
@@ -2913,6 +3083,7 @@ test("动画生产包会按 positivePromptBoundary 拦截正向画面越界", as
   };
   const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
   const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief });
+  visualGuardrails.fixedCharacterBoundary = xiaobaiziBoundary();
   const variant = {
     id: "V1",
     title: "风车的约定",
@@ -2929,9 +3100,17 @@ test("动画生产包会按 positivePromptBoundary 拦截正向画面越界", as
     client: { async generateJson(args) { return stagedAnimationResponse(leakedPlan, args.prompt); } },
     animationModel: "qwen3.7-max"
   });
+  const stageContext = {
+    ...input,
+    ...groundedUpstreamFixture(workflow),
+    creativeBrief,
+    creatorProfile,
+    variant,
+    fullStory
+  };
 
   await assert.rejects(
-    () => workflow.createAnimationPlan({ creativeBrief, visualGuardrails, creatorProfile, variant, fullStory }),
+    () => workflow.createAnimationPlan(sealBoundaryContext(workflow, stageContext, visualGuardrails)),
     /翅膀|正向画面提示词/
   );
 });
@@ -2981,7 +3160,17 @@ test("台词规则不会进入逐镜渲染负面提示词，混入时会被相�
     client: { async generateJson(args) { return stagedAnimationResponse(leakedPlan, args.prompt); } },
     animationModel: "qwen3.7-max"
   });
-  const result = await pruningWorkflow.createAnimationPlan({ creativeBrief, visualGuardrails, creatorProfile, variant, fullStory });
+  const stageContext = {
+    ...input,
+    ...groundedUpstreamFixture(pruningWorkflow),
+    creativeBrief,
+    creatorProfile,
+    variant,
+    fullStory
+  };
+  const result = await pruningWorkflow.createAnimationPlan(
+    sealBoundaryContext(pruningWorkflow, stageContext, visualGuardrails)
+  );
   assert.deepEqual(result.shotPlan[0].negativePrompts.image, []);
   assert.doesNotMatch(JSON.stringify(result.shotPlan.flatMap((shot) => Object.values(shot.negativePrompts))), /咕嘎|阿巴/u);
 });
@@ -3016,7 +3205,7 @@ test("完整剧情提示词要求围绕选中变体并锁定固定角色", () =>
   assert.match(prompt, /mimo-v2\.5-pro/);
   assert.match(prompt, /selectedVariantId 必须等于选中主题变体 id：V2/);
   assert.match(prompt, /不能改名/);
-  assert.match(prompt, /不得继承原片表面形象/);
+  assert.match(prompt, /不得再次解析 fixedCharacter 或重新推断角色特征/);
   assert.match(prompt, /禁止复用原片具体表达黑名单/);
   assert.match(prompt, /录取通知书/);
   assert.match(prompt, /孔明灯/);
@@ -3029,11 +3218,15 @@ test("完整剧情提示词要求围绕选中变体并锁定固定角色", () =>
 });
 
 test("动画提示词要求输出首尾帧视频生产包", () => {
+  const creatorProfile = { fixedCharacter: "小白子，狼耳少女，小女孩，儿童", vertical: "治愈日常", constraints: "只用嗷呜表达" };
+  const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
+  visualGuardrails.fixedCharacterBoundary = xiaobaiziBoundary();
   const prompt = animationPlanPrompt({
     creativeBrief: {},
+    visualGuardrails,
     variant: { id: "V2", title: "雨停之前" },
     fullStory: { selectedVariantId: "V2", title: "雨停之前", sceneScript: [] },
-    creatorProfile: { fixedCharacter: "小白子，狼耳少女，小女孩，儿童", vertical: "治愈日常", constraints: "只用嗷呜表达" }
+    creatorProfile
   });
   assert.match(prompt, /首尾帧 AI 视频生产包/);
   assert.match(prompt, /"promptSchemaVersion":"2\.0"/);
@@ -3045,8 +3238,8 @@ test("动画提示词要求输出首尾帧视频生产包", () => {
   assert.doesNotMatch(prompt, /"videoPrompt"\s*:/);
   assert.match(prompt, /默认 8–12 个镜头/);
   assert.match(prompt, /三层简化结构/);
-	  assert.match(prompt, /identity \/ scene lock/);
-	  assert.match(prompt, /sceneReferencePrompts/);
+  assert.match(prompt, /identity \/ scene lock/);
+  assert.match(prompt, /sceneReferencePrompts/);
   assert.match(prompt, /negativePrompts\.image/);
   assert.match(prompt, /negativePrompts\.video/);
   assert.match(prompt, /两个负面数组都允许为空，不设置最少条目数/);
@@ -3063,15 +3256,24 @@ test("动画提示词要求输出首尾帧视频生产包", () => {
   assert.match(prompt, /cameraMove\.mode=continuous/);
   assert.match(prompt, /shot\.startFrame\/endFrame 只用角色名和 sceneId 承接全局锁定/);
   assert.match(prompt, /固定角色外观边界/);
-  assert.match(prompt, /耳朵类设定只授权用户写明的耳朵表现/);
-  assert.match(prompt, /未授权信息保持不写，不得据此生成渲染负面提示词/);
+  assert.match(prompt, /不得重新推断、删除、替换或新增固定角色事实/);
+  assert.match(prompt, /"canonicalName":"狼尾"/);
 });
 
-test("固定角色外观边界提示词不会把显式狼尾巴写成禁止项", () => {
-  const policyText = fixedCharacterVisualPolicyText("小白子，q版狼耳少女，形象类似猫娘，有狼尾巴，儿童");
-  assert.match(policyText, /允许正向使用的身体特征：尾巴、狼尾、狼尾巴/);
-  assert.match(policyText, /未授权信息保持不写/);
-  assert.doesNotMatch(policyText, /狼爪|肉垫|鸟喙|脚蹼|鳍|羽毛|狐尾|兔尾|龙尾/);
+test("下游提示词同时携带全局必需与禁止事实，不再解析原始角色词", () => {
+  const creatorProfile = { fixedCharacter: "小白子，狼耳少女", vertical: "治愈日常", constraints: "" };
+  const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
+  visualGuardrails.fixedCharacterBoundary = xiaobaiziBoundary();
+  const prompt = animationPlanPrompt({
+    creativeBrief: {},
+    visualGuardrails,
+    variant: { id: "V1", title: "风车" },
+    fullStory: { selectedVariantId: "V1", title: "风车", sceneScript: [] },
+    creatorProfile
+  });
+  assert.match(prompt, /"canonicalName":"狼尾"/);
+  assert.match(prompt, /"canonicalName":"兽爪"/);
+  assert.match(prompt, /不得重新推断|不得再次生成或修改固定角色特征/);
 });
 
 test("本地视频命令解析角色、赛道、抽帧和变体数量", () => {

@@ -105,6 +105,10 @@ test("生产批次 prompt 只要求结构化 shot，旧字段由服务端编译"
   assert.match(prompt, /达到 endFrame 状态后立即停止/u);
   assert.match(prompt, /pose 只描述单张画面中可见的身体姿态/u);
   assert.match(prompt, /handPropState 只描述左右手与道具在当前画面的静态关系/u);
+  assert.match(prompt, /midground 不是收纳主要角色动作的备用字段/u);
+  assert.match(prompt, /environment 不得承载当前可见角色的身份、姿态、表情、手部动作或持有关系/u);
+  assert.match(prompt, /没有真实环境变化.*startFrame\.environment 的五个字符串逐字复制到 endFrame\.environment/u);
+  assert.match(prompt, /地点名中的归属称呼不代表该角色出镜/u);
   assert.match(prompt, /actionState 字段必须保留，但允许写空字符串/u);
   assert.match(prompt, /除 characters\[\]\.actionState 明确允许为 "" 外，startFrame\/endFrame 的所有字符串字段都必须填入非空/u);
   assert.match(prompt, /角色没有手持道具时，handPropState 也必须明确写出.*未持有、未接触或道具不在画面内，绝不能留空/u);

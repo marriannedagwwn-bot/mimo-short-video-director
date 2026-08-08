@@ -13,8 +13,8 @@ import { buildShotFrameMultiImagePrompt } from "./public/shot-frame-multi-image-
 import { computeDependencyHash, computePromptHash } from "./src/frame-dependency.js";
 import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./src/frame-reference-request.js";
 import { WorkflowService } from "./src/workflow.js";
-import { ensureFrameReferenceModeCompatibility, InputError } from "./src/validation.js";
-import { generateShotVideo, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
+import { ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, InputError } from "./src/validation.js";
+import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
 import {
   inferShotVideoProvider,
   isShotVideoModelAllowed,
@@ -74,6 +74,11 @@ const routes = {
     : workflow.createAnimationPlan(body),
   "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
   "/api/generate-shot-video": (body) => {
+    const visualGuardrails = workflow.assertGlobalCharacterBoundary(body);
+    ensureCharacterReferencesMatchBoundary(body.characterReferences, visualGuardrails, body.shot);
+    ensureCharacterPromptMatchesBoundary(shotVideoGenerationPromptText(body), visualGuardrails, {
+      requireRequiredTraits: false
+    });
     const setting = shotVideoRequestSetting(body);
     return generateShotVideo({
       ...body,
@@ -422,10 +427,15 @@ async function streamCharacterReferenceImages(request, response) {
   };
   try {
     const body = await readJson(request);
+    const visualGuardrails = workflow.assertGlobalCharacterBoundary(body);
+    ensureCharacterReferenceMatchesBoundary(body.characterReference, visualGuardrails);
     if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
     const count = Math.max(1, Math.min(config.jimeng.maxImages, Math.round(Number(body.count) || 1)));
     const imageModel = modelOverrideFor(body, "imageGeneration") || config.jimeng.model;
     const prompt = String(body.prompt || "").trim() || buildCharacterReferenceImagePrompt(body.characterReference, count);
+    ensureCharacterPromptMatchesBoundary(prompt, visualGuardrails, {
+      characterName: body.characterReference?.characterName || ""
+    });
     send("progress", {
       type: "start",
       message: `正在调用即梦 ${imageModel} 生成 ${count} 张角色参考图…`,
@@ -480,9 +490,11 @@ async function streamCharacterReferenceImages(request, response) {
 }
 
 async function generateShotFrameImage(body = {}) {
+  const visualGuardrails = workflow.assertGlobalCharacterBoundary(body);
   if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
   const frameKind = body.frameKind === "end" ? "end" : "start";
   const shot = body.shot || {};
+  ensureCharacterReferencesMatchBoundary(body.characterReferences, visualGuardrails, shot);
   const frameReferenceMode = String(body.frameReferenceMode || "").trim();
   if (frameReferenceMode && frameKind !== "end") {
     throw new InputError("frameReferenceMode 只允许用于尾帧生成");
@@ -545,6 +557,9 @@ async function generateShotFrameImage(body = {}) {
   if (frameReferenceMode) assertFrameDependencyHash(body.dependencyHash, authoritativeDependencyHash);
   const count = clampFrameImageCount(body.count);
   const providerPrompt = buildShotFrameMultiImagePrompt(prompt, count);
+  ensureCharacterPromptMatchesBoundary(providerPrompt, visualGuardrails, {
+    requireRequiredTraits: false
+  });
   const authoritativePromptHash = frameReferenceMode ? await computePromptHash(providerPrompt) : "";
   const imageModel = modelOverrideFor(body, "imageGeneration") || config.jimeng.model;
   const uploadedReferences = manifest.providerImages.map((item) => item.dataUrl);
@@ -618,6 +633,28 @@ async function generateShotFrameImage(body = {}) {
     requestPreview: requestReceipt?.requestPreview || {},
     generatedAt: new Date().toISOString()
   };
+}
+
+
+function ensureCharacterReferencesMatchBoundary(characterReferences, visualGuardrails, shot = {}) {
+  const references = Array.isArray(characterReferences) ? characterReferences : [];
+  const boundaryName = String(visualGuardrails?.fixedCharacterBoundary?.characterName || "").trim();
+  if (boundaryName && shotShowsCharacter(shot, boundaryName) && !references.some((reference) => (
+    String(reference?.characterName || "").trim() === boundaryName
+  ))) {
+    throw new InputError(`当前镜头包含固定角色「${boundaryName}」，但请求未携带其全局角色参考边界`);
+  }
+  references.forEach((reference) => ensureCharacterReferenceMatchesBoundary(reference, visualGuardrails));
+}
+
+function shotShowsCharacter(shot, characterName) {
+  const structuredNames = [
+    ...(shot?.startFrame?.characters || []),
+    ...(shot?.endFrame?.characters || [])
+  ].map((character) => String(character?.name || "").trim());
+  if (structuredNames.length) return structuredNames.includes(characterName);
+  return [shot?.startFramePrompt, shot?.endFramePrompt, shot?.videoPrompt, shot?.characterAction]
+    .some((value) => String(value || "").includes(characterName));
 }
 
 function frameReferenceManifestPromptLines(manifest = {}, frameReferenceMode = "", context = {}) {

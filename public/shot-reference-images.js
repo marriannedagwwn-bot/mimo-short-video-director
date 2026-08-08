@@ -163,7 +163,8 @@ export function validateFrameReferenceMode(shot = {}, frameReferenceMode, {
   const motion = shot?.motion || {};
   const cameraChanged = !stableEqual(startFrame.camera, endFrame.camera);
   const lightingChanged = !stableEqual(startFrame.lighting, endFrame.lighting);
-  const environmentChanged = !stableEqual(startFrame.environment, endFrame.environment);
+  const environmentChangedFields = changedEnvironmentFields(startFrame.environment, endFrame.environment);
+  const environmentChanged = environmentChangedFields.length > 0;
   const charactersChanged = !stableEqual(startFrame.characters, endFrame.characters);
   const timeAndWeatherChanged = startFrame.timeAndWeather !== endFrame.timeAndWeather;
   const styleChanged = !stableEqual(startFrame.styleModifiers, endFrame.styleModifiers);
@@ -181,7 +182,9 @@ export function validateFrameReferenceMode(shot = {}, frameReferenceMode, {
     throw new TypeError("transition 的光线变化必须同时写入 motion.lightingChange");
   }
   if (environmentChanged && !hasDeclaredFrameChange(motion?.environmentChange)) {
-    throw new TypeError("transition 的环境变化必须同时写入 motion.environmentChange");
+    throw new TypeError(
+      `transition 的环境变化必须同时写入 motion.environmentChange；变化字段：${environmentChangedFields.join("、")}`
+    );
   }
   if (timeAndWeatherChanged
     && !hasDeclaredFrameChange(motion?.environmentChange)
@@ -359,6 +362,12 @@ function environmentLayers(environment = {}) {
     background: environment?.background || "",
     atmosphere: environment?.atmosphere || ""
   };
+}
+
+function changedEnvironmentFields(startEnvironment, endEnvironment) {
+  const start = environmentLayers(startEnvironment);
+  const end = environmentLayers(endEnvironment);
+  return Object.keys(start).filter((field) => start[field] !== end[field]);
 }
 
 function stableEqual(left, right) {

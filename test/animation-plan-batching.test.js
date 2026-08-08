@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
+import { mockAnimationPlan, mockBrief, mockFullStory, mockVisualGuardrails } from "../src/mock.js";
 import { compileAnimationShotPrompts } from "../src/animation-prompt-compiler.js";
 import {
   CharacterFeatureCompilerTransportError,
@@ -8,10 +8,12 @@ import {
 } from "../src/character-feature-compiler.js";
 import { ModelResponseError } from "../src/mimo-client.js";
 import { animationFoundationPrompt, animationShotBatchPrompt } from "../src/prompts.js";
-import { ensureAnimationFoundationContract, ensureAnimationShotBatchContract } from "../src/validation.js";
+import { ensureAnimationFoundationContract, ensureAnimationShotBatchContract, materializeGlobalCharacterBoundaryViews } from "../src/validation.js";
 import { WorkflowService, repairAnimationShotBatchCandidate } from "../src/workflow.js";
+import { sealGlobalCharacterBoundary } from "../src/character-boundary.js";
 
 const TEST_STATIC_FRAME_COMPILER_MODEL = "static-frame-compiler-test";
+const TEST_CHARACTER_BOUNDARY_KEY = Buffer.alloc(32, 7);
 
 function isStaticFrameCompilerRequest(args = {}) {
   return /STATIC_FRAME_(?:FIELD_ORGANIZATION|FIELD_REORGANIZATION|ORGANIZER_ENVELOPE_REPAIR)_V3/u
@@ -93,7 +95,8 @@ function animationWorkflow(options = {}) {
     ...options,
     ...(useAnimationClient ? { animationClient: routedClient } : { client: routedClient }),
     staticFrameCompilerProvider: provider,
-    staticFrameCompilerModel: TEST_STATIC_FRAME_COMPILER_MODEL
+    staticFrameCompilerModel: TEST_STATIC_FRAME_COMPILER_MODEL,
+    characterBoundaryKey: TEST_CHARACTER_BOUNDARY_KEY
   });
 }
 
@@ -153,7 +156,13 @@ function fixture() {
     endingRitual: "老人按下播放键"
   };
   const fullStory = mockFullStory({ ...base, creativeBrief, variant });
-  const animationPlan = mockAnimationPlan({ ...base, creativeBrief, variant, fullStory });
+  const boundaryInput = { ...base, creativeBrief };
+  const visualGuardrails = sealGlobalCharacterBoundary(
+    materializeGlobalCharacterBoundaryViews(mockVisualGuardrails(boundaryInput), creatorProfile),
+    boundaryInput,
+    TEST_CHARACTER_BOUNDARY_KEY
+  );
+  const animationPlan = mockAnimationPlan({ ...base, creativeBrief, visualGuardrails, variant, fullStory });
   animationPlan.shotPlan.forEach((shot) => {
     for (const frameKind of ["startFrame", "endFrame"]) {
       (shot[frameKind]?.characters || []).forEach((character) => {
@@ -162,7 +171,7 @@ function fixture() {
     }
     Object.assign(shot, compileAnimationShotPrompts(shot));
   });
-  return { creatorProfile, creativeBrief, variant, fullStory, animationPlan };
+  return { creatorProfile, creativeBrief, visualGuardrails, variant, fullStory, animationPlan };
 }
 
 function foundationFrom(plan) {
@@ -354,6 +363,7 @@ test("Full Story 校验后并行生成 Foundation 与冻结角色特征 Profile�
     client,
     staticFrameCompilerProvider: "MiMo",
     staticFrameCompilerModel: TEST_STATIC_FRAME_COMPILER_MODEL,
+    characterBoundaryKey: TEST_CHARACTER_BOUNDARY_KEY,
     animationShotBatchSceneCount: 2
   });
   const characterFeatureProfiles = [];
@@ -404,7 +414,8 @@ test("Foundation 与 Character Feature 并行阶段同时失败时保留 Charact
   const workflow = new WorkflowService({
     client,
     staticFrameCompilerProvider: "MiMo",
-    staticFrameCompilerModel: TEST_STATIC_FRAME_COMPILER_MODEL
+    staticFrameCompilerModel: TEST_STATIC_FRAME_COMPILER_MODEL,
+    characterBoundaryKey: TEST_CHARACTER_BOUNDARY_KEY
   });
 
   await assert.rejects(
@@ -879,7 +890,6 @@ function actionStateAuditResponse(items, failingIds = new Map()) {
 
 test("actionState 审核只提交非空字段和三个最小属性", async () => {
   const context = fixture();
-  context.creatorProfile.fixedCharacter = `${context.creatorProfile.fixedCharacter}，画面允许出现小鸟及其翅膀`;
   const rawBatch = modelBatchFrom(context);
   rawBatch.shotPlan[0].startFrame.characters[0].actionState = "小鸟停在女孩掌心，翅膀轻微展开";
   rawBatch.shotPlan[1].startFrame.characters[0].actionState = "   ";

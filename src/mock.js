@@ -129,15 +129,6 @@ export function mockBrief(input) {
 export function mockVisualGuardrails(input) {
   const fixed = input.creatorProfile?.fixedCharacter || "固定主角";
   const fixedName = fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
-  const hasWolfTail = /狼尾|狼尾巴/u.test(fixed);
-  const hasCatTail = /猫尾|猫尾巴/u.test(fixed);
-  const allowedBodyFeatures = [
-    /狼耳/u.test(fixed) ? "狼耳" : "",
-    /猫耳/u.test(fixed) ? "猫耳" : "",
-    /猫娘/u.test(fixed) ? "猫娘" : "",
-    hasWolfTail ? "狼尾巴" : "",
-    hasCatTail ? "猫尾巴" : ""
-  ].filter(Boolean);
   const evidence = [{ sourcePath: "creatorProfile.fixedCharacter", evidence: fixed }];
   const sourceSimilarityRules = [];
   const dialogueRules = [];
@@ -173,26 +164,24 @@ export function mockVisualGuardrails(input) {
   }
   return {
     fixedCharacterBoundary: {
+      schemaVersion: "2.0",
       characterName: fixedName,
-      identityLock: `主角始终为${fixed}`,
-      allowedIdentity: fixed,
-      allowedAppearance: allowedBodyFeatures.length ? `允许使用：${allowedBodyFeatures.join("、")}` : "只使用固定角色文本明写的人物外观。",
-      allowedBodyFeatures,
-      styleNotes: fixed.includes("猫娘") ? "猫娘仅按用户明确写出的风格与外观特征呈现。" : "外观以用户明确设定为准。",
-      explicitUserPresets: fixed.split(/[，,；;、。\n\r]/u).map((item) => item.trim()).filter(Boolean),
-      doNotInfer: "后续正向提示词不得把类比词或原片表面元素扩展成用户没有授权的角色特征；未声明不等于渲染负面词。"
-    },
-    allowedPositiveTraits: [
-      { term: fixedName, scope: "identity", reason: "固定角色姓名必须锁定。" },
-      ...allowedBodyFeatures.map((term) => ({ term, scope: "bodyFeature", reason: "来自用户固定角色文本的明确设定。" }))
-    ],
-    positivePromptBoundary: [
-      {
-        rule: `${fixedName}保持用户明确设定的身份与外观；后续正向提示词不得擅自添加其他生物结构、服装符号或身份外壳。`,
+      canonicalDescription: fixed,
+      bodyForm: "演示模式只锁定用户完整原文，不执行本地关键词推断。",
+      requiredTraits: [{
+        canonicalName: fixedName,
+        terms: [fixedName],
+        scope: "identity",
+        evidenceLevel: "explicit",
         triggerEvidence: evidence,
-        severity: "block"
-      }
-    ],
+        reason: "演示模式没有模型调用，只锁定可确定的固定角色名称；完整语义边界需要视觉模型生成。"
+      }],
+      allowedTraits: [],
+      forbiddenTraits: [],
+      unresolvedConflicts: []
+    },
+    allowedPositiveTraits: [],
+    positivePromptBoundary: [],
     sourceSimilarityRules,
     dialogueRules,
     stageInstructions: {
@@ -200,7 +189,7 @@ export function mockVisualGuardrails(input) {
       fullStory: "分别执行角色正向边界、原片表达规避和 dialogueRules，不把三类规则混成渲染负面词。",
       animationPlan: "结合当前镜头动作、道具、参考输入和真实失败记录，逐镜生成可为空的图片/视频 render negative。"
     },
-    rationale: "本阶段只锁定正向角色边界、原片表达规避与台词行为，不生成最终图片或视频负面提示词。",
+    rationale: "本阶段一次性签发全局角色边界；后续只消费该边界，不重新解析固定角色。",
     uncertainties: []
   };
 }

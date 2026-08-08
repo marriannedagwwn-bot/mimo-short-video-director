@@ -12,9 +12,10 @@ const observationFactKinds = new Set([
 const observationImportance = new Set(["core", "supporting"]);
 
 export class ReconstructionGroundingError extends Error {
-  constructor(message) {
+  constructor(message, code = "RECONSTRUCTION_GROUNDING_INVALID") {
     super(message);
     this.name = "ReconstructionGroundingError";
+    this.code = code;
   }
 }
 
@@ -138,12 +139,19 @@ function normalizeObservationEvidence(reference, path, input, options) {
     return { source: "frame", frameNumber: reference.frameNumber, timestampMs };
   }
   if (reference.source === "video") {
-    assertExactKeys(reference, ["source", "startMs", "endMs"], path);
+    assertExactKeys(reference, ["source", "startSecond", "endSecond"], path, "VIDEO_EVIDENCE_TIME_INVALID");
     if (!validVideo(input.video)) fail(`${path}.source`, "输入未提供有效原生视频");
     if (durationMs === null) fail(path, "原生视频 evidence 需要 metadata.duration");
-    assertTimePair(reference.startMs, reference.endMs, path);
-    if (reference.endMs > durationMs) fail(`${path}.endMs`, "超过输入视频时长");
-    return { source: "video", startMs: reference.startMs, endMs: reference.endMs };
+    assertSecondPair(reference.startSecond, reference.endSecond, path);
+    const exclusiveLimitMs = durationMs + 1000;
+    if (reference.endSecond * 1000 >= exclusiveLimitMs) {
+      fail(
+        `${path}.endSecond`,
+        `超过输入视频时长加 1 秒的容差（模型值 ${reference.endSecond}s，允许的最大整数秒为 ${Math.ceil(durationMs / 1000)}s）`,
+        "VIDEO_EVIDENCE_TIME_INVALID"
+      );
+    }
+    return { source: "video", startSecond: reference.startSecond, endSecond: reference.endSecond };
   }
   fail(`${path}.source`, "只允许 frame 或 video");
 }
@@ -241,18 +249,22 @@ function assertString(value, path) {
   if (typeof value !== "string" || !value.trim()) fail(path, "必须是非空字符串");
 }
 
-function assertTimePair(startMs, endMs, path) {
-  if (!Number.isInteger(startMs) || startMs < 0) fail(`${path}.startMs`, "必须是非负整数毫秒");
-  if (!Number.isInteger(endMs) || endMs < startMs) fail(`${path}.endMs`, "必须是不小于 startMs 的整数毫秒");
+function assertSecondPair(startSecond, endSecond, path) {
+  if (!Number.isInteger(startSecond) || startSecond < 0) {
+    fail(`${path}.startSecond`, "必须是非负整数秒", "VIDEO_EVIDENCE_TIME_INVALID");
+  }
+  if (!Number.isInteger(endSecond) || endSecond <= startSecond) {
+    fail(`${path}.endSecond`, "必须是大于 startSecond 的整数秒", "VIDEO_EVIDENCE_TIME_INVALID");
+  }
 }
 
-function assertExactKeys(value, expected, path) {
+function assertExactKeys(value, expected, path, code = "RECONSTRUCTION_GROUNDING_INVALID") {
   const missing = expected.filter((key) => !Object.hasOwn(value, key));
-  if (missing.length) fail(path, `缺少字段：${missing.join("、")}`);
+  if (missing.length) fail(path, `缺少字段：${missing.join("、")}`, code);
   const unexpected = Object.keys(value).filter((key) => !expected.includes(key));
-  if (unexpected.length) fail(path, `包含未允许字段：${unexpected.join("、")}`);
+  if (unexpected.length) fail(path, `包含未允许字段：${unexpected.join("、")}`, code);
 }
 
-function fail(path, message) {
-  throw new ReconstructionGroundingError(`${path} ${message}`);
+function fail(path, message, code = "RECONSTRUCTION_GROUNDING_INVALID") {
+  throw new ReconstructionGroundingError(`${path} ${message}`, code);
 }

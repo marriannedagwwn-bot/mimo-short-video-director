@@ -69,7 +69,8 @@ const CACHED_FEATURE_KEYS = Object.freeze([
 const PROFILE_CACHE_LIMIT = 32;
 const SYSTEM_PROMPT = `你是 Character Feature Compiler。
 
-你只根据服务端提供的权威角色设定与签发证据 ID，整理角色长期稳定的特殊身体特征词库。
+你只根据服务端提供的已签发全局角色边界与配角设定，整理角色长期稳定的特殊身体特征词库。
+固定主角的语义已经在 Visual Guardrails 阶段确定；你只能编译 requiredTraits 中已有的 appearance 事实，不得重新解析 fixedCharacter、重新推断或新增主角特征。
 不得读取或假定 Animation Foundation，不得把服装配件升级为真实身体器官，不得描述当前镜头状态。
 只能返回严格 JSON 对象，不要 Markdown、解释、原文、路径或 offset。`;
 const PROFILE_PROMPT_VERSION = "character-feature-profile-v1";
@@ -380,12 +381,16 @@ export function buildCharacterFeatureSourceCatalog(input = {}) {
 
   const primaryName = characters.find((character) => character.role === "protagonist")?.name
     || characters[0].name;
-  addSource({
-    sourceGroup: "fixedCharacter",
-    sourcePath: "creatorProfile.fixedCharacter",
-    value: authoritativeInput.creatorProfile.fixedCharacter,
-    characterNames: [primaryName]
-  });
+  const hasGlobalBoundary = authoritativeInput.visualGuardrails?.fixedCharacterBoundary?.schemaVersion === "2.0"
+    && Array.isArray(authoritativeInput.visualGuardrails.fixedCharacterBoundary.requiredTraits);
+  if (!hasGlobalBoundary) {
+    addSource({
+      sourceGroup: "fixedCharacter",
+      sourcePath: "creatorProfile.fixedCharacter",
+      value: authoritativeInput.creatorProfile.fixedCharacter,
+      characterNames: [primaryName]
+    });
+  }
 
   collectStringLeaves(authoritativeInput.visualGuardrails, "visualGuardrails")
     .forEach(({ path, value }) => {
@@ -393,11 +398,13 @@ export function buildCharacterFeatureSourceCatalog(input = {}) {
         sourceGroup: "visualGuardrails",
         sourcePath: path,
         value,
-        characterNames: literalCharacterNames(value, characters)
+        characterNames: path.startsWith("visualGuardrails.fixedCharacterBoundary.requiredTraits")
+          ? [primaryName]
+          : literalCharacterNames(value, characters)
       });
     });
 
-  collectCharacterBibleSources(authoritativeInput.fullStory.characterBible)
+  collectCharacterBibleSources(authoritativeInput.fullStory.characterBible, { skipProtagonist: hasGlobalBoundary })
     .forEach((source) => addSource(source));
 
   authoritativeInput.temporaryCharacters.forEach((temporary, index) => {
@@ -415,7 +422,13 @@ export function buildCharacterFeatureSourceCatalog(input = {}) {
     characters,
     segments,
     segmentById,
-    spanById
+    spanById,
+    lockedAppearanceTraitsByTarget: new Map(characters.flatMap((character) => (
+      character.role === "protagonist"
+      && hasGlobalBoundary
+        ? [[character.characterTargetId, authoritativeInput.visualGuardrails.fixedCharacterBoundary.requiredTraits.filter((trait) => trait?.scope === "appearance")]]
+        : []
+    )))
   };
 }
 
@@ -433,6 +446,14 @@ export function buildCharacterFeatureCompilerPrompt({
       characterTargetId,
       name
     })),
+    lockedCharacterBoundaries: catalog.characters.flatMap((character) => {
+      const boundary = authoritativeInput.visualGuardrails?.fixedCharacterBoundary;
+      if (character.role !== "protagonist" || boundary?.schemaVersion !== "2.0" || !Array.isArray(boundary.requiredTraits)) return [];
+      return [{
+        characterTargetId: character.characterTargetId,
+        requiredAppearanceTraits: boundary.requiredTraits.filter((trait) => trait?.scope === "appearance")
+      }];
+    }),
     sourceCatalog: catalog.segments.map((segment) => ({
       segmentId: segment.segmentId,
       characterTargetId: segment.characterTargetId,
@@ -449,7 +470,9 @@ export function buildCharacterFeatureCompilerPrompt({
 任务：
 - 为每个签发角色整理长期稳定的特殊身体特征。
 - 每个 characterTargetId 必须恰好返回一次；没有特殊特征时返回 features: []。
-- explicit 只用于原文明确写出的特征；inferred 只用于能由明确物种/身份推导的特征；有歧义时使用 unresolved。
+- 固定主角只允许编译 visualGuardrails.fixedCharacterBoundary.requiredTraits 中 scope=appearance 的既有事实；evidenceLevel 必须沿用边界，不得做新的语义推断。
+- lockedCharacterBoundaries 中每个 requiredAppearanceTraits 必须恰好编译一次；canonicalName 和 terms 必须原样沿用，只允许为编译协议补充 suggestedFeatureKey、featureKind、semanticSubtype 和已签发 spanId。
+- 配角仍按签发输入处理：explicit 只用于原文明确写出的特征；inferred 只用于能由明确物种/身份推导的特征；有歧义时使用 unresolved。
 - inferred 只是词库授权：只有将来局部镜头原文字面出现冻结 term 时才能识别，绝不自动注入镜头。
 - costume/accessory 不得写成真实器官；不要描述当前帧姿态、位置、方向或动作。
 
@@ -533,10 +556,29 @@ export function validateCharacterFeatureCompilerResponse(response, { catalog } =
         catalog
       })
     );
+    assertLockedBoundaryFeatureCoverage(features, catalog.lockedAppearanceTraitsByTarget?.get(targetId) || [], path);
     return { characterTargetId: targetId, features };
   });
 
   return { characters };
+}
+
+function assertLockedBoundaryFeatureCoverage(features, lockedTraits, path) {
+  if (!lockedTraits.length) return;
+  if (features.length !== lockedTraits.length) {
+    throw protocolError(`${path}.features 必须逐项编译全局边界 requiredAppearanceTraits，不得遗漏或新增`);
+  }
+  lockedTraits.forEach((trait, index) => {
+    const feature = features[index];
+    const expectedTerms = uniqueTerms(trait.terms || []);
+    if (
+      feature.canonicalName !== trait.canonicalName
+      || feature.evidenceLevel !== trait.evidenceLevel
+      || JSON.stringify(uniqueTerms(feature.terms)) !== JSON.stringify(expectedTerms)
+    ) {
+      throw protocolError(`${path}.features[${index}] 必须原样沿用全局角色边界特征“${trait.canonicalName}”`);
+    }
+  });
 }
 
 export function compileCharacterFeatureProfile(draft, {
@@ -925,7 +967,15 @@ function projectAuthoritativeInput({
     creatorProfile: {
       fixedCharacter: String(creatorProfile?.fixedCharacter || "").trim()
     },
-    visualGuardrails: sanitizeAuthoritativeValue(visualGuardrails),
+    visualGuardrails: {
+      fixedCharacterBoundary: sanitizeAuthoritativeValue({
+        schemaVersion: visualGuardrails?.fixedCharacterBoundary?.schemaVersion || "",
+        characterName: visualGuardrails?.fixedCharacterBoundary?.characterName || "",
+        requiredTraits: Array.isArray(visualGuardrails?.fixedCharacterBoundary?.requiredTraits)
+          ? visualGuardrails.fixedCharacterBoundary.requiredTraits
+          : []
+      })
+    },
     fullStory: {
       characterBible: sanitizeAuthoritativeValue(fullStory?.characterBible || {})
     },
@@ -958,7 +1008,7 @@ function collectCharacterSeeds(authoritativeInput) {
   return seeds;
 }
 
-function collectCharacterBibleSources(characterBible = {}) {
+function collectCharacterBibleSources(characterBible = {}, { skipProtagonist = false } = {}) {
   const sources = [];
   const addObject = (value, rootPath, name) => {
     collectStringLeaves(value, rootPath).forEach(({ path, value: text }) => {
@@ -971,7 +1021,7 @@ function collectCharacterBibleSources(characterBible = {}) {
     });
   };
   const protagonist = characterBible?.protagonist;
-  if (isRecord(protagonist)) {
+  if (!skipProtagonist && isRecord(protagonist)) {
     addObject(protagonist, "fullStory.characterBible.protagonist", protagonist.name);
   }
   const careRecipient = characterBible?.careRecipient;
