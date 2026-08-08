@@ -9,14 +9,20 @@ export const SEEDANCE_VIDEO_MODELS = Object.freeze([
   "doubao-seedance-2-0-mini-260615"
 ]);
 
-export const KLING_CN_V3_ENDPOINT = "https://api-beijing.klingai.com/image-to-video/kling-3.0";
+export const MINIMAX_VIDEO_MODELS = Object.freeze([
+  "MiniMax-H3"
+]);
 
-const SHOT_VIDEO_PROVIDERS = Object.freeze(["Kling", "Seedance"]);
+export const KLING_CN_V3_ENDPOINT = "https://api-beijing.klingai.com/image-to-video/kling-3.0";
+export const MINIMAX_H3_ENDPOINT = "https://api.minimaxi.com/v2/video_generation";
+
+const SHOT_VIDEO_PROVIDERS = Object.freeze(["Kling", "Seedance", "MiniMax"]);
 
 export function normalizeShotVideoProvider(value = "") {
   const normalized = String(value || "").trim().toLowerCase();
   if (["kling", "klingai", "kuaishou"].includes(normalized)) return "Kling";
   if (["seedance", "volcengine", "ark", "modelark", "dreamina"].includes(normalized)) return "Seedance";
+  if (["minmax", "minimax", "minimaxi", "hailuo", "hailuoai", "h3"].includes(normalized)) return "MiniMax";
   if (["videohttp", "video_http", "generic", "custom"].includes(normalized)) return "VideoHTTP";
   return "";
 }
@@ -26,6 +32,7 @@ export function inferShotVideoProvider({ model = "", preset = "" } = {}) {
   const presetName = String(preset || "").trim().toLowerCase();
   if (/^kling(?:-|$)/iu.test(modelName) || /kling/u.test(presetName)) return "Kling";
   if (/^(?:doubao|dreamina)-seedance-/iu.test(modelName) || /(?:seedance|modelark|dreamina)/u.test(presetName)) return "Seedance";
+  if (/^minimax-h3$/iu.test(modelName) || /(?:minimax|hailuo|h3_video)/u.test(presetName)) return "MiniMax";
   return "";
 }
 
@@ -44,7 +51,9 @@ export function shotVideoDefaultSetting(env = process.env) {
   });
   const provider = explicitProvider && explicitProvider !== "VideoHTTP"
     ? explicitProvider
-    : inferredProvider || (hasSeedanceSpecificConfig(env) ? "Seedance" : "Kling");
+    : inferredProvider || (hasSeedanceSpecificConfig(env)
+      ? "Seedance"
+      : hasMiniMaxSpecificConfig(env) ? "MiniMax" : "Kling");
   const runtime = shotVideoRuntimeConfig(provider, env);
   return {
     provider,
@@ -72,6 +81,26 @@ export function resolveShotVideoSetting(input = {}, env = process.env) {
 
 export function shotVideoRuntimeConfig(provider, env = process.env, requestedModel = "") {
   const normalized = normalizeShotVideoProvider(provider);
+  if (normalized === "MiniMax") {
+    const model = clean(requestedModel || env.MINIMAX_VIDEO_MODEL) || MINIMAX_VIDEO_MODELS[0];
+    return {
+      provider: "MiniMax",
+      configPath: clean(env.MINIMAX_VIDEO_CONFIG),
+      endpoint: clean(env.MINIMAX_VIDEO_ENDPOINT || env.MINIMAX_BASE_URL) || MINIMAX_H3_ENDPOINT,
+      model,
+      apiKey: clean(env.MINIMAX_API_KEY),
+      providerPreset: clean(env.MINIMAX_VIDEO_PRESET) || "minimax_h3_video_generation",
+      timeoutMs: clean(env.MINIMAX_VIDEO_TIMEOUT_MS),
+      pollIntervalMs: clean(env.MINIMAX_VIDEO_POLL_INTERVAL_MS),
+      pollTimeoutMs: clean(env.MINIMAX_VIDEO_POLL_TIMEOUT_MS),
+      pollEndpointTemplate: clean(env.MINIMAX_VIDEO_POLL_ENDPOINT_TEMPLATE),
+      resolution: clean(env.MINIMAX_VIDEO_RESOLUTION) || "2K",
+      duration: clean(env.MINIMAX_VIDEO_DURATION),
+      ratio: clean(env.MINIMAX_VIDEO_ASPECT_RATIO),
+      watermark: booleanEnv(env.MINIMAX_WATERMARK, false),
+      promptMaxChars: clean(env.MINIMAX_PROMPT_MAX_CHARS) || "7000"
+    };
+  }
   if (normalized === "Seedance") {
     const model = clean(requestedModel || env.SEEDANCE_VIDEO_MODEL) || SEEDANCE_VIDEO_MODELS[0];
     return {
@@ -146,7 +175,9 @@ export function shotVideoRuntimeConfig(provider, env = process.env, requestedMod
 export function shotVideoProviderCatalog(env = process.env) {
   return Object.fromEntries(SHOT_VIDEO_PROVIDERS.map((provider) => {
     const runtime = shotVideoRuntimeConfig(provider, env);
-    const modelIds = provider === "Kling" ? KLING_VIDEO_MODELS : SEEDANCE_VIDEO_MODELS;
+    const modelIds = provider === "Kling"
+      ? KLING_VIDEO_MODELS
+      : provider === "Seedance" ? SEEDANCE_VIDEO_MODELS : MINIMAX_VIDEO_MODELS;
     const directConfigured = Boolean(runtime.endpoint && runtime.apiKey && runtime.model);
     const configured = Boolean(runtime.configPath || directConfigured);
     return [provider, {
@@ -165,6 +196,7 @@ export function isShotVideoModelAllowed(provider, model) {
   const modelName = clean(model);
   if (normalized === "Kling") return /^kling-v(?:2-1|3)$/iu.test(modelName);
   if (normalized === "Seedance") return /^doubao-seedance-2-0(?:-(?:fast|mini))?-\d{6}$/iu.test(modelName);
+  if (normalized === "MiniMax") return modelName === "MiniMax-H3";
   return normalized === "VideoHTTP" && Boolean(modelName);
 }
 
@@ -181,6 +213,16 @@ export function isNonDomesticKlingApiEndpoint(value = "") {
 
 function hasSeedanceSpecificConfig(env = process.env) {
   return Boolean(env.SEEDANCE_VIDEO_ENDPOINT || env.SEEDANCE_BASE_URL || env.SEEDANCE_VIDEO_CONFIG || env.SEEDANCE_VIDEO_MODEL);
+}
+
+function hasMiniMaxSpecificConfig(env = process.env) {
+  return Boolean(
+    env.MINIMAX_API_KEY
+    || env.MINIMAX_VIDEO_ENDPOINT
+    || env.MINIMAX_BASE_URL
+    || env.MINIMAX_VIDEO_CONFIG
+    || env.MINIMAX_VIDEO_MODEL
+  );
 }
 
 function booleanEnv(value, fallback) {

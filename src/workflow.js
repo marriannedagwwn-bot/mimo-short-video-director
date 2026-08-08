@@ -6,7 +6,7 @@ import { AttemptStore } from "./attempt-store.js";
 import { ModelCallCoordinator } from "./model-call-coordinator.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
-import { InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCharacterReferenceMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
+import { InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCharacterReferenceMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
 import { CharacterBoundaryError, createCharacterBoundaryKey, sealGlobalCharacterBoundary, verifyGlobalCharacterBoundary } from "./character-boundary.js";
 import {
   ReconstructionGroundingError,
@@ -259,7 +259,7 @@ export class WorkflowService {
     requireText(profile.vertical, "垂直赛道");
     const groundedInput = groundedStageInput(input, this.groundingKey);
     const finalize = (result) => {
-      const raw = ensureOutputContract(result, "visualGuardrails");
+      const raw = ensureOutputContract(normalizeGlobalCharacterBoundaryTerms(result), "visualGuardrails");
       const modelSealFields = ["sourceDigest", "boundaryDigest", "boundarySignature"]
         .filter((field) => Object.prototype.hasOwnProperty.call(raw.fixedCharacterBoundary || {}, field));
       if (modelSealFields.length) {

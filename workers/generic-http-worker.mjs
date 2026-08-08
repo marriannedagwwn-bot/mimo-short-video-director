@@ -131,6 +131,12 @@ function buildRequestBody(context, config) {
     }
     return { body, negativePromptDelivery };
   }
+  if (isMiniMaxH3VideoGeneration(context.request.capability, config)) {
+    return {
+      body: buildMiniMaxH3VideoBody(providerContext, config, negativePromptDelivery),
+      negativePromptDelivery
+    };
+  }
   if (isModelArkContentGeneration(context.request.capability, config)) {
     return {
       body: buildModelArkContentGenerationBody(providerContext, config, negativePromptDelivery),
@@ -219,7 +225,7 @@ function resolveNegativePromptDelivery(context, config, template) {
     return nativeNegativePromptDelivery(compiled, providerFields.join(", "));
   }
 
-  if (isModelArkContentGeneration(capability, config)) {
+  if (isModelArkContentGeneration(capability, config) || isMiniMaxH3VideoGeneration(capability, config)) {
     const eligible = entries.filter((entry) => entry.priority === "high" && entry.reasonCode === "explicit_identity_conflict");
     const ignored = entries.filter((entry) => !eligible.includes(entry));
     if (!eligible.length) return unsupportedNegativePromptDelivery(compiled, entries);
@@ -426,6 +432,9 @@ function extractArtifact(data, request, config) {
 
 function taskIdPathsFor(request, config) {
   if (config.taskIdPaths) return config.taskIdPaths;
+  if (isMiniMaxH3VideoGeneration(request.capability, config)) {
+    return uniquePaths(["task_id", ...defaultTaskIdPaths()]);
+  }
   if (isKlingV3ImageToVideo(request.capability, config)) {
     return uniquePaths(["data.id", "data.0.id", ...defaultTaskIdPaths()]);
   }
@@ -437,6 +446,9 @@ function taskIdPathsFor(request, config) {
 
 function statusPathsFor(request, config) {
   if (config.statusPaths) return config.statusPaths;
+  if (isMiniMaxH3VideoGeneration(request.capability, config)) {
+    return uniquePaths(["task.status", ...defaultStatusPaths()]);
+  }
   if (isKlingV3ImageToVideo(request.capability, config)) {
     return uniquePaths(["data.0.status", "data.status", ...defaultStatusPaths()]);
   }
@@ -448,6 +460,9 @@ function statusPathsFor(request, config) {
 
 function resultUrlPathsFor(request, config) {
   if (config.resultUrlPaths) return config.resultUrlPaths;
+  if (isMiniMaxH3VideoGeneration(request.capability, config)) {
+    return uniquePaths(["task.content.url", ...defaultResultUrlPaths()]);
+  }
   if (isKlingV3ImageToVideo(request.capability, config)) {
     return uniquePaths([
       "data.0.outputs.0.url",
@@ -490,6 +505,10 @@ function pollTargetFor(data, providerTaskId, config) {
   if (typeof pollUrl === "string" && pollUrl.trim()) return pollUrl;
   const template = config.pollEndpointTemplate || "";
   if (template && providerTaskId) return template.replace(/\{taskId\}/gu, encodeURIComponent(providerTaskId));
+  if (isMiniMaxH3VideoGeneration("first_last_frame_video_generation", config) && providerTaskId && config.resolvedEndpoint) {
+    const origin = new URL(String(config.resolvedEndpoint)).origin;
+    return `${origin}/v2/query/video_generation/${encodeURIComponent(providerTaskId)}`;
+  }
   if (isKlingV3ImageToVideo("first_last_frame_video_generation", config) && providerTaskId && config.resolvedEndpoint) {
     const origin = new URL(String(config.resolvedEndpoint)).origin;
     return `${origin}/tasks?task_ids=${encodeURIComponent(providerTaskId)}`;
@@ -513,6 +532,16 @@ function isModelArkContentGeneration(capability, config) {
   return ["modelark", "modelark_content_generation", "dreamina", "jimeng"].includes(presetFor(capability, config));
 }
 
+function isMiniMaxH3VideoGeneration(capability, config) {
+  if (capability !== "first_last_frame_video_generation") return false;
+  const preset = presetFor(capability, config);
+  const model = String(config.videoModel || config.model || "").trim();
+  const endpoint = String(config.resolvedEndpoint || config.videoEndpoint || config.endpoint || "");
+  return preset === "minimax_h3_video_generation"
+    || model === "MiniMax-H3"
+    || (hostnameFor(endpoint) === "api.minimaxi.com" && /\/v2\/video_generation\/?$/u.test(endpoint));
+}
+
 function isKlingImageToVideo(capability, config) {
   if (capability !== "first_last_frame_video_generation") return false;
   const preset = presetFor(capability, config);
@@ -532,6 +561,22 @@ function isKlingV3ImageToVideo(capability, config) {
 
 function normalizeEndpointForPreset(capability, endpoint, config) {
   if (!endpoint) return endpoint;
+  if (isMiniMaxH3VideoGeneration(capability, { ...config, videoEndpoint: endpoint, endpoint })) {
+    const clean = String(endpoint).replace(/\/$/u, "");
+    try {
+      const parsed = new URL(clean);
+      if (parsed.hostname === "api.minimaxi.com") {
+        if (/^\/v1(?:\/|$)/u.test(parsed.pathname)) {
+          throw new Error("MiniMax H3 必须使用 V2 /v2/video_generation 接口，不能复用旧版 /v1/video_generation。");
+        }
+        if (!parsed.pathname || parsed.pathname === "/") return `${clean}/v2/video_generation`;
+        if (parsed.pathname === "/v2") return `${clean}/video_generation`;
+      }
+    } catch (error) {
+      if (error instanceof Error && /MiniMax H3 必须使用/u.test(error.message)) throw error;
+    }
+    return clean;
+  }
   if (isKlingV3ImageToVideo(capability, { ...config, videoEndpoint: endpoint, endpoint })) {
     const clean = String(endpoint).replace(/\/$/u, "");
     if (/\/image-to-video\/kling-3\.0$/u.test(clean)) return clean;
@@ -594,6 +639,31 @@ function buildModelArkContentGenerationBody(context, config, negativePromptDeliv
     body.execution_expires_after = expiresAfter;
   }
   return body;
+}
+
+function buildMiniMaxH3VideoBody(context, config, negativePromptDelivery = {}) {
+  const artifacts = context.inputArtifacts || [];
+  const startFrame = firstArtifactDataUrl(artifacts[0]);
+  const endFrame = firstArtifactDataUrl(artifacts[1]);
+  if (!startFrame || !endFrame) throw new Error("MiniMax H3 首尾帧视频任务需要首帧和尾帧两张图片 dataUrl。");
+  const prompt = truncateText([
+    context.request.prompt || "",
+    negativePromptDelivery.appliedMode === "positive_constraint" ? negativePromptDelivery.appliedText : ""
+  ].filter(Boolean).join("\n"), Number(config.promptMaxChars || 7000));
+  if (!prompt) throw new Error("MiniMax H3 视频提示词不能为空。");
+  const parameters = context.request.parameters || {};
+  return {
+    model: context.model || config.model || "MiniMax-H3",
+    content: [
+      { type: "text", text: prompt },
+      { type: "image_url", image_url: { url: startFrame }, role: "first_frame" },
+      { type: "image_url", image_url: { url: endFrame }, role: "last_frame" }
+    ],
+    resolution: normalizeMiniMaxResolution(config.resolution),
+    duration: normalizeMiniMaxDuration(parameters.durationSeconds || config.duration),
+    ratio: "adaptive",
+    aigc_watermark: config.watermark === true
+  };
 }
 
 function buildKlingV3ImageToVideoBody(context, config) {
@@ -692,6 +762,16 @@ function normalizeSeedanceResolution(value, model) {
     ? ["480p", "720p"]
     : ["480p", "720p", "1080p", "4k"];
   return allowed.includes(resolution) ? resolution : "720p";
+}
+
+function normalizeMiniMaxDuration(value) {
+  const seconds = Math.round(Number(value) || 5);
+  return Math.min(15, Math.max(4, seconds));
+}
+
+function normalizeMiniMaxResolution(value) {
+  const resolution = String(value || "2K").trim().toUpperCase();
+  return ["768P", "2K"].includes(resolution) ? resolution : "2K";
 }
 
 function truncateText(value, maxChars) {

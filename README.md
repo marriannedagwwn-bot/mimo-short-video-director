@@ -137,9 +137,9 @@ JIMENG_MAX_IMAGES=6
 - 导出当前生产包 JSON：保留完整剧情、主题变体、`animationPlan`、模型信息和已选首尾帧图片，供外部程序读取。
 - 复制动画生产包 Markdown：输出 Markdown 格式的角色参考、场景参考、资产提示词和逐镜首帧／尾帧／`videoPrompt`，可直接粘贴到供应商程序。
 
-## 单镜头首尾帧 → Kling 3.0 / Seedance 2.0
+## 单镜头首尾帧 → Kling 3.0 / Seedance 2.0 / MiniMax H3
 
-动画生产包的每个 shot 可以使用已选首帧和尾帧生成 1–4 个候选视频。页面“模型设置”中的“首尾帧视频”阶段可在 Kling 和 Seedance 之间切换。服务端提交异步任务、轮询终态、立即下载 mp4 到 `public/generated-videos/` 并在页面播放。
+动画生产包的每个 shot 可以使用已选首帧和尾帧生成 1–4 个候选视频。页面“模型设置”中的“首尾帧视频”阶段可在 Kling、Seedance 和 MiniMax H3 之间切换。服务端提交异步任务、轮询终态、立即下载 mp4 到 `public/generated-videos/` 并在页面播放。
 
 可灵 3.0 使用新版独立协议和 API Key：
 
@@ -169,6 +169,20 @@ SEEDANCE_VIDEO_POLL_TIMEOUT_MS=900000
 ```
 
 `SEEDANCE_API_KEY` 留空时会复用同一火山方舟账号的 `JIMENG_API_KEY`。可选模型包括 Standard `doubao-seedance-2-0-260128`、Fast `doubao-seedance-2-0-fast-260128` 和 Mini `doubao-seedance-2-0-mini-260615`。请求使用 `first_frame` / `last_frame`，默认 `generate_audio=true`；轮询把 `succeeded`、`failed`、`expired`、`cancelled` 全部视为终态，避免过期或取消后永久卡住。
+
+MiniMax H3 使用官方 V2 多模态视频生成接口：
+
+```dotenv
+MINIMAX_VIDEO_ENDPOINT=https://api.minimaxi.com/v2/video_generation
+MINIMAX_API_KEY=你的 MiniMax API Key
+MINIMAX_VIDEO_MODEL=MiniMax-H3
+MINIMAX_VIDEO_RESOLUTION=2K
+MINIMAX_WATERMARK=false
+MINIMAX_VIDEO_POLL_INTERVAL_MS=3000
+MINIMAX_VIDEO_POLL_TIMEOUT_MS=900000
+```
+
+请求把镜头提示词、首帧和尾帧分别写入 `content` 的 `text`、`first_frame`、`last_frame`，时长按官方允许的 4–15 秒归一，首尾帧模式固定使用 `ratio=adaptive`。服务端通过 `GET /v2/query/video_generation/{task_id}` 轮询 `queued/running → succeeded/failed/cancelled`，成功后下载 `task.content.url`。H3 不提供独立负面提示词字段；系统只会把高优先级角色身份冲突转换成正向身份锁定，其余负面条目在回执中明确标记为未下发。接口依据：[创建视频生成任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create)、[查询任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-query)。
 
 旧可灵 2.1 仍保持兼容：
 

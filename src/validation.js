@@ -1566,6 +1566,30 @@ export function materializeGlobalCharacterBoundaryViews(value, creatorProfile = 
   };
 }
 
+export function normalizeGlobalCharacterBoundaryTerms(value) {
+  const boundary = value?.fixedCharacterBoundary;
+  if (!boundary || typeof boundary !== "object" || Array.isArray(boundary)) return value;
+  const normalizedBoundary = { ...boundary };
+  for (const field of ["requiredTraits", "allowedTraits", "forbiddenTraits"]) {
+    if (!Array.isArray(boundary[field])) continue;
+    normalizedBoundary[field] = boundary[field].map((trait) => {
+      if (!trait || typeof trait !== "object" || Array.isArray(trait)
+        || typeof trait.canonicalName !== "string" || !trait.canonicalName.trim()
+        || !Array.isArray(trait.terms)) {
+        return trait;
+      }
+      return {
+        ...trait,
+        terms: [...new Set([trait.canonicalName, ...trait.terms])]
+      };
+    });
+  }
+  return {
+    ...value,
+    fixedCharacterBoundary: normalizedBoundary
+  };
+}
+
 export function ensureVisualGuardrailsMatchesProfile(value, creatorProfile = {}) {
   value = materializeGlobalCharacterBoundaryViews(value, creatorProfile);
   const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);

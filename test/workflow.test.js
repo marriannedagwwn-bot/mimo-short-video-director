@@ -7,7 +7,7 @@ import path from "node:path";
 import { WorkflowService } from "../src/workflow.js";
 import { getConfig } from "../src/config.js";
 import { InputError, OutputContractError } from "../src/validation.js";
-import { ensureCharacterPromptMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile, extractFixedCharacterName, materializeGlobalCharacterBoundaryViews } from "../src/validation.js";
+import { ensureCharacterPromptMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile, extractFixedCharacterName, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms } from "../src/validation.js";
 import { buildRequestBody, MimoClient, parseModelJson } from "../src/mimo-client.js";
 import { buildQwenRequestBody, QwenClient } from "../src/qwen-client.js";
 import { JimengImageClient, buildCharacterReferenceImagePrompt, buildJimengImageRequestBody, buildShotFrameImagePrompt } from "../src/jimeng-client.js";
@@ -322,12 +322,15 @@ test("Visual Guardrails 只推断一次并签发全局边界，用户改设定�
   const referenceAnalysis = {};
   const reconstruction = mockReconstruction(input);
   let variantCalls = 0;
+  let guardrailCalls = 0;
   let capturedVariantPrompt = "";
   const rawGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
   rawGuardrails.fixedCharacterBoundary = xiaobaiziBoundary();
+  rawGuardrails.fixedCharacterBoundary.requiredTraits[2].terms = ["狼尾巴", "尾巴"];
   const workflow = new WorkflowService({
     client: {
       async generateJsonWithMedia() {
+        guardrailCalls += 1;
         return structuredClone(rawGuardrails);
       },
       async generateJson(args) {
@@ -358,9 +361,11 @@ test("Visual Guardrails 只推断一次并签发全局边界，用户改设定�
 
   const visualGuardrails = await workflow.createVisualGuardrails(stageContext);
   assert.equal(visualGuardrails.fixedCharacterBoundary.requiredTraits[2].canonicalName, "狼尾");
+  assert.deepEqual(visualGuardrails.fixedCharacterBoundary.requiredTraits[2].terms, ["狼尾", "狼尾巴", "尾巴"]);
   assert.equal(visualGuardrails.fixedCharacterBoundary.requiredTraits[2].evidenceLevel, "inferred");
   assert.match(visualGuardrails.fixedCharacterBoundary.sourceDigest, /^sha256:/u);
   assert.ok(visualGuardrails.fixedCharacterBoundary.boundarySignature);
+  assert.equal(guardrailCalls, 1);
 
   const variants = await workflow.createVariants({ ...stageContext, visualGuardrails, count: 1 });
   assert.equal(variants.variants.length, 1);
@@ -2948,11 +2953,33 @@ test("全局边界接受模型生成的新概念与同义词，不依赖本地�
     forbiddenTraits: [],
     unresolvedConflicts: []
   };
+  raw.fixedCharacterBoundary.requiredTraits[1].terms = ["晶体感应须", "星光触须"];
   const guardrails = ensureVisualGuardrailsMatchesProfile(
-    ensureOutputContract(materializeGlobalCharacterBoundaryViews(raw, creatorProfile), "visualGuardrails"),
+    ensureOutputContract(materializeGlobalCharacterBoundaryViews(
+      normalizeGlobalCharacterBoundaryTerms(raw),
+      creatorProfile
+    ), "visualGuardrails"),
     creatorProfile
   );
   assert.deepEqual(guardrails.fixedCharacterBoundary.requiredTraits[1].terms, ["水晶触角", "晶体感应须", "星光触须"]);
+});
+
+test("角色边界术语归一化不会掩盖要求与禁止冲突", () => {
+  const creatorProfile = { fixedCharacter: "小白子，狼耳少女", vertical: "治愈日常", constraints: "" };
+  const raw = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
+  raw.fixedCharacterBoundary = xiaobaiziBoundary({ forbidClaws: false });
+  raw.fixedCharacterBoundary.requiredTraits[2].terms = ["狼尾巴"];
+  raw.fixedCharacterBoundary.forbiddenTraits.push({
+    ...boundaryTrait("狼尾", ["尾巴"], "appearance", "explicit"),
+    terms: ["尾巴"]
+  });
+  assert.throws(
+    () => ensureOutputContract(
+      materializeGlobalCharacterBoundaryViews(normalizeGlobalCharacterBoundaryTerms(raw), creatorProfile),
+      "visualGuardrails"
+    ),
+    /同时要求并禁止：狼尾/u
+  );
 });
 
 test("固定角色生成必须沿用全局事实，配角不继承主角边界，逐镜仍禁止冲突特征", () => {

@@ -346,7 +346,7 @@ creativeBrief 已识别黑名单：${protectedText}
 - 必须理解完整语义，不得按单个关键词机械匹配。角色原型、类比和常见形象可以依据模型常识推断稳定特征；推断项标记 evidenceLevel=inferred，并解释依据。
 - 用户明确肯定或否定的设定高于模型常识。配饰、服装、图案、兴趣、临时扮演和文化风格不得升级为真实器官或固定身份。
 - requiredTraits 是后续必须沿用的全局事实；allowedTraits 是可按剧情选择但不能改变含义的事实；forbiddenTraits 是后续正向内容不得出现的事实。
-- requiredTraits、allowedTraits、forbiddenTraits 中每项自行给出 canonicalName 和 terms；terms 是本次边界签发的同义表达，不来自程序词典，且必须包含 canonicalName。
+- requiredTraits、allowedTraits、forbiddenTraits 中每项自行给出 canonicalName 和 terms；canonicalName 是你判断的标准名称，terms 只补充本次边界接受的其他同义表达，不来自程序词典；服务端会确定性地把 canonicalName 纳入最终匹配词集合。
 - scope 只允许 identity、appearance、personality、occupation、storyFunction；evidenceLevel 只允许 explicit 或 inferred。
 - 用户文字自身存在无法消解的明确冲突时写入 unresolvedConflicts，不得擅自选择一方。存在 unresolvedConflicts 时工作流会阻断，不进入后续阶段。
 - allowedPositiveTraits 和 positivePromptBoundary 由服务端根据全局边界确定性生成。你必须输出空数组，不得自行填写。

@@ -138,17 +138,19 @@ const MODEL_STAGE_DEFS = [
   { key: "staticFrameCompiler", label: "静态帧编译器", hint: "叙事语言到静态视觉语言的语义合法化", capability: "文本模型", capabilityKind: "text" },
   { key: "characterReference", label: "人物图修正", hint: "根据上传图片修正角色描述", capability: "视觉模型", capabilityKind: "vision" },
   { key: "imageGeneration", label: "图片生成", hint: "角色参考图、镜头首尾帧图片", capability: "图片生成", capabilityKind: "image", providerLocked: true, optional: true },
-  { key: "shotVideo", label: "首尾帧视频", hint: "可灵或 Seedance 单镜头首尾帧视频候选", capability: "视频生成", capabilityKind: "video", providers: ["Kling", "Seedance"], optional: true }
+  { key: "shotVideo", label: "首尾帧视频", hint: "可灵、Seedance 或 MiniMax H3 单镜头首尾帧视频候选", capability: "视频生成", capabilityKind: "video", providers: ["Kling", "Seedance", "MiniMax"], optional: true }
 ];
 const MEDIA_INPUT_MODEL_STAGES = new Set(["analysis", "reconstruction", "visualGuardrails", "characterReference"]);
 const SHOT_VIDEO_PROVIDER_LABELS = {
   Kling: "可灵 AI",
   Seedance: "Seedance 2.0",
+  MiniMax: "MiniMax H3",
   VideoHTTP: "自定义 HTTP"
 };
 const SHOT_VIDEO_PROVIDER_EYEBROWS = {
   Kling: "KLING AI",
   Seedance: "SEEDANCE 2.0",
+  MiniMax: "MINIMAX H3",
   VideoHTTP: "CUSTOM VIDEO HTTP"
 };
 const MODEL_OPTION_CATALOG = {
@@ -175,6 +177,9 @@ const MODEL_OPTION_CATALOG = {
       "doubao-seedance-2-0-fast-260128",
       "doubao-seedance-2-0-mini-260615"
     ]
+  },
+  MiniMax: {
+    shotVideo: ["MiniMax-H3"]
   },
   VideoHTTP: {
     shotVideo: []

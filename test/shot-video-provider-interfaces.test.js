@@ -7,6 +7,8 @@ import path from "node:path";
 import {
   isShotVideoModelAllowed,
   KLING_CN_V3_ENDPOINT,
+  MINIMAX_H3_ENDPOINT,
+  MINIMAX_VIDEO_MODELS,
   SEEDANCE_VIDEO_MODELS,
   shotVideoDefaultSetting,
   shotVideoProviderCatalog,
@@ -262,6 +264,132 @@ test("Seedance expired/cancelled 都是终态，且当前官方三个 Model ID �
   }), /供应商任务失败：expired/u);
 });
 
+test("MiniMax H3 使用 V2 多模态首尾帧、Bearer 鉴权和 task.content.url 轮询协议", async (t) => {
+  assert.deepEqual(MINIMAX_VIDEO_MODELS, ["MiniMax-H3"]);
+  assert.equal(isShotVideoModelAllowed("MiniMax", "MiniMax-H3"), true);
+  assert.equal(isShotVideoModelAllowed("MiniMax", "MiniMax-Hailuo-2.3"), false);
+  assert.deepEqual(shotVideoDefaultSetting({ MINIMAX_API_KEY: "minimax-key" }), {
+    provider: "MiniMax",
+    model: "MiniMax-H3"
+  });
+  const runtime = shotVideoRuntimeConfig("MiniMax", { MINIMAX_API_KEY: "minimax-key" });
+  assert.equal(runtime.endpoint, MINIMAX_H3_ENDPOINT);
+  assert.equal(runtime.providerPreset, "minimax_h3_video_generation");
+  assert.equal(runtime.resolution, "2K");
+  assert.equal(shotVideoProviderCatalog({ MINIMAX_API_KEY: "minimax-key" }).MiniMax.configured, true);
+
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "minimax-h3-interface-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  let postedBody = null;
+  let pollRequestUrl = "";
+  let authorization = "";
+  const provider = http.createServer(async (request, response) => {
+    if (request.method === "POST" && request.url === "/v2/video_generation") {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      postedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      authorization = request.headers.authorization || "";
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ task_id: "minimax-h3-task" }));
+      return;
+    }
+    if (request.method === "GET" && request.url === "/v2/query/video_generation/minimax-h3-task") {
+      pollRequestUrl = request.url;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        task: {
+          id: "minimax-h3-task",
+          model: "MiniMax-H3",
+          status: "succeeded",
+          content: { url: `http://127.0.0.1:${provider.address().port}/media/minimax-h3.mp4` }
+        }
+      }));
+      return;
+    }
+    if (request.url === "/media/minimax-h3.mp4") {
+      response.writeHead(200, { "content-type": "video/mp4" });
+      response.end("minimax h3 video bytes");
+      return;
+    }
+    response.writeHead(404);
+    response.end("not found");
+  });
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  t.after(() => closeServer(provider));
+
+  const port = provider.address().port;
+  const configPath = path.join(root, "provider.json");
+  const startPath = path.join(root, "start.png");
+  const endPath = path.join(root, "end.png");
+  const outputPath = path.join(root, "output.mp4");
+  await Promise.all([
+    fs.writeFile(startPath, "start image bytes"),
+    fs.writeFile(endPath, "end image bytes"),
+    fs.writeFile(configPath, JSON.stringify({
+      videoEndpoint: `http://127.0.0.1:${port}/v2/video_generation`,
+      providerPreset: "minimax_h3_video_generation",
+      videoModel: "MiniMax-H3",
+      apiKey: "test-key",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      resolution: "2K",
+      watermark: false
+    }))
+  ]);
+
+  const request = videoRequest({
+    provider: "MiniMax",
+    model: "MiniMax-H3",
+    startPath,
+    endPath,
+    durationSeconds: 3
+  });
+  request.negativePromptEntries = [
+    {
+      text: "猫耳",
+      enabled: true,
+      reasonCode: "explicit_identity_conflict",
+      priority: "high"
+    },
+    {
+      text: "不要出现额外人物",
+      enabled: true,
+      reasonCode: "identity_conflict",
+      priority: "medium"
+    }
+  ];
+  request.compiledNegativePrompt = "猫耳；不要出现额外人物";
+  const receipt = await executeGenericHttpWorker({
+    config: configPath,
+    request,
+    output: outputPath,
+    root
+  });
+
+  assert.equal(postedBody.model, "MiniMax-H3");
+  assert.equal(postedBody.content[0].type, "text");
+  assert.match(postedBody.content[0].text, /固定角色身份锁定/u);
+  assert.doesNotMatch(postedBody.content[0].text, /猫耳|额外人物/u);
+  assert.equal(postedBody.content[1].role, "first_frame");
+  assert.equal(postedBody.content[2].role, "last_frame");
+  assert.match(postedBody.content[1].image_url.url, /^data:image\/png;base64,/u);
+  assert.match(postedBody.content[2].image_url.url, /^data:image\/png;base64,/u);
+  assert.equal(postedBody.duration, 4);
+  assert.equal(postedBody.resolution, "2K");
+  assert.equal(postedBody.ratio, "adaptive");
+  assert.equal(postedBody.aigc_watermark, false);
+  assert.equal(Object.hasOwn(postedBody, "negative_prompt"), false);
+  assert.equal(authorization, "Bearer test-key");
+  assert.equal(pollRequestUrl, "/v2/query/video_generation/minimax-h3-task");
+  assert.equal(await fs.readFile(outputPath, "utf8"), "minimax h3 video bytes");
+  assert.equal(receipt.videoProvider, "MiniMax");
+  assert.equal(receipt.providerTaskId, "minimax-h3-task");
+  assert.equal(receipt.audioRequested, false);
+  assert.equal(receipt.negativePromptDelivery.appliedMode, "positive_constraint");
+  assert.deepEqual(receipt.negativePromptDelivery.ignored.map((item) => item.text), ["不要出现额外人物"]);
+  assert.match(receipt.requestPreview.body.content[1].image_url.url, /^\[REDACTED_DATA_URL length=\d+\]$/u);
+});
+
 test("Kling 3.0 锁定国内官方 endpoint，不继承海外、Legacy endpoint、token 或 provider config", () => {
   const runtime = shotVideoRuntimeConfig("Kling", {
     KLING_V3_ENDPOINT: "https://api-singapore.klingai.com/image-to-video/kling-3.0",
@@ -320,6 +448,62 @@ test("旧 provider.json-only 路由保持 generic，未校验配置文件不谎�
   assert.equal(kling.configured, true);
   assert.equal(kling.reachable, false);
   assert.equal(kling.status, 0);
+});
+
+test("自定义 HTTP 的同名 v2 路径不会被误判为 MiniMax H3", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "custom-v2-video-generation-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  let postedBody = null;
+  const provider = http.createServer(async (request, response) => {
+    if (request.method === "POST" && request.url === "/v2/video_generation") {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      postedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        mediaUrl: `http://127.0.0.1:${provider.address().port}/media/custom.mp4`
+      }));
+      return;
+    }
+    if (request.url === "/media/custom.mp4") {
+      response.writeHead(200, { "content-type": "video/mp4" });
+      response.end("custom video bytes");
+      return;
+    }
+    response.writeHead(404);
+    response.end("not found");
+  });
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  t.after(() => closeServer(provider));
+
+  const configPath = path.join(root, "provider.json");
+  const startPath = path.join(root, "start.png");
+  const endPath = path.join(root, "end.png");
+  const outputPath = path.join(root, "output.mp4");
+  await Promise.all([
+    fs.writeFile(startPath, "start image bytes"),
+    fs.writeFile(endPath, "end image bytes"),
+    fs.writeFile(configPath, JSON.stringify({
+      videoEndpoint: `http://127.0.0.1:${provider.address().port}/v2/video_generation`,
+      videoModel: "custom-video-model"
+    }))
+  ]);
+
+  await executeGenericHttpWorker({
+    config: configPath,
+    request: videoRequest({
+      provider: "VideoHTTP",
+      model: "custom-video-model",
+      startPath,
+      endPath
+    }),
+    output: outputPath,
+    root
+  });
+
+  assert.equal(postedBody.taskId, "VideoHTTP-test");
+  assert.equal(Object.hasOwn(postedBody, "content"), false);
+  assert.equal(await fs.readFile(outputPath, "utf8"), "custom video bytes");
 });
 
 function videoRequest({

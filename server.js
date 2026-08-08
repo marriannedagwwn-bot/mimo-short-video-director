@@ -277,7 +277,7 @@ function shotVideoRequestSetting(body = {}) {
     model: requestedModel
   });
   if (setting.provider === "VideoHTTP") return setting;
-  if (!["Kling", "Seedance"].includes(setting.provider)) {
+  if (!["Kling", "Seedance", "MiniMax"].includes(setting.provider)) {
     throw new ShotVideoConfigError(`不支持首尾帧视频提供商“${setting.provider || requestedProvider}”。`);
   }
   if (!isShotVideoModelAllowed(setting.provider, setting.model)) {
