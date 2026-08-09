@@ -307,6 +307,8 @@ test("角色边界 prompt 明确分类规则且禁止生成全局渲染负面词
   assert.match(prompt, /positivePromptBoundary/);
   assert.match(prompt, /sourceSimilarityRules/);
   assert.match(prompt, /dialogueRules/);
+  assert.match(prompt, /对白词汇、发声内容和说话方式只能进入 dialogueRules/);
+  assert.match(prompt, /不得同时进入 requiredTraits、allowedTraits 或 forbiddenTraits/);
   assert.match(prompt, /形象类似猫娘，有狼尾巴/);
   assert.match(prompt, /本阶段不生成图片或视频模型的最终负面提示词/);
   assert.match(prompt, /未声明只表示后续正向提示词不得擅自添加/);

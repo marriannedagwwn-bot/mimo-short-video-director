@@ -328,9 +328,9 @@ export function visualGuardrailsPrompt(input) {
 目标：
 - 只在本阶段对固定角色做一次完整语义判断，形成后续全部阶段共用且不得重算的全局角色边界。
 - 根据用户整段描述和模型常识，明确固定角色必须保持、允许选择和禁止出现的身份、外观、性格、职业与剧情功能。
-- 生成 positivePromptBoundary，用来审查后续正向提示词是否擅自添加用户未授权的身份、外观或身体特征。
-- 生成 sourceSimilarityRules，用来约束创意简报、完整故事和分镜不得复制原片可识别的表面表达。
-- 生成 dialogueRules，用来约束角色能说什么、不能说什么，以及台词表达方式。
+- 生成 positivePromptBoundary，仅用来审查后续正向提示词是否擅自添加用户未授权的身份、外观或身体特征。
+- 生成 sourceSimilarityRules，仅用来约束创意简报、完整故事和分镜不得复制原片可识别的表面表达。
+- 生成 dialogueRules，仅用来约束角色能说什么、不能说什么，以及台词表达方式。
 - 本阶段不生成图片或视频模型的最终负面提示词。未声明只表示后续正向提示词不得擅自添加，不等于要写入负面提示词。
 
 固定角色：${fixedCharacter}
@@ -353,6 +353,7 @@ creativeBrief 已识别黑名单：${protectedText}
 - sourceSimilarityRules 只收录 referenceAnalysis、sourceScriptReconstruction 或 creativeBrief 中真实出现的可识别表面表达；抽象叙事结构不得列入。
 - sourceSimilarityRules.appliesWhenReferenceUsed 固定为 true，表示只有该原片画面实际作为某次图片/视频生成参考输入时，才可把对应表面表达转换为该次渲染负面提示词；在此之前它只是创意与正向提示词边界。
 - dialogueRules 只处理台词和说话方式，不得混入图片或视频渲染负面提示词。
+- 对白词汇、发声内容和说话方式只能进入 dialogueRules，不得同时进入 requiredTraits、allowedTraits 或 forbiddenTraits。
 - triggerEvidence 必须逐项给出 sourcePath 和 evidence。sourcePath 必须指向具体输入字段，evidence 必须摘录或准确概括该字段中的明确内容。
 - 所有规则数组允许为空；不得为了显得完整而补充低相关条目。
 
