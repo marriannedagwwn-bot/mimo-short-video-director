@@ -54,7 +54,11 @@ const state = {
     running: false,
     shotId: "",
     count: 1,
-    validationRevision: 0
+    validationRevision: 0,
+    generationMode: "first_last_frame",
+    includeEndpointFrames: true,
+    includeCharacterReferences: true,
+    referenceAssets: []
   },
   mode: "demo",
   mediaMode: "auto",
@@ -121,6 +125,11 @@ const elements = {
   shotVideoEyebrow: $("#shotVideoModal .eyebrow"),
   shotVideoModalTitle: $("#shotVideoModalTitle"), shotVideoMeta: $("#shotVideoMeta"),
   shotVideoReferenceList: $("#shotVideoReferenceList"), shotVideoCount: $("#shotVideoCount"),
+  shotVideoGenerationMode: $("#shotVideoGenerationMode"),
+  shotVideoAllReferenceControls: $("#shotVideoAllReferenceControls"),
+  shotVideoIncludeEndpointFrames: $("#shotVideoIncludeEndpointFrames"),
+  shotVideoIncludeCharacterReferences: $("#shotVideoIncludeCharacterReferences"),
+  shotVideoReferenceDrop: $("#shotVideoReferenceDrop"), shotVideoReferenceInput: $("#shotVideoReferenceInput"),
   shotVideoPromptPreview: $("#shotVideoPromptPreview"), shotVideoStatus: $("#shotVideoStatus"),
   confirmGenerateShotVideo: $("#confirmGenerateShotVideo"), shotVideoResults: $("#shotVideoResults"),
   generatedImagePreview: $("#generatedImagePreview"), generatedImagePreviewImage: $("#generatedImagePreviewImage"),
@@ -138,7 +147,7 @@ const MODEL_STAGE_DEFS = [
   { key: "staticFrameCompiler", label: "静态帧编译器", hint: "叙事语言到静态视觉语言的语义合法化", capability: "文本模型", capabilityKind: "text" },
   { key: "characterReference", label: "人物图修正", hint: "根据上传图片修正角色描述", capability: "视觉模型", capabilityKind: "vision" },
   { key: "imageGeneration", label: "图片生成", hint: "角色参考图、镜头首尾帧图片", capability: "图片生成", capabilityKind: "image", providerLocked: true, optional: true },
-  { key: "shotVideo", label: "首尾帧视频", hint: "可灵、Seedance 或 MiniMax H3 单镜头首尾帧视频候选", capability: "视频生成", capabilityKind: "video", providers: ["Kling", "Seedance", "MiniMax"], optional: true }
+  { key: "shotVideo", label: "镜头视频", hint: "首尾帧或全能参考单镜头视频候选", capability: "视频生成", capabilityKind: "video", providers: ["Kling", "Seedance", "MiniMax"], optional: true }
 ];
 const MEDIA_INPUT_MODEL_STAGES = new Set(["analysis", "reconstruction", "visualGuardrails", "characterReference"]);
 const SHOT_VIDEO_PROVIDER_LABELS = {
@@ -283,9 +292,40 @@ function bindEvents() {
     if (event.target === elements.shotVideoModal) closeShotVideoGenerator();
     const useButton = event.target.closest("[data-use-shot-video]");
     if (useButton) return selectShotVideoCandidate(useButton.dataset.useShotVideo, useButton.dataset.candidateIndex);
+    const removeButton = event.target.closest("[data-remove-shot-video-reference]");
+    if (removeButton) return removeShotVideoReferenceAsset(removeButton.dataset.removeShotVideoReference);
+  });
+  elements.shotVideoGenerationMode.addEventListener("change", () => {
+    state.shotVideoGeneration.generationMode = normalizeShotVideoGenerationMode(elements.shotVideoGenerationMode.value);
+    updateShotVideoGeneratorPreview({ preservePrompt: true });
   });
   elements.shotVideoCount.addEventListener("change", () => {
     state.shotVideoGeneration.count = Number(elements.shotVideoCount.value) || 1;
+  });
+  elements.shotVideoIncludeEndpointFrames.addEventListener("change", () => {
+    state.shotVideoGeneration.includeEndpointFrames = elements.shotVideoIncludeEndpointFrames.checked;
+    updateShotVideoGeneratorPreview({ preservePrompt: true });
+  });
+  elements.shotVideoIncludeCharacterReferences.addEventListener("change", () => {
+    state.shotVideoGeneration.includeCharacterReferences = elements.shotVideoIncludeCharacterReferences.checked;
+    updateShotVideoGeneratorPreview({ preservePrompt: true });
+  });
+  elements.shotVideoReferenceInput.addEventListener("change", async (event) => {
+    const files = [...(event.target.files || [])];
+    event.target.value = "";
+    if (files.length) await addShotVideoReferenceFiles(files);
+  });
+  ["dragenter", "dragover"].forEach((name) => elements.shotVideoReferenceDrop.addEventListener(name, (event) => {
+    event.preventDefault();
+    elements.shotVideoReferenceDrop.classList.add("dragging");
+  }));
+  ["dragleave", "drop"].forEach((name) => elements.shotVideoReferenceDrop.addEventListener(name, (event) => {
+    event.preventDefault();
+    elements.shotVideoReferenceDrop.classList.remove("dragging");
+  }));
+  elements.shotVideoReferenceDrop.addEventListener("drop", async (event) => {
+    const files = [...(event.dataTransfer?.files || [])];
+    if (files.length) await addShotVideoReferenceFiles(files);
   });
   elements.confirmGenerateShotVideo.addEventListener("click", confirmGenerateShotVideo);
   elements.generatedImagePreview.addEventListener("click", (event) => {
@@ -2153,16 +2193,20 @@ async function openShotVideoGenerator(shotId) {
   state.shotVideoGeneration.running = false;
   state.shotVideoGeneration.shotId = String(shotId);
   state.shotVideoGeneration.count = Number(elements.shotVideoCount.value) || 1;
+  state.shotVideoGeneration.referenceAssets = [];
+  elements.shotVideoGenerationMode.value = state.shotVideoGeneration.generationMode;
+  elements.shotVideoIncludeEndpointFrames.checked = state.shotVideoGeneration.includeEndpointFrames;
+  elements.shotVideoIncludeCharacterReferences.checked = state.shotVideoGeneration.includeCharacterReferences;
   setShotVideoGeneratorRunning(false);
   elements.shotVideoModal.classList.remove("hidden");
   elements.shotVideoModal.setAttribute("aria-hidden", "false");
-  setShotVideoStatus("正在校验首尾帧依赖…", "active");
+  setShotVideoStatus("正在校验视频参考素材…", "active");
   if (!await updateShotVideoGeneratorPreview()) return;
   renderShotVideoModalResults();
   elements.shotVideoPromptPreview.focus();
 }
 
-async function updateShotVideoGeneratorPreview() {
+async function updateShotVideoGeneratorPreview(options = {}) {
   if (!state.shotVideoGeneration.open) return true;
   const validationRevision = ++state.shotVideoGeneration.validationRevision;
   const shotId = state.shotVideoGeneration.shotId;
@@ -2172,18 +2216,53 @@ async function updateShotVideoGeneratorPreview() {
     return false;
   }
   const { shot } = context;
+  const generationMode = normalizeShotVideoGenerationMode(state.shotVideoGeneration.generationMode);
+  state.shotVideoGeneration.generationMode = generationMode;
+  elements.shotVideoGenerationMode.value = generationMode;
+  elements.shotVideoAllReferenceControls.classList.toggle("hidden", generationMode !== "all_reference");
   const count = Math.max(1, Math.min(4, Number(state.shotVideoGeneration.count) || Number(elements.shotVideoCount.value) || 1));
   elements.shotVideoCount.value = String(count);
   elements.shotVideoModalTitle.textContent = `用 ${shotVideoProviderLabel()} 生成 ${shot.shotId || "镜头"} 视频`;
-  elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || 4} 秒 · 自动锁定已添加的首帧/尾帧`;
+  elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || 4} 秒 · ${generationMode === "all_reference" ? "多模态参考生成，不锁定精确首尾帧" : "精确锁定已添加的首帧/尾帧"}`;
   elements.shotVideoReferenceList.innerHTML = renderShotVideoReferenceList(shotId);
-  elements.shotVideoPromptPreview.value = buildShotVideoPromptPreview(shot);
-  const validation = await evaluateShotVideoEndpoints(shotId);
+  if (!options.preservePrompt || !elements.shotVideoPromptPreview.value.trim()) {
+    elements.shotVideoPromptPreview.value = buildShotVideoPromptPreview(shot);
+  }
+  const validation = await evaluateShotVideoReferences(shotId);
   if (validationRevision !== state.shotVideoGeneration.validationRevision || validation.cancelled) return false;
   elements.shotVideoReferenceList.innerHTML = renderShotVideoReferenceList(shotId);
   setShotVideoStatus(validation.message, validation.ok ? (validation.status === "prompt_changed" ? "active" : "") : "error");
   elements.confirmGenerateShotVideo.disabled = !validation.ok;
   return true;
+}
+
+function evaluateShotVideoReferences(shotId) {
+  return state.shotVideoGeneration.generationMode === "all_reference"
+    ? evaluateAllReferenceAssets(shotId)
+    : evaluateShotVideoEndpoints(shotId);
+}
+
+async function evaluateAllReferenceAssets(shotId) {
+  const context = shotFrameContext(shotId);
+  if (!context) return { ok: false, message: "没有找到对应镜头。" };
+  const provider = shotVideoSetting().provider;
+  if (!shotVideoModeSupported(provider, "all_reference")) {
+    return {
+      ok: false,
+      message: provider === "Kling"
+        ? "当前可灵接入是官方首尾帧 image-to-video 接口，尚无已验证的 Omni API 协议；全能参考请选择 Seedance 2.0 或 MiniMax H3。"
+        : `${shotVideoProviderLabel(provider)} 当前不支持全能参考模式。`
+    };
+  }
+  const assets = allReferenceAssetDescriptors(shotId);
+  const issue = validateAllReferenceAssetDescriptors(assets);
+  if (issue) return { ok: false, message: issue };
+  const counts = referenceAssetCounts(assets);
+  return {
+    ok: true,
+    status: "ready",
+    message: `全能参考已就绪：${counts.image} 图、${counts.video} 视频、${counts.audio} 音频。它们只作为参考，不会被解释为精确首帧或尾帧。`
+  };
 }
 
 async function evaluateShotVideoEndpoints(shotId) {
@@ -2296,7 +2375,7 @@ async function confirmGenerateShotVideo() {
   const prompt = elements.shotVideoPromptPreview.value.trim();
   if (!prompt) return setShotVideoStatus("视频提示词不能为空。", "error");
   const shotId = state.shotVideoGeneration.shotId;
-  const validation = await evaluateShotVideoEndpoints(shotId);
+  const validation = await evaluateShotVideoReferences(shotId);
   if (!validation.ok) return setShotVideoStatus(validation.message, "error");
   const count = Math.max(1, Math.min(4, Number(elements.shotVideoCount.value) || 1));
   state.shotVideoGeneration.count = count;
@@ -2316,6 +2395,10 @@ async function confirmGenerateShotVideo() {
 function setShotVideoGeneratorRunning(running) {
   state.shotVideoGeneration.running = running;
   elements.shotVideoCount.disabled = running;
+  elements.shotVideoGenerationMode.disabled = running;
+  elements.shotVideoIncludeEndpointFrames.disabled = running;
+  elements.shotVideoIncludeCharacterReferences.disabled = running;
+  elements.shotVideoReferenceInput.disabled = running;
   elements.shotVideoPromptPreview.disabled = running;
   elements.confirmGenerateShotVideo.disabled = running;
   elements.closeShotVideoModal.disabled = running;
@@ -2328,7 +2411,162 @@ function setShotVideoStatus(message, tone = "") {
   elements.shotVideoStatus.className = `story-status ${tone}`;
 }
 
+function allReferenceAssetDescriptors(shotId) {
+  const context = shotFrameContext(shotId);
+  if (!context) return [];
+  const assets = [];
+  if (state.shotVideoGeneration.includeCharacterReferences) {
+    const references = shotRelatedCharacterReferences(context.shot, context.plan.characterReferencePrompts || []);
+    for (const reference of references) {
+      if (!reference?.referenceImageDataUrl) continue;
+      assets.push({
+        id: `character-${reference.characterName || assets.length}`,
+        mediaType: "image",
+        name: `${reference.characterName || "角色"}参考图`,
+        dataUrl: reference.referenceImageDataUrl,
+        sizeBytes: 0,
+        durationSeconds: 0,
+        source: "character_reference"
+      });
+    }
+  }
+  if (state.shotVideoGeneration.includeEndpointFrames) {
+    const start = selectedShotFrameCandidate(shotId, "start");
+    const end = storedShotFrameCandidate(shotId, "end");
+    if (start) assets.push({
+      id: "workflow-start-frame",
+      mediaType: "image",
+      name: "已选首帧（普通参考图）",
+      dataUrl: start.dataUrl || "",
+      url: start.url || "",
+      sizeBytes: 0,
+      durationSeconds: 0,
+      source: "workflow_start_frame"
+    });
+    if (end) assets.push({
+      id: "workflow-end-frame",
+      mediaType: "image",
+      name: "已选尾帧（普通参考图）",
+      dataUrl: end.dataUrl || "",
+      url: end.url || "",
+      sizeBytes: 0,
+      durationSeconds: 0,
+      source: "workflow_end_frame"
+    });
+  }
+  assets.push(...state.shotVideoGeneration.referenceAssets);
+  const seen = new Set();
+  return assets.filter((asset) => {
+    const identity = asset.dataUrl || asset.url || `${asset.source}:${asset.name}:${asset.id}`;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+}
+
+function referenceAssetCounts(assets) {
+  return assets.reduce((counts, asset) => {
+    if (Object.hasOwn(counts, asset.mediaType)) counts[asset.mediaType] += 1;
+    return counts;
+  }, { image: 0, video: 0, audio: 0 });
+}
+
+function validateAllReferenceAssetDescriptors(assets) {
+  const counts = referenceAssetCounts(assets);
+  if (!counts.image && !counts.video) return "全能参考模式至少需要一张图片或一段视频，不能只上传音频。";
+  if (counts.image > 9) return `全能参考图片最多 9 张，当前 ${counts.image} 张。`;
+  if (counts.video > 3) return `全能参考视频最多 3 段，当前 ${counts.video} 段。`;
+  if (counts.audio > 3) return `全能参考音频最多 3 段，当前 ${counts.audio} 段。`;
+  const videos = assets.filter((asset) => asset.mediaType === "video");
+  const audios = assets.filter((asset) => asset.mediaType === "audio");
+  const invalidDuration = [...videos, ...audios].find((asset) => asset.durationSeconds < 2 || asset.durationSeconds > 15);
+  if (invalidDuration) return `${invalidDuration.name} 时长必须在 2–15 秒之间。`;
+  if (videos.some((asset) => asset.sizeBytes > 50 * 1024 * 1024)) return "单段参考视频不得超过 50MB。";
+  const videoDuration = videos.reduce((sum, asset) => sum + Number(asset.durationSeconds || 0), 0);
+  const audioDuration = audios.reduce((sum, asset) => sum + Number(asset.durationSeconds || 0), 0);
+  if (videoDuration > 15.05) return `参考视频总时长不得超过 15 秒，当前 ${videoDuration.toFixed(2)} 秒。`;
+  if (audioDuration > 15.05) return `参考音频总时长不得超过 15 秒，当前 ${audioDuration.toFixed(2)} 秒。`;
+  return "";
+}
+
+async function addShotVideoReferenceFiles(files) {
+  try {
+    const added = [];
+    for (const file of files) {
+      const mediaType = referenceFileMediaType(file);
+      if (!mediaType) throw new Error(`${file.name} 不是支持的图片、视频或音频文件。`);
+      const durationSeconds = mediaType === "image" ? 0 : await browserMediaDuration(file, mediaType);
+      added.push({
+        id: `upload-${Date.now()}-${added.length}`,
+        mediaType,
+        name: file.name,
+        dataUrl: await readFileAsDataUrl(file),
+        sizeBytes: file.size,
+        durationSeconds,
+        source: "upload"
+      });
+    }
+    const candidateAssets = [...state.shotVideoGeneration.referenceAssets, ...added];
+    const issue = validateAllReferenceAssetDescriptors(candidateAssets);
+    if (issue && !/至少需要一张图片或一段视频/u.test(issue)) throw new Error(issue);
+    state.shotVideoGeneration.referenceAssets = candidateAssets;
+    await updateShotVideoGeneratorPreview({ preservePrompt: true });
+  } catch (error) {
+    setShotVideoStatus(error.message || "无法添加全能参考素材。", "error");
+  }
+}
+
+function removeShotVideoReferenceAsset(assetId) {
+  state.shotVideoGeneration.referenceAssets = state.shotVideoGeneration.referenceAssets
+    .filter((asset) => String(asset.id) !== String(assetId));
+  updateShotVideoGeneratorPreview({ preservePrompt: true });
+}
+
+function referenceFileMediaType(file) {
+  const type = String(file?.type || "").split("/", 1)[0];
+  return ["image", "video", "audio"].includes(type) ? type : "";
+}
+
+function browserMediaDuration(file, mediaType) {
+  return new Promise((resolve, reject) => {
+    const element = document.createElement(mediaType === "video" ? "video" : "audio");
+    const url = URL.createObjectURL(file);
+    const cleanup = () => URL.revokeObjectURL(url);
+    element.preload = "metadata";
+    element.addEventListener("loadedmetadata", () => {
+      const duration = Number(element.duration);
+      cleanup();
+      if (!Number.isFinite(duration) || duration <= 0) reject(new Error(`无法读取 ${file.name} 的时长。`));
+      else resolve(duration);
+    }, { once: true });
+    element.addEventListener("error", () => {
+      cleanup();
+      reject(new Error(`浏览器无法读取 ${file.name}。`));
+    }, { once: true });
+    element.src = url;
+  });
+}
+
 function renderShotVideoReferenceList(shotId) {
+  if (state.shotVideoGeneration.generationMode === "all_reference") {
+    const assets = allReferenceAssetDescriptors(shotId);
+    if (!assets.length) {
+      return `<p class="shot-video-reference-note">尚未选择参考素材。可加入已有首尾帧、角色参考图，或上传图片、视频和音频。</p>`;
+    }
+    const labels = { image: "图片", video: "视频", audio: "音频" };
+    return `<div>
+      <span class="block-label">全能参考素材 · ${escape(assets.length)} 项</span>
+      <div class="shot-video-reference-assets">
+        ${assets.map((asset) => `<div class="shot-video-reference-asset">
+          <span>${escape(labels[asset.mediaType] || asset.mediaType)}</span>
+          <strong title="${escape(asset.name)}">${escape(asset.name)}</strong>
+          <small>${asset.durationSeconds ? `${escape(asset.durationSeconds.toFixed(2))} 秒` : asset.sizeBytes ? escape(formatBytes(asset.sizeBytes)) : escape(asset.source === "character_reference" ? "角色锁定" : "工作流参考")}</small>
+          ${asset.source === "upload" ? `<button class="shot-video-reference-remove" type="button" data-remove-shot-video-reference="${escape(asset.id)}" aria-label="移除 ${escape(asset.name)}">×</button>` : ""}
+        </div>`).join("")}
+      </div>
+      <p class="shot-video-reference-note">这些素材会以 reference_image / reference_video / reference_audio 发送，不会混入 first_frame / last_frame。</p>
+    </div>`;
+  }
   const start = selectedShotFrameCandidate(shotId, "start");
   const end = storedShotFrameCandidate(shotId, "end");
   const endStatus = state.shotFrameResults[shotFrameKey(shotId, "end")]?.status || "";
@@ -2377,15 +2615,23 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
   renderShotVideoModalResults();
   setAnimationStatus(`正在用 ${shotVideoProviderLabel()} 生成 ${shotId} 镜头视频 · ${count} 条候选…`, "active");
   try {
-    const endpointValidation = await evaluateShotVideoEndpoints(shotId);
-    if (!endpointValidation.ok) throw new Error(endpointValidation.message);
-    const startFrame = selectedShotFrameCandidate(shotId, "start");
-    const endFrame = selectedShotFrameCandidate(shotId, "end");
-    if (!startFrame || !endFrame) throw new Error("请先生成并选择首帧和尾帧参考图。");
-    const [startFrameDataUrl, endFrameDataUrl] = await Promise.all([
-      frameCandidateDataUrl(startFrame),
-      frameCandidateDataUrl(endFrame)
-    ]);
+    const generationMode = normalizeShotVideoGenerationMode(state.shotVideoGeneration.generationMode);
+    const referenceValidation = await evaluateShotVideoReferences(shotId);
+    if (!referenceValidation.ok) throw new Error(referenceValidation.message);
+    let startFrameDataUrl = "";
+    let endFrameDataUrl = "";
+    let referenceAssets = [];
+    if (generationMode === "all_reference") {
+      referenceAssets = await collectAllReferenceAssets(shotId);
+    } else {
+      const startFrame = selectedShotFrameCandidate(shotId, "start");
+      const endFrame = selectedShotFrameCandidate(shotId, "end");
+      if (!startFrame || !endFrame) throw new Error("请先生成并选择首帧和尾帧参考图。");
+      [startFrameDataUrl, endFrameDataUrl] = await Promise.all([
+        frameCandidateDataUrl(startFrame),
+        frameCandidateDataUrl(endFrame)
+      ]);
+    }
     const videoNegativePrompt = compileShotNegativePrompt(shot, "video");
     const videoShot = { ...shot };
     delete videoShot.negativePrompt;
@@ -2396,6 +2642,7 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
       ...globalCharacterBoundaryContext(),
       selectedVariantId: variant?.id || "",
       count,
+      generationMode,
       characterReferences: plan.characterReferencePrompts || [],
       shot: {
         ...videoShot,
@@ -2404,8 +2651,9 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
         compiledNegativePrompt: videoNegativePrompt.compiledNegativePrompt,
         negativePrompt: videoNegativePrompt.compiledNegativePrompt
       },
-      startFrameDataUrl,
-      endFrameDataUrl
+      ...(generationMode === "all_reference"
+        ? { referenceAssets }
+        : { startFrameDataUrl, endFrameDataUrl })
     });
     const videos = Array.isArray(result.videos) && result.videos.length ? result.videos : result.outputUrl ? [result] : [];
     if (videos.length !== count) throw new Error(`视频数量不足：请求 ${count} 条，实际返回 ${videos.length} 条。`);
@@ -2427,6 +2675,27 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
   updateShotVideoResult(shotId);
   renderShotVideoModalResults();
   return true;
+}
+
+async function collectAllReferenceAssets(shotId) {
+  const descriptors = allReferenceAssetDescriptors(shotId);
+  const assets = await Promise.all(descriptors.map(async (asset) => ({
+    mediaType: asset.mediaType,
+    name: asset.name,
+    dataUrl: asset.dataUrl || await urlToDataUrl(asset.url),
+    sizeBytes: Number(asset.sizeBytes) || 0,
+    durationSeconds: Number(asset.durationSeconds) || 0,
+    source: asset.source || "upload"
+  })));
+  const seen = new Set();
+  const unique = assets.filter((asset) => {
+    if (seen.has(asset.dataUrl)) return false;
+    seen.add(asset.dataUrl);
+    return true;
+  });
+  const issue = validateAllReferenceAssetDescriptors(unique);
+  if (issue) throw new Error(issue);
+  return unique;
 }
 
 async function frameCandidateDataUrl(candidate = {}) {
@@ -2654,7 +2923,7 @@ function renderOneShotFramePreview(shotId, frameKind, stateItem) {
 
 function renderShotVideoResult(shotId) {
   const stateItem = state.shotVideoResults[shotId];
-  if (!stateItem) return `<p>先选择首帧和尾帧，即可用 ${escape(shotVideoProviderLabel())} 生成该镜头视频。</p>`;
+  if (!stateItem) return `<p>选择首尾帧模式或全能参考模式，即可用 ${escape(shotVideoProviderLabel())} 生成该镜头视频。</p>`;
   if (stateItem.status === "running") return `<p class="active">生成中：正在生成 ${escape(stateItem.expectedCount || 1)} 条视频候选…</p>`;
   if (stateItem.status === "error") return `<p class="error">${escape(stateItem.message)}</p>`;
   const startFrameUrl = stateItem.result?.startFrameUrl || "";
@@ -2725,6 +2994,14 @@ function animationModelLabel() { return modelDisplayLabel(state.animationProvide
 function staticFrameCompilerModelLabel() { return modelDisplayLabel(state.staticFrameCompilerProvider, state.staticFrameCompilerModel); }
 function normalizeShotVideoProvider(provider = "") {
   return provider;
+}
+function normalizeShotVideoGenerationMode(value = "") {
+  return String(value || "").trim().toLowerCase() === "all_reference" ? "all_reference" : "first_last_frame";
+}
+function shotVideoModeSupported(provider, mode) {
+  const normalizedMode = normalizeShotVideoGenerationMode(mode);
+  if (normalizedMode === "first_last_frame") return true;
+  return ["Seedance", "MiniMax"].includes(normalizeShotVideoProvider(provider));
 }
 function shotVideoSetting() {
   const setting = effectiveStageSetting("shotVideo");
@@ -2991,9 +3268,7 @@ function updateShotVideoProviderUi() {
     button.textContent = `用 ${label} 生成此镜头视频`;
   });
   if (state.shotVideoGeneration.open) {
-    const context = shotFrameContext(state.shotVideoGeneration.shotId);
-    elements.shotVideoModalTitle.textContent = `用 ${label} 生成 ${context?.shot?.shotId || "镜头"} 视频`;
-    elements.shotVideoReferenceList.innerHTML = renderShotVideoReferenceList(state.shotVideoGeneration.shotId);
+    updateShotVideoGeneratorPreview({ preservePrompt: true });
   }
 }
 function modelDisplayLabel(provider, model) {

@@ -5,6 +5,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import {
+  isShotVideoGenerationModeSupported,
   isShotVideoModelAllowed,
   KLING_CN_V3_ENDPOINT,
   MINIMAX_H3_ENDPOINT,
@@ -209,6 +210,68 @@ test("Seedance 2.0 使用方舟首尾帧角色、默认音画同生和完整终�
   assert.equal(receipt.audioRequested, true);
 });
 
+test("Seedance 2.0 全能参考使用 reference_image/video/audio 且不混入首尾帧角色", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "seedance-r2v-interface-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  let postedBody = null;
+  const provider = http.createServer(async (request, response) => {
+    if (request.url === "/media/r2v.mp4") {
+      response.writeHead(200, { "content-type": "video/mp4" });
+      response.end("seedance r2v video bytes");
+      return;
+    }
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    postedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ mediaUrl: `http://127.0.0.1:${provider.address().port}/media/r2v.mp4` }));
+  });
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  t.after(() => closeServer(provider));
+
+  const configPath = path.join(root, "provider.json");
+  const imagePath = path.join(root, "character.png");
+  const videoPath = path.join(root, "motion.mp4");
+  const audioPath = path.join(root, "rhythm.mp3");
+  await Promise.all([
+    fs.writeFile(imagePath, "image bytes"),
+    fs.writeFile(videoPath, "video bytes"),
+    fs.writeFile(audioPath, "audio bytes"),
+    fs.writeFile(configPath, JSON.stringify({
+      videoEndpoint: `http://127.0.0.1:${provider.address().port}/api/v3/contents/generations/tasks`,
+      providerPreset: "modelark_content_generation",
+      videoModel: "doubao-seedance-2-0-260128",
+      apiKey: "test-key"
+    }))
+  ]);
+
+  await executeGenericHttpWorker({
+    config: configPath,
+    request: allReferenceVideoRequest({
+      provider: "Seedance",
+      model: "doubao-seedance-2-0-260128",
+      artifacts: [
+        { path: imagePath, mediaType: "image", role: "reference_image" },
+        { path: videoPath, mediaType: "video", role: "reference_video" },
+        { path: audioPath, mediaType: "audio", role: "reference_audio" }
+      ]
+    }),
+    output: path.join(root, "output.mp4"),
+    root
+  });
+
+  assert.deepEqual(postedBody.content.map((item) => item.role || "text"), [
+    "text",
+    "reference_image",
+    "reference_video",
+    "reference_audio"
+  ]);
+  assert.equal(postedBody.content.some((item) => ["first_frame", "last_frame"].includes(item.role)), false);
+  assert.match(postedBody.content[1].image_url.url, /^data:image\/png;base64,/u);
+  assert.match(postedBody.content[2].video_url.url, /^data:video\/mp4;base64,/u);
+  assert.match(postedBody.content[3].audio_url.url, /^data:audio\/mpeg;base64,/u);
+});
+
 test("Seedance expired/cancelled 都是终态，且当前官方三个 Model ID 均可选", async (t) => {
   assert.deepEqual(SEEDANCE_VIDEO_MODELS, [
     "doubao-seedance-2-0-260128",
@@ -390,6 +453,68 @@ test("MiniMax H3 使用 V2 多模态首尾帧、Bearer 鉴权和 task.content.ur
   assert.match(receipt.requestPreview.body.content[1].image_url.url, /^\[REDACTED_DATA_URL length=\d+\]$/u);
 });
 
+test("MiniMax H3 全能参考允许单张参考图并拒绝仅音频输入", async (t) => {
+  assert.equal(isShotVideoGenerationModeSupported("Seedance", "all_reference"), true);
+  assert.equal(isShotVideoGenerationModeSupported("MiniMax", "all_reference"), true);
+  assert.equal(isShotVideoGenerationModeSupported("Kling", "all_reference"), false);
+
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "minimax-r2v-interface-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  let postedBody = null;
+  const provider = http.createServer(async (request, response) => {
+    if (request.url === "/media/r2v.mp4") {
+      response.writeHead(200, { "content-type": "video/mp4" });
+      response.end("minimax r2v video bytes");
+      return;
+    }
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    postedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ mediaUrl: `http://127.0.0.1:${provider.address().port}/media/r2v.mp4` }));
+  });
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  t.after(() => closeServer(provider));
+
+  const configPath = path.join(root, "provider.json");
+  const imagePath = path.join(root, "character.png");
+  const audioPath = path.join(root, "rhythm.mp3");
+  await Promise.all([
+    fs.writeFile(imagePath, "image bytes"),
+    fs.writeFile(audioPath, "audio bytes"),
+    fs.writeFile(configPath, JSON.stringify({
+      videoEndpoint: `http://127.0.0.1:${provider.address().port}/v2/video_generation`,
+      providerPreset: "minimax_h3_video_generation",
+      videoModel: "MiniMax-H3",
+      apiKey: "test-key"
+    }))
+  ]);
+
+  await executeGenericHttpWorker({
+    config: configPath,
+    request: allReferenceVideoRequest({
+      provider: "MiniMax",
+      model: "MiniMax-H3",
+      artifacts: [{ path: imagePath, mediaType: "image", role: "reference_image" }]
+    }),
+    output: path.join(root, "output.mp4"),
+    root
+  });
+  assert.deepEqual(postedBody.content.map((item) => item.role || "text"), ["text", "reference_image"]);
+  assert.equal(postedBody.ratio, "adaptive");
+
+  await assert.rejects(() => executeGenericHttpWorker({
+    config: configPath,
+    request: allReferenceVideoRequest({
+      provider: "MiniMax",
+      model: "MiniMax-H3",
+      artifacts: [{ path: audioPath, mediaType: "audio", role: "reference_audio" }]
+    }),
+    output: path.join(root, "audio-only.mp4"),
+    root
+  }), /不能只输入音频/u);
+});
+
 test("Kling 3.0 锁定国内官方 endpoint，不继承海外、Legacy endpoint、token 或 provider config", () => {
   const runtime = shotVideoRuntimeConfig("Kling", {
     KLING_V3_ENDPOINT: "https://api-singapore.klingai.com/image-to-video/kling-3.0",
@@ -534,6 +659,27 @@ function videoRequest({
     parameters: {
       aspectRatio: "9:16",
       durationSeconds
+    }
+  };
+}
+
+function allReferenceVideoRequest({ provider, model, artifacts }) {
+  return {
+    taskId: `${provider}-r2v-test`,
+    capability: "all_reference_video_generation",
+    outputKey: "preview.r2v-test",
+    provider,
+    model,
+    prompt: "参考人物身份、动作节奏和声音氛围生成新镜头。",
+    inputArtifacts: artifacts.map((artifact, index) => ({
+      outputKey: `references.${index + 1}`,
+      status: "done",
+      ...artifact
+    })),
+    parameters: {
+      aspectRatio: "9:16",
+      durationSeconds: 5,
+      generationMode: "all_reference"
     }
   };
 }

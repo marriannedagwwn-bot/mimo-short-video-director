@@ -15,7 +15,7 @@ async function main(argv = process.argv.slice(2)) {
     console.log(`用法：
   node workers/generic-http-worker.mjs --config provider.json --request <request.json> --output <target-file> --receipt <receipt.json> --root <production-root>
 
-这是一个通用 HTTP worker，用于把 command provider 的 request JSON 转发给图像/首尾帧视频 API。
+这是一个通用 HTTP worker，用于把 command provider 的 request JSON 转发给图像/视频 API。
 必要配置可以写在 JSON config，或使用 VIDEO_HTTP_* 环境变量。
 
 最小环境变量示例：
@@ -97,7 +97,7 @@ function endpointFor(capability, config) {
   const endpoints = config.endpoints || {};
   let endpoint = endpoints[capability] || "";
   if (!endpoint && capability === "image_generation") endpoint = config.imageEndpoint || config.endpoint;
-  if (!endpoint && capability === "first_last_frame_video_generation") endpoint = config.videoEndpoint || config.endpoint;
+  if (!endpoint && isVideoGenerationCapability(capability)) endpoint = config.videoEndpoint || config.endpoint;
   if (!endpoint && capability === "video_quality_review") endpoint = config.reviewEndpoint || config.endpoint;
   if (!endpoint && capability === "video_assembly") endpoint = config.assemblyEndpoint || config.endpoint;
   if (!endpoint) endpoint = config.endpoint;
@@ -108,7 +108,7 @@ function modelFor(capability, config) {
   const models = config.models || {};
   if (models[capability]) return models[capability];
   if (capability === "image_generation") return config.imageModel || config.model || "";
-  if (capability === "first_last_frame_video_generation") return config.videoModel || config.model || "";
+  if (isVideoGenerationCapability(capability)) return config.videoModel || config.model || "";
   if (capability === "video_quality_review") return config.reviewModel || config.model || "";
   if (capability === "video_assembly") return config.assemblyModel || config.model || "";
   return config.model || "";
@@ -528,12 +528,12 @@ function presetFor(capability, config) {
 }
 
 function isModelArkContentGeneration(capability, config) {
-  if (capability !== "first_last_frame_video_generation") return false;
+  if (!isVideoGenerationCapability(capability)) return false;
   return ["modelark", "modelark_content_generation", "dreamina", "jimeng"].includes(presetFor(capability, config));
 }
 
 function isMiniMaxH3VideoGeneration(capability, config) {
-  if (capability !== "first_last_frame_video_generation") return false;
+  if (!isVideoGenerationCapability(capability)) return false;
   const preset = presetFor(capability, config);
   const model = String(config.videoModel || config.model || "").trim();
   const endpoint = String(config.resolvedEndpoint || config.videoEndpoint || config.endpoint || "");
@@ -548,6 +548,10 @@ function isKlingImageToVideo(capability, config) {
   if (["kling", "kling_image_to_video", "kling_image2video", "klingai", "kling_3_0_image_to_video"].includes(preset)) return true;
   const endpoint = String(config.resolvedEndpoint || config.videoEndpoint || config.endpoint || "");
   return /(^|\.)klingai\.com\b/u.test(hostnameFor(endpoint));
+}
+
+function isVideoGenerationCapability(capability) {
+  return ["first_last_frame_video_generation", "all_reference_video_generation"].includes(capability);
 }
 
 function isKlingV3ImageToVideo(capability, config) {
@@ -605,21 +609,17 @@ function normalizeEndpointForPreset(capability, endpoint, config) {
 
 function buildModelArkContentGenerationBody(context, config, negativePromptDelivery = {}) {
   const artifacts = context.inputArtifacts || [];
-  const startFrame = firstArtifactDataUrl(artifacts[0]);
-  const endFrame = firstArtifactDataUrl(artifacts[1]);
-  if (!startFrame || !endFrame) throw new Error("ModelArk/Dreamina 首尾帧视频任务需要首帧和尾帧两张图片 dataUrl。");
   const prompt = [
     context.request.prompt || "",
     negativePromptDelivery.appliedMode === "positive_constraint" ? negativePromptDelivery.appliedText : ""
   ].filter(Boolean).join("\n");
   const parameters = context.request.parameters || {};
+  const content = context.request.capability === "all_reference_video_generation"
+    ? buildAllReferenceContent(artifacts, prompt, "Seedance 2.0")
+    : buildFirstLastFrameContent(artifacts, prompt, "ModelArk/Dreamina");
   const body = {
     model: context.model || config.model || undefined,
-    content: [
-      { type: "text", text: prompt },
-      { type: "image_url", image_url: { url: startFrame }, role: "first_frame" },
-      { type: "image_url", image_url: { url: endFrame }, role: "last_frame" }
-    ],
+    content,
     ratio: normalizeSeedanceRatio(parameters.aspectRatio || config.ratio),
     duration: normalizeSeedanceDuration(parameters.durationSeconds || config.duration),
     watermark: config.watermark === true,
@@ -643,27 +643,57 @@ function buildModelArkContentGenerationBody(context, config, negativePromptDeliv
 
 function buildMiniMaxH3VideoBody(context, config, negativePromptDelivery = {}) {
   const artifacts = context.inputArtifacts || [];
-  const startFrame = firstArtifactDataUrl(artifacts[0]);
-  const endFrame = firstArtifactDataUrl(artifacts[1]);
-  if (!startFrame || !endFrame) throw new Error("MiniMax H3 首尾帧视频任务需要首帧和尾帧两张图片 dataUrl。");
   const prompt = truncateText([
     context.request.prompt || "",
     negativePromptDelivery.appliedMode === "positive_constraint" ? negativePromptDelivery.appliedText : ""
   ].filter(Boolean).join("\n"), Number(config.promptMaxChars || 7000));
   if (!prompt) throw new Error("MiniMax H3 视频提示词不能为空。");
   const parameters = context.request.parameters || {};
+  const content = context.request.capability === "all_reference_video_generation"
+    ? buildAllReferenceContent(artifacts, prompt, "MiniMax H3")
+    : buildFirstLastFrameContent(artifacts, prompt, "MiniMax H3");
   return {
     model: context.model || config.model || "MiniMax-H3",
-    content: [
-      { type: "text", text: prompt },
-      { type: "image_url", image_url: { url: startFrame }, role: "first_frame" },
-      { type: "image_url", image_url: { url: endFrame }, role: "last_frame" }
-    ],
+    content,
     resolution: normalizeMiniMaxResolution(config.resolution),
     duration: normalizeMiniMaxDuration(parameters.durationSeconds || config.duration),
     ratio: "adaptive",
     aigc_watermark: config.watermark === true
   };
+}
+
+function buildFirstLastFrameContent(artifacts, prompt, providerLabel) {
+  const startFrame = firstArtifactDataUrl(artifacts[0]);
+  const endFrame = firstArtifactDataUrl(artifacts[1]);
+  if (!startFrame || !endFrame) throw new Error(`${providerLabel} 首尾帧视频任务需要首帧和尾帧两张图片 dataUrl。`);
+  return [
+    { type: "text", text: prompt },
+    { type: "image_url", image_url: { url: startFrame }, role: "first_frame" },
+    { type: "image_url", image_url: { url: endFrame }, role: "last_frame" }
+  ];
+}
+
+function buildAllReferenceContent(artifacts, prompt, providerLabel) {
+  const content = [{ type: "text", text: prompt }];
+  for (const [index, artifact] of artifacts.entries()) {
+    const mediaType = String(artifact.mediaType || "").trim().toLowerCase();
+    const dataUrl = firstArtifactDataUrl(artifact);
+    if (!["image", "video", "audio"].includes(mediaType) || !dataUrl) {
+      throw new Error(`${providerLabel} 全能参考素材 ${index + 1} 缺少有效媒体类型或 dataUrl。`);
+    }
+    const type = `${mediaType}_url`;
+    content.push({
+      type,
+      [type]: { url: dataUrl },
+      role: `reference_${mediaType}`
+    });
+  }
+  const hasVisualReference = content.some((item) => ["reference_image", "reference_video"].includes(item.role));
+  if (!hasVisualReference) throw new Error(`${providerLabel} 全能参考模式至少需要一张图片或一段视频，不能只输入音频。`);
+  if (content.some((item) => ["first_frame", "last_frame"].includes(item.role))) {
+    throw new Error(`${providerLabel} 全能参考模式不得混用 first_frame 或 last_frame。`);
+  }
+  return content;
 }
 
 function buildKlingV3ImageToVideoBody(context, config) {
@@ -819,7 +849,14 @@ async function loadInputArtifacts(inputArtifacts, config) {
       outputKey: artifact.outputKey || "",
       path: artifact.path || "",
       status: artifact.status || "",
-      missing: Boolean(artifact.missing)
+      missing: Boolean(artifact.missing),
+      mediaType: artifact.mediaType || "",
+      role: artifact.role || "",
+      filename: artifact.filename || "",
+      mimeType: artifact.mimeType || "",
+      durationSeconds: Number(artifact.durationSeconds) || 0,
+      sizeBytes: Number(artifact.sizeBytes) || 0,
+      source: artifact.source || ""
     };
     if (includeDataUrls && artifact.path) {
       try {
@@ -1103,6 +1140,10 @@ function mimeTypeForPath(filePath) {
   if (extension === ".gif") return "image/gif";
   if (extension === ".mp4") return "video/mp4";
   if (extension === ".mov") return "video/quicktime";
+  if (extension === ".webm") return "video/webm";
+  if (extension === ".mp3") return "audio/mpeg";
+  if (extension === ".m4a") return "audio/mp4";
+  if (extension === ".wav") return "audio/wav";
   if (extension === ".json") return "application/json";
   return "application/octet-stream";
 }

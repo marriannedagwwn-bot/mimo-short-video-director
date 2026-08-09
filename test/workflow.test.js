@@ -1048,6 +1048,73 @@ test("单镜头首尾帧视频可通过通用 HTTP worker 传递逐镜负面词"
   assert.equal(result.receipt.requestPreview.headers.Authorization, "[REDACTED]");
 });
 
+test("单镜头全能参考模式不生成首尾帧，并把参考图作为 R2V 权威输入", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-r2v-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  let receivedBody = null;
+  const provider = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    receivedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ data: { videoBase64: Buffer.from("r2v shot video bytes").toString("base64") } }));
+  });
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  t.after(() => closeServer(provider));
+  const configPath = path.join(root, "provider.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    videoEndpoint: `http://127.0.0.1:${provider.address().port}/v2/video_generation`,
+    providerPreset: "minimax_h3_video_generation",
+    videoModel: "MiniMax-H3",
+    apiKey: "test-key"
+  }));
+
+  const result = await generateShotVideo({
+    workerRunner: executeGenericHttpWorker,
+    configPath,
+    outputRoot: path.join(root, "generated-videos"),
+    publicBasePath: "/generated-videos",
+    videoProvider: "MiniMax",
+    videoModel: "MiniMax-H3",
+    generationMode: "all_reference",
+    referenceAssets: [{
+      mediaType: "image",
+      name: "小白子角色参考.png",
+      dataUrl: `data:image/png;base64,${Buffer.from("character reference bytes").toString("base64")}`,
+      source: "character_reference"
+    }],
+    shot: {
+      shotId: "S01-R2V",
+      durationSeconds: 5,
+      startFramePrompt: "不应生成这个首帧",
+      endFramePrompt: "不应生成这个尾帧",
+      videoPrompt: "参考角色身份生成挥手动作"
+    }
+  });
+
+  assert.equal(result.generationMode, "all_reference");
+  assert.equal(result.startFrameUrl, "");
+  assert.equal(result.endFrameUrl, "");
+  assert.deepEqual(result.referenceSummary, { image: 1, video: 0, audio: 0 });
+  assert.deepEqual(receivedBody.content.map((item) => item.role || "text"), ["text", "reference_image"]);
+  assert.equal(receivedBody.content.some((item) => ["first_frame", "last_frame"].includes(item.role)), false);
+  assert.equal(await fs.readFile(result.outputPath, "utf8"), "r2v shot video bytes");
+});
+
+test("可灵全能参考模式明确失败，不静默降级为首尾帧", async () => {
+  await assert.rejects(() => generateShotVideo({
+    videoProvider: "Kling",
+    videoModel: "kling-v3",
+    generationMode: "all_reference",
+    referenceAssets: [{
+      mediaType: "image",
+      name: "reference.png",
+      dataUrl: "data:image/png;base64,AA=="
+    }],
+    shot: { shotId: "S-KLING-R2V", videoPrompt: "参考人物生成动作" }
+  }), /尚未取得可验证的 Omni API 协议/u);
+});
+
 test("单镜头首尾帧视频支持可灵 preset、轮询与 negative_prompt 真实传递", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-kling-"));
   let postBody = null;
@@ -3069,6 +3136,20 @@ test("角色生成边界允许否定提及但仍拒绝正向或转折后的禁�
     visualGuardrails,
     { requireRequiredTraits: false }
   ), /猫耳|全局边界禁止特征/u);
+  const allReferenceVideoPrompt = shotVideoGenerationPromptText({
+    generationMode: "all_reference",
+    shot: {
+      videoPrompt: "小白子保持狼耳与狼尾，抬手贴好信纸。",
+      startFramePrompt: "旧首帧误写为猫耳少女。",
+      endFramePrompt: "旧尾帧误写为猫尾。"
+    }
+  });
+  assert.doesNotMatch(allReferenceVideoPrompt, /猫耳|猫尾/u);
+  assert.doesNotThrow(() => ensureCharacterPromptMatchesBoundary(
+    allReferenceVideoPrompt,
+    visualGuardrails,
+    { requireRequiredTraits: false }
+  ));
 });
 
 test("角色边界、原片规避与逐镜渲染负面提示词在 prompt 中保持分类", () => {

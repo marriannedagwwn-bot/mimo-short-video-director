@@ -18,6 +18,24 @@ export const MINIMAX_H3_ENDPOINT = "https://api.minimaxi.com/v2/video_generation
 
 const SHOT_VIDEO_PROVIDERS = Object.freeze(["Kling", "Seedance", "MiniMax"]);
 
+export const SHOT_VIDEO_GENERATION_MODES = Object.freeze([
+  "first_last_frame",
+  "all_reference"
+]);
+
+export function normalizeShotVideoGenerationMode(value = "") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["all_reference", "all-reference", "reference", "r2v"].includes(normalized)) return "all_reference";
+  return "first_last_frame";
+}
+
+export function isShotVideoGenerationModeSupported(provider, mode) {
+  const normalizedProvider = normalizeShotVideoProvider(provider);
+  const normalizedMode = normalizeShotVideoGenerationMode(mode);
+  if (normalizedMode === "first_last_frame") return ["Kling", "Seedance", "MiniMax", "VideoHTTP"].includes(normalizedProvider);
+  return ["Seedance", "MiniMax"].includes(normalizedProvider);
+}
+
 export function normalizeShotVideoProvider(value = "") {
   const normalized = String(value || "").trim().toLowerCase();
   if (["kling", "klingai", "kuaishou"].includes(normalized)) return "Kling";
@@ -98,7 +116,8 @@ export function shotVideoRuntimeConfig(provider, env = process.env, requestedMod
       duration: clean(env.MINIMAX_VIDEO_DURATION),
       ratio: clean(env.MINIMAX_VIDEO_ASPECT_RATIO),
       watermark: booleanEnv(env.MINIMAX_WATERMARK, false),
-      promptMaxChars: clean(env.MINIMAX_PROMPT_MAX_CHARS) || "7000"
+      promptMaxChars: clean(env.MINIMAX_PROMPT_MAX_CHARS) || "7000",
+      maxInputDataUrlBytes: clean(env.MINIMAX_MAX_REFERENCE_BYTES) || String(50 * 1024 * 1024)
     };
   }
   if (normalized === "Seedance") {
@@ -120,7 +139,8 @@ export function shotVideoRuntimeConfig(provider, env = process.env, requestedMod
       watermark: booleanEnv(env.SEEDANCE_WATERMARK, false),
       returnLastFrame: booleanEnv(env.SEEDANCE_RETURN_LAST_FRAME, false),
       serviceTier: clean(env.SEEDANCE_SERVICE_TIER),
-      executionExpiresAfter: clean(env.SEEDANCE_EXECUTION_EXPIRES_AFTER)
+      executionExpiresAfter: clean(env.SEEDANCE_EXECUTION_EXPIRES_AFTER),
+      maxInputDataUrlBytes: clean(env.SEEDANCE_MAX_REFERENCE_BYTES) || String(50 * 1024 * 1024)
     };
   }
   if (normalized === "Kling") {

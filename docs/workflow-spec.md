@@ -156,7 +156,12 @@ flowchart LR
 - JSON 导出：生产包版本为 `2.1`，保留完整剧情、选中变体、合并后的 v2 `animationPlan`、兼容字符串、模型信息和已选首尾帧图片；旧 `2.0` 包仍可导入。
 - Markdown 复制：把角色参考、场景参考、资产提示词和逐镜首帧／尾帧／`videoPrompt` 整理成可直接粘贴到供应商程序的生产包。
 
-页面内保留单镜头可灵 AI 试片链路。用户为当前 shot 选定首帧和尾帧后，`POST /api/generate-shot-video` 会将两张图、`videoPrompt`、镜头参数和当前 `negativePrompts.video` 发送给可灵 `image2video`。可灵 preset 使用 `image`、`image_tail`、`prompt` 和 `negative_prompt`，支持异步轮询、下载 mp4 及 1–4 个候选结果。回执的 `negativePromptDelivery` 和脱敏 `requestPreview` 用于核对负面词是否真实写入 `negative_prompt`。
+页面内保留单镜头试片链路。`POST /api/generate-shot-video` 的 `generationMode` 是模式权威字段，不从 provider、模型名或素材数量推断：
+
+- `first_last_frame`：首帧和尾帧是精确端点，仍执行现有尾帧硬依赖校验；Kling、Seedance 与 MiniMax H3 均可使用。
+- `all_reference`：`referenceAssets[]` 是参考素材权威来源，允许图片、视频、音频；首尾帧和角色图只有在用户显式勾选后才作为普通 `reference_image` 加入。该模式不生成或校验精确端点，不得混入 `first_frame` / `last_frame`。当前仅 Seedance 2.0 与 MiniMax H3 有已验证的 R2V API 协议；可灵当前 image-to-video 接入必须明确失败，不能静默降级。
+
+全能参考共同限制为图片最多 9 张、视频最多 3 段、音频最多 3 段，单段视频或音频 2–15 秒，视频与音频各自总时长不超过 15 秒，不能只输入音频，请求体不超过 64MB。服务端按实际 data URL MIME、文件字节和 ffprobe 时长再次验证用户媒体，而不是重新判断 AI 输出。两种模式均支持异步轮询、下载 mp4、1–4 个候选结果，以及回执中的 `negativePromptDelivery` 和脱敏 `requestPreview`。
 
 仓库不提供 JSONL 任务队列、production workspace、批量执行器、本地质检、失败队列重试或 ffmpeg 成片合成。整片批量生成时，外部供应商程序负责把 `shotPlan[]` 中的首尾帧、`videoPrompt`、`negativePrompts.video` 和验收标准映射到它自身的请求协议。
 

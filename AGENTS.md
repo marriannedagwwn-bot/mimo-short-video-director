@@ -57,6 +57,13 @@ Static Frame / Shot Generation
  ↓
 Video Generation
 
+视频生成存在两个显式模式：
+
+- `first_last_frame`：首尾帧是精确端点，Kling、Seedance、MiniMax H3 可用。
+- `all_reference`：图片/视频/音频仅作为多模态参考，当前只允许 Seedance 2.0 与 MiniMax H3；不得混用 `first_frame` / `last_frame`，不得把可灵 image-to-video 静默当作 Omni API。
+
+模式由请求 `generationMode` 决定，不得根据 provider、模型名或素材存在性自动推断或降级。
+
 ---
 
 ## 当前模型 provider 边界

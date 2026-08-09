@@ -75,7 +75,7 @@ QWEN_VIDEO_FPS=2
 QWEN_ENABLE_THINKING=false
 ```
 
-配置 `QWEN_API_KEY` 后，只要 Qwen 可用，参考片分析、脚本还原、创意简报、视觉规则、主题变体、完整剧情、动画生产包和人物参考修正默认都会调用 Qwen 对应阶段模型；未配置 Qwen 时自动回退为 MiMo。`qwen3.7-max` 是纯文本阶段的默认选择；会传入视频或图片的参考片分析、脚本还原、视觉规则和人物参考修正默认使用 `qwen3.7-plus`，也可以改成账号可用的 Qwen-VL / Qwen-Omni 模型。页面顶部“模型设置”按钮可以按阶段临时切换 provider 和模型名，覆盖值会随之后所有生成请求发送给后端，也会写入导出的生产包。角色和首尾帧图片仍由已配置的即梦图片服务生成；选中首尾帧后可在页面选择 Kling 或 Seedance 生成单镜头候选视频。
+配置 `QWEN_API_KEY` 后，只要 Qwen 可用，参考片分析、脚本还原、创意简报、视觉规则、主题变体、完整剧情、动画生产包和人物参考修正默认都会调用 Qwen 对应阶段模型；未配置 Qwen 时自动回退为 MiMo。`qwen3.7-max` 是纯文本阶段的默认选择；会传入视频或图片的参考片分析、脚本还原、视觉规则和人物参考修正默认使用 `qwen3.7-plus`，也可以改成账号可用的 Qwen-VL / Qwen-Omni 模型。页面顶部“模型设置”按钮可以按阶段临时切换 provider 和模型名，覆盖值会随之后所有生成请求发送给后端，也会写入导出的生产包。角色和首尾帧图片仍由已配置的即梦图片服务生成；单镜头视频可选择 Kling、Seedance 或 MiniMax H3，并按 provider 能力使用首尾帧或全能参考模式。
 
 ## 接入 DeepSeek-V4 纯文本模型
 
@@ -137,14 +137,19 @@ JIMENG_MAX_IMAGES=6
 - 导出当前生产包 JSON：保留完整剧情、主题变体、`animationPlan`、模型信息和已选首尾帧图片，供外部程序读取。
 - 复制动画生产包 Markdown：输出 Markdown 格式的角色参考、场景参考、资产提示词和逐镜首帧／尾帧／`videoPrompt`，可直接粘贴到供应商程序。
 
-## 单镜头首尾帧 → Kling 3.0 / Seedance 2.0 / MiniMax H3
+## 单镜头视频：首尾帧 / 全能参考
 
-动画生产包的每个 shot 可以使用已选首帧和尾帧生成 1–4 个候选视频。页面“模型设置”中的“首尾帧视频”阶段可在 Kling、Seedance 和 MiniMax H3 之间切换。服务端提交异步任务、轮询终态、立即下载 mp4 到 `public/generated-videos/` 并在页面播放。
+动画生产包的每个 shot 可以生成 1–4 个候选视频。页面“模型设置”中的“镜头视频”阶段可在 Kling、Seedance 和 MiniMax H3 之间切换；生成弹窗必须显式选择模式：
+
+- `first_last_frame`：已选首帧和尾帧是精确端点，Kling、Seedance 与 MiniMax H3 均支持。
+- `all_reference`：图片、视频和音频只是人物、场景、动作、运镜、节奏或声音参考，不被解释为精确首尾帧。Seedance 2.0 与 MiniMax H3 使用官方 R2V 角色 `reference_image`、`reference_video`、`reference_audio`；不得与 `first_frame` / `last_frame` 混用。
+
+全能参考模式可显式加入当前镜头已选首尾帧（作为普通图片参考）和本镜头已有角色参考图，也可以上传额外媒体。共同限制为最多 9 张图片、3 段视频、3 段音频，单段视频或音频 2–15 秒，视频总时长与音频总时长分别不超过 15 秒，且不能只上传音频。服务端提交异步任务、轮询终态、立即下载 mp4 到 `public/generated-videos/` 并在页面播放。
 
 可灵 3.0 使用新版独立协议和 API Key：
 
 ```dotenv
-KLING_V3_ENDPOINT=https://api-singapore.klingai.com/image-to-video/kling-3.0
+KLING_V3_ENDPOINT=https://api-beijing.klingai.com/image-to-video/kling-3.0
 KLING_V3_API_KEY=你的可灵新版 API Key
 KLING_V3_AUDIO=native
 KLING_VIDEO_RESOLUTION=720p
@@ -153,7 +158,7 @@ KLING_VIDEO_POLL_INTERVAL_MS=3000
 KLING_VIDEO_POLL_TIMEOUT_MS=900000
 ```
 
-应用把首帧和尾帧分别写入 `contents` 的 `first_frame` / `last_frame`，显式请求 `audio=native`，并通过 `GET /tasks?task_ids=...` 轮询 `submitted → processing → succeeded/failed`。3.0 的模型版本编码在 endpoint 中，请求不会发送 Legacy 的 `model_name`、`negative_prompt` 或 `aspect_ratio`。3.0 新版 API Key 与旧 AK/SK/JWT token 的兼容性没有官方保证，所以代码会拒绝把旧 `/v1` provider config 与新版 `contents` 协议混用。
+应用把首帧和尾帧分别写入 `contents` 的 `first_frame` / `last_frame`，显式请求 `audio=native`，并通过 `GET /tasks?task_ids=...` 轮询 `submitted → processing → succeeded/failed`。3.0 的模型版本编码在 endpoint 中，请求不会发送 Legacy 的 `model_name`、`negative_prompt` 或 `aspect_ratio`。当前仓库只接入已验证的官方 image-to-video 协议；虽然 Kling VIDEO 3.0 Omni 产品支持多模态参考，但没有可验证的开发者 Omni endpoint/schema，因此页面会明确拒绝可灵的全能参考模式，不会静默退化为首尾帧。产品能力参考：[Kling VIDEO 3.0 Omni 用户指南](https://home.kling.ai/quickstart/klingai-video-3-omni-model-user-guide)。
 
 Seedance 2.0 使用火山方舟内容生成任务：
 
@@ -168,7 +173,7 @@ SEEDANCE_VIDEO_POLL_INTERVAL_MS=3000
 SEEDANCE_VIDEO_POLL_TIMEOUT_MS=900000
 ```
 
-`SEEDANCE_API_KEY` 留空时会复用同一火山方舟账号的 `JIMENG_API_KEY`。可选模型包括 Standard `doubao-seedance-2-0-260128`、Fast `doubao-seedance-2-0-fast-260128` 和 Mini `doubao-seedance-2-0-mini-260615`。请求使用 `first_frame` / `last_frame`，默认 `generate_audio=true`；轮询把 `succeeded`、`failed`、`expired`、`cancelled` 全部视为终态，避免过期或取消后永久卡住。
+`SEEDANCE_API_KEY` 留空时会复用同一火山方舟账号的 `JIMENG_API_KEY`。可选模型包括 Standard `doubao-seedance-2-0-260128`、Fast `doubao-seedance-2-0-fast-260128` 和 Mini `doubao-seedance-2-0-mini-260615`。首尾帧模式使用 `first_frame` / `last_frame`；全能参考模式使用 `reference_image` / `reference_video` / `reference_audio`，二者不混用。默认 `generate_audio=true`；轮询把 `succeeded`、`failed`、`expired`、`cancelled` 全部视为终态，避免过期或取消后永久卡住。能力依据：[Seedance 2.0 官方发布](https://seed.bytedance.com/blog/seedance-2-0-official-launch)、[BytePlus ModelArk 视频生成 API](https://docs.byteplus.com/en/docs/modelark/1520757)。
 
 MiniMax H3 使用官方 V2 多模态视频生成接口：
 
@@ -182,7 +187,7 @@ MINIMAX_VIDEO_POLL_INTERVAL_MS=3000
 MINIMAX_VIDEO_POLL_TIMEOUT_MS=900000
 ```
 
-请求把镜头提示词、首帧和尾帧分别写入 `content` 的 `text`、`first_frame`、`last_frame`，时长按官方允许的 4–15 秒归一，首尾帧模式固定使用 `ratio=adaptive`。服务端通过 `GET /v2/query/video_generation/{task_id}` 轮询 `queued/running → succeeded/failed/cancelled`，成功后下载 `task.content.url`。H3 不提供独立负面提示词字段；系统只会把高优先级角色身份冲突转换成正向身份锁定，其余负面条目在回执中明确标记为未下发。接口依据：[创建视频生成任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create)、[查询任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-query)。
+首尾帧模式把镜头提示词、首帧和尾帧分别写入 `content` 的 `text`、`first_frame`、`last_frame`；全能参考模式改用 `reference_image`、`reference_video`、`reference_audio`，并固定不混入端点角色。时长按官方允许的 4–15 秒归一，`ratio=adaptive`。服务端通过 `GET /v2/query/video_generation/{task_id}` 轮询 `queued/running → succeeded/failed/cancelled`，成功后下载 `task.content.url`。H3 不提供独立负面提示词字段；系统只会把高优先级角色身份冲突转换成正向身份锁定，其余负面条目在回执中明确标记为未下发。接口依据：[创建视频生成任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create)、[查询任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-query)。
 
 旧可灵 2.1 仍保持兼容：
 
@@ -209,9 +214,9 @@ VIDEO_HTTP_POLL_TIMEOUT_MS=600000
 - `src/character-boundary.js`：全局角色边界的上游摘要、签发和验签。
 - `src/character-feature-compiler.js`：把已签发的固定角色外观事实编译为动画静态帧侧车，不重新推断主角。
 - `src/workflow.js`：完整创意工作流编排，以及“动画基础锁定 → 逐场次分批 shotPlan → 服务端合并”的动画生产包生成与验证。
-- `src/shot-video-generator.js`：将当前 shot 的已选首尾帧、`videoPrompt` 和逐镜视频负面词路由到所选视频 provider。
-- `src/shot-video-providers.js`：Kling / Seedance 模型白名单、默认选择及互相隔离的运行配置。
-- `workers/generic-http-worker.mjs`：Kling 3.0、Kling 2.1、Seedance 2.0 请求体、异步轮询、产物下载和脱敏回执。
+- `src/shot-video-generator.js`：按显式模式将首尾帧或多模态参考、`videoPrompt` 和逐镜视频负面词路由到所选视频 provider。
+- `src/shot-video-providers.js`：Kling / Seedance / MiniMax 模型白名单、模式能力、默认选择及互相隔离的运行配置。
+- `workers/generic-http-worker.mjs`：Kling、Seedance 与 MiniMax 的首尾帧/R2V 请求体、异步轮询、产物下载和脱敏回执。
 - `src/mock.js`：未配置模型时的演示结果。
 - `docs/workflow-spec.md`：产品原则、字段要求和验收标准。
 - `test/`：工作流和核心叙事约束测试。

@@ -182,7 +182,9 @@ const server = http.createServer(async (request, response) => {
       });
     }
     if (request.method === "POST" && routes[url.pathname]) {
-      const body = await readJson(request);
+      const body = await readJson(request, {
+        limit: url.pathname === "/api/generate-shot-video" ? 70 * 1024 * 1024 : undefined
+      });
       const result = await routes[url.pathname](body);
       return json(response, 200, { ok: true, mode: workflow.mode, result });
     }
@@ -399,13 +401,13 @@ function mediaSettingsForProvider(provider, config) {
   };
 }
 
-async function readJson(request) {
+async function readJson(request, options = {}) {
   const chunks = [];
   let size = 0;
-  const limit = 32 * 1024 * 1024;
+  const limit = Number(options.limit) || 32 * 1024 * 1024;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > limit) throw new InputError("请求过大，请减少采样画面数量或尺寸");
+    if (size > limit) throw new InputError("请求过大，请减少参考素材数量或尺寸");
     chunks.push(chunk);
   }
   try {

@@ -300,6 +300,13 @@
         <div class="modal-panel">
           <p class="modal-meta" id="shotVideoMeta"></p>
           <label class="field">
+            <span>生成模式</span>
+            <select id="shotVideoGenerationMode">
+              <option value="first_last_frame">首尾帧模式</option>
+              <option value="all_reference">全能参考模式</option>
+            </select>
+          </label>
+          <label class="field">
             <span>生成数量</span>
             <select id="shotVideoCount">
               <option value="1">1 条</option>
@@ -308,6 +315,22 @@
               <option value="4">4 条</option>
             </select>
           </label>
+          <div class="shot-video-all-reference-controls hidden" id="shotVideoAllReferenceControls">
+            <label class="shot-video-reference-toggle">
+              <input id="shotVideoIncludeEndpointFrames" type="checkbox" checked>
+              <span>把已选首帧/尾帧作为普通参考图</span>
+            </label>
+            <label class="shot-video-reference-toggle">
+              <input id="shotVideoIncludeCharacterReferences" type="checkbox" checked>
+              <span>加入本镜头已有角色参考图</span>
+            </label>
+            <label class="shot-video-reference-drop" id="shotVideoReferenceDrop" for="shotVideoReferenceInput">
+              <span>添加全能参考素材</span>
+              <strong>图片、视频或音频</strong>
+              <small>最多 9 图、3 视频、3 音频；视频与音频各自总时长不超过 15 秒。</small>
+            </label>
+            <input id="shotVideoReferenceInput" type="file" accept="image/*,video/*,audio/*" multiple hidden>
+          </div>
           <div class="shot-video-reference-list" id="shotVideoReferenceList"></div>
         </div>
         <div class="modal-panel">

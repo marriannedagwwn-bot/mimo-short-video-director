@@ -7,7 +7,9 @@ import { compileShotNegativePrompt } from "../public/negative-prompts.js";
 import {
   inferShotVideoProvider,
   isNonDomesticKlingApiEndpoint,
+  isShotVideoGenerationModeSupported,
   isShotVideoModelAllowed,
+  normalizeShotVideoGenerationMode,
   normalizeShotVideoProvider,
   resolveShotVideoSetting,
   shotVideoRuntimeConfig
@@ -47,19 +49,27 @@ export async function generateShotVideo(options = {}) {
     || ""
   ).trim();
   const providerRuntime = shotVideoRuntimeConfig(videoProvider, process.env, videoModel);
+  const generationMode = normalizeShotVideoGenerationMode(options.generationMode);
   assertProviderProtocolCompatibility(videoProvider, videoModel, config);
   if (videoProvider !== "VideoHTTP" && !isShotVideoModelAllowed(videoProvider, videoModel)) {
-    throw new ShotVideoConfigError(`${videoProvider} 不支持首尾帧视频模型“${videoModel}”。`);
+    throw new ShotVideoConfigError(`${videoProvider} 不支持视频模型“${videoModel}”。`);
+  }
+  if (!isShotVideoGenerationModeSupported(videoProvider, generationMode)) {
+    if (videoProvider === "Kling" && generationMode === "all_reference") {
+      throw new ShotVideoConfigError("当前可灵接入使用官方 image-to-video 首尾帧接口；尚未取得可验证的 Omni API 协议，不能使用全能参考模式。请选择 Seedance 2.0 或 MiniMax H3。");
+    }
+    throw new ShotVideoConfigError(`${videoProvider} 不支持${generationMode === "all_reference" ? "全能参考" : "首尾帧"}视频模式。`);
   }
   if (videoProvider !== "VideoHTTP" && !providerAuthConfigured(config, providerRuntime)) {
     throw new ShotVideoConfigError(`未配置 ${videoProvider} API Key。请设置对应 provider API Key，或在 provider config 中提供认证信息。`);
   }
-  if (!videoEndpointConfigured(config, providerRuntime, videoProvider)) {
-    throw new ShotVideoConfigError(`未配置 ${videoProvider} 首尾帧视频生成服务。请设置对应 provider endpoint/API Key，或设置 provider config 指向有效 JSON。`);
+  if (!videoEndpointConfigured(config, providerRuntime, videoProvider, generationMode)) {
+    throw new ShotVideoConfigError(`未配置 ${videoProvider} ${generationMode === "all_reference" ? "全能参考" : "首尾帧"}视频生成服务。请设置对应 provider endpoint/API Key，或设置 provider config 指向有效 JSON。`);
   }
-  if (!hasBothInputFrames(options) && !imageEndpointConfigured(config)) {
+  if (generationMode === "first_last_frame" && !hasBothInputFrames(options) && !imageEndpointConfigured(config)) {
     throw new ShotVideoConfigError("未配置首尾帧图片生成服务。请设置 VIDEO_HTTP_IMAGE_ENDPOINT / VIDEO_HTTP_ENDPOINT，或设置 VIDEO_HTTP_CONFIG 指向 provider.json；如果已在外部生成图片，也可以传入 startFrameDataUrl 和 endFrameDataUrl。");
   }
+  if (generationMode === "all_reference") assertAllReferenceRequestSize(options);
 
   const outputRoot = options.outputRoot || path.resolve("public/generated-videos");
   const publicBasePath = options.publicBasePath || "/generated-videos";
@@ -70,16 +80,20 @@ export async function generateShotVideo(options = {}) {
 
   try {
     await fs.mkdir(outputRoot, { recursive: true });
-    const frames = await prepareFrameArtifacts({
-      shot,
-      options,
-      outputRoot,
-      publicBasePath,
-      workDir,
-      configPath,
-      stamp
-    });
-    const inputArtifacts = [frames.start, frames.end].map(({ url, receipt, ...artifact }) => artifact);
+    const frames = generationMode === "first_last_frame"
+      ? await prepareFrameArtifacts({
+        shot,
+        options,
+        outputRoot,
+        publicBasePath,
+        workDir,
+        configPath,
+        stamp
+      })
+      : null;
+    const inputArtifacts = generationMode === "first_last_frame"
+      ? [frames.start, frames.end].map(({ url, receipt, ...artifact }) => artifact)
+      : await prepareAllReferenceArtifacts(options.referenceAssets, workDir);
     const videos = [];
     for (let index = 0; index < count; index += 1) {
       const suffix = count > 1 ? `-${index + 1}` : "";
@@ -90,7 +104,8 @@ export async function generateShotVideo(options = {}) {
         candidateIndex: index,
         candidateCount: count,
         provider: videoProvider,
-        model: videoModel
+        model: videoModel,
+        generationMode
       });
       const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: options.workerRunner });
       await assertUsableVideoOutput(outputPath);
@@ -111,18 +126,20 @@ export async function generateShotVideo(options = {}) {
       shotId: shot.shotId || "",
       provider: videoProvider,
       model: videoModel,
-      startFrameUrl: frames.start.url,
-      startFramePath: frames.start.path,
-      endFrameUrl: frames.end.url,
-      endFramePath: frames.end.path,
+      generationMode,
+      startFrameUrl: frames?.start?.url || "",
+      startFramePath: frames?.start?.path || "",
+      endFrameUrl: frames?.end?.url || "",
+      endFramePath: frames?.end?.path || "",
+      referenceSummary: generationMode === "all_reference" ? summarizeReferenceArtifacts(inputArtifacts) : null,
       outputUrl: firstVideo.outputUrl || "",
       outputPath: firstVideo.outputPath || "",
       count,
       actualCount: videos.length,
       videos,
       frameReceipts: {
-        start: frames.start.receipt || {},
-        end: frames.end.receipt || {}
+        start: frames?.start?.receipt || {},
+        end: frames?.end?.receipt || {}
       },
       receipt: firstVideo.receipt || {},
       generatedAt: new Date().toISOString()
@@ -135,6 +152,9 @@ export async function generateShotVideo(options = {}) {
 export function shotVideoGenerationPromptText(options = {}) {
   const shot = options.shot || {};
   const prompts = [shot.videoPrompt];
+  if (normalizeShotVideoGenerationMode(options.generationMode) === "all_reference") {
+    return prompts.map((item) => String(item || "").trim()).filter(Boolean).join("\n");
+  }
   if (!options.startFrameDataUrl) prompts.push(shot.startFramePrompt || framePromptFallback(shot, "start"));
   if (!options.endFrameDataUrl) prompts.push(shot.endFramePrompt || framePromptFallback(shot, "end"));
   return prompts.map((item) => String(item || "").trim()).filter(Boolean).join("\n");
@@ -213,14 +233,16 @@ function buildShotVideoRequest(shot = {}, context = {}) {
   const candidateCount = Number(context.candidateCount) || 1;
   const candidateSuffix = candidateCount > 1 ? `-${candidateIndex + 1}` : "";
   const negativePrompt = compileShotNegativePrompt(shot, "video");
+  const generationMode = normalizeShotVideoGenerationMode(context.generationMode);
+  const allReference = generationMode === "all_reference";
   return {
     version: "1.0",
     providerMode: "provider_agnostic",
     taskId: `${shot.shotId || "SHOT"}-VIDEO-PREVIEW${candidateSuffix}`,
-    type: "first_last_frame_video",
-    capability: "first_last_frame_video_generation",
+    type: allReference ? "all_reference_video" : "first_last_frame_video",
+    capability: allReference ? "all_reference_video_generation" : "first_last_frame_video_generation",
     status: "ready",
-    inputType: "image_pair_to_video",
+    inputType: allReference ? "multimodal_reference_to_video" : "image_pair_to_video",
     outputKey: `preview.${safeSegment(shot.shotId || "shot")}`,
     outputPath: context.outputPath,
     provider: context.provider || "",
@@ -241,7 +263,8 @@ function buildShotVideoRequest(shot = {}, context = {}) {
       soundDesign: shot.soundDesign || "",
       continuityNotes: shot.continuityNotes || "",
       candidateIndex,
-      candidateCount
+      candidateCount,
+      generationMode
     },
     acceptanceCriteria: shot.acceptanceCriteria || [],
     rawJob: shot
@@ -350,14 +373,138 @@ function imageEndpointConfigured(config = {}) {
   );
 }
 
-function videoEndpointConfigured(config = {}, runtime = {}, provider = "") {
+function videoEndpointConfigured(config = {}, runtime = {}, provider = "", generationMode = "first_last_frame") {
+  const capability = normalizeShotVideoGenerationMode(generationMode) === "all_reference"
+    ? "all_reference_video_generation"
+    : "first_last_frame_video_generation";
   return Boolean(
-    config.endpoints?.first_last_frame_video_generation
+    config.endpoints?.[capability]
     || config.videoEndpoint
     || config.endpoint
     || runtime.endpoint
     || (provider === "VideoHTTP" && (process.env.VIDEO_HTTP_VIDEO_ENDPOINT || process.env.VIDEO_HTTP_ENDPOINT))
   );
+}
+
+async function prepareAllReferenceArtifacts(referenceAssets, workDir) {
+  const assets = Array.isArray(referenceAssets) ? referenceAssets : [];
+  if (!assets.length) throw new ShotVideoConfigError("全能参考模式至少需要一张参考图片或一段参考视频。");
+  const prepared = [];
+  for (let index = 0; index < assets.length; index += 1) {
+    const asset = assets[index] || {};
+    const decoded = decodeDataUrl(asset.dataUrl, `referenceAssets[${index}].dataUrl`);
+    const mediaType = normalizeReferenceMediaType(asset.mediaType || decoded.mimeType.split("/", 1)[0]);
+    if (!decoded.mimeType.startsWith(`${mediaType}/`)) {
+      throw new ShotVideoConfigError(`referenceAssets[${index}] 的媒体类型与 data URL 不一致。`);
+    }
+    const filePath = path.join(workDir, `reference-${String(index + 1).padStart(2, "0")}${extensionForMime(decoded.mimeType)}`);
+    await fs.writeFile(filePath, decoded.buffer);
+    const artifact = {
+      outputKey: `references.${index + 1}`,
+      path: filePath,
+      status: "done",
+      missing: false,
+      mediaType,
+      role: `reference_${mediaType}`,
+      mimeType: decoded.mimeType,
+      filename: safeReferenceName(asset.name, index, decoded.mimeType),
+      sizeBytes: decoded.buffer.length,
+      source: String(asset.source || "upload").trim() || "upload"
+    };
+    if (mediaType === "video" || mediaType === "audio") {
+      artifact.durationSeconds = await probeMediaDuration(filePath, mediaType);
+    }
+    prepared.push(artifact);
+  }
+  validateAllReferenceArtifacts(prepared);
+  return prepared;
+}
+
+function validateAllReferenceArtifacts(artifacts) {
+  const grouped = Object.groupBy(artifacts, (item) => item.mediaType);
+  const images = grouped.image || [];
+  const videos = grouped.video || [];
+  const audios = grouped.audio || [];
+  if (!images.length && !videos.length) throw new ShotVideoConfigError("全能参考模式不能只上传音频；至少需要一张图片或一段视频。");
+  if (images.length > 9) throw new ShotVideoConfigError(`全能参考图片最多 9 张，当前 ${images.length} 张。`);
+  if (videos.length > 3) throw new ShotVideoConfigError(`全能参考视频最多 3 段，当前 ${videos.length} 段。`);
+  if (audios.length > 3) throw new ShotVideoConfigError(`全能参考音频最多 3 段，当前 ${audios.length} 段。`);
+  for (const item of [...videos, ...audios]) {
+    if (item.durationSeconds < 2 || item.durationSeconds > 15) {
+      throw new ShotVideoConfigError(`${item.filename} 时长必须在 2–15 秒之间，当前 ${formatDuration(item.durationSeconds)} 秒。`);
+    }
+  }
+  if (videos.some((item) => item.sizeBytes > 50 * 1024 * 1024)) {
+    throw new ShotVideoConfigError("单段参考视频不得超过 50MB。");
+  }
+  const videoDuration = videos.reduce((sum, item) => sum + item.durationSeconds, 0);
+  const audioDuration = audios.reduce((sum, item) => sum + item.durationSeconds, 0);
+  if (videoDuration > 15.05) throw new ShotVideoConfigError(`参考视频总时长不得超过 15 秒，当前 ${formatDuration(videoDuration)} 秒。`);
+  if (audioDuration > 15.05) throw new ShotVideoConfigError(`参考音频总时长不得超过 15 秒，当前 ${formatDuration(audioDuration)} 秒。`);
+}
+
+function assertAllReferenceRequestSize(options) {
+  const bytes = Buffer.byteLength(JSON.stringify(options), "utf8");
+  if (bytes > 64 * 1024 * 1024) {
+    throw new ShotVideoConfigError(`全能参考请求体不得超过 64MB，当前约 ${(bytes / 1024 / 1024).toFixed(1)}MB。`);
+  }
+}
+
+function summarizeReferenceArtifacts(artifacts) {
+  const counts = { image: 0, video: 0, audio: 0 };
+  for (const artifact of artifacts) counts[artifact.mediaType] += 1;
+  return counts;
+}
+
+function normalizeReferenceMediaType(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["image", "video", "audio"].includes(normalized)) return normalized;
+  throw new ShotVideoConfigError(`不支持的全能参考媒体类型“${value || "空"}”。`);
+}
+
+function decodeDataUrl(dataUrl, fieldName) {
+  const match = String(dataUrl || "").match(/^data:([^;,]+);base64,(.+)$/u);
+  if (!match) throw new ShotVideoConfigError(`${fieldName} 不是有效的 base64 data URL。`);
+  const buffer = Buffer.from(match[2], "base64");
+  if (!buffer.length) throw new ShotVideoConfigError(`${fieldName} 没有可用的媒体数据。`);
+  return {
+    mimeType: match[1].toLowerCase(),
+    buffer
+  };
+}
+
+async function probeMediaDuration(filePath, mediaType) {
+  try {
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v", "error",
+      "-show_entries", "format=duration:stream=codec_type,duration",
+      "-of", "json",
+      filePath
+    ]);
+    const metadata = JSON.parse(String(stdout || "{}"));
+    const streams = Array.isArray(metadata.streams) ? metadata.streams : [];
+    if (!streams.some((stream) => stream.codec_type === mediaType)) {
+      throw new Error(`缺少 ${mediaType} 流`);
+    }
+    const streamDuration = streams
+      .filter((stream) => stream.codec_type === mediaType)
+      .map((stream) => Number(stream.duration))
+      .find((duration) => Number.isFinite(duration) && duration > 0);
+    const duration = streamDuration || Number(metadata.format?.duration);
+    if (!Number.isFinite(duration) || duration <= 0) throw new Error("时长无效");
+    return duration;
+  } catch {
+    throw new ShotVideoConfigError(`无法读取参考${mediaType === "video" ? "视频" : "音频"}时长，请确认文件可播放并已安装 ffprobe。`);
+  }
+}
+
+function safeReferenceName(name, index, mimeType) {
+  const cleaned = String(name || "").trim().replace(/[\\/]+/gu, "_").slice(0, 120);
+  return cleaned || `reference-${index + 1}${extensionForMime(mimeType)}`;
+}
+
+function formatDuration(value) {
+  return Number(value).toFixed(2).replace(/\.00$/u, "");
 }
 
 function providerAuthConfigured(config = {}, runtime = {}) {
@@ -404,7 +551,14 @@ function extensionForMime(mimeType) {
   return ({
     "image/jpeg": ".jpg",
     "image/png": ".png",
-    "image/webp": ".webp"
+    "image/webp": ".webp",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/webm": ".webm",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav"
   })[mimeType] || ".bin";
 }
 
