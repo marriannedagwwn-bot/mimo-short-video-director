@@ -14,6 +14,16 @@ import {
   createApiRequestError,
   renderCompilerFailureDetails
 } from "./compiler-observability.js";
+import {
+  ACTIVE_PRODUCTION_RUN_STORAGE_KEY,
+  beginArtifactRequest,
+  emptyProductionState,
+  finishArtifactRequest,
+  isArtifactRequestCurrent,
+  lineageDependency,
+  planProductionContext,
+  productionStateFromRun
+} from "./production-lineage-client.js";
 
 const state = {
   file: null,
@@ -30,6 +40,7 @@ const state = {
   shotVideoResults: {},
   shotFrameResults: {},
   characterReferenceStatuses: {},
+  production: emptyProductionState(),
   characterImageGeneration: {
     open: false,
     running: false,
@@ -224,6 +235,7 @@ async function init() {
         ? "模型已配置，但部分阶段不可用"
         : "演示模式 · 配置模型后启用真实分析";
     renderModelSettings();
+    await restoreActiveProductionRun();
   } catch {
     elements.modelState.lastElementChild.textContent = "服务连接失败";
   }
@@ -398,13 +410,13 @@ function bindEvents() {
   window.addEventListener("popstate", renderRoute);
   [elements.fixedCharacter, elements.vertical, elements.constraints].forEach((element) => element.addEventListener("input", handleProfileInput));
   elements.transcript.addEventListener("input", () => {
-    if (state.characterBoundaryProfile) invalidateGlobalCharacterBoundary("字幕或台词文本已修改；旧的全局角色边界已失效，请重新运行工作流。");
+    if (state.characterBoundaryProfile || state.production.runId) invalidateGlobalCharacterBoundary("字幕或台词文本已修改；旧的生产 Run 与全局角色边界已失效，请重新运行工作流。");
   });
 }
 
 async function handleFile(file) {
   if (!file.type.startsWith("video/")) return showError("请选择视频文件。支持 MP4、MOV、WebM 等浏览器可播放格式。");
-  if (state.characterBoundaryProfile) invalidateGlobalCharacterBoundary("参考视频已替换；旧的全局角色边界已失效，请重新运行工作流。");
+  if (state.characterBoundaryProfile || state.production.runId) invalidateGlobalCharacterBoundary("参考视频已替换；旧的生产 Run 与全局角色边界已失效，请重新运行工作流。");
   const media = analysisMediaSettings();
   if (state.mode !== "demo" && media.mediaMode === "video" && file.size > media.nativeVideoMaxBytes) {
     return showError(`当前强制使用原生视频，文件不能超过 ${formatBytes(media.nativeVideoMaxBytes)}。请压缩视频或改用 auto 模式。`);
@@ -527,6 +539,8 @@ async function runWorkflow() {
   state.shotVideoResults = {};
   state.shotFrameResults = {};
   state.characterReferenceStatuses = {};
+  state.production = emptyProductionState();
+  localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
   state.selectedVariantId = null;
   showError("");
   setRunning(true);
@@ -547,40 +561,79 @@ async function runWorkflow() {
     creatorProfile
   };
   try {
+    const productionRun = await api("/api/production/run/start", {
+      metadata: {
+        sourceVideo: state.metadata,
+        creatorProfile,
+        transcript: shared.transcript
+      }
+    });
+    state.production = productionStateFromRun(productionRun);
+    persistActiveProductionRun();
+
     setStage("analysis", "active");
-    state.output.referenceAnalysis = await api("/api/analyze", shared);
+    state.output.referenceAnalysis = await requestProductionArtifact({
+      endpoint: "/api/analyze",
+      requestBody: shared,
+      artifactId: "referenceAnalysis",
+      artifactType: "referenceAnalysis"
+    });
     renderAnalysis(state.output.referenceAnalysis);
     setStage("analysis", "done");
 
     setStage("script", "active");
-    state.output.sourceScriptReconstruction = await api("/api/reconstruct", { ...shared, referenceAnalysis: state.output.referenceAnalysis });
+    state.output.sourceScriptReconstruction = await requestProductionArtifact({
+      endpoint: "/api/reconstruct",
+      requestBody: { ...shared, referenceAnalysis: state.output.referenceAnalysis },
+      artifactId: "sourceScriptReconstruction",
+      artifactType: "sourceScriptReconstruction",
+      dependencyIds: ["referenceAnalysis"]
+    });
     renderScript(state.output.sourceScriptReconstruction);
     setStage("script", "done");
 
     setStage("brief", "active");
-    state.output.creativeBrief = await api("/api/brief", { referenceAnalysis: state.output.referenceAnalysis, sourceScriptReconstruction: state.output.sourceScriptReconstruction, creatorProfile });
+    state.output.creativeBrief = await requestProductionArtifact({
+      endpoint: "/api/brief",
+      requestBody: { referenceAnalysis: state.output.referenceAnalysis, sourceScriptReconstruction: state.output.sourceScriptReconstruction, creatorProfile },
+      artifactId: "creativeBrief",
+      artifactType: "creativeBrief",
+      dependencyIds: ["referenceAnalysis", "sourceScriptReconstruction"]
+    });
     renderBrief(state.output.creativeBrief);
     setStage("brief", "done");
 
     setStage("guardrails", "active");
-    state.output.visualGuardrails = await api("/api/visual-guardrails", {
-      ...shared,
-      referenceAnalysis: state.output.referenceAnalysis,
-      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
-      creativeBrief: state.output.creativeBrief
+    state.output.visualGuardrails = await requestProductionArtifact({
+      endpoint: "/api/visual-guardrails",
+      requestBody: {
+        ...shared,
+        referenceAnalysis: state.output.referenceAnalysis,
+        sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+        creativeBrief: state.output.creativeBrief
+      },
+      artifactId: "visualGuardrails",
+      artifactType: "visualGuardrails",
+      dependencyIds: ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief"]
     });
     state.characterBoundaryProfile = { ...creatorProfile };
     renderVisualGuardrails(state.output.visualGuardrails);
     setStage("guardrails", "done");
 
     setStage("variants", "active");
-    state.output.themeVariants = await api("/api/variants", {
-      referenceAnalysis: state.output.referenceAnalysis,
-      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
-      creativeBrief: state.output.creativeBrief,
-      visualGuardrails: state.output.visualGuardrails,
-      creatorProfile,
-      count: Number(elements.variantCount.value)
+    state.output.themeVariants = await requestProductionArtifact({
+      endpoint: "/api/variants",
+      requestBody: {
+        referenceAnalysis: state.output.referenceAnalysis,
+        sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+        creativeBrief: state.output.creativeBrief,
+        visualGuardrails: state.output.visualGuardrails,
+        creatorProfile,
+        count: Number(elements.variantCount.value)
+      },
+      artifactId: "themeVariants",
+      artifactType: "themeVariants",
+      dependencyIds: ["creativeBrief", "visualGuardrails"]
     });
     renderVariants(state.output.themeVariants);
     setStage("variants", "done");
@@ -594,6 +647,162 @@ async function runWorkflow() {
     state.running = false;
     setRunning(false);
     validateReady();
+  }
+}
+
+async function requestProductionArtifact({
+  endpoint,
+  requestBody,
+  artifactId,
+  artifactType,
+  dependencyIds = [],
+  createMediaNamespace = false,
+  contentForArtifact = (value) => value
+}) {
+  assertActiveProductionRun();
+  const requestId = crypto.randomUUID();
+  const token = beginArtifactRequest(state.production, artifactId, requestId);
+  try {
+    const dependencies = productionDependencies(dependencyIds);
+    const started = await api("/api/production/stage/update", {
+      ...token,
+      stageId: artifactId,
+      status: "running"
+    });
+    assertCurrentProductionRequest(token);
+    updateProductionCheckpoint(started);
+    const responseContent = await api(endpoint, requestBody);
+    assertCurrentProductionRequest(token);
+    const content = contentForArtifact(responseContent);
+    const committed = await api("/api/production/artifact/commit", {
+      ...token,
+      artifactType,
+      content,
+      dependencies,
+      createMediaNamespace
+    });
+    assertCurrentProductionRequest(token);
+    acceptProductionCommit(committed);
+    return responseContent;
+  } catch (error) {
+    if (isArtifactRequestCurrent(state.production, token)) {
+      await api("/api/production/stage/update", {
+        ...token,
+        stageId: artifactId,
+        status: "failed",
+        error: { code: error.code || "STAGE_FAILED", message: error.message || "阶段执行失败" }
+      }).catch(() => {});
+    }
+    throw error;
+  } finally {
+    finishArtifactRequest(state.production, token);
+  }
+}
+
+async function commitProductionArtifact({
+  artifactId,
+  artifactType,
+  content,
+  dependencyIds = [],
+  dependencyRefs = null,
+  createMediaNamespace = false,
+  requestToken = null
+}) {
+  assertActiveProductionRun();
+  const ownsToken = !requestToken;
+  const token = requestToken || beginArtifactRequest(state.production, artifactId, crypto.randomUUID());
+  try {
+    assertCurrentProductionRequest(token);
+    const committed = await api("/api/production/artifact/commit", {
+      ...token,
+      artifactType,
+      content,
+      dependencies: dependencyRefs ? structuredClone(dependencyRefs) : productionDependencies(dependencyIds),
+      createMediaNamespace
+    });
+    assertCurrentProductionRequest(token);
+    acceptProductionCommit(committed);
+    return committed.lineage;
+  } finally {
+    if (ownsToken) finishArtifactRequest(state.production, token);
+  }
+}
+
+function productionDependencies(artifactIds = []) {
+  return artifactIds.map((artifactId) => {
+    const lineage = state.production.artifacts[artifactId];
+    if (!lineage || lineage.status !== "current") {
+      throw new Error(`上游生产状态已失效：${artifactId}，请从该阶段重新生成。`);
+    }
+    return lineageDependency(lineage);
+  });
+}
+
+function acceptProductionCommit(result = {}) {
+  const lineage = result.lineage;
+  if (!lineage?.artifactId) throw new Error("服务端没有返回 artifact lineage。");
+  state.production.artifacts[lineage.artifactId] = lineage;
+  if (result.checkpoint) state.production.checkpoint = result.checkpoint;
+  applyStaleProductionArtifacts(result.staleArtifactIds || []);
+  persistActiveProductionRun();
+}
+
+function applyStaleProductionArtifacts(artifactIds = []) {
+  for (const artifactId of artifactIds) {
+    if (state.production.artifacts[artifactId]) {
+      state.production.artifacts[artifactId] = { ...state.production.artifacts[artifactId], status: "stale" };
+    }
+    if (artifactId.startsWith("animationPlan:")) {
+      const variantId = artifactId.slice("animationPlan:".length);
+      delete state.animationPlans[variantId];
+      delete state.animationPlanMetadata[variantId];
+      if (
+        String(state.selectedVariantId || "") === variantId
+        || String(state.output.animationPlan?.selectedVariantId || "") === variantId
+      ) delete state.output.animationPlan;
+      state.shotFrameResults = {};
+      state.shotVideoResults = {};
+      state.characterReferenceStatuses = {};
+      elements.animationPlan.innerHTML = "";
+      elements.animationPlan.classList.add("hidden");
+    } else if (artifactId.startsWith("fullStory:")) {
+      const variantId = artifactId.slice("fullStory:".length);
+      delete state.fullStories[variantId];
+      if (
+        String(state.selectedVariantId || "") === variantId
+        || String(state.output.fullStory?.selectedVariantId || "") === variantId
+      ) delete state.output.fullStory;
+      if (String(state.selectedVariantId || "") === variantId) {
+        elements.fullStory.innerHTML = "";
+        elements.fullStory.classList.add("hidden");
+      }
+    } else if (artifactId.startsWith("shotVideo:") || artifactId.startsWith("shotFrame:")) {
+      state.shotFrameResults = {};
+      state.shotVideoResults = {};
+    }
+  }
+  state.output.fullStories = state.fullStories;
+  state.output.animationPlans = state.animationPlans;
+  state.output.animationPlanMetadata = state.animationPlanMetadata;
+}
+
+function updateProductionCheckpoint(result = {}) {
+  if (result.stage?.stageId) state.production.stages[result.stage.stageId] = result.stage;
+  if (result.checkpoint) state.production.checkpoint = result.checkpoint;
+  persistActiveProductionRun();
+}
+
+function assertCurrentProductionRequest(token) {
+  if (!isArtifactRequestCurrent(state.production, token)) {
+    const error = new Error("该请求对应的生产版本已被替换，已丢弃旧结果。");
+    error.code = "STALE_ASYNC_RESULT";
+    throw error;
+  }
+}
+
+function assertActiveProductionRun() {
+  if (!state.production.projectId || !state.production.runId) {
+    throw new Error("当前没有可写入的生产 Run，请重新运行工作流。 ");
   }
 }
 
@@ -929,15 +1138,30 @@ async function generateFullStory({ force = false } = {}) {
   setStoryRunning(true);
   setStoryStatus(`正在调用 ${storyModelLabel()} 生成完整剧情…`, "active");
   try {
-    const fullStory = await api("/api/full-story", {
-      referenceAnalysis: state.output.referenceAnalysis,
-      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
-      creativeBrief: state.output.creativeBrief,
-      visualGuardrails: state.output.visualGuardrails,
-      themeVariants: state.output.themeVariants,
-      variant,
-      creatorProfile: profile()
+    await ensureSelectedVariantArtifact(variant);
+    const fullStory = await requestProductionArtifact({
+      endpoint: "/api/full-story",
+      requestBody: {
+        referenceAnalysis: state.output.referenceAnalysis,
+        sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+        creativeBrief: state.output.creativeBrief,
+        visualGuardrails: state.output.visualGuardrails,
+        themeVariants: state.output.themeVariants,
+        variant,
+        creatorProfile: profile()
+      },
+      artifactId: `fullStory:${variant.id}`,
+      artifactType: "fullStory",
+      dependencyIds: [
+        "referenceAnalysis",
+        "sourceScriptReconstruction",
+        "creativeBrief",
+        "visualGuardrails",
+        "themeVariants",
+        `variant:${variant.id}`
+      ]
     });
+    assertSelectedVariant(variant.id);
     state.fullStories[variant.id] = fullStory;
     state.output.fullStories = state.fullStories;
     state.output.fullStory = fullStory;
@@ -997,31 +1221,43 @@ async function generateAnimationPlan({ force = false } = {}) {
     return;
   }
   state.animationRunning = true;
-  if (force) {
-    state.shotVideoResults = {};
-    state.shotFrameResults = {};
-    state.characterReferenceStatuses = {};
-  }
   setAnimationRunning(true);
   setAnimationStatus(`正在调用 ${animationModelLabel()} 生成直接视频镜头生产包…`, "active");
   try {
     const animationPlanMode = "direct_shot";
     const previousPrivateSidecars = state.animationPlanMetadata[variant.id]?.privateSidecars;
-    const result = await api("/api/animation-plan", {
-      referenceAnalysis: state.output.referenceAnalysis,
-      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
-      creativeBrief: state.output.creativeBrief,
-      visualGuardrails: state.output.visualGuardrails,
-      variant,
-      fullStory,
-      creatorProfile: profile(),
-      animationPlanMode,
-      // 暂时弃置，后续优化或删除：direct_shot 不消费 Character Feature private sidecar；旧 v2 请求兼容保留。
-      ...(animationPlanMode !== "direct_shot" && previousPrivateSidecars && typeof previousPrivateSidecars === "object" && !Array.isArray(previousPrivateSidecars)
-        ? { privateSidecars: structuredClone(previousPrivateSidecars) }
-        : {}),
-      includeCompilerMetadata: true
+    await ensureSelectedVariantArtifact(variant);
+    const result = await requestProductionArtifact({
+      endpoint: "/api/animation-plan",
+      requestBody: {
+        referenceAnalysis: state.output.referenceAnalysis,
+        sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+        creativeBrief: state.output.creativeBrief,
+        visualGuardrails: state.output.visualGuardrails,
+        variant,
+        fullStory,
+        creatorProfile: profile(),
+        animationPlanMode,
+        // 暂时弃置，后续优化或删除：direct_shot 不消费 Character Feature private sidecar；旧 v2 请求兼容保留。
+        ...(animationPlanMode !== "direct_shot" && previousPrivateSidecars && typeof previousPrivateSidecars === "object" && !Array.isArray(previousPrivateSidecars)
+          ? { privateSidecars: structuredClone(previousPrivateSidecars) }
+          : {}),
+        includeCompilerMetadata: true
+      },
+      artifactId: `animationPlan:${variant.id}`,
+      artifactType: "animationPlan",
+      dependencyIds: [
+        "referenceAnalysis",
+        "sourceScriptReconstruction",
+        "creativeBrief",
+        "visualGuardrails",
+        `variant:${variant.id}`,
+        `fullStory:${variant.id}`
+      ],
+      createMediaNamespace: true,
+      contentForArtifact: (value) => normalizeAnimationPlanResponse(value).animationPlan
     });
+    assertSelectedVariant(variant.id);
     const { animationPlan, metadata } = normalizeAnimationPlanResponse(result);
     state.animationPlans[variant.id] = animationPlan;
     if (metadata?.staticFrameCompiler) state.animationPlanMetadata[variant.id] = metadata;
@@ -1044,6 +1280,68 @@ async function generateAnimationPlan({ force = false } = {}) {
     state.animationRunning = false;
     setAnimationRunning(false);
   }
+}
+
+async function ensureSelectedVariantArtifact(variant) {
+  if (!variant?.id) throw new Error("选中主题缺少 id。");
+  return commitProductionArtifact({
+    artifactId: `variant:${variant.id}`,
+    artifactType: "selectedVariant",
+    content: variant,
+    dependencyIds: ["themeVariants"]
+  });
+}
+
+function assertSelectedVariant(variantId) {
+  if (String(state.selectedVariantId || "") !== String(variantId || "")) {
+    const error = new Error("生成期间切换了主题变体，已丢弃旧页面回写。");
+    error.code = "STALE_VARIANT_RESULT";
+    throw error;
+  }
+}
+
+function animationPlanArtifactId(variantId) {
+  return `animationPlan:${variantId}`;
+}
+
+function currentPlanProductionContext(variantId) {
+  const context = planProductionContext(state.production, animationPlanArtifactId(variantId));
+  if (!context) throw new Error("当前 Animation Plan 没有有效 lineage/mediaNamespace，请重新生成动画生产包。");
+  return context;
+}
+
+function assertPlanProductionContextCurrent(context) {
+  const current = planProductionContext(state.production, context?.planArtifactId);
+  if (
+    !current
+    || current.projectId !== context.projectId
+    || current.runId !== context.runId
+    || current.planRevision !== context.planRevision
+    || current.planDigest !== context.planDigest
+    || current.mediaNamespace !== context.mediaNamespace
+  ) {
+    const error = new Error("Animation Plan 已更新，旧媒体结果已保留在历史目录但不会挂到新方案。");
+    error.code = "STALE_MEDIA_RESULT";
+    throw error;
+  }
+}
+
+function currentPlanDependencyIds(variantId) {
+  const lineage = state.production.artifacts[animationPlanArtifactId(variantId)];
+  if (!lineage || lineage.status !== "current") throw new Error("当前 Animation Plan lineage 已失效。");
+  return (lineage.dependencies || []).map((dependency) => dependency.artifactId);
+}
+
+function currentPlanDependencyRefs(variantId) {
+  const lineage = state.production.artifacts[animationPlanArtifactId(variantId)];
+  if (!lineage || lineage.status !== "current") throw new Error("当前 Animation Plan lineage 已失效。");
+  return structuredClone(lineage.dependencies || []);
+}
+
+function currentPlanLineageRef(variantId) {
+  const lineage = state.production.artifacts[animationPlanArtifactId(variantId)];
+  if (!lineage || lineage.status !== "current") throw new Error("当前 Animation Plan lineage 已失效。");
+  return lineageDependency(lineage);
 }
 
 function normalizeAnimationPlanResponse(result) {
@@ -1464,6 +1762,9 @@ async function refineCharacterReferenceWithImage(indexValue, file) {
   if (file.size > 8 * 1024 * 1024) return setAnimationStatus(`人物参考图不能超过 ${formatBytes(8 * 1024 * 1024)}。`, "error");
 
   const key = characterReferenceStatusKey(index);
+  const planArtifactId = animationPlanArtifactId(variant.id);
+  const planDependencyRefs = currentPlanDependencyRefs(variant.id);
+  const planToken = beginArtifactRequest(state.production, planArtifactId, crypto.randomUUID());
   state.characterReferenceStatuses[key] = { status: "running", message: "正在用 MiMo 分析人物参考图…" };
   renderAnimationPlan(plan);
   setAnimationStatus(`正在分析 ${item.characterName || "角色"} 的人物参考图…`, "active");
@@ -1488,26 +1789,43 @@ async function refineCharacterReferenceWithImage(indexValue, file) {
         visualBible: plan.visualBible
       }
     });
+    assertCurrentProductionRequest(planToken);
+    const updatedPlan = structuredClone(plan);
+    const previousInPlan = updatedPlan.characterReferencePrompts[index];
     const updated = {
-      ...item,
+      ...previousInPlan,
       ...refined,
       referenceImageAdded: true,
       referenceImageName: file.name,
       referenceImageDataUrl: imageDataUrl
     };
-    plan.characterReferencePrompts[index] = updated;
-    const syncedShots = syncShotCharacterReference(plan, item, updated);
-    state.animationPlans[variant.id] = plan;
+    updatedPlan.characterReferencePrompts[index] = updated;
+    const syncedShots = syncShotCharacterReference(updatedPlan, previousInPlan, updated);
+    await commitProductionArtifact({
+      artifactId: planArtifactId,
+      artifactType: "animationPlan",
+      content: updatedPlan,
+      dependencyRefs: planDependencyRefs,
+      createMediaNamespace: true,
+      requestToken: planToken
+    });
+    assertSelectedVariant(variant.id);
+    state.animationPlans[variant.id] = updatedPlan;
     state.output.animationPlans = state.animationPlans;
-    state.output.animationPlan = plan;
+    state.output.animationPlan = updatedPlan;
     state.characterReferenceStatuses[key] = { status: "ready", message: syncedShots ? `已更新人物描述，并同步 ${syncedShots} 个镜头` : "已更新人物描述" };
-    renderAnimationPlan(plan);
+    renderAnimationPlan(updatedPlan);
     setAnimationStatus(`${updated.characterName || "角色"} 已添加人物参考图，并更新了角色描述${syncedShots ? `，同步了 ${syncedShots} 个镜头提示词` : ""}。`, "ready");
     updateStoryExportActions();
   } catch (error) {
-    state.characterReferenceStatuses[key] = { status: "error", message: error.message || "人物参考图分析失败" };
-    renderAnimationPlan(plan);
+    const currentLineage = state.production.artifacts[planArtifactId];
+    if (currentLineage?.status === "current" && currentLineage.revision === planToken.expectedCurrentRevision) {
+      state.characterReferenceStatuses[key] = { status: "error", message: error.message || "人物参考图分析失败" };
+      renderAnimationPlan(plan);
+    }
     setAnimationStatus(error.message || "人物参考图分析失败", "error");
+  } finally {
+    finishArtifactRequest(state.production, planToken);
   }
 }
 
@@ -1578,6 +1896,11 @@ async function generateCharacterReferenceImages() {
   const count = Math.max(1, Math.min(6, Number(elements.characterImageCount.value) || 1));
   const prompt = elements.characterImagePromptPreview.value.trim();
   if (!prompt) return setCharacterImageStatus("生成提示词不能为空。", "error");
+  const variant = selectedVariant();
+  if (!variant) return setCharacterImageStatus("当前没有选中的主题变体。", "error");
+  const productionContext = currentPlanProductionContext(variant.id);
+  const planLineageRef = currentPlanLineageRef(variant.id);
+  const roleIndex = Number(elements.characterImageRole.value) || 0;
   state.characterImageGeneration.running = true;
   state.characterImageGeneration.count = count;
   state.characterImageGeneration.results = Array.from({ length: count }, (_, index) => ({ status: "loading", imageIndex: index }));
@@ -1596,11 +1919,31 @@ async function generateCharacterReferenceImages() {
       sourceScriptReconstruction: state.output.sourceScriptReconstruction,
       creativeBrief: state.output.creativeBrief,
       visualGuardrails: state.output.visualGuardrails,
-      selectedVariant: selectedVariant()
-    }, handleCharacterImageStreamEvent);
+      selectedVariant: variant,
+      productionContext
+    }, (event) => {
+      assertPlanProductionContextCurrent(productionContext);
+      handleCharacterImageStreamEvent(event);
+    });
+    assertPlanProductionContextCurrent(productionContext);
     const readyCount = state.characterImageGeneration.results.filter((result) => result.status === "ready").length;
+    if (readyCount) {
+      await commitProductionArtifact({
+        artifactId: `characterImages:${variant.id}:${roleIndex}`,
+        artifactType: "characterImages",
+        content: {
+          characterName: item.characterName || "",
+          results: state.characterImageGeneration.results.filter((result) => result.status === "ready")
+        },
+        dependencyRefs: [planLineageRef]
+      });
+    }
     setCharacterImageStatus(readyCount ? `已生成 ${readyCount} 张参考图，可选择一张设为人物参考图。` : "生成结束，但没有返回可用图片。", readyCount ? "ready" : "error");
   } catch (error) {
+    if (error.code === "STALE_MEDIA_RESULT") {
+      state.characterImageGeneration.results = [];
+      renderCharacterImageResults();
+    }
     setCharacterImageStatus(error.message || "角色参考图生成失败。", "error");
   } finally {
     state.characterImageGeneration.running = false;
@@ -1691,31 +2034,48 @@ async function useGeneratedCharacterReference(resultIndexValue) {
   const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
   const previous = plan?.characterReferencePrompts?.[roleIndex];
   if (!result?.url || !previous || !plan) return setCharacterImageStatus("没有可用的生成图或角色项。", "error");
+  const planArtifactId = animationPlanArtifactId(variant.id);
+  const planDependencyRefs = currentPlanDependencyRefs(variant.id);
+  const planToken = beginArtifactRequest(state.production, planArtifactId, crypto.randomUUID());
   try {
     setCharacterImageStatus("正在写入角色参考图并同步镜头提示词…", "active");
     const imageDataUrl = await urlToDataUrl(result.url);
+    assertCurrentProductionRequest(planToken);
+    const updatedPlan = structuredClone(plan);
+    const previousInPlan = updatedPlan.characterReferencePrompts[roleIndex];
     const updated = {
-      ...previous,
+      ...previousInPlan,
       referenceImageAdded: true,
       referenceImageName: result.filename || `jimeng-reference-${Number(resultIndexValue) + 1}.png`,
       referenceImageDataUrl: imageDataUrl,
       referenceImageNotes: `由 ${state.imageProvider} ${modelName(result.model || state.imageModel)} 根据上传参考图生成；已要求去掉水果摊，保留站立全身角色。`
     };
-    plan.characterReferencePrompts[roleIndex] = updated;
-    const syncedShots = syncShotCharacterReference(plan, previous, updated);
-    state.animationPlans[variant.id] = plan;
+    updatedPlan.characterReferencePrompts[roleIndex] = updated;
+    const syncedShots = syncShotCharacterReference(updatedPlan, previousInPlan, updated);
+    await commitProductionArtifact({
+      artifactId: planArtifactId,
+      artifactType: "animationPlan",
+      content: updatedPlan,
+      dependencyRefs: planDependencyRefs,
+      createMediaNamespace: true,
+      requestToken: planToken
+    });
+    assertSelectedVariant(variant.id);
+    state.animationPlans[variant.id] = updatedPlan;
     state.output.animationPlans = state.animationPlans;
-    state.output.animationPlan = plan;
+    state.output.animationPlan = updatedPlan;
     state.characterReferenceStatuses[characterReferenceStatusKey(roleIndex)] = {
       status: "ready",
       message: syncedShots ? `已使用即梦生成图，并同步 ${syncedShots} 个镜头` : "已使用即梦生成图"
     };
-    renderAnimationPlan(plan);
+    renderAnimationPlan(updatedPlan);
     setAnimationStatus(`${updated.characterName || "角色"} 已使用即梦生成的人物参考图${syncedShots ? `，同步了 ${syncedShots} 个镜头提示词` : ""}。`, "ready");
     setCharacterImageStatus("已设为人物参考图。", "ready");
     updateStoryExportActions();
   } catch (error) {
     setCharacterImageStatus(error.message || "写入人物参考图失败。", "error");
+  } finally {
+    finishArtifactRequest(state.production, planToken);
   }
 }
 
@@ -2652,6 +3012,10 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
   const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
   const shot = (plan?.shotPlan || []).find((item) => String(item.shotId) === String(shotId));
   if (!shot) return setAnimationStatus("没有找到对应镜头。", "error");
+  const productionContext = currentPlanProductionContext(variant.id);
+  const planLineageRef = currentPlanLineageRef(variant.id);
+  const mediaArtifactId = `shotVideo:${variant.id}:${shotId}`;
+  const mediaToken = beginArtifactRequest(state.production, mediaArtifactId, crypto.randomUUID());
   const count = Math.max(1, Math.min(4, Number(options.count) || 1));
   state.shotVideoResults[shotId] = { status: "running", message: `正在调用 ${shotVideoProviderLabel()} · ${count} 条…`, expectedCount: count };
   updateShotVideoResult(shotId);
@@ -2697,24 +3061,40 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
       },
       ...(generationMode === "all_reference"
         ? { referenceAssets }
-        : { startFrameDataUrl, endFrameDataUrl })
+        : { startFrameDataUrl, endFrameDataUrl }),
+      productionContext
     });
+    assertPlanProductionContextCurrent(productionContext);
+    assertCurrentProductionRequest(mediaToken);
     const videos = Array.isArray(result.videos) && result.videos.length ? result.videos : result.outputUrl ? [result] : [];
     if (videos.length !== count) throw new Error(`视频数量不足：请求 ${count} 条，实际返回 ${videos.length} 条。`);
     const selectedIndex = 0;
-    state.shotVideoResults[shotId] = {
+    const readyResult = {
       status: "ready",
       result: { ...result, videos, selectedIndex, outputUrl: videos[selectedIndex]?.outputUrl || result.outputUrl || "" },
       selectedIndex
     };
+    await commitProductionArtifact({
+      artifactId: mediaArtifactId,
+      artifactType: "shotVideo",
+      content: readyResult,
+      dependencyRefs: [planLineageRef],
+      requestToken: mediaToken
+    });
+    assertPlanProductionContextCurrent(productionContext);
+    state.shotVideoResults[shotId] = readyResult;
     setAnimationStatus(`${shotId} 镜头视频已生成 ${videos.length} 条候选。`, "ready");
   } catch (error) {
-    state.shotVideoResults[shotId] = { status: "error", message: error.message || "镜头视频生成失败" };
+    if (isArtifactRequestCurrent(state.production, mediaToken) && !["STALE_ASYNC_RESULT", "STALE_MEDIA_RESULT"].includes(error.code)) {
+      state.shotVideoResults[shotId] = { status: "error", message: error.message || "镜头视频生成失败" };
+    }
     setAnimationStatus(error.message || "镜头视频生成失败", "error");
     updateShotVideoResult(shotId);
     renderShotVideoModalResults();
     if (options.throwOnError) throw error;
     return false;
+  } finally {
+    finishArtifactRequest(state.production, mediaToken);
   }
   updateShotVideoResult(shotId);
   renderShotVideoModalResults();
@@ -2774,21 +3154,34 @@ function renderShotVideoModalResults() {
   </div>`).join("");
 }
 
-function selectShotVideoCandidate(shotId, candidateIndexValue) {
+async function selectShotVideoCandidate(shotId, candidateIndexValue) {
   const stateItem = state.shotVideoResults[shotId];
   const videos = stateItem?.result?.videos || [];
   const selectedIndex = Number(candidateIndexValue);
   if (!videos[selectedIndex]) return;
-  stateItem.status = "ready";
-  stateItem.selectedIndex = selectedIndex;
-  stateItem.result.selectedIndex = selectedIndex;
-  stateItem.result.outputUrl = videos[selectedIndex].outputUrl || videos[selectedIndex].url || "";
-  stateItem.result.outputPath = videos[selectedIndex].outputPath || "";
-  state.shotVideoResults[shotId] = stateItem;
-  updateShotVideoResult(shotId);
-  renderShotVideoModalResults();
-  setShotVideoStatus(`已将第 ${selectedIndex + 1} 条设为当前镜头视频。`, "ready");
-  setAnimationStatus(`${shotId} 已切换为第 ${selectedIndex + 1} 条视频候选。`, "ready");
+  const variant = selectedVariant();
+  if (!variant) return setShotVideoStatus("当前没有选中的主题变体。", "error");
+  try {
+    const updatedStateItem = structuredClone(stateItem);
+    updatedStateItem.status = "ready";
+    updatedStateItem.selectedIndex = selectedIndex;
+    updatedStateItem.result.selectedIndex = selectedIndex;
+    updatedStateItem.result.outputUrl = videos[selectedIndex].outputUrl || videos[selectedIndex].url || "";
+    updatedStateItem.result.outputPath = videos[selectedIndex].outputPath || "";
+    await commitProductionArtifact({
+      artifactId: `shotVideo:${variant.id}:${shotId}`,
+      artifactType: "shotVideo",
+      content: updatedStateItem,
+      dependencyIds: [animationPlanArtifactId(variant.id)]
+    });
+    state.shotVideoResults[shotId] = updatedStateItem;
+    updateShotVideoResult(shotId);
+    renderShotVideoModalResults();
+    setShotVideoStatus(`已将第 ${selectedIndex + 1} 条设为当前镜头视频。`, "ready");
+    setAnimationStatus(`${shotId} 已切换为第 ${selectedIndex + 1} 条视频候选。`, "ready");
+  } catch (error) {
+    setShotVideoStatus(error.message || "切换镜头视频失败。", "error");
+  }
 }
 
 async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "", options = {}) {
@@ -2801,6 +3194,10 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
     return setAnimationStatus("当前 direct_shot 镜头不生成首尾帧。", "error");
   }
   const key = shotFrameKey(shotId, frameKind);
+  const productionContext = currentPlanProductionContext(variant.id);
+  const planLineageRef = currentPlanLineageRef(variant.id);
+  const mediaArtifactId = `shotFrame:${variant.id}:${shotId}:${frameKind}`;
+  const mediaToken = beginArtifactRequest(state.production, mediaArtifactId, crypto.randomUUID());
   const count = Math.max(1, Math.min(6, Number(options.count) || 1));
   state.shotFrameResults[key] = { status: "running", frameKind, message: `正在生成${frameKind === "end" ? "尾帧" : "首帧"}镜头 · ${count} 张…` };
   updateShotFrameResult(shotId);
@@ -2853,6 +3250,7 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
       visualBible: plan.visualBible || {},
       characterReferences,
       sceneReference: sceneReferenceForShot(plan, shot),
+      productionContext,
       ...(frameKind === "end" && frameReferenceMode ? {
         frameReferenceMode,
         referenceImages: endpointReferences,
@@ -2860,6 +3258,8 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
         promptHash
       } : {})
     });
+    assertPlanProductionContextCurrent(productionContext);
+    assertCurrentProductionRequest(mediaToken);
     const images = Array.isArray(result.images) && result.images.length ? result.images : [result];
     const authority = {
       frameReferenceMode: result.frameReferenceMode || frameReferenceMode,
@@ -2876,19 +3276,32 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
     result.selectedIndex = -1;
     result.url = "";
     result.dataUrl = "";
-    state.shotFrameResults[key] = { status: options.autoSelectFirst ? "ready" : "pending", frameKind, result, selectedIndex: options.autoSelectFirst ? 0 : -1, message: `已生成 ${result.images.length} 张候选图，请选择一张添加到镜头。` };
+    const readyResult = { status: options.autoSelectFirst ? "ready" : "pending", frameKind, result, selectedIndex: options.autoSelectFirst ? 0 : -1, message: `已生成 ${result.images.length} 张候选图，请选择一张添加到镜头。` };
+    await commitProductionArtifact({
+      artifactId: mediaArtifactId,
+      artifactType: "shotFrame",
+      content: readyResult,
+      dependencyRefs: [planLineageRef],
+      requestToken: mediaToken
+    });
+    assertPlanProductionContextCurrent(productionContext);
+    state.shotFrameResults[key] = readyResult;
     if (options.autoSelectFirst) {
       selectShotFrameCandidate(shotId, frameKind, 0);
     } else {
       setAnimationStatus(`${shotId} ${frameKind === "end" ? "尾帧" : "首帧"}镜头已生成 ${result.images.length} 张候选图，等待选择。`, "ready");
     }
   } catch (error) {
-    state.shotFrameResults[key] = { status: "error", frameKind, message: error.message || "镜头帧图片生成失败" };
+    if (isArtifactRequestCurrent(state.production, mediaToken) && !["STALE_ASYNC_RESULT", "STALE_MEDIA_RESULT"].includes(error.code)) {
+      state.shotFrameResults[key] = { status: "error", frameKind, message: error.message || "镜头帧图片生成失败" };
+    }
     setAnimationStatus(error.message || "镜头帧图片生成失败", "error");
     updateShotFrameResult(shotId);
     renderShotFrameImageResults();
     if (options.throwOnError) throw error;
     return false;
+  } finally {
+    finishArtifactRequest(state.production, mediaToken);
   }
   updateShotFrameResult(shotId);
   renderShotFrameImageResults();
@@ -3331,8 +3744,8 @@ function profile() { return { fixedCharacter: elements.fixedCharacter.value.trim
 function handleProfileInput() {
   const currentProfile = profile();
   if (
-    state.characterBoundaryProfile
-    && JSON.stringify(currentProfile) !== JSON.stringify(state.characterBoundaryProfile)
+    state.production.runId
+    && (!state.characterBoundaryProfile || JSON.stringify(currentProfile) !== JSON.stringify(state.characterBoundaryProfile))
   ) {
     invalidateGlobalCharacterBoundary();
   }
@@ -3340,19 +3753,16 @@ function handleProfileInput() {
   validateReady();
 }
 function invalidateGlobalCharacterBoundary(message = "固定角色或创作设定已修改；旧的全局角色边界已失效，请重新运行工作流。") {
+  abandonActiveProductionRun();
   state.characterBoundaryProfile = null;
-  delete state.output.creativeBrief;
-  delete state.output.visualGuardrails;
-  delete state.output.themeVariants;
-  delete state.output.fullStory;
-  delete state.output.animationPlan;
+  state.output = {};
   state.selectedVariantId = null;
   state.fullStories = {};
   state.animationPlans = {};
   state.animationPlanMetadata = {};
   state.shotFrameResults = {};
   state.shotVideoResults = {};
-  [elements.brief, elements.guardrails, elements.variants].forEach((element) => {
+  [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants].forEach((element) => {
     element.innerHTML = "";
     element.classList.add("hidden");
   });
@@ -3370,6 +3780,134 @@ function globalCharacterBoundaryContext() {
 }
 function saveProfile() { localStorage.setItem("directorProfile", JSON.stringify(profile())); }
 function restoreProfile() { try { const data = JSON.parse(localStorage.getItem("directorProfile")); if (data) { elements.fixedCharacter.value = data.fixedCharacter || ""; elements.vertical.value = data.vertical || ""; elements.constraints.value = data.constraints || ""; } } catch {} }
+
+function persistActiveProductionRun() {
+  if (!state.production.projectId || !state.production.runId) return;
+  localStorage.setItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY, JSON.stringify({
+    projectId: state.production.projectId,
+    runId: state.production.runId
+  }));
+}
+
+function abandonActiveProductionRun() {
+  state.production = emptyProductionState();
+  localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
+}
+
+async function restoreActiveProductionRun() {
+  let active;
+  try {
+    active = JSON.parse(localStorage.getItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY) || "null");
+  } catch {
+    localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
+    return false;
+  }
+  if (!active?.projectId || !active?.runId) return false;
+  try {
+    const run = await api("/api/production/run/load", {
+      projectId: active.projectId,
+      runId: active.runId,
+      includeContent: true
+    });
+    state.production = productionStateFromRun(run);
+    restoreRunMetadata(run.metadata || {});
+    restoreRunArtifacts(run.latestArtifacts || {});
+    persistActiveProductionRun();
+    return true;
+  } catch {
+    abandonActiveProductionRun();
+    return false;
+  }
+}
+
+function restoreRunMetadata(metadata = {}) {
+  state.metadata = metadata.sourceVideo || null;
+  if (metadata.creatorProfile && typeof metadata.creatorProfile === "object") {
+    elements.fixedCharacter.value = metadata.creatorProfile.fixedCharacter || "";
+    elements.vertical.value = metadata.creatorProfile.vertical || "";
+    elements.constraints.value = metadata.creatorProfile.constraints || "";
+    saveProfile();
+  }
+  if (typeof metadata.transcript === "string") elements.transcript.value = metadata.transcript;
+}
+
+function restoreRunArtifacts(latestArtifacts = {}) {
+  const currentContent = (artifactId) => {
+    const entry = latestArtifacts[artifactId];
+    return entry?.lineage?.status === "current" ? entry.content : null;
+  };
+  state.output = {
+    referenceAnalysis: currentContent("referenceAnalysis"),
+    sourceScriptReconstruction: currentContent("sourceScriptReconstruction"),
+    creativeBrief: currentContent("creativeBrief"),
+    visualGuardrails: currentContent("visualGuardrails"),
+    themeVariants: currentContent("themeVariants")
+  };
+  state.characterBoundaryProfile = state.output.visualGuardrails ? { ...profile() } : null;
+  state.fullStories = {};
+  state.animationPlans = {};
+  state.animationPlanMetadata = {};
+  state.shotFrameResults = {};
+  state.shotVideoResults = {};
+  const currentEntries = Object.entries(latestArtifacts)
+    .filter(([, entry]) => entry?.lineage?.status === "current")
+    .sort((left, right) => String(left[1].lineage.createdAt || "").localeCompare(String(right[1].lineage.createdAt || "")));
+  for (const [artifactId, entry] of currentEntries) {
+    if (artifactId.startsWith("fullStory:")) state.fullStories[artifactId.slice("fullStory:".length)] = entry.content;
+    else if (artifactId.startsWith("animationPlan:")) state.animationPlans[artifactId.slice("animationPlan:".length)] = entry.content;
+    else if (artifactId.startsWith("shotVideo:")) {
+      const parts = artifactId.split(":");
+      state.shotVideoResults[parts.slice(2).join(":")] = entry.content;
+    } else if (artifactId.startsWith("shotFrame:")) {
+      const parts = artifactId.split(":");
+      const frameKind = parts.at(-1);
+      const shotId = parts.slice(2, -1).join(":");
+      state.shotFrameResults[shotFrameKey(shotId, frameKind)] = entry.content;
+    }
+  }
+  state.output.fullStories = state.fullStories;
+  state.output.animationPlans = state.animationPlans;
+  const latestPlanId = [...currentEntries].reverse().find(([artifactId]) => artifactId.startsWith("animationPlan:"))?.[0];
+  const latestStoryId = [...currentEntries].reverse().find(([artifactId]) => artifactId.startsWith("fullStory:"))?.[0];
+  state.selectedVariantId = latestPlanId?.slice("animationPlan:".length)
+    || latestStoryId?.slice("fullStory:".length)
+    || state.output.themeVariants?.variants?.[0]?.id
+    || null;
+  if (state.selectedVariantId) {
+    state.output.fullStory = state.fullStories[state.selectedVariantId] || null;
+    state.output.animationPlan = state.animationPlans[state.selectedVariantId] || null;
+  }
+  renderCurrentMainOutputs();
+}
+
+function renderCurrentMainOutputs() {
+  const rendered = [
+    [state.output.referenceAnalysis, renderAnalysis, "analysis"],
+    [state.output.sourceScriptReconstruction, renderScript, "script"],
+    [state.output.creativeBrief, renderBrief, "brief"],
+    [state.output.visualGuardrails, renderVisualGuardrails, "guardrails"],
+    [state.output.themeVariants, renderVariants, "variants"]
+  ];
+  resetPipeline();
+  for (const element of [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants]) {
+    element.innerHTML = "";
+    element.classList.add("hidden");
+  }
+  if (rendered.some(([value]) => Boolean(value))) {
+    elements.empty.classList.add("hidden");
+    elements.resultStack.classList.remove("hidden");
+    for (const [value, render, stage] of rendered) {
+      if (!value) continue;
+      render(value);
+      setStage(stage, "done");
+    }
+    elements.export.classList.remove("hidden");
+  } else {
+    elements.empty.classList.remove("hidden");
+    elements.resultStack.classList.add("hidden");
+    elements.export.classList.add("hidden");
+  }
+}
 function selectedVariant() { return (state.output.themeVariants?.variants || []).find((variant) => String(variant.id) === String(state.selectedVariantId)); }
 function currentFullStory() {
   const variant = selectedVariant();
@@ -3403,7 +3941,7 @@ function selectedStoryPackage() {
   };
   const pack = {
     packageType: "story-production-test-package",
-    packageVersion: "2.2",
+    packageVersion: "3.0",
     exportedAt: new Date().toISOString(),
     mode: state.mode,
     modelInfo: currentModelInfo(),
@@ -3446,34 +3984,55 @@ function exportJson() {
   URL.revokeObjectURL(url);
 }
 
-function exportCurrentStoryPackage() {
+async function exportCurrentStoryPackage() {
   const pack = selectedStoryPackage();
   if (!pack?.fullStory) return setStoryStatus("请先生成完整剧情，再导出当前生产包。", "error");
-  const suffix = pack.animationPlan ? "动画生产包" : "完整剧情";
-  downloadJson(pack, `短视频${suffix}-${pack.selectedVariant?.id || "variant"}-${Date.now()}.json`);
+  try {
+    const sealed = await sealProductionPackage(pack);
+    const suffix = sealed.animationPlan ? "动画生产包" : "完整剧情";
+    downloadJson(sealed, `短视频${suffix}-${sealed.selectedVariant?.id || "variant"}-${Date.now()}.json`);
+  } catch (error) {
+    setStoryStatus(error.message || "生产包签发失败。", "error");
+  }
 }
 
-function exportStoryTestPackage() {
+async function exportStoryTestPackage() {
   const pack = selectedStoryPackage();
   if (!pack?.fullStory) return setStoryPackageStatus("请先生成或导入完整剧情，再导出测试包。", "error");
-  const suffix = pack.animationPlan ? "完整剧情-动画测试包" : "完整剧情测试包";
-  downloadJson(pack, `短视频${suffix}-${pack.selectedVariant?.id || "variant"}-${Date.now()}.json`);
-  setStoryPackageStatus(`已导出 ${pack.animationPlan ? "完整剧情 + 动画生产包" : "完整剧情"} 测试包。`, "ready");
+  try {
+    const sealed = await sealProductionPackage(pack);
+    const suffix = sealed.animationPlan ? "完整剧情-动画测试包" : "完整剧情测试包";
+    downloadJson(sealed, `短视频${suffix}-${sealed.selectedVariant?.id || "variant"}-${Date.now()}.json`);
+    setStoryPackageStatus(`已导出签名的 ${sealed.animationPlan ? "完整剧情 + 动画生产包" : "完整剧情"} 测试包。`, "ready");
+  } catch (error) {
+    setStoryPackageStatus(error.message || "测试包签发失败。", "error");
+  }
+}
+
+function sealProductionPackage(payload) {
+  assertActiveProductionRun();
+  return api("/api/production/package/seal", {
+    projectId: state.production.projectId,
+    runId: state.production.runId,
+    payload
+  });
 }
 
 async function importStoryTestPackage(file) {
   try {
     setStoryPackageStatus("正在导入测试包…", "");
     const payload = JSON.parse(await file.text());
-    const restored = restoreStoryPackage(payload);
-    setStoryPackageStatus(`已导入 ${restored.id}：${restored.hasStory ? "完整剧情" : "未含完整剧情"}${restored.hasAnimation ? " + 动画生产包" : ""}。`, "ready");
+    const imported = await api("/api/production/package/import", { package: payload });
+    const restored = restoreStoryPackage(imported.payload, imported.production);
+    setStoryPackageStatus(`已校验并隔离导入 ${restored.id}：${restored.hasStory ? "完整剧情" : "未含完整剧情"}${restored.hasAnimation ? " + 动画生产包" : ""}；旧媒体未混入。`, "ready");
   } catch (error) {
     setStoryPackageStatus(error.message || "测试包导入失败", "error");
   }
 }
 
-function restoreStoryPackage(payload) {
+function restoreStoryPackage(payload, production) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("测试包 JSON 格式无效。");
+  if (!production?.projectId || !production?.runId || !production?.artifacts) throw new Error("服务端没有返回隔离后的生产 Run。");
   const variant = normalizeImportedVariant(payload);
   if (!variant?.id) throw new Error("测试包缺少 selectedVariant 或主题变体 id。");
   const id = String(variant.id);
@@ -3481,9 +4040,9 @@ function restoreStoryPackage(payload) {
   const animationPlan = payload.animationPlan || payload.animationPlans?.[id] || payload.output?.animationPlan || null;
 
   if (payload.creatorProfile && typeof payload.creatorProfile === "object") {
-    elements.fixedCharacter.value = payload.creatorProfile.fixedCharacter || elements.fixedCharacter.value;
-    elements.vertical.value = payload.creatorProfile.vertical || elements.vertical.value;
-    elements.constraints.value = payload.creatorProfile.constraints || elements.constraints.value;
+    elements.fixedCharacter.value = payload.creatorProfile.fixedCharacter || "";
+    elements.vertical.value = payload.creatorProfile.vertical || "";
+    elements.constraints.value = payload.creatorProfile.constraints || "";
     saveProfile();
     validateReady();
   }
@@ -3504,23 +4063,33 @@ function restoreStoryPackage(payload) {
     renderModelSettings();
   }
 
-  state.metadata = payload.sourceVideo || legacySourceVideoMetadata(payload.metadata) || state.metadata;
-  state.output.referenceAnalysis = payload.referenceAnalysis || payload.output?.referenceAnalysis || state.output.referenceAnalysis;
-  state.output.sourceScriptReconstruction = payload.sourceScriptReconstruction || payload.output?.sourceScriptReconstruction || state.output.sourceScriptReconstruction;
-  state.output.creativeBrief = payload.creativeBrief || payload.output?.creativeBrief || state.output.creativeBrief;
-  state.output.visualGuardrails = payload.visualGuardrails || payload.output?.visualGuardrails || state.output.visualGuardrails;
+  state.production = {
+    ...emptyProductionState(),
+    schemaVersion: production.lineageSchemaVersion || "1.0",
+    projectId: production.projectId,
+    runId: production.runId,
+    artifacts: structuredClone(production.artifacts || {}),
+    stages: structuredClone(production.stages || {}),
+    checkpoint: structuredClone(production.checkpoint || { sequence: 0, updatedAt: "" })
+  };
+  persistActiveProductionRun();
+  state.metadata = payload.sourceVideo || legacySourceVideoMetadata(payload.metadata) || null;
+  state.output = {
+    referenceAnalysis: payload.referenceAnalysis || payload.output?.referenceAnalysis || null,
+    sourceScriptReconstruction: payload.sourceScriptReconstruction || payload.output?.sourceScriptReconstruction || null,
+    creativeBrief: payload.creativeBrief || payload.output?.creativeBrief || null,
+    visualGuardrails: payload.visualGuardrails || payload.output?.visualGuardrails || null
+  };
   state.characterBoundaryProfile = state.output.visualGuardrails ? { ...profile() } : null;
   state.output.themeVariants = mergeImportedThemeVariants(payload.themeVariants || payload.output?.themeVariants, variant);
   state.selectedVariantId = id;
 
-  state.fullStories = { ...(payload.fullStories || {}), ...state.fullStories };
-  state.animationPlans = { ...(payload.animationPlans || {}), ...state.animationPlans };
-  state.animationPlanMetadata = {
-    ...(payload.animationPlanMetadata || payload.output?.animationPlanMetadata || {}),
-    ...state.animationPlanMetadata
-  };
-  state.shotFrameResults = { ...(payload.shotFrameResults || payload.output?.shotFrameResults || {}), ...state.shotFrameResults };
-  state.shotVideoResults = { ...(payload.shotVideoResults || payload.output?.shotVideoResults || {}), ...state.shotVideoResults };
+  state.fullStories = {};
+  state.animationPlans = {};
+  state.animationPlanMetadata = structuredClone(payload.animationPlanMetadata || payload.output?.animationPlanMetadata || {});
+  state.shotFrameResults = {};
+  state.shotVideoResults = {};
+  state.characterReferenceStatuses = {};
   if (fullStory) {
     state.fullStories[id] = fullStory;
     state.output.fullStory = fullStory;
@@ -3561,6 +4130,11 @@ function restoreStoryPackage(payload) {
   state.output.fullStories = state.fullStories;
   state.output.animationPlans = state.animationPlans;
   state.output.animationPlanMetadata = state.animationPlanMetadata;
+  state.characterImageGeneration.results = [];
+  state.characterImageGeneration.referenceImageDataUrl = "";
+  state.characterImageGeneration.referenceImageName = "";
+  state.shotVideoGeneration.referenceAssets = [];
+  renderCurrentMainOutputs();
   elements.export.classList.remove("hidden");
   history.replaceState({ storyVariantId: id }, "", `/story/${encodeURIComponent(id)}`);
   renderStoryPage({ autoGenerate: false });
@@ -3586,13 +4160,12 @@ function normalizeImportedVariant(payload) {
 
 function mergeImportedThemeVariants(themeVariants, variant) {
   const imported = Array.isArray(themeVariants?.variants) ? themeVariants.variants : [];
-  const existing = Array.isArray(state.output.themeVariants?.variants) ? state.output.themeVariants.variants : [];
-  const merged = [...imported, ...existing, variant].filter(Boolean).reduce((acc, item) => {
+  const merged = [...imported, variant].filter(Boolean).reduce((acc, item) => {
     if (!item?.id || acc.some((entry) => String(entry.id) === String(item.id))) return acc;
     acc.push(item);
     return acc;
   }, []);
-  return { ...(themeVariants || state.output.themeVariants || {}), variants: merged };
+  return { ...(themeVariants || {}), variants: merged };
 }
 
 function setStoryPackageStatus(message, tone = "") {

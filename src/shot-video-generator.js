@@ -83,6 +83,7 @@ export async function generateShotVideo(options = {}) {
   const outputRoot = options.outputRoot || path.resolve("public/generated-videos");
   const publicBasePath = options.publicBasePath || "/generated-videos";
   const shotId = safeSegment(shot.shotId || "shot");
+  const filenamePrefix = options.filenamePrefix ? `${safeSegment(options.filenamePrefix)}-` : "";
   const stamp = new Date().toISOString().replace(/[-:.]/gu, "").replace(/Z$/u, "");
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-"));
   const count = clampVideoCount(options.count);
@@ -97,7 +98,8 @@ export async function generateShotVideo(options = {}) {
         publicBasePath,
         workDir,
         configPath,
-        stamp
+        stamp,
+        filenamePrefix
       })
       : null;
     const inputArtifacts = generationMode === "first_last_frame"
@@ -106,7 +108,7 @@ export async function generateShotVideo(options = {}) {
     const videos = [];
     for (let index = 0; index < count; index += 1) {
       const suffix = count > 1 ? `-${index + 1}` : "";
-      const outputPath = path.join(outputRoot, `${shotId}-${stamp}${suffix}.mp4`);
+      const outputPath = path.join(outputRoot, `${filenamePrefix}${shotId}-${stamp}${suffix}.mp4`);
       const request = buildShotVideoRequest(shot, {
         outputPath,
         inputArtifacts,
@@ -178,6 +180,7 @@ async function prepareFrameArtifacts(context) {
 async function prepareOneFrameArtifact(context) {
   const { shot, outputRoot, publicBasePath, frameKind, stamp, dataUrl, workDir, configPath } = context;
   const shotId = safeSegment(shot.shotId || "shot");
+  const filenamePrefix = context.filenamePrefix || "";
   const outputKey = `frames.${shotId}.${frameKind}`;
   const prompt = frameKind === "start" ? shot.startFramePrompt : shot.endFramePrompt;
 
@@ -186,12 +189,12 @@ async function prepareOneFrameArtifact(context) {
       outputRoot,
       publicBasePath,
       outputKey,
-      basename: `${shotId}-${frameKind}-${stamp}`,
+      basename: `${filenamePrefix}${shotId}-${frameKind}-${stamp}`,
       dataUrl
     });
   }
 
-  const outputPath = path.join(outputRoot, `${shotId}-${frameKind}-${stamp}.png`);
+  const outputPath = path.join(outputRoot, `${filenamePrefix}${shotId}-${frameKind}-${stamp}.png`);
   const request = buildFrameRequest(shot, { frameKind, outputPath, outputKey, prompt });
   const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: context.options.workerRunner });
   return {

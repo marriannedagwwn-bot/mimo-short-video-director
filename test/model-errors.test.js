@@ -12,6 +12,7 @@ import {
   serializeServerError
 } from "../src/server-error.js";
 import { InputError, OutputContractError } from "../src/validation.js";
+import { ProductionStateError } from "../src/production-lineage.js";
 
 test("ValidationDiagnostic normalizes the stable public shape", () => {
   const diagnostic = new ValidationDiagnostic({
@@ -147,6 +148,22 @@ test("server serializer keeps legacy status/message semantics while adding obser
     assert.equal(serialized.status, 400);
     assert.equal(serialized.body.error, "输入错误");
     assert.equal(serialized.body.code, "INPUT_INVALID");
+  });
+
+  await t.test("ProductionStateError preserves conflict status and safe lineage details", () => {
+    const serialized = serializeServerError(new ProductionStateError("旧请求已失效", {
+      code: "ARTIFACT_REVISION_CONFLICT",
+      httpStatus: 409,
+      details: [{ artifactId: "fullStory:V1", expectedRevision: "r1", actualRevision: "r2" }]
+    }));
+    assert.equal(serialized.status, 409);
+    assert.equal(serialized.body.category, "production-state");
+    assert.equal(serialized.body.code, "ARTIFACT_REVISION_CONFLICT");
+    assert.deepEqual(serialized.body.details, [{
+      artifactId: "fullStory:V1",
+      expectedRevision: "r1",
+      actualRevision: "r2"
+    }]);
   });
 
   await t.test("OutputContractError remains 502 with the compatibility prefix", () => {

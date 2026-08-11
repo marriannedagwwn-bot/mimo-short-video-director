@@ -54,6 +54,10 @@ Animation Plan direct_shot（promptSchemaVersion 3.0）
  ↓
 Video Generation
 
+上述业务 JSON 之外，Production Lineage v1 作为服务端 sidecar 运行：每次浏览器主流程创建独立 project/run；各成功阶段提交 Artifact revision、content digest、实际上游 dependencies、Stage 状态与 Checkpoint。它不改变模型字段含义，也不是第二份角色或剧情事实来源。
+
+Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Artifact stale。模型请求开始时冻结依赖 revision，返回时同时经过浏览器 request token 与服务端 `expectedCurrentRevision`/dependency 校验。Animation Plan 每个 revision 签发独立 media namespace。
+
 当前 `direct_shot` 必须由请求显式传入 `animationPlanMode: "direct_shot"`，且 `productionStrategy.format` 为 `direct_shot_video`。每个 shot 保留 `videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes` 以及镜头标识、时长、剧情目的、负面词和验收标准；禁止 `startFrame`、`endFrame`、`motion`、`startFramePrompt`、`endFramePrompt` 五个端点字段。
 
 当前 `direct_shot` 的场内拆镜只依据 Full Story 的 `location` 与 `visibleAction` 中的人物主要动作目标。地点或主要动作目标变化时拆镜；景别、机位、构图、焦段、运镜和转场建议只能决定已划定镜头的摄影表达，不得增加镜头。`shotAndSound` 与 `shootingNotes` 不是镜头数量的事实源。每个 source scene 至少一镜及 3–6 秒单镜时长约束保持不变。
@@ -130,11 +134,11 @@ Legacy Full Story
 Full Story v2
 Canonical Story
 Canonical Pipeline
-Production Package
+完整批量 Production Package / production workspace
 Receipt
 Canonical Provenance
 
-当前 HEAD 不包含这些实现。
+当前 HEAD 已包含独立的 Production Lineage v1、本地 Run/Stage/Artifact/Checkpoint 状态库和签名的 v3 测试/规划包；它们不是 Canonical Story、完整批量 Production Package、供应商 Receipt 或 Canonical Provenance。
 
 
 ---
@@ -389,7 +393,7 @@ characters:
 
 # 8. 状态隔离要求
 
-未来所有新功能必须考虑：
+当前 Production Lineage v1 已实现并要求所有新功能继续考虑：
 
 variant
 story revision
@@ -422,23 +426,15 @@ timestamp
 
 # 9. 导入导出规则
 
-当前浏览器导出的 JSON：
-
-属于：
-
-测试/规划包
-
-不是：
-
-生产级 Production Package
-
-除非增加：
+当前浏览器可导出的 JSON 分为普通创意 JSON，以及服务端签发的 v3 测试/规划包。后者必须包含：
 
 - schema version
 - digest
 - signature
-- provenance
+- production lineage
 - validation
+
+v3 包导入时必须验证上述字段和 parent lineage，并建立隔离的新 Run；禁止与现态静默混合。包内旧媒体结果不得直接恢复。它仍不是包含批量执行、供应商状态和完整 canonical provenance 的 Production Package。
 
 
 禁止：
@@ -558,12 +554,16 @@ AGENTS.md
 
 ## P0
 
-状态隔离：
+已实现并必须保持：
 
 variant digest
 story revision
 plan revision
 media namespace
+
+- 上游 revision 变化递归标记下游 stale
+- request token + expectedCurrentRevision 双层拒绝旧异步回写
+- 媒体目录和文件名绑定 project/run/plan revision/digest
 
 ---
 
@@ -583,12 +583,14 @@ Full Story Contract：
 
 ## P2
 
-生产可靠性：
+已实现基础能力：
 
 - 导入验证
 - 签名机制
 - 持久化状态
 - 媒体生命周期
+
+尚未实现远端任务接管、批量队列、完整视觉 QA 和成片恢复。
 
 
 ---

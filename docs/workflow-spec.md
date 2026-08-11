@@ -158,7 +158,7 @@ flowchart LR
 
 剧情页必须提供两个供应商交付出口：
 
-- JSON 导出：当前测试/规划包版本为 `2.2`，保留完整剧情、选中变体、`animationPlan` 与模型信息；`direct_shot` 的 `animationPlan` 不含首尾帧字段，旧 v2 兼容数据可继续保留其端点和编译字段。
+- JSON 导出：当前测试/规划包版本为 `3.0`。服务端只对当前 Variant、Full Story 和可选 Animation Plan 的一致 lineage 签发摘要与本机 HMAC；导入先验证 package type/version/digest/signature/parent lineage，再建立隔离的新 Run，禁止与当前浏览器状态合并，且不信任包内旧媒体选择。
 - Markdown 复制：当前 `direct_shot` 按逐镜 `videoPrompt`、运镜、角色动作、对白/字幕、声音、连续性、视频负面词和验收标准交付；旧 v2 才整理首帧、尾帧及其兼容字段。
 
 页面内保留单镜头试片链路。`POST /api/generate-shot-video` 的 `generationMode` 是模式权威字段，不从端点字段缺失、provider、模型名或素材数量推断：
@@ -168,7 +168,15 @@ flowchart LR
 
 全能参考共同限制为图片最多 9 张、视频最多 3 段、音频最多 3 段，单段视频或音频 2–15 秒，视频与音频各自总时长不超过 15 秒，不能只输入音频，请求体不超过 64MB。服务端按实际 data URL MIME、文件字节和 ffprobe 时长再次验证用户媒体，而不是重新判断 AI 输出。两种模式均支持异步轮询、下载 mp4、1–4 个候选结果，以及回执中的 `negativePromptDelivery` 和脱敏 `requestPreview`。
 
-仓库不提供 JSONL 任务队列、production workspace、批量执行器、本地质检、失败队列重试或 ffmpeg 成片合成。整片批量生成时，外部供应商程序负责把当前 `direct_shot` 的 `videoPrompt`、逐镜职责字段、`negativePrompts.video` 和验收标准映射到自身协议；只有旧 v2 兼容计划才映射首尾帧。
+#### Production Lineage 与状态恢复
+
+浏览器每次从视频输入重新运行主流程都会创建一个隔离 Run。每个成功阶段由服务端根据 canonical JSON 计算 SHA-256，签发单调 revision，并记录它实际消费的上游 `{ artifactId, revision, contentDigest }`。Variant 内容变化会使旧 Full Story 以及依赖它的 Animation Plan/媒体递归 stale；只改变对象键顺序不算内容变化。模型输出本身不得生成或修改 lineage。
+
+前端在模型调用开始时冻结依赖 revision 与 `expectedCurrentRevision`。返回时同时检查本地 request token，提交时再由服务端检查 optimistic concurrency 和上游仍为 current；任一条件失败都拒绝回写。媒体还必须携带当前 Plan 的 `mediaNamespace`，目录与文件名同时绑定 project/run/plan revision/digest。
+
+服务端在 `runtime/production-runs/` 持久化 Run、Stage、Artifact、Checkpoint。页面刷新后可以恢复已完成 JSON artifact，并从最后 checkpoint 继续下游操作；原始上传视频和仍在执行中的远端模型调用不属于 checkpoint，刷新后不能自动续传或接管。完整契约见 `docs/production-lineage-state.md`。
+
+仓库不提供 JSONL 任务队列、完整 production workspace、批量执行器、本地视觉质检、失败队列自动重试或 ffmpeg 成片合成。整片批量生成时，外部供应商程序负责把当前 `direct_shot` 的 `videoPrompt`、逐镜职责字段、`negativePrompts.video` 和验收标准映射到自身协议；只有旧 v2 兼容计划才映射首尾帧。
 
 ## 3. 模型与媒体策略
 

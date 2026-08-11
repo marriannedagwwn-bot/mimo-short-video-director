@@ -10,6 +10,7 @@ import { ModelResponseError } from "./mimo-client.js";
 import { ModelPipelineError, sanitizePublicMetadata } from "./model-errors.js";
 import { ShotVideoConfigError, ShotVideoProviderError } from "./shot-video-generator.js";
 import { StaticFrameCompilerError } from "./static-frame-compiler.js";
+import { ProductionStateError } from "./production-lineage.js";
 import { InputError, OutputContractError } from "./validation.js";
 
 export function serializeServerError(error, {
@@ -35,6 +36,16 @@ export function serializeServerError(error, {
       category: "input",
       code: "INPUT_INVALID",
       origin: "client",
+      details: sanitizePublicMetadata(error.details) || []
+    }));
+  }
+
+  if (error instanceof ProductionStateError) {
+    return response(error.httpStatus, observabilityBody({
+      error: error.message,
+      category: "production-state",
+      code: error.code,
+      origin: error.httpStatus === 409 ? "conflict" : "client",
       details: sanitizePublicMetadata(error.details) || []
     }));
   }

@@ -20,6 +20,9 @@ export function loadEnv(file = path.resolve(".env")) {
 
 export function getConfig() {
   const serverRequestTimeoutMs = Math.round(clampNumber(process.env.SERVER_REQUEST_TIMEOUT_MS, 900000, 30000, 3600000));
+  const productionStateDirectory = path.resolve(
+    process.env.WORKFLOW_PRODUCTION_STATE_DIR?.trim() || "runtime/production-runs"
+  );
   const workflowRuntimeEnvironment = String(
     process.env.WORKFLOW_RUNTIME_ENVIRONMENT
       || process.env.NODE_ENV
@@ -121,7 +124,8 @@ export function getConfig() {
     workflowRuntime: {
       environment: workflowRuntimeEnvironment,
       signaturePolicy: workflowSignaturePolicy,
-      characterBoundarySignatureRequired
+      characterBoundarySignatureRequired,
+      productionStateDirectory
     },
     mimo: {
       baseUrl,

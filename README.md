@@ -144,8 +144,10 @@ JIMENG_MAX_IMAGES=6
 
 动画生产包生成后，剧情页保留两个供应商交付出口：
 
-- 导出当前生产包 JSON：当前测试/规划包版本为 `2.2`，保留完整剧情、主题变体、`animationPlan` 和模型信息；`direct_shot` 的 `animationPlan` 不含端点字段，旧 v2 兼容数据可保留已选首尾帧。
+- 导出当前生产包 JSON：当前测试/规划包版本为 `3.0`。服务端校验当前 Variant → Full Story → Animation Plan revision 后写入 `productionLineage`、内容摘要和本机持久 HMAC 签名；被修改的文件、旧版文件或血缘不一致的文件不能导入。
 - 复制动画生产包 Markdown：当前 `direct_shot` 输出角色/场景/资产参考和逐镜 `videoPrompt`、运镜、动作、声音、连续性、视频负面词及验收标准；旧 v2 才输出逐镜首帧／尾帧。
+
+浏览器启动一次工作流时，服务端会在 `runtime/production-runs/` 建立轻量 Run，并在每个阶段成功后持久化 Artifact、revision、依赖摘要、Stage 状态和 Checkpoint。相同 JSON 仅键顺序变化不会制造新 revision；同一 Variant ID 的实际内容变化会确定性标记旧 Story、Plan 和媒体为 stale。刷新页面后可恢复最近 Run 的已完成 JSON 阶段，但不会持久化原始上传视频，也不会续接刷新前仍在供应商执行的请求。详见 [Production Lineage 与持久状态](docs/production-lineage-state.md)。
 
 ## 单镜头视频：首尾帧 / 全能参考
 
@@ -154,7 +156,7 @@ JIMENG_MAX_IMAGES=6
 - `first_last_frame`：已选首帧和尾帧是精确端点，Kling、Seedance 与 MiniMax H3 均支持；无端点的 `direct_shot` 不可使用该模式，必须明确失败。
 - `all_reference`：图片、视频和音频只是人物、场景、动作、运镜、节奏或声音参考，不被解释为精确首尾帧。Seedance 2.0 与 MiniMax H3 使用官方 R2V 角色 `reference_image`、`reference_video`、`reference_audio`；不得与 `first_frame` / `last_frame` 混用。
 
-全能参考模式可显式加入旧 v2 镜头已选首尾帧（作为普通图片参考）和本镜头已有角色参考图，也可以上传额外媒体。该模式必须至少包含合法图片或视频；共同限制为最多 9 张图片、3 段视频、3 段音频，单段视频或音频 2–15 秒，视频总时长与音频总时长分别不超过 15 秒，且不能只上传音频。服务端提交异步任务、轮询终态、立即下载 mp4 到 `public/generated-videos/` 并在页面播放。
+全能参考模式可显式加入旧 v2 镜头已选首尾帧（作为普通图片参考）和本镜头已有角色参考图，也可以上传额外媒体。该模式必须至少包含合法图片或视频；共同限制为最多 9 张图片、3 段视频、3 段音频，单段视频或音频 2–15 秒，视频总时长与音频总时长分别不超过 15 秒，且不能只上传音频。服务端提交异步任务、轮询终态，并把 mp4 下载到 `public/generated-videos/<project>/<run>/<plan-revision>-<digest>/`。文件名也带 Plan revision/digest 前缀；旧 Plan 的异步结果不会挂到新 Plan。
 
 可灵 3.0 使用新版独立协议和 API Key：
 
@@ -212,7 +214,7 @@ VIDEO_HTTP_POLL_TIMEOUT_MS=600000
 
 旧 preset 会把首帧写入 `image`、尾帧写入 `image_tail`、动画镜头提示词写入 `prompt`，并将当前 shot 中已启用的 `negativePrompts.video` 编译到 `negative_prompt`。时长按 5 或 10 秒归一，使用首尾帧时默认 `mode=pro`。服务端回执为所有 provider 保留脱敏 `requestPreview`、实际 provider/model、是否请求音频和 `negativePromptDelivery`。
 
-该内置链路只服务于页面内的单镜头试片。仓库仍不提供 JSONL 任务队列、production workspace、批量执行器、本地质检或 ffmpeg 成片合成；整片批量生成和后期由外部供应商程序负责。
+该内置链路只服务于页面内的单镜头试片。仓库已有本地轻量 Run/Artifact/Checkpoint 状态库，但仍不提供 JSONL 任务队列、批量执行器、本地视觉质检或 ffmpeg 成片合成；整片批量生成和后期由外部供应商程序负责。
 
 ## 结构
 
@@ -222,6 +224,7 @@ VIDEO_HTTP_POLL_TIMEOUT_MS=600000
 - `src/qwen-client.js`：Qwen OpenAI 兼容多模态适配器。
 - `src/deepseek-client.js`：DeepSeek-V4 OpenAI 兼容纯文本适配器。
 - `src/character-boundary.js`：全局角色边界的上游摘要、签发和验签。
+- `src/production-lineage.js`、`src/production-state-store.js`：确定性内容摘要、revision 依赖图、stale 传播、Run/Stage/Artifact/Checkpoint 持久化和 v3 测试包签发/导入。
 - `src/character-feature-compiler.js`：把已签发的固定角色外观事实编译为动画静态帧侧车，不重新推断主角。
 - `src/workflow.js`：完整创意工作流编排，以及“动画基础锁定 → 逐场次分批 shotPlan → 服务端合并”的动画生产包生成与验证。
 - `src/shot-video-generator.js`：按显式模式将首尾帧或多模态参考、`videoPrompt` 和逐镜视频负面词路由到所选视频 provider。
@@ -229,6 +232,7 @@ VIDEO_HTTP_POLL_TIMEOUT_MS=600000
 - `workers/generic-http-worker.mjs`：Kling、Seedance 与 MiniMax 的首尾帧/R2V 请求体、异步轮询、产物下载和脱敏回执。
 - `src/mock.js`：未配置模型时的演示结果。
 - `docs/workflow-spec.md`：产品原则、字段要求和验收标准。
+- `docs/production-lineage-state.md`：生产状态的事实来源、依赖、媒体命名空间、恢复与导入边界。
 - `test/`：工作流和核心叙事约束测试。
 
 本地测试包回放可显式配置 `WORKFLOW_RUNTIME_ENVIRONMENT=test` 与 `WORKFLOW_SIGNATURE_POLICY=test_package_unverified`。该模式允许服务重启后继续使用原测试包中的角色边界，但仍严格校验 `sourceDigest` 和 `boundaryDigest`；生产及其他环境始终强制校验签名。

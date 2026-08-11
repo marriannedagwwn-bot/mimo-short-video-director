@@ -6,6 +6,7 @@ exports/
 public/generated-images/
 public/generated-videos/
 runtime-captures/
+runtime/production-runs/
 
 # Large local reference videos; keep them out of Git/Codex workspace snapshots.
 测试文件/*.mp4

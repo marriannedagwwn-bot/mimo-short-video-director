@@ -38,6 +38,8 @@ import {
   serializeServerError
 } from "./src/server-error.js";
 import { AnimationPromptCapture } from "./src/animation-prompt-capture.js";
+import { ProductionStateStore } from "./src/production-state-store.js";
+import { ProductionStateError, normalizeArtifactId, safeIdentifier } from "./src/production-lineage.js";
 
 loadEnv();
 const config = getConfig();
@@ -55,6 +57,9 @@ const stageDefaults = buildStageDefaults(config, { mimoClient, qwenClient });
 const modelStages = buildModelStages(stageDefaults, config);
 const clients = { MiMo: mimoClient, Qwen: qwenClient, DeepSeek: deepseekClient };
 const attemptStore = new AttemptStore();
+const productionStateStore = new ProductionStateStore({
+  rootDir: config.workflowRuntime.productionStateDirectory
+});
 const workflow = new WorkflowService({
   clients,
   stageDefaults,
@@ -85,17 +90,25 @@ const routes = {
     ? workflow.createAnimationPlanWithMetadata(body)
     : workflow.createAnimationPlan(body)),
   "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
-  "/api/generate-shot-video": (body) => {
+  "/api/generate-shot-video": async (body) => {
     const visualGuardrails = workflow.assertGlobalCharacterBoundary(body);
     ensureCharacterReferencesMatchBoundary(body.characterReferences, visualGuardrails, body.shot);
     ensureCharacterPromptMatchesBoundary(shotVideoGenerationPromptText(body), visualGuardrails, {
       requireRequiredTraits: false
     });
     const setting = shotVideoRequestSetting(body);
+    const productionMedia = await resolveProductionMediaContext(body, {
+      required: String(body.animationPromptSchemaVersion || "").trim() === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION
+    });
     return generateShotVideo({
       ...body,
       videoProvider: setting.provider,
-      videoModel: setting.model
+      videoModel: setting.model,
+      ...(productionMedia ? {
+        outputRoot: productionMedia.videoOutputRoot,
+        publicBasePath: productionMedia.videoPublicBasePath,
+        filenamePrefix: productionMedia.filenamePrefix
+      } : {})
     });
   },
   "/api/run": (body) => workflow.run(body)
@@ -161,6 +174,10 @@ const server = http.createServer(async (request, response) => {
         imageModelAvailable: imageProvider.modelAvailable,
         mediaMode: analysisMedia.mediaMode,
         nativeVideoMaxBytes: analysisMedia.nativeVideoMaxBytes,
+        productionState: {
+          schemaVersion: "1.0",
+          persistent: true
+        },
         timeouts: {
           serverRequestMs: config.serverRequestTimeoutMs,
           qwenGenerationMs: config.qwen.requestTimeoutMs,
@@ -176,6 +193,11 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/api/generate-shot-frame-image") {
       const body = await readJson(request);
       const result = await generateShotFrameImage(body);
+      return json(response, 200, { ok: true, mode: workflow.mode, result });
+    }
+    if (request.method === "POST" && url.pathname.startsWith("/api/production/")) {
+      const body = await readJson(request, { limit: 70 * 1024 * 1024 });
+      const result = await handleProductionStateRequest(url.pathname, body);
       return json(response, 200, { ok: true, mode: workflow.mode, result });
     }
     if (request.method === "POST"
@@ -213,6 +235,7 @@ server.requestTimeout = config.serverRequestTimeoutMs;
 
 server.listen(config.port, () => {
   console.log(`AI 短视频导演：http://localhost:${config.port}`);
+  console.log(`Production Lineage 状态目录：${config.workflowRuntime.productionStateDirectory}`);
   if (animationPromptCapture.enabled) {
     console.log(`动画 AI Prompt 抓取已开启：${animationPromptCapture.outputRoot}`);
   }
@@ -435,6 +458,103 @@ async function readJson(request, options = {}) {
   }
 }
 
+async function handleProductionStateRequest(pathname, body = {}) {
+  if (pathname === "/api/production/run/start") {
+    return productionStateStore.createRun({
+      projectId: body.projectId,
+      metadata: {
+        sourceVideo: plainObject(body.metadata?.sourceVideo),
+        creatorProfile: plainObject(body.metadata?.creatorProfile),
+        transcript: String(body.metadata?.transcript || ""),
+        startedBy: "browser-workflow"
+      }
+    });
+  }
+  if (pathname === "/api/production/run/load") {
+    return productionStateStore.loadRun({
+      projectId: body.projectId,
+      runId: body.runId,
+      includeContent: body.includeContent !== false
+    });
+  }
+  if (pathname === "/api/production/stage/update") {
+    return productionStateStore.recordStage(body);
+  }
+  if (pathname === "/api/production/artifact/commit") {
+    return productionStateStore.commitArtifact(body);
+  }
+  if (pathname === "/api/production/package/seal") {
+    return productionStateStore.sealPackage({
+      projectId: body.projectId,
+      runId: body.runId,
+      payload: body.payload
+    });
+  }
+  if (pathname === "/api/production/package/import") {
+    return productionStateStore.importPackage(body.package);
+  }
+  throw new ProductionStateError("生产状态接口不存在", {
+    code: "PRODUCTION_ROUTE_NOT_FOUND",
+    httpStatus: 404
+  });
+}
+
+async function resolveProductionMediaContext(body = {}, { required = false } = {}) {
+  const context = body.productionContext;
+  if (!context || typeof context !== "object" || Array.isArray(context)) {
+    if (!required) return null;
+    throw new ProductionStateError("当前媒体生成请求缺少 Animation Plan lineage", {
+      code: "MEDIA_LINEAGE_REQUIRED",
+      httpStatus: 409
+    });
+  }
+  const projectId = safeIdentifier(context.projectId, "productionContext.projectId");
+  const runId = safeIdentifier(context.runId, "productionContext.runId");
+  const planArtifactId = normalizeArtifactId(context.planArtifactId);
+  const planRevision = safeIdentifier(context.planRevision, "productionContext.planRevision");
+  const planDigest = String(context.planDigest || "").trim().toLowerCase();
+  const mediaNamespace = String(context.mediaNamespace || "").trim();
+  const run = await productionStateStore.loadRun({ projectId, runId, includeContent: false });
+  const current = run.latestArtifacts?.[planArtifactId]?.lineage;
+  if (
+    !current
+    || current.artifactType !== "animationPlan"
+    || !planArtifactId.startsWith("animationPlan:")
+    || current.status !== "current"
+    || current.revision !== planRevision
+    || current.contentDigest !== planDigest
+    || current.mediaNamespace !== mediaNamespace
+  ) {
+    throw new ProductionStateError("Animation Plan 已更新，拒绝把媒体写入旧版本", {
+      code: "MEDIA_PLAN_LINEAGE_STALE",
+      httpStatus: 409,
+      details: [{
+        artifactId: planArtifactId,
+        expectedRevision: planRevision,
+        actualRevision: current?.revision || null
+      }]
+    });
+  }
+  const namespaceSegments = mediaNamespace.split("/").map((segment) => safeIdentifier(segment, "mediaNamespace"));
+  if (namespaceSegments.length !== 3) {
+    throw new ProductionStateError("mediaNamespace 格式无效", {
+      code: "MEDIA_NAMESPACE_INVALID"
+    });
+  }
+  const publicNamespace = namespaceSegments.join("/");
+  return {
+    imageOutputRoot: path.join(publicDir, "generated-images", ...namespaceSegments),
+    imagePublicBasePath: `/generated-images/${publicNamespace}`,
+    videoOutputRoot: path.join(publicDir, "generated-videos", ...namespaceSegments),
+    videoPublicBasePath: `/generated-videos/${publicNamespace}`,
+    filenamePrefix: `${safeIdentifier(planRevision, "planRevision")}-${planDigest.slice(0, 12)}`
+  };
+}
+
+function plainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
 async function streamCharacterReferenceImages(request, response) {
   response.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -447,6 +567,7 @@ async function streamCharacterReferenceImages(request, response) {
   };
   try {
     const body = await readJson(request);
+    const productionMedia = await resolveProductionMediaContext(body, { required: true });
     const visualGuardrails = workflow.assertGlobalCharacterBoundary(body);
     ensureCharacterReferenceMatchesBoundary(body.characterReference, visualGuardrails);
     if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
@@ -471,7 +592,7 @@ async function streamCharacterReferenceImages(request, response) {
       model: imageModel
     }, async (event) => {
       if (event.type === "image_generation.partial_succeeded") {
-        const image = await persistGeneratedImage(event, body.characterReference);
+        const image = await persistGeneratedImage(event, body.characterReference, productionMedia);
         send("image", {
           type: "image",
           imageIndex: Number(event.image_index) || 0,
@@ -586,6 +707,7 @@ async function generateShotFrameImage(body = {}) {
   });
   const authoritativePromptHash = frameReferenceMode ? await computePromptHash(providerPrompt) : "";
   const imageModel = modelOverrideFor(body, "imageGeneration") || config.jimeng.model;
+  const productionMedia = await resolveProductionMediaContext(body, { required: false });
   const uploadedReferences = manifest.providerImages.map((item) => item.dataUrl);
   const images = [];
   const requestReceipt = await jimengClient.generateImagesStream({
@@ -598,7 +720,7 @@ async function generateShotFrameImage(body = {}) {
     if (event.type === "image_generation.partial_succeeded") {
       images.push(await persistGeneratedImage(event, {
         characterName: `${shot.shotId || "shot"}-${frameKind}-frame`
-      }));
+      }, productionMedia));
     }
     if (event.type === "image_generation.partial_failed") {
       throw new JimengImageProviderError(event.error?.message || event.error?.code || "镜头帧图片生成失败", JSON.stringify(event.error || {}));
@@ -707,14 +829,15 @@ function clampFrameImageCount(value) {
   return Math.min(6, Math.max(1, number));
 }
 
-async function persistGeneratedImage(event, characterReference = {}) {
-  const outputRoot = path.join(publicDir, "generated-images");
+async function persistGeneratedImage(event, characterReference = {}, productionMedia = null) {
+  const outputRoot = productionMedia?.imageOutputRoot || path.join(publicDir, "generated-images");
   await fs.mkdir(outputRoot, { recursive: true });
   const stamp = new Date().toISOString().replace(/[-:.]/gu, "").replace(/Z$/u, "");
   const name = safeSegment(characterReference.characterName || "character");
   const index = Number(event.image_index) || 0;
   const extension = extensionForImage(config.jimeng.outputFormat || "png");
-  const filename = `${name}-reference-${stamp}-${index + 1}${extension}`;
+  const prefix = productionMedia?.filenamePrefix ? `${productionMedia.filenamePrefix}-` : "";
+  const filename = `${prefix}${name}-reference-${stamp}-${index + 1}${extension}`;
   const file = path.join(outputRoot, filename);
   if (event.b64_json) {
     await fs.writeFile(file, Buffer.from(stripDataUrlPrefix(event.b64_json), "base64"));
@@ -727,7 +850,7 @@ async function persistGeneratedImage(event, characterReference = {}) {
   }
   return {
     filename,
-    url: `/generated-images/${filename}`,
+    url: `${productionMedia?.imagePublicBasePath || "/generated-images"}/${filename}`,
     path: file,
     size: event.size || ""
   };
@@ -777,6 +900,7 @@ function streamErrorPayload(error = {}, fallbackMessage, extra = {}) {
 function streamErrorStatus(error = {}, compilerStage = "") {
   const explicitStatus = Number(error.status || error.statusCode);
   if (Number.isInteger(explicitStatus) && explicitStatus >= 400 && explicitStatus <= 599) return explicitStatus;
+  if (error instanceof ProductionStateError) return error.httpStatus;
   if (compilerStage) return compilerErrorStatus(error);
   if (
     error instanceof InputError
