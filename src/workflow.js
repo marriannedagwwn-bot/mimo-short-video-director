@@ -6,7 +6,7 @@ import { AttemptStore } from "./attempt-store.js";
 import { ModelCallCoordinator } from "./model-call-coordinator.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
-import { InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCharacterReferenceMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCharacterReferenceMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
 import { CharacterBoundaryError, createCharacterBoundaryKey, sealGlobalCharacterBoundary, verifyGlobalCharacterBoundary } from "./character-boundary.js";
 import {
   ReconstructionGroundingError,
@@ -40,6 +40,7 @@ export class WorkflowService {
     animationShotBatchSceneCount = DEFAULT_ANIMATION_BATCH_SCENE_COUNT,
     groundingKey = null,
     characterBoundaryKey = null,
+    characterBoundarySignatureRequired = true,
     attemptStore = null,
     modelCallCoordinator = null
   } = {}) {
@@ -80,6 +81,7 @@ export class WorkflowService {
     this.animationShotBatchSceneCount = normalizeBatchSize(animationShotBatchSceneCount);
     this.groundingKey = groundingKey || createGroundingKey();
     this.characterBoundaryKey = characterBoundaryKey || createCharacterBoundaryKey();
+    this.characterBoundarySignatureRequired = characterBoundarySignatureRequired !== false;
     this.attemptStore = attemptStore instanceof AttemptStore
       ? attemptStore
       : new AttemptStore();
@@ -374,6 +376,7 @@ export class WorkflowService {
     maxCompletionTokens = null,
     compilerSettings,
     characterFeatureProfile,
+    directShotMode = false,
     batchIndex = 0,
     repairContext,
     validate
@@ -393,6 +396,7 @@ export class WorkflowService {
         maxCompletionTokens,
         compilerSettings,
         characterFeatureProfile,
+        directShotMode,
         batchIndex,
         compilerPhase: "post-generate",
         rawModelOutput,
@@ -447,6 +451,7 @@ export class WorkflowService {
         maxCompletionTokens,
         compilerSettings,
         characterFeatureProfile,
+        directShotMode,
         batchIndex,
         compilerPhase: "second-pass",
         rawModelOutput: retryRawModelOutput,
@@ -484,6 +489,7 @@ export class WorkflowService {
     maxCompletionTokens,
     compilerSettings,
     characterFeatureProfile,
+    directShotMode = false,
     batchIndex,
     compilerPhase,
     rawModelOutput,
@@ -500,6 +506,7 @@ export class WorkflowService {
         repairContext,
         compilerSettings,
         characterFeatureProfile,
+        directShotMode,
         batchIndex,
         phase: compilerPhase
       });
@@ -566,6 +573,7 @@ export class WorkflowService {
         repairContext,
         compilerSettings,
         characterFeatureProfile,
+        directShotMode,
         batchIndex,
         phase: "post-patch"
       });
@@ -612,12 +620,20 @@ export class WorkflowService {
     repairContext,
     compilerSettings,
     characterFeatureProfile,
+    directShotMode = false,
     batchIndex,
     phase
   }) {
     const repairedStructure = repairAnimationShotBatchStructure(rawModelOutput, repairContext);
     if (!isPlainObject(repairedStructure) || !Array.isArray(repairedStructure.shotPlan)) {
       throw new OutputContractError("animationShotBatch structural repair 后必须包含 shotPlan 数组");
+    }
+    if (directShotMode) {
+      // 暂时弃置，后续优化或删除：direct_shot 绕过 Static Frame Compiler 与本地 Prompt Compiler；旧实现保留在下方兼容 v2。
+      return {
+        candidate: repairedStructure,
+        compilerRuns: []
+      };
     }
     const structurallyRepaired = stripAnimationShotBatchAliases(repairedStructure);
     const compiled = await compileStaticFrames({
@@ -728,6 +744,11 @@ export class WorkflowService {
     const profile = requireObject(input.creatorProfile, "creatorProfile");
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
+    const animationPlanMode = String(input.animationPlanMode || "").trim();
+    if (animationPlanMode && animationPlanMode !== ANIMATION_DIRECT_SHOT_MODE) {
+      throw new InputError(`animationPlanMode 只允许 ${ANIMATION_DIRECT_SHOT_MODE}`);
+    }
+    const directShotMode = animationPlanMode === ANIMATION_DIRECT_SHOT_MODE;
     const visualGuardrails = this.assertGlobalCharacterBoundary(input);
     const fullStory = ensureFullStoryMatchesProfile(
       ensureOutputContract(input.fullStory, "fullStory"),
@@ -742,7 +763,7 @@ export class WorkflowService {
     if (!this.hasLiveClient) {
       return {
         animationPlan: validateAnimationPlanOutput(mockAnimationPlan(validatedInput), validatedInput),
-        metadata: {
+        metadata: directShotMode ? disabledDirectShotCompilerMetadata(compilerSettings) : {
           staticFrameCompiler: {
             version: STATIC_FRAME_COMPILER_VERSION,
             provider: compilerSettings.provider || "",
@@ -752,18 +773,13 @@ export class WorkflowService {
         }
       };
     }
-    this.assertStageClient(settings, "首尾帧动画生产包");
-    assertStaticFrameCompilerSettings(compilerSettings);
+    this.assertStageClient(settings, directShotMode ? "直接视频镜头生产包" : "首尾帧动画生产包");
+    if (!directShotMode) assertStaticFrameCompilerSettings(compilerSettings);
     const promptInput = { ...validatedInput, targetProvider: settings.provider, targetModel: settings.model };
-    const [foundationResult, characterFeatureResult] = await Promise.allSettled([
-      this.generateValidatedJson({
-        client: settings.client,
-        prompt: animationFoundationPrompt(promptInput),
-        model: settings.model,
-        maxCompletionTokens: settings.maxCompletionTokens,
-        validate: (result) => validateAnimationFoundationOutput(result, validatedInput)
-      }),
-      compileCharacterFeatures({
+    // 暂时弃置，后续优化或删除：direct_shot 当前不调用 Character Feature Compiler。
+    const createCharacterFeatureTask = () => directShotMode
+      ? Promise.resolve(disabledCompilerResult("Character Feature Compiler"))
+      : compileCharacterFeatures({
         creatorProfile: structuredClone(profile),
         visualGuardrails: structuredClone(validatedInput.visualGuardrails || {}),
         fullStory: structuredClone(fullStory),
@@ -776,7 +792,16 @@ export class WorkflowService {
         maxCompletionTokens: compilerSettings.maxCompletionTokens,
         timeoutMs: compilerSettings.requestTimeoutMs,
         cachedProfile: input.privateSidecars?.characterFeatureProfile || null
-      })
+      });
+    const [foundationResult, characterFeatureResult] = await Promise.allSettled([
+      this.generateValidatedJson({
+        client: settings.client,
+        prompt: animationFoundationPrompt(promptInput),
+        model: settings.model,
+        maxCompletionTokens: settings.maxCompletionTokens,
+        validate: (result) => validateAnimationFoundationOutput(result, validatedInput)
+      }),
+      createCharacterFeatureTask()
     ]);
     const foundation = settledParallelValue(
       foundationResult,
@@ -790,7 +815,9 @@ export class WorkflowService {
       "Character Feature Compiler",
       "Animation Foundation"
     );
-    const characterFeatureProfile = freezeClone(characterFeatureCompilation.profile);
+    const characterFeatureProfile = directShotMode
+      ? null
+      : freezeClone(characterFeatureCompilation.profile);
 
     const sourceScenes = Array.isArray(validatedInput.fullStory.sceneScript) ? validatedInput.fullStory.sceneScript : [];
     const sceneBatches = chunkItems(sourceScenes, this.animationShotBatchSceneCount);
@@ -822,6 +849,7 @@ export class WorkflowService {
         maxCompletionTokens: settings.maxCompletionTokens,
         compilerSettings,
         characterFeatureProfile,
+        directShotMode,
         batchIndex,
         repairContext: createAnimationShotBatchRepairContext(batchContext),
         validate: (result) => validateAnimationShotBatchOutput(result, batchContext)
@@ -836,7 +864,7 @@ export class WorkflowService {
     );
     return {
       animationPlan,
-      metadata: {
+      metadata: directShotMode ? disabledDirectShotCompilerMetadata(compilerSettings) : {
         characterFeatureCompiler: structuredClone(characterFeatureCompilation.metadata || {}),
         privateSidecars: {
           characterFeatureProfile: structuredClone(characterFeatureProfile)
@@ -876,7 +904,12 @@ export class WorkflowService {
   assertGlobalCharacterBoundary(input = {}) {
     requireObject(input.visualGuardrails, "visualGuardrails");
     try {
-      const verified = verifyGlobalCharacterBoundary(input.visualGuardrails, input, this.characterBoundaryKey);
+      const verified = verifyGlobalCharacterBoundary(
+        input.visualGuardrails,
+        input,
+        this.characterBoundaryKey,
+        { requireSignature: this.characterBoundarySignatureRequired }
+      );
       const materialized = materializeGlobalCharacterBoundaryViews(verified, input.creatorProfile || {});
       return ensureVisualGuardrailsMatchesProfile(ensureOutputContract(materialized, "visualGuardrails"), input.creatorProfile || {});
     } catch (error) {
@@ -980,6 +1013,18 @@ function validateAnimationPlanOutput(result, input = {}) {
     createAnimationEmotionValidationProjection(result, primaryCharacterName),
     "animationPlan"
   );
+  if (result?.promptSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
+    // 暂时弃置，后续优化或删除：direct_shot 不运行本地 Prompt Compiler；v2 兼容实现保留在下方。
+    const pruned = pruneAnimationPlanNegativePrompts(structuredClone(result), input);
+    return ensureAnimationPlanMatchesProfile(
+      pruned,
+      input.creatorProfile,
+      input.creativeBrief,
+      input.variant,
+      input.visualGuardrails,
+      input
+    );
+  }
   const structured = structuredClone(result);
   const normalized = normalizeAnimationPlanPromptAliases(structured);
   ensureAnimationPlanV2Contract(
@@ -1000,6 +1045,22 @@ function validateAnimationPlanOutput(result, input = {}) {
 function validateAnimationFoundationOutput(result, input = {}) {
   const sourceSceneIds = (input.fullStory?.sceneScript || []).map((scene) => scene?.sceneId);
   const foundation = ensureAnimationFoundationContract(result, { sourceSceneIds });
+  const expectedSchemaVersion = input.animationPlanMode === ANIMATION_DIRECT_SHOT_MODE
+    ? ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION
+    : "2.0";
+  if (foundation.promptSchemaVersion !== expectedSchemaVersion) {
+    throw new OutputContractError(
+      `animationFoundation.promptSchemaVersion 与 animationPlanMode 不匹配，必须为 ${expectedSchemaVersion}`
+    );
+  }
+  if (
+    expectedSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION
+    && foundation.productionStrategy?.format !== "direct_shot_video"
+  ) {
+    throw new OutputContractError(
+      "animationFoundation.productionStrategy.format 在 direct_shot 模式必须为 direct_shot_video"
+    );
+  }
   resolveExplicitAnimationPrimaryCharacterName(input, foundation, {
     path: "animationFoundation"
   });
@@ -1030,7 +1091,8 @@ function validateAnimationShotBatchOutput(result, {
       path: "animationShotBatch",
       batchIndex,
       sourceSceneIds
-    })
+    }),
+    { promptSchemaVersion: foundation?.promptSchemaVersion || "" }
   );
   const batch = structuredClone(result);
   if (foundation?.promptSchemaVersion === "2.0") {
@@ -1039,19 +1101,21 @@ function validateAnimationShotBatchOutput(result, {
       throw new OutputContractError(`animationShotBatch.shotPlan[${index}] 必须输出 v2 结构化字段：startFrame、endFrame、motion`);
     });
   }
-  ensureAnimationPlanV2Contract(
-    createAnimationEmotionValidationProjection(batch, primaryCharacterName, {
-      compileAliases: true,
-      path: "animationShotBatch",
-      batchIndex,
-      sourceSceneIds
-    }),
-    {
-      path: "animationShotBatch",
-      allowVersionlessStructured: true,
-      compileShotPrompts: compileAnimationShotPrompts
-    }
-  );
+  if (foundation?.promptSchemaVersion !== ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
+    ensureAnimationPlanV2Contract(
+      createAnimationEmotionValidationProjection(batch, primaryCharacterName, {
+        compileAliases: true,
+        path: "animationShotBatch",
+        batchIndex,
+        sourceSceneIds
+      }),
+      {
+        path: "animationShotBatch",
+        allowVersionlessStructured: true,
+        compileShotPrompts: compileAnimationShotPrompts
+      }
+    );
+  }
   const allowedSourceScenes = new Set(sourceSceneIds);
   const knownSceneIds = new Set((foundation.sceneReferencePrompts || []).map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean));
   const sceneIdBySourceScene = new Map((foundation.sceneReferencePrompts || []).flatMap((scene) => (
@@ -1137,6 +1201,36 @@ function createAnimationEmotionValidationProjection(value, primaryCharacterName,
 } = {}) {
   const projected = structuredClone(value);
   if (!isPlainObject(projected) || !Array.isArray(projected.shotPlan)) {
+    return projected;
+  }
+
+  if (projected.promptSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
+    const appearanceFields = [
+      "videoPrompt",
+      "characterAction",
+      "dialogueOrSubtitle",
+      "continuityNotes"
+    ];
+    const canonicalProtagonistAppearanceCount = primaryCharacterName
+      ? projected.shotPlan.reduce((count, shot) => count + (
+        appearanceFields.some((field) => String(shot?.[field] || "").includes(primaryCharacterName)) ? 1 : 0
+      ), 0)
+      : 0;
+    if (
+      primaryCharacterName
+      && path === "animationPlan"
+      && projected.shotPlan.length > 0
+      && canonicalProtagonistAppearanceCount === 0
+    ) {
+      throw new OutputContractError(
+        `${path}.shotPlan 必须至少有一个直接视频镜头让全剧主角「${primaryCharacterName}」实际出镜`,
+        [{
+          code: "ANIMATION_PRIMARY_CHARACTER_MISSING_FROM_SHOT_PLAN",
+          path: `${path}.shotPlan`,
+          reason: `全剧主角「${primaryCharacterName}」必须出现在 videoPrompt、characterAction、dialogueOrSubtitle 或 continuityNotes 的真实镜头描述中`
+        }]
+      );
+    }
     return projected;
   }
 
@@ -1571,6 +1665,7 @@ function mergeAnimationPlan(foundation, shotPlan, input = {}) {
   const durationRange = Number.isFinite(Number(recommendedDuration.min)) && Number.isFinite(Number(recommendedDuration.max))
     ? `${recommendedDuration.min}–${recommendedDuration.max} 秒`
     : "建议时长范围";
+  const directShotMode = foundation.promptSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION;
   return {
     ...foundation,
     sceneReferencePrompts: foundation.sceneReferencePrompts.map((scene) => {
@@ -1583,15 +1678,32 @@ function mergeAnimationPlan(foundation, shotPlan, input = {}) {
     shotPlan,
     continuityAndSafetyCheck: {
       ...foundation.continuityAndSafetyCheck,
-      firstLastFrameContinuity: `已合并 ${shotPlan.length} 个镜头，每镜均已通过首帧、尾帧、场景引用和连续性字段校验。`,
+      firstLastFrameContinuity: directShotMode
+        ? `当前直接视频模式不生产首尾帧；已合并 ${shotPlan.length} 个镜头并通过场景引用与连续性字段校验。`
+        : `已合并 ${shotPlan.length} 个镜头，每镜均已通过首帧、尾帧、场景引用和连续性字段校验。`,
       shotDurationControlled: `${shotPlan.length} 个镜头的时长均已通过 ${durationRange} 约束校验。`,
-      readyForVideoGeneration: "全部逐镜 shotPlan 已在服务端合并并通过最终契约校验，可进入图片与视频生成。"
+      readyForVideoGeneration: directShotMode
+        ? "全部直接视频 shotPlan 已在服务端合并并通过最终契约校验，可进入视频生成。"
+        : "全部逐镜 shotPlan 已在服务端合并并通过最终契约校验，可进入图片与视频生成。"
     }
   };
 }
 
 function animationContinuityContext(shot) {
   if (!shot) return null;
+  if (!hasStructuredAnimationPromptSource(shot)) {
+    return {
+      shotId: shot.shotId,
+      sourceSceneId: shot.sourceSceneId,
+      sceneId: shot.sceneId,
+      videoPrompt: shot.videoPrompt,
+      cameraMotion: shot.cameraMotion,
+      characterAction: shot.characterAction,
+      dialogueOrSubtitle: shot.dialogueOrSubtitle,
+      soundDesign: shot.soundDesign,
+      continuityNotes: shot.continuityNotes
+    };
+  }
   const finalBeat = Array.isArray(shot.motion?.timingBeats) ? shot.motion.timingBeats.at(-1) : null;
   return {
     shotId: shot.shotId,
@@ -1640,6 +1752,35 @@ function settledParallelValue(result, companionResult, label, companionLabel) {
 
 function freezeClone(value) {
   return freezeRecursively(structuredClone(value));
+}
+
+function disabledCompilerResult(stage) {
+  return {
+    profile: null,
+    metadata: {
+      stage,
+      disabled: true,
+      note: "暂时弃置，后续优化或删除"
+    }
+  };
+}
+
+function disabledDirectShotCompilerMetadata(settings = {}) {
+  return {
+    characterFeatureCompiler: disabledCompilerResult("Character Feature Compiler").metadata,
+    staticFrameCompiler: {
+      version: STATIC_FRAME_COMPILER_VERSION,
+      provider: settings.provider || "",
+      model: settings.model || "",
+      runs: [],
+      disabled: true,
+      note: "暂时弃置，后续优化或删除"
+    },
+    localPromptCompiler: {
+      disabled: true,
+      note: "暂时弃置，后续优化或删除"
+    }
+  };
 }
 
 function freezeRecursively(value) {
@@ -1741,7 +1882,7 @@ function stageLabel(stage) {
     visualGuardrails: "角色与表达边界",
     variants: "主题变体",
     fullStory: "完整剧情",
-    animationPlan: "首尾帧动画生产包",
+    animationPlan: "动画镜头生产包",
     staticFrameCompiler: "Static Frame Compiler",
     characterReference: "人物参考修正"
   })[stage] || stage;

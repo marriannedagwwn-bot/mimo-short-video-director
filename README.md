@@ -16,7 +16,7 @@ npm start
 
 `Visual Guardrails` 是固定角色语义唯一生成阶段。视觉模型会结合用户角色描述、参考分析、脚本还原和创意简报，一次性输出 `requiredTraits`、`allowedTraits` 与 `forbiddenTraits`；可以使用模型常识理解“狼娘”等开放概念，但不依赖本地写死的物种关键词字典，且用户明确肯定或否定的设定优先。
 
-服务端会将该边界与当前上游数据摘要绑定并签名。主题变体、Legacy Full Story、Animation Plan、人物参考精修、角色图、首尾帧和视频生成只消费同一份已签发边界，不会在每个阶段重新识别关键词或重新推断角色特征。修改固定角色、赛道、限制、字幕或参考视频会使旧边界失效，页面要求重新运行工作流。
+服务端会将该边界与当前上游数据摘要绑定并签名。主题变体、Legacy Full Story、Animation Plan、人物参考精修、角色图、旧 v2 首尾帧和视频生成只消费同一份已签发边界，不会在每个阶段重新识别关键词或重新推断角色特征。修改固定角色、赛道、限制、字幕或参考视频会使旧边界失效，页面要求重新运行工作流。
 
 ## 接入 Xiaomi MiMo V2.5
 
@@ -75,11 +75,21 @@ QWEN_VIDEO_FPS=2
 QWEN_ENABLE_THINKING=false
 ```
 
-配置 `QWEN_API_KEY` 后，只要 Qwen 可用，参考片分析、脚本还原、创意简报、视觉规则、主题变体、完整剧情、动画生产包和人物参考修正默认都会调用 Qwen 对应阶段模型；未配置 Qwen 时自动回退为 MiMo。`qwen3.7-max` 是纯文本阶段的默认选择；会传入视频或图片的参考片分析、脚本还原、视觉规则和人物参考修正默认使用 `qwen3.7-plus`，也可以改成账号可用的 Qwen-VL / Qwen-Omni 模型。页面顶部“模型设置”按钮可以按阶段临时切换 provider 和模型名，覆盖值会随之后所有生成请求发送给后端，也会写入导出的生产包。角色和首尾帧图片仍由已配置的即梦图片服务生成；单镜头视频可选择 Kling、Seedance 或 MiniMax H3，并按 provider 能力使用首尾帧或全能参考模式。
+配置 `QWEN_API_KEY` 后，只要 Qwen 可用，参考片分析、脚本还原、创意简报、视觉规则、主题变体、完整剧情、动画生产包和人物参考修正默认都会调用 Qwen 对应阶段模型；未配置 Qwen 时自动回退为 MiMo。`qwen3.7-max` 是纯文本阶段的默认选择；会传入视频或图片的参考片分析、脚本还原、视觉规则和人物参考修正默认使用 `qwen3.7-plus`，也可以改成账号可用的 Qwen-VL / Qwen-Omni 模型。页面顶部“模型设置”按钮可以按阶段临时切换 provider 和模型名，覆盖值会随之后所有生成请求发送给后端，也会写入导出的生产包。角色图片仍由已配置的即梦图片服务生成；当前 `direct_shot` 不生成首尾帧图片，旧 v2 兼容路径才保留首尾帧能力。
+
+## 当前 Animation Plan 临时主流程
+
+页面请求显式发送 `animationPlanMode: "direct_shot"`，服务端返回 `promptSchemaVersion: "3.0"` 与 `productionStrategy.format: "direct_shot_video"`。每个 shot 保留 `shotId`、`sourceSceneId`、`sceneId`、`durationSeconds`、`storyPurpose`、`emotionalTarget`、`videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes`、`negativePrompts` 和 `acceptanceCriteria`；`negativePrompts.image` 必须为 `[]`。
+
+当前场内拆镜只依据 Full Story 的地点和人物主要动作：地点或主要动作目标变化才拆镜。景别、机位、构图、焦段、运镜和转场建议只用于已经划定镜头的内部摄影表达，不得单独增加镜头；`shotAndSound` 与 `shootingNotes` 不是镜头数量的事实源。每个 source scene 至少一镜及 3–6 秒单镜时长约束保持不变。
+
+当前 shot 禁止 `startFrame`、`endFrame`、`motion`、`startFramePrompt`、`endFramePrompt` 五个端点字段，也不得用别名补回端点。Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：暂时弃置，后续优化或删除。旧 v2 代码保留兼容，但不参与当前 `direct_shot` 主流程。
+
+视频请求仍必须显式选择 `generationMode`，不能根据端点字段缺失、provider、模型名或素材存在性推断。无端点的 `direct_shot` 不能使用 `first_last_frame`；选择 `all_reference` 时仍需提供合法图片或视频，不能只提供音频。
 
 ## 接入 DeepSeek-V4 纯文本模型
 
-DeepSeek 只作为显式可选的纯文本 provider，不会因为配置了 API Key 就自动接管 Qwen/MiMo 的默认阶段路由。页面“模型设置”只会在创意简报、主题变体、Legacy Full Story、Animation Plan 和 Static Frame Compiler 中提供 DeepSeek；参考片分析、脚本还原、视觉规则和人物图修正仍必须使用支持图片或视频输入的 Qwen/MiMo。前端隐藏不兼容选项，服务端也会在调用 provider 前明确拒绝媒体阶段绕过请求。
+DeepSeek 只作为显式可选的纯文本 provider，不会因为配置了 API Key 就自动接管 Qwen/MiMo 的默认阶段路由。页面“模型设置”只会在创意简报、主题变体、Legacy Full Story、Animation Plan 和旧 v2 兼容路径的 Static Frame Compiler 中提供 DeepSeek；参考片分析、脚本还原、视觉规则和人物图修正仍必须使用支持图片或视频输入的 Qwen/MiMo。前端隐藏不兼容选项，服务端也会在调用 provider 前明确拒绝媒体阶段绕过请求。
 
 ```dotenv
 DEEPSEEK_BASE_URL=https://api.deepseek.com
@@ -96,7 +106,7 @@ DEEPSEEK_JSON_MODE=true
 
 可选模型为 `deepseek-v4-flash` 和 `deepseek-v4-pro`，页面默认把 Flash 放在首位，Pro 保留为显式对照选择，不做静默回退。客户端使用官方 OpenAI 兼容 `/chat/completions` 与 JSON Output；空内容、非法 JSON、鉴权失败和媒体输入都会明确失败或按既有受控次数重试，不会返回默认值掩盖错误。接口依据：[DeepSeek V4 模型与价格](https://api-docs.deepseek.com/quick_start/pricing)、[Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/) 和 [JSON Output](https://api-docs.deepseek.com/guides/json_mode/)。模型设置中的阶段标题会显示“视觉模型”或“文本模型”标签，图片和视频生成阶段保留独立标签。
 
-动画逐镜 batch 在结构修复之后会经过独立的 Static Frame Compiler，把“准备、即将、正在”等剧情叙事语言转换为单帧可直接观察的姿态、手部与道具状态和动作结果。该阶段复用已配置的 Qwen、MiMo 或 DeepSeek 客户端与凭据，但 provider/model 不继承动画规划阶段，也不会静默回退：
+以下 Static Frame Compiler 配置仅供旧 v2 首尾帧兼容路径。当前 `direct_shot` 中 Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：暂时弃置，后续优化或删除；旧实现与配置保留，供兼容路径把剧情叙事语言转换为可直接观察的单帧状态。旧 v2 的 Static Frame Compiler 复用已配置的 Qwen、MiMo 或 DeepSeek 客户端与凭据，但 provider/model 不继承动画规划阶段，也不会静默回退：
 
 ```dotenv
 STATIC_FRAME_COMPILER_PROVIDER=Qwen
@@ -105,7 +115,7 @@ STATIC_FRAME_COMPILER_MAX_COMPLETION_TOKENS=4096
 STATIC_FRAME_COMPILER_TIMEOUT_MS=300000
 ```
 
-`STATIC_FRAME_COMPILER_PROVIDER` 仅支持 `Qwen`、`MiMo` 或 `DeepSeek`，对应 provider 必须已经配置可用。配置缺失或模型不可用时，健康检查和动画生产包接口会明确报告 Static Frame Compiler 不可用。
+`STATIC_FRAME_COMPILER_PROVIDER` 仅支持 `Qwen`、`MiMo` 或 `DeepSeek`，对应 provider 必须已经配置可用。配置缺失或模型不可用时，显式运行旧 v2 兼容路径会明确报告 Static Frame Compiler 不可用；当前 `direct_shot` 不以该配置作为运行前提。
 
 Qwen、MiMo 和 DeepSeek 的单次生成请求默认都允许等待 15 分钟，分别由 `QWEN_REQUEST_TIMEOUT_MS=900000`、`MIMO_REQUEST_TIMEOUT_MS=900000` 和 `DEEPSEEK_REQUEST_TIMEOUT_MS=900000` 控制。`SERVER_REQUEST_TIMEOUT_MS=900000` 同步限制服务端接收请求体的时间；它不替代模型请求超时设置。
 
@@ -134,17 +144,17 @@ JIMENG_MAX_IMAGES=6
 
 动画生产包生成后，剧情页保留两个供应商交付出口：
 
-- 导出当前生产包 JSON：保留完整剧情、主题变体、`animationPlan`、模型信息和已选首尾帧图片，供外部程序读取。
-- 复制动画生产包 Markdown：输出 Markdown 格式的角色参考、场景参考、资产提示词和逐镜首帧／尾帧／`videoPrompt`，可直接粘贴到供应商程序。
+- 导出当前生产包 JSON：当前测试/规划包版本为 `2.2`，保留完整剧情、主题变体、`animationPlan` 和模型信息；`direct_shot` 的 `animationPlan` 不含端点字段，旧 v2 兼容数据可保留已选首尾帧。
+- 复制动画生产包 Markdown：当前 `direct_shot` 输出角色/场景/资产参考和逐镜 `videoPrompt`、运镜、动作、声音、连续性、视频负面词及验收标准；旧 v2 才输出逐镜首帧／尾帧。
 
 ## 单镜头视频：首尾帧 / 全能参考
 
-动画生产包的每个 shot 可以生成 1–4 个候选视频。页面“模型设置”中的“镜头视频”阶段可在 Kling、Seedance 和 MiniMax H3 之间切换；生成弹窗必须显式选择模式：
+动画生产包的每个 shot 可以生成 1–4 个候选视频。页面“模型设置”中的“镜头视频”阶段可在 Kling、Seedance 和 MiniMax H3 之间切换；请求中的 `generationMode` 是模式权威字段，生成弹窗必须显式选择，不能根据缺失字段、provider、模型名或素材存在性自动推断或降级：
 
-- `first_last_frame`：已选首帧和尾帧是精确端点，Kling、Seedance 与 MiniMax H3 均支持。
+- `first_last_frame`：已选首帧和尾帧是精确端点，Kling、Seedance 与 MiniMax H3 均支持；无端点的 `direct_shot` 不可使用该模式，必须明确失败。
 - `all_reference`：图片、视频和音频只是人物、场景、动作、运镜、节奏或声音参考，不被解释为精确首尾帧。Seedance 2.0 与 MiniMax H3 使用官方 R2V 角色 `reference_image`、`reference_video`、`reference_audio`；不得与 `first_frame` / `last_frame` 混用。
 
-全能参考模式可显式加入当前镜头已选首尾帧（作为普通图片参考）和本镜头已有角色参考图，也可以上传额外媒体。共同限制为最多 9 张图片、3 段视频、3 段音频，单段视频或音频 2–15 秒，视频总时长与音频总时长分别不超过 15 秒，且不能只上传音频。服务端提交异步任务、轮询终态、立即下载 mp4 到 `public/generated-videos/` 并在页面播放。
+全能参考模式可显式加入旧 v2 镜头已选首尾帧（作为普通图片参考）和本镜头已有角色参考图，也可以上传额外媒体。该模式必须至少包含合法图片或视频；共同限制为最多 9 张图片、3 段视频、3 段音频，单段视频或音频 2–15 秒，视频总时长与音频总时长分别不超过 15 秒，且不能只上传音频。服务端提交异步任务、轮询终态、立即下载 mp4 到 `public/generated-videos/` 并在页面播放。
 
 可灵 3.0 使用新版独立协议和 API Key：
 
@@ -220,6 +230,8 @@ VIDEO_HTTP_POLL_TIMEOUT_MS=600000
 - `src/mock.js`：未配置模型时的演示结果。
 - `docs/workflow-spec.md`：产品原则、字段要求和验收标准。
 - `test/`：工作流和核心叙事约束测试。
+
+本地测试包回放可显式配置 `WORKFLOW_RUNTIME_ENVIRONMENT=test` 与 `WORKFLOW_SIGNATURE_POLICY=test_package_unverified`。该模式允许服务重启后继续使用原测试包中的角色边界，但仍严格校验 `sourceDigest` 和 `boundaryDigest`；生产及其他环境始终强制校验签名。
 
 ## 验证
 

@@ -20,6 +20,21 @@ export function loadEnv(file = path.resolve(".env")) {
 
 export function getConfig() {
   const serverRequestTimeoutMs = Math.round(clampNumber(process.env.SERVER_REQUEST_TIMEOUT_MS, 900000, 30000, 3600000));
+  const workflowRuntimeEnvironment = String(
+    process.env.WORKFLOW_RUNTIME_ENVIRONMENT
+      || process.env.NODE_ENV
+      || "development"
+  ).trim().toLowerCase();
+  const requestedWorkflowSignaturePolicy = String(
+    process.env.WORKFLOW_SIGNATURE_POLICY || "signed"
+  ).trim().toLowerCase();
+  const workflowSignaturePolicy = requestedWorkflowSignaturePolicy === "test_package_unverified"
+    ? "test_package_unverified"
+    : "signed";
+  const characterBoundarySignatureRequired = !(
+    ["test", "development"].includes(workflowRuntimeEnvironment)
+    && workflowSignaturePolicy === "test_package_unverified"
+  );
   const baseUrl = process.env.MIMO_BASE_URL?.trim() || "";
   const requestedMediaMode = process.env.MIMO_MEDIA_MODE?.trim().toLowerCase() || "auto";
   const mediaMode = ["auto", "video", "frames"].includes(requestedMediaMode) ? requestedMediaMode : "auto";
@@ -103,6 +118,11 @@ export function getConfig() {
   return {
     port: Number(process.env.PORT || 4173),
     serverRequestTimeoutMs,
+    workflowRuntime: {
+      environment: workflowRuntimeEnvironment,
+      signaturePolicy: workflowSignaturePolicy,
+      characterBoundarySignatureRequired
+    },
     mimo: {
       baseUrl,
       apiKey: process.env.MIMO_API_KEY?.trim() || "",

@@ -582,6 +582,45 @@ test("工作流阶段可通过 modelOverrides 灵活切换 provider 和模型", 
   assert.equal(calls[0].maxCompletionTokens, 22000);
 });
 
+test("测试包签名策略允许跨进程角色边界，但仍拒绝摘要不一致", () => {
+  const signingWorkflow = new WorkflowService();
+  const signedContext = globalBoundaryContext(signingWorkflow, { count: 1 });
+  const testPackageWorkflow = new WorkflowService({
+    characterBoundarySignatureRequired: false
+  });
+
+  assert.doesNotThrow(() => testPackageWorkflow.assertGlobalCharacterBoundary(signedContext));
+
+  const changedContext = structuredClone(signedContext);
+  changedContext.visualGuardrails.fixedCharacterBoundary.canonicalDescription += "，内容已被修改";
+  assert.throws(
+    () => testPackageWorkflow.assertGlobalCharacterBoundary(changedContext),
+    /全局角色边界内容已变化/u
+  );
+});
+
+test("workflow runtime 仅在显式测试包策略下跳过角色边界签名", () => {
+  const keys = ["WORKFLOW_RUNTIME_ENVIRONMENT", "WORKFLOW_SIGNATURE_POLICY"];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    process.env.WORKFLOW_RUNTIME_ENVIRONMENT = "test";
+    process.env.WORKFLOW_SIGNATURE_POLICY = "test_package_unverified";
+    assert.equal(getConfig().workflowRuntime.characterBoundarySignatureRequired, false);
+
+    process.env.WORKFLOW_RUNTIME_ENVIRONMENT = "production";
+    assert.equal(getConfig().workflowRuntime.characterBoundarySignatureRequired, true);
+
+    process.env.WORKFLOW_RUNTIME_ENVIRONMENT = "test";
+    process.env.WORKFLOW_SIGNATURE_POLICY = "signed";
+    assert.equal(getConfig().workflowRuntime.characterBoundarySignatureRequired, true);
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});
+
 test("Qwen 媒体阶段默认避开 qwen3.7-max 文本模型", () => {
   const keys = [
     "QWEN_MODEL",

@@ -879,7 +879,7 @@ function renderStoryPage({ autoGenerate = false } = {}) {
     } else {
       elements.animationPlan.classList.add("hidden");
       elements.animationPlan.innerHTML = "";
-      setAnimationStatus("可以继续生成首尾帧动画生产包。", "");
+      setAnimationStatus("可以继续生成动画镜头生产包。", "");
     }
   } else {
     elements.fullStory.classList.add("hidden");
@@ -944,7 +944,7 @@ async function generateFullStory({ force = false } = {}) {
     renderFullStory(fullStory);
     setStoryStatus(`完整剧情已生成 · ${storyModelLabel()}`, "ready");
     elements.animationGenerate.disabled = false;
-    setAnimationStatus("可以继续生成首尾帧动画生产包。", "");
+    setAnimationStatus("可以继续生成动画镜头生产包。", "");
     updateStoryExportActions();
     elements.export.classList.remove("hidden");
   } catch (error) {
@@ -1003,8 +1003,9 @@ async function generateAnimationPlan({ force = false } = {}) {
     state.characterReferenceStatuses = {};
   }
   setAnimationRunning(true);
-  setAnimationStatus(`正在调用 ${animationModelLabel()} 生成首尾帧动画生产包…`, "active");
+  setAnimationStatus(`正在调用 ${animationModelLabel()} 生成直接视频镜头生产包…`, "active");
   try {
+    const animationPlanMode = "direct_shot";
     const previousPrivateSidecars = state.animationPlanMetadata[variant.id]?.privateSidecars;
     const result = await api("/api/animation-plan", {
       referenceAnalysis: state.output.referenceAnalysis,
@@ -1014,7 +1015,9 @@ async function generateAnimationPlan({ force = false } = {}) {
       variant,
       fullStory,
       creatorProfile: profile(),
-      ...(previousPrivateSidecars && typeof previousPrivateSidecars === "object" && !Array.isArray(previousPrivateSidecars)
+      animationPlanMode,
+      // 暂时弃置，后续优化或删除：direct_shot 不消费 Character Feature private sidecar；旧 v2 请求兼容保留。
+      ...(animationPlanMode !== "direct_shot" && previousPrivateSidecars && typeof previousPrivateSidecars === "object" && !Array.isArray(previousPrivateSidecars)
         ? { privateSidecars: structuredClone(previousPrivateSidecars) }
         : {}),
       includeCompilerMetadata: true
@@ -1067,11 +1070,21 @@ function selectedAnimationPlanMetadata() {
   return variant ? state.animationPlanMetadata[variant.id] || null : null;
 }
 
+function hasPlannedEndpoints(shot = {}) {
+  const hasStructuredEndpoints = Boolean(shot.startFrame && shot.endFrame && shot.motion);
+  const hasCompiledEndpoints = Boolean(
+    String(shot.startFramePrompt || "").trim()
+    && String(shot.endFramePrompt || "").trim()
+  );
+  return hasStructuredEndpoints || hasCompiledEndpoints;
+}
+
 function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
   const strategy = data.productionStrategy || {};
   const visual = data.visualBible || {};
-  elements.animationPlan.innerHTML = `${resultHeader("ANIMATION PLAN", data.title || "首尾帧动画生产包", strategy.format || "first_last_frame_video")}
-    <div class="summary-strip">${escape(strategy.whyThisWorkflow || "按首尾帧拆镜头，逐镜生成短视频，优先控制角色一致性。")}</div>
+  const directShotPlan = data.promptSchemaVersion === "3.0";
+  elements.animationPlan.innerHTML = `${resultHeader("ANIMATION PLAN", data.title || "动画镜头生产包", strategy.format || (directShotPlan ? "direct_shot_video" : "first_last_frame_video"))}
+    <div class="summary-strip">${escape(strategy.whyThisWorkflow || (directShotPlan ? "镜头内容直接组织为视频生成指令。" : "按首尾帧拆镜头，逐镜生成短视频，优先控制角色一致性。"))}</div>
     <div class="data-grid">
       ${cell("画幅", strategy.targetAspectRatio || "9:16")}
       ${cell("目标时长", `${strategy.targetRuntimeSeconds || 60} 秒`)}
@@ -1080,7 +1093,7 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
       ${cell("色彩", (visual.colorPalette || []).join(" / "))}
       ${cell("镜头语言", visual.cameraLanguage)}
     </div>
-    ${renderStaticFrameCompilerLog(metadata)}
+    ${directShotPlan ? "" : renderStaticFrameCompilerLog(metadata)}
     ${block("生产顺序", `<div class="tag-row">${(strategy.generationOrder || []).map((item, index) => `<span class="tag orange">${index + 1} · ${escape(item)}</span>`).join("")}</div>`)}
     ${block("视觉圣经", `<div class="rule-list">
       <div class="rule"><strong>整体风格</strong><p>${escape(visual.overallStyle)}<br><b>光线：</b>${escape(visual.lighting)}</p></div>
@@ -1096,14 +1109,16 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
       <strong>${escape(item.assetName)}</strong>
       <p>${escape(item.imagePrompt)}<br><b>功能：</b>${escape(item.storyFunction)}<br><b>一致性：</b>${escape((item.consistencyTags || []).join(" / "))}</p>
     </div>`).join("") || "<p class=\"long-copy\">无单独资产提示词。</p>"}</div>`)}
-    ${block("首尾帧镜头计划", `<div class="shot-list">${(data.shotPlan || []).map((shot, shotIndex) => `<div class="shot-card">
+    ${block(directShotPlan ? "直接视频镜头计划" : "首尾帧镜头计划", `<div class="shot-list">${(data.shotPlan || []).map((shot, shotIndex) => `<div class="shot-card">
       <div class="scene-head"><strong>${escape(shot.shotId)} · ${escape(shot.sourceSceneId)} · ${escape(shot.sceneId || "")}</strong><span>${escape(shot.durationSeconds)} 秒 · ${escape(shot.emotionalTarget)}</span></div>
       <p><b>剧情功能：</b>${escape(shot.storyPurpose)}</p>
       <div class="prompt-grid">
-        ${renderShotFramePromptCard(shot.shotId, "start", "首帧 prompt", shot.startFramePrompt)}
-        ${renderShotFramePromptCard(shot.shotId, "end", "尾帧 prompt", shot.endFramePrompt)}
+        ${hasPlannedEndpoints(shot) ? `
+          ${renderShotFramePromptCard(shot.shotId, "start", "首帧 prompt", shot.startFramePrompt)}
+          ${renderShotFramePromptCard(shot.shotId, "end", "尾帧 prompt", shot.endFramePrompt)}
+        ` : ""}
         <div class="prompt-card"><span class="prompt-label">视频 prompt</span><p>${escape(shot.videoPrompt)}</p></div>
-        ${renderShotNegativePromptCard(shot, "image", "图片负面提示词")}
+        ${hasPlannedEndpoints(shot) ? renderShotNegativePromptCard(shot, "image", "图片负面提示词") : ""}
         ${renderShotNegativePromptCard(shot, "video", "视频负面提示词")}
       </div>
       <p><b>镜头运动：</b>${escape(shot.cameraMotion)}<br><b>动作：</b>${escape(shot.characterAction)}<br><b>对白/字幕：</b>${escape(shot.dialogueOrSubtitle)}<br><b>声音：</b>${escape(shot.soundDesign)}</p>
@@ -1111,10 +1126,10 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
       <div class="shot-video-action">
         <div class="shot-action-row">
           <button class="outline-button shot-video-button" type="button" data-generate-shot-video="${escape(shot.shotId)}"${state.shotVideoResults[shot.shotId]?.status === "running" ? " disabled" : ""}>用 ${escape(shotVideoProviderLabel())} 生成此镜头视频</button>
-          <button class="outline-button shot-video-button" type="button" data-open-shot-frame-generator="${escape(shot.shotId)}"${shotFrameIsRunning(shot.shotId) ? " disabled" : ""}>生成首尾帧</button>
-          ${renderPreviousTailReuseButton(data, shot, shotIndex)}
+          ${hasPlannedEndpoints(shot) ? `<button class="outline-button shot-video-button" type="button" data-open-shot-frame-generator="${escape(shot.shotId)}"${shotFrameIsRunning(shot.shotId) ? " disabled" : ""}>生成首尾帧</button>` : ""}
+          ${hasPlannedEndpoints(shot) ? renderPreviousTailReuseButton(data, shot, shotIndex) : ""}
         </div>
-        <div class="shot-frame-result" data-shot-frame-result="${escape(shot.shotId)}">${renderShotFrameResult(shot.shotId)}</div>
+        ${hasPlannedEndpoints(shot) ? `<div class="shot-frame-result" data-shot-frame-result="${escape(shot.shotId)}">${renderShotFrameResult(shot.shotId)}</div>` : ""}
         <div class="shot-video-result" data-shot-video-result="${escape(shot.shotId)}">${renderShotVideoResult(shot.shotId)}</div>
       </div>
     </div>`).join("")}</div>`)}
@@ -1135,6 +1150,7 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
 function renderStaticFrameCompilerLog(metadata = null) {
   const compiler = metadata?.staticFrameCompiler;
   if (!compiler || typeof compiler !== "object" || Array.isArray(compiler)) return "";
+  if (compiler.disabled === true) return "";
   const runs = Array.isArray(compiler.runs) ? compiler.runs : [];
   const modificationCount = runs.reduce((total, run) => total + compilerRunModifications(run).length, 0);
   const identity = [compiler.provider, compiler.model].filter(Boolean).join(" · ") || "模型信息未记录";
@@ -1859,6 +1875,12 @@ function cssEscape(value) {
 }
 
 async function openShotFrameImageGenerator(shotId, frameKindValue = "start") {
+  const context = shotFrameContext(shotId);
+  if (!context || !hasPlannedEndpoints(context.shot)) {
+    // 暂时弃置，后续优化或删除：direct_shot 不开放首尾帧生成入口；旧 v2 弹窗实现保留在下方。
+    setAnimationStatus("当前 direct_shot 镜头不生成首尾帧。", "error");
+    return;
+  }
   const frameKind = frameKindValue === "end" ? "end" : "start";
   state.shotFrameImageGeneration.open = true;
   state.shotFrameImageGeneration.running = false;
@@ -2215,7 +2237,7 @@ async function updateShotVideoGeneratorPreview(options = {}) {
     setAnimationStatus("没有找到对应镜头。", "error");
     return false;
   }
-  const { shot } = context;
+  const { shot, plan } = context;
   const generationMode = normalizeShotVideoGenerationMode(state.shotVideoGeneration.generationMode);
   state.shotVideoGeneration.generationMode = generationMode;
   elements.shotVideoGenerationMode.value = generationMode;
@@ -2223,10 +2245,14 @@ async function updateShotVideoGeneratorPreview(options = {}) {
   const count = Math.max(1, Math.min(4, Number(state.shotVideoGeneration.count) || Number(elements.shotVideoCount.value) || 1));
   elements.shotVideoCount.value = String(count);
   elements.shotVideoModalTitle.textContent = `用 ${shotVideoProviderLabel()} 生成 ${shot.shotId || "镜头"} 视频`;
-  elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || 4} 秒 · ${generationMode === "all_reference" ? "多模态参考生成，不锁定精确首尾帧" : "精确锁定已添加的首帧/尾帧"}`;
+  elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || 4} 秒 · ${generationMode === "all_reference"
+    ? "多模态参考生成，不锁定精确首尾帧"
+    : hasPlannedEndpoints(shot)
+      ? "精确锁定已添加的首帧/尾帧"
+      : "当前镜头没有端点；首尾帧模式不可用"}`;
   elements.shotVideoReferenceList.innerHTML = renderShotVideoReferenceList(shotId);
   if (!options.preservePrompt || !elements.shotVideoPromptPreview.value.trim()) {
-    elements.shotVideoPromptPreview.value = buildShotVideoPromptPreview(shot);
+    elements.shotVideoPromptPreview.value = buildShotVideoPromptPreview(shot, plan.promptSchemaVersion);
   }
   const validation = await evaluateShotVideoReferences(shotId);
   if (validationRevision !== state.shotVideoGeneration.validationRevision || validation.cancelled) return false;
@@ -2268,6 +2294,13 @@ async function evaluateAllReferenceAssets(shotId) {
 async function evaluateShotVideoEndpoints(shotId) {
   const context = shotFrameContext(shotId);
   if (!context) return { ok: false, message: "没有找到对应镜头。" };
+  if (!hasPlannedEndpoints(context.shot)) {
+    return {
+      ok: false,
+      status: "endpointless",
+      message: "当前 direct_shot 镜头没有首尾帧。请显式选择“全能参考”模式并添加受支持的图片或视频参考；系统不会自动切换生成模式。"
+    };
+  }
   const startCandidate = selectedShotFrameCandidate(shotId, "start");
   if (!startCandidate) return { ok: false, message: "请先生成并选择该镜头的首帧参考图。" };
   const endKey = shotFrameKey(shotId, "end");
@@ -2430,7 +2463,7 @@ function allReferenceAssetDescriptors(shotId) {
       });
     }
   }
-  if (state.shotVideoGeneration.includeEndpointFrames) {
+  if (state.shotVideoGeneration.includeEndpointFrames && hasPlannedEndpoints(context.shot)) {
     const start = selectedShotFrameCandidate(shotId, "start");
     const end = storedShotFrameCandidate(shotId, "end");
     if (start) assets.push({
@@ -2567,6 +2600,10 @@ function renderShotVideoReferenceList(shotId) {
       <p class="shot-video-reference-note">这些素材会以 reference_image / reference_video / reference_audio 发送，不会混入 first_frame / last_frame。</p>
     </div>`;
   }
+  const context = shotFrameContext(shotId);
+  if (context && !hasPlannedEndpoints(context.shot)) {
+    return `<p class="shot-video-reference-note">当前 direct_shot 镜头没有首尾帧，不能使用首尾帧模式。请在上方显式选择“全能参考”并添加图片或视频参考。</p>`;
+  }
   const start = selectedShotFrameCandidate(shotId, "start");
   const end = storedShotFrameCandidate(shotId, "end");
   const endStatus = state.shotFrameResults[shotFrameKey(shotId, "end")]?.status || "";
@@ -2590,8 +2627,12 @@ function frameStatusDescription(status) {
   return "已锁定参考图";
 }
 
-function buildShotVideoPromptPreview(shot = {}) {
+function buildShotVideoPromptPreview(shot = {}, promptSchemaVersion = "") {
   const noTextRule = "禁止新增字幕、对白文字、标题、说明字、Logo、水印、UI 文本或漫画拟声词；对白只用于理解动作和情绪，不要渲染成画面文字。";
+  if (promptSchemaVersion === "3.0") {
+    // 暂时弃置，后续优化或删除：direct_shot 不再由前端拼装镜头职责字段，直接使用模型签发的完整 videoPrompt。
+    return [shot.videoPrompt || "", noTextRule].filter(Boolean).join("\n");
+  }
   if (shot.startFrame && shot.endFrame && shot.motion) {
     return [shot.videoPrompt || "", noTextRule].filter(Boolean).join("\n");
   }
@@ -2599,6 +2640,8 @@ function buildShotVideoPromptPreview(shot = {}) {
     shot.videoPrompt || "",
     shot.cameraMotion ? `镜头运动：${shot.cameraMotion}` : "",
     shot.characterAction ? `角色动作：${shot.characterAction}` : "",
+    shot.dialogueOrSubtitle ? `对白：${shot.dialogueOrSubtitle}` : "",
+    shot.soundDesign ? `声音：${shot.soundDesign}` : "",
     shot.continuityNotes ? `连续性：${shot.continuityNotes}` : "",
     noTextRule
   ].filter(Boolean).join("\n");
@@ -2643,6 +2686,7 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
       selectedVariantId: variant?.id || "",
       count,
       generationMode,
+      animationPromptSchemaVersion: plan.promptSchemaVersion || "",
       characterReferences: plan.characterReferencePrompts || [],
       shot: {
         ...videoShot,
@@ -2753,6 +2797,9 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
   const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
   const shot = (plan?.shotPlan || []).find((item) => String(item.shotId) === String(shotId));
   if (!shot || !plan) return setAnimationStatus("没有找到对应镜头。", "error");
+  if (!hasPlannedEndpoints(shot)) {
+    return setAnimationStatus("当前 direct_shot 镜头不生成首尾帧。", "error");
+  }
   const key = shotFrameKey(shotId, frameKind);
   const count = Math.max(1, Math.min(6, Number(options.count) || 1));
   state.shotFrameResults[key] = { status: "running", frameKind, message: `正在生成${frameKind === "end" ? "尾帧" : "首帧"}镜头 · ${count} 张…` };
@@ -2797,6 +2844,7 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
     const result = await api("/api/generate-shot-frame-image", {
       ...globalCharacterBoundaryContext(),
       selectedVariantId: variant?.id || "",
+      animationPromptSchemaVersion: plan.promptSchemaVersion || "",
       frameKind,
       count,
       ...(promptOverride ? { prompt: promptOverride } : {}),
@@ -2975,7 +3023,7 @@ function setStoryRunning(running) {
 }
 function setAnimationRunning(running) {
   elements.animationGenerate.classList.toggle("running", running);
-  elements.animationGenerate.textContent = running ? "动画生产包生成中…" : "生成首尾帧动画生产包";
+  elements.animationGenerate.textContent = running ? "动画生产包生成中…" : "生成动画镜头生产包";
   const variant = selectedVariant();
   const fullStory = variant ? state.fullStories[variant.id] || state.output.fullStory : null;
   elements.animationGenerate.disabled = running || !variant || !fullStory;
@@ -3256,7 +3304,7 @@ function modelStateSummary() {
 }
 function updateModelActionLabels() {
   if (!state.storyRunning) elements.storyGenerate.querySelector("span").textContent = `用 ${storyModelLabel()} 生成完整剧情`;
-  if (!state.animationRunning) elements.animationGenerate.textContent = "生成首尾帧动画生产包";
+  if (!state.animationRunning) elements.animationGenerate.textContent = "生成动画镜头生产包";
   updateShotVideoProviderUi();
 }
 function updateShotVideoProviderUi() {
@@ -3580,7 +3628,7 @@ function formatAnimationPackMarkdown(pack) {
   const guardrails = pack.visualGuardrails || {};
   const boundary = guardrails.fixedCharacterBoundary || {};
   const lines = [
-    `# ${plan.title || pack.fullStory?.title || "首尾帧动画生产包"}`,
+    `# ${plan.title || pack.fullStory?.title || "动画镜头生产包"}`,
     "",
     `- 画幅：${strategy.targetAspectRatio || "9:16"}`,
     `- 目标时长：${strategy.targetRuntimeSeconds || pack.fullStory?.targetDurationSeconds || 60} 秒`,
@@ -3656,18 +3704,21 @@ function formatAnimationPackMarkdown(pack) {
   }
   lines.push("", "## 镜头生产任务");
   for (const shot of plan.shotPlan || []) {
+    const endpointPromptLines = hasPlannedEndpoints(shot) ? [
+      "",
+      "首帧 prompt：",
+      shot.startFramePrompt || "",
+      "",
+      "尾帧 prompt：",
+      shot.endFramePrompt || ""
+    ] : [];
     lines.push(
       "",
       `### ${shot.shotId || "镜头"} · ${shot.sourceSceneId || ""} · ${shot.durationSeconds || 4} 秒`,
       `场景 ID：${shot.sceneId || ""}`,
       `剧情功能：${shot.storyPurpose || ""}`,
       `情绪目标：${shot.emotionalTarget || ""}`,
-      "",
-      "首帧 prompt：",
-      shot.startFramePrompt || "",
-      "",
-      "尾帧 prompt：",
-      shot.endFramePrompt || "",
+      ...endpointPromptLines,
       "",
       "视频 prompt：",
       shot.videoPrompt || "",

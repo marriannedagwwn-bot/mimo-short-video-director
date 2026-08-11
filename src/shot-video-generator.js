@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { compileShotNegativePrompt } from "../public/negative-prompts.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION } from "./validation.js";
 import {
   inferShotVideoProvider,
   isNonDomesticKlingApiEndpoint,
@@ -50,6 +51,14 @@ export async function generateShotVideo(options = {}) {
   ).trim();
   const providerRuntime = shotVideoRuntimeConfig(videoProvider, process.env, videoModel);
   const generationMode = normalizeShotVideoGenerationMode(options.generationMode);
+  if (
+    String(options.animationPromptSchemaVersion || "").trim() === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION
+    && generationMode === "first_last_frame"
+  ) {
+    throw new ShotVideoConfigError(
+      "promptSchemaVersion=3.0 的 direct_shot 镜头没有首尾端点，不能使用 first_last_frame；请显式选择受支持的 all_reference 模式并提供图片或视频参考。"
+    );
+  }
   assertProviderProtocolCompatibility(videoProvider, videoModel, config);
   if (videoProvider !== "VideoHTTP" && !isShotVideoModelAllowed(videoProvider, videoModel)) {
     throw new ShotVideoConfigError(`${videoProvider} 不支持视频模型“${videoModel}”。`);

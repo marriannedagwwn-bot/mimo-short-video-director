@@ -553,3 +553,130 @@ test("nested visual leaves enter visual-boundary scans and structured dialogue s
     /鸟喙.*endFrame\.characters\[0\]\.expression/
   );
 });
+
+test("来源禁词用正则顺序包含匹配已签发允许词，不误杀常见缩写或放行无关身份", () => {
+  const creatorProfile = { fixedCharacter: "小白子，Q版狼耳少女人形" };
+  const visualGuardrails = {
+    fixedCharacterBoundary: {
+      characterName: "小白子",
+      requiredTraits: [{ canonicalName: "小白子", terms: ["小白子"], scope: "identity" }],
+      allowedTraits: [{ canonicalName: "日系风格服饰", terms: ["日系风格服饰"], scope: "appearance" }],
+      forbiddenTraits: []
+    },
+    allowedPositiveTraits: [],
+    sourceSimilarityRules: []
+  };
+  const basePlan = {
+    promptSchemaVersion: "2.0",
+    selectedVariantId: "V1",
+    title: "秋日休憩",
+    visualBible: {},
+    characterReferencePrompts: [{
+      characterName: "小白子",
+      storyRole: "主角",
+      identity: "Q版狼耳少女人形",
+      appearancePrompt: "小白子，Q版狼耳少女人形",
+      consistencyTags: []
+    }],
+    sceneReferencePrompts: [],
+    assetPrompts: [],
+    shotPlan: [v2Shot()]
+  };
+  const validateSourceTerm = (sourceExpression, appearancePrompt, boundary = visualGuardrails) => {
+    const creativeBrief = {
+      protectedExpressions: [{ sourceExpression, prohibition: `不得复用${sourceExpression}` }],
+      controlledRewriteVariables: []
+    };
+    const guardrails = structuredClone(boundary);
+    guardrails.sourceSimilarityRules = [{ sourceExpression }];
+    const plan = structuredClone(basePlan);
+    plan.characterReferencePrompts[0].appearancePrompt = `小白子，Q版狼耳少女人形，${appearancePrompt}`;
+    return () => ensureAnimationPlanMatchesProfile(
+      plan,
+      creatorProfile,
+      creativeBrief,
+      { id: "V1" },
+      guardrails
+    );
+  };
+
+  for (const acceptedExpression of ["日系", "日系风格", "服饰", "日服饰"]) {
+    assert.doesNotThrow(
+      validateSourceTerm(acceptedExpression, acceptedExpression),
+      `已签发的“日系风格服饰”应覆盖常见表达“${acceptedExpression}”`
+    );
+  }
+
+  const compoundSourceExpression = "菲比啾比、粉发女孩、蓝发女孩这些具体名称及其与发色、服饰（如企鹅装）的强绑定。";
+  assert.doesNotThrow(
+    validateSourceTerm(compoundSourceExpression, "日系风格服饰，黑白简洁配色"),
+    "说明句机械切出的泛词“服饰”不得误杀已签发允许外观"
+  );
+
+  for (const forbiddenExpression of [
+    "企鹅服",
+    "动物拟态服装",
+    "猫耳少女",
+    "企鹅服饰",
+    "非日系服饰",
+    "日系校服",
+    "服饰日系",
+    "日饰",
+    "日风服"
+  ]) {
+    assert.throws(
+      validateSourceTerm(forbiddenExpression, forbiddenExpression),
+      new RegExp(`${forbiddenExpression}.*characterReferencePrompts\\[0\\]\\.appearancePrompt`, "u")
+    );
+  }
+
+  const authoritativeForbiddenGuardrails = structuredClone(visualGuardrails);
+  authoritativeForbiddenGuardrails.fixedCharacterBoundary.forbiddenTraits = [{
+    canonicalName: "服饰",
+    terms: ["服饰"],
+    scope: "appearance"
+  }];
+  const authoritativeForbiddenPlan = structuredClone(basePlan);
+  authoritativeForbiddenPlan.characterReferencePrompts[0].appearancePrompt = "小白子，Q版狼耳少女人形，服饰";
+  assert.throws(
+    () => ensureAnimationPlanMatchesProfile(
+      authoritativeForbiddenPlan,
+      creatorProfile,
+      { protectedExpressions: [], controlledRewriteVariables: [] },
+      { id: "V1" },
+      authoritativeForbiddenGuardrails
+    ),
+    /服饰.*characterReferencePrompts\[0\]\.appearancePrompt/u
+  );
+
+  const nurseGuardrails = structuredClone(visualGuardrails);
+  nurseGuardrails.fixedCharacterBoundary.allowedTraits = [{
+    canonicalName: "护士",
+    terms: ["护士"],
+    scope: "identity"
+  }];
+  assert.throws(
+    validateSourceTerm("护士服", "护士服", nurseGuardrails),
+    /护士服.*characterReferencePrompts\[0\]\.appearancePrompt/u
+  );
+
+  const requiredGuardrails = structuredClone(visualGuardrails);
+  requiredGuardrails.fixedCharacterBoundary.requiredTraits.push({
+    canonicalName: "日系风格服饰",
+    terms: ["日系风格服饰"],
+    scope: "appearance"
+  });
+  requiredGuardrails.fixedCharacterBoundary.allowedTraits = [];
+  const partialRequiredPlan = structuredClone(basePlan);
+  partialRequiredPlan.characterReferencePrompts[0].appearancePrompt = "小白子，Q版狼耳少女人形，日系";
+  assert.throws(
+    () => ensureAnimationPlanMatchesProfile(
+      partialRequiredPlan,
+      creatorProfile,
+      { protectedExpressions: [], controlledRewriteVariables: [] },
+      { id: "V1" },
+      requiredGuardrails
+    ),
+    /角色参考提示词未沿用全局必需角色事实：日系风格服饰/u
+  );
+});

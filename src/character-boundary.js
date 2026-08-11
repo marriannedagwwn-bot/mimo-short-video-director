@@ -37,7 +37,9 @@ export function sealGlobalCharacterBoundary(visualGuardrails, input = {}, key) {
   };
 }
 
-export function verifyGlobalCharacterBoundary(visualGuardrails, input = {}, key) {
+export function verifyGlobalCharacterBoundary(visualGuardrails, input = {}, key, {
+  requireSignature = true
+} = {}) {
   assertSigningKey(key);
   const value = cloneRecord(visualGuardrails, "visualGuardrails");
   const boundary = cloneRecord(value.fixedCharacterBoundary, "visualGuardrails.fixedCharacterBoundary");
@@ -53,9 +55,11 @@ export function verifyGlobalCharacterBoundary(visualGuardrails, input = {}, key)
   if (boundary.boundaryDigest !== boundaryDigest) {
     throw new CharacterBoundaryError("全局角色边界内容已变化，不能继续使用旧边界");
   }
-  const expectedSignature = sign({ sourceDigest, boundaryDigest }, key);
-  if (!safeEqual(boundary.boundarySignature, expectedSignature)) {
-    throw new CharacterBoundaryError("全局角色边界签名无效，请重新生成角色边界");
+  if (requireSignature) {
+    const expectedSignature = sign({ sourceDigest, boundaryDigest }, key);
+    if (!safeEqual(boundary.boundarySignature, expectedSignature)) {
+      throw new CharacterBoundaryError("全局角色边界签名无效，请重新生成角色边界");
+    }
   }
   return value;
 }

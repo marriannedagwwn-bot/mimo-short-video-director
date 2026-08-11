@@ -17,8 +17,7 @@ AI 短视频生产工作流系统。
 → 创意重构
 → Visual Guardrails
 → Story
-→ Animation Plan
-→ 首尾帧
+→ Animation Plan（direct_shot）
 → 视频生成
 → 导出生产数据
 
@@ -51,18 +50,22 @@ Variants
  ↓
 Legacy Full Story
  ↓
-Animation Plan 2.0
- ↓
-Static Frame / Shot Generation
+Animation Plan direct_shot（promptSchemaVersion 3.0）
  ↓
 Video Generation
 
+当前 `direct_shot` 必须由请求显式传入 `animationPlanMode: "direct_shot"`，且 `productionStrategy.format` 为 `direct_shot_video`。每个 shot 保留 `videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes` 以及镜头标识、时长、剧情目的、负面词和验收标准；禁止 `startFrame`、`endFrame`、`motion`、`startFramePrompt`、`endFramePrompt` 五个端点字段。
+
+当前 `direct_shot` 的场内拆镜只依据 Full Story 的 `location` 与 `visibleAction` 中的人物主要动作目标。地点或主要动作目标变化时拆镜；景别、机位、构图、焦段、运镜和转场建议只能决定已划定镜头的摄影表达，不得增加镜头。`shotAndSound` 与 `shootingNotes` 不是镜头数量的事实源。每个 source scene 至少一镜及 3–6 秒单镜时长约束保持不变。
+
+Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：暂时弃置，后续优化或删除。旧 v2 代码保留兼容，但不参与当前 `direct_shot` 主流程。
+
 视频生成存在两个显式模式：
 
-- `first_last_frame`：首尾帧是精确端点，Kling、Seedance、MiniMax H3 可用。
-- `all_reference`：图片/视频/音频仅作为多模态参考，当前只允许 Seedance 2.0 与 MiniMax H3；不得混用 `first_frame` / `last_frame`，不得把可灵 image-to-video 静默当作 Omni API。
+- `first_last_frame`：首尾帧是精确端点，Kling、Seedance、MiniMax H3 可用；无端点的 `direct_shot` 不可使用，必须明确失败。
+- `all_reference`：图片/视频/音频仅作为多模态参考，必须至少包含合法图片或视频，不能只输入音频；当前只允许 Seedance 2.0 与 MiniMax H3，不得混用 `first_frame` / `last_frame`，不得把可灵 image-to-video 静默当作 Omni API。
 
-模式由请求 `generationMode` 决定，不得根据 provider、模型名或素材存在性自动推断或降级。
+模式由请求 `generationMode` 决定，不得根据端点字段缺失、provider、模型名或素材存在性自动推断或降级。
 
 ---
 
@@ -80,7 +83,7 @@ DeepSeek 当前只允许用于纯文本阶段：
 - Variants
 - Legacy Full Story
 - Animation Plan
-- Static Frame Compiler
+- Static Frame Compiler（仅旧 v2 兼容路径）
 
 禁止将 DeepSeek 用于需要图片或视频输入的阶段：
 
@@ -97,7 +100,9 @@ DeepSeek 当前只允许用于纯文本阶段：
 
 `Visual Guardrails` 是固定角色语义的唯一生成阶段。它允许视觉模型结合用户设定、参考分析、脚本还原、创意简报和模型常识生成开放语义边界，不得新增本地物种关键词字典替代模型判断。
 
-服务端签发的 `fixedCharacterBoundary` 是后续 Variants、Legacy Full Story、Animation Plan、Character Feature Compiler、人物参考精修、角色图、首尾帧和视频生成的唯一固定角色事实来源。后续阶段不得重新解析 `creatorProfile.fixedCharacter`、重新推断关键词或生成第二份角色边界。
+服务端签发的 `fixedCharacterBoundary` 是后续 Variants、Legacy Full Story、Animation Plan、人物参考精修、角色图、视频生成，以及旧 v2 兼容路径中 Character Feature Compiler 和首尾帧生成的唯一固定角色事实来源。后续阶段不得重新解析 `creatorProfile.fixedCharacter`、重新推断关键词或生成第二份角色边界。
+
+生产环境必须校验 `fixedCharacterBoundary.boundarySignature`。仅当服务端显式配置 `WORKFLOW_RUNTIME_ENVIRONMENT=test|development` 且 `WORKFLOW_SIGNATURE_POLICY=test_package_unverified` 时，为支持重启后继续回放本地测试包，可以跳过 HMAC 签名比较；`sourceDigest` 与 `boundaryDigest` 仍必须匹配。该策略只能来自服务端环境，禁止由请求体控制。
 
 冲突优先级：用户明确肯定/否定 > 已签发模型推断。无法消解的冲突必须阻断，不能选择任一方静默覆盖。用户或权威上游数据改变后，旧边界必须失效并重新生成。
 
@@ -288,20 +293,20 @@ Compiler、Retry、Recovery、Fallback、Source of Truth 修改时：
 
 ## Animation Plan
 
-涉及 startFrame、endFrame、environment、motion、
-environmentChange、inherit 或 transition 的语义修改前，
-必须先阅读：
+当前主流程为显式 `animationPlanMode: "direct_shot"`，输出 `promptSchemaVersion: "3.0"`。shot 保留 `videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes` 等直接视频字段，禁止 `startFrame`、`endFrame`、`motion`、`startFramePrompt`、`endFramePrompt` 五个端点字段；`negativePrompts.image` 必须为 `[]`。
+
+只有维护旧 v2 兼容路径、涉及 startFrame、endFrame、environment、motion、environmentChange、inherit 或 transition 的语义修改前，必须先阅读：
 
 `docs/animation-plan-source-of-truth.md`
 
-如果文档没有明确当前字段的事实来源和冲突优先级，
+如果文档没有明确旧 v2 字段的事实来源和冲突优先级，
 不得自行补充解释或实施确定性修复。
 负责：
 
 镜头拆分
-动作状态
-首尾帧关系
-动画约束
+直接视频渲染提示词
+角色动作、运镜和声音设计
+镜头连续性与动画约束
 
 不负责：
 

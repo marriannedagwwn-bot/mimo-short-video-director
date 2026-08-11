@@ -1,3 +1,5 @@
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE } from "./validation.js";
+
 const allowedComponents = [
   ["送达任务", "保留“必须把某物送到某人手中”的目标压力，改写物品、接收者和阻碍。"],
   ["旅途结构", "保留空间推进带来的关系升温，改写路线、交通方式与停靠事件。"],
@@ -402,6 +404,9 @@ export function mockFullStory(input) {
 }
 
 export function mockAnimationPlan(input) {
+  if (input.animationPlanMode === ANIMATION_DIRECT_SHOT_MODE) {
+    return mockDirectAnimationPlan(input);
+  }
   const variant = input.variant || {};
   const fullStory = input.fullStory || {};
   const fixed = input.creatorProfile?.fixedCharacter || fullStory.characterBible?.protagonist?.identity || variant.characterSetup?.protagonist || "固定主角";
@@ -548,6 +553,76 @@ export function mockAnimationPlan(input) {
       readyForVideoGeneration: "可以进入角色参考图、道具参考图、首尾帧和短视频候选生成。"
     },
     uncertainties: []
+  };
+}
+
+function mockDirectAnimationPlan(input) {
+  const legacy = mockAnimationPlan({ ...input, animationPlanMode: "" });
+  const directShots = legacy.shotPlan.map((shot) => {
+    const dialogue = (shot.motion?.audio?.dialogue || [])
+      .map((item) => `${item.speaker}：${item.text}`)
+      .join("；");
+    const cameraMove = shot.motion?.cameraMove || {};
+    const cameraMotion = [cameraMove.technique, cameraMove.path, cameraMove.speed]
+      .filter(Boolean)
+      .join("；");
+    const characterAction = String(shot.motion?.primaryAction || "角色完成当前剧情动作").trim();
+    const soundDesign = [
+      shot.motion?.audio?.ambience,
+      ...(shot.motion?.audio?.soundEffects || []),
+      shot.motion?.audio?.musicCue
+    ].filter(Boolean).join("；");
+    const continuityNotes = (shot.motion?.preserve || []).join("；");
+    return {
+      shotId: shot.shotId,
+      sourceSceneId: shot.sourceSceneId,
+      sceneId: shot.sceneId,
+      durationSeconds: shot.durationSeconds,
+      storyPurpose: shot.storyPurpose,
+      emotionalTarget: shot.emotionalTarget,
+      videoPrompt: [
+        `${characterAction}。`,
+        cameraMotion ? `摄影机：${cameraMotion}。` : "",
+        shot.motion?.emotionArc?.visibleProgression ? `表演：${shot.motion.emotionArc.visibleProgression}。` : "",
+        dialogue ? `对白：${dialogue}；对白只作为声音，不渲染画面文字。` : "",
+        soundDesign ? `声音：${soundDesign}。` : "",
+        continuityNotes ? `连续性：${continuityNotes}。` : "",
+        `环境、角色身份、关键道具与既有锁定保持一致；达到动作结果后立即停止。`
+      ].filter(Boolean).join(""),
+      cameraMotion: cameraMotion || "固定机位，保持单一连续构图",
+      characterAction,
+      dialogueOrSubtitle: dialogue,
+      soundDesign: soundDesign || "保留当前场景的自然环境声和动作声",
+      continuityNotes: continuityNotes || "角色、场景和关键道具与前后镜头连续",
+      negativePrompts: {
+        image: [],
+        video: structuredClone(shot.negativePrompts?.video || [])
+      },
+      acceptanceCriteria: (shot.acceptanceCriteria || []).slice(0, 3)
+    };
+  });
+  return {
+    ...legacy,
+    promptSchemaVersion: ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION,
+    title: legacy.title.replace("首尾帧动画生产包", "直接视频镜头生产包"),
+    productionStrategy: {
+      ...legacy.productionStrategy,
+      format: "direct_shot_video",
+      generationOrder: ["锁定角色、场景和资产", "生成直接视频镜头", "质检并挑选候选", "剪辑、配音、字幕和音效"],
+      whyThisWorkflow: "镜头内容由模型直接写成完整视频指令，不生产首帧、尾帧或端点运动结构。"
+    },
+    shotPlan: directShots,
+    generationChecklist: (legacy.generationChecklist || []).filter((item) => item.check !== "首尾帧因果"),
+    modelAgnosticNotes: [
+      "videoPrompt 是每个镜头的完整渲染主指令。",
+      "当前流程不生产 startFrame、endFrame、motion、startFramePrompt 或 endFramePrompt。",
+      "视频生成模式仍由请求显式选择，不根据字段缺失自动推断。"
+    ],
+    continuityAndSafetyCheck: {
+      ...legacy.continuityAndSafetyCheck,
+      firstLastFrameContinuity: "当前直接视频模式不生产首尾帧。",
+      readyForVideoGeneration: "直接视频镜头已通过契约校验，可进入显式视频生成模式。"
+    }
   };
 }
 

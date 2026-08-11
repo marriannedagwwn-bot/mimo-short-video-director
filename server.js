@@ -13,7 +13,7 @@ import { buildShotFrameMultiImagePrompt } from "./public/shot-frame-multi-image-
 import { computeDependencyHash, computePromptHash } from "./src/frame-dependency.js";
 import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./src/frame-reference-request.js";
 import { WorkflowService } from "./src/workflow.js";
-import { ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, InputError } from "./src/validation.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, InputError } from "./src/validation.js";
 import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
 import {
   inferShotVideoProvider,
@@ -37,9 +37,16 @@ import {
   inferCompilerErrorStage,
   serializeServerError
 } from "./src/server-error.js";
+import { AnimationPromptCapture } from "./src/animation-prompt-capture.js";
 
 loadEnv();
 const config = getConfig();
+const animationPromptCapture = new AnimationPromptCapture({
+  outputRoot: process.env.ANIMATION_PROMPT_CAPTURE_DIR || ""
+});
+if (animationPromptCapture.enabled) {
+  globalThis.fetch = animationPromptCapture.wrapFetch(globalThis.fetch);
+}
 const mimoClient = config.mimo.enabled ? new MimoClient(config.mimo) : null;
 const qwenClient = config.qwen.enabled ? new QwenClient(config.qwen) : null;
 const deepseekClient = config.deepseek.enabled ? new DeepSeekClient(config.deepseek) : null;
@@ -51,6 +58,7 @@ const attemptStore = new AttemptStore();
 const workflow = new WorkflowService({
   clients,
   stageDefaults,
+  characterBoundarySignatureRequired: config.workflowRuntime.characterBoundarySignatureRequired,
   attemptStore
 });
 const castOrchestration = new CastOrchestrationService({
@@ -69,9 +77,13 @@ const routes = {
   "/api/visual-guardrails": (body) => workflow.createVisualGuardrails(body),
   "/api/variants": (body) => workflow.createVariants(body),
   "/api/full-story": (body) => workflow.createFullStory(body),
-  "/api/animation-plan": (body) => body?.includeCompilerMetadata
+  "/api/animation-plan": (body) => animationPromptCapture.run({
+    route: "/api/animation-plan",
+    variantId: body?.variant?.id,
+    animationPlanMode: body?.animationPlanMode
+  }, () => body?.includeCompilerMetadata
     ? workflow.createAnimationPlanWithMetadata(body)
-    : workflow.createAnimationPlan(body),
+    : workflow.createAnimationPlan(body)),
   "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
   "/api/generate-shot-video": (body) => {
     const visualGuardrails = workflow.assertGlobalCharacterBoundary(body);
@@ -201,6 +213,12 @@ server.requestTimeout = config.serverRequestTimeoutMs;
 
 server.listen(config.port, () => {
   console.log(`AI 短视频导演：http://localhost:${config.port}`);
+  if (animationPromptCapture.enabled) {
+    console.log(`动画 AI Prompt 抓取已开启：${animationPromptCapture.outputRoot}`);
+  }
+  if (!config.workflowRuntime.characterBoundarySignatureRequired) {
+    console.log("全局角色边界签名：测试包模式（保留 sourceDigest / boundaryDigest 校验）");
+  }
   console.log(`运行模式：${workflow.mode === "live" ? `${stageDefaults.analysis.provider} (${stageDefaults.analysis.model}) / 剧情 ${stageDefaults.fullStory.provider} ${stageDefaults.fullStory.model} / 动画 ${stageDefaults.animationPlan.provider} ${stageDefaults.animationPlan.model} / 静态帧编译 ${stageDefaults.staticFrameCompiler.provider || "未配置"} ${stageDefaults.staticFrameCompiler.model || ""}` : "演示数据（配置 .env 后接入模型服务）"}`);
   console.log(`生成请求超时：${Math.round(config.qwen.requestTimeoutMs / 60000)} 分钟（Qwen）/ ${Math.round(config.mimo.requestTimeoutMs / 60000)} 分钟（MiMo）/ ${Math.round(config.deepseek.requestTimeoutMs / 60000)} 分钟（DeepSeek）`);
 });
@@ -493,6 +511,10 @@ async function streamCharacterReferenceImages(request, response) {
 
 async function generateShotFrameImage(body = {}) {
   const visualGuardrails = workflow.assertGlobalCharacterBoundary(body);
+  if (String(body.animationPromptSchemaVersion || "").trim() === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
+    // 暂时弃置，后续优化或删除：direct_shot 禁止进入旧首尾帧图片生成路径，旧 v2 实现保留在下方。
+    throw new InputError("promptSchemaVersion=3.0 的 direct_shot 镜头不生成首尾帧");
+  }
   if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
   const frameKind = body.frameKind === "end" ? "end" : "start";
   const shot = body.shot || {};

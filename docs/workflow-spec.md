@@ -21,9 +21,9 @@ flowchart LR
     V --> F[themeVariants]
     F --> H[选择主题变体]
     H --> I[fullStory]
-    I --> J1[animationFoundation]
-    J1 --> J2[shotPlan batches]
-    J2 --> J[merge animationPlan]
+    I --> J1[direct_shot animationFoundation]
+    J1 --> J2[direct shotPlan batches]
+    J2 --> J[merge animationPlan 3.0]
     G[固定角色与垂直赛道] --> E
     G --> V
     G --> I
@@ -75,6 +75,8 @@ flowchart LR
 
 `visualGuardrails` 是固定角色语义唯一生成阶段，只负责一次性确定并签发全局角色边界，不负责生成最终图片或视频负面提示词。它同时读取用户角色描述、参考分析、脚本还原和创意简报，并允许视觉模型用通用常识补全用户采用的角色原型；不使用本地物种关键词字典。用户明确肯定或否定的描述优先于模型常识，无法消解的冲突必须进入 `unresolvedConflicts` 并阻断下游。输出必须拆成：
 
+生产环境必须校验 `fixedCharacterBoundary` 的 HMAC 签名。本地 `test`/`development` 只有在服务端同时配置 `WORKFLOW_SIGNATURE_POLICY=test_package_unverified` 时才跳过签名比较，以便服务重启后继续回放测试包；`sourceDigest` 与 `boundaryDigest` 仍然强制校验，不能复用其他素材、用户设定或被改写过的边界。
+
 - `fixedCharacterBoundary.requiredTraits`：后续角色参考、剧情扩写、动画规划和生成请求必须沿用的身份、外观、性格、职业或剧情功能事实；每项带 `explicit | inferred` 证据等级和模型生成的同义词。
 - `fixedCharacterBoundary.allowedTraits`：允许按剧情选择使用、但不要求每个角色参考都出现的事实。
 - `fixedCharacterBoundary.forbiddenTraits`：与已确定角色形象冲突、后续正向字段不得出现的事实。
@@ -82,7 +84,7 @@ flowchart LR
 - `sourceSimilarityRules`：防止主题、故事和分镜复制原片的服装、动作、道具或镜头组合。只有生成请求实际传入原片视觉参考时，相关表面元素才可能在该次请求中以 `reference_leak` 进入渲染负面词。
 - `dialogueRules`：角色口癖、可用拟声词和禁用对白。台词规则不得进入图片负面提示词。
 
-服务端将边界与当前 `creatorProfile`、`referenceAnalysis`、`sourceScriptReconstruction` 和 `creativeBrief` 的摘要绑定并签名。Variants、Legacy Full Story、Animation Plan、人物参考精修、角色图、首尾帧和视频生成只消费验签后的边界，不再解析 `fixedCharacter` 或调用模型常识重算。Character Feature Compiler 也只编译已签发 `requiredTraits(scope=appearance)`，不能重新推断固定主角。用户修改角色设定、字幕、参考视频或上游创意数据后，旧边界立即失效并要求重新生成。
+服务端将边界与当前 `creatorProfile`、`referenceAnalysis`、`sourceScriptReconstruction` 和 `creativeBrief` 的摘要绑定并签名。Variants、Legacy Full Story、Animation Plan、人物参考精修、角色图、旧 v2 首尾帧和视频生成只消费验签后的边界，不再解析 `fixedCharacter` 或调用模型常识重算。旧 v2 兼容路径中的 Character Feature Compiler 也只能编译已签发 `requiredTraits(scope=appearance)`，不能重新推断固定主角。用户修改角色设定、字幕、参考视频或上游创意数据后，旧边界立即失效并要求重新生成。
 
 该阶段没有 `commonNegativePrompt`，也不维护“未声明身体部件”的完整枚举。未声明不等于禁止；只有全局边界明确写入 `forbiddenTraits` 或存在当前镜头的有效失败证据时，相关概念才可参与后续拦截或逐镜负面词判断。
 
@@ -110,20 +112,21 @@ flowchart LR
 
 ### 阶段七：animationPlan
 
-完整剧情生成后，可以继续生成用于 AI 视频制作的 `animationPlan`。该阶段不直接调用具体视频模型，而是输出模型无关的首尾帧生产包：
+完整剧情生成后，可以继续生成用于 AI 视频制作的 `animationPlan`。当前临时主流程必须由请求显式传入 `animationPlanMode: "direct_shot"`，输出携带 `promptSchemaVersion: "3.0"`，且 `productionStrategy.format` 为 `direct_shot_video`；不得因镜头缺少端点字段而自动进入此模式。
 
-- `productionStrategy`：默认采用 `first_last_frame_video`，单镜头控制在 3–6 秒，竖屏 9:16。
-- `visualBible`：动画风格、色彩、光线、世界规则、镜头语言和角色一致性规则；不存放全局渲染负面词。
-- `characterReferencePrompts`：固定角色、被关爱对象和帮助者的参考图提示词，用于先锁定视觉一致性。
-- `sceneReferencePrompts`：可复用地点/场景参考提示词，用于锁定室内外属性、背景层级、光线、空间锚点和连续性规则。
-- `assetPrompts`：关键道具提示词。
-- `shotPlan`：逐镜头引用 `sceneId`，以 `startFrame`、`endFrame` 和 `motion` 作为 Prompt 单一事实源；服务端派生首帧、尾帧、视频和既有展示字段，并保留逐镜验收标准与 `negativePrompts.image` / `negativePrompts.video`。
-- `editPlan`：剪辑节奏、转场、字幕、音乐音效、开头钩子和结尾停顿。
-- `generationChecklist`：角色稳定、首尾帧因果、情绪曲线、可剪辑性和表达原创的质检标准。
+当前 `direct_shot` 仍先生成不含 `shotPlan` 的 foundation，再按 `fullStory.sceneScript` 分批生成镜头并按剧情顺序合并。`visualBible`、`characterReferencePrompts`、`sceneReferencePrompts`、`assetPrompts`、`editPlan` 与 `generationChecklist` 继续承担全局视觉锁、引用、剪辑和质检职责。每个 shot 保留：
 
-动画阶段的核心原则是：先稳定视觉，再逐镜生成，不追求一次生成整条片。首尾帧用于锁定每个短镜头的完整静态起点和终点，`motion` 只描述图片无法表达的动作、时间、摄影机、光线、情绪和声音变化。
+- `shotId`、`sourceSceneId`、`sceneId`、`durationSeconds`、`storyPurpose`、`emotionalTarget`；
+- `videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes`；
+- `negativePrompts` 与 `acceptanceCriteria`。
 
-新生成的计划携带 `promptSchemaVersion: "2.0"`。逐镜结构如下：
+`videoPrompt` 是完整视频渲染指令，其他逐镜字段保留各自职责并必须与它一致。shot 禁止 `startFrame`、`endFrame`、`motion`、`startFramePrompt`、`endFramePrompt` 五个端点字段，也不得增加 `endStateRef` 等替代端点字段；`negativePrompts.image` 必须为 `[]`。Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：暂时弃置，后续优化或删除。旧 v2 代码仍保留兼容，但这三个编译阶段不参与当前 `direct_shot` 主流程。
+
+`direct_shot` 的场内拆镜边界只来自 `fullStory.sceneScript[].location` 与 `visibleAction` 中的人物主要动作目标。地点或主要人物动作目标变化时拆镜；任何输入中的景别、机位、构图、焦段、运镜或转场建议都只能决定已经划定镜头的摄影表达，不得生成额外 shot。`shotAndSound` 与 `shootingNotes` 继续提供摄影和声音参考，但不是镜头数量的事实源。每个 source scene 至少一镜及 3–6 秒单镜时长约束保持不变。
+
+#### 旧 v2 首尾帧兼容路径
+
+旧 v2 计划携带 `promptSchemaVersion: "2.0"`。其逐镜结构如下：
 
 - `startFrame` / `endFrame`：`timeAndWeather`、逐角色位置/朝向/姿态/手持物/视线/表情、前中后景、摄影机规格、物理光源、风格修饰和连续性锁；两端都必须是可独立生成的完整静态规格。
 - `motion`：一个 `primaryAction`，`locked` 或 `continuous` 摄影机，起止情绪与可见表演，环境/光线变化，1–4 个连续覆盖 0–100% 的 `timingBeats`，对白/环境声/音效，以及到达尾帧后的停止条件。
@@ -132,13 +135,15 @@ flowchart LR
 
 兼容字段 `startFramePrompt`、`endFramePrompt`、`videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes` 全部由共享编译器确定性生成。模型不得同时撰写第二套字符串；若导入的 v2 数据同时带结构和不一致的兼容字段，契约校验直接失败。
 
-服务端内部将该阶段拆成三步，但 `POST /api/animation-plan` 的请求和最终响应保持不变：
+旧 v2 服务端兼容路径仍拆成三步，但 `POST /api/animation-plan` 的请求和最终响应保持不变：
 
 1. 生成 `animationFoundation`：只生成 `visualBible`、角色/场景/资产参考和其他全局字段，不生成、占位或推测 `shotPlan`。场景参考使用服务端私有 `sourceSceneIds` 锁定剧情场次与 `sceneId` 的唯一映射；共享地点可将多个场次映射到同一场景。
 2. 按 `fullStory.sceneScript` 每 2 场分批生成仅含 `{ "shotPlan": [...] }` 的结构化镜头结果。每批只能覆盖指定 `sourceSceneId`，且 shot 必须使用基础阶段锁定的对应 `sceneId`。当前批会与前面已通过的镜头一起校验；包括跨批重复负面词在内的错误，都只使用现有纠偏机制重试当前批。
 3. 服务端按剧情顺序合并，统一编号 `A01...`，保留三类结构化对象，编译兼容字符串，同步重写逐镜负面词的 shot 证据路径，重算 `sceneReferencePrompts.relatedShotIds`，然后再执行一次完整 `animationPlan` 契约、正向边界和负面词相关性校验。下一批会收到上一镜完整 `endFrame` 与运动终态，而不是只收到一段尾帧散文。
 
-分阶段结果是服务端私有结构，不写入前端状态或导出文件。合并后的公开 `animationPlan` 同时包含 v2 结构和兼容字符串；现有前端与供应商程序无需立即迁移。无 `promptSchemaVersion` 的旧计划继续按 legacy 字符串读取，不尝试从散文反推结构。
+分阶段结果是服务端私有结构，不写入前端状态或导出文件。旧 v2 合并结果同时包含结构和兼容字符串；无 `promptSchemaVersion` 的更早计划继续按 legacy 字符串读取，不尝试从散文反推结构。这些兼容规则不得为 `direct_shot` 补写端点字段。
+
+#### 两种契约共用的逐镜负面提示词
 
 每条逐镜渲染负面词必须包含：
 
@@ -149,28 +154,28 @@ flowchart LR
 - `priority`：`high`、`medium` 或 `low`；
 - 可选 `enabled`：设为 `false` 时表示停用，内置单镜头生成和外部供应商程序都不应将它编译进请求。
 
-图片和视频数组都允许为 `[]`，不设最少条目数。没有可解析证据、仅以“用户未声明/未提及”为理由、媒介不匹配、把台词规则混入画面、或在没有实际原片参考输入时使用 `reference_leak` 的候选项，会在工作流相关性裁剪中删除；保留下来的非法结构会触发现有模型纠偏重试。不同 shot 不得无差别复制同一组负面词。
+图片和视频数组都允许为 `[]`，不设最少条目数；其中 `direct_shot` 的图片数组必须严格为 `[]`，只交付视频负面词。没有可解析证据、仅以“用户未声明/未提及”为理由、媒介不匹配、把台词规则混入画面、或在没有实际原片参考输入时使用 `reference_leak` 的候选项，会在工作流相关性裁剪中删除；保留下来的非法结构会触发现有模型纠偏重试。不同 shot 不得无差别复制同一组负面词。
 
 剧情页必须提供两个供应商交付出口：
 
-- JSON 导出：生产包版本为 `2.1`，保留完整剧情、选中变体、合并后的 v2 `animationPlan`、兼容字符串、模型信息和已选首尾帧图片；旧 `2.0` 包仍可导入。
-- Markdown 复制：把角色参考、场景参考、资产提示词和逐镜首帧／尾帧／`videoPrompt` 整理成可直接粘贴到供应商程序的生产包。
+- JSON 导出：当前测试/规划包版本为 `2.2`，保留完整剧情、选中变体、`animationPlan` 与模型信息；`direct_shot` 的 `animationPlan` 不含首尾帧字段，旧 v2 兼容数据可继续保留其端点和编译字段。
+- Markdown 复制：当前 `direct_shot` 按逐镜 `videoPrompt`、运镜、角色动作、对白/字幕、声音、连续性、视频负面词和验收标准交付；旧 v2 才整理首帧、尾帧及其兼容字段。
 
-页面内保留单镜头试片链路。`POST /api/generate-shot-video` 的 `generationMode` 是模式权威字段，不从 provider、模型名或素材数量推断：
+页面内保留单镜头试片链路。`POST /api/generate-shot-video` 的 `generationMode` 是模式权威字段，不从端点字段缺失、provider、模型名或素材数量推断：
 
-- `first_last_frame`：首帧和尾帧是精确端点，仍执行现有尾帧硬依赖校验；Kling、Seedance 与 MiniMax H3 均可使用。
-- `all_reference`：`referenceAssets[]` 是参考素材权威来源，允许图片、视频、音频；首尾帧和角色图只有在用户显式勾选后才作为普通 `reference_image` 加入。该模式不生成或校验精确端点，不得混入 `first_frame` / `last_frame`。当前仅 Seedance 2.0 与 MiniMax H3 有已验证的 R2V API 协议；可灵当前 image-to-video 接入必须明确失败，不能静默降级。
+- `first_last_frame`：首帧和尾帧是精确端点，仍执行现有尾帧硬依赖校验；Kling、Seedance 与 MiniMax H3 均可使用。无端点的 `direct_shot` 不可使用该模式，必须明确失败，不能据此自动改选 `all_reference`。
+- `all_reference`：`referenceAssets[]` 是参考素材权威来源，必须至少包含合法图片或视频，不能只输入音频；首尾帧和角色图只有在用户显式勾选后才作为普通 `reference_image` 加入。该模式不生成或校验精确端点，不得混入 `first_frame` / `last_frame`。当前仅 Seedance 2.0 与 MiniMax H3 有已验证的 R2V API 协议；可灵当前 image-to-video 接入必须明确失败，不能静默降级。
 
 全能参考共同限制为图片最多 9 张、视频最多 3 段、音频最多 3 段，单段视频或音频 2–15 秒，视频与音频各自总时长不超过 15 秒，不能只输入音频，请求体不超过 64MB。服务端按实际 data URL MIME、文件字节和 ffprobe 时长再次验证用户媒体，而不是重新判断 AI 输出。两种模式均支持异步轮询、下载 mp4、1–4 个候选结果，以及回执中的 `negativePromptDelivery` 和脱敏 `requestPreview`。
 
-仓库不提供 JSONL 任务队列、production workspace、批量执行器、本地质检、失败队列重试或 ffmpeg 成片合成。整片批量生成时，外部供应商程序负责把 `shotPlan[]` 中的首尾帧、`videoPrompt`、`negativePrompts.video` 和验收标准映射到它自身的请求协议。
+仓库不提供 JSONL 任务队列、production workspace、批量执行器、本地质检、失败队列重试或 ffmpeg 成片合成。整片批量生成时，外部供应商程序负责把当前 `direct_shot` 的 `videoPrompt`、逐镜职责字段、`negativePrompts.video` 和验收标准映射到自身协议；只有旧 v2 兼容计划才映射首尾帧。
 
 ## 3. 模型与媒体策略
 
 - 浏览器从本地视频均匀采样 6–10 张关键帧，最长边压缩到 720px；在 MiMo `auto/video` 模式且文件大小允许时，同时用 base64 `video_url` 发送原生视频。应用不持久化视频。
 - `auto` 模式下，推理服务不接受原生视频时自动回退关键帧；超出大小限制时直接走关键帧。
 - MiMo 多模态视觉输入必须在文本指令之前；用户消息末尾保留 `/no_think`，请求体同时设置 `thinking={"type":"disabled"}`。
-- 默认阶段路由保持 Qwen 优先、MiMo 回退。DeepSeek 只在页面按阶段显式选择后参与创意简报、主题变体、Legacy Full Story、Animation Plan 或 Static Frame Compiler；默认模型为 `deepseek-v4-flash`，`deepseek-v4-pro` 为显式可选项，不静默回退。
+- 默认阶段路由保持 Qwen 优先、MiMo 回退。DeepSeek 只在页面按阶段显式选择后参与创意简报、主题变体、Legacy Full Story、Animation Plan，或旧 v2 兼容路径的 Static Frame Compiler；默认模型为 `deepseek-v4-flash`，`deepseek-v4-pro` 为显式可选项，不静默回退。
 - DeepSeek 请求只发送字符串文本，使用官方 OpenAI 兼容 `/chat/completions`、`max_tokens`、`thinking` 和 JSON Output。参考片分析、脚本还原、视觉规则、人物图修正属于媒体输入阶段，前端不提供 DeepSeek，服务端也会在 provider 调用前拒绝绕过请求。
 - 当前实现通过小米 OpenAI 兼容 `/chat/completions` 接口连接 MiMo V2.5；原生视频使用 `video_url`，并携带 `fps=2`、`media_resolution=default`。Qwen 通过阿里云 Model Studio OpenAI 兼容 `/chat/completions` 接收文本、图片或视频。未配置服务时使用明确标注的演示模式。
 

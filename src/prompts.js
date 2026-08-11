@@ -1,4 +1,8 @@
-import { collectProtectedTermsFromBrief } from "./validation.js";
+import {
+  ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION,
+  ANIMATION_DIRECT_SHOT_MODE,
+  collectProtectedTermsFromBrief
+} from "./validation.js";
 
 const JSON_ONLY = `
 只输出一个合法 JSON 对象，不要 Markdown 代码块，不要解释。不得输出思维过程。
@@ -647,6 +651,9 @@ shotPlan 只提供结构化的 startFrame、endFrame 和 motion。身份由 char
  * animationPlan validation and downstream production flow.
  */
 export function animationFoundationPrompt(input) {
+  if (input.animationPlanMode === ANIMATION_DIRECT_SHOT_MODE) {
+    return animationDirectFoundationPrompt(input);
+  }
   const variant = input.variant || {};
   const fullStory = input.fullStory || {};
   const forbiddenTerms = collectProtectedTermsFromBrief(input.creativeBrief, input.creatorProfile?.fixedCharacter || "");
@@ -765,6 +772,9 @@ visualGuardrails 分类规则：${visualGuardrailsText}
  * merged result remains compatible with the existing validator.
  */
 export function animationShotBatchPrompt(input) {
+  if (input.animationPlanMode === ANIMATION_DIRECT_SHOT_MODE) {
+    return animationDirectShotBatchPrompt(input);
+  }
   const variant = input.variant || {};
   const fullStory = input.fullStory || {};
   const foundation = input.animationFoundation || input.foundation || input.animationPlanFoundation || {};
@@ -847,6 +857,211 @@ ${STRUCTURED_ANIMATION_SHOT_RULES_WITH_FIELD_RESPONSIBILITIES}
 }
 
 只输出本批镜头。不要回显动画基础对象，不要输出本批之外的 sourceSceneId。旧提示词和动作/声音字段由服务端从 v2 结构编译，模型不得输出。${JSON_ONLY}`;
+}
+
+function animationDirectFoundationPrompt(input) {
+  const fullStory = input.fullStory || {};
+  const foundationStoryContext = animationDirectFoundationStoryContext(fullStory);
+  return `${SYSTEM_PROMPT}
+
+你现在进入 AI 动画导演的“直接视频镜头基础锁定”阶段。上游 fullStory 已经确定；本阶段只生成全片共用的角色、场景、资产、风格和生产策略，不生成任何 shotPlan。
+
+当前显式模式：${ANIMATION_DIRECT_SHOT_MODE}
+当前契约版本：${ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION}
+使用目标模型：${input.targetProvider || "MiMo"} ${input.targetModel || "mimo-v2.5-pro"}。
+
+垂直赛道：${input.creatorProfile?.vertical || "未指定"}
+创作限制：${input.creatorProfile?.constraints || "无"}
+完整剧情基础事实 fullStory：${JSON.stringify(foundationStoryContext)}
+固定角色外观边界（唯一角色事实源）：${globalCharacterBoundaryText(input.visualGuardrails)}
+visualGuardrails 附加规则（不重复 fixedCharacterBoundary）：${formatVisualGuardrailsForPrompt(
+    input.visualGuardrails,
+    { includeFixedCharacterBoundary: false }
+  )}
+
+硬约束：
+- promptSchemaVersion 必须逐字等于 ${ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION}。
+- selectedVariantId 必须等于 fullStory.selectedVariantId：${fullStory.selectedVariantId || "未指定"}。
+- productionStrategy.format 必须写 direct_shot_video；生成顺序只能描述“角色/场景/资产锁定 → 直接视频镜头”，不得包含首帧、尾帧、Static Frame Compiler 或本地 Prompt Compiler。
+- 只能服务当前 fullStory，不得改主题、主角、关系、剧情动作或结局。
+- characterReferencePrompts 必须沿用已签发 fixedCharacterBoundary；不得重新解析 fixedCharacter 或扩展身份。
+- fullStory.sceneScript 中每个 sceneId 必须被某一条且只能一条 sceneReferencePrompts.sourceSceneIds 覆盖；relatedShotIds 统一输出 []。
+- 所有正向字段不得混入原片表面身份或 sourceSimilarityRules 禁止表达。
+- continuityAndSafetyCheck 只能说明基础锁定完成、仍待逐镜生成和最终校验，不能虚称镜头已经通过。
+- 顶层不得包含 shotPlan、shots、startFrame、endFrame、motion、startFramePrompt 或 endFramePrompt。
+
+严格输出以下结构：
+{
+  "promptSchemaVersion":"${ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION}",
+  "selectedVariantId":"",
+  "title":"",
+  "productionStrategy":{
+    "format":"direct_shot_video",
+    "targetAspectRatio":"9:16",
+    "targetRuntimeSeconds":60,
+    "recommendedShotDurationSeconds":{"min":3,"max":6},
+    "generationOrder":[],
+    "whyThisWorkflow":""
+  },
+  "visualBible":{
+    "overallStyle":"",
+    "animationStyle":"",
+    "colorPalette":[],
+    "lighting":"",
+    "worldRules":[],
+    "cameraLanguage":"",
+    "characterConsistencyRules":[]
+  },
+  "characterReferencePrompts":[{
+    "characterName":"",
+    "storyRole":"",
+    "identity":"",
+    "appearancePrompt":"",
+    "consistencyTags":[],
+    "forbiddenChanges":[]
+  }],
+  "sceneReferencePrompts":[{
+    "sceneId":"LOC01",
+    "sourceSceneIds":["S1"],
+    "sceneName":"",
+    "storyFunction":"",
+    "environmentPrompt":"",
+    "continuityAnchors":[],
+    "relatedShotIds":[]
+  }],
+  "assetPrompts":[{
+    "assetName":"",
+    "storyFunction":"",
+    "imagePrompt":"",
+    "consistencyTags":[],
+    "avoidSimilarityNote":""
+  }],
+  "editPlan":{
+    "sequenceRhythm":"",
+    "transitions":[],
+    "subtitlePlan":"",
+    "musicAndSfx":"",
+    "hookAndEndingNotes":""
+  },
+  "generationChecklist":[{"check":"","passCriteria":""}],
+  "modelAgnosticNotes":[],
+  "continuityAndSafetyCheck":{
+    "fixedCharacterLocked":"",
+    "positivePromptsAvoidSourceSurface":"",
+    "firstLastFrameContinuity":"当前模式不生产首尾帧，仍待直接视频镜头校验。",
+    "shotDurationControlled":"仍待逐镜校验。",
+    "readyForVideoGeneration":"基础锁定完成，仍待逐镜生成。"
+  },
+  "uncertainties":[{"field":"","reason":"","safeFallback":""}]
+}
+
+不要输出镜头或首尾帧内容。${JSON_ONLY}`;
+}
+
+function animationDirectFoundationStoryContext(fullStory) {
+  const scenes = Array.isArray(fullStory?.sceneScript) ? fullStory.sceneScript : [];
+  return {
+    selectedVariantId: fullStory?.selectedVariantId,
+    title: fullStory?.title,
+    oneLinePremise: fullStory?.oneLinePremise,
+    targetDurationSeconds: fullStory?.targetDurationSeconds,
+    characterBible: fullStory?.characterBible || {},
+    keyProps: Array.isArray(fullStory?.keyProps) ? fullStory.keyProps : [],
+    dialogueStyleGuide: fullStory?.dialogueStyleGuide || {},
+    sceneScript: scenes.map((scene) => ({
+      sceneId: scene?.sceneId,
+      timeRange: scene?.timeRange,
+      location: scene?.location,
+      characters: Array.isArray(scene?.characters) ? scene.characters : [],
+      visibleAction: scene?.visibleAction,
+      emotionNode: scene?.emotionNode,
+      dramaticFunction: scene?.dramaticFunction
+    }))
+  };
+}
+
+function animationDirectShotBatchPrompt(input) {
+  const variant = input.variant || {};
+  const fullStory = input.fullStory || {};
+  const foundation = input.animationFoundation || input.foundation || input.animationPlanFoundation || {};
+  const sourceScenes = resolveAnimationBatchScenes(input, fullStory);
+  const sourceSceneIds = sourceScenes
+    .map((scene) => typeof scene === "string" ? scene : scene?.sceneId)
+    .filter(Boolean);
+  const forbiddenTerms = collectProtectedTermsFromBrief(
+    input.creativeBrief,
+    input.creatorProfile?.fixedCharacter || ""
+  );
+  const forbiddenText = forbiddenTerms.length ? forbiddenTerms.join("、") : "无";
+  const batchLabel = input.batchLabel
+    || (input.batchIndex !== undefined ? `第 ${Number(input.batchIndex) + 1} 批` : "当前批次");
+  const shotIdInstruction = formatShotIdInstruction(input);
+  return `${SYSTEM_PROMPT}
+
+你现在进入 AI 动画导演的“直接视频镜头批次”阶段。动画基础锁定已经生成；本阶段只把指定 source scenes 转成可直接交给视频模型的 shotPlan。
+
+当前显式模式：${ANIMATION_DIRECT_SHOT_MODE}
+契约版本：${ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION}
+批次：${batchLabel}
+本批允许的 sourceSceneId：${sourceSceneIds.length ? sourceSceneIds.join("、") : "空"}
+镜头编号要求：${shotIdInstruction}
+
+固定角色：${input.creatorProfile?.fixedCharacter || "未指定"}
+创作限制：${input.creatorProfile?.constraints || "无"}
+选中主题变体：${JSON.stringify(variant)}
+全剧必要上下文：${JSON.stringify({
+    selectedVariantId: fullStory.selectedVariantId,
+    title: fullStory.title,
+    oneLinePremise: fullStory.oneLinePremise,
+    targetDurationSeconds: fullStory.targetDurationSeconds,
+    characterBible: fullStory.characterBible,
+    keyProps: fullStory.keyProps,
+    dialogueStyleGuide: fullStory.dialogueStyleGuide
+  })}
+本批指定 source scenes：${JSON.stringify(sourceScenes)}
+动画基础锁定：${JSON.stringify(foundation)}
+上一批末镜头连续性上下文：${JSON.stringify(input.previousShotContext || input.continuityContext || {})}
+creativeBrief：${JSON.stringify(input.creativeBrief || {})}
+禁止复用原片具体表达黑名单：${forbiddenText}
+固定角色外观边界：${globalCharacterBoundaryText(input.visualGuardrails)}
+visualGuardrails 分类规则：${formatVisualGuardrailsForPrompt(input.visualGuardrails)}
+
+硬约束：
+- 顶层只允许 shotPlan；不得回显 foundation 或 promptSchemaVersion。
+- 每个指定 source scene 至少一个镜头；sourceSceneId 必须来自本批，sceneId 必须引用 foundation 对该 source scene 的唯一映射；保持剧情动作顺序。
+- 每个镜头只有一个主要人物动作目标，建议 3-6 秒。拆镜边界只依据本批 source scene 的 location 与 visibleAction：地点变化，或人物的主要动作目标发生变化时才拆镜；多个先后人物动作必须拆成相邻镜头。
+- 景别、机位、构图、焦段、运镜或转场变化不得单独触发拆镜。shotAndSound、shootingNotes、visualBible.cameraLanguage、editPlan 与上一批 cameraMotion 中的摄影建议，只能在动作与地点边界确定后用于选择当前 shot 的一个连续摄影方案；不得逐个机位生成 shot，也不得把硬切塞进同一 shot。
+- 同一地点下，多人同步完成同一个协作动作仍可作为一个主要动作 shot；不得按参与人数或机位数量机械拆镜。
+- videoPrompt 是该镜头唯一完整渲染主指令：明确地点与环境、实际出镜角色、可见动作、表演情绪、连续运镜、光线、节奏、停止条件，以及需要生成的对白与声音设计；它必须完整吸收并与 cameraMotion、characterAction、dialogueOrSubtitle、soundDesign、continuityNotes 一致，后续不会再由本地 Compiler 拼装。
+- cameraMotion 只写这一个镜头的连续摄影机运动；characterAction 只写实际可见动作；dialogueOrSubtitle 只写剧情对白内容，没有则输出空字符串；soundDesign 写环境声/动作声/音乐关系；continuityNotes 写与前后镜头必须承接的状态。
+- 必须沿用 foundation 的角色、场景、资产和风格锁定，不得重写身份或引入上方黑名单。
+- 当前流程不生产端点，shot 中严禁出现 startFrame、endFrame、motion、startFramePrompt、endFramePrompt、endStateRef 或任何替代端点字段。
+- negativePrompts.image 必须为 []；negativePrompts.video 仅放本镜头有直接证据的时序、道具、角色数量、接触或参考泄漏风险，允许 []。
+- negativePrompts 条目结构固定为 {"text":"","appliesTo":"video","triggerEvidence":[{"sourcePath":"","evidence":""}],"reasonCode":"","priority":"high|medium|low","enabled":true}；reasonCode 只允许 explicit_identity_conflict、shot_object_confusion、shot_interaction_failure、temporal_consistency_failure、reference_leak、proven_provider_failure。
+- 当前镜头证据路径只允许 animationPlan.shotPlan[shotId].videoPrompt、.cameraMotion、.characterAction、.dialogueOrSubtitle、.soundDesign、.continuityNotes；剧情证据指向 fullStory.sceneScript[sceneId] 的真实字段。
+- acceptanceCriteria 必须是 1-3 条可观察、可判定的短标准。
+
+严格输出：
+{
+  "shotPlan":[{
+    "shotId":"A01",
+    "sourceSceneId":"S1",
+    "sceneId":"LOC01",
+    "durationSeconds":4,
+    "storyPurpose":"",
+    "emotionalTarget":"",
+    "videoPrompt":"",
+    "cameraMotion":"",
+    "characterAction":"",
+    "dialogueOrSubtitle":"",
+    "soundDesign":"",
+    "continuityNotes":"",
+    "negativePrompts":{"image":[],"video":[]},
+    "acceptanceCriteria":[""]
+  }]
+}
+
+不要生成、解释或占位首尾帧；镜头内容必须完整保存在直接视频字段中。${JSON_ONLY}`;
 }
 
 export function animationActionStateAuditPrompt(items = []) {
@@ -1023,10 +1238,15 @@ function formatTime(seconds) {
   return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
 
-function formatVisualGuardrailsForPrompt(visualGuardrails) {
+function formatVisualGuardrailsForPrompt(
+  visualGuardrails,
+  { includeFixedCharacterBoundary = true } = {}
+) {
   if (!visualGuardrails || typeof visualGuardrails !== "object") return "未生成全局角色边界，禁止继续下游生成。";
   return JSON.stringify({
-    fixedCharacterBoundary: visualGuardrails.fixedCharacterBoundary || {},
+    ...(includeFixedCharacterBoundary
+      ? { fixedCharacterBoundary: visualGuardrails.fixedCharacterBoundary || {} }
+      : {}),
     allowedPositiveTraits: visualGuardrails.allowedPositiveTraits || [],
     positivePromptBoundary: visualGuardrails.positivePromptBoundary || [],
     sourceSimilarityRules: visualGuardrails.sourceSimilarityRules || [],
