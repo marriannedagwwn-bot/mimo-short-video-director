@@ -6,7 +6,7 @@ import { AttemptStore } from "./attempt-store.js";
 import { ModelCallCoordinator } from "./model-call-coordinator.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCharacterReferenceMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, pruneAnimationPlanNegativePrompts, requireFrames, requireObject, requireText } from "./validation.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCharacterReferenceMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText } from "./validation.js";
 import { CharacterBoundaryError, createCharacterBoundaryKey, sealGlobalCharacterBoundary, verifyGlobalCharacterBoundary } from "./character-boundary.js";
 import {
   ReconstructionGroundingError,
@@ -749,6 +749,7 @@ export class WorkflowService {
       throw new InputError(`animationPlanMode 只允许 ${ANIMATION_DIRECT_SHOT_MODE}`);
     }
     const directShotMode = animationPlanMode === ANIMATION_DIRECT_SHOT_MODE;
+    const targetAspectRatio = requireAnimationPlanAspectRatio(input.targetAspectRatio || "9:16");
     const visualGuardrails = this.assertGlobalCharacterBoundary(input);
     const fullStory = ensureFullStoryMatchesProfile(
       ensureOutputContract(input.fullStory, "fullStory"),
@@ -757,7 +758,7 @@ export class WorkflowService {
       input.variant,
       visualGuardrails
     );
-    const validatedInput = { ...input, fullStory, visualGuardrails };
+    const validatedInput = { ...input, fullStory, visualGuardrails, targetAspectRatio };
     const settings = this.resolveStage("animationPlan", validatedInput);
     const compilerSettings = this.resolveStage("staticFrameCompiler", validatedInput);
     if (!this.hasLiveClient) {
@@ -1059,6 +1060,11 @@ function validateAnimationFoundationOutput(result, input = {}) {
   ) {
     throw new OutputContractError(
       "animationFoundation.productionStrategy.format 在 direct_shot 模式必须为 direct_shot_video"
+    );
+  }
+  if (foundation.productionStrategy?.targetAspectRatio !== input.targetAspectRatio) {
+    throw new OutputContractError(
+      `animationFoundation.productionStrategy.targetAspectRatio 必须等于用户选择的 ${input.targetAspectRatio}`
     );
   }
   resolveExplicitAnimationPrimaryCharacterName(input, foundation, {

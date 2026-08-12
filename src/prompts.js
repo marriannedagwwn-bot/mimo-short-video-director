@@ -862,6 +862,7 @@ ${STRUCTURED_ANIMATION_SHOT_RULES_WITH_FIELD_RESPONSIBILITIES}
 function animationDirectFoundationPrompt(input) {
   const fullStory = input.fullStory || {};
   const foundationStoryContext = animationDirectFoundationStoryContext(fullStory);
+  const targetAspectRatio = input.targetAspectRatio || "9:16";
   return `${SYSTEM_PROMPT}
 
 你现在进入 AI 动画导演的“直接视频镜头基础锁定”阶段。上游 fullStory 已经确定；本阶段只生成全片共用的角色、场景、资产、风格和生产策略，不生成任何 shotPlan。
@@ -869,6 +870,7 @@ function animationDirectFoundationPrompt(input) {
 当前显式模式：${ANIMATION_DIRECT_SHOT_MODE}
 当前契约版本：${ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION}
 使用目标模型：${input.targetProvider || "MiMo"} ${input.targetModel || "mimo-v2.5-pro"}。
+用户选择的目标画幅：${targetAspectRatio}
 
 垂直赛道：${input.creatorProfile?.vertical || "未指定"}
 创作限制：${input.creatorProfile?.constraints || "无"}
@@ -883,6 +885,7 @@ visualGuardrails 附加规则（不重复 fixedCharacterBoundary）：${formatVi
 - promptSchemaVersion 必须逐字等于 ${ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION}。
 - selectedVariantId 必须等于 fullStory.selectedVariantId：${fullStory.selectedVariantId || "未指定"}。
 - productionStrategy.format 必须写 direct_shot_video；生成顺序只能描述“角色/场景/资产锁定 → 直接视频镜头”，不得包含首帧、尾帧、Static Frame Compiler 或本地 Prompt Compiler。
+- productionStrategy.targetAspectRatio 必须逐字等于用户选择的 ${targetAspectRatio}；visualBible、场景参考和后续镜头构图都必须按该画幅设计，不得改回其他比例。
 - 只能服务当前 fullStory，不得改主题、主角、关系、剧情动作或结局。
 - characterReferencePrompts 必须沿用已签发 fixedCharacterBoundary；不得重新解析 fixedCharacter 或扩展身份。
 - fullStory.sceneScript 中每个 sceneId 必须被某一条且只能一条 sceneReferencePrompts.sourceSceneIds 覆盖；relatedShotIds 统一输出 []。
@@ -897,7 +900,7 @@ visualGuardrails 附加规则（不重复 fixedCharacterBoundary）：${formatVi
   "title":"",
   "productionStrategy":{
     "format":"direct_shot_video",
-    "targetAspectRatio":"9:16",
+    "targetAspectRatio":"${targetAspectRatio}",
     "targetRuntimeSeconds":60,
     "recommendedShotDurationSeconds":{"min":3,"max":6},
     "generationOrder":[],

@@ -21,6 +21,17 @@ const execFileAsync = promisify(execFile);
 export class ShotVideoConfigError extends Error {}
 export class ShotVideoProviderError extends Error {}
 
+const SHOT_VIDEO_ASPECT_RATIOS = Object.freeze(["9:16", "16:9"]);
+
+export function normalizeShotVideoAspectRatio(value, { defaultValue = "9:16" } = {}) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return defaultValue;
+  if (!SHOT_VIDEO_ASPECT_RATIOS.includes(normalized)) {
+    throw new ShotVideoConfigError(`aspectRatio 只允许 ${SHOT_VIDEO_ASPECT_RATIOS.join(" 或 ")}`);
+  }
+  return normalized;
+}
+
 export async function generateShotVideo(options = {}) {
   const shot = options.shot || {};
   const requestedSetting = resolveShotVideoSetting({
@@ -51,6 +62,7 @@ export async function generateShotVideo(options = {}) {
   ).trim();
   const providerRuntime = shotVideoRuntimeConfig(videoProvider, process.env, videoModel);
   const generationMode = normalizeShotVideoGenerationMode(options.generationMode);
+  const aspectRatio = normalizeShotVideoAspectRatio(options.aspectRatio);
   if (
     String(options.animationPromptSchemaVersion || "").trim() === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION
     && generationMode === "first_last_frame"
@@ -116,7 +128,8 @@ export async function generateShotVideo(options = {}) {
         candidateCount: count,
         provider: videoProvider,
         model: videoModel,
-        generationMode
+        generationMode,
+        aspectRatio
       });
       const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: options.workerRunner });
       await assertUsableVideoOutput(outputPath);
@@ -265,7 +278,7 @@ function buildShotVideoRequest(shot = {}, context = {}) {
     negativePrompt: negativePrompt.compiledNegativePrompt,
     inputArtifacts: context.inputArtifacts || [],
     parameters: {
-      aspectRatio: shot.aspectRatio || "9:16",
+      aspectRatio: context.aspectRatio || "9:16",
       durationSeconds: Number(shot.durationSeconds) || 4,
       shotId: shot.shotId || "",
       sourceSceneId: shot.sourceSceneId || "",

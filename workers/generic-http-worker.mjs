@@ -657,7 +657,9 @@ function buildMiniMaxH3VideoBody(context, config, negativePromptDelivery = {}) {
     content,
     resolution: normalizeMiniMaxResolution(config.resolution),
     duration: normalizeMiniMaxDuration(parameters.durationSeconds || config.duration),
-    ratio: "adaptive",
+    ratio: context.request.capability === "all_reference_video_generation"
+      ? normalizeMiniMaxRatio(parameters.aspectRatio || config.ratio)
+      : "adaptive",
     aigc_watermark: config.watermark === true
   };
 }
@@ -802,6 +804,13 @@ function normalizeMiniMaxDuration(value) {
 function normalizeMiniMaxResolution(value) {
   const resolution = String(value || "2K").trim().toUpperCase();
   return ["768P", "2K"].includes(resolution) ? resolution : "2K";
+}
+
+function normalizeMiniMaxRatio(value) {
+  const ratio = String(value || "adaptive").trim().toLowerCase();
+  return ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"].includes(ratio)
+    ? ratio
+    : "adaptive";
 }
 
 function truncateText(value, maxChars) {

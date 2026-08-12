@@ -122,6 +122,56 @@ test("same-id upstream change stales Story, Plan and media, while key reordering
   });
 });
 
+test("切换计划级画幅签发新 Plan revision 并只使旧镜头媒体 stale", async () => {
+  await withStore(async ({ store }) => {
+    const run = await store.createRun({ projectId: "project-aspect-ratio" });
+    const story = await commit(store, run, {
+      artifactId: "fullStory:V1",
+      artifactType: "fullStory",
+      content: { selectedVariantId: "V1", sceneScript: [{ sceneId: "S1" }] }
+    });
+    const shotPlan = [{ shotId: "A01", durationSeconds: 4, videoPrompt: "原镜头" }];
+    const plan = await commit(store, run, {
+      artifactId: "animationPlan:V1",
+      artifactType: "animationPlan",
+      content: {
+        selectedVariantId: "V1",
+        productionStrategy: { targetAspectRatio: "9:16" },
+        shotPlan
+      },
+      dependencies: [lineageRef(story.lineage)],
+      createMediaNamespace: true
+    });
+    await commit(store, run, {
+      artifactId: "shotVideo:V1:A01",
+      artifactType: "shotVideo",
+      content: { status: "ready", result: { outputUrl: "/9x16.mp4" } },
+      dependencies: [lineageRef(plan.lineage)]
+    });
+
+    const changed = await commit(store, run, {
+      artifactId: "animationPlan:V1",
+      artifactType: "animationPlan",
+      expectedCurrentRevision: plan.lineage.revision,
+      content: {
+        selectedVariantId: "V1",
+        productionStrategy: { targetAspectRatio: "16:9" },
+        shotPlan
+      },
+      dependencies: [lineageRef(story.lineage)],
+      createMediaNamespace: true
+    });
+
+    assert.notEqual(changed.lineage.revision, plan.lineage.revision);
+    assert.notEqual(changed.lineage.mediaNamespace, plan.lineage.mediaNamespace);
+    assert.deepEqual(changed.staleArtifactIds, ["shotVideo:V1:A01"]);
+    const loaded = await store.loadRun(run);
+    assert.equal(loaded.latestArtifacts["animationPlan:V1"].content.productionStrategy.targetAspectRatio, "16:9");
+    assert.deepEqual(loaded.latestArtifacts["animationPlan:V1"].content.shotPlan, shotPlan);
+    assert.equal(loaded.latestArtifacts["shotVideo:V1:A01"].lineage.status, "stale");
+  });
+});
+
 test("signed v3 package validates lineage, rejects tampering and imports into an isolated run", async () => {
   await withStore(async ({ store }) => {
     const run = await store.createRun({ projectId: "project-package" });

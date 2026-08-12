@@ -114,6 +114,10 @@ flowchart LR
 
 完整剧情生成后，可以继续生成用于 AI 视频制作的 `animationPlan`。当前临时主流程必须由请求显式传入 `animationPlanMode: "direct_shot"`，输出携带 `promptSchemaVersion: "3.0"`，且 `productionStrategy.format` 为 `direct_shot_video`；不得因镜头缺少端点字段而自动进入此模式。
 
+浏览器还必须显式传入 `targetAspectRatio`，当前只允许 `9:16` 或 `16:9`。首次生成时，Foundation 的 `productionStrategy.targetAspectRatio` 必须与用户选择逐字一致；已有计划切换画幅时，用户选择作为新的计划级输出事实，不调用模型、不重写 shot，并提交同一 Animation Plan artifact 的新 revision/media namespace。该计划级字段是后续视频请求的画幅事实源；不得向 exact direct-shot 字段集合增加逐镜 `aspectRatio`。需要重新设计镜头构图时，用户再显式触发完整 Plan 重生成。
+
+页面和 Markdown 的“镜头计划合计时长”由全部 `shotPlan[].durationSeconds` 求和派生；`productionStrategy.targetRuntimeSeconds` 保留为上游目标并用于显示偏差，两者不得自动互相覆盖。该合计是计划时长，不等同于供应商生成媒体经探测后的实际文件时长。
+
 当前 `direct_shot` 仍先生成不含 `shotPlan` 的 foundation，再按 `fullStory.sceneScript` 分批生成镜头并按剧情顺序合并。`visualBible`、`characterReferencePrompts`、`sceneReferencePrompts`、`assetPrompts`、`editPlan` 与 `generationChecklist` 继续承担全局视觉锁、引用、剪辑和质检职责。每个 shot 保留：
 
 - `shotId`、`sourceSceneId`、`sceneId`、`durationSeconds`、`storyPurpose`、`emotionalTarget`；

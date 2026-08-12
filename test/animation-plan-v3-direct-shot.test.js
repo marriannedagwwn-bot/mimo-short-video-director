@@ -12,7 +12,7 @@ import {
   pruneAnimationPlanNegativePrompts
 } from "../src/validation.js";
 import { WorkflowService } from "../src/workflow.js";
-import { generateShotVideo, ShotVideoConfigError } from "../src/shot-video-generator.js";
+import { generateShotVideo, normalizeShotVideoAspectRatio, ShotVideoConfigError } from "../src/shot-video-generator.js";
 
 const DIRECT_SHOT_FIELDS = Object.freeze([
   "shotId",
@@ -133,6 +133,27 @@ test("direct foundation 与 batch prompt 声明 3.0 且 JSON 结构不含端点�
       );
     }
   }
+});
+
+test("direct_shot 把用户选择的 16:9 锁入 Prompt、Mock 和最终计划", async () => {
+  const workflow = new WorkflowService();
+  const context = { ...directContext(workflow), targetAspectRatio: "16:9" };
+  const prompt = animationFoundationPrompt(context);
+
+  assert.match(prompt, /用户选择的目标画幅：16:9/u);
+  assert.match(prompt, /"targetAspectRatio":"16:9"/u);
+  const plan = await workflow.createAnimationPlan(context);
+  assert.equal(plan.productionStrategy.targetAspectRatio, "16:9");
+  assert.match(plan.visualBible.cameraLanguage, /横屏 16:9/u);
+});
+
+test("direct_shot 明确拒绝未支持的动画目标画幅", async () => {
+  const workflow = new WorkflowService();
+  const context = directContext(workflow);
+  await assert.rejects(
+    () => workflow.createAnimationPlan({ ...context, targetAspectRatio: "1:1" }),
+    /targetAspectRatio 只允许 9:16 或 16:9/u
+  );
 });
 
 test("direct foundation 只发送基础事实投影且 fixedCharacterBoundary 不重复", () => {
@@ -319,6 +340,12 @@ test("v3 视频请求不得静默进入 first_last_frame", async () => {
     (error) => error instanceof ShotVideoConfigError
       && /direct_shot.*不能使用 first_last_frame/u.test(error.message)
   );
+});
+
+test("逐镜视频请求只接受计划支持的两个画幅", () => {
+  assert.equal(normalizeShotVideoAspectRatio("9:16"), "9:16");
+  assert.equal(normalizeShotVideoAspectRatio("16:9"), "16:9");
+  assert.throws(() => normalizeShotVideoAspectRatio("1:1"), /aspectRatio 只允许 9:16 或 16:9/u);
 });
 
 test("direct_shot 六个镜头职责字段都可作为逐镜视频负面词证据", () => {

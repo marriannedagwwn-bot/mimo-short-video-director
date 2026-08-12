@@ -81,6 +81,10 @@ QWEN_ENABLE_THINKING=false
 
 页面请求显式发送 `animationPlanMode: "direct_shot"`，服务端返回 `promptSchemaVersion: "3.0"` 与 `productionStrategy.format: "direct_shot_video"`。每个 shot 保留 `shotId`、`sourceSceneId`、`sceneId`、`durationSeconds`、`storyPurpose`、`emotionalTarget`、`videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes`、`negativePrompts` 和 `acceptanceCriteria`；`negativePrompts.image` 必须为 `[]`。
 
+页面允许显式选择 `9:16` 或 `16:9`。首次生成时，该值会锁入 `productionStrategy.targetAspectRatio`、Foundation Prompt 和后续视频请求；模型返回其他比例或与用户选择不一致会明确失败。已有 Plan 切换画幅时不调用模型、不重写 shot，只更新计划级输出画幅并签发新 revision/media namespace，使旧画幅镜头媒体失效。若要让模型连镜头构图一起重新设计，再单独点击重新生成 Animation Plan。
+
+Animation Plan 顶部的时长使用全部 `shotPlan[].durationSeconds` 的合计，并把 `productionStrategy.targetRuntimeSeconds` 保留为上游目标用于显示偏差；不会再把目标时长冒充为当前镜头计划总长。
+
 当前场内拆镜只依据 Full Story 的地点和人物主要动作：地点或主要动作目标变化才拆镜。景别、机位、构图、焦段、运镜和转场建议只用于已经划定镜头的内部摄影表达，不得单独增加镜头；`shotAndSound` 与 `shootingNotes` 不是镜头数量的事实源。每个 source scene 至少一镜及 3–6 秒单镜时长约束保持不变。
 
 当前 shot 禁止 `startFrame`、`endFrame`、`motion`、`startFramePrompt`、`endFramePrompt` 五个端点字段，也不得用别名补回端点。Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：暂时弃置，后续优化或删除。旧 v2 代码保留兼容，但不参与当前 `direct_shot` 主流程。
@@ -199,7 +203,7 @@ MINIMAX_VIDEO_POLL_INTERVAL_MS=3000
 MINIMAX_VIDEO_POLL_TIMEOUT_MS=900000
 ```
 
-首尾帧模式把镜头提示词、首帧和尾帧分别写入 `content` 的 `text`、`first_frame`、`last_frame`；全能参考模式改用 `reference_image`、`reference_video`、`reference_audio`，并固定不混入端点角色。时长按官方允许的 4–15 秒归一，`ratio=adaptive`。服务端通过 `GET /v2/query/video_generation/{task_id}` 轮询 `queued/running → succeeded/failed/cancelled`，成功后下载 `task.content.url`。H3 不提供独立负面提示词字段；系统只会把高优先级角色身份冲突转换成正向身份锁定，其余负面条目在回执中明确标记为未下发。接口依据：[创建视频生成任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create)、[查询任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-query)。
+首尾帧模式把镜头提示词、首帧和尾帧分别写入 `content` 的 `text`、`first_frame`、`last_frame`；全能参考模式改用 `reference_image`、`reference_video`、`reference_audio`，并固定不混入端点角色。时长按官方允许的 4–15 秒归一；首尾帧保持 `ratio=adaptive`，全能参考模式按当前 Animation Plan 显式发送 `9:16` 或 `16:9`。服务端通过 `GET /v2/query/video_generation/{task_id}` 轮询 `queued/running → succeeded/failed/cancelled`，成功后下载 `task.content.url`。H3 不提供独立负面提示词字段；系统只会把高优先级角色身份冲突转换成正向身份锁定，其余负面条目在回执中明确标记为未下发。接口依据：[创建视频生成任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create)、[查询任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-query)。
 
 旧可灵 2.1 仍保持兼容：
 

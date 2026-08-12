@@ -167,6 +167,14 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
           </button>
           <p class="story-status" id="animationStatus"></p>
+          <label class="animation-aspect-control" for="animationAspectRatio">
+            <span>动画目标画幅</span>
+            <select id="animationAspectRatio">
+              <option value="9:16">9:16 · 竖屏</option>
+              <option value="16:9">16:9 · 横屏</option>
+            </select>
+            <small id="animationAspectRatioHint">首次生成会按此构图；已有计划切换时只更新输出画幅。</small>
+          </label>
           <button class="outline-button animation-button" id="generateAnimationPlan" type="button" disabled>生成动画镜头生产包</button>
           <div class="story-export-actions">
             <button class="outline-button" id="exportStoryPackage" type="button" disabled>导出当前生产包 JSON</button>

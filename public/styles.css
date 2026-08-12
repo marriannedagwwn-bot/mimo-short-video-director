@@ -134,6 +134,14 @@ h1 em { color: var(--accent); font-style: normal; }
 .data-cell { padding: 14px; border: 1px solid var(--line); border-radius: 11px; }
 .data-cell > span, .block-label { display: block; margin-bottom: 7px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .data-cell strong { font-size: 12px; line-height: 1.55; }
+.data-cell select { width: 100%; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.72); padding: 8px 9px; color: var(--ink); font-size: 12px; outline: none; }
+.data-cell select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(240,90,42,.08); }
+.aspect-ratio-cell small { display: block; margin-top: 7px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.animation-aspect-control { display: block; margin: 12px 0 8px; padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.45); }
+.animation-aspect-control > span { display: block; margin-bottom: 7px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.animation-aspect-control select { width: 100%; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.76); padding: 9px 10px; color: var(--ink); font-size: 12px; outline: none; }
+.animation-aspect-control select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(240,90,42,.08); }
+.animation-aspect-control small { display: block; margin-top: 7px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .result-block { margin-top: 22px; }
 .compiler-log { display: grid; gap: 10px; }
 .compiler-log-disclosure > .compiler-log { margin-top: 10px; }

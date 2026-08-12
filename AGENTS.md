@@ -62,6 +62,8 @@ Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Art
 
 当前 `direct_shot` 的场内拆镜只依据 Full Story 的 `location` 与 `visibleAction` 中的人物主要动作目标。地点或主要动作目标变化时拆镜；景别、机位、构图、焦段、运镜和转场建议只能决定已划定镜头的摄影表达，不得增加镜头。`shotAndSound` 与 `shootingNotes` 不是镜头数量的事实源。每个 source scene 至少一镜及 3–6 秒单镜时长约束保持不变。
 
+Animation Plan 的 `targetAspectRatio` 当前只允许 `9:16` 或 `16:9`。首次生成时必须锁入 `productionStrategy.targetAspectRatio` 并与 Foundation 输出一致；已有 Plan 切换画幅时以用户选择更新计划级输出事实，不调用模型、不重写 shot，但必须签发新 Plan revision/media namespace，使旧画幅媒体 stale。后续视频生成从当前签发 Plan 读取；不得向 direct-shot 的 exact shot 字段增加 `aspectRatio`。页面的计划总长由 `shotPlan[].durationSeconds` 合计派生，`targetRuntimeSeconds` 仍是上游目标，不得互相覆盖。
+
 Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：暂时弃置，后续优化或删除。旧 v2 代码保留兼容，但不参与当前 `direct_shot` 主流程。
 
 视频生成存在两个显式模式：

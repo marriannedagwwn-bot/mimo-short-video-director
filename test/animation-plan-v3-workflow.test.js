@@ -147,3 +147,15 @@ test("direct_shot 拒绝 2.0 Animation Foundation", async () => {
   assert.equal(animationCalls.length, 2);
   assert.equal(staticProviderCalls.length, 0);
 });
+
+test("direct_shot 拒绝模型把用户选择的 16:9 改回 9:16", async () => {
+  let foundation;
+  const { workflow } = createLiveWorkflow(() => structuredClone(foundation));
+  const context = { ...fixture(workflow), targetAspectRatio: "16:9" };
+  foundation = foundationFrom(mockAnimationPlan({ ...context, targetAspectRatio: "9:16" }));
+
+  await assert.rejects(
+    () => workflow.createAnimationPlanWithMetadata(context),
+    /targetAspectRatio 必须等于用户选择的 16:9/u
+  );
+});

@@ -13,7 +13,7 @@ import { buildShotFrameMultiImagePrompt } from "./public/shot-frame-multi-image-
 import { computeDependencyHash, computePromptHash } from "./src/frame-dependency.js";
 import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./src/frame-reference-request.js";
 import { WorkflowService } from "./src/workflow.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, InputError } from "./src/validation.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, InputError, requireAnimationPlanAspectRatio } from "./src/validation.js";
 import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
 import {
   inferShotVideoProvider,
@@ -100,8 +100,20 @@ const routes = {
     const productionMedia = await resolveProductionMediaContext(body, {
       required: String(body.animationPromptSchemaVersion || "").trim() === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION
     });
+    if (
+      productionMedia
+      && String(body.aspectRatio || "").trim()
+      && body.aspectRatio !== productionMedia.planAspectRatio
+    ) {
+      throw new ProductionStateError("视频请求画幅与当前 Animation Plan 不一致", {
+        code: "MEDIA_PLAN_ASPECT_RATIO_MISMATCH",
+        httpStatus: 409,
+        details: [{ requested: body.aspectRatio, currentPlan: productionMedia.planAspectRatio }]
+      });
+    }
     return generateShotVideo({
       ...body,
+      aspectRatio: productionMedia?.planAspectRatio || requireAnimationPlanAspectRatio(body.aspectRatio || "9:16", "aspectRatio"),
       videoProvider: setting.provider,
       videoModel: setting.model,
       ...(productionMedia ? {
@@ -514,8 +526,9 @@ async function resolveProductionMediaContext(body = {}, { required = false } = {
   const planRevision = safeIdentifier(context.planRevision, "productionContext.planRevision");
   const planDigest = String(context.planDigest || "").trim().toLowerCase();
   const mediaNamespace = String(context.mediaNamespace || "").trim();
-  const run = await productionStateStore.loadRun({ projectId, runId, includeContent: false });
-  const current = run.latestArtifacts?.[planArtifactId]?.lineage;
+  const run = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
+  const currentEntry = run.latestArtifacts?.[planArtifactId];
+  const current = currentEntry?.lineage;
   if (
     !current
     || current.artifactType !== "animationPlan"
@@ -542,12 +555,17 @@ async function resolveProductionMediaContext(body = {}, { required = false } = {
     });
   }
   const publicNamespace = namespaceSegments.join("/");
+  const planAspectRatio = requireAnimationPlanAspectRatio(
+    currentEntry?.content?.productionStrategy?.targetAspectRatio,
+    "当前 Animation Plan productionStrategy.targetAspectRatio"
+  );
   return {
     imageOutputRoot: path.join(publicDir, "generated-images", ...namespaceSegments),
     imagePublicBasePath: `/generated-images/${publicNamespace}`,
     videoOutputRoot: path.join(publicDir, "generated-videos", ...namespaceSegments),
     videoPublicBasePath: `/generated-videos/${publicNamespace}`,
-    filenamePrefix: `${safeIdentifier(planRevision, "planRevision")}-${planDigest.slice(0, 12)}`
+    filenamePrefix: `${safeIdentifier(planRevision, "planRevision")}-${planDigest.slice(0, 12)}`,
+    planAspectRatio
   };
 }
 

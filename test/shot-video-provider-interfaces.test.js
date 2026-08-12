@@ -250,6 +250,7 @@ test("Seedance 2.0 全能参考使用 reference_image/video/audio 且不混入�
     request: allReferenceVideoRequest({
       provider: "Seedance",
       model: "doubao-seedance-2-0-260128",
+      aspectRatio: "16:9",
       artifacts: [
         { path: imagePath, mediaType: "image", role: "reference_image" },
         { path: videoPath, mediaType: "video", role: "reference_video" },
@@ -270,6 +271,7 @@ test("Seedance 2.0 全能参考使用 reference_image/video/audio 且不混入�
   assert.match(postedBody.content[1].image_url.url, /^data:image\/png;base64,/u);
   assert.match(postedBody.content[2].video_url.url, /^data:video\/mp4;base64,/u);
   assert.match(postedBody.content[3].audio_url.url, /^data:audio\/mpeg;base64,/u);
+  assert.equal(postedBody.ratio, "16:9");
 });
 
 test("Seedance expired/cancelled 都是终态，且当前官方三个 Model ID 均可选", async (t) => {
@@ -495,13 +497,14 @@ test("MiniMax H3 全能参考允许单张参考图并拒绝仅音频输入", asy
     request: allReferenceVideoRequest({
       provider: "MiniMax",
       model: "MiniMax-H3",
+      aspectRatio: "16:9",
       artifacts: [{ path: imagePath, mediaType: "image", role: "reference_image" }]
     }),
     output: path.join(root, "output.mp4"),
     root
   });
   assert.deepEqual(postedBody.content.map((item) => item.role || "text"), ["text", "reference_image"]);
-  assert.equal(postedBody.ratio, "adaptive");
+  assert.equal(postedBody.ratio, "16:9");
 
   await assert.rejects(() => executeGenericHttpWorker({
     config: configPath,
@@ -663,7 +666,7 @@ function videoRequest({
   };
 }
 
-function allReferenceVideoRequest({ provider, model, artifacts }) {
+function allReferenceVideoRequest({ provider, model, artifacts, aspectRatio = "9:16" }) {
   return {
     taskId: `${provider}-r2v-test`,
     capability: "all_reference_video_generation",
@@ -677,7 +680,7 @@ function allReferenceVideoRequest({ provider, model, artifacts }) {
       ...artifact
     })),
     parameters: {
-      aspectRatio: "9:16",
+      aspectRatio,
       durationSeconds: 5,
       generationMode: "all_reference"
     }

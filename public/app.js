@@ -24,6 +24,12 @@ import {
   planProductionContext,
   productionStateFromRun
 } from "./production-lineage-client.js";
+import {
+  ANIMATION_PLAN_ASPECT_RATIOS,
+  animationPlanRuntimeSummary,
+  normalizeAnimationPlanAspectRatio,
+  withAnimationPlanAspectRatio
+} from "./animation-plan-settings.js";
 
 const state = {
   file: null,
@@ -37,6 +43,8 @@ const state = {
   fullStories: {},
   animationPlans: {},
   animationPlanMetadata: {},
+  animationAspectRatioDrafts: {},
+  animationAspectRatioUpdating: false,
   shotVideoResults: {},
   shotFrameResults: {},
   characterReferenceStatuses: {},
@@ -110,6 +118,7 @@ const elements = {
   selectedVariantSummary: $("#selectedVariantSummary"), storyStatus: $("#storyStatus"),
   storyGenerate: $("#generateFullStory"), fullStory: $("#fullStoryResult"), backToResults: $("#backToResults"),
   animationGenerate: $("#generateAnimationPlan"), animationStatus: $("#animationStatus"), animationPlan: $("#animationPlanResult"),
+  animationAspectRatio: $("#animationAspectRatio"), animationAspectRatioHint: $("#animationAspectRatioHint"),
   exportStoryPackage: $("#exportStoryPackage"), copyAnimationPack: $("#copyAnimationPack"),
   importStoryPackage: $("#importStoryPackage"), exportStoryTestPackage: $("#exportStoryTestPackage"),
   storyPackageFile: $("#storyPackageFile"), storyPackageStatus: $("#storyPackageStatus"),
@@ -265,6 +274,7 @@ function bindEvents() {
   elements.backToResults.addEventListener("click", backToMainResults);
   elements.storyGenerate.addEventListener("click", () => generateFullStory({ force: true }));
   elements.animationGenerate.addEventListener("click", () => generateAnimationPlan({ force: true }));
+  elements.animationAspectRatio.addEventListener("change", () => handleAnimationAspectRatioChange(elements.animationAspectRatio.value));
   elements.exportStoryPackage.addEventListener("click", exportCurrentStoryPackage);
   elements.copyAnimationPack.addEventListener("click", copyAnimationProductionPack);
   elements.importStoryPackage.addEventListener("click", () => elements.storyPackageFile.click());
@@ -397,6 +407,8 @@ function bindEvents() {
     openCharacterReferenceInput(card.dataset.characterReferenceCard);
   });
   elements.animationPlan.addEventListener("change", (event) => {
+    const aspectRatioSelect = event.target.closest("[data-animation-aspect-ratio]");
+    if (aspectRatioSelect) return handleAnimationAspectRatioChange(aspectRatioSelect.value);
     const input = event.target.closest("[data-character-reference-input]");
     if (input && input.files[0]) {
       refineCharacterReferenceWithImage(input.dataset.characterReferenceInput, input.files[0]);
@@ -536,6 +548,7 @@ async function runWorkflow() {
   state.fullStories = {};
   state.animationPlans = {};
   state.animationPlanMetadata = {};
+  state.animationAspectRatioDrafts = {};
   state.shotVideoResults = {};
   state.shotFrameResults = {};
   state.characterReferenceStatuses = {};
@@ -1077,6 +1090,7 @@ function renderStoryPage({ autoGenerate = false } = {}) {
   renderSelectedVariantSummary(variant);
   const existing = variant ? state.fullStories[variant.id] : null;
   const animationExisting = variant ? state.animationPlans[variant.id] : null;
+  syncAnimationAspectRatioControls(animationExisting);
   if (existing) {
     renderFullStory(existing);
     setStoryStatus(`已生成完整剧情 · ${storyModelLabel()}`, "ready");
@@ -1216,6 +1230,7 @@ async function generateAnimationPlan({ force = false } = {}) {
   if (!variant) return setAnimationStatus("请先选择一个主题变体。", "error");
   const fullStory = state.fullStories[variant.id] || state.output.fullStory;
   if (!fullStory) return setAnimationStatus("请先生成完整剧情，再生成动画生产包。", "error");
+  const targetAspectRatio = selectedAnimationAspectRatio(variant.id);
   if (!force && state.animationPlans[variant.id]) {
     renderAnimationPlan(state.animationPlans[variant.id]);
     return;
@@ -1238,6 +1253,7 @@ async function generateAnimationPlan({ force = false } = {}) {
         fullStory,
         creatorProfile: profile(),
         animationPlanMode,
+        targetAspectRatio,
         // 暂时弃置，后续优化或删除：direct_shot 不消费 Character Feature private sidecar；旧 v2 请求兼容保留。
         ...(animationPlanMode !== "direct_shot" && previousPrivateSidecars && typeof previousPrivateSidecars === "object" && !Array.isArray(previousPrivateSidecars)
           ? { privateSidecars: structuredClone(previousPrivateSidecars) }
@@ -1265,8 +1281,9 @@ async function generateAnimationPlan({ force = false } = {}) {
     state.output.animationPlans = state.animationPlans;
     state.output.animationPlanMetadata = state.animationPlanMetadata;
     state.output.animationPlan = animationPlan;
+    state.animationAspectRatioDrafts[variant.id] = normalizeAnimationPlanAspectRatio(animationPlan.productionStrategy?.targetAspectRatio);
     renderAnimationPlan(animationPlan, metadata);
-    setAnimationStatus(`动画生产包已生成 · ${animationModelLabel()}`, "ready");
+    setAnimationStatus(`动画生产包已生成 · ${state.animationAspectRatioDrafts[variant.id]} · ${animationModelLabel()}`, "ready");
     updateStoryExportActions();
     elements.export.classList.remove("hidden");
   } catch (error) {
@@ -1344,6 +1361,101 @@ function currentPlanLineageRef(variantId) {
   return lineageDependency(lineage);
 }
 
+function selectedAnimationAspectRatio(variantId = selectedVariant()?.id) {
+  const plan = variantId ? state.animationPlans[variantId] : null;
+  const planAspectRatio = normalizeAnimationPlanAspectRatio(plan?.productionStrategy?.targetAspectRatio);
+  const draft = variantId ? state.animationAspectRatioDrafts[variantId] : "";
+  return normalizeAnimationPlanAspectRatio(draft, planAspectRatio);
+}
+
+function syncAnimationAspectRatioControls(plan = null) {
+  const variant = selectedVariant();
+  if (!variant) {
+    elements.animationAspectRatio.value = "9:16";
+    elements.animationAspectRatio.disabled = true;
+    elements.animationAspectRatioHint.textContent = "请先选择主题变体。";
+    return;
+  }
+  const currentPlan = plan || state.animationPlans[variant.id] || null;
+  const currentRatio = normalizeAnimationPlanAspectRatio(currentPlan?.productionStrategy?.targetAspectRatio);
+  if (!Object.prototype.hasOwnProperty.call(state.animationAspectRatioDrafts, variant.id)) {
+    state.animationAspectRatioDrafts[variant.id] = currentRatio;
+  }
+  const draft = selectedAnimationAspectRatio(variant.id);
+  elements.animationAspectRatio.value = draft;
+  elements.animationAspectRatio.disabled = state.animationRunning || state.animationAspectRatioUpdating;
+  elements.animationAspectRatioHint.textContent = !currentPlan
+    ? `将按 ${draft} 生成镜头构图与视频画幅。`
+    : `当前 Animation Plan 已应用 ${currentRatio}；切换不会调用模型或重写镜头。`;
+}
+
+function handleAnimationAspectRatioChange(value) {
+  const variant = selectedVariant();
+  if (!variant) return setAnimationStatus("请先选择一个主题变体。", "error");
+  const ratio = normalizeAnimationPlanAspectRatio(value);
+  const plan = state.animationPlans[variant.id] || null;
+  if (plan) return updateAnimationPlanAspectRatio(ratio);
+  state.animationAspectRatioDrafts[variant.id] = ratio;
+  syncAnimationAspectRatioControls(plan);
+  setAnimationStatus(`已选择 ${ratio}，将用于新生成的 Animation Plan。`, "ready");
+  setAnimationRunning(false);
+}
+
+async function updateAnimationPlanAspectRatio(value) {
+  if (state.animationAspectRatioUpdating) return;
+  const variant = selectedVariant();
+  const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : null;
+  if (!variant || !plan) return handleAnimationAspectRatioChange(value);
+  const ratio = normalizeAnimationPlanAspectRatio(value);
+  const currentRatio = normalizeAnimationPlanAspectRatio(plan.productionStrategy?.targetAspectRatio);
+  if (ratio === currentRatio) {
+    state.animationAspectRatioDrafts[variant.id] = ratio;
+    syncAnimationAspectRatioControls(plan);
+    return;
+  }
+
+  const planArtifactId = animationPlanArtifactId(variant.id);
+  const planDependencyRefs = currentPlanDependencyRefs(variant.id);
+  const planToken = beginArtifactRequest(state.production, planArtifactId, crypto.randomUUID());
+  state.animationAspectRatioUpdating = true;
+  elements.animationAspectRatio.disabled = true;
+  document.querySelectorAll("[data-animation-aspect-ratio]").forEach((select) => { select.disabled = true; });
+  elements.animationGenerate.disabled = true;
+  setAnimationStatus(`正在把当前 Animation Plan 输出画幅切换为 ${ratio}…`, "active");
+  try {
+    const updatedPlan = withAnimationPlanAspectRatio(plan, ratio);
+    await commitProductionArtifact({
+      artifactId: planArtifactId,
+      artifactType: "animationPlan",
+      content: updatedPlan,
+      dependencyRefs: planDependencyRefs,
+      createMediaNamespace: true,
+      requestToken: planToken
+    });
+    state.animationPlans[variant.id] = updatedPlan;
+    state.output.animationPlans = state.animationPlans;
+    state.animationAspectRatioDrafts[variant.id] = ratio;
+    if (String(state.selectedVariantId || "") === String(variant.id)) {
+      state.output.animationPlan = updatedPlan;
+      renderAnimationPlan(updatedPlan);
+      setAnimationStatus(`输出画幅已切换为 ${ratio}；未调用模型，原镜头内容与时长保持不变。`, "ready");
+    }
+    updateStoryExportActions();
+  } catch (error) {
+    state.animationAspectRatioDrafts[variant.id] = currentRatio;
+    if (String(state.selectedVariantId || "") === String(variant.id)) {
+      renderAnimationPlan(plan);
+      setAnimationStatus(error.message || "画幅切换失败", "error");
+    }
+  } finally {
+    state.animationAspectRatioUpdating = false;
+    finishArtifactRequest(state.production, planToken);
+    const currentVariant = selectedVariant();
+    syncAnimationAspectRatioControls(currentVariant ? state.animationPlans[currentVariant.id] || null : null);
+    setAnimationRunning(false);
+  }
+}
+
 function normalizeAnimationPlanResponse(result) {
   if (
     result
@@ -1381,11 +1493,14 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
   const strategy = data.productionStrategy || {};
   const visual = data.visualBible || {};
   const directShotPlan = data.promptSchemaVersion === "3.0";
+  const currentAspectRatio = normalizeAnimationPlanAspectRatio(strategy.targetAspectRatio);
+  const aspectRatioDraft = selectedAnimationAspectRatio(data.selectedVariantId);
+  const runtimeSummary = animationPlanRuntimeSummary(data);
   elements.animationPlan.innerHTML = `${resultHeader("ANIMATION PLAN", data.title || "动画镜头生产包", strategy.format || (directShotPlan ? "direct_shot_video" : "first_last_frame_video"))}
     <div class="summary-strip">${escape(strategy.whyThisWorkflow || (directShotPlan ? "镜头内容直接组织为视频生成指令。" : "按首尾帧拆镜头，逐镜生成短视频，优先控制角色一致性。"))}</div>
     <div class="data-grid">
-      ${cell("画幅", strategy.targetAspectRatio || "9:16")}
-      ${cell("目标时长", `${strategy.targetRuntimeSeconds || 60} 秒`)}
+      ${animationAspectRatioCell(currentAspectRatio, aspectRatioDraft)}
+      ${cell("镜头计划合计时长", formatAnimationPlanRuntime(runtimeSummary))}
       ${cell("单镜头", `${strategy.recommendedShotDurationSeconds?.min || 3}-${strategy.recommendedShotDurationSeconds?.max || 6} 秒`)}
       ${cell("动画风格", visual.animationStyle)}
       ${cell("色彩", (visual.colorPalette || []).join(" / "))}
@@ -1442,7 +1557,27 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
     ${block("生成验收清单", `<div class="rule-list">${(data.generationChecklist || []).map((item) => `<div class="rule"><strong>${escape(item.check)}</strong><p>${escape(item.passCriteria)}</p></div>`).join("")}</div>`)}
     <div class="warning-box"><b>动画连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
     ${uncertainties(data.uncertainties)}`;
+  syncAnimationAspectRatioControls(data);
   reveal(elements.animationPlan);
+}
+
+function animationAspectRatioCell(currentRatio, draftRatio) {
+  const options = ANIMATION_PLAN_ASPECT_RATIOS.map((ratio) => (
+    `<option value="${escape(ratio)}"${ratio === draftRatio ? " selected" : ""}>${escape(ratio)} · ${ratio === "9:16" ? "竖屏" : "横屏"}</option>`
+  )).join("");
+  return `<div class="data-cell aspect-ratio-cell">
+    <span>目标画幅</span>
+    <select data-animation-aspect-ratio aria-label="动画目标画幅"${state.animationAspectRatioUpdating ? " disabled" : ""}>${options}</select>
+    <small>当前计划已应用 ${escape(currentRatio)}；切换不会重写镜头</small>
+  </div>`;
+}
+
+function formatAnimationPlanRuntime(summary) {
+  if (!summary.valid) return `待确认（${summary.reason}）`;
+  if (summary.targetSeconds === null) return `${summary.plannedSeconds} 秒`;
+  if (summary.deltaSeconds === 0) return `${summary.plannedSeconds} 秒（与目标一致）`;
+  const sign = summary.deltaSeconds > 0 ? "+" : "";
+  return `${summary.plannedSeconds} 秒（目标 ${summary.targetSeconds} 秒，偏差 ${sign}${summary.deltaSeconds} 秒）`;
 }
 
 function renderStaticFrameCompilerLog(metadata = null) {
@@ -2605,7 +2740,7 @@ async function updateShotVideoGeneratorPreview(options = {}) {
   const count = Math.max(1, Math.min(4, Number(state.shotVideoGeneration.count) || Number(elements.shotVideoCount.value) || 1));
   elements.shotVideoCount.value = String(count);
   elements.shotVideoModalTitle.textContent = `用 ${shotVideoProviderLabel()} 生成 ${shot.shotId || "镜头"} 视频`;
-  elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || 4} 秒 · ${generationMode === "all_reference"
+  elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || 4} 秒 · ${normalizeAnimationPlanAspectRatio(plan.productionStrategy?.targetAspectRatio)} · ${generationMode === "all_reference"
     ? "多模态参考生成，不锁定精确首尾帧"
     : hasPlannedEndpoints(shot)
       ? "精确锁定已添加的首帧/尾帧"
@@ -3050,6 +3185,7 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
       selectedVariantId: variant?.id || "",
       count,
       generationMode,
+      aspectRatio: normalizeAnimationPlanAspectRatio(plan.productionStrategy?.targetAspectRatio),
       animationPromptSchemaVersion: plan.promptSchemaVersion || "",
       characterReferences: plan.characterReferencePrompts || [],
       shot: {
@@ -3436,10 +3572,18 @@ function setStoryRunning(running) {
 }
 function setAnimationRunning(running) {
   elements.animationGenerate.classList.toggle("running", running);
-  elements.animationGenerate.textContent = running ? "动画生产包生成中…" : "生成动画镜头生产包";
   const variant = selectedVariant();
   const fullStory = variant ? state.fullStories[variant.id] || state.output.fullStory : null;
+  const plan = variant ? state.animationPlans[variant.id] : null;
+  const draft = selectedAnimationAspectRatio(variant?.id);
+  const currentRatio = normalizeAnimationPlanAspectRatio(plan?.productionStrategy?.targetAspectRatio);
+  elements.animationGenerate.textContent = running
+    ? `正在生成 ${draft} 动画生产包…`
+    : plan && draft !== currentRatio
+      ? `按 ${draft} 重新生成动画镜头生产包`
+      : `生成动画镜头生产包 · ${draft}`;
   elements.animationGenerate.disabled = running || !variant || !fullStory;
+  elements.animationAspectRatio.disabled = running || !variant;
   updateStoryExportActions();
 }
 function setStoryStatus(message, tone = "") {
@@ -3760,6 +3904,7 @@ function invalidateGlobalCharacterBoundary(message = "固定角色或创作设�
   state.fullStories = {};
   state.animationPlans = {};
   state.animationPlanMetadata = {};
+  state.animationAspectRatioDrafts = {};
   state.shotFrameResults = {};
   state.shotVideoResults = {};
   [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants].forEach((element) => {
@@ -3847,6 +3992,7 @@ function restoreRunArtifacts(latestArtifacts = {}) {
   state.fullStories = {};
   state.animationPlans = {};
   state.animationPlanMetadata = {};
+  state.animationAspectRatioDrafts = {};
   state.shotFrameResults = {};
   state.shotVideoResults = {};
   const currentEntries = Object.entries(latestArtifacts)
@@ -3854,7 +4000,11 @@ function restoreRunArtifacts(latestArtifacts = {}) {
     .sort((left, right) => String(left[1].lineage.createdAt || "").localeCompare(String(right[1].lineage.createdAt || "")));
   for (const [artifactId, entry] of currentEntries) {
     if (artifactId.startsWith("fullStory:")) state.fullStories[artifactId.slice("fullStory:".length)] = entry.content;
-    else if (artifactId.startsWith("animationPlan:")) state.animationPlans[artifactId.slice("animationPlan:".length)] = entry.content;
+    else if (artifactId.startsWith("animationPlan:")) {
+      const variantId = artifactId.slice("animationPlan:".length);
+      state.animationPlans[variantId] = entry.content;
+      state.animationAspectRatioDrafts[variantId] = normalizeAnimationPlanAspectRatio(entry.content?.productionStrategy?.targetAspectRatio);
+    }
     else if (artifactId.startsWith("shotVideo:")) {
       const parts = artifactId.split(":");
       state.shotVideoResults[parts.slice(2).join(":")] = entry.content;
@@ -4087,6 +4237,7 @@ function restoreStoryPackage(payload, production) {
   state.fullStories = {};
   state.animationPlans = {};
   state.animationPlanMetadata = structuredClone(payload.animationPlanMetadata || payload.output?.animationPlanMetadata || {});
+  state.animationAspectRatioDrafts = {};
   state.shotFrameResults = {};
   state.shotVideoResults = {};
   state.characterReferenceStatuses = {};
@@ -4096,6 +4247,7 @@ function restoreStoryPackage(payload, production) {
   }
   if (animationPlan) {
     state.animationPlans[id] = animationPlan;
+    state.animationAspectRatioDrafts[id] = normalizeAnimationPlanAspectRatio(animationPlan.productionStrategy?.targetAspectRatio);
     state.output.animationPlan = animationPlan;
   }
   const staticFrameCompiler = payload.metadata?.staticFrameCompiler
@@ -4200,11 +4352,16 @@ function formatAnimationPackMarkdown(pack) {
   const visual = plan.visualBible || {};
   const guardrails = pack.visualGuardrails || {};
   const boundary = guardrails.fixedCharacterBoundary || {};
+  const runtimeSummary = animationPlanRuntimeSummary(plan);
   const lines = [
     `# ${plan.title || pack.fullStory?.title || "动画镜头生产包"}`,
     "",
     `- 画幅：${strategy.targetAspectRatio || "9:16"}`,
-    `- 目标时长：${strategy.targetRuntimeSeconds || pack.fullStory?.targetDurationSeconds || 60} 秒`,
+    `- 镜头计划合计时长：${runtimeSummary.valid ? `${runtimeSummary.plannedSeconds} 秒` : `待确认（${runtimeSummary.reason}）`}`,
+    `- 上游目标时长：${runtimeSummary.targetSeconds || pack.fullStory?.targetDurationSeconds || "待确认"} 秒`,
+    ...(runtimeSummary.valid && runtimeSummary.deltaSeconds !== null
+      ? [`- 时长偏差：${runtimeSummary.deltaSeconds > 0 ? "+" : ""}${runtimeSummary.deltaSeconds} 秒`]
+      : []),
     `- 单镜头时长：${strategy.recommendedShotDurationSeconds?.min || 3}-${strategy.recommendedShotDurationSeconds?.max || 6} 秒`,
     `- 工作流：${strategy.format || "first_last_frame_video"}`,
     `- Prompt Schema：${plan.promptSchemaVersion || "legacy"}`,

@@ -413,6 +413,8 @@ export function mockAnimationPlan(input) {
   const fixedName = fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
   const title = fullStory.title || variant.title || "可动画化短片";
   const targetRuntime = Number(fullStory.targetDurationSeconds) || 60;
+  const targetAspectRatio = input.targetAspectRatio || "9:16";
+  const aspectRatioLabel = targetAspectRatio === "16:9" ? "横屏 16:9" : "竖屏 9:16";
   const protagonistIdentity = fullStory.characterBible?.protagonist?.identity || fixed;
   const careRecipient = fullStory.characterBible?.careRecipient?.nameOrLabel || variant.characterSetup?.careRecipient || "被关爱对象";
   const explicitIdentity = [...new Set([fixed, protagonistIdentity].map((item) => String(item || "").trim()).filter(Boolean))].join("，");
@@ -432,8 +434,8 @@ export function mockAnimationPlan(input) {
       sceneId,
       sceneName: location,
       storyFunction: scene.dramaticFunction || "承载剧情动作和情绪变化",
-      environmentPrompt: `竖屏 9:16，${location}，治愈生活流 2.5D 动画场景参考图，空间真实可信，背景层级清楚，光线自然，适合${fixedName}在其中完成短镜头动作。`,
-      continuityAnchors: [location, "同一室内外属性", "同一背景层级", "同一光线方向", "同一竖屏构图逻辑"],
+      environmentPrompt: `${aspectRatioLabel}，${location}，治愈生活流 2.5D 动画场景参考图，空间真实可信，背景层级清楚，光线自然，适合${fixedName}在其中完成短镜头动作。`,
+      continuityAnchors: [location, "同一室内外属性", "同一背景层级", "同一光线方向", `同一${aspectRatioLabel}构图逻辑`],
       sceneContinuityRules: ["室内外属性保持一致", "地点与背景层级保持一致", "光线方向保持连续"],
       relatedShotIds: [`A${String(index + 1).padStart(2, "0")}`]
     };
@@ -484,7 +486,7 @@ export function mockAnimationPlan(input) {
     title: `${title} · 首尾帧动画生产包`,
     productionStrategy: {
       format: "first_last_frame_video",
-      targetAspectRatio: "9:16",
+      targetAspectRatio,
       targetRuntimeSeconds: targetRuntime,
       recommendedShotDurationSeconds: { min: 3, max: 6 },
       generationOrder: ["生成角色参考图", "生成关键道具参考图", "逐镜生成首帧", "逐镜生成尾帧", "用首尾帧生成短视频", "质检并挑选候选", "剪辑、配音、字幕和音效"],
@@ -496,7 +498,7 @@ export function mockAnimationPlan(input) {
       colorPalette: ["暖米色", "雨后青灰", "低饱和橙色", "柔和绿色"],
       lighting: "自然散射光，情绪低点偏冷，帮助和结尾逐步转暖。",
       worldRules: ["村庄/生活空间真实可信", "道具比例稳定", "角色不突然换装", "天气变化服务情绪，不抢戏"],
-      cameraLanguage: "竖屏近中景为主，少量跟拍，关键情绪用静态停顿。",
+      cameraLanguage: `${aspectRatioLabel}近中景为主，少量跟拍，关键情绪用静态停顿。`,
       characterConsistencyRules: [`${fixedName}始终保持用户明确设定的同一身份`, "同一发型、同一衣服、同一身高比例", "表情变化克制，动作先于语言"]
     },
 	    characterReferencePrompts: [

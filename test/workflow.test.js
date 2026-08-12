@@ -1118,6 +1118,7 @@ test("单镜头全能参考模式不生成首尾帧，并把参考图作为 R2V 
     videoProvider: "MiniMax",
     videoModel: "MiniMax-H3",
     generationMode: "all_reference",
+    aspectRatio: "16:9",
     referenceAssets: [{
       mediaType: "image",
       name: "小白子角色参考.png",
@@ -1139,6 +1140,7 @@ test("单镜头全能参考模式不生成首尾帧，并把参考图作为 R2V 
   assert.deepEqual(result.referenceSummary, { image: 1, video: 0, audio: 0 });
   assert.deepEqual(receivedBody.content.map((item) => item.role || "text"), ["text", "reference_image"]);
   assert.equal(receivedBody.content.some((item) => ["first_frame", "last_frame"].includes(item.role)), false);
+  assert.equal(receivedBody.ratio, "16:9");
   assert.equal(await fs.readFile(result.outputPath, "utf8"), "r2v shot video bytes");
 });
 

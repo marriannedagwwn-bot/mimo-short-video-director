@@ -78,6 +78,23 @@ const animationShotFields = [
 const animationPromptSchemaVersion = "2.0";
 export const ANIMATION_DIRECT_SHOT_MODE = "direct_shot";
 export const ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION = "3.0";
+export const ANIMATION_PLAN_ASPECT_RATIOS = Object.freeze(["9:16", "16:9"]);
+
+export function requireAnimationPlanAspectRatio(value, path = "targetAspectRatio") {
+  const normalized = String(value || "").trim();
+  if (!ANIMATION_PLAN_ASPECT_RATIOS.includes(normalized)) {
+    throw new InputError(`${path} 只允许 ${ANIMATION_PLAN_ASPECT_RATIOS.join(" 或 ")}`);
+  }
+  return normalized;
+}
+
+export function ensureAnimationPlanAspectRatio(value, path = "productionStrategy.targetAspectRatio") {
+  const normalized = String(value || "").trim();
+  if (!ANIMATION_PLAN_ASPECT_RATIOS.includes(normalized)) {
+    throw new OutputContractError(`${path} 只允许 ${ANIMATION_PLAN_ASPECT_RATIOS.join(" 或 ")}`);
+  }
+  return normalized;
+}
 const animationDirectShotFields = [
   "shotId",
   "sourceSceneId",
@@ -599,6 +616,7 @@ export function ensureAnimationFoundationContract(value, { sourceSceneIds = [] }
   const unexpected = Object.keys(value).filter((key) => ![...animationFoundationFields, "promptSchemaVersion"].includes(key));
   if (unexpected.length) throw new OutputContractError(`animationFoundation 包含未允许的顶层字段：${unexpected.join("、")}`);
   ensureAnimationFoundationPromptSchemaVersion(value.promptSchemaVersion, "animationFoundation.promptSchemaVersion");
+  ensureAnimationPlanAspectRatio(value.productionStrategy?.targetAspectRatio, "animationFoundation.productionStrategy.targetAspectRatio");
 
   for (const field of ["characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "generationChecklist", "modelAgnosticNotes", "uncertainties"]) {
     if (!Array.isArray(value[field])) throw new OutputContractError(`animationFoundation.${field} 必须是数组`);
@@ -708,6 +726,7 @@ export function ensureAnimationPlanDirectShotContract(value, { path = "animation
   if (value.productionStrategy?.format !== "direct_shot_video") {
     throw new OutputContractError(`${path}.productionStrategy.format 必须严格等于 "direct_shot_video"`);
   }
+  ensureAnimationPlanAspectRatio(value.productionStrategy?.targetAspectRatio, `${path}.productionStrategy.targetAspectRatio`);
   if (!Array.isArray(value.shotPlan)) throw new OutputContractError(`${path}.shotPlan 必须是数组`);
   value.shotPlan.forEach((shot, index) => ensureAnimationDirectShotContract(shot, `${path}.shotPlan[${index}]`));
   validateAnimationPlanNegativePromptContract(value);
