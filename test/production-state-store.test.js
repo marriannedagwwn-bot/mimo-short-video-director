@@ -172,6 +172,54 @@ test("切换计划级画幅签发新 Plan revision 并只使旧镜头媒体 stal
   });
 });
 
+test("后镜引用上一镜精确视频 revision，重选上一镜候选会递归使下游视频 stale", async () => {
+  await withStore(async ({ store }) => {
+    const run = await store.createRun({ projectId: "project-shot-continuity" });
+    const plan = await commit(store, run, {
+      artifactId: "animationPlan:V1",
+      artifactType: "animationPlan",
+      content: {
+        selectedVariantId: "V1",
+        productionStrategy: { targetAspectRatio: "16:9" },
+        shotPlan: [{ shotId: "A01" }, { shotId: "A02" }, { shotId: "A03" }]
+      },
+      createMediaNamespace: true
+    });
+    const a01 = await commit(store, run, {
+      artifactId: "shotVideo:V1:A01",
+      artifactType: "shotVideo",
+      content: { status: "ready", selectedIndex: 0, result: { outputUrl: "/a01-1.mp4" } },
+      dependencies: [lineageRef(plan.lineage)]
+    });
+    const a02 = await commit(store, run, {
+      artifactId: "shotVideo:V1:A02",
+      artifactType: "shotVideo",
+      content: { status: "ready", selectedIndex: 0, result: { outputUrl: "/a02.mp4" } },
+      dependencies: [lineageRef(plan.lineage), lineageRef(a01.lineage)]
+    });
+    await commit(store, run, {
+      artifactId: "shotVideo:V1:A03",
+      artifactType: "shotVideo",
+      content: { status: "ready", selectedIndex: 0, result: { outputUrl: "/a03.mp4" } },
+      dependencies: [lineageRef(plan.lineage), lineageRef(a02.lineage)]
+    });
+
+    const changed = await commit(store, run, {
+      artifactId: "shotVideo:V1:A01",
+      artifactType: "shotVideo",
+      expectedCurrentRevision: a01.lineage.revision,
+      content: { status: "ready", selectedIndex: 1, result: { outputUrl: "/a01-2.mp4" } },
+      dependencies: [lineageRef(plan.lineage)]
+    });
+
+    assert.deepEqual(changed.staleArtifactIds, ["shotVideo:V1:A02", "shotVideo:V1:A03"]);
+    const loaded = await store.loadRun(run);
+    assert.equal(loaded.latestArtifacts["shotVideo:V1:A01"].lineage.status, "current");
+    assert.equal(loaded.latestArtifacts["shotVideo:V1:A02"].lineage.status, "stale");
+    assert.equal(loaded.latestArtifacts["shotVideo:V1:A03"].lineage.status, "stale");
+  });
+});
+
 test("signed v3 package validates lineage, rejects tampering and imports into an isolated run", async () => {
   await withStore(async ({ store }) => {
     const run = await store.createRun({ projectId: "project-package" });

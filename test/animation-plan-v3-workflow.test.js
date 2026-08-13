@@ -12,14 +12,22 @@ const ENDPOINT_FIELDS = [
   "endFramePrompt"
 ];
 
+const TUTORIAL_STYLE_VIDEO_PROMPT = "温暖治愈的2.5D手绘动画质感，出发点被清晨柔和侧光照亮，背景空间层次清楚。社区修理师阿岚保持既定外观，确认一段旧录音，听到任务期限后立刻把它收好。镜头先以中景跟随阿岚靠近任务物，确认内容时硬切到任务物特写，最后切到阿岚收好录音后的反应近景。前段节奏轻快，确认期限时短促停顿；保留室内环境底噪、收纳动作声和阿岚的短句“我现在去”。内部摄影切换前后保持阿岚身份、服装、任务物造型和光线方向一致，收好任务物后立即停止。";
+
 const DIRECT_SHOT_SENTINELS = {
-  videoPrompt: "VIDEO_PROMPT_SENTINEL：阿岚完成当前剧情动作。",
-  cameraMotion: "CAMERA_MOTION_SENTINEL：固定机位。",
-  characterAction: "CHARACTER_ACTION_SENTINEL：阿岚完成动作。",
-  dialogueOrSubtitle: "DIALOGUE_OR_SUBTITLE_SENTINEL",
-  soundDesign: "SOUND_DESIGN_SENTINEL",
-  continuityNotes: "CONTINUITY_NOTES_SENTINEL：阿岚身份保持一致。"
+  videoPrompt: TUTORIAL_STYLE_VIDEO_PROMPT,
+  cameraMotion: "先以中景跟随阿岚靠近任务物，确认内容时硬切任务物特写，最后切到收好录音后的反应近景",
+  characterAction: "阿岚确认一段旧录音，听到任务期限后立刻把它收好",
+  dialogueOrSubtitle: "阿岚：我现在去。",
+  soundDesign: "室内环境底噪、收纳动作声；确认期限时短促停顿",
+  continuityNotes: "内部摄影切换前后保持阿岚身份、服装、任务物造型和光线方向一致"
 };
+
+const DIRECT_SHOT_ACCEPTANCE = [
+  "阿岚按顺序完成确认旧录音并在期限出现后收好的动作链",
+  "摄影顺序为中景跟随、任务物特写、阿岚反应近景",
+  "三段摄影表达中的阿岚与任务物外观保持一致"
+];
 
 function createLiveWorkflow(generateAnimationJson) {
   const animationCalls = [];
@@ -112,6 +120,7 @@ test("live direct_shot 保留模型视频字段且完全绕过三个编译阶段
   foundation = foundationFrom(modelPlan);
   batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
   Object.assign(batch.shotPlan[0], DIRECT_SHOT_SENTINELS);
+  batch.shotPlan[0].acceptanceCriteria = DIRECT_SHOT_ACCEPTANCE;
 
   const { animationPlan, metadata } = await workflow.createAnimationPlanWithMetadata(context);
 
@@ -123,6 +132,12 @@ test("live direct_shot 保留模型视频字段且完全绕过三个编译阶段
     Object.fromEntries(Object.keys(DIRECT_SHOT_SENTINELS).map((field) => [field, animationPlan.shotPlan[0][field]])),
     DIRECT_SHOT_SENTINELS
   );
+  assert.equal(
+    animationPlan.shotPlan.filter((shot) => shot.sourceSceneId === batch.shotPlan[0].sourceSceneId).length,
+    1,
+    "同一地点、同一主要动作目标下的内部硬切不得增加业务 shot"
+  );
+  assert.deepEqual(animationPlan.shotPlan[0].acceptanceCriteria, DIRECT_SHOT_ACCEPTANCE);
   animationPlan.shotPlan.forEach((shot) => {
     ENDPOINT_FIELDS.forEach((field) => assert.equal(Object.hasOwn(shot, field), false));
   });

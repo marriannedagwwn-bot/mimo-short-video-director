@@ -64,9 +64,14 @@ referenceAnalysis + reconstruction + brief + guardrails
           ├─ characterImages:<variantId>:<roleIndex>
           ├─ shotFrame:<variantId>:<shotId>:<kind>（旧 v2）
           └─ shotVideo:<variantId>:<shotId>
+              └─ shotVideo:<variantId>:<nextShotId>（仅显式使用上一镜抽帧时）
 ```
 
 依赖记录的是实际 revision/digest，不只是 `variant.id` 或 `shotId`。上游提交新 revision 后，仍引用旧 revision 的所有下游 Artifact 会递归变为 `stale`。
+
+默认每个 `shotVideo` 只依赖当前 Animation Plan。若某镜请求显式使用 `continuityReferenceMode=previous_shot_frames`，它还必须依赖 Plan 顺序中紧邻上一镜的 current `shotVideo` 精确 revision/digest；服务端回执提供该 source lineage，浏览器提交媒体 Artifact 时冻结它。上一镜重生成或切换候选会签发新 revision，并递归使所有引用旧 revision 的后镜视频 stale。切换后镜自己的候选只是更新同一媒体 Artifact，必须原样保留已有依赖，不能退回为只依赖 Plan。
+
+浏览器恢复和运行时缓存必须按 `variantId + shotId`（旧 v2 帧再加 `frameKind`）区分媒体结果。服务端只将具体下游 Artifact 标为 stale 时，前端只移除对应缓存项；不得清空其他 Variant、上一镜或同 Plan 内仍为 current 的媒体结果。
 
 ## 4. 异步请求规则
 
@@ -98,6 +103,8 @@ public/generated-videos/<mediaNamespace>/
 ```
 
 文件名也带 Plan revision 和 digest 前缀。远端生成期间 Plan 若更新，旧任务可能仍在旧目录完成，但前端会拒绝把结果挂到新 Plan。
+
+上一镜抽帧不信任浏览器提交的绝对路径或任意 URL。服务端根据当前 Plan 的 `shotPlan[]` 顺序导出 source shot，读取同一 Run 中 current `shotVideo` Artifact 的选中候选，只把当前 `public/generated-videos/<mediaNamespace>/` 单层目录内、文件名前缀同时绑定当前 Plan 和 source shotId 的普通 mp4 映射回本地文件。旧 namespace、远程 URL、路径穿越、子目录、符号链接和缺失文件必须明确拒绝。通过路径校验后仍须以 `O_NOFOLLOW` 文件句柄读取并冻结到任务私有目录，抽帧回执记录实际读取源字节及各 JPEG 的 SHA-256，避免路径校验与 FFmpeg 打开之间的文件替换使 lineage 与实际输入脱钩。
 
 ## 6. Run、Stage、Artifact 与 Checkpoint
 

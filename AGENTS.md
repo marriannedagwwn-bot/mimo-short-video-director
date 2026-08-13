@@ -60,7 +60,11 @@ Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Art
 
 当前 `direct_shot` 必须由请求显式传入 `animationPlanMode: "direct_shot"`，且 `productionStrategy.format` 为 `direct_shot_video`。每个 shot 保留 `videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes` 以及镜头标识、时长、剧情目的、负面词和验收标准；禁止 `startFrame`、`endFrame`、`motion`、`startFramePrompt`、`endFramePrompt` 五个端点字段。
 
-当前 `direct_shot` 的场内拆镜只依据 Full Story 的 `location` 与 `visibleAction` 中的人物主要动作目标。地点或主要动作目标变化时拆镜；景别、机位、构图、焦段、运镜和转场建议只能决定已划定镜头的摄影表达，不得增加镜头。`shotAndSound` 与 `shootingNotes` 不是镜头数量的事实源。每个 source scene 至少一镜及 3–6 秒单镜时长约束保持不变。
+镜头标识不得混淆：`sourceSceneId`（常见 `S1`）是当前 Full Story 的剧情场次归属；`sceneId`（常见 `LOC01`）是 Foundation 场景视觉参考组；`shotId`（常见 `A01`）是当前 Plan revision 内的业务镜头顺序标识。`S1` 不是场地，`LOC01` 不保证精确物理地点或无缝连续，`A01` 也不能脱离 project/run/plan revision/digest 单独标识媒体。
+
+当前 `direct_shot` 的场内拆镜只依据 Full Story 的 `location` 与 `visibleAction` 中的人物主要动作目标。地点或主要动作目标变化时拆镜；同一地点、围绕同一主要动作目标组成完整叙事动作的连续阶段保留为一条业务 shot，不得按动作动词机械拆分。景别、机位、构图、焦段、运镜和转场建议只能决定已划定业务 shot 内部的摄影/剪辑表达，不得增加 `shotPlan[]`；同一 `videoPrompt` 可以按顺序描述中景跟随、关键动作特写、硬切或结尾宽景。`shotAndSound` 与 `shootingNotes` 不是镜头数量的事实源。每个 source scene 至少一镜及 3–6 秒单镜时长约束保持不变；内部摄影变化允许但不强制，不能为了堆机位而压缩、跳过或改写 `visibleAction`。
+
+`direct_shot.videoPrompt` 必须是一条自包含、可直接交给视频模型的中文自然语言完整提示词，按“Foundation 风格与物理光线 → 地点环境 → 实际出镜主体与已锁定外观 → `visibleAction` 顺序动作链与可见结果 → 内部摄影/剪辑顺序 → 节奏、对白和声音 → 本镜头相关稳定约束与停止条件”组织。它不得生成尚未与当前视频请求绑定的 `@图片/@视频/@音频` 编号。`cameraMotion` 应同步记录业务 shot 内完整的摄影与剪辑顺序，不再限定为单一连续运镜。使用内部切换时，1–3 条 `acceptanceCriteria` 必须覆盖主要动作链顺序、可见终点和关键摄影切换；失败不得静默增加 shot 或删除动作。
 
 Animation Plan 的 `targetAspectRatio` 当前只允许 `9:16` 或 `16:9`。首次生成时必须锁入 `productionStrategy.targetAspectRatio` 并与 Foundation 输出一致；已有 Plan 切换画幅时以用户选择更新计划级输出事实，不调用模型、不重写 shot，但必须签发新 Plan revision/media namespace，使旧画幅媒体 stale。后续视频生成从当前签发 Plan 读取；不得向 direct-shot 的 exact shot 字段增加 `aspectRatio`。页面的计划总长由 `shotPlan[].durationSeconds` 合计派生，`targetRuntimeSeconds` 仍是上游目标，不得互相覆盖。
 
@@ -72,6 +76,12 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：�
 - `all_reference`：图片/视频/音频仅作为多模态参考，必须至少包含合法图片或视频，不能只输入音频；当前只允许 Seedance 2.0 与 MiniMax H3，不得混用 `first_frame` / `last_frame`，不得把可灵 image-to-video 静默当作 Omni API。
 
 模式由请求 `generationMode` 决定，不得根据端点字段缺失、provider、模型名或素材存在性自动推断或降级。
+
+`all_reference` 可另行显式传入运行时 `continuityReferenceMode: "none" | "previous_shot_frames"`；它不得改变或推断 `generationMode`，也不是 `direct_shot` Schema 字段。启用 `previous_shot_frames` 时，上一镜只由当前 Plan `shotPlan[]` 的紧邻前项确定；服务端必须读取上一镜 current `shotVideo` Artifact 的已选候选，只接受当前 media namespace 内的受信 mp4，并用 FFmpeg 每秒抽取一张 JPEG 作为普通 `reference_image`。实际抽帧与其他图片共同受 9 图上限约束，超限明确失败。该参考只增强一致性，不能覆盖当前 Full Story/Plan、`fixedCharacterBoundary` 或 Foundation 场景事实；跨地点、跨时段或上一镜漂移是关闭该开关的合法反例。
+
+`POST /api/generate-shot-video` 必须始终绑定当前签发 Animation Plan，不能依据客户端自报 `animationPromptSchemaVersion` 降级为无 lineage 请求。服务端从 Plan 唯一解析 exact shot；只允许独立 `promptOverride` 覆盖本次媒体提示词，动作、时长、场景、声音、负面词和验收条件仍来自 Plan。输出文件名必须包含不可碰撞的请求 nonce，并在返回前通过 ffprobe 视频流/时长校验。
+
+使用上一镜抽帧生成的后镜 `shotVideo` Artifact 必须同时依赖当前 Animation Plan 与上一镜 `shotVideo` 的精确 revision/digest；上一镜重生成或切换候选必须递归使下游视频 stale。切换后镜自身候选时必须保留既有媒体依赖。浏览器中的 `shotVideoResults` 与旧 v2 `shotFrameResults` 都必须按 variant + shotId 隔离，禁止只用 `A01` 作为状态键；单个媒体 stale 只能移除对应结果，不能清空其他 current 媒体。
 
 ---
 
@@ -311,7 +321,7 @@ Compiler、Retry、Recovery、Fallback、Source of Truth 修改时：
 
 镜头拆分
 直接视频渲染提示词
-角色动作、运镜和声音设计
+角色动作、内部摄影/剪辑和声音设计
 镜头连续性与动画约束
 
 不负责：

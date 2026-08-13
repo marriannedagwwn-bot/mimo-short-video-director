@@ -15,6 +15,7 @@ import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./s
 import { WorkflowService } from "./src/workflow.js";
 import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, InputError, requireAnimationPlanAspectRatio } from "./src/validation.js";
 import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
+import { resolveAuthoritativeShotVideoInput, resolvePreviousShotFrameReference } from "./src/shot-video-continuity.js";
 import {
   inferShotVideoProvider,
   isShotVideoModelAllowed,
@@ -91,18 +92,30 @@ const routes = {
     : workflow.createAnimationPlan(body)),
   "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
   "/api/generate-shot-video": async (body) => {
+    const productionMedia = await resolveProductionMediaContext(body, { required: true });
+    const authoritativeInput = resolveAuthoritativeShotVideoInput({
+      planArtifactId: productionMedia.planArtifactId,
+      planEntry: productionMedia.planEntry,
+      currentShotId: body.shotId || body.shot?.shotId,
+      promptOverride: body.promptOverride,
+      requestedSchemaVersion: body.animationPromptSchemaVersion,
+      selectedVariantId: body.selectedVariantId
+    });
+    const request = {
+      ...body,
+      shot: authoritativeInput.shot,
+      characterReferences: authoritativeInput.characterReferences,
+      animationPromptSchemaVersion: authoritativeInput.promptSchemaVersion,
+      videoPromptSource: authoritativeInput.promptSource
+    };
     const visualGuardrails = workflow.assertGlobalCharacterBoundary(body);
-    ensureCharacterReferencesMatchBoundary(body.characterReferences, visualGuardrails, body.shot);
-    ensureCharacterPromptMatchesBoundary(shotVideoGenerationPromptText(body), visualGuardrails, {
+    ensureCharacterReferencesMatchBoundary(request.characterReferences, visualGuardrails, request.shot);
+    ensureCharacterPromptMatchesBoundary(shotVideoGenerationPromptText(request), visualGuardrails, {
       requireRequiredTraits: false
     });
     const setting = shotVideoRequestSetting(body);
-    const productionMedia = await resolveProductionMediaContext(body, {
-      required: String(body.animationPromptSchemaVersion || "").trim() === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION
-    });
     if (
-      productionMedia
-      && String(body.aspectRatio || "").trim()
+      String(body.aspectRatio || "").trim()
       && body.aspectRatio !== productionMedia.planAspectRatio
     ) {
       throw new ProductionStateError("视频请求画幅与当前 Animation Plan 不一致", {
@@ -111,8 +124,21 @@ const routes = {
         details: [{ requested: body.aspectRatio, currentPlan: productionMedia.planAspectRatio }]
       });
     }
+    const trustedPreviousShotReference = productionMedia
+      ? await resolvePreviousShotFrameReference({
+        continuityReferenceMode: request.continuityReferenceMode,
+        generationMode: request.generationMode,
+        currentShotId: request.shot.shotId,
+        planArtifactId: productionMedia.planArtifactId,
+        planEntry: productionMedia.planEntry,
+        latestArtifacts: productionMedia.latestArtifacts,
+        videoOutputRoot: productionMedia.videoOutputRoot,
+        videoPublicBasePath: productionMedia.videoPublicBasePath,
+        filenamePrefix: productionMedia.filenamePrefix
+      })
+      : null;
     return generateShotVideo({
-      ...body,
+      ...request,
       aspectRatio: productionMedia?.planAspectRatio || requireAnimationPlanAspectRatio(body.aspectRatio || "9:16", "aspectRatio"),
       videoProvider: setting.provider,
       videoModel: setting.model,
@@ -120,7 +146,8 @@ const routes = {
         outputRoot: productionMedia.videoOutputRoot,
         publicBasePath: productionMedia.videoPublicBasePath,
         filenamePrefix: productionMedia.filenamePrefix
-      } : {})
+      } : {}),
+      trustedPreviousShotReference
     });
   },
   "/api/run": (body) => workflow.run(body)
@@ -560,6 +587,9 @@ async function resolveProductionMediaContext(body = {}, { required = false } = {
     "当前 Animation Plan productionStrategy.targetAspectRatio"
   );
   return {
+    planArtifactId,
+    planEntry: currentEntry,
+    latestArtifacts: run.latestArtifacts || {},
     imageOutputRoot: path.join(publicDir, "generated-images", ...namespaceSegments),
     imagePublicBasePath: `/generated-images/${publicNamespace}`,
     videoOutputRoot: path.join(publicDir, "generated-videos", ...namespaceSegments),

@@ -1032,11 +1032,15 @@ visualGuardrails 分类规则：${formatVisualGuardrailsForPrompt(input.visualGu
 硬约束：
 - 顶层只允许 shotPlan；不得回显 foundation 或 promptSchemaVersion。
 - 每个指定 source scene 至少一个镜头；sourceSceneId 必须来自本批，sceneId 必须引用 foundation 对该 source scene 的唯一映射；保持剧情动作顺序。
-- 每个镜头只有一个主要人物动作目标，建议 3-6 秒。拆镜边界只依据本批 source scene 的 location 与 visibleAction：地点变化，或人物的主要动作目标发生变化时才拆镜；多个先后人物动作必须拆成相邻镜头。
-- 景别、机位、构图、焦段、运镜或转场变化不得单独触发拆镜。shotAndSound、shootingNotes、visualBible.cameraLanguage、editPlan 与上一批 cameraMotion 中的摄影建议，只能在动作与地点边界确定后用于选择当前 shot 的一个连续摄影方案；不得逐个机位生成 shot，也不得把硬切塞进同一 shot。
+- 每个镜头只有一个主要人物动作目标，建议 3-6 秒。拆镜边界只依据本批 source scene 的 location 与 visibleAction：地点变化，或人物的主要动作目标发生变化时才拆镜。同一地点、围绕同一主要动作目标组成完整叙事动作的连续阶段必须保留在一条业务 shot 中，不得按动作动词数量机械拆镜。
+- 景别、机位、构图、焦段、运镜或转场变化不得单独触发拆镜。shotAndSound、shootingNotes、visualBible.cameraLanguage、editPlan 与上一批 cameraMotion 中的摄影建议，只能在动作与地点边界确定后决定当前业务 shot 内部的摄影与剪辑表达；可以按顺序写中景跟随、关键动作特写、硬切或结尾宽景，但这些内部摄影段不得生成额外 shot。
+- 内部摄影变化允许但不强制。必须服从 3-6 秒时长，优先完整呈现 visibleAction 的动作链和可见结果，只选时长容得下、服务叙事的关键摄影变化；不得为了堆满机位而压缩、跳过或改写剧情动作。
 - 同一地点下，多人同步完成同一个协作动作仍可作为一个主要动作 shot；不得按参与人数或机位数量机械拆镜。
-- videoPrompt 是该镜头唯一完整渲染主指令：明确地点与环境、实际出镜角色、可见动作、表演情绪、连续运镜、光线、节奏、停止条件，以及需要生成的对白与声音设计；它必须完整吸收并与 cameraMotion、characterAction、dialogueOrSubtitle、soundDesign、continuityNotes 一致，后续不会再由本地 Compiler 拼装。
-- cameraMotion 只写这一个镜头的连续摄影机运动；characterAction 只写实际可见动作；dialogueOrSubtitle 只写剧情对白内容，没有则输出空字符串；soundDesign 写环境声/动作声/音乐关系；continuityNotes 写与前后镜头必须承接的状态。
+- videoPrompt 是该镜头唯一完整渲染主指令，必须写成一条自包含、可直接交给视频模型的中文自然语言提示词，不得写成字段清单、JSON 片段，也不得生成尚未绑定的 @图片、@视频或 @音频编号。按以下顺序组织并自然衔接：①沿用 foundation 的视觉风格、物理光线与时段；②地点、前中后景和关键环境；③本场实际出镜主体及已锁定外观；④严格依照 visibleAction 的顺序动作链与可见结果；⑤服务动作的内部摄影/剪辑顺序；⑥表演节奏、对白、环境声、动作声与音乐关系；⑦本镜头直接相关的角色/服装/道具/场景稳定约束和停止条件。
+- videoPrompt 必须完整吸收并与 cameraMotion、characterAction、dialogueOrSubtitle、soundDesign、continuityNotes 一致，后续不会再由本地 Compiler 拼装。不得重新创作剧情，不得用空泛的“电影感、高质量、震撼”等词替代可观察的光线、动作、摄影或声音说明。
+- cameraMotion 写这一个业务 shot 内部按顺序发生的完整摄影与剪辑表达；既可以是单一连续运镜，也可以包含由剧情摄影证据支持的景别变化、特写插入或硬切。characterAction 只写实际可见的顺序动作链；dialogueOrSubtitle 只写剧情对白内容，没有则输出空字符串；soundDesign 写环境声/动作声/音乐关系；continuityNotes 写内部摄影段之间及前后业务镜头必须承接的状态。
+- 若 videoPrompt 使用内部摄影切换，acceptanceCriteria 必须在 1-3 条额度内覆盖主要动作链的完整顺序与可见终点，并覆盖关键摄影切换是否命中；角色、服装、道具或场景跨切换稳定性可以与其中一条合并。失败时进入现有纠偏或重试，不得静默增加 shot、删除动作或改写事实。
+- 边界示例（只用于理解，不得复制内容）：人物跑到信箱、投入信件并以完成后的舒展动作收尾，仍围绕同一投递目标，可在一条 videoPrompt 内写“中景跟随 → 投递特写 → 结尾逆光宽景”；若人物投信后改为拿起水桶给菜地浇水，主要动作目标已变化，必须拆成相邻业务 shot。
 - 必须沿用 foundation 的角色、场景、资产和风格锁定，不得重写身份或引入上方黑名单。
 - 当前流程不生产端点，shot 中严禁出现 startFrame、endFrame、motion、startFramePrompt、endFramePrompt、endStateRef 或任何替代端点字段。
 - negativePrompts.image 必须为 []；negativePrompts.video 仅放本镜头有直接证据的时序、道具、角色数量、接触或参考泄漏风险，允许 []。

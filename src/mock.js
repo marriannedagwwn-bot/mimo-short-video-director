@@ -561,6 +561,23 @@ export function mockAnimationPlan(input) {
 function mockDirectAnimationPlan(input) {
   const legacy = mockAnimationPlan({ ...input, animationPlanMode: "" });
   const directShots = legacy.shotPlan.map((shot) => {
+    const sourceScene = (input.fullStory?.sceneScript || []).find(
+      (scene) => String(scene?.sceneId || "") === String(shot.sourceSceneId || "")
+    ) || {};
+    const sceneReference = (legacy.sceneReferencePrompts || []).find(
+      (scene) => String(scene?.sceneId || "") === String(shot.sceneId || "")
+    ) || {};
+    const visibleCharacterPrompts = (Array.isArray(sourceScene.characters) ? sourceScene.characters : [])
+      .map((characterName) => {
+        const reference = (legacy.characterReferencePrompts || []).find(
+          (item) => String(item?.characterName || "") === String(characterName || "")
+        );
+        return reference?.appearancePrompt
+          ? `${characterName}（${reference.appearancePrompt}）`
+          : String(characterName || "").trim();
+      })
+      .filter(Boolean)
+      .join("；");
     const dialogue = (shot.motion?.audio?.dialogue || [])
       .map((item) => `${item.speaker}：${item.text}`)
       .join("；");
@@ -571,10 +588,20 @@ function mockDirectAnimationPlan(input) {
     const characterAction = String(shot.motion?.primaryAction || "角色完成当前剧情动作").trim();
     const soundDesign = [
       shot.motion?.audio?.ambience,
-      ...(shot.motion?.audio?.soundEffects || []),
+      `与“${characterAction}”同步的自然动作声`,
       shot.motion?.audio?.musicCue
     ].filter(Boolean).join("；");
     const continuityNotes = (shot.motion?.preserve || []).join("；");
+    const styleAndLighting = [
+      legacy.visualBible?.animationStyle,
+      legacy.visualBible?.overallStyle,
+      legacy.visualBible?.lighting
+    ].filter(Boolean).join("，");
+    const environmentPrompt = sceneReference.environmentPrompt
+      || sourceScene.location
+      || "沿用当前场景锁定";
+    const visiblePerformance = shot.motion?.emotionArc?.visibleProgression || "";
+    const stopCondition = shot.motion?.stopCondition || "达到当前动作的可见结果后立即停止，不追加新动作";
     return {
       shotId: shot.shotId,
       sourceSceneId: shot.sourceSceneId,
@@ -583,13 +610,16 @@ function mockDirectAnimationPlan(input) {
       storyPurpose: shot.storyPurpose,
       emotionalTarget: shot.emotionalTarget,
       videoPrompt: [
-        `${characterAction}。`,
-        cameraMotion ? `摄影机：${cameraMotion}。` : "",
-        shot.motion?.emotionArc?.visibleProgression ? `表演：${shot.motion.emotionArc.visibleProgression}。` : "",
-        dialogue ? `对白：${dialogue}；对白只作为声音，不渲染画面文字。` : "",
-        soundDesign ? `声音：${soundDesign}。` : "",
-        continuityNotes ? `连续性：${continuityNotes}。` : "",
-        `环境、角色身份、关键道具与既有锁定保持一致；达到动作结果后立即停止。`
+        styleAndLighting ? `${styleAndLighting}。` : "",
+        `${environmentPrompt}。`,
+        visibleCharacterPrompts ? `${visibleCharacterPrompts}，${characterAction}。` : `${characterAction}。`,
+        cameraMotion ? `镜头按动作顺序${cameraMotion}。` : "",
+        visiblePerformance ? `${visiblePerformance}。` : "",
+        `在 ${shot.durationSeconds} 秒内按上述顺序清楚完成动作，节奏服务“${shot.emotionalTarget}”。`,
+        dialogue ? `${dialogue}；对白只作为声音，不渲染画面文字。` : "",
+        soundDesign ? `${soundDesign}。` : "",
+        continuityNotes ? `内部摄影段与前后镜头均保持${continuityNotes}。` : "",
+        `${stopCondition}。`
       ].filter(Boolean).join(""),
       cameraMotion: cameraMotion || "固定机位，保持单一连续构图",
       characterAction,
@@ -600,7 +630,11 @@ function mockDirectAnimationPlan(input) {
         image: [],
         video: structuredClone(shot.negativePrompts?.video || [])
       },
-      acceptanceCriteria: (shot.acceptanceCriteria || []).slice(0, 3)
+      acceptanceCriteria: [
+        `“${characterAction}”按顺序完整发生且可见结果清楚`,
+        cameraMotion ? `摄影表达按“${cameraMotion}”完成且不遗漏主要动作` : "主要动作在稳定构图中完整可见",
+        continuityNotes ? `动作与摄影变化过程中保持${continuityNotes}` : "角色、场景和关键道具在动作过程中保持稳定"
+      ]
     };
   });
   return {
@@ -616,7 +650,8 @@ function mockDirectAnimationPlan(input) {
     shotPlan: directShots,
     generationChecklist: (legacy.generationChecklist || []).filter((item) => item.check !== "首尾帧因果"),
     modelAgnosticNotes: [
-      "videoPrompt 是每个镜头的完整渲染主指令。",
+      "videoPrompt 是每个镜头的完整自然语言渲染主指令，依次包含风格与光线、环境、主体锁定、动作链、摄影表达、节奏声音和稳定约束。",
+      "同一业务镜头可以包含服务同一动作目标的内部景别变化或剪辑表达；它们不得反向增加 shotPlan 数量。",
       "当前流程不生产 startFrame、endFrame、motion、startFramePrompt 或 endFramePrompt。",
       "视频生成模式仍由请求显式选择，不根据字段缺失自动推断。"
     ],

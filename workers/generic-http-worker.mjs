@@ -676,6 +676,14 @@ function buildFirstLastFrameContent(artifacts, prompt, providerLabel) {
 }
 
 function buildAllReferenceContent(artifacts, prompt, providerLabel) {
+  const counts = artifacts.reduce((result, artifact) => {
+    const mediaType = String(artifact.mediaType || "").trim().toLowerCase();
+    if (Object.hasOwn(result, mediaType)) result[mediaType] += 1;
+    return result;
+  }, { image: 0, video: 0, audio: 0 });
+  if (counts.image > 9 || counts.video > 3 || counts.audio > 3) {
+    throw new Error(`${providerLabel} 全能参考素材超过上限：${counts.image} 图、${counts.video} 视频、${counts.audio} 音频。`);
+  }
   const content = [{ type: "text", text: prompt }];
   for (const [index, artifact] of artifacts.entries()) {
     const mediaType = String(artifact.mediaType || "").trim().toLowerCase();

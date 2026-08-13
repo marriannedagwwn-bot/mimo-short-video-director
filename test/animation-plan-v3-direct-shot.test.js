@@ -215,7 +215,7 @@ test("direct foundation 只发送基础事实投影且 fixedCharacterBoundary �
   assert.match(prompt, /"sourceSimilarityRules"/u);
 });
 
-test("direct batch 只按人物动作与地点拆镜，机位建议不得生成额外 shot", () => {
+test("direct batch 把完整动作链和内部摄影切换写入一条教程式 videoPrompt", () => {
   const context = directContext();
   const plan = mockAnimationPlan(context);
   const { shotPlan: ignoredShotPlan, ...animationFoundation } = structuredClone(plan);
@@ -226,9 +226,9 @@ test("direct batch 只按人物动作与地点拆镜，机位建议不得生成�
 
   const sourceScene = structuredClone(context.fullStory.sceneScript[0]);
   sourceScene.location = "社区维修间";
-  sourceScene.visibleAction = "阿岚持续拧紧旧收音机上的一颗螺丝";
-  sourceScene.shotAndSound = "中景记录动作；切到手部特写；再切回近景表情";
-  sourceScene.shootingNotes = "可尝试俯拍或侧面机位";
+  sourceScene.visibleAction = "阿岚快步走到维修台前，将录音带放入旧收音机，按下播放键，听到声音后松开紧绷的肩膀";
+  sourceScene.shotAndSound = "中景跟随阿岚走近；投入录音带时硬切手部特写；最后切到阿岚放松肩膀的逆光近景";
+  sourceScene.shootingNotes = "清晨柔和侧光，录音带与旧收音机跨切换保持同一造型";
 
   const prompt = animationShotBatchPrompt({
     ...context,
@@ -238,14 +238,34 @@ test("direct batch 只按人物动作与地点拆镜，机位建议不得生成�
   });
 
   assert.match(prompt, /拆镜边界只依据本批 source scene 的 location 与 visibleAction/u);
+  assert.match(prompt, /同一地点、围绕同一主要动作目标组成完整叙事动作的连续阶段必须保留在一条业务 shot/u);
   assert.match(prompt, /景别、机位、构图、焦段、运镜或转场变化不得单独触发拆镜/u);
-  assert.match(prompt, /不得逐个机位生成 shot/u);
+  assert.match(prompt, /这些内部摄影段不得生成额外 shot/u);
+  assert.match(prompt, /内部摄影变化允许但不强制/u);
   assert.match(prompt, /多人同步完成同一个协作动作仍可作为一个主要动作 shot/u);
-  assert.match(prompt, /中景记录动作；切到手部特写；再切回近景表情/u);
-  assert.doesNotMatch(prompt, /多地点、多机位切换或多个先后动作必须拆镜/u);
+  assert.match(prompt, /一条自包含、可直接交给视频模型的中文自然语言提示词/u);
+  assert.match(prompt, /视觉风格、物理光线与时段/u);
+  assert.match(prompt, /严格依照 visibleAction 的顺序动作链与可见结果/u);
+  assert.match(prompt, /内部摄影\/剪辑顺序/u);
+  assert.match(prompt, /不得生成尚未绑定的 @图片、@视频或 @音频编号/u);
+  assert.match(prompt, /acceptanceCriteria 必须在 1-3 条额度内覆盖主要动作链的完整顺序与可见终点/u);
+  assert.match(prompt, /投信后改为拿起水桶给菜地浇水，主要动作目标已变化/u);
+  assert.match(prompt, /中景跟随阿岚走近；投入录音带时硬切手部特写；最后切到阿岚放松肩膀的逆光近景/u);
+  assert.doesNotMatch(prompt, /多个先后人物动作必须拆成相邻镜头/u);
+  assert.doesNotMatch(prompt, /一个连续摄影方案/u);
+  assert.doesNotMatch(prompt, /不得把硬切塞进同一 shot/u);
+  assert.doesNotMatch(prompt, /cameraMotion 只写这一个镜头的连续摄影机运动/u);
 
   const oneActionShot = directShot();
-  oneActionShot.cameraMotion = "同一连续镜头从中景缓慢推近至手部近景";
+  oneActionShot.durationSeconds = 6;
+  oneActionShot.videoPrompt = "温暖治愈的2.5D手绘动画质感，社区维修间被清晨柔和侧光照亮。阿岚快步走到维修台前，将录音带放入旧收音机，按下播放键，听到声音后松开肩膀。镜头先以中景跟随，投入录音带时硬切手部特写，最后切到逆光反应近景。动作与摄影切换前后保持阿岚、录音带、旧收音机和光线方向一致，放松肩膀后立即停止。";
+  oneActionShot.cameraMotion = "先以中景跟随，投入录音带时硬切手部特写，最后切到逆光反应近景";
+  oneActionShot.characterAction = sourceScene.visibleAction;
+  oneActionShot.acceptanceCriteria = [
+    "阿岚按顺序完成走近、投入录音带、播放和放松肩膀",
+    "内部摄影顺序为中景跟随、手部特写、逆光反应近景",
+    "阿岚、录音带和旧收音机跨切换保持一致"
+  ];
   assert.doesNotThrow(() => ensureAnimationShotBatchContract(
     { shotPlan: [oneActionShot] },
     { promptSchemaVersion: ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION }
@@ -323,6 +343,15 @@ test("demo direct_shot 返回无端点的 3.0 plan 并标记 compiler disabled",
       assert.equal(Object.hasOwn(shot, field), false, `${shot.shotId} 不得包含 ${field}`);
     }
   }
+  const firstShot = result.animationPlan.shotPlan[0];
+  assert.match(firstShot.videoPrompt, /2\.5D 动画/u);
+  assert.match(firstShot.videoPrompt, /出发点/u);
+  assert.match(firstShot.videoPrompt, /在 4 秒内按上述顺序清楚完成动作/u);
+  assert.match(firstShot.videoPrompt, /自然动作声/u);
+  assert.match(firstShot.videoPrompt, /内部摄影段与前后镜头均保持/u);
+  assert.equal(firstShot.acceptanceCriteria.length, 3);
+  assert.match(firstShot.acceptanceCriteria[0], /按顺序完整发生且可见结果清楚/u);
+  assert.match(firstShot.acceptanceCriteria[1], /摄影表达/u);
 
   assert.equal(result.metadata.characterFeatureCompiler.disabled, true);
   assert.equal(result.metadata.staticFrameCompiler.disabled, true);

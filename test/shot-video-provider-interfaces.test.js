@@ -233,6 +233,7 @@ test("Seedance 2.0 全能参考使用 reference_image/video/audio 且不混入�
   const imagePath = path.join(root, "character.png");
   const videoPath = path.join(root, "motion.mp4");
   const audioPath = path.join(root, "rhythm.mp3");
+  const tutorialStyleVideoPrompt = "温暖治愈的2.5D手绘动画质感，乡村小院被夕阳暖光照亮。狼耳少女跑到门口投入通知，随后拍一下布袋并转身伸懒腰。镜头先以中景跟随，投入通知时硬切信箱特写，最后切到逆光宽景。动作与摄影切换前后保持角色、服装、信箱和光线方向一致。";
   await Promise.all([
     fs.writeFile(imagePath, "image bytes"),
     fs.writeFile(videoPath, "video bytes"),
@@ -251,6 +252,7 @@ test("Seedance 2.0 全能参考使用 reference_image/video/audio 且不混入�
       provider: "Seedance",
       model: "doubao-seedance-2-0-260128",
       aspectRatio: "16:9",
+      prompt: tutorialStyleVideoPrompt,
       artifacts: [
         { path: imagePath, mediaType: "image", role: "reference_image" },
         { path: videoPath, mediaType: "video", role: "reference_video" },
@@ -267,6 +269,11 @@ test("Seedance 2.0 全能参考使用 reference_image/video/audio 且不混入�
     "reference_video",
     "reference_audio"
   ]);
+  assert.equal(
+    postedBody.content[0].text,
+    tutorialStyleVideoPrompt,
+    "direct_shot.videoPrompt 必须作为一条完整提示词原样进入 Seedance"
+  );
   assert.equal(postedBody.content.some((item) => ["first_frame", "last_frame"].includes(item.role)), false);
   assert.match(postedBody.content[1].image_url.url, /^data:image\/png;base64,/u);
   assert.match(postedBody.content[2].video_url.url, /^data:video\/mp4;base64,/u);
@@ -666,14 +673,20 @@ function videoRequest({
   };
 }
 
-function allReferenceVideoRequest({ provider, model, artifacts, aspectRatio = "9:16" }) {
+function allReferenceVideoRequest({
+  provider,
+  model,
+  artifacts,
+  aspectRatio = "9:16",
+  prompt = "参考人物身份、动作节奏和声音氛围生成新镜头。"
+}) {
   return {
     taskId: `${provider}-r2v-test`,
     capability: "all_reference_video_generation",
     outputKey: "preview.r2v-test",
     provider,
     model,
-    prompt: "参考人物身份、动作节奏和声音氛围生成新镜头。",
+    prompt,
     inputArtifacts: artifacts.map((artifact, index) => ({
       outputKey: `references.${index + 1}`,
       status: "done",

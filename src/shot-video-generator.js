@@ -1,10 +1,17 @@
 import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { compileShotNegativePrompt } from "../public/negative-prompts.js";
 import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION } from "./validation.js";
+import {
+  mediaFilenameSegment,
+  normalizeShotVideoContinuityReferenceMode,
+  SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
+} from "./shot-video-continuity.js";
 import {
   inferShotVideoProvider,
   isNonDomesticKlingApiEndpoint,
@@ -62,6 +69,7 @@ export async function generateShotVideo(options = {}) {
   ).trim();
   const providerRuntime = shotVideoRuntimeConfig(videoProvider, process.env, videoModel);
   const generationMode = normalizeShotVideoGenerationMode(options.generationMode);
+  const continuityReferenceMode = normalizeShotVideoContinuityReferenceMode(options.continuityReferenceMode);
   const aspectRatio = normalizeShotVideoAspectRatio(options.aspectRatio);
   if (
     String(options.animationPromptSchemaVersion || "").trim() === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION
@@ -81,6 +89,18 @@ export async function generateShotVideo(options = {}) {
     }
     throw new ShotVideoConfigError(`${videoProvider} 不支持${generationMode === "all_reference" ? "全能参考" : "首尾帧"}视频模式。`);
   }
+  if (
+    continuityReferenceMode === SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
+    && generationMode !== "all_reference"
+  ) {
+    throw new ShotVideoConfigError("上一镜抽帧只能作为 all_reference 的普通参考图，不能用于首尾帧模式。");
+  }
+  if (
+    continuityReferenceMode === SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
+    && !options.trustedPreviousShotReference
+  ) {
+    throw new ShotVideoConfigError("上一镜抽帧缺少当前 Plan 签发的受信视频来源。");
+  }
   if (videoProvider !== "VideoHTTP" && !providerAuthConfigured(config, providerRuntime)) {
     throw new ShotVideoConfigError(`未配置 ${videoProvider} API Key。请设置对应 provider API Key，或在 provider config 中提供认证信息。`);
   }
@@ -97,6 +117,7 @@ export async function generateShotVideo(options = {}) {
   const shotId = safeSegment(shot.shotId || "shot");
   const filenamePrefix = options.filenamePrefix ? `${safeSegment(options.filenamePrefix)}-` : "";
   const stamp = new Date().toISOString().replace(/[-:.]/gu, "").replace(/Z$/u, "");
+  const requestNonce = safeSegment(options.requestNonce || randomUUID());
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-"));
   const count = clampVideoCount(options.count);
 
@@ -114,13 +135,29 @@ export async function generateShotVideo(options = {}) {
         filenamePrefix
       })
       : null;
+    let continuityReference = null;
     const inputArtifacts = generationMode === "first_last_frame"
       ? [frames.start, frames.end].map(({ url, receipt, ...artifact }) => artifact)
-      : await prepareAllReferenceArtifacts(options.referenceAssets, workDir);
+      : await (async () => {
+        const uploadedArtifacts = await prepareAllReferenceArtifacts(options.referenceAssets, workDir);
+        continuityReference = continuityReferenceMode === SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
+          ? await preparePreviousShotFrameArtifacts({
+            reference: options.trustedPreviousShotReference,
+            workDir,
+            extractor: options.previousShotFrameExtractor
+          })
+          : null;
+        const combined = [
+          ...uploadedArtifacts,
+          ...(continuityReference?.artifacts || [])
+        ];
+        validateAllReferenceArtifacts(combined);
+        return combined;
+      })();
     const videos = [];
     for (let index = 0; index < count; index += 1) {
       const suffix = count > 1 ? `-${index + 1}` : "";
-      const outputPath = path.join(outputRoot, `${filenamePrefix}${shotId}-${stamp}${suffix}.mp4`);
+      const outputPath = path.join(outputRoot, `${filenamePrefix}${shotId}-${stamp}-${requestNonce}${suffix}.mp4`);
       const request = buildShotVideoRequest(shot, {
         outputPath,
         inputArtifacts,
@@ -132,7 +169,10 @@ export async function generateShotVideo(options = {}) {
         aspectRatio
       });
       const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: options.workerRunner });
-      await assertUsableVideoOutput(outputPath);
+      await assertUsableVideoOutput(outputPath, {
+        outputProbe: options.videoOutputProbe,
+        skipFfprobeForInjectedWorker: Boolean(options.workerRunner) && !options.videoOutputProbe
+      });
       videos.push({
         candidateIndex: index,
         provider: videoProvider,
@@ -156,6 +196,28 @@ export async function generateShotVideo(options = {}) {
       endFrameUrl: frames?.end?.url || "",
       endFramePath: frames?.end?.path || "",
       referenceSummary: generationMode === "all_reference" ? summarizeReferenceArtifacts(inputArtifacts) : null,
+      videoPromptSource: options.videoPromptSource === "runtime_override" ? "runtime_override" : "animation_plan",
+      effectiveVideoPrompt: String(shot.videoPrompt || ""),
+      continuityReferenceReceipt: continuityReference
+        ? {
+          mode: SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES,
+          continuityType: continuityReference.reference.continuityType || "intentional_next_shot",
+          sourceShotId: continuityReference.reference.sourceShotId,
+          sourceSceneId: continuityReference.reference.sourceSceneId || "",
+          sceneId: continuityReference.reference.sceneId || "",
+          selectedIndex: continuityReference.reference.selectedIndex,
+          sourceOutputUrl: continuityReference.reference.sourceOutputUrl,
+          sourceArtifact: continuityReference.reference.sourceArtifact,
+          sourceVideoSha256: continuityReference.sourceVideoSha256,
+          frameIntervalSeconds: 1,
+          frameCount: continuityReference.artifacts.length,
+          sourceDurationSeconds: continuityReference.durationSeconds,
+          frames: continuityReference.artifacts.map((artifact) => ({
+            timestampSeconds: artifact.timestampSeconds,
+            sha256: artifact.sha256
+          }))
+        }
+        : null,
       outputUrl: firstVideo.outputUrl || "",
       outputPath: firstVideo.outputPath || "",
       count,
@@ -296,7 +358,7 @@ function buildShotVideoRequest(shot = {}, context = {}) {
   };
 }
 
-async function assertUsableVideoOutput(outputPath) {
+async function assertUsableVideoOutput(outputPath, { outputProbe, skipFfprobeForInjectedWorker = false } = {}) {
   let stat;
   try {
     stat = await fs.stat(outputPath);
@@ -319,6 +381,37 @@ async function assertUsableVideoOutput(outputPath) {
     }
   } finally {
     await file.close();
+  }
+  if (typeof outputProbe === "function") {
+    await outputProbe(outputPath);
+  } else if (!skipFfprobeForInjectedWorker) {
+    await probePlayableVideoOutput(outputPath);
+  }
+}
+
+async function probePlayableVideoOutput(outputPath) {
+  try {
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v", "error",
+      "-show_entries", "format=duration,format_name:stream=codec_type,duration",
+      "-of", "json",
+      outputPath
+    ], {
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+      killSignal: "SIGKILL"
+    });
+    const metadata = JSON.parse(String(stdout || "{}"));
+    const streams = Array.isArray(metadata.streams) ? metadata.streams : [];
+    if (!streams.some((stream) => stream.codec_type === "video")) throw new Error("缺少视频流");
+    const duration = streams
+      .filter((stream) => stream.codec_type === "video")
+      .map((stream) => Number(stream.duration))
+      .find((value) => Number.isFinite(value) && value > 0)
+      || Number(metadata.format?.duration);
+    if (!Number.isFinite(duration) || duration <= 0) throw new Error("视频时长无效");
+  } catch (error) {
+    throw new ShotVideoProviderError(`视频生成服务返回的文件无法通过 ffprobe 播放性校验：${error.message || "无有效视频流"}。`);
   }
 }
 
@@ -413,7 +506,6 @@ function videoEndpointConfigured(config = {}, runtime = {}, provider = "", gener
 
 async function prepareAllReferenceArtifacts(referenceAssets, workDir) {
   const assets = Array.isArray(referenceAssets) ? referenceAssets : [];
-  if (!assets.length) throw new ShotVideoConfigError("全能参考模式至少需要一张参考图片或一段参考视频。");
   const prepared = [];
   for (let index = 0; index < assets.length; index += 1) {
     const asset = assets[index] || {};
@@ -441,8 +533,132 @@ async function prepareAllReferenceArtifacts(referenceAssets, workDir) {
     }
     prepared.push(artifact);
   }
-  validateAllReferenceArtifacts(prepared);
   return prepared;
+}
+
+async function preparePreviousShotFrameArtifacts({ reference, workDir, extractor } = {}) {
+  const frameExtractor = typeof extractor === "function" ? extractor : extractVideoFramesEverySecond;
+  const sourceSnapshot = await snapshotTrustedPreviousVideo(reference, workDir);
+  const extracted = await frameExtractor({
+    sourcePath: sourceSnapshot.path,
+    outputDirectory: workDir,
+    sourceShotId: reference.sourceShotId
+  });
+  const frames = Array.isArray(extracted?.frames) ? extracted.frames : [];
+  if (!frames.length) {
+    throw new ShotVideoConfigError(`${reference.sourceShotId} 没有抽取到可用视频帧。`);
+  }
+  if (frames.length > 9) {
+    throw new ShotVideoConfigError(`${reference.sourceShotId} 按每秒一帧抽取后得到 ${frames.length} 张，超过全能参考图片上限 9 张。`);
+  }
+  const artifacts = [];
+  const trustedWorkDir = path.resolve(workDir);
+  for (let index = 0; index < frames.length; index += 1) {
+    const frame = frames[index] || {};
+    const filePath = path.resolve(String(frame.path || ""));
+    if (path.dirname(filePath) !== trustedWorkDir) {
+      throw new ShotVideoConfigError(`${reference.sourceShotId} 的抽帧文件不在当前生成任务临时目录中。`);
+    }
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile() || stat.size < 1) {
+      throw new ShotVideoConfigError(`${reference.sourceShotId} 的第 ${index + 1} 张抽帧不可用。`);
+    }
+    const frameBytes = await fs.readFile(filePath);
+    artifacts.push({
+      outputKey: `references.previous-shot.${index + 1}`,
+      path: filePath,
+      status: "done",
+      missing: false,
+      mediaType: "image",
+      role: "reference_image",
+      mimeType: "image/jpeg",
+      filename: `${safeSegment(reference.sourceShotId)}-${String(index + 1).padStart(2, "0")}.jpg`,
+      sizeBytes: stat.size,
+      source: "previous_shot_frame",
+      sourceShotId: reference.sourceShotId,
+      sha256: sha256Bytes(frameBytes),
+      timestampSeconds: Number.isFinite(Number(frame.timestampSeconds))
+        ? Number(frame.timestampSeconds)
+        : index
+    });
+  }
+  return {
+    reference,
+    sourceVideoSha256: sourceSnapshot.sha256,
+    durationSeconds: Number(extracted.durationSeconds) || 0,
+    artifacts
+  };
+}
+
+async function snapshotTrustedPreviousVideo(reference = {}, workDir = "") {
+  const sourcePath = String(reference.sourcePath || "");
+  let sourceHandle;
+  try {
+    sourceHandle = await fs.open(sourcePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const before = await sourceHandle.stat();
+    if (!before.isFile() || before.size < 8 || before.size > 50 * 1024 * 1024) {
+      throw new Error("文件类型或大小无效");
+    }
+    const bytes = await sourceHandle.readFile();
+    const after = await sourceHandle.stat();
+    if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || bytes.length !== after.size) {
+      throw new Error("读取期间文件发生变化");
+    }
+    const snapshotPath = path.join(workDir, `previous-${safeSegment(reference.sourceShotId)}-source.mp4`);
+    await fs.writeFile(snapshotPath, bytes, { flag: "wx" });
+    return { path: snapshotPath, sha256: sha256Bytes(bytes) };
+  } catch (error) {
+    if (error instanceof ShotVideoConfigError) throw error;
+    throw new ShotVideoConfigError(`${reference.sourceShotId || "上一镜"} 的受信视频无法冻结到当前生成任务：${error.message || "文件不可用"}。`);
+  } finally {
+    await sourceHandle?.close().catch(() => {});
+  }
+}
+
+export async function extractVideoFramesEverySecond({
+  sourcePath,
+  outputDirectory,
+  sourceShotId = "previous-shot",
+  execFileRunner = execFileAsync,
+  durationProbe = probeMediaDuration
+} = {}) {
+  const durationSeconds = await durationProbe(sourcePath, "video");
+  if (durationSeconds > 9) {
+    throw new ShotVideoConfigError(`${sourceShotId} 时长 ${formatDuration(durationSeconds)} 秒，按每秒一帧会超过全能参考图片上限 9 张。`);
+  }
+  const basename = `previous-${safeSegment(sourceShotId)}-frame`;
+  const outputPattern = path.join(outputDirectory, `${basename}-%02d.jpg`);
+  await execFileRunner("ffmpeg", [
+    "-hide_banner",
+    "-loglevel", "error",
+    "-y",
+    "-i", sourcePath,
+    "-map", "0:v:0",
+    "-an",
+    "-vf", "fps=1,scale=w='if(gt(iw,ih),min(720,iw),-2)':h='if(gt(iw,ih),-2,min(720,ih))'",
+    "-q:v", "4",
+    outputPattern
+  ], {
+    timeout: 60_000,
+    maxBuffer: 1024 * 1024,
+    killSignal: "SIGKILL"
+  });
+  const filenames = (await fs.readdir(outputDirectory))
+    .filter((name) => name.startsWith(`${basename}-`) && name.endsWith(".jpg"))
+    .sort();
+  if (!filenames.length) {
+    throw new ShotVideoConfigError(`${sourceShotId} 没有可解码的视频帧。`);
+  }
+  if (filenames.length > 9) {
+    throw new ShotVideoConfigError(`${sourceShotId} 按每秒一帧抽取后得到 ${filenames.length} 张，超过全能参考图片上限 9 张。`);
+  }
+  return {
+    durationSeconds,
+    frames: filenames.map((name, index) => ({
+      path: path.join(outputDirectory, name),
+      timestampSeconds: index
+    }))
+  };
 }
 
 function validateAllReferenceArtifacts(artifacts) {
@@ -505,7 +721,11 @@ async function probeMediaDuration(filePath, mediaType) {
       "-show_entries", "format=duration:stream=codec_type,duration",
       "-of", "json",
       filePath
-    ]);
+    ], {
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+      killSignal: "SIGKILL"
+    });
     const metadata = JSON.parse(String(stdout || "{}"));
     const streams = Array.isArray(metadata.streams) ? metadata.streams : [];
     if (!streams.some((stream) => stream.codec_type === mediaType)) {
@@ -588,10 +808,9 @@ function extensionForMime(mimeType) {
 }
 
 function safeSegment(value) {
-  return String(value || "item")
-    .trim()
-    .replace(/\s+/gu, "_")
-    .replace(/[^\p{L}\p{N}_-]+/gu, "_")
-    .replace(/^_+|_+$/gu, "")
-    .slice(0, 60) || "item";
+  return mediaFilenameSegment(value);
+}
+
+function sha256Bytes(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
 }
