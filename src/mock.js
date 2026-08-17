@@ -200,12 +200,12 @@ export function mockVariants(input) {
   const fixed = input.creatorProfile?.fixedCharacter || "固定主角";
   const vertical = input.creatorProfile?.vertical || "生活记录";
   const seeds = [
-    { title: "最后一格电", task: "在闭店前修复并送回一件承载回忆的旧设备", medium: "一段未导出的旧录音", pressure: "暴雨导致街区停电", helper: "夜班便利店员借出移动电源", ending: "老人把修好的设备放回空着的餐位旁，按下播放键" },
-    { title: "错过的那班车", task: "把临时改好的工具交给即将返乡的学徒", medium: "工具柄内侧刻下的一句交代", pressure: "末班车提前且道路封控", helper: "收摊摊主用三轮车带主角穿过旧街", ending: "学徒上车前习惯性地把工具擦净，再递回一块旧抹布" },
-    { title: "今天也要开门", task: "赶在清晨营业前恢复一家小店的关键设备", medium: "贴在设备背后的手写营业日期", pressure: "凌晨低温与配件不匹配", helper: "早餐店老板翻出多年前留下的通用零件", ending: "卷帘门升起，被照料对象照常先为主角留下一份早餐" },
-    { title: "雨停之前", task: "把重新制作的纪念物送到一场小型告别仪式", medium: "被水浸过又重新描好的图案", pressure: "连续降雨与临时改址", helper: "公交司机在安全范围内提醒一条近路", ending: "所有人没有讲话，只把纪念物摆正并擦去雨滴" },
-    { title: "多出来的一份", task: "补做一份临时缺失的物品送给不愿麻烦别人的新人", medium: "与团队其他人相同的名字标记", pressure: "活动即将开始且材料用尽", helper: "隔壁同行分享最后一小份材料", ending: "新人默默把自己的那份与大家摆在同一排" },
-    { title: "灯亮以后", task: "修复一盏被当作约定信号的旧灯", medium: "灯罩内的一张褪色便签", pressure: "山路起雾且备用灯芯损坏", helper: "巡夜保安提供一段废旧铜线", ending: "远处窗口亮起另一盏灯，主角关掉手电站了一会儿" }
+    { title: "最后一格电", task: "在闭店前修复并送回一件承载回忆的旧设备", medium: "一段未导出的旧录音", pressure: "暴雨导致街区停电", helper: "夜班便利店员借出移动电源", ending: "老人把修好的设备放回空着的餐位旁，按下播放键", shape: ["建立结果问题", "证明关系重量", "获得帮助但保留人物尊严", "用日常仪式回应隐性需求"] },
+    { title: "错过的那班车", task: "把临时改好的工具交给即将返乡的学徒", medium: "工具柄内侧刻下的一句交代", pressure: "末班车提前且道路封控", helper: "收摊摊主用三轮车带主角穿过旧街", ending: "学徒上车前习惯性地把工具擦净，再递回一块旧抹布", shape: ["建立结果问题", "把最大代价提前压到第二拍", "帮助来得很晚且只解决一半", "用日常仪式收尾但留下未答的下一次"] },
+    { title: "今天也要开门", task: "赶在清晨营业前恢复一家小店的关键设备", medium: "贴在设备背后的手写营业日期", pressure: "凌晨低温与配件不匹配", helper: "早餐店老板翻出多年前留下的通用零件", ending: "卷帘门升起，被照料对象照常先为主角留下一份早餐", shape: ["先让主角判断失误", "承担失误代价并重新定目标", "获得帮助但保留人物尊严", "用日常仪式回应隐性需求"] },
+    { title: "雨停之前", task: "把重新制作的纪念物送到一场小型告别仪式", medium: "被水浸过又重新描好的图案", pressure: "连续降雨与临时改址", helper: "公交司机在安全范围内提醒一条近路", ending: "所有人没有讲话，只把纪念物摆正并擦去雨滴", shape: ["建立结果问题", "证明关系重量", "帮助只给方向，主角仍需独自完成", "愿望没有完全达成，收在开放情绪"] },
+    { title: "多出来的一份", task: "补做一份临时缺失的物品送给不愿麻烦别人的新人", medium: "与团队其他人相同的名字标记", pressure: "活动即将开始且材料用尽", helper: "隔壁同行分享最后一小份材料", ending: "新人默默把自己的那份与大家摆在同一排", shape: ["建立结果问题", "被关爱对象先行回避", "帮助者点破回避的真正原因", "用日常仪式回应隐性需求"] },
+    { title: "灯亮以后", task: "修复一盏被当作约定信号的旧灯", medium: "灯罩内的一张褪色便签", pressure: "山路起雾且备用灯芯损坏", helper: "巡夜保安提供一段废旧铜线", ending: "远处窗口亮起另一盏灯，主角关掉手电站了一会儿", shape: ["建立结果问题", "证明关系重量", "帮助改变了主角原本的目标", "以另一个人的回应完成兑现"] }
   ];
   return { variants: seeds.slice(0, count).map((seed, index) => ({
     id: `V${index + 1}`,
@@ -218,10 +218,10 @@ export function mockVariants(input) {
     emotionalMedium: seed.medium,
     environmentPressure: seed.pressure,
     storyOutline: [
-      { beat: 1, phase: "钩子", action: "任务物出问题，明确最后期限", emotion: "紧迫", dramaticFunction: "建立结果问题", estimatedSeconds: 4 },
-      { beat: 2, phase: "推进", action: "常规方案失效，主角付出额外成本保护任务", emotion: "担心", dramaticFunction: "证明关系重量", estimatedSeconds: 14 },
-      { beat: 3, phase: "转折", action: `${seed.helper}看出困境并提供具体帮助`, emotion: "温暖", dramaticFunction: "获得帮助但保留人物尊严", estimatedSeconds: 12 },
-      { beat: 4, phase: "兑现", action: seed.ending, emotion: "释然", dramaticFunction: "用日常仪式回应隐性需求", estimatedSeconds: 10 }
+      { beat: 1, phase: "钩子", action: "任务物出问题，明确最后期限", emotion: "紧迫", dramaticFunction: seed.shape[0], estimatedSeconds: 4 },
+      { beat: 2, phase: "推进", action: "常规方案失效，主角付出额外成本保护任务", emotion: "担心", dramaticFunction: seed.shape[1], estimatedSeconds: 14 },
+      { beat: 3, phase: "转折", action: `${seed.helper}看出困境并提供具体帮助`, emotion: "温暖", dramaticFunction: seed.shape[2], estimatedSeconds: 12 },
+      { beat: 4, phase: "兑现", action: seed.ending, emotion: "释然", dramaticFunction: seed.shape[3], estimatedSeconds: 10 }
     ],
     highValueBeatMapping: [
       { briefBeat: "任务与期限", newExpression: seed.task, retainedValue: "快速建立观看问题" },

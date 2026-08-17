@@ -1869,7 +1869,32 @@ export function ensureCreativeBriefMatchesProfile(value, creatorProfile = {}) {
   return value;
 }
 
+// 多个变体共用同一条 dramaticFunction 序列时，它们只是同一个故事的不同布景，
+// 变体数量就失去意义。这里只裁决"全部雷同"这一个可确定性判定的下界：
+// 无法判断"是否真的足够不同"，那属于语义，不在本地校验范围内。
+function validateVariantStructuralDivergence(variants) {
+  if (!Array.isArray(variants) || variants.length < 2) return;
+  const sequences = variants.map((variant, index) => {
+    const outline = Array.isArray(variant?.storyOutline) ? variant.storyOutline : [];
+    const functions = outline.map((beat) => String(beat?.dramaticFunction || "").trim());
+    if (!outline.length || functions.some((entry) => !entry)) {
+      throw new OutputContractError(
+        `themeVariants.variants[${index}]（${variant?.id || `V${index + 1}`}）的 storyOutline `
+        + "每个 beat 都必须填写非空 dramaticFunction，否则无法判定各方案的结构是否真的不同"
+      );
+    }
+    return functions.join(" › ");
+  });
+  if (new Set(sequences).size > 1) return;
+  throw new OutputContractError(
+    `themeVariants 的 ${variants.length} 个方案共用同一条 dramaticFunction 序列（${sequences[0]}）。`
+    + "至少要有两个方案在危机位置、成败节奏或结尾情绪上结构不同；"
+    + "只更换季节、天气、交通工具、道具或帮助者称谓不构成不同主题。"
+  );
+}
+
 export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}, creativeBrief = null, visualGuardrails = null) {
+  validateVariantStructuralDivergence(value?.variants);
   const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
   if (!fixedName) return value;
   const protagonistLeakTerms = collectGlobalCharacterForbiddenTerms(visualGuardrails);
