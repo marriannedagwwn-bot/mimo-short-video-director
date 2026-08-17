@@ -1862,9 +1862,23 @@ function collectUpstreamText(value, sink = []) {
 // 【原片有】只证明模型给出了判定，不证明判定为真——校验器此前从未见过原片。
 // 因此要求该分支用「」引出一段上游逐字原文，再回到上游核对它确实存在。
 // 编造出来的场景描述不可能逐字命中 sourceScriptReconstruction / referenceAnalysis。
+// 逐句而不是整串比对：上游常把同一件事写成几种措辞（"骑着自行车，车把上有一个企鹅玩偶"
+// 与"骑自行车，车把上有企鹅玩偶"），模型的引用往往是它们的混合，整串比对会因为少一个
+// "一个"就阻断整个阶段——而那件事在原片里确实发生过。分句后每一句仍必须逐字命中，
+// 编造的场景描述依旧无法通过。
+function citationClauses(value) {
+  return String(value)
+    .split(/[、,，;；。．.!！?？:：]/u)
+    .map((part) => normalizeSourceExpressionExcerpt(part))
+    .filter(Boolean);
+}
+
 function validateNarrativeComponentCitations(components, upstream) {
-  const upstreamText = normalizeSourceExpressionExcerpt(collectUpstreamText(upstream).join("\n"));
-  if (!upstreamText) return;
+  // 逐条归一化后各自保留：拼成一整串会让相邻字段在去空白后粘连，制造跨字段的假匹配。
+  const upstreamTexts = collectUpstreamText(upstream)
+    .map((entry) => normalizeSourceExpressionExcerpt(entry))
+    .filter(Boolean);
+  if (!upstreamTexts.length) return;
   (Array.isArray(components) ? components : []).forEach((item, index) => {
     const assessment = String(item?.howToReuseSafely || "").trim();
     if (!assessment.startsWith("【原片有】")) return;
@@ -1875,10 +1889,8 @@ function validateNarrativeComponentCitations(components, upstream) {
         `${path} 判定为【原片有】时必须用「」引出一段 sourceScriptReconstruction 或 referenceAnalysis 中的逐字原文作为依据。`
       );
     }
-    const missing = citations
-      .map((citation) => ({ citation, normalized: normalizeSourceExpressionExcerpt(citation) }))
-      .filter((entry) => entry.normalized && !upstreamText.includes(entry.normalized))
-      .map((entry) => entry.citation);
+    const missing = citations.flatMap((citation) => citationClauses(citation)
+      .filter((clause) => !upstreamTexts.some((text) => text.includes(clause))));
     if (missing.length) {
       throw new OutputContractError(
         `${path} 引用的原文在上游并不存在：${missing.map((entry) => `「${entry}」`).join("、")}。`
