@@ -1,13 +1,18 @@
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE } from "./validation.js";
+import {
+  ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION,
+  ANIMATION_DIRECT_SHOT_MODE,
+  CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS
+} from "./validation.js";
+import { resolveVideoPromptProfile, VIDEO_PROMPT_PROFILE_IDS } from "../public/video-prompt-profiles.js";
 
-const allowedComponents = [
-  ["送达任务", "保留“必须把某物送到某人手中”的目标压力，改写物品、接收者和阻碍。"],
-  ["旅途结构", "保留空间推进带来的关系升温，改写路线、交通方式与停靠事件。"],
-  ["情感媒介", "使用新的日常物件承载情绪，不沿用原片独特道具组合。"],
-  ["获得帮助", "保留陌生人或同伴援助的情绪回报，改写帮助者身份与帮助方式。"],
-  ["被关爱对象", "保留显性需求与隐性需求的双层设计，重建人物关系与具体处境。"],
-  ["天气或空间推动情绪", "继续让环境形成外部阻力和氛围，但采用新的场景调度。"],
-  ["生活化或仪式化结尾", "保留小动作收束情绪的方式，重新设计结尾动作和道具。"]
+const allowedComponentGuidance = [
+  "保留“必须把某物送到某人手中”的目标压力，改写物品、接收者和阻碍。",
+  "保留空间推进带来的关系升温，改写路线、交通方式与停靠事件。",
+  "按当前剧情需要选择日常物件承载情绪；来源物件不是禁词，也不得因来源存在而机械注入。",
+  "保留陌生人或同伴援助的情绪回报，改写帮助者身份与帮助方式。",
+  "保留显性需求与隐性需求的双层设计，重建人物关系与具体处境。",
+  "继续让环境形成外部阻力和氛围，但采用新的场景调度。",
+  "保留小动作收束情绪的方式，重新设计结尾动作和道具。"
 ];
 
 export function mockAnalysis(input) {
@@ -122,7 +127,9 @@ export function mockBrief(input) {
       { dimension: "细节表达", minimumChange: "关键道具、具体阻力、对白和结尾动作全部重做", acceptanceCheck: "不存在逐句或逐镜对应" },
       { dimension: "价值保真", minimumChange: "不改变高价值桥段的剧作功能", acceptanceCheck: "每个新桥段能映射回其情绪与叙事价值" }
     ],
-    allowedNarrativeComponents: allowedComponents.map(([component, howToReuseSafely]) => ({ component, howToReuseSafely })),
+    allowedNarrativeComponents: CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS.map(
+      (component, index) => ({ component, howToReuseSafely: allowedComponentGuidance[index] })
+    ),
     nonNegotiableExperience: { samePositioning: "仍是生活关系中的任务型情绪故事", sameAudience: "仍服务需要关系共鸣和善意确认的受众", sameEmotion: "仍经历好奇—担心—温暖—释然", samePlotDriver: "仍由必须完成的具体任务驱动", sameBeatValue: "仍包含成本证明、获得帮助与日常兑现" },
     creativeDistancePolicy: "结构与体验保持高保真；人物、事件、台词、道具和视听表达保持明确原创。"
   };
@@ -141,17 +148,9 @@ export function mockVisualGuardrails(input) {
       sourcePath: `creativeBrief.protectedExpressions[${index}].sourceExpression`,
       evidence: sourceExpression
     }];
-    if (/台词|对白|口癖|拟声/u.test(String(item?.expressionType || "")) || /咕嘎/u.test(sourceExpression)) {
-      dialogueRules.push({
-        text: /咕嘎/u.test(sourceExpression)
-          ? "主角不得使用“咕嘎”；主角说话必须服从用户明确设定。"
-          : `不得复用原片台词表达“${sourceExpression}”。`,
-        triggerEvidence
-      });
-      continue;
-    }
+    if (/台词|对白|口癖|拟声/u.test(String(item?.expressionType || ""))) continue;
     sourceSimilarityRules.push({
-      text: `主题变体、完整故事和分镜结构不得复用原片表面表达“${sourceExpression}”。`,
+      text: `记录原片表面表达“${sourceExpression}”；仅在实际使用原片视觉参考时用于 reference_leak 风险判断，不构成正向内容禁词。`,
       sourceExpression,
       triggerEvidence,
       appliesWhenReferenceUsed: true
@@ -187,8 +186,8 @@ export function mockVisualGuardrails(input) {
     sourceSimilarityRules,
     dialogueRules,
     stageInstructions: {
-      themeVariants: "按 positivePromptBoundary 审查角色正向设定，并按 sourceSimilarityRules 改写原片表面表达。",
-      fullStory: "分别执行角色正向边界、原片表达规避和 dialogueRules，不把三类规则混成渲染负面词。",
+      themeVariants: "按 positivePromptBoundary 审查固定角色；sourceSimilarityRules 不是正向内容禁词。",
+      fullStory: "服从固定角色边界和用户明确 dialogueRules；来源表面表达允许按剧情使用，不得机械注入。",
       animationPlan: "结合当前镜头动作、道具、参考输入和真实失败记录，逐镜生成可为空的图片/视频 render negative。"
     },
     rationale: "本阶段一次性签发全局角色边界；后续只消费该边界，不重新解析固定角色。",
@@ -395,8 +394,8 @@ export function mockFullStory(input) {
     continuityAndSafetyCheck: {
       fixedCharacterLocked: `主角始终为${fixedName}`,
       verticalFit: `任务和帮助方式来自${input.creatorProfile?.vertical || "当前赛道"}`,
-      sourceSurfaceAvoided: "不继承原片服装、动物拟态、外壳职业或独特动作",
-      protectedExpressionsAvoided: "仅保留剧作功能，不复用具体表达",
+      sourceSurfaceAvoided: "来源表面表达按当前剧情需要处理，不作为全局内容禁词",
+      protectedExpressionsAvoided: "来源记录未被机械注入；当前 Variant 已选用的表达保持不变",
       shootableWithinConstraints: input.creatorProfile?.constraints || "默认 60 秒、少场景、低成本可拍"
     },
     uncertainties: []
@@ -525,7 +524,7 @@ export function mockAnimationPlan(input) {
       storyFunction: item.storyFunction || "承载任务和情绪",
       imagePrompt: `竖屏动画道具参考图，${item.prop || `关键道具${index + 1}`}，生活化、低饱和、手感真实，适合${fixedName}拿在手中，能在开场、受阻和结尾保持同一外观。`,
       consistencyTags: [item.prop || `道具${index + 1}`, "低饱和", "同一外观", "生活化"],
-      avoidSimilarityNote: "只服务新剧情道具功能，不复刻参考片具体道具组合。"
+      avoidSimilarityNote: "记录与来源道具的关系；当前剧情需要时允许使用，不因来源上下文机械添加。"
     })),
     shotPlan,
     editPlan: {
@@ -540,7 +539,7 @@ export function mockAnimationPlan(input) {
       { check: "首尾帧因果", passCriteria: "首帧和尾帧之间只发生一个清楚动作，不跳剧情。" },
       { check: "情绪曲线", passCriteria: "镜头情绪按紧迫、担心、温暖、释然推进。" },
       { check: "可剪辑性", passCriteria: "每个镜头 3–6 秒，动作结束点可作为剪辑点。" },
-      { check: "表达原创", passCriteria: "不复用参考片具体人物、台词、道具组合和镜头连续设计。" }
+      { check: "来源职责", passCriteria: "按当前 Full Story 使用人物、对白和道具；不得因来源上下文存在而机械添加。" }
     ],
     modelAgnosticNotes: [
       "服务端从 startFrame、endFrame 和 motion 统一编译图像/视频提示词，结构化字段是唯一事实源。",
@@ -549,7 +548,7 @@ export function mockAnimationPlan(input) {
     ],
     continuityAndSafetyCheck: {
       fixedCharacterLocked: `动画主角始终锁定为${fixedName}`,
-      positivePromptsAvoidSourceSurface: "正向提示词只写新人设、新场景和新道具，不继承参考片表面身份。",
+      positivePromptsAvoidSourceSurface: "正向提示词忠实承接当前 Full Story；来源表达可以使用，但不得机械注入或覆盖固定主角边界。",
       firstLastFrameContinuity: "每个镜头都给出首帧、尾帧、运动和验收标准。",
       shotDurationControlled: "所有镜头按 3–6 秒短镜头设计。",
       readyForVideoGeneration: "可以进入角色参考图、道具参考图、首尾帧和短视频候选生成。"
@@ -558,8 +557,44 @@ export function mockAnimationPlan(input) {
   };
 }
 
+export function mockAnimationVideoPromptRewrite(animationPlan = {}, videoPromptProfile = {}) {
+  const miniMaxH3 = videoPromptProfile.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3;
+  return {
+    videoPrompts: (animationPlan.shotPlan || []).map((shot) => {
+      const dialogueTexts = String(shot.dialogueOrSubtitle || "").trim()
+        ? String(shot.dialogueOrSubtitle).split(/[；;\n]+/u).map((item) => item.trim()).filter(Boolean)
+        : [];
+      const h3Dialogue = dialogueTexts.map((item, index) => {
+        const text = item.replace(/^\s*[^：:]{1,40}[：:]\s*/u, "").trim();
+        return `The speaker (S${index + 1}) says, <d>[Chinese] ${text}</d>.`;
+      }).join(" ");
+      const videoPrompt = miniMaxH3
+        ? [
+          `integrated_multimodal_description: [Shot 1] The signed animation style, physical lighting, location, character appearance, wardrobe, and props remain unchanged. The character performs the complete planned action in order: ${shot.characterAction}. The camera follows the planned expression with restrained amplitude and a steady speed: ${shot.cameraMotion}. ${h3Dialogue} The visible action reaches its planned final state within ${shot.durationSeconds} seconds and stops without adding another beat.`,
+          `overall_soundscape: ${shot.soundDesign || "Natural ambience and synchronized physical action sounds remain audible throughout the shot."}`,
+          "non_diegetic_music: N/A"
+        ].join("\n\n")
+        : [
+          `沿用已签发动画计划的视觉风格、物理光线、地点、角色外观、服装与道具。`,
+          `${shot.characterAction}。`,
+          `镜头按顺序执行：${shot.cameraMotion}。`,
+          shot.dialogueOrSubtitle ? `${shot.dialogueOrSubtitle}；对白只作为声音，不渲染画面文字。` : "",
+          `${shot.soundDesign}。`,
+          `${shot.continuityNotes}。`,
+          `在 ${shot.durationSeconds} 秒内到达已签发动作终点后立即停止，不新增字幕、标题、Logo、水印或额外动作。`
+        ].filter(Boolean).join("");
+      return { shotId: shot.shotId, videoPrompt };
+    })
+  };
+}
+
 function mockDirectAnimationPlan(input) {
   const legacy = mockAnimationPlan({ ...input, animationPlanMode: "" });
+  const videoPromptProfile = structuredClone(
+    input.videoPromptProfile
+    || (input.videoPromptTarget ? resolveVideoPromptProfile(input.videoPromptTarget) : {})
+  );
+  const miniMaxH3 = videoPromptProfile.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3;
   const directShots = legacy.shotPlan.map((shot) => {
     const sourceScene = (input.fullStory?.sceneScript || []).find(
       (scene) => String(scene?.sceneId || "") === String(shot.sourceSceneId || "")
@@ -602,6 +637,26 @@ function mockDirectAnimationPlan(input) {
       || "沿用当前场景锁定";
     const visiblePerformance = shot.motion?.emotionArc?.visibleProgression || "";
     const stopCondition = shot.motion?.stopCondition || "达到当前动作的可见结果后立即停止，不追加新动作";
+    const seedanceVideoPrompt = [
+      styleAndLighting ? `${styleAndLighting}。` : "",
+      `${environmentPrompt}。`,
+      visibleCharacterPrompts ? `${visibleCharacterPrompts}，${characterAction}。` : `${characterAction}。`,
+      cameraMotion ? `镜头按动作顺序${cameraMotion}。` : "",
+      visiblePerformance ? `${visiblePerformance}。` : "",
+      `在 ${shot.durationSeconds} 秒内按上述顺序清楚完成动作，节奏服务“${shot.emotionalTarget}”。`,
+      dialogue ? `${dialogue}；对白只作为声音，不渲染画面文字。` : "",
+      soundDesign ? `${soundDesign}。` : "",
+      continuityNotes ? `内部摄影段与前后镜头均保持${continuityNotes}。` : "",
+      `${stopCondition}。`
+    ].filter(Boolean).join("");
+    const h3Dialogue = (shot.motion?.audio?.dialogue || [])
+      .map((item, index) => `${item.speaker || "The speaker"} (S${index + 1}) says, <d>[Chinese] ${item.text}</d>.`)
+      .join(" ");
+    const h3VideoPrompt = [
+      `integrated_multimodal_description: [Shot 1] A clean 2.5D animated scene uses the signed visual style and stable physical lighting in ${environmentPrompt}. The locked character appearance remains unchanged while the character completes the signed action in order: ${characterAction}. ${cameraMotion ? `The camera executes ${cameraMotion} with restrained amplitude at a steady speed.` : "The camera remains stable."} ${visiblePerformance ? `The visible performance follows this progression: ${visiblePerformance}.` : ""} ${h3Dialogue} The action reaches its visible result within ${shot.durationSeconds} seconds and stops without adding another beat.`,
+      `overall_soundscape: ${shot.motion?.audio?.ambience || "Natural room tone continues throughout the shot."} Physical action sounds remain synchronized with the visible movement.`,
+      `non_diegetic_music: ${shot.motion?.audio?.musicCue || "N/A"}`
+    ].join("\n\n");
     return {
       shotId: shot.shotId,
       sourceSceneId: shot.sourceSceneId,
@@ -609,18 +664,7 @@ function mockDirectAnimationPlan(input) {
       durationSeconds: shot.durationSeconds,
       storyPurpose: shot.storyPurpose,
       emotionalTarget: shot.emotionalTarget,
-      videoPrompt: [
-        styleAndLighting ? `${styleAndLighting}。` : "",
-        `${environmentPrompt}。`,
-        visibleCharacterPrompts ? `${visibleCharacterPrompts}，${characterAction}。` : `${characterAction}。`,
-        cameraMotion ? `镜头按动作顺序${cameraMotion}。` : "",
-        visiblePerformance ? `${visiblePerformance}。` : "",
-        `在 ${shot.durationSeconds} 秒内按上述顺序清楚完成动作，节奏服务“${shot.emotionalTarget}”。`,
-        dialogue ? `${dialogue}；对白只作为声音，不渲染画面文字。` : "",
-        soundDesign ? `${soundDesign}。` : "",
-        continuityNotes ? `内部摄影段与前后镜头均保持${continuityNotes}。` : "",
-        `${stopCondition}。`
-      ].filter(Boolean).join(""),
+      videoPrompt: miniMaxH3 ? h3VideoPrompt : seedanceVideoPrompt,
       cameraMotion: cameraMotion || "固定机位，保持单一连续构图",
       characterAction,
       dialogueOrSubtitle: dialogue,
@@ -644,6 +688,8 @@ function mockDirectAnimationPlan(input) {
     productionStrategy: {
       ...legacy.productionStrategy,
       format: "direct_shot_video",
+      recommendedShotDurationSeconds: { min: miniMaxH3 ? 4 : 3, max: 6 },
+      videoPromptProfile,
       generationOrder: ["锁定角色、场景和资产", "生成直接视频镜头", "质检并挑选候选", "剪辑、配音、字幕和音效"],
       whyThisWorkflow: "镜头内容由模型直接写成完整视频指令，不生产首帧、尾帧或端点运动结构。"
     },

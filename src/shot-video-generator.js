@@ -6,7 +6,24 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { compileShotNegativePrompt } from "../public/negative-prompts.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION } from "./validation.js";
+import {
+  assertVideoPromptProfile,
+  VIDEO_PROMPT_PROFILE_IDS
+} from "../public/video-prompt-profiles.js";
+import {
+  ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION,
+  ensureCharacterPromptMatchesBoundary
+} from "./validation.js";
+import {
+  assertMiniMaxH3BasePrompt,
+  assertMiniMaxH3Duration,
+  assertMiniMaxH3OrdinaryReferencePolicy,
+  assertMiniMaxH3Ref2VAPrompt,
+  buildMiniMaxH3ContextIrIntent,
+  buildMiniMaxH3ReferenceManifest,
+  miniMaxH3DialogueTexts,
+  sha256Text
+} from "./minimax-h3-prompt.js";
 import {
   mediaFilenameSegment,
   normalizeShotVideoContinuityReferenceMode,
@@ -71,6 +88,24 @@ export async function generateShotVideo(options = {}) {
   const generationMode = normalizeShotVideoGenerationMode(options.generationMode);
   const continuityReferenceMode = normalizeShotVideoContinuityReferenceMode(options.continuityReferenceMode);
   const aspectRatio = normalizeShotVideoAspectRatio(options.aspectRatio);
+  const miniMaxH3Runtime = videoProvider === "MiniMax" && videoModel === "MiniMax-H3";
+  const exactMiniMaxH3PromptProfile = isExactMiniMaxH3PromptProfile(options.videoPromptProfile);
+  if (miniMaxH3Runtime) {
+    try {
+      assertMiniMaxH3Duration(shot.durationSeconds, "shot.durationSeconds");
+    } catch (error) {
+      throw new ShotVideoConfigError(error.message);
+    }
+  }
+  if (
+    miniMaxH3Runtime
+    && generationMode === "all_reference"
+    && !exactMiniMaxH3PromptProfile
+  ) {
+    throw new ShotVideoConfigError(
+      "当前 Animation Plan 不是已签发的 MiniMax H3 提示词 Profile，不能把旧 Seedance/未知方言直接提交给 H3。请在模型切换提醒中确认重新生成视频提示词后再试。"
+    );
+  }
   if (
     String(options.animationPromptSchemaVersion || "").trim() === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION
     && generationMode === "first_last_frame"
@@ -151,11 +186,124 @@ export async function generateShotVideo(options = {}) {
           ...uploadedArtifacts,
           ...(continuityReference?.artifacts || [])
         ];
-        validateAllReferenceArtifacts(combined);
+        validateAllReferenceArtifacts(combined, {
+          maxTotal: miniMaxH3Runtime ? 12 : Number.POSITIVE_INFINITY
+        });
         return combined;
       })();
+    const useMiniMaxH3ContextIr = generationMode === "all_reference"
+      && miniMaxH3Runtime
+      && exactMiniMaxH3PromptProfile;
+    let effectiveVideoPrompt = String(shot.videoPrompt || "").trim();
+    let referenceManifest = null;
+    let sharedPromptReceipt = null;
+    let expandedPromptSemanticAudit = null;
+    if (useMiniMaxH3ContextIr) {
+      if (typeof options.auditMiniMaxH3ExpandedPromptSemantics !== "function") {
+        throw new ShotVideoConfigError("MiniMax H3 Context-IR 缺少服务端语义一致性审计器，拒绝直接生成视频。");
+      }
+      const sourcePrompt = effectiveVideoPrompt;
+      let dialogueTexts;
+      try {
+        dialogueTexts = miniMaxH3DialogueTexts(shot.dialogueOrSubtitle);
+        assertMiniMaxH3BasePrompt(sourcePrompt, {
+          durationSeconds: shot.durationSeconds,
+          path: "shot.videoPrompt",
+          dialogueTexts
+        });
+        referenceManifest = buildMiniMaxH3ReferenceManifest(inputArtifacts);
+      } catch (error) {
+        throw new ShotVideoConfigError(error.message);
+      }
+      const contextIrIntent = buildMiniMaxH3ContextIrIntent({
+        sourcePrompt,
+        artifacts: inputArtifacts,
+        characterReferences: options.characterReferences,
+        shot
+      });
+      const contextIrOutputPath = path.join(workDir, `${shotId}-h3-context-ir.txt`);
+      const contextIrRequest = buildMiniMaxH3ContextIrRequest(shot, {
+        outputPath: contextIrOutputPath,
+        inputArtifacts,
+        prompt: contextIrIntent,
+        referenceManifest,
+        aspectRatio,
+        videoPromptProfile: options.videoPromptProfile
+      });
+      if (typeof options.assertProductionContextCurrent === "function") {
+        await options.assertProductionContextCurrent();
+      }
+      const contextIrReceipt = await runGenericWorker({
+        request: contextIrRequest,
+        outputPath: contextIrOutputPath,
+        workDir,
+        configPath,
+        workerRunner: options.workerRunner
+      });
+      effectiveVideoPrompt = String(await fs.readFile(contextIrOutputPath, "utf8")).trim();
+      if (effectiveVideoPrompt.length > 7000) {
+        throw new ShotVideoConfigError(`MiniMax H3 Context-IR 返回的提示词超过 7000 字符（当前 ${effectiveVideoPrompt.length}），拒绝截断或降级。`);
+      }
+      let parsed;
+      try {
+        parsed = assertMiniMaxH3Ref2VAPrompt(effectiveVideoPrompt, {
+          durationSeconds: shot.durationSeconds,
+          path: "effectiveVideoPrompt",
+          dialogueTexts,
+          ordinaryReferenceOnly: true
+        });
+        assertMiniMaxH3OrdinaryReferencePolicy(parsed, referenceManifest, {
+          path: "effectiveVideoPrompt"
+        });
+        ensureCharacterPromptMatchesBoundary(effectiveVideoPrompt, options.visualGuardrails, {
+          requireRequiredTraits: false,
+          promptScope: "multi_character"
+        });
+      } catch (error) {
+        throw new ShotVideoConfigError(`MiniMax H3 Context-IR 返回无效：${error.message}`);
+      }
+      expandedPromptSemanticAudit = await options.auditMiniMaxH3ExpandedPromptSemantics({
+        sourcePrompt,
+        expandedPrompt: effectiveVideoPrompt,
+        referenceManifest,
+        shot: structuredClone(shot)
+      });
+      if (expandedPromptSemanticAudit?.verdict !== "pass") {
+        throw new ShotVideoConfigError("MiniMax H3 Context-IR 语义一致性审计未返回 pass，拒绝生成视频。");
+      }
+      const labelBindings = bindMiniMaxH3ReferenceLabels(parsed, referenceManifest);
+      referenceManifest = Object.freeze({
+        ...referenceManifest,
+        labelBindings: Object.freeze(labelBindings),
+        labelBindingsDigest: sha256Text(JSON.stringify(labelBindings))
+      });
+      sharedPromptReceipt = {
+        schemaVersion: "minimax_h3_ref2va_prompt_receipt/1.0",
+        dialect: "minimax_h3_ref2va_six_section",
+        videoPromptProfile: structuredClone(options.videoPromptProfile),
+        source: {
+          kind: options.videoPromptSource === "runtime_override" ? "runtime_override" : "animation_plan",
+          textSha256: sha256Text(sourcePrompt)
+        },
+        compiler: {
+          kind: "h3_context_ir",
+          providerTaskId: contextIrReceipt.providerTaskId || "",
+          intentSha256: sha256Text(contextIrIntent)
+        },
+        semanticAudit: structuredClone(expandedPromptSemanticAudit),
+        effective: {
+          text: effectiveVideoPrompt,
+          textSha256: sha256Text(effectiveVideoPrompt),
+          sectionNames: [...parsed.sectionNames]
+        },
+        referenceManifest
+      };
+    }
     const videos = [];
     for (let index = 0; index < count; index += 1) {
+      if (useMiniMaxH3ContextIr && typeof options.assertProductionContextCurrent === "function") {
+        await options.assertProductionContextCurrent();
+      }
       const suffix = count > 1 ? `-${index + 1}` : "";
       const outputPath = path.join(outputRoot, `${filenamePrefix}${shotId}-${stamp}-${requestNonce}${suffix}.mp4`);
       const request = buildShotVideoRequest(shot, {
@@ -166,7 +314,11 @@ export async function generateShotVideo(options = {}) {
         provider: videoProvider,
         model: videoModel,
         generationMode,
-        aspectRatio
+        aspectRatio,
+        prompt: effectiveVideoPrompt,
+        videoPromptProfile: options.videoPromptProfile,
+        promptDialect: useMiniMaxH3ContextIr ? "minimax_h3_ref2va_six_section" : "",
+        referenceManifest
       });
       const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: options.workerRunner });
       await assertUsableVideoOutput(outputPath, {
@@ -197,7 +349,19 @@ export async function generateShotVideo(options = {}) {
       endFramePath: frames?.end?.path || "",
       referenceSummary: generationMode === "all_reference" ? summarizeReferenceArtifacts(inputArtifacts) : null,
       videoPromptSource: options.videoPromptSource === "runtime_override" ? "runtime_override" : "animation_plan",
-      effectiveVideoPrompt: String(shot.videoPrompt || ""),
+      sourceVideoPrompt: String(shot.videoPrompt || ""),
+      effectiveVideoPrompt,
+      promptReceipt: sharedPromptReceipt
+        ? {
+          ...sharedPromptReceipt,
+          providerSubmissions: videos.map((video) => ({
+            candidateIndex: video.candidateIndex,
+            providerTaskId: video.receipt?.providerTaskId || "",
+            submittedPromptSha256: video.receipt?.promptReceipt?.submittedPromptSha256 || "",
+            referenceManifestDigest: video.receipt?.promptReceipt?.referenceManifestDigest || ""
+          }))
+        }
+        : null,
       continuityReferenceReceipt: continuityReference
         ? {
           mode: SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES,
@@ -244,6 +408,28 @@ export function shotVideoGenerationPromptText(options = {}) {
   if (!options.startFrameDataUrl) prompts.push(shot.startFramePrompt || framePromptFallback(shot, "start"));
   if (!options.endFrameDataUrl) prompts.push(shot.endFramePrompt || framePromptFallback(shot, "end"));
   return prompts.map((item) => String(item || "").trim()).filter(Boolean).join("\n");
+}
+
+export function shouldDeferH3CharacterAppearanceBoundaryCheck(options = {}) {
+  let generationMode;
+  try {
+    generationMode = normalizeShotVideoGenerationMode(options.generationMode);
+  } catch {
+    return false;
+  }
+  if (
+    generationMode !== "all_reference"
+    || String(options.videoProvider || "").trim() !== "MiniMax"
+    || String(options.videoModel || "").trim() !== "MiniMax-H3"
+    || !isExactMiniMaxH3PromptProfile(options.videoPromptProfile)
+  ) {
+    return false;
+  }
+  return (Array.isArray(options.referenceAssets) ? options.referenceAssets : []).some((asset) => (
+    String(asset?.source || "").trim() === "character_reference"
+    && Boolean(String(asset?.sourceCharacterName || "").trim())
+    && Boolean(String(asset?.dataUrl || "").trim())
+  ));
 }
 
 async function prepareFrameArtifacts(context) {
@@ -334,7 +520,10 @@ function buildShotVideoRequest(shot = {}, context = {}) {
     outputPath: context.outputPath,
     provider: context.provider || "",
     model: context.model || "",
-    prompt: shot.videoPrompt || "",
+    prompt: Object.hasOwn(context, "prompt") ? String(context.prompt || "") : shot.videoPrompt || "",
+    ...(context.videoPromptProfile ? { videoPromptProfile: structuredClone(context.videoPromptProfile) } : {}),
+    ...(context.promptDialect ? { promptDialect: context.promptDialect } : {}),
+    ...(context.referenceManifest ? { referenceManifest: context.referenceManifest } : {}),
     negativePromptEntries: negativePrompt.negativePromptEntries,
     compiledNegativePrompt: negativePrompt.compiledNegativePrompt,
     negativePrompt: negativePrompt.compiledNegativePrompt,
@@ -355,6 +544,33 @@ function buildShotVideoRequest(shot = {}, context = {}) {
     },
     acceptanceCriteria: shot.acceptanceCriteria || [],
     rawJob: shot
+  };
+}
+
+function buildMiniMaxH3ContextIrRequest(shot = {}, context = {}) {
+  return {
+    version: "1.0",
+    providerMode: "provider_agnostic",
+    taskId: `${shot.shotId || "SHOT"}-H3-CONTEXT-IR`,
+    type: "h3_context_ir",
+    capability: "h3_context_ir",
+    status: "ready",
+    inputType: "multimodal_reference_to_prompt",
+    outputKey: `context-ir.${safeSegment(shot.shotId || "shot")}`,
+    outputPath: context.outputPath,
+    provider: "MiniMax",
+    model: "MiniMax-H3",
+    prompt: String(context.prompt || ""),
+    promptDialect: "minimax_h3_context_ir_intent",
+    videoPromptProfile: structuredClone(context.videoPromptProfile),
+    referenceManifest: context.referenceManifest,
+    inputArtifacts: context.inputArtifacts || [],
+    parameters: {
+      aspectRatio: context.aspectRatio || "9:16",
+      durationSeconds: Number(shot.durationSeconds),
+      shotId: shot.shotId || "",
+      sourceSceneId: shot.sourceSceneId || ""
+    }
   };
 }
 
@@ -525,8 +741,11 @@ async function prepareAllReferenceArtifacts(referenceAssets, workDir) {
       role: `reference_${mediaType}`,
       mimeType: decoded.mimeType,
       filename: safeReferenceName(asset.name, index, decoded.mimeType),
+      logicalName: safeReferenceName(asset.name, index, decoded.mimeType),
       sizeBytes: decoded.buffer.length,
-      source: String(asset.source || "upload").trim() || "upload"
+      sha256: sha256Bytes(decoded.buffer),
+      source: String(asset.source || "upload").trim() || "upload",
+      sourceCharacterName: String(asset.sourceCharacterName || "").trim()
     };
     if (mediaType === "video" || mediaType === "audio") {
       artifact.durationSeconds = await probeMediaDuration(filePath, mediaType);
@@ -661,7 +880,7 @@ export async function extractVideoFramesEverySecond({
   };
 }
 
-function validateAllReferenceArtifacts(artifacts) {
+function validateAllReferenceArtifacts(artifacts, { maxTotal = Number.POSITIVE_INFINITY } = {}) {
   const grouped = Object.groupBy(artifacts, (item) => item.mediaType);
   const images = grouped.image || [];
   const videos = grouped.video || [];
@@ -670,6 +889,9 @@ function validateAllReferenceArtifacts(artifacts) {
   if (images.length > 9) throw new ShotVideoConfigError(`全能参考图片最多 9 张，当前 ${images.length} 张。`);
   if (videos.length > 3) throw new ShotVideoConfigError(`全能参考视频最多 3 段，当前 ${videos.length} 段。`);
   if (audios.length > 3) throw new ShotVideoConfigError(`全能参考音频最多 3 段，当前 ${audios.length} 段。`);
+  if (artifacts.length > maxTotal) {
+    throw new ShotVideoConfigError(`MiniMax H3 混合参考素材总数最多 ${maxTotal} 项，当前 ${artifacts.length} 项。`);
+  }
   for (const item of [...videos, ...audios]) {
     if (item.durationSeconds < 2 || item.durationSeconds > 15) {
       throw new ShotVideoConfigError(`${item.filename} 时长必须在 2–15 秒之间，当前 ${formatDuration(item.durationSeconds)} 秒。`);
@@ -682,6 +904,80 @@ function validateAllReferenceArtifacts(artifacts) {
   const audioDuration = audios.reduce((sum, item) => sum + item.durationSeconds, 0);
   if (videoDuration > 15.05) throw new ShotVideoConfigError(`参考视频总时长不得超过 15 秒，当前 ${formatDuration(videoDuration)} 秒。`);
   if (audioDuration > 15.05) throw new ShotVideoConfigError(`参考音频总时长不得超过 15 秒，当前 ${formatDuration(audioDuration)} 秒。`);
+}
+
+function isExactMiniMaxH3PromptProfile(profile = {}) {
+  try {
+    const canonical = assertVideoPromptProfile(profile);
+    return canonical.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3
+      && canonical.provider === "MiniMax"
+      && canonical.model === "MiniMax-H3";
+  } catch {
+    return false;
+  }
+}
+
+function bindMiniMaxH3ReferenceLabels(parsed, manifest) {
+  const prompt = parsed.prompt;
+  const definitions = parsed.sections.subject_definitions;
+  const contentItems = Array.isArray(manifest?.contentItems) ? manifest.contentItems : [];
+  const kindToMediaType = { Picture: "image", Video: "video", Audio: "audio" };
+  const usedPhysicalLabels = [...new Set(
+    [...prompt.matchAll(/<(Picture|Video|Audio)\s+(\d+)>/gu)].map((match) => match[0])
+  )];
+  const physicalLabels = contentItems.map((item) => {
+    const kind = item.mediaType === "image" ? "Picture" : item.mediaType === "video" ? "Video" : "Audio";
+    return `<${kind} ${item.ordinalWithinMediaType}>`;
+  });
+  const unexpectedLabels = usedPhysicalLabels.filter((label) => !physicalLabels.includes(label));
+  if (unexpectedLabels.length) {
+    throw new ShotVideoConfigError(`MiniMax H3 Context-IR 使用了没有真实传入素材的标签：${unexpectedLabels.join("、")}。`);
+  }
+  const undefinedLabels = physicalLabels.filter((label) => !definitions.includes(label));
+  if (undefinedLabels.length) {
+    throw new ShotVideoConfigError(`MiniMax H3 Context-IR 未在 subject_definitions 定义真实传入素材：${undefinedLabels.join("、")}。`);
+  }
+  const bindings = physicalLabels.map((label) => {
+    const match = label.match(/^<(Picture|Video|Audio)\s+(\d+)>$/u);
+    const mediaType = kindToMediaType[match[1]];
+    const ordinal = Number(match[2]);
+    const item = contentItems.find((candidate) => (
+      candidate.mediaType === mediaType && candidate.ordinalWithinMediaType === ordinal
+    ));
+    return Object.freeze({
+      label,
+      kind: match[1].toLowerCase(),
+      assetIds: Object.freeze([item.assetId]),
+      component: mediaType
+    });
+  });
+  const subjectLabels = [...new Set(
+    [...definitions.matchAll(/<Subject\s+(\d+)>/gu)].map((match) => match[0])
+  )];
+  for (const label of subjectLabels) {
+    const relatedPhysicalLabels = [...new Set(
+      definitions
+        .split(/\r?\n/u)
+        .filter((line) => line.includes(label))
+        .flatMap((line) => [...line.matchAll(/<(?:Picture|Video|Audio)\s+\d+>/gu)].map((match) => match[0]))
+    )];
+    if (!relatedPhysicalLabels.length) {
+      throw new ShotVideoConfigError(`MiniMax H3 Context-IR 的 ${label} 未绑定任何真实传入素材。`);
+    }
+    const assetIds = relatedPhysicalLabels.flatMap((physicalLabel) => (
+      bindings.find((binding) => binding.label === physicalLabel)?.assetIds || []
+    ));
+    if (!assetIds.length) {
+      throw new ShotVideoConfigError(`MiniMax H3 Context-IR 的 ${label} 只绑定了不存在的参考标签。`);
+    }
+    bindings.push(Object.freeze({
+      label,
+      kind: "subject",
+      assetIds: Object.freeze([...new Set(assetIds)]),
+      component: "semantic_subject"
+    }));
+  }
+  return bindings;
 }
 
 function assertAllReferenceRequestSize(options) {

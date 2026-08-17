@@ -414,7 +414,7 @@ test("MiniMax H3 使用 V2 多模态首尾帧、Bearer 鉴权和 task.content.ur
     model: "MiniMax-H3",
     startPath,
     endPath,
-    durationSeconds: 3
+    durationSeconds: 4
   });
   request.negativePromptEntries = [
     {
@@ -456,7 +456,8 @@ test("MiniMax H3 使用 V2 多模态首尾帧、Bearer 鉴权和 task.content.ur
   assert.equal(await fs.readFile(outputPath, "utf8"), "minimax h3 video bytes");
   assert.equal(receipt.videoProvider, "MiniMax");
   assert.equal(receipt.providerTaskId, "minimax-h3-task");
-  assert.equal(receipt.audioRequested, false);
+  assert.equal(receipt.audioRequested, true);
+  assert.equal(receipt.audioOutputMode, "native");
   assert.equal(receipt.negativePromptDelivery.appliedMode, "positive_constraint");
   assert.deepEqual(receipt.negativePromptDelivery.ignored.map((item) => item.text), ["不要出现额外人物"]);
   assert.match(receipt.requestPreview.body.content[1].image_url.url, /^\[REDACTED_DATA_URL length=\d+\]$/u);

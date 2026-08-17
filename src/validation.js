@@ -1,5 +1,13 @@
 import { validateLegacyFullStoryStrict } from "./contracts/contract-validator.js";
 import { GLOBAL_CHARACTER_BOUNDARY_VERSION } from "./character-boundary.js";
+import {
+  assertVideoPromptProfile,
+  VIDEO_PROMPT_PROFILE_IDS
+} from "../public/video-prompt-profiles.js";
+import {
+  assertMiniMaxH3BasePrompt,
+  miniMaxH3DialogueTexts
+} from "./minimax-h3-prompt.js";
 
 export class InputError extends Error {
   constructor(message, details = []) {
@@ -79,6 +87,15 @@ const animationPromptSchemaVersion = "2.0";
 export const ANIMATION_DIRECT_SHOT_MODE = "direct_shot";
 export const ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION = "3.0";
 export const ANIMATION_PLAN_ASPECT_RATIOS = Object.freeze(["9:16", "16:9"]);
+export const CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS = Object.freeze([
+  "送达任务",
+  "旅途结构",
+  "情感媒介",
+  "获得帮助",
+  "被关爱对象",
+  "天气或空间推动情绪",
+  "生活化或仪式化结尾"
+]);
 
 export function requireAnimationPlanAspectRatio(value, path = "targetAspectRatio") {
   const normalized = String(value || "").trim();
@@ -541,9 +558,30 @@ function pushFullStorySceneViolation(details, detail) {
   details.push({
     code: detail.code,
     path: detail.path,
+    jsonPointer: fullStorySceneContractJsonPointer(detail.path),
     reason: detail.reason,
     ...(detail.sceneId ? { sceneId: detail.sceneId } : {})
   });
+}
+
+function fullStorySceneContractJsonPointer(path) {
+  const source = String(path || "");
+  if (!source.startsWith("fullStory.")) return "";
+  const tokens = [];
+  const body = source.slice("fullStory.".length);
+  const pattern = /(?:^|\.)([^.\[\]]+)|\[(\d+)\]/gu;
+  let consumed = 0;
+  for (const match of body.matchAll(pattern)) {
+    if (match.index !== consumed) return "";
+    const token = match[1] ?? match[2];
+    if (["__proto__", "prototype", "constructor"].includes(token)) return "";
+    tokens.push(token);
+    consumed = match.index + match[0].length;
+  }
+  if (!tokens.length || consumed !== body.length) return "";
+  return `/${tokens
+    .map((token) => String(token).replaceAll("~", "~0").replaceAll("/", "~1"))
+    .join("/")}`;
 }
 
 function literalContractTextIncludes(text, literal) {
@@ -729,8 +767,38 @@ export function ensureAnimationPlanDirectShotContract(value, { path = "animation
   ensureAnimationPlanAspectRatio(value.productionStrategy?.targetAspectRatio, `${path}.productionStrategy.targetAspectRatio`);
   if (!Array.isArray(value.shotPlan)) throw new OutputContractError(`${path}.shotPlan 必须是数组`);
   value.shotPlan.forEach((shot, index) => ensureAnimationDirectShotContract(shot, `${path}.shotPlan[${index}]`));
+  const videoPromptProfile = ensureAnimationPlanVideoPromptProfile(value, { path, optional: true });
+  if (videoPromptProfile?.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3) {
+    value.shotPlan.forEach((shot, index) => {
+      try {
+        assertMiniMaxH3BasePrompt(shot.videoPrompt, {
+          durationSeconds: shot.durationSeconds,
+          path: `${path}.shotPlan[${index}].videoPrompt`,
+          dialogueTexts: miniMaxH3DialogueTexts(shot.dialogueOrSubtitle)
+        });
+      } catch (error) {
+        throw new OutputContractError(error.message, error.details);
+      }
+    });
+  }
   validateAnimationPlanNegativePromptContract(value);
   return value;
+}
+
+export function ensureAnimationPlanVideoPromptProfile(value, {
+  path = "animationPlan",
+  optional = false
+} = {}) {
+  const profile = value?.productionStrategy?.videoPromptProfile;
+  if (profile === undefined || profile === null) {
+    if (optional) return null;
+    throw new OutputContractError(`${path}.productionStrategy.videoPromptProfile 缺失。`);
+  }
+  try {
+    return assertVideoPromptProfile(profile);
+  } catch (error) {
+    throw new OutputContractError(`${path}.productionStrategy.videoPromptProfile 无效：${error.message}`);
+  }
 }
 
 function ensureAnimationDirectShotContract(shot, path) {
@@ -1669,6 +1737,9 @@ function validateTriggerEvidenceShape(triggerEvidence, path, { requireNonEmpty =
 
 export function materializeGlobalCharacterBoundaryViews(value, creatorProfile = {}) {
   const boundary = value?.fixedCharacterBoundary || {};
+  const fixedCharacterName = String(
+    boundary.characterName || extractFixedCharacterName(creatorProfile.fixedCharacter) || "固定主角"
+  ).trim();
   const fixedEvidence = [{
     sourcePath: "creatorProfile.fixedCharacter",
     evidence: String(creatorProfile.fixedCharacter || "").trim()
@@ -1681,9 +1752,9 @@ export function materializeGlobalCharacterBoundaryViews(value, creatorProfile = 
   const requiredNames = (boundary.requiredTraits || []).map((trait) => trait.canonicalName);
   const forbiddenNames = (boundary.forbiddenTraits || []).map((trait) => trait.canonicalName);
   const ruleParts = [
-    requiredNames.length ? `必须沿用：${requiredNames.join("、")}` : "",
-    forbiddenNames.length ? `不得出现：${forbiddenNames.join("、")}` : "",
-    "后续阶段不得重新推断、删除或替换全局角色事实"
+    requiredNames.length ? `固定角色「${fixedCharacterName}」必须沿用：${requiredNames.join("、")}` : "",
+    forbiddenNames.length ? `固定角色「${fixedCharacterName}」不得具有：${forbiddenNames.join("、")}` : "",
+    "该边界只约束固定角色，不套用到配角、道具、对白或声音；后续阶段不得重新推断、删除或替换固定角色事实"
   ].filter(Boolean);
   return {
     ...value,
@@ -1726,9 +1797,6 @@ export function ensureVisualGuardrailsMatchesProfile(value, creatorProfile = {})
   if (!fixedName) return value;
 
   const boundary = value.fixedCharacterBoundary || {};
-  const conflictTerms = collectVisualGuardrailRawForbiddenTerms(value)
-    .filter((term) => isAllowedByGlobalCharacterBoundary(term, value));
-
   const mismatches = [];
   if (boundary.characterName !== fixedName) {
     mismatches.push(`未围绕固定角色「${fixedName}」生成外观规则`);
@@ -1741,9 +1809,6 @@ export function ensureVisualGuardrailsMatchesProfile(value, creatorProfile = {})
   }
   if (!value.positivePromptBoundary.length) {
     mismatches.push("缺少用于后续正向提示词审查的 positivePromptBoundary");
-  }
-  if (conflictTerms.length) {
-    mismatches.push(`sourceSimilarityRules 与固定角色已明确允许的特征冲突：${[...new Set(conflictTerms)].join("、")}`);
   }
   if (mismatches.length) throw new OutputContractError(`visualGuardrails 未锁定固定角色：${mismatches.join("；")}`);
   return value;
@@ -1770,10 +1835,7 @@ export function ensureCreativeBriefMatchesProfile(value, creatorProfile = {}) {
 export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}, creativeBrief = null, visualGuardrails = null) {
   const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
   if (!fixedName) return value;
-  const fixedProfile = String(creatorProfile.fixedCharacter || "");
-  const sourceLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
-  const protagonistLeakTerms = [...new Set(sourceLeakTerms)];
-  const visibleLeakTerms = protagonistLeakTerms;
+  const protagonistLeakTerms = collectGlobalCharacterForbiddenTerms(visualGuardrails);
   const mismatches = [];
   value.variants.forEach((variant, index) => {
     const label = variant?.id || `V${index + 1}`;
@@ -1794,11 +1856,7 @@ export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}, crea
     }
     const protagonistHits = findTerms(protagonist, protagonistLeakTerms);
     if (protagonistHits.length) {
-      mismatches.push(`${label} 的 protagonist 混入原片表面身份或非用户设定身份：${protagonistHits.join("、")}`);
-    }
-    const visibleHits = findTerms(visibleStoryText, visibleLeakTerms);
-    if (visibleHits.length) {
-      mismatches.push(`${label} 的故事文本复用了禁止表面表达：${visibleHits.join("、")}`);
+      mismatches.push(`${label} 的 protagonist 使用了固定角色边界签发的禁止特征：${protagonistHits.join("、")}`);
     }
   });
   if (mismatches.length) {
@@ -1814,42 +1872,39 @@ export function ensureFullStoryMatchesProfile(value, creatorProfile = {}, creati
   }
   if (!fixedName) return value;
 
-  const fixedProfile = String(creatorProfile.fixedCharacter || "");
-  const sourceLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
-  const protagonistLeakTerms = [...new Set(sourceLeakTerms)];
-  const visibleLeakTerms = protagonistLeakTerms;
+  const protagonistLeakTerms = collectGlobalCharacterForbiddenTerms(visualGuardrails);
   const protagonist = value.characterBible?.protagonist || {};
   const protagonistText = JSON.stringify(protagonist);
   const fullText = JSON.stringify(value);
-  const sceneText = JSON.stringify({
-    title: value.title,
-    oneLinePremise: value.oneLinePremise,
-    shootingSynopsis: value.shootingSynopsis,
-    beatSheet: value.beatSheet,
-    sceneScript: value.sceneScript,
-    keyProps: (value.keyProps || []).map((item) => ({
-      prop: item?.prop,
-      storyFunction: item?.storyFunction,
-      visualUse: item?.visualUse
-    }))
-  });
+  const strictPositiveFields = collectFullStoryStrictPositiveFields(value);
+  const rulePositiveFields = collectFullStoryRuleFields(value);
+  const protagonistPositiveFields = strictPositiveFields.filter((field) => (
+    field.path.startsWith("characterBible.protagonist.")
+  ));
+  const protagonistRuleFields = rulePositiveFields.filter((field) => (
+    field.path.startsWith("characterBible.protagonist.")
+  ));
 
-  const mismatches = [];
+  const fixedCharacterMismatches = [];
   if (!protagonistText.includes(fixedName)) {
-    mismatches.push(`characterBible.protagonist 未包含固定角色「${fixedName}」`);
+    fixedCharacterMismatches.push(`characterBible.protagonist 未包含固定角色「${fixedName}」`);
   }
   if (!fullText.includes(fixedName)) {
-    mismatches.push(`fullStory 未使用固定角色「${fixedName}」`);
+    fixedCharacterMismatches.push(`fullStory 未使用固定角色「${fixedName}」`);
   }
-  const protagonistHits = findTerms(protagonistText, protagonistLeakTerms);
+  const protagonistHits = dedupeFieldTermHits([
+    ...findFieldTermHits(protagonistPositiveFields, protagonistLeakTerms),
+    ...findFieldTermHits(protagonistRuleFields, protagonistLeakTerms, { allowNegativeContext: true })
+  ]);
   if (protagonistHits.length) {
-    mismatches.push(`主角设定混入原片表面身份或非用户设定身份：${protagonistHits.join("、")}`);
+    fixedCharacterMismatches.push(
+      `主角设定使用了固定角色边界签发的禁止特征：${formatFieldTermHits(protagonistHits)}`
+    );
   }
-  const visibleHits = findTerms(sceneText, visibleLeakTerms);
-  if (visibleHits.length) {
-    mismatches.push(`剧情文本复用了禁止表面表达：${visibleHits.join("、")}`);
+  if (fixedCharacterMismatches.length) {
+    throw new OutputContractError(`fullStory 未锁定固定角色：${fixedCharacterMismatches.join("；")}`);
   }
-  if (mismatches.length) throw new OutputContractError(`fullStory 未锁定固定角色：${mismatches.join("；")}`);
+
   return value;
 }
 
@@ -1861,40 +1916,158 @@ export function ensureAnimationPlanMatchesProfile(value, creatorProfile = {}, cr
   const semanticContext = { ...context, creatorProfile, creativeBrief, variant, visualGuardrails };
   if (!fixedName) return ensureAnimationPlanNegativePrompts(value, semanticContext);
 
-  const fixedProfile = String(creatorProfile.fixedCharacter || "");
-  const sourceLeakTerms = collectForbiddenVisualTerms(creativeBrief, fixedProfile, visualGuardrails);
-  const protagonistLeakTerms = [...new Set(sourceLeakTerms)];
-  const visibleLeakTerms = protagonistLeakTerms;
   const referenceFields = collectAnimationReferenceFields(value);
-  const strictPositiveFields = collectAnimationStrictPositiveFields(value);
-  const rulePositiveFields = collectAnimationRuleFields(value);
-  const referenceText = referenceFields.map((field) => field.value).join("\n");
+  const fixedCharacterName = String(
+    visualGuardrails?.fixedCharacterBoundary?.characterName || fixedName
+  ).trim();
+  const fixedReferenceIndexes = (value.characterReferencePrompts || [])
+    .map((reference, index) => (
+      String(reference?.characterName || "").trim() === fixedCharacterName ? index : -1
+    ))
+    .filter((index) => index >= 0);
+  const fixedReferenceIndex = fixedReferenceIndexes.length === 1
+    ? fixedReferenceIndexes[0]
+    : null;
+  const fixedReferencePath = fixedReferenceIndex === null
+    ? "characterReferencePrompts"
+    : `characterReferencePrompts[${fixedReferenceIndex}]`;
+  const fixedReferenceFields = fixedReferenceIndex === null
+    ? []
+    : referenceFields.filter((field) => (
+      field.path === fixedReferencePath || field.path.startsWith(`${fixedReferencePath}.`)
+    ));
+  const fixedReferenceText = fixedReferenceFields.map((field) => field.value).join("\n");
   const fullText = JSON.stringify(value);
 
   const mismatches = [];
-  if (!referenceText.includes(fixedName)) {
-    mismatches.push(`characterReferencePrompts 未包含固定角色「${fixedName}」`);
+  const details = [];
+  if (fixedReferenceIndexes.length !== 1) {
+    const reason = fixedReferenceIndexes.length
+      ? `characterReferencePrompts 中固定角色「${fixedCharacterName}」必须恰好出现一次，当前 ${fixedReferenceIndexes.length} 次`
+      : `characterReferencePrompts 未包含固定角色「${fixedCharacterName}」`;
+    mismatches.push(reason);
+    details.push(animationProfileDiagnostic({
+      code: fixedReferenceIndexes.length
+        ? "ANIMATION_FIXED_CHARACTER_REFERENCE_NOT_UNIQUE"
+        : "ANIMATION_FIXED_CHARACTER_REFERENCE_MISSING",
+      path: "characterReferencePrompts",
+      reason,
+      visualGuardrails,
+      sourcePaths: ["visualGuardrails.fixedCharacterBoundary.characterName"]
+    }));
   }
   if (!fullText.includes(fixedName)) {
     mismatches.push(`animationPlan 未使用固定角色「${fixedName}」`);
+    details.push(animationProfileDiagnostic({
+      code: "ANIMATION_FIXED_CHARACTER_USAGE_MISSING",
+      path: "",
+      reason: `animationPlan 未使用固定角色「${fixedName}」`,
+      visualGuardrails,
+      sourcePaths: ["visualGuardrails.fixedCharacterBoundary.characterName"]
+    }));
   }
-  const missingRequiredTraits = findMissingGlobalCharacterTraits(referenceText, visualGuardrails?.fixedCharacterBoundary?.requiredTraits);
+  const missingRequiredTraits = fixedReferenceIndex === null
+    ? []
+    : findMissingGlobalCharacterTraits(
+      fixedReferenceText,
+      visualGuardrails?.fixedCharacterBoundary?.requiredTraits
+    );
   if (missingRequiredTraits.length) {
     mismatches.push(`角色参考提示词未沿用全局必需角色事实：${missingRequiredTraits.join("、")}`);
+    details.push(animationProfileDiagnostic({
+      code: "ANIMATION_FIXED_CHARACTER_REQUIRED_TRAITS_MISSING",
+      path: fixedReferencePath,
+      reason: `固定角色参考缺少全局必需角色事实：${missingRequiredTraits.join("、")}`,
+      visualGuardrails,
+      sourcePaths: ["visualGuardrails.fixedCharacterBoundary.requiredTraits"],
+      extra: { missingRequiredTraits }
+    }));
   }
-  const referenceHits = findFieldTermHits(referenceFields, protagonistLeakTerms);
+  const boundaryForbiddenTerms = collectGlobalCharacterForbiddenTerms(visualGuardrails);
+  const referenceHits = fixedReferenceIndex === null
+    ? []
+    : findFieldTermHits(fixedReferenceFields, boundaryForbiddenTerms);
   if (referenceHits.length) {
-    mismatches.push(`角色参考提示词混入原片表面身份或非用户设定身份：${formatFieldTermHits(referenceHits)}`);
+    mismatches.push(`固定角色参考提示词使用了签发禁止特征：${formatFieldTermHits(referenceHits)}`);
+    referenceHits.forEach((hit) => {
+      details.push(animationProfileDiagnostic({
+        code: "ANIMATION_CHARACTER_REFERENCE_FORBIDDEN_TERM",
+        path: hit.path,
+        reason: `角色参考提示词包含禁止特征：${hit.term}`,
+        visualGuardrails,
+        sourcePaths: ["visualGuardrails.fixedCharacterBoundary.forbiddenTraits"],
+        extra: { matchedTerm: hit.term }
+      }));
+    });
   }
-  const positiveHits = [
-    ...findFieldTermHits(strictPositiveFields, visibleLeakTerms),
-    ...findFieldTermHits(rulePositiveFields, visibleLeakTerms, { allowNegativeContext: true })
-  ];
-  if (positiveHits.length) {
-    mismatches.push(`正向画面提示词复用了禁止表面表达：${formatFieldTermHits(positiveHits)}`);
+  const structuredFixedCharacterHits = findFieldTermHits(
+    collectAnimationStructuredFixedCharacterFields(value, fixedCharacterName),
+    boundaryForbiddenTerms
+  );
+  if (structuredFixedCharacterHits.length) {
+    mismatches.push(
+      `固定角色镜头字段使用了签发禁止特征：${formatFieldTermHits(structuredFixedCharacterHits)}`
+    );
+    structuredFixedCharacterHits.forEach((hit) => {
+      details.push(animationProfileDiagnostic({
+        code: "ANIMATION_FIXED_CHARACTER_FORBIDDEN_TERM",
+        path: hit.path,
+        reason: `固定角色镜头字段包含禁止特征：${hit.term}`,
+        visualGuardrails,
+        sourcePaths: ["visualGuardrails.fixedCharacterBoundary.forbiddenTraits"],
+        extra: { matchedTerm: hit.term }
+      }));
+    });
   }
-  if (mismatches.length) throw new OutputContractError(`animationPlan 未锁定固定角色：${mismatches.join("；")}`);
+  if (mismatches.length) {
+    throw new OutputContractError(
+      `animationPlan 未锁定固定角色：${mismatches.join("；")}`,
+      details
+    );
+  }
   return ensureAnimationPlanNegativePrompts(value, semanticContext);
+}
+
+function animationProfileDiagnostic({
+  code,
+  path,
+  reason,
+  visualGuardrails,
+  sourcePaths = [],
+  extra = {}
+}) {
+  const boundary = visualGuardrails?.fixedCharacterBoundary || {};
+  return {
+    code,
+    path,
+    jsonPointer: animationProfileJsonPointer(path),
+    reason,
+    authority: {
+      sourcePaths,
+      characterName: String(boundary.characterName || ""),
+      boundaryDigest: String(boundary.boundaryDigest || "")
+    },
+    ...extra
+  };
+}
+
+function animationProfileJsonPointer(path) {
+  const source = String(path || "");
+  if (!source) return "";
+  const tokens = [];
+  const pattern = /(?:^|\.)([^.\[\]]+)|\[(\d+)\]/gu;
+  let consumed = 0;
+  for (const match of source.matchAll(pattern)) {
+    if (match.index !== consumed) return "";
+    const token = match[1] ?? match[2];
+    if (["__proto__", "prototype", "constructor"].includes(token)) return "";
+    tokens.push(token);
+    consumed = match.index + match[0].length;
+  }
+  if (!tokens.length || consumed !== source.length) return "";
+  return `/${tokens
+    .map((token) => String(token).replaceAll("~", "~0").replaceAll("/", "~1"))
+    .join("/")}`;
 }
 
 export function ensureCharacterReferenceMatchesBoundary(value, visualGuardrails = null) {
@@ -1918,10 +2091,12 @@ export function ensureCharacterReferenceMatchesBoundary(value, visualGuardrails 
 
 export function ensureCharacterPromptMatchesBoundary(text, visualGuardrails = null, {
   characterName = "",
-  requireRequiredTraits = true
+  requireRequiredTraits = true,
+  promptScope = "fixed_character"
 } = {}) {
   const boundary = visualGuardrails?.fixedCharacterBoundary;
   if (!boundary) return text;
+  if (promptScope === "multi_character") return text;
   if (characterName && String(characterName).trim() !== String(boundary.characterName || "").trim()) return text;
   const value = String(text || "");
   const forbiddenHits = findTerms(value, collectGlobalCharacterForbiddenTerms(visualGuardrails), {
@@ -2369,10 +2544,29 @@ const protectedTermStopWords = new Set([
 ]);
 
 function validateNarrativeComponents(components) {
-  const required = ["送达任务", "旅途结构", "情感媒介", "获得帮助", "被关爱对象", "天气或空间推动情绪", "生活化或仪式化结尾"];
-  const present = new Set(components.map((item) => item?.component));
+  const required = CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS;
+  const names = components.map((item) => item?.component);
+  const present = new Set(names);
   const missing = required.filter((name) => !present.has(name));
   if (missing.length) throw new OutputContractError(`creativeBrief 未逐项评估可复用叙事构件：${missing.join("、")}`);
+  const unexpected = [...present].filter((name) => !required.includes(name));
+  if (unexpected.length) {
+    throw new OutputContractError(`creativeBrief.allowedNarrativeComponents 使用了非服务端签发分类：${unexpected.join("、")}`);
+  }
+  const duplicates = names.filter((name, index) => names.indexOf(name) !== index);
+  if (duplicates.length) {
+    throw new OutputContractError(`creativeBrief.allowedNarrativeComponents 重复分类：${[...new Set(duplicates)].join("、")}`);
+  }
+  components.forEach((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new OutputContractError(`creativeBrief.allowedNarrativeComponents[${index}] 必须是对象`);
+    }
+    if (typeof item.howToReuseSafely !== "string" || !item.howToReuseSafely.trim()) {
+      throw new OutputContractError(
+        `creativeBrief.allowedNarrativeComponents[${index}].howToReuseSafely 必须填写非空评估`
+      );
+    }
+  });
 }
 
 function validateProtectedExpressions(items) {
@@ -2412,6 +2606,19 @@ export function collectForbiddenVisualTerms(brief, fixedProfile = "", visualGuar
   for (const term of collectVisualGuardrailForbiddenTerms(visualGuardrails, fixedProfile)) terms.add(term);
   for (const term of collectGlobalCharacterForbiddenTerms(visualGuardrails)) terms.add(term);
   return [...terms].filter(Boolean);
+}
+
+export function collectAnimationReferenceForbiddenTermSourcePaths(
+  rawTerm,
+  _brief,
+  _fixedProfile = "",
+  visualGuardrails = null
+) {
+  const term = String(rawTerm || "").trim();
+  if (!term) return [];
+  return collectGlobalCharacterForbiddenTerms(visualGuardrails).includes(term)
+    ? ["visualGuardrails.fixedCharacterBoundary.forbiddenTraits"]
+    : [];
 }
 
 export function collectVisualGuardrailForbiddenTerms(visualGuardrails, fixedProfile = "") {
@@ -2535,6 +2742,75 @@ function escapeRegExpLiteral(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
+function collectFullStoryStrictPositiveFields(value = {}) {
+  const fields = [];
+  pushField(fields, "title", value.title);
+  pushField(fields, "oneLinePremise", value.oneLinePremise);
+  pushField(fields, "shootingSynopsis", value.shootingSynopsis);
+
+  const protagonist = value.characterBible?.protagonist || {};
+  pushField(fields, "characterBible.protagonist.name", protagonist.name);
+  pushField(fields, "characterBible.protagonist.identity", protagonist.identity);
+  pushArrayFields(fields, "characterBible.protagonist.traits", protagonist.traits);
+  pushArrayFields(fields, "characterBible.protagonist.signatureBehaviors", protagonist.signatureBehaviors);
+
+  const careRecipient = value.characterBible?.careRecipient || {};
+  for (const field of ["nameOrLabel", "identity", "explicitNeed", "implicitNeed", "relationshipToProtagonist"]) {
+    pushField(fields, `characterBible.careRecipient.${field}`, careRecipient[field]);
+  }
+  (value.characterBible?.helpers || []).forEach((helper, helperIndex) => {
+    for (const field of ["nameOrLabel", "functionInStory", "relationshipToProtagonist", "helpingAction"]) {
+      pushField(fields, `characterBible.helpers[${helperIndex}].${field}`, helper?.[field]);
+    }
+  });
+
+  (value.beatSheet || []).forEach((beat, beatIndex) => {
+    pushField(fields, `beatSheet[${beatIndex}].storyAction`, beat?.storyAction);
+  });
+  (value.sceneScript || []).forEach((scene, sceneIndex) => {
+    pushField(fields, `sceneScript[${sceneIndex}].location`, scene?.location);
+    pushArrayFields(fields, `sceneScript[${sceneIndex}].characters`, scene?.characters);
+    pushField(fields, `sceneScript[${sceneIndex}].visibleAction`, scene?.visibleAction);
+    (scene?.dialogue || []).forEach((dialogue, dialogueIndex) => {
+      for (const field of ["speaker", "line", "deliveryOrSubtext"]) {
+        pushField(fields, `sceneScript[${sceneIndex}].dialogue[${dialogueIndex}].${field}`, dialogue?.[field]);
+      }
+    });
+    pushField(fields, `sceneScript[${sceneIndex}].shotAndSound`, scene?.shotAndSound);
+  });
+  (value.keyProps || []).forEach((item, itemIndex) => {
+    pushField(fields, `keyProps[${itemIndex}].prop`, item?.prop);
+    pushField(fields, `keyProps[${itemIndex}].storyFunction`, item?.storyFunction);
+    pushField(fields, `keyProps[${itemIndex}].visualUse`, item?.visualUse);
+  });
+  (value.shootingPlan || []).forEach((item, itemIndex) => {
+    pushField(fields, `shootingPlan[${itemIndex}].unit`, item?.unit);
+    pushField(fields, `shootingPlan[${itemIndex}].setup`, item?.setup);
+    pushField(fields, `shootingPlan[${itemIndex}].mustCapture`, item?.mustCapture);
+  });
+  (value.retentionPlan || []).forEach((item, itemIndex) => {
+    pushField(fields, `retentionPlan[${itemIndex}].moment`, item?.moment);
+    pushField(fields, `retentionPlan[${itemIndex}].viewerQuestion`, item?.viewerQuestion);
+    pushField(fields, `retentionPlan[${itemIndex}].payoff`, item?.payoff);
+  });
+  return fields;
+}
+
+function collectFullStoryRuleFields(value = {}) {
+  const fields = [];
+  pushField(fields, "characterBible.protagonist.speechRules", value.characterBible?.protagonist?.speechRules);
+  (value.sceneScript || []).forEach((scene, sceneIndex) => {
+    pushField(fields, `sceneScript[${sceneIndex}].shootingNotes`, scene?.shootingNotes);
+  });
+  (value.shootingPlan || []).forEach((item, itemIndex) => {
+    pushField(fields, `shootingPlan[${itemIndex}].practicalNote`, item?.practicalNote);
+  });
+  pushField(fields, "dialogueStyleGuide.overallTone", value.dialogueStyleGuide?.overallTone);
+  pushField(fields, "dialogueStyleGuide.protagonistSpeechRule", value.dialogueStyleGuide?.protagonistSpeechRule);
+  pushField(fields, "dialogueStyleGuide.supportingCharactersSpeechRule", value.dialogueStyleGuide?.supportingCharactersSpeechRule);
+  return fields;
+}
+
 function collectAnimationReferenceFields(value = {}) {
   const fields = [];
   (value.characterReferencePrompts || []).forEach((item, index) => {
@@ -2543,6 +2819,26 @@ function collectAnimationReferenceFields(value = {}) {
     pushField(fields, `characterReferencePrompts[${index}].identity`, item?.identity);
     pushField(fields, `characterReferencePrompts[${index}].appearancePrompt`, item?.appearancePrompt);
     pushArrayFields(fields, `characterReferencePrompts[${index}].consistencyTags`, item?.consistencyTags);
+  });
+  return fields;
+}
+
+function collectAnimationStructuredFixedCharacterFields(value = {}, fixedCharacterName = "") {
+  const fields = [];
+  const expectedName = String(fixedCharacterName || "").trim();
+  if (!expectedName) return fields;
+  (value.shotPlan || []).forEach((shot, shotIndex) => {
+    if (!hasStructuredAnimationShotFields(shot)) return;
+    for (const frameField of ["startFrame", "endFrame"]) {
+      const frame = shot?.[frameField];
+      (frame?.characters || []).forEach((character, characterIndex) => {
+        if (String(character?.name || "").trim() !== expectedName) return;
+        const path = `shotPlan[${shotIndex}].${frameField}.characters[${characterIndex}]`;
+        animationFrameCharacterFields.forEach((field) => {
+          pushField(fields, `${path}.${field}`, character?.[field]);
+        });
+      });
+    }
   });
   return fields;
 }

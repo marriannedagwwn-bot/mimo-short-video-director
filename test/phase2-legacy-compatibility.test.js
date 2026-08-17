@@ -7,6 +7,7 @@ import {
 } from "../src/cast-api.js";
 import { CastPipelineDisabledError } from "../src/cast-errors.js";
 import { CastOrchestrationService } from "../src/cast-orchestration.js";
+import { FULL_STORY_BEAT_SCENE_POSTPASS_SCHEMA_VERSION } from "../src/full-story-beat-scene-postpass.js";
 import { mockBrief, mockFullStory, mockReconstruction } from "../src/mock.js";
 import {
   groundingContextDigest,
@@ -86,17 +87,39 @@ test("Phase 2 feature flag 默认关闭且只能显式启用", () => {
   }
 });
 
-test("当前 legacy Full Story 正常路径仍只调用一次 provider 且成功 wire shape 不变", async () => {
+test("当前 legacy Full Story 正常路径使用同一 provider 完成生成与 postpass，且成功 wire shape 不变", async () => {
   let providerCalls = 0;
+  const providerRequests = [];
   const expectedStory = mockFullStory({
     ...context,
     referenceAnalysis: {},
     sourceScriptReconstruction: {}
   });
+  const passPostpass = {
+    schemaVersion: FULL_STORY_BEAT_SCENE_POSTPASS_SCHEMA_VERSION,
+    status: "pass",
+    reviews: expectedStory.beatSheet.map((beat, beatIndex) => ({
+      beatIndex,
+      beat: beat.beat,
+      sceneIds: [expectedStory.sceneScript[beatIndex].sceneId],
+      verdict: "pass",
+      issueCode: "none",
+      beatEvidence: "",
+      sceneEvidence: "",
+      nextStateEvidence: "",
+      reason: "",
+      completionId: ""
+    })),
+    completions: []
+  };
   const workflow = new WorkflowService({
     storyClient: {
-      async generateJson() {
+      async generateJson(request) {
         providerCalls += 1;
+        providerRequests.push(request);
+        if (request.prompt.includes(FULL_STORY_BEAT_SCENE_POSTPASS_SCHEMA_VERSION)) {
+          return structuredClone(passPostpass);
+        }
         return structuredClone(expectedStory);
       }
     }
@@ -113,7 +136,10 @@ test("当前 legacy Full Story 正常路径仍只调用一次 provider 且成功
     creativeBrief
   }));
 
-  assert.equal(providerCalls, 1);
+  assert.equal(providerCalls, 2);
+  assert.equal(providerRequests.length, 2);
+  assert.equal(providerRequests[0].model, providerRequests[1].model);
+  assert.match(providerRequests[1].prompt, /待审完整 Full Story JSON（这是本次唯一业务输入）/u);
   assert.deepEqual(result, expectedStory);
   assert.deepEqual(Object.keys(result), Object.keys(expectedStory));
 });

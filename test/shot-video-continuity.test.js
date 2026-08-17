@@ -15,6 +15,7 @@ import {
 } from "../public/shot-video-continuity.js";
 import {
   resolveAuthoritativeShotVideoInput,
+  resolveAuthoritativeShotVideoReferenceAssets,
   resolvePreviousShotFrameReference,
   SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
 } from "../src/shot-video-continuity.js";
@@ -68,6 +69,47 @@ test("视频生成只从当前 Plan 解析 exact shot，运行时只允许显式
     currentShotId: "A02",
     selectedVariantId: "V2"
   }), /主题变体/u);
+});
+
+test("character_reference 只能绑定当前签发 Plan 的 exact 角色图，服务端保留来源不能伪造", () => {
+  const signedDataUrl = "data:image/png;base64,c2lnbmVk";
+  const plan = {
+    characterReferencePrompts: [{
+      characterName: "小白子",
+      referenceImageDataUrl: signedDataUrl
+    }]
+  };
+  const resolved = resolveAuthoritativeShotVideoReferenceAssets([{
+    mediaType: "image",
+    name: "客户端自报名称",
+    dataUrl: signedDataUrl,
+    source: "character_reference"
+  }, {
+    mediaType: "image",
+    name: "普通氛围参考",
+    dataUrl: "data:image/png;base64,d2Vhaw==",
+    source: "upload"
+  }], plan);
+  assert.equal(resolved[0].sourceCharacterName, "小白子");
+  assert.equal(resolved[0].name, "小白子参考图");
+  assert.equal(resolved[1].source, "upload");
+
+  assert.throws(
+    () => resolveAuthoritativeShotVideoReferenceAssets([{
+      mediaType: "image",
+      dataUrl: "data:image/png;base64,Zm9yZ2Vk",
+      source: "character_reference"
+    }], plan),
+    /不属于当前签发 Animation Plan/u
+  );
+  assert.throws(
+    () => resolveAuthoritativeShotVideoReferenceAssets([{
+      mediaType: "image",
+      dataUrl: signedDataUrl,
+      source: "previous_shot_frame"
+    }], plan),
+    /服务端保留来源/u
+  );
 });
 
 test("上一业务镜头按当前 Plan 顺序解析，结果状态按 variant 隔离", () => {
@@ -222,8 +264,8 @@ test("上一镜每秒抽帧作为 reference_image，并把精确源 lineage 写�
   await Promise.all([
     fs.writeFile(configPath, JSON.stringify({
       videoEndpoint: "https://provider.invalid/video",
-      providerPreset: "minimax_h3_video_generation",
-      videoModel: "MiniMax-H3",
+      providerPreset: "modelark_content_generation",
+      videoModel: "doubao-seedance-2-0-260128",
       apiKey: "test-key"
     })),
     fs.writeFile(sourcePath, Buffer.alloc(32, 2))
@@ -234,8 +276,8 @@ test("上一镜每秒抽帧作为 reference_image，并把精确源 lineage 写�
     configPath,
     outputRoot: path.join(root, "generated-videos"),
     publicBasePath: "/generated-videos/test",
-    videoProvider: "MiniMax",
-    videoModel: "MiniMax-H3",
+    videoProvider: "Seedance",
+    videoModel: "doubao-seedance-2-0-260128",
     generationMode: "all_reference",
     continuityReferenceMode: SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES,
     trustedPreviousShotReference: trustedPreviousShotReference(sourcePath),
@@ -291,8 +333,8 @@ test("上一镜抽帧计入合并后的 9 图上限，不能静默挤掉既有�
   await Promise.all([
     fs.writeFile(configPath, JSON.stringify({
       videoEndpoint: "https://provider.invalid/video",
-      providerPreset: "minimax_h3_video_generation",
-      videoModel: "MiniMax-H3",
+      providerPreset: "modelark_content_generation",
+      videoModel: "doubao-seedance-2-0-260128",
       apiKey: "test-key"
     })),
     fs.writeFile(sourcePath, Buffer.alloc(32, 2))
@@ -305,8 +347,8 @@ test("上一镜抽帧计入合并后的 9 图上限，不能静默挤掉既有�
   await assert.rejects(() => generateShotVideo({
     configPath,
     outputRoot: path.join(root, "generated-videos"),
-    videoProvider: "MiniMax",
-    videoModel: "MiniMax-H3",
+    videoProvider: "Seedance",
+    videoModel: "doubao-seedance-2-0-260128",
     generationMode: "all_reference",
     continuityReferenceMode: SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES,
     trustedPreviousShotReference: trustedPreviousShotReference(sourcePath),
@@ -329,8 +371,8 @@ test("同一镜头的并发视频请求使用不可碰撞的输出文件名", as
   const configPath = path.join(root, "provider.json");
   await fs.writeFile(configPath, JSON.stringify({
     videoEndpoint: "https://provider.invalid/video",
-    providerPreset: "minimax_h3_video_generation",
-    videoModel: "MiniMax-H3",
+    providerPreset: "modelark_content_generation",
+    videoModel: "doubao-seedance-2-0-260128",
     apiKey: "test-key"
   }));
   const options = {
@@ -338,8 +380,8 @@ test("同一镜头的并发视频请求使用不可碰撞的输出文件名", as
     outputRoot: path.join(root, "generated-videos"),
     publicBasePath: "/generated-videos/test",
     filenamePrefix: "animationPlan-V1-r1-abcdef123456",
-    videoProvider: "MiniMax",
-    videoModel: "MiniMax-H3",
+    videoProvider: "Seedance",
+    videoModel: "doubao-seedance-2-0-260128",
     generationMode: "all_reference",
     referenceAssets: [{
       mediaType: "image",

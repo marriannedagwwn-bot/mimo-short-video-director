@@ -166,10 +166,10 @@ test("server serializer keeps legacy status/message semantics while adding obser
     }]);
   });
 
-  await t.test("OutputContractError remains 502 with the compatibility prefix", () => {
+  await t.test("OutputContractError remains 502 with an accurate validation prefix", () => {
     const serialized = serializeServerError(new OutputContractError("缺少字段"));
     assert.equal(serialized.status, 502);
-    assert.equal(serialized.body.error, "模型输出不完整：缺少字段");
+    assert.equal(serialized.body.error, "模型输出未通过校验：缺少字段");
     assert.equal(serialized.body.code, "OUTPUT_CONTRACT_INVALID");
   });
 

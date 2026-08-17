@@ -1,0 +1,1101 @@
+{
+  "schemaVersion": "h3-semantic-audit-replay-fixture/1.0",
+  "fixtureId": "h3-semantic-audit-20260815",
+  "provenance": {
+    "capturedDate": "2026-08-15",
+    "description": "Sanitized projection of two independent MiniMax H3 initial Animation Plan attempts built from locally captured model content and signed upstream artifacts.",
+    "exactness": "Each cases[].shots[] object and cases[].legacyAuditOutput is copied exactly from the corresponding provider completion. Authority and Foundation data are intentionally projected to the semantic fields needed by this replay.",
+    "excluded": [
+      "model request prompts",
+      "HTTP request or response envelopes",
+      "headers",
+      "API keys and cookies",
+      "provider and production request identifiers",
+      "digests and signatures",
+      "Data URLs, Base64, and media"
+    ]
+  },
+  "authority": {
+    "fixedCharacterBoundary": {
+      "characterName": "小白子",
+      "canonicalDescription": "Q版狼耳少女，形象类似狼娘，活泼可爱，懂事，学生/村民，村里的热心帮手。",
+      "bodyForm": "Q版人类少女体型，带有狼耳和狼尾特征。",
+      "requiredTraits": [
+        {
+          "canonicalName": "狼耳",
+          "scope": "appearance",
+          "evidenceLevel": "explicit",
+          "terms": [
+            "狼耳",
+            "狼耳朵",
+            "兽耳"
+          ]
+        },
+        {
+          "canonicalName": "狼尾",
+          "scope": "appearance",
+          "evidenceLevel": "inferred",
+          "terms": [
+            "狼尾",
+            "狼尾巴",
+            "兽尾"
+          ]
+        },
+        {
+          "canonicalName": "活泼可爱",
+          "scope": "personality",
+          "evidenceLevel": "explicit",
+          "terms": [
+            "活泼可爱",
+            "可爱",
+            "活泼"
+          ]
+        },
+        {
+          "canonicalName": "懂事",
+          "scope": "personality",
+          "evidenceLevel": "explicit",
+          "terms": [
+            "懂事",
+            "乖巧",
+            "善解人意"
+          ]
+        },
+        {
+          "canonicalName": "学生或村民",
+          "scope": "identity",
+          "evidenceLevel": "explicit",
+          "terms": [
+            "学生或村民",
+            "学生",
+            "村民"
+          ]
+        },
+        {
+          "canonicalName": "村里的热心帮手",
+          "scope": "storyFunction",
+          "evidenceLevel": "explicit",
+          "terms": [
+            "村里的热心帮手",
+            "热心帮手",
+            "乐于助人"
+          ]
+        }
+      ],
+      "forbiddenTraits": [
+        {
+          "canonicalName": "企鹅装",
+          "scope": "appearance",
+          "terms": [
+            "企鹅装",
+            "企鹅服装",
+            "动物服"
+          ]
+        },
+        {
+          "canonicalName": "送信员",
+          "scope": "occupation",
+          "terms": [
+            "送信员",
+            "邮递员"
+          ]
+        }
+      ]
+    },
+    "sourceScenes": [
+      {
+        "sceneId": "S1",
+        "location": "金色麦田",
+        "characters": [
+          "小白子",
+          "老爷爷"
+        ],
+        "visibleAction": "小白子擦着汗把最后一捆麦子搬到谷堆旁，狼尾开心地左右摇摆，对老爷爷发出清脆的'嗷！'，老爷爷笑着摸摸她的头",
+        "dialogue": [
+          {
+            "speaker": "小白子",
+            "line": "嗷！",
+            "deliveryOrSubtext": "清脆上扬，配合双手叉腰和狼尾快速摇摆，表达开心和自豪"
+          }
+        ],
+        "shotAndSound": "开场空镜展现金色麦田在阳光下摇曳，镜头跟随小白子搬运麦子的动作，特写她擦汗和狼尾摇摆的细节，中景展现老爷爷摸头的温馨互动。背景音为夏日蝉鸣和麦浪沙沙声",
+        "shootingNotes": "新海诚风格光影，金色阳光洒在麦田上形成光晕效果，突出夏日午后的温暖氛围"
+      },
+      {
+        "sceneId": "S2",
+        "location": "田边大树下的草垛旁",
+        "characters": [
+          "小白子"
+        ],
+        "visibleAction": "小白子拖着疲惫的步伐走到草垛旁，打了个大大的哈欠，蜷缩在干草堆上，狼耳慢慢耷拉下来，发出软绵绵的'嗷呜……'，渐渐入睡",
+        "dialogue": [
+          {
+            "speaker": "小白子",
+            "line": "嗷呜……",
+            "deliveryOrSubtext": "绵长低沉，配合揉眼和狼耳耷拉，表达困倦"
+          }
+        ],
+        "shotAndSound": "镜头跟随小白子疲惫的步伐，中景展现她走向草垛，特写打哈欠和狼耳耷拉的过程，最后俯拍她蜷缩入睡的安详姿态。背景音渐弱，加入轻柔的风声",
+        "shootingNotes": "光影从明亮转为柔和，树荫投下斑驳光影，营造安静舒适的休息环境"
+      },
+      {
+        "sceneId": "S3",
+        "location": "田边大树下的草垛旁",
+        "characters": [
+          "小白子",
+          "扎辫子的小女孩",
+          "戴草帽的青年农夫",
+          "端茶的老奶奶"
+        ],
+        "visibleAction": "扎辫子的小女孩路过，轻手轻脚地把一顶手编草帽盖在小白子脸上遮阳；戴草帽的青年农夫放下一束刚采的野花在她枕边；端茶的老奶奶用薄棉布披在她肩上",
+        "dialogue": [
+          {
+            "speaker": "扎辫子的小女孩",
+            "line": "辛苦啦",
+            "deliveryOrSubtext": "轻声细语，对着睡着的小白子说，表达心疼和关怀"
+          }
+        ],
+        "shotAndSound": "三段式镜头：第一段中景展现小女孩放草帽，第二段中景展现青年农夫放野花，第三段中景展现老奶奶披棉布。每个动作都轻手轻脚，特写他们温柔的表情。背景音为轻柔的脚步声和布料摩擦声",
+        "shootingNotes": "每个帮助者出现时都有柔和的光线变化，突出他们的善意和细心"
+      },
+      {
+        "sceneId": "S6",
+        "location": "田边大树下的草垛旁",
+        "characters": [
+          "小白子"
+        ],
+        "visibleAction": "雨渐渐停了，阳光穿过芭蕉叶的缝隙洒在小白子脸上，她在梦中露出满足的微笑，狼尾轻轻卷住身边的野花，鼻尖冒出一个小小的鼻涕泡",
+        "dialogue": [
+          {
+            "speaker": "小白子",
+            "line": "嗷~",
+            "deliveryOrSubtext": "极轻的梦呓，配合嘴角上扬，表达满足"
+          }
+        ],
+        "shotAndSound": "特写阳光穿过叶缝形成光斑洒在小白子脸上，慢镜头展现她微笑和狼尾卷住野花的细节，最后镜头缓缓拉远展现整片金色麦田和彩虹。背景音为雨停后的鸟鸣和舒缓的音乐渐弱",
+        "shootingNotes": "光斑效果要柔和梦幻，鼻涕泡细节增加可爱度，结尾彩虹象征美好和希望的延续"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "caseId": "initial-h3-plan-attempt-1",
+      "foundationLocks": {
+        "visualBible": {
+          "overallStyle": "日系2.5D新海诚光影风格，治愈温情日常动画，柔和赛璐璐渲染结合体积光",
+          "animationStyle": "2.5D卡通渲染，Q版比例人物，细腻环境光影，微风动态植被，粒子光斑",
+          "colorPalette": [
+            "金黄色麦浪",
+            "暖橙夕阳",
+            "翠绿芭蕉叶",
+            "天蓝晴空",
+            "柔白棉布",
+            "淡紫野花"
+          ],
+          "lighting": "新海诚式黄金时段体积光，丁达尔效应穿透麦穗与树叶，雨景转为柔和漫射冷光，雨后阳光重新穿透叶隙形成斑驳光点",
+          "worldRules": [
+            "村庄自然环境，无现代城市元素",
+            "植被随风轻摆，麦浪呈波浪状起伏",
+            "天气系统：晴→乌云→阵雨→雨停阳光重现",
+            "所有角色比例统一为Q版（大头小身）",
+            "动物特征（狼耳狼尾）具有物理动态（随风、随情绪摆动）"
+          ],
+          "cameraLanguage": "以中近景和特写为主，缓推缓拉，偶尔低角度仰拍芭蕉叶帐篷，雨后使用俯拍光斑洒落",
+          "characterConsistencyRules": [
+            "小白子狼耳与狼尾在所有镜头中保持灰白色渐变",
+            "日常服装为浅蓝背带裙配白色短袖，全片不变",
+            "其他村民服装各自固定，不随镜头变化",
+            "Q版比例（头身比约1:1.5）全片统一"
+          ]
+        },
+        "characterReferencePrompts": [
+          {
+            "characterName": "小白子",
+            "storyRole": "主角，村里的热心帮手",
+            "identity": "Q版狼耳少女，学生/村民",
+            "appearancePrompt": "Q版狼耳少女，大头小身比例约1:1.5，灰白色渐变狼耳和蓬松狼尾，大眼睛圆润明亮，浅蓝背带裙搭配白色短袖衬衫，棕色小皮鞋，脸颊微红，活泼可爱表情",
+            "consistencyTags": [
+              "wolf ears gray-white gradient",
+              "fluffy wolf tail",
+              "light blue overall dress",
+              "white short-sleeve shirt",
+              "chibi proportions 1:1.5",
+              "rosy cheeks",
+              "big round eyes",
+              "懂事"
+            ],
+            "forbiddenChanges": [
+              "不得出现企鹅装或任何动物主题服装",
+              "不得改变狼耳狼尾颜色",
+              "不得变为写实人体比例",
+              "不得出现送信员/邮递员标识"
+            ]
+          },
+          {
+            "characterName": "老爷爷",
+            "storyRole": "村口种麦子的老人，接受帮助的邻居长辈",
+            "identity": "村庄老年农夫",
+            "appearancePrompt": "Q版慈祥老爷爷，光头微秃带白发边缘，圆脸皱纹微笑，棕色粗布背心搭米色长袖，手持麦穗，弯腰姿态温和",
+            "consistencyTags": [
+              "chibi old man",
+              "bald with white hair edges",
+              "brown vest",
+              "kind smile",
+              "farmer"
+            ],
+            "forbiddenChanges": [
+              "不得变为年轻形象",
+              "不得穿现代城市服装"
+            ]
+          },
+          {
+            "characterName": "扎辫子的小女孩",
+            "storyRole": "第一个发现小白子睡着并为其遮阳的村里小伙伴",
+            "identity": "村庄儿童",
+            "appearancePrompt": "Q版小女孩，双麻花辫，圆脸大眼，粉色碎花连衣裙，草编小凉鞋，表情温柔关切",
+            "consistencyTags": [
+              "chibi girl",
+              "twin braids",
+              "pink floral dress",
+              "gentle expression"
+            ],
+            "forbiddenChanges": [
+              "不得变为成年形象",
+              "不得更换发型或服装颜色"
+            ]
+          },
+          {
+            "characterName": "戴草帽的青年农夫",
+            "storyRole": "为小白子带来自然气息关怀的同村邻居",
+            "identity": "村庄青年劳动者",
+            "appearancePrompt": "Q版青年男性，草编宽檐帽，健康肤色，白色短袖粗布衫搭深绿长裤，手臂结实，微笑温和",
+            "consistencyTags": [
+              "chibi young man",
+              "straw hat wide brim",
+              "white rough cloth shirt",
+              "dark green pants",
+              "warm smile"
+            ],
+            "forbiddenChanges": [
+              "不得去掉草帽",
+              "不得穿现代服装"
+            ]
+          },
+          {
+            "characterName": "端茶的老奶奶",
+            "storyRole": "为小白子添暖的细心慈祥长辈",
+            "identity": "村庄老年女性",
+            "appearancePrompt": "Q版慈祥老奶奶，灰白短发盘髻，圆脸细纹微笑，深蓝碎花围裙搭米色长袖，手持托盘或布料，体态微弯温和",
+            "consistencyTags": [
+              "chibi old woman",
+              "gray hair bun",
+              "dark blue floral apron",
+              "kind gentle expression"
+            ],
+            "forbiddenChanges": [
+              "不得变为年轻形象",
+              "不得更换围裙花色"
+            ]
+          }
+        ],
+        "sceneReferencePrompts": [
+          {
+            "sceneId": "LOC01",
+            "sourceSceneIds": [
+              "S1"
+            ],
+            "sceneName": "金色麦田",
+            "storyFunction": "建立主角完成帮助任务的状态，展现劳动成果与满足感",
+            "environmentPrompt": "广阔金黄色麦田，麦穗饱满低垂，远处连绵青山，田埂泥土小路，谷堆草垛散落，黄金时段斜阳，丁达尔光穿透麦穗间隙，微风麦浪起伏，16:9宽幅构图",
+            "continuityAnchors": [
+              "麦田金黄色调",
+              "谷堆位置固定",
+              "夕阳方向从画面右侧射入"
+            ]
+          },
+          {
+            "sceneId": "LOC02",
+            "sourceSceneIds": [
+              "S2",
+              "S3",
+              "S4",
+              "S5",
+              "S6"
+            ],
+            "sceneName": "田边大树下的草垛旁",
+            "storyFunction": "主角休息场所，承载被关怀、天气变化、集体保护和安心熟睡的完整情感弧光",
+            "environmentPrompt": "麦田边缘一棵大榕树，树冠浓密投下阴凉，树干粗壮有藤蔓，树下干草垛堆叠柔软，地面零星野花小草，远处可见麦田与村庄轮廓，光影随天气变化：晴时斑驳树影→乌云遮顶冷调→雨中芭蕉叶帐篷→雨后阳光穿透叶隙光斑，16:9宽幅构图",
+            "continuityAnchors": [
+              "大榕树位置与形态固定",
+              "草垛形状与位置固定",
+              "天气渐变连贯（晴→阴→雨→晴）",
+              "芭蕉叶帐篷在S4搭建后持续存在至S6"
+            ]
+          }
+        ],
+        "assetPrompts": [
+          {
+            "assetName": "手编草帽",
+            "storyFunction": "为小白子遮阳，体现小女孩的细心照顾",
+            "imagePrompt": "手工编织天然麦秆草帽，圆顶宽檐，编织纹理清晰，边缘微微不规则体现手工质感，柔和自然色调",
+            "consistencyTags": [
+              "handwoven straw hat",
+              "wheat stalk material",
+              "wide brim",
+              "natural tone"
+            ],
+            "avoidSimilarityNote": "使用手编草帽而非原片白毯子，材质和功能完全不同"
+          },
+          {
+            "assetName": "一束野花",
+            "storyFunction": "为小白子带来自然气息和惊喜",
+            "imagePrompt": "一小束田野野花，淡紫色与白色小花混搭，绿色细茎用麻绳简单扎在一起，花瓣带露珠，自然清新",
+            "consistencyTags": [
+              "wildflower bouquet",
+              "lavender and white small flowers",
+              "hemp string tied",
+              "dewdrops on petals"
+            ],
+            "avoidSimilarityNote": "使用野花而非原片橘子，从食物改为自然植物"
+          },
+          {
+            "assetName": "薄棉布",
+            "storyFunction": "为小白子保暖防止着凉",
+            "imagePrompt": "轻薄柔白棉布，略有褶皱体现织物柔软质感，边缘有简单手工缝线，半透明质感，温暖柔和",
+            "consistencyTags": [
+              "thin white cotton cloth",
+              "soft wrinkles",
+              "hand-stitched edges",
+              "semi-transparent"
+            ],
+            "avoidSimilarityNote": "使用薄棉布而非原片白毯子，颜色和材质都有区别"
+          },
+          {
+            "assetName": "大芭蕉叶",
+            "storyFunction": "集体遮雨，形成叶子帐篷",
+            "imagePrompt": "大片翠绿芭蕉叶，叶脉清晰，表面有雨珠滚动，边缘自然弧度，鲜绿饱满，三片组合围成帐篷形态",
+            "consistencyTags": [
+              "large banana leaf",
+              "emerald green",
+              "visible leaf veins",
+              "raindrops on surface",
+              "natural curve"
+            ],
+            "avoidSimilarityNote": "使用芭蕉叶而非原片雨伞，从人造工具改为自然材料"
+          },
+          {
+            "assetName": "麦捆",
+            "storyFunction": "体现小白子帮助收割的劳动成果",
+            "imagePrompt": "金黄色麦穗捆扎成束，麻绳绑扎，麦粒饱满，穗头微垂，整齐码放在谷堆旁",
+            "consistencyTags": [
+              "wheat bundle",
+              "golden yellow",
+              "hemp rope tied",
+              "plump grains"
+            ],
+            "avoidSimilarityNote": "新增农活道具，与原片无任何关联"
+          }
+        ]
+      },
+      "shots": [
+        {
+          "shotId": "A01",
+          "sourceSceneId": "S1",
+          "sceneId": "LOC01",
+          "durationSeconds": 5,
+          "storyPurpose": "建立小白子完成帮助收割任务后的满足与自豪状态",
+          "emotionalTarget": "兴奋/满足",
+          "videoPrompt": "integrated_multimodal_description: [Shot 1] In a Makoto Shinkai-inspired 2.5D anime style with golden-hour volumetric lighting and Tyndall rays piercing through wheat stalks, a wide shot reveals a vast golden wheat field swaying gently in the breeze, with distant green mountains and a dirt path along the ridge. The camera slowly pushes in to a medium shot following Xiaobaizi, a chibi wolf-eared girl (1:1.5 head-to-body ratio, gray-white gradient wolf ears, fluffy wolf tail, light blue overall dress over white short-sleeve shirt, brown shoes, rosy cheeks), as she wipes sweat from her forehead with one hand and drags the last golden wheat bundle tied with hemp rope toward a stacked grain pile. Her wolf tail wags rapidly side to side in joy. She plants her hands on her hips proudly, turns to the chibi bald elderly farmer (brown vest, beige long sleeves, kind smile) standing beside the pile, and says <d>[Chinese] 嗷！</d> with a bright upward tone. The old man smiles warmly and gently pats her head. The wheat bundles remain neatly stacked, and the golden sunlight maintains its right-side direction throughout.\noverall_soundscape: Cicadas hum steadily in the summer heat, wheat stalks rustle softly in the breeze, footsteps crunch on dry earth, and fabric rustles as Xiaobaizi moves.\nnon_diegetic_music: A gentle fingerpicked acoustic guitar melody with soft piano single notes plays at a relaxed tempo, conveying warmth and satisfaction.",
+          "cameraMotion": "开场宽景展现金色麦田全貌，缓推至中景跟随小白子搬运麦捆，特写擦汗与狼尾摇摆细节，最终中景呈现老爷爷摸头互动",
+          "characterAction": "小白子擦汗→拖拽最后一捆麦子到谷堆旁→狼尾快速左右摇摆→双手叉腰→对老爷爷发出清脆'嗷！'→老爷爷笑着摸她的头",
+          "dialogueOrSubtitle": "小白子：嗷！",
+          "soundDesign": "夏日蝉鸣持续，麦浪沙沙声，脚步踩干土声，布料摩擦声；音乐为轻柔吉他指弹配钢琴单音",
+          "continuityNotes": "麦田金黄色调与谷堆位置固定，夕阳从画面右侧射入；小白子服装与狼耳狼尾灰白渐变全镜头一致；老爷爷仅在S1出现",
+          "negativePrompts": {
+            "image": [],
+            "video": [
+              {
+                "text": "penguin costume, animal suit, green/red/blue mailbox, white blanket, orange fruit, umbrella, city street, modern urban elements",
+                "appliesTo": "video",
+                "triggerEvidence": [
+                  {
+                    "sourcePath": "creativeBrief.protectedExpressions",
+                    "evidence": "禁止使用原片独特道具组合与场景"
+                  }
+                ],
+                "reasonCode": "reference_leak",
+                "priority": "high",
+                "enabled": true
+              }
+            ]
+          },
+          "acceptanceCriteria": [
+            "小白子完成擦汗→搬运麦捆→叉腰→对老爷爷叫'嗷！'的完整动作链，狼尾持续快速摇摆",
+            "老爷爷在镜头后半段出现并摸小白子的头，两人互动温馨自然",
+            "金色麦田场景与新海诚式丁达尔光影贯穿全镜头，夕阳方向始终从右侧射入"
+          ]
+        },
+        {
+          "shotId": "A02",
+          "sourceSceneId": "S2",
+          "sceneId": "LOC02",
+          "durationSeconds": 6,
+          "storyPurpose": "展现小白子因劳动疲惫而进入休息状态，为后续被关怀做铺垫",
+          "emotionalTarget": "放松/困倦",
+          "videoPrompt": "integrated_multimodal_description: [Shot 1] In a Makoto Shinkai-inspired 2.5D anime style, the lighting transitions from bright golden-hour to soft dappled shade beneath a large banyan tree at the edge of the wheat field. A medium tracking shot follows Xiaobaizi (chibi wolf-eared girl, gray-white gradient wolf ears now drooping slightly, fluffy wolf tail hanging low, light blue overall dress, white short-sleeve shirt, brown shoes, rosy cheeks fading to sleepy pallor) as she drags her feet with heavy steps along the dirt path toward a soft haystack piled against the tree trunk. She yawns widely, rubbing her eyes with both fists. [Shot 2] At 00:03.000, the camera cuts to a close-up of her face as her wolf ears slowly droop down flat, and she murmurs <d>[Chinese] 嗷呜……</d> in a long, low, drowsy tone. [Shot 3] At 00:05.000, the camera shifts to a high-angle overhead shot as she curls up into a small ball on the dry haystack, her wolf tail wrapping loosely around her body, eyes closing peacefully. Dappled tree shadows play gently across her form. The banyan tree, haystack, and scattered wildflowers on the ground remain fixed throughout.\noverall_soundscape: Footsteps slow and soften on grass, a long yawn, quiet fabric rustling against dry hay, gentle wind through banyan leaves, distant cicadas fading.\nnon_diegetic_music: The acoustic guitar melody slows further, piano notes become sparser and softer, fading toward silence as she falls asleep.",
+          "cameraMotion": "中景跟随小白子疲惫步伐走向草垛→硬切至面部特写展现狼耳耷拉与打哈欠→硬切至俯拍全景展现蜷缩入睡姿态",
+          "characterAction": "小白子拖步走向草垛→打大哈欠揉眼→狼耳慢慢耷拉→发出绵长'嗷呜……'→蜷缩在干草堆上→狼尾松散环绕身体→闭眼入睡",
+          "dialogueOrSubtitle": "小白子：嗷呜……",
+          "soundDesign": "脚步渐缓变轻，哈欠声，布料与干草摩擦声，榕树叶微风声，远处蝉鸣渐弱；音乐逐渐稀疏轻柔至近静音",
+          "continuityNotes": "大榕树与草垛位置固定，光影从明亮转为斑驳树荫；小白子服装与狼耳狼尾颜色保持一致；此镜头结束时小白子已入睡，为S3关怀镜头提供起始状态",
+          "negativePrompts": {
+            "image": [],
+            "video": [
+              {
+                "text": "penguin costume, animal suit, white blanket, orange fruit, umbrella, city elements, modern furniture, rocking chair, small stool",
+                "appliesTo": "video",
+                "triggerEvidence": [
+                  {
+                    "sourcePath": "creativeBrief.protectedExpressions",
+                    "evidence": "禁止使用原片场景与道具"
+                  }
+                ],
+                "reasonCode": "reference_leak",
+                "priority": "high",
+                "enabled": true
+              }
+            ]
+          },
+          "acceptanceCriteria": [
+            "小白子完成拖步→打哈欠揉眼→狼耳耷拉→蜷缩入睡的完整疲惫动作链，表情从疲倦过渡到安详",
+            "三次内部摄影切换（中景跟随→面部特写→俯拍）按时间顺序命中，切点分别在约3秒和5秒处",
+            "大榕树、草垛与斑驳树荫环境贯穿全镜头，光影柔和过渡无跳变"
+          ]
+        },
+        {
+          "shotId": "A03",
+          "sourceSceneId": "S3",
+          "sceneId": "LOC02",
+          "durationSeconds": 6,
+          "storyPurpose": "展现村民们轮流关怀的温暖",
+          "emotionalTarget": "温馨/安心",
+          "videoPrompt": "integrated_multimodal_description: [Shot 1] In a Makoto Shinkai-inspired 2.5D anime style with soft dappled shade beneath the large banyan tree, a medium shot shows Xiaobaizi (chibi wolf-eared girl, gray-white gradient wolf ears drooping, fluffy wolf tail curled loosely around her body, light blue overall dress, white short-sleeve shirt, brown shoes, rosy cheeks) sleeping peacefully on the haystack. A chibi girl with twin braids and pink floral dress approaches quietly from the left, gently places a handwoven straw hat over Xiaobaizi's face to block the sun, and whispers <d>[Chinese] 辛苦啦</d> before stepping back. [Shot 2] At 00:02.500, the camera cuts to a medium shot from the right as a chibi young man wearing a wide-brim straw hat, white rough cloth shirt, and dark green pants kneels down and carefully places a small bouquet of lavender and white wildflowers tied with hemp string near Xiaobaizi's pillow, smiling warmly. [Shot 3] At 00:04.500, the camera cuts to a medium shot as a chibi old woman with gray hair bun and dark blue floral apron drapes a thin white cotton cloth over Xiaobaizi's shoulders with gentle care. The banyan tree, haystack, and scattered wildflowers remain fixed throughout.\noverall_soundscape: Soft footsteps on grass, gentle fabric rustling against hay, quiet placement of objects, distant cicadas, light breeze through banyan leaves.\nnon_diegetic_music: A gentle acoustic guitar melody with sparse piano notes plays at a slow, soothing tempo, creating a warm and caring atmosphere.",
+          "cameraMotion": "中景展现小女孩放草帽→硬切至中景展现青年农夫放野花→硬切至中景展现老奶奶披棉布",
+          "characterAction": "小白子蜷缩在草垛上熟睡→小女孩轻手轻脚走来放草帽遮阳并轻声说话→青年农夫跪下放野花在枕边→老奶奶轻柔披上薄棉布",
+          "dialogueOrSubtitle": "扎辫子的小女孩：辛苦啦",
+          "soundDesign": "轻柔脚步声，布料与干草摩擦声，物品轻放声，远处蝉鸣，榕树叶微风声；音乐温柔舒缓",
+          "continuityNotes": "大榕树与草垛位置固定，光影为斑驳树荫；小白子服装与狼耳狼尾颜色保持一致；草帽、野花、棉布按顺序依次出现并保留在后续镜头中",
+          "negativePrompts": {
+            "image": [],
+            "video": []
+          },
+          "acceptanceCriteria": [
+            "小女孩、青年农夫、老奶奶按顺序依次出现并完成放草帽、放野花、披棉布的动作",
+            "小白子保持熟睡状态，狼耳耷拉、狼尾松散环绕身体",
+            "草帽盖在脸上、野花放在枕边、棉布披在肩上的最终状态清晰可见"
+          ]
+        },
+        {
+          "shotId": "A06",
+          "sourceSceneId": "S6",
+          "sceneId": "LOC02",
+          "durationSeconds": 6,
+          "storyPurpose": "情感收束，展现小白子在关爱中安心熟睡的满足与宁静",
+          "emotionalTarget": "宁静/满足",
+          "videoPrompt": "integrated_multimodal_description: [Shot 1] In a Makoto Shinkai-inspired 2.5D anime style, the lighting transitions from cool overcast to warm golden tones as rain stops and sunlight begins filtering through gaps between the banana leaves. A close-up shows dappled light spots gradually appearing on Xiaobaizi's face (chibi wolf-eared girl, gray-white gradient wolf ears, fluffy wolf tail, light blue overall dress, white short-sleeve shirt, handwoven straw hat tilted to side, thin white cotton cloth on shoulders). [Shot 2] At 00:02.500, the camera cuts to an extreme close-up in slow motion of Xiaobaizi's face as she smiles contentedly in her sleep, her wolf tail gently curling around the wildflower bouquet beside her, and a small semi-transparent bubble forming at her nose tip. She murmurs softly <d>[Chinese] 嗷~</d> with a peaceful expression. [Shot 3] At 00:05.000, the camera slowly pulls back to a wide shot revealing the entire golden wheat field with a rainbow arching across the sky, the banyan tree with the three villagers still holding banana leaves now lowered, and Xiaobaizi sleeping peacefully on the haystack bathed in warm sunlight. The scene holds with gentle breeze moving the wheat.\noverall_soundscape: Rain sounds gradually fading to silence, birds beginning to chirp, gentle breeze through wheat field, soft fabric rustling.\nnon_diegetic_music: The acoustic guitar and piano melody slows to a gentle, peaceful conclusion, notes becoming sparse and dreamlike as the scene fades.",
+          "cameraMotion": "阳光穿过叶缝光斑特写→硬切至小白子面部慢动作特写（微笑、狼尾卷花、鼻涕泡）→缓慢拉远至金色麦田全景含彩虹",
+          "characterAction": "阳光光斑逐渐出现在小白子脸上→小白子在梦中露出满足微笑，狼尾轻轻卷住身边野花，鼻尖冒出小鼻涕泡→画面拉远展现全景",
+          "dialogueOrSubtitle": "小白子：嗷~",
+          "soundDesign": "雨声渐弱至停止，鸟鸣声渐起，微风拂过麦田沙沙声；音乐渐缓趋于宁静收尾",
+          "continuityNotes": "天气从雨中转为雨后晴天；芭蕉叶帐篷仍存在但三人可能已放下叶片；小白子身上草帽、棉布、野花保持；大榕树与草垛位置固定；结尾出现彩虹",
+          "negativePrompts": {
+            "image": [],
+            "video": [
+              {
+                "text": "rain still falling heavily",
+                "appliesTo": "video",
+                "triggerEvidence": [
+                  {
+                    "sourcePath": "animationPlan.shotPlan.A06.videoPrompt",
+                    "evidence": "rain stops and sunlight begins filtering"
+                  }
+                ],
+                "reasonCode": "temporal_consistency_failure",
+                "priority": "high",
+                "enabled": true
+              },
+              {
+                "text": "bubble larger than nose tip or realistic mucus",
+                "appliesTo": "video",
+                "triggerEvidence": [
+                  {
+                    "sourcePath": "animationPlan.uncertainties",
+                    "evidence": "使用小而半透明的圆形气泡，直径不超过鼻尖"
+                  }
+                ],
+                "reasonCode": "shot_object_confusion",
+                "priority": "medium",
+                "enabled": true
+              }
+            ]
+          },
+          "acceptanceCriteria": [
+            "阳光光斑特写、面部慢动作特写（含微笑、狼尾卷花、鼻涕泡）、拉远全景三个内部摄影段按顺序呈现",
+            "小白子发出极轻的'嗷~'梦呓，配合满足微笑表情",
+            "结尾全景展现金色麦田与彩虹，完成情感收束"
+          ]
+        }
+      ],
+      "legacyAuditOutput": {
+        "verdict": "fail",
+        "issues": [
+          {
+            "category": "action_order",
+            "reason": "Shot A01: authoritativeSourceScene 与 exactShotFacts 要求小白子先擦汗、搬运麦捆、狼尾摇摆、双手叉腰、对老爷爷叫'嗷！'，最后老爷爷摸头。candidateVideoPrompt 中小白子'plants her hands on her hips proudly, turns to the chibi bald elderly farmer... and says 嗷！'，但缺少'狼尾快速左右摇摆'在叉腰前的明确动作描述（仅在拖麦捆时提到 tail wags，未在叉腰叫嗷前再次强调快速摇摆），且老爷爷摸头动作被简化为'pats her head'，未体现'笑着摸头'的温馨互动细节。"
+          },
+          {
+            "category": "camera_sequence",
+            "reason": "Shot A02: exactShotFacts 要求三次内部摄影切换（中景跟随→面部特写→俯拍），切点分别在约3秒和5秒处。candidateVideoPrompt 标注 [Shot 1] 中景跟随，[Shot 2] At 00:03.000 面部特写，[Shot 3] At 00:05.000 俯拍，时间切点正确，但 [Shot 1] 描述中未明确标注为'medium tracking shot'的结束时间点，导致第一段时长不够明确，存在轻微结构模糊。"
+          },
+          {
+            "category": "prop",
+            "reason": "Shot A03: exactShotFacts 要求小女孩放'手编草帽'，candidateVideoPrompt 写'handwoven straw hat'正确；但青年农夫放'野花'，candidate 写'lavender and white wildflowers tied with hemp string'，新增了'lavender'（薰衣草）和'hemp string'（麻绳）细节，属于 unauthorized_addition，原事实仅说'刚采的野花'，未指定花种和捆扎方式。"
+          },
+          {
+            "category": "continuity",
+            "reason": "Shot A06: exactShotFacts continuityNotes 指出'芭蕉叶帐篷仍存在但三人可能已放下叶片'，candidateVideoPrompt 写'the three villagers still holding banana leaves now lowered'，明确三人仍持有芭蕉叶但已放下，与事实一致；但 authoritativeSourceScene S6 仅提及小白子一人，未要求三人仍在画面中，candidate 将三人保留在结尾全景中属于轻微 unauthorized_addition，可能干扰'情感收束聚焦主角'的叙事功能。"
+          }
+        ]
+      },
+      "expectedMaterialOutcome": {
+        "verdict": "fail",
+        "materialIssues": [
+          {
+            "issueKey": "A06_EXTRA_CAST",
+            "shotId": "A06",
+            "category": "cast",
+            "authorityEvidence": {
+              "path": "/authority/sourceScenes/3/characters",
+              "value": [
+                "小白子"
+              ]
+            },
+            "candidateEvidence": [
+              {
+                "path": "/cases/0/shots/3/videoPrompt",
+                "excerpt": "the three villagers still holding banana leaves now lowered"
+              },
+              {
+                "path": "/cases/0/shots/3/continuityNotes",
+                "excerpt": "三人可能已放下叶片"
+              }
+            ],
+            "reason": "S6 signs only 小白子 as on-screen cast. Character or scene reference locks do not authorize retaining helpers on screen."
+          }
+        ],
+        "legacyIssueAssessments": [
+          {
+            "legacyIssueIndex": 0,
+            "expectedDisposition": "pass",
+            "reason": "The prompt already says the wolf tail wags rapidly and that the old man smiles warmly before patting her head. Repetition at a second instant and an exact synonym are not material requirements."
+          },
+          {
+            "legacyIssueIndex": 1,
+            "expectedDisposition": "pass",
+            "reason": "The next [Shot N] timestamp supplies the prior segment boundary; an explicit end-time sentence is not required."
+          },
+          {
+            "legacyIssueIndex": 2,
+            "expectedDisposition": "pass",
+            "reason": "Lavender and white flowers tied with hemp string are authorized visual details from foundationLocks.assetPrompts for 一束野花."
+          },
+          {
+            "legacyIssueIndex": 3,
+            "expectedDisposition": "retain_reclassified",
+            "materialIssueKey": "A06_EXTRA_CAST",
+            "reason": "Retain only the unauthorized on-screen helpers and classify it as cast. Do not treat their earlier scene presence as authorization in S6."
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "initial-h3-plan-attempt-2",
+      "foundationLocks": {
+        "visualBible": {
+          "overallStyle": "日系2.5D新海诚光影风格，治愈温情日常动画，高饱和度自然光，细腻的环境光散射与丁达尔效应，柔和边缘与精致细节并存。",
+          "animationStyle": "2.5D cel-shaded 动画，角色采用 Q 版比例（约 2.5 头身），背景为手绘质感写实风格，角色与背景通过光影融合。动作流畅但保留适度顿感以增强可爱度。",
+          "colorPalette": [
+            "金黄色（麦田主色 #F2C94C）",
+            "暖橙色（阳光与夕阳 #F2994A）",
+            "草绿色（芭蕉叶与草地 #6FCF97）",
+            "天蓝色（晴空 #56CCF2）",
+            "灰蓝色（雨云 #828282 过渡至 #4F4F4F）",
+            "米白色（棉布与草帽 #F5F5DC）"
+          ],
+          "lighting": "主光源为午后偏暖的自然阳光，高角度侧逆光营造丁达尔效应；雨天转为柔和漫射光，色温偏冷；结尾阳光穿透芭蕉叶形成斑驳光影。全局使用新海诚标志性的lens flare与光斑点缀。",
+          "worldRules": [
+            "村庄环境保持日系田园美学，无现代工业元素",
+            "天气变化需在 2-3 秒内完成过渡，乌云聚集需有动态过程",
+            "植物（麦子、野花、芭蕉叶）需有微风摆动的次级动画",
+            "雨滴需有物理碰撞反馈（打在叶面弹跳）"
+          ],
+          "cameraLanguage": "以中景和近景为主，适度使用低角度仰拍突出角色可爱感；运镜平缓，多用横移与缓推；雨天段落使用轻微手持晃动感增强临场感；结尾使用缓慢拉远收束情绪。",
+          "characterConsistencyRules": [
+            "小白子的狼耳与狼尾在所有镜头中必须可见且物理一致",
+            "狼尾摆动频率与情绪正相关：开心时快速左右摆，困倦时缓慢下垂",
+            "狼耳状态反映情绪：竖起=警觉/开心，耷拉=困倦/委屈",
+            "所有角色服装在天气变化前后保持一致，不因雨水改变颜色"
+          ]
+        },
+        "characterReferencePrompts": [
+          {
+            "characterName": "小白子",
+            "storyRole": "主角，村里的热心帮手",
+            "identity": "Q版狼耳少女，村民",
+            "appearancePrompt": "Q版2.5头身少女，银白色短发，头顶一对毛茸茸的银灰色狼耳，身后蓬松的银灰色狼尾，琥珀色大眼睛，圆润脸颊带淡粉腮红，穿着浅蓝色棉麻短袖衬衫搭配卡其色背带短裤，赤脚穿草编凉鞋，整体气质活泼可爱又懂事",
+            "consistencyTags": [
+              "wolf_ears",
+              "wolf_tail",
+              "silver_white_hair",
+              "amber_eyes",
+              "blue_shirt_overalls",
+              "chibi_proportions"
+            ],
+            "forbiddenChanges": [
+              "不得改变狼耳狼尾的颜色或形态",
+              "不得添加动物主题服装或连体衣",
+              "不得改变头身比例",
+              "不得移除狼耳或狼尾"
+            ]
+          },
+          {
+            "characterName": "老爷爷",
+            "storyRole": "被帮助对象，村口种麦子的老人",
+            "identity": "邻居长辈",
+            "appearancePrompt": "慈祥的老年男性，花白短发，满脸皱纹但笑容温暖，穿着白色棉麻背心搭配深棕色宽松长裤，头戴旧草帽，皮肤晒成健康的小麦色，身形微驼但精神矍铄",
+            "consistencyTags": [
+              "elderly_male",
+              "white_hair",
+              "straw_hat",
+              "white_vest",
+              "warm_smile"
+            ],
+            "forbiddenChanges": [
+              "不得年轻化",
+              "不得改变服装风格为现代都市"
+            ]
+          },
+          {
+            "characterName": "扎辫子的小女孩",
+            "storyRole": "第一个发现小白子睡着并为其遮阳的人",
+            "identity": "村里的小伙伴",
+            "appearancePrompt": "Q版2.5头身小女孩，黑色双麻花辫，圆脸大眼，穿着鹅黄色碎花连衣裙，白色短袜配红色小皮鞋，表情温柔细心",
+            "consistencyTags": [
+              "chibi_girl",
+              "twin_braids",
+              "yellow_dress",
+              "red_shoes"
+            ],
+            "forbiddenChanges": [
+              "不得改变发型为散发",
+              "不得改变服装颜色"
+            ]
+          },
+          {
+            "characterName": "戴草帽的青年农夫",
+            "storyRole": "为小白子带来自然气息的关怀者",
+            "identity": "同村劳作的邻居",
+            "appearancePrompt": "青年男性，约20岁出头，健康的小麦色皮肤，黑色短发微乱，宽边草帽，穿着浅绿色棉麻短袖衬衫卷起袖子，深蓝色工装裤，脚穿草鞋，面带朴实温和的笑容",
+            "consistencyTags": [
+              "young_farmer",
+              "straw_hat",
+              "green_shirt",
+              "blue_workpants"
+            ],
+            "forbiddenChanges": [
+              "不得添加现代配饰",
+              "不得改变肤色为苍白"
+            ]
+          },
+          {
+            "characterName": "端茶的老奶奶",
+            "storyRole": "为小白子添暖的细心长辈",
+            "identity": "村里的慈祥长辈",
+            "appearancePrompt": "慈祥的老年女性，银白色盘发，圆框老花眼镜，穿着淡紫色棉麻上衣搭配深灰色长裙，外罩米白色针织开衫，面容温和，动作轻柔",
+            "consistencyTags": [
+              "elderly_female",
+              "silver_hair_bun",
+              "glasses",
+              "purple_top",
+              "cardigan"
+            ],
+            "forbiddenChanges": [
+              "不得移除眼镜",
+              "不得改变发色"
+            ]
+          }
+        ],
+        "sceneReferencePrompts": [
+          {
+            "sceneId": "LOC01",
+            "sourceSceneIds": [
+              "S1"
+            ],
+            "sceneName": "金色麦田",
+            "storyFunction": "建立主角完成帮助任务的状态，展现劳动成果与满足感",
+            "environmentPrompt": "广阔的金色麦田，麦穗饱满低垂，午后阳光斜照形成金色光浪，远处可见村庄轮廓与连绵青山，田埂上散落着几捆扎好的麦子，空气中漂浮着细小的麦芒与光尘，新海诚风格的丁达尔光线穿透云层",
+            "continuityAnchors": [
+              "麦田金黄色调贯穿",
+              "午后阳光角度一致",
+              "远处村庄轮廓不变"
+            ]
+          },
+          {
+            "sceneId": "LOC02",
+            "sourceSceneIds": [
+              "S2",
+              "S3",
+              "S4",
+              "S5",
+              "S6"
+            ],
+            "sceneName": "田边大树下的草垛旁",
+            "storyFunction": "主角休息与接受关怀的核心场景，承载天气变化与集体保护的情感高潮",
+            "environmentPrompt": "麦田边缘一棵巨大的樟树，树冠浓密投下大片阴凉，树干粗壮布满青苔，树旁堆着几个金黄色干草垛，地面是柔软的草地与零星野花，远处可见麦田与村庄。天气从晴朗转为乌云密布再转为雨后初晴，光影随之变化",
+            "continuityAnchors": [
+              "樟树位置与形态不变",
+              "草垛位置固定",
+              "地面草地纹理一致",
+              "天气变化需连贯过渡"
+            ]
+          }
+        ],
+        "assetPrompts": [
+          {
+            "assetName": "手编草帽",
+            "storyFunction": "为小白子遮阳，体现细心照顾",
+            "imagePrompt": "手工编织的圆形草帽，天然麦秆色，帽檐宽大，编织纹理清晰可见，帽顶微微隆起，边缘有轻微毛边体现手工质感，尺寸适合Q版角色面部大小",
+            "consistencyTags": [
+              "handwoven_straw_hat",
+              "natural_wheat_color",
+              "wide_brim"
+            ],
+            "avoidSimilarityNote": "使用手编草帽而非原片的白毯子，材质和功能完全不同"
+          },
+          {
+            "assetName": "一束野花",
+            "storyFunction": "为小白子带来自然气息和惊喜",
+            "imagePrompt": "一小束田野野花，包含紫色薰衣草、白色雏菊和黄色蒲公英，用一根细麻绳简单扎在一起，花茎长短不一保持自然感，花瓣上带有细小露珠",
+            "consistencyTags": [
+              "wildflower_bouquet",
+              "lavender_daisy_dandelion",
+              "twine_tied"
+            ],
+            "avoidSimilarityNote": "使用野花而非原片的橘子，从食物改为自然植物"
+          },
+          {
+            "assetName": "薄棉布",
+            "storyFunction": "为小白子保暖，防止着凉",
+            "imagePrompt": "一块轻薄的米白色棉布，质地柔软有轻微褶皱，边缘有简单的手工缝线，尺寸约为Q版角色肩宽的两倍，半透明质感可隐约透出下方衣物颜色",
+            "consistencyTags": [
+              "thin_cotton_cloth",
+              "off_white",
+              "soft_texture"
+            ],
+            "avoidSimilarityNote": "使用薄棉布而非原片的白毯子，颜色和材质都有区别"
+          },
+          {
+            "assetName": "大芭蕉叶",
+            "storyFunction": "集体遮雨，形成叶子帐篷",
+            "imagePrompt": "新鲜的大型芭蕉叶，叶片宽大呈椭圆形，翠绿色带光泽，叶脉清晰可见，叶面有细小水珠，叶柄粗壮，尺寸足够覆盖一个Q版角色",
+            "consistencyTags": [
+              "banana_leaf",
+              "fresh_green",
+              "large_size",
+              "visible_veins"
+            ],
+            "avoidSimilarityNote": "使用芭蕉叶而非原片的雨伞，从人造工具改为自然材料"
+          },
+          {
+            "assetName": "麦捆",
+            "storyFunction": "劳动成果的象征，建立帮助行为的视觉证据",
+            "imagePrompt": "扎好的麦捆，金黄色麦穗朝上，用麻绳在中间捆扎，麦秆整齐排列，每捆约Q版角色半身高，底部略微散开呈圆锥形",
+            "consistencyTags": [
+              "wheat_bundle",
+              "golden_color",
+              "hemp_rope_tied"
+            ],
+            "avoidSimilarityNote": "无原片对应物，新增农业场景道具"
+          }
+        ]
+      },
+      "shots": [
+        {
+          "shotId": "A01",
+          "sourceSceneId": "S1",
+          "sceneId": "LOC01",
+          "durationSeconds": 5,
+          "storyPurpose": "建立小白子完成帮助任务后的满足与自豪状态",
+          "emotionalTarget": "兴奋/满足",
+          "videoPrompt": "integrated_multimodal_description: [Shot 1] In a Japanese 2.5D Makoto Shinkai-inspired cel-shaded animation style with warm golden-hour sunlight and visible Tyndall rays piercing through floating wheat chaff, a wide establishing shot reveals an expansive golden wheat field under a clear sky, with distant village rooftops and rolling green hills on the horizon. At 00:01.500, the camera cuts to a medium tracking shot following XiaoBaizi, a chibi 2.5-head-tall wolf-eared girl with silver-white short hair, fluffy silver-gray wolf ears perked upright, a bushy silver-gray wolf tail swaying rapidly side to side, amber eyes, rosy cheeks, wearing a light-blue cotton-linen short-sleeve shirt over khaki suspender shorts and straw sandals. She wipes sweat from her forehead with the back of her hand, then places the last golden wheat bundle onto a tall stack beside an elderly man with white hair, warm wrinkles, a white cotton vest, and dark-brown loose trousers. She turns to him, puts both hands on her hips, and lets out a bright upward <d>[Chinese] 嗷！</d> while her wolf tail wags energetically. The old man smiles warmly and gently pats the top of her head. At 00:04.000, the camera cuts to a close-up of XiaoBaizi's face beaming with pride, her wolf ears standing tall and her amber eyes sparkling in the golden lens flare.\noverall_soundscape: Dry wheat stalks rustle in a gentle breeze, soft footsteps on packed earth, a light fabric swish as the bundle is set down, and distant summer cicadas hum steadily.\nnon_diegetic_music: A bright, warm acoustic-guitar melody at a moderate tempo with light piano accents underscores the sense of cheerful accomplishment.",
+          "cameraMotion": "开场宽景建立金色麦田环境（0-1.5s）→ 硬切至中景横移跟随小白子搬运麦捆并擦汗（1.5-4s）→ 硬切至面部特写捕捉自豪表情与老爷爷摸头互动（4-5s）",
+          "characterAction": "小白子擦汗，将最后一捆麦子搬到谷堆旁放下，双手叉腰对老爷爷发出清脆的'嗷！'，狼尾快速左右摇摆；老爷爷微笑摸她的头",
+          "dialogueOrSubtitle": "小白子：嗷！",
+          "soundDesign": "麦穗摩擦沙沙声、脚步声、放下麦捆的轻响、远处蝉鸣；音乐为明快吉他与钢琴合奏",
+          "continuityNotes": "麦田金黄色调与午后阳光角度需与后续镜头一致；小白子服装、狼耳狼尾形态为本片基准；老爷爷外观锁定",
+          "negativePrompts": {
+            "image": [],
+            "video": [
+              {
+                "text": "no penguin costume, no animal suit, no green/red/blue mailbox, no urban street",
+                "appliesTo": "video",
+                "triggerEvidence": [
+                  {
+                    "sourcePath": "creativeBrief.protectedExpressions",
+                    "evidence": "禁止企鹅装、绿色/红色/蓝色邮箱、城市街道"
+                  }
+                ],
+                "reasonCode": "explicit_identity_conflict",
+                "priority": "high",
+                "enabled": true
+              }
+            ]
+          },
+          "acceptanceCriteria": [
+            "小白子完成搬麦捆→擦汗→叉腰→狼尾摇摆的完整动作链，并发出'嗷！'",
+            "老爷爷摸头互动可见，表情温暖",
+            "三次内部摄影切换（宽景→中景跟随→特写）按时序命中，金色麦田与新海诚光影贯穿"
+          ]
+        },
+        {
+          "shotId": "A02",
+          "sourceSceneId": "S2",
+          "sceneId": "LOC02",
+          "durationSeconds": 5,
+          "storyPurpose": "展现小白子从疲惫过渡到安心入睡的状态",
+          "emotionalTarget": "放松/困倦",
+          "videoPrompt": "integrated_multimodal_description: [Shot 1] In the same Japanese 2.5D Shinkai cel-shaded style with dappled shade filtering through a large camphor tree canopy, a medium shot follows XiaoBaizi, the chibi wolf-eared girl in her locked light-blue shirt and khaki suspender shorts, as she drags her feet slowly across soft grass toward a golden hay bale beside the thick mossy trunk. Her wolf ears gradually droop downward and her bushy tail hangs low, swaying weakly. She lets out a long, soft <d>[Chinese] 嗷呜……</d> while rubbing her eyes with both fists. At 00:02.500, the camera cuts to a high-angle overhead shot as she curls up on her side against the hay bale, her wolf ears fully flattened, her tail wrapping loosely around her legs, and her breathing slows into peaceful sleep. Tiny motes of golden dust drift through shafts of light between the leaves above.\noverall_soundscape: Slow, heavy footsteps on soft grass, a big yawn, gentle rustling of dry hay as she settles, and a soft warm breeze through camphor leaves.\nnon_diegetic_music: The acoustic guitar softens to a slow, lulling fingerpicked pattern with sustained piano notes, fading to near-silence as she falls asleep.",
+          "cameraMotion": "中景跟随小白子疲惫步伐走向草垛（0-2.5s）→ 硬切至俯拍高角度展现她蜷缩入睡的全过程（2.5-5s）",
+          "characterAction": "小白子拖着疲惫步伐走到大树下的草垛旁，打哈欠揉眼，狼耳慢慢耷拉，发出绵长的'嗷呜……'，蜷缩在干草堆上渐渐入睡",
+          "dialogueOrSubtitle": "小白子：嗷呜……",
+          "soundDesign": "缓慢脚步声、草地摩擦、大哈欠、干草窸窣声、轻柔风声；音乐渐弱为催眠吉他指弹",
+          "continuityNotes": "樟树与草垛位置锁定为本场景基准；光影从明亮麦田过渡为树荫斑驳；小白子服装与狼耳狼尾形态与A01一致，狼耳从竖立过渡为耷拉",
+          "negativePrompts": {
+            "image": [],
+            "video": [
+              {
+                "text": "no white blanket, no orange fruit, no umbrella, no modern furniture or rocking chair",
+                "appliesTo": "video",
+                "triggerEvidence": [
+                  {
+                    "sourcePath": "creativeBrief.protectedExpressions",
+                    "evidence": "禁止白毯子、橘子、雨伞、摇椅"
+                  }
+                ],
+                "reasonCode": "shot_object_confusion",
+                "priority": "high",
+                "enabled": true
+              }
+            ]
+          },
+          "acceptanceCriteria": [
+            "小白子完成疲惫行走→打哈欠揉眼→蜷缩入睡的完整动作链，狼耳从竖立渐变为耷拉",
+            "发出绵长'嗷呜……'，情绪表达为困倦",
+            "两次内部摄影切换（中景跟随→俯拍）按时序命中，樟树草垛环境一致"
+          ]
+        },
+        {
+          "shotId": "A03",
+          "sourceSceneId": "S3",
+          "sceneId": "LOC02",
+          "durationSeconds": 6,
+          "storyPurpose": "展现村民们轮流关怀的温暖，通过三个连续的轻柔动作建立被爱的安心感",
+          "emotionalTarget": "温馨/安心",
+          "videoPrompt": "integrated_multimodal_description: [Shot 1] In the Japanese 2.5D Shinkai cel-shaded style with dappled shade filtering through a large camphor tree canopy, a medium shot captures XiaoBaizi, the chibi wolf-eared girl in her locked light-blue shirt and khaki suspender shorts, curled up asleep against a golden hay bale with her wolf ears fully flattened and bushy tail wrapped loosely around her legs. A chibi girl with black twin braids and a yellow floral dress tiptoes into frame from the left, gently places a handwoven straw hat over XiaoBaizi's face to block the sunlight, and whispers <d>[Chinese] 辛苦啦</d> before stepping back. At 00:02.000, the camera cuts to a close-up as a young farmer in a wide-brimmed straw hat and green cotton shirt kneels beside the hay bale, carefully setting down a small bouquet of wildflowers (purple lavender, white daisies, yellow dandelions tied with twine) near XiaoBaizi's pillow, his expression warm and gentle. At 00:04.000, the camera cuts to a medium shot as an elderly woman with a silver hair bun and round glasses drapes a thin off-white cotton cloth over XiaoBaizi's shoulders, smoothing the fabric with care. Throughout all three actions, XiaoBaizi remains peacefully asleep, her breathing slow and steady, with tiny motes of golden dust drifting through shafts of light between the leaves above.\noverall_soundscape: Soft tiptoeing footsteps on grass, gentle rustling of dry hay, light fabric friction as the cloth settles, and a warm breeze through camphor leaves.\nnon_diegetic_music: A tender piano melody with sustained notes and sparse acoustic guitar arpeggios, tempo slow and lulling, volume kept low to maintain the peaceful atmosphere.",
+          "cameraMotion": "中景展现小女孩放草帽（0-2s）→ 硬切至近景特写青年农夫放野花（2-4s）→ 硬切至中景展现老奶奶披棉布（4-6s）",
+          "characterAction": "小白子蜷缩在草垛旁熟睡，狼耳耷拉，狼尾松散环绕腿部；扎辫子小女孩轻手轻脚走来，将手编草帽盖在小白子脸上遮阳，轻声说'辛苦啦'后离开；青年农夫跪下，在小白子枕边放下一束野花；老奶奶将薄棉布披在小白子肩上并抚平",
+          "dialogueOrSubtitle": "扎辫子的小女孩：辛苦啦",
+          "soundDesign": "轻柔脚步声、干草窸窣声、布料摩擦声、微风穿过树叶声；钢琴与吉他合奏的治愈配乐保持低音量",
+          "continuityNotes": "樟树与草垛位置与A02保持一致；小白子服装、狼耳狼尾形态与A02入睡时一致；光影为树荫斑驳的午后暖光；三个帮助者依次出现，动作轻柔不惊醒主角",
+          "negativePrompts": {
+            "image": [],
+            "video": [
+              {
+                "text": "小白子在关怀动作过程中醒来或睁眼",
+                "appliesTo": "video",
+                "triggerEvidence": [
+                  {
+                    "sourcePath": "animationPlan.shotPlan.A03.characterAction",
+                    "evidence": "小白子蜷缩在草垛旁熟睡"
+                  },
+                  {
+                    "sourcePath": "fullStory.sceneScript.S3.visibleAction",
+                    "evidence": "展现村民们轮流关怀的温暖"
+                  }
+                ],
+                "reasonCode": "temporal_consistency_failure",
+                "priority": "high",
+                "enabled": true
+              },
+              {
+                "text": "草帽、野花、棉布三个道具缺失或顺序错乱",
+                "appliesTo": "video",
+                "triggerEvidence": [
+                  {
+                    "sourcePath": "animationPlan.shotPlan.A03.characterAction",
+                    "evidence": "依次放置草帽、野花、披棉布"
+                  },
+                  {
+                    "sourcePath": "fullStory.sceneScript.S3.visibleAction",
+                    "evidence": "三个连续的关怀动作"
+                  }
+                ],
+                "reasonCode": "shot_object_confusion",
+                "priority": "high",
+                "enabled": true
+              }
+            ]
+          },
+          "acceptanceCriteria": [
+            "三个帮助者依次完成放草帽、放野花、披棉布的动作，顺序正确且道具可见",
+            "小白子在整个镜头中保持熟睡状态，狼耳耷拉、狼尾松散环绕",
+            "内部两次硬切分别命中2秒和4秒时间点，景别变化符合中景→近景→中景的顺序"
+          ]
+        },
+        {
+          "shotId": "A06",
+          "sourceSceneId": "S6",
+          "sceneId": "LOC02",
+          "durationSeconds": 6,
+          "storyPurpose": "情感收束，展现小白子在雨后阳光中安心熟睡的满足与宁静",
+          "emotionalTarget": "宁静/满足",
+          "videoPrompt": "integrated_multimodal_description: [Shot 1] In the Japanese 2.5D Shinkai cel-shaded style with warm golden-hour lighting returning after rain, a close-up shot captures dappled sunlight filtering through gaps between banana leaves, casting soft dancing light spots onto XiaoBaizi's peaceful sleeping face; her amber eyes are closed, cheeks flushed with pink, and a tiny translucent snot bubble inflates and deflates gently from her nose as she breathes. At 00:02.500, the camera cuts to a slow-motion medium close-up of XiaoBaizi's face as she smiles contentedly in her dream, her lips curving upward, and her fluffy silver-gray wolf tail slowly curls around the small bouquet of wildflowers (purple lavender, white daisies, yellow dandelions tied with twine) beside her pillow; she murmurs softly <d>[Chinese] 嗷~</d> with a barely audible dreamy tone. At 00:04.500, the camera slowly pulls back and rises to a wide establishing shot revealing the entire golden wheat field under a clearing sky with a vivid rainbow arching across the horizon, the camphor tree and hay bales in the middle ground, and the three banana leaves now lowered as the villagers stand nearby watching XiaoBaizi sleep with gentle smiles; lens flares and Tyndall rays pierce through the remaining clouds.\noverall_soundscape: Rain sounds gradually fading to silence, replaced by cheerful bird chirping, a gentle warm breeze rustling through wheat stalks, and the soft rustle of banana leaves being lowered.\nnon_diegetic_music: The piano melody slows to a gentle lullaby tempo, joined by a solo acoustic guitar playing a warm resolving phrase, gradually fading to silence as the rainbow appears.",
+          "cameraMotion": "特写阳光穿过叶缝光斑洒在脸上（0-2.5s）→ 硬切至慢镜头中近景展现微笑和狼尾卷花（2.5-4.5s）→ 缓慢拉远上升至全景展现麦田与彩虹（4.5-6s）",
+          "characterAction": "阳光光斑在小白子脸上舞动；小白子在梦中露出满足微笑，嘴角上扬；狼尾缓缓卷住身边的野花束；鼻尖冒出小鼻涕泡随呼吸起伏；小白子发出极轻的梦呓'嗷~'；结尾远处三人放下芭蕉叶微笑注视",
+          "dialogueOrSubtitle": "小白子：嗷~",
+          "soundDesign": "雨声渐弱至停止；鸟鸣声渐起；微风吹麦声；配乐从温柔渐弱至静默；小白子梦呓声极轻",
+          "continuityNotes": "樟树、草垛位置与A05一致；天气从雨后转为晴朗，光线从冷色过渡回暖色丁达尔光；小白子身上草帽已移至身旁（露出面部接受阳光），野花和棉布保持可见；狼尾卷住野花为新增动作；结尾彩虹和金色麦田呼应开场",
+          "negativePrompts": {
+            "image": [],
+            "video": []
+          },
+          "acceptanceCriteria": [
+            "阳光穿过芭蕉叶缝隙的光斑效果必须柔和且可见地洒在小白子脸上",
+            "小白子梦中微笑时狼尾必须缓缓卷住身边的野花束，鼻涕泡细节可见",
+            "结尾拉远镜头必须展现金色麦田全景和天空彩虹，光线回暖并带有丁达尔效应"
+          ]
+        }
+      ],
+      "legacyAuditOutput": {
+        "verdict": "fail",
+        "issues": [
+          {
+            "category": "action_order",
+            "reason": "Shot A01: authoritativeSourceScene 和 exactShotFacts 明确要求小白子先擦汗、搬麦捆放下、双手叉腰、发出'嗷！'、狼尾摇摆，老爷爷摸头。candidateVideoPrompt 中动作顺序为擦汗→放下麦捆→转身叉腰→发出'嗷！'，但缺少'狼尾快速左右摇摆'在发出'嗷！'时的明确同步描述（仅在前文提到 tail swaying rapidly side to side，未与发声动作绑定），且老爷爷摸头动作被放在最后，与 exactShotFacts 中'面部特写捕捉自豪表情与老爷爷摸头互动'的时序基本一致，但 candidate 将摸头放在中景而非特写镜头中，与 camera_sequence 冲突。"
+          },
+          {
+            "category": "camera_sequence",
+            "reason": "Shot A01: exactShotFacts 要求第三次内部摄影切换（00:04.000）为'面部特写捕捉自豪表情与老爷爷摸头互动'，但 candidateVideoPrompt 在 00:04.000 的 close-up 中仅描述小白子面部，老爷爷摸头动作已在中景（00:01.500）完成，导致特写镜头中缺少老爷爷摸头互动，与 acceptanceCriteria '老爷爷摸头互动可见'在特写中的要求冲突。"
+          },
+          {
+            "category": "continuity",
+            "reason": "Shot A06: exactShotFacts continuityNotes 明确指出'小白子身上草帽已移至身旁（露出面部接受阳光）'，但 candidateVideoPrompt 未提及草帽位置变化，且在 A05 中草帽仍在脸上（'handwoven straw hat still on her face'），A06 中未说明草帽被移开，导致阳光洒在脸上的逻辑与草帽遮脸的连续性矛盾。"
+          },
+          {
+            "category": "visible_final_state",
+            "reason": "Shot A06: exactShotFacts 要求'结尾拉远镜头必须展现金色麦田全景和天空彩虹，光线回暖并带有丁达尔效应'，candidateVideoPrompt 虽提及 rainbow 和 Tyndall rays，但未明确描述'金色麦田全景'（仅说 'entire golden wheat field'），且 acceptanceCriteria 要求'光线回暖并带有丁达尔效应'，candidate 中 'warm golden-hour lighting returning after rain' 和 'Tyndall rays pierce through the remaining clouds' 基本符合，但 'remaining clouds' 与 S6 authoritativeSourceScene '雨渐渐停了' 及 exactShotFacts '天气从雨后转为晴朗' 存在轻微冲突（晴朗不应有 remaining clouds）。"
+          },
+          {
+            "category": "character_identity",
+            "reason": "Shot A06: exactShotFacts characterAction 要求'结尾远处三人放下芭蕉叶微笑注视'，candidateVideoPrompt 描述 'the three banana leaves now lowered as the villagers stand nearby watching XiaoBaizi sleep with gentle smiles'，但未明确三人身份（扎辫子小女孩、青年农夫、老奶奶），在最终镜头中丢失了角色可识别性，违反 characterConsistencyRules 中对角色一致性的要求。"
+          }
+        ]
+      },
+      "expectedMaterialOutcome": {
+        "verdict": "fail",
+        "materialIssues": [
+          {
+            "issueKey": "A01_CAMERA_INTERACTION_MISMATCH",
+            "shotId": "A01",
+            "category": "camera_sequence",
+          "exactShotEvidence": {
+            "path": "/cases/1/shots/0/cameraMotion",
+            "excerpt": "硬切至面部特写捕捉自豪表情与老爷爷摸头互动（4-5s）"
+          },
+            "candidateEvidence": {
+              "path": "/cases/1/shots/0/videoPrompt",
+              "excerpt": "At 00:04.000, the camera cuts to a close-up"
+            },
+          "reason": "The exact candidate shot places the head-pat interaction in the final close-up, but the H3 prompt completes that interaction in the preceding medium segment."
+          },
+          {
+            "issueKey": "A06_EXTRA_CAST",
+            "shotId": "A06",
+            "category": "cast",
+            "authorityEvidence": {
+              "path": "/authority/sourceScenes/3/characters",
+              "value": [
+                "小白子"
+              ]
+            },
+            "candidateEvidence": [
+              {
+                "path": "/cases/1/shots/3/characterAction",
+                "excerpt": "结尾远处三人放下芭蕉叶微笑注视"
+              },
+              {
+                "path": "/cases/1/shots/3/videoPrompt",
+                "excerpt": "the villagers stand nearby watching XiaoBaizi sleep with gentle smiles"
+              }
+            ],
+            "reason": "S6 signs only 小白子 as on-screen cast. The correct response is not to add helper identities but to reject their unauthorized presence."
+          },
+          {
+            "issueKey": "A06_HAT_CONTINUITY_OMISSION",
+            "shotId": "A06",
+            "category": "continuity",
+          "exactShotEvidence": {
+            "path": "/cases/1/shots/3/continuityNotes",
+            "excerpt": "小白子身上草帽已移至身旁（露出面部接受阳光）"
+          },
+            "candidateEvidence": {
+              "path": "/cases/1/shots/3/videoPrompt",
+              "excerpt": "dappled sunlight filtering through gaps between banana leaves"
+            },
+            "reason": "The prompt exposes the face but never establishes the signed transition that moves the previously face-covering hat beside her."
+          }
+        ],
+        "legacyIssueAssessments": [
+          {
+            "legacyIssueIndex": 0,
+            "expectedDisposition": "pass",
+            "reason": "The prompt explicitly synchronizes an energetic tail wag with the utterance. The material camera-placement conflict is represented separately by A01_CAMERA_INTERACTION_MISMATCH."
+          },
+          {
+            "legacyIssueIndex": 1,
+            "expectedDisposition": "retain",
+            "materialIssueKey": "A01_CAMERA_INTERACTION_MISMATCH",
+            "reason": "The final close-up omits the head-pat interaction required by cameraMotion."
+          },
+          {
+            "legacyIssueIndex": 2,
+            "expectedDisposition": "retain",
+            "materialIssueKey": "A06_HAT_CONTINUITY_OMISSION",
+              "reason": "The prior face-covering hat state requires an explicit visible transition to the exact-shot beside-the-character state."
+          },
+          {
+            "legacyIssueIndex": 3,
+            "expectedDisposition": "pass",
+            "reason": "Entire golden wheat field is equivalent to 金色麦田全景, and remaining clouds are compatible with a clearing sky after rain."
+          },
+          {
+            "legacyIssueIndex": 4,
+            "expectedDisposition": "pass_replaced",
+            "replacementMaterialIssueKey": "A06_EXTRA_CAST",
+            "reason": "Do not repair this by naming the three helpers. S6 does not authorize them as on-screen cast, so their presence is the material error."
+          }
+        ]
+      }
+    }
+  ]
+}

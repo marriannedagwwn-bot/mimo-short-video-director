@@ -117,6 +117,7 @@ export function shotVideoRuntimeConfig(provider, env = process.env, requestedMod
       ratio: clean(env.MINIMAX_VIDEO_ASPECT_RATIO),
       watermark: booleanEnv(env.MINIMAX_WATERMARK, false),
       promptMaxChars: clean(env.MINIMAX_PROMPT_MAX_CHARS) || "7000",
+      maxRequestBodyBytes: clean(env.MINIMAX_MAX_REQUEST_BODY_BYTES) || String(64 * 1024 * 1024),
       maxInputDataUrlBytes: clean(env.MINIMAX_MAX_REFERENCE_BYTES) || String(50 * 1024 * 1024)
     };
   }

@@ -501,7 +501,7 @@ test("nested current-shot visual evidence paths are supported while audio dialog
   );
 });
 
-test("nested visual leaves enter visual-boundary scans and structured dialogue stays separated", () => {
+test("nested visual leaves enforce only the signed fixed-character boundary while source expressions remain reusable", () => {
   const creatorProfile = { fixedCharacter: "小白子，Q版猫耳少女人形" };
   const creativeBrief = {
     protectedExpressions: [{ sourceExpression: "企鹅服", prohibition: "不得复用企鹅服" }],
@@ -539,12 +539,9 @@ test("nested visual leaves enter visual-boundary scans and structured dialogue s
   dialogueOnly.shotPlan[0].motion.audio.dialogue = [{ speaker: "路人", text: "那套企鹅服已收进仓库", delivery: "平静" }];
   assert.equal(ensureAnimationPlanMatchesProfile(dialogueOnly, ...args), dialogueOnly);
 
-  const sourceLeak = structuredClone(basePlan);
-  sourceLeak.shotPlan[0].startFrame.characters[0].actionState = "穿着企鹅服打开木箱";
-  assert.throws(
-    () => ensureAnimationPlanMatchesProfile(sourceLeak, ...args),
-    /企鹅服.*startFrame\.characters\[0\]\.actionState/
-  );
+  const sourceReuse = structuredClone(basePlan);
+  sourceReuse.shotPlan[0].startFrame.characters[0].actionState = "穿着企鹅服打开木箱";
+  assert.equal(ensureAnimationPlanMatchesProfile(sourceReuse, ...args), sourceReuse);
 
   const positiveBoundaryLeak = structuredClone(basePlan);
   positiveBoundaryLeak.shotPlan[0].endFrame.characters[0].expression = "脸部长出鸟喙";
@@ -554,7 +551,7 @@ test("nested visual leaves enter visual-boundary scans and structured dialogue s
   );
 });
 
-test("来源禁词用正则顺序包含匹配已签发允许词，不误杀常见缩写或放行无关身份", () => {
+test("来源表达不再是固定主角禁词，只有签发边界能要求或禁止特征", () => {
   const creatorProfile = { fixedCharacter: "小白子，Q版狼耳少女人形" };
   const visualGuardrails = {
     fixedCharacterBoundary: {
@@ -613,7 +610,7 @@ test("来源禁词用正则顺序包含匹配已签发允许词，不误杀常�
     "说明句机械切出的泛词“服饰”不得误杀已签发允许外观"
   );
 
-  for (const forbiddenExpression of [
+  for (const reusableSourceExpression of [
     "企鹅服",
     "动物拟态服装",
     "猫耳少女",
@@ -624,9 +621,9 @@ test("来源禁词用正则顺序包含匹配已签发允许词，不误杀常�
     "日饰",
     "日风服"
   ]) {
-    assert.throws(
-      validateSourceTerm(forbiddenExpression, forbiddenExpression),
-      new RegExp(`${forbiddenExpression}.*characterReferencePrompts\\[0\\]\\.appearancePrompt`, "u")
+    assert.doesNotThrow(
+      validateSourceTerm(reusableSourceExpression, reusableSourceExpression),
+      `来源记录“${reusableSourceExpression}”不得自动升级为固定主角禁词`
     );
   }
 
@@ -655,9 +652,9 @@ test("来源禁词用正则顺序包含匹配已签发允许词，不误杀常�
     terms: ["护士"],
     scope: "identity"
   }];
-  assert.throws(
+  assert.doesNotThrow(
     validateSourceTerm("护士服", "护士服", nurseGuardrails),
-    /护士服.*characterReferencePrompts\[0\]\.appearancePrompt/u
+    "sourceSimilarityRules 不能反向禁止用户已允许的角色表达"
   );
 
   const requiredGuardrails = structuredClone(visualGuardrails);

@@ -71,6 +71,42 @@ export function resolveAuthoritativeShotVideoInput({
   };
 }
 
+export function resolveAuthoritativeShotVideoReferenceAssets(referenceAssets, plan = {}) {
+  const assets = Array.isArray(referenceAssets) ? referenceAssets : [];
+  const signedCharacterImages = (Array.isArray(plan.characterReferencePrompts)
+    ? plan.characterReferencePrompts
+    : [])
+    .filter((reference) => String(reference?.referenceImageDataUrl || "").trim())
+    .map((reference) => ({
+      characterName: String(reference.characterName || "").trim(),
+      dataUrl: String(reference.referenceImageDataUrl || "").trim()
+    }));
+  return assets.map((asset, index) => {
+    const source = String(asset?.source || "upload").trim() || "upload";
+    if (["previous_shot_frame", "previous_shot_frames"].includes(source)) {
+      throw new ProductionStateError(
+        `referenceAssets[${index}].source=${source} 是服务端保留来源；上一镜参考只能由当前 Plan lineage 解析。`,
+        { code: "SHOT_VIDEO_REFERENCE_SOURCE_RESERVED", httpStatus: 409 }
+      );
+    }
+    if (source !== "character_reference") return structuredClone(asset);
+    const dataUrl = String(asset?.dataUrl || "").trim();
+    const matches = signedCharacterImages.filter((reference) => reference.dataUrl === dataUrl);
+    if (matches.length !== 1) {
+      throw new ProductionStateError(
+        `referenceAssets[${index}] 声明为 character_reference，但内容不属于当前签发 Animation Plan 的唯一角色参考图。`,
+        { code: "SHOT_VIDEO_CHARACTER_REFERENCE_UNTRUSTED", httpStatus: 409 }
+      );
+    }
+    return {
+      ...structuredClone(asset),
+      name: `${matches[0].characterName || "角色"}参考图`,
+      source: "character_reference",
+      sourceCharacterName: matches[0].characterName
+    };
+  });
+}
+
 export async function resolvePreviousShotFrameReference({
   continuityReferenceMode,
   generationMode,

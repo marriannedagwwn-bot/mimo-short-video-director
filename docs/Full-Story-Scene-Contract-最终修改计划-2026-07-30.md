@@ -7,6 +7,10 @@
 - 实施规则：逐 Phase 实施、测试、提交和汇报；没有明确批准不得进入下一 Phase
 - 当前进度：Phase 0、Phase 1 已验收；Phase 2 已实施并等待阶段验收；Phase 3 尚未开始
 
+> 2026-08-14 状态注记：当前 Legacy Full Story 已增加窄范围、有界的子树结构纠错，仅在已有完整 JSON 候选、可信 diagnostics 精确指向 protagonist `name`，且验签固定角色边界提供唯一姓名时使用一次模型 replacement、私有计划签发、原子合并并完整复验。未知正文、配角身份错误、`characters` 与动作/对白冲突、没有签发值来源的必填剧情字段直接失败。它不实现本文 Phase 3/4 的 Registry、Presence、Evidence Auditor、受限语义 Patch 或 Full Story v2，也不改变下述待实施清单状态。
+
+> 2026-08-16 状态注记：当前 Legacy Full Story 又增加了与失败候选 repair 分离的 Beat–Scene 提交前 postpass。初轮 Story（包含实际发生的唯一允许 retry 或 protagonist 姓名局部纠错）必须先通过全部既有校验，随后同一文本 provider/model 独立调用一次 AI；该调用的业务内容只有完整 Full Story JSON 和专用提示，不上传边界、变体、Brief、Guardrails、分析或重构数据。`beatSheet` 只读，AI 不得自由生成 suffix；每条提议的 `addition` 必须是对应 `beatSheet[beatIndex].storyAction` 的连续逐字原文，并包含该 review 的 `beatEvidence`，全部证据只可引用该 `storyAction` 和相关现有 `visibleAction`，再 append 到已有 `sceneScript[].visibleAction`。无法逐字投影时必须返回 `blocked`。一次最多 3 个已有场次、每条 addition 最多 600 字、合计最多 1200 字；原动作逐字前缀及其他字段全部冻结。正常路径 2 次 provider call，初轮消耗 retry/repair 后最多 3 次，禁止第四次；`blocked`、证据错绑、协议/供应商错误、超限、越界或非追加变化、最终复验失败均 fail closed，不 fallback 初轮 Story。最终 unchanged 或合法追加的 Story 仍只提交一次 Artifact，中间候选不形成 revision；全量模型输出日志 metadata 使用明确的 `stage` 区分 postpass。该窄 postpass 不是本文 Phase 3/4 的通用 Auditor、Patch、Registry/Presence 或 Full Story v2，仍不改变下述未来 Phase 状态。
+
 ## 1. 最终架构决策
 
 1. Phase 1 只使用内部 `legacy-full-story-strict` schema，不发布 `full-story/v1`；最终公开 API 直接切换为 `full-story/v2`。
@@ -110,9 +114,9 @@ git diff --check
 - 内部 schema 使用 Ajv `8.20.0` 编译；错误只投影为稳定 diagnostic code 和 JSON Pointer，不返回内部 schema id。
 - 原有 Scene Contract 的语义规则、聚合错误和路径继续保留在共享 validator 中；strict schema 在其前面拦截深层缺字段、`null`、错误类型和 unknown fields。
 - 既有非 Full Story `generateJson` / `requestJson` 调用仍使用原 client retry 配置；只有 Full Story 走单次 `requestCompletion`。
-- 正常合法 Full Story：1 次 provider call。
-- 可重试的 truncation、envelope、JSON syntax、暂时性 HTTP 或 schema/contract 失败：最多 2 次 provider call（primary + 1 次 Coordinator retry）。
-- 永久性 provider 4xx：1 次 provider call 后终止。
+- Phase 1 验收时的正常合法 Full Story：1 次 provider call；当前 Legacy 运行时计数见 2026-08-16 状态注记。
+- Phase 1 验收时，可重试的 truncation、envelope、JSON syntax、暂时性 HTTP 或 schema/contract 失败：最多 2 次 provider call（primary + 1 次 Coordinator retry）。当前初轮成功后还会进入唯一一次 Beat–Scene postpass，整个 operation 最多 3 次。
+- 永久性 provider 4xx：1 次 provider call 后终止，且不会进入 postpass。
 - Full Story strict gate 失败的 Animation 请求：0 次下游 provider/compiler call。
 - Phase 1 不引入 `FULL_STORY_V2_PIPELINE_ENABLED`；该 flag 仍保持未启用，留待 Phase 3 与 Phase 4 同一发布窗口。
 
@@ -215,7 +219,7 @@ helper 数组索引不得进入 ID。重排通过 declaration/source identifier 
 Phase 2 实施记录：
 
 - 两个 API 与编排由 `FULL_STORY_V2_PIPELINE_ENABLED` 控制，默认关闭；Phase 2 不调用 Cast 或 Story provider。
-- 当前 legacy `POST /api/full-story` 不经过 Cast 编排，正常成功路径仍为 1 次 Story provider call，响应 wire shape 不变。
+- Phase 2 实施记录当时，legacy `POST /api/full-story` 不经过 Cast 编排，正常成功路径为 1 次 Story provider call，响应 wire shape 不变。当前仍不经过 Cast 编排，但按 2026-08-16 状态注记在初轮完整校验后执行一次 Beat–Scene postpass，正常路径为 2 次 provider call、初轮 retry/repair 后最多 3 次，最终 wire shape 与单次 Artifact commit 不变。
 - Character ID 按固定系统槽位、`declarationId`、稳定 source identifier、服务端 UUID 持久绑定的顺序生成；名称和 helper 数组索引不参与 ID。
 - 单进程 confirmation store 的默认 TTL 为 30 分钟；token 单次消费并绑定 operation/proposal/context/environment/audience；重启丢失状态后返回 `409 OPERATION_EXPIRED`。
 - 聚焦验收：

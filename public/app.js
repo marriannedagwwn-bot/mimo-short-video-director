@@ -22,6 +22,7 @@ import {
   isArtifactRequestCurrent,
   lineageDependency,
   planProductionContext,
+  productionRequestHeaders,
   productionStateFromRun
 } from "./production-lineage-client.js";
 import {
@@ -41,6 +42,13 @@ import {
   shotVideoArtifactIdFor,
   shotVideoResultKey
 } from "./shot-video-continuity.js";
+import {
+  runtimePromptOverride,
+  shouldAppendSeedanceNoTextRule,
+  videoPromptProfileLabel,
+  videoPromptProfileUiState,
+  videoPromptTargetForSetting
+} from "./video-prompt-profile-ui.js";
 
 const state = {
   file: null,
@@ -56,6 +64,7 @@ const state = {
   animationPlanMetadata: {},
   animationAspectRatioDrafts: {},
   animationAspectRatioUpdating: false,
+  animationPromptRewriting: false,
   shotVideoResults: {},
   shotFrameResults: {},
   characterReferenceStatuses: {},
@@ -174,7 +183,7 @@ const MODEL_STAGE_DEFS = [
   { key: "analysis", label: "参考片分析", hint: "视频解析、定位、人物、节奏", capability: "视觉模型", capabilityKind: "vision" },
   { key: "reconstruction", label: "脚本还原", hint: "分场、动作、镜头、转折", capability: "视觉模型", capabilityKind: "vision" },
   { key: "brief", label: "创意简报", hint: "保留价值、受控变量", capability: "文本模型", capabilityKind: "text" },
-  { key: "visualGuardrails", label: "视觉规则", hint: "角色边界、原片规避、台词规则", capability: "视觉模型", capabilityKind: "vision" },
+  { key: "visualGuardrails", label: "视觉规则", hint: "角色边界、原片来源记录、台词规则", capability: "视觉模型", capabilityKind: "vision" },
   { key: "variants", label: "主题变体", hint: "新故事方向", capability: "文本模型", capabilityKind: "text" },
   { key: "fullStory", label: "完整剧情", hint: "可拍分场剧本", capability: "文本模型", capabilityKind: "text" },
   { key: "animationPlan", label: "动画生产包", hint: "首尾帧、镜头与视频提示词", capability: "文本模型", capabilityKind: "text" },
@@ -687,6 +696,7 @@ async function requestProductionArtifact({
   artifactId,
   artifactType,
   dependencyIds = [],
+  dependencyRefs = null,
   createMediaNamespace = false,
   contentForArtifact = (value) => value
 }) {
@@ -694,7 +704,7 @@ async function requestProductionArtifact({
   const requestId = crypto.randomUUID();
   const token = beginArtifactRequest(state.production, artifactId, requestId);
   try {
-    const dependencies = productionDependencies(dependencyIds);
+    const dependencies = dependencyRefs ? structuredClone(dependencyRefs) : productionDependencies(dependencyIds);
     const started = await api("/api/production/stage/update", {
       ...token,
       stageId: artifactId,
@@ -702,7 +712,7 @@ async function requestProductionArtifact({
     });
     assertCurrentProductionRequest(token);
     updateProductionCheckpoint(started);
-    const responseContent = await api(endpoint, requestBody);
+    const responseContent = await api(endpoint, requestBody, { productionToken: token });
     assertCurrentProductionRequest(token);
     const content = contentForArtifact(responseContent);
     const committed = await api("/api/production/artifact/commit", {
@@ -835,8 +845,15 @@ function assertActiveProductionRun() {
   }
 }
 
-async function api(path, body) {
-  const response = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(withModelOverrides(body)) });
+async function api(path, body, { productionToken = null } = {}) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...productionRequestHeaders(productionToken || {})
+    },
+    body: JSON.stringify(withModelOverrides(body))
+  });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) {
     throw createApiRequestError(data, response.status, `请求失败（${response.status}）`);
@@ -979,7 +996,7 @@ function renderVisualGuardrails(data) {
     ${block("禁止出现", renderBoundaryTraits(boundary.forbiddenTraits))}
     ${block("允许正向使用", renderAllowedPositiveTraits(data.allowedPositiveTraits))}
     ${block("正向提示词边界", renderGuardrailRuleList(data.positivePromptBoundary, "无额外正向提示词边界。"))}
-    ${block("原片相似规避规则", renderGuardrailRuleList(data.sourceSimilarityRules, "无原片表面表达规避项。"))}
+    ${block("原片表面表达来源记录", renderGuardrailRuleList(data.sourceSimilarityRules, "无原片表面表达来源记录。"))}
     ${block("台词与行为规则", renderGuardrailRuleList(data.dialogueRules, "无额外台词或行为规则。"))}
     <div class="warning-box"><b>渲染负面提示词不在本阶段生成。</b> 图片与视频负面提示词只在 animationPlan 中按当前镜头分别生成，并必须附带触发证据。</div>
     ${uncertainties(data.uncertainties)}`;
@@ -1247,6 +1264,12 @@ async function generateAnimationPlan({ force = false } = {}) {
   const fullStory = state.fullStories[variant.id] || state.output.fullStory;
   if (!fullStory) return setAnimationStatus("请先生成完整剧情，再生成动画生产包。", "error");
   const targetAspectRatio = selectedAnimationAspectRatio(variant.id);
+  let videoPromptTarget;
+  try {
+    videoPromptTarget = videoPromptTargetForSetting(shotVideoSetting());
+  } catch (error) {
+    return setAnimationStatus(`${error.message} 请先在模型设置中选择 Seedance 2.0 或 MiniMax H3。`, "error");
+  }
   if (!force && state.animationPlans[variant.id]) {
     renderAnimationPlan(state.animationPlans[variant.id]);
     return;
@@ -1270,6 +1293,7 @@ async function generateAnimationPlan({ force = false } = {}) {
         creatorProfile: profile(),
         animationPlanMode,
         targetAspectRatio,
+        videoPromptTarget,
         // 暂时弃置，后续优化或删除：direct_shot 不消费 Character Feature private sidecar；旧 v2 请求兼容保留。
         ...(animationPlanMode !== "direct_shot" && previousPrivateSidecars && typeof previousPrivateSidecars === "object" && !Array.isArray(previousPrivateSidecars)
           ? { privateSidecars: structuredClone(previousPrivateSidecars) }
@@ -1534,6 +1558,7 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
       ${cell("动画风格", visual.animationStyle)}
       ${cell("色彩", (visual.colorPalette || []).join(" / "))}
       ${cell("镜头语言", visual.cameraLanguage)}
+      ${directShotPlan ? renderVideoPromptProfileCell(data) : ""}
     </div>
     ${directShotPlan ? "" : renderStaticFrameCompilerLog(metadata)}
     ${block("生产顺序", `<div class="tag-row">${(strategy.generationOrder || []).map((item, index) => `<span class="tag orange">${index + 1} · ${escape(item)}</span>`).join("")}</div>`)}
@@ -1588,6 +1613,20 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
     ${uncertainties(data.uncertainties)}`;
   syncAnimationAspectRatioControls(data);
   reveal(elements.animationPlan);
+}
+
+function renderVideoPromptProfileCell(plan = {}) {
+  const ui = videoPromptProfileUiState(plan, shotVideoSetting());
+  if (ui.status === "matched") {
+    return cell("视频提示词", `${videoPromptProfileLabel(ui.current)} · 与当前模型一致`);
+  }
+  if (ui.status === "mismatch") {
+    return cell("视频提示词", `${videoPromptProfileLabel(ui.current)} → 当前 ${videoPromptProfileLabel(ui.target)} · 尚未重写`);
+  }
+  if (ui.status === "unsupported_target") {
+    return cell("视频提示词", `${videoPromptProfileLabel(ui.current)} · 当前模型没有 direct_shot Profile`);
+  }
+  return cell("视频提示词", "Plan Profile 无效 · 已阻止自动判断");
 }
 
 function animationAspectRatioCell(currentRatio, draftRatio) {
@@ -2813,14 +2852,24 @@ async function updateShotVideoGeneratorPreview(options = {}) {
   const count = Math.max(1, Math.min(4, Number(state.shotVideoGeneration.count) || Number(elements.shotVideoCount.value) || 1));
   elements.shotVideoCount.value = String(count);
   elements.shotVideoModalTitle.textContent = `用 ${shotVideoProviderLabel()} 生成 ${shot.shotId || "镜头"} 视频`;
-  elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || 4} 秒 · ${normalizeAnimationPlanAspectRatio(plan.productionStrategy?.targetAspectRatio)} · ${generationMode === "all_reference"
+  const promptProfileUi = videoPromptProfileUiState(plan, shotVideoSetting());
+  const promptProfileStatus = promptProfileUi.status === "matched"
+    ? `${videoPromptProfileLabel(promptProfileUi.current)} 提示词匹配`
+    : promptProfileUi.status === "mismatch"
+      ? `当前 ${videoPromptProfileLabel(promptProfileUi.target)} · Plan 为 ${videoPromptProfileLabel(promptProfileUi.current)} 提示词`
+      : `当前模型与 Plan 提示词 Profile 未匹配`;
+  elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || 4} 秒 · ${normalizeAnimationPlanAspectRatio(plan.productionStrategy?.targetAspectRatio)} · ${promptProfileStatus} · ${generationMode === "all_reference"
     ? "多模态参考生成，不锁定精确首尾帧"
     : hasPlannedEndpoints(shot)
       ? "精确锁定已添加的首帧/尾帧"
       : "当前镜头没有端点；首尾帧模式不可用"}`;
   elements.shotVideoReferenceList.innerHTML = renderShotVideoReferenceList(shotId);
   if (!options.preservePrompt || !elements.shotVideoPromptPreview.value.trim()) {
-    elements.shotVideoPromptPreview.value = buildShotVideoPromptPreview(shot, plan.promptSchemaVersion);
+    elements.shotVideoPromptPreview.value = buildShotVideoPromptPreview(
+      shot,
+      plan.promptSchemaVersion,
+      plan.productionStrategy?.videoPromptProfile
+    );
   }
   const validation = await evaluateShotVideoReferences(shotId);
   if (validationRevision !== state.shotVideoGeneration.validationRevision || validation.cancelled) return false;
@@ -2982,6 +3031,13 @@ async function confirmGenerateShotVideo() {
   const prompt = elements.shotVideoPromptPreview.value.trim();
   if (!prompt) return setShotVideoStatus("视频提示词不能为空。", "error");
   const shotId = state.shotVideoGeneration.shotId;
+  const context = shotFrameContext(shotId);
+  if (!context) return setShotVideoStatus("没有找到对应镜头。", "error");
+  const promptOverride = runtimePromptOverride(
+    prompt,
+    context.shot.videoPrompt,
+    context.plan.productionStrategy?.videoPromptProfile
+  );
   const validation = await evaluateShotVideoReferences(shotId);
   if (!validation.ok) return setShotVideoStatus(validation.message, "error");
   const count = Math.max(1, Math.min(4, Number(elements.shotVideoCount.value) || 1));
@@ -2989,7 +3045,7 @@ async function confirmGenerateShotVideo() {
   setShotVideoGeneratorRunning(true);
   setShotVideoStatus(`${shotVideoProviderLabel()} 正在生成 ${count} 条视频候选…`, "active");
   try {
-    await generateShotVideo(shotId, prompt, { count, throwOnError: true });
+    await generateShotVideo(shotId, promptOverride, { count, throwOnError: true });
     const actualCount = shotVideoStateItem(shotId)?.result?.videos?.length || count;
     setShotVideoStatus(`已生成 ${actualCount} 条视频候选，可选择一条设为当前镜头视频。`, "ready");
   } catch (error) {
@@ -3233,11 +3289,14 @@ function frameStatusDescription(status) {
   return "已锁定参考图";
 }
 
-function buildShotVideoPromptPreview(shot = {}, promptSchemaVersion = "") {
+function buildShotVideoPromptPreview(shot = {}, promptSchemaVersion = "", videoPromptProfile = null) {
   const noTextRule = "禁止新增字幕、对白文字、标题、说明字、Logo、水印、UI 文本或漫画拟声词；对白只用于理解动作和情绪，不要渲染成画面文字。";
   if (promptSchemaVersion === "3.0") {
     // 暂时弃置，后续优化或删除：direct_shot 不再由前端拼装镜头职责字段，直接使用模型签发的完整 videoPrompt。
-    return [shot.videoPrompt || "", noTextRule].filter(Boolean).join("\n");
+    return [
+      shot.videoPrompt || "",
+      shouldAppendSeedanceNoTextRule(videoPromptProfile) ? noTextRule : ""
+    ].filter(Boolean).join("\n");
   }
   if (shot.startFrame && shot.endFrame && shot.motion) {
     return [shot.videoPrompt || "", noTextRule].filter(Boolean).join("\n");
@@ -3799,7 +3858,7 @@ function handleModelStageListChange(event) {
   const selectedModel = defaultSetting.provider === provider ? defaultSetting.model : providerDefaultModel(provider, stage.key);
   modelSelect.innerHTML = renderModelOptions(stage, provider, selectedModel, defaultSetting);
 }
-function saveModelSettings() {
+async function saveModelSettings() {
   const next = {};
   for (const stage of MODEL_STAGE_DEFS) {
     const row = elements.modelStageList.querySelector(`[data-model-stage="${stage.key}"]`);
@@ -3819,8 +3878,9 @@ function saveModelSettings() {
   updateModelActionLabels();
   elements.storyModelName.textContent = modelDisplayLabel(state.storyProvider, state.storyModel);
   setModelSettingsStatus("已应用。之后所有生成请求都会使用当前模型路由。", "ready");
+  await offerVideoPromptRewriteForCurrentPlan();
 }
-function resetModelSettings() {
+async function resetModelSettings() {
   state.modelOverrides = {};
   localStorage.removeItem("directorModelOverrides");
   applyEffectiveModelState();
@@ -3829,6 +3889,111 @@ function resetModelSettings() {
   updateModelActionLabels();
   elements.storyModelName.textContent = modelDisplayLabel(state.storyProvider, state.storyModel);
   setModelSettingsStatus("已恢复后端默认模型。", "ready");
+  await offerVideoPromptRewriteForCurrentPlan();
+}
+
+async function offerVideoPromptRewriteForCurrentPlan() {
+  const variant = selectedVariant();
+  const plan = variant ? state.animationPlans[variant.id] || null : null;
+  if (!variant || !plan || plan.promptSchemaVersion !== "3.0" || plan.productionStrategy?.format !== "direct_shot_video") return;
+  renderAnimationPlan(plan);
+  const ui = videoPromptProfileUiState(plan, shotVideoSetting());
+  if (ui.status === "matched") return;
+  if (ui.status === "unsupported_target") {
+    setModelSettingsStatus(`模型设置已保存，但不会改写提示词：${ui.message}`, "error");
+    setAnimationStatus("当前模型没有 direct_shot 视频提示词 Profile；原 Animation Plan 保持不变。", "error");
+    return;
+  }
+  if (ui.status === "invalid_current_profile") {
+    setModelSettingsStatus(`模型设置已保存，但当前 Plan Profile 无效：${ui.message}`, "error");
+    setAnimationStatus("当前 Animation Plan 的提示词 Profile 无效，已阻止自动重写。", "error");
+    return;
+  }
+  const currentLabel = videoPromptProfileLabel(ui.current);
+  const targetLabel = videoPromptProfileLabel(ui.target);
+  const accepted = window.confirm(
+    `镜头视频模型已切换为 ${targetLabel}，当前 Animation Plan 使用 ${currentLabel} 提示词。\n\n是否只重新生成 direct_shot.videoPrompt？\n确认后会签发新的 Plan revision 和媒体命名空间；取消则保留现有提示词。`
+  );
+  if (!accepted) {
+    setModelSettingsStatus(`模型设置已保存；已保留 ${currentLabel} 提示词，未修改 Animation Plan。`, "ready");
+    setAnimationStatus(`当前模型为 ${targetLabel}，Plan 仍使用 ${currentLabel} 提示词。`, "active");
+    return;
+  }
+  await rewriteCurrentAnimationVideoPrompts(videoPromptTargetForSetting(shotVideoSetting()));
+}
+
+async function rewriteCurrentAnimationVideoPrompts(videoPromptTarget) {
+  if (state.animationPromptRewriting) return;
+  const variant = selectedVariant();
+  const plan = variant ? state.animationPlans[variant.id] || null : null;
+  const fullStory = variant ? state.fullStories[variant.id] || state.output.fullStory : null;
+  if (!variant || !plan || !fullStory) {
+    setModelSettingsStatus("缺少当前主题、完整剧情或 Animation Plan，不能重写提示词。", "error");
+    return;
+  }
+  const planArtifactId = animationPlanArtifactId(variant.id);
+  let productionContext;
+  let dependencyRefs;
+  try {
+    productionContext = currentPlanProductionContext(variant.id);
+    dependencyRefs = currentPlanDependencyRefs(variant.id);
+  } catch (error) {
+    setModelSettingsStatus(error.message || "当前 Animation Plan lineage 已失效。", "error");
+    return;
+  }
+  state.animationPromptRewriting = true;
+  elements.saveModelSettings.disabled = true;
+  elements.resetModelSettings.disabled = true;
+  elements.animationGenerate.disabled = true;
+  setModelSettingsStatus(`正在为 ${shotVideoProviderLabel(videoPromptTarget.provider)} 重写 direct_shot.videoPrompt…`, "active");
+  setAnimationStatus("正在只重写视频提示词；镜头拆分、动作、时长和其他字段保持不变…", "active");
+  try {
+    const response = await requestProductionArtifact({
+      endpoint: "/api/animation-plan/video-prompts/rewrite",
+      requestBody: {
+        creatorProfile: profile(),
+        creativeBrief: state.output.creativeBrief,
+        variant,
+        fullStory,
+        visualGuardrails: state.output.visualGuardrails,
+        fixedCharacterBoundary: state.output.visualGuardrails?.fixedCharacterBoundary,
+        animationPlanMode: "direct_shot",
+        videoPromptTarget,
+        productionContext
+      },
+      artifactId: planArtifactId,
+      artifactType: "animationPlan",
+      dependencyRefs,
+      createMediaNamespace: true,
+      contentForArtifact: (value) => normalizeAnimationPlanResponse(value).animationPlan
+    });
+    assertSelectedVariant(variant.id);
+    const { animationPlan, metadata } = normalizeAnimationPlanResponse(response);
+    state.animationPlans[variant.id] = animationPlan;
+    state.output.animationPlans = state.animationPlans;
+    state.output.animationPlan = animationPlan;
+    if (metadata) {
+      state.animationPlanMetadata[variant.id] = {
+        ...(state.animationPlanMetadata[variant.id] || {}),
+        ...metadata
+      };
+      state.output.animationPlanMetadata = state.animationPlanMetadata;
+    }
+    state.animationAspectRatioDrafts[variant.id] = normalizeAnimationPlanAspectRatio(animationPlan.productionStrategy?.targetAspectRatio);
+    renderAnimationPlan(animationPlan);
+    setModelSettingsStatus(`已重写为 ${videoPromptProfileLabel(animationPlan.productionStrategy?.videoPromptProfile)} 提示词。`, "ready");
+    setAnimationStatus("视频提示词已更新并签发新 Plan revision；旧 Plan 媒体已标记 stale。", "ready");
+    updateStoryExportActions();
+  } catch (error) {
+    renderAnimationPlan(plan);
+    setModelSettingsStatus(error.message || "视频提示词重写失败。", "error");
+    setAnimationStatus("提示词重写失败；原 Animation Plan 保持不变。", "error");
+  } finally {
+    state.animationPromptRewriting = false;
+    elements.saveModelSettings.disabled = false;
+    elements.resetModelSettings.disabled = false;
+    setAnimationRunning(false);
+  }
 }
 function setModelSettingsStatus(message, tone = "") {
   elements.modelSettingsStatus.textContent = message;
@@ -4502,7 +4667,7 @@ function formatAnimationPackMarkdown(pack) {
     "### 1. 正向提示词边界",
     ...formatRuleCollectionMarkdown(guardrails.positivePromptBoundary),
     "",
-    "### 2. 原片相似规避规则",
+    "### 2. 原片表面表达来源记录",
     ...formatRuleCollectionMarkdown(guardrails.sourceSimilarityRules),
     "",
     "### 3. 台词与行为规则",

@@ -114,11 +114,12 @@ test("每镜图片和视频负面数组均为空时通过输出契约和语义�
   assert.doesNotThrow(() => validatePlan(plan, context));
 });
 
-test("“咕嘎”只进入 dialogueRules，混入图片或视频负面词会被删除", () => {
+test("来源拟声词“咕嘎”不升级为 dialogueRules，也不进入渲染负面词", () => {
   const context = buildContext({
     protectedExpressions: [{ expressionType: "台词", sourceExpression: "咕嘎" }]
   });
-  assert.match(JSON.stringify(context.visualGuardrails.dialogueRules), /咕嘎/u);
+  assert.doesNotMatch(JSON.stringify(context.visualGuardrails.dialogueRules), /咕嘎/u);
+  assert.match(JSON.stringify(context.visualGuardrails.dialogueRules), /嗷.*嗷呜/u);
   assert.doesNotMatch(JSON.stringify(context.visualGuardrails.sourceSimilarityRules), /咕嘎/u);
   const plan = buildPlan(context);
   plan.shotPlan[0].negativePrompts.image.push(negativeEntry({

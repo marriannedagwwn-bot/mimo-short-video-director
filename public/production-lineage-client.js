@@ -1,4 +1,11 @@
 export const ACTIVE_PRODUCTION_RUN_STORAGE_KEY = "mimoActiveProductionRunV1";
+export const PRODUCTION_REQUEST_HEADER_NAMES = Object.freeze({
+  projectId: "x-mimo-project-id",
+  runId: "x-mimo-run-id",
+  artifactId: "x-mimo-artifact-id",
+  requestId: "x-mimo-production-request-id",
+  expectedCurrentRevision: "x-mimo-expected-current-revision"
+});
 
 export function emptyProductionState() {
   return {
@@ -39,6 +46,23 @@ export function beginArtifactRequest(production, artifactId, requestId) {
   };
   production.activeRequests[id] = token.requestId;
   return token;
+}
+
+export function productionRequestHeaders(token = {}) {
+  const projectId = String(token.projectId || "").trim();
+  const runId = String(token.runId || "").trim();
+  const artifactId = String(token.artifactId || "").trim();
+  const requestId = String(token.requestId || "").trim();
+  if (!projectId || !runId || !artifactId || !requestId) return {};
+  return {
+    [PRODUCTION_REQUEST_HEADER_NAMES.projectId]: projectId,
+    [PRODUCTION_REQUEST_HEADER_NAMES.runId]: runId,
+    [PRODUCTION_REQUEST_HEADER_NAMES.artifactId]: artifactId,
+    [PRODUCTION_REQUEST_HEADER_NAMES.requestId]: requestId,
+    ...(token.expectedCurrentRevision ? {
+      [PRODUCTION_REQUEST_HEADER_NAMES.expectedCurrentRevision]: String(token.expectedCurrentRevision)
+    } : {})
+  };
 }
 
 export function isArtifactRequestCurrent(production, token = {}) {

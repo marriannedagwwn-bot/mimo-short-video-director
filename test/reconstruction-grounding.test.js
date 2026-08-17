@@ -153,7 +153,7 @@ test("live reconstruction 使用专用事实还原 system prompt 和完整 refer
   assert.equal(result.scenes[0].location, script.scenes[0].location);
 });
 
-test("完整脚本契约失败时只纠偏一次，第二次仍失败则终止", async () => {
+test("完整脚本候选校验失败时 fail closed，不发送整份脚本纠偏", async () => {
   const calls = [];
   const client = {
     async generateJsonWithMedia(request) {
@@ -168,9 +168,7 @@ test("完整脚本契约失败时只纠偏一次，第二次仍失败则终止",
     () => workflow.reconstruct({ ...context(), referenceAnalysis }),
     (error) => error instanceof OutputContractError
   );
-  assert.equal(calls.length, 2);
-  assert.match(calls[1].prompt, /完整脚本契约校验/u);
-  assert.match(calls[1].prompt, /不要输出 schemaVersion、sourceFacts、globalFactRefs/u);
+  assert.equal(calls.length, 1);
 });
 
 test("篡改签名 analysis 后 reconstruction 在调用模型前拒绝", async () => {

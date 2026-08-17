@@ -32,16 +32,23 @@ export class ModelCallCoordinator {
     stage = "",
     validate,
     retryPrompt,
-    retryTokenLimit = defaultRetryTokenLimit
+    shouldRetry,
+    attemptObserver = null,
+    retryTokenLimit = defaultRetryTokenLimit,
+    maxProviderCalls = this.maxProviderCalls
   } = {}) {
     if (!client || typeof client !== "object") throw new TypeError("client 必须是对象");
     if (typeof validate !== "function") throw new TypeError("validate 必须是函数");
+    if (!Number.isInteger(maxProviderCalls) || maxProviderCalls < 1) {
+      throw new TypeError("本次 maxProviderCalls 必须是正整数");
+    }
+    const providerCallBudget = Math.min(this.maxProviderCalls, maxProviderCalls);
 
     const operationId = `operation:${this.idFactory()}`;
     const attempts = [];
     let activeRequest = { ...(request || {}), jsonRetryAttempts: 0, strictJson: true };
 
-    for (let callIndex = 0; callIndex < this.maxProviderCalls; callIndex += 1) {
+    for (let callIndex = 0; callIndex < providerCallBudget; callIndex += 1) {
       const startedAtMs = this.now();
       let completion = null;
       let candidate = null;
@@ -64,8 +71,8 @@ export class ModelCallCoordinator {
         candidate = completion.parsed === undefined
           ? parseSingleJsonObject(completion.content, provider || "模型")
           : completion.parsed;
-        const value = validate(candidate);
-        attempts.push(this.recordAttempt({
+        const value = await validate(candidate);
+        const attempt = this.recordAttempt({
           operationId,
           callIndex,
           stage,
@@ -81,11 +88,20 @@ export class ModelCallCoordinator {
           rawOutput: completion.raw,
           requestId: completion.requestId,
           usage: completion.usage
-        }));
+        });
+        attempts.push(attempt);
+        await notifyAttemptObserver(attemptObserver, {
+          ...attempt.toJSON(),
+          callIndex,
+          content: completion.content,
+          contentPresent: typeof completion.content === "string",
+          providerRequestId: completion.requestId,
+          usage: completion.usage
+        });
         return value;
       } catch (error) {
         const issue = classifyAttemptError(error);
-        attempts.push(this.recordAttempt({
+        const attempt = this.recordAttempt({
           operationId,
           callIndex,
           stage,
@@ -101,9 +117,25 @@ export class ModelCallCoordinator {
           rawOutput: completion?.raw || error?.raw || "",
           requestId: completion?.requestId || error?.requestId,
           usage: completion?.usage || error?.usage
-        }));
+        });
+        attempts.push(attempt);
+        await notifyAttemptObserver(attemptObserver, {
+          ...attempt.toJSON(),
+          callIndex,
+          content: typeof completion?.content === "string" ? completion.content : "",
+          contentPresent: typeof completion?.content === "string",
+          providerRequestId: completion?.requestId || error?.requestId || "",
+          usage: completion?.usage || error?.usage || null
+        });
 
-        const canRetry = issue.retryable && callIndex + 1 < this.maxProviderCalls;
+        const retryAllowed = typeof shouldRetry !== "function" || shouldRetry({
+          error,
+          issue,
+          candidate,
+          callIndex,
+          attempts: [...attempts]
+        }) !== false;
+        const canRetry = issue.retryable && retryAllowed && callIndex + 1 < providerCallBudget;
         if (!canRetry) {
           throw new ModelPipelineError(issue.message, {
             category: issue.category,
@@ -185,6 +217,15 @@ export class ModelCallCoordinator {
         usage: usage && typeof usage === "object" ? usage : null
       }
     });
+  }
+}
+
+async function notifyAttemptObserver(observer, payload) {
+  if (typeof observer !== "function") return;
+  try {
+    await observer(payload);
+  } catch (error) {
+    console.warn(`模型输出观测写入失败：${String(error?.message || "未知错误").slice(0, 500)}`);
   }
 }
 

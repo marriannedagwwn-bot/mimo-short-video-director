@@ -151,7 +151,7 @@ export function serializeServerError(error, {
 
   if (error instanceof OutputContractError) {
     return response(502, observabilityBody({
-      error: `模型输出不完整：${error.message}`,
+      error: `模型输出未通过校验：${error.message}`,
       category: "output-contract",
       code: "OUTPUT_CONTRACT_INVALID",
       origin: "model",

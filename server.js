@@ -14,8 +14,8 @@ import { computeDependencyHash, computePromptHash } from "./src/frame-dependency
 import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./src/frame-reference-request.js";
 import { WorkflowService } from "./src/workflow.js";
 import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, InputError, requireAnimationPlanAspectRatio } from "./src/validation.js";
-import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
-import { resolveAuthoritativeShotVideoInput, resolvePreviousShotFrameReference } from "./src/shot-video-continuity.js";
+import { generateShotVideo, shotVideoGenerationPromptText, shouldDeferH3CharacterAppearanceBoundaryCheck, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
+import { resolveAuthoritativeShotVideoInput, resolveAuthoritativeShotVideoReferenceAssets, resolvePreviousShotFrameReference } from "./src/shot-video-continuity.js";
 import {
   inferShotVideoProvider,
   isShotVideoModelAllowed,
@@ -39,15 +39,48 @@ import {
   serializeServerError
 } from "./src/server-error.js";
 import { AnimationPromptCapture } from "./src/animation-prompt-capture.js";
+import { PartialRepairDebugWriter } from "./src/partial-repair-debug.js";
+import {
+  FullModelOutputLogWriter,
+  MODEL_OUTPUT_LOG_SCOPES,
+  resolvePrivateModelOutputLogRoot
+} from "./src/full-model-output-log.js";
+import {
+  resolveAnimationPlanModelOutputTrace,
+  resolveFullStoryModelOutputTrace
+} from "./src/full-model-output-trace.js";
 import { ProductionStateStore } from "./src/production-state-store.js";
 import { ProductionStateError, normalizeArtifactId, safeIdentifier } from "./src/production-lineage.js";
 
 loadEnv();
+const root = path.dirname(fileURLToPath(import.meta.url));
 const config = getConfig();
-const animationPromptCapture = new AnimationPromptCapture({
-  outputRoot: process.env.ANIMATION_PROMPT_CAPTURE_DIR || ""
+const partialRepairDebugWriter = new PartialRepairDebugWriter({
+  outputRoot: process.env.PARTIAL_REPAIR_DEBUG_DIR
+    || path.join(root, "debug", "partial-repairs")
 });
-if (animationPromptCapture.enabled) {
+const fullModelOutputLogWriter = new FullModelOutputLogWriter({
+  outputRoot: await resolvePrivateModelOutputLogRoot({
+    workspaceRoot: root,
+    configuredValue: process.env.FULL_STORY_MODEL_OUTPUT_LOG_DIR,
+    servedRoot: path.join(root, "public")
+  })
+});
+const animationModelOutputLogWriter = new FullModelOutputLogWriter({
+  scope: MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN,
+  outputRoot: await resolvePrivateModelOutputLogRoot({
+    workspaceRoot: root,
+    configuredValue: process.env.ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR,
+    servedRoot: path.join(root, "public"),
+    environmentVariableName: "ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR",
+    logLabel: "Animation Plan 模型全量输出"
+  })
+});
+const animationPromptCapture = new AnimationPromptCapture({
+  outputRoot: process.env.ANIMATION_PROMPT_CAPTURE_DIR || "",
+  modelOutputLogWriter: animationModelOutputLogWriter
+});
+if (animationPromptCapture.active) {
   globalThis.fetch = animationPromptCapture.wrapFetch(globalThis.fetch);
 }
 const mimoClient = config.mimo.enabled ? new MimoClient(config.mimo) : null;
@@ -65,7 +98,9 @@ const workflow = new WorkflowService({
   clients,
   stageDefaults,
   characterBoundarySignatureRequired: config.workflowRuntime.characterBoundarySignatureRequired,
-  attemptStore
+  attemptStore,
+  partialRepairDebugWriter,
+  fullModelOutputLogWriter
 });
 const castOrchestration = new CastOrchestrationService({
   environment: config.fullStoryV2Pipeline.environment,
@@ -73,8 +108,29 @@ const castOrchestration = new CastOrchestrationService({
   confirmationTtlMs: config.fullStoryV2Pipeline.castConfirmationTtlMs,
   storyProvider: workflow.storyClient
 });
-const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, "public");
+
+async function fullStoryModelOutputTrace(request, body = {}) {
+  if (!fullModelOutputLogWriter.enabled) return null;
+  const result = await resolveFullStoryModelOutputTrace({
+    headers: request?.headers || {},
+    variantId: body?.variant?.id,
+    loadRun: (input) => productionStateStore.loadRun(input)
+  });
+  if (result.warning) console.warn(result.warning);
+  return result.context;
+}
+
+async function animationPlanModelOutputTrace(request, body = {}) {
+  if (!animationModelOutputLogWriter.enabled) return null;
+  const result = await resolveAnimationPlanModelOutputTrace({
+    headers: request?.headers || {},
+    variantId: body?.variant?.id,
+    loadRun: (input) => productionStateStore.loadRun(input)
+  });
+  if (result.warning) console.warn(result.warning);
+  return result.context;
+}
 
 const routes = {
   "/api/analyze": (body) => workflow.analyze(body),
@@ -82,14 +138,33 @@ const routes = {
   "/api/brief": (body) => workflow.createBrief(body),
   "/api/visual-guardrails": (body) => workflow.createVisualGuardrails(body),
   "/api/variants": (body) => workflow.createVariants(body),
-  "/api/full-story": (body) => workflow.createFullStory(body),
-  "/api/animation-plan": (body) => animationPromptCapture.run({
+  "/api/full-story": async (body, { request } = {}) => workflow.createFullStory(body, {
+    traceContext: await fullStoryModelOutputTrace(request, body)
+  }),
+  "/api/animation-plan": async (body, { request } = {}) => animationPromptCapture.run({
     route: "/api/animation-plan",
     variantId: body?.variant?.id,
-    animationPlanMode: body?.animationPlanMode
+    animationPlanMode: body?.animationPlanMode,
+    provider: String(body?.modelOverrides?.animationPlan?.provider || stageDefaults.animationPlan.provider || ""),
+    traceContext: await animationPlanModelOutputTrace(request, body)
   }, () => body?.includeCompilerMetadata
     ? workflow.createAnimationPlanWithMetadata(body)
     : workflow.createAnimationPlan(body)),
+  "/api/animation-plan/video-prompts/rewrite": async (body, { request } = {}) => {
+    const productionMedia = await resolveProductionMediaContext(body, { required: true });
+    return animationPromptCapture.run({
+      route: "/api/animation-plan/video-prompts/rewrite",
+      variantId: body?.variant?.id,
+      animationPlanMode: "direct_shot",
+      provider: String(body?.modelOverrides?.animationPlan?.provider || stageDefaults.animationPlan.provider || ""),
+      traceContext: await animationPlanModelOutputTrace(request, body)
+    }, () => workflow.rewriteAnimationPlanVideoPrompts({
+      ...body,
+      // The browser may display an older copy while this request is in flight.
+      // Only the current signed Artifact is authorized as rewrite source.
+      animationPlan: productionMedia.planEntry.content
+    }));
+  },
   "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
   "/api/generate-shot-video": async (body) => {
     const productionMedia = await resolveProductionMediaContext(body, { required: true });
@@ -105,15 +180,29 @@ const routes = {
       ...body,
       shot: authoritativeInput.shot,
       characterReferences: authoritativeInput.characterReferences,
+      referenceAssets: resolveAuthoritativeShotVideoReferenceAssets(
+        body.referenceAssets,
+        productionMedia.planEntry.content
+      ),
       animationPromptSchemaVersion: authoritativeInput.promptSchemaVersion,
-      videoPromptSource: authoritativeInput.promptSource
+      videoPromptSource: authoritativeInput.promptSource,
+      videoPromptProfile: structuredClone(
+        productionMedia.planEntry.content?.productionStrategy?.videoPromptProfile || null
+      )
     };
     const visualGuardrails = workflow.assertGlobalCharacterBoundary(body);
     ensureCharacterReferencesMatchBoundary(request.characterReferences, visualGuardrails, request.shot);
-    ensureCharacterPromptMatchesBoundary(shotVideoGenerationPromptText(request), visualGuardrails, {
-      requireRequiredTraits: false
-    });
     const setting = shotVideoRequestSetting(body);
+    if (!shouldDeferH3CharacterAppearanceBoundaryCheck({
+      ...request,
+      videoProvider: setting.provider,
+      videoModel: setting.model
+    })) {
+      ensureCharacterPromptMatchesBoundary(shotVideoGenerationPromptText(request), visualGuardrails, {
+        requireRequiredTraits: false,
+        promptScope: "multi_character"
+      });
+    }
     if (
       String(body.aspectRatio || "").trim()
       && body.aspectRatio !== productionMedia.planAspectRatio
@@ -139,6 +228,7 @@ const routes = {
       : null;
     return generateShotVideo({
       ...request,
+      visualGuardrails,
       aspectRatio: productionMedia?.planAspectRatio || requireAnimationPlanAspectRatio(body.aspectRatio || "9:16", "aspectRatio"),
       videoProvider: setting.provider,
       videoModel: setting.model,
@@ -147,7 +237,44 @@ const routes = {
         publicBasePath: productionMedia.videoPublicBasePath,
         filenamePrefix: productionMedia.filenamePrefix
       } : {}),
-      trustedPreviousShotReference
+      trustedPreviousShotReference,
+      auditMiniMaxH3ExpandedPromptSemantics: ({ sourcePrompt, expandedPrompt, referenceManifest, shot }) => (
+        workflow.auditMiniMaxH3ExpandedPromptSemantics({
+          ...body,
+          animationPlan: productionMedia.planEntry.content,
+          shot,
+          sourcePrompt,
+          expandedPrompt,
+          referenceManifest
+        })
+      ),
+      assertProductionContextCurrent: async () => {
+        const currentMedia = await resolveProductionMediaContext(body, { required: true });
+        if (!trustedPreviousShotReference) return;
+        const currentPrevious = await resolvePreviousShotFrameReference({
+          continuityReferenceMode: request.continuityReferenceMode,
+          generationMode: request.generationMode,
+          currentShotId: request.shot.shotId,
+          planArtifactId: currentMedia.planArtifactId,
+          planEntry: currentMedia.planEntry,
+          latestArtifacts: currentMedia.latestArtifacts,
+          videoOutputRoot: currentMedia.videoOutputRoot,
+          videoPublicBasePath: currentMedia.videoPublicBasePath,
+          filenamePrefix: currentMedia.filenamePrefix
+        });
+        if (
+          currentPrevious?.sourceArtifact?.artifactId !== trustedPreviousShotReference.sourceArtifact?.artifactId
+          || currentPrevious?.sourceArtifact?.revision !== trustedPreviousShotReference.sourceArtifact?.revision
+          || currentPrevious?.sourceArtifact?.contentDigest !== trustedPreviousShotReference.sourceArtifact?.contentDigest
+          || currentPrevious?.selectedIndex !== trustedPreviousShotReference.selectedIndex
+          || currentPrevious?.sourceOutputUrl !== trustedPreviousShotReference.sourceOutputUrl
+        ) {
+          throw new ProductionStateError("上一镜当前候选已更新，拒绝继续使用旧的 Context-IR/抽帧结果。", {
+            code: "SHOT_VIDEO_PREVIOUS_REFERENCE_STALE",
+            httpStatus: 409
+          });
+        }
+      }
     });
   },
   "/api/run": (body) => workflow.run(body)
@@ -258,7 +385,7 @@ const server = http.createServer(async (request, response) => {
       const body = await readJson(request, {
         limit: url.pathname === "/api/generate-shot-video" ? 70 * 1024 * 1024 : undefined
       });
-      const result = await routes[url.pathname](body);
+      const result = await routes[url.pathname](body, { request });
       return json(response, 200, { ok: true, mode: workflow.mode, result });
     }
     if (request.method === "GET" || request.method === "HEAD") return serveStatic(url.pathname, response, request.method === "HEAD");
@@ -275,6 +402,13 @@ server.requestTimeout = config.serverRequestTimeoutMs;
 server.listen(config.port, () => {
   console.log(`AI 短视频导演：http://localhost:${config.port}`);
   console.log(`Production Lineage 状态目录：${config.workflowRuntime.productionStateDirectory}`);
+    console.log(`局部纠错 Debug 目录：${partialRepairDebugWriter.outputRoot}`);
+    if (fullModelOutputLogWriter.enabled) {
+      console.log(`Full Story 全量模型输出日志已开启：${fullModelOutputLogWriter.outputRoot}`);
+    }
+    if (animationModelOutputLogWriter.enabled) {
+      console.log(`Animation Plan 全量模型输出日志已开启：${animationModelOutputLogWriter.outputRoot}`);
+    }
   if (animationPromptCapture.enabled) {
     console.log(`动画 AI Prompt 抓取已开启：${animationPromptCapture.outputRoot}`);
   }
@@ -751,7 +885,8 @@ async function generateShotFrameImage(body = {}) {
   const count = clampFrameImageCount(body.count);
   const providerPrompt = buildShotFrameMultiImagePrompt(prompt, count);
   ensureCharacterPromptMatchesBoundary(providerPrompt, visualGuardrails, {
-    requireRequiredTraits: false
+    requireRequiredTraits: false,
+    promptScope: "multi_character"
   });
   const authoritativePromptHash = frameReferenceMode ? await computePromptHash(providerPrompt) : "";
   const imageModel = modelOverrideFor(body, "imageGeneration") || config.jimeng.model;

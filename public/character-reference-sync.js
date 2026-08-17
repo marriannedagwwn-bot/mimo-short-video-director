@@ -1,4 +1,9 @@
 export function syncShotCharacterReference(plan, previousCharacter, updatedCharacter) {
+  // MiniMax H3 direct_shot stores an English provider-signed Base prompt.
+  // Runtime Context-IR binding, not this legacy text mutator, decides whether
+  // a character uses an image or the signed text fallback. Keep this guard
+  // H3-specific so the existing Seedance behavior is unchanged by this fix.
+  if (isMiniMaxH3DirectShotPlan(plan)) return 0;
   const characterName = String(updatedCharacter?.characterName || previousCharacter?.characterName || "").trim();
   if (!characterName || !Array.isArray(plan?.shotPlan)) return 0;
   const visualAnchor = buildCharacterVisualAnchor(updatedCharacter, characterName);
@@ -22,6 +27,17 @@ export function syncShotCharacterReference(plan, previousCharacter, updatedChara
     if (shotChanged) changed += 1;
   }
   return changed;
+}
+
+function isMiniMaxH3DirectShotPlan(plan = {}) {
+  const profile = plan?.productionStrategy?.videoPromptProfile || {};
+  return (
+    String(plan?.promptSchemaVersion || "").trim() === "3.0"
+    || String(plan?.productionStrategy?.format || "").trim() === "direct_shot_video"
+  )
+    && String(profile.profileId || "").trim() === "minimax_h3"
+    && String(profile.provider || "").trim() === "MiniMax"
+    && String(profile.model || "").trim() === "MiniMax-H3";
 }
 
 function hasStructuredPromptSource(shot) {

@@ -1,12 +1,54 @@
-import { ANALYSIS_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, miniMaxH3ExpandedPromptSemanticAuditPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { compileCharacterFeatures } from "./character-feature-compiler.js";
 import { AttemptStore } from "./attempt-store.js";
+import {
+  fullStoryPartialRepairPrompt,
+  mergeFullStoryPartialRepair,
+  planFullStoryPartialRepair
+} from "./full-story-partial-repair.js";
+import {
+  FULL_STORY_BEAT_SCENE_POSTPASS_STAGE,
+  createFullStoryBeatScenePostpassPlan,
+  fullStoryBeatScenePostpassPrompt,
+  mergeFullStoryBeatScenePostpass
+} from "./full-story-beat-scene-postpass.js";
+import {
+  animationFoundationPartialRepairPrompt,
+  mergeAnimationFoundationPartialRepair,
+  planAnimationFoundationPartialRepair
+} from "./animation-foundation-partial-repair.js";
+import {
+  animationShotPromptPartialRepairPrompt,
+  mergeAnimationShotPromptPartialRepair,
+  planAnimationShotPromptPartialRepair
+} from "./animation-shot-prompt-partial-repair.js";
+import {
+  animationVideoPromptSemanticAuditCatalogPayload,
+  createAnimationVideoPromptSemanticAuditCatalog,
+  deriveAnimationVideoPromptSemanticAuditOverall,
+  validateAnimationVideoPromptSemanticAuditResponse
+} from "./animation-video-prompt-semantic-audit.js";
+import {
+  animationVideoPromptSemanticRepairPrompt,
+  mergeAnimationVideoPromptSemanticRepair,
+  planAnimationVideoPromptSemanticRepair
+} from "./animation-video-prompt-semantic-repair.js";
 import { ModelCallCoordinator } from "./model-call-coordinator.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationShotBatchContract, ensureCharacterReferenceMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText } from "./validation.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCharacterReferenceMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText } from "./validation.js";
+import {
+  resolveVideoPromptProfile,
+  VIDEO_PROMPT_PROFILE_IDS
+} from "../public/video-prompt-profiles.js";
+import {
+  MiniMaxH3PromptError,
+  assertMiniMaxH3BasePrompt,
+  assertMiniMaxH3Duration,
+  miniMaxH3DialogueTexts
+} from "./minimax-h3-prompt.js";
 import { CharacterBoundaryError, createCharacterBoundaryKey, sealGlobalCharacterBoundary, verifyGlobalCharacterBoundary } from "./character-boundary.js";
 import {
   ReconstructionGroundingError,
@@ -17,6 +59,7 @@ import {
   verifyReconstructionSeal,
   verifyReferenceAnalysis
 } from "./reconstruction-grounding.js";
+import { isDeepStrictEqual } from "node:util";
 
 const DEFAULT_ANIMATION_BATCH_SCENE_COUNT = 2;
 
@@ -42,7 +85,9 @@ export class WorkflowService {
     characterBoundaryKey = null,
     characterBoundarySignatureRequired = true,
     attemptStore = null,
-    modelCallCoordinator = null
+    modelCallCoordinator = null,
+    partialRepairDebugWriter = null,
+    fullModelOutputLogWriter = null
   } = {}) {
     this.clients = normalizeClients(clients);
     if (client && !Object.keys(this.clients).length) this.clients.MiMo = client;
@@ -88,10 +133,65 @@ export class WorkflowService {
     this.modelCallCoordinator = modelCallCoordinator instanceof ModelCallCoordinator
       ? modelCallCoordinator
       : new ModelCallCoordinator({ attemptStore: this.attemptStore });
+    this.partialRepairDebugWriter = partialRepairDebugWriter;
+    this.fullModelOutputLogWriter = fullModelOutputLogWriter
+      && typeof fullModelOutputLogWriter.recordAttempt === "function"
+      ? fullModelOutputLogWriter
+      : null;
   }
 
   get mode() {
     return this.hasLiveClient ? "live" : "demo";
+  }
+
+  async beginPartialRepairDebug(payload) {
+    return safePartialRepairDebugCall(
+      this.partialRepairDebugWriter,
+      "begin",
+      payload
+    );
+  }
+
+  async recordPartialRepairDebugResponse(session, response) {
+    if (!session) return null;
+    return safePartialRepairDebugCall(
+      this.partialRepairDebugWriter,
+      "recordResponse",
+      session,
+      response
+    );
+  }
+
+  async recordPartialRepairDebugResult(session, result) {
+    if (!session) return null;
+    return safePartialRepairDebugCall(
+      this.partialRepairDebugWriter,
+      "recordResult",
+      session,
+      result
+    );
+  }
+
+  async preparePartialRepairDebug({ promptFactory, ...debugPayload }) {
+    let repairPrompt = "";
+    let promptError = null;
+    try {
+      repairPrompt = promptFactory();
+    } catch (error) {
+      promptError = error;
+    }
+    const debugSession = await this.beginPartialRepairDebug({
+      ...debugPayload,
+      repairPrompt
+    });
+    if (promptError) {
+      await this.recordPartialRepairDebugResult(debugSession, {
+        status: "rejected",
+        error: promptError
+      });
+      throw promptError;
+    }
+    return { repairPrompt, debugSession };
   }
 
   get hasLiveClient() {
@@ -287,7 +387,7 @@ export class WorkflowService {
     });
   }
 
-  async createFullStory(input) {
+  async createFullStory(input, { traceContext = null } = {}) {
     requireObject(input, "请求");
     requireObject(input.creativeBrief, "creativeBrief");
     requireObject(input.variant, "variant");
@@ -301,13 +401,127 @@ export class WorkflowService {
     if (!this.hasLiveClient) return ensureFullStoryMatchesProfile(ensureOutputContract(mockFullStory(validatedInput), "fullStory"), profile, input.creativeBrief, input.variant, visualGuardrails);
     this.assertStageClient(settings, "完整剧情");
     const prompt = fullStoryPrompt({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
-    return this.generateValidatedJson({
+    const validateFullStory = (result) => ensureFullStoryMatchesProfile(
+      ensureOutputContract(result, "fullStory"),
+      profile,
+      input.creativeBrief,
+      input.variant,
+      visualGuardrails
+    );
+    const observeFullStoryAttempt = this.fullModelOutputLogWriter?.enabled
+      ? (attempt) => this.fullModelOutputLogWriter.recordAttempt({
+        ...attempt,
+        context: {
+          ...(traceContext && typeof traceContext === "object" ? traceContext : {}),
+          variantId: String(validatedInput.variant?.id || "")
+        }
+      })
+      : null;
+    let partialRepairState = null;
+    let fullStory;
+    try {
+      fullStory = await this.modelCallCoordinator.runJson({
+        client: settings.client,
+        request: {
+          prompt,
+          model: settings.model,
+          maxCompletionTokens: settings.maxCompletionTokens
+        },
+        provider: settings.provider || "",
+        stage: "fullStory",
+        attemptObserver: observeFullStoryAttempt,
+        retryTokenLimit,
+        maxProviderCalls: 2,
+        shouldRetry: ({ candidate }) => (
+          partialRepairState !== null
+          || !candidate
+          || typeof candidate !== "object"
+          || Array.isArray(candidate)
+        ),
+        validate: async (result) => {
+          if (partialRepairState) {
+            await this.recordPartialRepairDebugResponse(partialRepairState.debugSession, result);
+            try {
+              const repaired = validateFullStory(mergeFullStoryPartialRepair(
+                partialRepairState.candidate,
+                result,
+                partialRepairState.plan,
+                validatedInput
+              ));
+              await this.recordPartialRepairDebugResult(partialRepairState.debugSession, {
+                status: "repaired"
+              });
+              partialRepairState.debugResultRecorded = true;
+              return repaired;
+            } catch (error) {
+              await this.recordPartialRepairDebugResult(partialRepairState.debugSession, {
+                status: "rejected",
+                error
+              });
+              partialRepairState.debugResultRecorded = true;
+              throw error;
+            }
+          }
+          try {
+            return validateFullStory(result);
+          } catch (error) {
+            const repairPlan = planFullStoryPartialRepair(result, error, validatedInput);
+            if (repairPlan) {
+              const { repairPrompt, debugSession } = await this.preparePartialRepairDebug({
+                promptFactory: () => fullStoryPartialRepairPrompt(repairPlan),
+                stage: "fullStory",
+                provider: settings.provider,
+                model: settings.model,
+                variantId: validatedInput.variant?.id,
+                originalError: error,
+                repairPlan
+              });
+              partialRepairState = {
+                candidate: structuredClone(result),
+                plan: repairPlan,
+                repairPrompt,
+                debugResultRecorded: false,
+                debugSession
+              };
+            }
+            throw error;
+          }
+        },
+        retryPrompt: ({ issue }) => {
+          if (partialRepairState) return partialRepairState.repairPrompt;
+          return fullStoryCompletionRetryPrompt(prompt, issue);
+        }
+      });
+    } catch (error) {
+      if (!partialRepairState?.debugResultRecorded) {
+        await this.recordPartialRepairDebugResult(partialRepairState?.debugSession, {
+          status: "rejected",
+          error
+        });
+        if (partialRepairState) partialRepairState.debugResultRecorded = true;
+      }
+      throw error;
+    }
+
+    const beatScenePostpassPlan = createFullStoryBeatScenePostpassPlan(fullStory);
+    return this.modelCallCoordinator.runJson({
       client: settings.client,
-      prompt,
-      model: settings.model,
-      maxCompletionTokens: settings.maxCompletionTokens,
-      validate: (result) => ensureFullStoryMatchesProfile(ensureOutputContract(result, "fullStory"), profile, input.creativeBrief, input.variant, visualGuardrails),
-      retryContext: { stage: "fullStory", provider: settings.provider }
+      request: {
+        prompt: fullStoryBeatScenePostpassPrompt(beatScenePostpassPlan),
+        model: settings.model,
+        maxCompletionTokens: settings.maxCompletionTokens
+      },
+      provider: settings.provider || "",
+      stage: FULL_STORY_BEAT_SCENE_POSTPASS_STAGE,
+      attemptObserver: observeFullStoryAttempt,
+      maxProviderCalls: 1,
+      shouldRetry: () => false,
+      validate: (response) => mergeFullStoryBeatScenePostpass(
+        fullStory,
+        response,
+        beatScenePostpassPlan,
+        { validateMerged: validateFullStory }
+      )
     });
   }
 
@@ -326,51 +540,134 @@ export class WorkflowService {
   }
 
   async generateValidatedJson({ client = this.client, prompt, systemPrompt = null, model = null, maxCompletionTokens = null, frames = [], video = null, validate, retryContext = null, onResolvedMediaMode = null }) {
-    const request = { prompt, systemPrompt, model, maxCompletionTokens, onResolvedMediaMode };
-    if (retryContext?.stage === "fullStory") {
-      return this.modelCallCoordinator.runJson({
-        client,
-        request,
-        provider: retryContext.provider || "",
-        stage: "fullStory",
-        validate,
-        retryTokenLimit,
-        retryPrompt: ({ error, issue, candidate }) => (
-          issue.category === "schema" || issue.category === "output-contract"
-            ? validationRetryPrompt(
-              prompt,
-              error.message,
-              retryContext,
-              candidate,
-              error.details
-            )
-            : fullStoryCompletionRetryPrompt(prompt, issue)
-        )
-      });
-    }
+    const request = {
+      prompt,
+      systemPrompt,
+      model,
+      maxCompletionTokens,
+      onResolvedMediaMode,
+      jsonRetryAttempts: 0,
+      strictJson: true
+    };
     const first = frames.length || video
       ? await client.generateJsonWithMedia({ ...request, frames, video })
       : await client.generateJson(request);
+    // A parsed candidate may only receive another content-model call through
+    // a stage adapter that signs exact targets and performs an atomic merge.
+    // Generic whole-artifact regeneration would grant the model unrelated
+    // write access and can leak the complete failed Artifact back into the
+    // correction prompt, so unsupported stages fail closed here.
+    return validate(first);
+  }
+
+  async generateAnimationFoundationWithPartialRepair({
+    client,
+    provider = "",
+    prompt,
+    model = null,
+    maxCompletionTokens = null,
+    validate,
+    repairContext
+  }) {
+    let partialRepairState = null;
     try {
-      return validate(first);
+      return await this.modelCallCoordinator.runJson({
+      client,
+      request: { prompt, model, maxCompletionTokens },
+      provider,
+      stage: "animationFoundation",
+      maxProviderCalls: 2,
+      retryTokenLimit,
+      shouldRetry: () => partialRepairState !== null,
+      validate: async (result) => {
+        if (partialRepairState) {
+          await this.recordPartialRepairDebugResponse(partialRepairState.debugSession, result);
+          try {
+            const merged = mergeAnimationFoundationPartialRepair(
+              partialRepairState.candidate,
+              result,
+              partialRepairState.plan,
+              {
+                context: repairContext,
+                validateMerged: (candidate) => {
+                  validate(candidate);
+                  return true;
+                }
+              }
+            );
+            const repaired = validate(merged);
+            await this.recordPartialRepairDebugResult(partialRepairState.debugSession, {
+              status: "repaired"
+            });
+            partialRepairState.debugResultRecorded = true;
+            return repaired;
+          } catch (error) {
+            await this.recordPartialRepairDebugResult(partialRepairState.debugSession, {
+              status: "rejected",
+              error
+            });
+            partialRepairState.debugResultRecorded = true;
+            if (!(error instanceof OutputContractError)) throw error;
+            throw new OutputContractError(
+              `Animation Foundation 有界局部纠错失败；原始诊断：${partialRepairState.error.message}；repair 响应：${error.message}`,
+              [
+                ...(Array.isArray(partialRepairState.error.details)
+                  ? partialRepairState.error.details
+                  : []),
+                ...(Array.isArray(error.details) ? error.details : [])
+              ]
+            );
+          }
+        }
+        try {
+          return validate(result);
+        } catch (error) {
+          if (error instanceof OutputContractError) {
+            const repairPlan = planAnimationFoundationPartialRepair(
+              result,
+              error,
+              repairContext
+            );
+            if (repairPlan) {
+              const { repairPrompt, debugSession } = await this.preparePartialRepairDebug({
+                promptFactory: () => animationFoundationPartialRepairPrompt(repairPlan),
+                stage: "animationFoundation",
+                provider,
+                model,
+                variantId: repairContext?.variant?.id,
+                originalError: error,
+                repairPlan
+              });
+              partialRepairState = {
+                candidate: structuredClone(result),
+                plan: repairPlan,
+                error,
+                repairPrompt,
+                debugResultRecorded: false,
+                debugSession
+              };
+            }
+          }
+          throw error;
+        }
+      },
+      retryPrompt: () => partialRepairState.repairPrompt
+      });
     } catch (error) {
-      if (!(error instanceof OutputContractError)) throw error;
-      const retryRequest = {
-        prompt: validationRetryPrompt(prompt, error.message, retryContext, first, error.details),
-        systemPrompt,
-        model,
-        maxCompletionTokens: retryTokenLimit(maxCompletionTokens),
-        onResolvedMediaMode
-      };
-      const second = frames.length || video
-        ? await client.generateJsonWithMedia({ ...retryRequest, frames, video })
-        : await client.generateJson(retryRequest);
-      return validate(second);
+      if (!partialRepairState?.debugResultRecorded) {
+        await this.recordPartialRepairDebugResult(partialRepairState?.debugSession, {
+          status: "rejected",
+          error
+        });
+        if (partialRepairState) partialRepairState.debugResultRecorded = true;
+      }
+      throw error;
     }
   }
 
   async generateAnimationShotBatch({
     client,
+    provider = "",
     prompt,
     model = null,
     maxCompletionTokens = null,
@@ -379,6 +676,7 @@ export class WorkflowService {
     directShotMode = false,
     batchIndex = 0,
     repairContext,
+    partialRepairContext = null,
     validate
   }) {
     const firstPolicy = ANIMATION_BATCH_ATTEMPT_POLICIES.first;
@@ -387,11 +685,20 @@ export class WorkflowService {
     assertAnimationBatchAttemptPolicy(retryPolicy);
 
     let firstOutcome;
+    let firstResponseReceived = false;
     try {
-      const firstResponse = await client.generateJson({ prompt, model, maxCompletionTokens });
+      const firstResponse = await client.generateJson({
+        prompt,
+        model,
+        maxCompletionTokens,
+        jsonRetryAttempts: 0,
+        strictJson: true
+      });
+      firstResponseReceived = true;
       const rawModelOutput = structuredClone(firstResponse);
       firstOutcome = await this.runAnimationShotBatchAttempt({
         client,
+        provider,
         model,
         maxCompletionTokens,
         compilerSettings,
@@ -401,6 +708,7 @@ export class WorkflowService {
         compilerPhase: "post-generate",
         rawModelOutput,
         repairContext,
+        partialRepairContext,
         validate,
         policy: firstPolicy
       });
@@ -409,7 +717,8 @@ export class WorkflowService {
       firstOutcome = animationBatchAttemptFailure({
         error,
         candidate: null,
-        phase: "generate"
+        phase: "generate",
+        hadParsedCandidate: firstResponseReceived
       });
     }
 
@@ -418,6 +727,12 @@ export class WorkflowService {
         batch: firstOutcome.batch,
         compilerRuns: finalizeStaticFrameCompilerRuns(firstOutcome.compilerRuns, firstOutcome.batch, true)
       };
+    }
+    if (directShotMode && firstOutcome.hadParsedCandidate) {
+      throw attachStaticFrameCompilerRuns(
+        finalDirectAnimationBatchAttemptError(firstOutcome),
+        finalizeStaticFrameCompilerRuns(firstOutcome.compilerRuns, null, false)
+      );
     }
     if (!firstPolicy.allowBatchRetry) throw finalAnimationBatchAttemptError(firstOutcome.error);
 
@@ -430,7 +745,9 @@ export class WorkflowService {
       const retryResponse = await client.generateJson({
         prompt: retryPrompt,
         model,
-        maxCompletionTokens: retryTokenLimit(maxCompletionTokens)
+        maxCompletionTokens: retryTokenLimit(maxCompletionTokens),
+        jsonRetryAttempts: 0,
+        strictJson: true
       });
       retryRawModelOutput = structuredClone(retryResponse);
     } catch (error) {
@@ -447,6 +764,7 @@ export class WorkflowService {
     try {
       retryOutcome = await this.runAnimationShotBatchAttempt({
         client,
+        provider,
         model,
         maxCompletionTokens,
         compilerSettings,
@@ -456,6 +774,7 @@ export class WorkflowService {
         compilerPhase: "second-pass",
         rawModelOutput: retryRawModelOutput,
         repairContext,
+        partialRepairContext,
         validate,
         policy: retryPolicy
       });
@@ -485,6 +804,7 @@ export class WorkflowService {
 
   async runAnimationShotBatchAttempt({
     client,
+    provider = "",
     model,
     maxCompletionTokens,
     compilerSettings,
@@ -494,6 +814,7 @@ export class WorkflowService {
     compilerPhase,
     rawModelOutput,
     repairContext,
+    partialRepairContext = null,
     validate,
     policy
   }) {
@@ -523,6 +844,7 @@ export class WorkflowService {
         error,
         candidate: null,
         phase: "structural_repair_or_alias",
+        hadParsedCandidate: true,
         compilerRuns
       });
     }
@@ -536,7 +858,140 @@ export class WorkflowService {
       policy
     });
     initialOutcome.compilerRuns = compilerRuns;
-    if (initialOutcome.status === "success" || !policy.allowPatch) return initialOutcome;
+    initialOutcome.hadParsedCandidate = true;
+    if (initialOutcome.status === "success") return initialOutcome;
+
+    if (directShotMode && policy.allowPatch && partialRepairContext?.foundation) {
+      let repairPlan = null;
+      let repairCandidate = null;
+      try {
+        const canonicalCandidate = canonicalizeAnimationShotBatchForPromptRepair(
+          candidate,
+          partialRepairContext
+        );
+        repairCandidate = createAnimationShotPromptRepairCandidate(
+          canonicalCandidate,
+          partialRepairContext.foundation,
+          partialRepairContext.previousShots
+        );
+        repairPlan = planAnimationShotPromptPartialRepair(
+          repairCandidate,
+          initialOutcome.error,
+          {
+            repairAttemptCount: 0,
+            fullStory: partialRepairContext.input?.fullStory,
+            visualGuardrails: partialRepairContext.input?.visualGuardrails
+          }
+        );
+      } catch (error) {
+        if (!isRecoverableAnimationModelOutputError(error)) throw error;
+        return animationBatchAttemptFailure({
+          error,
+          candidate,
+          phase: "bounded_prompt_repair_plan",
+          diagnostics: initialOutcome.diagnostics,
+          compilerRuns,
+          hadParsedCandidate: true
+        });
+      }
+
+      if (repairPlan) {
+        const { repairPrompt, debugSession } = await this.preparePartialRepairDebug({
+          promptFactory: () => animationShotPromptPartialRepairPrompt(repairPlan),
+          stage: "animationShotPrompt",
+          provider,
+          model,
+          variantId: partialRepairContext.input?.variant?.id,
+          batchIndex,
+          originalError: initialOutcome.error,
+          repairPlan
+        });
+        try {
+          const envelope = await client.generateJson({
+            prompt: repairPrompt,
+            model,
+            maxCompletionTokens: retryTokenLimit(maxCompletionTokens),
+            jsonRetryAttempts: 0,
+            strictJson: true
+          });
+          await this.recordPartialRepairDebugResponse(debugSession, envelope);
+          const mergedPlan = mergeAnimationShotPromptPartialRepair(
+            repairCandidate,
+            envelope,
+            repairPlan,
+            {
+              fullStory: partialRepairContext.input?.fullStory,
+              visualGuardrails: partialRepairContext.input?.visualGuardrails
+            }
+          );
+          const previousShotCount = Array.isArray(partialRepairContext.previousShots)
+            ? partialRepairContext.previousShots.length
+            : 0;
+          const repairedCandidate = {
+            shotPlan: structuredClone(mergedPlan.shotPlan.slice(previousShotCount))
+          };
+          const repairedOutcome = await this.evaluateAnimationShotBatchCandidate({
+            client,
+            model,
+            maxCompletionTokens,
+            candidate: repairedCandidate,
+            validate,
+            policy
+          });
+          repairedOutcome.compilerRuns = compilerRuns;
+          repairedOutcome.hadParsedCandidate = true;
+          repairedOutcome.boundedRepairAttempted = true;
+          if (repairedOutcome.status === "success") {
+            assertAnimationBatchOnlyVideoPromptsChanged(
+              repairedCandidate,
+              repairedOutcome.batch
+            );
+            await this.recordPartialRepairDebugResult(debugSession, {
+              status: "repaired"
+            });
+          } else {
+            await this.recordPartialRepairDebugResult(debugSession, {
+              status: "rejected",
+              error: repairedOutcome.error
+            });
+          }
+          return repairedOutcome;
+        } catch (error) {
+          await this.recordPartialRepairDebugResult(debugSession, {
+            status: "rejected",
+            error
+          });
+          if (!isRecoverableAnimationModelOutputError(error)) throw error;
+          const repairError = error instanceof OutputContractError
+            ? new OutputContractError(
+              `H3 videoPrompt 有界局部纠错失败；原始诊断：${initialOutcome.error.message}；repair 响应：${error.message}`,
+              [
+                ...(Array.isArray(initialOutcome.error?.details)
+                  ? initialOutcome.error.details
+                  : []),
+                ...(Array.isArray(error.details) ? error.details : [])
+              ]
+            )
+            : error;
+          return animationBatchAttemptFailure({
+            error: repairError,
+            candidate,
+            phase: "bounded_prompt_repair",
+            diagnostics: initialOutcome.diagnostics,
+            compilerRuns,
+            hadParsedCandidate: true,
+            boundedRepairAttempted: true
+          });
+        }
+      }
+    }
+
+    // direct_shot may only use the bounded videoPrompt adapter above. The
+    // legacy v2 patch path serializes a whole failed batch and must remain
+    // structurally unreachable even if a future direct schema adds a field
+    // that resembles a legacy patch target.
+    if (directShotMode) return initialOutcome;
+    if (!policy.allowPatch) return initialOutcome;
     if (initialOutcome.kind === "audit_protocol") return initialOutcome;
 
     let trustedDetail;
@@ -750,6 +1205,9 @@ export class WorkflowService {
     }
     const directShotMode = animationPlanMode === ANIMATION_DIRECT_SHOT_MODE;
     const targetAspectRatio = requireAnimationPlanAspectRatio(input.targetAspectRatio || "9:16");
+    const videoPromptProfile = directShotMode
+      ? resolveDirectShotVideoPromptProfile(input.videoPromptTarget)
+      : null;
     const visualGuardrails = this.assertGlobalCharacterBoundary(input);
     const fullStory = ensureFullStoryMatchesProfile(
       ensureOutputContract(input.fullStory, "fullStory"),
@@ -758,10 +1216,19 @@ export class WorkflowService {
       input.variant,
       visualGuardrails
     );
-    const validatedInput = { ...input, fullStory, visualGuardrails, targetAspectRatio };
+    const validatedInput = {
+      ...input,
+      fullStory,
+      visualGuardrails,
+      targetAspectRatio,
+      ...(videoPromptProfile ? { videoPromptProfile } : {})
+    };
     const settings = this.resolveStage("animationPlan", validatedInput);
     const compilerSettings = this.resolveStage("staticFrameCompiler", validatedInput);
     if (!this.hasLiveClient) {
+      if (videoPromptProfile?.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3) {
+        throw new InputError("MiniMax H3 Animation Plan 需要已配置的文本模型生成并验证英文 Prompt；demo mock 不得伪造翻译后的 H3 事实。");
+      }
       return {
         animationPlan: validateAnimationPlanOutput(mockAnimationPlan(validatedInput), validatedInput),
         metadata: directShotMode ? disabledDirectShotCompilerMetadata(compilerSettings) : {
@@ -795,12 +1262,14 @@ export class WorkflowService {
         cachedProfile: input.privateSidecars?.characterFeatureProfile || null
       });
     const [foundationResult, characterFeatureResult] = await Promise.allSettled([
-      this.generateValidatedJson({
+      this.generateAnimationFoundationWithPartialRepair({
         client: settings.client,
+        provider: settings.provider,
         prompt: animationFoundationPrompt(promptInput),
         model: settings.model,
         maxCompletionTokens: settings.maxCompletionTokens,
-        validate: (result) => validateAnimationFoundationOutput(result, validatedInput)
+        validate: (result) => validateAnimationFoundationOutput(result, validatedInput),
+        repairContext: validatedInput
       }),
       createCharacterFeatureTask()
     ]);
@@ -845,6 +1314,7 @@ export class WorkflowService {
       };
       const batchResult = await this.generateAnimationShotBatch({
         client: settings.client,
+        provider: settings.provider,
         prompt,
         model: settings.model,
         maxCompletionTokens: settings.maxCompletionTokens,
@@ -853,19 +1323,43 @@ export class WorkflowService {
         directShotMode,
         batchIndex,
         repairContext: createAnimationShotBatchRepairContext(batchContext),
+        partialRepairContext: batchContext,
         validate: (result) => validateAnimationShotBatchOutput(result, batchContext)
       });
       shotPlan.push(...batchResult.batch.shotPlan);
       compilerRuns.push(...batchResult.compilerRuns);
     }
 
-    const animationPlan = validateAnimationPlanOutput(
+    let animationPlan = validateAnimationPlanOutput(
       mergeAnimationPlan(foundation, shotPlan, validatedInput),
       validatedInput
     );
+    let initialVideoPromptSemanticAudit = null;
+    if (
+      directShotMode
+      && videoPromptProfile?.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3
+    ) {
+      const semanticOutcome = await this.auditInitialAnimationVideoPromptSemantics({
+        ...validatedInput,
+        sourcePlan: animationPlan,
+        rewrittenPlan: animationPlan,
+        targetProfile: videoPromptProfile,
+        auditMode: "initial"
+      });
+      animationPlan = semanticOutcome.animationPlan;
+      initialVideoPromptSemanticAudit = semanticOutcome.semanticAudit;
+    }
+    const directShotMetadata = directShotMode
+      ? {
+        ...disabledDirectShotCompilerMetadata(compilerSettings),
+        ...(initialVideoPromptSemanticAudit
+          ? { videoPromptSemanticAudit: initialVideoPromptSemanticAudit }
+          : {})
+      }
+      : null;
     return {
       animationPlan,
-      metadata: directShotMode ? disabledDirectShotCompilerMetadata(compilerSettings) : {
+      metadata: directShotMode ? directShotMetadata : {
         characterFeatureCompiler: structuredClone(characterFeatureCompilation.metadata || {}),
         privateSidecars: {
           characterFeatureProfile: structuredClone(characterFeatureProfile)
@@ -878,6 +1372,323 @@ export class WorkflowService {
         }
       }
     };
+  }
+
+  async auditInitialAnimationVideoPromptSemantics(input) {
+    return this.auditAnimationVideoPromptSemanticsWithBoundedRepair(input, {
+      auditMode: "initial",
+      stageLabel: "MiniMax H3 首次 Animation Plan 视频提示词语义审计",
+      failurePrefix: "MiniMax H3 首次视频提示词与镜头事实不一致"
+    });
+  }
+
+  async generateAnimationVideoPromptSemanticAudit(input, {
+    auditMode,
+    stageLabel,
+    reviewShotIds = null
+  } = {}) {
+    const settings = this.resolveStage("animationPlan", input);
+    this.assertStageClient(settings, stageLabel);
+    const catalog = createAnimationVideoPromptSemanticAuditCatalog(
+      animationVideoPromptSemanticAuditCatalogInput(input, { reviewShotIds }),
+      { candidate: input.rewrittenPlan }
+    );
+    const audit = await this.generateValidatedJson({
+      client: settings.client,
+      systemPrompt: ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT,
+      prompt: animationVideoPromptRewriteSemanticAuditPrompt({
+        ...input,
+        auditMode,
+        semanticAuditPayload: animationVideoPromptSemanticAuditCatalogPayload(catalog)
+      }),
+      model: settings.model,
+      maxCompletionTokens: Math.min(Number(settings.maxCompletionTokens) || 2048, 8192),
+      validate: (value) => validateAnimationVideoPromptSemanticAuditResponse(value, catalog)
+    });
+    return {
+      settings,
+      audit,
+      overall: deriveAnimationVideoPromptSemanticAuditOverall(audit)
+    };
+  }
+
+  async auditAnimationVideoPromptSemanticsWithBoundedRepair(input, {
+    auditMode,
+    stageLabel,
+    failurePrefix
+  } = {}) {
+    const candidate = structuredClone(requireObject(input.rewrittenPlan, "rewrittenPlan"));
+    const firstAudit = await this.generateAnimationVideoPromptSemanticAudit(input, {
+      auditMode,
+      stageLabel
+    });
+    if (firstAudit.overall.verdict === "pass") {
+      return {
+        animationPlan: candidate,
+        semanticAudit: animationVideoPromptSemanticAuditReceipt({
+          settings: firstAudit.settings,
+          auditMode,
+          rounds: 1,
+          initialReviewedShotIds: candidate.shotPlan.map((shot) => shot.shotId),
+          reReviewedShotIds: [],
+          repairedShotIds: []
+        })
+      };
+    }
+
+    let repairPlan;
+    try {
+      repairPlan = planAnimationVideoPromptSemanticRepair(candidate, firstAudit.audit, {
+        repairAttemptCount: 0,
+        fullStory: input.fullStory,
+        visualGuardrails: input.visualGuardrails,
+        planIdentity: animationVideoPromptSemanticRepairIdentity(input, auditMode)
+      });
+    } catch (error) {
+      if (!(error instanceof OutputContractError)) throw error;
+      throw new InputError(`${failurePrefix}：${formatAnimationVideoPromptSemanticAuditFailure(firstAudit.audit)}；${error.message}`);
+    }
+    if (!repairPlan) {
+      throw new InputError(
+        `${failurePrefix}：${formatAnimationVideoPromptSemanticAuditFailure(firstAudit.audit)}。`
+        + "审计发现结构化 shot 事实冲突，或未能签发唯一安全的 videoPrompt 修复目标；本次明确终止。"
+      );
+    }
+
+    const repairedShotIds = repairPlan.targets.map((target) => String(target.adapterState?.shotId || ""));
+    const { repairPrompt, debugSession } = await this.preparePartialRepairDebug({
+      promptFactory: () => animationVideoPromptSemanticRepairPrompt(repairPlan),
+      stage: "animationVideoPromptSemanticRepair",
+      provider: firstAudit.settings.provider,
+      model: firstAudit.settings.model,
+      variantId: input.variant?.id,
+      originalError: new OutputContractError(
+        formatAnimationVideoPromptSemanticAuditFailure(firstAudit.audit)
+      ),
+      repairPlan
+    });
+    try {
+      const envelope = await firstAudit.settings.client.generateJson({
+        prompt: repairPrompt,
+        model: firstAudit.settings.model,
+        maxCompletionTokens: retryTokenLimit(firstAudit.settings.maxCompletionTokens),
+        jsonRetryAttempts: 0,
+        strictJson: true
+      });
+      await this.recordPartialRepairDebugResponse(debugSession, envelope);
+      const merged = mergeAnimationVideoPromptSemanticRepair(
+        candidate,
+        envelope,
+        repairPlan,
+        {
+          audit: firstAudit.audit,
+          fullStory: input.fullStory,
+          visualGuardrails: input.visualGuardrails,
+          planIdentity: animationVideoPromptSemanticRepairIdentity(input, auditMode),
+          validateMerged: ({ candidate: value }) => {
+            validateAnimationPlanOutput(value, input);
+            return true;
+          }
+        }
+      );
+      const repairedPlan = validateAnimationPlanOutput(merged, input);
+      assertOnlySelectedAnimationVideoPromptsChanged(candidate, repairedPlan, repairedShotIds);
+
+      const reviewedShotIds = animationSemanticRepairReviewShotIds(repairedPlan, repairedShotIds);
+      const finalAudit = await this.generateAnimationVideoPromptSemanticAudit({
+        ...input,
+        rewrittenPlan: repairedPlan
+      }, {
+        auditMode,
+        stageLabel: `${stageLabel}（有界修复复审）`,
+        reviewShotIds: reviewedShotIds
+      });
+      if (finalAudit.overall.verdict !== "pass") {
+        throw new InputError(
+          `${failurePrefix}：唯一一次有界 videoPrompt 修复复审仍未通过：`
+          + formatAnimationVideoPromptSemanticAuditFailure(finalAudit.audit)
+        );
+      }
+      await this.recordPartialRepairDebugResult(debugSession, { status: "repaired" });
+      return {
+        animationPlan: repairedPlan,
+        semanticAudit: animationVideoPromptSemanticAuditReceipt({
+          settings: finalAudit.settings,
+          auditMode,
+          rounds: 2,
+          initialReviewedShotIds: candidate.shotPlan.map((shot) => shot.shotId),
+          reReviewedShotIds: reviewedShotIds,
+          repairedShotIds
+        })
+      };
+    } catch (error) {
+      await this.recordPartialRepairDebugResult(debugSession, {
+        status: "rejected",
+        error
+      });
+      if (error instanceof InputError) throw error;
+      throw new InputError(`${failurePrefix}：有界 videoPrompt 修复失败；${error.message}`);
+    }
+  }
+
+  async rewriteAnimationPlanVideoPrompts(input) {
+    requireObject(input, "请求");
+    const sourcePlan = structuredClone(requireObject(input.animationPlan, "animationPlan"));
+    if (sourcePlan.promptSchemaVersion !== ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
+      throw new InputError("只有 direct_shot 3.0 Animation Plan 可以改写视频提示词");
+    }
+    ensureAnimationPlanVideoPromptProfile(sourcePlan, { optional: true });
+    const videoPromptProfile = resolveDirectShotVideoPromptProfile(input.videoPromptTarget);
+    const visualGuardrails = this.assertGlobalCharacterBoundary(input);
+    const fullStory = ensureFullStoryMatchesProfile(
+      ensureOutputContract(input.fullStory, "fullStory"),
+      input.creatorProfile,
+      input.creativeBrief,
+      input.variant,
+      visualGuardrails
+    );
+    const validatedInput = {
+      ...input,
+      animationPlan: sourcePlan,
+      animationPlanMode: ANIMATION_DIRECT_SHOT_MODE,
+      targetAspectRatio: requireAnimationPlanAspectRatio(sourcePlan.productionStrategy?.targetAspectRatio),
+      videoPromptProfile,
+      visualGuardrails,
+      fullStory
+    };
+    validateAnimationPlanOutput(sourcePlan, {
+      ...validatedInput,
+      // Legacy signed Plans may not yet carry a profile; source validation must not
+      // inject or infer one before the user explicitly confirms this rewrite.
+      videoPromptProfile: sourcePlan.productionStrategy?.videoPromptProfile || null
+    });
+    if (videoPromptProfile.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3) {
+      sourcePlan.shotPlan.forEach((shot, index) => {
+        try {
+          assertMiniMaxH3Duration(shot.durationSeconds, `animationPlan.shotPlan[${index}].durationSeconds`);
+        } catch (error) {
+          throw new InputError(error.message);
+        }
+      });
+    }
+
+    const settings = this.resolveStage("animationPlan", validatedInput);
+    if (!this.hasLiveClient) {
+      throw new InputError("Animation Plan 视频提示词改写需要已配置的文本模型执行改写与独立语义审计；demo mock 不得签发生产 Profile。");
+    }
+    this.assertStageClient(settings, "Animation Plan 视频提示词目标改写");
+    const candidate = await this.generateValidatedJson({
+      client: settings.client,
+      prompt: animationVideoPromptRewritePrompt({
+        ...validatedInput,
+        targetProvider: settings.provider,
+        targetModel: settings.model
+      }),
+      model: settings.model,
+      maxCompletionTokens: settings.maxCompletionTokens,
+      validate: (value) => validateAnimationVideoPromptRewrite(value, sourcePlan, videoPromptProfile)
+    });
+    const validatedRewrite = validateAnimationVideoPromptRewrite(candidate, sourcePlan, videoPromptProfile);
+    const promptsByShotId = new Map(validatedRewrite.videoPrompts.map((item) => [item.shotId, item.videoPrompt]));
+    const rewrittenPlan = {
+      ...structuredClone(sourcePlan),
+      productionStrategy: {
+        ...structuredClone(sourcePlan.productionStrategy),
+        videoPromptProfile: structuredClone(videoPromptProfile)
+      },
+      shotPlan: sourcePlan.shotPlan.map((shot) => ({
+        ...structuredClone(shot),
+        videoPrompt: promptsByShotId.get(shot.shotId)
+      }))
+    };
+    assertOnlyAnimationVideoPromptsChanged(sourcePlan, rewrittenPlan, videoPromptProfile);
+    let animationPlan = validateAnimationPlanOutput(rewrittenPlan, validatedInput);
+    // Validation may prune evidence that no longer matches a rewritten prompt.
+    // Prompt-only retargeting is not authorized to silently mutate that evidence
+    // (or any other Plan field), so prove the invariant again after validation.
+    assertOnlyAnimationVideoPromptsChanged(sourcePlan, animationPlan, videoPromptProfile);
+    const semanticOutcome = await this.auditAnimationVideoPromptRewriteSemantics({
+      ...validatedInput,
+      sourcePlan,
+      rewrittenPlan: animationPlan,
+      targetProfile: videoPromptProfile
+    });
+    animationPlan = semanticOutcome.animationPlan;
+    assertOnlyAnimationVideoPromptsChanged(sourcePlan, animationPlan, videoPromptProfile);
+    const semanticAudit = semanticOutcome.semanticAudit;
+    return {
+      animationPlan,
+      metadata: {
+        videoPromptRewrite: {
+          provider: settings.provider || "demo",
+          model: settings.model || "demo",
+          sourceProfile: structuredClone(sourcePlan.productionStrategy?.videoPromptProfile || null),
+          targetProfile: structuredClone(videoPromptProfile),
+          rewrittenShotIds: sourcePlan.shotPlan.map((shot) => shot.shotId),
+          semanticAudit
+        }
+      }
+    };
+  }
+
+  async auditAnimationVideoPromptRewriteSemantics(input) {
+    return this.auditAnimationVideoPromptSemanticsWithBoundedRepair(input, {
+      auditMode: "rewrite",
+      stageLabel: "Animation Plan 视频提示词改写语义审计",
+      failurePrefix: "视频提示词改写改变了已签发镜头事实"
+    });
+  }
+
+  async auditMiniMaxH3ExpandedPromptSemantics(input) {
+    requireObject(input, "请求");
+    const animationPlan = requireObject(input.animationPlan, "animationPlan");
+    const shot = requireObject(input.shot, "shot");
+    requireText(input.sourcePrompt, "sourcePrompt");
+    requireText(input.expandedPrompt, "expandedPrompt");
+    requireObject(input.referenceManifest, "referenceManifest");
+    const profile = ensureAnimationPlanVideoPromptProfile(animationPlan);
+    if (profile.profileId !== VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3) {
+      throw new InputError("H3 Context-IR 语义审计只接受已签发的 MiniMax H3 Animation Plan");
+    }
+    const exactShot = (animationPlan.shotPlan || []).find(
+      (candidate) => String(candidate?.shotId || "") === String(shot.shotId || "")
+    );
+    const exactShotFacts = exactShot ? structuredClone(exactShot) : null;
+    const submittedShotFacts = structuredClone(shot);
+    if (exactShotFacts) delete exactShotFacts.videoPrompt;
+    delete submittedShotFacts.videoPrompt;
+    if (
+      !exactShot
+      || !isDeepStrictEqual(exactShotFacts, submittedShotFacts)
+      || String(shot.videoPrompt || "").trim() !== String(input.sourcePrompt || "").trim()
+    ) {
+      throw new InputError("H3 Context-IR 语义审计必须使用当前签发 Plan 的 exact shot");
+    }
+    const settings = this.resolveStage("animationPlan", input);
+    this.assertStageClient(settings, "MiniMax H3 Context-IR 语义一致性审计");
+    const result = await this.generateValidatedJson({
+      client: settings.client,
+      prompt: miniMaxH3ExpandedPromptSemanticAuditPrompt({
+        ...input,
+        animationPlan,
+        shot: exactShot
+      }),
+      model: settings.model,
+      maxCompletionTokens: Math.min(Number(settings.maxCompletionTokens) || 2048, 4096),
+      validate: validateMiniMaxH3ExpandedPromptSemanticAudit
+    });
+    if (result.verdict !== "pass") {
+      throw new InputError(
+        `MiniMax H3 Context-IR 扩写改变了当前签发镜头事实：${result.issues.map((issue) => `${issue.category}: ${issue.reason}`).join("；")}`
+      );
+    }
+    return Object.freeze({
+      schemaVersion: "minimax_h3_expanded_prompt_semantic_audit/1.0",
+      provider: settings.provider,
+      model: settings.model,
+      verdict: "pass",
+      issues: Object.freeze([])
+    });
   }
 
   async refineCharacterReference(input) {
@@ -1044,6 +1855,9 @@ function validateAnimationPlanOutput(result, input = {}) {
 }
 
 function validateAnimationFoundationOutput(result, input = {}) {
+  if (Object.prototype.hasOwnProperty.call(result?.productionStrategy || {}, "videoPromptProfile")) {
+    throw new OutputContractError("animationFoundation.productionStrategy.videoPromptProfile 由服务端签发，模型不得输出");
+  }
   const sourceSceneIds = (input.fullStory?.sceneScript || []).map((scene) => scene?.sceneId);
   const foundation = ensureAnimationFoundationContract(result, { sourceSceneIds });
   const expectedSchemaVersion = input.animationPlanMode === ANIMATION_DIRECT_SHOT_MODE
@@ -1070,6 +1884,20 @@ function validateAnimationFoundationOutput(result, input = {}) {
   resolveExplicitAnimationPrimaryCharacterName(input, foundation, {
     path: "animationFoundation"
   });
+  if (expectedSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
+    const expectedDurationRange = input.videoPromptProfile?.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3
+      ? { min: 4, max: 6 }
+      : { min: 3, max: 6 };
+    const actualDurationRange = foundation.productionStrategy?.recommendedShotDurationSeconds || {};
+    if (
+      Number(actualDurationRange.min) !== expectedDurationRange.min
+      || Number(actualDurationRange.max) !== expectedDurationRange.max
+    ) {
+      throw new OutputContractError(
+        `animationFoundation.productionStrategy.recommendedShotDurationSeconds 必须为 ${expectedDurationRange.min}–${expectedDurationRange.max} 秒`
+      );
+    }
+  }
   const checked = ensureAnimationPlanMatchesProfile(
     { ...foundation, shotPlan: [] },
     input.creatorProfile,
@@ -1079,7 +1907,412 @@ function validateAnimationFoundationOutput(result, input = {}) {
     input
   );
   const { shotPlan: ignoredShotPlan, ...validatedFoundation } = checked;
-  return validatedFoundation;
+  if (expectedSchemaVersion !== ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) return validatedFoundation;
+  return {
+    ...validatedFoundation,
+    productionStrategy: {
+      ...validatedFoundation.productionStrategy,
+      videoPromptProfile: structuredClone(input.videoPromptProfile)
+    }
+  };
+}
+
+function resolveDirectShotVideoPromptProfile(target) {
+  try {
+    return resolveVideoPromptProfile(target);
+  } catch (error) {
+    throw new InputError(`direct_shot 必须显式选择受支持的视频提示词目标：${error.message}`);
+  }
+}
+
+function animationVideoPromptSemanticAuditCatalogInput(input = {}, {
+  reviewShotIds = null
+} = {}) {
+  const sourcePlan = requireObject(input.sourcePlan, "sourcePlan");
+  const rewrittenPlan = requireObject(input.rewrittenPlan, "rewrittenPlan");
+  const sourceShots = Array.isArray(sourcePlan.shotPlan) ? sourcePlan.shotPlan : [];
+  const candidateShots = Array.isArray(rewrittenPlan.shotPlan) ? rewrittenPlan.shotPlan : [];
+  if (!sourceShots.length || sourceShots.length !== candidateShots.length) {
+    throw new OutputContractError("Animation videoPrompt 语义审计要求 source/candidate shotPlan 等长且非空");
+  }
+
+  const requestedIds = reviewShotIds === null
+    ? null
+    : new Set(Array.isArray(reviewShotIds) ? reviewShotIds.map(String) : []);
+  if (requestedIds && !requestedIds.size) {
+    throw new OutputContractError("Animation videoPrompt 复审至少需要一个 shotId");
+  }
+  const knownShotIds = new Set(candidateShots.map((shot) => String(shot?.shotId || "")));
+  if (requestedIds && [...requestedIds].some((shotId) => !knownShotIds.has(shotId))) {
+    throw new OutputContractError("Animation videoPrompt 复审 shotId 不属于当前候选 Plan");
+  }
+
+  const fixedCharacterBoundary = projectAnimationSemanticAuditBoundary(
+    input.visualGuardrails?.fixedCharacterBoundary
+  );
+  const keyProps = structuredClone(input.fullStory?.keyProps || []);
+  const fullStoryScenes = Array.isArray(input.fullStory?.sceneScript)
+    ? input.fullStory.sceneScript
+    : [];
+  const sceneReferences = Array.isArray(rewrittenPlan.sceneReferencePrompts)
+    ? rewrittenPlan.sceneReferencePrompts
+    : [];
+  const rewriteAudit = input.auditMode === "rewrite";
+  const shots = candidateShots.flatMap((candidateShot, shotIndex) => {
+    const shotId = String(candidateShot?.shotId || "");
+    if (requestedIds && !requestedIds.has(shotId)) return [];
+    const sourceShot = sourceShots[shotIndex];
+    if (!isPlainObject(sourceShot) || String(sourceShot.shotId || "") !== shotId) {
+      throw new OutputContractError(`Animation videoPrompt 语义审计 ${shotId || shotIndex} 与 source Plan 镜头顺序不一致`);
+    }
+    const sourceSceneMatches = fullStoryScenes.filter(
+      (scene) => String(scene?.sceneId || "") === String(candidateShot.sourceSceneId || "")
+    );
+    if (sourceSceneMatches.length !== 1) {
+      throw new OutputContractError(`Animation videoPrompt 语义审计 ${shotId} 必须定位唯一 Full Story source scene`);
+    }
+    const sceneReferenceMatches = sceneReferences.filter(
+      (scene) => String(scene?.sceneId || "") === String(candidateShot.sceneId || "")
+    );
+    if (sceneReferenceMatches.length !== 1) {
+      throw new OutputContractError(`Animation videoPrompt 语义审计 ${shotId} 必须定位唯一 Foundation scene lock`);
+    }
+    const sourceScene = sourceSceneMatches[0];
+    const authorityFacts = [
+      semanticAuditAuthorityFact(shotId, "fixedCharacterBoundary", "fixed_character", fixedCharacterBoundary),
+      semanticAuditAuthorityFact(shotId, "fullStory.scene.characters", "full_story", sourceScene.characters || []),
+      semanticAuditAuthorityFact(shotId, "fullStory.scene.location", "full_story", sourceScene.location || ""),
+      semanticAuditAuthorityFact(shotId, "fullStory.scene.visibleAction", "full_story", sourceScene.visibleAction || ""),
+      semanticAuditAuthorityFact(shotId, "fullStory.scene.dialogue", "full_story", sourceScene.dialogue ?? ""),
+      semanticAuditAuthorityFact(shotId, "fullStory.scene.shotAndSound", "full_story", sourceScene.shotAndSound ?? ""),
+      semanticAuditAuthorityFact(shotId, "fullStory.keyProps", "full_story", keyProps),
+      semanticAuditAuthorityFact(shotId, "foundation.visualBible", "foundation", rewrittenPlan.visualBible || {}),
+      semanticAuditAuthorityFact(shotId, "foundation.characterReferencePrompts", "foundation", rewrittenPlan.characterReferencePrompts || []),
+      semanticAuditAuthorityFact(shotId, "foundation.sceneReferencePrompt", "foundation", sceneReferenceMatches[0]),
+      // Deliberately send the complete signed asset lock. Selecting a subset
+      // with local keyword heuristics would recreate the omission that caused
+      // the real A03 wildflower false positive.
+      semanticAuditAuthorityFact(shotId, "foundation.assetPrompts", "foundation", rewrittenPlan.assetPrompts || []),
+      semanticAuditAuthorityFact(shotId, "foundation.visualProductionStrategy", "foundation", {
+        targetAspectRatio: rewrittenPlan.productionStrategy?.targetAspectRatio,
+        videoPromptProfile: rewrittenPlan.productionStrategy?.videoPromptProfile
+      }),
+      ...(candidateShots[shotIndex - 1]
+        ? [semanticAuditAuthorityFact(
+          shotId,
+          "adjacent.previousShot",
+          "adjacent_shot",
+          projectAnimationSemanticAdjacentShot(candidateShots[shotIndex - 1])
+        )]
+        : []),
+      ...(candidateShots[shotIndex + 1]
+        ? [semanticAuditAuthorityFact(
+          shotId,
+          "adjacent.nextShot",
+          "adjacent_shot",
+          projectAnimationSemanticAdjacentShot(candidateShots[shotIndex + 1])
+        )]
+        : []),
+      ...animationSemanticExactShotAuthorityFacts(shotId, candidateShot),
+      ...(rewriteAudit
+        ? [semanticAuditAuthorityFact(shotId, "sourcePlan.videoPrompt", "exact_shot", sourceShot.videoPrompt || "")]
+        : [])
+    ];
+    const candidateFields = [
+      "sourceSceneId",
+      "sceneId",
+      "durationSeconds",
+      "storyPurpose",
+      "emotionalTarget",
+      "cameraMotion",
+      "characterAction",
+      "dialogueOrSubtitle",
+      "soundDesign",
+      "continuityNotes",
+      "acceptanceCriteria"
+    ].map((field) => ({
+      candidateFieldId: `${shotId}:candidate:${field}`,
+      layer: "shot_facts",
+      field,
+      value: structuredClone(candidateShot[field])
+    }));
+    candidateFields.push({
+      candidateFieldId: `${shotId}:candidate:videoPrompt`,
+      layer: "video_prompt",
+      field: "videoPrompt",
+      value: String(candidateShot.videoPrompt || "")
+    });
+    return [{ shotId, authorityFacts, candidateFields }];
+  });
+  return { shots };
+}
+
+function semanticAuditAuthorityFact(shotId, field, tier, value) {
+  return {
+    authorityFactId: `${shotId}:authority:${field}`,
+    tier,
+    field,
+    value: structuredClone(value ?? null)
+  };
+}
+
+function animationSemanticExactShotAuthorityFacts(shotId, shot) {
+  return [
+    "sourceSceneId",
+    "sceneId",
+    "durationSeconds",
+    "storyPurpose",
+    "emotionalTarget",
+    "cameraMotion",
+    "characterAction",
+    "dialogueOrSubtitle",
+    "soundDesign",
+    "continuityNotes",
+    "acceptanceCriteria"
+  ].map((field) => semanticAuditAuthorityFact(
+    shotId,
+    `exactShot.${field}`,
+    "exact_shot",
+    shot[field]
+  ));
+}
+
+function projectAnimationSemanticAdjacentShot(shot) {
+  return {
+    shotId: String(shot?.shotId || ""),
+    sourceSceneId: String(shot?.sourceSceneId || ""),
+    sceneId: String(shot?.sceneId || ""),
+    characterAction: String(shot?.characterAction || ""),
+    continuityNotes: String(shot?.continuityNotes || ""),
+    acceptanceCriteria: structuredClone(shot?.acceptanceCriteria || [])
+  };
+}
+
+function projectAnimationSemanticAuditBoundary(boundary) {
+  if (!isPlainObject(boundary)) {
+    throw new OutputContractError("Animation videoPrompt 语义审计缺少验签 fixedCharacterBoundary");
+  }
+  return {
+    schemaVersion: String(boundary.schemaVersion || ""),
+    characterName: String(boundary.characterName || ""),
+    canonicalDescription: String(boundary.canonicalDescription || ""),
+    bodyForm: String(boundary.bodyForm || ""),
+    requiredTraits: structuredClone(boundary.requiredTraits || []),
+    allowedTraits: structuredClone(boundary.allowedTraits || []),
+    forbiddenTraits: structuredClone(boundary.forbiddenTraits || []),
+    unresolvedConflicts: structuredClone(boundary.unresolvedConflicts || [])
+  };
+}
+
+function animationVideoPromptSemanticRepairIdentity(input, auditMode) {
+  return {
+    auditMode,
+    selectedVariantId: String(input.fullStory?.selectedVariantId || input.variant?.id || ""),
+    sourceProfile: structuredClone(input.sourcePlan?.productionStrategy?.videoPromptProfile || null),
+    targetProfile: structuredClone(input.targetProfile || null),
+    targetAspectRatio: String(input.rewrittenPlan?.productionStrategy?.targetAspectRatio || "")
+  };
+}
+
+function assertOnlySelectedAnimationVideoPromptsChanged(before, after, repairedShotIds) {
+  const mutableShotIds = new Set(repairedShotIds.map(String));
+  const beforePlan = structuredClone(before);
+  const afterPlan = structuredClone(after);
+  const beforeShots = beforePlan.shotPlan;
+  const afterShots = afterPlan.shotPlan;
+  delete beforePlan.shotPlan;
+  delete afterPlan.shotPlan;
+  if (!isDeepStrictEqual(beforePlan, afterPlan) || beforeShots.length !== afterShots.length) {
+    throw new OutputContractError("Animation videoPrompt 语义修复不得改变 Plan 顶层事实或镜头数量");
+  }
+  beforeShots.forEach((beforeShot, index) => {
+    const afterShot = afterShots[index];
+    if (beforeShot.shotId !== afterShot?.shotId) {
+      throw new OutputContractError("Animation videoPrompt 语义修复不得重排镜头");
+    }
+    if (!mutableShotIds.has(String(beforeShot.shotId))) {
+      if (!isDeepStrictEqual(beforeShot, afterShot)) {
+        throw new OutputContractError(`Animation videoPrompt 语义修复越权修改 ${beforeShot.shotId}`);
+      }
+      return;
+    }
+    const beforeFacts = structuredClone(beforeShot);
+    const afterFacts = structuredClone(afterShot);
+    delete beforeFacts.videoPrompt;
+    delete afterFacts.videoPrompt;
+    if (!isDeepStrictEqual(beforeFacts, afterFacts)) {
+      throw new OutputContractError(`Animation videoPrompt 语义修复不得改动 ${beforeShot.shotId} 的结构化事实`);
+    }
+  });
+}
+
+function animationSemanticRepairReviewShotIds(plan, repairedShotIds) {
+  const targetIds = new Set(repairedShotIds.map(String));
+  const selected = new Set();
+  plan.shotPlan.forEach((shot, index) => {
+    if (!targetIds.has(String(shot.shotId))) return;
+    [index - 1, index, index + 1].forEach((candidateIndex) => {
+      const neighbor = plan.shotPlan[candidateIndex];
+      if (neighbor) selected.add(String(neighbor.shotId));
+    });
+  });
+  return plan.shotPlan.map((shot) => String(shot.shotId)).filter((shotId) => selected.has(shotId));
+}
+
+function formatAnimationVideoPromptSemanticAuditFailure(audit) {
+  const messages = audit.shots.flatMap((shot) => shot.issues.map((issue) => (
+    `${shot.shotId} ${issue.layer}/${issue.relation}: ${issue.productionImpact}`
+  )));
+  return messages.join("；") || "审计返回 fail，但没有可用的实质冲突证据";
+}
+
+function animationVideoPromptSemanticAuditReceipt({
+  settings,
+  auditMode,
+  rounds,
+  initialReviewedShotIds,
+  reReviewedShotIds,
+  repairedShotIds
+}) {
+  return freezeClone({
+    schemaVersion: "animation_video_prompt_semantic_audit_receipt/2.0",
+    provider: String(settings.provider || ""),
+    model: String(settings.model || ""),
+    auditMode,
+    verdict: "pass",
+    issues: [],
+    rounds,
+    reviewedShotIds: initialReviewedShotIds,
+    reReviewedShotIds,
+    repairedShotIds
+  });
+}
+
+function validateAnimationVideoPromptRewrite(value, sourcePlan, videoPromptProfile) {
+  if (!isPlainObject(value)) {
+    throw new OutputContractError("animationVideoPromptRewrite 必须是对象");
+  }
+  const keys = Object.keys(value).sort();
+  if (!isDeepStrictEqual(keys, ["videoPrompts"])) {
+    throw new OutputContractError("animationVideoPromptRewrite 只允许顶层字段 videoPrompts");
+  }
+  if (!Array.isArray(value.videoPrompts)) {
+    throw new OutputContractError("animationVideoPromptRewrite.videoPrompts 必须是数组");
+  }
+  const sourceShots = Array.isArray(sourcePlan?.shotPlan) ? sourcePlan.shotPlan : [];
+  if (value.videoPrompts.length !== sourceShots.length) {
+    throw new OutputContractError(
+      `animationVideoPromptRewrite.videoPrompts 数量必须严格等于当前 Plan 的 ${sourceShots.length}`
+    );
+  }
+  const normalized = value.videoPrompts.map((item, index) => {
+    if (!isPlainObject(item)) {
+      throw new OutputContractError(`animationVideoPromptRewrite.videoPrompts[${index}] 必须是对象`);
+    }
+    if (!isDeepStrictEqual(Object.keys(item).sort(), ["shotId", "videoPrompt"])) {
+      throw new OutputContractError(
+        `animationVideoPromptRewrite.videoPrompts[${index}] 只允许 shotId、videoPrompt`
+      );
+    }
+    const expectedShot = sourceShots[index];
+    const shotId = String(item.shotId || "").trim();
+    const videoPrompt = String(item.videoPrompt || "").trim();
+    if (shotId !== expectedShot.shotId) {
+      throw new OutputContractError(
+        `animationVideoPromptRewrite.videoPrompts[${index}].shotId 必须按原顺序等于 ${expectedShot.shotId}`
+      );
+    }
+    if (!videoPrompt) {
+      throw new OutputContractError(`animationVideoPromptRewrite.videoPrompts[${index}].videoPrompt 不能为空`);
+    }
+    if (videoPromptProfile.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3) {
+      try {
+        assertMiniMaxH3BasePrompt(videoPrompt, {
+          durationSeconds: expectedShot.durationSeconds,
+          path: `animationVideoPromptRewrite.videoPrompts[${index}].videoPrompt`,
+          dialogueTexts: miniMaxH3DialogueTexts(expectedShot.dialogueOrSubtitle)
+        });
+      } catch (error) {
+        throw new OutputContractError(error.message, error.details);
+      }
+    }
+    return { shotId, videoPrompt };
+  });
+  return { videoPrompts: normalized };
+}
+
+const MINIMAX_H3_SEMANTIC_AUDIT_CATEGORIES = new Set([
+  "language_format",
+  "character_identity",
+  "location_environment",
+  "prop",
+  "action_order",
+  "visible_final_state",
+  "camera_sequence",
+  "dialogue",
+  "sound",
+  "continuity",
+  "duration",
+  "reference_role",
+  "unauthorized_addition"
+]);
+
+function validateMiniMaxH3ExpandedPromptSemanticAudit(value) {
+  if (!isPlainObject(value) || !isDeepStrictEqual(Object.keys(value).sort(), ["issues", "verdict"])) {
+    throw new OutputContractError("MiniMax H3 语义审计只允许 verdict、issues 两个字段");
+  }
+  if (!new Set(["pass", "fail"]).has(value.verdict)) {
+    throw new OutputContractError("MiniMax H3 语义审计 verdict 只允许 pass 或 fail");
+  }
+  if (!Array.isArray(value.issues)) {
+    throw new OutputContractError("MiniMax H3 语义审计 issues 必须是数组");
+  }
+  const issues = value.issues.map((issue, index) => {
+    if (!isPlainObject(issue) || !isDeepStrictEqual(Object.keys(issue).sort(), ["category", "reason"])) {
+      throw new OutputContractError(`MiniMax H3 语义审计 issues[${index}] 只允许 category、reason`);
+    }
+    const category = String(issue.category || "").trim();
+    const reason = String(issue.reason || "").trim();
+    if (!MINIMAX_H3_SEMANTIC_AUDIT_CATEGORIES.has(category)) {
+      throw new OutputContractError(`MiniMax H3 语义审计 issues[${index}].category 无效`);
+    }
+    if (!reason) throw new OutputContractError(`MiniMax H3 语义审计 issues[${index}].reason 不能为空`);
+    return { category, reason };
+  });
+  if (value.verdict === "pass" && issues.length) {
+    throw new OutputContractError("MiniMax H3 语义审计 pass 时 issues 必须为空");
+  }
+  if (value.verdict === "fail" && !issues.length) {
+    throw new OutputContractError("MiniMax H3 语义审计 fail 时至少需要一个 issue");
+  }
+  return { verdict: value.verdict, issues };
+}
+
+function assertOnlyAnimationVideoPromptsChanged(sourcePlan, rewrittenPlan, targetProfile) {
+  const stripMutablePromptFields = (plan) => {
+    const comparable = structuredClone(plan);
+    if (isPlainObject(comparable.productionStrategy)) {
+      delete comparable.productionStrategy.videoPromptProfile;
+    }
+    if (Array.isArray(comparable.shotPlan)) {
+      comparable.shotPlan.forEach((shot) => {
+        if (isPlainObject(shot)) delete shot.videoPrompt;
+      });
+    }
+    return comparable;
+  };
+  if (!isDeepStrictEqual(stripMutablePromptFields(sourcePlan), stripMutablePromptFields(rewrittenPlan))) {
+    throw new OutputContractError("视频提示词目标改写不得改变 videoPrompt 与签发 Profile 之外的 Plan 字段");
+  }
+  try {
+    const actualProfile = ensureAnimationPlanVideoPromptProfile(rewrittenPlan);
+    if (!isDeepStrictEqual(actualProfile, targetProfile)) {
+      throw new OutputContractError("视频提示词目标改写后的签发 Profile 与用户目标不一致");
+    }
+  } catch (error) {
+    if (error instanceof OutputContractError) throw error;
+    throw new OutputContractError(error.message);
+  }
 }
 
 function validateAnimationShotBatchOutput(result, {
@@ -1165,7 +2398,46 @@ function validateAnimationShotBatchOutput(result, {
     input.visualGuardrails,
     input
   );
-  return { shotPlan: checked.shotPlan.slice(previousCount) };
+  const checkedBatch = { shotPlan: checked.shotPlan.slice(previousCount) };
+  // Sign a prompt-only repair only after every non-prompt validation above
+  // has passed. Otherwise a candidate with a missing scene or invalid
+  // duration could consume the sole correction call before its real blocker
+  // is discovered.
+  validateMiniMaxH3AnimationShotBatchPrompts(
+    checkedBatch,
+    foundation,
+    previousShots.length
+  );
+  return checkedBatch;
+}
+
+function validateMiniMaxH3AnimationShotBatchPrompts(batch, foundation, shotIndexOffset = 0) {
+  if (
+    foundation?.productionStrategy?.videoPromptProfile?.profileId
+    !== VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3
+  ) return;
+
+  const failures = [];
+  batch.shotPlan.forEach((shot, index) => {
+    try {
+      assertMiniMaxH3BasePrompt(shot.videoPrompt, {
+        durationSeconds: shot.durationSeconds,
+        path: `animationPlan.shotPlan[${shotIndexOffset + index}].videoPrompt`,
+        dialogueTexts: miniMaxH3DialogueTexts(shot.dialogueOrSubtitle)
+      });
+    } catch (error) {
+      if (!(error instanceof MiniMaxH3PromptError)) throw error;
+      failures.push({
+        message: error.message,
+        details: Array.isArray(error.details) ? error.details : []
+      });
+    }
+  });
+  if (!failures.length) return;
+  throw new OutputContractError(
+    failures.map((failure) => failure.message).join("；"),
+    failures.flatMap((failure) => failure.details)
+  );
 }
 
 function resolveExplicitAnimationPrimaryCharacterName(input = {}, foundation = {}, {
@@ -1950,7 +3222,9 @@ function animationBatchAttemptFailure({
   phase,
   kind = "contract",
   diagnostics = [],
-  compilerRuns = []
+  compilerRuns = [],
+  hadParsedCandidate = candidate !== null && candidate !== undefined,
+  boundedRepairAttempted = false
 }) {
   return {
     status: "recoverable_failure",
@@ -1959,11 +3233,62 @@ function animationBatchAttemptFailure({
     phase,
     kind,
     compilerRuns,
+    hadParsedCandidate: Boolean(hadParsedCandidate),
+    boundedRepairAttempted: Boolean(boundedRepairAttempted),
     diagnostics: [
       ...diagnostics,
       animationBatchErrorDiagnostic(error, phase, candidate)
     ]
   };
+}
+
+function createAnimationShotPromptRepairCandidate(batch, foundation, previousShots = []) {
+  if (!isPlainObject(batch) || !Array.isArray(batch.shotPlan)) {
+    throw new OutputContractError("H3 Prompt 局部纠错缺少完整 animationShotBatch 候选");
+  }
+  if (!isPlainObject(foundation)) {
+    throw new OutputContractError("H3 Prompt 局部纠错缺少已验证 Animation Foundation");
+  }
+  return {
+    ...structuredClone(foundation),
+    shotPlan: [
+      ...structuredClone(Array.isArray(previousShots) ? previousShots : []),
+      ...structuredClone(batch.shotPlan)
+    ]
+  };
+}
+
+function canonicalizeAnimationShotBatchForPromptRepair(batch, context = {}) {
+  if (!isPlainObject(batch) || !Array.isArray(batch.shotPlan)) {
+    throw new OutputContractError("H3 Prompt 局部纠错缺少可规范化的 animationShotBatch");
+  }
+  const foundation = context.foundation;
+  const previousShots = Array.isArray(context.previousShots) ? context.previousShots : [];
+  const combined = pruneAnimationPlanNegativePrompts({
+    ...structuredClone(foundation),
+    shotPlan: [
+      ...structuredClone(previousShots),
+      ...structuredClone(batch.shotPlan)
+    ]
+  }, context.input || {});
+  return {
+    shotPlan: combined.shotPlan.slice(previousShots.length)
+  };
+}
+
+function assertAnimationBatchOnlyVideoPromptsChanged(before, after) {
+  const stripPrompts = (batch) => ({
+    ...structuredClone(batch),
+    shotPlan: (batch.shotPlan || []).map((shot) => {
+      const { videoPrompt: ignoredVideoPrompt, ...facts } = shot;
+      return facts;
+    })
+  });
+  if (!isDeepStrictEqual(stripPrompts(before), stripPrompts(after))) {
+    throw new OutputContractError(
+      "H3 videoPrompt 局部纠错后的完整校验改变了未授权镜头字段"
+    );
+  }
 }
 
 function finalizeStaticFrameCompilerRuns(runs = [], finalBatch = null, runAccepted = false) {
@@ -2095,6 +3420,20 @@ function finalAnimationBatchAttemptError(error) {
   }
   if (error instanceof ModelResponseError && Number(error.status) === 0) {
     return new OutputContractError(`animationShotBatch second-pass 失败：${error.message}`);
+  }
+  return error;
+}
+
+function finalDirectAnimationBatchAttemptError(outcome) {
+  const error = outcome?.error;
+  if (outcome?.boundedRepairAttempted && error instanceof OutputContractError) {
+    return new OutputContractError(
+      `animationShotBatch 有界局部纠错失败：${error.message}`,
+      Array.isArray(error.details) ? error.details : []
+    );
+  }
+  if (outcome?.boundedRepairAttempted && error instanceof ModelResponseError) {
+    return new OutputContractError(`animationShotBatch 有界局部纠错失败：${error.message}`);
   }
   return error;
 }
@@ -2437,147 +3776,23 @@ function animationAuditTokenLimit() {
   return 2048;
 }
 
-function validationRetryPrompt(
-  originalPrompt,
-  validationError,
-  retryContext = null,
-  failedOutput = null,
-  validationDetails = []
-) {
-  if (retryContext?.stage === "referenceAnalysis") {
-    return analysisValidationRetryPrompt(originalPrompt, validationError, failedOutput, retryContext);
-  }
-  if (retryContext?.stage === "sourceScriptReconstruction") {
-    return reconstructionValidationRetryPrompt(originalPrompt, validationError, retryContext, failedOutput);
-  }
-  if (retryContext?.stage === "fullStory") {
-    return fullStoryValidationRetryPrompt(
-      originalPrompt,
-      validationError,
-      validationDetails,
-      failedOutput
-    );
-  }
-  const animationCorrection = originalPrompt.includes('"negativePrompts"')
-    ? `
-- 每个 shot 必须输出 negativePrompts.image 和 negativePrompts.video 数组，数组允许为空。
-- 每个保留条目必须有当前镜头的具体 triggerEvidence、受支持的 reasonCode、正确的 appliesTo 和 priority；不要复制通用负面词，不要用“未声明/未提及”作为唯一理由。
-- dialogueRules 不进入图片/视频负面提示词；sourceSimilarityRules 只有在当前生成确实传入视觉参考时才可按 reference_leak 使用。`
-    : "";
-  const creativeBriefCorrection = retryContext?.stage === "creativeBrief"
-    ? creativeBriefValidationCorrection(retryContext.fixedCharacter)
-    : "";
-  const transformationCorrection = retryContext?.stage === "creativeBrief"
-    ? "- 返回完整 JSON 对象，但内容上只修正越界字段；其余已经合格的 Creative Brief 字段保持不变。"
-    : "- 可以保留送达任务、旅途结构、帮助、天气阻力和仪式化结尾，但必须换成新人物、新任务、新道具、新对白和新画面表达。";
-  const failedOutputReference = retryContext?.stage === "creativeBrief" && failedOutput
-    ? `\n上一次待修 JSON（只改校验命中的字段，其他字段保持不变）：\n${JSON.stringify(failedOutput)}`
-    : "";
-  return `${originalPrompt}
-
-上一次输出已经是 JSON，但没有通过系统校验：
-${validationError}
-${failedOutputReference}
-
-请基于同一个任务重新输出一份完整合法 JSON，并修复上述问题。
-关键要求：
-- 不要更换用户固定角色，不要改名，不要降级为配角。
-- 不要复用有明确证据的原片表面表达。
-- 正向提示词只能使用固定角色文本已经明确授权的身份与外观；未授权信息保持不写，且不得把“未声明”转换成渲染负面提示词。
-${transformationCorrection}
-- 规则必须保持分类：角色正向边界、原片规避、台词规则和逐镜渲染负面提示词不得混写。${animationCorrection}
-${creativeBriefCorrection}
-- 只输出一个完整 JSON 对象，不要 Markdown，不要解释。`;
-}
-
-function fullStoryValidationRetryPrompt(
-  originalPrompt,
-  validationError,
-  validationDetails,
-  failedOutput
-) {
-  return `${originalPrompt}
-
-FULL_STORY_SCENE_CONTRACT_RETRY_V1
-
-上一次 fullStory 已经是 JSON，但没有通过系统校验（完整剧情与 Scene Contract）：
-${validationError}
-
-结构化错误详情：
-${JSON.stringify(Array.isArray(validationDetails) ? validationDetails : [])}
-
-上一次待修完整 JSON：
-${JSON.stringify(failedOutput || {})}
-
-请基于同一个主题和角色设定重新输出一份完整 fullStory JSON，并完整修复 sceneScript：
-- 返回全部 fullStory 顶层字段和完整 sceneScript，不得只返回 patch、单个场次或解释文字。
-- 每场 sceneId、location 和 visibleAction 必须是非空字符串；sceneId 在 sceneScript 中唯一。
-- 每场 characters 必须是非空角色名称字符串数组，角色名不能为空或重复。
-- 已锁定角色只能使用 characterBible 中的标准名称，不得追加括号、身份、外观说明、空格后缀、别名或昵称；场次型临时配角使用独立明确名称。
-- visibleAction 或 shotAndSound 明确写到已锁定标准角色时，该精确名称必须存在于同场 characters。
-- dialogue 只使用结构化数组，每条非空 speaker 必须逐字存在于同场 characters；不要根据台词正文猜测在场角色。
-- 当前 fullStory schema 没有画外音、旁白或 offscreen speaker 标记，不得要求系统从 dialogue 或 shotAndSound 猜测画外身份。
-- dialogue、shotAndSound、shootingNotes、emotionNode 和 dramaticFunction 只能补充场次结构，不能替代 location、characters 或 visibleAction。
-- Validation 只会重新校验，不会自动补写、改名、归一化或接受别名。
-- 只输出一个完整 JSON 对象，不要 Markdown，不要解释。`;
-}
-
-function analysisValidationRetryPrompt(originalPrompt, validationError, failedOutput, retryContext = {}) {
-  const videoDurationSeconds = Math.max(0, Number(retryContext.videoDurationSeconds) || 0);
-  const maximumWholeEndSecond = videoDurationSeconds ? Math.ceil(videoDurationSeconds) : 0;
-  const frameCount = Math.max(0, Math.round(Number(retryContext.frameCount)) || 0);
-  const evidenceModeCorrection = retryContext.mediaMode === "video"
-    ? `- 本次成功媒体请求使用原生视频：所有 observedFacts.evidenceRefs 只能写 {"source":"video","startSecond":整数,"endSecond":整数}，必须满足 0 <= startSecond < endSecond${maximumWholeEndSecond ? ` <= ${maximumWholeEndSecond}` : ""}；不得输出 startMs/endMs，不得保留任何 frame 或 frameNumber。`
-    : retryContext.mediaMode === "frames"
-      ? `- 本次成功媒体请求使用采样画面：所有 observedFacts.evidenceRefs 只能写 {"source":"frame","frameNumber":实际提供的正整数}，frameNumber 必须落在 1${frameCount ? `-${frameCount}` : " 到实际提供帧数"}；不得保留任何 video、startSecond、endSecond、startMs 或 endMs。`
-      : "- evidenceRefs 必须严格服从上方校验错误指出的本次媒体证据来源。";
-  return `${originalPrompt}
-
-上一次 referenceAnalysis 已经是 JSON，但没有通过证据契约校验：
-${validationError}
-
-上一次待修 JSON：
-${JSON.stringify(failedOutput || {})}
-
-请返回完整 referenceAnalysis JSON，但只修正校验消息指出的 schema 或 evidence 字段：
-- observedFacts.observation 只能记录本次画面或原生视频中直接可见的单一事实。
-- 不得改名，不得替换人物、地点、道具、动作、对白或结尾，也不得把不确定内容补成事实。
-${evidenceModeCorrection}
-- 不要为了避开校验而改写素材事实；无法确认的内容移入 uncertainties。
-- 只输出一个完整 JSON 对象，不要 Markdown，不要解释。`;
-}
-
-function reconstructionValidationRetryPrompt(originalPrompt, validationError, retryContext, failedOutput) {
-  return `${originalPrompt}
-
-上一次 sourceScriptReconstruction 已经是 JSON，但没有通过完整脚本契约校验：
-${validationError}
-
-上一次待修 JSON：
-${JSON.stringify(failedOutput || {})}
-
-请返回完整 sourceScriptReconstruction JSON，并只修正校验消息指出的字段：
-- scenes 必须是非空数组，每个 scene 保留 sceneId、timeRange、location、characters、visibleActions、dialogueGist、shotDesign、emotionNode、dramaticFunction、turningPoint、keyProps、sourceEvidence 和 confidence。
-- coreEventSequence、turningPoints 和 uncertainties 必须是数组；relationshipPattern 必须是字符串；endingAction 必须包含 action、emotionalMeaning 和 evidence。
-- 只能依据原视频、采样画面、referenceAnalysis 和用户补充还原原片；不得改编人物、道具、对白、动作或结尾。
-- 无法确认的对白和采样间隙进入 uncertainties，不要为了字段完整而虚构事实。
-- 不要输出 schemaVersion、sourceFacts、globalFactRefs、factRefs 或 groundingSeal。
-- 只输出一个完整 JSON 对象，不要 Markdown，不要解释。`;
-}
-
-function creativeBriefValidationCorrection(fixedCharacter = "") {
-  return `
-Creative Brief 专用纠偏：
-- 校验消息已经给出精确字段路径和具体命中词，只修正越界字段，不要重写整个 Creative Brief。
-- fixedCharacter 原文：${fixedCharacter || "未指定"}
-- 本阶段只保留用户姓名与完整原始设定，不对角色原型、身体结构或职业做关键词推断；这些语义统一交给后续 Visual Guardrails。
-- newRole 和 newOccupationOrIdentity 只写目标角色最终身份；mappingLogic 只解释剧作功能迁移。
-- mappingLogic 中“不继承原片动物形象”等否定来源说明不等于给目标角色指定动物身份；不要为了消除否定来源词而改动 fixedCharacter，只需用清楚的剧作功能语言修正真正越界的字段。`;
-}
-
 function retryTokenLimit(value) {
   const current = Number(value || 12288);
   if (!Number.isFinite(current)) return 12288;
   const grownWithinDefaultCap = Math.min(32768, Math.max(12288, Math.ceil(current * 1.25)));
   return Math.max(current, grownWithinDefaultCap);
+}
+
+async function safePartialRepairDebugCall(writer, method, ...args) {
+  if (!writer || typeof writer[method] !== "function") return null;
+  try {
+    return await writer[method](...args);
+  } catch (error) {
+    const reason = String(error?.message || error || "未知错误")
+      .replace(/data:[^\s"']*;base64,[A-Za-z0-9+/=_-]+/gu, "[REDACTED_DATA_URL]")
+      .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/giu, "Bearer [REDACTED]")
+      .slice(0, 500);
+    console.warn(`[partial-repair-debug] ${method} 失败，业务流程继续：${reason}`);
+    return null;
+  }
 }

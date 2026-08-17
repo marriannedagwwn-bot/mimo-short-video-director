@@ -1,9 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadEnv, getConfig } from "./config.js";
 import { MimoClient, ModelResponseError } from "./mimo-client.js";
 import { QwenClient } from "./qwen-client.js";
 import { WorkflowService } from "./workflow.js";
+import { PartialRepairDebugWriter } from "./partial-repair-debug.js";
 import { prepareVideoInput } from "./video-file.js";
 
 export function parseRunVideoArgs(argv) {
@@ -77,6 +79,11 @@ export async function runVideoCommand(argv, { stdout = process.stdout, stderr = 
     await assertMimoState(client, config, options);
     const stageDefaults = buildCommandStageDefaults(config, qwenClient ? "Qwen" : "MiMo");
     const analysisMedia = qwenClient ? config.qwen : config.mimo;
+    const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const partialRepairDebugWriter = new PartialRepairDebugWriter({
+      outputRoot: process.env.PARTIAL_REPAIR_DEBUG_DIR
+        || path.join(projectRoot, "debug", "partial-repairs")
+    });
 
     stdout.write(`读取视频：${path.resolve(options.videoPath)}\n`);
     const videoInput = await prepareVideoInput(options.videoPath, {
@@ -88,7 +95,8 @@ export async function runVideoCommand(argv, { stdout = process.stdout, stderr = 
 
     const workflow = new WorkflowService({
       clients: { MiMo: client, Qwen: qwenClient },
-      stageDefaults
+      stageDefaults,
+      partialRepairDebugWriter
     });
     stdout.write(`运行模式：${workflow.mode === "live" ? `${stageDefaults.analysis.provider} 实分析；剧情 ${stageDefaults.fullStory.provider} ${stageDefaults.fullStory.model}；动画 ${stageDefaults.animationPlan.provider} ${stageDefaults.animationPlan.model}` : "演示模式"}\n`);
     const result = await workflow.run({

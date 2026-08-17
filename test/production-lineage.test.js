@@ -11,7 +11,8 @@ import {
   beginArtifactRequest,
   emptyProductionState,
   isArtifactRequestCurrent,
-  planProductionContext
+  planProductionContext,
+  productionRequestHeaders
 } from "../public/production-lineage-client.js";
 
 test("contentDigest ignores object key order but detects content changes", () => {
@@ -60,6 +61,23 @@ test("browser request guard rejects an older response for the same artifact", ()
   assert.equal(first.expectedCurrentRevision, "fullStory-V1-r3");
   assert.equal(isArtifactRequestCurrent(production, first), false);
   assert.equal(isArtifactRequestCurrent(production, second), true);
+});
+
+test("production request token uses sidecar headers instead of entering the business body", () => {
+  assert.deepEqual(productionRequestHeaders({
+    projectId: "project-a",
+    runId: "run-a",
+    artifactId: "fullStory:V2",
+    requestId: "request-a",
+    expectedCurrentRevision: "fullStory-V2-r1"
+  }), {
+    "x-mimo-project-id": "project-a",
+    "x-mimo-run-id": "run-a",
+    "x-mimo-artifact-id": "fullStory:V2",
+    "x-mimo-production-request-id": "request-a",
+    "x-mimo-expected-current-revision": "fullStory-V2-r1"
+  });
+  assert.deepEqual(productionRequestHeaders({ model: "qwen3.7-max" }), {});
 });
 
 test("plan production context is available only for a current namespaced plan", () => {

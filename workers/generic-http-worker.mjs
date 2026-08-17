@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import {
   inferShotVideoProvider,
   isNonDomesticKlingApiEndpoint,
@@ -69,11 +70,19 @@ async function executeRequest(request, options, config) {
     root: options.root || "",
     output: options.output
   };
+  if (request.referenceManifest) {
+    assertReferenceManifestMatchesArtifacts(request.referenceManifest, context.inputArtifacts);
+  }
   const { body, negativePromptDelivery } = buildRequestBody(context, config);
+  if (isMiniMaxH3Capability(context.request.capability, config)) {
+    assertMiniMaxH3RequestBodySize(body, config);
+  }
   const startedAt = Date.now();
   const first = await postJson(endpoint, body, config);
   const resolved = await resolveProviderResult(first, context.request, { ...config, resolvedEndpoint: endpoint });
   await writeOutput(resolved, options.output, config);
+  const miniMaxH3Video = isMiniMaxH3VideoGeneration(context.request.capability, config);
+  const promptReceipt = buildMiniMaxH3ProviderPromptReceipt(context.request, body, config);
   return {
     provider: "generic-http-worker",
     videoProvider: context.request.provider || config.videoProvider || "",
@@ -83,8 +92,15 @@ async function executeRequest(request, options, config) {
     outputPath: options.output,
     endpoint: redactUrl(endpoint),
     model: context.model,
-    audioRequested: body.generate_audio === true || body.settings?.audio === "native" || body.sound === "on",
+    audioRequested: miniMaxH3Video
+      || body.generate_audio === true
+      || body.settings?.audio === "native"
+      || body.sound === "on",
+    audioOutputMode: miniMaxH3Video
+      ? "native"
+      : body.generate_audio === true || body.settings?.audio === "native" || body.sound === "on" ? "requested" : "none",
     negativePromptDelivery,
+    ...(promptReceipt ? { promptReceipt } : {}),
     requestPreview: buildRequestPreview(endpoint, body, config),
     resultKind: resolved.kind,
     providerTaskId: resolved.providerTaskId || "",
@@ -96,6 +112,12 @@ async function executeRequest(request, options, config) {
 function endpointFor(capability, config) {
   const endpoints = config.endpoints || {};
   let endpoint = endpoints[capability] || "";
+  if (capability === "h3_context_ir" && endpoint) return String(endpoint).trim();
+  if (!endpoint && capability === "h3_context_ir") {
+    const explicitContextIrEndpoint = config.h3ContextIrEndpoint || config.contextIrEndpoint;
+    if (explicitContextIrEndpoint) return String(explicitContextIrEndpoint).trim();
+    endpoint = deriveMiniMaxH3ContextIrEndpoint(config.videoEndpoint || config.endpoint);
+  }
   if (!endpoint && capability === "image_generation") endpoint = config.imageEndpoint || config.endpoint;
   if (!endpoint && isVideoGenerationCapability(capability)) endpoint = config.videoEndpoint || config.endpoint;
   if (!endpoint && capability === "video_quality_review") endpoint = config.reviewEndpoint || config.endpoint;
@@ -108,13 +130,22 @@ function modelFor(capability, config) {
   const models = config.models || {};
   if (models[capability]) return models[capability];
   if (capability === "image_generation") return config.imageModel || config.model || "";
-  if (isVideoGenerationCapability(capability)) return config.videoModel || config.model || "";
+  if (isVideoGenerationCapability(capability) || capability === "h3_context_ir") return config.videoModel || config.model || "";
   if (capability === "video_quality_review") return config.reviewModel || config.model || "";
   if (capability === "video_assembly") return config.assemblyModel || config.model || "";
   return config.model || "";
 }
 
 function buildRequestBody(context, config) {
+  if (isMiniMaxH3ContextIr(context.request.capability, config)) {
+    return {
+      body: buildMiniMaxH3ContextIrBody(context, config),
+      negativePromptDelivery: unsupportedNegativePromptDelivery(
+        context.request.compiledNegativePrompt,
+        activeNegativePromptEntries(context.request.negativePromptEntries)
+      )
+    };
+  }
   const template = config.bodyTemplates?.[context.request.capability] || config.bodyTemplate;
   const negativePromptDelivery = resolveNegativePromptDelivery(context, config, template);
   const providerContext = contextForNegativePromptDelivery(context, negativePromptDelivery);
@@ -223,6 +254,13 @@ function resolveNegativePromptDelivery(context, config, template) {
     const providerFields = uniquePaths([...templateFields, ...configuredFields]);
     if (!providerFields.length) return unsupportedNegativePromptDelivery(compiled, entries);
     return nativeNegativePromptDelivery(compiled, providerFields.join(", "));
+  }
+
+  if (
+    isMiniMaxH3VideoGeneration(capability, config)
+    && context.request.promptDialect === "minimax_h3_ref2va_six_section"
+  ) {
+    return unsupportedNegativePromptDelivery(compiled, entries);
   }
 
   if (isModelArkContentGeneration(capability, config) || isMiniMaxH3VideoGeneration(capability, config)) {
@@ -424,7 +462,7 @@ function extractArtifact(data, request, config) {
   }
   const base64 = firstValue(data, config.resultBase64Paths || defaultResultBase64Paths());
   if (typeof base64 === "string" && base64.trim()) return { kind: "base64", base64 };
-  const text = firstValue(data, config.resultTextPaths || defaultResultTextPaths());
+  const text = firstValue(data, resultTextPathsFor(request, config));
   if (typeof text === "string" && text.trim() && textArtifactAllowed(request, config)) return { kind: "text", text };
   if (request.capability === "video_quality_review" && data) return { kind: "json", data };
   return null;
@@ -432,7 +470,7 @@ function extractArtifact(data, request, config) {
 
 function taskIdPathsFor(request, config) {
   if (config.taskIdPaths) return config.taskIdPaths;
-  if (isMiniMaxH3VideoGeneration(request.capability, config)) {
+  if (isMiniMaxH3Capability(request.capability, config)) {
     return uniquePaths(["task_id", ...defaultTaskIdPaths()]);
   }
   if (isKlingV3ImageToVideo(request.capability, config)) {
@@ -446,7 +484,7 @@ function taskIdPathsFor(request, config) {
 
 function statusPathsFor(request, config) {
   if (config.statusPaths) return config.statusPaths;
-  if (isMiniMaxH3VideoGeneration(request.capability, config)) {
+  if (isMiniMaxH3Capability(request.capability, config)) {
     return uniquePaths(["task.status", ...defaultStatusPaths()]);
   }
   if (isKlingV3ImageToVideo(request.capability, config)) {
@@ -481,6 +519,14 @@ function resultUrlPathsFor(request, config) {
   return defaultResultUrlPaths();
 }
 
+function resultTextPathsFor(request, config) {
+  if (config.resultTextPaths) return config.resultTextPaths;
+  if (isMiniMaxH3ContextIr(request.capability, config)) {
+    return uniquePaths(["task.content.prompt", ...defaultResultTextPaths()]);
+  }
+  return defaultResultTextPaths();
+}
+
 function successStatusesFor(request, config) {
   if (config.successStatuses) return config.successStatuses;
   if (isKlingV3ImageToVideo(request.capability, config)) return ["succeeded"];
@@ -497,7 +543,8 @@ function failureStatusesFor(request, config) {
 
 function textArtifactAllowed(request, config) {
   if (config.allowTextArtifact === true) return true;
-  return request.capability === "video_quality_review";
+  return request.capability === "video_quality_review"
+    || isMiniMaxH3ContextIr(request.capability, config);
 }
 
 function pollTargetFor(data, providerTaskId, config) {
@@ -542,6 +589,20 @@ function isMiniMaxH3VideoGeneration(capability, config) {
     || (hostnameFor(endpoint) === "api.minimaxi.com" && /\/v2\/video_generation\/?$/u.test(endpoint));
 }
 
+function isMiniMaxH3ContextIr(capability, config) {
+  if (capability !== "h3_context_ir") return false;
+  const preset = presetFor(capability, config);
+  const model = String(config.videoModel || config.model || "").trim();
+  const endpoint = String(config.resolvedEndpoint || config.h3ContextIrEndpoint || config.contextIrEndpoint || "");
+  return preset === "minimax_h3_video_generation"
+    || model === "MiniMax-H3"
+    || /\/v2\/h3_context_ir\/?$/u.test(endpoint);
+}
+
+function isMiniMaxH3Capability(capability, config) {
+  return isMiniMaxH3VideoGeneration(capability, config) || isMiniMaxH3ContextIr(capability, config);
+}
+
 function isKlingImageToVideo(capability, config) {
   if (capability !== "first_last_frame_video_generation") return false;
   const preset = presetFor(capability, config);
@@ -565,6 +626,7 @@ function isKlingV3ImageToVideo(capability, config) {
 
 function normalizeEndpointForPreset(capability, endpoint, config) {
   if (!endpoint) return endpoint;
+  if (capability === "h3_context_ir") return deriveMiniMaxH3ContextIrEndpoint(endpoint);
   if (isMiniMaxH3VideoGeneration(capability, { ...config, videoEndpoint: endpoint, endpoint })) {
     const clean = String(endpoint).replace(/\/$/u, "");
     try {
@@ -607,6 +669,24 @@ function normalizeEndpointForPreset(capability, endpoint, config) {
   return endpoint;
 }
 
+function deriveMiniMaxH3ContextIrEndpoint(value = "") {
+  const endpoint = String(value || "").trim();
+  if (!endpoint) return "";
+  try {
+    const url = new URL(endpoint);
+    url.pathname = "/v2/h3_context_ir";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    if (/\/v2\/h3_context_ir\/?$/u.test(endpoint)) return endpoint;
+    if (/\/v2\/video_generation\/?$/u.test(endpoint)) {
+      return endpoint.replace(/\/v2\/video_generation\/?$/u, "/v2/h3_context_ir");
+    }
+    return "";
+  }
+}
+
 function buildModelArkContentGenerationBody(context, config, negativePromptDelivery = {}) {
   const artifacts = context.inputArtifacts || [];
   const prompt = [
@@ -643,24 +723,44 @@ function buildModelArkContentGenerationBody(context, config, negativePromptDeliv
 
 function buildMiniMaxH3VideoBody(context, config, negativePromptDelivery = {}) {
   const artifacts = context.inputArtifacts || [];
-  const prompt = truncateText([
+  const prompt = requireTextWithinLimit([
     context.request.prompt || "",
     negativePromptDelivery.appliedMode === "positive_constraint" ? negativePromptDelivery.appliedText : ""
-  ].filter(Boolean).join("\n"), Number(config.promptMaxChars || 7000));
-  if (!prompt) throw new Error("MiniMax H3 视频提示词不能为空。");
+  ].filter(Boolean).join("\n"), miniMaxH3PromptMaxChars(config), "MiniMax H3 视频提示词");
   const parameters = context.request.parameters || {};
+  const duration = Object.hasOwn(parameters, "durationSeconds")
+    ? parameters.durationSeconds
+    : config.duration;
   const content = context.request.capability === "all_reference_video_generation"
-    ? buildAllReferenceContent(artifacts, prompt, "MiniMax H3")
+    ? buildAllReferenceContent(artifacts, prompt, "MiniMax H3", { maxTotal: 12 })
     : buildFirstLastFrameContent(artifacts, prompt, "MiniMax H3");
   return {
     model: context.model || config.model || "MiniMax-H3",
     content,
     resolution: normalizeMiniMaxResolution(config.resolution),
-    duration: normalizeMiniMaxDuration(parameters.durationSeconds || config.duration),
+    duration: normalizeMiniMaxDuration(duration),
     ratio: context.request.capability === "all_reference_video_generation"
       ? normalizeMiniMaxRatio(parameters.aspectRatio || config.ratio)
       : "adaptive",
     aigc_watermark: config.watermark === true
+  };
+}
+
+function buildMiniMaxH3ContextIrBody(context, config) {
+  const parameters = context.request.parameters || {};
+  const duration = Object.hasOwn(parameters, "durationSeconds")
+    ? parameters.durationSeconds
+    : config.duration;
+  const prompt = requireTextWithinLimit(
+    context.request.prompt || "",
+    miniMaxH3PromptMaxChars(config),
+    "MiniMax H3 Context-IR 提示词"
+  );
+  return {
+    model: context.model || config.model || "MiniMax-H3",
+    content: buildAllReferenceContent(context.inputArtifacts || [], prompt, "MiniMax H3 Context-IR", { maxTotal: 12 }),
+    duration: normalizeMiniMaxDuration(duration),
+    ratio: normalizeMiniMaxRatio(parameters.aspectRatio || config.ratio)
   };
 }
 
@@ -675,7 +775,7 @@ function buildFirstLastFrameContent(artifacts, prompt, providerLabel) {
   ];
 }
 
-function buildAllReferenceContent(artifacts, prompt, providerLabel) {
+function buildAllReferenceContent(artifacts, prompt, providerLabel, { maxTotal = Number.POSITIVE_INFINITY } = {}) {
   const counts = artifacts.reduce((result, artifact) => {
     const mediaType = String(artifact.mediaType || "").trim().toLowerCase();
     if (Object.hasOwn(result, mediaType)) result[mediaType] += 1;
@@ -683,6 +783,9 @@ function buildAllReferenceContent(artifacts, prompt, providerLabel) {
   }, { image: 0, video: 0, audio: 0 });
   if (counts.image > 9 || counts.video > 3 || counts.audio > 3) {
     throw new Error(`${providerLabel} 全能参考素材超过上限：${counts.image} 图、${counts.video} 视频、${counts.audio} 音频。`);
+  }
+  if (artifacts.length > maxTotal) {
+    throw new Error(`${providerLabel} 混合参考素材总数最多 ${maxTotal} 项，当前 ${artifacts.length} 项。`);
   }
   const content = [{ type: "text", text: prompt }];
   for (const [index, artifact] of artifacts.entries()) {
@@ -805,8 +908,11 @@ function normalizeSeedanceResolution(value, model) {
 }
 
 function normalizeMiniMaxDuration(value) {
-  const seconds = Math.round(Number(value) || 5);
-  return Math.min(15, Math.max(4, seconds));
+  const seconds = Number(value);
+  if (!Number.isInteger(seconds) || seconds < 4 || seconds > 15) {
+    throw new Error("MiniMax H3 duration 必须是 4–15 秒整数，不能静默改写时长。");
+  }
+  return seconds;
 }
 
 function normalizeMiniMaxResolution(value) {
@@ -825,6 +931,36 @@ function truncateText(value, maxChars) {
   const text = String(value || "").trim();
   if (!Number.isFinite(maxChars) || maxChars <= 0 || text.length <= maxChars) return text;
   return text.slice(0, maxChars);
+}
+
+function requireTextWithinLimit(value, maxChars, label) {
+  const text = String(value || "").trim();
+  if (!text) throw new Error(`${label}不能为空。`);
+  if (Number.isFinite(maxChars) && maxChars > 0 && text.length > maxChars) {
+    throw new Error(`${label}超过 ${maxChars} 字符（当前 ${text.length}），拒绝截断。`);
+  }
+  return text;
+}
+
+function miniMaxH3PromptMaxChars(config = {}) {
+  const configured = Number(config.promptMaxChars || 7000);
+  if (!Number.isFinite(configured) || configured <= 0) return 7000;
+  return Math.min(7000, Math.floor(configured));
+}
+
+function assertMiniMaxH3RequestBodySize(body, config = {}) {
+  const officialMaxBytes = 64 * 1024 * 1024;
+  const configuredMaxBytes = Object.hasOwn(config, "maxRequestBodyBytes")
+    ? Number(config.maxRequestBodyBytes)
+    : officialMaxBytes;
+  const maxBytes = Math.min(officialMaxBytes, configuredMaxBytes);
+  const bytes = Buffer.byteLength(JSON.stringify(removeUndefined(body)), "utf8");
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
+    throw new Error("MiniMax H3 maxRequestBodyBytes 配置无效。");
+  }
+  if (bytes > maxBytes) {
+    throw new Error(`MiniMax H3 最终请求体不得超过 ${(maxBytes / 1024 / 1024).toFixed(2)}MB，当前 ${(bytes / 1024 / 1024).toFixed(2)}MB；拒绝截断或丢弃参考素材。`);
+  }
 }
 
 function hostnameFor(value) {
@@ -873,7 +1009,11 @@ async function loadInputArtifacts(inputArtifacts, config) {
       mimeType: artifact.mimeType || "",
       durationSeconds: Number(artifact.durationSeconds) || 0,
       sizeBytes: Number(artifact.sizeBytes) || 0,
-      source: artifact.source || ""
+      source: artifact.source || "",
+      logicalName: artifact.logicalName || artifact.filename || "",
+      sourceShotId: artifact.sourceShotId || "",
+      sourceCharacterName: artifact.sourceCharacterName || "",
+      sha256: String(artifact.sha256 || "").trim().toLowerCase()
     };
     if (includeDataUrls && artifact.path) {
       try {
@@ -882,6 +1022,8 @@ async function loadInputArtifacts(inputArtifacts, config) {
           const buffer = await fs.readFile(artifact.path);
           item.filename = path.basename(artifact.path);
           item.mimeType = mimeTypeForPath(artifact.path);
+          item.sizeBytes = buffer.length;
+          item.sha256 = sha256Bytes(buffer);
           item.dataUrl = `data:${item.mimeType};base64,${buffer.toString("base64")}`;
         }
       } catch {
@@ -891,6 +1033,57 @@ async function loadInputArtifacts(inputArtifacts, config) {
     result.push(item);
   }
   return result;
+}
+
+function assertReferenceManifestMatchesArtifacts(manifest, artifacts) {
+  if (manifest?.schemaVersion !== "minimax_h3_reference_manifest/1.0") {
+    throw new Error("MiniMax H3 referenceManifest schemaVersion 无效。");
+  }
+  const items = Array.isArray(manifest.contentItems) ? manifest.contentItems : [];
+  if (manifest.digest !== sha256Text(JSON.stringify(items))) {
+    throw new Error("MiniMax H3 referenceManifest digest 与 contentItems 不一致。");
+  }
+  if (
+    Array.isArray(manifest.labelBindings)
+    && manifest.labelBindingsDigest !== sha256Text(JSON.stringify(manifest.labelBindings))
+  ) {
+    throw new Error("MiniMax H3 referenceManifest labelBindingsDigest 无效。");
+  }
+  if (items.length !== artifacts.length) {
+    throw new Error(`MiniMax H3 referenceManifest 素材数与实际输入不一致：manifest=${items.length}，actual=${artifacts.length}。`);
+  }
+  for (let index = 0; index < items.length; index += 1) {
+    const expected = items[index] || {};
+    const actual = artifacts[index] || {};
+    if (expected.providerContentIndex !== index + 1) {
+      throw new Error(`MiniMax H3 referenceManifest 第 ${index + 1} 项 providerContentIndex 无效。`);
+    }
+    if (expected.mediaType !== actual.mediaType || expected.transportRole !== `reference_${actual.mediaType}`) {
+      throw new Error(`MiniMax H3 referenceManifest 第 ${index + 1} 项媒体类型或 role 与实际输入不一致。`);
+    }
+    if (!actual.dataUrl || !/^[a-f0-9]{64}$/u.test(actual.sha256)) {
+      throw new Error(`MiniMax H3 第 ${index + 1} 项实际输入缺少可验证的媒体字节。`);
+    }
+    if (expected.sha256 !== actual.sha256 || Number(expected.byteLength) !== actual.sizeBytes) {
+      throw new Error(`MiniMax H3 referenceManifest 第 ${index + 1} 项字节摘要与实际输入不一致。`);
+    }
+  }
+}
+
+function buildMiniMaxH3ProviderPromptReceipt(request, body, config) {
+  if (!isMiniMaxH3Capability(request.capability, config)) return null;
+  const submittedPrompt = Array.isArray(body.content)
+    ? String(body.content.find((item) => item?.type === "text")?.text || "")
+    : "";
+  if (!submittedPrompt) return null;
+  return {
+    schemaVersion: "minimax_h3_provider_prompt_receipt/1.0",
+    dialect: String(request.promptDialect || "minimax_h3_unprofiled"),
+    submittedPrompt,
+    submittedPromptSha256: sha256Text(submittedPrompt),
+    referenceManifestDigest: String(request.referenceManifest?.digest || ""),
+    referenceManifest: request.referenceManifest || null
+  };
 }
 
 async function postJson(url, body, config) {
@@ -1138,6 +1331,14 @@ function parseJsonEnv(name, fallback) {
 
 function stripDataUrlPrefix(value) {
   return String(value || "").includes(",") ? String(value).split(",", 2)[1] : String(value || "");
+}
+
+function sha256Bytes(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function sha256Text(value) {
+  return sha256Bytes(Buffer.from(String(value || ""), "utf8"));
 }
 
 function looksLikeJson(buffer) {

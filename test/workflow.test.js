@@ -7,8 +7,8 @@ import path from "node:path";
 import { WorkflowService } from "../src/workflow.js";
 import { getConfig } from "../src/config.js";
 import { InputError, OutputContractError } from "../src/validation.js";
-import { ensureCharacterPromptMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile, extractFixedCharacterName, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms } from "../src/validation.js";
-import { buildRequestBody, MimoClient, parseModelJson } from "../src/mimo-client.js";
+import { CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS, ensureCharacterPromptMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile, extractFixedCharacterName, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms } from "../src/validation.js";
+import { buildRequestBody, MimoClient, ModelResponseError, parseModelJson } from "../src/mimo-client.js";
 import { buildQwenRequestBody, QwenClient } from "../src/qwen-client.js";
 import { JimengImageClient, buildCharacterReferenceImagePrompt, buildJimengImageRequestBody, buildShotFrameImagePrompt } from "../src/jimeng-client.js";
 import { RECONSTRUCTION_SYSTEM_PROMPT, SYSTEM_PROMPT, animationPlanPrompt, briefPrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "../src/prompts.js";
@@ -21,6 +21,8 @@ import { syncShotCharacterReference } from "../public/character-reference-sync.j
 import { buildFrameReferenceManifest, shotRelatedCharacterReferences, uploadedReferenceImages } from "../public/shot-reference-images.js";
 import { groundingContextDigest, sealReconstruction } from "../src/reconstruction-grounding.js";
 import { sealGlobalCharacterBoundary } from "../src/character-boundary.js";
+import { ModelCallCoordinator } from "../src/model-call-coordinator.js";
+import { FULL_STORY_BEAT_SCENE_POSTPASS_SCHEMA_VERSION } from "../src/full-story-beat-scene-postpass.js";
 
 const frames = Array.from({ length: 8 }, (_, index) => ({
   timestamp: index * 5,
@@ -38,6 +40,30 @@ const input = {
 };
 
 const TEST_STATIC_FRAME_COMPILER_MODEL = "static-frame-compiler-test";
+
+function isFullStoryBeatScenePostpassPrompt(prompt = "") {
+  return String(prompt).includes(FULL_STORY_BEAT_SCENE_POSTPASS_SCHEMA_VERSION);
+}
+
+function fullStoryBeatScenePassResponse(story) {
+  return {
+    schemaVersion: FULL_STORY_BEAT_SCENE_POSTPASS_SCHEMA_VERSION,
+    status: "pass",
+    reviews: story.beatSheet.map((beat, beatIndex) => ({
+      beatIndex,
+      beat: beat.beat,
+      sceneIds: [story.sceneScript[Math.min(beatIndex, story.sceneScript.length - 1)].sceneId],
+      verdict: "pass",
+      issueCode: "none",
+      beatEvidence: "",
+      sceneEvidence: "",
+      nextStateEvidence: "",
+      reason: "",
+      completionId: ""
+    })),
+    completions: []
+  };
+}
 
 function animationWorkflow(options = {}) {
   const provider = String(options.animationProvider || "MiMo");
@@ -386,7 +412,7 @@ test("Visual Guardrails 只推断一次并签发全局边界，用户改设定�
   assert.equal(variantCalls, 1);
 });
 
-test("Visual Guardrails 拒绝模型伪造服务端签发字段", async () => {
+test("Visual Guardrails 拒绝模型伪造服务端签发字段且不整包重生", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，q版狼耳少女，形象类似猫娘",
     vertical: "治愈/温情/日常",
@@ -431,7 +457,7 @@ test("Visual Guardrails 拒绝模型伪造服务端签发字段", async () => {
     }),
     /签发字段只能由服务端生成/u
   );
-  assert.equal(modelCalls, 2);
+  assert.equal(modelCalls, 1);
 });
 
 test("creativeBrief 将通用叙事构件列为允许复用而非禁止项", async () => {
@@ -445,6 +471,73 @@ test("creativeBrief 将通用叙事构件列为允许复用而非禁止项", asy
     assert.ok(allowed.includes(component));
     assert.equal(protectedText.includes(component), false);
   }
+});
+
+test("creativeBrief 使用服务端固定的七项叙事分类并要求每项非空评估", () => {
+  const creativeBrief = mockBrief({
+    ...input,
+    referenceAnalysis: {},
+    sourceScriptReconstruction: {}
+  });
+  assert.deepEqual(
+    creativeBrief.allowedNarrativeComponents.map((item) => item.component),
+    [...CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS]
+  );
+  assert.doesNotThrow(() => ensureOutputContract(creativeBrief, "creativeBrief"));
+
+  const notApplicable = structuredClone(creativeBrief);
+  notApplicable.allowedNarrativeComponents[0].howToReuseSafely = "本次不采用该构件；保留分类并说明限制。";
+  assert.doesNotThrow(() => ensureOutputContract(notApplicable, "creativeBrief"));
+
+  const reordered = structuredClone(creativeBrief);
+  reordered.allowedNarrativeComponents.reverse();
+  assert.doesNotThrow(() => ensureOutputContract(reordered, "creativeBrief"));
+
+  const missing = structuredClone(creativeBrief);
+  missing.allowedNarrativeComponents = missing.allowedNarrativeComponents.filter(
+    (item) => item.component !== "旅途结构"
+  );
+  assert.throws(
+    () => ensureOutputContract(missing, "creativeBrief"),
+    /creativeBrief 未逐项评估可复用叙事构件：旅途结构/u
+  );
+
+  const confirmedFailureShape = structuredClone(creativeBrief);
+  confirmedFailureShape.allowedNarrativeComponents = confirmedFailureShape.allowedNarrativeComponents.filter(
+    (item) => ["送达任务", "获得帮助", "被关爱对象"].includes(item.component)
+  );
+  assert.throws(
+    () => ensureOutputContract(confirmedFailureShape, "creativeBrief"),
+    /creativeBrief 未逐项评估可复用叙事构件：旅途结构、情感媒介、天气或空间推动情绪、生活化或仪式化结尾/u
+  );
+
+  const renamed = structuredClone(creativeBrief);
+  renamed.allowedNarrativeComponents[1].component = "空间旅程";
+  assert.throws(
+    () => ensureOutputContract(renamed, "creativeBrief"),
+    /creativeBrief 未逐项评估可复用叙事构件：旅途结构/u
+  );
+
+  const blankAssessment = structuredClone(creativeBrief);
+  blankAssessment.allowedNarrativeComponents[2].howToReuseSafely = "  ";
+  assert.throws(
+    () => ensureOutputContract(blankAssessment, "creativeBrief"),
+    /howToReuseSafely 必须填写非空评估/u
+  );
+
+  const unexpected = structuredClone(creativeBrief);
+  unexpected.allowedNarrativeComponents.push({ component: "其他母题", howToReuseSafely: "说明" });
+  assert.throws(
+    () => ensureOutputContract(unexpected, "creativeBrief"),
+    /使用了非服务端签发分类：其他母题/u
+  );
+
+  const duplicate = structuredClone(creativeBrief);
+  duplicate.allowedNarrativeComponents.push(structuredClone(duplicate.allowedNarrativeComponents[0]));
+  assert.throws(
+    () => ensureOutputContract(duplicate, "creativeBrief"),
+    /重复分类：送达任务/u
+  );
 });
 
 test("主题变体同时提供结构保真与表达变换证明", async () => {
@@ -469,28 +562,238 @@ test("选择主题变体后可用 mimo-v2.5-pro 生成完整剧情", async () =>
     environmentPressure: "暴雨停电",
     endingRitual: "老人按下播放键"
   };
-  let captured;
-  let providerCalls = 0;
+  variant.oneLineHook = "VARIANT_ONLY_POSTPASS_SENTINEL";
+  const story = mockFullStory({ ...input, creativeBrief, variant });
+  const captured = [];
   const workflow = new WorkflowService({
     storyModel: "mimo-v2.5-pro",
     storyMaxCompletionTokens: 12345,
     client: {
       async generateJson(args) {
-        providerCalls += 1;
-        captured = args;
-        return mockFullStory({ ...input, creativeBrief, variant });
+        captured.push(args);
+        return isFullStoryBeatScenePostpassPrompt(args.prompt)
+          ? fullStoryBeatScenePassResponse(story)
+          : structuredClone(story);
       }
     }
   });
   const result = await workflow.createFullStory(globalBoundaryContext(workflow, { creativeBrief, variant }));
-  assert.equal(captured.model, "mimo-v2.5-pro");
-  assert.equal(captured.maxCompletionTokens, 12345);
-  assert.equal(captured.jsonRetryAttempts, 0);
-  assert.equal(captured.strictJson, true);
-  assert.equal(providerCalls, 1);
+  assert.equal(captured.length, 2);
+  for (const request of captured) {
+    assert.equal(request.model, "mimo-v2.5-pro");
+    assert.equal(request.maxCompletionTokens, 12345);
+    assert.equal(request.jsonRetryAttempts, 0);
+    assert.equal(request.strictJson, true);
+  }
+  assert.match(captured[0].prompt, /VARIANT_ONLY_POSTPASS_SENTINEL/u);
+  assert.doesNotMatch(captured[1].prompt, /VARIANT_ONLY_POSTPASS_SENTINEL/u);
+  assert.match(captured[1].prompt, new RegExp(JSON.stringify(story.title), "u"));
   assert.equal(result.selectedVariantId, "V1");
   assert.ok(result.sceneScript.length >= 6);
   assert.match(result.characterBible.protagonist.identity, /阿岚/);
+});
+
+test("Full Story 后置审校只追加可唯一补全的 visibleAction 状态桥", async () => {
+  const creativeBrief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const variant = {
+    id: "V1",
+    title: "灯笼归途",
+    characterSetup: { protagonist: "阿岚，社区修理师", careRecipient: "独居老人", helper: "夜班便利店员" },
+    newTask: "逐户送完六盏灯笼",
+    emotionalMedium: "纸灯笼",
+    environmentPressure: "天色渐暗",
+    endingRitual: "回家放下空竹篓"
+  };
+  const story = mockFullStory({ ...input, creativeBrief, variant });
+  story.beatSheet[0].storyAction =
+    "阿岚背着装有六盏灯笼的竹篓逐户送灯笼。随后连续完成其余住户的灯笼交付，最后一盏交出后空竹篓清晰可见，她转身返家。";
+  story.sceneScript[0].visibleAction = "阿岚背着装有六盏灯笼的竹篓沿石阶前行。";
+  story.sceneScript[1].visibleAction = "阿岚取出一盏灯笼交给住户，随后继续前行。";
+  story.sceneScript[2].visibleAction = "阿岚回到院子，把空竹篓放在门边。";
+  const original = structuredClone(story);
+  const prompts = [];
+  const workflow = new WorkflowService({
+    client: {
+      async generateJson(args) {
+        prompts.push(args.prompt);
+        if (!isFullStoryBeatScenePostpassPrompt(args.prompt)) return structuredClone(story);
+        const response = fullStoryBeatScenePassResponse(story);
+        response.status = "completed";
+        response.reviews[0] = {
+          beatIndex: 0,
+          beat: story.beatSheet[0].beat,
+          sceneIds: [story.sceneScript[0].sceneId, story.sceneScript[1].sceneId],
+          verdict: "completed",
+          issueCode: "unexplained_state_jump",
+          beatEvidence: "最后一盏交出后空竹篓清晰可见",
+          sceneEvidence: "取出一盏灯笼",
+          nextStateEvidence: "空竹篓",
+          reason: "分场只展示一盏交付，下一场却已经是空竹篓，缺少可见的任务完成桥。",
+          completionId: "C1"
+        };
+        response.completions = [{
+          completionId: "C1",
+          targetSceneId: story.sceneScript[1].sceneId,
+          field: "visibleAction",
+          mode: "append",
+          currentVisibleAction: story.sceneScript[1].visibleAction,
+          addition: "随后连续完成其余住户的灯笼交付，最后一盏交出后空竹篓清晰可见，她转身返家。"
+        }];
+        return response;
+      }
+    }
+  });
+
+  const result = await workflow.createFullStory(globalBoundaryContext(workflow, { creativeBrief, variant }));
+  assert.equal(prompts.length, 2);
+  assert.match(result.sceneScript[1].visibleAction, /最后一盏交出后空竹篓/u);
+  const projected = structuredClone(result);
+  projected.sceneScript[1].visibleAction = original.sceneScript[1].visibleAction;
+  assert.deepEqual(projected, original);
+});
+
+test("Full Story 后置审校 blocked 时整次失败且不重试或回退首稿", async () => {
+  const creativeBrief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const variant = mockVariants({ ...input, creativeBrief }).variants[0];
+  const story = mockFullStory({ ...input, creativeBrief, variant });
+  let calls = 0;
+  const workflow = new WorkflowService({
+    modelCallCoordinator: new ModelCallCoordinator({ maxProviderCalls: 4 }),
+    client: {
+      async generateJson(args) {
+        calls += 1;
+        if (!isFullStoryBeatScenePostpassPrompt(args.prompt)) return structuredClone(story);
+        const response = fullStoryBeatScenePassResponse(story);
+        response.status = "blocked";
+        response.reviews[0] = {
+          beatIndex: 0,
+          beat: story.beatSheet[0].beat,
+          sceneIds: [story.sceneScript[0].sceneId],
+          verdict: "blocked",
+          issueCode: "insufficient_internal_evidence",
+          beatEvidence: story.beatSheet[0].storyAction.slice(0, 40),
+          sceneEvidence: story.sceneScript[0].visibleAction.slice(0, 40),
+          nextStateEvidence: "",
+          reason: "仅靠当前 Full Story 无法唯一确定应追加的动作，不能猜测补全。",
+          completionId: ""
+        };
+        return response;
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => workflow.createFullStory(globalBoundaryContext(workflow, { creativeBrief, variant })),
+    /无法安全补全/u
+  );
+  assert.equal(calls, 2);
+});
+
+test("Full Story 初轮 completion retry 成功后只执行一次 postpass，总调用严格为三次", async () => {
+  const creativeBrief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const variant = mockVariants({ ...input, creativeBrief }).variants[0];
+  const story = mockFullStory({ ...input, creativeBrief, variant });
+  const prompts = [];
+  const workflow = new WorkflowService({
+    modelCallCoordinator: new ModelCallCoordinator({ maxProviderCalls: 4 }),
+    client: {
+      async generateJson(args) {
+        prompts.push(args.prompt);
+        if (prompts.length === 1) {
+          throw new ModelResponseError(
+            "模型必须返回严格 JSON，首次响应未闭合",
+            "{\"selectedVariantId\":",
+            0,
+            { code: "MODEL_JSON_OBJECT_REQUIRED" }
+          );
+        }
+        if (isFullStoryBeatScenePostpassPrompt(args.prompt)) {
+          return fullStoryBeatScenePassResponse(story);
+        }
+        return structuredClone(story);
+      }
+    }
+  });
+
+  const result = await workflow.createFullStory(
+    globalBoundaryContext(workflow, { creativeBrief, variant })
+  );
+  assert.deepEqual(result, story);
+  assert.equal(prompts.length, 3);
+  assert.equal(isFullStoryBeatScenePostpassPrompt(prompts[0]), false);
+  assert.equal(isFullStoryBeatScenePostpassPrompt(prompts[1]), false);
+  assert.equal(isFullStoryBeatScenePostpassPrompt(prompts[2]), true);
+});
+
+test("Full Story 全量输出 observer 使用旁路 Production trace，且 trace 不进入 Prompt 或 Artifact", async () => {
+  const creativeBrief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const variant = {
+    id: "V1",
+    title: "最后一格电",
+    characterSetup: { protagonist: "阿岚，社区修理师", careRecipient: "独居老人", helper: "夜班便利店员" },
+    newTask: "修复并送回旧设备",
+    emotionalMedium: "一段旧录音",
+    environmentPressure: "暴雨停电",
+    endingRitual: "老人按下播放键"
+  };
+  const story = mockFullStory({ ...input, creativeBrief, variant });
+  const content = JSON.stringify(story);
+  const reviewContent = JSON.stringify(fullStoryBeatScenePassResponse(story));
+  const observed = [];
+  const providerPrompts = [];
+  let providerCalls = 0;
+  const workflow = new WorkflowService({
+    client: {
+      async requestCompletion(request) {
+        providerCalls += 1;
+        providerPrompts.push(request.prompt);
+        const responseContent = providerCalls === 1 ? content : reviewContent;
+        return {
+          content: responseContent,
+          raw: JSON.stringify({ choices: [{ message: { content: responseContent } }] }),
+          requestId: `provider-request-${providerCalls}`,
+          finishReason: "stop",
+          usage: { total_tokens: 42 }
+        };
+      }
+    },
+    fullModelOutputLogWriter: {
+      enabled: true,
+      async recordAttempt(value) {
+        observed.push(value);
+      }
+    }
+  });
+  const traceContext = {
+    verified: true,
+    projectId: "project-a",
+    runId: "run-a",
+    artifactId: "fullStory:V1",
+    productionRequestId: "production-request-1"
+  };
+  const result = await workflow.createFullStory(
+    globalBoundaryContext(workflow, { creativeBrief, variant }),
+    { traceContext }
+  );
+
+  assert.equal(observed.length, 2);
+  assert.equal(observed[0].content, content);
+  assert.equal(observed[0].providerRequestId, "provider-request-1");
+  assert.equal(observed[1].content, reviewContent);
+  assert.equal(observed[1].providerRequestId, "provider-request-2");
+  assert.deepEqual(observed.map((attempt) => attempt.stage), [
+    "fullStory",
+    "fullStoryBeatScenePostpass"
+  ]);
+  for (const attempt of observed) {
+    assert.equal(attempt.context.productionRequestId, "production-request-1");
+    assert.equal(attempt.context.variantId, "V1");
+  }
+  for (const providerPrompt of providerPrompts) {
+    assert.doesNotMatch(providerPrompt, /production-request-1|project-a|run-a/u);
+  }
+  assert.equal(Object.hasOwn(result, "traceContext"), false);
+  assert.deepEqual(result, story);
 });
 
 test("完整剧情和动画生产包可切换到 Qwen，同时保留 MiMo 基础客户端", async () => {
@@ -504,6 +807,7 @@ test("完整剧情和动画生产包可切换到 Qwen，同时保留 MiMo 基础
     environmentPressure: "暴雨停电",
     endingRitual: "老人按下播放键"
   };
+  const story = mockFullStory({ ...input, creativeBrief, variant });
   const calls = [];
   const mimoClient = {
     async generateJson() {
@@ -516,8 +820,12 @@ test("完整剧情和动画生产包可切换到 Qwen，同时保留 MiMo 基础
   const qwenClient = {
     async generateJson(args) {
       calls.push(args);
-      if (args.model === "qwen3.7-max-story") return mockFullStory({ ...input, creativeBrief, variant });
-      const plan = mockAnimationPlan({ ...input, creativeBrief, variant, fullStory: mockFullStory({ ...input, creativeBrief, variant }) });
+      if (args.model === "qwen3.7-max-story") {
+        return isFullStoryBeatScenePostpassPrompt(args.prompt)
+          ? fullStoryBeatScenePassResponse(story)
+          : structuredClone(story);
+      }
+      const plan = mockAnimationPlan({ ...input, creativeBrief, variant, fullStory: story });
       return stagedAnimationResponse(plan, args.prompt);
     }
   };
@@ -540,8 +848,10 @@ test("完整剧情和动画生产包可切换到 Qwen，同时保留 MiMo 基础
   assert.equal(workflow.mode, "live");
   assert.equal(calls[0].model, "qwen3.7-max-story");
   assert.equal(calls[0].maxCompletionTokens, 16000);
-  assert.equal(calls[1].model, "qwen3.7-max-animation");
-  assert.equal(calls[1].maxCompletionTokens, 17000);
+  assert.equal(calls[1].model, "qwen3.7-max-story");
+  assert.equal(calls[1].maxCompletionTokens, 16000);
+  assert.equal(calls[2].model, "qwen3.7-max-animation");
+  assert.equal(calls[2].maxCompletionTokens, 17000);
   assert.equal(fullStory.selectedVariantId, "V1");
   assert.equal(animationPlan.selectedVariantId, "V1");
 });
@@ -557,11 +867,14 @@ test("工作流阶段可通过 modelOverrides 灵活切换 provider 和模型", 
     environmentPressure: "暴雨停电",
     endingRitual: "老人按下播放键"
   };
+  const story = mockFullStory({ ...input, creativeBrief, variant });
   const calls = [];
   const qwenClient = {
     async generateJson(args) {
       calls.push(args);
-      return mockFullStory({ ...input, creativeBrief, variant });
+      return isFullStoryBeatScenePostpassPrompt(args.prompt)
+        ? fullStoryBeatScenePassResponse(story)
+        : structuredClone(story);
     }
   };
   const workflow = new WorkflowService({
@@ -578,8 +891,11 @@ test("工作流阶段可通过 modelOverrides 灵活切换 provider 和模型", 
     }
   }));
   assert.equal(result.selectedVariantId, "V1");
-  assert.equal(calls[0].model, "qwen-custom-story");
-  assert.equal(calls[0].maxCompletionTokens, 22000);
+  assert.equal(calls.length, 2);
+  for (const call of calls) {
+    assert.equal(call.model, "qwen-custom-story");
+    assert.equal(call.maxCompletionTokens, 22000);
+  }
 });
 
 test("测试包签名策略允许跨进程角色边界，但仍拒绝摘要不一致", () => {
@@ -741,44 +1057,40 @@ test("Qwen 媒体阶段覆盖为 qwen3.7-max 时回退默认视觉模型", async
   assert.equal(calls[0].model, "qwen3.7-plus");
 });
 
-test("referenceAnalysis 原生视频证据失败后只按 video evidence 纠偏", async () => {
+test("referenceAnalysis 完整候选的 evidence 来源错误时 fail closed，不整包纠偏", async () => {
   const calls = [];
+  const unrelatedSentinel = "UNRELATED_ANALYSIS_SENTINEL";
   const workflow = new WorkflowService({
     client: {
       async generateJsonWithMedia(args) {
         calls.push(args);
         args.onResolvedMediaMode?.("video");
         const analysis = mockAnalysis(input);
-        if (calls.length === 1) return analysis;
-        assert.match(args.prompt, /本次成功媒体请求使用原生视频/u);
-        assert.match(args.prompt, /不得保留任何 frame 或 frameNumber/u);
-        assert.match(args.prompt, /不得输出 startMs\/endMs/u);
-        assert.match(args.prompt, /endSecond <= 40/u);
-        analysis.observedFacts.forEach((fact, index) => {
-          fact.evidenceRefs = [{
-            source: "video",
-            startSecond: index,
-            endSecond: index + 1
-          }];
-        });
+        analysis.summary = unrelatedSentinel;
         return analysis;
       }
     }
   });
 
-  const result = await workflow.analyze({
-    ...input,
-    video: {
-      dataUrl: "data:video/mp4;base64,AAAA",
-      mimeType: "video/mp4",
-      size: 4
-    }
-  });
+  await assert.rejects(
+    () => workflow.analyze({
+      ...input,
+      video: {
+        dataUrl: "data:video/mp4;base64,AAAA",
+        mimeType: "video/mp4",
+        size: 4
+      }
+    }),
+    /source 本次成功媒体请求只允许 video evidence/u
+  );
 
-  assert.equal(calls.length, 2);
-  assert.ok(result.observedFacts.every((fact) => (
-    fact.evidenceRefs.every((reference) => reference.source === "video")
-  )));
+  assert.equal(calls.length, 1);
+  const secondCalls = calls.slice(1);
+  assert.equal(secondCalls.length, 0);
+  assert.equal(
+    secondCalls.some((call) => String(call.prompt || "").includes(unrelatedSentinel)),
+    false
+  );
 });
 
 test("referenceAnalysis 视频时间连续越界时改用关键帧重新取证", async () => {
@@ -814,10 +1126,9 @@ test("referenceAnalysis 视频时间连续越界时改用关键帧重新取证",
 
   const result = await workflow.analyze(videoInput);
 
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 2);
   assert.equal(calls[0].video, videoInput.video);
-  assert.equal(calls[1].video, videoInput.video);
-  assert.equal(calls[2].video, null);
+  assert.equal(calls[1].video, null);
   assert.ok(result.observedFacts.every((fact) => (
     fact.evidenceRefs.every((reference) => reference.source === "frame")
   )));
@@ -1015,6 +1326,36 @@ test("v2 结构化镜头更新角色参考图时不会改写编译后的兼容 p
   assert.deepEqual(plan.shotPlan[0], before);
 });
 
+test("direct_shot 更新角色参考图时不再由旧同步器改写 H3 镜头文本", () => {
+  const plan = {
+    promptSchemaVersion: "3.0",
+    productionStrategy: {
+      format: "direct_shot_video",
+      videoPromptProfile: {
+        profileId: "minimax_h3",
+        provider: "MiniMax",
+        model: "MiniMax-H3"
+      }
+    },
+    shotPlan: [{
+      shotId: "A01",
+      videoPrompt: "integrated_multimodal_description: [Shot 1] Xiaobaizi crosses the courtyard.\noverall_soundscape: Footsteps.\nnon_diegetic_music: N/A",
+      characterAction: "小白子穿上雨衣后抱紧画册。",
+      continuityNotes: "小白子完成动作后保持站姿。"
+    }]
+  };
+  const before = structuredClone(plan.shotPlan[0]);
+
+  const changed = syncShotCharacterReference(
+    plan,
+    { characterName: "小白子", appearancePrompt: "旧外观" },
+    { characterName: "小白子", appearancePrompt: "银灰长发、蓝色眼睛、深色校服" }
+  );
+
+  assert.equal(changed, 0);
+  assert.deepEqual(plan.shotPlan[0], before);
+});
+
 test("单镜头首尾帧视频可通过通用 HTTP worker 传递逐镜负面词", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-http-"));
   let receivedBody = null;
@@ -1105,8 +1446,8 @@ test("单镜头全能参考模式不生成首尾帧，并把参考图作为 R2V 
   const configPath = path.join(root, "provider.json");
   await fs.writeFile(configPath, JSON.stringify({
     videoEndpoint: `http://127.0.0.1:${provider.address().port}/v2/video_generation`,
-    providerPreset: "minimax_h3_video_generation",
-    videoModel: "MiniMax-H3",
+    providerPreset: "modelark_content_generation",
+    videoModel: "doubao-seedance-2-0-260128",
     apiKey: "test-key"
   }));
 
@@ -1115,8 +1456,8 @@ test("单镜头全能参考模式不生成首尾帧，并把参考图作为 R2V 
     configPath,
     outputRoot: path.join(root, "generated-videos"),
     publicBasePath: "/generated-videos",
-    videoProvider: "MiniMax",
-    videoModel: "MiniMax-H3",
+    videoProvider: "Seedance",
+    videoModel: "doubao-seedance-2-0-260128",
     generationMode: "all_reference",
     aspectRatio: "16:9",
     referenceAssets: [{
@@ -2044,7 +2385,7 @@ test("MiMo 健康检查同时验证服务可达和指定模型已加载", async 
   });
 });
 
-test("brief 提示词明确区分可复用结构与禁止表达", () => {
+test("brief 提示词区分来源事实、非机械注入与固定角色边界", () => {
   const prompt = briefPrompt({
     referenceAnalysis: {},
     sourceScriptReconstruction: {},
@@ -2054,11 +2395,27 @@ test("brief 提示词明确区分可复用结构与禁止表达", () => {
       constraints: ""
     }
   });
-  assert.match(prompt, /不能因为原片使用过就一刀切禁止/);
+  assert.match(prompt, /都不能仅因原片使用过就一刀切禁止/u);
+  assert.match(prompt, /来源表达只作为来源事实和改编参考/u);
+  assert.match(prompt, /不得仅因它出现在来源上下文中就机械添加/u);
+  assert.match(prompt, /固定角色边界和用户明确约束仍然优先/u);
   assert.match(prompt, /protectedExpressions 只允许放具体且可识别的表达/);
   assert.match(prompt, /送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾/);
+  assert.ok(prompt.includes(JSON.stringify(
+    CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS.map((component) => ({
+      component,
+      howToReuseSafely: ""
+    })),
+    null,
+    2
+  )));
+  assert.match(prompt, /七个 component 名称和数量由服务端固定/u);
+  assert.match(prompt, /模型只填写每项非空的 howToReuseSafely/u);
+  assert.match(prompt, /本次不适合采用.*必须保留对应 component/u);
   assert.match(prompt, /企鹅服女孩/);
-  assert.match(prompt, /不能把“企鹅”“企鹅快递员”“翅膀\/尾巴动作”等表面元素写进固定角色映射或新故事/);
+  assert.match(prompt, /原片未经 fixedCharacter 授权.*不能覆盖固定主角身份/u);
+  assert.match(prompt, /可以在当前剧情需要时把企鹅装角色作为独立配角/u);
+  assert.match(prompt, /不能把.*改写成固定主角自身的身份或身体特征/u);
   assert.match(prompt, /roleAndOccupationMapping 的第一项必须映射原片主角的剧作功能/);
   assert.match(prompt, /fixedCharacter 是最高优先级/u);
   assert.match(prompt, /猫娘.*猫耳少女.*猫尾/u);
@@ -2068,6 +2425,9 @@ test("brief 提示词明确区分可复用结构与禁止表达", () => {
   assert.match(prompt, /newRole.*newOccupationOrIdentity.*最终身份/u);
   assert.match(prompt, /mappingLogic.*剧作功能迁移/u);
   assert.match(prompt, /sourceFunction.*protectedExpressions/u);
+  assert.match(prompt, /每一项都必须重复完整中心名词/u);
+  assert.match(prompt, /绿色邮箱、红色邮箱、蓝色邮箱/u);
+  assert.match(prompt, /不得写“绿色、红色、蓝色邮箱”/u);
 });
 
 test("模型漏掉必要字段时拒绝把结果标记为成功", () => {
@@ -2341,6 +2701,8 @@ test("creativeBrief 将动态身份和来源表面词交给 Visual Guardrails", 
   assert.match(guardrailsPrompt, /q 版狼耳少女/u);
   assert.match(guardrailsPrompt, /形象类似于猫娘/u);
   assert.match(guardrailsPrompt, /快递员/u);
+  assert.match(guardrailsPrompt, /每一项都必须重复完整中心名词/u);
+  assert.match(guardrailsPrompt, /不得沿用或生成“绿色、红色、蓝色邮箱（组合）”/u);
 
   const guardrails = ensureVisualGuardrailsMatchesProfile(
     ensureOutputContract(mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: brief }), "visualGuardrails"),
@@ -2367,7 +2729,7 @@ test("creativeBrief 第一项 newRole 必须保留固定角色姓名", () => {
   );
 });
 
-test("creativeBrief 固定姓名校验失败后只纠偏一次", async () => {
+test("creativeBrief 完整候选的固定姓名校验失败时 fail closed", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常",
@@ -2375,28 +2737,34 @@ test("creativeBrief 固定姓名校验失败后只纠偏一次", async () => {
   };
   const invalidBrief = creativeBriefFixture(creatorProfile, {
     newRole: "神秘少女阿花",
-    mappingLogic: "小白子的剧作功能错误地交给了阿花"
+    mappingLogic: "小白子的剧作功能错误地交给了阿花，UNRELATED_CREATIVE_BRIEF_SENTINEL"
   });
-  const correctedBrief = creativeBriefFixture(creatorProfile);
   const prompts = [];
   const workflow = new WorkflowService({
     client: {
       async generateJson(args) {
         prompts.push(args.prompt);
-        return prompts.length === 1 ? invalidBrief : correctedBrief;
+        return invalidBrief;
       }
     }
   });
 
-  const result = await workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile });
+  await assert.rejects(
+    () => workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile }),
+    (error) => error instanceof OutputContractError
+      && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newRole")
+  );
 
-  assert.equal(prompts.length, 2);
-  assert.match(result.roleAndOccupationMapping[0].newRole, /小白子/u);
-  assert.match(prompts[1], /creativeBrief\.roleAndOccupationMapping\[0\]\.newRole/u);
-  assert.match(prompts[1], /不得更换或重命名主角/u);
+  assert.equal(prompts.length, 1);
+  const secondPrompts = prompts.slice(1);
+  assert.equal(secondPrompts.length, 0);
+  assert.equal(
+    secondPrompts.some((prompt) => prompt.includes("UNRELATED_CREATIVE_BRIEF_SENTINEL")),
+    false
+  );
 });
 
-test("creativeBrief 第二次输出仍丢失固定姓名时抛出 OutputContractError", async () => {
+test("creativeBrief 不可局修错误即使客户可继续返回也不发起第二请求", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常",
@@ -2421,7 +2789,7 @@ test("creativeBrief 第二次输出仍丢失固定姓名时抛出 OutputContract
     (error) => error instanceof OutputContractError
       && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newRole")
   );
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
 });
 
 test("creativeBrief 动态表面词不会在 Visual Guardrails 前触发自动纠偏", async () => {
@@ -2525,7 +2893,7 @@ test("主题变体必须锁定用户指定固定角色，不能另起主角名",
   );
 });
 
-test("主题变体禁止继承 creativeBrief 中已保护的表面形象", async () => {
+test("主题变体允许按剧情复用原片角色组合，但不覆盖固定主角", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常"
@@ -2543,17 +2911,17 @@ test("主题变体禁止继承 creativeBrief 中已保护的表面形象", async
         return { variants: [{
           id: "V1",
           title: "雾中画境",
-          oneLineHook: "小白子冒雾送画。",
-          logline: "企鹅快递员小白子被委托将画作送到山村女孩手中。",
+          oneLineHook: "小白子冒雾送画，企鹅服志愿者在村口引路。",
+          logline: "小白子被委托将画作送到山村女孩手中，途中获得企鹅服志愿者的帮助。",
           verticalFit: "治愈/温情/日常",
-          characterSetup: { protagonist: "小白子，一只呆萌但尽责的企鹅快递员", careRecipient: "小月", helper: "老张" },
+          characterSetup: { protagonist: "小白子，小女孩", careRecipient: "小月", helper: "企鹅服志愿者老张" },
           newTask: "送画作",
           emotionalMedium: "儿童画",
           environmentPressure: "大雾",
-          storyOutline: [{ beat: 1, phase: "任务", action: "小白子翅膀微拍，整理背包出发。", emotion: "期待", dramaticFunction: "建立任务", estimatedSeconds: 6 }],
+          storyOutline: [{ beat: 1, phase: "任务", action: "小白子整理背包，跟着企鹅服志愿者老张出发。", emotion: "期待", dramaticFunction: "建立任务", estimatedSeconds: 6 }],
           highValueBeatMapping: [],
           keyDialogueDirections: [],
-          endingRitual: "小白子尾巴轻摇，与小月一起放风筝。",
+          endingRitual: "小白子与小月一起把画作摆正。",
           transformationProof: { changedCharacters: "", changedTask: "", changedDetailsAndProps: "", changedDialogue: "", changedVisualExpression: "" },
           experienceFidelity: { positioning: "", audience: "", emotion: "", plotDriver: "", highValueBeats: "" },
           originalityRiskCheck: { riskLevel: "low", possibleSimilarity: "", mitigation: "" }
@@ -2562,13 +2930,14 @@ test("主题变体禁止继承 creativeBrief 中已保护的表面形象", async
     }
   });
 
-  await assert.rejects(
-    () => workflow.createVariants(globalBoundaryContext(workflow, { creativeBrief, creatorProfile, count: 1 })),
-    /企鹅|翅膀|尾巴/
+  const result = await workflow.createVariants(
+    globalBoundaryContext(workflow, { creativeBrief, creatorProfile, count: 1 })
   );
+  assert.equal(result.variants[0].characterSetup.protagonist, "小白子，小女孩");
+  assert.match(JSON.stringify(result.variants[0]), /企鹅服志愿者/u);
 });
 
-test("主题变体禁止复用 mustChange 受控改写变量", async () => {
+test("主题变体允许按剧情复用 mustChange 来源道具", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常"
@@ -2615,13 +2984,14 @@ test("主题变体禁止复用 mustChange 受控改写变量", async () => {
     }
   });
 
-  await assert.rejects(
-    () => workflow.createVariants(globalBoundaryContext(workflow, { creativeBrief, creatorProfile, count: 1 })),
-    /录取通知书|孔明灯/
+  const result = await workflow.createVariants(
+    globalBoundaryContext(workflow, { creativeBrief, creatorProfile, count: 1 })
   );
+  assert.match(result.variants[0].newTask, /录取通知书/u);
+  assert.match(result.variants[0].endingRitual, /孔明灯/u);
 });
 
-test("完整剧情禁止继承 creativeBrief 中已保护的表面形象", async () => {
+test("完整剧情允许配角与 visibleAction 复用原片角色组合", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常",
@@ -2644,19 +3014,27 @@ test("完整剧情禁止继承 creativeBrief 中已保护的表面形象", async
     endingRitual: "把儿童画摆正"
   };
   const leakedStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
-  leakedStory.characterBible.protagonist.identity = "小白子，一只呆萌但尽责的企鹅快递员";
-  leakedStory.sceneScript[0].visibleAction = "小白子翅膀微拍，准备出发。";
+  leakedStory.characterBible.helpers[0].functionInStory = "穿企鹅服帮小白子在雾中引路";
+  leakedStory.sceneScript[0].characters.push("老张");
+  leakedStory.sceneScript[0].visibleAction = "老张穿着企鹅服在雾中引路，小白子跟着他准备出发。";
   const workflow = new WorkflowService({
-    client: { async generateJson() { return leakedStory; } },
+    client: {
+      async generateJson(args) {
+        return isFullStoryBeatScenePostpassPrompt(args.prompt)
+          ? fullStoryBeatScenePassResponse(leakedStory)
+          : structuredClone(leakedStory);
+      }
+    },
     storyModel: "mimo-v2.5-pro"
   });
-  await assert.rejects(
-    () => workflow.createFullStory(globalBoundaryContext(workflow, { creativeBrief, creatorProfile, variant })),
-    /企鹅|翅膀/
+  const result = await workflow.createFullStory(
+    globalBoundaryContext(workflow, { creativeBrief, creatorProfile, variant })
   );
+  assert.match(result.characterBible.helpers[0].functionInStory, /企鹅服/u);
+  assert.match(result.sceneScript[0].visibleAction, /企鹅服/u);
 });
 
-test("完整剧情禁止复用 mustChange 受控改写变量，但允许在避相似说明里负向提及", async () => {
+test("完整剧情允许在 visibleAction 或避相似说明中使用 mustChange 来源道具", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常",
@@ -2694,19 +3072,26 @@ test("完整剧情禁止复用 mustChange 受控改写变量，但允许在避�
   safeStory.keyProps[0].avoidSimilarityNote = "避免录取通知书和孔明灯，改用儿童画与风筝完成同类情绪功能。";
 
   const leakedWorkflow = new WorkflowService({
-    client: { async generateJson() { return leakedStory; } },
+    client: {
+      async generateJson(args) {
+        return isFullStoryBeatScenePostpassPrompt(args.prompt)
+          ? fullStoryBeatScenePassResponse(leakedStory)
+          : structuredClone(leakedStory);
+      }
+    },
     storyModel: "mimo-v2.5-pro"
   });
-  await assert.rejects(
-    () => leakedWorkflow.createFullStory(globalBoundaryContext(leakedWorkflow, { creativeBrief, creatorProfile, variant })),
-    /录取通知书|孔明灯/
+  const leakedResult = await leakedWorkflow.createFullStory(
+    globalBoundaryContext(leakedWorkflow, { creativeBrief, creatorProfile, variant })
   );
+  assert.match(leakedResult.sceneScript[0].visibleAction, /录取通知书/u);
+  assert.match(leakedResult.sceneScript[0].visibleAction, /孔明灯/u);
 
   assert.doesNotThrow(() => ensureOutputContract(safeStory, "fullStory"));
   assert.doesNotThrow(() => ensureFullStoryMatchesProfile(safeStory, creatorProfile, creativeBrief, variant));
 });
 
-test("完整剧情校验失败时会自动要求模型纠偏一次", async () => {
+test("完整剧情无可信局部路径的语义失败不会自动发送完整 Story 重写", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，狼耳少女，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常",
@@ -2731,32 +3116,28 @@ test("完整剧情校验失败时会自动要求模型纠偏一次", async () =>
   const leakedStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
   leakedStory.characterBible.protagonist.signatureBehaviors = ["狼爪肉垫轻拍表示开心"];
   leakedStory.sceneScript[0].visibleAction = "小白子用狼爪扶住风车，肉垫清晰可见。";
-  const fixedStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
-  fixedStory.characterBible.protagonist.signatureBehaviors = ["狼耳轻轻抖动表示开心", "抱紧风车表示认真"];
-  fixedStory.sceneScript[0].visibleAction = "小白子抱紧风车，狼耳轻轻抖动，认真出发。";
   const prompts = [];
   const workflow = new WorkflowService({
     client: {
       async generateJson(args) {
         prompts.push(args.prompt);
-        return prompts.length === 1 ? leakedStory : fixedStory;
+        return leakedStory;
       }
     }
   });
 
-  const result = await workflow.createFullStory(globalBoundaryContext(
-    workflow,
-    { creativeBrief, creatorProfile, variant },
-    xiaobaiziBoundary()
-  ));
-
-  assert.equal(result.selectedVariantId, "V1");
-  assert.equal(prompts.length, 2);
-  assert.match(prompts[1], /没有通过系统校验/);
-  assert.doesNotMatch(JSON.stringify(result), /狼爪|肉垫/);
+  await assert.rejects(
+    () => workflow.createFullStory(globalBoundaryContext(
+      workflow,
+      { creativeBrief, creatorProfile, variant },
+      xiaobaiziBoundary()
+    )),
+    /狼爪|肉垫/u
+  );
+  assert.equal(prompts.length, 1);
 });
 
-test("Scene Contract 失败会携带全部路径重试完整 fullStory 一次", async () => {
+test("Scene Contract 跨字段失败没有唯一事实来源时只调用一次并 fail closed", async () => {
   const creatorProfile = {
     fixedCharacter: "阿岚，社区修理师",
     vertical: "家电维修",
@@ -2785,67 +3166,11 @@ test("Scene Contract 失败会携带全部路径重试完整 fullStory 一次", 
   invalidStory.sceneScript[3].location = "";
   invalidStory.sceneScript[3].characters = [];
   invalidStory.sceneScript[3].visibleAction = "";
-  const validStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
   const prompts = [];
   const workflow = new WorkflowService({
     client: {
       async generateJson(args) {
         prompts.push(args.prompt);
-        return prompts.length === 1 ? structuredClone(invalidStory) : structuredClone(validStory);
-      }
-    }
-  });
-
-  const result = await workflow.createFullStory(globalBoundaryContext(workflow, {
-    creativeBrief,
-    creatorProfile,
-    variant
-  }));
-
-  assert.equal(prompts.length, 2);
-  assert.equal(result.selectedVariantId, variant.id);
-  assert.match(prompts[1], /FULL_STORY_SCENE_CONTRACT_RETRY_V1/u);
-  assert.match(prompts[1], /fullStory\.sceneScript\[3\]\.location/u);
-  assert.match(prompts[1], /fullStory\.sceneScript\[3\]\.characters/u);
-  assert.match(prompts[1], /fullStory\.sceneScript\[3\]\.visibleAction/u);
-  assert.match(prompts[1], /上一次待修完整 JSON/u);
-});
-
-test("Full Story 第二次 Scene Contract 仍失败时终止且不产生第三次请求", async () => {
-  const creatorProfile = {
-    fixedCharacter: "阿岚，社区修理师",
-    vertical: "家电维修",
-    constraints: "60 秒内"
-  };
-  const creativeBrief = mockBrief({
-    ...input,
-    creatorProfile,
-    referenceAnalysis: {},
-    sourceScriptReconstruction: {}
-  });
-  const variant = {
-    id: "V1",
-    title: "最后一格电",
-    characterSetup: {
-      protagonist: "阿岚，社区修理师",
-      careRecipient: "独居老人",
-      helper: "夜班便利店员"
-    },
-    newTask: "修复并送回旧设备",
-    emotionalMedium: "一段旧录音",
-    environmentPressure: "暴雨停电",
-    endingRitual: "老人按下播放键"
-  };
-  const invalidStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
-  invalidStory.sceneScript[3].location = "";
-  invalidStory.sceneScript[3].characters = [];
-  invalidStory.sceneScript[3].visibleAction = "";
-  let calls = 0;
-  const workflow = new WorkflowService({
-    client: {
-      async generateJson() {
-        calls += 1;
-        if (calls > 2) throw new Error("禁止第三次完整剧情请求");
         return structuredClone(invalidStory);
       }
     }
@@ -2858,6 +3183,219 @@ test("Full Story 第二次 Scene Contract 仍失败时终止且不产生第三�
       variant
     })),
     /fullStory Scene Contract 校验失败/u
+  );
+  assert.equal(prompts.length, 1);
+});
+
+test("真实三子树混合结构错误因语义目的地不唯一而 fail closed", async () => {
+  const creatorProfile = {
+    fixedCharacter: "阿岚，社区修理师",
+    vertical: "家电维修",
+    constraints: "60 秒内"
+  };
+  const creativeBrief = mockBrief({ ...input, creatorProfile });
+  const variant = {
+    id: "V1",
+    title: "雨棚下的收音机",
+    characterSetup: { protagonist: "阿岚，社区修理师", careRecipient: "铃木奶奶", helper: "夜班便利店员" },
+    newTask: "修好旧收音机",
+    emotionalMedium: "一台旧收音机",
+    environmentPressure: "暴雨停电",
+    endingRitual: "铃木奶奶按下播放键"
+  };
+  const malformed = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  malformed.title = "UNRELATED_FULL_STORY_SENTINEL";
+  malformed.characterBible.protagonist["困倦时狼耳微微耷拉"] = "";
+  malformed.characterBible.protagonist["感激时用力抱紧物品并发出长长的"] = "";
+  delete malformed.beatSheet[4].emotion;
+  delete malformed.beatSheet[4].dramaticFunction;
+  delete malformed.beatSheet[4].retainedValueFromBrief;
+  malformed.beatSheet[4]["村民们迅速从四面八方赶来并搭起油布棚"] = "";
+  malformed.beatSheet[4]["感动、温暖、强烈的归属感与安全感"] = "";
+  malformed.beatSheet[4]["天气突变催化全村集体行动"] = "";
+  malformed.sceneScript[2]["脱背心和盖背心的动作要格外轻柔"] = "";
+  const frozen = structuredClone(malformed);
+  const prompts = [];
+  const workflow = new WorkflowService({
+    client: {
+      async generateJson(args) {
+        prompts.push(args.prompt);
+        return structuredClone(malformed);
+      }
+    }
+  });
+  await assert.rejects(
+    () => workflow.createFullStory(globalBoundaryContext(workflow, {
+      creativeBrief,
+      creatorProfile,
+      variant
+    })),
+    /fullStory 结构校验失败/u
+  );
+  assert.equal(prompts.length, 1);
+  assert.deepEqual(malformed, frozen);
+});
+
+test("签发固定角色姓名缺失时只发送 protagonist 子树并完成合并", async () => {
+  const creatorProfile = {
+    fixedCharacter: "阿岚，社区修理师",
+    vertical: "家电维修",
+    constraints: "60 秒内"
+  };
+  const creativeBrief = mockBrief({ ...input, creatorProfile });
+  const variant = {
+    id: "V1",
+    title: "雨棚下的收音机",
+    characterSetup: {
+      protagonist: "阿岚，社区修理师",
+      careRecipient: "铃木奶奶",
+      helper: "夜班便利店员"
+    },
+    newTask: "修好旧收音机",
+    emotionalMedium: "一台旧收音机",
+    environmentPressure: "暴雨停电",
+    endingRitual: "铃木奶奶按下播放键"
+  };
+  const malformed = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  malformed.title = "WORKFLOW_OUTSIDE_TARGET_SENTINEL";
+  delete malformed.characterBible.protagonist.name;
+  const frozen = structuredClone(malformed);
+  const repairedStory = structuredClone(malformed);
+  repairedStory.characterBible.protagonist.name = "阿岚";
+  const prompts = [];
+  const debugEvents = [];
+  const partialRepairDebugWriter = {
+    async begin(payload) {
+      debugEvents.push({ phase: "begin", payload });
+      return { repairSessionId: "full-story-debug" };
+    },
+    async recordResponse(session, response) {
+      debugEvents.push({ phase: "response", session, response });
+    },
+    async recordResult(session, result) {
+      debugEvents.push({ phase: "result", session, result });
+    }
+  };
+  const workflow = new WorkflowService({
+    partialRepairDebugWriter,
+    client: {
+      async generateJson(args) {
+        prompts.push(args.prompt);
+        if (prompts.length === 1) return structuredClone(malformed);
+        if (isFullStoryBeatScenePostpassPrompt(args.prompt)) {
+          assert.match(args.prompt, /WORKFLOW_OUTSIDE_TARGET_SENTINEL/u);
+          return fullStoryBeatScenePassResponse(repairedStory);
+        }
+        assert.doesNotMatch(args.prompt, /WORKFLOW_OUTSIDE_TARGET_SENTINEL/u);
+        const targets = JSON.parse(
+          args.prompt.match(/待修子树：\n(\[[\s\S]*?\])\n\n只返回以下精确 JSON 协议/u)[1]
+        );
+        assert.deepEqual(targets.map((target) => target.path), ["/characterBible/protagonist"]);
+        const protagonist = structuredClone(malformed.characterBible.protagonist);
+        protagonist.name = targets[0].expectedFields.name;
+        return {
+          schemaVersion: "full_story_partial_repair/1.0",
+          baseDigest: args.prompt.match(/"baseDigest":"([a-f0-9]{64})"/u)?.[1],
+          repairs: [{ repairId: targets[0].repairId, replacement: protagonist }]
+        };
+      }
+    }
+  });
+
+  const result = await workflow.createFullStory(globalBoundaryContext(workflow, {
+    creativeBrief,
+    creatorProfile,
+    variant
+  }));
+  assert.equal(prompts.length, 3);
+  assert.equal(result.title, "WORKFLOW_OUTSIDE_TARGET_SENTINEL");
+  assert.equal(result.characterBible.protagonist.name, "阿岚");
+  assert.deepEqual(malformed, frozen);
+  assert.deepEqual(debugEvents.map((event) => event.phase), ["begin", "response", "result"]);
+  assert.equal(debugEvents[0].payload.stage, "fullStory");
+  assert.match(debugEvents[0].payload.originalError.message, /结构校验失败/u);
+  assert.equal(debugEvents[0].payload.repairPlan.targets[0].currentValue.name, undefined);
+  assert.equal(debugEvents[2].result.status, "repaired");
+});
+
+test("Full Story 局部修复即使协调器预算更高也严格禁止第三次调用", async () => {
+  const creatorProfile = input.creatorProfile;
+  const creativeBrief = mockBrief({ ...input, creatorProfile });
+  const variant = mockVariants({ ...input, creatorProfile, creativeBrief }).variants[0];
+  const invalid = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  delete invalid.characterBible.protagonist.name;
+  let calls = 0;
+  const workflow = new WorkflowService({
+    modelCallCoordinator: new ModelCallCoordinator({ maxProviderCalls: 4 }),
+    client: {
+      async generateJson() {
+        calls += 1;
+        return structuredClone(invalid);
+      }
+    }
+  });
+  await assert.rejects(
+    () => workflow.createFullStory(globalBoundaryContext(workflow, { creativeBrief, creatorProfile, variant })),
+    /fullStory|局部修复/u
+  );
+  assert.equal(calls, 2);
+});
+
+test("Full Story 局部修复第二次仍失败时终止且不产生第三次请求", async () => {
+  const creatorProfile = {
+    fixedCharacter: "阿岚，社区修理师",
+    vertical: "家电维修",
+    constraints: "60 秒内"
+  };
+  const creativeBrief = mockBrief({
+    ...input,
+    creatorProfile,
+    referenceAnalysis: {},
+    sourceScriptReconstruction: {}
+  });
+  const variant = {
+    id: "V1",
+    title: "最后一格电",
+    characterSetup: {
+      protagonist: "阿岚，社区修理师",
+      careRecipient: "独居老人",
+      helper: "夜班便利店员"
+    },
+    newTask: "修复并送回旧设备",
+    emotionalMedium: "一段旧录音",
+    environmentPressure: "暴雨停电",
+    endingRitual: "老人按下播放键"
+  };
+  const invalidStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
+  delete invalidStory.characterBible.protagonist.name;
+  let calls = 0;
+  const workflow = new WorkflowService({
+    client: {
+      async generateJson(args) {
+        calls += 1;
+        if (calls > 2) throw new Error("禁止第三次完整剧情请求");
+        if (calls === 1) return structuredClone(invalidStory);
+        const targets = JSON.parse(args.prompt.match(/待修子树：\n(\[[\s\S]*?\])\n\n只返回以下精确 JSON 协议/u)[1]);
+        const replacement = structuredClone(invalidStory.characterBible.protagonist);
+        return {
+          schemaVersion: "full_story_partial_repair/1.0",
+          baseDigest: args.prompt.match(/"baseDigest":"([a-f0-9]{64})"/u)?.[1],
+          repairs: targets.map((target) => ({
+            repairId: target.repairId,
+            replacement
+          }))
+        };
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => workflow.createFullStory(globalBoundaryContext(workflow, {
+      creativeBrief,
+      creatorProfile,
+      variant
+    })),
+    /局部修复/u
   );
   assert.equal(calls, 2);
 });
@@ -2916,7 +3454,7 @@ test("动画入口在任何模型与 Compiler 调用前拒绝残缺 Full Story",
   assert.equal(modelCalls, 0);
 });
 
-test("动画生产包正向提示词复用原片表面形象时会被边界校验拦截", async () => {
+test("动画生产包正向场景允许按剧情复用原片表面形象", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常",
@@ -2945,15 +3483,18 @@ test("动画生产包正向提示词复用原片表面形象时会被边界校�
     variant
   });
   const leakedPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory });
-  leakedPlan.shotPlan[0].startFrame.characters[0].actionState = "企鹅快递员小白子站在村口，翅膀抬至胸前，手里拿着画。";
+  const sourceSurface = "村口长椅上摆着无人穿着的企鹅服，翅膀造型袖套平整可见";
+  leakedPlan.shotPlan[0].startFrame.environment.foreground = sourceSurface;
+  leakedPlan.shotPlan[0].endFrame.environment.foreground = sourceSurface;
   const workflow = animationWorkflow({
     client: { async generateJson(args) { return stagedAnimationResponse(leakedPlan, args.prompt); } },
     animationModel: "mimo-v2.5-pro"
   });
-  await assert.rejects(
-    () => workflow.createAnimationPlan(globalBoundaryContext(workflow, { creativeBrief, creatorProfile, variant, fullStory })),
-    /企鹅|翅膀|正向画面提示词/
+  const result = await workflow.createAnimationPlan(
+    globalBoundaryContext(workflow, { creativeBrief, creatorProfile, variant, fullStory })
   );
+  assert.equal(result.shotPlan[0].startFrame.environment.foreground, sourceSurface);
+  assert.equal(result.shotPlan[0].endFrame.environment.foreground, sourceSurface);
 });
 
 test("Visual Guardrails 推断狼尾后下游直接沿用，并继续禁止兽爪肉垫", async () => {
@@ -3195,7 +3736,7 @@ test("角色生成边界允许否定提及但仍拒绝正向或转折后的禁�
   ));
 });
 
-test("角色边界、原片规避与逐镜渲染负面提示词在 prompt 中保持分类", () => {
+test("Variants、Full Story 与旧 v2 Animation Prompt 都不机械注入来源规则", () => {
   const creatorProfile = { fixedCharacter: "小白子，q版狼耳少女，有狼尾巴", vertical: "治愈日常", constraints: "" };
   const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
   const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief });
@@ -3215,18 +3756,18 @@ test("角色边界、原片规避与逐镜渲染负面提示词在 prompt 中保
 
   for (const prompt of [variantPrompt, storyPrompt]) {
     assert.match(prompt, /positivePromptBoundary/);
-    assert.match(prompt, /sourceSimilarityRules/);
-    assert.match(prompt, /彩虹披风/);
+    assert.doesNotMatch(prompt, /"sourceSimilarityRules"\s*:/u);
+    assert.doesNotMatch(prompt, /彩虹披风/u);
   }
   assert.match(animationPrompt, /positivePromptBoundary/);
-  assert.match(animationPrompt, /sourceSimilarityRules/);
-  assert.match(animationPrompt, /彩虹披风/);
+  assert.doesNotMatch(animationPrompt, /"sourceSimilarityRules"\s*:/u);
+  assert.doesNotMatch(animationPrompt, /彩虹披风/u);
   assert.match(animationPrompt, /negativePrompts\.image/);
   assert.match(animationPrompt, /triggerEvidence/);
   assert.doesNotMatch(animationPrompt, /commonNegativePrompt/);
 });
 
-test("动画生产包会按 positivePromptBoundary 拦截正向画面越界", async () => {
+test("动画生产包仍按 fixedCharacterBoundary 拦截固定主角外观越界", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，q版狼耳少女，有狼尾巴，儿童",
     vertical: "治愈/温情/日常",
@@ -3246,7 +3787,7 @@ test("动画生产包会按 positivePromptBoundary 拦截正向画面越界", as
   };
   const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant, visualGuardrails });
   const leakedPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory, visualGuardrails });
-  leakedPlan.shotPlan[0].startFrame.characters[0].actionState = "小白子站在村口，翅膀从肩后伸出。";
+  leakedPlan.characterReferencePrompts[0].appearancePrompt += "，肩后长出翅膀";
   const workflow = animationWorkflow({
     client: { async generateJson(args) { return stagedAnimationResponse(leakedPlan, args.prompt); } },
     animationModel: "qwen3.7-max"
@@ -3262,7 +3803,7 @@ test("动画生产包会按 positivePromptBoundary 拦截正向画面越界", as
 
   await assert.rejects(
     () => workflow.createAnimationPlan(sealBoundaryContext(workflow, stageContext, visualGuardrails)),
-    /翅膀|正向画面提示词/
+    /翅膀|角色参考提示词/
   );
 });
 
@@ -3357,7 +3898,9 @@ test("完整剧情提示词要求围绕选中变体并锁定固定角色", () =>
   assert.match(prompt, /selectedVariantId 必须等于选中主题变体 id：V2/);
   assert.match(prompt, /不能改名/);
   assert.match(prompt, /不得再次解析 fixedCharacter 或重新推断角色特征/);
-  assert.match(prompt, /禁止复用原片具体表达黑名单/);
+  assert.match(prompt, /原片表面表达参考（不是正向内容禁词）/u);
+  assert.match(prompt, /它们不再作为 Full Story 的内容禁词/u);
+  assert.match(prompt, /不得因为来源上下文列出了这些表达，就机械把它们补进/u);
   assert.match(prompt, /录取通知书/);
   assert.match(prompt, /孔明灯/);
   assert.match(prompt, /sceneScript 至少 6 场/);

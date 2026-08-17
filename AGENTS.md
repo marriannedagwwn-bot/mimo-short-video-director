@@ -62,9 +62,17 @@ Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Art
 
 镜头标识不得混淆：`sourceSceneId`（常见 `S1`）是当前 Full Story 的剧情场次归属；`sceneId`（常见 `LOC01`）是 Foundation 场景视觉参考组；`shotId`（常见 `A01`）是当前 Plan revision 内的业务镜头顺序标识。`S1` 不是场地，`LOC01` 不保证精确物理地点或无缝连续，`A01` 也不能脱离 project/run/plan revision/digest 单独标识媒体。
 
-当前 `direct_shot` 的场内拆镜只依据 Full Story 的 `location` 与 `visibleAction` 中的人物主要动作目标。地点或主要动作目标变化时拆镜；同一地点、围绕同一主要动作目标组成完整叙事动作的连续阶段保留为一条业务 shot，不得按动作动词机械拆分。景别、机位、构图、焦段、运镜和转场建议只能决定已划定业务 shot 内部的摄影/剪辑表达，不得增加 `shotPlan[]`；同一 `videoPrompt` 可以按顺序描述中景跟随、关键动作特写、硬切或结尾宽景。`shotAndSound` 与 `shootingNotes` 不是镜头数量的事实源。每个 source scene 至少一镜及 3–6 秒单镜时长约束保持不变；内部摄影变化允许但不强制，不能为了堆机位而压缩、跳过或改写 `visibleAction`。
+当前 `direct_shot` 的场内拆镜只依据 Full Story 的 `location` 与 `visibleAction` 中的人物主要动作目标。地点或主要动作目标变化时拆镜；同一地点、围绕同一主要动作目标组成完整叙事动作的连续阶段保留为一条业务 shot，不得按动作动词机械拆分。景别、机位、构图、焦段、运镜和转场建议只能决定已划定业务 shot 内部的摄影/剪辑表达，不得增加 `shotPlan[]`；同一 `videoPrompt` 可以按顺序描述中景跟随、关键动作特写、硬切或结尾宽景。`shotAndSound` 与 `shootingNotes` 不是镜头数量的事实源。每个 source scene 至少一镜；Seedance Profile 单镜为 3–6 秒，MiniMax H3 Profile 单镜为 4–6 秒整数。内部摄影变化允许但不强制，不能为了堆机位而压缩、跳过或改写 `visibleAction`。
 
-`direct_shot.videoPrompt` 必须是一条自包含、可直接交给视频模型的中文自然语言完整提示词，按“Foundation 风格与物理光线 → 地点环境 → 实际出镜主体与已锁定外观 → `visibleAction` 顺序动作链与可见结果 → 内部摄影/剪辑顺序 → 节奏、对白和声音 → 本镜头相关稳定约束与停止条件”组织。它不得生成尚未与当前视频请求绑定的 `@图片/@视频/@音频` 编号。`cameraMotion` 应同步记录业务 shot 内完整的摄影与剪辑顺序，不再限定为单一连续运镜。使用内部切换时，1–3 条 `acceptanceCriteria` 必须覆盖主要动作链顺序、可见终点和关键摄影切换；失败不得静默增加 shot 或删除动作。
+`productionStrategy.videoPromptProfile` 是服务端根据首次生成 Plan 时用户明确选择的 Seedance 2.0 或 MiniMax H3 镜头视频模型签发的 Plan 级提示词方言/来源记录，严格包含 `schemaVersion/profileId/provider/model/guideVersion`；它不是运行时 provider/model 锁，模型不得输出、推断或修改。Seedance Profile 的 `direct_shot.videoPrompt` 必须是一条自包含、可直接交给视频模型的中文自然语言完整提示词，按“Foundation 风格与物理光线 → 地点环境 → 实际出镜主体与已锁定外观 → `visibleAction` 顺序动作链与可见结果 → 内部摄影/剪辑顺序 → 节奏、对白和声音 → 本镜头相关稳定约束与停止条件”组织。MiniMax H3 Profile 必须使用官方 Base/T2VA 的三个英文段名：`integrated_multimodal_description`、`overall_soundscape`、`non_diegetic_music`；每个段名必须从独立新行行首开始，JSON 原文中的 `videoPrompt` 必须用 `\n` 转义分隔三段，不得把多个段名写在同一行。三个 section 的叙述必须使用英文，只有 `<d>` 中逐字保留的原语言对白/歌词和英文双引号中逐字保留的画面可见文字可以使用原语言。`dialogueOrSubtitle` 保持跨供应商共享的上游纯剧情对白，不得写 `<d>`、翻译或拉丁转写；逐条去除说话人前缀后的中文原文只在 `integrated_multimodal_description` 中逐字包装为 `<d>[Chinese] ...</d>`。`[Shot 1]` 不带时间戳，后续 `[Shot N] At MM:SS.mmm` 时间严格递增且小于 `durationSeconds`。H3 的 `[Shot N]` 是同一 `A0x` 内部摄影/剪辑段，不是新的业务 shot。Plan 阶段两种 Profile 都不得生成尚未绑定的 `@图片/@视频/@音频` 或 `<Subject/Picture/Video/Audio N>`。`cameraMotion` 应同步记录业务 shot 内完整的摄影与剪辑顺序；使用内部切换时，1–3 条 `acceptanceCriteria` 必须覆盖主要动作链顺序、可见终点和关键摄影切换，失败不得静默增加 shot 或删除动作。
+
+MiniMax H3 Prompt 契约固定到官方 `MiniMax-AI/MiniMax-H3` 仓库 commit `80365054c7fbaace01ed417076fecd532c1ae0e0` 的 `skills/h3-prompt-writing`；不得自动跟随仓库 HEAD，升级必须同步修改 `guideVersion`、文档、校验和测试。
+
+已有 Plan 后切换镜头视频模型时，页面先保留新的运行时选择，再比较目标 Profile 与已签发 `videoPromptProfile` 并询问是否重写；缺失 Profile 的旧 Plan 同样视为 mismatch，禁止从 Prompt 文本、provider 或模型名反推。拒绝时不修改 Plan、不签发 revision、不 stale 媒体，也不回滚新模型设置；确认时只能重写全部 `shotPlan[].videoPrompt` 并更新 Profile，其他字段必须逐字保留。改写结果通过完整契约校验后还必须经过下述证据绑定语义审计；若只发现 `video_prompt` 层实质冲突，可在提交前执行唯一一次有界 Prompt 修复和复审，其他字段仍逐字冻结。只有最终完整校验和审计都成功后才签发新 Plan revision/media namespace 并使旧媒体 stale，任何失败都保留旧 Plan current。合法反例：Seedance Plan 含 3 秒镜头时，切到 H3 不能通过提示词改写把 `durationSeconds` 静默改成 4 秒；确认改写必须失败并要求完整重生 H3 Plan，拒绝改写则 Plan 保持不变，但该 3 秒镜头也不得提交给 H3。
+
+首次生成 MiniMax H3 Plan 以及确认 Profile 改写都必须使用已配置的实时文本模型；demo mock 不得伪造英文翻译、语义审计结果或生产 Profile。首次 H3 的 Foundation 与全部 shot 合并并通过完整契约校验后，必须另行执行逐镜、证据绑定的两层语义审计：先检查同镜结构化字段是否服从验签固定角色、Full Story 场次/道具用途和 Foundation 视觉锁，再在结构化事实通过时检查 Base Prompt。审计必须包含完整 `assetPrompts`；它只能以受信 ID 和逐字 excerpt 报告会改变实际成片的关系，不能因同义翻译、没有重复已表达动作、缺少多余的段落结束时间或 Foundation 已授权的视觉细化而失败。结构化字段 fail 时 `videoPrompt` 必须停止评估且不得修 Prompt；只有全部结构化字段 pass、失败项都精确属于 `videoPrompt` 时，才可签发一次有界 Prompt 修复，原子合并后复审受影响镜头与相邻镜头，复审失败不得循环。通过回执只记录在 `metadata.videoPromptSemanticAudit`，不是第二份事实源。首次 H3 Plan 仍按项目生产子集把每镜限制为 4–6 秒整数；MiniMax V2 运行时协议总体只接受 4–15 秒整数，已有值不合法时必须拒绝，不能钳制、补长或缩短。
+
+拒绝重写不授权运行时方言降级：`all_reference + MiniMax H3` 只允许消费 exact MiniMax H3 Profile。当前 Plan Profile 缺失或仍为 Seedance 时，必须在 Context-IR 和视频供应商调用前明确失败；不得把旧 Prompt 直接提交给 H3，也不得因用户已切换运行时模型而自动改 Plan。
 
 Animation Plan 的 `targetAspectRatio` 当前只允许 `9:16` 或 `16:9`。首次生成时必须锁入 `productionStrategy.targetAspectRatio` 并与 Foundation 输出一致；已有 Plan 切换画幅时以用户选择更新计划级输出事实，不调用模型、不重写 shot，但必须签发新 Plan revision/media namespace，使旧画幅媒体 stale。后续视频生成从当前签发 Plan 读取；不得向 direct-shot 的 exact shot 字段增加 `aspectRatio`。页面的计划总长由 `shotPlan[].durationSeconds` 合计派生，`targetRuntimeSeconds` 仍是上游目标，不得互相覆盖。
 
@@ -78,6 +86,8 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：�
 模式由请求 `generationMode` 决定，不得根据端点字段缺失、provider、模型名或素材存在性自动推断或降级。
 
 `all_reference` 可另行显式传入运行时 `continuityReferenceMode: "none" | "previous_shot_frames"`；它不得改变或推断 `generationMode`，也不是 `direct_shot` Schema 字段。启用 `previous_shot_frames` 时，上一镜只由当前 Plan `shotPlan[]` 的紧邻前项确定；服务端必须读取上一镜 current `shotVideo` Artifact 的已选候选，只接受当前 media namespace 内的受信 mp4，并用 FFmpeg 每秒抽取一张 JPEG 作为普通 `reference_image`。实际抽帧与其他图片共同受 9 图上限约束，超限明确失败。该参考只增强一致性，不能覆盖当前 Full Story/Plan、`fixedCharacterBoundary` 或 Foundation 场景事实；跨地点、跨时段或上一镜漂移是关闭该开关的合法反例。
+
+MiniMax H3 的 `all_reference` 必须在实际引用冻结后显式调用 `POST /v2/h3_context_ir`，不得在 Plan 阶段预编译。它是用户点击生成后才发生的供应商计费异步步骤；保存或切换模型、取消 Profile 改写、仅打开生成弹窗都不得调用。Context-IR 输入引用的角色、顺序和内容摘要必须与随后视频请求完全相同；返回 Prompt 必须严格验证六个英文 section `subject_definitions`、`summary`、`retention_analysis`、`detailed_description`、`overall_soundscape`、`non_diegetic_music`，正文同样只允许对白/歌词和英文双引号内画面可见文字保留原语言。`<Picture/Video/Audio N>` 必须与同类实际素材顺序逐项绑定，`<Subject N>` 必须在 `subject_definitions` 中由签发主体或实际引用明确定义，任何标签不得悬空；图片只定义主体、场景或风格时应把 `<Picture N>` 内嵌在对应 Subject definition，普通 `all_reference` 未授权独立 Picture keyframe/storyboard definition 或 retention。签发角色图只能作为来源内嵌在对应 `<Subject N>` definition，不得为该 `<Picture N>` 建立独立 definition 或 retention；来源全部为签发 `character_reference` 的角色-only Subject 必须在 `retention_analysis` 使用精确 marker `fully_preserved`。这里的 `fully_preserved` 只锁定签发身份与外观，不锁定参考图中的姿势、动作、构图或背景；角色按当前 exact shot 执行新动作/姿势、进入当前场景，不构成保留降级。只要某签发角色图实际进入本次冻结 manifest，它就是该角色在 H3 运行时的静态外观来源：Context-IR 应以内嵌 `<Picture N>` 的 `<Subject N>` 表达身份与外观，不得把 Base Prompt 或遗留外观锚点中的静态发色、五官、体型、常规服饰或画风描述重复进最终六段 Prompt；这些文字仅在该角色图未实际发送时作为 fallback。此例外不删除当前镜头的动作、姿势、表情、道具、场景、摄影、声音，或剧情明确要求的动态外观变化（例如穿上雨衣、衣物被雨淋湿）；角色图也绝不能覆盖 `fixedCharacterBoundary` 的身份、物种或签发必需特征，发生冲突必须失败。本规则仅适用于 MiniMax H3 Context-IR，不改变 Seedance Profile。普通上传或上一镜素材必须绑定到独立的弱参考 Subject，并在 `retention_analysis` 使用精确 marker `weak_reference`；不得把这些弱参考来源与签发角色图混合绑定到同一个 Subject。普通参考的 `summary` 只允许 `[reference generation]` 或实际有音频时的 `[reference generation + audio reference]`。上一镜抽帧只能作为一致性 weak reference/reference-generation 素材，禁止被解释成 editing、continuation、关键帧或 fully-preserved 内容。本地确定性检查负责六段结构、标签、retention、边界、时间线和对白，并在排除允许的原语言内容后拒绝非 Latin script；该字符脚本屏障不能证明其余散文确实是英文。随后必须由已配置文本模型执行只读语义一致性审计并明确检查 `language_format`；非英文、无法确认、审计协议错误或 verdict 非 `pass` 时不得调用最终视频生成。Context-IR 失败、结构不合法、引用错绑或扩写冲突必须中止本次生成，不得回退到 Base 三段、Seedance Prompt 或通用散文。权威优先级是：用户对“是否重写”的明确决定控制 Plan revision；当前签发 Full Story/exact shot、`fixedCharacterBoundary` 与 Foundation 锁控制内容事实；冻结参考 manifest 控制引用编号/角色；Plan Profile 控制方言；Context-IR 扩写最低，不能反向覆盖上游。
 
 `POST /api/generate-shot-video` 必须始终绑定当前签发 Animation Plan，不能依据客户端自报 `animationPromptSchemaVersion` 降级为无 lineage 请求。服务端从 Plan 唯一解析 exact shot；只允许独立 `promptOverride` 覆盖本次媒体提示词，动作、时长、场景、声音、负面词和验收条件仍来自 Plan。输出文件名必须包含不可碰撞的请求 nonce，并在返回前通过 ffprobe 视频流/时长校验。
 
@@ -116,11 +126,41 @@ DeepSeek 当前只允许用于纯文本阶段：
 
 `Visual Guardrails` 是固定角色语义的唯一生成阶段。它允许视觉模型结合用户设定、参考分析、脚本还原、创意简报和模型常识生成开放语义边界，不得新增本地物种关键词字典替代模型判断。
 
+Creative Brief 的 `controlledRewriteVariables.sourceValue`、`protectedExpressions.sourceExpression` 以及 Visual Guardrails 的 `sourceSimilarityRules.sourceExpression` 在列举同一类别的多个具体物品时，每一项都必须重复完整中心名词，例如“绿色邮箱、红色邮箱、蓝色邮箱”；禁止输出“绿色、红色、蓝色邮箱（组合）”这类共享末项名词的缩写。该规则只能规范已有来源事实，不授权模型补充新物品；下游也不得通过颜色词、后缀或本地中文语法规则猜测被省略的中心名词。旧 Artifact 含歧义缩写时必须重新生成对应上游阶段，不能原地推断或改写已签发内容。
+
+Creative Brief 的 `allowedNarrativeComponents[].component` 是服务端固定的七项 taxonomy：送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾。生成 Prompt 必须展开完整七项；模型只能填写每项非空的 `howToReuseSafely`，不得改名、合并、省略、重复或增加分类。不适合当前素材时也必须保留该项，并在说明中记录不采用或限制条件。数组顺序不承载业务语义。七项名称由服务端常量与 validator 共用，不得在 Prompt、Mock 或校验器中各自维护第二份列表。
+
+上述 Creative Brief 来源字段与 `sourceSimilarityRules` 都只是原片表面表达的 provenance，不是 Variants、Legacy Full Story 或 Animation Plan 的正文禁词。原片道具、拟声词和角色组合允许按当前选定剧情出现在任意正向业务字段，包括 `visibleAction`、对白、声音以及 `videoPrompt`；但不得仅因它们存在于来源上下文就机械注入下游内容。`sourceSimilarityRules` 只在实际生成请求确实携带原片参考时，为 `reference_leak` 提供证据；不得据此扫描或拒绝无原片参考的正文。`dialogueRules` 只能来自用户明确约束，不得把原片对白或拟声词自动提升为对白规则。该放行不改变 `fixedCharacterBoundary` 的优先级：固定主角的签发身份与外观仍是硬边界，复用原片角色组合不授权改写固定主角。
+
 服务端签发的 `fixedCharacterBoundary` 是后续 Variants、Legacy Full Story、Animation Plan、人物参考精修、角色图、视频生成，以及旧 v2 兼容路径中 Character Feature Compiler 和首尾帧生成的唯一固定角色事实来源。后续阶段不得重新解析 `creatorProfile.fixedCharacter`、重新推断关键词或生成第二份角色边界。
 
 生产环境必须校验 `fixedCharacterBoundary.boundarySignature`。仅当服务端显式配置 `WORKFLOW_RUNTIME_ENVIRONMENT=test|development` 且 `WORKFLOW_SIGNATURE_POLICY=test_package_unverified` 时，为支持重启后继续回放本地测试包，可以跳过 HMAC 签名比较；`sourceDigest` 与 `boundaryDigest` 仍必须匹配。该策略只能来自服务端环境，禁止由请求体控制。
 
 冲突优先级：用户明确肯定/否定 > 已签发模型推断。无法消解的冲突必须阻断，不能选择任一方静默覆盖。用户或权威上游数据改变后，旧边界必须失效并重新生成。
+
+## 当前模型内容纠错边界
+
+当前主流程中，任何已经解析为候选对象的模型内容错误都不得通过“把完整失败 Artifact 发回模型并要求整包重写”恢复。只有 validator 输出稳定 `code + RFC 6901 JSON Pointer + reason`，候选完整、目标已存在、事实来源唯一且对应 stage adapter 明确授权时，才允许签发一次有界局部纠错。没有可信 diagnostics、没有唯一权威、整个对象/数组项丢失、候选非对象或 adapter 不支持时必须 fail closed；不得解析人类错误消息猜 path，也不得自动扩大可写范围。
+
+当前生产纠错由一个 Full Story 专用协议、两个确定性 Animation adapter 和一个 H3 语义 Prompt adapter 组成：Legacy Full Story 仅支持由签发固定角色边界唯一恢复 protagonist `name` 的安全子集，使用 `full_story_partial_repair/1.0`；Animation Foundation 固定角色安全子集与 MiniMax H3 段落安全子集使用 `artifact_partial_repair/1.0`；证据绑定审计确认全部结构化 shot facts 通过后，纯 `videoPrompt` 实质冲突可使用 `animation_video_prompt_semantic_repair/1.0`。服务端独占私有签发身份、`baseDigest`、authorityDigest、repairId、目标 path、mutablePointers 与 authority；模型取得的序列化计划不能作为可合并计划。第二次模型请求只发送目标 currentValue、diagnostics、修复说明和最小权威投影。模型只能返回等量、同序 `{repairId,replacement}`，不能返回 path、op、完整 Artifact 或额外字段。服务端必须在 clone 上原子合并，证明目标内未授权事实与全部目标外数据不变，重新投影并验证当前 authority，并从头执行该阶段完整 Schema、角色、剧情与跨字段校验。语义 Prompt 修复另允许且只允许一次相邻镜头复审；复审失败即终止，不得再次修复或整包 fallback。
+
+当前覆盖只包括：Legacy Full Story 中 protagonist `name` 缺失/类型错误/空字符串且验签边界提供唯一姓名；Animation Foundation 中唯一固定角色参考的 `requiredTraits` 缺失/禁止特征命中；MiniMax H3 Plan 生成批次中的受信段落错误；以及审计 V2 证明结构化事实全部通过后的纯 `videoPrompt` 实质冲突。Foundation 仅缺必需事实时必须冻结 `appearancePrompt` 和已有 `consistencyTags`，只允许在标签尾部按签发顺序追加缺失 trait 的 exact `canonicalName`，不能用同义 term、重排或改写外观代替；禁止词诊断只授权实际命中的字段做最小删除，混合错误的缺失事实仍只能进入标签。Full Story 的未知正文错位、配角姓名或身份错误、`characters` 与 `visibleAction`/`dialogue` 的跨字段冲突，以及没有签发值来源的必填剧情字段必须 fail closed，不能让模型通过猜字段、改名、删对白、删动作或另编剧情消除校验错误。确定性 H3 target 还必须已有唯一、可独立通过校验并被冻结的 `integrated_multimodal_description`；语义 target 则只允许完整替换已签发镜头的 `videoPrompt`，全部非 Prompt 字段及未命中镜头逐字冻结。结构化 `characterAction`、`cameraMotion`、`continuityNotes` 或其他 shot fact 本身与高层权威冲突时，不得借修 Prompt 掩盖，必须明确失败。其他已解析内容错误当前直接失败，不能宣称已被自动纠正；唯一的再取证例外是 `referenceAnalysis` 原生视频候选仅因 `VIDEO_EVIDENCE_TIME_INVALID` 失败且已有关键帧时，系统丢弃该候选并用既有 frames 重取一次，不发送失败 Artifact，也不属于 repair。网络、鉴权、429、timeout、lineage stale、签名失效同样不是内容 repair。旧 v2 首尾帧兼容路径不是当前 `direct_shot` 主流程，不能用其历史整批 retry 解释当前行为。
+
+### Legacy Full Story Beat–Scene 提交前复核
+
+Legacy Full Story 另有一次与失败候选 repair 严格分离的 Beat–Scene 提交前复核。它只能在初轮候选（包括已经完成唯一允许的 retry 或 protagonist `name` 局部纠错）通过 exact Schema、Scene Contract、固定角色/Profile、Variant 与既有语义边界的完整校验后执行；失败候选不得借此补写正文。复核使用当前 Full Story 已明确选择的同一文本 provider/model，第二次请求的业务内容只能包含这份完整、已合法的 Full Story JSON 与专用复核提示，不得再次上传或展开 `creatorProfile`、Theme Variant、Creative Brief、Visual Guardrails、`referenceAnalysis`、Reconstruction 或其他边界/变体数据。
+
+`beatSheet` 在该复核中是只读的叙事目标，模型只判断它与 `sceneScript` 是否存在会造成可拍叙事断裂的明显遗漏。若不存在明显遗漏，必须返回 unchanged；若存在，模型也不得自由创作 suffix。每条提议必须指向已有 scene 和唯一 `beatSheet[beatIndex]`，其 `addition` 必须是对应 `beatSheet[beatIndex].storyAction` 中一段连续、逐字相同的原文，并且必须包含该 review 逐字返回的 `beatEvidence`；全部证据只能使用该 `storyAction` 与目标/相关场次现有 `visibleAction` 的逐字 excerpt，不能引用其他 Story 字段或上游数据。无法把所需内容逐字投影为该连续原文时必须返回 `blocked`，不得概括、改写、拼接不连续片段或自行补写。
+
+唯一可写范围仍是把受信 `addition` append 到已有 `sceneScript[i].visibleAction` 末尾，原值必须保持为逐字前缀。一次 postpass 最多补 3 个已有场次，每条 `addition` 最多 600 字，全部 additions 合计最多 1200 字；超限、`beatIndex`/证据错绑、addition 未包含 `beatEvidence` 或原文不连续均按协议错误 fail closed。场次数量与顺序、`sceneId`、`timeRange`、`location`、`characters`、对白、`shotAndSound`、`emotionNode`、`dramaticFunction`、`shootingNotes` 以及 `sceneScript` 外全部字段必须逐字冻结。明显遗漏仅指重要剧情节拍、可见结果、状态变化或因果过渡没有任何可拍证据；合法省略、蒙太奇概括、末项代表整组、或现有终态已经覆盖节拍时不得重复投影。
+
+复核返回 `blocked`、协议错误、供应商错误、越界 diff、非追加式改写或最终完整复验失败时必须 fail closed：不得保存原候选作为 fallback，不得发起第二轮复核，也不得扩大到整包重写。正常路径为 Full Story 初轮生成加一次复核，共 2 次 provider call；初轮若消耗唯一允许的 retry 或局部纠错调用，成功后再复核时整个 operation 最多 3 次，禁止第四次调用。append 合并在 clone 上完成，并从头重新执行 Full Story 全部校验；只有最终 unchanged 或合法追加后的 Story 提交一次 Artifact。初轮候选、复核响应和合并中间态都不是 Artifact、revision、Checkpoint 或第二份 Story 事实源。该 postpass 不扩展上述 partial-repair adapter，也不是 Full Story v2、Canonical Story 或通用 Auditor。
+
+每次服务端或 `run:video` 已成功签发 repair plan 后，必须在第二次 provider call 之前启动 `debug/partial-repairs/` 本地观测记录，并按触发、局部 Prompt、模型 replacement 投影、最终结果四阶段落盘。只允许写入命中 target 的 currentValue、结构化 diagnostics、最小 authority 与拒绝原因；禁止写入完整 Story/Foundation/Animation Plan、原始 HTTP 响应、Header、密钥、Cookie、Data URL 或 Base64 媒体。没有签发 plan 时不得创建记录。Debug 写入必须 fail-open 并只输出脱敏告警，不得改变 repair 的成功/失败、增加模型调用或回退保存 raw；这些文件不是 Artifact、Production Lineage、业务事实来源、恢复数据或导出包内容。
+
+Full Story 另有一条与 partial-repair Debug 严格隔离的、服务端环境显式开启的全量模型输出日志。只有 `FULL_STORY_MODEL_OUTPUT_LOG_DIR` 为非空私有路径时，才允许把每次实时 Full Story primary、retry/repair 与 Beat–Scene postpass completion 的完整 `content` 按阶段原样落盘，并在日志 metadata 中保存明确的 `stage`；不得把请求 Prompt、HTTP 请求/响应包、Header、API Key、Cookie、Data URL 或 Base64 媒体一并保存。浏览器 Production token 只能通过旁路 Header 传递，服务端必须核对 current running stage 后分别记录 `productionRequestId` 与 `providerRequestId`，不得把 trace context 混入 Workflow input、Prompt、Full Story、Artifact 或导出包。目录位于 `public/` 时必须禁用。日志不截断模型 content，文件权限必须私有并原子写入；写入失败 fail-open，不得改变校验、repair、postpass、重试预算、lineage 或业务错误。该日志只是本机敏感观测 sidecar，不是第二份 Story、Production Lineage、恢复数据或事实来源。
+
+Animation Plan 原始 completion 使用独立的 `ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR` 与固定 `scope=animationPlan`。服务端必须在真实 `/chat/completions` 响应交给 JSON parser 前，从克隆响应中只提取 `choices[0].message.content`、finish reason、usage 数值和 provider requestId；不得保存或传递原始 HTTP envelope、请求 Prompt、Header、密钥或媒体。它必须覆盖首次 direct-shot Plan 的 Foundation、每批 shot、已实际调用的 H3 段落纠错、H3 语义 `videoPrompt` 修复、首次审计与复审，并以调用顺序/阶段标签区分；未发生的 repair 不得伪造记录。Production Header 只可在服务端核对 `animationPlan:<variantId>` current running stage、requestId 与 expected revision 后标记 verified；不匹配只能记为 unbound，不能搜索 Run 猜归属或阻断业务。输出观测失败必须 fail-open，不能改变 Response、provider 调用次数、validator、repair、Plan commit 或错误文字；日志仍不是 Artifact、事实源或恢复数据。
 
 ---
 
@@ -137,6 +177,18 @@ Legacy Full Story
 - 生成完整剧情
 - 输出 sceneScript
 - 提供 Animation Plan 输入
+
+## Legacy Full Story 有界子树纠错
+
+Legacy Full Story 的唯一一次模型纠错只在首次 completion 已解析为完整 JSON 对象、全部结构化 diagnostics 都精确指向 `/characterBible/protagonist/name` 的 required/type/empty-string 错误，并且当前验签 `fixedCharacterBoundary.characterName` 提供唯一正确值时启用。服务端以当前进程内私有签发身份独占 path、repairId、mutableFields、expectedFields、原候选 baseDigest 与 authorityDigest；模型只看 protagonist 当前子树、诊断、签发姓名和最小权威上下文，只返回 replacement，不得自报 path、JSON Patch 或重写整份 Story。
+
+replacement 只能把 protagonist `name` 设为 expectedFields 中逐字签发的固定角色姓名；identity、traits、speechRules、signatureBehaviors 与所有目标外数据必须保持不变。未知正文、配角姓名/身份错误、`characters` 与 `visibleAction`/`dialogue` 冲突、没有签发值来源的必填剧情字段都不得进入计划。服务端合并前必须确认收到的是原始私有签发计划并重新核验当前 authority；在 clone 上原子合并后，必须从头重新执行 exact schema、Scene Contract 和 `ensureFullStoryMatchesProfile`。任何协议、签发、权威、合并或完整复验失败都不得提交 Artifact，也不得产生第三次 provider call。
+
+无法安全局部化的已解析候选必须明确失败，不能静默回退为“把完整失败 Story 发给模型重写”；无完整候选的截断/JSON 语法或供应商协议错误仍可使用既有 completion retry。内部 `full_story_partial_repair/1.0` 只是同一次 Legacy operation 的临时响应协议，不是 Full Story v2、Canonical Story、新事实源或 Production Lineage revision。合法反例：少于 6 个节拍、整个场次丢失、配角角色名缺失、没有验签边界的 protagonist 姓名错误、场次人物名单与动作/对白冲突、独立缺少 `storyAction`、无结构化路径的 Profile 错误，都不能伪造成局部修复。
+
+## Legacy Full Story Beat–Scene 提交前复核
+
+完整合法的初轮 Full Story 在 Artifact 提交前还必须独立调用一次 AI，对照其只读 `beatSheet` 与可拍 `sceneScript`。该调用只接收完整 Full Story JSON 和专用提示；它没有边界、变体或其他上游上下文的独立输入，也无权改写剧情或自由生成 suffix。唯一合法变化，是把对应 `beatSheet[beatIndex].storyAction` 中连续、逐字相同的 `addition` 投影到已有场次的 `visibleAction` 末尾；`addition` 必须包含该 review 的 `beatEvidence`，且全部证据只可引用该 `storyAction` 和相关 `visibleAction`。一次最多 3 个场次、每条 addition 最多 600 字、合计最多 1200 字；无法逐字投影必须返回 `blocked`。其他字段全部冻结。unchanged 可直接进入最终复验；`blocked`、协议/供应商错误、证据错绑、越界或非追加变化、最终复验失败均终止，不得 fallback 或重试 postpass。正常 operation 共 2 次 provider call，初轮消耗一次允许的 retry/repair 时最多 3 次；最终仍只提交一次 Full Story Artifact。
 
 
 ## 当前不存在

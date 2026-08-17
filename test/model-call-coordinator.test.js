@@ -5,7 +5,7 @@ import { ModelCallCoordinator } from "../src/model-call-coordinator.js";
 import { ModelPipelineError } from "../src/model-errors.js";
 import { ModelResponseError } from "../src/mimo-client.js";
 import { mockFullStory } from "../src/mock.js";
-import { ensureOutputContract } from "../src/validation.js";
+import { ensureOutputContract, OutputContractError } from "../src/validation.js";
 
 test("Coordinator handles finish_reason=length before parsing and retries once", async () => {
   let calls = 0;
@@ -199,6 +199,104 @@ test("Coordinator compatibility adapter disables nested client JSON retries", as
   assert.equal(requests.length, 1);
   assert.equal(requests[0].jsonRetryAttempts, 0);
   assert.equal(requests[0].strictJson, true);
+});
+
+test("Coordinator 等待异步 validate 完成后才构造并发送纠错请求", async () => {
+  const events = [];
+  let calls = 0;
+  const result = await new ModelCallCoordinator().runJson({
+    client: {
+      async requestCompletion(request) {
+        calls += 1;
+        events.push(`provider:${request.prompt}`);
+        return completion(JSON.stringify({ ok: calls === 2 }));
+      }
+    },
+    request: { prompt: "primary" },
+    provider: "test-double",
+    stage: "animationFoundation",
+    validate: async (candidate) => {
+      events.push(`validate:${candidate.ok}`);
+      await Promise.resolve();
+      if (!candidate.ok) {
+        events.push("debug-written");
+        throw new OutputContractError("需要局部纠错");
+      }
+      return candidate;
+    },
+    retryPrompt: () => {
+      assert.equal(events.at(-1), "debug-written");
+      events.push("retry-prompt");
+      return "repair";
+    }
+  });
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(events, [
+    "provider:primary",
+    "validate:false",
+    "debug-written",
+    "retry-prompt",
+    "provider:repair",
+    "validate:true"
+  ]);
+});
+
+test("Coordinator attempt observer 收到每次完整模型 content，且区分 provider requestId", async () => {
+  let calls = 0;
+  const observed = [];
+  const result = await new ModelCallCoordinator().runJson({
+    client: {
+      async requestCompletion() {
+        calls += 1;
+        return completion(JSON.stringify({ ok: calls === 2, text: `完整输出-${calls}` }), {
+          requestId: `provider-${calls}`
+        });
+      }
+    },
+    request: { prompt: "PRIVATE_PROMPT", model: "story-model" },
+    provider: "Qwen",
+    stage: "fullStory",
+    validate: (candidate) => {
+      if (!candidate.ok) throw new OutputContractError("首轮语义错误");
+      return candidate;
+    },
+    retryPrompt: () => "retry",
+    attemptObserver: (attempt) => observed.push(attempt)
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(observed.length, 2);
+  assert.deepEqual(observed.map((item) => item.status), ["failed", "succeeded"]);
+  assert.deepEqual(observed.map((item) => item.providerRequestId), ["provider-1", "provider-2"]);
+  assert.match(observed[0].content, /完整输出-1/u);
+  assert.match(observed[1].content, /完整输出-2/u);
+  assert.doesNotMatch(JSON.stringify(observed), /PRIVATE_PROMPT/u);
+});
+
+test("attempt observer 写入失败不会改变业务结果或增加模型调用", async () => {
+  let calls = 0;
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const result = await new ModelCallCoordinator().runJson({
+      client: {
+        async requestCompletion() {
+          calls += 1;
+          return completion("{\"ok\":true}");
+        }
+      },
+      request: { prompt: "primary" },
+      validate: (candidate) => candidate,
+      attemptObserver: async () => {
+        throw new Error("disk unavailable");
+      }
+    });
+    assert.deepEqual(result, { ok: true });
+    assert.equal(calls, 1);
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 function completion(content, {

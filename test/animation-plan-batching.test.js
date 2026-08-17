@@ -216,7 +216,7 @@ test("分阶段内部契约允许镜头负面词为空", () => {
   assert.equal(ensureAnimationShotBatchContract(batch), batch);
 });
 
-test("Animation Foundation 必须唯一登记 Full Story 标准主角", async (t) => {
+test("Animation Foundation 主角参考缺失或重复时 fail closed，不整包重生", async (t) => {
   const scenarios = [
     {
       name: "主角参考缺失",
@@ -273,18 +273,24 @@ test("Animation Foundation 必须唯一登记 Full Story 标准主角", async (t
         "u"
       ));
 
-      assert.equal(foundationCalls, 2);
+      assert.equal(foundationCalls, 1);
       assert.equal(batchCalls, 0);
-      assert.deepEqual(finalError.details, [{
-        code: "ANIMATION_PRIMARY_CHARACTER_REFERENCE_MATCH_FAILURE",
-        path: "animationFoundation.characterReferencePrompts",
-        reason: `全剧主角「${protagonistName}」的角色参考必须唯一且使用标准姓名`,
-        expectedPrimaryCharacterName: protagonistName,
-        exactMatchCount: scenario.expectedCount,
-        actualCharacterNames: invalidFoundation.characterReferencePrompts.map(
-          (reference) => reference.characterName
-        )
-      }]);
+      assert.equal(finalError.name, "ModelPipelineError");
+      assert.equal(finalError.attempts.length, 1);
+      assert.equal(finalError.diagnostics.length, 1);
+      assert.equal(
+        finalError.diagnostics[0].code,
+        "ANIMATION_PRIMARY_CHARACTER_REFERENCE_MATCH_FAILURE"
+      );
+      assert.equal(
+        finalError.diagnostics[0].path,
+        "animationFoundation.characterReferencePrompts"
+      );
+      assert.equal(finalError.diagnostics[0].metadata.exactMatchCount, scenario.expectedCount);
+      assert.deepEqual(
+        finalError.diagnostics[0].metadata.actualCharacterNames,
+        invalidFoundation.characterReferencePrompts.map((reference) => reference.characterName)
+      );
     });
   }
 });
@@ -715,10 +721,10 @@ test("服务端重编镜头 ID 时同步重写负面词证据路径", async () =
   );
 });
 
-test("Qwen 高 token 上限在分阶段纠偏时不会被降到 32768", async () => {
+test("Qwen 完整但不可局修的 Foundation 只调用一次并保留高 token 上限", async () => {
   const context = fixture();
   const requests = [];
-  let call = 0;
+  const unrelatedSentinel = "PARSED_FOUNDATION_UNRELATED_SENTINEL";
   const workflow = animationWorkflow({
     animationShotBatchSceneCount: 2,
     animationProvider: "Qwen",
@@ -727,44 +733,49 @@ test("Qwen 高 token 上限在分阶段纠偏时不会被降到 32768", async ()
     animationClient: {
       async generateJson(args) {
         requests.push(args);
-        call += 1;
-        if (call === 1) return {};
-        if (call === 2) return foundationFrom(context.animationPlan);
-        const batchIndex = call - 3;
-        return { shotPlan: structuredClone(context.animationPlan.shotPlan.slice(batchIndex * 2, batchIndex * 2 + 2)) };
+        return { unrelatedSentinel };
       }
     }
   });
 
-  const result = await workflow.createAnimationPlan(context);
-  assert.equal(result.shotPlan.length, 6);
+  await assert.rejects(
+    () => workflow.createAnimationPlan(context),
+    /animationFoundation 缺少必要字段/u
+  );
+  assert.equal(requests.length, 1);
   assert.equal(requests[0].maxCompletionTokens, 50000);
-  assert.equal(requests[1].maxCompletionTokens, 50000);
-  assert.match(requests[1].prompt, /没有通过系统校验/);
+  const secondRequests = requests.slice(1);
+  assert.equal(secondRequests.length, 0);
+  assert.equal(
+    secondRequests.some((request) => String(request.prompt || "").includes(unrelatedSentinel)),
+    false
+  );
 });
 
-test("基础阶段回传旧整包时会纠偏，不会静默丢弃 shotPlan", async () => {
+test("基础阶段回传旧整包时 fail closed，不重传完整 Plan", async () => {
   const context = fixture();
-  let call = 0;
+  const unrelatedSentinel = "OLD_PLAN_UNRELATED_SENTINEL";
+  const invalidFoundation = structuredClone(context.animationPlan);
+  invalidFoundation.title = unrelatedSentinel;
   const prompts = [];
   const workflow = animationWorkflow({
     animationShotBatchSceneCount: 2,
     client: {
       async generateJson(args) {
         prompts.push(args.prompt);
-        call += 1;
-        if (call === 1) return structuredClone(context.animationPlan);
-        if (call === 2) return foundationFrom(context.animationPlan);
-        const batchIndex = call - 3;
-        return { shotPlan: structuredClone(context.animationPlan.shotPlan.slice(batchIndex * 2, batchIndex * 2 + 2)) };
+        return structuredClone(invalidFoundation);
       }
     }
   });
 
-  const result = await workflow.createAnimationPlan(context);
-  assert.equal(result.shotPlan.length, 6);
-  assert.equal(prompts.length, 5);
-  assert.match(prompts[1], /未允许的顶层字段.*shotPlan/);
+  await assert.rejects(
+    () => workflow.createAnimationPlan(context),
+    /animationFoundation 包含未允许的顶层字段：shotPlan/u
+  );
+  assert.equal(prompts.length, 1);
+  const secondPrompts = prompts.slice(1);
+  assert.equal(secondPrompts.length, 0);
+  assert.equal(secondPrompts.some((prompt) => prompt.includes(unrelatedSentinel)), false);
 });
 
 test("sceneId 映射错误由唯一 foundation 映射确定性修复", async () => {
