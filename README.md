@@ -16,7 +16,7 @@ npm start
 
 `Visual Guardrails` 是固定角色语义唯一生成阶段。视觉模型会结合用户角色描述、参考分析、脚本还原和创意简报，一次性输出 `requiredTraits`、`allowedTraits` 与 `forbiddenTraits`；可以使用模型常识理解“狼娘”等开放概念，但不依赖本地写死的物种关键词字典，且用户明确肯定或否定的设定优先。
 
-创意简报和视觉规则列举同类具体物品时，会要求模型逐项写出完整名称，例如“绿色邮箱、红色邮箱、蓝色邮箱”，不允许用“绿色、红色、蓝色邮箱组合”共享末项名词。旧的歧义缩写不会由本地规则猜测补全，需要重新生成对应的 Brief 与 Visual Guardrails。
+创意简报和视觉规则列举同类具体物品时，会要求模型逐项写出完整名称，例如“绿色邮箱、红色邮箱、蓝色邮箱”，不允许用“绿色、红色、蓝色邮箱组合”共享末项名词。旧的歧义缩写不会由本地规则猜测补全，需要重新生成对应的 Brief 与 Visual Guardrails。Visual Guardrails 侧已有确定性校验兜住这条：`sourceSimilarityRules[].sourceExpression` 的每一项都必须逐字出自本规则引用的证据，模型自行补全中心名词会直接失败。
 
 Creative Brief 中的 `controlledRewriteVariables.sourceValue`、`protectedExpressions.sourceExpression` 和 Visual Guardrails 中的 `sourceSimilarityRules` 只记录原片表面表达的来源，不再作为下游正文禁词。原片道具、拟声词或角色组合可以随所选剧情进入 Variant、Legacy Full Story 与 Animation Plan 的正向业务字段，包括 `visibleAction`、对白、声音和 `videoPrompt`；系统不会仅因为某个表达出现在来源上下文中就把它机械写入正向内容。`sourceSimilarityRules` 只在生成请求实际携带原片参考时，为 `reference_leak` 提供证据；`dialogueRules` 也只能来自用户明确约束，不会由原片对白或拟声词自动生成。固定主角仍须服从已签发的 `fixedCharacterBoundary`，上述放行不授权修改其身份或外观。
 

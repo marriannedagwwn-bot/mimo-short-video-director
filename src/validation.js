@@ -1587,6 +1587,7 @@ function validateVisualGuardrailsContract(value) {
       throw new OutputContractError(`${path}.appliesWhenReferenceUsed 必须为 true`);
     }
     validateTriggerEvidenceShape(item.triggerEvidence, `${path}.triggerEvidence`, { requireNonEmpty: true });
+    validateSourceExpressionExcerptBinding(item, path);
   });
   value.dialogueRules.forEach((item, index) => {
     const path = `visualGuardrails.dialogueRules[${index}]`;
@@ -1594,6 +1595,38 @@ function validateVisualGuardrailsContract(value) {
     if (!String(item.text || "").trim()) throw new OutputContractError(`${path}.text 不能为空`);
     validateTriggerEvidenceShape(item.triggerEvidence, `${path}.triggerEvidence`, { requireNonEmpty: true });
   });
+}
+
+// 只归一化模型可以合法变动的排版：引号样式、空白和句末标点。
+// 不做任何中文语法或词性推断——猜测被省略的中心名词正是本规则禁止的行为。
+function normalizeSourceExpressionExcerpt(value) {
+  return String(value)
+    .replace(/[“”"'‘’「」『』（）()]/gu, "")
+    .replace(/\s+/gu, "")
+    .replace(/[。．.,，；;、]+$/gu, "");
+}
+
+function sourceExpressionEnumerationItems(value) {
+  return String(value)
+    .split(/[、,，;；]/u)
+    .map((part) => normalizeSourceExpressionExcerpt(part))
+    .filter(Boolean);
+}
+
+// sourceExpression 的每一项都必须逐字出现在本条规则自己引用的 evidence 中。
+// 模型一旦补全上游省略的中心名词（例如把“投递信件至绿色邮箱、红色邮箱”展开成
+// “投递信件至红色邮箱”），产出的字符串就不可能逐字存在于 evidence 里，于是在此 fail closed。
+// 按 AGENTS.md：上游含歧义缩写时必须重新生成对应阶段，不得在下游原地推断或改写。
+function validateSourceExpressionExcerptBinding(item, path) {
+  const evidences = (Array.isArray(item.triggerEvidence) ? item.triggerEvidence : [])
+    .map((entry) => normalizeSourceExpressionExcerpt(entry?.evidence));
+  const missing = sourceExpressionEnumerationItems(item.sourceExpression)
+    .filter((part) => !evidences.some((evidence) => evidence.includes(part)));
+  if (!missing.length) return;
+  throw new OutputContractError(
+    `${path}.sourceExpression 含未出现在自身 triggerEvidence 中的表达：${missing.join("、")}。`
+    + "来源表面表达只能逐字引用上游证据；上游若使用了共享中心名词的缩写，必须重新生成对应上游阶段，不得在此补全或改写。"
+  );
 }
 
 function validateGlobalCharacterBoundary(boundary) {

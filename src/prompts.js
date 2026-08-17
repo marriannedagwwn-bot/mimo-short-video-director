@@ -369,6 +369,7 @@ creativeBrief 已识别的原片表面表达参考：${protectedText}
 - allowedPositiveTraits 和 positivePromptBoundary 由服务端根据全局边界确定性生成。你必须输出空数组，不得自行填写。
 - sourceSimilarityRules 只收录 referenceAnalysis、sourceScriptReconstruction 或 creativeBrief 中真实出现的可识别表面表达；抽象叙事结构不得列入。
 - sourceSimilarityRules.sourceExpression 与 triggerEvidence.evidence 在并列列举同一类别物品时，每一项都必须重复完整中心名词。必须写“绿色邮箱、红色邮箱、蓝色邮箱”，不得沿用或生成“绿色、红色、蓝色邮箱（组合）”这种共享末项名词的缩写；只能展开已有事实，不能补充新物品。
+- sourceExpression 的每一项都必须逐字出现在同一条规则的 triggerEvidence.evidence 中，会被确定性校验。禁止拼接、补全或改写：上游 evidence 写“投递信件至绿色邮箱、红色邮箱、蓝色邮箱”时，只能原样引用“红色邮箱”或整串原文，绝不能自行补出“投递信件至红色邮箱”。上游缩写导致某一项无法逐字引用时，保留上游原文即可，不得由你推断被省略的中心名词。
 - sourceSimilarityRules.appliesWhenReferenceUsed 固定为 true，表示只有该原片画面实际作为某次图片/视频生成参考输入时，才可把对应表面表达转换为该次渲染负面提示词；它不得在此之前被解释成剧情、对白、声音或 videoPrompt 的内容禁词。
 - dialogueRules 只处理台词和说话方式，不得混入图片或视频渲染负面提示词。
 - 仅仅因为原片或 creativeBrief.protectedExpressions 记录了某句台词、口癖或拟声词，不得把它升级成 dialogueRules 禁令；dialogueRules 只能来自 creatorProfile.constraints 等用户明确说话约束。

@@ -126,7 +126,7 @@ DeepSeek 当前只允许用于纯文本阶段：
 
 `Visual Guardrails` 是固定角色语义的唯一生成阶段。它允许视觉模型结合用户设定、参考分析、脚本还原、创意简报和模型常识生成开放语义边界，不得新增本地物种关键词字典替代模型判断。
 
-Creative Brief 的 `controlledRewriteVariables.sourceValue`、`protectedExpressions.sourceExpression` 以及 Visual Guardrails 的 `sourceSimilarityRules.sourceExpression` 在列举同一类别的多个具体物品时，每一项都必须重复完整中心名词，例如“绿色邮箱、红色邮箱、蓝色邮箱”；禁止输出“绿色、红色、蓝色邮箱（组合）”这类共享末项名词的缩写。该规则只能规范已有来源事实，不授权模型补充新物品；下游也不得通过颜色词、后缀或本地中文语法规则猜测被省略的中心名词。旧 Artifact 含歧义缩写时必须重新生成对应上游阶段，不能原地推断或改写已签发内容。
+Creative Brief 的 `controlledRewriteVariables.sourceValue`、`protectedExpressions.sourceExpression` 以及 Visual Guardrails 的 `sourceSimilarityRules.sourceExpression` 在列举同一类别的多个具体物品时，每一项都必须重复完整中心名词，例如“绿色邮箱、红色邮箱、蓝色邮箱”；禁止输出“绿色、红色、蓝色邮箱（组合）”这类共享末项名词的缩写。该规则只能规范已有来源事实，不授权模型补充新物品；下游也不得通过颜色词、后缀或本地中文语法规则猜测被省略的中心名词。旧 Artifact 含歧义缩写时必须重新生成对应上游阶段，不能原地推断或改写已签发内容。其中「下游不得补全被省略的中心名词」这一半现已由确定性校验强制：`visualGuardrails.sourceSimilarityRules[].sourceExpression` 的每一并列项都必须逐字出现在本条规则自己的 `triggerEvidence[].evidence` 中，否则 fail closed（只归一化引号、空白与句末标点，不做任何中文语法推断）。上游 Creative Brief 是否写出了缩写本身仍只由 Prompt 约束——判定它需要的正是本规则禁止的中心名词推断，因此不做本地实现。
 
 Creative Brief 的 `allowedNarrativeComponents[].component` 是服务端固定的七项 taxonomy：送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾。生成 Prompt 必须展开完整七项；模型只能填写每项非空的 `howToReuseSafely`，不得改名、合并、省略、重复或增加分类。不适合当前素材时也必须保留该项，并在说明中记录不采用或限制条件。数组顺序不承载业务语义。七项名称由服务端常量与 validator 共用，不得在 Prompt、Mock 或校验器中各自维护第二份列表。
 
