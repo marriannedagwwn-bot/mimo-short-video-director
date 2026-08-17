@@ -1851,7 +1851,45 @@ export function ensureVisualGuardrailsMatchesProfile(value, creatorProfile = {})
   return value;
 }
 
-export function ensureCreativeBriefMatchesProfile(value, creatorProfile = {}) {
+// 递归收集上游对象里的全部字符串，用于逐字证据比对。
+function collectUpstreamText(value, sink = []) {
+  if (typeof value === "string") sink.push(value);
+  else if (Array.isArray(value)) value.forEach((item) => collectUpstreamText(item, sink));
+  else if (value && typeof value === "object") Object.values(value).forEach((item) => collectUpstreamText(item, sink));
+  return sink;
+}
+
+// 【原片有】只证明模型给出了判定，不证明判定为真——校验器此前从未见过原片。
+// 因此要求该分支用「」引出一段上游逐字原文，再回到上游核对它确实存在。
+// 编造出来的场景描述不可能逐字命中 sourceScriptReconstruction / referenceAnalysis。
+function validateNarrativeComponentCitations(components, upstream) {
+  const upstreamText = normalizeSourceExpressionExcerpt(collectUpstreamText(upstream).join("\n"));
+  if (!upstreamText) return;
+  (Array.isArray(components) ? components : []).forEach((item, index) => {
+    const assessment = String(item?.howToReuseSafely || "").trim();
+    if (!assessment.startsWith("【原片有】")) return;
+    const path = `creativeBrief.allowedNarrativeComponents[${index}]（${item?.component}）.howToReuseSafely`;
+    const citations = [...assessment.matchAll(/「([^」]+)」/gu)].map((match) => match[1].trim()).filter(Boolean);
+    if (!citations.length) {
+      throw new OutputContractError(
+        `${path} 判定为【原片有】时必须用「」引出一段 sourceScriptReconstruction 或 referenceAnalysis 中的逐字原文作为依据。`
+      );
+    }
+    const missing = citations
+      .map((citation) => ({ citation, normalized: normalizeSourceExpressionExcerpt(citation) }))
+      .filter((entry) => entry.normalized && !upstreamText.includes(entry.normalized))
+      .map((entry) => entry.citation);
+    if (missing.length) {
+      throw new OutputContractError(
+        `${path} 引用的原文在上游并不存在：${missing.map((entry) => `「${entry}」`).join("、")}。`
+        + "存在性判定只能引用原片确实发生过的内容，不得为原片补出它没有的叙事构件。"
+      );
+    }
+  });
+}
+
+export function ensureCreativeBriefMatchesProfile(value, creatorProfile = {}, upstream = null) {
+  if (upstream) validateNarrativeComponentCitations(value?.allowedNarrativeComponents, upstream);
   const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
   if (!fixedName) return value;
 

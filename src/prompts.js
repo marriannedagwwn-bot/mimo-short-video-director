@@ -330,7 +330,7 @@ sourceScriptReconstruction：${JSON.stringify(input.sourceScriptReconstruction)}
 }
 
 allowedNarrativeComponents 的七个 component 名称和数量由服务端固定。必须逐项原样保留上面七项，不得改名、合并、省略、重复或增加第八项；模型只填写每项非空的 howToReuseSafely。即使判断本次不适合采用，也必须保留对应 component，并在 howToReuseSafely 中说明不采用或限制条件；不要自动列入 protectedExpressions。
-每一条 howToReuseSafely 都必须以「【原片有】」或「【原片没有】」开头，先对原片是否真的存在该构件作出判定，再谈复用。这一判定只描述 referenceAnalysis 与 sourceScriptReconstruction 里已经发生的事实，不描述新片打算怎么拍。写「【原片有】」时必须紧接着指出它在原片中的具体体现（哪一场、什么动作或什么物件）；原片没有该构件时必须写「【原片没有】」并说明本次不采用或仅作有限借用，禁止改写成一条针对新片的正向复用指令来绕过判定。举例：原片中主角只是陪伴亲近的人经历人生节点、并没有把物品送交他人的任务时，送达任务必须写「【原片没有】」，不得写成「主角携带某物前往某户人家」。
+每一条 howToReuseSafely 都必须以「【原片有】」或「【原片没有】」开头，先对原片是否真的存在该构件作出判定，再谈复用。这一判定只描述 referenceAnalysis 与 sourceScriptReconstruction 里已经发生的事实，不描述新片打算怎么拍。写「【原片有】」时必须用中文直角引号「」引出一段来自 referenceAnalysis 或 sourceScriptReconstruction 的**逐字原文**作为依据，该原文会被回到上游逐字核对，写不出就说明原片并没有这个构件；原片没有该构件时必须写「【原片没有】」并说明本次不采用或仅作有限借用，禁止改写成一条针对新片的正向复用指令来绕过判定。举例：原片中主角只是陪伴亲近的人经历人生节点、并没有把物品送交他人的任务时，送达任务必须写「【原片没有】」，不得写成「主角携带某物前往某户人家」。
 protectedExpressions 只允许放具体且可识别的表达，不允许放抽象母题或通用叙事结构。
 controlledRewriteVariables.sourceValue、protectedExpressions.sourceExpression 以及相关 evidence 在并列列举同一类别物品时，每一项都必须重复完整中心名词，不能让前面的项目共享最后一项的名词。必须写“绿色邮箱、红色邮箱、蓝色邮箱”，不得写“绿色、红色、蓝色邮箱”或“绿色、红色、蓝色邮箱组合”。这只规范已有事实的完整名称，不得新增输入中没有的物品。${JSON_ONLY}`;
 }

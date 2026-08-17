@@ -326,12 +326,27 @@ export class WorkflowService {
     requireObject(input.sourceScriptReconstruction, "sourceScriptReconstruction");
     requireObject(input.creatorProfile || {}, "creatorProfile");
     const groundedInput = groundedStageInput(input, this.groundingKey);
-    if (!this.hasLiveClient) return ensureCreativeBriefMatchesProfile(ensureOutputContract(mockBrief(groundedInput), "creativeBrief"), input.creatorProfile);
+    // allowedNarrativeComponents 的【原片有】判定要回到上游逐字核对，因此把这两份上游一并交给校验器。
+    const briefUpstream = {
+      referenceAnalysis: input.referenceAnalysis,
+      sourceScriptReconstruction: input.sourceScriptReconstruction
+    };
+    if (!this.hasLiveClient) {
+      return ensureCreativeBriefMatchesProfile(
+        ensureOutputContract(mockBrief(groundedInput), "creativeBrief"),
+        input.creatorProfile,
+        briefUpstream
+      );
+    }
     const prompt = briefPrompt(groundedInput);
     return this.generateStageJson("brief", groundedInput, {
       prompt,
       retryContext: { stage: "creativeBrief", fixedCharacter: input.creatorProfile?.fixedCharacter || "" },
-      validate: (result) => ensureCreativeBriefMatchesProfile(ensureOutputContract(result, "creativeBrief"), input.creatorProfile)
+      validate: (result) => ensureCreativeBriefMatchesProfile(
+        ensureOutputContract(result, "creativeBrief"),
+        input.creatorProfile,
+        briefUpstream
+      )
     });
   }
 
