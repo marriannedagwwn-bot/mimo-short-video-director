@@ -405,10 +405,26 @@ creativeBrief 已识别的原片表面表达参考：${protectedText}
 fixedCharacterBoundary 不得输出 sourceDigest、boundaryDigest 或 boundarySignature；这些字段由服务端签发。顶层只能包含上述字段，不得额外输出旧版字段或任何图片/视频 render negative prompt。${JSON_ONLY}`;
 }
 
+// 只取 referenceAnalysis.retentionDrivers 里的 viewerQuestion 形态，刻意不取 payoff 与 evidence：
+// payoff 是原片具体剧情，把它交给编故事的阶段会放大原片内容泄漏，而这里需要的只是“如何提出一个
+// 可以被延后回答的具体问句”这一结构。
+function sourceViewerQuestionForms(referenceAnalysis) {
+  const drivers = Array.isArray(referenceAnalysis?.retentionDrivers) ? referenceAnalysis.retentionDrivers : [];
+  return drivers
+    .map((item) => String(item?.viewerQuestion || "").trim())
+    .filter(Boolean)
+    .map((question, index) => `${index + 1}. ${question}`)
+    .join("\n");
+}
+
 export function variantsPrompt(input) {
   const count = Math.max(1, Math.min(6, Number(input.count) || 3));
   const forbiddenTerms = collectProtectedTermsFromBrief(input.creativeBrief, input.creatorProfile?.fixedCharacter || "");
   const forbiddenText = forbiddenTerms.length ? forbiddenTerms.join("、") : "无";
+  const viewerQuestionForms = sourceViewerQuestionForms(input.referenceAnalysis);
+  const viewerQuestionText = viewerQuestionForms
+    ? `\n原片完播问句形态参考（只示范“怎样提出一个可以被延后回答的具体问句”，不提供它们的答案；内容必须完全换新，不得复用其提问对象、答案或兑现事件）：\n${viewerQuestionForms}\n`
+    : "";
   const visualPolicyText = globalCharacterBoundaryText(input.visualGuardrails);
   const visualGuardrailsText = formatVisualGuardrailsForPrompt(input.visualGuardrails, {
     includeSourceSimilarityRules: false
@@ -423,7 +439,7 @@ export function variantsPrompt(input) {
 creativeBrief：${JSON.stringify(input.creativeBrief)}
 原片表面表达参考（不是正向内容禁词）：${forbiddenText}
 固定角色外观边界：${visualPolicyText}
-固定角色正向边界与用户台词规则：${visualGuardrailsText}
+固定角色正向边界与用户台词规则：${visualGuardrailsText}${viewerQuestionText}
 
 固定角色硬约束：
 - 每个 variant 必须使用上方“固定角色”作为唯一主角，不得改名、换昵称、另起主角名，也不得把固定角色降级为旁观者或帮助者。
@@ -435,6 +451,14 @@ creativeBrief：${JSON.stringify(input.creativeBrief)}
 - 即使复用原片角色组合，固定主角仍必须保持已签发姓名、身份、物种和 requiredTraits；来源表达不能覆盖 fixedCharacterBoundary。
 - 必须逐字服从已签发的全局角色边界；不得重新解释固定角色、重新推断身体结构或改变 requiredTraits。
 - sourceSimilarityRules 只保留来源证据与“实际使用原片视觉参考时”的参考泄漏职责，不是 Variant 正向内容黑名单；dialogueRules 仍只约束已签发角色的对白边界。
+
+叙事质量硬约束（这些约束负责让方案好看，不得与上述固定角色边界冲突；冲突时以固定角色边界为准）：
+- 施动性：storyOutline 中每个 beat 的 action 主语必须是固定角色本人。至少 3 个 beat 里固定角色是发起者而不是反应者——她主动想要、主动决定、主动争取、遭遇挫折，或亲手解决问题。把主角写成只“陪着、帮忙拿着、看着、站在一旁、跟着上车、发出声音、摇尾巴、眼眶泛红”的旁观者属于不合格；纯情绪反应镜头不计入这 3 个 beat。
+- 悬念：oneLineHook、logline 和 characterSetup.careRecipient 都不得提前陈述本片最大情绪反转的结果。该结果只能留到对应 beat 首次揭晓，人物卡里只能写揭晓之前观众已经知道的身份。如果观众在第 1 个 beat 之前就知道结局会发生什么，这个方案不合格。
+- 结构分化：${count} 个方案之间不得共用同一条 dramaticFunction 序列。至少两个方案在危机位置、成败节奏或结尾情绪上真正不同，例如让主角先失败一次、把最大波折放到接近结尾、或用没有完全达成的愿望收尾。只更换季节、天气、交通工具、道具材质、动物或帮助者称谓不算不同主题。
+- 质感留白：每个方案至少要有 1 个 beat 不推进主线，只承担固定角色的性格、癖好或人物关系质感，并在该 beat 的 dramaticFunction 里写明它不推进主线。判据是：删掉它故事依然完整，但角色会明显变扁平。
+- 具体承诺：endingRitual 及其对应 beat 必须包含一句具体、可引用、且只属于本方案的承诺或约定内容，不能只写“拉钩约定”“许愿”“告别”这类动作名称。keyDialogueDirections 至少给出 careRecipient 的一句具体台词方向，不能只描述情绪。
+- 完播悬念：每个方案必须自己设计至少一个“被刻意拖住不答的具体问句”，并在 storyOutline 对应 beat 的 dramaticFunction 里写明它在第几拍抛出、第几拍兑现；抛出与兑现之间至少间隔 2 个 beat。该问句必须是观众看完第 1 拍后会主动想问的具体问题，不能是“接下来会怎样”“他们能成功吗”这类通用悬念。oneLineHook 可以点出这个问题，但绝不能在同一句里给出答案；答案也不得提前写进 logline 或 characterSetup。如果上方提供了原片完播问句形态参考，只能学它的提问方式，不得复用它的提问对象、答案或兑现事件。
 
 输出结构：
 {
