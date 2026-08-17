@@ -20,7 +20,7 @@ npm start
 
 Creative Brief 中的 `controlledRewriteVariables.sourceValue`、`protectedExpressions.sourceExpression` 和 Visual Guardrails 中的 `sourceSimilarityRules` 只记录原片表面表达的来源，不再作为下游正文禁词。原片道具、拟声词或角色组合可以随所选剧情进入 Variant、Legacy Full Story 与 Animation Plan 的正向业务字段，包括 `visibleAction`、对白、声音和 `videoPrompt`；系统不会仅因为某个表达出现在来源上下文中就把它机械写入正向内容。`sourceSimilarityRules` 只在生成请求实际携带原片参考时，为 `reference_leak` 提供证据；`dialogueRules` 也只能来自用户明确约束，不会由原片对白或拟声词自动生成。固定主角仍须服从已签发的 `fixedCharacterBoundary`，上述放行不授权修改其身份或外观。
 
-Creative Brief 的 `allowedNarrativeComponents` 使用服务端固定的七项通用叙事分类。实时模型不会自行决定分类名，只为每一项填写非空的安全复用说明；即使本次不采用某类构件，也必须保留该项并说明限制，避免同义改名或漏项导致契约失败。
+Creative Brief 的 `allowedNarrativeComponents` 使用服务端固定的七项通用叙事分类。实时模型不会自行决定分类名，只为每一项填写非空的安全复用说明；即使本次不采用某类构件，也必须保留该项并说明限制，避免同义改名或漏项导致契约失败。每条说明还必须以 `【原片有】` 或 `【原片没有】` 开头先判定原片是否真的存在该构件，避免模型替原片补出它并不存在的叙事构件（例如原片只是陪伴，却被写成送货任务）。
 
 服务端会将该边界与当前上游数据摘要绑定并签名。主题变体、Legacy Full Story、Animation Plan、人物参考精修、角色图、旧 v2 首尾帧和视频生成只消费同一份已签发边界，不会在每个阶段重新识别关键词或重新推断角色特征。修改固定角色、赛道、限制、字幕或参考视频会使旧边界失效，页面要求重新运行工作流。
 

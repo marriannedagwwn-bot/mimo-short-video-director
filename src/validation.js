@@ -97,6 +97,10 @@ export const CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS = Object.freeze([
   "生活化或仪式化结尾"
 ]);
 
+// howToReuseSafely 必须先对"原片是否真的存在该构件"作出显式二选一判定，再谈怎么复用。
+// 缺少这一步时模型会把"新片可以怎么用"直接写成复用授权，等于替原片补出它没有的叙事构件。
+export const CREATIVE_BRIEF_COMPONENT_PRESENCE_MARKERS = Object.freeze(["【原片有】", "【原片没有】"]);
+
 export function requireAnimationPlanAspectRatio(value, path = "targetAspectRatio") {
   const normalized = String(value || "").trim();
   if (!ANIMATION_PLAN_ASPECT_RATIOS.includes(normalized)) {
@@ -2597,6 +2601,14 @@ function validateNarrativeComponents(components) {
     if (typeof item.howToReuseSafely !== "string" || !item.howToReuseSafely.trim()) {
       throw new OutputContractError(
         `creativeBrief.allowedNarrativeComponents[${index}].howToReuseSafely 必须填写非空评估`
+      );
+    }
+    const assessment = item.howToReuseSafely.trim();
+    if (!CREATIVE_BRIEF_COMPONENT_PRESENCE_MARKERS.some((marker) => assessment.startsWith(marker))) {
+      throw new OutputContractError(
+        `creativeBrief.allowedNarrativeComponents[${index}]（${item.component}）.howToReuseSafely `
+        + `必须以 ${CREATIVE_BRIEF_COMPONENT_PRESENCE_MARKERS.join(" 或 ")} 开头，`
+        + "先判定原片是否真的存在该构件，再说明如何复用或为何不采用。"
       );
     }
   });

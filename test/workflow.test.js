@@ -486,7 +486,7 @@ test("creativeBrief 使用服务端固定的七项叙事分类并要求每项非
   assert.doesNotThrow(() => ensureOutputContract(creativeBrief, "creativeBrief"));
 
   const notApplicable = structuredClone(creativeBrief);
-  notApplicable.allowedNarrativeComponents[0].howToReuseSafely = "本次不采用该构件；保留分类并说明限制。";
+  notApplicable.allowedNarrativeComponents[0].howToReuseSafely = "【原片没有】原片没有把物品送交他人的任务；本次不采用该构件，保留分类并说明限制。";
   assert.doesNotThrow(() => ensureOutputContract(notApplicable, "creativeBrief"));
 
   const reordered = structuredClone(creativeBrief);
