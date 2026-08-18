@@ -32,7 +32,9 @@ export const MINIMAX_H3_BASE_DIAGNOSTIC_CODES = Object.freeze({
   DIALOGUE_UNAUTHORIZED: "MINIMAX_H3_BASE_DIALOGUE_UNAUTHORIZED",
   DIALOGUE_COUNT_MISMATCH: "MINIMAX_H3_BASE_DIALOGUE_COUNT_MISMATCH",
   DIALOGUE_MISSING: "MINIMAX_H3_BASE_DIALOGUE_MISSING",
-  DIALOGUE_ORDER_MISMATCH: "MINIMAX_H3_BASE_DIALOGUE_ORDER_MISMATCH"
+  DIALOGUE_ORDER_MISMATCH: "MINIMAX_H3_BASE_DIALOGUE_ORDER_MISMATCH",
+  SPEAKER_ID_MISSING: "MINIMAX_H3_BASE_SPEAKER_ID_MISSING",
+  MUSIC_ABSTRACT_MOOD: "MINIMAX_H3_BASE_MUSIC_ABSTRACT_MOOD"
 });
 
 export class MiniMaxH3PromptError extends Error {
@@ -122,6 +124,16 @@ export function assertMiniMaxH3BasePrompt(text, {
     missingCode: MINIMAX_H3_BASE_DIAGNOSTIC_CODES.DIALOGUE_MISSING,
     orderCode: MINIMAX_H3_BASE_DIAGNOSTIC_CODES.DIALOGUE_ORDER_MISMATCH
   });
+  assertSpeakerIdsBound(
+    sections.integrated_multimodal_description,
+    `${path}.integrated_multimodal_description`,
+    promptPointer
+  );
+  assertNonDiegeticMusicIsSoundDesign(
+    sections.non_diegetic_music,
+    `${path}.non_diegetic_music`,
+    promptPointer
+  );
   return Object.freeze({
     prompt,
     sectionNames: MINIMAX_H3_BASE_SECTION_NAMES,
@@ -628,6 +640,66 @@ function assertNoConcretePictureUse(description, label, path) {
       `${path} 把普通图片 ${label} 当作具体关键帧、构图锚或逐帧复制来源。`
     );
   }
+}
+
+// 官方要求每个说话、唱歌或发出画外人声的主体使用稳定 ID (S1)/(S2)，同时发声用 (S1,S2)。
+// 实测六个带对白的镜头只有一个照做，而 Prompt 里已经写过这条——纯措辞压不住。
+// H3 靠这些 ID 分配音色：多角色镜头缺 ID 会让两个人说出同一个声音。
+// 判据取"同一 [Shot N] 段内、该 <d> 块之前出现过说话人 ID"，不按句子边界切，
+// 因为 <d> 正文里本身就含句号，按句切会误判。
+const MINIMAX_H3_SPEAKER_ID_PATTERN = /\(S\d+(?:\s*,\s*S\d+)*\)/u;
+
+function assertSpeakerIdsBound(description, path, promptPointer) {
+  const text = String(description || "");
+  if (!text.includes("<d>")) return;
+  const segments = text.split(/(?=\[Shot \d+\])/u);
+  segments.forEach((segment) => {
+    const shotLabel = (segment.match(/\[Shot \d+\]/u) || ["[Shot 1]"])[0];
+    let cursor = 0;
+    while (true) {
+      const index = segment.indexOf("<d>", cursor);
+      if (index < 0) break;
+      if (!MINIMAX_H3_SPEAKER_ID_PATTERN.test(segment.slice(0, index))) {
+        throwMiniMaxH3PromptError(
+          `${path} 中 ${shotLabel} 的 <d> 对白块之前缺少稳定说话人 ID。`
+          + "每个说话主体必须使用 (S1)、(S2) 这类稳定标识，同时发声用 (S1,S2)；"
+          + "识别短语、ID、动作与递送方式写在 <d> 外，H3 依赖它分配音色。",
+          {
+            code: MINIMAX_H3_BASE_DIAGNOSTIC_CODES.SPEAKER_ID_MISSING,
+            jsonPointer: promptPointer,
+            reason: `Dialogue block in ${shotLabel} is not preceded by a stable speaker ID.`,
+            expected: "(S1) / (S2) / (S1,S2)",
+            actual: segment.slice(Math.max(0, index - 60), index)
+          }
+        );
+      }
+      cursor = index + 3;
+    }
+  });
+}
+
+// 官方明写 non_diegetic_music 只描述乐器、速度、节奏与动态变化，
+// "do not use abstract mood words or explain the emotional function of the score"。
+// 词表只收无歧义的抽象情绪词，刻意不收 warm、bright、soft 这类合法音色描述。
+const MINIMAX_H3_ABSTRACT_MOOD_PATTERN =
+  /\b(?:atmosphere|atmospheric|mood|emotional|emotionally|emotion|emotions|feeling|feelings|healing|nostalgia|nostalgic|conveying|conveys|evoking|evokes)\b/giu;
+
+function assertNonDiegeticMusicIsSoundDesign(music, path, promptPointer) {
+  const text = String(music || "").trim();
+  if (!text || text === "N/A") return;
+  const hits = [...new Set((text.match(MINIMAX_H3_ABSTRACT_MOOD_PATTERN) || []).map((hit) => hit.toLowerCase()))];
+  if (!hits.length) return;
+  throwMiniMaxH3PromptError(
+    `${path} 使用了抽象情绪词：${hits.join("、")}。`
+    + "non_diegetic_music 只描述乐器、速度、节奏与动态变化，不得解释配乐的情绪功能。",
+    {
+      code: MINIMAX_H3_BASE_DIAGNOSTIC_CODES.MUSIC_ABSTRACT_MOOD,
+      jsonPointer: promptPointer,
+      reason: "non_diegetic_music must describe instrumentation, tempo, rhythm and dynamics only.",
+      expected: [],
+      actual: hits
+    }
+  );
 }
 
 function assertDialoguePreserved(prompt, dialogueTexts, path, diagnostic = null) {

@@ -383,7 +383,7 @@ test("所有 H3 Base 确定性失败族都携带稳定 code、Pointer、reason�
 
 test("局部 replacement 必须逐字保留签发对白", () => {
   const signedDialoguePrompt = validH3Prompt({
-    dialogue: "Xiaobaizi says, <d>[Chinese] 我把通知送到了。</d>."
+    dialogue: "Xiaobaizi (S1) says, <d>[Chinese] 我把通知送到了。</d>."
   }).split("\noverall_soundscape:")[0];
   const candidate = candidatePlan({
     dialogueOrSubtitle: "小白子：我把通知送到了。",
@@ -391,7 +391,7 @@ test("局部 replacement 必须逐字保留签发对白", () => {
   });
   const error = captureBasePromptError(candidate);
   const plan = planRepair(candidate, error);
-  const rewritten = validH3Prompt({ dialogue: "Xiaobaizi says, <d>[Chinese] 通知已经送达。</d>." });
+  const rewritten = validH3Prompt({ dialogue: "Xiaobaizi (S1) says, <d>[Chinese] 通知已经送达。</d>." });
 
   assert.throws(
     () => mergeRepair(candidate, envelope(plan, rewritten), plan),
@@ -401,7 +401,7 @@ test("局部 replacement 必须逐字保留签发对白", () => {
   assert.doesNotThrow(() => mergeRepair(
     candidate,
     envelope(plan, validH3Prompt({
-      dialogue: "Xiaobaizi says, <d>[Chinese] 我把通知送到了。</d>."
+      dialogue: "Xiaobaizi (S1) says, <d>[Chinese] 我把通知送到了。</d>."
     })),
     plan
   ));

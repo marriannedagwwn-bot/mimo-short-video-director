@@ -163,14 +163,14 @@ test("原对白必须逐字保存在 <d>[Chinese] ...</d>，对白提取保持�
   );
   assert.throws(
     () => assertMiniMaxH3BasePrompt(
-      BASE_PROMPT.replace(" [Shot 2]", " <d>[Chinese] 我是新增对白。</d> [Shot 2]"),
+      BASE_PROMPT.replace(" [Shot 2]", " Xiaobaizi (S1) says <d>[Chinese] 我是新增对白。</d> [Shot 2]"),
       { durationSeconds: 5, dialogueTexts: [] }
     ),
     /新增或改写了未签发对白/u
   );
   const repeatedDialoguePrompt = BASE_PROMPT.replace(
     " [Shot 2]",
-    " <d>[Chinese] 嗯。</d> <d>[Chinese] 嗯。</d> [Shot 2]"
+    " Xiaobaizi (S1) says <d>[Chinese] 嗯。</d> <d>[Chinese] 嗯。</d> [Shot 2]"
   );
   assert.doesNotThrow(() => assertMiniMaxH3BasePrompt(repeatedDialoguePrompt, {
     durationSeconds: 5,

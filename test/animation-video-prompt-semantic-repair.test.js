@@ -28,7 +28,7 @@ function h3Prompt(marker) {
   return [
     `integrated_multimodal_description: [Shot 1] Warm afternoon light fills the rural courtyard. Xiaobaizi completes the signed visible action and holds its final state while the camera follows the required sequence. ${marker}`,
     "overall_soundscape: Light footsteps, cloth movement, and the signed rural ambience remain synchronized with the visible action.",
-    "non_diegetic_music: A restrained acoustic cue follows the emotional arc and resolves after the visible action."
+    "non_diegetic_music: A restrained acoustic cue at a slow tempo that softens and resolves after the visible action."
   ].join("\n");
 }
 

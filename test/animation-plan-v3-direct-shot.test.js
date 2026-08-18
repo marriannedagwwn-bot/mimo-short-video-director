@@ -114,7 +114,7 @@ function miniMaxH3PromptForShot(shot) {
     .map((line, index) => `The signed speaker (S${index + 1}) says, <d>[Chinese] ${line}</d>.`)
     .join(" ");
   return `integrated_multimodal_description: [Shot 1] The signed character remains in the locked Animation Plan location with the authorized wardrobe and props, performs the complete planned action chain in its exact order, follows the specified camera sequence, and holds the stated visible final state. ${dialogue}`.trim()
-    + `\noverall_soundscape: The signed diegetic ambience, action sounds, and spoken lines remain synchronized with every visible action.\nnon_diegetic_music: A restrained instrumental cue follows the signed emotional progression and ends with the completed action.`;
+    + `\noverall_soundscape: The signed diegetic ambience, action sounds, and spoken lines remain synchronized with every visible action.\nnon_diegetic_music: A restrained instrumental cue at a slow tempo, joined by sustained low strings that fade out on the completed action.`;
 }
 
 function animationVideoPromptSemanticAuditPayload(prompt) {
