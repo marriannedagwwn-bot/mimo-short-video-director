@@ -95,6 +95,7 @@ Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主�
 - **Seedance**：`videoPrompt` 是一条自包含、可直接交给视频模型的中文自然语言完整提示词，按「Foundation 风格与物理光线 → 地点环境 → 出镜主体与已锁定外观 → `visibleAction` 顺序动作链与可见结果 → 内部摄影/剪辑顺序 → 节奏、对白和声音 → 稳定约束与停止条件」组织。
 - **MiniMax H3**：必须使用三个官方英文段名 `integrated_multimodal_description`、`overall_soundscape`、`non_diegetic_music`；每段名从**独立新行行首**开始，JSON 原文用 `\n` 转义分隔，禁止多个段名同行。叙述使用英文，仅 `<d>` 内逐字保留的原语言对白/歌词与英文双引号内的画面可见文字可用原语言。`dialogueOrSubtitle` 保持跨供应商共享的上游纯剧情对白，**不得**写 `<d>`、翻译或拉丁转写；去除说话人前缀后的中文原文只在 `integrated_multimodal_description` 中包装为 `<d>[Chinese] ...</d>`。`[Shot 1]` 不带时间戳，后续 `[Shot N] At MM:SS.mmm` 严格递增且小于 `durationSeconds`；`[Shot N]` 是同一 `A0x` 内部剪辑段，**不是新的业务 shot**。
 - Plan 阶段两种 Profile 都不得生成尚未绑定的 `@图片/@视频/@音频` 或 `<Subject/Picture/Video/Audio N>`。
+- H3 提示词必须使用官方受控词表，模型自由发挥英文措辞会显著降低成片可控性：运镜取 `Zoom In/Out`、`Push In`/`Pull Out`、`Pan`、`Truck`、`Tilt`、`Pedestal`、`Arc Shot`、`Tracking Shot`、`Static Shot`、`Shake`、`POV`、`Roll`，并按需附 `with small/large amplitude` 与 `at slow/fast speed`；切点动词取官方五项；`[Shot 1]` 开头须出现官方风格词（`Cinematic`、`live-action`、`2D-animated`、`3D CG`、`claymation`、`watercolor`、`vintage film`）。时间戳只属于 `[Shot N]` 切点标记，不得内联写入镜内叙述。禁止十六进制色号等设计工具记法。任何 `<d>` 块所在句必须带稳定说话人 ID，旁白用精确短语 `says in an off-screen voiceover` 并紧接说明嘴唇闭合，对白跨切用 `<scenetrans>`、被结尾截断用 `<cutoff>`。`non_diegetic_music` 只写乐器、速度、节奏与动态，严禁抽象情绪词与情绪功能解释。
 - H3 Prompt 契约固定到官方 `MiniMax-AI/MiniMax-H3` 仓库 commit `80365054c7fbaace01ed417076fecd532c1ae0e0` 的 `skills/h3-prompt-writing`。**不得自动跟随 HEAD**；升级必须同步改 `guideVersion`、文档、校验和测试。
 
 ### 2.5 切换镜头视频模型 / 切换画幅
