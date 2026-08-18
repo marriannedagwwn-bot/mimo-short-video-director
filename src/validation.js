@@ -1860,12 +1860,41 @@ function collectUpstreamText(value, sink = []) {
 }
 
 // 【原片有】只证明模型给出了判定，不证明判定为真——校验器此前从未见过原片。
-// 因此要求该分支用「」引出一段上游逐字原文，再回到上游核对它确实存在。
-// 编造出来的场景描述不可能逐字命中 sourceScriptReconstruction / referenceAnalysis。
-// 逐句而不是整串比对：上游常把同一件事写成几种措辞（"骑着自行车，车把上有一个企鹅玩偶"
-// 与"骑自行车，车把上有企鹅玩偶"），模型的引用往往是它们的混合，整串比对会因为少一个
-// "一个"就阻断整个阶段——而那件事在原片里确实发生过。分句后每一句仍必须逐字命中，
-// 编造的场景描述依旧无法通过。
+// 因此要求该分支用「」引出上游依据，再回到上游核对它确实发生过。
+//
+// 判据是字符覆盖率而不是逐字子串。Brief 阶段的模型正在做归纳，引用时必然转述：
+// 上游写"为睡着的企鹅装女孩盖上白色毯子"，模型会写成"给睡着的角色盖上白毯子"。
+// 逐字比对把这种忠实转述判成编造，实测每换一个参考视频都会阻断整个阶段。
+// 覆盖率对转述稳健，同时把复用真词汇拼出的编造挡在阈值之外（实测 0.54 对 0.80）。
+// 用最长公共子序列，字符级、语言无关，不做中文语法推断也不引入词典。
+const CITATION_COVERAGE_THRESHOLD = 0.75;
+
+function longestCommonSubsequenceLength(a, b) {
+  let previous = new Array(b.length + 1).fill(0);
+  let current = new Array(b.length + 1).fill(0);
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      current[j] = a[i - 1] === b[j - 1]
+        ? previous[j - 1] + 1
+        : Math.max(previous[j], current[j - 1]);
+    }
+    [previous, current] = [current, previous];
+    current.fill(0);
+  }
+  return previous[b.length];
+}
+
+function citationCoverage(clause, upstreamTexts) {
+  if (!clause) return 1;
+  let best = 0;
+  for (const text of upstreamTexts) {
+    if (text.includes(clause)) return 1;
+    best = Math.max(best, longestCommonSubsequenceLength(clause, text) / clause.length);
+    if (best >= 1) break;
+  }
+  return best;
+}
+
 function citationClauses(value) {
   return String(value)
     .split(/[、,，;；。．.!！?？:：]/u)
@@ -1890,11 +1919,14 @@ function validateNarrativeComponentCitations(components, upstream) {
       );
     }
     const missing = citations.flatMap((citation) => citationClauses(citation)
-      .filter((clause) => !upstreamTexts.some((text) => text.includes(clause))));
+      .map((clause) => ({ clause, coverage: citationCoverage(clause, upstreamTexts) }))
+      .filter((entry) => entry.coverage < CITATION_COVERAGE_THRESHOLD));
     if (missing.length) {
       throw new OutputContractError(
-        `${path} 引用的原文在上游并不存在：${missing.map((entry) => `「${entry}」`).join("、")}。`
-        + "存在性判定只能引用原片确实发生过的内容，不得为原片补出它没有的叙事构件。"
+        `${path} 引用的内容在上游找不到对应事实：`
+        + `${missing.map((entry) => `「${entry.clause}」（覆盖率 ${entry.coverage.toFixed(2)}）`).join("、")}。`
+        + "存在性判定只能引用原片确实发生过的内容，不得为原片补出它没有的叙事构件；"
+        + "允许转述，但必须能在 referenceAnalysis 或 sourceScriptReconstruction 中找到对应原文。"
       );
     }
   });

@@ -45,7 +45,7 @@ test("【原片有】编造上游并不存在的原文必须失败", () => {
       upstream
     ),
     (error) => error instanceof OutputContractError
-      && /引用的原文在上游并不存在/u.test(error.message)
+      && /在上游找不到对应事实/u.test(error.message)
   );
 });
 
@@ -116,7 +116,7 @@ test("分句放宽后，编造的场景仍然拒绝", () => {
       creatorProfile,
       realUpstream
     ),
-    (error) => error instanceof OutputContractError && /引用的原文在上游并不存在/u.test(error.message)
+    (error) => error instanceof OutputContractError && /在上游找不到对应事实/u.test(error.message)
   );
 });
 
@@ -142,5 +142,59 @@ test("跨字段粘连不构成命中", () => {
       split
     ),
     OutputContractError
+  );
+});
+
+// 第二例真实回放：模型对一件真实发生过的事做了忠实转述——上游写"为睡着的企鹅装
+// 女孩盖上白色毯子"，模型写成"给睡着的角色盖上白毯子"。该引用不含标点，分句后
+// 仍是整串，逐字比对必然落空，于是每换一个参考视频都会阻断 Brief 阶段。
+const blanketUpstream = Object.freeze({
+  referenceAnalysis: {
+    storySynopsis: "三位不同发色的女孩陆续出现，默默为她盖上毯子、捡回被风吹走的包、放上橘子。",
+    observedFacts: [
+      "金发戴帽女孩出现，为睡着的企鹅装女孩盖上白色毯子",
+      "00:26-00:36 出现，为咕嘎盖上白毯子"
+    ]
+  },
+  sourceScriptReconstruction: {
+    scenes: [{ visibleActions: ["金发女孩靠近摇椅，展开毯子盖在熟睡者身上，动作轻柔", "拿出白色毯子"] }]
+  }
+});
+
+function blanketBrief(assessment) {
+  const brief = mockBrief({ creatorProfile, ...upstream });
+  brief.allowedNarrativeComponents.forEach((item, index) => {
+    item.howToReuseSafely = index === 2 ? assessment : "【原片没有】本组用例不评估该构件。";
+  });
+  return brief;
+}
+
+test("回放：无标点的忠实转述不应阻断阶段", () => {
+  assert.doesNotThrow(() => ensureCreativeBriefMatchesProfile(
+    blanketBrief("【原片有】「金发女孩给睡着的角色盖上白毯子」。保留物件承载情绪的功能，改写物件与场合。"),
+    creatorProfile,
+    blanketUpstream
+  ));
+});
+
+test("覆盖率放宽后，复用真词汇的编造仍然拒绝", () => {
+  assert.throws(
+    () => ensureCreativeBriefMatchesProfile(
+      blanketBrief("【原片有】「金发女孩把白毯子卖给了邻居换回一袋橘子」。"),
+      creatorProfile,
+      blanketUpstream
+    ),
+    (error) => error instanceof OutputContractError && /在上游找不到对应事实/u.test(error.message)
+  );
+});
+
+test("报错带上覆盖率，便于判断是转述还是编造", () => {
+  assert.throws(
+    () => ensureCreativeBriefMatchesProfile(
+      blanketBrief("【原片有】「主角在便利店买了一把雨伞」。"),
+      creatorProfile,
+      blanketUpstream
+    ),
+    (error) => /覆盖率 0\.\d\d/u.test(error.message)
   );
 });
