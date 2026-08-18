@@ -2128,9 +2128,11 @@ export function ensureAnimationPlanMatchesProfile(value, creatorProfile = {}, cr
     }));
   }
   const boundaryForbiddenTerms = collectGlobalCharacterForbiddenTerms(visualGuardrails);
+  // 角色参考提示词里"无翅膀、无鸟喙、无企鹅服装"是给图像模型的否定约束，是正确写法。
+  // 与 protagonist 规则字段一致放行否定语境，否则模型写对了反而被判成使用了禁止特征。
   const referenceHits = fixedReferenceIndex === null
     ? []
-    : findFieldTermHits(fixedReferenceFields, boundaryForbiddenTerms);
+    : findFieldTermHits(fixedReferenceFields, boundaryForbiddenTerms, { allowNegativeContext: true });
   if (referenceHits.length) {
     mismatches.push(`固定角色参考提示词使用了签发禁止特征：${formatFieldTermHits(referenceHits)}`);
     referenceHits.forEach((hit) => {

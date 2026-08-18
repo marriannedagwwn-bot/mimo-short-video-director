@@ -523,9 +523,27 @@ function assertConsistencyTagsRepair(before, after, forbiddenTerms, allowedTagAd
   }
 }
 
+// 剥离禁止词时必须连同紧邻的否定词一起剥掉。只删"企鹅服装"会把"无"留成孤儿，
+// 于是 skeleton 要求正文保留"无、无、无"这种病句——合法的最小删除永远对不上，
+// 模型无论怎么改都过不去。否定词表与 validation.js 的 isNegatedTermOccurrence 保持一致。
+const REPAIR_NEGATION_PREFIX = "(?:不要|禁止|避免|不得|不能|不可|勿|严禁|不应|不允许|切勿|杜绝|无|没有|不含|不带|非)"
+  + "(?:出现|使用|写入|新增|添加|加入|带有|拥有|包含|有)?";
+
+function escapeRepairRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
 function referenceRepairSkeleton(value, removableTerms) {
   let normalized = String(value || "");
-  for (const term of removableTerms) normalized = normalized.split(term).join("");
+  // 长词优先，避免"企鹅服"先命中而在"企鹅服装"里留下残字。
+  const ordered = [...removableTerms].sort((a, b) => String(b).length - String(a).length);
+  for (const term of ordered) {
+    if (!term) continue;
+    normalized = normalized.replace(
+      new RegExp(`(?:${REPAIR_NEGATION_PREFIX})?\\s*${escapeRepairRegExp(term)}`, "gu"),
+      ""
+    );
+  }
   return normalized
     .replace(/[\s，,。；;、:：|/\\()[\]{}"“”'‘’+\-]/gu, "")
     .replace(/[且并及与和]/gu, "");
