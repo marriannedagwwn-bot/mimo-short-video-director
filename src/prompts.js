@@ -1199,6 +1199,7 @@ Full Story 的 shotAndSound/shootingNotes 只能提供摄影与声音建议，�
 不得因为同义翻译、语法位置、没有重复已表达动作、或未额外写上一段的结束时间而判 fail。例如：
 - “entire golden wheat field” 可以表达“金色麦田全景”。
 - [Shot 2] At 00:03.000 已自然界定 [Shot 1] 的结束，不需另写 end time。
+- [Shot 1] 是 MiniMax H3 官方规定的强制起始标记，每条 videoPrompt 都必须以它开头，单镜头、Static Shot 也不例外；它不表示多镜头结构，更不构成 camera_beat_changed_or_reordered。只有出现 [Shot 2] 及以后的编号时，才存在镜内切分可供判断。
 - “clearing sky with remaining clouds” 与“雨后逐渐转晴”兼容。
 - 已出现的 actor/action/object/order/result 不得因为没有在另一句重复而判缺失。
 - Full Story 泛称道具时，Foundation assetPrompts 已锁定的颜色、材质和纹理是合法视觉细化。
