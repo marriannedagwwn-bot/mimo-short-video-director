@@ -68,9 +68,31 @@ test("H3 提示词要求说话人 ID、旁白短语与跨切标记", () => {
   assert.ok(prompt.includes("<cutoff>"));
 });
 
-test("H3 提示词逐字列出被禁的抽象情绪词", () => {
+// 说话人 ID 是补词表之后最大的失败源：61 镜里 17 次因缺 ID 失败，占全部失败的 59%。
+// 原提示词只说"必须带稳定 ID"却不给位置，模型的自然写法 She says <d>…</d> 无处安放它。
+// 官方句式是 ID 跟在身份短语之后、动词之前，因此改为给出可照抄的模板与两条官方范例。
+test("说话人 ID 给出官方位置模板而不只是要求带 ID", () => {
   const prompt = h3Prompt();
-  for (const word of ["healing", "atmosphere", "emotional", "tender", "conveying"]) {
-    assert.ok(prompt.includes(word), `缺少被禁情绪词示例：${word}`);
+  assert.match(prompt, /<身份短语> \(S1\) says: <d>/u, "应给出可照抄的位置模板");
+  assert.ok(
+    prompt.includes("The young woman with a quiet, breathy voice (S1) says:"),
+    "应附官方单人范例"
+  );
+  assert.ok(
+    prompt.includes("The two children (S1,S2) shout together,"),
+    "应附官方同时发声范例"
+  );
+  assert.match(prompt, /不要写成 She says \(S1\)/u, "应点名模型实际写错的形式");
+});
+
+// 原本这条断言 Prompt 里逐字列出 healing/atmosphere/emotional 等禁词。
+// 实测该写法无效且可能有害：把禁词写出来反而提高它们的出现概率（否定式指令天生弱）。
+// 已改为正向模板——只允许四类可听要素，并给出可直接执行的范例。
+test("non_diegetic_music 采用正向模板而不是禁词黑名单", () => {
+  const prompt = h3Prompt();
+  assert.match(prompt, /乐器与音色、速度、节奏型、音量或织体的动态变化/u);
+  assert.ok(prompt.includes("A single nylon-string guitar figure at a moderate tempo"), "应给出可执行范例");
+  for (const word of ["healing", "atmosphere", "tender", "conveying"]) {
+    assert.ok(!prompt.includes(word), `不应再把禁词 ${word} 写进提示词`);
   }
 });

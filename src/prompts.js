@@ -1339,9 +1339,12 @@ function directShotVideoPromptRules(profile = {}) {
 - [Shot 1] 开头必须先给出整体视觉风格与初始构图，风格词从官方集合中选取并逐字使用：Cinematic、live-action、2D-animated、3D CG、claymation、watercolor、vintage film；可在其后补充 foundation 的具体风格描述，但官方风格词本身必须出现。
 - 时间戳只属于分镜切点标记 [Shot N] At MM:SS.mmm，绝不能作为内联时间写进镜内叙述。同一业务 shot 若不切分镜，整段不出现任何 At MM:SS.mmm。
 - 禁止写入十六进制色号（如 #FF8C42）、RGB 数值、Pantone 编号或任何设计工具记法。H3 是视频模型不是配色工具，颜色只能用自然英文描述，例如 warm orange sky、soft purple-pink gradient。
-- 任何 <d> 对白块所在句子中，说话人必须带稳定 ID：单人用 (S1)、(S2)，同时发声用 (S1,S2)。说话人的识别短语、ID、动作与递送方式一律写在 <d> 外，<d> 内只保留语言标签与逐字原文。说话人首次出现时补足可稳定识别的身份信息（角色类型、年龄段、性别、是否在画面内、音高、音色、语速或口音）。旁白必须使用精确短语 says in an off-screen voiceover，并在该 <d> 块之后紧接说明对应角色嘴唇保持闭合。同一句对白或歌词跨越硬切时，在两侧连接处使用 <scenetrans> 并明写音频跨切延续；被视频结尾截断时使用 <cutoff>。
+- 每个 <d> 对白块都必须按官方句式书写，ID 紧跟在说话人的身份短语之后、动词之前：
+  <身份短语> (S1) says: <d>[Chinese] 原文</d> <递送方式或后续动作>
+官方范例逐字照抄其结构：The young woman with a quiet, breathy voice (S1) says: <d>[English] I get off at the next station.</d> ／ The two children (S1,S2) shout together, <d>[English] Wait for us!</d>
+不要写成 She says (S1) <d>…</d> 或 She (S1) says <d>…</d> 这类把 ID 硬插进主谓之间的形式；先写出这个人是谁（角色类型、年龄段、性别、是否在画面内、音色或语速等可稳定识别的信息），再接 ID，再接动词。同一说话人在全片沿用同一编号，同时发声用 (S1,S2)。<d> 内只保留语言标签与逐字原文，身份短语、ID、动作与递送方式一律在 <d> 外。旁白必须使用精确短语 says in an off-screen voiceover，并在该 <d> 块之后紧接说明对应角色嘴唇保持闭合。同一句对白或歌词跨越硬切时，在两侧连接处使用 <scenetrans> 并明写音频跨切延续；被视频结尾截断时使用 <cutoff>。
 - 画面中实际可见的招牌、标语、字幕或霓虹文字放进英文双引号内逐字保留，不翻译，例如 A red neon sign reading "营业中" glows above the doorway.
-- overall_soundscape 用 1–4 句完整英文句子写成一个连续段落，只写环境声、物理动作声与非语言人声，不重复对白或音乐；只有用户明确要求全片静音时才写 N/A。non_diegetic_music 用 1–3 句英文写观众可闻配乐的乐器、速度、节奏与动态变化；没有配乐写 N/A。严禁出现抽象情绪词或解释配乐的情绪功能：healing、atmosphere、mood、emotional、tender、warmth、conveying、evoking、establishing a ... feeling 等一律不得使用。正例：Sparse piano notes at a slow tempo, joined by sustained low strings that gradually increase in volume before fading out. 反例：A warm acoustic melody establishing a peaceful healing atmosphere.
+- overall_soundscape 用 1–4 句完整英文句子写成一个连续段落，只写环境声、物理动作声与非语言人声，不重复对白或音乐；只有用户明确要求全片静音时才写 N/A。non_diegetic_music 用 1–3 句英文，且**只能**由四类可听要素构成：乐器与音色、速度、节奏型、音量或织体的动态变化；没有配乐写 N/A。每一句都必须能被录音师直接执行。按「乐器 + 速度 + 进入或退出方式」组织，例如：Sparse piano notes at a slow tempo, joined by sustained low strings that gradually increase in volume before fading out. / A single nylon-string guitar figure at a moderate tempo, thinning to one held note at the end. 凡是描述听者感受、场景气氛或配乐用途的词都不属于这四类，写进去即视为未完成本字段。
 - videoPrompt 必须与 cameraMotion、characterAction、dialogueOrSubtitle、soundDesign、continuityNotes 逐项一致，且必须在 ${profile.model || "MiniMax-H3"} 的 4–15 秒硬时长内可执行；本项目首次 H3 Plan 只允许 4–6 秒整数。不得重新创作剧情或用供应商格式改变其他 shot 字段。`;
   }
   return `- videoPrompt 是该镜头唯一完整渲染主指令，必须写成一条自包含、可直接交给 Seedance 2.0 的中文自然语言提示词，不得写成字段清单、JSON 片段，也不得生成尚未绑定的 @图片、@视频或 @音频编号。按以下顺序组织并自然衔接：①沿用 foundation 的视觉风格、物理光线与时段；②地点、前中后景和关键环境；③本场实际出镜主体及已锁定外观；④严格依照 visibleAction 的顺序动作链与可见结果；⑤服务动作的内部摄影/剪辑顺序；⑥表演节奏、对白、环境声、动作声与音乐关系；⑦本镜头直接相关的角色/服装/道具/场景稳定约束和停止条件。
