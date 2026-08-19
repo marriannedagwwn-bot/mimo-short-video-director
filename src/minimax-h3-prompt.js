@@ -300,6 +300,55 @@ export function miniMaxH3DialogueTexts(dialogueOrSubtitle = "") {
   return candidates;
 }
 
+// miniMaxH3DialogueTexts 会剥掉说话人前缀，多说话人镜头因此失去 (S1)/(S2) 的分配依据。
+// 局部纠错必须由服务端按首次发声顺序指派 ID，不能让模型自选，否则两个角色可能共用一个音色。
+export function miniMaxH3DialogueEntries(dialogueOrSubtitle = "") {
+  const text = String(dialogueOrSubtitle || "").trim();
+  if (!text) return [];
+  if (/<\/?d\b[^>]*>/iu.test(text)) {
+    throw new MiniMaxH3PromptError(
+      "dialogueOrSubtitle 必须保持跨供应商共享的纯剧情对白；<d>[Language] ...</d> 只允许出现在 MiniMax H3 videoPrompt 中。"
+    );
+  }
+  const speakerOrder = [];
+  return text
+    .split(/[；;\n]+/u)
+    .map((item) => {
+      const raw = item.trim();
+      if (!raw) return null;
+      const match = raw.match(/^\s*([^：:]{1,40})[：:]\s*(.*)$/u);
+      const speaker = match ? match[1].trim() : "";
+      const utterance = (match ? match[2] : raw).trim();
+      if (!utterance) return null;
+      if (speaker && !speakerOrder.includes(speaker)) speakerOrder.push(speaker);
+      return { speaker, text: utterance };
+    })
+    .filter(Boolean)
+    .map((entry) => ({
+      ...entry,
+      speakerId: entry.speaker ? `(S${speakerOrder.indexOf(entry.speaker) + 1})` : "(S1)"
+    }));
+}
+
+// 按句切分，切分前把 <d>...</d> 整体遮罩成等长占位，避免对白正文里的句号切错。
+// 时间戳 00:03.000 与 2.5D 这类小数点后面不是空白，天然不会被当作句末。
+export function splitMiniMaxH3Sentences(value) {
+  const text = String(value || "");
+  const masked = text.replace(/<d>[\s\S]*?<\/d>/gu, (block) => "\u0000".repeat(block.length));
+  const sentences = [];
+  let start = 0;
+  const boundary = /[.!?。！？](?=\s|$)/gu;
+  let match;
+  while ((match = boundary.exec(masked))) {
+    const piece = text.slice(start, match.index + 1).trim();
+    if (piece) sentences.push(piece);
+    start = match.index + 1;
+  }
+  const tail = text.slice(start).trim();
+  if (tail) sentences.push(tail);
+  return sentences;
+}
+
 export function buildMiniMaxH3ContextIrIntent({
   sourcePrompt,
   artifacts = [],

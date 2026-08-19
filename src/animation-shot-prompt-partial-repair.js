@@ -12,7 +12,9 @@ import {
   MINIMAX_H3_BASE_DIAGNOSTIC_CODES,
   MiniMaxH3PromptError,
   assertMiniMaxH3BasePrompt,
-  miniMaxH3DialogueTexts
+  miniMaxH3DialogueEntries,
+  miniMaxH3DialogueTexts,
+  splitMiniMaxH3Sentences
 } from "./minimax-h3-prompt.js";
 import {
   OutputContractError,
@@ -39,6 +41,17 @@ const repairableCodes = new Set([
   MINIMAX_H3_BASE_DIAGNOSTIC_CODES.DIALOGUE_UNAUTHORIZED,
   MINIMAX_H3_BASE_DIAGNOSTIC_CODES.DIALOGUE_COUNT_MISMATCH,
   MINIMAX_H3_BASE_DIAGNOSTIC_CODES.DIALOGUE_MISSING,
+  MINIMAX_H3_BASE_DIAGNOSTIC_CODES.DIALOGUE_ORDER_MISMATCH,
+  MINIMAX_H3_BASE_DIAGNOSTIC_CODES.SPEAKER_ID_MISSING,
+  MINIMAX_H3_BASE_DIAGNOSTIC_CODES.MUSIC_ABSTRACT_MOOD
+]);
+
+// 只有"签发对白存在、但 <d> 块数量不足"这一种情形，才允许在 integrated 正文内插入对白。
+// 其余对白类诊断（改写、越权、顺序错）都可能牵动既有正文，仍旧 fail closed。
+const dialogueInsertionCodes = new Set([
+  MINIMAX_H3_BASE_DIAGNOSTIC_CODES.DIALOGUE_COUNT_MISMATCH,
+  MINIMAX_H3_BASE_DIAGNOSTIC_CODES.DIALOGUE_MISSING,
+  MINIMAX_H3_BASE_DIAGNOSTIC_CODES.SPEAKER_ID_MISSING,
   MINIMAX_H3_BASE_DIAGNOSTIC_CODES.DIALOGUE_ORDER_MISMATCH
 ]);
 
@@ -86,17 +99,59 @@ export const animationShotPromptPartialRepairAdapter = Object.freeze({
 
       const path = `/shotPlan/${shotIndex}/videoPrompt`;
       const candidateShotFacts = omitKey(shot, "videoPrompt");
+      const dialogueTexts = miniMaxH3DialogueTexts(shot.dialogueOrSubtitle);
       const preservedSections = preservableCurrentSections(
         shot.videoPrompt,
         targetDiagnostics,
         shot.durationSeconds,
-        miniMaxH3DialogueTexts(shot.dialogueOrSubtitle)
+        dialogueTexts
       );
       // A prompt-only repair may never receive authority to rewrite the
       // visual/action story body. If the existing integrated section cannot
       // independently pass the deterministic H3 checks, this diagnostic is
       // not safely repairable by the local adapter and must fail closed.
-      if (!preservedSections.integrated_multimodal_description) return null;
+      //
+      // 唯一例外：正文结构本身完好，只是漏写了签发对白的 <d> 块。实测这一种占
+      // 全部带对白镜头的 53%，且已解析候选按契约不得整批重写，否则毫无恢复路径。
+      // 此时不冻结整段，改为句级冻结 —— 只允许在原有句子内插入对白，其余逐字不变。
+      let dialogueInsertion = null;
+      if (!preservedSections.integrated_multimodal_description) {
+        const currentBlocks = (String(shot.videoPrompt || "").match(/<d>/gu) || []).length;
+        const insertionOnly = targetDiagnostics.every(
+          (detail) => dialogueInsertionCodes.has(String(detail.code || ""))
+        );
+        // 两种可修形态各用一个探针确认"正文除对白/说话人外结构完好"：
+        //   缺 <d>          → 把对白约束摘掉再验；
+        //   <d> 齐全缺 ID   → 临时注入 (S1) 再验。
+        // 探针只用于判定，冻结句子仍取自原文。
+        // 顺序错时按 prompt 的实际顺序做探针，同时注入 (S1) 顺带覆盖缺 ID 的情形。
+        // 但必须先确认两边是同一组对白（多重集相等），否则那是改写内容而不是换顺序。
+        const promptBodies = h3DialogueBodies(shot.videoPrompt);
+        const sameUtterances = promptBodies.length === dialogueTexts.length
+          && [...promptBodies].sort().join("\u0000") === [...dialogueTexts].sort().join("\u0000");
+        if (currentBlocks === dialogueTexts.length && !sameUtterances) return null;
+        const probe = currentBlocks < dialogueTexts.length
+          ? { prompt: shot.videoPrompt, texts: [] }
+          : { prompt: String(shot.videoPrompt || "").replace(/<d>/gu, "(S1) <d>"), texts: promptBodies };
+        const structural = preservableCurrentSections(
+          probe.prompt,
+          targetDiagnostics,
+          shot.durationSeconds,
+          probe.texts
+        );
+        if (!structural.integrated_multimodal_description
+          || !insertionOnly
+          || !dialogueTexts.length
+          || currentBlocks > dialogueTexts.length) {
+          return null;
+        }
+        const entries = miniMaxH3DialogueEntries(shot.dialogueOrSubtitle);
+        dialogueInsertion = {
+          frozenSentences: splitMiniMaxH3Sentences(h3IntegratedBody(shot.videoPrompt)),
+          allowedSpeakerIds: [...new Set(entries.map((entry) => entry.speakerId))],
+          utterances: entries.map((entry) => ({ speakerId: entry.speakerId, text: entry.text }))
+        };
+      }
       return {
         path,
         targetLabel: `${String(shot.shotId || `shotPlan[${shotIndex}]`)} videoPrompt`,
@@ -118,20 +173,25 @@ export const animationShotPromptPartialRepairAdapter = Object.freeze({
           ...(Object.keys(preservedSections).length
             ? ["Keep every modelContext.preservedSections body byte-for-byte after trimming; only add or repair the other required sections."]
             : []),
+          ...(dialogueInsertion
+            ? ["This target only needs its signed dialogue restored. For each modelContext.dialogueInsertion.utterances entry, write the official sentence form inside the sentence where that character vocalizes: <identity phrase> (S1) says: <d>[Chinese] text</d>. The speaker ID belongs OUTSIDE the tags — never write (S1) inside <d>...</d>. The content between <d>[Chinese] and </d> must equal utterances[].text verbatim with nothing added or removed. Every other sentence of integrated_multimodal_description must stay byte-for-byte identical, the sentence count must not change, and only IDs listed in modelContext.dialogueInsertion.allowedSpeakerIds may appear."]
+            : []),
           "Do not change duration or add Plan-stage reference labels."
         ].join(" "),
         modelContext: {
           authoritativeSourceScene,
           candidateShotFacts,
           preservedSections,
+          ...(dialogueInsertion ? { dialogueInsertion } : {}),
           foundationLocks: buildFoundationLocks(candidate, shot, candidateShotFacts)
         },
         adapterState: {
           shotIndex,
           shotId: String(shot.shotId || ""),
           durationSeconds: shot.durationSeconds,
-          dialogueTexts: miniMaxH3DialogueTexts(shot.dialogueOrSubtitle),
-          preservedSections
+          dialogueTexts,
+          preservedSections,
+          dialogueInsertion
         }
       };
     });
@@ -163,6 +223,7 @@ export const animationShotPromptPartialRepairAdapter = Object.freeze({
           );
         }
       }
+      assertDialogueInsertionOnly(target, parsed);
     } catch (error) {
       if (error instanceof MiniMaxH3PromptError) {
         throw new OutputContractError(error.message, error.details);
@@ -223,6 +284,64 @@ export function mergeAnimationShotPromptPartialRepair(
     adapter: animationShotPromptPartialRepairAdapter,
     context: { repairAttemptCount: 0, fullStory, visualGuardrails }
   });
+}
+
+// 只缺对白时 integrated 整段没被冻结，改由句级冻结兜底：句数不得变化，
+// 发生变化的句子数不得超过签发对白条数，且每条变化必须确实是为了插入对白
+// （含 <d>，且只能使用服务端指派的说话人 ID）。其余句子逐字不变，
+// 模型无法借"补对白"之名改写可见动作、道具或摄影描述。
+function h3DialogueBodies(videoPrompt) {
+  return [...String(videoPrompt || "").matchAll(/<d>\[[^\]]*\]\s*([\s\S]*?)<\/d>/gu)]
+    .map((match) => match[1].trim())
+    .filter(Boolean);
+}
+
+function h3IntegratedBody(videoPrompt) {
+  const match = String(videoPrompt || "").match(
+    /^integrated_multimodal_description:[ \t]*([\s\S]*?)(?=\n(?:overall_soundscape|non_diegetic_music):|$)/mu
+  );
+  return match ? match[1].trim() : "";
+}
+
+function assertDialogueInsertionOnly(target, parsed) {
+  const insertion = target.adapterState?.dialogueInsertion;
+  if (!insertion) return;
+  const before = insertion.frozenSentences || [];
+  const after = splitMiniMaxH3Sentences(parsed.sections?.integrated_multimodal_description);
+  if (after.length !== before.length) {
+    throw new OutputContractError(
+      `H3 对白补写不得增删 integrated_multimodal_description 的句子：原 ${before.length} 句，现 ${after.length} 句`
+    );
+  }
+  const changed = [];
+  after.forEach((sentence, index) => {
+    if (sentence !== before[index]) changed.push(index);
+  });
+  if (!changed.length) {
+    throw new OutputContractError("H3 对白补写未在任何句子中插入 <d> 对白块");
+  }
+  const allowedChanges = (insertion.utterances || []).length;
+  if (changed.length > allowedChanges) {
+    throw new OutputContractError(
+      `H3 对白补写最多允许 ${allowedChanges} 个句子发生变化，当前 ${changed.length} 个`
+    );
+  }
+  const allowed = new Set(insertion.allowedSpeakerIds || []);
+  for (const index of changed) {
+    const sentence = after[index];
+    if (!sentence.includes("<d>")) {
+      throw new OutputContractError(
+        `H3 对白补写改写了与对白无关的句子：${before[index]}`
+      );
+    }
+    for (const speakerId of sentence.match(/\(S\d+(?:\s*,\s*S\d+)*\)/gu) || []) {
+      if (!allowed.has(speakerId)) {
+        throw new OutputContractError(
+          `H3 对白补写使用了未指派的说话人 ID ${speakerId}；服务端指派为 ${[...allowed].join("、")}`
+        );
+      }
+    }
+  }
 }
 
 function buildH3RepairAuthority(candidate, targets, context) {
