@@ -15,3 +15,7 @@ runtime/production-runs/
 测试文件/*.MOV
 测试文件/*.rtf
 测试文件/*.RTF
+
+# Local Codex VPN tooling; never commit.
+.codex-ufi-vpn-manager/
+.codex-ufi-vpn-module/
