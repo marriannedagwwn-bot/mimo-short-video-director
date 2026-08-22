@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { parseModelPrices } from "./token-usage.js";
 
 export function loadEnv(file = path.resolve(".env")) {
   if (!fs.existsSync(file)) return;
@@ -118,9 +119,18 @@ export function getConfig() {
   const jimengApiKey = process.env.JIMENG_API_KEY?.trim() || process.env.ARK_API_KEY?.trim() || process.env.VOLCENGINE_ARK_API_KEY?.trim() || "";
   const jimengMaxImages = Math.round(clampNumber(process.env.JIMENG_MAX_IMAGES, 6, 1, 15));
   const jimengTimeoutMs = Math.round(clampNumber(process.env.JIMENG_TIMEOUT_MS, 300000, 30000, 900000));
+  // 单价由用户在 .env 里按模型 ID 配置；没配的模型只报 token，不报金额。
+  // 单条格式错误只跳过该条并告警，不因为一个笔误拖垮启动。
+  const { prices: modelPrices, invalid: invalidModelPrices } = parseModelPrices(
+    process.env.MODEL_PRICE_CNY_PER_MILLION
+  );
+  if (invalidModelPrices.length) {
+    console.warn(`MODEL_PRICE_CNY_PER_MILLION 有 ${invalidModelPrices.length} 条无法解析，已跳过：${invalidModelPrices.join("、")}`);
+  }
   return {
     port: Number(process.env.PORT || 4173),
     serverRequestTimeoutMs,
+    modelPrices,
     workflowRuntime: {
       environment: workflowRuntimeEnvironment,
       signaturePolicy: workflowSignaturePolicy,

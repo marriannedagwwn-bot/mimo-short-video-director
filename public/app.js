@@ -1,4 +1,5 @@
 import { syncShotCharacterReference } from "./character-reference-sync.js";
+import { formatStageUsageSuffix, mergeStageUsage } from "./token-usage-format.js";
 import { compileShotNegativePrompt } from "./negative-prompts.js";
 import { buildShotFrameImagePrompt, compileShotFrameNegativePrompt } from "./shot-frame-prompt.js";
 import {
@@ -130,6 +131,7 @@ const elements = {
   frames: $("#frames"), frameStatus: $("#frameStatus"), replace: $("#replaceVideo"), transcript: $("#transcript"),
   fixedCharacter: $("#fixedCharacter"), vertical: $("#vertical"), constraints: $("#constraints"), variantCount: $("#variantCount"),
   run: $("#runWorkflow"), error: $("#errorMessage"), modelState: $("#modelState"),
+  pipelineUsage: $("#pipelineUsage"),
   openModelSettings: $("#openModelSettings"), modelSettingsModal: $("#modelSettingsModal"), closeModelSettings: $("#closeModelSettings"),
   modelStageList: $("#modelStageList"), resetModelSettings: $("#resetModelSettings"), saveModelSettings: $("#saveModelSettings"),
   modelSettingsStatus: $("#modelSettingsStatus"),
@@ -572,6 +574,8 @@ async function runWorkflow() {
   const creatorProfile = profile();
   if (state.frames.length < 3 || !creatorProfile.fixedCharacter || !creatorProfile.vertical) return showError("请先上传视频，并填写固定角色和垂直赛道。 ");
   state.running = true;
+  beginStageUsage();
+  elements.pipelineUsage.textContent = "";
   state.output = {};
   state.characterBoundaryProfile = null;
   state.fullStories = {};
@@ -679,6 +683,11 @@ async function runWorkflow() {
     });
     renderVariants(state.output.themeVariants);
     setStage("variants", "done");
+    const pipelineUsage = endStageUsage();
+    elements.pipelineUsage.textContent = pipelineUsage
+      ? `AI 导演阶段完成${formatStageUsageSuffix(pipelineUsage)}`
+      : "";
+    elements.pipelineUsage.className = "story-status ready";
     elements.export.classList.remove("hidden");
     elements.variants.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
@@ -686,6 +695,7 @@ async function runWorkflow() {
     if (active) setStage(active.dataset.stage, "error");
     showError(error.message || "工作流执行失败");
   } finally {
+    endStageUsage();
     state.running = false;
     setRunning(false);
     validateReady();
@@ -847,6 +857,20 @@ function assertActiveProductionRun() {
   }
 }
 
+// 一个「阶段」= 用户点一次按钮触发的整个操作。启动 AI 导演是 5 个后端请求，
+// 剧情和镜头各 1 个但内部有多次模型调用。这里按阶段收集每个响应带回的 usage。
+let stageUsageEntries = null;
+
+function beginStageUsage() {
+  stageUsageEntries = [];
+}
+
+function endStageUsage() {
+  const entries = stageUsageEntries;
+  stageUsageEntries = null;
+  return mergeStageUsage(entries || []);
+}
+
 async function api(path, body, { productionToken = null } = {}) {
   const response = await fetch(path, {
     method: "POST",
@@ -860,6 +884,8 @@ async function api(path, body, { productionToken = null } = {}) {
   if (!response.ok || !data.ok) {
     throw createApiRequestError(data, response.status, `请求失败（${response.status}）`);
   }
+  // 纯旁路：没有 usage 的请求（簿记类）不会进合计，也不影响返回值。
+  if (stageUsageEntries && data.usage) stageUsageEntries.push(data.usage);
   return data.result;
 }
 
@@ -1234,6 +1260,7 @@ async function generateFullStory({ force = false } = {}) {
   }
   state.storyRunning = true;
   setStoryRunning(true);
+  beginStageUsage();
   setStoryStatus(`正在调用 ${storyModelLabel()} 生成完整剧情…`, "active");
   try {
     await ensureSelectedVariantArtifact(variant);
@@ -1264,7 +1291,7 @@ async function generateFullStory({ force = false } = {}) {
     state.output.fullStories = state.fullStories;
     state.output.fullStory = fullStory;
     renderFullStory(fullStory);
-    setStoryStatus(`完整剧情已生成 · ${storyModelLabel()}`, "ready");
+    setStoryStatus(`完整剧情已生成 · ${storyModelLabel()}${formatStageUsageSuffix(endStageUsage())}`, "ready");
     elements.animationGenerate.disabled = false;
     setAnimationStatus("可以继续生成动画镜头生产包。", "");
     updateStoryExportActions();
@@ -1375,7 +1402,7 @@ async function generateAnimationPlan({ force = false } = {}) {
     state.output.animationPlan = animationPlan;
     state.animationAspectRatioDrafts[variant.id] = normalizeAnimationPlanAspectRatio(animationPlan.productionStrategy?.targetAspectRatio);
     renderAnimationPlan(animationPlan, metadata);
-    setAnimationStatus(`动画生产包已生成 · ${state.animationAspectRatioDrafts[variant.id]} · ${animationModelLabel()}`, "ready");
+    setAnimationStatus(`动画生产包已生成 · ${state.animationAspectRatioDrafts[variant.id]} · ${animationModelLabel()}${formatStageUsageSuffix(endStageUsage())}`, "ready");
     updateStoryExportActions();
     elements.export.classList.remove("hidden");
   } catch (error) {

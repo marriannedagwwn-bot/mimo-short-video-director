@@ -1,4 +1,5 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
+import { recordModelUsage } from "./token-usage.js";
 
 export class ModelResponseError extends Error {
   constructor(message, raw = "", status = 0, metadata = {}) {
@@ -224,6 +225,8 @@ export class MimoClient {
     const usage = envelope.usage && typeof envelope.usage === "object"
       ? envelope.usage
       : null;
+    // 记入当前请求的 token 记账作用域；作用域外是 no-op，异常内部吞掉。
+    recordModelUsage({ provider: "MiMo", model: body.model, usage });
     const finishReason = String(choice?.finish_reason || "");
     if (typeof content !== "string") {
       throw new ModelResponseError(

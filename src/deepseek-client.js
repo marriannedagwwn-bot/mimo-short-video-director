@@ -1,5 +1,6 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
 import { ModelResponseError, parseModelJson, parseStrictModelJson } from "./mimo-client.js";
+import { recordModelUsage } from "./token-usage.js";
 
 export class DeepSeekClient {
   constructor(config) {
@@ -158,6 +159,8 @@ export class DeepSeekClient {
     const usage = envelope.usage && typeof envelope.usage === "object"
       ? envelope.usage
       : null;
+    // 记入当前请求的 token 记账作用域；作用域外是 no-op，异常内部吞掉。
+    recordModelUsage({ provider: "DeepSeek", model: body.model, usage });
     const finishReason = String(choice?.finish_reason || "");
     if (typeof content !== "string") {
       throw new ModelResponseError(

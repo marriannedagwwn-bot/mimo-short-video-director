@@ -51,6 +51,7 @@ import {
 } from "./src/full-model-output-trace.js";
 import { ProductionStateStore } from "./src/production-state-store.js";
 import { ProductionStateError, normalizeArtifactId, safeIdentifier } from "./src/production-lineage.js";
+import { runWithUsageAccounting } from "./src/token-usage.js";
 
 loadEnv();
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -385,8 +386,12 @@ const server = http.createServer(async (request, response) => {
       const body = await readJson(request, {
         limit: url.pathname === "/api/generate-shot-video" ? 70 * 1024 * 1024 : undefined
       });
-      const result = await routes[url.pathname](body, { request });
-      return json(response, 200, { ok: true, mode: workflow.mode, result });
+      // usage 只挂在响应信封上：result 就是 Artifact 内容，多一个字段会污染 digest。
+      const { result, usage } = await runWithUsageAccounting(
+        () => routes[url.pathname](body, { request }),
+        { prices: config.modelPrices }
+      );
+      return json(response, 200, { ok: true, mode: workflow.mode, result, usage });
     }
     if (request.method === "GET" || request.method === "HEAD") return serveStatic(url.pathname, response, request.method === "HEAD");
     return json(response, 404, { ok: false, error: "接口不存在" });
