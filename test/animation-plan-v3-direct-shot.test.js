@@ -6,10 +6,16 @@ import { animationFoundationPrompt, animationShotBatchPrompt } from "../src/prom
 import {
   ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION,
   ANIMATION_DIRECT_SHOT_MODE,
+  InputError,
   OutputContractError,
   ensureAnimationShotBatchContract,
+  MINIMAX_H3_NO_MUSIC_SECTION,
+  NO_BACKGROUND_MUSIC_SENTENCE,
   materializeGlobalCharacterBoundaryViews,
-  pruneAnimationPlanNegativePrompts
+  normalizeBackgroundMusicMode,
+  parseSceneTimeRangeSeconds,
+  pruneAnimationPlanNegativePrompts,
+  sceneMinimumShotCount
 } from "../src/validation.js";
 import { WorkflowService } from "../src/workflow.js";
 import { generateShotVideo, normalizeShotVideoAspectRatio, ShotVideoConfigError } from "../src/shot-video-generator.js";
@@ -60,6 +66,18 @@ function directShot() {
   };
 }
 
+// 这些用例验证的是 direct_shot 的字段契约与各类修复协议，不是镜头数下限。
+// 把每场脚本时长压到单镜上限以内，使「一场一镜」的既有 fixture 本身就满足
+// 新的每场镜头数下限，测试焦点保持不变。下限本身由专门的用例覆盖。
+function withSingleShotSceneTimeRanges(fullStory) {
+  const story = structuredClone(fullStory);
+  story.sceneScript = (Array.isArray(story.sceneScript) ? story.sceneScript : []).map((scene, index) => ({
+    ...scene,
+    timeRange: `00:${String(index * 5).padStart(2, "0")}-00:${String(index * 5 + 5).padStart(2, "0")}`
+  }));
+  return story;
+}
+
 function directContext(workflow = new WorkflowService()) {
   const creatorProfile = {
     fixedCharacter: "阿岚，社区修理师",
@@ -85,7 +103,7 @@ function directContext(workflow = new WorkflowService()) {
     environmentPressure: "暴雨停电",
     endingRitual: "老人按下播放键"
   };
-  const fullStory = mockFullStory({ ...boundaryInput, creativeBrief, variant });
+  const fullStory = withSingleShotSceneTimeRanges(mockFullStory({ ...boundaryInput, creativeBrief, variant }));
   const signingInput = { ...boundaryInput, creativeBrief };
   const visualGuardrails = sealGlobalCharacterBoundary(
     materializeGlobalCharacterBoundaryViews(mockVisualGuardrails(signingInput), creatorProfile),
@@ -398,12 +416,25 @@ test("direct batch 把完整动作链和内部摄影切换写入一条教程式 
     shotIdStartIndex: 1
   });
 
-  assert.match(prompt, /拆镜边界只依据本批 source scene 的 location 与 visibleAction/u);
-  assert.match(prompt, /同一地点、围绕同一主要动作目标组成完整叙事动作的连续阶段必须保留在一条业务 shot/u);
-  assert.match(prompt, /景别、机位、构图、焦段、运镜或转场变化不得单独触发拆镜/u);
+  // 拆镜表述必须是正向产出要求：有几个主要动作目标就产出几个 shot。
+  assert.match(prompt, /拆镜依据只有两个：location 变化，或 visibleAction 中人物的主要动作目标变化/u);
+  assert.match(prompt, /有几个主要动作目标就必须产出几个 shot/u);
+  assert.match(prompt, /把两个以上主要动作目标塞进同一条 shot 属于错误输出/u);
+  assert.match(prompt, /唯一正确的做法是增加 shot/u);
+  assert.match(prompt, /把多个动作压进 6 秒、加速带过或省略动作都属于错误输出/u);
+  // 禁令收敛成封闭的三类，不得再泛化成“默认别拆”。
+  assert.match(prompt, /只有以下三类变化不得触发拆镜/u);
+  assert.match(prompt, /① 景别、机位、构图、焦段、运镜或转场变化/u);
+  assert.match(prompt, /② 同一主要动作目标内部的动作动词或连续阶段/u);
+  assert.match(prompt, /③ 同一地点多人同步完成的同一个协作动作/u);
+  assert.match(prompt, /除这三类之外，主要动作目标变化必须拆镜/u);
+  assert.match(prompt, /同一个目标下的连续阶段（起步→加速→抵达）才合并为一条 shot/u);
   assert.match(prompt, /这些内部摄影段不得生成额外 shot/u);
   assert.match(prompt, /内部摄影变化允许但不强制/u);
-  assert.match(prompt, /多人同步完成同一个协作动作仍可作为一个主要动作 shot/u);
+  // 每场镜头数下限与全片进度必须出现在提示词里。
+  assert.match(prompt, /本批镜头数下限（由各场 timeRange ÷ 6 秒单镜上限得出，硬性要求）：S1 脚本 5 秒 → 至少 1 个 shot/u);
+  assert.match(prompt, /这是硬性产出要求而不是建议值/u);
+  assert.match(prompt, /全片时长进度：/u);
   assert.match(prompt, /一条自包含、可直接交给 Seedance 2\.0 的中文自然语言提示词/u);
   assert.match(prompt, /视觉风格、物理光线与时段/u);
   assert.match(prompt, /严格依照 visibleAction 的顺序动作链与可见结果/u);
@@ -699,4 +730,156 @@ test("direct_shot 六个镜头职责字段都可作为逐镜视频负面词证�
     });
     assert.equal(pruned.shotPlan[0].negativePrompts.video.length, 1, `${field} 证据不得被裁剪`);
   }
+});
+
+
+test("每场镜头数下限由 timeRange 确定性推出，不可解析时退回下限 1", () => {
+  assert.equal(parseSceneTimeRangeSeconds("00:15-00:33"), 18);
+  assert.equal(parseSceneTimeRangeSeconds("01:00-01:20"), 20);
+  // 非法或非正跨度一律返回 null，不猜测场次时长。
+  assert.equal(parseSceneTimeRangeSeconds("00:20-00:10"), null);
+  assert.equal(parseSceneTimeRangeSeconds("时长未知"), null);
+  assert.equal(parseSceneTimeRangeSeconds(""), null);
+
+  // 20 秒脚本 ÷ 6 秒单镜上限 → 至少 4 镜；正是旧行为只给 1 镜的那类场次。
+  assert.equal(sceneMinimumShotCount({ timeRange: "01:00-01:20" }, 6), 4);
+  assert.equal(sceneMinimumShotCount({ timeRange: "00:00-00:15" }, 6), 3);
+  assert.equal(sceneMinimumShotCount({ timeRange: "00:00-00:06" }, 6), 1);
+  // timeRange 不可解析、上限非法时退回既有契约下限 1，不失败也不推断。
+  assert.equal(sceneMinimumShotCount({ timeRange: "乱写" }, 6), 1);
+  assert.equal(sceneMinimumShotCount({}, 6), 1);
+  assert.equal(sceneMinimumShotCount({ timeRange: "00:00-00:20" }, 0), 1);
+});
+
+test("长场次在批次提示词里拿到与 timeRange 匹配的镜头数下限和全片进度", () => {
+  const context = directContext();
+  const plan = mockAnimationPlan(context);
+  const { shotPlan: ignoredShotPlan, ...animationFoundation } = structuredClone(plan);
+  animationFoundation.sceneReferencePrompts.forEach((scene, index) => {
+    scene.sourceSceneIds = [context.fullStory.sceneScript[index].sceneId];
+    scene.relatedShotIds = [];
+  });
+
+  const longScene = structuredClone(context.fullStory.sceneScript[0]);
+  longScene.timeRange = "01:00-01:20";
+  const shortScene = structuredClone(context.fullStory.sceneScript[1]);
+  shortScene.timeRange = "00:00-00:06";
+
+  const prompt = animationShotBatchPrompt({
+    ...context,
+    animationFoundation,
+    sourceScenes: [longScene, shortScene],
+    shotIdStartIndex: 5,
+    runtimeBudget: {
+      plannedShotCount: 4,
+      plannedSeconds: 21,
+      scriptCompletedSeconds: 20,
+      batchScriptSeconds: 26,
+      scriptTotalSeconds: 60
+    }
+  });
+
+  assert.match(prompt, /S1 脚本 20 秒 → 至少 4 个 shot/u);
+  assert.match(prompt, /S2 脚本 6 秒 → 至少 1 个 shot/u);
+  assert.match(prompt, /已产出 4 个 shot · 已用 21 秒 · 前面各场脚本合计 20 秒 · 本批脚本合计 26 秒 · 全片脚本合计 60 秒/u);
+});
+
+test("timeRange 不可解析时提示词说明未知，并退回下限 1 不阻断", () => {
+  const context = directContext();
+  const plan = mockAnimationPlan(context);
+  const { shotPlan: ignoredShotPlan, ...animationFoundation } = structuredClone(plan);
+  animationFoundation.sceneReferencePrompts.forEach((scene, index) => {
+    scene.sourceSceneIds = [context.fullStory.sceneScript[index].sceneId];
+    scene.relatedShotIds = [];
+  });
+  const brokenScene = structuredClone(context.fullStory.sceneScript[0]);
+  brokenScene.timeRange = "未知";
+
+  const prompt = animationShotBatchPrompt({
+    ...context,
+    animationFoundation,
+    sourceScenes: [brokenScene],
+    shotIdStartIndex: 1
+  });
+
+  assert.match(prompt, /S1 timeRange 不可解析 → 至少 1 个 shot/u);
+  assert.match(prompt, /全片时长进度：未提供/u);
+});
+
+
+function foundationFor(context, { backgroundMusicMode = "none" } = {}) {
+  const plan = mockAnimationPlan(context);
+  const { shotPlan: ignoredShotPlan, ...foundation } = structuredClone(plan);
+  foundation.sceneReferencePrompts.forEach((scene, index) => {
+    scene.sourceSceneIds = [context.fullStory.sceneScript[index].sceneId];
+    scene.relatedShotIds = [];
+  });
+  foundation.productionStrategy.backgroundMusicMode = backgroundMusicMode;
+  return foundation;
+}
+
+test("背景音乐开关缺省关闭，只接受布尔值或两个合法字面量", () => {
+  assert.equal(normalizeBackgroundMusicMode(undefined), "none");
+  assert.equal(normalizeBackgroundMusicMode(null), "none");
+  assert.equal(normalizeBackgroundMusicMode(false), "none");
+  assert.equal(normalizeBackgroundMusicMode(true), "allowed");
+  assert.equal(normalizeBackgroundMusicMode("none"), "none");
+  assert.equal(normalizeBackgroundMusicMode("allowed"), "allowed");
+  assert.throws(() => normalizeBackgroundMusicMode("off"), InputError);
+  assert.throws(() => normalizeBackgroundMusicMode(1), InputError);
+});
+
+test("关闭背景音乐时 Seedance 批次提示词要求逐字收尾句，开启时不要求", () => {
+  const context = directContext();
+  const closedPrompt = animationShotBatchPrompt({
+    ...context,
+    animationFoundation: foundationFor(context, { backgroundMusicMode: "none" }),
+    sourceScenes: context.fullStory.sceneScript.slice(0, 1),
+    shotIdStartIndex: 1
+  });
+  assert.match(closedPrompt, /背景音乐：关闭，本片不使用任何背景音乐/u);
+  assert.ok(closedPrompt.includes(NO_BACKGROUND_MUSIC_SENTENCE));
+  assert.match(closedPrompt, /必须以这句话逐字收尾/u);
+  assert.match(closedPrompt, /关闭的只是背景音乐，脚步、风声、器物声和对白都必须照常保留/u);
+
+  const openPrompt = animationShotBatchPrompt({
+    ...context,
+    animationFoundation: foundationFor(context, { backgroundMusicMode: "allowed" }),
+    sourceScenes: context.fullStory.sceneScript.slice(0, 1),
+    shotIdStartIndex: 1
+  });
+  assert.match(openPrompt, /背景音乐：开启，允许使用背景音乐/u);
+  assert.equal(openPrompt.includes(NO_BACKGROUND_MUSIC_SENTENCE), false);
+});
+
+test("关闭背景音乐时 H3 批次提示词要求 non_diegetic_music 逐字写 N/A", () => {
+  const context = {
+    ...directContext(),
+    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
+  };
+  const foundation = foundationFor(context, { backgroundMusicMode: "none" });
+  foundation.productionStrategy.videoPromptProfile = resolveVideoPromptProfile(context.videoPromptTarget);
+  const prompt = animationShotBatchPrompt({
+    ...context,
+    videoPromptProfile: foundation.productionStrategy.videoPromptProfile,
+    animationFoundation: foundation,
+    sourceScenes: context.fullStory.sceneScript.slice(0, 1),
+    shotIdStartIndex: 1
+  });
+
+  assert.match(prompt, /背景音乐：关闭，本片不使用任何背景音乐/u);
+  assert.ok(prompt.includes(`non_diegetic_music 必须逐字只写 ${MINIMAX_H3_NO_MUSIC_SECTION}`));
+  assert.match(prompt, /overall_soundscape 照常写环境声、物理动作声与非语言人声——关闭的只是配乐，不是现场声/u);
+  // H3 不走中文追加句，避免踩非 Latin script 屏障。
+  assert.equal(prompt.includes(NO_BACKGROUND_MUSIC_SENTENCE), false);
+});
+
+test("Foundation 提示词声明用户选择，并声明该字段由服务端签发", () => {
+  const context = directContext();
+  const closed = animationFoundationPrompt({ ...context, backgroundMusicMode: "none" });
+  assert.match(closed, /用户选择的背景音乐：关闭，本片不使用任何背景音乐/u);
+  assert.match(closed, /productionStrategy.backgroundMusicMode 都是服务端签发字段，模型不得输出/u);
+
+  const open = animationFoundationPrompt({ ...context, backgroundMusicMode: "allowed" });
+  assert.match(open, /用户选择的背景音乐：开启，允许使用背景音乐/u);
 });

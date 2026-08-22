@@ -15,7 +15,7 @@ const ENDPOINT_FIELDS = [
   "endFramePrompt"
 ];
 
-const TUTORIAL_STYLE_VIDEO_PROMPT = "温暖治愈的2.5D手绘动画质感，出发点被清晨柔和侧光照亮，背景空间层次清楚。社区修理师阿岚保持既定外观，确认一段旧录音，听到任务期限后立刻把它收好。镜头先以中景跟随阿岚靠近任务物，确认内容时硬切到任务物特写，最后切到阿岚收好录音后的反应近景。前段节奏轻快，确认期限时短促停顿；保留室内环境底噪、收纳动作声和阿岚的短句“我现在去”。内部摄影切换前后保持阿岚身份、服装、任务物造型和光线方向一致，收好任务物后立即停止。";
+const TUTORIAL_STYLE_VIDEO_PROMPT = "温暖治愈的2.5D手绘动画质感，出发点被清晨柔和侧光照亮，背景空间层次清楚。社区修理师阿岚保持既定外观，确认一段旧录音，听到任务期限后立刻把它收好。镜头先以中景跟随阿岚靠近任务物，确认内容时硬切到任务物特写，最后切到阿岚收好录音后的反应近景。前段节奏轻快，确认期限时短促停顿；保留室内环境底噪、收纳动作声和阿岚的短句“我现在去”。内部摄影切换前后保持阿岚身份、服装、任务物造型和光线方向一致，收好任务物后立即停止。全片无背景音乐，只保留现场环境声与动作声。";
 
 const DIRECT_SHOT_SENTINELS = {
   videoPrompt: TUTORIAL_STYLE_VIDEO_PROMPT,
@@ -110,7 +110,7 @@ function fixture(workflow) {
     environmentPressure: "暴雨停电",
     endingRitual: "老人按下播放键"
   };
-  const fullStory = mockFullStory({ ...base, creativeBrief, variant });
+  const fullStory = withSingleShotSceneTimeRanges(mockFullStory({ ...base, creativeBrief, variant }));
   return withGlobalCharacterBoundary(workflow, {
     ...base,
     creativeBrief,
@@ -144,7 +144,7 @@ function miniMaxH3PromptForShot(shot) {
     .map((line, index) => `The signed speaker (S${index + 1}) says, <d>[Chinese] ${line}</d>.`)
     .join(" ");
   return `integrated_multimodal_description: [Shot 1] The signed character remains in the locked Animation Plan location with the authorized wardrobe and props, performs the complete planned action chain in its exact order, follows the specified camera sequence, and holds the stated visible final state. ${dialogue}`.trim()
-    + `\noverall_soundscape: The signed diegetic ambience, action sounds, and spoken lines remain synchronized with every visible action.\nnon_diegetic_music: A restrained instrumental cue at a slow tempo, joined by sustained low strings that fade out on the completed action.`;
+    + `\noverall_soundscape: The signed diegetic ambience, action sounds, and spoken lines remain synchronized with every visible action.\nnon_diegetic_music: N/A`;
 }
 
 function miniMaxH3RewriteForPlan(plan) {
@@ -356,6 +356,19 @@ function wolfGirlRepairBoundary() {
     forbiddenTraits: [],
     unresolvedConflicts: []
   };
+}
+
+
+// 这些用例验证的是 direct_shot 的字段契约与各类修复协议，不是镜头数下限。
+// 把每场脚本时长压到单镜上限以内，使「一场一镜」的既有 fixture 本身就满足
+// 新的每场镜头数下限，测试焦点保持不变。下限本身由专门的用例覆盖。
+function withSingleShotSceneTimeRanges(fullStory) {
+  const story = structuredClone(fullStory);
+  story.sceneScript = (Array.isArray(story.sceneScript) ? story.sceneScript : []).map((scene, index) => ({
+    ...scene,
+    timeRange: `00:${String(index * 5).padStart(2, "0")}-00:${String(index * 5 + 5).padStart(2, "0")}`
+  }));
+  return story;
 }
 
 test("live direct_shot 保留模型视频字段且完全绕过三个编译阶段", async () => {
@@ -1341,4 +1354,206 @@ test("prompt-only rewrite 结构合法但语义审计发现动作顺序漂移时
 
   assert.equal(calls.length, 2);
   assert.deepEqual(sourcePlan, before);
+});
+
+
+// 把 S1 拉长到 20 秒（÷6 秒单镜上限 → 至少 4 镜），其余场次保持 5 秒 / 1 镜。
+function longFirstSceneContext(workflow) {
+  const context = fixture(workflow);
+  const patched = structuredClone(context);
+  patched.fullStory.sceneScript[0].timeRange = "01:00-01:20";
+  return patched;
+}
+
+test("长场次只给一个镜头时明确失败，不放行被压缩的动作链", async () => {
+  let foundation;
+  let batch;
+  const { workflow, animationCalls } = createLiveWorkflow((args, callNumber) => {
+    if (callNumber === 1) return structuredClone(foundation);
+    return structuredClone(batch);
+  });
+  const context = longFirstSceneContext(workflow);
+  const modelPlan = mockAnimationPlan(context);
+  foundation = foundationFrom(modelPlan);
+  // 旧行为：20 秒的 S1 也只产出一个 6 秒镜头。
+  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
+
+  await assert.rejects(
+    () => workflow.createAnimationPlanWithMetadata(context),
+    (error) => {
+      assert.match(error.message, /S1 只产出 1 个 shot/u);
+      assert.match(error.message, /脚本 timeRange 20 秒 要求至少 4 个/u);
+      assert.match(error.message, /单镜上限 6 秒/u);
+      return true;
+    }
+  );
+  // direct_shot 对「已解析但不合契约」的候选一律 fail closed（workflow.js 的
+  // directShotMode && hadParsedCandidate 分支），不整批重试：foundation 一次 + batch 一次。
+  assert.equal(animationCalls.length, 2);
+});
+
+test("长场次按下限拆够镜头后正常签发，成片总长跟着脚本走", async () => {
+  let foundation;
+  let batch;
+  const { workflow } = createLiveWorkflow((args, callNumber) => {
+    if (callNumber === 1) return structuredClone(foundation);
+    if (callNumber === 2) return structuredClone(batch);
+    throw new Error(`不应发生第 ${callNumber} 次调用`);
+  });
+  const context = longFirstSceneContext(workflow);
+  const modelPlan = mockAnimationPlan(context);
+  foundation = foundationFrom(modelPlan);
+
+  const [firstShot, ...restShots] = structuredClone(modelPlan.shotPlan);
+  const s1Shots = [0, 1, 2, 3].map((index) => ({
+    ...structuredClone(firstShot),
+    shotId: `A0${index + 1}`,
+    durationSeconds: 5
+  }));
+  const renumberedRest = restShots.map((shot, index) => ({
+    ...shot,
+    shotId: `A0${index + 5}`
+  }));
+  batch = { shotPlan: [...s1Shots, ...renumberedRest] };
+
+  const { animationPlan } = await workflow.createAnimationPlanWithMetadata(context);
+
+  assert.equal(animationPlan.shotPlan.filter((shot) => shot.sourceSceneId === "S1").length, 4);
+  assert.equal(animationPlan.shotPlan.length, 9);
+  // 20 秒的 S1 现在真的占了 20 秒，而不是被压成一个 6 秒镜头。
+  assert.equal(
+    animationPlan.shotPlan
+      .filter((shot) => shot.sourceSceneId === "S1")
+      .reduce((total, shot) => total + shot.durationSeconds, 0),
+    20
+  );
+});
+
+
+test("请求不带开关时服务端签发 backgroundMusicMode: none，Seedance 提示词带签发收尾句", async () => {
+  let foundation;
+  let batch;
+  const { workflow } = createLiveWorkflow((args, callNumber) => {
+    if (callNumber === 1) return structuredClone(foundation);
+    if (callNumber === 2) return structuredClone(batch);
+    throw new Error(`不应发生第 ${callNumber} 次调用`);
+  });
+  const context = fixture(workflow);
+  const modelPlan = mockAnimationPlan(context);
+  foundation = foundationFrom(modelPlan);
+  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
+
+  const { animationPlan } = await workflow.createAnimationPlanWithMetadata(context);
+
+  assert.equal(animationPlan.productionStrategy.backgroundMusicMode, "none");
+  animationPlan.shotPlan.forEach((shot) => {
+    assert.ok(
+      shot.videoPrompt.trim().endsWith("全片无背景音乐，只保留现场环境声与动作声。"),
+      `${shot.shotId} 的 videoPrompt 必须以签发的无配乐句收尾`
+    );
+  });
+});
+
+test("关闭背景音乐时 Seedance videoPrompt 缺收尾句明确失败", async () => {
+  let foundation;
+  let batch;
+  const { workflow } = createLiveWorkflow((args, callNumber) => {
+    if (callNumber === 1) return structuredClone(foundation);
+    return structuredClone(batch);
+  });
+  const context = fixture(workflow);
+  const modelPlan = mockAnimationPlan(context);
+  foundation = foundationFrom(modelPlan);
+  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
+  // 模型漏掉了签发的收尾句。
+  batch.shotPlan[0].videoPrompt = batch.shotPlan[0].videoPrompt
+    .replace("全片无背景音乐，只保留现场环境声与动作声。", "");
+
+  await assert.rejects(
+    () => workflow.createAnimationPlanWithMetadata(context),
+    (error) => {
+      assert.match(error.message, /shotPlan\[0\]\.videoPrompt 必须以「全片无背景音乐，只保留现场环境声与动作声。」逐字收尾/u);
+      return true;
+    }
+  );
+});
+
+test("开启背景音乐时不施加收尾句约束，带配乐的提示词照常通过", async () => {
+  let foundation;
+  let batch;
+  const { workflow } = createLiveWorkflow((args, callNumber) => {
+    if (callNumber === 1) return structuredClone(foundation);
+    if (callNumber === 2) return structuredClone(batch);
+    throw new Error(`不应发生第 ${callNumber} 次调用`);
+  });
+  const base = fixture(workflow);
+  const context = { ...base, backgroundMusicEnabled: true };
+  const modelPlan = mockAnimationPlan({ ...context, backgroundMusicMode: "allowed" });
+  foundation = foundationFrom(modelPlan);
+  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
+
+  const { animationPlan } = await workflow.createAnimationPlanWithMetadata(context);
+
+  assert.equal(animationPlan.productionStrategy.backgroundMusicMode, "allowed");
+  assert.equal(
+    animationPlan.shotPlan[0].videoPrompt.includes("全片无背景音乐"),
+    false,
+    "开启配乐时不得注入无配乐句"
+  );
+});
+
+test("关闭背景音乐时 H3 的 non_diegetic_music 非 N/A 明确失败", async () => {
+  let foundation;
+  let batch;
+  const { workflow } = createLiveWorkflow((args, callNumber) => {
+    if (/ANIMATION_VIDEO_PROMPT_(?:INITIAL|REWRITE)_SEMANTIC_AUDIT_V2/u.test(args.prompt)) {
+      return passingAnimationVideoPromptSemanticAudit(args.prompt);
+    }
+    if (callNumber === 1) return structuredClone(foundation);
+    return structuredClone(batch);
+  });
+  const context = {
+    ...fixture(workflow),
+    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
+  };
+  const modelPlan = mockAnimationPlan(context);
+  foundation = foundationFrom(modelPlan);
+  batch = {
+    shotPlan: modelPlan.shotPlan.map((shot) => ({
+      ...structuredClone(shot),
+      durationSeconds: 5,
+      videoPrompt: miniMaxH3PromptForShot(shot).replace(
+        "non_diegetic_music: N/A",
+        "non_diegetic_music: A soft piano figure at a slow tempo fading out on the final beat."
+      )
+    }))
+  };
+
+  await assert.rejects(
+    () => workflow.createAnimationPlanWithMetadata(context),
+    (error) => {
+      assert.match(error.message, /non_diegetic_music 必须逐字为 N\/A（用户已关闭背景音乐）/u);
+      return true;
+    }
+  );
+});
+
+test("backgroundMusicMode 由服务端签发，模型自行输出时拒绝", async () => {
+  let foundation;
+  const { workflow } = createLiveWorkflow((args, callNumber) => {
+    if (callNumber === 1) return structuredClone(foundation);
+    throw new Error(`不应发生第 ${callNumber} 次调用`);
+  });
+  const context = fixture(workflow);
+  const modelPlan = mockAnimationPlan(context);
+  foundation = foundationFrom(modelPlan);
+  foundation.productionStrategy.backgroundMusicMode = "allowed";
+
+  await assert.rejects(
+    () => workflow.createAnimationPlanWithMetadata(context),
+    (error) => {
+      assert.match(error.message, /backgroundMusicMode 由服务端签发，模型不得输出/u);
+      return true;
+    }
+  );
 });

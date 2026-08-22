@@ -105,6 +105,13 @@
             <option value="6">6 个</option>
           </select>
         </label>
+        <label class="field inline-field">
+          <span>视频目标画幅 <small>新生成的计划按此构图</small></span>
+          <select id="animationAspectRatio">
+            <option value="9:16">9:16 · 竖屏</option>
+            <option value="16:9">16:9 · 横屏</option>
+          </select>
+        </label>
         <div class="promise-box">
           <span>导演约束</span>
           <p>人物、任务、道具、对白和视听表达重做；母题、结构功能和情绪价值不被误杀。</p>
@@ -167,14 +174,6 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
           </button>
           <p class="story-status" id="animationStatus"></p>
-          <label class="animation-aspect-control" for="animationAspectRatio">
-            <span>动画目标画幅</span>
-            <select id="animationAspectRatio">
-              <option value="9:16">9:16 · 竖屏</option>
-              <option value="16:9">16:9 · 横屏</option>
-            </select>
-            <small id="animationAspectRatioHint">首次生成会按此构图；已有计划切换时只更新输出画幅。</small>
-          </label>
           <button class="outline-button animation-button" id="generateAnimationPlan" type="button" disabled>生成动画镜头生产包</button>
           <div class="story-export-actions">
             <button class="outline-button" id="exportStoryPackage" type="button" disabled>导出当前生产包 JSON</button>

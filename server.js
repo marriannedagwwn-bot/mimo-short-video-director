@@ -13,7 +13,7 @@ import { buildShotFrameMultiImagePrompt } from "./public/shot-frame-multi-image-
 import { computeDependencyHash, computePromptHash } from "./src/frame-dependency.js";
 import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./src/frame-reference-request.js";
 import { WorkflowService } from "./src/workflow.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, InputError, requireAnimationPlanAspectRatio } from "./src/validation.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, characterPromptBoundaryMismatch, characterReferenceBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, InputError, requireAnimationPlanAspectRatio } from "./src/validation.js";
 import { generateShotVideo, shotVideoGenerationPromptText, shouldDeferH3CharacterAppearanceBoundaryCheck, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
 import { resolveAuthoritativeShotVideoInput, resolveAuthoritativeShotVideoReferenceAssets, resolvePreviousShotFrameReference } from "./src/shot-video-continuity.js";
 import {
@@ -751,14 +751,18 @@ async function streamCharacterReferenceImages(request, response) {
     const body = await readJson(request);
     const productionMedia = await resolveProductionMediaContext(body, { required: true });
     const visualGuardrails = workflow.assertGlobalCharacterBoundary(body);
-    ensureCharacterReferenceMatchesBoundary(body.characterReference, visualGuardrails);
     if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
     const count = Math.max(1, Math.min(config.jimeng.maxImages, Math.round(Number(body.count) || 1)));
     const imageModel = modelOverrideFor(body, "imageGeneration") || config.jimeng.model;
     const prompt = String(body.prompt || "").trim() || buildCharacterReferenceImagePrompt(body.characterReference, count);
-    ensureCharacterPromptMatchesBoundary(prompt, visualGuardrails, {
-      characterName: body.characterReference?.characterName || ""
-    });
+    // 角色参考图是用户可改写提示词的环节：边界偏差只提醒，不阻断本次生成。
+    // 成片渲染链路（/api/generate-shot-video、旧 v2 首尾帧）仍然硬失败。
+    const boundaryWarnings = [
+      characterReferenceBoundaryMismatch(body.characterReference, visualGuardrails),
+      characterPromptBoundaryMismatch(prompt, visualGuardrails, {
+        characterName: body.characterReference?.characterName || ""
+      })
+    ].filter(Boolean);
     send("progress", {
       type: "start",
       message: `正在调用即梦 ${imageModel} 生成 ${count} 张角色参考图…`,
@@ -766,6 +770,13 @@ async function streamCharacterReferenceImages(request, response) {
       count,
       prompt
     });
+    if (boundaryWarnings.length) {
+      send("progress", {
+        type: "boundary-warning",
+        characterName: body.characterReference?.characterName || "",
+        message: `模型输出未通过校验：${boundaryWarnings.join("；")}`
+      });
+    }
     await jimengClient.generateImagesStream({
       referenceImageDataUrl: body.referenceImageDataUrl,
       characterReference: body.characterReference,

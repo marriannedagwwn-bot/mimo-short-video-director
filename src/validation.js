@@ -116,6 +116,37 @@ export function ensureAnimationPlanAspectRatio(value, path = "productionStrategy
   }
   return normalized;
 }
+
+// 背景音乐开关：用户在主题变体卡上选择，服务端签发进 productionStrategy。
+// 与 videoPromptProfile 同级——模型不得输出、推断或修改这个字段。
+export const BACKGROUND_MUSIC_NONE = "none";
+export const BACKGROUND_MUSIC_ALLOWED = "allowed";
+export const BACKGROUND_MUSIC_MODES = Object.freeze([BACKGROUND_MUSIC_NONE, BACKGROUND_MUSIC_ALLOWED]);
+
+// 关闭背景音乐时，Seedance videoPrompt 必须以这句逐字收尾。
+// 它明确区分「背景音乐」与「现场声」，避免视频模型把动作声和对白一起静音。
+export const NO_BACKGROUND_MUSIC_SENTENCE = "全片无背景音乐，只保留现场环境声与动作声。";
+
+// 关闭背景音乐时，MiniMax H3 用官方语法表达同一意图：non_diegetic_music 逐字写 N/A。
+// 追加中文会同时违反非 Latin script 屏障与配乐段受控词表，所以两个 Profile 各用各的合法写法。
+export const MINIMAX_H3_NO_MUSIC_SECTION = "N/A";
+
+// 请求侧归一：开关缺省关闭，与变体卡上的默认状态一致。
+export function normalizeBackgroundMusicMode(value) {
+  if (value === true) return BACKGROUND_MUSIC_ALLOWED;
+  if (value === false || value === undefined || value === null) return BACKGROUND_MUSIC_NONE;
+  const normalized = String(value).trim();
+  if (BACKGROUND_MUSIC_MODES.includes(normalized)) return normalized;
+  throw new InputError(`backgroundMusicEnabled 只允许布尔值或 ${BACKGROUND_MUSIC_MODES.join(" / ")}`);
+}
+
+export function ensureBackgroundMusicMode(value, path = "productionStrategy.backgroundMusicMode") {
+  const normalized = String(value || "").trim();
+  if (!BACKGROUND_MUSIC_MODES.includes(normalized)) {
+    throw new OutputContractError(`${path} 只允许 ${BACKGROUND_MUSIC_MODES.join(" 或 ")}`);
+  }
+  return normalized;
+}
 const animationDirectShotFields = [
   "shotId",
   "sourceSceneId",
@@ -2216,9 +2247,38 @@ function animationProfileJsonPointer(path) {
     .join("/")}`;
 }
 
-export function ensureCharacterReferenceMatchesBoundary(value, visualGuardrails = null) {
+export const ANIMATION_FALLBACK_MAX_SHOT_DURATION_SECONDS = 6;
+
+// "00:15-00:33" → 18 秒。格式不符或非正跨度一律返回 null：
+// timeRange 是模型产物，不得靠猜测补一个场次时长出来。
+export function parseSceneTimeRangeSeconds(timeRange) {
+  const match = /^\s*(\d{1,3}):([0-5]\d)\s*[-–—~]\s*(\d{1,3}):([0-5]\d)\s*$/u.exec(String(timeRange || ""));
+  if (!match) return null;
+  const span = (Number(match[3]) * 60 + Number(match[4])) - (Number(match[1]) * 60 + Number(match[2]));
+  return span > 0 ? span : null;
+}
+
+// 单个 source scene 的镜头数下限 = 脚本 timeRange ÷ 单镜时长上限，向上取整。
+// 依据是用户选定的权威：timeRange 直接决定该场应占多少成片时间。
+// timeRange 缺失或不可解析时退回既有契约下限 1，不失败也不推断。
+export function sceneMinimumShotCount(scene, maxShotDurationSeconds) {
+  const seconds = parseSceneTimeRangeSeconds(scene?.timeRange);
+  const cap = Number(maxShotDurationSeconds);
+  if (seconds === null || !Number.isFinite(cap) || cap <= 0) return 1;
+  return Math.max(1, Math.ceil(seconds / cap));
+}
+
+// Foundation 已签发的单镜时长上限是唯一权威；缺失时才退回项目常量。
+export function animationMaxShotDurationSeconds(foundation) {
+  const maximum = Number(foundation?.productionStrategy?.recommendedShotDurationSeconds?.max);
+  return Number.isFinite(maximum) && maximum > 0 ? maximum : ANIMATION_FALLBACK_MAX_SHOT_DURATION_SECONDS;
+}
+
+// 返回空字符串表示合规；非空字符串就是唯一的偏差描述。
+// 角色参考阶段只提醒不阻断，成片渲染阶段仍由 ensure* 包装器硬失败。
+export function characterReferenceBoundaryMismatch(value, visualGuardrails = null) {
   const boundary = visualGuardrails?.fixedCharacterBoundary;
-  if (!boundary || String(value?.characterName || "").trim() !== String(boundary.characterName || "").trim()) return value;
+  if (!boundary || String(value?.characterName || "").trim() !== String(boundary.characterName || "").trim()) return "";
   const fields = [
     value.characterName,
     value.storyRole,
@@ -2231,19 +2291,24 @@ export function ensureCharacterReferenceMatchesBoundary(value, visualGuardrails 
   const mismatches = [];
   if (forbiddenHits.length) mismatches.push(`混入全局边界禁止特征：${forbiddenHits.join("、")}`);
   if (missingRequiredTraits.length) mismatches.push(`缺少全局必需角色事实：${missingRequiredTraits.join("、")}`);
-  if (mismatches.length) throw new OutputContractError(`characterReference 未沿用全局角色边界：${mismatches.join("；")}`);
+  return mismatches.length ? `characterReference 未沿用全局角色边界：${mismatches.join("；")}` : "";
+}
+
+export function ensureCharacterReferenceMatchesBoundary(value, visualGuardrails = null) {
+  const mismatch = characterReferenceBoundaryMismatch(value, visualGuardrails);
+  if (mismatch) throw new OutputContractError(mismatch);
   return value;
 }
 
-export function ensureCharacterPromptMatchesBoundary(text, visualGuardrails = null, {
+export function characterPromptBoundaryMismatch(text, visualGuardrails = null, {
   characterName = "",
   requireRequiredTraits = true,
   promptScope = "fixed_character"
 } = {}) {
   const boundary = visualGuardrails?.fixedCharacterBoundary;
-  if (!boundary) return text;
-  if (promptScope === "multi_character") return text;
-  if (characterName && String(characterName).trim() !== String(boundary.characterName || "").trim()) return text;
+  if (!boundary) return "";
+  if (promptScope === "multi_character") return "";
+  if (characterName && String(characterName).trim() !== String(boundary.characterName || "").trim()) return "";
   const value = String(text || "");
   const forbiddenHits = findTerms(value, collectGlobalCharacterForbiddenTerms(visualGuardrails), {
     allowNegativeContext: true
@@ -2254,8 +2319,13 @@ export function ensureCharacterPromptMatchesBoundary(text, visualGuardrails = nu
   const mismatches = [];
   if (forbiddenHits.length) mismatches.push(`混入全局边界禁止特征：${forbiddenHits.join("、")}`);
   if (missingRequiredTraits.length) mismatches.push(`缺少全局必需角色事实：${missingRequiredTraits.join("、")}`);
-  if (mismatches.length) throw new InputError(`角色生成提示词未沿用全局角色边界：${mismatches.join("；")}`);
-  return value;
+  return mismatches.length ? `角色生成提示词未沿用全局角色边界：${mismatches.join("；")}` : "";
+}
+
+export function ensureCharacterPromptMatchesBoundary(text, visualGuardrails = null, options = {}) {
+  const mismatch = characterPromptBoundaryMismatch(text, visualGuardrails, options);
+  if (mismatch) throw new InputError(mismatch);
+  return text;
 }
 
 export function pruneAnimationPlanNegativePrompts(value, context = {}) {

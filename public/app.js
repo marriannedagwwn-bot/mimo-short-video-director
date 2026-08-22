@@ -26,10 +26,8 @@ import {
   productionStateFromRun
 } from "./production-lineage-client.js";
 import {
-  ANIMATION_PLAN_ASPECT_RATIOS,
   animationPlanRuntimeSummary,
   normalizeAnimationPlanAspectRatio,
-  withAnimationPlanAspectRatio
 } from "./animation-plan-settings.js";
 import {
   dropStaleMediaResults,
@@ -63,7 +61,8 @@ const state = {
   animationPlans: {},
   animationPlanMetadata: {},
   animationAspectRatioDrafts: {},
-  animationAspectRatioUpdating: false,
+  animationAspectRatioDefault: "9:16",
+  backgroundMusicDrafts: {},
   animationPromptRewriting: false,
   shotVideoResults: {},
   shotFrameResults: {},
@@ -76,6 +75,7 @@ const state = {
     count: 1,
     referenceImageDataUrl: "",
     referenceImageName: "",
+    boundaryWarning: "",
     results: []
   },
   shotFrameImageGeneration: {
@@ -139,7 +139,7 @@ const elements = {
   selectedVariantSummary: $("#selectedVariantSummary"), storyStatus: $("#storyStatus"),
   storyGenerate: $("#generateFullStory"), fullStory: $("#fullStoryResult"), backToResults: $("#backToResults"),
   animationGenerate: $("#generateAnimationPlan"), animationStatus: $("#animationStatus"), animationPlan: $("#animationPlanResult"),
-  animationAspectRatio: $("#animationAspectRatio"), animationAspectRatioHint: $("#animationAspectRatioHint"),
+  animationAspectRatio: $("#animationAspectRatio"),
   exportStoryPackage: $("#exportStoryPackage"), copyAnimationPack: $("#copyAnimationPack"),
   importStoryPackage: $("#importStoryPackage"), exportStoryTestPackage: $("#exportStoryTestPackage"),
   storyPackageFile: $("#storyPackageFile"), storyPackageStatus: $("#storyPackageStatus"),
@@ -297,7 +297,7 @@ function bindEvents() {
   elements.backToResults.addEventListener("click", backToMainResults);
   elements.storyGenerate.addEventListener("click", () => generateFullStory({ force: true }));
   elements.animationGenerate.addEventListener("click", () => generateAnimationPlan({ force: true }));
-  elements.animationAspectRatio.addEventListener("change", () => handleAnimationAspectRatioChange(elements.animationAspectRatio.value));
+  elements.animationAspectRatio.addEventListener("change", () => handleDefaultAspectRatioChange(elements.animationAspectRatio.value));
   elements.exportStoryPackage.addEventListener("click", exportCurrentStoryPackage);
   elements.copyAnimationPack.addEventListener("click", copyAnimationProductionPack);
   elements.importStoryPackage.addEventListener("click", () => elements.storyPackageFile.click());
@@ -314,6 +314,10 @@ function bindEvents() {
     if (previewButton) return openGeneratedImagePreview(previewButton.dataset.previewGeneratedReference);
     const useButton = event.target.closest("[data-use-generated-reference]");
     if (useButton) useGeneratedCharacterReference(useButton.dataset.useGeneratedReference);
+  });
+  elements.variants.addEventListener("change", (event) => {
+    const toggle = event.target.closest("[data-background-music]");
+    if (toggle) handleBackgroundMusicToggle(toggle.dataset.backgroundMusic, toggle.checked);
   });
   elements.closeShotFrameImageModal.addEventListener("click", closeShotFrameImageGenerator);
   elements.shotFrameImageModal.addEventListener("click", (event) => {
@@ -434,8 +438,6 @@ function bindEvents() {
     openCharacterReferenceInput(card.dataset.characterReferenceCard);
   });
   elements.animationPlan.addEventListener("change", (event) => {
-    const aspectRatioSelect = event.target.closest("[data-animation-aspect-ratio]");
-    if (aspectRatioSelect) return handleAnimationAspectRatioChange(aspectRatioSelect.value);
     const input = event.target.closest("[data-character-reference-input]");
     if (input && input.files[0]) {
       refineCharacterReferenceWithImage(input.dataset.characterReferenceInput, input.files[0]);
@@ -1071,7 +1073,17 @@ function structuredValue(value) {
 function renderVariants(data) {
   elements.variants.innerHTML = `${resultHeader("THEME VARIANTS", "可拍摄的具体主题变体")}
     <div class="variant-grid">${(data.variants || []).map((variant) => `<div class="variant">
-      <div class="variant-top"><div><span class="variant-number">${escape(variant.id)} · NEW EPISODE</span><h4>${escape(variant.title)}</h4></div><span class="risk">相似风险 ${escape(variant.originalityRiskCheck?.riskLevel || "-")}</span></div>
+      <div class="variant-top">
+        <div><span class="variant-number">${escape(variant.id)} · NEW EPISODE</span><h4>${escape(variant.title)}</h4></div>
+        <div class="variant-top-meta">
+          <label class="variant-switch" title="${backgroundMusicEnabled(variant.id) ? "开启：允许为该主题生成背景音乐" : "关闭：成片只保留现场环境声与动作声"}">
+            <input type="checkbox" data-background-music="${escape(variant.id)}" aria-label="${escape(variant.title)} 的背景音乐"${backgroundMusicEnabled(variant.id) ? " checked" : ""}>
+            <span class="variant-switch-track" aria-hidden="true"></span>
+            <span class="variant-switch-label">配乐</span>
+          </label>
+          <span class="risk">相似风险 ${escape(variant.originalityRiskCheck?.riskLevel || "-")}</span>
+        </div>
+      </div>
       <p class="variant-hook">${escape(variant.oneLineHook)}</p>
       <p class="variant-logline">${escape(variant.logline)}</p>
       <div class="variant-cast">
@@ -1084,6 +1096,45 @@ function renderVariants(data) {
       <button class="outline-button variant-story-button" type="button" data-story-variant="${escape(variant.id)}">进入完整剧情 →</button>
     </div>`).join("")}</div>`;
   reveal(elements.variants);
+}
+
+// 开关默认关闭；已有 Plan 时以 Plan 已签发的 backgroundMusicMode 为准。
+function backgroundMusicEnabled(variantId) {
+  if (Object.prototype.hasOwnProperty.call(state.backgroundMusicDrafts, variantId)) {
+    return Boolean(state.backgroundMusicDrafts[variantId]);
+  }
+  const plan = state.animationPlans[variantId];
+  const mode = plan?.productionStrategy?.backgroundMusicMode;
+  return mode ? mode !== "none" : false;
+}
+
+async function handleBackgroundMusicToggle(variantId, enabled) {
+  const plan = state.animationPlans[variantId];
+  const currentMode = plan?.productionStrategy?.backgroundMusicMode;
+  // 没有 Plan：只是记录选择，等生成时使用。
+  if (!plan || !currentMode) {
+    state.backgroundMusicDrafts[variantId] = enabled;
+    renderVariants(state.output.themeVariants);
+    return;
+  }
+  if ((currentMode !== "none") === enabled) {
+    state.backgroundMusicDrafts[variantId] = enabled;
+    renderVariants(state.output.themeVariants);
+    return;
+  }
+  // 已有 Plan：切换必须重生整包，不能只改提示词末尾。明确征求同意。
+  const confirmed = window.confirm(
+    `切换背景音乐需要用模型重新生成整个 Animation Plan。\n`
+    + `新 Plan 会签发新的 revision 和媒体目录，该变体已生成的镜头视频将全部失效。\n\n是否继续？`
+  );
+  if (!confirmed) {
+    renderVariants(state.output.themeVariants);
+    return;
+  }
+  state.backgroundMusicDrafts[variantId] = enabled;
+  renderVariants(state.output.themeVariants);
+  state.selectedVariantId = variantId;
+  await generateAnimationPlan(true);
 }
 
 function navigateToStory(variantId) {
@@ -1293,6 +1344,7 @@ async function generateAnimationPlan({ force = false } = {}) {
         creatorProfile: profile(),
         animationPlanMode,
         targetAspectRatio,
+        backgroundMusicEnabled: backgroundMusicEnabled(variant.id),
         videoPromptTarget,
         // 暂时弃置，后续优化或删除：direct_shot 不消费 Character Feature private sidecar；旧 v2 请求兼容保留。
         ...(animationPlanMode !== "direct_shot" && previousPrivateSidecars && typeof previousPrivateSidecars === "object" && !Array.isArray(previousPrivateSidecars)
@@ -1416,97 +1468,25 @@ function currentPlanLineageRef(variantId) {
 
 function selectedAnimationAspectRatio(variantId = selectedVariant()?.id) {
   const plan = variantId ? state.animationPlans[variantId] : null;
-  const planAspectRatio = normalizeAnimationPlanAspectRatio(plan?.productionStrategy?.targetAspectRatio);
+  const planAspectRatio = normalizeAnimationPlanAspectRatio(
+    plan?.productionStrategy?.targetAspectRatio,
+    state.animationAspectRatioDefault
+  );
   const draft = variantId ? state.animationAspectRatioDrafts[variantId] : "";
   return normalizeAnimationPlanAspectRatio(draft, planAspectRatio);
 }
 
+// 创作宇宙面板上的画幅只是新 Plan 的默认值：已签发的 Plan 保持它自己锁入的画幅，
+// 不因为这里拨一下就重签 revision 或 stale 媒体。切换已有 Plan 的入口仍在 Plan 卡片内。
+function handleDefaultAspectRatioChange(value) {
+  state.animationAspectRatioDefault = normalizeAnimationPlanAspectRatio(value);
+  syncAnimationAspectRatioControls();
+}
+
 function syncAnimationAspectRatioControls(plan = null) {
-  const variant = selectedVariant();
-  if (!variant) {
-    elements.animationAspectRatio.value = "9:16";
-    elements.animationAspectRatio.disabled = true;
-    elements.animationAspectRatioHint.textContent = "请先选择主题变体。";
-    return;
-  }
-  const currentPlan = plan || state.animationPlans[variant.id] || null;
-  const currentRatio = normalizeAnimationPlanAspectRatio(currentPlan?.productionStrategy?.targetAspectRatio);
-  if (!Object.prototype.hasOwnProperty.call(state.animationAspectRatioDrafts, variant.id)) {
-    state.animationAspectRatioDrafts[variant.id] = currentRatio;
-  }
-  const draft = selectedAnimationAspectRatio(variant.id);
-  elements.animationAspectRatio.value = draft;
-  elements.animationAspectRatio.disabled = state.animationRunning || state.animationAspectRatioUpdating;
-  elements.animationAspectRatioHint.textContent = !currentPlan
-    ? `将按 ${draft} 生成镜头构图与视频画幅。`
-    : `当前 Animation Plan 已应用 ${currentRatio}；切换不会调用模型或重写镜头。`;
-}
-
-function handleAnimationAspectRatioChange(value) {
-  const variant = selectedVariant();
-  if (!variant) return setAnimationStatus("请先选择一个主题变体。", "error");
-  const ratio = normalizeAnimationPlanAspectRatio(value);
-  const plan = state.animationPlans[variant.id] || null;
-  if (plan) return updateAnimationPlanAspectRatio(ratio);
-  state.animationAspectRatioDrafts[variant.id] = ratio;
-  syncAnimationAspectRatioControls(plan);
-  setAnimationStatus(`已选择 ${ratio}，将用于新生成的 Animation Plan。`, "ready");
-  setAnimationRunning(false);
-}
-
-async function updateAnimationPlanAspectRatio(value) {
-  if (state.animationAspectRatioUpdating) return;
-  const variant = selectedVariant();
-  const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : null;
-  if (!variant || !plan) return handleAnimationAspectRatioChange(value);
-  const ratio = normalizeAnimationPlanAspectRatio(value);
-  const currentRatio = normalizeAnimationPlanAspectRatio(plan.productionStrategy?.targetAspectRatio);
-  if (ratio === currentRatio) {
-    state.animationAspectRatioDrafts[variant.id] = ratio;
-    syncAnimationAspectRatioControls(plan);
-    return;
-  }
-
-  const planArtifactId = animationPlanArtifactId(variant.id);
-  const planDependencyRefs = currentPlanDependencyRefs(variant.id);
-  const planToken = beginArtifactRequest(state.production, planArtifactId, crypto.randomUUID());
-  state.animationAspectRatioUpdating = true;
-  elements.animationAspectRatio.disabled = true;
-  document.querySelectorAll("[data-animation-aspect-ratio]").forEach((select) => { select.disabled = true; });
-  elements.animationGenerate.disabled = true;
-  setAnimationStatus(`正在把当前 Animation Plan 输出画幅切换为 ${ratio}…`, "active");
-  try {
-    const updatedPlan = withAnimationPlanAspectRatio(plan, ratio);
-    await commitProductionArtifact({
-      artifactId: planArtifactId,
-      artifactType: "animationPlan",
-      content: updatedPlan,
-      dependencyRefs: planDependencyRefs,
-      createMediaNamespace: true,
-      requestToken: planToken
-    });
-    state.animationPlans[variant.id] = updatedPlan;
-    state.output.animationPlans = state.animationPlans;
-    state.animationAspectRatioDrafts[variant.id] = ratio;
-    if (String(state.selectedVariantId || "") === String(variant.id)) {
-      state.output.animationPlan = updatedPlan;
-      renderAnimationPlan(updatedPlan);
-      setAnimationStatus(`输出画幅已切换为 ${ratio}；未调用模型，原镜头内容与时长保持不变。`, "ready");
-    }
-    updateStoryExportActions();
-  } catch (error) {
-    state.animationAspectRatioDrafts[variant.id] = currentRatio;
-    if (String(state.selectedVariantId || "") === String(variant.id)) {
-      renderAnimationPlan(plan);
-      setAnimationStatus(error.message || "画幅切换失败", "error");
-    }
-  } finally {
-    state.animationAspectRatioUpdating = false;
-    finishArtifactRequest(state.production, planToken);
-    const currentVariant = selectedVariant();
-    syncAnimationAspectRatioControls(currentVariant ? state.animationPlans[currentVariant.id] || null : null);
-    setAnimationRunning(false);
-  }
+  void plan;
+  elements.animationAspectRatio.value = state.animationAspectRatioDefault;
+  elements.animationAspectRatio.disabled = false;
 }
 
 function normalizeAnimationPlanResponse(result) {
@@ -1547,12 +1527,12 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
   const visual = data.visualBible || {};
   const directShotPlan = data.promptSchemaVersion === "3.0";
   const currentAspectRatio = normalizeAnimationPlanAspectRatio(strategy.targetAspectRatio);
-  const aspectRatioDraft = selectedAnimationAspectRatio(data.selectedVariantId);
+  const sharedPromptClauses = sharedVideoPromptClauses(data.shotPlan);
   const runtimeSummary = animationPlanRuntimeSummary(data);
   elements.animationPlan.innerHTML = `${resultHeader("ANIMATION PLAN", data.title || "动画镜头生产包", strategy.format || (directShotPlan ? "direct_shot_video" : "first_last_frame_video"))}
     <div class="summary-strip">${escape(strategy.whyThisWorkflow || (directShotPlan ? "镜头内容直接组织为视频生成指令。" : "按首尾帧拆镜头，逐镜生成短视频，优先控制角色一致性。"))}</div>
     <div class="data-grid">
-      ${animationAspectRatioCell(currentAspectRatio, aspectRatioDraft)}
+      ${cell("目标画幅", `${currentAspectRatio} · ${currentAspectRatio === "9:16" ? "竖屏" : "横屏"}`)}
       ${cell("镜头计划合计时长", formatAnimationPlanRuntime(runtimeSummary))}
       ${cell("单镜头", `${strategy.recommendedShotDurationSeconds?.min || 3}-${strategy.recommendedShotDurationSeconds?.max || 6} 秒`)}
       ${cell("动画风格", visual.animationStyle)}
@@ -1584,7 +1564,7 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
           ${renderShotFramePromptCard(shot.shotId, "start", "首帧 prompt", shot.startFramePrompt)}
           ${renderShotFramePromptCard(shot.shotId, "end", "尾帧 prompt", shot.endFramePrompt)}
         ` : ""}
-        <div class="prompt-card"><span class="prompt-label">视频 prompt</span><p>${escape(shot.videoPrompt)}</p></div>
+        <div class="prompt-card"><span class="prompt-label">视频 prompt</span><p class="video-prompt-body">${renderVideoPromptBody(shot.videoPrompt, sharedPromptClauses)}</p></div>
         ${hasPlannedEndpoints(shot) ? renderShotNegativePromptCard(shot, "image", "图片负面提示词") : ""}
         ${renderShotNegativePromptCard(shot, "video", "视频负面提示词")}
       </div>
@@ -1629,15 +1609,40 @@ function renderVideoPromptProfileCell(plan = {}) {
   return cell("视频提示词", "Plan Profile 无效 · 已阻止自动判断");
 }
 
-function animationAspectRatioCell(currentRatio, draftRatio) {
-  const options = ANIMATION_PLAN_ASPECT_RATIOS.map((ratio) => (
-    `<option value="${escape(ratio)}"${ratio === draftRatio ? " selected" : ""}>${escape(ratio)} · ${ratio === "9:16" ? "竖屏" : "横屏"}</option>`
-  )).join("");
-  return `<div class="data-cell aspect-ratio-cell">
-    <span>目标画幅</span>
-    <select data-animation-aspect-ratio aria-label="动画目标画幅"${state.animationAspectRatioUpdating ? " disabled" : ""}>${options}</select>
-    <small>当前计划已应用 ${escape(currentRatio)}；切换不会重写镜头</small>
-  </div>`;
+// 视频提示词里，风格、光线、锁定外观、签发的无配乐句这类模板内容会在每个镜头逐字重复；
+// 只在本镜出现的小句才是这条 shot 真正的内容。判定依据是跨镜重复次数，不维护关键词表——
+// 措辞完全由模型决定，写死一份词表必然既漏判又误伤。纯展示逻辑，不改任何字段。
+const SHARED_VIDEO_PROMPT_CLAUSE_MIN_SHOTS = 2;
+const VIDEO_PROMPT_CLAUSE_SPLIT = /([，。；！？\n]+)/u;
+
+function normalizeVideoPromptClause(value) {
+  return String(value || "").replace(/\s+/gu, " ").trim();
+}
+
+function sharedVideoPromptClauses(shotPlan = []) {
+  const counts = new Map();
+  (Array.isArray(shotPlan) ? shotPlan : []).forEach((shot) => {
+    const seen = new Set();
+    String(shot?.videoPrompt || "").split(VIDEO_PROMPT_CLAUSE_SPLIT).forEach((segment, index) => {
+      if (index % 2) return;
+      const clause = normalizeVideoPromptClause(segment);
+      if (clause) seen.add(clause);
+    });
+    seen.forEach((clause) => counts.set(clause, (counts.get(clause) || 0) + 1));
+  });
+  return new Set([...counts.entries()]
+    .filter(([, count]) => count >= SHARED_VIDEO_PROMPT_CLAUSE_MIN_SHOTS)
+    .map(([clause]) => clause));
+}
+
+// 只加标记，不改一个字：分隔符原样保留，每段单独转义后再包 strong。
+function renderVideoPromptBody(prompt, sharedClauses = new Set()) {
+  return String(prompt || "").split(VIDEO_PROMPT_CLAUSE_SPLIT).map((segment, index) => {
+    if (index % 2) return escape(segment);
+    const clause = normalizeVideoPromptClause(segment);
+    if (!clause || sharedClauses.has(clause)) return escape(segment);
+    return `<strong>${escape(segment)}</strong>`;
+  }).join("");
 }
 
 function formatAnimationPlanRuntime(summary) {
@@ -1993,11 +1998,13 @@ async function refineCharacterReferenceWithImage(indexValue, file) {
       }
     });
     assertCurrentProductionRequest(planToken);
+    // boundaryWarning 只用于提醒展示，绝不写进 Plan Artifact。
+    const { boundaryWarning = "", ...refinedFields } = refined || {};
     const updatedPlan = structuredClone(plan);
     const previousInPlan = updatedPlan.characterReferencePrompts[index];
     const updated = {
       ...previousInPlan,
-      ...refined,
+      ...refinedFields,
       referenceImageAdded: true,
       referenceImageName: file.name,
       referenceImageDataUrl: imageDataUrl
@@ -2016,9 +2023,11 @@ async function refineCharacterReferenceWithImage(indexValue, file) {
     state.animationPlans[variant.id] = updatedPlan;
     state.output.animationPlans = state.animationPlans;
     state.output.animationPlan = updatedPlan;
-    state.characterReferenceStatuses[key] = { status: "ready", message: syncedShots ? `已更新人物描述，并同步 ${syncedShots} 个镜头` : "已更新人物描述" };
+    state.characterReferenceStatuses[key] = boundaryWarning
+      ? { status: "warn", message: boundaryWarning }
+      : { status: "ready", message: syncedShots ? `已更新人物描述，并同步 ${syncedShots} 个镜头` : "已更新人物描述" };
     renderAnimationPlan(updatedPlan);
-    setAnimationStatus(`${updated.characterName || "角色"} 已添加人物参考图，并更新了角色描述${syncedShots ? `，同步了 ${syncedShots} 个镜头提示词` : ""}。`, "ready");
+    setAnimationStatus(`${updated.characterName || "角色"} 已添加人物参考图，并更新了角色描述${syncedShots ? `，同步了 ${syncedShots} 个镜头提示词` : ""}。`, boundaryWarning ? "warn" : "ready");
     updateStoryExportActions();
   } catch (error) {
     const currentLineage = state.production.artifacts[planArtifactId];
@@ -2047,6 +2056,7 @@ function openCharacterImageGenerator() {
   state.characterImageGeneration.selectedIndex = Math.min(state.characterImageGeneration.selectedIndex || 0, items.length - 1);
   state.characterImageGeneration.count = Number(elements.characterImageCount.value) || 1;
   state.characterImageGeneration.results = [];
+  state.characterImageGeneration.boundaryWarning = "";
   elements.characterImageRole.innerHTML = items.map((item, index) => `<option value="${escape(index)}">${escape(item.characterName || `角色 ${index + 1}`)} · ${escape(item.storyRole || "角色参考")}</option>`).join("");
   elements.characterImageRole.value = String(state.characterImageGeneration.selectedIndex);
   elements.characterImageCount.value = String(state.characterImageGeneration.count);
@@ -2106,6 +2116,7 @@ async function generateCharacterReferenceImages() {
   const roleIndex = Number(elements.characterImageRole.value) || 0;
   state.characterImageGeneration.running = true;
   state.characterImageGeneration.count = count;
+  state.characterImageGeneration.boundaryWarning = "";
   state.characterImageGeneration.results = Array.from({ length: count }, (_, index) => ({ status: "loading", imageIndex: index }));
   renderCharacterImageResults();
   setCharacterImageRunning(true);
@@ -2141,7 +2152,12 @@ async function generateCharacterReferenceImages() {
         dependencyRefs: [planLineageRef]
       });
     }
-    setCharacterImageStatus(readyCount ? `已生成 ${readyCount} 张参考图，可选择一张设为人物参考图。` : "生成结束，但没有返回可用图片。", readyCount ? "ready" : "error");
+    const finalMessage = readyCount ? `已生成 ${readyCount} 张参考图，可选择一张设为人物参考图。` : "生成结束，但没有返回可用图片。";
+    const finalWarning = state.characterImageGeneration.boundaryWarning;
+    setCharacterImageStatus(
+      finalWarning ? `${finalMessage}${finalWarning}` : finalMessage,
+      readyCount ? (finalWarning ? "warn" : "ready") : "error"
+    );
   } catch (error) {
     if (error.code === "STALE_MEDIA_RESULT") {
       state.characterImageGeneration.results = [];
@@ -2170,6 +2186,11 @@ function handleCharacterImageStreamEvent(event) {
     const index = Number(event.imageIndex) || 0;
     state.characterImageGeneration.results[index] = { ...event, status: "error" };
     renderCharacterImageResults();
+    return;
+  }
+  if (event.type === "boundary-warning") {
+    state.characterImageGeneration.boundaryWarning = event.message || "";
+    if (event.message) setCharacterImageStatus(event.message, "warn");
     return;
   }
   if (event.type === "completed") {
@@ -3766,7 +3787,6 @@ function setAnimationRunning(running) {
       ? `按 ${draft} 重新生成动画镜头生产包`
       : `生成动画镜头生产包 · ${draft}`;
   elements.animationGenerate.disabled = running || !variant || !fullStory;
-  elements.animationAspectRatio.disabled = running || !variant;
   updateStoryExportActions();
 }
 function setStoryStatus(message, tone = "") {

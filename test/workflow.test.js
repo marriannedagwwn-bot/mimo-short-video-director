@@ -7,7 +7,7 @@ import path from "node:path";
 import { WorkflowService } from "../src/workflow.js";
 import { getConfig } from "../src/config.js";
 import { InputError, OutputContractError } from "../src/validation.js";
-import { CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS, ensureCharacterPromptMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile, extractFixedCharacterName, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms } from "../src/validation.js";
+import { CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS, characterPromptBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile, extractFixedCharacterName, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms } from "../src/validation.js";
 import { buildRequestBody, MimoClient, ModelResponseError, parseModelJson } from "../src/mimo-client.js";
 import { buildQwenRequestBody, QwenClient } from "../src/qwen-client.js";
 import { JimengImageClient, buildCharacterReferenceImagePrompt, buildJimengImageRequestBody, buildShotFrameImagePrompt } from "../src/jimeng-client.js";
@@ -1222,6 +1222,106 @@ test("人物参考图可用 MiMo 修正角色参考提示词", async () => {
   assert.equal(result.referenceImageName, "xiaobaizi.png");
   assert.match(result.appearancePrompt, /参考图中的小白子/);
   assert.ok(result.consistencyTags.includes("狼耳发饰"));
+});
+
+test("人物参考精修的边界偏差只回传提醒，参考图照常挂上，成片链路仍硬失败", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，狼耳少女，儿童体型",
+    constraints: "保持治愈风格",
+    vertical: "温馨/日常/治愈"
+  };
+  const workflow = new WorkflowService({
+    client: {
+      async generateJsonWithMedia() {
+        return {
+          characterName: "小白子",
+          storyRole: "主角",
+          identity: "村里的热心帮手",
+          appearancePrompt: "参考图中的小白子，短发，粉色上衣和蓝色背带裙，儿童比例。",
+          consistencyTags: ["短发", "粉色上衣", "蓝色背带裙"],
+          forbiddenChanges: ["不要变成成人"],
+          referenceImageNotes: "吸收参考图中的服装配色和年龄感。"
+        };
+      }
+    }
+  });
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const context = globalBoundaryContext(workflow, {
+    imageName: "xiaobaizi.png",
+    imageDataUrl: "data:image/png;base64,AA==",
+    creatorProfile,
+    creativeBrief,
+    selectedVariant: { id: "V1", title: "风车与彩虹" },
+    fullStory: { title: "风车与彩虹" },
+    characterReference: {
+      characterName: "小白子",
+      storyRole: "主角",
+      identity: "狼耳少女",
+      appearancePrompt: "小白子，儿童，村民装扮。",
+      consistencyTags: ["儿童"],
+      forbiddenChanges: ["不要变成成人"]
+    }
+  }, xiaobaiziBoundary());
+
+  const result = await workflow.refineCharacterReference(context);
+
+  // 不再抛错：参考图照常挂上，用户不必重新上传。
+  assert.equal(result.referenceImageAdded, true);
+  assert.equal(result.referenceImageName, "xiaobaizi.png");
+  assert.match(result.appearancePrompt, /参考图中的小白子/u);
+  assert.match(result.boundaryWarning, /^模型输出未通过校验：characterReference 未沿用全局角色边界：缺少全局必需角色事实：/u);
+  assert.match(result.boundaryWarning, /狼耳/u);
+
+  // 同一份内容进入成片渲染链路时仍然硬失败，提醒不等于放行。
+  const { boundaryWarning, ...persisted } = result;
+  assert.equal(Object.hasOwn(persisted, "boundaryWarning"), false);
+  assert.throws(
+    () => ensureCharacterReferenceMatchesBoundary(persisted, context.visualGuardrails),
+    OutputContractError
+  );
+});
+
+test("边界合规的人物参考精修不带任何提醒字段", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，狼耳少女，儿童体型",
+    constraints: "保持治愈风格",
+    vertical: "温馨/日常/治愈"
+  };
+  const workflow = new WorkflowService({
+    client: {
+      async generateJsonWithMedia() {
+        return {
+          characterName: "小白子",
+          storyRole: "主角",
+          identity: "狼耳少女，村里的热心帮手",
+          appearancePrompt: "参考图中的小白子，狼耳与狼尾保持灰白色，粉色上衣和蓝色背带裙，儿童比例。",
+          consistencyTags: ["狼耳", "狼尾", "粉色上衣"],
+          forbiddenChanges: ["不要变成成人"],
+          referenceImageNotes: "吸收参考图中的服装配色。"
+        };
+      }
+    }
+  });
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const result = await workflow.refineCharacterReference(globalBoundaryContext(workflow, {
+    imageName: "xiaobaizi.png",
+    imageDataUrl: "data:image/png;base64,AA==",
+    creatorProfile,
+    creativeBrief,
+    selectedVariant: { id: "V1", title: "风车与彩虹" },
+    fullStory: { title: "风车与彩虹" },
+    characterReference: {
+      characterName: "小白子",
+      storyRole: "主角",
+      identity: "狼耳少女",
+      appearancePrompt: "小白子，狼耳少女，带狼尾。",
+      consistencyTags: ["狼耳", "狼尾"],
+      forbiddenChanges: ["不要变成成人"]
+    }
+  }, xiaobaiziBoundary()));
+
+  assert.equal(Object.hasOwn(result, "boundaryWarning"), false);
+  assert.equal(result.referenceImageAdded, true);
 });
 
 test("人物参考图更新后同步镜头里的角色外观描述", () => {
@@ -3652,6 +3752,30 @@ test("固定角色生成必须沿用全局事实，配角不继承主角边界�
     visualGuardrails,
     { requireRequiredTraits: false }
   ), /兽爪|狼爪|全局边界禁止特征/u);
+});
+
+test("角色提示词边界偏差可以只收集不抛错，短路分支与硬失败语义不变", () => {
+  const creatorProfile = { fixedCharacter: "小白子，狼耳少女", vertical: "治愈日常", constraints: "" };
+  const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
+  visualGuardrails.fixedCharacterBoundary = xiaobaiziBoundary();
+  const compliant = "小白子，狼耳少女，带狼尾的全身角色参考图。";
+  const missing = "小白子，短发少女的全身角色参考图。";
+
+  assert.equal(characterPromptBoundaryMismatch(compliant, visualGuardrails, { characterName: "小白子" }), "");
+  const mismatch = characterPromptBoundaryMismatch(missing, visualGuardrails, { characterName: "小白子" });
+  assert.match(mismatch, /^角色生成提示词未沿用全局角色边界：缺少全局必需角色事实：/u);
+  assert.match(mismatch, /狼尾/u);
+
+  // 收集器只是把同一条判定摊开，ensure 包装器对同一段文本仍然抛错。
+  assert.throws(
+    () => ensureCharacterPromptMatchesBoundary(missing, visualGuardrails, { characterName: "小白子" }),
+    InputError
+  );
+
+  // 三个短路分支逐字保留：无边界、多角色提示词、非固定角色。
+  assert.equal(characterPromptBoundaryMismatch(missing, {}, { characterName: "小白子" }), "");
+  assert.equal(characterPromptBoundaryMismatch(missing, visualGuardrails, { promptScope: "multi_character" }), "");
+  assert.equal(characterPromptBoundaryMismatch(missing, visualGuardrails, { characterName: "邻居奶奶" }), "");
 });
 
 test("角色生成边界允许否定提及但仍拒绝正向或转折后的禁止特征", () => {

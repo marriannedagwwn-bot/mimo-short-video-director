@@ -1,7 +1,11 @@
 import {
   ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION,
   ANIMATION_DIRECT_SHOT_MODE,
-  CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS
+  BACKGROUND_MUSIC_NONE,
+  CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS,
+  MINIMAX_H3_NO_MUSIC_SECTION,
+  NO_BACKGROUND_MUSIC_SENTENCE,
+  normalizeBackgroundMusicMode
 } from "./validation.js";
 import { resolveVideoPromptProfile, VIDEO_PROMPT_PROFILE_IDS } from "../public/video-prompt-profiles.js";
 
@@ -597,6 +601,10 @@ function mockDirectAnimationPlan(input) {
     || (input.videoPromptTarget ? resolveVideoPromptProfile(input.videoPromptTarget) : {})
   );
   const miniMaxH3 = videoPromptProfile.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3;
+  // 演示输出必须跟真实契约一致：开关缺省关闭，两个 Profile 各按自己的合法写法表达无配乐。
+  const noBackgroundMusic = normalizeBackgroundMusicMode(
+    input.backgroundMusicMode ?? input.backgroundMusicEnabled
+  ) === BACKGROUND_MUSIC_NONE;
   const directShots = legacy.shotPlan.map((shot) => {
     const sourceScene = (input.fullStory?.sceneScript || []).find(
       (scene) => String(scene?.sceneId || "") === String(shot.sourceSceneId || "")
@@ -649,7 +657,8 @@ function mockDirectAnimationPlan(input) {
       dialogue ? `${dialogue}；对白只作为声音，不渲染画面文字。` : "",
       soundDesign ? `${soundDesign}。` : "",
       continuityNotes ? `内部摄影段与前后镜头均保持${continuityNotes}。` : "",
-      `${stopCondition}。`
+      `${stopCondition}。`,
+      noBackgroundMusic ? NO_BACKGROUND_MUSIC_SENTENCE : ""
     ].filter(Boolean).join("");
     const h3Dialogue = (shot.motion?.audio?.dialogue || [])
       .map((item, index) => `${item.speaker || "The speaker"} (S${index + 1}) says, <d>[Chinese] ${item.text}</d>.`)
@@ -657,7 +666,9 @@ function mockDirectAnimationPlan(input) {
     const h3VideoPrompt = [
       `integrated_multimodal_description: [Shot 1] A clean 2.5D animated scene uses the signed visual style and stable physical lighting in ${environmentPrompt}. The locked character appearance remains unchanged while the character completes the signed action in order: ${characterAction}. ${cameraMotion ? `The camera executes ${cameraMotion} with restrained amplitude at a steady speed.` : "The camera remains stable."} ${visiblePerformance ? `The visible performance follows this progression: ${visiblePerformance}.` : ""} ${h3Dialogue} The action reaches its visible result within ${shot.durationSeconds} seconds and stops without adding another beat.`,
       `overall_soundscape: ${shot.motion?.audio?.ambience || "Natural room tone continues throughout the shot."} Physical action sounds remain synchronized with the visible movement.`,
-      `non_diegetic_music: ${shot.motion?.audio?.musicCue || "N/A"}`
+      `non_diegetic_music: ${noBackgroundMusic
+        ? MINIMAX_H3_NO_MUSIC_SECTION
+        : (shot.motion?.audio?.musicCue || MINIMAX_H3_NO_MUSIC_SECTION)}`
     ].join("\n\n");
     return {
       shotId: shot.shotId,

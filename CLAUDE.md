@@ -80,10 +80,12 @@ Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主�
 
 ### 2.3 拆镜规则
 
-- 场内拆镜**只依据** Full Story 的 `location` 与 `visibleAction` 中的人物主要动作目标。地点或主要动作目标变化时拆镜。
-- 同一地点、围绕同一主要动作目标构成完整叙事动作的连续阶段，保留为**一条**业务 shot；不得按动作动词机械拆分。
-- 景别、机位、构图、焦段、运镜、转场只决定已划定 shot **内部**的摄影/剪辑表达，**不得增加 `shotPlan[]`**。同一 `videoPrompt` 可按顺序描述中景跟随 → 关键动作特写 → 硬切 → 结尾宽景。
-- `shotAndSound` 与 `shootingNotes` **不是**镜头数量的事实源。每个 source scene 至少一镜。
+- 场内拆镜**只依据** Full Story 的 `location` 与 `visibleAction` 中的人物主要动作目标。**`visibleAction` 里有几个主要动作目标，就必须产出几个 shot**——这是正向产出要求，不是"允许拆"的许可。把两个以上主要动作目标塞进同一条 shot 属于错误输出。
+- 同一地点、围绕同一主要动作目标构成完整叙事动作的连续阶段，保留为**一条**业务 shot。
+- **只有三类变化不得触发拆镜**：① 景别/机位/构图/焦段/运镜/转场变化；② 同一主要动作目标内部的动作动词或连续阶段；③ 同一地点多人同步完成的同一个协作动作。除这三类之外，主要动作目标变化必须拆镜。摄影表达只决定已划定 shot **内部**的剪辑，**不得增加 `shotPlan[]`**；同一 `videoPrompt` 可按顺序描述中景跟随 → 关键动作特写 → 硬切 → 结尾宽景。
+- `shotAndSound` 与 `shootingNotes` **不是**镜头数量的事实源。
+- **每场镜头数下限是确定性硬约束**：`ceil(该 source scene 的 timeRange 秒数 / Foundation 已签发的单镜时长上限)`，由 `sceneMinimumShotCount()` 唯一计算，同时渲染进批次 Prompt 并在 `validateAnimationShotBatchOutput` 校验。`timeRange` 是该场应占多少成片时间的**权威**；它缺失或不可解析时退回既有下限 1，不失败也不推断场次时长。低于下限即 `OutputContractError`，且 direct_shot 对已解析候选**一律 fail closed，不整批重试**。一条 shot 装不下该场全部动作时，唯一正确做法是增加 shot，压缩、加速带过或省略动作都是错误输出。**该下限只作用于 direct_shot 主流程，旧 v2 兼容路径的镜头数语义不变。**
+- 分批生成时服务端把 `runtimeBudget`（已产出镜头数、已用秒数、前面各场脚本合计、本批脚本合计、全片脚本合计）喂进批次 Prompt，供模型判断进度。它**只是提示信息，不参与校验**，也不是任何字段的事实来源。
 - 时长：Seedance Profile 单镜 3–6 秒；MiniMax H3 Profile 单镜 4–6 秒整数（H3 运行时协议本身接受 4–15 秒整数，已有值不合法必须拒绝，不得钳制、补长或缩短）。
 - 内部摄影变化允许但不强制。**不得为了堆机位压缩、跳过或改写 `visibleAction`。**
 
@@ -98,6 +100,14 @@ Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主�
 - H3 提示词必须使用官方受控词表，模型自由发挥英文措辞会显著降低成片可控性：运镜取 `Zoom In/Out`、`Push In`/`Pull Out`、`Pan`、`Truck`、`Tilt`、`Pedestal`、`Arc Shot`、`Tracking Shot`、`Static Shot`、`Shake`、`POV`、`Roll`，并按需附 `with small/large amplitude` 与 `at slow/fast speed`；切点动词取官方五项；`[Shot 1]` 开头须出现官方风格词（`Cinematic`、`live-action`、`2D-animated`、`3D CG`、`claymation`、`watercolor`、`vintage film`）。时间戳只属于 `[Shot N]` 切点标记，不得内联写入镜内叙述。禁止十六进制色号等设计工具记法。任何 `<d>` 块之前（同一 `[Shot N]` 段内）必须出现稳定说话人 ID（确定性校验强制），旁白用精确短语 `says in an off-screen voiceover` 并紧接说明嘴唇闭合，对白跨切用 `<scenetrans>`、被结尾截断用 `<cutoff>`。`non_diegetic_music` 只写乐器、速度、节奏与动态，严禁抽象情绪词与情绪功能解释（确定性校验强制）。
 - H3 Prompt 契约固定到官方 `MiniMax-AI/MiniMax-H3` 仓库 commit `80365054c7fbaace01ed417076fecd532c1ae0e0` 的 `skills/h3-prompt-writing`。**不得自动跟随 HEAD**；升级必须同步改 `guideVersion`、文档、校验和测试。
 
+**`productionStrategy.backgroundMusicMode`** — 主题变体卡上的背景音乐开关，取值只有 `"none"` / `"allowed"`，**默认 `none`**。与 `videoPromptProfile` 同级：由服务端根据请求 `backgroundMusicEnabled` 签发，**模型不得输出、推断或修改**，回显即拒绝。
+
+- `none` 时两个 Profile 各用各的合法语法表达同一意图，**不得互换**：Seedance 的 `videoPrompt` 必须以 `全片无背景音乐，只保留现场环境声与动作声。` **逐字收尾**；MiniMax H3 的 `non_diegetic_music` 段必须**逐字为 `N/A`**（官方写法，`assertNonDiegeticMusicIsSoundDesign` 已接受）。往 H3 提示词末尾追加中文会同时违反非 Latin script 屏障与配乐段受控词表，属于错误实现。
+- 关闭的**只是背景音乐**，不是现场声：`overall_soundscape` 与 `soundDesign` 照常写环境声、物理动作声与对白。`soundDesign` 不做关键词禁用——那需要语义判断，会误伤「他哼起了歌」这类剧情内声音。
+- 校验点：批次走 `validateMiniMaxH3AnimationShotBatchPrompts`（H3 段）与 `validateSeedanceBackgroundMusicSentence`（Seedance 收尾句）；Profile 改写路径在语义审计**之前**跑同两个校验——方言改写只动措辞，**不授权顺手改变有无配乐**。`allowed` 时两个校验都不施加，行为与开关引入前完全一致。
+- 已有 Plan 时拨动开关**必须重新生成整个 Animation Plan**（与切换画幅不同，画幅不调用模型）：签发新 Plan revision 与 media namespace，递归 stale 该变体已生成的全部媒体。页面必须先明确征求同意，拒绝时开关回弹到 Plan 当前值，不改 Plan、不 stale 媒体。
+- Demo mock 与真实契约保持一致：`mockAnimationPlan` 按同一 `backgroundMusicMode` 产出合规提示词，不得出现 mock 通过而 live 失败的偏差。
+
 ### 2.5 切换镜头视频模型 / 切换画幅
 
 **切换模型**：页面先保留新的运行时选择，再比较目标 Profile 与已签发 `videoPromptProfile` 并询问是否重写。缺失 Profile 的旧 Plan 同样视为 mismatch，**禁止从 Prompt 文本、provider 或模型名反推**。
@@ -108,6 +118,9 @@ Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主�
 - 拒绝重写**不授权运行时方言降级**：`all_reference + MiniMax H3` 只允许消费 exact H3 Profile；Profile 缺失或仍为 Seedance 时，必须在 Context-IR 与视频供应商调用前明确失败。
 
 **切换画幅**：`targetAspectRatio` 只允许 `9:16` 或 `16:9`，首次生成锁入 `productionStrategy.targetAspectRatio` 并与 Foundation 一致。已有 Plan 切换画幅时**不调用模型、不重写 shot**，但必须签发新 Plan revision/media namespace 并 stale 旧画幅媒体。不得向 direct-shot 的 exact shot 增加 `aspectRatio`。页面计划总长由 `shotPlan[].durationSeconds` 合计派生，`targetRuntimeSeconds` 仍是上游目标，两者不得互相覆盖。
+
+- **画幅只在生成前选择。** 浏览器把画幅控件放在「设定创作宇宙」面板（`#animationAspectRatio`），它只是**新 Plan 的默认值**：写进 `state.animationAspectRatioDefault`，取值优先级为「该变体草稿 → 该变体已签发 Plan → 全局默认」。拨动它**不触碰任何已签发 Plan**——不签发 revision、不 stale 媒体。已生成的 Plan 卡片里画幅是**纯展示**（`data-cell`），不再提供就地切换的下拉框。
+- 因此当前浏览器**不暴露**「已有 Plan 就地切换画幅」这条路径；要换画幅只能重新生成 Plan。上面那条契约描述的仍是该操作一旦发生时必须满足的语义，`withAnimationPlanAspectRatio()`（`public/animation-plan-settings.js`）与其单元测试保留，随时可重新接回 UI。
 
 ### 2.6 视频生成模式
 
@@ -152,6 +165,7 @@ DeepSeek 模型 ID 只登记 `deepseek-v4-flash`（页面首选）与 `deepseek-
 
 - `Visual Guardrails` 是固定角色语义的**唯一生成阶段**。允许视觉模型结合用户设定、参考分析、脚本还原、创意简报与模型常识生成开放语义边界；**不得新增本地物种关键词字典替代模型判断**。
 - 服务端签发的 `fixedCharacterBoundary` 是后续 Variants、Legacy Full Story、Animation Plan、人物参考精修、角色图、视频生成，以及旧 v2 兼容路径的**唯一**固定角色事实来源。后续阶段不得重新解析 `creatorProfile.fixedCharacter`、重新推断关键词或生成第二份边界。
+- **执行力度分两档，事实来源不变。** 角色参考阶段——`/api/refine-character-reference` 的精修结果、`/api/generate-character-reference-images` 的 `characterReference` 与用户可编辑 prompt——遇到边界偏差**只提醒不阻断**：服务端仍按边界完整判定，把偏差原文放进响应 `boundaryWarning` 或 `boundary-warning` 流事件，浏览器以 `warn` 色展示并照常完成本次操作，用户不必重新上传。依据是本节已有的「用户明确肯定/否定 > 已签发模型推断」。`boundaryWarning` **只用于展示**，浏览器写回 Plan 前必须剥离，不进入 Artifact。成片渲染链路（`/api/generate-shot-video`、`shot-video-generator` 的 `effectiveVideoPrompt`、旧 v2 首尾帧 `/api/generate-shot-frame-image`）**仍然硬失败**：`ensureCharacterReferenceMatchesBoundary` / `ensureCharacterPromptMatchesBoundary` 逐字保留抛错语义，只提醒的那三处改调同一判定的收集器 `characterReferenceBoundaryMismatch` / `characterPromptBoundaryMismatch`（返回空串即合规）。判定规则只有一份，禁止另建第二套词表。
 - 生产环境必须校验 `boundarySignature`。**仅当**服务端显式配置 `WORKFLOW_RUNTIME_ENVIRONMENT=test|development` 且 `WORKFLOW_SIGNATURE_POLICY=test_package_unverified` 时可跳过 HMAC 比较（`sourceDigest` 与 `boundaryDigest` 仍必须匹配）。该策略**只能来自服务端环境，禁止由请求体控制**。
 - 冲突优先级：**用户明确肯定/否定 > 已签发模型推断**。无法消解的冲突必须阻断，不能静默选边。用户或权威上游数据改变后，旧边界必须失效并重新生成。
 

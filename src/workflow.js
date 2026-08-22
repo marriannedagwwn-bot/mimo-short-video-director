@@ -38,7 +38,7 @@ import {
 import { ModelCallCoordinator } from "./model-call-coordinator.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, animationFrameCameraFields, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCharacterReferenceMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText } from "./validation.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, MINIMAX_H3_NO_MUSIC_SECTION, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, animationMaxShotDurationSeconds, characterReferenceBoundaryMismatch, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, parseSceneTimeRangeSeconds, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText, sceneMinimumShotCount } from "./validation.js";
 import {
   resolveVideoPromptProfile,
   VIDEO_PROMPT_PROFILE_IDS
@@ -1220,6 +1220,8 @@ export class WorkflowService {
     }
     const directShotMode = animationPlanMode === ANIMATION_DIRECT_SHOT_MODE;
     const targetAspectRatio = requireAnimationPlanAspectRatio(input.targetAspectRatio || "9:16");
+    // 背景音乐开关缺省关闭，与主题变体卡上的默认状态一致。
+    const backgroundMusicMode = normalizeBackgroundMusicMode(input.backgroundMusicEnabled);
     const videoPromptProfile = directShotMode
       ? resolveDirectShotVideoPromptProfile(input.videoPromptTarget)
       : null;
@@ -1236,6 +1238,7 @@ export class WorkflowService {
       fullStory,
       visualGuardrails,
       targetAspectRatio,
+      backgroundMusicMode,
       ...(videoPromptProfile ? { videoPromptProfile } : {})
     };
     const settings = this.resolveStage("animationPlan", validatedInput);
@@ -1317,7 +1320,16 @@ export class WorkflowService {
         sourceScenes: batchScenes,
         batchIndex,
         shotIdStartIndex,
-        previousShotContext: animationContinuityContext(shotPlan.at(-1))
+        previousShotContext: animationContinuityContext(shotPlan.at(-1)),
+        // 分批生成时模型看不到全局进度：显式喂入已用秒数与脚本预算，
+        // 它才可能判断当前落后还是超前。纯提示信息，不参与校验。
+        runtimeBudget: {
+          plannedShotCount: shotPlan.length,
+          plannedSeconds: sumShotDurationSeconds(shotPlan),
+          scriptCompletedSeconds: sumSceneScriptSeconds(sceneBatches.slice(0, batchIndex).flat()),
+          batchScriptSeconds: sumSceneScriptSeconds(batchScenes),
+          scriptTotalSeconds: sumSceneScriptSeconds(sourceScenes)
+        }
       });
       const batchContext = {
         input: validatedInput,
@@ -1617,6 +1629,10 @@ export class WorkflowService {
       }))
     };
     assertOnlyAnimationVideoPromptsChanged(sourcePlan, rewrittenPlan, videoPromptProfile);
+    // 方言改写不授权顺手改变有无配乐：新提示词必须继续遵守当前 Plan 已签发的
+    // backgroundMusicMode，且各按目标 Profile 的合法写法表达。放在语义审计之前失败。
+    validateMiniMaxH3AnimationShotBatchPrompts(rewrittenPlan, rewrittenPlan, 0);
+    validateSeedanceBackgroundMusicSentence(rewrittenPlan, rewrittenPlan, 0);
     let animationPlan = validateAnimationPlanOutput(rewrittenPlan, validatedInput);
     // Validation may prune evidence that no longer matches a rewritten prompt.
     // Prompt-only retargeting is not authorized to silently mutate that evidence
@@ -1813,7 +1829,7 @@ function normalizeCharacterReference(result = {}, fallback = {}, input = {}) {
   const appearancePrompt = String(value.appearancePrompt || fallback.appearancePrompt || "").trim();
   if (!characterName) throw new OutputContractError("characterReference 缺少 characterName");
   if (!appearancePrompt) throw new OutputContractError("characterReference 缺少 appearancePrompt");
-  return ensureCharacterReferenceMatchesBoundary({
+  const normalized = {
     ...fallback,
     characterName,
     storyRole: String(value.storyRole || fallback.storyRole || "").trim(),
@@ -1824,7 +1840,11 @@ function normalizeCharacterReference(result = {}, fallback = {}, input = {}) {
     referenceImageAdded: true,
     referenceImageName: String(input.imageName || fallback.referenceImageName || "").trim(),
     referenceImageNotes: String(value.referenceImageNotes || value.imageAnalysis || fallback.referenceImageNotes || "").trim()
-  }, input.visualGuardrails);
+  };
+  // 人物参考精修是用户上传环节：边界偏差只随结果回传提醒，不阻断用户继续下一步。
+  // boundaryWarning 只用于展示，浏览器写回 Plan 前必须剥离，不进入 Artifact。
+  const boundaryWarning = characterReferenceBoundaryMismatch(normalized, input.visualGuardrails);
+  return boundaryWarning ? { ...normalized, boundaryWarning: `模型输出未通过校验：${boundaryWarning}` } : normalized;
 }
 
 function normalizeStringArray(value, fallback = []) {
@@ -1872,6 +1892,9 @@ function validateAnimationPlanOutput(result, input = {}) {
 function validateAnimationFoundationOutput(result, input = {}) {
   if (Object.prototype.hasOwnProperty.call(result?.productionStrategy || {}, "videoPromptProfile")) {
     throw new OutputContractError("animationFoundation.productionStrategy.videoPromptProfile 由服务端签发，模型不得输出");
+  }
+  if (Object.prototype.hasOwnProperty.call(result?.productionStrategy || {}, "backgroundMusicMode")) {
+    throw new OutputContractError("animationFoundation.productionStrategy.backgroundMusicMode 由服务端签发，模型不得输出");
   }
   const sourceSceneIds = (input.fullStory?.sceneScript || []).map((scene) => scene?.sceneId);
   const foundation = ensureAnimationFoundationContract(result, { sourceSceneIds });
@@ -1927,7 +1950,8 @@ function validateAnimationFoundationOutput(result, input = {}) {
     ...validatedFoundation,
     productionStrategy: {
       ...validatedFoundation.productionStrategy,
-      videoPromptProfile: structuredClone(input.videoPromptProfile)
+      videoPromptProfile: structuredClone(input.videoPromptProfile),
+      backgroundMusicMode: input.backgroundMusicMode || BACKGROUND_MUSIC_NONE
     }
   };
 }
@@ -2403,6 +2427,32 @@ function validateAnimationShotBatchOutput(result, {
     throw new OutputContractError(`animationShotBatch 未覆盖当前批次剧情场次：${missingScenes.join("、")}`);
   }
 
+  // 每场镜头数下限由该场 timeRange ÷ 单镜时长上限确定性推出。
+  // 低于下限说明该场的剧情动作被压进了太少的镜头，必须让模型重出，不得放行。
+  // 只作用于当前 direct_shot 主流程；旧 v2 兼容路径的镜头数语义不在本次授权范围内。
+  if (foundation?.promptSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
+  const maxShotDurationSeconds = animationMaxShotDurationSeconds(foundation);
+  const shotCountBySourceScene = batch.shotPlan.reduce((counts, shot) => {
+    const sceneId = String(shot?.sourceSceneId || "").trim();
+    counts.set(sceneId, (counts.get(sceneId) || 0) + 1);
+    return counts;
+  }, new Map());
+  sourceScenes.forEach((scene) => {
+    const sceneId = String(scene?.sceneId || "").trim();
+    if (!sceneId) return;
+    const minimumShots = sceneMinimumShotCount(scene, maxShotDurationSeconds);
+    const actualShots = shotCountBySourceScene.get(sceneId) || 0;
+    if (actualShots < minimumShots) {
+      const scriptSeconds = parseSceneTimeRangeSeconds(scene?.timeRange);
+      throw new OutputContractError(
+        `animationShotBatch 中 ${sceneId} 只产出 ${actualShots} 个 shot，`
+        + `脚本 timeRange ${scriptSeconds === null ? "未知" : `${scriptSeconds} 秒`} 要求至少 ${minimumShots} 个`
+        + `（单镜上限 ${maxShotDurationSeconds} 秒）。请按 visibleAction 的主要动作目标拆镜，不要把多个动作压进一条 shot。`
+      );
+    }
+  });
+  }
+
   const previousCount = previousShots.length;
   const pruned = pruneAnimationPlanNegativePrompts({ ...foundation, shotPlan: [...previousShots, ...batch.shotPlan] }, input);
   const checked = ensureAnimationPlanMatchesProfile(
@@ -2423,6 +2473,11 @@ function validateAnimationShotBatchOutput(result, {
     foundation,
     previousShots.length
   );
+  validateSeedanceBackgroundMusicSentence(
+    checkedBatch,
+    foundation,
+    previousShots.length
+  );
   return checkedBatch;
 }
 
@@ -2432,14 +2487,27 @@ function validateMiniMaxH3AnimationShotBatchPrompts(batch, foundation, shotIndex
     !== VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3
   ) return;
 
+  const noBackgroundMusic = foundation?.productionStrategy?.backgroundMusicMode === BACKGROUND_MUSIC_NONE;
   const failures = [];
   batch.shotPlan.forEach((shot, index) => {
+    const shotPath = `animationPlan.shotPlan[${shotIndexOffset + index}].videoPrompt`;
     try {
-      assertMiniMaxH3BasePrompt(shot.videoPrompt, {
+      const parsed = assertMiniMaxH3BasePrompt(shot.videoPrompt, {
         durationSeconds: shot.durationSeconds,
-        path: `animationPlan.shotPlan[${shotIndexOffset + index}].videoPrompt`,
+        path: shotPath,
         dialogueTexts: miniMaxH3DialogueTexts(shot.dialogueOrSubtitle)
       });
+      // 用户关闭背景音乐时，H3 只接受官方的 N/A 写法；其它措辞一律拒绝。
+      if (noBackgroundMusic) {
+        const music = String(parsed.sections?.non_diegetic_music || "").trim();
+        if (music !== MINIMAX_H3_NO_MUSIC_SECTION) {
+          failures.push({
+            message: `${shotPath} 的 non_diegetic_music 必须逐字为 ${MINIMAX_H3_NO_MUSIC_SECTION}`
+              + `（用户已关闭背景音乐），当前为：${music || "空"}`,
+            details: []
+          });
+        }
+      }
     } catch (error) {
       if (!(error instanceof MiniMaxH3PromptError)) throw error;
       failures.push({
@@ -2453,6 +2521,23 @@ function validateMiniMaxH3AnimationShotBatchPrompts(batch, foundation, shotIndex
     failures.map((failure) => failure.message).join("；"),
     failures.flatMap((failure) => failure.details)
   );
+}
+
+// 用户关闭背景音乐时，Seedance videoPrompt 必须以签发的那句中文逐字收尾。
+// H3 走官方的 non_diegetic_music: N/A，不适用这条，由上面的 H3 校验负责。
+function validateSeedanceBackgroundMusicSentence(batch, foundation, shotIndexOffset = 0) {
+  if (foundation?.productionStrategy?.backgroundMusicMode !== BACKGROUND_MUSIC_NONE) return;
+  if (
+    foundation?.productionStrategy?.videoPromptProfile?.profileId
+    === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3
+  ) return;
+  batch.shotPlan.forEach((shot, index) => {
+    if (String(shot?.videoPrompt || "").trim().endsWith(NO_BACKGROUND_MUSIC_SENTENCE)) return;
+    throw new OutputContractError(
+      `animationPlan.shotPlan[${shotIndexOffset + index}].videoPrompt 必须以「${NO_BACKGROUND_MUSIC_SENTENCE}」`
+      + "逐字收尾（用户已关闭背景音乐）。"
+    );
+  });
 }
 
 function resolveExplicitAnimationPrimaryCharacterName(input = {}, foundation = {}, {
@@ -2980,6 +3065,26 @@ function mergeAnimationPlan(foundation, shotPlan, input = {}) {
         : "全部逐镜 shotPlan 已在服务端合并并通过最终契约校验，可进入图片与视频生成。"
     }
   };
+}
+
+function sumShotDurationSeconds(shots) {
+  return (Array.isArray(shots) ? shots : []).reduce((total, shot) => {
+    const duration = Number(shot?.durationSeconds);
+    return Number.isFinite(duration) ? total + duration : total;
+  }, 0);
+}
+
+// 任意一场 timeRange 不可解析就返回 null：宁可不显示预算，也不给出半真的合计。
+function sumSceneScriptSeconds(scenes) {
+  const list = Array.isArray(scenes) ? scenes : [];
+  if (!list.length) return 0;
+  let total = 0;
+  for (const scene of list) {
+    const seconds = parseSceneTimeRangeSeconds(scene?.timeRange);
+    if (seconds === null) return null;
+    total += seconds;
+  }
+  return total;
 }
 
 function animationContinuityContext(shot) {
