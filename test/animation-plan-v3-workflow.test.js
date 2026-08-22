@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { mockAnimationPlan, mockBrief, mockFullStory } from "../src/mock.js";
 import { WorkflowService } from "../src/workflow.js";
 import { withGlobalCharacterBoundary } from "./helpers/global-character-boundary.js";
-import { assertMiniMaxH3BasePrompt, miniMaxH3DialogueTexts } from "../src/minimax-h3-prompt.js";
 import { ARTIFACT_PARTIAL_REPAIR_SCHEMA_VERSION } from "../src/artifact-partial-repair.js";
 import { pruneAnimationPlanNegativePrompts } from "../src/validation.js";
 
@@ -137,23 +136,6 @@ function foundationFrom(plan) {
     )];
   });
   return foundation;
-}
-
-function miniMaxH3PromptForShot(shot) {
-  const dialogue = miniMaxH3DialogueTexts(shot.dialogueOrSubtitle)
-    .map((line, index) => `The signed speaker (S${index + 1}) says, <d>[Chinese] ${line}</d>.`)
-    .join(" ");
-  return `integrated_multimodal_description: [Shot 1] The signed character remains in the locked Animation Plan location with the authorized wardrobe and props, performs the complete planned action chain in its exact order, follows the specified camera sequence, and holds the stated visible final state. ${dialogue}`.trim()
-    + `\noverall_soundscape: The signed diegetic ambience, action sounds, and spoken lines remain synchronized with every visible action.\nnon_diegetic_music: N/A`;
-}
-
-function miniMaxH3RewriteForPlan(plan) {
-  return {
-    videoPrompts: plan.shotPlan.map((shot) => ({
-      shotId: shot.shotId,
-      videoPrompt: miniMaxH3PromptForShot(shot)
-    }))
-  };
 }
 
 function animationVideoPromptSemanticAuditPayload(prompt) {
@@ -371,6 +353,16 @@ function withSingleShotSceneTimeRanges(fullStory) {
   return story;
 }
 
+// 方言只有一种：改写产出的是全新的 Seedance 中文提示词，而不是另一套段落格式。
+function seedanceRewriteForPlan(plan) {
+  return {
+    videoPrompts: plan.shotPlan.map((shot) => ({
+      shotId: shot.shotId,
+      videoPrompt: `温暖治愈的手绘动画质感。${shot.characterAction}。镜头按动作顺序执行${shot.cameraMotion}。在 ${shot.durationSeconds} 秒内完成后立即停止。`
+    }))
+  };
+}
+
 test("live direct_shot 保留模型视频字段且完全绕过三个编译阶段", async () => {
   let foundation;
   let batch;
@@ -409,564 +401,6 @@ test("live direct_shot 保留模型视频字段且完全绕过三个编译阶段
   assert.equal(metadata.staticFrameCompiler.disabled, true);
   assert.deepEqual(metadata.staticFrameCompiler.runs, []);
   assert.equal(metadata.localPromptCompiler.disabled, true);
-});
-
-test("live 首次选择 MiniMax H3 时生成英文 Base Prompt、锁定 4–6 秒并完成独立语义审计", async () => {
-  let foundation;
-  let batch;
-  const { workflow, animationCalls, staticProviderCalls } = createLiveWorkflow((args, callNumber) => {
-    if (/ANIMATION_VIDEO_PROMPT_(?:INITIAL|REWRITE)_SEMANTIC_AUDIT_V2/u.test(args.prompt)) {
-      return passingAnimationVideoPromptSemanticAudit(args.prompt);
-    }
-    if (callNumber === 1) return structuredClone(foundation);
-    if (callNumber === 2) return structuredClone(batch);
-    throw new Error(`H3 首次生成出现意外的第 ${callNumber} 次模型调用`);
-  });
-  const context = {
-    ...fixture(workflow),
-    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
-  };
-  delete context.videoPromptProfile;
-  const modelPlan = mockAnimationPlan(context);
-  foundation = foundationFrom(modelPlan);
-  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
-  batch.shotPlan.forEach((shot) => {
-    shot.videoPrompt = miniMaxH3PromptForShot(shot);
-  });
-
-  const { animationPlan, metadata } = await workflow.createAnimationPlanWithMetadata(context);
-
-  assert.equal(animationCalls.length, 3);
-  assert.equal(staticProviderCalls.length, 0);
-  assert.match(animationCalls[2].prompt, /ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2/u);
-  assert.equal(animationPlan.productionStrategy.videoPromptProfile.profileId, "minimax_h3");
-  assert.deepEqual(animationPlan.productionStrategy.recommendedShotDurationSeconds, { min: 4, max: 6 });
-  animationPlan.shotPlan.forEach((shot) => {
-    assert.ok(shot.durationSeconds >= 4 && shot.durationSeconds <= 6);
-    assert.doesNotThrow(() => assertMiniMaxH3BasePrompt(shot.videoPrompt, {
-      durationSeconds: shot.durationSeconds,
-      dialogueTexts: miniMaxH3DialogueTexts(shot.dialogueOrSubtitle)
-    }));
-    assert.doesNotMatch(shot.videoPrompt, /<(?:Picture|Video|Audio)\s+\d+>/u);
-  });
-  assert.equal(metadata.videoPromptSemanticAudit.verdict, "pass");
-});
-
-test("H3 语义审计只重写受影响 videoPrompt，并复审目标镜头与相邻镜头后再签发", async () => {
-  let foundation;
-  let batch;
-  let repairedPrompt;
-  let auditRound = 0;
-  let reviewAuditPayload;
-  let semanticRepairPrompt = "";
-  const debug = partialRepairDebugSpy("semantic-repair-debug");
-  const { workflow, animationCalls, staticProviderCalls } = createLiveWorkflow((args, callNumber) => {
-    if (/ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2/u.test(args.prompt)) {
-      auditRound += 1;
-      if (auditRound === 2) {
-        reviewAuditPayload = animationVideoPromptSemanticAuditPayload(args.prompt);
-      }
-      return auditRound === 1
-        ? failingVideoPromptAnimationSemanticAudit(args.prompt)
-        : passingAnimationVideoPromptSemanticAudit(args.prompt);
-    }
-    if (/ANIMATION_VIDEO_PROMPT_SEMANTIC_REPAIR_V1/u.test(args.prompt)) {
-      semanticRepairPrompt = args.prompt;
-      return animationVideoPromptSemanticRepairEnvelope(args.prompt, [repairedPrompt]);
-    }
-    if (callNumber === 1) return structuredClone(foundation);
-    if (callNumber === 2) return structuredClone(batch);
-    throw new Error(`H3 语义有界修复出现意外的第 ${callNumber} 次模型调用`);
-  }, { partialRepairDebugWriter: debug.writer });
-  const context = {
-    ...fixture(workflow),
-    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
-  };
-  delete context.videoPromptProfile;
-  const modelPlan = mockAnimationPlan(context);
-  foundation = foundationFrom(modelPlan);
-  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
-  batch.shotPlan.forEach((shot) => {
-    shot.videoPrompt = miniMaxH3PromptForShot(shot);
-  });
-  const originalBatch = structuredClone(batch);
-  repairedPrompt = batch.shotPlan[0].videoPrompt.replace(
-    "follows the specified camera sequence",
-    "executes every signed camera beat in the specified order"
-  );
-
-  const { animationPlan, metadata } = await workflow.createAnimationPlanWithMetadata(context);
-
-  assert.equal(animationCalls.length, 5, "Foundation + batch + audit + one repair + one re-audit");
-  assert.equal(staticProviderCalls.length, 0);
-  assert.equal(auditRound, 2);
-  assert.deepEqual(reviewAuditPayload.shots.map((shot) => shot.shotId), ["A01", "A02"]);
-  assert.ok(reviewAuditPayload.shots[0].authorityFacts.some(
-    (fact) => fact.field === "adjacent.nextShot" && fact.value.shotId === "A02"
-  ));
-  assert.ok(reviewAuditPayload.shots[1].authorityFacts.some(
-    (fact) => fact.field === "adjacent.previousShot" && fact.value.shotId === "A01"
-  ));
-  assert.match(semanticRepairPrompt, /ANIMATION_VIDEO_PROMPT_SEMANTIC_REPAIR_V1/u);
-  const providerPayload = animationVideoPromptSemanticRepairPayload(semanticRepairPrompt);
-  assert.equal(providerPayload.targets.length, 1);
-  assert.equal(providerPayload.targets[0].currentValue, originalBatch.shotPlan[0].videoPrompt);
-  for (const privateField of ["path", "baseDigest", "authorityDigest", "mutablePointers"]) {
-    assert.equal(Object.hasOwn(providerPayload.targets[0], privateField), false);
-  }
-  assert.equal(animationPlan.shotPlan[0].videoPrompt, repairedPrompt);
-  assert.deepEqual(animationPlan.shotPlan.slice(1), originalBatch.shotPlan.slice(1));
-  assert.deepEqual(
-    animationPlan.shotPlan.map((shot) => {
-      const clone = structuredClone(shot);
-      delete clone.videoPrompt;
-      return clone;
-    }),
-    originalBatch.shotPlan.map((shot) => {
-      const clone = structuredClone(shot);
-      delete clone.videoPrompt;
-      return clone;
-    })
-  );
-  assert.deepEqual(metadata.videoPromptSemanticAudit.repairedShotIds, ["A01"]);
-  assert.deepEqual(
-    metadata.videoPromptSemanticAudit.reviewedShotIds,
-    originalBatch.shotPlan.map((shot) => shot.shotId)
-  );
-  assert.deepEqual(metadata.videoPromptSemanticAudit.reReviewedShotIds, ["A01", "A02"]);
-  assert.equal(metadata.videoPromptSemanticAudit.rounds, 2);
-  assert.deepEqual(debug.events.map((event) => event.phase), ["begin", "response", "result"]);
-  assert.equal(debug.events[0].payload.stage, "animationVideoPromptSemanticRepair");
-  assert.equal(debug.events[2].result.status, "repaired");
-});
-
-test("live H3 初始 batch 缺两个 section 时只局部修复 videoPrompt，随后才执行语义审计", async () => {
-  const fullStorySentinel = "UNRELATED_FULL_STORY_SENTINEL";
-  const completePlanSentinel = "UNRELATED_COMPLETE_PLAN_SENTINEL";
-  const otherShotSentinel = "UNRELATED_OTHER_SHOT_SENTINEL";
-  let foundation;
-  let batch;
-  let repairedPrompt;
-  let preservedIntegratedBody;
-  let repairPrompt = "";
-  const debug = partialRepairDebugSpy("h3-debug");
-  const { workflow, animationCalls, staticProviderCalls } = createLiveWorkflow((args, callNumber) => {
-    if (/ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2/u.test(args.prompt)) {
-      return passingAnimationVideoPromptSemanticAudit(args.prompt);
-    }
-    if (/ARTIFACT_PARTIAL_REPAIR_V1/u.test(args.prompt)) {
-      repairPrompt = args.prompt;
-      return partialRepairEnvelope(args.prompt, [repairedPrompt]);
-    }
-    if (callNumber === 1) return structuredClone(foundation);
-    if (callNumber === 2) return structuredClone(batch);
-    throw new Error(`H3 有界纠错出现意外的第 ${callNumber} 次模型调用`);
-  }, { partialRepairDebugWriter: debug.writer });
-  const context = {
-    ...fixture(workflow),
-    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
-  };
-  delete context.videoPromptProfile;
-  context.fullStory.shootingSynopsis = `${context.fullStory.shootingSynopsis} ${fullStorySentinel}`;
-  const modelPlan = mockAnimationPlan(context);
-  foundation = foundationFrom(modelPlan);
-  foundation.title = completePlanSentinel;
-  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
-  batch.shotPlan.forEach((shot) => {
-    shot.videoPrompt = miniMaxH3PromptForShot(shot);
-  });
-  batch.shotPlan[1].videoPrompt = batch.shotPlan[1].videoPrompt.replace(
-    "The signed character",
-    `${otherShotSentinel} The signed character`
-  );
-  repairedPrompt = miniMaxH3PromptForShot(batch.shotPlan[0]);
-  preservedIntegratedBody = assertMiniMaxH3BasePrompt(repairedPrompt, {
-    durationSeconds: batch.shotPlan[0].durationSeconds,
-    dialogueTexts: miniMaxH3DialogueTexts(batch.shotPlan[0].dialogueOrSubtitle)
-  }).sections.integrated_multimodal_description;
-  batch.shotPlan[0].videoPrompt = repairedPrompt.split("\noverall_soundscape:")[0];
-  const originalBatch = structuredClone(batch);
-
-  const { animationPlan, metadata } = await workflow.createAnimationPlanWithMetadata(context);
-
-  assert.equal(animationCalls.length, 4);
-  assert.equal(staticProviderCalls.length, 0);
-  assert.match(animationCalls[2].prompt, /ARTIFACT_PARTIAL_REPAIR_V1/u);
-  assert.match(animationCalls[3].prompt, /ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2/u);
-  assert.doesNotMatch(
-    repairPrompt,
-    new RegExp(`${fullStorySentinel}|${completePlanSentinel}|${otherShotSentinel}`, "u")
-  );
-  const repairPayload = partialRepairPayload(repairPrompt);
-  assert.equal(repairPayload.targets.length, 1);
-  assert.equal(repairPayload.targets[0].repairId, "R1");
-  for (const privateField of ["path", "mutablePointers", "currentDigest", "adapterState"]) {
-    assert.equal(
-      Object.hasOwn(repairPayload.targets[0], privateField),
-      false,
-      `repair payload 不得向模型暴露服务端私有字段 ${privateField}`
-    );
-  }
-  assert.equal(
-    repairPayload.targets[0].modelContext.preservedSections.integrated_multimodal_description,
-    preservedIntegratedBody,
-    "首轮已经合法的 integrated 正文必须作为不可改写内容进入有界 repair"
-  );
-  assert.equal(animationPlan.title, completePlanSentinel);
-  assert.equal(animationPlan.shotPlan[0].videoPrompt, repairedPrompt);
-  assert.equal(
-    assertMiniMaxH3BasePrompt(animationPlan.shotPlan[0].videoPrompt, {
-      durationSeconds: animationPlan.shotPlan[0].durationSeconds,
-      dialogueTexts: miniMaxH3DialogueTexts(animationPlan.shotPlan[0].dialogueOrSubtitle)
-    }).sections.integrated_multimodal_description,
-    preservedIntegratedBody,
-    "repair 只能补齐 sound/music，不能改写合法 integrated"
-  );
-  assert.equal(animationPlan.shotPlan[1].videoPrompt, batch.shotPlan[1].videoPrompt);
-  assert.deepEqual(
-    animationPlan.shotPlan.map((shot) => {
-      const copy = structuredClone(shot);
-      delete copy.videoPrompt;
-      return copy;
-    }),
-    originalBatch.shotPlan.map((shot) => {
-      const copy = structuredClone(shot);
-      delete copy.videoPrompt;
-      return copy;
-    })
-  );
-  assert.equal(metadata.videoPromptSemanticAudit.verdict, "pass");
-  assert.deepEqual(debug.events.map((event) => event.phase), ["begin", "response", "result"]);
-  assert.equal(debug.events[0].payload.stage, "animationShotPrompt");
-  assert.equal(debug.events[0].payload.repairPlan.targets[0].path, "/shotPlan/0/videoPrompt");
-  assert.equal(debug.events[2].result.status, "repaired");
-});
-
-test("live H3 batch 同时缺剧情场次覆盖与 Prompt section 时先 coverage fail，不签发局部修复", async () => {
-  let foundation;
-  let batch;
-  const debug = partialRepairDebugSpy("must-not-start");
-  const { workflow, animationCalls, staticProviderCalls } = createLiveWorkflow((args, callNumber) => {
-    if (/ARTIFACT_PARTIAL_REPAIR_V1/u.test(args.prompt)) {
-      throw new Error("coverage 失败后不得发起 H3 局部修复");
-    }
-    if (/ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2/u.test(args.prompt)) {
-      throw new Error("coverage 失败后不得执行 H3 语义审计");
-    }
-    if (callNumber === 1) return structuredClone(foundation);
-    if (callNumber === 2) return structuredClone(batch);
-    throw new Error(`coverage 优先级测试出现意外的第 ${callNumber} 次模型调用`);
-  }, { partialRepairDebugWriter: debug.writer });
-  const context = {
-    ...fixture(workflow),
-    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
-  };
-  delete context.videoPromptProfile;
-  const modelPlan = mockAnimationPlan(context);
-  foundation = foundationFrom(modelPlan);
-  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
-  batch.shotPlan.forEach((shot) => {
-    shot.videoPrompt = miniMaxH3PromptForShot(shot);
-  });
-  batch.shotPlan[0].videoPrompt =
-    "integrated_multimodal_description: [Shot 1] The signed action reaches its visible final state.";
-  const missingSourceSceneId = batch.shotPlan.at(-1).sourceSceneId;
-  batch.shotPlan.pop();
-
-  await assert.rejects(
-    () => workflow.createAnimationPlanWithMetadata(context),
-    new RegExp(`animationShotBatch 未覆盖当前批次剧情场次：${missingSourceSceneId}`, "u")
-  );
-
-  assert.equal(animationCalls.length, 2);
-  assert.equal(staticProviderCalls.length, 0);
-  assert.equal(
-    animationCalls.some((call) => /ARTIFACT_PARTIAL_REPAIR_V1/u.test(call.prompt)),
-    false
-  );
-  assert.equal(
-    animationCalls.some((call) => /ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2/u.test(call.prompt)),
-    false
-  );
-  assert.deepEqual(debug.events, [], "没有签发 repair plan 时不得创建 debug session");
-});
-
-test("live H3 局部修复以 deterministic negative prune 后的 canonical batch 为不变基线", async () => {
-  const pruneSentinel = "H3_NEGATIVE_PROMPT_PRUNE_SENTINEL";
-  let foundation;
-  let batch;
-  let repairedPrompt;
-  let repairPrompt = "";
-  const { workflow, animationCalls } = createLiveWorkflow((args, callNumber) => {
-    if (/ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2/u.test(args.prompt)) {
-      return passingAnimationVideoPromptSemanticAudit(args.prompt);
-    }
-    if (/ARTIFACT_PARTIAL_REPAIR_V1/u.test(args.prompt)) {
-      repairPrompt = args.prompt;
-      return partialRepairEnvelope(args.prompt, [repairedPrompt]);
-    }
-    if (callNumber === 1) return structuredClone(foundation);
-    if (callNumber === 2) return structuredClone(batch);
-    throw new Error(`H3 canonical baseline 测试出现意外的第 ${callNumber} 次模型调用`);
-  });
-  const context = {
-    ...fixture(workflow),
-    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
-  };
-  delete context.videoPromptProfile;
-  const modelPlan = mockAnimationPlan(context);
-  foundation = foundationFrom(modelPlan);
-  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
-  batch.shotPlan.forEach((shot) => {
-    shot.videoPrompt = miniMaxH3PromptForShot(shot);
-  });
-  repairedPrompt = miniMaxH3PromptForShot(batch.shotPlan[0]);
-  batch.shotPlan[0].videoPrompt = repairedPrompt.split("\noverall_soundscape:")[0];
-  batch.shotPlan[0].negativePrompts.video.push({
-    text: pruneSentinel,
-    appliesTo: "video",
-    triggerEvidence: [{
-      sourcePath: `animationPlan.shotPlan[${batch.shotPlan[0].shotId}].videoPrompt`,
-      evidence: "EVIDENCE_NOT_PRESENT_IN_THE_SIGNED_PROMPT"
-    }],
-    reasonCode: "temporal_consistency_failure",
-    priority: "medium",
-    enabled: true
-  });
-  const originalBatch = structuredClone(batch);
-  const canonicalBaseline = pruneAnimationPlanNegativePrompts({
-    ...structuredClone(foundation),
-    shotPlan: structuredClone(batch.shotPlan)
-  }, context).shotPlan;
-
-  const { animationPlan } = await workflow.createAnimationPlanWithMetadata(context);
-
-  assert.equal(animationCalls.length, 4);
-  assert.match(repairPrompt, /ARTIFACT_PARTIAL_REPAIR_V1/u);
-  const repairPayload = partialRepairPayload(repairPrompt);
-  assert.deepEqual(
-    repairPayload.targets[0].modelContext.candidateShotFacts.negativePrompts,
-    canonicalBaseline[0].negativePrompts,
-    "repair 计划必须使用 prune 后的 canonical 镜头事实"
-  );
-  assert.equal(JSON.stringify(repairPayload).includes(pruneSentinel), false);
-  assert.equal(
-    originalBatch.shotPlan[0].negativePrompts.video.some((item) => item.text === pruneSentinel),
-    true,
-    "原始模型候选必须保持不变"
-  );
-  assert.equal(
-    animationPlan.shotPlan[0].negativePrompts.video.some((item) => item.text === pruneSentinel),
-    false
-  );
-  const withoutVideoPrompt = (shots) => shots.map((shot) => {
-    const clone = structuredClone(shot);
-    delete clone.videoPrompt;
-    return clone;
-  });
-  assert.deepEqual(
-    withoutVideoPrompt(animationPlan.shotPlan),
-    withoutVideoPrompt(canonicalBaseline),
-    "repair 后完整校验不得再改写 canonical baseline 中的非 videoPrompt 字段"
-  );
-  assert.equal(animationPlan.shotPlan[0].videoPrompt, repairedPrompt);
-});
-
-test("live H3 唯一一次局部 replacement 仍缺 section 时明确失败，不整批重试也不执行语义审计", async () => {
-  let foundation;
-  let batch;
-  const debug = partialRepairDebugSpy("h3-rejected-debug");
-  const { workflow, animationCalls } = createLiveWorkflow((args, callNumber) => {
-    if (/ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2/u.test(args.prompt)) {
-      throw new Error("坏 replacement 后不得执行 H3 语义审计");
-    }
-    if (/ARTIFACT_PARTIAL_REPAIR_V1/u.test(args.prompt)) {
-      return partialRepairEnvelope(args.prompt, [
-        "integrated_multimodal_description: [Shot 1] The signed action reaches its visible final state."
-      ]);
-    }
-    if (callNumber === 1) return structuredClone(foundation);
-    if (callNumber === 2) return structuredClone(batch);
-    throw new Error(`H3 坏 replacement 后出现意外的第 ${callNumber} 次模型调用`);
-  }, { partialRepairDebugWriter: debug.writer });
-  const context = {
-    ...fixture(workflow),
-    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
-  };
-  delete context.videoPromptProfile;
-  const modelPlan = mockAnimationPlan(context);
-  foundation = foundationFrom(modelPlan);
-  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
-  batch.shotPlan.forEach((shot) => {
-    shot.videoPrompt = miniMaxH3PromptForShot(shot);
-  });
-  batch.shotPlan[0].videoPrompt = miniMaxH3PromptForShot(
-    batch.shotPlan[0]
-  ).split("\noverall_soundscape:")[0];
-
-  await assert.rejects(
-    () => workflow.createAnimationPlanWithMetadata(context),
-    /有界局部纠错失败|H3.*section|H3 段落/u
-  );
-
-  assert.equal(animationCalls.length, 3);
-  assert.match(animationCalls[2].prompt, /ARTIFACT_PARTIAL_REPAIR_V1/u);
-  assert.equal(
-    animationCalls.some((call) => /ANIMATION_SHOT_BATCH_RETRY_V1/u.test(call.prompt)),
-    false
-  );
-  assert.equal(
-    animationCalls.some((call) => /ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2/u.test(call.prompt)),
-    false
-  );
-  assert.deepEqual(debug.events.map((event) => event.phase), ["begin", "response", "result"]);
-  assert.equal(debug.events[2].result.status, "rejected");
-});
-
-test("live H3 局部 repair envelope 含额外字段或错误 repairId 时原子终止且没有第三次 batch 调用", async (t) => {
-  const cases = [
-    {
-      name: "envelope 顶层额外字段",
-      corrupt: (value) => ({ ...value, unexpected: "forbidden" })
-    },
-    {
-      name: "repair item 夹带 path",
-      corrupt: (value) => ({
-        ...value,
-        repairs: [{ ...value.repairs[0], path: "/shotPlan/0/videoPrompt" }]
-      })
-    },
-    {
-      name: "错误 repairId",
-      corrupt: (value) => ({
-        ...value,
-        repairs: [{ ...value.repairs[0], repairId: "R999" }]
-      })
-    }
-  ];
-
-  for (const scenario of cases) {
-    await t.test(scenario.name, async () => {
-      let foundation;
-      let batch;
-      let repairedPrompt;
-      const { workflow, animationCalls, staticProviderCalls } = createLiveWorkflow((args, callNumber) => {
-        if (/ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2/u.test(args.prompt)) {
-          throw new Error("非法 repair envelope 后不得执行 H3 语义审计");
-        }
-        if (/ARTIFACT_PARTIAL_REPAIR_V1/u.test(args.prompt)) {
-          return scenario.corrupt(partialRepairEnvelope(args.prompt, [repairedPrompt]));
-        }
-        if (callNumber === 1) return structuredClone(foundation);
-        if (callNumber === 2) return structuredClone(batch);
-        throw new Error(`非法 repair envelope 后出现意外的第 ${callNumber} 次模型调用`);
-      });
-      const context = {
-        ...fixture(workflow),
-        videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
-      };
-      delete context.videoPromptProfile;
-      const modelPlan = mockAnimationPlan(context);
-      foundation = foundationFrom(modelPlan);
-      batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
-      batch.shotPlan.forEach((shot) => {
-        shot.videoPrompt = miniMaxH3PromptForShot(shot);
-      });
-      repairedPrompt = miniMaxH3PromptForShot(batch.shotPlan[0]);
-      batch.shotPlan[0].videoPrompt = repairedPrompt.split("\noverall_soundscape:")[0];
-      const originalBatch = structuredClone(batch);
-
-      await assert.rejects(
-        () => workflow.createAnimationPlanWithMetadata(context),
-        /有界局部纠错失败|只允许|repairId/u
-      );
-
-      assert.equal(animationCalls.length, 3, "foundation + 首轮 batch + 唯一 repair 后必须终止");
-      assert.match(animationCalls[2].prompt, /ARTIFACT_PARTIAL_REPAIR_V1/u);
-      assert.equal(
-        animationCalls.some((call) => /ANIMATION_SHOT_BATCH_RETRY_V1/u.test(call.prompt)),
-        false
-      );
-      assert.equal(
-        animationCalls.some((call) => /ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2/u.test(call.prompt)),
-        false
-      );
-      assert.deepEqual(batch, originalBatch, "失败 repair 不得回写首轮候选");
-      assert.equal(staticProviderCalls.length, 0);
-    });
-  }
-});
-
-test("live H3 integrated 自身非法或重复时 fail closed，默认两场首批当场停止", async (t) => {
-  const cases = [
-    {
-      name: "integrated 含未授权中文正文",
-      corrupt: (prompt) => prompt.replace(
-        "The signed character",
-        "温暖 The signed character"
-      )
-    },
-    {
-      name: "integrated heading 重复",
-      corrupt: (prompt) => `${prompt}\nintegrated_multimodal_description: [Shot 1] A duplicate body must not gain repair authority.`
-    }
-  ];
-
-  for (const scenario of cases) {
-    await t.test(scenario.name, async () => {
-      let foundation;
-      let firstBatch;
-      const { workflow, animationCalls, staticProviderCalls } = createLiveWorkflow((args, callNumber) => {
-        if (/ARTIFACT_PARTIAL_REPAIR_V1/u.test(args.prompt)) {
-          throw new Error("integrated 不可信时不得签发局部 repair");
-        }
-        if (callNumber === 1) return structuredClone(foundation);
-        if (callNumber === 2) return structuredClone(firstBatch);
-        throw new Error(`首批 fail closed 后出现意外的第 ${callNumber} 次模型调用`);
-      }, {
-        // Omit the constructor override and exercise WorkflowService's real
-        // production default of two source scenes per batch.
-        animationShotBatchSceneCount: null
-      });
-      const context = {
-        ...fixture(workflow),
-        videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
-      };
-      delete context.videoPromptProfile;
-      const modelPlan = mockAnimationPlan(context);
-      foundation = foundationFrom(modelPlan);
-      const firstSourceSceneIds = new Set(
-        context.fullStory.sceneScript.slice(0, 2).map((scene) => scene.sceneId)
-      );
-      firstBatch = {
-        shotPlan: structuredClone(modelPlan.shotPlan.filter(
-          (shot) => firstSourceSceneIds.has(shot.sourceSceneId)
-        ))
-      };
-      firstBatch.shotPlan.forEach((shot) => {
-        shot.videoPrompt = miniMaxH3PromptForShot(shot);
-      });
-      firstBatch.shotPlan[0].videoPrompt = scenario.corrupt(firstBatch.shotPlan[0].videoPrompt);
-
-      await assert.rejects(
-        () => workflow.createAnimationPlanWithMetadata(context),
-        /H3|英文|段落|section/u
-      );
-
-      assert.equal(animationCalls.length, 2, "foundation 与坏首批后必须停止，不能生成第二批");
-      assert.match(animationCalls[1].prompt, /批次：第 1 批/u);
-      assert.match(animationCalls[1].prompt, /本批允许的 sourceSceneId：S1、S2/u);
-      assert.equal(
-        animationCalls.some((call) => /批次：第 2 批/u.test(call.prompt)),
-        false
-      );
-      assert.equal(
-        animationCalls.some((call) => /ARTIFACT_PARTIAL_REPAIR_V1/u.test(call.prompt)),
-        false
-      );
-      assert.equal(staticProviderCalls.length, 0);
-    });
-  }
 });
 
 test("live Foundation 的特定发色与缺失角色事实只修固定角色子树并保持其余 Foundation", async () => {
@@ -1142,49 +576,6 @@ test("live Foundation replacement 改写未命中外观事实时记录 rejected 
   );
 });
 
-test("live H3 Foundation 同时有可修角色错误与非 4–6 秒范围时优先 fail closed，不签发 Foundation repair", async () => {
-  let invalidFoundation;
-  const debug = partialRepairDebugSpy("foundation-must-not-start");
-  const { workflow, animationCalls, staticProviderCalls } = createLiveWorkflow((args, callNumber) => {
-    if (/ARTIFACT_PARTIAL_REPAIR_V1/u.test(args.prompt)) {
-      throw new Error("Foundation 存在非局修 duration 错误时不得发起角色局部修复");
-    }
-    if (callNumber === 1) return structuredClone(invalidFoundation);
-    throw new Error(`Foundation 混合错误测试出现意外的第 ${callNumber} 次模型调用`);
-  }, { partialRepairDebugWriter: debug.writer });
-  const baseContext = {
-    ...fixture(workflow),
-    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
-  };
-  delete baseContext.videoPromptProfile;
-  const creatorProfile = {
-    ...baseContext.creatorProfile,
-    fixedCharacter: "阿岚，社区修理师，活泼可爱，懂事"
-  };
-  const context = withGlobalCharacterBoundary(workflow, {
-    ...baseContext,
-    creatorProfile
-  }, fixedCharacterRepairBoundary());
-  invalidFoundation = foundationFrom(mockAnimationPlan(context));
-  invalidFoundation.productionStrategy.recommendedShotDurationSeconds = { min: 3, max: 6 };
-  invalidFoundation.characterReferencePrompts[0].appearancePrompt =
-    "阿岚，社区修理师，保持既定身份与服装，特定发色";
-  invalidFoundation.characterReferencePrompts[0].consistencyTags = ["阿岚", "社区修理师", "同一服装"];
-
-  await assert.rejects(
-    () => workflow.createAnimationPlanWithMetadata(context),
-    /animationFoundation\.productionStrategy\.recommendedShotDurationSeconds 必须为 4–6 秒/u
-  );
-
-  assert.equal(animationCalls.length, 1);
-  assert.equal(staticProviderCalls.length, 0);
-  assert.equal(
-    animationCalls.some((call) => /ARTIFACT_PARTIAL_REPAIR_V1/u.test(call.prompt)),
-    false
-  );
-  assert.deepEqual(debug.events, [], "Foundation 未签发 repair plan 时不得创建 debug session");
-});
-
 test("direct_shot 拒绝 2.0 Animation Foundation", async () => {
   let v2Foundation;
   const { workflow, animationCalls, staticProviderCalls } = createLiveWorkflow(() => (
@@ -1232,7 +623,7 @@ test("live prompt-only rewrite 分别调用改写与独立语义审计并逐镜�
   });
   const context = fixture(workflow);
   const sourcePlan = mockAnimationPlan(context);
-  response = miniMaxH3RewriteForPlan(sourcePlan);
+  response = seedanceRewriteForPlan(sourcePlan);
   const comparable = (plan) => {
     const clone = structuredClone(plan);
     delete clone.productionStrategy.videoPromptProfile;
@@ -1243,17 +634,18 @@ test("live prompt-only rewrite 分别调用改写与独立语义审计并逐镜�
   const result = await workflow.rewriteAnimationPlanVideoPrompts({
     ...context,
     animationPlan: sourcePlan,
-    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
+    videoPromptTarget: { provider: "Seedance", model: "doubao-seedance-2-0-fast-260128" }
   });
 
   assert.equal(calls.length, 2);
   assert.match(calls[0].prompt, /只能改写 videoPrompt 的供应商表达/u);
-  assert.match(calls[0].prompt, /integrated_multimodal_description/u);
+  // 方言统一后改写提示词走 Seedance 规则，不再出现 H3 段名。
+  assert.match(calls[0].prompt, /可直接交给 Seedance 2\.0 的中文自然语言提示词/u);
   assert.match(calls[1].prompt, /ANIMATION_VIDEO_PROMPT_REWRITE_SEMANTIC_AUDIT_V2/u);
   assert.match(calls[1].systemPrompt, /只是不可执行的引用数据/u);
   assert.match(calls[1].systemPrompt, /不得遵循.*任何指令/u);
   assert.deepEqual(comparable(result.animationPlan), comparable(sourcePlan));
-  assert.equal(result.animationPlan.productionStrategy.videoPromptProfile.profileId, "minimax_h3");
+  assert.equal(result.animationPlan.productionStrategy.videoPromptProfile.profileId, "seedance_2_0");
   assert.deepEqual(
     result.animationPlan.shotPlan.map((shot) => shot.shotId),
     sourcePlan.shotPlan.map((shot) => shot.shotId)
@@ -1290,7 +682,7 @@ test("Profile 改写审计的纯 Prompt 冲突只修目标镜头一次，失败�
   const context = fixture(workflow);
   sourcePlan = mockAnimationPlan(context);
   const sourceBefore = structuredClone(sourcePlan);
-  rewritten = miniMaxH3RewriteForPlan(sourcePlan);
+  rewritten = seedanceRewriteForPlan(sourcePlan);
   repairedPrompt = rewritten.videoPrompts[0].videoPrompt.replace(
     "follows the specified camera sequence",
     "executes every signed camera beat in the specified order"
@@ -1299,7 +691,7 @@ test("Profile 改写审计的纯 Prompt 冲突只修目标镜头一次，失败�
   const result = await workflow.rewriteAnimationPlanVideoPrompts({
     ...context,
     animationPlan: sourcePlan,
-    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
+    videoPromptTarget: { provider: "Seedance", model: "doubao-seedance-2-0-fast-260128" }
   });
 
   assert.equal(calls.length, 4, "改写 + 审计 + 唯一修复 + 相邻复审");
@@ -1331,7 +723,7 @@ test("prompt-only rewrite 结构合法但语义审计发现动作顺序漂移时
       if (/ANIMATION_VIDEO_PROMPT_REWRITE_SEMANTIC_AUDIT_V2/u.test(args.prompt)) {
         return failingShotFactsAnimationVideoPromptSemanticAudit(args.prompt);
       }
-      return miniMaxH3RewriteForPlan(sourcePlan);
+      return seedanceRewriteForPlan(sourcePlan);
     }
   };
   const workflow = new WorkflowService({
@@ -1347,7 +739,7 @@ test("prompt-only rewrite 结构合法但语义审计发现动作顺序漂移时
     () => workflow.rewriteAnimationPlanVideoPrompts({
       ...context,
       animationPlan: sourcePlan,
-      videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
+      videoPromptTarget: { provider: "Seedance", model: "doubao-seedance-2-0-fast-260128" }
     }),
     /shot_facts\/story_action_reordered/u
   );
@@ -1499,42 +891,6 @@ test("开启背景音乐时不施加收尾句约束，带配乐的提示词照�
     animationPlan.shotPlan[0].videoPrompt.includes("全片无背景音乐"),
     false,
     "开启配乐时不得注入无配乐句"
-  );
-});
-
-test("关闭背景音乐时 H3 的 non_diegetic_music 非 N/A 明确失败", async () => {
-  let foundation;
-  let batch;
-  const { workflow } = createLiveWorkflow((args, callNumber) => {
-    if (/ANIMATION_VIDEO_PROMPT_(?:INITIAL|REWRITE)_SEMANTIC_AUDIT_V2/u.test(args.prompt)) {
-      return passingAnimationVideoPromptSemanticAudit(args.prompt);
-    }
-    if (callNumber === 1) return structuredClone(foundation);
-    return structuredClone(batch);
-  });
-  const context = {
-    ...fixture(workflow),
-    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
-  };
-  const modelPlan = mockAnimationPlan(context);
-  foundation = foundationFrom(modelPlan);
-  batch = {
-    shotPlan: modelPlan.shotPlan.map((shot) => ({
-      ...structuredClone(shot),
-      durationSeconds: 5,
-      videoPrompt: miniMaxH3PromptForShot(shot).replace(
-        "non_diegetic_music: N/A",
-        "non_diegetic_music: A soft piano figure at a slow tempo fading out on the final beat."
-      )
-    }))
-  };
-
-  await assert.rejects(
-    () => workflow.createAnimationPlanWithMetadata(context),
-    (error) => {
-      assert.match(error.message, /non_diegetic_music 必须逐字为 N\/A（用户已关闭背景音乐）/u);
-      return true;
-    }
   );
 });
 

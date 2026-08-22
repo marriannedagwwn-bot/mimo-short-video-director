@@ -1,7 +1,4 @@
-import {
-  VIDEO_PROMPT_PROFILE_IDS,
-  assertVideoPromptProfile
-} from "../public/video-prompt-profiles.js";
+import { assertVideoPromptProfile } from "../public/video-prompt-profiles.js";
 import {
   ARTIFACT_PARTIAL_REPAIR_SCHEMA_VERSION,
   createArtifactPartialRepairPlan,
@@ -11,11 +8,6 @@ import {
   ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SCHEMA_VERSION,
   assertValidatedAnimationVideoPromptSemanticAudit
 } from "./animation-video-prompt-semantic-audit.js";
-import {
-  MiniMaxH3PromptError,
-  assertMiniMaxH3BasePrompt,
-  miniMaxH3DialogueTexts
-} from "./minimax-h3-prompt.js";
 import { contentDigest } from "./production-lineage.js";
 import {
   OutputContractError,
@@ -50,13 +42,13 @@ const issueFields = Object.freeze([
  * that cannot make the final Plan valid.
  */
 export const animationVideoPromptSemanticRepairAdapter = Object.freeze({
-  id: "animationPlan/minimax-h3-semantic-video-prompt/1.0",
+  id: "animationPlan/semantic-video-prompt/1.0",
   maxTargets: ANIMATION_VIDEO_PROMPT_SEMANTIC_REPAIR_MAX_TARGETS,
 
   selectTargets({ candidate, diagnostics, context }) {
     if (Number(context.repairAttemptCount || 0) !== 0) return null;
     if (context.semanticAuditTrustToken !== semanticAuditTrustToken) return null;
-    if (!isTrustedH3DirectShotPlan(candidate)) return null;
+    if (!isTrustedDirectShotPlan(candidate)) return null;
     if (!isSignedCharacterBoundary(context.visualGuardrails?.fixedCharacterBoundary)) return null;
 
     const audit = context.audit;
@@ -100,8 +92,7 @@ export const animationVideoPromptSemanticRepairAdapter = Object.freeze({
         adapterState: {
           shotIndex,
           shotId: shot.shotId,
-          durationSeconds: shot.durationSeconds,
-          dialogueTexts: miniMaxH3DialogueTexts(shot.dialogueOrSubtitle)
+          durationSeconds: shot.durationSeconds
         }
       };
     });
@@ -123,18 +114,6 @@ export const animationVideoPromptSemanticRepairAdapter = Object.freeze({
       throw new OutputContractError(
         `Animation videoPrompt 语义修复 ${target.repairId} replacement 必须是非空字符串`
       );
-    }
-    try {
-      assertMiniMaxH3BasePrompt(replacement, {
-        durationSeconds: target.adapterState.durationSeconds,
-        path: target.path,
-        dialogueTexts: target.adapterState.dialogueTexts
-      });
-    } catch (error) {
-      if (error instanceof MiniMaxH3PromptError) {
-        throw new OutputContractError(error.message, error.details);
-      }
-      throw error;
     }
     return true;
   },
@@ -197,11 +176,11 @@ export function animationVideoPromptSemanticRepairPrompt(plan) {
   const payload = serializeAnimationVideoPromptSemanticRepairPlan(plan);
   return `ANIMATION_VIDEO_PROMPT_SEMANTIC_REPAIR_V1
 
-You perform one bounded MiniMax H3 video-prompt semantic repair operation.
+You perform one bounded video-prompt semantic repair operation.
 
 For each target, rewrite only currentValue as one complete replacement string. Resolve exactly the listed material diagnostics using that target's authority. The signed Full Story and fixed character facts have priority over Foundation appearance locks; the already-audited exactShotFacts then define this shot's rendering implementation. Foundation locks may refine appearance but never authorize a new character, prop, action, or story function.
 
-Keep all unrelated valid facts unchanged. The replacement must remain a valid MiniMax H3 Base/T2VA prompt with exactly these three English sections in order, each beginning on its own line: integrated_multimodal_description, overall_soundscape, non_diegetic_music. Preserve every signed original-language dialogue item verbatim inside <d>[Chinese] ...</d>. Do not add Plan-stage reference labels.
+Keep all unrelated valid facts unchanged. The replacement must remain one self-contained Chinese natural-language prompt that can be sent directly to the shot video model, in the same dialect as currentValue. Preserve every signed dialogue line verbatim. Do not add Plan-stage reference labels.
 
 Bounded input:
 ${JSON.stringify(payload)}
@@ -458,13 +437,11 @@ function projectAdjacentShot(shot) {
   };
 }
 
-function isTrustedH3DirectShotPlan(candidate) {
+function isTrustedDirectShotPlan(candidate) {
   try {
     ensureAnimationPlanDirectShotContract(candidate);
-    const profile = assertVideoPromptProfile(
-      candidate.productionStrategy?.videoPromptProfile
-    );
-    return profile.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3;
+    assertVideoPromptProfile(candidate.productionStrategy?.videoPromptProfile);
+    return true;
   } catch {
     return false;
   }

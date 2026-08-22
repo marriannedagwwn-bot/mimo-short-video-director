@@ -3081,11 +3081,7 @@ async function confirmGenerateShotVideo() {
   const shotId = state.shotVideoGeneration.shotId;
   const context = shotFrameContext(shotId);
   if (!context) return setShotVideoStatus("没有找到对应镜头。", "error");
-  const promptOverride = runtimePromptOverride(
-    prompt,
-    context.shot.videoPrompt,
-    context.plan.productionStrategy?.videoPromptProfile
-  );
+  const promptOverride = runtimePromptOverride(prompt);
   const validation = await evaluateShotVideoReferences(shotId);
   if (!validation.ok) return setShotVideoStatus(validation.message, "error");
   const count = Math.max(1, Math.min(4, Number(elements.shotVideoCount.value) || 1));

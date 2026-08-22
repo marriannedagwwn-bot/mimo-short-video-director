@@ -85,7 +85,7 @@ Animation Plan 全量模型输出日志遵循同一 lineage 隔离，但使用�
 
 `productionStrategy.videoPromptProfile` 和各镜 `videoPrompt` 属于 Animation Plan 内容，因此 Profile 改写不是运行时模型设置变化，也不能就地覆盖当前 Plan。用户拒绝“重新生成提示词”时不提交 Artifact，Plan revision/media namespace 与媒体状态均不变；用户确认后，服务端先证明只改变 `videoPrompt` 和 Profile，再执行逐镜证据绑定语义审计。纯 Prompt fail 可在提交前经过一次有界修复与相邻复审，但结构化 shot facts fail 不得修 Prompt。只有最终完整校验和审计 verdict=`pass` 都成功，才提交同一 `animationPlan:<variantId>` 的新 revision；协议错误、语义失败或其他改写错误均不得先提交或 stale 旧媒体，旧 Plan 继续 current。即使 Full Story 依赖未变，成功改写后的新 Plan digest/media namespace 也必须使依赖旧 Plan revision 的角色图、旧 v2 帧和视频递归 stale。
 
-首次 MiniMax H3 Plan 同样只有在 Foundation/shot 合并、完整契约校验、逐镜证据审计以及必要时唯一一次 Prompt 修复/复审全部成功后才能提交 `animationPlan:<variantId>` Artifact；任何中间失败均不得创建 Plan revision/media namespace。`metadata.videoPromptSemanticAudit` 只记录最终 pass、审计轮次、复审镜头与实际修复镜头，不写入 Plan 内容 digest，也不改变 Full Story、exact shot 或角色边界的事实来源。
+Animation Plan 同样只有在 Foundation/shot 合并、完整契约校验、逐镜证据审计以及必要的有界修复全部通过后，才作为一次 Artifact revision 提交；中间候选、修复中间态都不是 Artifact，也不是恢复数据。
 
 默认每个 `shotVideo` 只依赖当前 Animation Plan。若某镜请求显式使用 `continuityReferenceMode=previous_shot_frames`，它还必须依赖 Plan 顺序中紧邻上一镜的 current `shotVideo` 精确 revision/digest；服务端回执提供该 source lineage，浏览器提交媒体 Artifact 时冻结它。上一镜重生成或切换候选会签发新 revision，并递归使所有引用旧 revision 的后镜视频 stale。切换后镜自己的候选只是更新同一媒体 Artifact，必须原样保留已有依赖，不能退回为只依赖 Plan。
 
@@ -103,7 +103,6 @@ Animation Plan 全量模型输出日志遵循同一 lineage 隔离，但使用�
 
 模型返回后先检查浏览器内 request token；提交时服务端再检查目标 revision 与所有依赖是否仍为 current。较新的请求、Story 或 Plan 已经出现时，旧响应必须明确失败，不能选择任一版本静默覆盖。
 
-MiniMax H3 `all_reference` 的 Context-IR 是同一个 `shotVideo` 媒体请求内、仅在用户点击生成后执行的供应商计费异步编译步骤；保存或切换模型、取消 Profile 改写、仅打开弹窗都不能创建该任务。调用前除上述 Plan 冻结项外，还必须冻结有序 reference manifest 的素材角色、provider content 顺序、每项 SHA-256、manifest digest；启用上一镜时同时冻结其 current `shotVideo` 精确 revision/digest。Context-IR 返回后、提交视频生成前和媒体写回前都必须再次确认 Plan 与上一镜依赖仍为 current，且实际发送的引用 manifest 与编译时完全一致。任何检查失败都丢弃旧结果并明确失败，不能把过期六段式 Prompt 发给新 Plan 或另一组素材。
 
 合法反例：JSON 对象只调整键顺序时 digest 不变，应复用当前 revision。非法串线：Variant 仍叫 `V1`，但标题、角色或剧情内容已变化时 digest 必须变化，旧 Story/Plan 不能继续使用。
 
@@ -124,7 +123,6 @@ public/generated-videos/<mediaNamespace>/
 
 文件名也带 Plan revision 和 digest 前缀。远端生成期间 Plan 若更新，旧任务可能仍在旧目录完成，但前端会拒绝把结果挂到新 Plan。
 
-H3 Context-IR 返回的六段式英文 Ref2VA 文本、reference manifest/digest 和语义审计结果只作为该次 `shotVideo` 请求的本地可追踪元数据，与实际发送的有效 Prompt 一起绑定当前 Plan 和引用依赖。它不生成新的 Story、Plan、固定角色边界或独立 Canonical Artifact，也不构成供应商 Receipt 或完整 Canonical Provenance；供应商扩写与当前签发 Full Story/exact shot、`fixedCharacterBoundary`、Foundation 锁冲突时必须拒绝。六段结构、时间线、标签闭包、retention marker、普通参考角色及固定角色边界先经确定性校验；本地字符脚本屏障会拒绝非 Latin script 的正文，但不能证明其余散文确为英文。随后必须由已配置文本模型执行只读语义一致性审计并明确检查 `language_format`；非英文、无法确认、审计协议错误或 verdict 非 `pass` 时不得发起最终视频任务。Context-IR 失败、六段结构不合法、引用未绑定、独立 Picture 被越权当成关键帧/storyboard，或上一镜 weak reference 被升级为 editing/continuation/关键帧/fully-preserved 内容时，不得登记成功媒体 Artifact，也不得 fallback 到 Base 三段、Seedance Prompt 或通用散文。
 
 上一镜抽帧不信任浏览器提交的绝对路径或任意 URL。服务端根据当前 Plan 的 `shotPlan[]` 顺序导出 source shot，读取同一 Run 中 current `shotVideo` Artifact 的选中候选，只把当前 `public/generated-videos/<mediaNamespace>/` 单层目录内、文件名前缀同时绑定当前 Plan 和 source shotId 的普通 mp4 映射回本地文件。旧 namespace、远程 URL、路径穿越、子目录、符号链接和缺失文件必须明确拒绝。通过路径校验后仍须以 `O_NOFOLLOW` 文件句柄读取并冻结到任务私有目录，抽帧回执记录实际读取源字节及各 JPEG 的 SHA-256，避免路径校验与 FFmpeg 打开之间的文件替换使 lineage 与实际输入脱钩。
 

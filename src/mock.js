@@ -3,11 +3,10 @@ import {
   ANIMATION_DIRECT_SHOT_MODE,
   BACKGROUND_MUSIC_NONE,
   CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS,
-  MINIMAX_H3_NO_MUSIC_SECTION,
   NO_BACKGROUND_MUSIC_SENTENCE,
   normalizeBackgroundMusicMode
 } from "./validation.js";
-import { resolveVideoPromptProfile, VIDEO_PROMPT_PROFILE_IDS } from "../public/video-prompt-profiles.js";
+import { resolveVideoPromptProfile } from "../public/video-prompt-profiles.js";
 
 // 每条【原片有】都必须用「」引用 mockReconstruction 中真实存在的逐字原文，
 // 否则 mock 自己就违反了 allowedNarrativeComponents 的存在性判定契约。
@@ -564,24 +563,10 @@ export function mockAnimationPlan(input) {
 }
 
 export function mockAnimationVideoPromptRewrite(animationPlan = {}, videoPromptProfile = {}) {
-  const miniMaxH3 = videoPromptProfile.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3;
   return {
     videoPrompts: (animationPlan.shotPlan || []).map((shot) => {
-      const dialogueTexts = String(shot.dialogueOrSubtitle || "").trim()
-        ? String(shot.dialogueOrSubtitle).split(/[；;\n]+/u).map((item) => item.trim()).filter(Boolean)
-        : [];
-      const h3Dialogue = dialogueTexts.map((item, index) => {
-        const text = item.replace(/^\s*[^：:]{1,40}[：:]\s*/u, "").trim();
-        return `The speaker (S${index + 1}) says, <d>[Chinese] ${text}</d>.`;
-      }).join(" ");
-      const videoPrompt = miniMaxH3
-        ? [
-          `integrated_multimodal_description: [Shot 1] The signed animation style, physical lighting, location, character appearance, wardrobe, and props remain unchanged. The character performs the complete planned action in order: ${shot.characterAction}. The camera follows the planned expression with restrained amplitude and a steady speed: ${shot.cameraMotion}. ${h3Dialogue} The visible action reaches its planned final state within ${shot.durationSeconds} seconds and stops without adding another beat.`,
-          `overall_soundscape: ${shot.soundDesign || "Natural ambience and synchronized physical action sounds remain audible throughout the shot."}`,
-          "non_diegetic_music: N/A"
-        ].join("\n\n")
-        : [
-          `沿用已签发动画计划的视觉风格、物理光线、地点、角色外观、服装与道具。`,
+      const videoPrompt = [
+        `沿用已签发动画计划的视觉风格、物理光线、地点、角色外观、服装与道具。`,
           `${shot.characterAction}。`,
           `镜头按顺序执行：${shot.cameraMotion}。`,
           shot.dialogueOrSubtitle ? `${shot.dialogueOrSubtitle}；对白只作为声音，不渲染画面文字。` : "",
@@ -600,7 +585,6 @@ function mockDirectAnimationPlan(input) {
     input.videoPromptProfile
     || (input.videoPromptTarget ? resolveVideoPromptProfile(input.videoPromptTarget) : {})
   );
-  const miniMaxH3 = videoPromptProfile.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3;
   // 演示输出必须跟真实契约一致：开关缺省关闭，两个 Profile 各按自己的合法写法表达无配乐。
   const noBackgroundMusic = normalizeBackgroundMusicMode(
     input.backgroundMusicMode ?? input.backgroundMusicEnabled
@@ -660,16 +644,6 @@ function mockDirectAnimationPlan(input) {
       `${stopCondition}。`,
       noBackgroundMusic ? NO_BACKGROUND_MUSIC_SENTENCE : ""
     ].filter(Boolean).join("");
-    const h3Dialogue = (shot.motion?.audio?.dialogue || [])
-      .map((item, index) => `${item.speaker || "The speaker"} (S${index + 1}) says, <d>[Chinese] ${item.text}</d>.`)
-      .join(" ");
-    const h3VideoPrompt = [
-      `integrated_multimodal_description: [Shot 1] A clean 2.5D animated scene uses the signed visual style and stable physical lighting in ${environmentPrompt}. The locked character appearance remains unchanged while the character completes the signed action in order: ${characterAction}. ${cameraMotion ? `The camera executes ${cameraMotion} with restrained amplitude at a steady speed.` : "The camera remains stable."} ${visiblePerformance ? `The visible performance follows this progression: ${visiblePerformance}.` : ""} ${h3Dialogue} The action reaches its visible result within ${shot.durationSeconds} seconds and stops without adding another beat.`,
-      `overall_soundscape: ${shot.motion?.audio?.ambience || "Natural room tone continues throughout the shot."} Physical action sounds remain synchronized with the visible movement.`,
-      `non_diegetic_music: ${noBackgroundMusic
-        ? MINIMAX_H3_NO_MUSIC_SECTION
-        : (shot.motion?.audio?.musicCue || MINIMAX_H3_NO_MUSIC_SECTION)}`
-    ].join("\n\n");
     return {
       shotId: shot.shotId,
       sourceSceneId: shot.sourceSceneId,
@@ -677,7 +651,7 @@ function mockDirectAnimationPlan(input) {
       durationSeconds: shot.durationSeconds,
       storyPurpose: shot.storyPurpose,
       emotionalTarget: shot.emotionalTarget,
-      videoPrompt: miniMaxH3 ? h3VideoPrompt : seedanceVideoPrompt,
+      videoPrompt: seedanceVideoPrompt,
       cameraMotion: cameraMotion || "固定机位，保持单一连续构图",
       characterAction,
       dialogueOrSubtitle: dialogue,
@@ -701,7 +675,7 @@ function mockDirectAnimationPlan(input) {
     productionStrategy: {
       ...legacy.productionStrategy,
       format: "direct_shot_video",
-      recommendedShotDurationSeconds: { min: miniMaxH3 ? 4 : 3, max: 6 },
+      recommendedShotDurationSeconds: { min: 4, max: 6 },
       videoPromptProfile,
       generationOrder: ["锁定角色、场景和资产", "生成直接视频镜头", "质检并挑选候选", "剪辑、配音、字幕和音效"],
       whyThisWorkflow: "镜头内容由模型直接写成完整视频指令，不生产首帧、尾帧或端点运动结构。"

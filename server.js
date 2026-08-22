@@ -14,7 +14,7 @@ import { computeDependencyHash, computePromptHash } from "./src/frame-dependency
 import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./src/frame-reference-request.js";
 import { WorkflowService } from "./src/workflow.js";
 import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, characterPromptBoundaryMismatch, characterReferenceBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, InputError, requireAnimationPlanAspectRatio } from "./src/validation.js";
-import { generateShotVideo, shotVideoGenerationPromptText, shouldDeferH3CharacterAppearanceBoundaryCheck, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
+import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
 import { resolveAuthoritativeShotVideoInput, resolveAuthoritativeShotVideoReferenceAssets, resolvePreviousShotFrameReference } from "./src/shot-video-continuity.js";
 import {
   inferShotVideoProvider,
@@ -194,16 +194,10 @@ const routes = {
     const visualGuardrails = workflow.assertGlobalCharacterBoundary(body);
     ensureCharacterReferencesMatchBoundary(request.characterReferences, visualGuardrails, request.shot);
     const setting = shotVideoRequestSetting(body);
-    if (!shouldDeferH3CharacterAppearanceBoundaryCheck({
-      ...request,
-      videoProvider: setting.provider,
-      videoModel: setting.model
-    })) {
-      ensureCharacterPromptMatchesBoundary(shotVideoGenerationPromptText(request), visualGuardrails, {
-        requireRequiredTraits: false,
-        promptScope: "multi_character"
-      });
-    }
+    ensureCharacterPromptMatchesBoundary(shotVideoGenerationPromptText(request), visualGuardrails, {
+      requireRequiredTraits: false,
+      promptScope: "multi_character"
+    });
     if (
       String(body.aspectRatio || "").trim()
       && body.aspectRatio !== productionMedia.planAspectRatio
@@ -239,16 +233,6 @@ const routes = {
         filenamePrefix: productionMedia.filenamePrefix
       } : {}),
       trustedPreviousShotReference,
-      auditMiniMaxH3ExpandedPromptSemantics: ({ sourcePrompt, expandedPrompt, referenceManifest, shot }) => (
-        workflow.auditMiniMaxH3ExpandedPromptSemantics({
-          ...body,
-          animationPlan: productionMedia.planEntry.content,
-          shot,
-          sourcePrompt,
-          expandedPrompt,
-          referenceManifest
-        })
-      ),
       assertProductionContextCurrent: async () => {
         const currentMedia = await resolveProductionMediaContext(body, { required: true });
         if (!trustedPreviousShotReference) return;
@@ -270,7 +254,7 @@ const routes = {
           || currentPrevious?.selectedIndex !== trustedPreviousShotReference.selectedIndex
           || currentPrevious?.sourceOutputUrl !== trustedPreviousShotReference.sourceOutputUrl
         ) {
-          throw new ProductionStateError("上一镜当前候选已更新，拒绝继续使用旧的 Context-IR/抽帧结果。", {
+          throw new ProductionStateError("上一镜当前候选已更新，拒绝继续使用旧的抽帧结果。", {
             code: "SHOT_VIDEO_PREVIOUS_REFERENCE_STALE",
             httpStatus: 409
           });

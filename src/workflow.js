@@ -1,4 +1,4 @@
-import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, miniMaxH3ExpandedPromptSemanticAuditPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { compileCharacterFeatures } from "./character-feature-compiler.js";
@@ -20,11 +20,6 @@ import {
   planAnimationFoundationPartialRepair
 } from "./animation-foundation-partial-repair.js";
 import {
-  animationShotPromptPartialRepairPrompt,
-  mergeAnimationShotPromptPartialRepair,
-  planAnimationShotPromptPartialRepair
-} from "./animation-shot-prompt-partial-repair.js";
-import {
   animationVideoPromptSemanticAuditCatalogPayload,
   createAnimationVideoPromptSemanticAuditCatalog,
   deriveAnimationVideoPromptSemanticAuditOverall,
@@ -38,17 +33,8 @@ import {
 import { ModelCallCoordinator } from "./model-call-coordinator.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, MINIMAX_H3_NO_MUSIC_SECTION, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, animationMaxShotDurationSeconds, characterReferenceBoundaryMismatch, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, parseSceneTimeRangeSeconds, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText, sceneMinimumShotCount } from "./validation.js";
-import {
-  resolveVideoPromptProfile,
-  VIDEO_PROMPT_PROFILE_IDS
-} from "../public/video-prompt-profiles.js";
-import {
-  MiniMaxH3PromptError,
-  assertMiniMaxH3BasePrompt,
-  assertMiniMaxH3Duration,
-  miniMaxH3DialogueTexts
-} from "./minimax-h3-prompt.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, animationMaxShotDurationSeconds, characterReferenceBoundaryMismatch, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, parseSceneTimeRangeSeconds, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText, sceneMinimumShotCount } from "./validation.js";
+import { resolveVideoPromptProfile } from "../public/video-prompt-profiles.js";
 import { CharacterBoundaryError, createCharacterBoundaryKey, sealGlobalCharacterBoundary, verifyGlobalCharacterBoundary } from "./character-boundary.js";
 import {
   ReconstructionGroundingError,
@@ -876,131 +862,6 @@ export class WorkflowService {
     initialOutcome.hadParsedCandidate = true;
     if (initialOutcome.status === "success") return initialOutcome;
 
-    if (directShotMode && policy.allowPatch && partialRepairContext?.foundation) {
-      let repairPlan = null;
-      let repairCandidate = null;
-      try {
-        const canonicalCandidate = canonicalizeAnimationShotBatchForPromptRepair(
-          candidate,
-          partialRepairContext
-        );
-        repairCandidate = createAnimationShotPromptRepairCandidate(
-          canonicalCandidate,
-          partialRepairContext.foundation,
-          partialRepairContext.previousShots
-        );
-        repairPlan = planAnimationShotPromptPartialRepair(
-          repairCandidate,
-          initialOutcome.error,
-          {
-            repairAttemptCount: 0,
-            fullStory: partialRepairContext.input?.fullStory,
-            visualGuardrails: partialRepairContext.input?.visualGuardrails
-          }
-        );
-      } catch (error) {
-        if (!isRecoverableAnimationModelOutputError(error)) throw error;
-        return animationBatchAttemptFailure({
-          error,
-          candidate,
-          phase: "bounded_prompt_repair_plan",
-          diagnostics: initialOutcome.diagnostics,
-          compilerRuns,
-          hadParsedCandidate: true
-        });
-      }
-
-      if (repairPlan) {
-        const { repairPrompt, debugSession } = await this.preparePartialRepairDebug({
-          promptFactory: () => animationShotPromptPartialRepairPrompt(repairPlan),
-          stage: "animationShotPrompt",
-          provider,
-          model,
-          variantId: partialRepairContext.input?.variant?.id,
-          batchIndex,
-          originalError: initialOutcome.error,
-          repairPlan
-        });
-        try {
-          const envelope = await client.generateJson({
-            prompt: repairPrompt,
-            model,
-            maxCompletionTokens: retryTokenLimit(maxCompletionTokens),
-            jsonRetryAttempts: 0,
-            strictJson: true
-          });
-          await this.recordPartialRepairDebugResponse(debugSession, envelope);
-          const mergedPlan = mergeAnimationShotPromptPartialRepair(
-            repairCandidate,
-            envelope,
-            repairPlan,
-            {
-              fullStory: partialRepairContext.input?.fullStory,
-              visualGuardrails: partialRepairContext.input?.visualGuardrails
-            }
-          );
-          const previousShotCount = Array.isArray(partialRepairContext.previousShots)
-            ? partialRepairContext.previousShots.length
-            : 0;
-          const repairedCandidate = {
-            shotPlan: structuredClone(mergedPlan.shotPlan.slice(previousShotCount))
-          };
-          const repairedOutcome = await this.evaluateAnimationShotBatchCandidate({
-            client,
-            model,
-            maxCompletionTokens,
-            candidate: repairedCandidate,
-            validate,
-            policy
-          });
-          repairedOutcome.compilerRuns = compilerRuns;
-          repairedOutcome.hadParsedCandidate = true;
-          repairedOutcome.boundedRepairAttempted = true;
-          if (repairedOutcome.status === "success") {
-            assertAnimationBatchOnlyVideoPromptsChanged(
-              repairedCandidate,
-              repairedOutcome.batch
-            );
-            await this.recordPartialRepairDebugResult(debugSession, {
-              status: "repaired"
-            });
-          } else {
-            await this.recordPartialRepairDebugResult(debugSession, {
-              status: "rejected",
-              error: repairedOutcome.error
-            });
-          }
-          return repairedOutcome;
-        } catch (error) {
-          await this.recordPartialRepairDebugResult(debugSession, {
-            status: "rejected",
-            error
-          });
-          if (!isRecoverableAnimationModelOutputError(error)) throw error;
-          const repairError = error instanceof OutputContractError
-            ? new OutputContractError(
-              `H3 videoPrompt 有界局部纠错失败；原始诊断：${initialOutcome.error.message}；repair 响应：${error.message}`,
-              [
-                ...(Array.isArray(initialOutcome.error?.details)
-                  ? initialOutcome.error.details
-                  : []),
-                ...(Array.isArray(error.details) ? error.details : [])
-              ]
-            )
-            : error;
-          return animationBatchAttemptFailure({
-            error: repairError,
-            candidate,
-            phase: "bounded_prompt_repair",
-            diagnostics: initialOutcome.diagnostics,
-            compilerRuns,
-            hadParsedCandidate: true,
-            boundedRepairAttempted: true
-          });
-        }
-      }
-    }
-
     // direct_shot may only use the bounded videoPrompt adapter above. The
     // legacy v2 patch path serializes a whole failed batch and must remain
     // structurally unreachable even if a future direct schema adds a field
@@ -1244,9 +1105,6 @@ export class WorkflowService {
     const settings = this.resolveStage("animationPlan", validatedInput);
     const compilerSettings = this.resolveStage("staticFrameCompiler", validatedInput);
     if (!this.hasLiveClient) {
-      if (videoPromptProfile?.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3) {
-        throw new InputError("MiniMax H3 Animation Plan 需要已配置的文本模型生成并验证英文 Prompt；demo mock 不得伪造翻译后的 H3 事实。");
-      }
       return {
         animationPlan: validateAnimationPlanOutput(mockAnimationPlan(validatedInput), validatedInput),
         metadata: directShotMode ? disabledDirectShotCompilerMetadata(compilerSettings) : {
@@ -1361,27 +1219,9 @@ export class WorkflowService {
       mergeAnimationPlan(foundation, shotPlan, validatedInput),
       validatedInput
     );
-    let initialVideoPromptSemanticAudit = null;
-    if (
-      directShotMode
-      && videoPromptProfile?.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3
-    ) {
-      const semanticOutcome = await this.auditInitialAnimationVideoPromptSemantics({
-        ...validatedInput,
-        sourcePlan: animationPlan,
-        rewrittenPlan: animationPlan,
-        targetProfile: videoPromptProfile,
-        auditMode: "initial"
-      });
-      animationPlan = semanticOutcome.animationPlan;
-      initialVideoPromptSemanticAudit = semanticOutcome.semanticAudit;
-    }
     const directShotMetadata = directShotMode
       ? {
-        ...disabledDirectShotCompilerMetadata(compilerSettings),
-        ...(initialVideoPromptSemanticAudit
-          ? { videoPromptSemanticAudit: initialVideoPromptSemanticAudit }
-          : {})
+        ...disabledDirectShotCompilerMetadata(compilerSettings)
       }
       : null;
     return {
@@ -1589,15 +1429,6 @@ export class WorkflowService {
       // inject or infer one before the user explicitly confirms this rewrite.
       videoPromptProfile: sourcePlan.productionStrategy?.videoPromptProfile || null
     });
-    if (videoPromptProfile.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3) {
-      sourcePlan.shotPlan.forEach((shot, index) => {
-        try {
-          assertMiniMaxH3Duration(shot.durationSeconds, `animationPlan.shotPlan[${index}].durationSeconds`);
-        } catch (error) {
-          throw new InputError(error.message);
-        }
-      });
-    }
 
     const settings = this.resolveStage("animationPlan", validatedInput);
     if (!this.hasLiveClient) {
@@ -1631,7 +1462,6 @@ export class WorkflowService {
     assertOnlyAnimationVideoPromptsChanged(sourcePlan, rewrittenPlan, videoPromptProfile);
     // 方言改写不授权顺手改变有无配乐：新提示词必须继续遵守当前 Plan 已签发的
     // backgroundMusicMode，且各按目标 Profile 的合法写法表达。放在语义审计之前失败。
-    validateMiniMaxH3AnimationShotBatchPrompts(rewrittenPlan, rewrittenPlan, 0);
     validateSeedanceBackgroundMusicSentence(rewrittenPlan, rewrittenPlan, 0);
     let animationPlan = validateAnimationPlanOutput(rewrittenPlan, validatedInput);
     // Validation may prune evidence that no longer matches a rewritten prompt.
@@ -1667,58 +1497,6 @@ export class WorkflowService {
       auditMode: "rewrite",
       stageLabel: "Animation Plan 视频提示词改写语义审计",
       failurePrefix: "视频提示词改写改变了已签发镜头事实"
-    });
-  }
-
-  async auditMiniMaxH3ExpandedPromptSemantics(input) {
-    requireObject(input, "请求");
-    const animationPlan = requireObject(input.animationPlan, "animationPlan");
-    const shot = requireObject(input.shot, "shot");
-    requireText(input.sourcePrompt, "sourcePrompt");
-    requireText(input.expandedPrompt, "expandedPrompt");
-    requireObject(input.referenceManifest, "referenceManifest");
-    const profile = ensureAnimationPlanVideoPromptProfile(animationPlan);
-    if (profile.profileId !== VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3) {
-      throw new InputError("H3 Context-IR 语义审计只接受已签发的 MiniMax H3 Animation Plan");
-    }
-    const exactShot = (animationPlan.shotPlan || []).find(
-      (candidate) => String(candidate?.shotId || "") === String(shot.shotId || "")
-    );
-    const exactShotFacts = exactShot ? structuredClone(exactShot) : null;
-    const submittedShotFacts = structuredClone(shot);
-    if (exactShotFacts) delete exactShotFacts.videoPrompt;
-    delete submittedShotFacts.videoPrompt;
-    if (
-      !exactShot
-      || !isDeepStrictEqual(exactShotFacts, submittedShotFacts)
-      || String(shot.videoPrompt || "").trim() !== String(input.sourcePrompt || "").trim()
-    ) {
-      throw new InputError("H3 Context-IR 语义审计必须使用当前签发 Plan 的 exact shot");
-    }
-    const settings = this.resolveStage("animationPlan", input);
-    this.assertStageClient(settings, "MiniMax H3 Context-IR 语义一致性审计");
-    const result = await this.generateValidatedJson({
-      client: settings.client,
-      prompt: miniMaxH3ExpandedPromptSemanticAuditPrompt({
-        ...input,
-        animationPlan,
-        shot: exactShot
-      }),
-      model: settings.model,
-      maxCompletionTokens: Math.min(Number(settings.maxCompletionTokens) || 2048, 4096),
-      validate: validateMiniMaxH3ExpandedPromptSemanticAudit
-    });
-    if (result.verdict !== "pass") {
-      throw new InputError(
-        `MiniMax H3 Context-IR 扩写改变了当前签发镜头事实：${result.issues.map((issue) => `${issue.category}: ${issue.reason}`).join("；")}`
-      );
-    }
-    return Object.freeze({
-      schemaVersion: "minimax_h3_expanded_prompt_semantic_audit/1.0",
-      provider: settings.provider,
-      model: settings.model,
-      verdict: "pass",
-      issues: Object.freeze([])
     });
   }
 
@@ -1923,9 +1701,8 @@ function validateAnimationFoundationOutput(result, input = {}) {
     path: "animationFoundation"
   });
   if (expectedSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
-    const expectedDurationRange = input.videoPromptProfile?.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3
-      ? { min: 4, max: 6 }
-      : { min: 3, max: 6 };
+    // 一份提示词同时交给 Seedance 2.0 与 MiniMax H3，取两者交集：4–6 秒整数。
+    const expectedDurationRange = { min: 4, max: 6 };
     const actualDurationRange = foundation.productionStrategy?.recommendedShotDurationSeconds || {};
     if (
       Number(actualDurationRange.min) !== expectedDurationRange.min
@@ -2264,67 +2041,9 @@ function validateAnimationVideoPromptRewrite(value, sourcePlan, videoPromptProfi
     if (!videoPrompt) {
       throw new OutputContractError(`animationVideoPromptRewrite.videoPrompts[${index}].videoPrompt 不能为空`);
     }
-    if (videoPromptProfile.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3) {
-      try {
-        assertMiniMaxH3BasePrompt(videoPrompt, {
-          durationSeconds: expectedShot.durationSeconds,
-          path: `animationVideoPromptRewrite.videoPrompts[${index}].videoPrompt`,
-          dialogueTexts: miniMaxH3DialogueTexts(expectedShot.dialogueOrSubtitle)
-        });
-      } catch (error) {
-        throw new OutputContractError(error.message, error.details);
-      }
-    }
     return { shotId, videoPrompt };
   });
   return { videoPrompts: normalized };
-}
-
-const MINIMAX_H3_SEMANTIC_AUDIT_CATEGORIES = new Set([
-  "language_format",
-  "character_identity",
-  "location_environment",
-  "prop",
-  "action_order",
-  "visible_final_state",
-  "camera_sequence",
-  "dialogue",
-  "sound",
-  "continuity",
-  "duration",
-  "reference_role",
-  "unauthorized_addition"
-]);
-
-function validateMiniMaxH3ExpandedPromptSemanticAudit(value) {
-  if (!isPlainObject(value) || !isDeepStrictEqual(Object.keys(value).sort(), ["issues", "verdict"])) {
-    throw new OutputContractError("MiniMax H3 语义审计只允许 verdict、issues 两个字段");
-  }
-  if (!new Set(["pass", "fail"]).has(value.verdict)) {
-    throw new OutputContractError("MiniMax H3 语义审计 verdict 只允许 pass 或 fail");
-  }
-  if (!Array.isArray(value.issues)) {
-    throw new OutputContractError("MiniMax H3 语义审计 issues 必须是数组");
-  }
-  const issues = value.issues.map((issue, index) => {
-    if (!isPlainObject(issue) || !isDeepStrictEqual(Object.keys(issue).sort(), ["category", "reason"])) {
-      throw new OutputContractError(`MiniMax H3 语义审计 issues[${index}] 只允许 category、reason`);
-    }
-    const category = String(issue.category || "").trim();
-    const reason = String(issue.reason || "").trim();
-    if (!MINIMAX_H3_SEMANTIC_AUDIT_CATEGORIES.has(category)) {
-      throw new OutputContractError(`MiniMax H3 语义审计 issues[${index}].category 无效`);
-    }
-    if (!reason) throw new OutputContractError(`MiniMax H3 语义审计 issues[${index}].reason 不能为空`);
-    return { category, reason };
-  });
-  if (value.verdict === "pass" && issues.length) {
-    throw new OutputContractError("MiniMax H3 语义审计 pass 时 issues 必须为空");
-  }
-  if (value.verdict === "fail" && !issues.length) {
-    throw new OutputContractError("MiniMax H3 语义审计 fail 时至少需要一个 issue");
-  }
-  return { verdict: value.verdict, issues };
 }
 
 function assertOnlyAnimationVideoPromptsChanged(sourcePlan, rewrittenPlan, targetProfile) {
@@ -2468,11 +2187,6 @@ function validateAnimationShotBatchOutput(result, {
   // has passed. Otherwise a candidate with a missing scene or invalid
   // duration could consume the sole correction call before its real blocker
   // is discovered.
-  validateMiniMaxH3AnimationShotBatchPrompts(
-    checkedBatch,
-    foundation,
-    previousShots.length
-  );
   validateSeedanceBackgroundMusicSentence(
     checkedBatch,
     foundation,
@@ -2481,56 +2195,10 @@ function validateAnimationShotBatchOutput(result, {
   return checkedBatch;
 }
 
-function validateMiniMaxH3AnimationShotBatchPrompts(batch, foundation, shotIndexOffset = 0) {
-  if (
-    foundation?.productionStrategy?.videoPromptProfile?.profileId
-    !== VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3
-  ) return;
-
-  const noBackgroundMusic = foundation?.productionStrategy?.backgroundMusicMode === BACKGROUND_MUSIC_NONE;
-  const failures = [];
-  batch.shotPlan.forEach((shot, index) => {
-    const shotPath = `animationPlan.shotPlan[${shotIndexOffset + index}].videoPrompt`;
-    try {
-      const parsed = assertMiniMaxH3BasePrompt(shot.videoPrompt, {
-        durationSeconds: shot.durationSeconds,
-        path: shotPath,
-        dialogueTexts: miniMaxH3DialogueTexts(shot.dialogueOrSubtitle)
-      });
-      // 用户关闭背景音乐时，H3 只接受官方的 N/A 写法；其它措辞一律拒绝。
-      if (noBackgroundMusic) {
-        const music = String(parsed.sections?.non_diegetic_music || "").trim();
-        if (music !== MINIMAX_H3_NO_MUSIC_SECTION) {
-          failures.push({
-            message: `${shotPath} 的 non_diegetic_music 必须逐字为 ${MINIMAX_H3_NO_MUSIC_SECTION}`
-              + `（用户已关闭背景音乐），当前为：${music || "空"}`,
-            details: []
-          });
-        }
-      }
-    } catch (error) {
-      if (!(error instanceof MiniMaxH3PromptError)) throw error;
-      failures.push({
-        message: error.message,
-        details: Array.isArray(error.details) ? error.details : []
-      });
-    }
-  });
-  if (!failures.length) return;
-  throw new OutputContractError(
-    failures.map((failure) => failure.message).join("；"),
-    failures.flatMap((failure) => failure.details)
-  );
-}
-
-// 用户关闭背景音乐时，Seedance videoPrompt 必须以签发的那句中文逐字收尾。
-// H3 走官方的 non_diegetic_music: N/A，不适用这条，由上面的 H3 校验负责。
+// 用户关闭背景音乐时，videoPrompt 必须以签发的那句中文逐字收尾。
+// 方言只有一种，两个视频供应商共用这条约束。
 function validateSeedanceBackgroundMusicSentence(batch, foundation, shotIndexOffset = 0) {
   if (foundation?.productionStrategy?.backgroundMusicMode !== BACKGROUND_MUSIC_NONE) return;
-  if (
-    foundation?.productionStrategy?.videoPromptProfile?.profileId
-    === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3
-  ) return;
   batch.shotPlan.forEach((shot, index) => {
     if (String(shot?.videoPrompt || "").trim().endsWith(NO_BACKGROUND_MUSIC_SENTENCE)) return;
     throw new OutputContractError(
@@ -3360,55 +3028,6 @@ function animationBatchAttemptFailure({
       animationBatchErrorDiagnostic(error, phase, candidate)
     ]
   };
-}
-
-function createAnimationShotPromptRepairCandidate(batch, foundation, previousShots = []) {
-  if (!isPlainObject(batch) || !Array.isArray(batch.shotPlan)) {
-    throw new OutputContractError("H3 Prompt 局部纠错缺少完整 animationShotBatch 候选");
-  }
-  if (!isPlainObject(foundation)) {
-    throw new OutputContractError("H3 Prompt 局部纠错缺少已验证 Animation Foundation");
-  }
-  return {
-    ...structuredClone(foundation),
-    shotPlan: [
-      ...structuredClone(Array.isArray(previousShots) ? previousShots : []),
-      ...structuredClone(batch.shotPlan)
-    ]
-  };
-}
-
-function canonicalizeAnimationShotBatchForPromptRepair(batch, context = {}) {
-  if (!isPlainObject(batch) || !Array.isArray(batch.shotPlan)) {
-    throw new OutputContractError("H3 Prompt 局部纠错缺少可规范化的 animationShotBatch");
-  }
-  const foundation = context.foundation;
-  const previousShots = Array.isArray(context.previousShots) ? context.previousShots : [];
-  const combined = pruneAnimationPlanNegativePrompts({
-    ...structuredClone(foundation),
-    shotPlan: [
-      ...structuredClone(previousShots),
-      ...structuredClone(batch.shotPlan)
-    ]
-  }, context.input || {});
-  return {
-    shotPlan: combined.shotPlan.slice(previousShots.length)
-  };
-}
-
-function assertAnimationBatchOnlyVideoPromptsChanged(before, after) {
-  const stripPrompts = (batch) => ({
-    ...structuredClone(batch),
-    shotPlan: (batch.shotPlan || []).map((shot) => {
-      const { videoPrompt: ignoredVideoPrompt, ...facts } = shot;
-      return facts;
-    })
-  });
-  if (!isDeepStrictEqual(stripPrompts(before), stripPrompts(after))) {
-    throw new OutputContractError(
-      "H3 videoPrompt 局部纠错后的完整校验改变了未授权镜头字段"
-    );
-  }
 }
 
 function finalizeStaticFrameCompilerRuns(runs = [], finalBatch = null, runAccepted = false) {

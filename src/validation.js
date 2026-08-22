@@ -1,13 +1,6 @@
 import { validateLegacyFullStoryStrict } from "./contracts/contract-validator.js";
 import { GLOBAL_CHARACTER_BOUNDARY_VERSION } from "./character-boundary.js";
-import {
-  assertVideoPromptProfile,
-  VIDEO_PROMPT_PROFILE_IDS
-} from "../public/video-prompt-profiles.js";
-import {
-  assertMiniMaxH3BasePrompt,
-  miniMaxH3DialogueTexts
-} from "./minimax-h3-prompt.js";
+import { assertVideoPromptProfile } from "../public/video-prompt-profiles.js";
 
 export class InputError extends Error {
   constructor(message, details = []) {
@@ -126,10 +119,6 @@ export const BACKGROUND_MUSIC_MODES = Object.freeze([BACKGROUND_MUSIC_NONE, BACK
 // 关闭背景音乐时，Seedance videoPrompt 必须以这句逐字收尾。
 // 它明确区分「背景音乐」与「现场声」，避免视频模型把动作声和对白一起静音。
 export const NO_BACKGROUND_MUSIC_SENTENCE = "全片无背景音乐，只保留现场环境声与动作声。";
-
-// 关闭背景音乐时，MiniMax H3 用官方语法表达同一意图：non_diegetic_music 逐字写 N/A。
-// 追加中文会同时违反非 Latin script 屏障与配乐段受控词表，所以两个 Profile 各用各的合法写法。
-export const MINIMAX_H3_NO_MUSIC_SECTION = "N/A";
 
 // 请求侧归一：开关缺省关闭，与变体卡上的默认状态一致。
 export function normalizeBackgroundMusicMode(value) {
@@ -802,20 +791,7 @@ export function ensureAnimationPlanDirectShotContract(value, { path = "animation
   ensureAnimationPlanAspectRatio(value.productionStrategy?.targetAspectRatio, `${path}.productionStrategy.targetAspectRatio`);
   if (!Array.isArray(value.shotPlan)) throw new OutputContractError(`${path}.shotPlan 必须是数组`);
   value.shotPlan.forEach((shot, index) => ensureAnimationDirectShotContract(shot, `${path}.shotPlan[${index}]`));
-  const videoPromptProfile = ensureAnimationPlanVideoPromptProfile(value, { path, optional: true });
-  if (videoPromptProfile?.profileId === VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3) {
-    value.shotPlan.forEach((shot, index) => {
-      try {
-        assertMiniMaxH3BasePrompt(shot.videoPrompt, {
-          durationSeconds: shot.durationSeconds,
-          path: `${path}.shotPlan[${index}].videoPrompt`,
-          dialogueTexts: miniMaxH3DialogueTexts(shot.dialogueOrSubtitle)
-        });
-      } catch (error) {
-        throw new OutputContractError(error.message, error.details);
-      }
-    });
-  }
+  ensureAnimationPlanVideoPromptProfile(value, { path, optional: true });
   validateAnimationPlanNegativePromptContract(value);
   return value;
 }

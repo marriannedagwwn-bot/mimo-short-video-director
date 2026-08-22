@@ -10,7 +10,7 @@
 npm start
 ```
 
-打开 <http://localhost:4173>。未配置模型时会显示“演示模式”，除 MiniMax H3 Prompt 签发外的演示流程仍可运行，但结果不是对视频的真实判断。首次生成 H3 Animation Plan 或在已有 Plan 上确认改写 Profile，都必须配置可用的文本模型；demo mock 不会伪造英文翻译、首次/改写语义审计结果或生产 Profile。
+打开 <http://localhost:4173>。未配置模型时会显示“演示模式”，演示流程仍可运行，但结果不是对视频的真实判断。在已有 Plan 上确认改写视频提示词方言必须配置可用的文本模型；demo mock 不会伪造语义审计结果或生产 Profile。
 
 ## 全局角色边界
 
@@ -26,9 +26,9 @@ Creative Brief 的 `allowedNarrativeComponents` 使用服务端固定的七项�
 
 ## 模型输出有界纠错
 
-当前主流程不再把一份已经解析、但校验失败的完整 Artifact 直接交给模型整包重写。服务端只接受稳定的结构化 diagnostics（`code + RFC 6901 JSON Pointer + reason`）；当候选完整、路径可信、目标已存在且权威事实唯一时，才签发一次局部计划。当前有两套互不混用的协议：Legacy Full Story 使用专用 `full_story_partial_repair/1.0`；`artifact_partial_repair/1.0` 只统一编排 Animation Foundation 与 MiniMax H3 shot prompt。第二次请求只包含错误目标的当前值、修复说明和最小权威投影，模型只能按服务端 `repairId` 返回 replacement，不能自报 path、JSON Patch 或额外操作。
+当前主流程不再把一份已经解析、但校验失败的完整 Artifact 直接交给模型整包重写。服务端只接受稳定的结构化 diagnostics（`code + RFC 6901 JSON Pointer + reason`）；当候选完整、路径可信、目标已存在且权威事实唯一时，才签发一次局部计划。当前有两套互不混用的协议：Legacy Full Story 使用专用 `full_story_partial_repair/1.0`；`artifact_partial_repair/1.0` 编排 Animation Foundation 固定角色安全子集。第二次请求只包含错误目标的当前值、修复说明和最小权威投影，模型只能按服务端 `repairId` 返回 replacement，不能自报 path、JSON Patch 或额外操作。
 
-服务端在 clone 上核对私有签发的计划、`baseDigest`、可变路径、目标内既有事实、目标外摘要和当前权威，再原子合并并从头执行该阶段完整校验。局部响应仍错误、路径不可信、候选不完整、权威冲突或错误没有专用 adapter 时都会明确失败，不会退回整包重生。当前生产覆盖仅包括 Full Story 中可由签发 `fixedCharacterBoundary.characterName` 唯一恢复的 protagonist `name`、Foundation 唯一固定角色参考的安全错误子集，以及 H3 `videoPrompt` 的安全错误子集。Foundation 只缺 `requiredTraits` 时，`appearancePrompt` 与原标签逐字冻结，模型只能在 `consistencyTags` 尾部按签发顺序追加缺失事实的 `canonicalName`；禁止表达命中时只开放实际命中的字段做受限删除，混合错误中的缺失事实仍只能追加标签。Full Story 的未知正文错位、配角身份字段缺失或错误、`characters` 与 `visibleAction`/`dialogue` 冲突，以及没有签发值来源的必填剧情字段都直接失败。H3 只有在现有 `integrated_multimodal_description` 唯一存在、可独立通过确定性校验并被冻结时才能局部修复；“已有合法 integrated，但缺少 `overall_soundscape` 与 `non_diegetic_music`”可以触发，integrated 缺失、重复或自身不合法时直接失败。repair 成功后仍必须通过整批校验、最终 Plan 校验和独立语义审计。旧 v2 首尾帧兼容代码不属于当前 `direct_shot` 主流程。
+服务端在 clone 上核对私有签发的计划、`baseDigest`、可变路径、目标内既有事实、目标外摘要和当前权威，再原子合并并从头执行该阶段完整校验。局部响应仍错误、路径不可信、候选不完整、权威冲突或错误没有专用 adapter 时都会明确失败，不会退回整包重生。当前生产覆盖仅包括 Full Story 中可由签发 `fixedCharacterBoundary.characterName` 唯一恢复的 protagonist `name`、Foundation 唯一固定角色参考的安全错误子集，以及证据绑定审计确认全部结构化事实通过后的纯 `videoPrompt` 冲突。Foundation 只缺 `requiredTraits` 时，`appearancePrompt` 与原标签逐字冻结，模型只能在 `consistencyTags` 尾部按签发顺序追加缺失事实的 `canonicalName`；禁止表达命中时只开放实际命中的字段做受限删除，混合错误中的缺失事实仍只能追加标签。Full Story 的未知正文错位、配角身份字段缺失或错误、`characters` 与 `visibleAction`/`dialogue` 冲突，以及没有签发值来源的必填剧情字段都直接失败。repair 成功后仍必须通过整批校验、最终 Plan 校验和独立语义审计。旧 v2 首尾帧兼容代码不属于当前 `direct_shot` 主流程。
 
 唯一的已解析候选再取证例外是 `referenceAnalysis`：原生视频模式候选仅因 `VIDEO_EVIDENCE_TIME_INVALID` 失败且已有关键帧时，服务端丢弃该候选，不把失败 Artifact 或 diagnostics 发回模型，只用 `video=null` 和既有 frames 重新取证一次。这是媒体证据重新获取，不是局部 repair；第二次仍失败就终止。
 
@@ -143,15 +143,15 @@ MODEL_PRICE_CNY_PER_MILLION=qwen3.7-max=2.4/9.6,qwen3.7-plus=0.8/2
 
 ## 当前 Animation Plan 临时主流程
 
-页面请求显式发送 `animationPlanMode: "direct_shot"`，服务端返回 `promptSchemaVersion: "3.0"` 与 `productionStrategy.format: "direct_shot_video"`。每个 shot 保留 `shotId`、`sourceSceneId`、`sceneId`、`durationSeconds`、`storyPurpose`、`emotionalTarget`、`videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes`、`negativePrompts` 和 `acceptanceCriteria`；`negativePrompts.image` 必须为 `[]`。`productionStrategy.videoPromptProfile` 由服务端根据首次生成 Plan 时页面当前明确选择的 Seedance 2.0 或 MiniMax H3 镜头视频模型签发，固定记录 `{schemaVersion, profileId, provider, model, guideVersion}`。它说明这一版 Plan 的 `videoPrompt` 使用哪种提示词方言及哪版规则生成，不锁定之后实际发起视频请求时选择的 provider/model，也不得由模型自行输出或改写。
+页面请求显式发送 `animationPlanMode: "direct_shot"`，服务端返回 `promptSchemaVersion: "3.0"` 与 `productionStrategy.format: "direct_shot_video"`。每个 shot 保留 `shotId`、`sourceSceneId`、`sceneId`、`durationSeconds`、`storyPurpose`、`emotionalTarget`、`videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes`、`negativePrompts` 和 `acceptanceCriteria`；`negativePrompts.image` 必须为 `[]`。`productionStrategy.videoPromptProfile` 由服务端签发，固定记录 `{schemaVersion, profileId, provider, model, guideVersion}`。提示词方言只有一种（`profileId` 恒为 `seedance_2_0`）：同一条中文自然语言提示词同时提交给 Seedance 2.0 与 MiniMax H3。`provider`/`model` 只如实记录首次生成时选择的运行时视频模型，不锁定之后实际发起视频请求时的 provider/model，也不参与方言比较，更不得由模型自行输出或改写。
 
 页面允许显式选择 `9:16` 或 `16:9`。首次生成时，该值会锁入 `productionStrategy.targetAspectRatio`、Foundation Prompt 和后续视频请求；模型返回其他比例或与用户选择不一致会明确失败。已有 Plan 切换画幅时不调用模型、不重写 shot，只更新计划级输出画幅并签发新 revision/media namespace，使旧画幅镜头媒体失效。若要让模型连镜头构图一起重新设计，再单独点击重新生成 Animation Plan。
 
 Animation Plan 顶部的时长使用全部 `shotPlan[].durationSeconds` 的合计，并把 `productionStrategy.targetRuntimeSeconds` 保留为上游目标用于显示偏差；不会再把目标时长冒充为当前镜头计划总长。
 
-当前场内拆镜只依据 Full Story 的地点和人物主要动作目标：地点或主要动作目标变化才拆镜；同一地点、围绕同一主要目标形成完整叙事动作的连续阶段保留为一条业务 shot。景别、机位、构图、焦段、运镜和转场建议只用于已划定业务 shot 的内部摄影/剪辑表达，不得单独增加 `shotPlan[]`；一条 `videoPrompt` 可以按顺序包含中景跟随、关键动作特写、硬切和结尾宽景。`shotAndSound` 与 `shootingNotes` 不是镜头数量的事实源。Seedance Profile 使用 3–6 秒业务 shot，MiniMax H3 Profile 使用 4–6 秒整数业务 shot；每个 source scene 仍至少一镜，内部摄影变化只在时长可承载且不遗漏剧情动作时使用。
+当前场内拆镜只依据 Full Story 的地点和人物主要动作目标：地点或主要动作目标变化才拆镜；同一地点、围绕同一主要目标形成完整叙事动作的连续阶段保留为一条业务 shot。景别、机位、构图、焦段、运镜和转场建议只用于已划定业务 shot 的内部摄影/剪辑表达，不得单独增加 `shotPlan[]`；一条 `videoPrompt` 可以按顺序包含中景跟随、关键动作特写、硬切和结尾宽景。`shotAndSound` 与 `shootingNotes` 不是镜头数量的事实源。业务 shot 统一为 4–6 秒整数（一份提示词同时交给 Seedance 2.0 与 MiniMax H3，4 秒下限取自 H3 供应商硬约束）；每场镜头数下限由该场 `timeRange` ÷ 单镜时长上限确定性推出，内部摄影变化只在时长可承载且不遗漏剧情动作时使用。
 
-Seedance Profile 下，每条 `direct_shot.videoPrompt` 由 Animation Plan 模型直接写成一条自包含中文自然语言提示词，依次组织 Foundation 已锁定的风格与物理光线、地点环境、实际出镜主体及外观、`visibleAction` 顺序动作链、内部摄影/剪辑顺序、节奏与声音、稳定约束和停止条件。MiniMax H3 Profile 下，Plan 使用官方 Base/T2VA 三段契约：`integrated_multimodal_description`、`overall_soundscape`、`non_diegetic_music`。三个固定段名必须各自从新行行首开始，JSON 字符串用 `\n` 转义分隔，不得写在同一行；三个 section 的叙述必须使用英文。`dialogueOrSubtitle` 保持上游纯剧情对白且不得含 `<d>`、翻译或拉丁转写；去除说话人前缀后的中文原文只在 integrated 中逐字包装为 `<d>[Chinese] ...</d>`。除此之外，只有英文双引号中逐字保留的画面可见文字可以使用原语言。首个内部摄影段写 `[Shot 1]`，后续切换才写严格递增且小于镜头时长的 `[Shot N] At MM:SS.mmm`。这些 `[Shot N]` 都只是同一 `A0x` 业务 shot 内的摄影/剪辑段，不得增加 `shotPlan[]`。`cameraMotion` 同步记录同一业务 shot 内的完整摄影/剪辑顺序；若使用内部切换，验收标准同时检查动作链与关键切换。Animation Plan 阶段尚未绑定运行时素材，两种 Profile 都不得凭空生成 `@图片/@视频/@音频` 或 `<Subject/Picture/Video/Audio N>` 引用。
+每条 `direct_shot.videoPrompt` 由 Animation Plan 模型直接写成一条自包含中文自然语言提示词，依次组织 Foundation 已锁定的风格与物理光线、地点环境、实际出镜主体及外观、`visibleAction` 顺序动作链、内部摄影/剪辑顺序、节奏与声音、稳定约束和停止条件。方言只有这一种，Seedance 2.0 与 MiniMax H3 消费同一条提示词。`cameraMotion` 同步记录同一业务 shot 内的完整摄影/剪辑顺序；若使用内部切换，验收标准同时检查动作链与关键切换。Animation Plan 阶段尚未绑定运行时素材，不得凭空生成 `@图片/@视频/@音频` 或 `<Subject/Picture/Video/Audio N>` 引用。
 
 首次 H3 Plan 在 Foundation 与全部 shot 合并并通过完整契约校验后，还会单独调用文本模型执行逐镜、证据绑定的两层语义审计。第一层先检查结构化 shot facts 是否服从固定角色、Full Story 场次与 Foundation 锁；第二层只在第一层通过后检查 Base Prompt。审计上下文包含完整 `assetPrompts`，每条 blocker 必须引用服务端签发的同镜事实 ID、字段 ID 和逐字 evidence，只允许会改变实际成片的角色、身份、地点、道具、动作、终点、摄影、对白、声音、连续性、时长或语言关系；同义表达、未重复已经表达的动作、下一段时间戳自然界定上一段结束、以及 Foundation 已授权的资产外观细化不会单独导致失败。
 
@@ -161,7 +161,7 @@ H3 写法固定依据 MiniMax 官方仓库 [`h3-prompt-writing`](https://github.
 
 已有 Plan 后再改变“镜头视频”模型时，页面先保留新的模型设置，再比较目标 Profile 与 Plan 中已签发的 `videoPromptProfile` 并询问是否重写提示词；旧 Plan 缺失 Profile 也视为需要确认，禁止从现有散文或模型名反推。用户拒绝时，Plan 内容、revision、media namespace 和已有媒体状态全部不变；新的运行时模型设置也不会被 Profile 强行回滚。用户确认时，只允许重写每条 `shotPlan[].videoPrompt` 并更新 `videoPromptProfile`，其他 Plan 级与逐镜字段逐字保留；服务端在完整契约校验后执行同一套证据绑定审计，并只在纯 Prompt 问题时允许上述唯一一次有界修复。只有最终改写、完整校验和审计都成功后才签发新的 Plan revision/media namespace 并递归 stale 旧媒体；任何失败都保留原 Plan 为 current。合法反例：包含 3 秒 shot 的 Seedance Plan 切到 H3 后，即使用户确认，单纯改写提示词也不能把权威 `durationSeconds` 拉到 4 秒，系统必须拒绝这次改写并要求完整重生 H3 Plan；用户拒绝重写时原 Plan 可以保留，但用 H3 生成该 3 秒镜头仍须明确失败，不能钳制时长或静默降级模型。
 
-拒绝重写只表示“保留旧 Plan”，不等于授权把旧 Seedance/未知方言直接发给 H3。运行时选择 MiniMax H3 且使用 `all_reference` 时，当前 Plan 必须已签发 exact H3 Profile；Profile 缺失或不一致会在任何 Context-IR/视频供应商调用前明确阻断，并提示先确认重写。仅保存新模型设置或取消重写既不会调用文本模型/Context-IR，也不会用错误方言继续生成；用户确认重写时才会显式调用文本模型。
+提示词方言只有一种，因此切换运行时视频模型（Seedance 2.0 ↔ MiniMax H3，或 Seedance 各型号之间）不再产生方言不一致，也不再询问是否重写——同一条提示词两边都能直接跑。改写流程仅在 Plan 的方言与当前契约不一致时触发，即两种旧 Plan：完全缺 Profile，或带已下线的 `minimax_h3` Profile。这类 Plan 仍可加载查看，但生成视频前必须先重新生成 Plan。拒绝重写只表示“保留旧 Plan”，不会调用文本模型，也不会用错误方言继续生成。
 
 当前 shot 禁止 `startFrame`、`endFrame`、`motion`、`startFramePrompt`、`endFramePrompt` 五个端点字段，也不得用别名补回端点。Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：暂时弃置，后续优化或删除。旧 v2 代码保留兼容，但不参与当前 `direct_shot` 主流程。
 
@@ -236,9 +236,8 @@ JIMENG_MAX_IMAGES=6
 - `first_last_frame`：已选首帧和尾帧是精确端点，Kling、Seedance 与 MiniMax H3 均支持；无端点的 `direct_shot` 不可使用该模式，必须明确失败。
 - `all_reference`：图片、视频和音频只是人物、场景、动作、运镜、节奏或声音参考，不被解释为精确首尾帧。Seedance 2.0 与 MiniMax H3 使用官方 R2V 角色 `reference_image`、`reference_video`、`reference_audio`；不得与 `first_frame` / `last_frame` 混用。
 
-MiniMax H3 的 `all_reference` 不是把 Plan 中的 Base 三段提示词直接与素材拼接。只有用户在生成弹窗中点击“生成”后，服务端才冻结本次真正会发送的有序参考 manifest（素材角色、顺序、来源和内容摘要），并发起供应商计费的异步步骤 `POST /v2/h3_context_ir`；保存/切换模型、取消 Profile 改写或仅打开弹窗都不会调用 Context-IR。只有异步任务成功后的 `task.content.prompt` 可以进入 Ref2VA 校验。返回提示词必须按顺序严格为六个英文 section：`subject_definitions`、`summary`、`retention_analysis`、`detailed_description`、`overall_soundscape`、`non_diegetic_music`，原语言例外与 Base 相同。`<Picture/Video/Audio N>` 必须与本次 `content` 中同类素材的实际顺序逐项绑定，`<Subject N>` 必须在 `subject_definitions` 中由当前签发主体或这些引用明确定义，任何标签都不得悬空。图片只用于定义角色、场景、服装或风格时，`<Picture N>` 只能内嵌在相应 `<Subject N>` 定义中；当前普通 `all_reference` 未授权具体首帧、尾帧、关键帧或 storyboard anchor，因此不得创建独立 Picture definition/retention。签发角色图只内嵌在对应 `<Subject N>` definition 中，不单独建立 Picture definition/retention；仅绑定签发 `character_reference` 的角色-only Subject 必须在 `retention_analysis` 使用精确 marker `fully_preserved`。`fully_preserved` 只保持签发身份与外观，角色按照当前 exact shot 呈现新的动作、姿势、构图和背景并不属于降级。只要签发角色图实际在本次冻结 manifest 中发送，该图就是该角色在 H3 运行时的静态外观来源：最终六段 Prompt 应用包含 `<Picture N>` 的 `<Subject N>` 表达身份与外观，不得重复 Base Prompt 或遗留外观锚点中的静态发色、五官、体型、常规服饰或画风文字；若该角色图并未实际发送，才使用这些文字 fallback。这个规则不移除当前镜头的动作、姿势、表情、道具、场景、摄影、声音，或剧情明确要求的动态外观变化；图片也不能覆盖 `fixedCharacterBoundary` 的身份、物种或签发必需特征，冲突必须失败。它只适用于 MiniMax H3 Context-IR，本轮不改变 Seedance Profile。普通上传或上一镜素材须绑定到独立 Subject，并使用精确 marker `weak_reference`，不得与签发角色图混合进同一 Subject。普通参考请求的 `summary` 只能以 `[reference generation]` 或实际包含音频时的 `[reference generation + audio reference]` 开头。上一镜抽帧只能声明为一致性 weak reference/reference-generation 素材，不能被解释成编辑原视频、无缝续拍、关键帧或 `fully_preserved` 内容。本地先确定性校验六段结构、时间线、标签闭包、retention marker、普通参考角色与固定角色边界，并以字符脚本屏障拒绝非 Latin script 的正文；该屏障不能单独证明散文是英文。服务端随后调用文本模型做只读语义一致性审计并明确检查 `language_format`；非英文、无法确认、审计协议错误或 verdict 非 `pass` 时，不会提交最终 `/v2/video_generation`。Context-IR 请求失败、返回结构不合法、引用未绑定或扩写内容与当前事实冲突时，本次 H3 请求同样明确失败，不得退回 Plan Base 三段、Seedance 写法或不带引用的通用 Prompt。
 
-切换与运行时编译的权威边界是：用户是否确认重写只决定是否产生新的 Plan；当前签发的 Full Story、exact shot、`fixedCharacterBoundary` 和 Foundation 锁继续决定剧情、身份、动作、时长、场景与声音事实；冻结后的参考 manifest 决定素材编号和角色；Plan Profile 决定提示词方言；Context-IR 的供应商扩写只处于最末层，不能反向改变任何上游事实。弹窗 `promptOverride` 也只覆盖本次请求文本，不能取得其他 exact-shot 字段的权威。
+切换与运行时编译的权威边界是：用户是否确认重写只决定是否产生新的 Plan；当前签发的 Full Story、exact shot、`fixedCharacterBoundary` 和 Foundation 锁继续决定剧情、身份、动作、时长、场景与声音事实；冻结后的参考 manifest 决定素材编号和角色。弹窗 `promptOverride` 也只覆盖本次请求文本，不能取得其他 exact-shot 字段的权威。
 
 全能参考模式新增“把上个镜头内容作为普通参考图”开关，默认不勾选。勾选后，系统按当前 Animation Plan 的 `shotPlan[]` 顺序找到紧邻上一业务镜头，从当前 Run/Plan namespace 中读取它已选中的 current 视频候选，再由服务端 FFmpeg 每秒抽取一张 JPEG，作为 `reference_image` 与本镜头角色图、旧 v2 已选首尾帧和用户上传媒体一起发送。第一镜、上一镜未生成/已 stale、旧 Plan URL、非当前 namespace 文件都会明确失败；`S1` 是剧情场次而不是场地，`LOC01` 只是场景视觉参考组，即使两者相同也不承诺物理地点无缝连续。该开关只加强身份、画风和短时表演连续性，当前镜头的剧情动作、固定角色边界与目标场景仍优先；跨地点、跨时段或上一镜本身有漂移时应保持关闭。视频请求始终由服务端从当前 Plan 解析 exact shot；弹窗中的文本编辑只形成有回执的本次 `promptOverride`，不能伪造镜头动作、时长或场景。
 
@@ -285,7 +284,7 @@ MINIMAX_VIDEO_POLL_INTERVAL_MS=3000
 MINIMAX_VIDEO_POLL_TIMEOUT_MS=900000
 ```
 
-首尾帧模式把镜头提示词、首帧和尾帧分别写入 `content` 的 `text`、`first_frame`、`last_frame`；全能参考模式先用实际 `reference_image`、`reference_video`、`reference_audio` 调用 H3 Context-IR 生成并验证六段式 Ref2VA Prompt，再把同一批已冻结引用与该 Prompt 发送给视频生成接口，固定不混入端点角色。MiniMax V2 API 只接受 4–15 秒整数，项目新生成的 H3 Plan 进一步限制为 4–6 秒；不合法时明确拒绝，不能自动钳制、补长或缩短。首尾帧保持 `ratio=adaptive`，全能参考模式按当前 Animation Plan 显式发送 `9:16` 或 `16:9`。服务端通过 `GET /v2/query/video_generation/{task_id}` 轮询 `queued/running → succeeded/failed/cancelled`，成功后下载 `task.content.url`。H3 不提供独立负面提示词字段；系统只会把高优先级角色身份冲突转换成正向身份锁定，其余负面条目在回执中明确标记为未下发。接口依据：[创建视频生成任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create)、[查询任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-query)。
+首尾帧模式把镜头提示词、首帧和尾帧分别写入 `content` 的 `text`、`first_frame`、`last_frame`；全能参考模式把 Plan 中已签发的中文提示词与已冻结的 `reference_image`、`reference_video`、`reference_audio` 一并发送，固定不混入端点角色。MiniMax V2 API 只接受 4–15 秒整数，项目生成的 Plan 进一步统一为 4–6 秒；不合法时明确拒绝，不能自动钳制、补长或缩短。首尾帧保持 `ratio=adaptive`，全能参考模式按当前 Animation Plan 显式发送 `9:16` 或 `16:9`。服务端通过 `GET /v2/query/video_generation/{task_id}` 轮询 `queued/running → succeeded/failed/cancelled`，成功后下载 `task.content.url`。H3 不提供独立负面提示词字段；系统只会把高优先级角色身份冲突转换成正向身份锁定，其余负面条目在回执中明确标记为未下发。接口依据：[创建视频生成任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create)、[查询任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-query)。
 
 旧可灵 2.1 仍保持兼容：
 

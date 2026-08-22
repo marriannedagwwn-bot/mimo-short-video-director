@@ -1426,36 +1426,6 @@ test("v2 结构化镜头更新角色参考图时不会改写编译后的兼容 p
   assert.deepEqual(plan.shotPlan[0], before);
 });
 
-test("direct_shot 更新角色参考图时不再由旧同步器改写 H3 镜头文本", () => {
-  const plan = {
-    promptSchemaVersion: "3.0",
-    productionStrategy: {
-      format: "direct_shot_video",
-      videoPromptProfile: {
-        profileId: "minimax_h3",
-        provider: "MiniMax",
-        model: "MiniMax-H3"
-      }
-    },
-    shotPlan: [{
-      shotId: "A01",
-      videoPrompt: "integrated_multimodal_description: [Shot 1] Xiaobaizi crosses the courtyard.\noverall_soundscape: Footsteps.\nnon_diegetic_music: N/A",
-      characterAction: "小白子穿上雨衣后抱紧画册。",
-      continuityNotes: "小白子完成动作后保持站姿。"
-    }]
-  };
-  const before = structuredClone(plan.shotPlan[0]);
-
-  const changed = syncShotCharacterReference(
-    plan,
-    { characterName: "小白子", appearancePrompt: "旧外观" },
-    { characterName: "小白子", appearancePrompt: "银灰长发、蓝色眼睛、深色校服" }
-  );
-
-  assert.equal(changed, 0);
-  assert.deepEqual(plan.shotPlan[0], before);
-});
-
 test("单镜头首尾帧视频可通过通用 HTTP worker 传递逐镜负面词", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-http-"));
   let receivedBody = null;
@@ -4129,3 +4099,29 @@ function restoreEnv(values) {
     else process.env[key] = value;
   }
 }
+
+
+test("完整剧情提示词禁止把垂直赛道的画风词写进 location", () => {
+  const prompt = fullStoryPrompt({
+    creativeBrief: { controlledRewriteVariables: [], protectedExpressions: [] },
+    referenceAnalysis: {},
+    sourceScriptReconstruction: {},
+    variant: { id: "V1", title: "晨露与蒲公英" },
+    creatorProfile: {
+      fixedCharacter: "小白子，q 版狼耳少女",
+      // 用户把画风写进了赛道；模型据此把风格词粘进每一场的 location。
+      vertical: "治愈/温情/日常生活/日系 2.5D 新海诚光景",
+      constraints: ""
+    }
+  });
+
+  assert.match(prompt, /location 只写这一场实际发生的可拍摄物理地点/u);
+  assert.match(prompt, /不得把垂直赛道、画风、渲染风格、光线、色调或画质词写进 location/u);
+  // 反例与正例都要在提示词里出现，模型才知道边界在哪。
+  assert.match(prompt, /「日系2\.5D新海诚光景风格的集市旁草地」是错误输出/u);
+  assert.match(prompt, /正确写法是「集市旁草地」/u);
+  // 说明风格的归属，避免模型以为这是在删信息。
+  assert.match(prompt, /视觉风格由下游 Animation Plan 的 visualBible 统一签发/u);
+  // 赛道本身仍要照常传给模型，约束的是它不能流进 location。
+  assert.match(prompt, /垂直赛道：治愈\/温情\/日常生活\/日系 2\.5D 新海诚光景/u);
+});

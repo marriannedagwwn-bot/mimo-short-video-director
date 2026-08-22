@@ -9,7 +9,6 @@ import {
   InputError,
   OutputContractError,
   ensureAnimationShotBatchContract,
-  MINIMAX_H3_NO_MUSIC_SECTION,
   NO_BACKGROUND_MUSIC_SENTENCE,
   materializeGlobalCharacterBoundaryViews,
   normalizeBackgroundMusicMode,
@@ -20,7 +19,6 @@ import {
 import { WorkflowService } from "../src/workflow.js";
 import { generateShotVideo, normalizeShotVideoAspectRatio, ShotVideoConfigError } from "../src/shot-video-generator.js";
 import { resolveVideoPromptProfile, VIDEO_PROMPT_PROFILE_IDS } from "../public/video-prompt-profiles.js";
-import { assertMiniMaxH3BasePrompt, miniMaxH3DialogueTexts } from "../src/minimax-h3-prompt.js";
 
 const DIRECT_SHOT_FIELDS = Object.freeze([
   "shotId",
@@ -127,14 +125,6 @@ function directContext(workflow = new WorkflowService()) {
   };
 }
 
-function miniMaxH3PromptForShot(shot) {
-  const dialogue = miniMaxH3DialogueTexts(shot.dialogueOrSubtitle)
-    .map((line, index) => `The signed speaker (S${index + 1}) says, <d>[Chinese] ${line}</d>.`)
-    .join(" ");
-  return `integrated_multimodal_description: [Shot 1] The signed character remains in the locked Animation Plan location with the authorized wardrobe and props, performs the complete planned action chain in its exact order, follows the specified camera sequence, and holds the stated visible final state. ${dialogue}`.trim()
-    + `\noverall_soundscape: The signed diegetic ambience, action sounds, and spoken lines remain synchronized with every visible action.\nnon_diegetic_music: A restrained instrumental cue at a slow tempo, joined by sustained low strings that fade out on the completed action.`;
-}
-
 function animationVideoPromptSemanticAuditPayload(prompt) {
   const prefix = "服务端签发审核目录：";
   const suffix = "\n\n按目录 shots 顺序逐项输出";
@@ -171,7 +161,7 @@ function createPromptRewriteWorkflow(getSourcePlan) {
       return {
         videoPrompts: sourcePlan.shotPlan.map((shot) => ({
           shotId: shot.shotId,
-          videoPrompt: miniMaxH3PromptForShot(shot)
+          videoPrompt: `温暖治愈的手绘动画质感。${shot.characterAction}。镜头按动作顺序执行 ${shot.cameraMotion}。在 ${shot.durationSeconds} 秒内完成后立即停止。`
         }))
       };
     }
@@ -220,97 +210,6 @@ test("direct foundation 与 batch prompt 声明 3.0 且 JSON 结构不含端点�
       );
     }
   }
-});
-
-test("MiniMax H3 direct batch Prompt 用带对白的完整三段换行示例并把纯文本对白逐字包装进 integrated", () => {
-  const context = directContext();
-  const h3Profile = resolveVideoPromptProfile({
-    provider: "MiniMax",
-    model: "MiniMax-H3"
-  });
-  const plan = mockAnimationPlan(context);
-  const { shotPlan: ignoredShotPlan, ...animationFoundation } = structuredClone(plan);
-  animationFoundation.productionStrategy.videoPromptProfile = h3Profile;
-  animationFoundation.sceneReferencePrompts.forEach((scene, index) => {
-    scene.sourceSceneIds = [context.fullStory.sceneScript[index].sceneId];
-    scene.relatedShotIds = [];
-  });
-
-  const prompt = animationShotBatchPrompt({
-    ...context,
-    videoPromptProfile: h3Profile,
-    animationFoundation,
-    sourceScenes: context.fullStory.sceneScript.slice(0, 1),
-    shotIdStartIndex: 1
-  });
-  const exampleStartMarker = "\n严格输出：\n";
-  const exampleStart = prompt.lastIndexOf(exampleStartMarker);
-  const exampleEnd = prompt.indexOf("\n\n不要生成", exampleStart + exampleStartMarker.length);
-  assert.notEqual(exampleStart, -1, "H3 batch Prompt 必须提供 strict JSON 示例");
-  assert.notEqual(exampleEnd, -1, "H3 batch Prompt 的 strict JSON 示例必须有明确边界");
-
-  const rawExample = prompt.slice(exampleStart + exampleStartMarker.length, exampleEnd);
-  assert.match(
-    rawExample,
-    /"videoPrompt":"integrated_multimodal_description:[^"]*\\noverall_soundscape:[^"]*\\nnon_diegetic_music:[^"]*"/u,
-    "JSON 示例必须用转义的 \\n 分隔三个 H3 section，不能暗示模型把段名写在同一行"
-  );
-  const example = JSON.parse(rawExample);
-  assert.deepEqual(
-    [...example.shotPlan[0].videoPrompt.matchAll(/^(integrated_multimodal_description|overall_soundscape|non_diegetic_music):/gmu)]
-      .map((match) => match[1]),
-    ["integrated_multimodal_description", "overall_soundscape", "non_diegetic_music"],
-    "解析后的示例必须让三个 section heading 各自位于行首"
-  );
-  assert.equal(
-    example.shotPlan[0].dialogueOrSubtitle,
-    "小白子：嗷呜~",
-    "strict JSON 示例必须用非空拟声式对白演示结构化对白字段"
-  );
-  assert.match(
-    example.shotPlan[0].videoPrompt,
-    /<d>\[Chinese\] 嗷呜~<\/d>/u,
-    "strict JSON 示例必须在 integrated 中逐字包装去除说话人前缀后的原对白"
-  );
-  assert.equal(
-    [...example.shotPlan[0].videoPrompt.matchAll(/<d>\[[^\]]+\][\s\S]*?<\/d>/gu)].length,
-    1,
-    "strict JSON 示例中的签发对白必须恰好映射为一个 <d> 块"
-  );
-  assert.doesNotThrow(() => assertMiniMaxH3BasePrompt(example.shotPlan[0].videoPrompt, {
-    durationSeconds: example.shotPlan[0].durationSeconds,
-    dialogueTexts: miniMaxH3DialogueTexts(example.shotPlan[0].dialogueOrSubtitle)
-  }));
-  const soundscape = example.shotPlan[0].videoPrompt.split("\noverall_soundscape:")[1]
-    .split("\nnon_diegetic_music:")[0];
-  assert.doesNotMatch(soundscape, /嗷呜~/u, "soundscape 不得重复或替代逐字对白");
-
-  const headingRule = prompt.split("\n").find(
-    (line) => /新行行首/u.test(line) && /字段名|段名|heading|section/u.test(line)
-  );
-  assert.ok(headingRule, "H3 规则必须明确要求每个 section heading 从新行行首开始");
-
-  const dialogueFieldRule = prompt.split("\n").find(
-    (line) => /dialogueOrSubtitle 字段本身/u.test(line)
-  );
-  assert.ok(dialogueFieldRule, "H3 规则必须明确 dialogueOrSubtitle 的字段契约");
-  assert.match(dialogueFieldRule, /纯剧情对白/u);
-  assert.match(dialogueFieldRule, /(?:不得|禁止|严禁)[^；。]*<d>/u);
-
-  const dialogueMappingRule = prompt.split("\n").find(
-    (line) => /dialogueOrSubtitle 非空时/u.test(line)
-      && /integrated_multimodal_description/u.test(line)
-  );
-  assert.ok(dialogueMappingRule, "H3 规则必须声明纯文本对白到 integrated <d> 块的逐条映射");
-  assert.match(dialogueMappingRule, /(?:逐条|每一条|每句)/u);
-  assert.match(dialogueMappingRule, /逐字/u);
-  assert.match(
-    dialogueMappingRule,
-    /小白子：嗷呜~[^\n]*<d>\[Chinese\] 嗷呜~<\/d>/u,
-    "示例必须证明说话人标签留在结构化字段，而 <d> 只包装剥离说话人后的原对白"
-  );
-  assert.match(dialogueMappingRule, /嗯…？/u, "规则必须明确短叹词也属于签发对白");
-  assert.match(dialogueMappingRule, /murmur[^\n]*不能替代/u, "声音概述不得替代 <d> 对白块");
 });
 
 test("direct_shot 把用户选择的 16:9 锁入 Prompt、Mock 和最终计划", async () => {
@@ -555,101 +454,6 @@ test("demo direct_shot 返回无端点的 3.0 plan 并标记 compiler disabled",
   assert.equal(result.metadata.localPromptCompiler.disabled, true);
 });
 
-test("demo 首次选择 MiniMax H3 时明确失败，不能伪造英文 H3 Prompt", async () => {
-  const workflow = new WorkflowService();
-  const context = {
-    ...directContext(workflow),
-    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
-  };
-  delete context.videoPromptProfile;
-
-  await assert.rejects(
-    () => workflow.createAnimationPlanWithMetadata(context),
-    /MiniMax H3 Animation Plan 需要已配置的文本模型.*demo mock 不得伪造/u
-  );
-});
-
-test("确认切换提示词目标时只重写 videoPrompt 与签发 Profile", async () => {
-  let sourcePlan;
-  const { workflow, calls } = createPromptRewriteWorkflow(() => sourcePlan);
-  const seedanceContext = directContext(workflow);
-  sourcePlan = mockAnimationPlan(seedanceContext);
-  const comparable = (plan) => {
-    const clone = structuredClone(plan);
-    delete clone.productionStrategy.videoPromptProfile;
-    clone.shotPlan.forEach((shot) => delete shot.videoPrompt);
-    return clone;
-  };
-
-  const result = await workflow.rewriteAnimationPlanVideoPrompts({
-    ...seedanceContext,
-    animationPlan: sourcePlan,
-    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
-  });
-
-  assert.deepEqual(comparable(result.animationPlan), comparable(sourcePlan));
-  assert.equal(
-    result.animationPlan.productionStrategy.videoPromptProfile.profileId,
-    VIDEO_PROMPT_PROFILE_IDS.MINIMAX_H3
-  );
-  assert.deepEqual(
-    result.animationPlan.shotPlan.map((shot) => shot.shotId),
-    sourcePlan.shotPlan.map((shot) => shot.shotId)
-  );
-  result.animationPlan.shotPlan.forEach((shot) => {
-    assert.doesNotThrow(() => assertMiniMaxH3BasePrompt(shot.videoPrompt, {
-      durationSeconds: shot.durationSeconds,
-      dialogueTexts: miniMaxH3DialogueTexts(shot.dialogueOrSubtitle)
-    }));
-  });
-  assert.deepEqual(
-    result.metadata.videoPromptRewrite.rewrittenShotIds,
-    sourcePlan.shotPlan.map((shot) => shot.shotId)
-  );
-  assert.equal(calls.length, 2);
-  assert.match(calls[0].prompt, /只能改写 videoPrompt 的供应商表达/u);
-  const rewriteExampleMatch = calls[0].prompt.match(
-    /\{"shotId":"A01","videoPrompt":("(?:\\.|[^"\\])*")\}/u
-  );
-  assert.ok(rewriteExampleMatch, "H3 Profile rewrite 必须提供 videoPrompt JSON 字符串示例");
-  assert.deepEqual(
-    [...JSON.parse(rewriteExampleMatch[1]).matchAll(
-      /^(integrated_multimodal_description|overall_soundscape|non_diegetic_music):/gmu
-    )].map((match) => match[1]),
-    ["integrated_multimodal_description", "overall_soundscape", "non_diegetic_music"],
-    "Profile rewrite 的三个 H3 section 也必须各自行首"
-  );
-  const rewriteExample = JSON.parse(rewriteExampleMatch[1]);
-  assert.match(
-    rewriteExample,
-    /<d>\[Chinese\] 嗷呜~<\/d>/u,
-    "Profile rewrite 的 strict JSON 示例也必须展示逐字中文对白块"
-  );
-  assert.doesNotThrow(() => assertMiniMaxH3BasePrompt(rewriteExample, {
-    durationSeconds: 4,
-    dialogueTexts: ["嗷呜~"]
-  }));
-  assert.match(calls[1].prompt, /ANIMATION_VIDEO_PROMPT_REWRITE_SEMANTIC_AUDIT_V2/u);
-  assert.equal(result.metadata.videoPromptRewrite.semanticAudit.verdict, "pass");
-});
-
-test("已有 3 秒 Seedance 镜头切换 H3 时明确失败而不静默改成 4 秒", async () => {
-  const workflow = new WorkflowService();
-  const context = directContext(workflow);
-  const sourcePlan = await workflow.createAnimationPlan(context);
-  sourcePlan.shotPlan[0].durationSeconds = 3;
-
-  await assert.rejects(
-    () => workflow.rewriteAnimationPlanVideoPrompts({
-      ...context,
-      animationPlan: sourcePlan,
-      videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
-    }),
-    /MiniMax H3.*4–15 秒整数/u
-  );
-  assert.equal(sourcePlan.shotPlan[0].durationSeconds, 3);
-});
-
 test("提示词改写会使旧 videoPrompt 负面词证据失效时明确失败，不静默删除证据", async () => {
   let sourcePlan;
   const { workflow, calls } = createPromptRewriteWorkflow(() => sourcePlan);
@@ -673,7 +477,7 @@ test("提示词改写会使旧 videoPrompt 负面词证据失效时明确失败�
     () => workflow.rewriteAnimationPlanVideoPrompts({
       ...context,
       animationPlan: sourcePlan,
-      videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
+      videoPromptTarget: { provider: "Seedance", model: "doubao-seedance-2-0-fast-260128" }
     }),
     /不得改变 videoPrompt 与签发 Profile 之外的 Plan 字段/u
   );
@@ -850,28 +654,6 @@ test("关闭背景音乐时 Seedance 批次提示词要求逐字收尾句，开�
   });
   assert.match(openPrompt, /背景音乐：开启，允许使用背景音乐/u);
   assert.equal(openPrompt.includes(NO_BACKGROUND_MUSIC_SENTENCE), false);
-});
-
-test("关闭背景音乐时 H3 批次提示词要求 non_diegetic_music 逐字写 N/A", () => {
-  const context = {
-    ...directContext(),
-    videoPromptTarget: { provider: "MiniMax", model: "MiniMax-H3" }
-  };
-  const foundation = foundationFor(context, { backgroundMusicMode: "none" });
-  foundation.productionStrategy.videoPromptProfile = resolveVideoPromptProfile(context.videoPromptTarget);
-  const prompt = animationShotBatchPrompt({
-    ...context,
-    videoPromptProfile: foundation.productionStrategy.videoPromptProfile,
-    animationFoundation: foundation,
-    sourceScenes: context.fullStory.sceneScript.slice(0, 1),
-    shotIdStartIndex: 1
-  });
-
-  assert.match(prompt, /背景音乐：关闭，本片不使用任何背景音乐/u);
-  assert.ok(prompt.includes(`non_diegetic_music 必须逐字只写 ${MINIMAX_H3_NO_MUSIC_SECTION}`));
-  assert.match(prompt, /overall_soundscape 照常写环境声、物理动作声与非语言人声——关闭的只是配乐，不是现场声/u);
-  // H3 不走中文追加句，避免踩非 Latin script 屏障。
-  assert.equal(prompt.includes(NO_BACKGROUND_MUSIC_SENTENCE), false);
 });
 
 test("Foundation 提示词声明用户选择，并声明该字段由服务端签发", () => {
