@@ -1080,7 +1080,7 @@ export class WorkflowService {
       throw new InputError(`animationPlanMode 只允许 ${ANIMATION_DIRECT_SHOT_MODE}`);
     }
     const directShotMode = animationPlanMode === ANIMATION_DIRECT_SHOT_MODE;
-    const targetAspectRatio = requireAnimationPlanAspectRatio(input.targetAspectRatio || "9:16");
+    const targetAspectRatio = requireAnimationPlanAspectRatio(input.targetAspectRatio || "16:9");
     // 背景音乐开关缺省关闭，与主题变体卡上的默认状态一致。
     const backgroundMusicMode = normalizeBackgroundMusicMode(input.backgroundMusicEnabled);
     const videoPromptProfile = directShotMode

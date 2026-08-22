@@ -417,7 +417,7 @@ export function mockAnimationPlan(input) {
   const fixedName = fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
   const title = fullStory.title || variant.title || "可动画化短片";
   const targetRuntime = Number(fullStory.targetDurationSeconds) || 60;
-  const targetAspectRatio = input.targetAspectRatio || "9:16";
+  const targetAspectRatio = input.targetAspectRatio || "16:9";
   const aspectRatioLabel = targetAspectRatio === "16:9" ? "横屏 16:9" : "竖屏 9:16";
   const protagonistIdentity = fullStory.characterBible?.protagonist?.identity || fixed;
   const careRecipient = fullStory.characterBible?.careRecipient?.nameOrLabel || variant.characterSetup?.careRecipient || "被关爱对象";

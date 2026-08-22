@@ -921,7 +921,7 @@ ${STRUCTURED_ANIMATION_SHOT_RULES_WITH_FIELD_RESPONSIBILITIES}
 function animationDirectFoundationPrompt(input) {
   const fullStory = input.fullStory || {};
   const foundationStoryContext = animationDirectFoundationStoryContext(fullStory);
-  const targetAspectRatio = input.targetAspectRatio || "9:16";
+  const targetAspectRatio = input.targetAspectRatio || "16:9";
   const videoPromptProfile = input.videoPromptProfile || {};
   const backgroundMusicMode = input.backgroundMusicMode || BACKGROUND_MUSIC_NONE;
   const backgroundMusicDeclaration = formatBackgroundMusicDeclaration(backgroundMusicMode);

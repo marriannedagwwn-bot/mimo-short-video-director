@@ -62,7 +62,7 @@ const state = {
   animationPlans: {},
   animationPlanMetadata: {},
   animationAspectRatioDrafts: {},
-  animationAspectRatioDefault: "9:16",
+  animationAspectRatioDefault: "16:9",
   backgroundMusicDrafts: {},
   animationPromptRewriting: false,
   shotVideoResults: {},
