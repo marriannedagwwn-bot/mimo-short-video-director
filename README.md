@@ -302,12 +302,21 @@ VIDEO_HTTP_POLL_TIMEOUT_MS=600000
 
 旧 preset 会把首帧写入 `image`、尾帧写入 `image_tail`、动画镜头提示词写入 `prompt`，并将当前 shot 中已启用的 `negativePrompts.video` 编译到 `negative_prompt`。时长按 5 或 10 秒归一，使用首尾帧时默认 `mode=pro`。服务端回执为所有 provider 保留脱敏 `requestPreview`、实际 provider/model、是否请求音频和 `negativePromptDelivery`。
 
+### 供应商错误提示
+
+调用失败时，服务端会按各家官方错误码表把响应翻译成可执行的中文提示，而不是把原始 JSON 甩给用户。例如 MiniMax 的 `insufficient_balance_error (1008)` 会显示成「账户余额不足（MiniMax insufficient_balance_error）。前往 MiniMax 控制台充值后重试。」
+
+覆盖 MiniMax（v2 的 `error.type`、消息尾部括号数字码与旧接口 `base_resp.status_code`）、火山方舟 Ark（Seedance 视频与即梦图片共用公共错误码）、可灵、阿里云百炼 DashScope（Qwen）、DeepSeek 与小米 MiMo 六家，码表出处与核对日期写在 `src/provider-error-codes.js` 文件头。
+
+供应商原文逐字保留在响应的 `detail` 字段，解释放在新增的 `providerError` 里——排查时随时可取。匹配不到官方码时不做任何解释，直接回退原文展示。
+
 该内置链路只服务于页面内的单镜头试片。仓库已有本地轻量 Run/Artifact/Checkpoint 状态库，但仍不提供 JSONL 任务队列、批量执行器、本地视觉质检或 ffmpeg 成片合成；整片批量生成和后期由外部供应商程序负责。
 
 ## 结构
 
 - `public/`：上传、浏览器抽帧、角色配置、结果展示与 JSON 导出。
 - `src/prompts.js`：各导演阶段的提示词和结构化输出契约。
+- `src/provider-error-codes.js`：各供应商官方错误码 → 可执行中文提示（纯展示层）。
 - `src/mimo-client.js`：MiMo OpenAI 兼容适配器。
 - `src/qwen-client.js`：Qwen OpenAI 兼容多模态适配器。
 - `src/deepseek-client.js`：DeepSeek-V4 OpenAI 兼容纯文本适配器。
