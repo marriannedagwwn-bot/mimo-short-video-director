@@ -136,8 +136,26 @@ export async function generateShotVideo(options = {}) {
   const requestNonce = safeSegment(options.requestNonce || randomUUID());
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-"));
   const count = clampVideoCount(options.count);
+  // 供应商要跑几分钟，这期间用户可能重新生成 Plan 或切换上一镜候选。只靠事后
+  // 关卡（浏览器 assertPlanProductionContextCurrent、commitProductionArtifact 的
+  // expectedCurrentRevision）只能挡住旧结果成为 current Artifact，挡不住无效付费、
+  // 孤儿文件和过期成功结果回到 UI，所以生成期间必须自己复验。
+  const writtenOutputPaths = [];
+  const assertCurrentOrDiscard = async () => {
+    if (typeof options.assertProductionContextCurrent !== "function") return;
+    try {
+      await options.assertProductionContextCurrent();
+    } catch (error) {
+      await discardStaleShotVideoOutputs(writtenOutputPaths);
+      // 原样上抛：ProductionStateError 一旦被包成 ShotVideoConfigError/
+      // ShotVideoProviderError，serializeServerError 就判不出 409 和 stale code。
+      throw error;
+    }
+  };
 
   try {
+    // ① 任何供应商调用与文件写入之前。
+    await assertCurrentOrDiscard();
     await fs.mkdir(outputRoot, { recursive: true });
     const frames = generationMode === "first_last_frame"
       ? await prepareFrameArtifacts({
@@ -175,8 +193,12 @@ export async function generateShotVideo(options = {}) {
     let effectiveVideoPrompt = String(shot.videoPrompt || "").trim();
     const videos = [];
     for (let index = 0; index < count; index += 1) {
+      // ② 提交这一条候选给供应商之前：过期就不再产生新的付费调用。
+      await assertCurrentOrDiscard();
       const suffix = count > 1 ? `-${index + 1}` : "";
       const outputPath = path.join(outputRoot, `${filenamePrefix}${shotId}-${stamp}-${requestNonce}${suffix}.mp4`);
+      // 先登记再调用：worker 半途写了一半的文件也要进清理范围。
+      writtenOutputPaths.push(outputPath);
       const request = buildShotVideoRequest(shot, {
         outputPath,
         inputArtifacts,
@@ -194,6 +216,8 @@ export async function generateShotVideo(options = {}) {
         outputProbe: options.videoOutputProbe,
         skipFfprobeForInjectedWorker: Boolean(options.workerRunner) && !options.videoOutputProbe
       });
+      // ③ 这一条已经落盘：过期就把本次写入的全部候选删掉，不留孤儿文件。
+      await assertCurrentOrDiscard();
       videos.push({
         candidateIndex: index,
         provider: videoProvider,
@@ -205,6 +229,8 @@ export async function generateShotVideo(options = {}) {
         generatedAt: new Date().toISOString()
       });
     }
+    // ④ 组装返回值之前：过期的成功结果不许回到 UI。
+    await assertCurrentOrDiscard();
     const firstVideo = videos[0] || {};
     return {
       taskId: firstVideo.taskId || `${shot.shotId || "SHOT"}-VIDEO-PREVIEW`,
@@ -381,6 +407,24 @@ function buildShotVideoRequest(shot = {}, context = {}) {
     acceptanceCriteria: shot.acceptanceCriteria || [],
     rawJob: shot
   };
+}
+
+/**
+ * 删除本次调用**自己算出的**候选文件。只在生产上下文过期时调用。
+ *
+ * 这些路径都含 requestNonce，不可能撞上并发请求的产物；绝不扫描或 glob 目录。
+ * 删除失败只吞掉：清理是尽力而为，不能改变 fail closed 的结论。
+ * 旧 v2 首尾帧 PNG 不在覆盖内——它的文件名只有毫秒 stamp、不含 nonce，
+ * 删除有误伤并发请求的风险，而 first_last_frame 本身已是弃置兼容路径。
+ */
+async function discardStaleShotVideoOutputs(outputPaths = []) {
+  for (const outputPath of outputPaths) {
+    try {
+      await fs.rm(outputPath, { force: true });
+    } catch {
+      // 忽略：文件不存在、权限问题都不应影响过期错误的上抛。
+    }
+  }
 }
 
 async function assertUsableVideoOutput(outputPath, { outputProbe, skipFfprobeForInjectedWorker = false } = {}) {

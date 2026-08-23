@@ -121,7 +121,15 @@ public/generated-images/<mediaNamespace>/
 public/generated-videos/<mediaNamespace>/
 ```
 
-文件名也带 Plan revision 和 digest 前缀。远端生成期间 Plan 若更新，旧任务可能仍在旧目录完成，但前端会拒绝把结果挂到新 Plan。
+文件名也带 Plan revision、digest 前缀和不可碰撞的请求 nonce。
+
+远端生成往往要跑几分钟，这期间 Plan 可能被重新生成、上一镜候选可能被切换。因此 `/api/generate-shot-video` 在生成期间必须自己复验，而不是只依赖事后关卡：服务端把一个复验回调交给生成器，生成器在**任何供应商调用与文件写入之前**、**每条候选提交供应商之前**、**每条候选落盘并通过 ffprobe 之后**、**组装返回值之前**各执行一次。回调重新从状态库读取 run，比对 Plan 的 revision/digest/mediaNamespace 是否仍为 current；请求使用 `continuityReferenceMode=previous_shot_frames` 时还比对上一镜 current `shotVideo` 的精确 revision/digest 与选中候选。
+
+任一复验失败即 fail closed：删除本次请求已经写入的全部候选 mp4，并把 `ProductionStateError`（`MEDIA_PLAN_LINEAGE_STALE` / `SHOT_VIDEO_PREVIOUS_REFERENCE_STALE`，HTTP 409）原样上抛，不得包装成配置或供应商错误。清理只删除本次调用自己算出的、含该请求 nonce 的路径，绝不扫描目录；清理本身失败只被吞掉，不改变 fail closed 的结论。只有过期触发删除——供应商错误与 ffprobe 失败维持既有语义，产物留在原地便于排查。
+
+两处已知边界：单条候选一旦提交给供应商，主进程无法中断它（worker 在同一个子进程里完成提交、轮询与下载），那条的花费无法收回，复验阻止的是后续候选的付费、文件留存与结果回写；旧 v2 `first_last_frame` 路径写出的首尾帧 PNG 文件名不含请求 nonce，不在清理覆盖内。
+
+复验之外，前端仍会拒绝把过期结果挂到新 Plan——两层是叠加关系，不是替代关系。
 
 
 上一镜抽帧不信任浏览器提交的绝对路径或任意 URL。服务端根据当前 Plan 的 `shotPlan[]` 顺序导出 source shot，读取同一 Run 中 current `shotVideo` Artifact 的选中候选，只把当前 `public/generated-videos/<mediaNamespace>/` 单层目录内、文件名前缀同时绑定当前 Plan 和 source shotId 的普通 mp4 映射回本地文件。旧 namespace、远程 URL、路径穿越、子目录、符号链接和缺失文件必须明确拒绝。通过路径校验后仍须以 `O_NOFOLLOW` 文件句柄读取并冻结到任务私有目录，抽帧回执记录实际读取源字节及各 JPEG 的 SHA-256，避免路径校验与 FFmpeg 打开之间的文件替换使 lineage 与实际输入脱钩。

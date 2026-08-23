@@ -403,6 +403,121 @@ test("同一镜头的并发视频请求使用不可碰撞的输出文件名", as
   assert.notEqual(first.outputUrl, second.outputUrl);
 });
 
+// 生产上下文过期复验：server.js 传入 assertProductionContextCurrent，
+// 生成器必须在供应商调用前后真的执行它，过期时删除本次已写入的候选。
+test("候选之间生产上下文过期时立即停手，并删除本次已写入的候选文件", async (t) => {
+  const fixture = await staleCheckFixture(t);
+  const stale = new Error("Animation Plan 已更新，拒绝把媒体写入旧版本");
+  stale.code = "MEDIA_PLAN_LINEAGE_STALE";
+  stale.httpStatus = 409;
+  let checks = 0;
+
+  const rejected = await generateShotVideo({
+    ...fixture.options,
+    count: 2,
+    // 调用顺序：① try 开头 → ② 第 1 条提交前 → ③ 第 1 条落盘后 → ② 第 2 条提交前。
+    // 在第 4 次抛错，等于「第 1 条已经落盘、第 2 条还没提交供应商」。
+    assertProductionContextCurrent: async () => {
+      checks += 1;
+      if (checks === 4) throw stale;
+    }
+  }).then(() => null, (error) => error);
+
+  // 错误对象逐字上抛：包装成 ShotVideoConfigError/ProviderError 会让服务端判不出 409。
+  assert.equal(rejected, stale);
+  assert.equal(rejected.code, "MEDIA_PLAN_LINEAGE_STALE");
+  assert.equal(checks, 4);
+  // 第 2 条候选没有提交给供应商：省下的是真金白银。
+  assert.equal(fixture.workerCalls(), 1);
+  // 第 1 条已经落盘的文件必须被删掉，不留孤儿。
+  assert.deepEqual(await fixture.remainingVideos(), []);
+});
+
+test("全程 current 时四个复验点都执行，产物与既有行为一致", async (t) => {
+  const fixture = await staleCheckFixture(t);
+  let checks = 0;
+
+  const result = await generateShotVideo({
+    ...fixture.options,
+    count: 2,
+    assertProductionContextCurrent: async () => { checks += 1; }
+  });
+
+  // ① 1 次 + 每条候选（提交前 + 落盘后）2 次 * 2 条 + ④ 1 次。
+  assert.equal(checks, 6);
+  assert.equal(fixture.workerCalls(), 2);
+  assert.equal(result.actualCount, 2);
+  assert.equal((await fixture.remainingVideos()).length, 2);
+});
+
+test("供应商失败不触发清理，产物留在原地便于排查", async (t) => {
+  const fixture = await staleCheckFixture(t, {
+    workerRunner: async ({ output, receipt }) => {
+      await fs.writeFile(output, Buffer.alloc(600, 7));
+      await fs.writeFile(receipt, JSON.stringify({ ok: true }));
+      throw new Error("供应商返回 502");
+    }
+  });
+
+  await assert.rejects(() => generateShotVideo({
+    ...fixture.options,
+    assertProductionContextCurrent: async () => {}
+  }), /供应商返回 502/u);
+
+  // 只有过期才删文件；供应商错误维持既有语义。
+  assert.equal((await fixture.remainingVideos()).length, 1);
+});
+
+test("没有传入复验回调时行为与既有调用方完全一致", async (t) => {
+  const fixture = await staleCheckFixture(t);
+  const result = await generateShotVideo(fixture.options);
+  assert.equal(result.actualCount, 1);
+  assert.equal(fixture.workerCalls(), 1);
+  assert.equal((await fixture.remainingVideos()).length, 1);
+});
+
+async function staleCheckFixture(t, { workerRunner = null } = {}) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-stale-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, "provider.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    videoEndpoint: "https://provider.invalid/video",
+    providerPreset: "modelark_content_generation",
+    videoModel: "doubao-seedance-2-0-260128",
+    apiKey: "test-key"
+  }));
+  const outputRoot = path.join(root, "generated-videos");
+  let workerCalls = 0;
+  return {
+    workerCalls: () => workerCalls,
+    remainingVideos: async () => {
+      const entries = await fs.readdir(outputRoot).catch(() => []);
+      return entries.filter((name) => name.endsWith(".mp4")).sort();
+    },
+    options: {
+      configPath,
+      outputRoot,
+      publicBasePath: "/generated-videos/test",
+      filenamePrefix: "animationPlan-V1-r1-abcdef123456",
+      videoProvider: "Seedance",
+      videoModel: "doubao-seedance-2-0-260128",
+      generationMode: "all_reference",
+      referenceAssets: [{
+        mediaType: "image",
+        name: "reference.png",
+        dataUrl: `data:image/png;base64,${Buffer.from("reference").toString("base64")}`
+      }],
+      workerRunner: workerRunner || (async ({ output, receipt }) => {
+        workerCalls += 1;
+        await fs.writeFile(output, Buffer.alloc(600, 4));
+        await fs.writeFile(receipt, JSON.stringify({ ok: true }));
+      }),
+      videoOutputProbe: async () => {},
+      shot: { shotId: "A02", durationSeconds: 5, videoPrompt: "测试" }
+    }
+  };
+}
+
 async function continuityFixture({ variantId = "V1" } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "continuity-resolver-"));
   const videoOutputRoot = path.join(root, "generated-videos", "project", "run", "plan");
