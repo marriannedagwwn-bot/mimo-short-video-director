@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   normalizeModelUsage,
   parseModelPrices,
+  readModelUsageFromError,
   recordModelUsage,
   runWithUsageAccounting,
   summarizeModelUsage
@@ -121,6 +122,54 @@ test("被包裹函数抛错时错误原样向上抛，记账不改变失败语�
   );
 });
 
+test("阶段失败时，失败前已花掉的 token 挂在错误上一并报出", async () => {
+  const original = new Error("模型输出未通过校验");
+  original.code = "OUTPUT_CONTRACT_INVALID";
+  const error = await runWithUsageAccounting(async () => {
+    recordModelUsage({ provider: "Qwen", model: "qwen3.7-max", usage: { prompt_tokens: 1e6, completion_tokens: 0 } });
+    recordModelUsage({ provider: "Qwen", model: "qwen3.7-max", usage: { prompt_tokens: 1e6, completion_tokens: 0 } });
+    throw original;
+  }, { prices: PRICES }).then(() => null, (caught) => caught);
+
+  // 错误对象本身逐字不变：不是新错误，不改 message/code。
+  assert.equal(error, original);
+  assert.equal(error.message, "模型输出未通过校验");
+  assert.equal(error.code, "OUTPUT_CONTRACT_INVALID");
+
+  const usage = readModelUsageFromError(error);
+  assert.equal(usage.calls, 2);
+  assert.equal(usage.totalTokens, 2e6);
+  assert.equal(usage.costKnown, true);
+  assert.equal(usage.costCny, 4.8);
+
+  // Symbol 键不参与枚举：不会渗进错误信封的业务字段，也不会被日志序列化带出去。
+  assert.deepEqual(Object.keys(error), ["code"]);
+  assert.equal(JSON.parse(JSON.stringify({ ...error })).usage, undefined);
+});
+
+test("失败前一次模型调用都没发生时不返回 usage，非错误对象读取也不抛", async () => {
+  const error = await runWithUsageAccounting(async () => {
+    throw new Error("鉴权失败");
+  }, { prices: PRICES }).then(() => null, (caught) => caught);
+  assert.equal(readModelUsageFromError(error), null);
+
+  assert.equal(readModelUsageFromError(null), null);
+  assert.equal(readModelUsageFromError("字符串错误"), null);
+  assert.equal(readModelUsageFromError(undefined), null);
+});
+
+test("冻结的错误对象无法挂载 usage 时只放弃记账，不改变失败语义", async () => {
+  const frozen = Object.freeze(new Error("冻结错误"));
+  await assert.rejects(
+    () => runWithUsageAccounting(async () => {
+      recordModelUsage({ provider: "Qwen", model: "qwen3.7-max", usage: { total_tokens: 10 } });
+      throw frozen;
+    }, { prices: PRICES }),
+    /冻结错误/u
+  );
+  assert.equal(readModelUsageFromError(frozen), null);
+});
+
 test("单价解析容忍中文输入法的全角分隔符，不静默吞掉后面的条目", () => {
   // 真实踩到的坑：deepseek 那条留着占位符没填，且后面跟的是全角逗号，
   // 只按半角切分会把 mimo-v2.5 一起并进同一个条目而整条丢弃。
@@ -189,6 +238,13 @@ test("展示：千分位、不足一分显示 < ¥0.01、缺单价时不输出�
   // 演示模式没有模型调用：后缀为空，原状态文案保持不变。
   assert.equal(formatStageUsageSuffix(null), "");
   assert.equal(formatStageUsageSuffix({ totalTokens: 0, costKnown: false }), "");
+
+  // 失败阶段换一个措辞：这笔钱确实花了，但没有买到结果。
+  assert.equal(
+    formatStageUsageSuffix({ totalTokens: 12345, costCny: 0.12, costKnown: true }, { label: "失败前已消耗" }),
+    " · 失败前已消耗 12,345 tokens · 约 ¥0.12"
+  );
+  assert.equal(formatStageUsageSuffix(null, { label: "失败前已消耗" }), "");
 });
 
 

@@ -693,6 +693,9 @@ async function runWorkflow() {
   } catch (error) {
     const active = document.querySelector(".pipeline li.active");
     if (active) setStage(active.dataset.stage, "error");
+    const suffix = failedStageUsageSuffix();
+    elements.pipelineUsage.textContent = suffix ? `AI 导演阶段失败${suffix}` : "";
+    elements.pipelineUsage.className = "story-status error";
     showError(error.message || "工作流执行失败");
   } finally {
     endStageUsage();
@@ -871,6 +874,16 @@ function endStageUsage() {
   return mergeStageUsage(entries || []);
 }
 
+// 纯旁路：没有 usage 的请求（簿记类）不会进合计，也不影响返回值或失败语义。
+function recordStageUsage(usage) {
+  if (stageUsageEntries && usage) stageUsageEntries.push(usage);
+}
+
+/** 阶段失败时的后缀：失败前调用过的模型照样计费，不能显示成 0 或干脆不显示。 */
+function failedStageUsageSuffix() {
+  return formatStageUsageSuffix(endStageUsage(), { label: "失败前已消耗" });
+}
+
 async function api(path, body, { productionToken = null } = {}) {
   const response = await fetch(path, {
     method: "POST",
@@ -881,11 +894,11 @@ async function api(path, body, { productionToken = null } = {}) {
     body: JSON.stringify(withModelOverrides(body))
   });
   const data = await response.json().catch(() => ({}));
+  // 先记账再判成败：失败响应上的 usage 是失败前真实花掉的钱，抛错前必须收进合计。
+  recordStageUsage(data.usage);
   if (!response.ok || !data.ok) {
     throw createApiRequestError(data, response.status, `请求失败（${response.status}）`);
   }
-  // 纯旁路：没有 usage 的请求（簿记类）不会进合计，也不影响返回值。
-  if (stageUsageEntries && data.usage) stageUsageEntries.push(data.usage);
   return data.result;
 }
 
@@ -1297,8 +1310,9 @@ async function generateFullStory({ force = false } = {}) {
     updateStoryExportActions();
     elements.export.classList.remove("hidden");
   } catch (error) {
-    setStoryStatus(error.message || "完整剧情生成失败", "error");
+    setStoryStatus(`${error.message || "完整剧情生成失败"}${failedStageUsageSuffix()}`, "error");
   } finally {
+    endStageUsage();
     state.storyRunning = false;
     setStoryRunning(false);
   }
@@ -1354,6 +1368,7 @@ async function generateAnimationPlan({ force = false } = {}) {
   }
   state.animationRunning = true;
   setAnimationRunning(true);
+  beginStageUsage();
   setAnimationStatus(`正在调用 ${animationModelLabel()} 生成直接视频镜头生产包…`, "active");
   try {
     const animationPlanMode = "direct_shot";
@@ -1406,13 +1421,14 @@ async function generateAnimationPlan({ force = false } = {}) {
     updateStoryExportActions();
     elements.export.classList.remove("hidden");
   } catch (error) {
-    setAnimationStatus(error.message || "动画生产包生成失败", "error");
+    setAnimationStatus(`${error.message || "动画生产包生成失败"}${failedStageUsageSuffix()}`, "error");
     const compilerFailure = renderCompilerFailureDetails(error);
     if (compilerFailure) {
       elements.animationPlan.innerHTML = `${resultHeader("COMPILER FAILURE", "动画生产包未能安全编译")}${compilerFailure}`;
       reveal(elements.animationPlan);
     }
   } finally {
+    endStageUsage();
     state.animationRunning = false;
     setAnimationRunning(false);
   }

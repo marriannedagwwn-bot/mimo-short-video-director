@@ -51,7 +51,7 @@ import {
 } from "./src/full-model-output-trace.js";
 import { ProductionStateStore } from "./src/production-state-store.js";
 import { ProductionStateError, normalizeArtifactId, safeIdentifier } from "./src/production-lineage.js";
-import { runWithUsageAccounting } from "./src/token-usage.js";
+import { readModelUsageFromError, runWithUsageAccounting } from "./src/token-usage.js";
 
 loadEnv();
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -382,7 +382,9 @@ const server = http.createServer(async (request, response) => {
   } catch (error) {
     const serialized = serializeServerError(error, { attemptStore });
     if (serialized.log) console.error(serialized.log);
-    return json(response, serialized.status, serialized.body);
+    // 失败前已经花掉的 token 照样如实回报，挂在信封上不进 body 的任何业务字段。
+    const usage = readModelUsageFromError(error);
+    return json(response, serialized.status, usage ? { ...serialized.body, usage } : serialized.body);
   }
 });
 

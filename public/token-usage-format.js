@@ -55,12 +55,15 @@ export function formatCostCny(value) {
 /**
  * 返回追加到状态行的后缀，例如 ` · 本次消耗 12,345 tokens · 约 ¥0.12`。
  * 没有 usage、或本阶段一次模型调用都没发生时返回空串——演示模式文案保持原样。
+ *
+ * `label` 用于区分成功与失败：阶段失败时传「失败前已消耗」，因为失败前调用过的
+ * 模型照样计费，把它显示成「本次消耗」会让人误以为这笔钱是买到了结果的。
  */
-export function formatStageUsageSuffix(usage) {
+export function formatStageUsageSuffix(usage, { label = "本次消耗" } = {}) {
   if (!usage || typeof usage !== "object") return "";
   const totalTokens = Number(usage.totalTokens);
   if (!Number.isFinite(totalTokens) || totalTokens <= 0) return "";
-  const parts = [`本次消耗 ${formatTokens(totalTokens)} tokens`];
+  const parts = [`${label} ${formatTokens(totalTokens)} tokens`];
   if (usage.costKnown) {
     const cost = formatCostCny(usage.costCny);
     if (cost) parts.push(`约 ${cost}`);
