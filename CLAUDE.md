@@ -170,7 +170,12 @@ DeepSeek 模型 ID 只登记 `deepseek-v4-flash`（页面首选）与 `deepseek-
 ```
 "铃木奶奶站在院子里浇花"  → characters: ["铃木奶奶"]   ✅
 "铃木奶奶家的门口"        → 不能认为铃木奶奶出镜        ❌
+"空院子里的雨水落进水缸"  → characters: []             ✅
 ```
+
+**空数组是无人场次的正确值，不是错误。** 空院子雨水、屋外烟囱远景、桌面道具特写、城市建立镜头、角色离开后的空镜、纯转场环境镜头都合法；禁止空数组只会逼模型硬塞一个没出镜的角色，反而污染这个字段。放开不打开缺口——真正出镜的标准角色仍被 `visibleAction` 扫描抓住，有对白的场次仍被说话人校验抓住，两者都不猜「这句话里有没有人」。空镜场次照样可以有 `visibleAction`、`shotAndSound` 和 `offscreenSoundSources`。
+
+唯一新增的兜底是故事级的：**所有场次的 `characters` 全为空时抛 `FULL_STORY_NO_VISIBLE_CHARACTER_SCENE`**（path `fullStory.sceneScript`）。单场空镜合法，整片没有任何角色出镜则不成立；`ensureFullStoryMatchesProfile` 只查整个 JSON 含不含固定角色名，`characterBible` 里有名字就能通过，兜不住这一条。
 
 **`offscreenSoundSources`（可选数组）= 本场只以声音出现、明确不出镜的角色名。** `shotAndSound` 一条自由文本里同时承载画面描述（可能出镜）与声音来源（不代表出镜），程序无法也不得靠正则或词表区分，因此改为要模型**显式登记**。语义边界：
 

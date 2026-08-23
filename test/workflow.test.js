@@ -2540,13 +2540,6 @@ test("fullStory Scene Contract 聚合校验逐场必填字段与唯一性", asyn
       path: "fullStory.sceneScript[3].location"
     },
     {
-      name: "characters 为空",
-      mutate(story) {
-        story.sceneScript[3].characters = [];
-      },
-      path: "fullStory.sceneScript[3].characters"
-    },
-    {
       name: "visibleAction 为空",
       mutate(story) {
         story.sceneScript[3].visibleAction = "";
@@ -2592,7 +2585,8 @@ test("fullStory Scene Contract 聚合校验逐场必填字段与唯一性", asyn
   await t.test("同一场次的多个缺陷一次完整报告", () => {
     const story = storyFixture();
     story.sceneScript[3].location = "";
-    story.sceneScript[3].characters = [];
+    // 空数组现在是合法空镜；仍然非法的是空白角色名。
+    story.sceneScript[3].characters = ["   "];
     story.sceneScript[3].visibleAction = "";
     assert.throws(
       () => ensureOutputContract(story, "fullStory"),
@@ -2790,6 +2784,74 @@ test("fullStory Scene Contract 只校验可确定的视觉角色和结构化说�
     assert.doesNotThrow(() => ensureOutputContract(story, "fullStory"));
   });
 
+  await t.test("无人出镜的空镜使用空数组是合法的", () => {
+    const emptyScenes = [
+      { visibleAction: "雨水顺着空院子的屋檐落进水缸，地面积起一圈涟漪。", shotAndSound: "固定远景，只有雨声。" },
+      { visibleAction: "桌面上的旧收音机指示灯缓慢闪烁。", shotAndSound: "微距特写，电流底噪。" },
+      { visibleAction: "门轻轻合上，屋里只剩下还在晃动的门帘。", shotAndSound: "固定中景，脚步声渐远。" }
+    ];
+    for (const scene of emptyScenes) {
+      const story = storyFixture();
+      Object.assign(story.sceneScript[0], { ...scene, characters: [], dialogue: [] });
+      assert.doesNotThrow(() => ensureOutputContract(story, "fullStory"));
+    }
+  });
+
+  await t.test("空镜场次仍可登记画外声源", () => {
+    const story = storyFixture();
+    Object.assign(story.sceneScript[0], {
+      characters: [],
+      visibleAction: "空院子里的水缸接住屋檐落下的雨。",
+      dialogue: [],
+      shotAndSound: "屋内传来阿岚收拾工具的声响，画面始终停在院子里。",
+      offscreenSoundSources: ["阿岚"]
+    });
+    assert.doesNotThrow(() => ensureOutputContract(story, "fullStory"));
+  });
+
+  await t.test("空数组不会放过真正出镜的角色", () => {
+    const withVisibleCharacter = storyFixture();
+    Object.assign(withVisibleCharacter.sceneScript[0], {
+      characters: [],
+      visibleAction: "阿岚推门进来收起院子里的工具。",
+      dialogue: [],
+      shotAndSound: "中景跟随。"
+    });
+    assert.throws(
+      () => ensureOutputContract(withVisibleCharacter, "fullStory"),
+      /visibleAction.*标准角色「阿岚」/u
+    );
+
+    const withDialogue = storyFixture();
+    Object.assign(withDialogue.sceneScript[0], {
+      characters: [],
+      visibleAction: "雨水落进院子里的水缸。",
+      dialogue: [{ speaker: "阿岚", line: "又下雨了。", deliveryOrSubtext: "自言自语" }],
+      shotAndSound: "固定远景。"
+    });
+    assert.throws(
+      () => ensureOutputContract(withDialogue, "fullStory"),
+      /dialogue\[0\]\.speaker.*阿岚.*characters/u
+    );
+  });
+
+  await t.test("整片一个角色都不出镜时失败", () => {
+    const story = storyFixture();
+    story.sceneScript.forEach((scene) => Object.assign(scene, {
+      characters: [],
+      visibleAction: "雨水落进院子里的水缸。",
+      dialogue: [],
+      shotAndSound: "固定远景。"
+    }));
+    assert.throws(
+      () => ensureOutputContract(story, "fullStory"),
+      (error) => error instanceof OutputContractError
+        && error.details.some((detail) => (
+          detail.code === "FULL_STORY_NO_VISIBLE_CHARACTER_SCENE"
+          && detail.path === "fullStory.sceneScript"
+        ))
+    );
+  });
 });
 
 test("标准角色说明后缀使用锚定分隔符诊断且不误伤独立前缀名称", () => {

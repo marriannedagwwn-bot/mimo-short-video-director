@@ -427,12 +427,37 @@ function validateFullStorySceneContract(value) {
     });
   });
 
+  validateFullStoryHasVisibleCharacterScene(value.sceneScript, details);
+
   if (details.length) {
     throw new OutputContractError(
       `fullStory Scene Contract 校验失败：${details.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
       details
     );
   }
+}
+
+/**
+ * 单场无人出镜是合法空镜，但整片一个人都不出镜就不是短视频剧情了。
+ *
+ * 这条是放开空数组后唯一新增的兜底：实测 ensureFullStoryMatchesProfile 只检查
+ * 整个 JSON 是否含固定角色名，characterBible 里有名字就能通过，所以在此之前
+ * 防住「全片空镜」的其实只有那条已被移除的空数组禁令。判断完全确定性——
+ * 只看有没有任何一场的 characters 非空，不涉及任何文本语义。
+ */
+function validateFullStoryHasVisibleCharacterScene(sceneScript, details) {
+  if (!Array.isArray(sceneScript) || !sceneScript.length) return;
+  const hasVisibleCharacter = sceneScript.some((scene) => (
+    Array.isArray(scene?.characters) && scene.characters.some((name) => (
+      typeof name === "string" && name.trim()
+    ))
+  ));
+  if (hasVisibleCharacter) return;
+  pushFullStorySceneViolation(details, {
+    code: "FULL_STORY_NO_VISIBLE_CHARACTER_SCENE",
+    path: "fullStory.sceneScript",
+    reason: "全部场次的 characters 都为空；单场空镜合法，但整片至少要有一个场次有角色实际出镜"
+  });
 }
 
 function validateFullStorySceneRequiredString(value, path, field, details, sceneId = "") {
@@ -457,23 +482,26 @@ function validateFullStorySceneRequiredString(value, path, field, details, scene
   return normalized;
 }
 
+/**
+ * characters 的语义是「本场实际出镜角色」，所以无人场次的正确值就是 `[]`：
+ * 空院子里的雨水、桌面道具特写、城市建立镜头、人物离开后的空镜、纯转场环境镜头
+ * 都属于合法空镜。禁止空数组只会逼模型硬塞一个没出镜的角色来通过校验，
+ * 反而污染这个字段本身的事实性。
+ *
+ * 放开空数组不会打开缺口：真正出镜的标准角色仍会被
+ * validateFullStoryVisualCharacterReferences 从 visibleAction 里抓出来，
+ * 有对白的场次仍会被 validateFullStoryDialogueSpeakers 抓出来。两者都不猜
+ * 「这句话里有没有人」——那需要语义判断，写死词表会误伤合法反例。
+ */
 function validateFullStorySceneCharacters(value, path, standardNames, details, sceneId) {
   if (!Array.isArray(value)) {
     pushFullStorySceneViolation(details, {
       code: "FULL_STORY_SCENE_CHARACTERS_REQUIRED",
       path,
-      reason: "characters 必须是非空字符串数组",
+      reason: "characters 必须是字符串数组",
       sceneId
     });
     return new Set();
-  }
-  if (!value.length) {
-    pushFullStorySceneViolation(details, {
-      code: "FULL_STORY_SCENE_CHARACTERS_REQUIRED",
-      path,
-      reason: "characters 不能为空数组",
-      sceneId
-    });
   }
 
   return collectFullStorySceneNameList(value, path, standardNames, details, sceneId, {
@@ -566,19 +594,6 @@ function validateFullStorySceneOffscreenSoundSources(value, path, standardNames,
   });
   return names;
 }
-
-/**
- * 两个字段承载的语义不同，扫描口径也必须不同：
- *
- * - `visibleAction` 是可见主体事实的唯一字段，只认 `characters`；
- * - `shotAndSound` 一条自由文本里同时有画面描述（可能出镜）和声音来源（不代表
- *   出镜），因此额外接受 `offscreenSoundSources` 的显式登记作为豁免。
- *
- * 关键不对称：登记**只**豁免 shotAndSound，绝不豁免 visibleAction。契约已经强制
- * 实际参与本场的人物必须写进 visibleAction，所以模型无法靠「把人登记成声源」
- * 藏起一个出镜角色——藏了会在 visibleAction 这一档被抓，不写进 visibleAction
- * 就等于承认没出镜。这条不对称是整个登记机制不沦为免检后门的唯一原因。
- */
 
 /**
  * 两个字段承载的语义不同，扫描口径也必须不同：

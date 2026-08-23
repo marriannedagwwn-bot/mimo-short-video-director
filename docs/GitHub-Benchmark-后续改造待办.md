@@ -113,6 +113,7 @@ T08 跨环境 Production Package 仅在部署需求成立后启动
 - Production Lineage 已证明 Story 属于哪个 Variant revision，但不能证明模型生成的 Story 语义遵守该 Variant。
 - `sceneScript[].characters` 的语义是“本场实际出镜角色”，不是被提及对象、地点所有者、照片人物或回忆对象。
 - 已完成（2026-08-23）：`shotAndSound` 曾与 `visibleAction` 共用同一套“视觉字段”扫描，导致画外声音来源被判为出镜，唯一通过办法是把不出镜的角色写进 `characters`（污染事实来源，并让 Animation Plan Foundation 把画外的人渲染进画面）。现已新增可选 `sceneScript[].offscreenSoundSources` 显式登记，扫描按字段职责分档：`visibleAction` 只认 `characters`，`shotAndSound` 认两者并集；登记只豁免 `shotAndSound`，绝不豁免 `visibleAction`。全程零正则、零词表、零模型调用。**这不完成 `FS-01`**——FS-01 的命中点在 `visibleAction` 里的所属关系（“阿岚维修铺”），属另一类，其 characterization 判定保持不变。
+- 已完成（2026-08-23）：`characters` 此前禁止空数组，与「本场实际出镜角色」的定义矛盾，挡住了空院子雨水、道具特写、建立镜头、人物离开后的空镜等一整类合法镜头。现已允许空数组，并新增故事级 `FULL_STORY_NO_VISIBLE_CHARACTER_SCENE` 兜住「整片无人出镜」。**这不改变 `FS-03`**——未登记的临时角色出现在画面中仍可能通过，那对任何 `characters` 取值都存在，不是本次放开新引入的。
 - 当前主流程仍是 Legacy Full Story；不得把 Character Registry / Cast Proposal 描述成 Full Story v2 已接入。
 
 权威事实源必须先确定：

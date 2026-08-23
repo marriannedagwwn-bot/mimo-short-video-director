@@ -519,7 +519,9 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - visualGuardrails.positivePromptBoundary 继续约束固定主角的签发身份与必需特征；sourceSimilarityRules 只保留来源证据与实际视觉参考泄漏职责，不能覆盖用户这次的放行决定。
 - 对白必须服从 visualGuardrails.dialogueRules 与用户限制；可以用动作备注补足信息，不要让角色突然改变说话方式。
 - 每场戏都要能拍：写清地点、人物、动作、对白/声画信息、镜头建议、情绪节点和剧作功能。
-- sceneScript 每场的 location、characters 和 visibleAction 都必须完整填写：location、visibleAction 必须是非空字符串，characters 必须是非空角色名称字符串数组。
+- sceneScript 每场的 location、characters 和 visibleAction 都必须完整填写：location、visibleAction 必须是非空字符串，characters 必须是角色名称字符串数组（键必须存在）。
+- 无人出镜的场次，characters 的正确值就是空数组 []：空院子里的雨水、屋外烟囱远景、桌面道具特写、城市建立镜头、角色离开后留下的空镜、纯转场环境镜头都属于这一类。**不得为了填满字段硬塞一个没有出镜的角色**。空镜场次照样可以有 visibleAction（写画面里实际发生的可见变化）、shotAndSound 和 offscreenSoundSources（空院子配画外呼喊是合法组合）。
+- 但整片至少要有一个场次的 characters 非空：单场空镜合法，全片没有任何角色出镜则不成立。
 - location 只写这一场实际发生的可拍摄物理地点，例如「村口老树下」「邻居爷爷家院子」「河边小桥」。不得把垂直赛道、画风、渲染风格、光线、色调或画质词写进 location：「日系2.5D新海诚光景风格的集市旁草地」是错误输出，正确写法是「集市旁草地」。视觉风格由下游 Animation Plan 的 visualBible 统一签发，在这里重复它只会让每场地点看起来一模一样，反而丢失了地点本身的信息。
 - characters 中已锁定的主角、被关爱对象和已登记帮助者必须使用 characterBible 中的标准名称，不得添加括号、身份、外观说明、空格后缀、别名或昵称。场次型临时配角可以使用独立且明确的名称，不必强行加入 helpers。
 - dialogue 只使用结构化数组；每条 speaker 必须逐字存在于同场 characters。当前结构不支持 offscreen、voiceOver、narrator 或 isVisible 标记，不得要求系统根据台词正文或 shotAndSound 猜测画外说话人。
@@ -1224,7 +1226,7 @@ visualGuardrails 分类规则：${formatVisualGuardrailsForPrompt(input.visualGu
 - shotAndSound、shootingNotes、visualBible.cameraLanguage、editPlan 与上一批 cameraMotion 中的摄影建议，只能在动作与地点边界确定后决定当前业务 shot 内部的摄影与剪辑表达；可以按顺序写中景跟随、关键动作特写、硬切或结尾宽景，但这些内部摄影段不得生成额外 shot。
 - 内部摄影变化允许但不强制。必须服从 4-6 秒整数时长，优先完整呈现 visibleAction 的动作链和可见结果，只选时长容得下、服务叙事的关键摄影变化；不得为了堆满机位而压缩、跳过或改写剧情动作。
 ${videoPromptRules}
-- cameraMotion 写这一个业务 shot 内部按顺序发生的完整摄影与剪辑表达；既可以是单一连续运镜，也可以包含由剧情摄影证据支持的景别变化、特写插入或硬切。characterAction 只写实际可见的顺序动作链；dialogueOrSubtitle 只写剧情对白内容，没有则输出空字符串；soundDesign 写环境声/动作声/音乐关系；continuityNotes 写内部摄影段之间及前后业务镜头必须承接的状态。
+- cameraMotion 写这一个业务 shot 内部按顺序发生的完整摄影与剪辑表达；既可以是单一连续运镜，也可以包含由剧情摄影证据支持的景别变化、特写插入或硬切。characterAction 只写实际可见的顺序动作链；若该场 characters 为空数组（雨水、道具特写、建立镜头、人物离开后的空镜等无人场次），characterAction 必须如实描述这份缺席与画面里实际发生的可见变化，例如「无人物出镜，雨水顺着屋檐落进水缸」，**不得为了填满字段凭空造出一个角色**；dialogueOrSubtitle 只写剧情对白内容，没有则输出空字符串；soundDesign 写环境声/动作声/音乐关系；continuityNotes 写内部摄影段之间及前后业务镜头必须承接的状态。
 - 若 videoPrompt 使用内部摄影切换，acceptanceCriteria 必须在 1-3 条额度内覆盖主要动作链的完整顺序与可见终点，并覆盖关键摄影切换是否命中；角色、服装、道具或场景跨切换稳定性可以与其中一条合并。失败时进入现有纠偏或重试，不得静默增加 shot、删除动作或改写事实。
 - 边界示例（只用于理解，不得复制内容）：人物跑到信箱、投入信件并以完成后的舒展动作收尾，仍围绕同一投递目标，可在一条 videoPrompt 内写“中景跟随 → 投递特写 → 结尾逆光宽景”；若人物投信后改为拿起水桶给菜地浇水，主要动作目标已变化，必须拆成相邻业务 shot。
 - 必须沿用 foundation 的角色、场景、资产和风格锁定，不得重写固定主角身份。上方原片表面表达不是 videoPrompt 内容禁词；若它已存在于本镜权威剧情或结构化字段中必须如实转译，未出现时不得仅因来源上下文列出而主动添加。
