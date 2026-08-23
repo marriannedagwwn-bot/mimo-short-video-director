@@ -24,6 +24,17 @@ export function withAnimationPlanAspectRatio(plan, value) {
   return updated;
 }
 
+// 3.1 起 direct_shot 的单镜时长由各场 timeRange 派生，Plan 里不再有
+// "建议单镜时长"这个字段。页面要显示区间就只能从实际 shotPlan 汇总，
+// 旧的 first_last_frame Plan 仍旧读它自己的 recommendedShotDurationSeconds。
+export function animationPlanShotDurationRange(plan = {}) {
+  const durations = (Array.isArray(plan?.shotPlan) ? plan.shotPlan : [])
+    .map((shot) => Number(shot?.durationSeconds))
+    .filter((duration) => Number.isFinite(duration) && duration > 0);
+  if (!durations.length) return null;
+  return { min: Math.min(...durations), max: Math.max(...durations) };
+}
+
 export function animationPlanRuntimeSummary(plan = {}) {
   const shots = Array.isArray(plan?.shotPlan) ? plan.shotPlan : [];
   const target = Number(plan?.productionStrategy?.targetRuntimeSeconds);

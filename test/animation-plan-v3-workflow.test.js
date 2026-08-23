@@ -749,15 +749,20 @@ test("prompt-only rewrite 结构合法但语义审计发现动作顺序漂移时
 });
 
 
-// 把 S1 拉长到 20 秒（÷6 秒单镜上限 → 至少 4 镜），其余场次保持 5 秒 / 1 镜。
+// 把 S1 拉长到 20 秒（超过 15 秒单镜上限 → 骨架自动均分成 2 镜），
+// 其余场次保持 5 秒 / 1 镜。后续场次的 timeRange 一并顺延，保持时间线有序。
 function longFirstSceneContext(workflow) {
   const context = fixture(workflow);
   const patched = structuredClone(context);
-  patched.fullStory.sceneScript[0].timeRange = "01:00-01:20";
+  patched.fullStory.sceneScript.forEach((scene, index) => {
+    const start = index === 0 ? 0 : 20 + (index - 1) * 5;
+    const end = index === 0 ? 20 : start + 5;
+    scene.timeRange = `00:${String(start).padStart(2, "0")}-00:${String(end).padStart(2, "0")}`;
+  });
   return patched;
 }
 
-test("长场次只给一个镜头时明确失败，不放行被压缩的动作链", async () => {
+test("长场次只给一个镜头时明确失败：骨架要求 2 镜，模型给 1 镜不放行", async () => {
   let foundation;
   let batch;
   const { workflow, animationCalls } = createLiveWorkflow((args, callNumber) => {
@@ -767,15 +772,17 @@ test("长场次只给一个镜头时明确失败，不放行被压缩的动作�
   const context = longFirstSceneContext(workflow);
   const modelPlan = mockAnimationPlan(context);
   foundation = foundationFrom(modelPlan);
-  // 旧行为：20 秒的 S1 也只产出一个 6 秒镜头。
-  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
+  // 模型无视骨架，20 秒的 S1 仍然只给一条镜头。
+  batch = {
+    shotPlan: structuredClone(modelPlan.shotPlan).filter((shot, index) => index !== 1)
+  };
 
   await assert.rejects(
     () => workflow.createAnimationPlanWithMetadata(context),
     (error) => {
-      assert.match(error.message, /S1 只产出 1 个 shot/u);
-      assert.match(error.message, /脚本 timeRange 20 秒 要求至少 4 个/u);
-      assert.match(error.message, /单镜上限 6 秒/u);
+      assert.match(error.message, /必须恰好输出 7 个镜头，实际 6 个/u);
+      assert.match(error.message, /不得拆分、合并、新增或遗漏/u);
+      assert.match(error.message, /S1（00:00-00:20，20 秒）→ 2 个镜头：A01 10 秒（第 1\/2 段）、A02 10 秒（第 2\/2 段）/u);
       return true;
     }
   );
@@ -784,7 +791,7 @@ test("长场次只给一个镜头时明确失败，不放行被压缩的动作�
   assert.equal(animationCalls.length, 2);
 });
 
-test("长场次按下限拆够镜头后正常签发，成片总长跟着脚本走", async () => {
+test("长场次按骨架均分后正常签发，成片总长等于各场 timeRange 之和", async () => {
   let foundation;
   let batch;
   const { workflow } = createLiveWorkflow((args, callNumber) => {
@@ -795,32 +802,158 @@ test("长场次按下限拆够镜头后正常签发，成片总长跟着脚本�
   const context = longFirstSceneContext(workflow);
   const modelPlan = mockAnimationPlan(context);
   foundation = foundationFrom(modelPlan);
-
-  const [firstShot, ...restShots] = structuredClone(modelPlan.shotPlan);
-  const s1Shots = [0, 1, 2, 3].map((index) => ({
-    ...structuredClone(firstShot),
-    shotId: `A0${index + 1}`,
-    durationSeconds: 5
-  }));
-  const renumberedRest = restShots.map((shot, index) => ({
-    ...shot,
-    shotId: `A0${index + 5}`
-  }));
-  batch = { shotPlan: [...s1Shots, ...renumberedRest] };
+  // mock 已经按同一份骨架产出镜头，直接回放即可。
+  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
 
   const { animationPlan } = await workflow.createAnimationPlanWithMetadata(context);
 
-  assert.equal(animationPlan.shotPlan.filter((shot) => shot.sourceSceneId === "S1").length, 4);
-  assert.equal(animationPlan.shotPlan.length, 9);
-  // 20 秒的 S1 现在真的占了 20 秒，而不是被压成一个 6 秒镜头。
-  assert.equal(
-    animationPlan.shotPlan
-      .filter((shot) => shot.sourceSceneId === "S1")
-      .reduce((total, shot) => total + shot.durationSeconds, 0),
-    20
+  const s1Shots = animationPlan.shotPlan.filter((shot) => shot.sourceSceneId === "S1");
+  assert.equal(s1Shots.length, 2);
+  assert.deepEqual(s1Shots.map((shot) => shot.durationSeconds), [10, 10]);
+  // 5 个 5 秒场次 + 1 个 20 秒场次 = 7 镜、45 秒。
+  assert.equal(animationPlan.shotPlan.length, 7);
+  const plannedSeconds = animationPlan.shotPlan.reduce((total, shot) => total + shot.durationSeconds, 0);
+  assert.equal(plannedSeconds, 45);
+  assert.equal(animationPlan.productionStrategy.targetRuntimeSeconds, 45);
+});
+
+
+test("场次短于供应商下限时在任何模型调用之前失败", async () => {
+  const { workflow, animationCalls } = createLiveWorkflow(() => {
+    throw new Error("不应发生任何模型调用");
+  });
+  const context = fixture(workflow);
+  // 2 秒场次低于 Seedance 与 MiniMax H3 的共同 4 秒下限。
+  context.fullStory.sceneScript[2].timeRange = "00:10-00:12";
+  context.fullStory.sceneScript[3].timeRange = "00:12-00:17";
+
+  await assert.rejects(
+    () => workflow.createAnimationPlanWithMetadata(context),
+    (error) => {
+      assert.equal(error.details?.[0]?.code, "DIRECT_SHOT_SCENE_DURATION_BELOW_PROVIDER_MINIMUM");
+      assert.match(error.message, /不得补长、缩短或合并场次/u);
+      return true;
+    }
+  );
+  // 骨架派生在 Foundation 之前：契约错误不消耗任何 provider 调用。
+  assert.equal(animationCalls.length, 0);
+});
+
+test("timeRange 不可解析时明确失败，不再退回下限 1", async () => {
+  const { workflow, animationCalls } = createLiveWorkflow(() => {
+    throw new Error("不应发生任何模型调用");
+  });
+  const context = fixture(workflow);
+  context.fullStory.sceneScript[1].timeRange = "时长未知";
+
+  await assert.rejects(
+    () => workflow.createAnimationPlanWithMetadata(context),
+    (error) => error.details?.[0]?.code === "DIRECT_SHOT_SCENE_TIME_RANGE_INVALID"
+  );
+  assert.equal(animationCalls.length, 0);
+});
+
+test("模型按自己的想法重新分配镜头归属时明确失败，不靠注入把错位内容重新贴标签", async () => {
+  let foundation;
+  let batch;
+  const { workflow } = createLiveWorkflow((args, callNumber) => {
+    if (callNumber === 1) return structuredClone(foundation);
+    return structuredClone(batch);
+  });
+  // S1 是 20 秒，骨架要求 S1 两镜、S2 一镜。
+  const context = longFirstSceneContext(workflow);
+  const modelPlan = mockAnimationPlan(context);
+  foundation = foundationFrom(modelPlan);
+  const shots = structuredClone(modelPlan.shotPlan);
+  // 总数、顺序、场次覆盖全部合法，只是模型把第二镜算给了 S2：
+  // 既有的顺序/覆盖校验都抓不到，只有逐位骨架比对能抓到。
+  const misaligned = structuredClone(shots);
+  misaligned[1].sourceSceneId = "S2";
+  batch = { shotPlan: misaligned };
+
+  await assert.rejects(
+    () => workflow.createAnimationPlanWithMetadata(context),
+    (error) => {
+      assert.match(error.message, /shotPlan\[1\]\.sourceSceneId 必须是 S1，实际 S2/u);
+      assert.match(error.message, /镜头顺序必须逐位对应骨架/u);
+      return true;
+    }
   );
 });
 
+test("模型对调相邻场次时仍由既有顺序校验拦下", async () => {
+  let foundation;
+  let batch;
+  const { workflow } = createLiveWorkflow((args, callNumber) => {
+    if (callNumber === 1) return structuredClone(foundation);
+    return structuredClone(batch);
+  });
+  const context = fixture(workflow);
+  const modelPlan = mockAnimationPlan(context);
+  foundation = foundationFrom(modelPlan);
+  const shots = structuredClone(modelPlan.shotPlan);
+  batch = { shotPlan: [shots[1], shots[0], ...shots.slice(2)] };
+
+  await assert.rejects(
+    () => workflow.createAnimationPlanWithMetadata(context),
+    /必须按当前批次的剧情场次顺序输出/u
+  );
+});
+
+test("模型回显错误的时长与剧情目的时，服务端按骨架确定性覆盖", async () => {
+  let foundation;
+  let batch;
+  const { workflow } = createLiveWorkflow((args, callNumber) => {
+    if (callNumber === 1) return structuredClone(foundation);
+    if (callNumber === 2) return structuredClone(batch);
+    throw new Error(`不应发生第 ${callNumber} 次调用`);
+  });
+  const context = fixture(workflow);
+  const modelPlan = mockAnimationPlan(context);
+  foundation = foundationFrom(modelPlan);
+  const shots = structuredClone(modelPlan.shotPlan);
+  shots[0].durationSeconds = 12;
+  shots[0].storyPurpose = "模型自己编的剧情目的";
+  shots[0].emotionalTarget = "模型自己编的情绪目标";
+  shots[0].shotId = "Z99";
+  batch = { shotPlan: shots };
+
+  const { animationPlan } = await workflow.createAnimationPlanWithMetadata(context);
+
+  const scene = context.fullStory.sceneScript[0];
+  assert.equal(animationPlan.shotPlan[0].shotId, "A01");
+  assert.equal(animationPlan.shotPlan[0].durationSeconds, 5);
+  // storyPurpose / emotionalTarget 的唯一事实源是 Full Story，不是模型回显。
+  assert.equal(animationPlan.shotPlan[0].storyPurpose, scene.dramaticFunction);
+  assert.equal(animationPlan.shotPlan[0].emotionalTarget, scene.emotionNode);
+});
+
+test("Foundation 的 targetRuntimeSeconds 由服务端派生，模型给的值一律被覆盖", async () => {
+  let foundation;
+  let batch;
+  const { workflow } = createLiveWorkflow((args, callNumber) => {
+    if (callNumber === 1) return structuredClone(foundation);
+    if (callNumber === 2) return structuredClone(batch);
+    throw new Error(`不应发生第 ${callNumber} 次调用`);
+  });
+  const context = fixture(workflow);
+  const modelPlan = mockAnimationPlan(context);
+  foundation = foundationFrom(modelPlan);
+  foundation.productionStrategy.targetRuntimeSeconds = 999;
+  // 3.1 已经没有"建议单镜时长"这个事实，模型仍旧输出时必须被剥掉。
+  foundation.productionStrategy.recommendedShotDurationSeconds = { min: 4, max: 6 };
+  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
+
+  const { animationPlan } = await workflow.createAnimationPlanWithMetadata(context);
+
+  const plannedSeconds = animationPlan.shotPlan.reduce((total, shot) => total + shot.durationSeconds, 0);
+  assert.equal(animationPlan.productionStrategy.targetRuntimeSeconds, plannedSeconds);
+  assert.equal(plannedSeconds, 30);
+  assert.equal(
+    Object.hasOwn(animationPlan.productionStrategy, "recommendedShotDurationSeconds"),
+    false
+  );
+});
 
 test("请求不带开关时服务端签发 backgroundMusicMode: none，Seedance 提示词带签发收尾句", async () => {
   let foundation;

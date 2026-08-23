@@ -947,9 +947,17 @@ function ensureAnimationDirectShotContract(shot, path) {
   if (typeof shot.dialogueOrSubtitle !== "string") {
     throw new OutputContractError(`${path}.dialogueOrSubtitle 必须是字符串`);
   }
+  // 3.1 起 durationSeconds 由 Full Story 的 timeRange 确定性派生，
+  // 4–15 是 Seedance 2.0 与 MiniMax H3 的能力交集，不是项目级偏好。
   const duration = Number(shot.durationSeconds);
-  if (!Number.isFinite(duration) || duration <= 0) {
-    throw new OutputContractError(`${path}.durationSeconds 必须是正数`);
+  if (
+    !Number.isInteger(duration)
+    || duration < DIRECT_SHOT_MIN_DURATION_SECONDS
+    || duration > DIRECT_SHOT_MAX_DURATION_SECONDS
+  ) {
+    throw new OutputContractError(
+      `${path}.durationSeconds 必须是 ${DIRECT_SHOT_MIN_DURATION_SECONDS}–${DIRECT_SHOT_MAX_DURATION_SECONDS} 秒整数`
+    );
   }
   if (!Array.isArray(shot.acceptanceCriteria) || shot.acceptanceCriteria.length < 1 || shot.acceptanceCriteria.length > 3) {
     throw new OutputContractError(`${path}.acceptanceCriteria 必须包含 1-3 条验收标准`);
@@ -2335,31 +2343,35 @@ function animationProfileJsonPointer(path) {
     .join("/")}`;
 }
 
-export const ANIMATION_FALLBACK_MAX_SHOT_DURATION_SECONDS = 6;
+// direct_shot 3.1 的单镜时长边界：Seedance 2.0 与 MiniMax H3 的能力交集。
+// 4 秒是两家的共同下限，15 秒既是共同上限，也是长场次唯一的拆镜阈值。
+export const DIRECT_SHOT_MIN_DURATION_SECONDS = 4;
+export const DIRECT_SHOT_MAX_DURATION_SECONDS = 15;
+
+// timeRange 只有这一份解析规则，禁止在别处再写第二份。
+// 秒位放宽到 0–99 是确定性算术而不是推断：mm:ss 下 "00:60" 只可能是 60 秒，
+// 与 "01:00" 完全等价。模型把 00:59 的下一秒写成 00:60 是高频笔误，
+// 按 m*60+s 折算既不删信息也不猜，真正畸形的值仍然解析失败。
+const SCENE_TIME_RANGE_PATTERN = /^\s*(\d{1,3}):(\d{1,2})\s*[-–—~]\s*(\d{1,3}):(\d{1,2})\s*$/u;
+
+// "00:15-00:33" → { startSeconds: 15, endSeconds: 33 }。格式不符返回 null。
+// 这里不判断跨度正负：调用方各自决定非正跨度该失败还是该忽略。
+export function parseSceneTimeRangeBounds(timeRange) {
+  const match = SCENE_TIME_RANGE_PATTERN.exec(String(timeRange || ""));
+  if (!match) return null;
+  return {
+    startSeconds: Number(match[1]) * 60 + Number(match[2]),
+    endSeconds: Number(match[3]) * 60 + Number(match[4])
+  };
+}
 
 // "00:15-00:33" → 18 秒。格式不符或非正跨度一律返回 null：
 // timeRange 是模型产物，不得靠猜测补一个场次时长出来。
 export function parseSceneTimeRangeSeconds(timeRange) {
-  const match = /^\s*(\d{1,3}):([0-5]\d)\s*[-–—~]\s*(\d{1,3}):([0-5]\d)\s*$/u.exec(String(timeRange || ""));
-  if (!match) return null;
-  const span = (Number(match[3]) * 60 + Number(match[4])) - (Number(match[1]) * 60 + Number(match[2]));
+  const bounds = parseSceneTimeRangeBounds(timeRange);
+  if (!bounds) return null;
+  const span = bounds.endSeconds - bounds.startSeconds;
   return span > 0 ? span : null;
-}
-
-// 单个 source scene 的镜头数下限 = 脚本 timeRange ÷ 单镜时长上限，向上取整。
-// 依据是用户选定的权威：timeRange 直接决定该场应占多少成片时间。
-// timeRange 缺失或不可解析时退回既有契约下限 1，不失败也不推断。
-export function sceneMinimumShotCount(scene, maxShotDurationSeconds) {
-  const seconds = parseSceneTimeRangeSeconds(scene?.timeRange);
-  const cap = Number(maxShotDurationSeconds);
-  if (seconds === null || !Number.isFinite(cap) || cap <= 0) return 1;
-  return Math.max(1, Math.ceil(seconds / cap));
-}
-
-// Foundation 已签发的单镜时长上限是唯一权威；缺失时才退回项目常量。
-export function animationMaxShotDurationSeconds(foundation) {
-  const maximum = Number(foundation?.productionStrategy?.recommendedShotDurationSeconds?.max);
-  return Number.isFinite(maximum) && maximum > 0 ? maximum : ANIMATION_FALLBACK_MAX_SHOT_DURATION_SECONDS;
 }
 
 // 返回空字符串表示合规；非空字符串就是唯一的偏差描述。

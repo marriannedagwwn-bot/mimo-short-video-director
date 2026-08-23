@@ -78,16 +78,24 @@ Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主�
 | `sceneId` | `LOC01` | Foundation **场景视觉参考组**。不保证精确物理地点或无缝连续。 |
 | `shotId` | `A01` | 当前 Plan revision 内的**业务镜头顺序**。脱离 project/run/plan revision/digest 不能单独标识媒体。 |
 
-### 2.3 拆镜规则
+### 2.3 镜头映射规则（3.1 一对一映射）
 
-- 场内拆镜**只依据** Full Story 的 `location` 与 `visibleAction` 中的人物主要动作目标。**`visibleAction` 里有几个主要动作目标，就必须产出几个 shot**——这是正向产出要求，不是"允许拆"的许可。把两个以上主要动作目标塞进同一条 shot 属于错误输出。
-- 同一地点、围绕同一主要动作目标构成完整叙事动作的连续阶段，保留为**一条**业务 shot。
-- **只有三类变化不得触发拆镜**：① 景别/机位/构图/焦段/运镜/转场变化；② 同一主要动作目标内部的动作动词或连续阶段；③ 同一地点多人同步完成的同一个协作动作。除这三类之外，主要动作目标变化必须拆镜。摄影表达只决定已划定 shot **内部**的剪辑，**不得增加 `shotPlan[]`**；同一 `videoPrompt` 可按顺序描述中景跟随 → 关键动作特写 → 硬切 → 结尾宽景。
+**`fullStory.sceneScript[]` 的每一项就是最终可翻拍业务镜头。Animation Plan 不再拆镜，只填内容。**
+
+- 镜头骨架由 `deriveDirectShotSkeleton()`（`src/direct-shot-timeline.js`）从 Full Story **确定性派生**，是唯一权威。派生发生在**任何模型调用之前**。
+- 服务端独占并确定性签发 6 个字段：`shotId`（全局 `A01`、`A02`……）、`sourceSceneId`（= `sceneScript[i].sceneId`）、`sceneId`（Foundation `sourceSceneIds → LOC` 映射，规则不变）、`durationSeconds`、`storyPurpose`（= `dramaticFunction`）、`emotionalTarget`（= `emotionNode`）。模型回显错了按骨架**确定性覆盖**——这些值全部可从 Full Story 唯一推导，回显不构成新事实。
+- 模型只生成 8 个字段：`videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes`、`negativePrompts`、`acceptanceCriteria`。
+- **唯一的拆镜条件**：单场跨度 > 15 秒时按 `ceil(跨度 / 15)` 均分，余数逐秒给靠前的镜头（20 秒 → 10+10；17 秒 → 9+8；34 秒 → 12+11+11）。除此之外**禁止拆分、合并、新增、遗漏、重排或改写时长**。因此 `shotPlan.length === Σ ceil(span_i / 15)`；`span_i ≤ 15` 时该场严格 1:1。
+- 一条业务镜头内部允许多个动作阶段、景别变化、特写、硬切和结尾宽景，全部写进同一条 `videoPrompt`/`cameraMotion`，**不得增加 `shotPlan[]`**。动作目标变化**不再**是拆镜理由。
+- 长场次被均分时，该场 `visibleAction` 的动作链必须按时间先后完整分配到相邻镜头：不省略、不重复，段间靠 `continuityNotes` 承接。
 - `shotAndSound` 与 `shootingNotes` **不是**镜头数量的事实源。
-- **每场镜头数下限是确定性硬约束**：`ceil(该 source scene 的 timeRange 秒数 / Foundation 已签发的单镜时长上限)`，由 `sceneMinimumShotCount()` 唯一计算，同时渲染进批次 Prompt 并在 `validateAnimationShotBatchOutput` 校验。`timeRange` 是该场应占多少成片时间的**权威**；它缺失或不可解析时退回既有下限 1，不失败也不推断场次时长。低于下限即 `OutputContractError`，且 direct_shot 对已解析候选**一律 fail closed，不整批重试**。一条 shot 装不下该场全部动作时，唯一正确做法是增加 shot，压缩、加速带过或省略动作都是错误输出。**该下限只作用于 direct_shot 主流程，旧 v2 兼容路径的镜头数语义不变。**
-- 分批生成时服务端把 `runtimeBudget`（已产出镜头数、已用秒数、前面各场脚本合计、本批脚本合计、全片脚本合计）喂进批次 Prompt，供模型判断进度。它**只是提示信息，不参与校验**，也不是任何字段的事实来源。
-- 时长：**单镜统一 4–6 秒整数**。一份提示词同时交给 Seedance 2.0 与 MiniMax H3，4 秒下限取自 H3 的供应商硬约束（其运行时协议接受 4–15 秒整数）。已有值不合法必须拒绝，不得钳制、补长或缩短。
+- **时间线校验（全部明确失败，禁止退回默认值、猜测或钳制）**：`timeRange` 不可解析、跨度非正、跨场次起点早于上一场终点、任一段低于供应商 4 秒下限 → `OutputContractError` 带 `DIRECT_SHOT_SCENE_TIME_RANGE_INVALID` / `..._OUT_OF_ORDER` / `..._DURATION_BELOW_PROVIDER_MINIMUM`。场次之间允许留白，只禁重叠与回退。
+- `parseSceneTimeRangeSeconds` / `parseSceneTimeRangeBounds`（`src/validation.js`）共用**唯一一份**正则，秒位接受 `0–99`：`00:60` 在 mm:ss 下只可能是 60 秒，与 `01:00` 完全等价，按 `m*60+s` 折算是确定性算术而非推断。
+- 校验点：批次由 `assertDirectShotBatchMatchesSkeleton()` 复核数量与逐位 `sourceSceneId`；`mergeAnimationPlan` 对整份 `shotPlan` 再做一次逐位复核（含 `shotId`、`durationSeconds`）并断言 `Σ durationSeconds === productionStrategy.targetRuntimeSeconds`。direct_shot 对已解析候选**一律 fail closed，不整批重试**。
+- `productionStrategy.targetRuntimeSeconds` 由服务端注入为骨架各镜时长之和（= 各场 `timeRange` 跨度之和），模型输出的值一律被覆盖。`productionStrategy.recommendedShotDurationSeconds` 在 direct_shot 已**删除**——时长是派生事实，不存在"建议"；旧 v2 兼容路径保留该字段。
+- 时长：**没有项目级 4–6 秒限制**。合法值就是 timeRange 派生结果，落在 Seedance 2.0 与 MiniMax H3 的能力交集 4–15 秒整数内（`ensureAnimationDirectShotContract` 校验）。已有值不合法必须拒绝，不得钳制、补长或缩短。
 - 内部摄影变化允许但不强制。**不得为了堆机位压缩、跳过或改写 `visibleAction`。**
+- 以上只作用于 direct_shot 主流程，**旧 v2 兼容路径的镜头数与时长语义不变**。
 
 ### 2.4 `productionStrategy.videoPromptProfile`
 
@@ -208,7 +216,7 @@ vertical: "治愈/日常/日系 2.5D 新海诚光景"
 | 层 | 负责 | 不负责 |
 | --- | --- | --- |
 | Full Story | 叙事结构、角色、场景、对白、剧情逻辑 | 镜头动画实现、动作生成、视频生成 |
-| Animation Plan | 镜头拆分、直接视频渲染提示词、角色动作与内部摄影/剪辑与声音设计、镜头连续性与动画约束 | 重新创作剧情、修改角色身份、改变故事主题 |
+| Animation Plan | 直接视频渲染提示词、角色动作与内部摄影/剪辑与声音设计、镜头连续性与动画约束 | 拆镜（3.1 起镜头由 Full Story 场次确定性映射）、重新创作剧情、修改角色身份、改变故事主题 |
 
 Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：**暂时弃置**，旧 v2 代码保留兼容但不参与当前 `direct_shot` 主流程。
 

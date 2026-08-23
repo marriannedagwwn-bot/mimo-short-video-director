@@ -212,6 +212,53 @@ export function shotVideoProviderCatalog(env = process.env) {
   }));
 }
 
+// direct_shot 链路上两家供应商实际接受的镜头时长。项目不再另设 4–6 秒偏好：
+// Plan 的 durationSeconds 由 Full Story 的 timeRange 确定性派生，这里只负责回答
+// 「这个供应商能不能原样渲染这个时长」，不得钳制、补长或缩短。
+// 可灵不在 direct_shot 链路内（3.0 镜头没有端点，可灵又不支持全能参考），
+// 它的时长语义属于旧 v2 兼容路径，本表不覆盖，也不改动它既有的行为。
+const SHOT_VIDEO_DURATION_SUPPORT = Object.freeze({
+  MiniMax: Object.freeze({ min: 4, max: 15, integer: true }),
+  Seedance: Object.freeze({ min: 4, max: 15, integer: true })
+});
+
+/** 返回该供应商/模型的时长能力；返回 null 表示项目层面不施加约束。 */
+export function shotVideoDurationSupport(provider, model = "") {
+  return SHOT_VIDEO_DURATION_SUPPORT[normalizeShotVideoProvider(provider)] || null;
+}
+
+/**
+ * 时长不被供应商支持时明确失败。禁止拆镜、补长、缩短或静默改写——
+ * 唯一正确的处理是换一个支持该时长的供应商，或回到 Full Story 改场次时长。
+ */
+export function assertShotVideoDurationSupported(provider, model, durationSeconds, {
+  path = "shot.durationSeconds",
+  ErrorType = Error
+} = {}) {
+  const support = shotVideoDurationSupport(provider, model);
+  if (!support) return Number(durationSeconds);
+  const duration = Number(durationSeconds);
+  const label = `${normalizeShotVideoProvider(provider)}${clean(model) ? ` ${clean(model)}` : ""}`;
+  const suffix = "，不得拆镜、补长、缩短或静默改写时长。";
+  if (Array.isArray(support.discrete)) {
+    if (!support.discrete.includes(duration)) {
+      throw new ErrorType(`${path} 使用 ${label} 时只能是 ${support.discrete.join(" 或 ")} 秒${suffix}`);
+    }
+    return duration;
+  }
+  if (
+    (support.integer && !Number.isInteger(duration))
+    || !Number.isFinite(duration)
+    || duration < support.min
+    || duration > support.max
+  ) {
+    throw new ErrorType(
+      `${path} 使用 ${label} 时必须是 ${support.min}–${support.max} 秒${support.integer ? "整数" : ""}${suffix}`
+    );
+  }
+  return duration;
+}
+
 export function isShotVideoModelAllowed(provider, model) {
   const normalized = normalizeShotVideoProvider(provider);
   const modelName = clean(model);

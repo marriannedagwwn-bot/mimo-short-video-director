@@ -28,6 +28,7 @@ import {
 } from "./production-lineage-client.js";
 import {
   animationPlanRuntimeSummary,
+  animationPlanShotDurationRange,
   normalizeAnimationPlanAspectRatio,
 } from "./animation-plan-settings.js";
 import {
@@ -1577,7 +1578,7 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
     <div class="data-grid">
       ${cell("目标画幅", `${currentAspectRatio} · ${currentAspectRatio === "9:16" ? "竖屏" : "横屏"}`)}
       ${cell("镜头计划合计时长", formatAnimationPlanRuntime(runtimeSummary))}
-      ${cell("单镜头", `${strategy.recommendedShotDurationSeconds?.min || 3}-${strategy.recommendedShotDurationSeconds?.max || 6} 秒`)}
+      ${cell("单镜头", formatAnimationShotDurationRange(data))}
       ${cell("动画风格", visual.animationStyle)}
       ${cell("色彩", (visual.colorPalette || []).join(" / "))}
       ${cell("镜头语言", visual.cameraLanguage)}
@@ -1686,6 +1687,25 @@ function renderVideoPromptBody(prompt, sharedClauses = new Set()) {
     if (!clause || sharedClauses.has(clause)) return escape(segment);
     return `<strong>${escape(segment)}</strong>`;
   }).join("");
+}
+
+// 时长缺失是契约错误，不是可以静默补 4 秒的显示问题：如实显示缺失。
+function formatShotDurationSeconds(shot) {
+  const duration = Number(shot?.durationSeconds);
+  return Number.isFinite(duration) && duration > 0 ? `${duration} 秒` : "时长缺失";
+}
+
+// direct_shot 3.1 的单镜时长由各场 timeRange 派生，只能从 shotPlan 汇总；
+// 旧的首尾帧 Plan 仍旧读它自己签发的 recommendedShotDurationSeconds。
+function formatAnimationShotDurationRange(plan) {
+  const range = animationPlanShotDurationRange(plan);
+  if (range) {
+    return range.min === range.max ? `${range.min} 秒` : `${range.min}-${range.max} 秒`;
+  }
+  const recommended = plan?.productionStrategy?.recommendedShotDurationSeconds;
+  const min = Number(recommended?.min);
+  const max = Number(recommended?.max);
+  return Number.isFinite(min) && Number.isFinite(max) ? `${min}-${max} 秒` : "待确认";
 }
 
 function formatAnimationPlanRuntime(summary) {
@@ -2543,7 +2563,7 @@ async function updateShotFrameImageGeneratorPreview(options = {}) {
   state.shotFrameImageGeneration.frameKind = frameKind;
   elements.shotFrameImageModalTitle.textContent = `生成${label}镜头`;
   elements.confirmGenerateShotFrameImageLabel.textContent = `生成${label}`;
-  elements.shotFrameImageMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || ""} 秒 · 参考顺序由统一清单锁定`;
+  elements.shotFrameImageMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${formatShotDurationSeconds(shot)} · 参考顺序由统一清单锁定`;
   elements.shotFrameReferenceModeField.classList.toggle("hidden", frameKind !== "end" || !structuredEndpointShot);
   elements.shotFrameReferenceModeHint.classList.toggle("hidden", frameKind !== "end" || !structuredEndpointShot);
   let frameReferenceMode = "";
@@ -2922,7 +2942,7 @@ async function updateShotVideoGeneratorPreview(options = {}) {
     : promptProfileUi.status === "mismatch"
       ? `当前 ${videoPromptProfileLabel(promptProfileUi.target)} · Plan 为 ${videoPromptProfileLabel(promptProfileUi.current)} 提示词`
       : `当前模型与 Plan 提示词 Profile 未匹配`;
-  elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || 4} 秒 · ${normalizeAnimationPlanAspectRatio(plan.productionStrategy?.targetAspectRatio)} · ${promptProfileStatus} · ${generationMode === "all_reference"
+  elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${formatShotDurationSeconds(shot)} · ${normalizeAnimationPlanAspectRatio(plan.productionStrategy?.targetAspectRatio)} · ${promptProfileStatus} · ${generationMode === "all_reference"
     ? "多模态参考生成，不锁定精确首尾帧"
     : hasPlannedEndpoints(shot)
       ? "精确锁定已添加的首帧/尾帧"
@@ -4005,7 +4025,7 @@ async function rewriteCurrentAnimationVideoPrompts(videoPromptTarget) {
   elements.resetModelSettings.disabled = true;
   elements.animationGenerate.disabled = true;
   setModelSettingsStatus(`正在为 ${shotVideoProviderLabel(videoPromptTarget.provider)} 重写 direct_shot.videoPrompt…`, "active");
-  setAnimationStatus("正在只重写视频提示词；镜头拆分、动作、时长和其他字段保持不变…", "active");
+  setAnimationStatus("正在只重写视频提示词；镜头映射、动作、时长和其他字段保持不变…", "active");
   try {
     const response = await requestProductionArtifact({
       endpoint: "/api/animation-plan/video-prompts/rewrite",
@@ -4713,7 +4733,7 @@ function formatAnimationPackMarkdown(pack) {
     ...(runtimeSummary.valid && runtimeSummary.deltaSeconds !== null
       ? [`- 时长偏差：${runtimeSummary.deltaSeconds > 0 ? "+" : ""}${runtimeSummary.deltaSeconds} 秒`]
       : []),
-    `- 单镜头时长：${strategy.recommendedShotDurationSeconds?.min || 3}-${strategy.recommendedShotDurationSeconds?.max || 6} 秒`,
+    `- 单镜头时长：${formatAnimationShotDurationRange(plan)}`,
     `- 工作流：${strategy.format || "first_last_frame_video"}`,
     `- Prompt Schema：${plan.promptSchemaVersion || "legacy"}`,
     "",
@@ -4795,7 +4815,7 @@ function formatAnimationPackMarkdown(pack) {
     ] : [];
     lines.push(
       "",
-      `### ${shot.shotId || "镜头"} · ${shot.sourceSceneId || ""} · ${shot.durationSeconds || 4} 秒`,
+      `### ${shot.shotId || "镜头"} · ${shot.sourceSceneId || ""} · ${formatShotDurationSeconds(shot)}`,
       `场景 ID：${shot.sceneId || ""}`,
       `剧情功能：${shot.storyPurpose || ""}`,
       `情绪目标：${shot.emotionalTarget || ""}`,

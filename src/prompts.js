@@ -4,11 +4,9 @@ import {
   BACKGROUND_MUSIC_NONE,
   CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS,
     NO_BACKGROUND_MUSIC_SENTENCE,
-  animationMaxShotDurationSeconds,
-  collectProtectedTermsFromBrief,
-  parseSceneTimeRangeSeconds,
-  sceneMinimumShotCount
+  collectProtectedTermsFromBrief
 } from "./validation.js";
+import { formatDirectShotSkeleton } from "./direct-shot-timeline.js";
 import { VIDEO_PROMPT_PROFILE_IDS } from "../public/video-prompt-profiles.js";
 
 const JSON_ONLY = `
@@ -954,7 +952,7 @@ visualGuardrails 附加规则（不重复 fixedCharacterBoundary）：${formatVi
 - promptSchemaVersion 必须逐字等于 ${ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION}。
 - selectedVariantId 必须等于 fullStory.selectedVariantId：${fullStory.selectedVariantId || "未指定"}。
 - productionStrategy.format 必须写 direct_shot_video；生成顺序只能描述“角色/场景/资产锁定 → 直接视频镜头”，不得包含首帧、尾帧、Static Frame Compiler 或本地 Prompt Compiler。
-- productionStrategy.recommendedShotDurationSeconds 必须逐字输出 {"min":4,"max":6}。4 秒下限是 MiniMax H3 的供应商硬约束；同一份提示词要同时交给 Seedance 2.0 与 MiniMax H3，所以两边统一使用 4–6 秒整数。
+- 镜头时长与全片时长全部由 fullStory 各场次的 timeRange 确定性派生：本阶段不得给出任何建议单镜时长，productionStrategy.targetRuntimeSeconds 一律输出 0，服务端会用派生结果覆盖。
 - productionStrategy.videoPromptProfile 与 productionStrategy.backgroundMusicMode 都是服务端签发字段，模型不得输出、猜测或改写；服务端会在基础锁定通过后确定性注入。
 - productionStrategy.targetAspectRatio 必须逐字等于用户选择的 ${targetAspectRatio}；visualBible、场景参考和后续镜头构图都必须按该画幅设计，不得改回其他比例。
 - 只能服务当前 fullStory，不得改主题、主角、关系、剧情动作或结局。
@@ -972,8 +970,7 @@ visualGuardrails 附加规则（不重复 fixedCharacterBoundary）：${formatVi
   "productionStrategy":{
     "format":"direct_shot_video",
     "targetAspectRatio":"${targetAspectRatio}",
-    "targetRuntimeSeconds":60,
-    "recommendedShotDurationSeconds":{"min":4,"max":6},
+    "targetRuntimeSeconds":0,
     "generationOrder":[],
     "whyThisWorkflow":""
   },
@@ -1178,9 +1175,7 @@ function animationDirectShotBatchPrompt(input) {
     || BACKGROUND_MUSIC_NONE;
   const videoPromptRules = directShotVideoPromptRules(videoPromptProfile, { backgroundMusicMode });
   const strictOutputExample = directShotStrictOutputExample(videoPromptProfile);
-  const maxShotDuration = animationMaxShotDurationSeconds(foundation);
-  const sceneShotFloorText = formatSceneShotFloors(sourceScenes, maxShotDuration);
-  const runtimeBudgetText = formatAnimationRuntimeBudget(input.runtimeBudget);
+  const skeletonText = formatDirectShotSkeleton(input.directShotSkeleton);
   return `${SYSTEM_PROMPT}
 
 你现在进入 AI 动画导演的“直接视频镜头批次”阶段。动画基础锁定已经生成；本阶段只把指定 source scenes 转成可直接交给视频模型的 shotPlan。
@@ -1191,8 +1186,7 @@ function animationDirectShotBatchPrompt(input) {
 批次：${batchLabel}
 本批允许的 sourceSceneId：${sourceSceneIds.length ? sourceSceneIds.join("、") : "空"}
 背景音乐：${formatBackgroundMusicDeclaration(backgroundMusicMode)}
-本批镜头数下限（由各场 timeRange ÷ ${maxShotDuration} 秒单镜上限得出，硬性要求）：${sceneShotFloorText}
-全片时长进度：${runtimeBudgetText}
+本批镜头骨架（服务端已按各场 timeRange 确定性签发，逐字照抄，不得增删改序）：${skeletonText}
 镜头编号要求：${shotIdInstruction}
 
 固定角色：${input.creatorProfile?.fixedCharacter || "未指定"}
@@ -1219,16 +1213,16 @@ visualGuardrails 分类规则：${formatVisualGuardrailsForPrompt(input.visualGu
 
 硬约束：
 - 顶层只允许 shotPlan；不得回显 foundation 或 promptSchemaVersion。
-- 每个指定 source scene 必须达到上方「本批镜头数下限」给出的数量，这是硬性产出要求而不是建议值；sourceSceneId 必须来自本批，sceneId 必须引用 foundation 对该 source scene 的唯一映射；保持剧情动作顺序。
-- 拆镜依据只有两个：location 变化，或 visibleAction 中人物的主要动作目标变化。visibleAction 里有几个主要动作目标就必须产出几个 shot；把两个以上主要动作目标塞进同一条 shot 属于错误输出。主要动作目标指人物当前正在完成的那件事——拉住对方、递出物品、接过并打开物品、拥抱、转身离开各自都是独立目标；同一个目标下的连续阶段（起步→加速→抵达）才合并为一条 shot。
-- 每个镜头只有一个主要人物动作目标，必须为 4-6 秒整数。一条 shot 装不下该场 visibleAction 的全部动作时，唯一正确的做法是增加 shot；把多个动作压进 6 秒、加速带过或省略动作都属于错误输出。
-- 只有以下三类变化不得触发拆镜：① 景别、机位、构图、焦段、运镜或转场变化；② 同一主要动作目标内部的动作动词或连续阶段；③ 同一地点多人同步完成的同一个协作动作。除这三类之外，主要动作目标变化必须拆镜。
-- shotAndSound、shootingNotes、visualBible.cameraLanguage、editPlan 与上一批 cameraMotion 中的摄影建议，只能在动作与地点边界确定后决定当前业务 shot 内部的摄影与剪辑表达；可以按顺序写中景跟随、关键动作特写、硬切或结尾宽景，但这些内部摄影段不得生成额外 shot。
-- 内部摄影变化允许但不强制。必须服从 4-6 秒整数时长，优先完整呈现 visibleAction 的动作链和可见结果，只选时长容得下、服务叙事的关键摄影变化；不得为了堆满机位而压缩、跳过或改写剧情动作。
+- shotPlan 必须与上方骨架逐条一一对应：数量、顺序、shotId、sourceSceneId、durationSeconds、storyPurpose、emotionalTarget 全部逐字照抄骨架。**禁止拆分、合并、新增、遗漏、重排或改写时长**——镜头划分与时长已经由 Full Story 的场次时间线确定，本阶段没有任何数量自由度。sceneId 必须引用 foundation 对该 source scene 的唯一映射。
+- 一个场次就是一条业务镜头。该场 visibleAction 的完整动作链必须放进这一条镜头里按顺序完整呈现：允许多个动作阶段、景别变化、特写插入、硬切和结尾宽景，全部写在同一条 videoPrompt 与 cameraMotion 中，**不得因此增加 shotPlan 条目**。
+- 骨架里同一个 sourceSceneId 出现多条时（长场次按时长上限均分），必须把该场 visibleAction 的动作链按时间先后完整分配到这几条相邻镜头：每条只写属于自己那一段的动作，前后不得省略、不得重复同一动作，段与段之间用 continuityNotes 明确承接的角色位置、道具状态与情绪进度。
+- 每条镜头的时长已经在骨架里给定，videoPrompt 的动作密度必须服从它：时长长的镜头要写足完整动作链与呼吸节奏，不得靠加速带过或省略动作；时长短的镜头不得塞进本场之外的动作。
+- shotAndSound、shootingNotes、visualBible.cameraLanguage、editPlan 与上一批 cameraMotion 中的摄影建议，只决定当前业务 shot 内部的摄影与剪辑表达；可以按顺序写中景跟随、关键动作特写、硬切或结尾宽景，但这些内部摄影段不得生成额外 shot。
+- 内部摄影变化允许但不强制。优先完整呈现 visibleAction 的动作链和可见结果，只选服务叙事的关键摄影变化；不得为了堆满机位而压缩、跳过或改写剧情动作。
 ${videoPromptRules}
 - cameraMotion 写这一个业务 shot 内部按顺序发生的完整摄影与剪辑表达；既可以是单一连续运镜，也可以包含由剧情摄影证据支持的景别变化、特写插入或硬切。characterAction 只写实际可见的顺序动作链；若该场 characters 为空数组（雨水、道具特写、建立镜头、人物离开后的空镜等无人场次），characterAction 必须如实描述这份缺席与画面里实际发生的可见变化，例如「无人物出镜，雨水顺着屋檐落进水缸」，**不得为了填满字段凭空造出一个角色**；dialogueOrSubtitle 只写剧情对白内容，没有则输出空字符串；soundDesign 写环境声/动作声/音乐关系；continuityNotes 写内部摄影段之间及前后业务镜头必须承接的状态。
 - 若 videoPrompt 使用内部摄影切换，acceptanceCriteria 必须在 1-3 条额度内覆盖主要动作链的完整顺序与可见终点，并覆盖关键摄影切换是否命中；角色、服装、道具或场景跨切换稳定性可以与其中一条合并。失败时进入现有纠偏或重试，不得静默增加 shot、删除动作或改写事实。
-- 边界示例（只用于理解，不得复制内容）：人物跑到信箱、投入信件并以完成后的舒展动作收尾，仍围绕同一投递目标，可在一条 videoPrompt 内写“中景跟随 → 投递特写 → 结尾逆光宽景”；若人物投信后改为拿起水桶给菜地浇水，主要动作目标已变化，必须拆成相邻业务 shot。
+- 边界示例（只用于理解，不得复制内容）：某场 12 秒，人物跑到信箱、投入信件、随后拿起水桶给菜地浇水——这是一条 12 秒镜头，两个动作按顺序写进同一条 videoPrompt，可表达为“中景跟随 → 投递特写 → 硬切 → 浇水宽景”，**不得**因为动作目标变化就拆成两条 shot。
 - 必须沿用 foundation 的角色、场景、资产和风格锁定，不得重写固定主角身份。上方原片表面表达不是 videoPrompt 内容禁词；若它已存在于本镜权威剧情或结构化字段中必须如实转译，未出现时不得仅因来源上下文列出而主动添加。
 - 当前流程不生产端点，shot 中严禁出现 startFrame、endFrame、motion、startFramePrompt、endFramePrompt、endStateRef 或任何替代端点字段。
 - negativePrompts.image 必须为 []；negativePrompts.video 仅放本镜头有直接证据的时序、道具、角色数量、接触或参考泄漏风险，允许 []。
@@ -1242,7 +1236,7 @@ ${videoPromptRules}
     "shotId":"A01",
     "sourceSceneId":"S1",
     "sceneId":"LOC01",
-    "durationSeconds":4,
+    "durationSeconds":8,
     "storyPurpose":"",
     "emotionalTarget":"",
     "videoPrompt":${JSON.stringify(strictOutputExample.videoPrompt)},
@@ -1361,34 +1355,6 @@ ${patchShape}
 - 必须先消除“校验失败原因”指出的问题，再输出 value；不得保留或换序复述触发失败的意图、过程、运镜、对白或音效措辞。
 ${cameraInstructions}
 - 不得返回 patches 数组、多个 patch、完整批次、解释、Markdown 或任何额外字段。`;
-}
-
-function formatSceneShotFloors(sourceScenes, maxShotDurationSeconds) {
-  const scenes = Array.isArray(sourceScenes) ? sourceScenes : [];
-  if (!scenes.length) return "空";
-  return scenes.map((scene) => {
-    const sceneId = String(scene?.sceneId || "").trim() || "未知场次";
-    const scriptSeconds = parseSceneTimeRangeSeconds(scene?.timeRange);
-    const minimumShots = sceneMinimumShotCount(scene, maxShotDurationSeconds);
-    const scriptText = scriptSeconds === null ? "timeRange 不可解析" : `脚本 ${scriptSeconds} 秒`;
-    return `${sceneId} ${scriptText} → 至少 ${minimumShots} 个 shot`;
-  }).join("；");
-}
-
-function formatAnimationRuntimeBudget(budget) {
-  if (!budget || typeof budget !== "object") return "未提供";
-  const parts = [];
-  const push = (value, label) => {
-    const number = Number(value);
-    if (Number.isFinite(number)) parts.push(`${label} ${number} 秒`);
-  };
-  const shotCount = Number(budget.plannedShotCount);
-  if (Number.isFinite(shotCount)) parts.push(`已产出 ${shotCount} 个 shot`);
-  push(budget.plannedSeconds, "已用");
-  push(budget.scriptCompletedSeconds, "前面各场脚本合计");
-  push(budget.batchScriptSeconds, "本批脚本合计");
-  push(budget.scriptTotalSeconds, "全片脚本合计");
-  return parts.length ? parts.join(" · ") : "未提供";
 }
 
 function resolveAnimationBatchScenes(input, fullStory) {

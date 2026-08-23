@@ -6,6 +6,7 @@ import {
   NO_BACKGROUND_MUSIC_SENTENCE,
   normalizeBackgroundMusicMode
 } from "./validation.js";
+import { deriveDirectShotSkeleton } from "./direct-shot-timeline.js";
 import { resolveVideoPromptProfile } from "../public/video-prompt-profiles.js";
 
 // 每条【原片有】都必须用「」引用 mockReconstruction 中真实存在的逐字原文，
@@ -407,6 +408,20 @@ export function mockFullStory(input) {
   };
 }
 
+// 两个 mock 分支必须看到同一份场次列表：direct_shot 的镜头骨架由它派生，
+// 一旦两边各算一次就会出现 mock 通过而 live 失败的偏差。
+function resolveMockSceneScript(fullStory = {}, fixedName = "固定主角", careRecipient = "被关爱对象") {
+  if (Array.isArray(fullStory.sceneScript) && fullStory.sceneScript.length) return fullStory.sceneScript;
+  return [
+    { sceneId: "S1", timeRange: "00:00-00:05", location: "出发点", visibleAction: `${fixedName}确认任务物后出发。`, emotionNode: "任务启动", dramaticFunction: "建立任务" },
+    { sceneId: "S2", timeRange: "00:05-00:14", location: "途中", visibleAction: `${fixedName}在环境压力中保护任务物。`, emotionNode: "压力上升", dramaticFunction: "增加成本" },
+    { sceneId: "S3", timeRange: "00:14-00:25", location: "受阻点", visibleAction: `${fixedName}差点失手但护住任务物。`, emotionNode: "担心", dramaticFunction: "证明在意" },
+    { sceneId: "S4", timeRange: "00:25-00:38", location: "临时停靠点", visibleAction: "帮助者递出关键工具。", emotionNode: "温暖", dramaticFunction: "善意转折" },
+    { sceneId: "S5", timeRange: "00:38-00:51", location: "到达点", visibleAction: `${fixedName}把任务物交给${careRecipient}。`, emotionNode: "克制", dramaticFunction: "关系揭示" },
+    { sceneId: "S6", timeRange: "00:51-01:00", location: "结尾空间", visibleAction: "两人完成生活化结尾动作。", emotionNode: "释然", dramaticFunction: "情绪兑现" }
+  ];
+}
+
 export function mockAnimationPlan(input) {
   if (input.animationPlanMode === ANIMATION_DIRECT_SHOT_MODE) {
     return mockDirectAnimationPlan(input);
@@ -423,14 +438,7 @@ export function mockAnimationPlan(input) {
   const careRecipient = fullStory.characterBible?.careRecipient?.nameOrLabel || variant.characterSetup?.careRecipient || "被关爱对象";
   const explicitIdentity = [...new Set([fixed, protagonistIdentity].map((item) => String(item || "").trim()).filter(Boolean))].join("，");
   const protagonistPrompt = `${fixedName}，${explicitIdentity}，圆润可爱的 2.5D 动画造型，严格保持用户明确设定的身份、外观、服装、发型和年龄感，表情活泼但懂事，动作小而认真。`;
-  const sceneScript = Array.isArray(fullStory.sceneScript) && fullStory.sceneScript.length ? fullStory.sceneScript : [
-    { sceneId: "S1", timeRange: "00:00-00:05", location: "出发点", visibleAction: `${fixedName}确认任务物后出发。`, emotionNode: "任务启动", dramaticFunction: "建立任务" },
-    { sceneId: "S2", timeRange: "00:05-00:14", location: "途中", visibleAction: `${fixedName}在环境压力中保护任务物。`, emotionNode: "压力上升", dramaticFunction: "增加成本" },
-    { sceneId: "S3", timeRange: "00:14-00:25", location: "受阻点", visibleAction: `${fixedName}差点失手但护住任务物。`, emotionNode: "担心", dramaticFunction: "证明在意" },
-    { sceneId: "S4", timeRange: "00:25-00:38", location: "临时停靠点", visibleAction: "帮助者递出关键工具。", emotionNode: "温暖", dramaticFunction: "善意转折" },
-    { sceneId: "S5", timeRange: "00:38-00:51", location: "到达点", visibleAction: `${fixedName}把任务物交给${careRecipient}。`, emotionNode: "克制", dramaticFunction: "关系揭示" },
-    { sceneId: "S6", timeRange: "00:51-01:00", location: "结尾空间", visibleAction: "两人完成生活化结尾动作。", emotionNode: "释然", dramaticFunction: "情绪兑现" }
-  ];
+  const sceneScript = resolveMockSceneScript(fullStory, fixedName, careRecipient);
   const sceneReferencePrompts = sceneScript.map((scene, index) => {
     const sceneId = `LOC${String(index + 1).padStart(2, "0")}`;
     const location = scene.location || "生活化场景";
@@ -579,6 +587,24 @@ export function mockAnimationVideoPromptRewrite(animationPlan = {}, videoPromptP
   };
 }
 
+function omitKeys(source = {}, keys = []) {
+  return Object.fromEntries(Object.entries(source).filter(([key]) => !keys.includes(key)));
+}
+
+// 长场次拆成多镜后 shotId 会重排，负面提示词的证据路径必须跟着指向本镜。
+function rewriteMockNegativePromptShotIds(items, shotId) {
+  return structuredClone(items || []).map((item) => ({
+    ...item,
+    triggerEvidence: (item.triggerEvidence || []).map((evidence) => ({
+      ...evidence,
+      sourcePath: String(evidence.sourcePath || "").replace(
+        /animationPlan\.shotPlan\[[^\]]*\]/u,
+        `animationPlan.shotPlan[${shotId}]`
+      )
+    }))
+  }));
+}
+
 function mockDirectAnimationPlan(input) {
   const legacy = mockAnimationPlan({ ...input, animationPlanMode: "" });
   const videoPromptProfile = structuredClone(
@@ -589,8 +615,29 @@ function mockDirectAnimationPlan(input) {
   const noBackgroundMusic = normalizeBackgroundMusicMode(
     input.backgroundMusicMode ?? input.backgroundMusicEnabled
   ) === BACKGROUND_MUSIC_NONE;
-  const directShots = legacy.shotPlan.map((shot) => {
-    const sourceScene = (input.fullStory?.sceneScript || []).find(
+  // 3.1：镜头骨架由 Full Story 的 timeRange 确定性派生，mock 必须走同一条派生，
+  // 否则 demo 会产出真实契约拒绝的镜头数或时长。
+  const mockSceneScript = resolveMockSceneScript(
+    input.fullStory || {},
+    legacy.characterReferencePrompts?.[0]?.characterName || "固定主角"
+  );
+  const skeleton = Array.isArray(input.directShotSkeleton) && input.directShotSkeleton.length
+    ? input.directShotSkeleton
+    : deriveDirectShotSkeleton({ sceneScript: mockSceneScript });
+  const legacyShotBySourceScene = new Map(
+    legacy.shotPlan.map((item) => [String(item.sourceSceneId || ""), item])
+  );
+  const directShots = skeleton.map((skeletonShot) => {
+    const legacyShot = legacyShotBySourceScene.get(skeletonShot.sourceSceneId) || legacy.shotPlan[0];
+    const shot = {
+      ...legacyShot,
+      shotId: skeletonShot.shotId,
+      sourceSceneId: skeletonShot.sourceSceneId,
+      durationSeconds: skeletonShot.durationSeconds,
+      storyPurpose: skeletonShot.storyPurpose || legacyShot.storyPurpose,
+      emotionalTarget: skeletonShot.emotionalTarget || legacyShot.emotionalTarget
+    };
+    const sourceScene = mockSceneScript.find(
       (scene) => String(scene?.sceneId || "") === String(shot.sourceSceneId || "")
     ) || {};
     const sceneReference = (legacy.sceneReferencePrompts || []).find(
@@ -659,7 +706,7 @@ function mockDirectAnimationPlan(input) {
       continuityNotes: continuityNotes || "角色、场景和关键道具与前后镜头连续",
       negativePrompts: {
         image: [],
-        video: structuredClone(shot.negativePrompts?.video || [])
+        video: rewriteMockNegativePromptShotIds(shot.negativePrompts?.video || [], shot.shotId)
       },
       acceptanceCriteria: [
         `“${characterAction}”按顺序完整发生且可见结果清楚`,
@@ -673,13 +720,19 @@ function mockDirectAnimationPlan(input) {
     promptSchemaVersion: ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION,
     title: legacy.title.replace("首尾帧动画生产包", "直接视频镜头生产包"),
     productionStrategy: {
-      ...legacy.productionStrategy,
+      ...omitKeys(legacy.productionStrategy, ["recommendedShotDurationSeconds"]),
       format: "direct_shot_video",
-      recommendedShotDurationSeconds: { min: 4, max: 6 },
+      targetRuntimeSeconds: directShots.reduce((total, shot) => total + shot.durationSeconds, 0),
       videoPromptProfile,
       generationOrder: ["锁定角色、场景和资产", "生成直接视频镜头", "质检并挑选候选", "剪辑、配音、字幕和音效"],
       whyThisWorkflow: "镜头内容由模型直接写成完整视频指令，不生产首帧、尾帧或端点运动结构。"
     },
+    sceneReferencePrompts: (legacy.sceneReferencePrompts || []).map((scene) => ({
+      ...scene,
+      relatedShotIds: directShots
+        .filter((shot) => String(shot.sceneId || "") === String(scene.sceneId || ""))
+        .map((shot) => shot.shotId)
+    })),
     shotPlan: directShots,
     generationChecklist: (legacy.generationChecklist || []).filter((item) => item.check !== "首尾帧因果"),
     modelAgnosticNotes: [

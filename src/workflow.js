@@ -33,7 +33,13 @@ import {
 import { ModelCallCoordinator } from "./model-call-coordinator.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, animationMaxShotDurationSeconds, characterReferenceBoundaryMismatch, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, parseSceneTimeRangeSeconds, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText, sceneMinimumShotCount } from "./validation.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText } from "./validation.js";
+import {
+  deriveDirectShotSkeleton,
+  directShotSkeletonForScenes,
+  directShotSkeletonRuntimeSeconds,
+  formatDirectShotSkeleton
+} from "./direct-shot-timeline.js";
 import { resolveVideoPromptProfile } from "../public/video-prompt-profiles.js";
 import { CharacterBoundaryError, createCharacterBoundaryKey, sealGlobalCharacterBoundary, verifyGlobalCharacterBoundary } from "./character-boundary.js";
 import {
@@ -1094,13 +1100,18 @@ export class WorkflowService {
       input.variant,
       visualGuardrails
     );
+    // direct_shot 3.1：镜头骨架在任何模型调用之前从 Full Story 确定性派生。
+    // timeRange 不可解析、跨度非正、跨场次逆序或短于供应商下限时在这里 fail fast，
+    // 不签发 Plan，也不浪费一次 Foundation 调用。
+    const directShotSkeleton = directShotMode ? deriveDirectShotSkeleton(fullStory) : null;
     const validatedInput = {
       ...input,
       fullStory,
       visualGuardrails,
       targetAspectRatio,
       backgroundMusicMode,
-      ...(videoPromptProfile ? { videoPromptProfile } : {})
+      ...(videoPromptProfile ? { videoPromptProfile } : {}),
+      ...(directShotSkeleton ? { directShotSkeleton } : {})
     };
     const settings = this.resolveStage("animationPlan", validatedInput);
     const compilerSettings = this.resolveStage("staticFrameCompiler", validatedInput);
@@ -1172,6 +1183,11 @@ export class WorkflowService {
     for (let batchIndex = 0; batchIndex < sceneBatches.length; batchIndex += 1) {
       const batchScenes = sceneBatches[batchIndex];
       const shotIdStartIndex = shotPlan.length + 1;
+      // 3.1 下本批要产出哪几个镜头是确定的，模型没有数量自由度，
+      // 因此不再喂"已用秒数/脚本预算"这类追赶进度的提示信息。
+      const batchSkeleton = directShotSkeleton
+        ? directShotSkeletonForScenes(directShotSkeleton, batchScenes)
+        : null;
       const prompt = animationShotBatchPrompt({
         ...promptInput,
         animationFoundation: foundation,
@@ -1179,15 +1195,7 @@ export class WorkflowService {
         batchIndex,
         shotIdStartIndex,
         previousShotContext: animationContinuityContext(shotPlan.at(-1)),
-        // 分批生成时模型看不到全局进度：显式喂入已用秒数与脚本预算，
-        // 它才可能判断当前落后还是超前。纯提示信息，不参与校验。
-        runtimeBudget: {
-          plannedShotCount: shotPlan.length,
-          plannedSeconds: sumShotDurationSeconds(shotPlan),
-          scriptCompletedSeconds: sumSceneScriptSeconds(sceneBatches.slice(0, batchIndex).flat()),
-          batchScriptSeconds: sumSceneScriptSeconds(batchScenes),
-          scriptTotalSeconds: sumSceneScriptSeconds(sourceScenes)
-        }
+        ...(batchSkeleton ? { directShotSkeleton: batchSkeleton } : {})
       });
       const batchContext = {
         input: validatedInput,
@@ -1195,6 +1203,7 @@ export class WorkflowService {
         sourceScenes: batchScenes,
         batchIndex,
         shotIdStartIndex,
+        skeleton: batchSkeleton,
         previousShots: shotPlan
       };
       const batchResult = await this.generateAnimationShotBatch({
@@ -1216,7 +1225,7 @@ export class WorkflowService {
     }
 
     let animationPlan = validateAnimationPlanOutput(
-      mergeAnimationPlan(foundation, shotPlan, validatedInput),
+      mergeAnimationPlan(foundation, shotPlan, validatedInput, directShotSkeleton),
       validatedInput
     );
     const directShotMetadata = directShotMode
@@ -1700,19 +1709,6 @@ function validateAnimationFoundationOutput(result, input = {}) {
   resolveExplicitAnimationPrimaryCharacterName(input, foundation, {
     path: "animationFoundation"
   });
-  if (expectedSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
-    // 一份提示词同时交给 Seedance 2.0 与 MiniMax H3，取两者交集：4–6 秒整数。
-    const expectedDurationRange = { min: 4, max: 6 };
-    const actualDurationRange = foundation.productionStrategy?.recommendedShotDurationSeconds || {};
-    if (
-      Number(actualDurationRange.min) !== expectedDurationRange.min
-      || Number(actualDurationRange.max) !== expectedDurationRange.max
-    ) {
-      throw new OutputContractError(
-        `animationFoundation.productionStrategy.recommendedShotDurationSeconds 必须为 ${expectedDurationRange.min}–${expectedDurationRange.max} 秒`
-      );
-    }
-  }
   const checked = ensureAnimationPlanMatchesProfile(
     { ...foundation, shotPlan: [] },
     input.creatorProfile,
@@ -1723,10 +1719,18 @@ function validateAnimationFoundationOutput(result, input = {}) {
   );
   const { shotPlan: ignoredShotPlan, ...validatedFoundation } = checked;
   if (expectedSchemaVersion !== ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) return validatedFoundation;
+  // 3.1 的镜头时长全部由 Full Story timeRange 派生，"建议单镜时长"这个字段
+  // 已经没有对应的事实，模型即使仍旧输出也一律剥掉，不留一个无人负责的旧字段。
+  const {
+    recommendedShotDurationSeconds: droppedShotDurationRecommendation,
+    ...validatedProductionStrategy
+  } = validatedFoundation.productionStrategy || {};
   return {
     ...validatedFoundation,
     productionStrategy: {
-      ...validatedFoundation.productionStrategy,
+      ...validatedProductionStrategy,
+      // 全片目标时长 = 骨架各镜时长之和 = 各场 timeRange 跨度之和。
+      targetRuntimeSeconds: directShotSkeletonRuntimeSeconds(input.directShotSkeleton),
       videoPromptProfile: structuredClone(input.videoPromptProfile),
       backgroundMusicMode: input.backgroundMusicMode || BACKGROUND_MUSIC_NONE
     }
@@ -2073,12 +2077,41 @@ function assertOnlyAnimationVideoPromptsChanged(sourcePlan, rewrittenPlan, targe
   }
 }
 
+// direct_shot 3.1 的镜头骨架是服务端从 Full Story 派生的唯一权威。
+// shotId / durationSeconds / storyPurpose / emotionalTarget / sceneId 由服务端
+// 确定性注入，这里只复核数量、顺序与 sourceSceneId 归属：
+// 它们一旦对不上，说明模型写错了镜头内容的归属，注入只会把错误藏起来。
+function assertDirectShotBatchMatchesSkeleton(shots, skeleton, { path = "animationShotBatch" } = {}) {
+  if (!Array.isArray(skeleton)) {
+    throw new OutputContractError(`${path} 缺少服务端签发的镜头骨架，无法校验一对一映射`);
+  }
+  const expectation = formatDirectShotSkeleton(skeleton);
+  if (shots.length !== skeleton.length) {
+    throw new OutputContractError(
+      `${path}.shotPlan 必须恰好输出 ${skeleton.length} 个镜头，实际 ${shots.length} 个。`
+      + `镜头数量由 Full Story 的 timeRange 确定性派生，不得拆分、合并、新增或遗漏。`
+      + `本批骨架：${expectation}`
+    );
+  }
+  shots.forEach((shot, index) => {
+    const expected = skeleton[index];
+    if (String(shot?.sourceSceneId || "").trim() !== expected.sourceSceneId) {
+      throw new OutputContractError(
+        `${path}.shotPlan[${index}].sourceSceneId 必须是 ${expected.sourceSceneId}，实际 ${shot?.sourceSceneId || "缺失"}。`
+        + `镜头顺序必须逐位对应骨架：${expectation}`
+      );
+    }
+  });
+  return shots;
+}
+
 function validateAnimationShotBatchOutput(result, {
   input,
   foundation,
   sourceScenes,
   batchIndex = null,
   shotIdStartIndex,
+  skeleton = null,
   previousShots = []
 }) {
   const sourceSceneIds = sourceScenes.map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean);
@@ -2137,7 +2170,6 @@ function validateAnimationShotBatchOutput(result, {
     if (shot.sceneId !== expectedSceneId) {
       throw new OutputContractError(`animationShotBatch.shotPlan[${index}].sceneId 必须使用 ${shot.sourceSceneId} 映射的场景参考 ${expectedSceneId || "未映射"}`);
     }
-    ensureShotDurationWithinFoundation(shot, index, foundation);
   });
 
   const covered = new Set(batch.shotPlan.map((shot) => shot.sourceSceneId));
@@ -2146,30 +2178,11 @@ function validateAnimationShotBatchOutput(result, {
     throw new OutputContractError(`animationShotBatch 未覆盖当前批次剧情场次：${missingScenes.join("、")}`);
   }
 
-  // 每场镜头数下限由该场 timeRange ÷ 单镜时长上限确定性推出。
-  // 低于下限说明该场的剧情动作被压进了太少的镜头，必须让模型重出，不得放行。
-  // 只作用于当前 direct_shot 主流程；旧 v2 兼容路径的镜头数语义不在本次授权范围内。
+  // 3.1：本批镜头由服务端骨架完全确定，模型没有数量、顺序或时长的自由度。
+  // 数量或场次归属对不上说明模型自行拆镜、合并或漏写，必须明确失败——
+  // 服务端只对可从 Full Story 唯一推导的字段做确定性注入，不掩盖内容错位。
   if (foundation?.promptSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
-  const maxShotDurationSeconds = animationMaxShotDurationSeconds(foundation);
-  const shotCountBySourceScene = batch.shotPlan.reduce((counts, shot) => {
-    const sceneId = String(shot?.sourceSceneId || "").trim();
-    counts.set(sceneId, (counts.get(sceneId) || 0) + 1);
-    return counts;
-  }, new Map());
-  sourceScenes.forEach((scene) => {
-    const sceneId = String(scene?.sceneId || "").trim();
-    if (!sceneId) return;
-    const minimumShots = sceneMinimumShotCount(scene, maxShotDurationSeconds);
-    const actualShots = shotCountBySourceScene.get(sceneId) || 0;
-    if (actualShots < minimumShots) {
-      const scriptSeconds = parseSceneTimeRangeSeconds(scene?.timeRange);
-      throw new OutputContractError(
-        `animationShotBatch 中 ${sceneId} 只产出 ${actualShots} 个 shot，`
-        + `脚本 timeRange ${scriptSeconds === null ? "未知" : `${scriptSeconds} 秒`} 要求至少 ${minimumShots} 个`
-        + `（单镜上限 ${maxShotDurationSeconds} 秒）。请按 visibleAction 的主要动作目标拆镜，不要把多个动作压进一条 shot。`
-      );
-    }
-  });
+    assertDirectShotBatchMatchesSkeleton(batch.shotPlan, skeleton);
   }
 
   const previousCount = previousShots.length;
@@ -2482,7 +2495,7 @@ function animationPrimaryCharacterFrameDiagnostic({
   };
 }
 
-function createAnimationShotBatchRepairContext({ foundation, shotIdStartIndex }) {
+function createAnimationShotBatchRepairContext({ foundation, shotIdStartIndex, skeleton = null }) {
   const mappedSceneIds = new Map();
   for (const scene of foundation?.sceneReferencePrompts || []) {
     const sceneId = String(scene?.sceneId || "").trim();
@@ -2499,7 +2512,8 @@ function createAnimationShotBatchRepairContext({ foundation, shotIdStartIndex })
 
   return Object.freeze({
     shotIdStartIndex: Number(shotIdStartIndex),
-    sceneIdBySourceScene: Object.freeze(sceneIdBySourceScene)
+    sceneIdBySourceScene: Object.freeze(sceneIdBySourceScene),
+    skeleton: Array.isArray(skeleton) ? Object.freeze([...skeleton]) : null
   });
 }
 
@@ -2515,14 +2529,27 @@ export function repairAnimationShotBatchStructure(candidate, immutableContext = 
 
   const sceneIdBySourceScene = new Map(immutableContext.sceneIdBySourceScene || []);
   const shotIdStartIndex = Number(immutableContext.shotIdStartIndex);
+  // 骨架长度对得上时，服务端独占的派生字段按位置确定性写回：
+  // 它们全部可以从 Full Story 唯一推导，模型回显错了不构成新事实。
+  // 长度对不上时一律不动，交给 validator 明确报错，避免把错位的内容重新贴标签。
+  const skeleton = Array.isArray(immutableContext.skeleton)
+    && immutableContext.skeleton.length === repaired.shotPlan.length
+    ? immutableContext.skeleton
+    : null;
   return {
     ...repaired,
     shotPlan: repaired.shotPlan.map((shot, index) => {
       if (!isPlainObject(shot)) return shot;
       const nextShot = structuredClone(shot);
+      const skeletonShot = skeleton ? skeleton[index] : null;
       const shotNumber = (Number.isFinite(shotIdStartIndex) ? shotIdStartIndex : 1) + index;
-      const shotId = `A${String(shotNumber).padStart(2, "0")}`;
+      const shotId = skeletonShot ? skeletonShot.shotId : `A${String(shotNumber).padStart(2, "0")}`;
       nextShot.shotId = shotId;
+      if (skeletonShot) {
+        nextShot.durationSeconds = skeletonShot.durationSeconds;
+        nextShot.storyPurpose = skeletonShot.storyPurpose;
+        nextShot.emotionalTarget = skeletonShot.emotionalTarget;
+      }
 
       const mappedSceneId = sceneIdBySourceScene.get(nextShot.sourceSceneId);
       if (mappedSceneId) {
@@ -2670,20 +2697,7 @@ function rewriteShotNegativePromptEvidence(negativePrompts = {}, shotId) {
   return rewritten;
 }
 
-function ensureShotDurationWithinFoundation(shot, index, foundation) {
-  const recommendation = foundation.productionStrategy?.recommendedShotDurationSeconds || {};
-  const minimum = Number(recommendation.min);
-  const maximum = Number(recommendation.max);
-  const duration = Number(shot.durationSeconds);
-  if (Number.isFinite(minimum) && duration < minimum) {
-    throw new OutputContractError(`animationShotBatch.shotPlan[${index}].durationSeconds 不得小于 ${minimum}`);
-  }
-  if (Number.isFinite(maximum) && duration > maximum) {
-    throw new OutputContractError(`animationShotBatch.shotPlan[${index}].durationSeconds 不得大于 ${maximum}`);
-  }
-}
-
-function mergeAnimationPlan(foundation, shotPlan, input = {}) {
+function mergeAnimationPlan(foundation, shotPlan, input = {}, skeleton = null) {
   const knownSceneIds = new Set((foundation.sceneReferencePrompts || []).map((scene) => String(scene?.sceneId || "").trim()));
   const knownSourceSceneIds = new Set((input.fullStory?.sceneScript || []).map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean));
   const shotIds = new Set();
@@ -2707,11 +2721,39 @@ function mergeAnimationPlan(foundation, shotPlan, input = {}) {
     if (!relatedByScene.has(shot.sceneId)) relatedByScene.set(shot.sceneId, []);
     relatedByScene.get(shot.sceneId).push(shot.shotId);
   });
+  const directShotMode = foundation.promptSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION;
+  const plannedSeconds = sumShotDurationSeconds(shotPlan);
+  if (directShotMode) {
+    // 合并后再对整份 shotPlan 与完整骨架做一次逐位复核：分批生成时每批
+    // 只看得到自己那一段，全片的数量、顺序和总时长必须在这里最终确认。
+    assertDirectShotBatchMatchesSkeleton(shotPlan, skeleton, { path: "animationPlan" });
+    shotPlan.forEach((shot, index) => {
+      const expected = skeleton[index];
+      if (shot.shotId !== expected.shotId) {
+        throw new OutputContractError(
+          `animationPlan.shotPlan[${index}].shotId 必须是 ${expected.shotId}，实际 ${shot.shotId}`
+        );
+      }
+      if (Number(shot.durationSeconds) !== expected.durationSeconds) {
+        throw new OutputContractError(
+          `animationPlan.shotPlan[${index}].durationSeconds 必须是 ${expected.durationSeconds} 秒`
+          + `（由 ${expected.sourceSceneId} 的 timeRange ${expected.sceneTimeRange} 确定性派生），`
+          + `实际 ${shot.durationSeconds}`
+        );
+      }
+    });
+    const targetRuntimeSeconds = Number(foundation.productionStrategy?.targetRuntimeSeconds);
+    if (plannedSeconds !== targetRuntimeSeconds) {
+      throw new OutputContractError(
+        `animationPlan 镜头时长合计 ${plannedSeconds} 秒与 productionStrategy.targetRuntimeSeconds `
+        + `${targetRuntimeSeconds} 秒不一致`
+      );
+    }
+  }
   const recommendedDuration = foundation.productionStrategy?.recommendedShotDurationSeconds || {};
   const durationRange = Number.isFinite(Number(recommendedDuration.min)) && Number.isFinite(Number(recommendedDuration.max))
     ? `${recommendedDuration.min}–${recommendedDuration.max} 秒`
     : "建议时长范围";
-  const directShotMode = foundation.promptSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION;
   return {
     ...foundation,
     sceneReferencePrompts: foundation.sceneReferencePrompts.map((scene) => {
@@ -2727,7 +2769,9 @@ function mergeAnimationPlan(foundation, shotPlan, input = {}) {
       firstLastFrameContinuity: directShotMode
         ? `当前直接视频模式不生产首尾帧；已合并 ${shotPlan.length} 个镜头并通过场景引用与连续性字段校验。`
         : `已合并 ${shotPlan.length} 个镜头，每镜均已通过首帧、尾帧、场景引用和连续性字段校验。`,
-      shotDurationControlled: `${shotPlan.length} 个镜头的时长均已通过 ${durationRange} 约束校验。`,
+      shotDurationControlled: directShotMode
+        ? `${shotPlan.length} 个镜头的时长均由 Full Story 场次 timeRange 确定性派生，合计 ${plannedSeconds} 秒。`
+        : `${shotPlan.length} 个镜头的时长均已通过 ${durationRange} 约束校验。`,
       readyForVideoGeneration: directShotMode
         ? "全部直接视频 shotPlan 已在服务端合并并通过最终契约校验，可进入视频生成。"
         : "全部逐镜 shotPlan 已在服务端合并并通过最终契约校验，可进入图片与视频生成。"
@@ -2740,19 +2784,6 @@ function sumShotDurationSeconds(shots) {
     const duration = Number(shot?.durationSeconds);
     return Number.isFinite(duration) ? total + duration : total;
   }, 0);
-}
-
-// 任意一场 timeRange 不可解析就返回 null：宁可不显示预算，也不给出半真的合计。
-function sumSceneScriptSeconds(scenes) {
-  const list = Array.isArray(scenes) ? scenes : [];
-  if (!list.length) return 0;
-  let total = 0;
-  for (const scene of list) {
-    const seconds = parseSceneTimeRangeSeconds(scene?.timeRange);
-    if (seconds === null) return null;
-    total += seconds;
-  }
-  return total;
 }
 
 function animationContinuityContext(shot) {

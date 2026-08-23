@@ -12,10 +12,9 @@ import {
   NO_BACKGROUND_MUSIC_SENTENCE,
   materializeGlobalCharacterBoundaryViews,
   normalizeBackgroundMusicMode,
-  parseSceneTimeRangeSeconds,
-  pruneAnimationPlanNegativePrompts,
-  sceneMinimumShotCount
+  pruneAnimationPlanNegativePrompts
 } from "../src/validation.js";
+import { deriveDirectShotSkeleton } from "../src/direct-shot-timeline.js";
 import { WorkflowService } from "../src/workflow.js";
 import { generateShotVideo, normalizeShotVideoAspectRatio, ShotVideoConfigError } from "../src/shot-video-generator.js";
 import { resolveVideoPromptProfile, VIDEO_PROMPT_PROFILE_IDS } from "../public/video-prompt-profiles.js";
@@ -64,9 +63,9 @@ function directShot() {
   };
 }
 
-// 这些用例验证的是 direct_shot 的字段契约与各类修复协议，不是镜头数下限。
-// 把每场脚本时长压到单镜上限以内，使「一场一镜」的既有 fixture 本身就满足
-// 新的每场镜头数下限，测试焦点保持不变。下限本身由专门的用例覆盖。
+// 这些用例验证的是 direct_shot 的字段契约与各类修复协议，不是镜头映射本身。
+// 把每场时长压到单镜上限以内，让「一场一镜」的既有 fixture 天然满足 3.1 的
+// 一对一映射，测试焦点保持不变。映射与拆分规则由专门的用例覆盖。
 function withSingleShotSceneTimeRanges(fullStory) {
   const story = structuredClone(fullStory);
   story.sceneScript = (Array.isArray(story.sceneScript) ? story.sceneScript : []).map((scene, index) => ({
@@ -312,36 +311,33 @@ test("direct batch 把完整动作链和内部摄影切换写入一条教程式 
     ...context,
     animationFoundation,
     sourceScenes: [sourceScene],
-    shotIdStartIndex: 1
+    shotIdStartIndex: 1,
+    directShotSkeleton: deriveDirectShotSkeleton({ sceneScript: [sourceScene] })
   });
 
-  // 拆镜表述必须是正向产出要求：有几个主要动作目标就产出几个 shot。
-  assert.match(prompt, /拆镜依据只有两个：location 变化，或 visibleAction 中人物的主要动作目标变化/u);
-  assert.match(prompt, /有几个主要动作目标就必须产出几个 shot/u);
-  assert.match(prompt, /把两个以上主要动作目标塞进同一条 shot 属于错误输出/u);
-  assert.match(prompt, /唯一正确的做法是增加 shot/u);
-  assert.match(prompt, /把多个动作压进 6 秒、加速带过或省略动作都属于错误输出/u);
-  // 禁令收敛成封闭的三类，不得再泛化成“默认别拆”。
-  assert.match(prompt, /只有以下三类变化不得触发拆镜/u);
-  assert.match(prompt, /① 景别、机位、构图、焦段、运镜或转场变化/u);
-  assert.match(prompt, /② 同一主要动作目标内部的动作动词或连续阶段/u);
-  assert.match(prompt, /③ 同一地点多人同步完成的同一个协作动作/u);
-  assert.match(prompt, /除这三类之外，主要动作目标变化必须拆镜/u);
-  assert.match(prompt, /同一个目标下的连续阶段（起步→加速→抵达）才合并为一条 shot/u);
+  // 3.1：一场就是一条业务镜头，模型没有任何数量自由度。
+  assert.match(prompt, /本批镜头骨架（服务端已按各场 timeRange 确定性签发，逐字照抄，不得增删改序）：S1（00:00-00:05，5 秒）→ 1 个镜头：A01 5 秒/u);
+  assert.match(prompt, /禁止拆分、合并、新增、遗漏、重排或改写时长/u);
+  assert.match(prompt, /一个场次就是一条业务镜头/u);
+  assert.match(prompt, /允许多个动作阶段、景别变化、特写插入、硬切和结尾宽景/u);
+  assert.match(prompt, /不得因此增加 shotPlan 条目/u);
   assert.match(prompt, /这些内部摄影段不得生成额外 shot/u);
   assert.match(prompt, /内部摄影变化允许但不强制/u);
-  // 每场镜头数下限与全片进度必须出现在提示词里。
-  assert.match(prompt, /本批镜头数下限（由各场 timeRange ÷ 6 秒单镜上限得出，硬性要求）：S1 脚本 5 秒 → 至少 1 个 shot/u);
-  assert.match(prompt, /这是硬性产出要求而不是建议值/u);
-  assert.match(prompt, /全片时长进度：/u);
+  // 长场次被均分时，动作链必须按时间先后完整分配到相邻镜头。
+  assert.match(prompt, /必须把该场 visibleAction 的动作链按时间先后完整分配到这几条相邻镜头/u);
   assert.match(prompt, /一条自包含、可直接交给 Seedance 2\.0 的中文自然语言提示词/u);
   assert.match(prompt, /视觉风格、物理光线与时段/u);
   assert.match(prompt, /严格依照 visibleAction 的顺序动作链与可见结果/u);
   assert.match(prompt, /内部摄影\/剪辑顺序/u);
   assert.match(prompt, /不得生成尚未绑定的 @图片、@视频或 @音频编号/u);
   assert.match(prompt, /acceptanceCriteria 必须在 1-3 条额度内覆盖主要动作链的完整顺序与可见终点/u);
-  assert.match(prompt, /投信后改为拿起水桶给菜地浇水，主要动作目标已变化/u);
+  assert.match(prompt, /不得.*因为动作目标变化就拆成两条 shot/u);
   assert.match(prompt, /中景跟随阿岚走近；投入录音带时硬切手部特写；最后切到阿岚放松肩膀的逆光近景/u);
+  // 旧的拆镜规则与追赶进度提示必须彻底消失。
+  assert.doesNotMatch(prompt, /主要动作目标/u);
+  assert.doesNotMatch(prompt, /镜头数下限/u);
+  assert.doesNotMatch(prompt, /全片时长进度/u);
+  assert.doesNotMatch(prompt, /4-6 秒整数/u);
   assert.doesNotMatch(prompt, /多个先后人物动作必须拆成相邻镜头/u);
   assert.doesNotMatch(prompt, /一个连续摄影方案/u);
   assert.doesNotMatch(prompt, /不得把硬切塞进同一 shot/u);
@@ -441,7 +437,7 @@ test("demo direct_shot 返回无端点的 3.0 plan 并标记 compiler disabled",
   const firstShot = result.animationPlan.shotPlan[0];
   assert.match(firstShot.videoPrompt, /2\.5D 动画/u);
   assert.match(firstShot.videoPrompt, /出发点/u);
-  assert.match(firstShot.videoPrompt, /在 4 秒内按上述顺序清楚完成动作/u);
+  assert.match(firstShot.videoPrompt, /在 5 秒内按上述顺序清楚完成动作/u);
   assert.match(firstShot.videoPrompt, /自然动作声/u);
   assert.match(firstShot.videoPrompt, /内部摄影段与前后镜头均保持/u);
   assert.equal(firstShot.acceptanceCriteria.length, 3);
@@ -537,25 +533,9 @@ test("direct_shot 六个镜头职责字段都可作为逐镜视频负面词证�
 });
 
 
-test("每场镜头数下限由 timeRange 确定性推出，不可解析时退回下限 1", () => {
-  assert.equal(parseSceneTimeRangeSeconds("00:15-00:33"), 18);
-  assert.equal(parseSceneTimeRangeSeconds("01:00-01:20"), 20);
-  // 非法或非正跨度一律返回 null，不猜测场次时长。
-  assert.equal(parseSceneTimeRangeSeconds("00:20-00:10"), null);
-  assert.equal(parseSceneTimeRangeSeconds("时长未知"), null);
-  assert.equal(parseSceneTimeRangeSeconds(""), null);
-
-  // 20 秒脚本 ÷ 6 秒单镜上限 → 至少 4 镜；正是旧行为只给 1 镜的那类场次。
-  assert.equal(sceneMinimumShotCount({ timeRange: "01:00-01:20" }, 6), 4);
-  assert.equal(sceneMinimumShotCount({ timeRange: "00:00-00:15" }, 6), 3);
-  assert.equal(sceneMinimumShotCount({ timeRange: "00:00-00:06" }, 6), 1);
-  // timeRange 不可解析、上限非法时退回既有契约下限 1，不失败也不推断。
-  assert.equal(sceneMinimumShotCount({ timeRange: "乱写" }, 6), 1);
-  assert.equal(sceneMinimumShotCount({}, 6), 1);
-  assert.equal(sceneMinimumShotCount({ timeRange: "00:00-00:20" }, 0), 1);
-});
-
-test("长场次在批次提示词里拿到与 timeRange 匹配的镜头数下限和全片进度", () => {
+// timeRange 解析与镜头骨架派生本身由 test/direct-shot-timeline.test.js 覆盖，
+// 这里只验证骨架如何进入批次提示词。
+test("长场次在批次提示词里拿到服务端签发的镜头骨架，而不是镜头数下限", () => {
   const context = directContext();
   const plan = mockAnimationPlan(context);
   const { shotPlan: ignoredShotPlan, ...animationFoundation } = structuredClone(plan);
@@ -567,48 +547,26 @@ test("长场次在批次提示词里拿到与 timeRange 匹配的镜头数下限
   const longScene = structuredClone(context.fullStory.sceneScript[0]);
   longScene.timeRange = "01:00-01:20";
   const shortScene = structuredClone(context.fullStory.sceneScript[1]);
-  shortScene.timeRange = "00:00-00:06";
+  shortScene.timeRange = "01:20-01:26";
+  const skeleton = deriveDirectShotSkeleton({ sceneScript: [longScene, shortScene] });
 
   const prompt = animationShotBatchPrompt({
     ...context,
     animationFoundation,
     sourceScenes: [longScene, shortScene],
-    shotIdStartIndex: 5,
-    runtimeBudget: {
-      plannedShotCount: 4,
-      plannedSeconds: 21,
-      scriptCompletedSeconds: 20,
-      batchScriptSeconds: 26,
-      scriptTotalSeconds: 60
-    }
+    shotIdStartIndex: 1,
+    directShotSkeleton: skeleton
   });
 
-  assert.match(prompt, /S1 脚本 20 秒 → 至少 4 个 shot/u);
-  assert.match(prompt, /S2 脚本 6 秒 → 至少 1 个 shot/u);
-  assert.match(prompt, /已产出 4 个 shot · 已用 21 秒 · 前面各场脚本合计 20 秒 · 本批脚本合计 26 秒 · 全片脚本合计 60 秒/u);
+  // 20 秒超过 15 秒单镜上限，均分成两段；6 秒场次保持一条镜头。
+  assert.match(prompt, /S1（01:00-01:20，20 秒）→ 2 个镜头：A01 10 秒（第 1\/2 段）、A02 10 秒（第 2\/2 段）/u);
+  assert.match(prompt, /S2（01:20-01:26，6 秒）→ 1 个镜头：A03 6 秒/u);
+  // 追赶镜头数量的进度提示与镜头数下限都已经删除。
+  assert.doesNotMatch(prompt, /镜头数下限/u);
+  assert.doesNotMatch(prompt, /全片时长进度/u);
+  assert.doesNotMatch(prompt, /主要动作目标/u);
 });
 
-test("timeRange 不可解析时提示词说明未知，并退回下限 1 不阻断", () => {
-  const context = directContext();
-  const plan = mockAnimationPlan(context);
-  const { shotPlan: ignoredShotPlan, ...animationFoundation } = structuredClone(plan);
-  animationFoundation.sceneReferencePrompts.forEach((scene, index) => {
-    scene.sourceSceneIds = [context.fullStory.sceneScript[index].sceneId];
-    scene.relatedShotIds = [];
-  });
-  const brokenScene = structuredClone(context.fullStory.sceneScript[0]);
-  brokenScene.timeRange = "未知";
-
-  const prompt = animationShotBatchPrompt({
-    ...context,
-    animationFoundation,
-    sourceScenes: [brokenScene],
-    shotIdStartIndex: 1
-  });
-
-  assert.match(prompt, /S1 timeRange 不可解析 → 至少 1 个 shot/u);
-  assert.match(prompt, /全片时长进度：未提供/u);
-});
 
 
 function foundationFor(context, { backgroundMusicMode = "none" } = {}) {

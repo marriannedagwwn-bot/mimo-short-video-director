@@ -187,7 +187,7 @@ test("Seedance 2.0 使用方舟首尾帧角色、默认音画同生和完整终�
       model: "doubao-seedance-2-0-260128",
       startPath,
       endPath,
-      durationSeconds: 3
+      durationSeconds: 6
     }),
     output: outputPath,
     root
@@ -198,7 +198,7 @@ test("Seedance 2.0 使用方舟首尾帧角色、默认音画同生和完整终�
   assert.equal(postedBody.content[1].role, "first_frame");
   assert.equal(postedBody.content[2].role, "last_frame");
   assert.equal(postedBody.generate_audio, true);
-  assert.equal(postedBody.duration, 4);
+  assert.equal(postedBody.duration, 6);
   assert.equal(postedBody.resolution, "720p");
   assert.equal(postedBody.ratio, "9:16");
   assert.equal(Object.hasOwn(postedBody, "camera_fixed"), false);
@@ -208,6 +208,50 @@ test("Seedance 2.0 使用方舟首尾帧角色、默认音画同生和完整终�
   assert.equal(receipt.videoProvider, "Seedance");
   assert.equal(receipt.providerTaskId, "seedance-task");
   assert.equal(receipt.audioRequested, true);
+});
+
+test("Seedance 越界时长明确失败，不再静默 clamp 到 4 秒", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "seedance-duration-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, "provider.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    videoEndpoint: "http://127.0.0.1:1/api/v3/contents/generations/tasks",
+    apiKey: "seedance-key",
+    providerPreset: "modelark_content_generation"
+  }));
+  const startPath = path.join(root, "start.png");
+  const endPath = path.join(root, "end.png");
+  await Promise.all([
+    fs.writeFile(startPath, Buffer.from("start")),
+    fs.writeFile(endPath, Buffer.from("end"))
+  ]);
+
+  // 3 秒低于 Seedance 的 4 秒下限：旧行为悄悄补成 4 秒，现在必须明确失败。
+  await assert.rejects(() => executeGenericHttpWorker({
+    config: configPath,
+    request: videoRequest({
+      provider: "Seedance",
+      model: "doubao-seedance-2-0-260128",
+      startPath,
+      endPath,
+      durationSeconds: 3
+    }),
+    output: path.join(root, "out.mp4"),
+    root
+  }), /Seedance duration 必须是 4–15 秒整数，不能静默改写时长。/u);
+
+  await assert.rejects(() => executeGenericHttpWorker({
+    config: configPath,
+    request: videoRequest({
+      provider: "Seedance",
+      model: "doubao-seedance-2-0-260128",
+      startPath,
+      endPath,
+      durationSeconds: 16
+    }),
+    output: path.join(root, "out.mp4"),
+    root
+  }), /Seedance duration 必须是 4–15 秒整数，不能静默改写时长。/u);
 });
 
 test("Seedance 2.0 全能参考使用 reference_image/video/audio 且不混入首尾帧角色", async (t) => {

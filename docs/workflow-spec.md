@@ -176,7 +176,7 @@ Full Story 的完整 completion 观测与上述 repair Debug 是两套互斥职�
 
 浏览器还必须显式传入 `targetAspectRatio`，当前只允许 `9:16` 或 `16:9`。首次生成时，Foundation 的 `productionStrategy.targetAspectRatio` 必须与用户选择逐字一致；已有计划切换画幅时，用户选择作为新的计划级输出事实，不调用模型、不重写 shot，并提交同一 Animation Plan artifact 的新 revision/media namespace。该计划级字段是后续视频请求的画幅事实源；不得向 exact direct-shot 字段集合增加逐镜 `aspectRatio`。需要重新设计镜头构图时，用户再显式触发完整 Plan 重生成。
 
-页面和 Markdown 的“镜头计划合计时长”由全部 `shotPlan[].durationSeconds` 求和派生；`productionStrategy.targetRuntimeSeconds` 保留为上游目标并用于显示偏差，两者不得自动互相覆盖。该合计是计划时长，不等同于供应商生成媒体经探测后的实际文件时长。
+页面和 Markdown 的“镜头计划合计时长”由全部 `shotPlan[].durationSeconds` 求和派生；3.1 起 `productionStrategy.targetRuntimeSeconds` 由服务端注入为同一个合计值（= 各场 `timeRange` 跨度之和），两者定义上相等，偏差恒为 0，`mergeAnimationPlan` 对此有硬断言。“单镜头”一栏改为从实际 `shotPlan` 汇总区间，`recommendedShotDurationSeconds` 在 direct_shot 已删除。该合计是计划时长，不等同于供应商生成媒体经探测后的实际文件时长。
 
 当前 `direct_shot` 仍先生成不含 `shotPlan` 的 foundation，再按 `fullStory.sceneScript` 分批生成镜头并按剧情顺序合并。`visualBible`、`characterReferencePrompts`、`sceneReferencePrompts`、`assetPrompts`、`editPlan` 与 `generationChecklist` 继续承担全局视觉锁、引用、剪辑和质检职责。每个 shot 保留：
 
@@ -188,10 +188,10 @@ Full Story 的完整 completion 观测与上述 repair Debug 是两套互斥职�
 
 Foundation 与全部 shot 合并并通过完整契约校验后，服务端还要单独调用文本模型执行逐镜、证据绑定的语义审计；结构化事实 fail 时停止评估 `videoPrompt` 且不得修 Prompt。
 
-已有 Plan 后切换镜头视频模型的状态转移必须明确：先保留用户的新运行时模型设置，再比较目标 Profile 与 Plan Profile，并询问是否重新生成提示词；旧 Plan 缺失 Profile 同样视为 mismatch，禁止从现有 Prompt、provider 或模型名反推。拒绝时 Plan JSON、revision、media namespace 与媒体 current/stale 状态均不变化，新模型设置也不回滚；确认时只调用“视频提示词目标改写”，输入当前签发 Plan，输出与现有 shotId 顺序一一对应的 `videoPrompt`，服务端更新 Profile 并逐字保留全部其他 Plan 字段。完整契约校验后执行同一套证据审计；只有纯 Prompt 实质冲突可在提交前进行唯一一次有界修复与复审。只有最终改写、完整校验和审计都成功后才提交新的 Plan revision/media namespace，并递归 stale 旧媒体；任何失败都让旧 Plan 继续 current。首次 H3 Plan 与确认 Profile 改写都要求已配置的实时文本模型；demo mock 不得伪造英文翻译、语义审计结果或生产 Profile。合法反例：3 秒 Seedance shot 不满足 H3 最低 4 秒，Prompt-only rewrite 无权改变 `durationSeconds`，因此确认改写必须失败并要求完整重生 H3 Plan；拒绝重写虽然保留 Plan，但运行时 H3 也必须拒绝该镜头，不能钳制为 4 秒或 fallback。
+已有 Plan 后切换镜头视频模型的状态转移必须明确：先保留用户的新运行时模型设置，再比较目标 Profile 与 Plan Profile，并询问是否重新生成提示词；旧 Plan 缺失 Profile 同样视为 mismatch，禁止从现有 Prompt、provider 或模型名反推。拒绝时 Plan JSON、revision、media namespace 与媒体 current/stale 状态均不变化，新模型设置也不回滚；确认时只调用“视频提示词目标改写”，输入当前签发 Plan，输出与现有 shotId 顺序一一对应的 `videoPrompt`，服务端更新 Profile 并逐字保留全部其他 Plan 字段。完整契约校验后执行同一套证据审计；只有纯 Prompt 实质冲突可在提交前进行唯一一次有界修复与复审。只有最终改写、完整校验和审计都成功后才提交新的 Plan revision/media namespace，并递归 stale 旧媒体；任何失败都让旧 Plan 继续 current。首次 H3 Plan 与确认 Profile 改写都要求已配置的实时文本模型；demo mock 不得伪造英文翻译、语义审计结果或生产 Profile。合法反例：3 秒 shot 不满足两家供应商的 4 秒下限，Prompt-only rewrite 无权改变 `durationSeconds`，因此确认改写必须失败并要求完整重生 Plan；拒绝重写虽然保留 Plan，但运行时也必须拒绝该镜头，不能钳制为 4 秒或 fallback。3.1 起这类镜头在骨架派生阶段就已经被拦下。
 
 
-`direct_shot` 的场内业务拆镜边界只来自 `fullStory.sceneScript[].location` 与 `visibleAction` 中的人物主要动作目标。地点或主要人物动作目标变化时拆镜；同一地点、围绕同一主要目标形成完整叙事动作的连续阶段保留为一条业务 shot。任何输入中的景别、机位、构图、焦段、运镜或转场建议都只能决定已划定业务 shot 内部的摄影/剪辑表达，不得生成额外 `shotPlan[]`；同一 `videoPrompt` 可以按顺序描述中景跟随、关键动作特写、硬切或结尾宽景。`shotAndSound` 与 `shootingNotes` 继续提供摄影和声音参考，但不是镜头数量的事实源。每个 source scene 至少一镜；Seedance Profile 为 3–6 秒单镜，首次 MiniMax H3 Plan 使用项目生产子集 4–6 秒整数单镜。MiniMax V2 运行时协议总体只接受 4–15 秒整数，已有时长不合法时拒绝，不能钳制、补长或缩短。内部摄影变化允许但不强制，必须优先保证完整动作链。使用内部切换时，1–3 条验收标准必须覆盖动作顺序、可见终点和关键摄影切换，失败不得静默加镜或删动作。
+`direct_shot` 3.1 把 `fullStory.sceneScript[]` 的每一项直接定义为最终可翻拍业务镜头，Animation Plan 不再拆镜，只填内容。镜头骨架由服务端在任何模型调用之前从 Full Story 确定性派生：`shotId`（全局 `A01`、`A02`……）、`sourceSceneId`、`sceneId`、`durationSeconds`、`storyPurpose`（= `dramaticFunction`）、`emotionalTarget`（= `emotionNode`）全部由服务端签发，模型回显错了按骨架确定性覆盖。唯一的拆镜条件是单场跨度超过 15 秒：按 `ceil(跨度 / 15)` 均分，余数逐秒给靠前的镜头；其余情况严格一对一，禁止拆分、合并、新增、遗漏、重排或改写时长。任何输入中的景别、机位、构图、焦段、运镜或转场建议都只能决定已划定业务 shot 内部的摄影/剪辑表达，不得生成额外 `shotPlan[]`；同一 `videoPrompt` 可以按顺序描述中景跟随、关键动作特写、硬切或结尾宽景。`shotAndSound` 与 `shootingNotes` 继续提供摄影和声音参考，但不是镜头数量的事实源。镜头时长就是 `timeRange` 的派生结果，落在 Seedance 2.0 与 MiniMax H3 的能力交集 4–15 秒整数内；项目不再另设 4–6 秒子集，`timeRange` 不可解析、跨度非正、跨场次逆序或短于 4 秒时明确失败，不能钳制、补长或缩短。内部摄影变化允许但不强制，必须优先保证完整动作链。使用内部切换时，1–3 条验收标准必须覆盖动作顺序、可见终点和关键摄影切换，失败不得静默加镜或删动作。
 
 #### 旧 v2 首尾帧兼容路径
 

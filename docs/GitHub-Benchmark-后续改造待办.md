@@ -182,7 +182,7 @@ T08 跨环境 Production Package 仅在部署需求成立后启动
 | 故事角色职责 | 已通过 T01 的 `fullStory.characterBible` |
 | 每场实际出镜角色 | 已通过 T01 的 `sceneScript[].characters` |
 | Shot 所属剧情场次 | `shot.sourceSceneId` |
-| Shot 边界 | 当前 direct_shot 的 location + visibleAction 主要动作目标规则 |
+| Shot 边界 | 当前 direct_shot 3.1 的一对一映射：一场一镜，跨度 >15 秒时按 `ceil(跨度/15)` 均分 |
 | 版本归属 | Production Lineage dependency revisions |
 
 实施步骤：

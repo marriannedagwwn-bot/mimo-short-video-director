@@ -21,6 +21,7 @@ import {
   SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
 } from "./shot-video-continuity.js";
 import {
+  assertShotVideoDurationSupported,
   inferShotVideoProvider,
   isNonDomesticKlingApiEndpoint,
   isShotVideoGenerationModeSupported,
@@ -80,12 +81,19 @@ export async function generateShotVideo(options = {}) {
   const continuityReferenceMode = normalizeShotVideoContinuityReferenceMode(options.continuityReferenceMode);
   const aspectRatio = normalizeShotVideoAspectRatio(options.aspectRatio);
   const miniMaxH3Runtime = videoProvider === "MiniMax" && videoModel === "MiniMax-H3";
+  // 镜头时长由 Plan 唯一决定；这里只复核当前供应商能不能原样渲染它。
+  // H3 保留自己的诊断码，其余供应商走统一能力表，都不做任何钳制。
   if (miniMaxH3Runtime) {
     try {
       assertMiniMaxH3Duration(shot.durationSeconds, "shot.durationSeconds");
     } catch (error) {
       throw new ShotVideoConfigError(error.message);
     }
+  } else {
+    assertShotVideoDurationSupported(videoProvider, videoModel, shot.durationSeconds, {
+      path: "shot.durationSeconds",
+      ErrorType: ShotVideoConfigError
+    });
   }
   if (
     String(options.animationPromptSchemaVersion || "").trim() === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION
@@ -364,6 +372,18 @@ function buildFrameRequest(shot = {}, context = {}) {
   };
 }
 
+// Plan 的 durationSeconds 是唯一权威。缺失或非法时必须明确失败，
+// 不能像过去那样悄悄回落到 4 秒——那会把一个契约错误变成一段错时长的成片。
+function requireShotDurationSeconds(shot) {
+  const duration = Number(shot?.durationSeconds);
+  if (!Number.isFinite(duration) || duration <= 0) {
+    throw new ShotVideoConfigError(
+      `镜头 ${shot?.shotId || "未知"} 缺少有效的 durationSeconds，无法提交视频生成；时长必须来自当前 Animation Plan。`
+    );
+  }
+  return duration;
+}
+
 function buildShotVideoRequest(shot = {}, context = {}) {
   const candidateIndex = Number(context.candidateIndex) || 0;
   const candidateCount = Number(context.candidateCount) || 1;
@@ -392,7 +412,7 @@ function buildShotVideoRequest(shot = {}, context = {}) {
     inputArtifacts: context.inputArtifacts || [],
     parameters: {
       aspectRatio: context.aspectRatio || "9:16",
-      durationSeconds: Number(shot.durationSeconds) || 4,
+      durationSeconds: requireShotDurationSeconds(shot),
       shotId: shot.shotId || "",
       sourceSceneId: shot.sourceSceneId || "",
       cameraMotion: shot.cameraMotion || "",

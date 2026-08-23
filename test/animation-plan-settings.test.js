@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   ANIMATION_PLAN_ASPECT_RATIOS,
   animationPlanRuntimeSummary,
+  animationPlanShotDurationRange,
   isAnimationPlanAspectRatio,
   normalizeAnimationPlanAspectRatio,
   withAnimationPlanAspectRatio
@@ -34,6 +35,32 @@ test("Animation Plan 时长汇总保留等于目标和低于目标的合法结�
     productionStrategy: { targetRuntimeSeconds: 12 },
     shotPlan: [{ durationSeconds: 4 }, { durationSeconds: 5 }]
   }).deltaSeconds, -3);
+});
+
+test("direct_shot 3.1 的计划合计恒等于服务端派生的 targetRuntimeSeconds", () => {
+  // 时长全部由 timeRange 派生，两个数字定义上相等，偏差恒为 0。
+  const plan = {
+    productionStrategy: { targetRuntimeSeconds: 45 },
+    shotPlan: [10, 10, 5, 5, 5, 5, 5].map((durationSeconds) => ({ durationSeconds }))
+  };
+  const summary = animationPlanRuntimeSummary(plan);
+  assert.equal(summary.plannedSeconds, 45);
+  assert.equal(summary.deltaSeconds, 0);
+});
+
+test("单镜时长区间从 shotPlan 派生，Plan 里不再有建议时长字段", () => {
+  assert.deepEqual(
+    animationPlanShotDurationRange({ shotPlan: [{ durationSeconds: 6 }, { durationSeconds: 15 }, { durationSeconds: 8 }] }),
+    { min: 6, max: 15 }
+  );
+  assert.deepEqual(
+    animationPlanShotDurationRange({ shotPlan: [{ durationSeconds: 8 }, { durationSeconds: 8 }] }),
+    { min: 8, max: 8 }
+  );
+  // 没有可用时长时返回 null，由调用方决定怎么如实展示，而不是编一个区间。
+  assert.equal(animationPlanShotDurationRange({ shotPlan: [] }), null);
+  assert.equal(animationPlanShotDurationRange({ shotPlan: [{ durationSeconds: 0 }] }), null);
+  assert.equal(animationPlanShotDurationRange({}), null);
 });
 
 test("Animation Plan 时长数据不完整时不输出误导性的部分合计", () => {

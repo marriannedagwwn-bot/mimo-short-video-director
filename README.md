@@ -150,9 +150,9 @@ MODEL_PRICE_CNY_PER_MILLION=qwen3.7-max=12/36,qwen3.7-plus=2/8,mimo-v2.5=1/2,mim
 
 页面允许显式选择 `9:16` 或 `16:9`。首次生成时，该值会锁入 `productionStrategy.targetAspectRatio`、Foundation Prompt 和后续视频请求；模型返回其他比例或与用户选择不一致会明确失败。已有 Plan 切换画幅时不调用模型、不重写 shot，只更新计划级输出画幅并签发新 revision/media namespace，使旧画幅镜头媒体失效。若要让模型连镜头构图一起重新设计，再单独点击重新生成 Animation Plan。
 
-Animation Plan 顶部的时长使用全部 `shotPlan[].durationSeconds` 的合计，并把 `productionStrategy.targetRuntimeSeconds` 保留为上游目标用于显示偏差；不会再把目标时长冒充为当前镜头计划总长。
+Animation Plan 顶部的时长使用全部 `shotPlan[].durationSeconds` 的合计；3.1 起 `productionStrategy.targetRuntimeSeconds` 由服务端注入为同一个合计值（= 各场 `timeRange` 跨度之和），两者定义上相等，偏差恒为 0。「单镜头」一栏也改为从实际 `shotPlan` 汇总区间——`recommendedShotDurationSeconds` 在 direct_shot 已经删除，时长是派生事实，不存在「建议」；旧的首尾帧 Plan 仍旧读它自己签发的该字段。
 
-当前场内拆镜只依据 Full Story 的地点和人物主要动作目标：地点或主要动作目标变化才拆镜；同一地点、围绕同一主要目标形成完整叙事动作的连续阶段保留为一条业务 shot。景别、机位、构图、焦段、运镜和转场建议只用于已划定业务 shot 的内部摄影/剪辑表达，不得单独增加 `shotPlan[]`；一条 `videoPrompt` 可以按顺序包含中景跟随、关键动作特写、硬切和结尾宽景。`shotAndSound` 与 `shootingNotes` 不是镜头数量的事实源。业务 shot 统一为 4–6 秒整数（一份提示词同时交给 Seedance 2.0 与 MiniMax H3，4 秒下限取自 H3 供应商硬约束）；每场镜头数下限由该场 `timeRange` ÷ 单镜时长上限确定性推出，内部摄影变化只在时长可承载且不遗漏剧情动作时使用。
+direct_shot 3.1 把 `fullStory.sceneScript[]` 的每一项直接当成最终可翻拍业务镜头：Animation Plan 不再拆镜，只填内容。镜头骨架由服务端在任何模型调用之前从 Full Story 确定性派生——`shotId`、`sourceSceneId`、`sceneId`、`durationSeconds`、`storyPurpose`（取自 `dramaticFunction`）和 `emotionalTarget`（取自 `emotionNode`）全部由服务端签发，模型只写 `videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes`、`negativePrompts` 和 `acceptanceCriteria`。唯一的拆镜条件是单场跨度超过 15 秒：按 `ceil(跨度 / 15)` 均分，余数逐秒给靠前的镜头（20 秒 → 10+10，17 秒 → 9+8）；其余情况严格一对一，禁止拆分、合并、新增、遗漏、重排或改写时长。一条业务镜头内部可以按顺序包含多个动作阶段、景别变化、关键动作特写、硬切和结尾宽景，全部写进同一条 `videoPrompt`/`cameraMotion`，不得因此增加 `shotPlan[]`。`shotAndSound` 与 `shootingNotes` 不是镜头数量的事实源。镜头时长就是 `timeRange` 的派生结果，落在 Seedance 2.0 与 MiniMax H3 的能力交集 4–15 秒整数内；`timeRange` 不可解析、跨度非正、跨场次逆序或短于 4 秒时明确失败，不退回默认值也不钳制。
 
 每条 `direct_shot.videoPrompt` 由 Animation Plan 模型直接写成一条自包含中文自然语言提示词，依次组织 Foundation 已锁定的风格与物理光线、地点环境、实际出镜主体及外观、`visibleAction` 顺序动作链、内部摄影/剪辑顺序、节奏与声音、稳定约束和停止条件。方言只有这一种，Seedance 2.0 与 MiniMax H3 消费同一条提示词。`cameraMotion` 同步记录同一业务 shot 内的完整摄影/剪辑顺序；若使用内部切换，验收标准同时检查动作链与关键切换。Animation Plan 阶段尚未绑定运行时素材，不得凭空生成 `@图片/@视频/@音频` 或 `<Subject/Picture/Video/Audio N>` 引用。
 
@@ -162,7 +162,7 @@ Animation Plan 顶部的时长使用全部 `shotPlan[].durationSeconds` 的合�
 
 H3 写法固定依据 MiniMax 官方仓库 [`h3-prompt-writing`](https://github.com/MiniMax-AI/MiniMax-H3/tree/80365054c7fbaace01ed417076fecd532c1ae0e0/skills/h3-prompt-writing) 的 commit `80365054c7fbaace01ed417076fecd532c1ae0e0`；升级规则必须显式更新 `guideVersion`、验证和测试，不能自动跟随仓库 HEAD。
 
-已有 Plan 后再改变“镜头视频”模型时，页面先保留新的模型设置，再比较目标 Profile 与 Plan 中已签发的 `videoPromptProfile` 并询问是否重写提示词；旧 Plan 缺失 Profile 也视为需要确认，禁止从现有散文或模型名反推。用户拒绝时，Plan 内容、revision、media namespace 和已有媒体状态全部不变；新的运行时模型设置也不会被 Profile 强行回滚。用户确认时，只允许重写每条 `shotPlan[].videoPrompt` 并更新 `videoPromptProfile`，其他 Plan 级与逐镜字段逐字保留；服务端在完整契约校验后执行同一套证据绑定审计，并只在纯 Prompt 问题时允许上述唯一一次有界修复。只有最终改写、完整校验和审计都成功后才签发新的 Plan revision/media namespace 并递归 stale 旧媒体；任何失败都保留原 Plan 为 current。合法反例：包含 3 秒 shot 的 Seedance Plan 切到 H3 后，即使用户确认，单纯改写提示词也不能把权威 `durationSeconds` 拉到 4 秒，系统必须拒绝这次改写并要求完整重生 H3 Plan；用户拒绝重写时原 Plan 可以保留，但用 H3 生成该 3 秒镜头仍须明确失败，不能钳制时长或静默降级模型。
+已有 Plan 后再改变“镜头视频”模型时，页面先保留新的模型设置，再比较目标 Profile 与 Plan 中已签发的 `videoPromptProfile` 并询问是否重写提示词；旧 Plan 缺失 Profile 也视为需要确认，禁止从现有散文或模型名反推。用户拒绝时，Plan 内容、revision、media namespace 和已有媒体状态全部不变；新的运行时模型设置也不会被 Profile 强行回滚。用户确认时，只允许重写每条 `shotPlan[].videoPrompt` 并更新 `videoPromptProfile`，其他 Plan 级与逐镜字段逐字保留；服务端在完整契约校验后执行同一套证据绑定审计，并只在纯 Prompt 问题时允许上述唯一一次有界修复。只有最终改写、完整校验和审计都成功后才签发新的 Plan revision/media namespace 并递归 stale 旧媒体；任何失败都保留原 Plan 为 current。合法反例：包含 3 秒 shot 的旧 Plan 即使用户确认改写，单纯改写提示词也不能把权威 `durationSeconds` 拉到 4 秒，系统必须拒绝这次改写并要求完整重生 Plan；用户拒绝重写时原 Plan 可以保留，但用任何供应商生成该 3 秒镜头仍须明确失败，不能钳制时长或静默降级模型。3.1 起这类镜头在骨架派生阶段就已经被拦下。
 
 提示词方言只有一种，因此切换运行时视频模型（Seedance 2.0 ↔ MiniMax H3，或 Seedance 各型号之间）不再产生方言不一致，也不再询问是否重写——同一条提示词两边都能直接跑。改写流程仅在 Plan 的方言与当前契约不一致时触发，即两种旧 Plan：完全缺 Profile，或带已下线的 `minimax_h3` Profile。这类 Plan 仍可加载查看，但生成视频前必须先重新生成 Plan。拒绝重写只表示“保留旧 Plan”，不会调用文本模型，也不会用错误方言继续生成。
 
@@ -287,7 +287,7 @@ MINIMAX_VIDEO_POLL_INTERVAL_MS=3000
 MINIMAX_VIDEO_POLL_TIMEOUT_MS=900000
 ```
 
-首尾帧模式把镜头提示词、首帧和尾帧分别写入 `content` 的 `text`、`first_frame`、`last_frame`；全能参考模式把 Plan 中已签发的中文提示词与已冻结的 `reference_image`、`reference_video`、`reference_audio` 一并发送，固定不混入端点角色。MiniMax V2 API 只接受 4–15 秒整数，项目生成的 Plan 进一步统一为 4–6 秒；不合法时明确拒绝，不能自动钳制、补长或缩短。首尾帧保持 `ratio=adaptive`，全能参考模式按当前 Animation Plan 显式发送 `9:16` 或 `16:9`。服务端通过 `GET /v2/query/video_generation/{task_id}` 轮询 `queued/running → succeeded/failed/cancelled`，成功后下载 `task.content.url`。H3 不提供独立负面提示词字段；系统只会把高优先级角色身份冲突转换成正向身份锁定，其余负面条目在回执中明确标记为未下发。接口依据：[创建视频生成任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create)、[查询任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-query)。
+首尾帧模式把镜头提示词、首帧和尾帧分别写入 `content` 的 `text`、`first_frame`、`last_frame`；全能参考模式把 Plan 中已签发的中文提示词与已冻结的 `reference_image`、`reference_video`、`reference_audio` 一并发送，固定不混入端点角色。MiniMax V2 API 只接受 4–15 秒整数，Seedance 2.0 同为 4–15 秒整数；项目不再另设 4–6 秒子集，Plan 的时长直接来自 Full Story `timeRange` 的派生结果。不合法时明确拒绝，不能自动钳制、补长或缩短——Seedance 侧过去的静默 clamp 已改为明确失败。首尾帧保持 `ratio=adaptive`，全能参考模式按当前 Animation Plan 显式发送 `9:16` 或 `16:9`。服务端通过 `GET /v2/query/video_generation/{task_id}` 轮询 `queued/running → succeeded/failed/cancelled`，成功后下载 `task.content.url`。H3 不提供独立负面提示词字段；系统只会把高优先级角色身份冲突转换成正向身份锁定，其余负面条目在回执中明确标记为未下发。接口依据：[创建视频生成任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create)、[查询任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-query)。
 
 旧可灵 2.1 仍保持兼容：
 

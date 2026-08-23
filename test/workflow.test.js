@@ -1718,7 +1718,7 @@ test("单镜头视频生成不会把供应商纯文本确认当成 mp4", async (
     publicBasePath: "/generated-videos",
     startFrameDataUrl: frameDataUrl,
     endFrameDataUrl: frameDataUrl,
-    shot: { shotId: "S04", videoPrompt: "测试视频" }
+    shot: { shotId: "S04", videoPrompt: "测试视频", durationSeconds: 5 }
   }), ShotVideoProviderError);
 });
 

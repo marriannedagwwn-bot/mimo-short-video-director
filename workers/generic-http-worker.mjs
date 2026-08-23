@@ -701,7 +701,9 @@ function buildModelArkContentGenerationBody(context, config, negativePromptDeliv
     model: context.model || config.model || undefined,
     content,
     ratio: normalizeSeedanceRatio(parameters.aspectRatio || config.ratio),
-    duration: normalizeSeedanceDuration(parameters.durationSeconds || config.duration),
+    duration: normalizeSeedanceDuration(
+      Object.hasOwn(parameters, "durationSeconds") ? parameters.durationSeconds : config.duration
+    ),
     watermark: config.watermark === true,
     generate_audio: config.generateAudio !== false,
     return_last_frame: config.returnLastFrame === true
@@ -885,11 +887,16 @@ function normalizeKlingV3Resolution(value) {
   return ["720p", "1080p", "4k"].includes(resolution) ? resolution : "720p";
 }
 
+// -1 是 Ark 的"由模型自行决定时长"，只有在请求没有给出镜头时长时才可能出现。
+// 其余情况一律按供应商公开的 4–15 秒整数硬校验：Plan 的时长是权威事实，
+// 静默 clamp 会让一个 3 秒的镜头变成 4 秒的成片，属于隐蔽改写。
 function normalizeSeedanceDuration(value) {
-  const number = Math.round(Number(value));
-  if (number === -1) return -1;
-  if (!Number.isFinite(number)) return 5;
-  return Math.min(15, Math.max(4, number));
+  const seconds = Number(value);
+  if (seconds === -1) return -1;
+  if (!Number.isInteger(seconds) || seconds < 4 || seconds > 15) {
+    throw new Error("Seedance duration 必须是 4–15 秒整数，不能静默改写时长。");
+  }
+  return seconds;
 }
 
 function normalizeSeedanceRatio(value) {
