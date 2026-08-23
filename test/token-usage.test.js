@@ -121,6 +121,24 @@ test("被包裹函数抛错时错误原样向上抛，记账不改变失败语�
   );
 });
 
+test("单价解析容忍中文输入法的全角分隔符，不静默吞掉后面的条目", () => {
+  // 真实踩到的坑：deepseek 那条留着占位符没填，且后面跟的是全角逗号，
+  // 只按半角切分会把 mimo-v2.5 一起并进同一个条目而整条丢弃。
+  const line = "qwen3.7-max=12/36,qwen3.7-plus=2/8,deepseek-v4-flash=输入/输出，mimo-v2.5=1/2,mimo-v2.5-pro=3/6,";
+  const { prices, invalid } = parseModelPrices(line);
+  assert.deepEqual(prices.get("mimo-v2.5"), { inputPerMillion: 1, outputPerMillion: 2 });
+  assert.deepEqual(prices.get("mimo-v2.5-pro"), { inputPerMillion: 3, outputPerMillion: 6 });
+  assert.deepEqual(prices.get("qwen3.7-max"), { inputPerMillion: 12, outputPerMillion: 36 });
+  // 没填真实数字的占位符仍然只跳过它自己，并被如实报出来。
+  assert.deepEqual(invalid, ["deepseek-v4-flash=输入/输出"]);
+
+  // 顿号分隔与全角斜杠同样接受。
+  const wide = parseModelPrices("mimo-v2.5=1／2、mimo-v2.5-pro=3/6");
+  assert.deepEqual(wide.prices.get("mimo-v2.5"), { inputPerMillion: 1, outputPerMillion: 2 });
+  assert.deepEqual(wide.prices.get("mimo-v2.5-pro"), { inputPerMillion: 3, outputPerMillion: 6 });
+  assert.deepEqual(wide.invalid, []);
+});
+
 test("单价解析接受合法条目，跳过畸形条目", () => {
   const { prices, invalid } = parseModelPrices("qwen3.7-max=2.4/9.6, deepseek-v4-flash = 0.5/1.5 ,坏条目, x=1");
   assert.deepEqual(prices.get("qwen3.7-max"), { inputPerMillion: 2.4, outputPerMillion: 9.6 });
