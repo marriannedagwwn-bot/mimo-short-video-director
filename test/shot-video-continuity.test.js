@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   dropStaleMediaResults,
-  estimateOneFpsFrameCount,
+  previousShotReferenceFrameCount,
   mediaFilenameSegment,
   previousShotInPlan,
   selectedShotVideoCandidate,
@@ -19,7 +19,12 @@ import {
   resolvePreviousShotFrameReference,
   SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
 } from "../src/shot-video-continuity.js";
-import { extractVideoFramesEverySecond, generateShotVideo } from "../src/shot-video-generator.js";
+import {
+  extractEvenlySpacedVideoFrames,
+  generateShotVideo,
+  PREVIOUS_SHOT_REFERENCE_FRAME_COUNT,
+  previousShotFrameTimestamps
+} from "../src/shot-video-generator.js";
 
 const PLAN_DIGEST = "a".repeat(64);
 const VIDEO_DIGEST = "b".repeat(64);
@@ -126,7 +131,10 @@ test("上一业务镜头按当前 Plan 顺序解析，结果状态按 variant �
   assert.notEqual(shotVideoResultKey("V1", "A01"), shotVideoResultKey("V2", "A01"));
   assert.notEqual(shotFrameResultKey("V1", "A01", "start"), shotFrameResultKey("V2", "A01", "start"));
   assert.equal(mediaFilenameSegment("animationPlan-V.1-r1"), "animationPlan-V_1-r1");
-  assert.equal(estimateOneFpsFrameCount(6.08), 6);
+  // 抽帧数固定为 5 张，不再随时长变化；时长无效时才是 0。
+  assert.equal(previousShotReferenceFrameCount(6.08), 5);
+  assert.equal(previousShotReferenceFrameCount(15), 5);
+  assert.equal(previousShotReferenceFrameCount(0), 0);
   assert.equal(selectedShotVideoCandidate({
     status: "ready",
     selectedIndex: 1,
@@ -212,51 +220,76 @@ test("服务端只从当前 Plan 的上一镜 current Artifact 解析受信视�
   assert.equal(dottedVariantResolved.sourcePath, await fs.realpath(dottedVariantFixture.outputPath));
 });
 
-test("FFmpeg 以 1 fps 抽取上一镜并限制最多 9 张", async (t) => {
+test("参考帧布点：首帧、末帧和中间三等分点，末帧回退以保证可解码", () => {
+  // 首尾都要取到，中间三个是等分点。
+  assert.deepEqual(previousShotFrameTimestamps(8), [0, 2, 4, 6, 7.9]);
+  assert.deepEqual(previousShotFrameTimestamps(15), [0, 3.75, 7.5, 11.25, 14.9]);
+  assert.deepEqual(previousShotFrameTimestamps(4), [0, 1, 2, 3, 3.9]);
+  // 末帧不落在容器时长上：那个位置已经没有画面了。
+  assert.ok(previousShotFrameTimestamps(10).at(-1) < 10);
+  // 张数与时长解耦：4 秒和 15 秒都是 5 张。
+  assert.equal(previousShotFrameTimestamps(4).length, PREVIOUS_SHOT_REFERENCE_FRAME_COUNT);
+  assert.equal(previousShotFrameTimestamps(15).length, PREVIOUS_SHOT_REFERENCE_FRAME_COUNT);
+  // 每场各段合计不是重点，但布点必须严格递增，不能出现重复画面。
+  const stamps = previousShotFrameTimestamps(12);
+  assert.deepEqual([...stamps].sort((a, b) => a - b), stamps);
+  assert.equal(new Set(stamps).size, stamps.length);
+  // 只要一张时给末帧：它才是本镜首帧要承接的状态。
+  assert.deepEqual(previousShotFrameTimestamps(10, 1), [9.9]);
+  assert.deepEqual(previousShotFrameTimestamps(10, 2), [0, 9.9]);
+  // 时长无效不猜。
+  assert.deepEqual(previousShotFrameTimestamps(0), []);
+  assert.deepEqual(previousShotFrameTimestamps(NaN), []);
+});
+
+test("FFmpeg 逐时间戳精确截帧，长镜头不再撞 9 图上限", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "previous-shot-frames-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const sourcePath = path.join(root, "source.mp4");
   await fs.writeFile(sourcePath, Buffer.alloc(32, 1));
-  let command = "";
-  let args = [];
-  const result = await extractVideoFramesEverySecond({
+  const invocations = [];
+  // 12 秒：旧的每秒一帧会抽 12 张并直接报错，现在稳定 5 张。
+  const result = await extractEvenlySpacedVideoFrames({
     sourcePath,
     outputDirectory: root,
     sourceShotId: "A01",
-    durationProbe: async () => 6.08,
+    durationProbe: async () => 12,
     execFileRunner: async (receivedCommand, receivedArgs) => {
-      command = receivedCommand;
-      args = receivedArgs;
-      const pattern = receivedArgs.at(-1);
-      await Promise.all(Array.from({ length: 6 }, (_, index) => (
-        fs.writeFile(pattern.replace("%02d", String(index + 1).padStart(2, "0")), Buffer.alloc(16, index + 1))
-      )));
+      invocations.push({ command: receivedCommand, args: receivedArgs });
+      await fs.writeFile(receivedArgs.at(-1), Buffer.alloc(16, invocations.length));
     }
   });
-  assert.equal(command, "ffmpeg");
-  assert.equal(args.includes("-an"), true);
-  assert.equal(args.includes("0:v:0"), true);
-  assert.match(args[args.indexOf("-vf") + 1], /^fps=1,/u);
-  assert.equal(result.durationSeconds, 6.08);
-  assert.deepEqual(result.frames.map((frame) => frame.timestampSeconds), [0, 1, 2, 3, 4, 5]);
 
-  const overflowRoot = await fs.mkdtemp(path.join(os.tmpdir(), "previous-shot-overflow-"));
-  t.after(() => fs.rm(overflowRoot, { recursive: true, force: true }));
-  await assert.rejects(() => extractVideoFramesEverySecond({
+  assert.equal(invocations.length, PREVIOUS_SHOT_REFERENCE_FRAME_COUNT);
+  assert.equal(result.durationSeconds, 12);
+  assert.deepEqual(result.frames.map((frame) => frame.timestampSeconds), [0, 3, 6, 9, 11.9]);
+  // 每次调用都用输入侧 -ss 精确定位，不再依赖 fps 滤镜的副产品。
+  assert.deepEqual(
+    invocations.map(({ args }) => args[args.indexOf("-ss") + 1]),
+    ["0.000", "3.000", "6.000", "9.000", "11.900"]
+  );
+  for (const { command, args } of invocations) {
+    assert.equal(command, "ffmpeg");
+    assert.equal(args.includes("-an"), true);
+    assert.equal(args.includes("0:v:0"), true);
+    assert.deepEqual(args.slice(args.indexOf("-frames:v"), args.indexOf("-frames:v") + 2), ["-frames:v", "1"]);
+    // fps 滤镜必须彻底消失，否则单次调用还会吐出多帧。
+    assert.doesNotMatch(args[args.indexOf("-vf") + 1], /fps=/u);
+  }
+
+  // 某个时间戳解不出画面时明确失败，不静默少给几张。
+  const emptyRoot = await fs.mkdtemp(path.join(os.tmpdir(), "previous-shot-empty-"));
+  t.after(() => fs.rm(emptyRoot, { recursive: true, force: true }));
+  await assert.rejects(() => extractEvenlySpacedVideoFrames({
     sourcePath,
-    outputDirectory: overflowRoot,
+    outputDirectory: emptyRoot,
     sourceShotId: "A01",
-    durationProbe: async () => 10,
-    execFileRunner: async (_receivedCommand, receivedArgs) => {
-      const pattern = receivedArgs.at(-1);
-      await Promise.all(Array.from({ length: 10 }, (_, index) => (
-        fs.writeFile(pattern.replace("%02d", String(index + 1).padStart(2, "0")), Buffer.alloc(16, index + 1))
-      )));
-    }
-  }), /超过全能参考图片上限 9 张/u);
+    durationProbe: async () => 8,
+    execFileRunner: async () => {}
+  }), /没有可解码的视频帧/u);
 });
 
-test("上一镜每秒抽帧作为 reference_image，并把精确源 lineage 写入回执", async (t) => {
+test("上一镜均匀抽帧作为 reference_image，并把精确源 lineage 写入回执", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-previous-frames-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const configPath = path.join(root, "provider.json");
@@ -283,10 +316,11 @@ test("上一镜每秒抽帧作为 reference_image，并把精确源 lineage 写�
     trustedPreviousShotReference: trustedPreviousShotReference(sourcePath),
     previousShotFrameExtractor: async ({ outputDirectory }) => {
       const frames = [];
-      for (let index = 0; index < 6; index += 1) {
+      const timestamps = [0, 1.5, 3, 4.5, 5.98];
+      for (const [index, timestampSeconds] of timestamps.entries()) {
         const framePath = path.join(outputDirectory, `injected-${index + 1}.jpg`);
         await fs.writeFile(framePath, Buffer.alloc(24, index + 1));
-        frames.push({ path: framePath, timestampSeconds: index });
+        frames.push({ path: framePath, timestampSeconds });
       }
       return { durationSeconds: 6.08, frames };
     },
@@ -310,18 +344,18 @@ test("上一镜每秒抽帧作为 reference_image，并把精确源 lineage 写�
     }
   });
 
-  assert.deepEqual(result.referenceSummary, { image: 7, video: 0, audio: 0 });
+  assert.deepEqual(result.referenceSummary, { image: 6, video: 0, audio: 0 });
   assert.equal(result.continuityReferenceReceipt.sourceShotId, "A01");
-  assert.equal(result.continuityReferenceReceipt.frameCount, 6);
+  assert.equal(result.continuityReferenceReceipt.frameCount, 5);
   assert.equal(result.continuityReferenceReceipt.sourceDurationSeconds, 6.08);
   assert.match(result.continuityReferenceReceipt.sourceVideoSha256, /^[a-f0-9]{64}$/u);
-  assert.equal(result.continuityReferenceReceipt.frames.length, 6);
+  assert.equal(result.continuityReferenceReceipt.frames.length, 5);
   assert.equal(result.continuityReferenceReceipt.frames.every((frame) => /^[a-f0-9]{64}$/u.test(frame.sha256)), true);
   assert.deepEqual(result.continuityReferenceReceipt.sourceArtifact, trustedPreviousShotReference(sourcePath).sourceArtifact);
   assert.equal(Object.hasOwn(result.continuityReferenceReceipt, "sourcePath"), false);
-  assert.equal(providerRequest.inputArtifacts.length, 7);
-  assert.deepEqual(providerRequest.inputArtifacts.slice(1).map((item) => item.role), Array(6).fill("reference_image"));
-  assert.deepEqual(providerRequest.inputArtifacts.slice(1).map((item) => item.source), Array(6).fill("previous_shot_frame"));
+  assert.equal(providerRequest.inputArtifacts.length, 6);
+  assert.deepEqual(providerRequest.inputArtifacts.slice(1).map((item) => item.role), Array(5).fill("reference_image"));
+  assert.deepEqual(providerRequest.inputArtifacts.slice(1).map((item) => item.source), Array(5).fill("previous_shot_frame"));
   assert.equal(outputProbeCalls, 1);
 });
 

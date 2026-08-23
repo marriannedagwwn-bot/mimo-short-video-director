@@ -33,7 +33,7 @@ import {
 } from "./animation-plan-settings.js";
 import {
   dropStaleMediaResults,
-  estimateOneFpsFrameCount,
+  previousShotReferenceFrameCount,
   shotFrameResultKey,
   previousShotInPlan,
   selectedShotVideoCandidate,
@@ -2720,12 +2720,14 @@ function previousShotVideoReferenceContext(shotId) {
   if (!candidate) {
     return { available: false, previousShot, reason: `${previousShot.shotId} 尚未生成并选择可用的视频候选。` };
   }
-  const estimatedFrameCount = estimateOneFpsFrameCount(previousShot.durationSeconds);
-  if (!estimatedFrameCount || estimatedFrameCount > 9) {
+  // 抽帧数已固定为 5 张，不再随时长变化；这里只需要确认上一镜时长有效。
+  // 5 张与本镜角色参考图共用 9 图上限，超限由服务端 validateAllReferenceArtifacts 明确拦截。
+  const estimatedFrameCount = previousShotReferenceFrameCount(previousShot.durationSeconds);
+  if (!estimatedFrameCount) {
     return {
       available: false,
       previousShot,
-      reason: `${previousShot.shotId} 预计每秒抽帧 ${estimatedFrameCount || 0} 张，无法满足最多 9 张图片的限制。`
+      reason: `${previousShot.shotId} 的时长无效，无法抽取参考帧。`
     };
   }
   return {
@@ -2993,7 +2995,7 @@ async function evaluateAllReferenceAssets(shotId) {
     ok: true,
     status: "ready",
     message: `全能参考已就绪：${counts.image} 图、${counts.video} 视频、${counts.audio} 音频。${state.shotVideoGeneration.includePreviousShotFrames
-      ? `${previousReference.previousShot.shotId} 将由服务端 FFmpeg 每秒抽取一帧；`
+      ? `${previousReference.previousShot.shotId} 将由服务端 FFmpeg 均匀抽取 ${previousReference.estimatedFrameCount} 张（首帧、末帧和中间三等分点）；`
       : ""}它们只作为参考，不会被解释为精确首帧或尾帧。`
   };
 }
@@ -3166,7 +3168,7 @@ function allReferenceAssetDescriptors(shotId) {
       assets.push({
         id: "previous-shot-frames",
         mediaType: "image",
-        name: `${previousReference.previousShot.shotId} 上一镜内容（每秒一帧）`,
+        name: `${previousReference.previousShot.shotId} 上一镜内容（均匀 ${previousReference.estimatedFrameCount} 帧）`,
         sizeBytes: 0,
         durationSeconds: 0,
         referenceCount: previousReference.estimatedFrameCount,
@@ -3793,7 +3795,7 @@ function renderShotVideoResult(shotId) {
   const videos = Array.isArray(stateItem.result?.videos) && stateItem.result.videos.length ? stateItem.result.videos : stateItem.result?.outputUrl ? [stateItem.result] : [];
   const continuityReceipt = stateItem.result?.continuityReferenceReceipt;
   const continuityHtml = continuityReceipt?.mode === SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
-    ? `<p class="ready">连续性参考：${escape(continuityReceipt.sourceShotId)} 每秒抽帧，共 ${escape(continuityReceipt.frameCount)} 张普通参考图。</p>`
+    ? `<p class="ready">连续性参考：${escape(continuityReceipt.sourceShotId)} 均匀抽帧，共 ${escape(continuityReceipt.frameCount)} 张普通参考图。</p>`
     : "";
   const selectedIndex = Number.isFinite(Number(stateItem.selectedIndex ?? stateItem.result?.selectedIndex)) ? Number(stateItem.selectedIndex ?? stateItem.result?.selectedIndex) : 0;
   const videoHtml = videos.length

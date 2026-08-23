@@ -634,7 +634,7 @@ async function prepareAllReferenceArtifacts(referenceAssets, workDir) {
 }
 
 async function preparePreviousShotFrameArtifacts({ reference, workDir, extractor } = {}) {
-  const frameExtractor = typeof extractor === "function" ? extractor : extractVideoFramesEverySecond;
+  const frameExtractor = typeof extractor === "function" ? extractor : extractEvenlySpacedVideoFrames;
   const sourceSnapshot = await snapshotTrustedPreviousVideo(reference, workDir);
   const extracted = await frameExtractor({
     sourcePath: sourceSnapshot.path,
@@ -645,8 +645,10 @@ async function preparePreviousShotFrameArtifacts({ reference, workDir, extractor
   if (!frames.length) {
     throw new ShotVideoConfigError(`${reference.sourceShotId} 没有抽取到可用视频帧。`);
   }
-  if (frames.length > 9) {
-    throw new ShotVideoConfigError(`${reference.sourceShotId} 按每秒一帧抽取后得到 ${frames.length} 张，超过全能参考图片上限 9 张。`);
+  if (frames.length > PREVIOUS_SHOT_REFERENCE_FRAME_COUNT) {
+    throw new ShotVideoConfigError(
+      `${reference.sourceShotId} 抽取到 ${frames.length} 张参考帧，超过上一镜参考帧上限 ${PREVIOUS_SHOT_REFERENCE_FRAME_COUNT} 张。`
+    );
   }
   const artifacts = [];
   const trustedWorkDir = path.resolve(workDir);
@@ -712,50 +714,92 @@ async function snapshotTrustedPreviousVideo(reference = {}, workDir = "") {
   }
 }
 
-export async function extractVideoFramesEverySecond({
+// 上一镜参考帧固定取 5 张：首帧、末帧和中间三等分点。
+//
+// 旧实现按每秒一帧抽，3.1 把单镜时长放宽到 4–15 秒之后有两个后果：
+// 超过 9 秒的镜头直接撞上 9 图上限报错（实测语料里 56% 的镜头），而且
+// 9 张上限是和角色参考图共用的——每秒一帧会把锁角色长相的那几张挤出去。
+// 固定 5 张同时解决两件事，并且正好落在 MiniMax 的 5 张免费额度内。
+export const PREVIOUS_SHOT_REFERENCE_FRAME_COUNT = 5;
+
+// 容器时长是最后一帧的结束时刻，`-ss 时长` 落在画面之外解不出帧。
+// 回退 0.1 秒稳定落在最后一帧上（常见 24–30fps 下一帧是 0.033–0.042 秒），
+// 仍然代表镜头结尾状态。
+const LAST_FRAME_BACKOFF_SECONDS = 0.1;
+
+const PREVIOUS_SHOT_FRAME_SCALE_FILTER =
+  "scale=w='if(gt(iw,ih),min(720,iw),-2)':h='if(gt(iw,ih),-2,min(720,ih))'";
+
+/**
+ * 按 t = D×i/(N-1) 均匀布点，含首帧与末帧。纯函数，便于单测与复现。
+ * 时间戳保留三位小数：它会写进抽帧产物的 provenance，必须确定可复算。
+ */
+export function previousShotFrameTimestamps(
+  durationSeconds,
+  frameCount = PREVIOUS_SHOT_REFERENCE_FRAME_COUNT
+) {
+  const duration = Number(durationSeconds);
+  if (!Number.isFinite(duration) || duration <= 0) return [];
+  const count = Math.max(1, Math.round(Number(frameCount) || 0));
+  const lastStamp = Math.max(0, duration - LAST_FRAME_BACKOFF_SECONDS);
+  if (count === 1) return [roundSeconds(lastStamp)];
+  const stamps = [];
+  for (let index = 0; index < count; index += 1) {
+    stamps.push(roundSeconds(Math.min(lastStamp, (duration * index) / (count - 1))));
+  }
+  // 极短视频上多个布点可能落到同一帧；去重后宁可少给几张，也不重复上传同一画面。
+  return [...new Set(stamps)];
+}
+
+function roundSeconds(value) {
+  return Math.round(value * 1000) / 1000;
+}
+
+export async function extractEvenlySpacedVideoFrames({
   sourcePath,
   outputDirectory,
   sourceShotId = "previous-shot",
+  frameCount = PREVIOUS_SHOT_REFERENCE_FRAME_COUNT,
   execFileRunner = execFileAsync,
   durationProbe = probeMediaDuration
 } = {}) {
   const durationSeconds = await durationProbe(sourcePath, "video");
-  if (durationSeconds > 9) {
-    throw new ShotVideoConfigError(`${sourceShotId} 时长 ${formatDuration(durationSeconds)} 秒，按每秒一帧会超过全能参考图片上限 9 张。`);
+  const timestamps = previousShotFrameTimestamps(durationSeconds, frameCount);
+  if (!timestamps.length) {
+    throw new ShotVideoConfigError(`${sourceShotId} 的视频时长无效，无法抽取参考帧。`);
   }
   const basename = `previous-${safeSegment(sourceShotId)}-frame`;
-  const outputPattern = path.join(outputDirectory, `${basename}-%02d.jpg`);
-  await execFileRunner("ffmpeg", [
-    "-hide_banner",
-    "-loglevel", "error",
-    "-y",
-    "-i", sourcePath,
-    "-map", "0:v:0",
-    "-an",
-    "-vf", "fps=1,scale=w='if(gt(iw,ih),min(720,iw),-2)':h='if(gt(iw,ih),-2,min(720,ih))'",
-    "-q:v", "4",
-    outputPattern
-  ], {
-    timeout: 60_000,
-    maxBuffer: 1024 * 1024,
-    killSignal: "SIGKILL"
-  });
-  const filenames = (await fs.readdir(outputDirectory))
-    .filter((name) => name.startsWith(`${basename}-`) && name.endsWith(".jpg"))
-    .sort();
-  if (!filenames.length) {
-    throw new ShotVideoConfigError(`${sourceShotId} 没有可解码的视频帧。`);
+  const frames = [];
+  // 逐个时间戳精确截帧，而不是靠 fps 滤镜的副产品：布点必须显式可控，
+  // 首帧与末帧才能保证取到，时间戳也才能如实记进产物。
+  for (const [index, timestampSeconds] of timestamps.entries()) {
+    const framePath = path.join(outputDirectory, `${basename}-${String(index + 1).padStart(2, "0")}.jpg`);
+    await execFileRunner("ffmpeg", [
+      "-hide_banner",
+      "-loglevel", "error",
+      "-y",
+      "-ss", timestampSeconds.toFixed(3),
+      "-i", sourcePath,
+      "-map", "0:v:0",
+      "-an",
+      "-frames:v", "1",
+      "-vf", PREVIOUS_SHOT_FRAME_SCALE_FILTER,
+      "-q:v", "4",
+      framePath
+    ], {
+      timeout: 60_000,
+      maxBuffer: 1024 * 1024,
+      killSignal: "SIGKILL"
+    });
+    const stat = await fs.stat(framePath).catch(() => null);
+    if (!stat?.isFile() || stat.size < 1) {
+      throw new ShotVideoConfigError(
+        `${sourceShotId} 在第 ${timestampSeconds.toFixed(2)} 秒处没有可解码的视频帧。`
+      );
+    }
+    frames.push({ path: framePath, timestampSeconds });
   }
-  if (filenames.length > 9) {
-    throw new ShotVideoConfigError(`${sourceShotId} 按每秒一帧抽取后得到 ${filenames.length} 张，超过全能参考图片上限 9 张。`);
-  }
-  return {
-    durationSeconds,
-    frames: filenames.map((name, index) => ({
-      path: path.join(outputDirectory, name),
-      timestampSeconds: index
-    }))
-  };
+  return { durationSeconds, frames };
 }
 
 function validateAllReferenceArtifacts(artifacts, { maxTotal = Number.POSITIVE_INFINITY } = {}) {

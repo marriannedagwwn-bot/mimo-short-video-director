@@ -242,7 +242,7 @@ JIMENG_MAX_IMAGES=6
 
 切换与运行时编译的权威边界是：用户是否确认重写只决定是否产生新的 Plan；当前签发的 Full Story、exact shot、`fixedCharacterBoundary` 和 Foundation 锁继续决定剧情、身份、动作、时长、场景与声音事实；冻结后的参考 manifest 决定素材编号和角色。弹窗 `promptOverride` 也只覆盖本次请求文本，不能取得其他 exact-shot 字段的权威。
 
-全能参考模式新增“把上个镜头内容作为普通参考图”开关，默认不勾选。勾选后，系统按当前 Animation Plan 的 `shotPlan[]` 顺序找到紧邻上一业务镜头，从当前 Run/Plan namespace 中读取它已选中的 current 视频候选，再由服务端 FFmpeg 每秒抽取一张 JPEG，作为 `reference_image` 与本镜头角色图、旧 v2 已选首尾帧和用户上传媒体一起发送。第一镜、上一镜未生成/已 stale、旧 Plan URL、非当前 namespace 文件都会明确失败；`S1` 是剧情场次而不是场地，`LOC01` 只是场景视觉参考组，即使两者相同也不承诺物理地点无缝连续。该开关只加强身份、画风和短时表演连续性，当前镜头的剧情动作、固定角色边界与目标场景仍优先；跨地点、跨时段或上一镜本身有漂移时应保持关闭。视频请求始终由服务端从当前 Plan 解析 exact shot；弹窗中的文本编辑只形成有回执的本次 `promptOverride`，不能伪造镜头动作、时长或场景。
+全能参考模式新增“把上个镜头内容作为普通参考图”开关，默认不勾选。勾选后，系统按当前 Animation Plan 的 `shotPlan[]` 顺序找到紧邻上一业务镜头，从当前 Run/Plan namespace 中读取它已选中的 current 视频候选，再由服务端 FFmpeg 均匀截取 5 张 JPEG（首帧、末帧和中间三等分点），作为 `reference_image` 与本镜头角色图、旧 v2 已选首尾帧和用户上传媒体一起发送。张数固定为 5：9 图上限是和角色参考图共用的，抽帧占满会把锁角色长相的图挤出去，5 张也正好落在 MiniMax 的免费额度内。第一镜、上一镜未生成/已 stale、旧 Plan URL、非当前 namespace 文件都会明确失败；`S1` 是剧情场次而不是场地，`LOC01` 只是场景视觉参考组，即使两者相同也不承诺物理地点无缝连续。该开关只加强身份、画风和短时表演连续性，当前镜头的剧情动作、固定角色边界与目标场景仍优先；跨地点、跨时段或上一镜本身有漂移时应保持关闭。视频请求始终由服务端从当前 Plan 解析 exact shot；弹窗中的文本编辑只形成有回执的本次 `promptOverride`，不能伪造镜头动作、时长或场景。
 
 全能参考必须至少包含合法图片或视频；共同限制为最多 9 张图片、3 段视频、3 段音频，单段视频或音频 2–15 秒，视频总时长与音频总时长分别不超过 15 秒，且不能只上传音频。上一镜实际抽帧也计入 9 图上限，超限不会静默丢图。服务端提交异步任务、轮询终态，并把 mp4 下载到 `public/generated-videos/<project>/<run>/<plan-revision>-<digest>/`。使用上一镜抽帧的后镜媒体还依赖上一镜 `shotVideo` 的精确 revision/digest；上一镜重生成或切换候选后，依赖它的后镜视频会递归 stale。文件名同时带 Plan revision/digest 前缀和随机请求 nonce；返回文件还会经过 ffprobe 可播放性验证。上一镜源视频与逐秒 JPEG 的 SHA-256 写入连续性回执。生成期间服务端会反复复验 Plan 与上一镜候选是否仍为 current（任何供应商调用前、每条候选提交前、每条候选落盘后、返回前各一次）：一旦发现你已经重新生成 Plan 或切换了上一镜候选，剩余候选不再提交供应商，本次已经下载的 mp4 会被删除，请求以 409 失败，不会留下孤儿文件，旧 Plan 的异步结果也不会挂到新 Plan。已经提交给供应商的那一条无法中途撤回，它的花费收不回来。
 
@@ -324,7 +324,7 @@ VIDEO_HTTP_POLL_TIMEOUT_MS=600000
 - `src/production-lineage.js`、`src/production-state-store.js`：确定性内容摘要、revision 依赖图、stale 传播、Run/Stage/Artifact/Checkpoint 持久化和 v3 测试包签发/导入。
 - `src/character-feature-compiler.js`：把已签发的固定角色外观事实编译为动画静态帧侧车，不重新推断主角。
 - `src/workflow.js`：完整创意工作流编排，以及“动画基础锁定 → 逐场次分批 shotPlan → 服务端合并”的动画生产包生成与验证。
-- `src/shot-video-generator.js`：按显式模式将首尾帧或多模态参考、`videoPrompt` 和逐镜视频负面词路由到所选视频 provider；启用上一镜参考时，在临时目录用 FFmpeg 以 1 fps 抽图并作为普通 `reference_image` 合并校验。
+- `src/shot-video-generator.js`：按显式模式将首尾帧或多模态参考、`videoPrompt` 和逐镜视频负面词路由到所选视频 provider；启用上一镜参考时，在临时目录用 FFmpeg 按确定性时间戳均匀截取 5 张图并作为普通 `reference_image` 合并校验。
 - `src/shot-video-continuity.js`：从当前 Plan/Run/media namespace 安全解析紧邻上一镜的 current 视频候选，并签发后镜媒体所需的 source lineage 回执。
 - `src/shot-video-providers.js`：Kling / Seedance / MiniMax 模型白名单、模式能力、默认选择及互相隔离的运行配置。
 - `workers/generic-http-worker.mjs`：Kling、Seedance 与 MiniMax 的首尾帧/R2V 请求体、异步轮询、产物下载和脱敏回执。
