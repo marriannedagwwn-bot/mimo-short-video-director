@@ -8,6 +8,7 @@ import {
 import { JimengImageConfigError, JimengImageProviderError } from "./jimeng-client.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { ModelPipelineError, sanitizePublicMetadata } from "./model-errors.js";
+import { describeProviderError } from "./provider-error-codes.js";
 import { ShotVideoConfigError, ShotVideoProviderError } from "./shot-video-generator.js";
 import { StaticFrameCompilerError } from "./static-frame-compiler.js";
 import { ProductionStateError } from "./production-lineage.js";
@@ -98,13 +99,20 @@ export function serializeServerError(error, {
   }
 
   if (error instanceof ShotVideoProviderError) {
+    // detail 仍是供应商原文，一个字都不删；providerError 是额外的解释层。
+    const providerError = describeProviderError({
+      provider: error.provider,
+      httpStatus: error.status,
+      payload: error.message
+    });
     return response(502, observabilityBody({
       error: "视频生成服务调用失败",
       detail: error.message,
       category: "provider",
       code: "SHOT_VIDEO_PROVIDER_ERROR",
       origin: "provider",
-      retryable: false
+      retryable: providerError ? providerError.retryable : false,
+      providerError
     }));
   }
 
@@ -123,14 +131,20 @@ export function serializeServerError(error, {
       provider: "Jimeng",
       code: "IMAGE_PROVIDER_ERROR"
     });
+    const providerError = describeProviderError({
+      provider: "Jimeng",
+      httpStatus: error.status,
+      payload: error.raw || error.message
+    });
     return response(502, observabilityBody({
       error: "即梦图片生成服务调用失败",
       detail: error.message,
       category: "provider",
       code: "IMAGE_PROVIDER_ERROR",
       origin: "provider",
-      retryable: isRetryableProviderStatus(error.status),
-      attempts
+      retryable: providerError ? providerError.retryable : isRetryableProviderStatus(error.status),
+      attempts,
+      providerError
     }));
   }
 
@@ -165,13 +179,19 @@ export function serializeServerError(error, {
       provider: String(error.provider || ""),
       code: "MODEL_RESPONSE_ERROR"
     });
+    const providerError = describeProviderError({
+      provider: error.provider || error.metadata?.provider,
+      httpStatus: error.status,
+      payload: error.raw
+    });
     return response(502, observabilityBody({
       error: error.message,
       category: "provider",
       code: "MODEL_RESPONSE_ERROR",
       origin: "provider",
-      retryable: isRetryableProviderStatus(error.status),
-      attempts
+      retryable: providerError ? providerError.retryable : isRetryableProviderStatus(error.status),
+      attempts,
+      providerError
     }));
   }
 

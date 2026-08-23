@@ -254,8 +254,24 @@ function firstMetadataValue(value, wantedKey, depth = 0, seen = new WeakSet()) {
 function apiErrorMessage(payload, status, fallbackMessage, compilerStage) {
   const message = displayScalar(payload.error || fallbackMessage || (status ? `请求失败（${status}）` : "请求失败"));
   if (compilerStage) return message;
+  // 服务端认出了供应商官方错误码时，展示可执行的那句话；供应商原文仍然
+  // 完整留在 payload.detail 里，需要排查时随时可取，不算隐藏错误。
+  const explained = providerErrorText(payload.providerError);
+  if (explained) return `${message}：${explained}`;
   const detail = typeof payload.detail === "string" ? payload.detail.trim().slice(0, 240) : "";
   return detail ? `${message}：${detail}` : message;
+}
+
+// 与服务端 providerErrorDisplayText 同形；浏览器侧不重新查表，只渲染已签发结果。
+function providerErrorText(providerError) {
+  if (!isRecord(providerError)) return "";
+  const title = displayScalar(providerError.title);
+  const guidance = displayScalar(providerError.guidance);
+  if (!title) return "";
+  const label = providerError.matchedBy === "code" && providerError.code
+    ? `${displayScalar(providerError.provider)} ${displayScalar(providerError.code)}`
+    : `${displayScalar(providerError.provider)}${providerError.httpStatus ? ` HTTP ${displayScalar(providerError.httpStatus)}` : ""}`;
+  return `${title}（${label}）。${guidance}`;
 }
 
 function normalizeCompilerStage(value) {

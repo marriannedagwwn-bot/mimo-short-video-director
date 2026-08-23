@@ -546,7 +546,12 @@ async function runGenericWorker({ request, outputPath, workDir, configPath, work
     }
   } catch (error) {
     const message = String(error.stderr || error.message || "生成失败").trim();
-    throw new ShotVideoProviderError(message);
+    const providerError = new ShotVideoProviderError(message);
+    // 供应商与模型带上，错误出口才能查对应厂商的官方错误码表。
+    // 纯诊断信息，不参与任何控制流。
+    providerError.provider = String(request.provider || "");
+    providerError.model = String(request.model || "");
+    throw providerError;
   }
   return readJsonIfExists(receiptPath);
 }
