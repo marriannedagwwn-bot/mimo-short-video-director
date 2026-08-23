@@ -71,10 +71,16 @@ test("没有专属码时按 HTTP 状态兜底，标签如实标明依据", () =>
   assert.match(providerErrorDisplayText(deepseek), /DeepSeek HTTP 402/u);
   assert.doesNotMatch(providerErrorDisplayText(deepseek), /invalid_request_error/u);
 
-  // MiMo 未公开独立码表，走 OpenAI 兼容兜底。
+  // 小米 MiMo 官方同样按 HTTP 状态定义错误。
   const mimo = describeProviderError({ provider: "MiMo", httpStatus: 401, payload: "{}" });
-  assert.equal(mimo.title, "鉴权失败");
+  assert.equal(mimo.title, "认证失败");
   assert.equal(mimo.matchedBy, "httpStatus");
+
+  // 421 内容拦截是 MiMo 独有的一档，通用 OpenAI 兜底表里没有，
+  // 登记错了就会退化成"无匹配"。
+  const blocked = describeProviderError({ provider: "MiMo", httpStatus: 421, payload: "{}" });
+  assert.equal(blocked.title, "内容被安全策略拦截");
+  assert.equal(blocked.retryable, false);
 });
 
 test("匹配不到就返回 null，不许编一句安慰话", () => {

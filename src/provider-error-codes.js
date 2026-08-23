@@ -19,7 +19,7 @@
 // - 可灵 Kling：https://www.klingai.com/document-api/api/get-started/error-codes
 // - 阿里云百炼 DashScope（Qwen）：https://help.aliyun.com/zh/model-studio/error-code
 // - DeepSeek：https://api-docs.deepseek.com/quick_start/error_codes
-// - 小米 MiMo：OpenAI 兼容协议，官方未公开独立码表，走通用 HTTP 兜底。
+// - 小米 MiMo：https://mimo.mi.com/docs/zh-CN/api/guidance/error-codes
 
 export const PROVIDER_ERROR_DOC_URLS = Object.freeze({
   MiniMax: "https://platform.minimaxi.com/docs/api-reference/errorcode",
@@ -28,7 +28,7 @@ export const PROVIDER_ERROR_DOC_URLS = Object.freeze({
   Kling: "https://www.klingai.com/document-api/api/get-started/error-codes",
   Qwen: "https://help.aliyun.com/zh/model-studio/error-code",
   DeepSeek: "https://api-docs.deepseek.com/quick_start/error_codes",
-  MiMo: "https://mimo.mi.com/docs/zh-CN/quick-start/error-codes"
+  MiMo: "https://mimo.mi.com/docs/zh-CN/api/guidance/error-codes"
 });
 
 const entry = (title, guidance, retryable = false) => Object.freeze({ title, guidance, retryable });
@@ -38,7 +38,7 @@ const entry = (title, guidance, retryable = false) => Object.freeze({ title, gui
 const MINIMAX_CODES = Object.freeze({
   bad_request_error: entry("请求参数不合法", "检查提交的提示词与参数是否符合 MiniMax 接口要求。"),
   authorized_error: entry("鉴权失败", "检查 MINIMAX_API_KEY 是否正确、是否过期。"),
-  insufficient_balance_error: entry("账户余额不足", "前往 MiniMax 控制台充值后重试；也可以在镜头视频弹窗改选 Seedance 2.0。"),
+  insufficient_balance_error: entry("账户余额不足", "前往 MiniMax 控制台充值后重试。"),
   unprocessable_entity_error: entry("输入内容被安全策略拦截", "调整提示词中可能触发内容安全的表述后重试。"),
   rate_limit_error: entry("请求频率超限", "稍等片刻再重试，或降低并发数。", true),
   server_error: entry("MiniMax 服务内部错误", "稍后重试；持续失败请联系 MiniMax 支持并提供 request_id。", true),
@@ -47,7 +47,7 @@ const MINIMAX_CODES = Object.freeze({
   1001: entry("MiniMax 请求超时", "稍后重试。", true),
   1002: entry("请求频率超限", "稍等片刻再重试，或降低并发数。", true),
   1004: entry("鉴权失败：Token 不匹配", "检查 MINIMAX_API_KEY 是否正确、是否过期。"),
-  1008: entry("账户余额不足", "前往 MiniMax 控制台充值后重试；也可以在镜头视频弹窗改选 Seedance 2.0。"),
+  1008: entry("账户余额不足", "前往 MiniMax 控制台充值后重试。"),
   1024: entry("MiniMax 内部错误", "稍后重试。", true),
   1026: entry("输入内容涉敏被拦截", "调整提示词中可能触发内容安全的表述后重试。"),
   1027: entry("输出内容涉敏被拦截", "换一个表述重新生成；该镜头的提示词可能触发了内容安全。"),
@@ -134,8 +134,21 @@ const DEEPSEEK_STATUS = Object.freeze({
   503: entry("DeepSeek 服务过载", "稍后重试。", true)
 });
 
+// 小米 MiMo 与 DeepSeek 一样按 HTTP 状态定义错误。421 是它独有的一档，
+// 通用兜底表里没有，必须单独登记，否则内容拦截会退化成"无匹配"。
+const MIMO_STATUS = Object.freeze({
+  400: entry("请求体格式错误", "按错误消息里的提示修正请求。"),
+  401: entry("认证失败", "检查 MIMO_API_KEY 是否正确、是否过期。"),
+  402: entry("小米 MiMo 账户余额不足", "前往小米 MiMo 控制台充值后重试。"),
+  403: entry("拒绝访问", "确认当前账号已开通该模型。"),
+  404: entry("资源未找到", "检查配置里的接口地址与模型 ID。"),
+  421: entry("内容被安全策略拦截", "调整提示词中可能触发内容安全的表述后重试。"),
+  429: entry("请求超限", "降低请求频率或并发数后重试。", true),
+  500: entry("小米 MiMo 服务内部错误", "稍后重试。", true),
+  503: entry("小米 MiMo 服务故障", "稍后重试。", true)
+});
+
 // OpenAI 兼容协议的通用兜底：只在供应商没有可匹配的专属码时使用。
-// 小米 MiMo 未公开独立码表，走的就是这一层。
 const OPENAI_COMPATIBLE_STATUS = Object.freeze({
   400: entry("请求不合法", "检查请求参数是否符合该供应商的接口要求。"),
   401: entry("鉴权失败", "检查该供应商的 API Key 是否正确、是否过期。"),
@@ -163,7 +176,8 @@ const PROVIDER_CODE_TABLES = Object.freeze({
 });
 
 const PROVIDER_STATUS_TABLES = Object.freeze({
-  DeepSeek: DEEPSEEK_STATUS
+  DeepSeek: DEEPSEEK_STATUS,
+  MiMo: MIMO_STATUS
 });
 
 const PROVIDER_ALIASES = Object.freeze({
