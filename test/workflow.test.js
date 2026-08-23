@@ -2695,6 +2695,101 @@ test("fullStory Scene Contract 只校验可确定的视觉角色和结构化说�
     });
     assert.doesNotThrow(() => ensureOutputContract(story, "fullStory"));
   });
+
+  await t.test("shotAndSound 里的画外声音登记后通过，不登记仍失败", () => {
+    const offscreenScene = {
+      characters: ["吴奶奶"],
+      visibleAction: "吴奶奶把凉透的汤端回灶台。",
+      dialogue: [],
+      shotAndSound: "屋外传来阿岚喊吴奶奶来吃饭的声音，画面始终停在灶台。"
+    };
+
+    const registered = storyFixture();
+    Object.assign(registered.sceneScript[0], {
+      ...offscreenScene,
+      offscreenSoundSources: ["阿岚"]
+    });
+    assert.doesNotThrow(() => ensureOutputContract(registered, "fullStory"));
+
+    // 不登记时语义仍然无法确定，必须保持失败——放行的是显式声明，不是这句话的写法。
+    const unregistered = storyFixture();
+    Object.assign(unregistered.sceneScript[0], offscreenScene);
+    assert.throws(
+      () => ensureOutputContract(unregistered, "fullStory"),
+      /shotAndSound.*标准角色「阿岚」.*offscreenSoundSources/u
+    );
+  });
+
+  await t.test("登记为画外声源不能豁免 visibleAction，出镜仍必须写进 characters", () => {
+    const story = storyFixture();
+    Object.assign(story.sceneScript[0], {
+      characters: ["吴奶奶"],
+      // 登记成声源，却又写进 visibleAction：这是把登记当免检后门，必须失败。
+      visibleAction: "阿岚推门进来接过吴奶奶手里的汤碗。",
+      dialogue: [],
+      shotAndSound: "中景记录交接动作。",
+      offscreenSoundSources: ["阿岚"]
+    });
+    assert.throws(
+      () => ensureOutputContract(story, "fullStory"),
+      /visibleAction.*标准角色「阿岚」.*characters 未包含该精确名称/u
+    );
+  });
+
+  await t.test("同一角色不得同时出现在 characters 与 offscreenSoundSources", () => {
+    const story = storyFixture();
+    Object.assign(story.sceneScript[0], {
+      characters: ["吴奶奶", "阿岚"],
+      visibleAction: "阿岚陪吴奶奶收拾灶台。",
+      dialogue: [],
+      shotAndSound: "双人中景。",
+      offscreenSoundSources: ["阿岚"]
+    });
+    assert.throws(
+      () => ensureOutputContract(story, "fullStory"),
+      (error) => error instanceof OutputContractError
+        && error.details.some((detail) => detail.code === "FULL_STORY_SCENE_SOUND_SOURCE_ALSO_VISIBLE")
+    );
+  });
+
+  await t.test("画外声源同样必须使用精确标准名", () => {
+    const story = storyFixture();
+    Object.assign(story.sceneScript[0], {
+      characters: ["吴奶奶"],
+      visibleAction: "吴奶奶望向门外。",
+      dialogue: [],
+      shotAndSound: "屋外传来阿岚（社区修理师）的招呼声。",
+      offscreenSoundSources: ["阿岚（社区修理师）"]
+    });
+    assert.throws(
+      () => ensureOutputContract(story, "fullStory"),
+      (error) => error instanceof OutputContractError
+        && error.details.some((detail) => (
+          detail.code === "FULL_STORY_SCENE_CHARACTER_NAME_INEXACT"
+          && detail.path.includes("offscreenSoundSources")
+        ))
+    );
+  });
+
+  await t.test("登记了但 shotAndSound 没提到该角色仍然合法", () => {
+    const story = storyFixture();
+    Object.assign(story.sceneScript[0], {
+      characters: ["吴奶奶"],
+      visibleAction: "吴奶奶擦拭窗台。",
+      dialogue: [],
+      shotAndSound: "单人近景，保留环境声。",
+      offscreenSoundSources: ["阿岚"]
+    });
+    // 登记本身不产生视觉事实；强制它必须被引用会让一次措辞改动变成契约失败。
+    assert.doesNotThrow(() => ensureOutputContract(story, "fullStory"));
+  });
+
+  await t.test("不带 offscreenSoundSources 的旧 Story 行为不变", () => {
+    const story = storyFixture();
+    assert.equal(Object.prototype.hasOwnProperty.call(story.sceneScript[0], "offscreenSoundSources"), false);
+    assert.doesNotThrow(() => ensureOutputContract(story, "fullStory"));
+  });
+
 });
 
 test("标准角色说明后缀使用锚定分隔符诊断且不误伤独立前缀名称", () => {

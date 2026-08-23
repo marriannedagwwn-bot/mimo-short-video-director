@@ -172,6 +172,20 @@ DeepSeek 模型 ID 只登记 `deepseek-v4-flash`（页面首选）与 `deepseek-
 "铃木奶奶家的门口"        → 不能认为铃木奶奶出镜        ❌
 ```
 
+**`offscreenSoundSources`（可选数组）= 本场只以声音出现、明确不出镜的角色名。** `shotAndSound` 一条自由文本里同时承载画面描述（可能出镜）与声音来源（不代表出镜），程序无法也不得靠正则或词表区分，因此改为要模型**显式登记**。语义边界：
+
+| 字段 | 含义 | 扫描口径 |
+| --- | --- | --- |
+| `visibleAction` | 可见主体事实的唯一字段 | 只认 `characters` |
+| `shotAndSound` | 画面 + 声音混合描述 | 认 `characters` ∪ `offscreenSoundSources` |
+
+- **登记只豁免 `shotAndSound`，绝不豁免 `visibleAction`**——这条不对称是整个机制不沦为免检后门的唯一原因：实际参与本场的人物必须写进 `visibleAction`，藏了会在那一档被抓，不写就等于承认没出镜。
+- 同一名字同时出现在 `characters` 与 `offscreenSoundSources` → `FULL_STORY_SCENE_SOUND_SOURCE_ALSO_VISIBLE`，明确失败不选边。
+- 登记了但 `shotAndSound` 没提到该名字是**合法的**：登记本身不产生视觉事实。
+- 名称精确性与 `characters` 共用一份判定（`FULL_STORY_SCENE_CHARACTER_NAME_INEXACT`），禁止另建第二套词表。
+- 该字段**不在**局部纠错可写范围内，Beat–Scene postpass 也必须逐字冻结它。`dialogue[].speaker` 语义不变，仍必须逐字存在于同场 `characters`；画外声音只描述在 `shotAndSound`，不编码成 `dialogue` 条目。
+- 旧 Story 不带该字段时行为逐字不变（strict schema 里它不是 required）。
+
 `location` = **本场实际发生的可拍摄物理地点**，不是画风、光线或色调。垂直赛道里出现的风格词不得流进 `location`——视觉风格由下游 Animation Plan 的 `visualBible` 统一签发，在 Full Story 重复它会让每场地点看起来一模一样，反而丢掉地点信息。
 
 ```

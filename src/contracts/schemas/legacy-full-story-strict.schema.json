@@ -131,6 +131,10 @@
             "type": "array",
             "items": { "type": "string" }
           },
+          "offscreenSoundSources": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
           "visibleAction": { "type": "string" },
           "dialogue": {
             "type": "array",

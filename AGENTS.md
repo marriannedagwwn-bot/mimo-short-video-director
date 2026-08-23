@@ -399,6 +399,17 @@ Full Story 输出必须满足：
 - visibleAction
 - shotAndSound
 
+可选：`offscreenSoundSources`（字符串数组）——本场只以声音出现、明确不出镜的角色名。
+
+`shotAndSound` 一条自由文本同时承载画面描述（可能出镜）与声音来源（不代表出镜），程序不得靠正则或关键词区分两者，因此由模型显式登记。扫描口径按字段职责分档：`visibleAction` 只认 `characters`；`shotAndSound` 认 `characters` 与 `offscreenSoundSources` 的并集。
+
+登记只豁免 `shotAndSound`，绝不豁免 `visibleAction`：实际参与本场的人物必须写进 `visibleAction`，所以无法靠登记声源隐藏一个出镜角色。同名同时出现在两个字段时抛 `FULL_STORY_SCENE_SOUND_SOURCE_ALSO_VISIBLE`，不自动选边；登记了却未被 `shotAndSound` 引用是合法的；名称精确性与 `characters` 共用同一份判定。该字段不在局部纠错可写范围内，postpass 必须逐字冻结；`dialogue[].speaker` 仍必须逐字存在于同场 `characters`。旧 Story 缺该字段时行为不变。
+
+`location` 只写本场实际发生的**可拍摄物理地点**，不是画风、光线或色调。`creatorProfile.vertical` 里的风格词不得流进 `location`：正确写法是「集市旁草地」，错误写法是「日系2.5D新海诚光景风格的集市旁草地」。视觉风格由下游 Animation Plan 的 `visualBible` 统一签发，在 Full Story 重复它会让每场地点看起来一模一样，反而丢掉地点本身的信息。
+
+该约束写在 `fullStoryPrompt` 硬约束里，**没有确定性校验兜底**——判断一个词属于地点还是画风需要语义判断，写死词表会误伤「日系村落」这类合法地名，而 Full Story 失败的代价很高。上游 `sourceScriptReconstruction.scenes[].location` 不受此约束影响，它本来就只写原片观察到的地点。
+
+
 `location` 只写本场实际发生的**可拍摄物理地点**，不是画风、光线或色调。`creatorProfile.vertical` 里的风格词不得流进 `location`：正确写法是「集市旁草地」，错误写法是「日系2.5D新海诚光景风格的集市旁草地」。视觉风格由下游 Animation Plan 的 `visualBible` 统一签发，在 Full Story 重复它会让每场地点看起来一模一样，反而丢掉地点本身的信息。
 
 该约束写在 `fullStoryPrompt` 硬约束里，**没有确定性校验兜底**——判断一个词属于地点还是画风需要语义判断，写死词表会误伤「日系村落」这类合法地名，而 Full Story 失败的代价很高。上游 `sourceScriptReconstruction.scenes[].location` 不受此约束影响，它本来就只写原片观察到的地点。

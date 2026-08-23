@@ -524,6 +524,8 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - characters 中已锁定的主角、被关爱对象和已登记帮助者必须使用 characterBible 中的标准名称，不得添加括号、身份、外观说明、空格后缀、别名或昵称。场次型临时配角可以使用独立且明确的名称，不必强行加入 helpers。
 - dialogue 只使用结构化数组；每条 speaker 必须逐字存在于同场 characters。当前结构不支持 offscreen、voiceOver、narrator 或 isVisible 标记，不得要求系统根据台词正文或 shotAndSound 猜测画外说话人。
 - 所有地点、实际参与本场的人物和关键可见动作必须写入 location、characters、visibleAction；dialogue、shotAndSound、shootingNotes、emotionNode、dramaticFunction 等字段只能补充，不能替代这些结构字段。
+- characters 只写本场实际出镜的角色。若 shotAndSound 里要写某个角色的画外声音（例如「屋外传来妈妈喊白子回家吃饭的声音」），把该角色名登记到 offscreenSoundSources，不要把它塞进 characters——那会让下游把没出镜的人渲染进画面。没有画外声源时保持 offscreenSoundSources 为空数组。
+- offscreenSoundSources 只登记「谁不出镜」，不能用来省略 visibleAction：实际出镜的角色必须同时写进 characters 和 visibleAction，登记成声源不会豁免这条要求。同一个名字不得同时出现在 characters 和 offscreenSoundSources。
 
 输出 fullStory，严格使用以下结构：
 {
@@ -543,6 +545,7 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
     "timeRange":"",
     "location":"",
     "characters":["标准角色名"],
+    "offscreenSoundSources":[],
     "visibleAction":"",
     "dialogue":[{"speaker":"", "line":"", "deliveryOrSubtext":""}],
     "shotAndSound":"",

@@ -401,12 +401,21 @@ function validateFullStorySceneContract(value) {
       details,
       sceneId
     );
+    const offscreenSoundSourceNames = validateFullStorySceneOffscreenSoundSources(
+      scene.offscreenSoundSources,
+      `${scenePath}.offscreenSoundSources`,
+      standardNames,
+      characterNames,
+      details,
+      sceneId
+    );
     validateFullStoryVisualCharacterReferences({
       scene,
       scenePath,
       sceneId,
       standardNames,
       characterNames,
+      offscreenSoundSourceNames,
       details
     });
     validateFullStoryDialogueSpeakers({
@@ -467,12 +476,29 @@ function validateFullStorySceneCharacters(value, path, standardNames, details, s
     });
   }
 
+  return collectFullStorySceneNameList(value, path, standardNames, details, sceneId, {
+    nameRequiredCode: "FULL_STORY_SCENE_CHARACTER_NAME_REQUIRED",
+    duplicateCode: "FULL_STORY_SCENE_CHARACTER_DUPLICATE",
+    duplicateReason: (name) => `同一场次角色名不能重复：${name}`
+  });
+}
+
+/**
+ * 逐名校验：非空字符串、场内不重复、标准角色必须用精确标准名。
+ * characters 与 offscreenSoundSources 共用同一套规则——名称精确性只有一份判定，
+ * 不允许两个字段各自维护一套词表。
+ */
+function collectFullStorySceneNameList(value, path, standardNames, details, sceneId, {
+  nameRequiredCode,
+  duplicateCode,
+  duplicateReason
+}) {
   const names = new Set();
   value.forEach((characterName, characterIndex) => {
     const characterPath = `${path}[${characterIndex}]`;
     if (typeof characterName !== "string" || !characterName.trim()) {
       pushFullStorySceneViolation(details, {
-        code: "FULL_STORY_SCENE_CHARACTER_NAME_REQUIRED",
+        code: nameRequiredCode,
         path: characterPath,
         reason: "角色名必须是非空字符串",
         sceneId
@@ -482,9 +508,9 @@ function validateFullStorySceneCharacters(value, path, standardNames, details, s
     const normalized = characterName.trim();
     if (names.has(normalized)) {
       pushFullStorySceneViolation(details, {
-        code: "FULL_STORY_SCENE_CHARACTER_DUPLICATE",
+        code: duplicateCode,
         path: characterPath,
-        reason: `同一场次角色名不能重复：${normalized}`,
+        reason: duplicateReason(normalized),
         sceneId
       });
       return;
@@ -505,35 +531,106 @@ function validateFullStorySceneCharacters(value, path, standardNames, details, s
   return names;
 }
 
+/**
+ * 本场只以声音出现、明确不出镜的角色名。可选字段，缺省等价于空集。
+ *
+ * 它只登记「谁不出镜」，不产生任何视觉事实：唯一用途是在扫描 shotAndSound 时
+ * 把这些名字剔除。`characters` 仍然是「本场实际出镜角色」的唯一事实来源。
+ */
+function validateFullStorySceneOffscreenSoundSources(value, path, standardNames, characterNames, details, sceneId) {
+  if (value === undefined) return new Set();
+  if (!Array.isArray(value)) {
+    pushFullStorySceneViolation(details, {
+      code: "FULL_STORY_SCENE_SOUND_SOURCE_TYPE_INVALID",
+      path,
+      reason: "offscreenSoundSources 必须是字符串数组",
+      sceneId
+    });
+    return new Set();
+  }
+  const names = collectFullStorySceneNameList(value, path, standardNames, details, sceneId, {
+    nameRequiredCode: "FULL_STORY_SCENE_SOUND_SOURCE_NAME_REQUIRED",
+    duplicateCode: "FULL_STORY_SCENE_SOUND_SOURCE_DUPLICATE",
+    duplicateReason: (name) => `同一场次画外声源不能重复：${name}`
+  });
+  names.forEach((name) => {
+    if (!characterNames.has(name)) return;
+    // 出镜与不出镜是互斥事实。两个字段冲突只能证明数据不一致，
+    // 不能证明哪一方正确，因此明确失败而不是自动选边。
+    pushFullStorySceneViolation(details, {
+      code: "FULL_STORY_SCENE_SOUND_SOURCE_ALSO_VISIBLE",
+      path,
+      reason: `「${name}」同时出现在 characters 与 offscreenSoundSources；出镜与只闻其声互斥，必须二选一`,
+      sceneId
+    });
+  });
+  return names;
+}
+
+/**
+ * 两个字段承载的语义不同，扫描口径也必须不同：
+ *
+ * - `visibleAction` 是可见主体事实的唯一字段，只认 `characters`；
+ * - `shotAndSound` 一条自由文本里同时有画面描述（可能出镜）和声音来源（不代表
+ *   出镜），因此额外接受 `offscreenSoundSources` 的显式登记作为豁免。
+ *
+ * 关键不对称：登记**只**豁免 shotAndSound，绝不豁免 visibleAction。契约已经强制
+ * 实际参与本场的人物必须写进 visibleAction，所以模型无法靠「把人登记成声源」
+ * 藏起一个出镜角色——藏了会在 visibleAction 这一档被抓，不写进 visibleAction
+ * 就等于承认没出镜。这条不对称是整个登记机制不沦为免检后门的唯一原因。
+ */
+
+/**
+ * 两个字段承载的语义不同，扫描口径也必须不同：
+ *
+ * - `visibleAction` 是可见主体事实的唯一字段，只认 `characters`；
+ * - `shotAndSound` 一条自由文本里同时有画面描述（可能出镜）和声音来源（不代表
+ *   出镜），因此额外接受 `offscreenSoundSources` 的显式登记作为豁免。
+ *
+ * 关键不对称：登记**只**豁免 shotAndSound，绝不豁免 visibleAction。契约已经强制
+ * 实际参与本场的人物必须写进 visibleAction，所以模型无法靠「把人登记成声源」
+ * 藏起一个出镜角色——藏了会在 visibleAction 这一档被抓，不写进 visibleAction
+ * 就等于承认没出镜。这条不对称是整个登记机制不沦为免检后门的唯一原因。
+ */
 function validateFullStoryVisualCharacterReferences({
   scene,
   scenePath,
   sceneId,
   standardNames,
   characterNames,
+  offscreenSoundSourceNames = new Set(),
   details
 }) {
-  for (const field of ["visibleAction", "shotAndSound"]) {
+  const shotAndSoundDeclaredNames = new Set([...characterNames, ...offscreenSoundSourceNames]);
+  const scans = [
+    { field: "visibleAction", declaredNames: characterNames, reason: "characters 未包含该精确名称" },
+    {
+      field: "shotAndSound",
+      declaredNames: shotAndSoundDeclaredNames,
+      reason: "characters 未包含该精确名称；若这里只是画外声音来源，请登记到 offscreenSoundSources"
+    }
+  ];
+  for (const { field, declaredNames, reason } of scans) {
     const value = scene[field];
     if (typeof value !== "string" || !value) continue;
     standardNames.forEach((standardName) => {
       if (
-        !fullStoryVisualTextMentionsStandardName(value, standardName, characterNames)
-        || characterNames.has(standardName)
+        !fullStoryVisualTextMentionsStandardName(value, standardName, declaredNames)
+        || declaredNames.has(standardName)
       ) return;
       pushFullStorySceneViolation(details, {
         code: "FULL_STORY_SCENE_VISUAL_CHARACTER_MISSING",
         path: `${scenePath}.${field}`,
-        reason: `视觉字段明确提到标准角色「${standardName}」，但 characters 未包含该精确名称`,
+        reason: `视觉字段明确提到标准角色「${standardName}」，但 ${reason}`,
         sceneId
       });
     });
   }
 }
 
-function fullStoryVisualTextMentionsStandardName(text, standardName, characterNames) {
+function fullStoryVisualTextMentionsStandardName(text, standardName, declaredNames) {
   let remaining = text;
-  characterNames.forEach((characterName) => {
+  declaredNames.forEach((characterName) => {
     if (
       characterName === standardName
       || hasExplicitStandardNameSuffix(characterName, standardName)
@@ -2970,6 +3067,7 @@ function collectFullStoryStrictPositiveFields(value = {}) {
   (value.sceneScript || []).forEach((scene, sceneIndex) => {
     pushField(fields, `sceneScript[${sceneIndex}].location`, scene?.location);
     pushArrayFields(fields, `sceneScript[${sceneIndex}].characters`, scene?.characters);
+    pushArrayFields(fields, `sceneScript[${sceneIndex}].offscreenSoundSources`, scene?.offscreenSoundSources);
     pushField(fields, `sceneScript[${sceneIndex}].visibleAction`, scene?.visibleAction);
     (scene?.dialogue || []).forEach((dialogue, dialogueIndex) => {
       for (const field of ["speaker", "line", "deliveryOrSubtext"]) {
