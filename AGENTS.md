@@ -131,6 +131,8 @@ Creative Brief 的 `allowedNarrativeComponents[].component` 是服务端固定�
 
 服务端签发的 `fixedCharacterBoundary` 是后续 Variants、Legacy Full Story、Animation Plan、人物参考精修、角色图、视频生成，以及旧 v2 兼容路径中 Character Feature Compiler 和首尾帧生成的唯一固定角色事实来源。后续阶段不得重新解析 `creatorProfile.fixedCharacter`、重新推断关键词或生成第二份角色边界。角色边界的**事实来源唯一，但执行力度分两档**：角色参考阶段（`/api/refine-character-reference` 的精修结果、`/api/generate-character-reference-images` 的 `characterReference` 与用户可编辑 prompt）遇到偏差只回传提醒不阻断，服务端仍完整判定并把偏差原文放进 `boundaryWarning` 或 `boundary-warning` 流事件，浏览器以警告色展示、照常完成本次操作，用户不必重新上传；依据是本节的「用户明确肯定/否定 > 已签发模型推断」。`boundaryWarning` 只用于展示，写回 Plan 前必须剥离，不进入 Artifact。成片渲染链路（`/api/generate-shot-video`、`shot-video-generator` 的 `effectiveVideoPrompt`、旧 v2 首尾帧 `/api/generate-shot-frame-image`）仍然硬失败，`ensureCharacterReferenceMatchesBoundary` / `ensureCharacterPromptMatchesBoundary` 的抛错语义逐字不变；只提醒的三处改调同一判定的收集器 `characterReferenceBoundaryMismatch` / `characterPromptBoundaryMismatch`，判定规则只有一份，禁止另建第二套词表。
 
+`groundingSeal` 与 `fixedCharacterBoundary.boundarySignature` 所用的两把密钥必须持久化在状态根目录（`.grounding-key` / `.character-boundary-key`，可由 `WORKFLOW_GROUNDING_KEY` / `WORKFLOW_CHARACTER_BOUNDARY_KEY` 覆盖），跨进程重启保持不变。缺失即生成，损坏、长度不足或环境变量非法一律硬失败，**禁止静默回退为随机生成**——换钥会让全部已落盘 Artifact 的签名作废。已落盘 Artifact 不得用新密钥重新签发。
+
 生产环境必须校验 `fixedCharacterBoundary.boundarySignature`。仅当服务端显式配置 `WORKFLOW_RUNTIME_ENVIRONMENT=test|development` 且 `WORKFLOW_SIGNATURE_POLICY=test_package_unverified` 时，为支持重启后继续回放本地测试包，可以跳过 HMAC 签名比较；`sourceDigest` 与 `boundaryDigest` 仍必须匹配。该策略只能来自服务端环境，禁止由请求体控制。
 
 冲突优先级：用户明确肯定/否定 > 已签发模型推断。无法消解的冲突必须阻断，不能选择任一方静默覆盖。用户或权威上游数据改变后，旧边界必须失效并重新生成。

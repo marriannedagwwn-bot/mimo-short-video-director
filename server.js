@@ -49,6 +49,7 @@ import {
   resolveAnimationPlanModelOutputTrace,
   resolveFullStoryModelOutputTrace
 } from "./src/full-model-output-trace.js";
+import { loadOrCreatePersistentKey } from "./src/persistent-key.js";
 import { ProductionStateStore } from "./src/production-state-store.js";
 import { ProductionStateError, normalizeArtifactId, safeIdentifier } from "./src/production-lineage.js";
 import { readModelUsageFromError, runWithUsageAccounting } from "./src/token-usage.js";
@@ -95,10 +96,30 @@ const attemptStore = new AttemptStore();
 const productionStateStore = new ProductionStateStore({
   rootDir: config.workflowRuntime.productionStateDirectory
 });
+// 这两把密钥必须跨重启保持不变：落盘 Artifact 上的 groundingSeal 与 boundarySignature
+// 都是用它们签的，换钥等于让用户恢复的 Run 在下一次点击时全部作废。
+// 密钥材料只留在这里，不进 config 对象——/api/health 现在是逐字段挑选，
+// 但把密钥放进那个对象，离一次随手的展开就只有一步。
+const groundingKeyEntry = await loadOrCreatePersistentKey({
+  directory: config.workflowRuntime.productionStateDirectory,
+  fileName: ".grounding-key",
+  byteLength: 32,
+  label: "Grounding 密钥",
+  envValue: process.env.WORKFLOW_GROUNDING_KEY
+});
+const characterBoundaryKeyEntry = await loadOrCreatePersistentKey({
+  directory: config.workflowRuntime.productionStateDirectory,
+  fileName: ".character-boundary-key",
+  byteLength: 32,
+  label: "全局角色边界密钥",
+  envValue: process.env.WORKFLOW_CHARACTER_BOUNDARY_KEY
+});
 const workflow = new WorkflowService({
   clients,
   stageDefaults,
   characterBoundarySignatureRequired: config.workflowRuntime.characterBoundarySignatureRequired,
+  groundingKey: groundingKeyEntry.key,
+  characterBoundaryKey: characterBoundaryKeyEntry.key,
   attemptStore,
   partialRepairDebugWriter,
   fullModelOutputLogWriter
@@ -393,6 +414,8 @@ server.requestTimeout = config.serverRequestTimeoutMs;
 server.listen(config.port, () => {
   console.log(`AI 短视频导演：http://localhost:${config.port}`);
   console.log(`Production Lineage 状态目录：${config.workflowRuntime.productionStateDirectory}`);
+  // 只报来源，永远不打印密钥本身。
+  console.log(`签名密钥来源：Grounding ${groundingKeyEntry.source} / 全局角色边界 ${characterBoundaryKeyEntry.source}`);
     console.log(`局部纠错 Debug 目录：${partialRepairDebugWriter.outputRoot}`);
     if (fullModelOutputLogWriter.enabled) {
       console.log(`Full Story 全量模型输出日志已开启：${fullModelOutputLogWriter.outputRoot}`);

@@ -324,7 +324,27 @@ VIDEO_HTTP_POLL_TIMEOUT_MS=600000
 - `docs/production-lineage-state.md`：生产状态的事实来源、依赖、媒体命名空间、恢复与导入边界。
 - `test/`：工作流和核心叙事约束测试。
 
-本地测试包回放可显式配置 `WORKFLOW_RUNTIME_ENVIRONMENT=test` 与 `WORKFLOW_SIGNATURE_POLICY=test_package_unverified`。该模式允许服务重启后继续使用原测试包中的角色边界，但仍严格校验 `sourceDigest` 和 `boundaryDigest`；生产及其他环境始终强制校验签名。
+### 服务端签名密钥
+
+服务端有三把本地签名密钥，全部保存在状态根目录（默认 `runtime/production-runs/`，已在 `.gitignore` 内），首次启动自动以 `0600` 生成：
+
+| 文件 | 用途 | 环境变量覆盖 |
+| --- | --- | --- |
+| `.package-signing-key` | v3 测试/规划包签名 | 无 |
+| `.grounding-key` | 参考片分析与脚本还原的证据封印 | `WORKFLOW_GROUNDING_KEY` |
+| `.character-boundary-key` | 全局角色边界签名 | `WORKFLOW_CHARACTER_BOUNDARY_KEY` |
+
+```dotenv
+# 可选：多实例部署共享密钥时使用，hex 编码、至少 32 字节；不配置就用状态目录下的文件
+WORKFLOW_GROUNDING_KEY=
+WORKFLOW_CHARACTER_BOUNDARY_KEY=
+```
+
+密钥跨重启保持不变，所以重启服务后可以继续用之前的 Run 生成剧情、动画包和视频。环境变量填错、密钥文件损坏或长度不足时服务会**直接启动失败**，不会悄悄换一把新钥匙——那会让全部已落盘 Artifact 的签名瞬间作废。
+
+密钥持久化之前创建的历史 Run 无法挽救（签它们的随机密钥已经消失），必须重新运行工作流；已落盘 Artifact 不会被重新签发。
+
+本地测试包回放可显式配置 `WORKFLOW_RUNTIME_ENVIRONMENT=test` 与 `WORKFLOW_SIGNATURE_POLICY=test_package_unverified`，跳过角色边界的 HMAC 比较，但仍严格校验 `sourceDigest` 和 `boundaryDigest`；生产及其他环境始终强制校验签名。密钥持久化后，「重启后继续回放测试包」已不再需要这个开关。
 
 ## 验证
 

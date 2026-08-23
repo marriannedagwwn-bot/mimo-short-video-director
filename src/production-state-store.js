@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { loadOrCreatePersistentKey, PersistentKeyError } from "./persistent-key.js";
 import {
   PRODUCTION_LINEAGE_SCHEMA_VERSION,
   PRODUCTION_PACKAGE_TYPE,
@@ -601,25 +602,25 @@ export class ProductionStateStore {
   }
 
   async signingKey() {
-    await this.ensureRoot();
-    const keyFile = path.join(this.rootDir, ".package-signing-key");
     try {
-      const existing = await fs.readFile(keyFile);
-      if (existing.byteLength >= 32) return existing;
-      throw new ProductionStateError("持久化生产包签名密钥损坏", {
-        code: "PACKAGE_SIGNING_KEY_INVALID",
-        httpStatus: 500
+      // 与 grounding / 全局角色边界密钥共用同一套「读取或创建」，避免三份安全关键
+      // 逻辑各自漂移。包签名密钥不接受环境变量覆盖，行为与既有实现逐字一致。
+      const { key } = await loadOrCreatePersistentKey({
+        directory: this.rootDir,
+        fileName: ".package-signing-key",
+        byteLength: 48,
+        label: "生产包签名密钥",
+        envValue: null
       });
+      return key;
     } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-    const generated = randomBytes(48);
-    try {
-      await fs.writeFile(keyFile, generated, { flag: "wx", mode: 0o600 });
-      return generated;
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      return fs.readFile(keyFile);
+      if (error instanceof PersistentKeyError) {
+        throw new ProductionStateError("持久化生产包签名密钥损坏", {
+          code: "PACKAGE_SIGNING_KEY_INVALID",
+          httpStatus: 500
+        });
+      }
+      throw error;
     }
   }
 

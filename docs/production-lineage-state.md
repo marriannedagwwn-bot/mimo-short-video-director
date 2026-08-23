@@ -163,6 +163,18 @@ Artifact 内容独立写入原子替换的 JSON 文件。浏览器只在服务�
 - `packageDigest`
 - `packageSignature`
 
-签名密钥保存在状态根目录，只代表当前安装实例的本地信任。导入必须依次验证 type、version、digest、HMAC、各 Artifact digest、Variant ID 和 parent lineage。验证成功后建立新的 project/run，重新签发本地 revisions；禁止与浏览器现态 merge，并清空包内媒体选择。
+服务端有三把本地签名密钥，**全部保存在状态根目录**（默认 `runtime/production-runs/`，随 `WORKFLOW_PRODUCTION_STATE_DIR` 移动），只代表当前安装实例的本地信任：
+
+| 文件 | 用途 | 长度 | 环境变量覆盖 |
+| --- | --- | --- | --- |
+| `.package-signing-key` | v3 测试/规划包 `packageSignature` | 48 字节 | 无 |
+| `.grounding-key` | `referenceAnalysis` / `sourceScriptReconstruction` 的 `groundingSeal` | 32 字节 | `WORKFLOW_GROUNDING_KEY` |
+| `.character-boundary-key` | `fixedCharacterBoundary.boundarySignature` | 32 字节 | `WORKFLOW_CHARACTER_BOUNDARY_KEY` |
+
+三把密钥共用同一套「读取或创建」（`src/persistent-key.js`）：环境变量优先于文件；文件缺失时以 `wx` + `0o600` 生成，目录以 `0o700` 创建；并发首启撞上 `EEXIST` 时回读对方写入的那份。**密钥必须跨进程重启保持不变**——落盘 Artifact 上的签名就是用它签的，换钥等于让已恢复的 Run 在下一次点击时全部作废。因此环境变量非法、密钥文件损坏或长度不足时一律硬失败：**禁止静默回退到随机生成**，也禁止覆盖长度不足的文件（它可能是正确密钥被截断的残骸）。密钥材料不进 config 对象、不进任何响应、不写日志，启动日志只报来源。
+
+历史遗留：在密钥持久化之前签发的 Run，其 `groundingSeal` 与 `boundarySignature` 由已消失的随机密钥所签，无法恢复，必须重新运行工作流。已落盘 Artifact **不会**被重新签发——那等于用当前密钥给一批无法验证来源的内容背书。
+
+导入沿用包签名密钥。导入必须依次验证 type、version、digest、HMAC、各 Artifact digest、Variant ID 和 parent lineage。验证成功后建立新的 project/run，重新签发本地 revisions；禁止与浏览器现态 merge，并清空包内媒体选择。
 
 因此 v3 文件是可验证的本地测试/规划包，但不是包含供应商任务状态、跨环境证书链、批量调度和完整 canonical provenance 的最终 Production Package。
