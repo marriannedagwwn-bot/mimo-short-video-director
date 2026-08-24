@@ -102,6 +102,10 @@ h1 em { color: var(--accent); font-style: normal; }
 .pipeline-section { padding-top: 92px; }
 .pipeline-head { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 28px; }
 .pipeline-head .eyebrow { margin-bottom: 7px; }
+/* 运行摘要属于本次流水线的元信息，跟导出按钮同处标题行右侧；
+   放在步骤条下方会变成一行游离的正文，读起来像结果而不是状态。 */
+.pipeline-head-meta { display: flex; align-items: center; gap: 14px; }
+.pipeline-head-meta .story-status { margin: 0; min-height: 0; text-align: right; }
 .pipeline-head h2 { margin: 0; font-family: Georgia, "Songti SC", serif; font-weight: 500; font-size: 36px; }
 .outline-button { padding: 10px 15px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.4); cursor: pointer; font-size: 12px; }
 .outline-button:hover { border-color: var(--accent); color: var(--accent); }
@@ -214,6 +218,10 @@ h1 em { color: var(--accent); font-style: normal; }
 .result-block-head .block-label { margin-bottom: 0; }
 .round-add-button { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: rgba(255,255,255,.58); color: var(--accent); cursor: pointer; font-size: 20px; line-height: 1; }
 .round-add-button:hover { border-color: var(--accent); background: var(--accent-soft); }
+.round-add-button svg { width: 15px; height: 15px; }
+.round-add-button[disabled] { cursor: progress; opacity: .6; }
+.round-add-button.is-busy svg { animation: round-button-spin .9s linear infinite; }
+@keyframes round-button-spin { to { transform: rotate(360deg); } }
 .allow-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
 .allow-item { padding: 12px; border-radius: 10px; background: #edf6f1; }
 .allow-item strong { display: block; color: var(--green); font-size: 11px; }

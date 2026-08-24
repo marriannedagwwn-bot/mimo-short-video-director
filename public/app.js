@@ -58,6 +58,7 @@ const state = {
   metadata: null,
   output: {},
   characterBoundaryProfile: null,
+  variantsRegenerating: false,
   selectedVariantId: null,
   fullStories: {},
   animationPlans: {},
@@ -296,6 +297,7 @@ function bindEvents() {
   elements.variants.addEventListener("click", (event) => {
     const button = event.target.closest("[data-story-variant]");
     if (button) navigateToStory(button.dataset.storyVariant);
+    if (event.target.closest("[data-regenerate-variants]")) regenerateThemeVariants();
   });
   elements.backToResults.addEventListener("click", backToMainResults);
   elements.storyGenerate.addEventListener("click", () => generateFullStory({ force: true }));
@@ -1110,8 +1112,12 @@ function structuredValue(value) {
   return String(value ?? "");
 }
 
+const REGENERATE_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.9 4.5"/><polyline points="20 4 20 11 13 11"/></svg>`;
+
 function renderVariants(data) {
-  elements.variants.innerHTML = `${resultHeader("THEME VARIANTS", "可拍摄的具体主题变体")}
+  const regenerating = Boolean(state.variantsRegenerating);
+  const regenerateButton = `<button class="round-add-button${regenerating ? " is-busy" : ""}" type="button" data-regenerate-variants aria-label="换一批主题变体" title="${regenerating ? "正在重新生成主题变体…" : "换一批：用同一份上游证据重新生成主题变体"}"${regenerating ? " disabled" : ""}>${REGENERATE_ICON}</button>`;
+  elements.variants.innerHTML = `${resultHeader("THEME VARIANTS", "可拍摄的具体主题变体", "", regenerateButton)}
     <div class="variant-grid">${(data.variants || []).map((variant) => `<div class="variant">
       <div class="variant-top">
         <div><span class="variant-number">${escape(variant.id)} · NEW EPISODE</span><h4>${escape(variant.title)}</h4></div>
@@ -1136,6 +1142,70 @@ function renderVariants(data) {
       <button class="outline-button variant-story-button" type="button" data-story-variant="${escape(variant.id)}">进入完整剧情 →</button>
     </div>`).join("")}</div>`;
   reveal(elements.variants);
+}
+
+// 换一批：用同一份已签发的上游证据（referenceAnalysis / sourceScriptReconstruction /
+// creativeBrief / visualGuardrails）重新调用一次 /api/variants，不重跑前四个阶段。
+//
+// 新的 themeVariants revision 会让服务端 propagateStale 递归作废下游的
+// variant / fullStory / animationPlan / 镜头媒体——这是 P0 的状态隔离要求，
+// 不是可选项。所以下游已经有产出时必须先明确征求同意，拒绝就什么都不动。
+async function regenerateThemeVariants() {
+  if (state.variantsRegenerating) return;
+  if (!state.output.creativeBrief || !state.output.visualGuardrails) {
+    showError("上游创意简报或角色边界尚未生成，无法重新生成主题变体。");
+    return;
+  }
+
+  const downstream = [
+    ...Object.keys(state.fullStories || {}).map((variantId) => `${variantId} 的完整剧情`),
+    ...Object.keys(state.animationPlans || {}).map((variantId) => `${variantId} 的镜头计划`)
+  ];
+  if (downstream.length) {
+    const confirmed = window.confirm(
+      "换一批会签发新的主题变体，已生成的下游内容会全部失效：\n"
+      + `${downstream.join("、")}，以及它们下面已生成的镜头媒体。\n\n是否继续？`
+    );
+    if (!confirmed) return;
+  }
+
+  state.variantsRegenerating = true;
+  renderVariants(state.output.themeVariants);
+  setStage("variants", "active");
+  beginStageUsage();
+  try {
+    const themeVariants = await requestProductionArtifact({
+      endpoint: "/api/variants",
+      requestBody: {
+        referenceAnalysis: state.output.referenceAnalysis,
+        sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+        creativeBrief: state.output.creativeBrief,
+        visualGuardrails: state.output.visualGuardrails,
+        creatorProfile: profile(),
+        count: Number(elements.variantCount.value)
+      },
+      artifactId: "themeVariants",
+      artifactType: "themeVariants",
+      dependencyIds: ["creativeBrief", "visualGuardrails"]
+    });
+    state.output.themeVariants = themeVariants;
+    // 旧的选中项已经不存在了，别让它继续指向一个已作废的 variant。
+    state.selectedVariantId = null;
+    state.backgroundMusicDrafts = {};
+    setStage("variants", "done");
+    const usage = endStageUsage();
+    elements.pipelineUsage.textContent = usage ? `主题变体已换一批${formatStageUsageSuffix(usage)}` : "";
+    elements.pipelineUsage.className = "story-status ready";
+  } catch (error) {
+    setStage("variants", "error");
+    const suffix = failedStageUsageSuffix();
+    elements.pipelineUsage.textContent = suffix ? `换一批失败${suffix}` : "";
+    elements.pipelineUsage.className = "story-status error";
+    showError(error.message || "重新生成主题变体失败");
+  } finally {
+    state.variantsRegenerating = false;
+    renderVariants(state.output.themeVariants);
+  }
 }
 
 // 开关默认关闭；已有 Plan 时以 Plan 已签发的 backgroundMusicMode 为准。
@@ -3813,8 +3883,8 @@ function renderShotVideoResult(shotId) {
     : `${continuityHtml}${frameHtml}<p>视频已生成，但未返回可播放地址。</p>`;
 }
 
-function resultHeader(kicker, title, badge = "") {
-  return `<div class="result-title"><div><p>${kicker}</p><h3>${title}</h3></div>${badge ? `<span class="confidence">${escape(badge)}</span>` : ""}</div>`;
+function resultHeader(kicker, title, badge = "", action = "") {
+  return `<div class="result-title"><div><p>${kicker}</p><h3>${title}</h3></div>${badge ? `<span class="confidence">${escape(badge)}</span>` : ""}${action}</div>`;
 }
 function block(label, content) { return `<div class="result-block"><span class="block-label">${label}</span>${content}</div>`; }
 function actionBlock(label, content, action = "") { return `<div class="result-block"><div class="result-block-head"><span class="block-label">${label}</span>${action}</div>${content}</div>`; }
