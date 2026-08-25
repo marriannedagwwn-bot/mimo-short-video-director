@@ -1,12 +1,14 @@
 .env
 .DS_Store
 node_modules/
+.venv-faster-whisper/
 coverage/
 exports/
 public/generated-images/
 public/generated-videos/
 runtime-captures/
 runtime/production-runs/
+frames/
 
 # Large local reference videos; keep them out of Git/Codex workspace snapshots.
 测试文件/*.mp4
