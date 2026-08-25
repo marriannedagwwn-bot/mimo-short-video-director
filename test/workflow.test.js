@@ -4249,6 +4249,51 @@ test("台词规则不会进入逐镜渲染负面提示词，混入时会被相�
   assert.doesNotMatch(JSON.stringify(result.shotPlan.flatMap((shot) => Object.values(shot.negativePrompts))), /咕嘎|阿巴/u);
 });
 
+test("固定角色名提取把冒号当分隔符，「名字：描述」不会连描述一起当成角色名", () => {
+  // 回放实际失败输入：两个角色、每个都写成「名字：描述」。
+  const twoCharacters = "小白子：q 版狼耳少女，形象类似狼娘，有狐狸一样蓬松的尾巴，猫一样的耳朵；\n"
+    + "芙芙猫：白色与浅蓝色相间的蓬松卷发 / 头顶卷曲呆毛 / 猫耳";
+  assert.equal(extractFixedCharacterName(twoCharacters), "小白子");
+  // 单个角色写成冒号一样会坏——这从来不是「一个 vs 两个」的问题。
+  assert.equal(extractFixedCharacterName("小白子：q 版狼耳少女"), "小白子");
+  assert.equal(extractFixedCharacterName("小白子: q 版狼耳少女"), "小白子");
+  assert.equal(extractFixedCharacterName("Xiaobaizi: a wolf-eared girl"), "Xiaobaizi");
+
+  // 合法反例：原本就能正确提取的写法逐字不变。
+  assert.equal(extractFixedCharacterName("小白子，q 版狼耳少女，形象类似狼娘"), "小白子");
+  assert.equal(extractFixedCharacterName("小白子 q 版狼耳少女"), "小白子");
+  assert.equal(extractFixedCharacterName("小白子（q 版狼耳少女）"), "小白子");
+  // 显式角色名分支在切分之前返回，不受本次改动影响。
+  assert.equal(extractFixedCharacterName("角色名：小白子，q 版狼耳少女"), "小白子");
+});
+
+test("冒号写法的固定角色能通过 visualGuardrails 与 creativeBrief 的固定角色校验", () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子：q 版狼耳少女，形象类似狼娘，有狐狸一样蓬松的尾巴；\n芙芙猫：浅蓝色蓬松卷发",
+    vertical: "治愈/温情/日常",
+    constraints: ""
+  };
+  const workflow = new WorkflowService({ client: {} });
+  const context = globalBoundaryContext(workflow, { creatorProfile }, xiaobaiziBoundary());
+
+  // 边界的 characterName 是「小白子」，修复前会因为固定角色名被解析成整段描述而失败。
+  assert.equal(
+    ensureVisualGuardrailsMatchesProfile(context.visualGuardrails, creatorProfile).fixedCharacterBoundary.characterName,
+    "小白子"
+  );
+
+  // 创意简报此前只是因为模型把整段描述抄进 newRole 才「通过」；正确的角色名同样能通过。
+  const brief = creativeBriefFixture(creatorProfile, {
+    newRole: "小白子",
+    newOccupationOrIdentity: "村里的热心帮手",
+    mappingLogic: "只保留主动帮助他人的剧作功能"
+  });
+  assert.equal(
+    ensureCreativeBriefMatchesProfile(brief, creatorProfile).roleAndOccupationMapping[0].newRole,
+    "小白子"
+  );
+});
+
 test("固定角色名提取支持中文逗号设定，variants 提示词声明不可改名", () => {
   assert.equal(extractFixedCharacterName("小白子，小女孩，儿童，活泼可爱"), "小白子");
   assert.equal(extractFixedCharacterName("阿岚，28 岁社区修理师"), "阿岚");

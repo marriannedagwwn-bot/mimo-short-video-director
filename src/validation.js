@@ -2842,7 +2842,10 @@ export function extractFixedCharacterName(fixedCharacter) {
   if (!text) return "";
   const explicit = text.match(/(?:角色名|姓名|名字|名叫|叫|昵称)[:：为是叫\s]*([一-龥A-Za-z0-9_-]{1,16})/u);
   if (explicit?.[1]) return stripNameWrapper(explicit[1]);
-  const firstSegment = text.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || "";
+  // 冒号是「名字：描述」这种写法的分隔符，必须和逗号顿号同级——否则第一段会连描述一起被
+  // 当成角色名（`小白子：q 版狼耳少女`），下游 includes/等值判定要么硬失败，要么靠模型
+  // 原样回抄整段而以错误的方式通过。半角冒号一并处理，英文写法同理。
+  const firstSegment = text.split(/[，,；;、。:：\n\r（(]/u)[0]?.trim() || "";
   const spaceMatch = firstSegment.match(/^([一-龥A-Za-z0-9_-]{1,16})(?:\s|$)/u);
   return stripNameWrapper(spaceMatch?.[1] || firstSegment);
 }
