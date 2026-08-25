@@ -2,6 +2,7 @@ import { syncShotCharacterReference } from "./character-reference-sync.js";
 import { formatStageUsageSuffix, mergeStageUsage } from "./token-usage-format.js";
 import { compileShotNegativePrompt } from "./negative-prompts.js";
 import { buildShotFrameImagePrompt, compileShotFrameNegativePrompt } from "./shot-frame-prompt.js";
+import { buildCharacterReferenceImagePrompt } from "./character-reference-prompt.js";
 import {
   buildFrameReferenceManifest,
   canReusePreviousEndFrameAsStart,
@@ -1680,7 +1681,7 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
         ` : ""}
         <div class="prompt-card"><span class="prompt-label">视频 prompt</span><p class="video-prompt-body">${renderVideoPromptBody(shot.videoPrompt, sharedPromptClauses)}</p></div>
         ${hasPlannedEndpoints(shot) ? renderShotNegativePromptCard(shot, "image", "图片负面提示词") : ""}
-        ${renderShotNegativePromptCard(shot, "video", "视频负面提示词")}
+        ${renderShotVideoPromptCell(shot, currentAspectRatio)}
       </div>
       <p><b>镜头运动：</b>${escape(shot.cameraMotion)}<br><b>动作：</b>${escape(shot.characterAction)}<br><b>对白/字幕：</b>${escape(shot.dialogueOrSubtitle)}<br><b>声音：</b>${escape(shot.soundDesign)}</p>
       <div class="tag-row">${(shot.acceptanceCriteria || []).map((item) => `<span class="tag">${escape(item)}</span>`).join("")}</div>
@@ -1985,11 +1986,57 @@ function compilerFlag(value, trueLabel, falseLabel, falseTone = "no") {
 }
 
 function renderShotNegativePromptCard(shot = {}, target = "image", label = "负面提示词") {
+  return `<div class="prompt-card">${renderShotNegativePromptCardBody(shot, target, label)}</div>`;
+}
+
+function renderShotNegativePromptCardBody(shot = {}, target = "image", label = "负面提示词") {
   const entries = Array.isArray(shot?.negativePrompts?.[target]) ? shot.negativePrompts[target] : [];
   const content = entries.length
     ? `<div class="rule-list">${entries.map((entry) => renderShotNegativePromptEntry(entry)).join("")}</div>`
     : `<p class="long-copy">无</p>`;
-  return `<div class="prompt-card"><span class="prompt-label">${escape(label)}</span>${content}</div>`;
+  return `<span class="prompt-label">${escape(label)}</span>${content}`;
+}
+
+// 镜头卡片右上这一格：本镜头一有可播放的视频候选，整格就换成视频；没有视频时逐字保持
+// 原来的视频负面提示词卡片。纯展示切换，不改 Plan 的 negativePrompts 字段，也不改任何 lineage。
+function renderShotVideoPromptCell(shot = {}, aspectRatio) {
+  return `<div class="prompt-card" data-shot-video-media="${escape(shot.shotId)}" style="${shotVideoAspectStyle(aspectRatio)}">${renderShotVideoPromptCellBody(shot)}</div>`;
+}
+
+// 候选播放器的画幅跟随当前 Plan 的 targetAspectRatio：16:9 的成片不该被塞进 9:16 的黑框里。
+// 只影响播放器外框尺寸，不改任何 Plan 字段，也不碰旧 v2 首尾帧图的 9:16 预览。
+function shotVideoAspectStyle(aspectRatio) {
+  return normalizeAnimationPlanAspectRatio(aspectRatio) === "9:16"
+    ? "--shot-video-aspect: 9 / 16; --shot-video-card-max: 165px"
+    : "--shot-video-aspect: 16 / 9; --shot-video-card-max: 240px";
+}
+
+function renderShotVideoPromptCellBody(shot = {}) {
+  const videos = shotVideoPlayableCandidates(shot.shotId);
+  if (!videos.length) return renderShotNegativePromptCardBody(shot, "video", "视频负面提示词");
+  const selectedIndex = shotVideoSelectedIndex(shotVideoStateItem(shot.shotId));
+  return `<span class="prompt-label">${videos.length > 1 ? `镜头视频 · ${escape(videos.length)} 条候选` : "当前镜头视频"}</span>
+    <div class="shot-video-candidate-list">${videos.map((video, index) => {
+      const url = video.outputUrl || video.url || "";
+      return `<div class="shot-video-result-card${index === selectedIndex ? " selected" : ""}">
+        <span>${index === selectedIndex ? "当前镜头视频" : `候选 ${index + 1}`}</span>
+        <video src="${escape(url)}" controls playsinline></video>
+        <a href="${escape(url)}" download>下载视频</a>
+      </div>`;
+    }).join("")}</div>`;
+}
+
+function shotVideoPlayableCandidates(shotId) {
+  const stateItem = shotVideoStateItem(shotId);
+  if (!stateItem || stateItem.status === "running" || stateItem.status === "error") return [];
+  const result = stateItem.result;
+  const videos = Array.isArray(result?.videos) && result.videos.length ? result.videos : result?.outputUrl ? [result] : [];
+  return videos.filter((video) => video?.outputUrl || video?.url);
+}
+
+function shotVideoSelectedIndex(stateItem) {
+  const raw = Number(stateItem?.selectedIndex ?? stateItem?.result?.selectedIndex);
+  return Number.isFinite(raw) ? raw : 0;
 }
 
 function renderShotNegativePromptEntry(entry = {}) {
@@ -2131,8 +2178,9 @@ async function refineCharacterReferenceWithImage(indexValue, file) {
       }
     });
     assertCurrentProductionRequest(planToken);
-    // boundaryWarning 只用于提醒展示，绝不写进 Plan Artifact。
-    const { boundaryWarning = "", ...refinedFields } = refined || {};
+    // boundaryWarning 与 referenceImageOverrideNotice 只用于提醒展示，绝不写进 Plan Artifact。
+    const { boundaryWarning = "", referenceImageOverrideNotice = "", ...refinedFields } = refined || {};
+    const refineNotice = [referenceImageOverrideNotice, boundaryWarning].filter(Boolean).join("；");
     const updatedPlan = structuredClone(plan);
     const previousInPlan = updatedPlan.characterReferencePrompts[index];
     const updated = {
@@ -2156,11 +2204,11 @@ async function refineCharacterReferenceWithImage(indexValue, file) {
     state.animationPlans[variant.id] = updatedPlan;
     state.output.animationPlans = state.animationPlans;
     state.output.animationPlan = updatedPlan;
-    state.characterReferenceStatuses[key] = boundaryWarning
-      ? { status: "warn", message: boundaryWarning }
+    state.characterReferenceStatuses[key] = refineNotice
+      ? { status: "warn", message: refineNotice }
       : { status: "ready", message: syncedShots ? `已更新人物描述，并同步 ${syncedShots} 个镜头` : "已更新人物描述" };
     renderAnimationPlan(updatedPlan);
-    setAnimationStatus(`${updated.characterName || "角色"} 已添加人物参考图，并更新了角色描述${syncedShots ? `，同步了 ${syncedShots} 个镜头提示词` : ""}。`, boundaryWarning ? "warn" : "ready");
+    setAnimationStatus(`${updated.characterName || "角色"} 已添加人物参考图，并更新了角色描述${syncedShots ? `，同步了 ${syncedShots} 个镜头提示词` : ""}。`, refineNotice ? "warn" : "ready");
     updateStoryExportActions();
   } catch (error) {
     const currentLineage = state.production.artifacts[planArtifactId];
@@ -2217,7 +2265,7 @@ async function setCharacterImageReferenceFile(file) {
     elements.characterImagePreview.src = dataUrl;
     elements.characterImagePreviewWrap.classList.remove("hidden");
     elements.characterImageDropTitle.textContent = file.name;
-    elements.characterImageDropHint.textContent = "已载入参考图。生成时会参考它，但会移除水果摊和无关背景。";
+    elements.characterImageDropHint.textContent = "已载入参考图。生成时会参考它，但会移除无关背景。";
     setCharacterImageStatus("参考图片已载入。", "ready");
   } catch (error) {
     setCharacterImageStatus(error.message || "参考图片读取失败。", "error");
@@ -2225,13 +2273,14 @@ async function setCharacterImageReferenceFile(file) {
 }
 
 function renderCharacterImagePromptPreview() {
-  const item = currentCharacterImageReference();
   const count = Number(elements.characterImageCount.value) || state.characterImageGeneration.count || 1;
-  const base = item?.appearancePrompt || item?.identity || item?.characterName || "";
-  const countNote = count > 1 ? `\n本次需要输出 ${count} 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。` : "";
-  elements.characterImagePromptPreview.value = base
-    ? `参考我上传的这张图片，不要水果摊，生成一张${base}\n注意：人物必须是站立姿态的全身图。\n画面只保留人物主体，干净浅色背景，适合作为后续动画角色参考图。\n不要生成摊位、水果、杂乱街景、路人或与角色无关的物体。${countNote}`
-    : "当前角色没有可用的角色参考提示词。";
+  // 与服务端回退路径共用同一份模板：用户在这里看到并可编辑的，就是实际发送的。
+  const prompt = buildCharacterReferenceImagePrompt({
+    characterReference: currentCharacterImageReference() || {},
+    count,
+    visualBible: currentCharacterImagePlan()?.visualBible || null
+  });
+  elements.characterImagePromptPreview.value = prompt || "当前角色没有可用的角色参考提示词。";
 }
 
 async function generateCharacterReferenceImages() {
@@ -2405,7 +2454,7 @@ async function useGeneratedCharacterReference(resultIndexValue) {
       referenceImageAdded: true,
       referenceImageName: result.filename || `jimeng-reference-${Number(resultIndexValue) + 1}.png`,
       referenceImageDataUrl: imageDataUrl,
-      referenceImageNotes: `由 ${state.imageProvider} ${modelName(result.model || state.imageModel)} 根据上传参考图生成；已要求去掉水果摊，保留站立全身角色。`
+      referenceImageNotes: `由 ${state.imageProvider} ${modelName(result.model || state.imageModel)} 根据上传参考图生成；已要求干净背景，保留站立全身角色。`
     };
     updatedPlan.characterReferencePrompts[roleIndex] = updated;
     const syncedShots = syncShotCharacterReference(updatedPlan, previousInPlan, updated);
@@ -2436,9 +2485,13 @@ async function useGeneratedCharacterReference(resultIndexValue) {
   }
 }
 
-function currentCharacterImageReference() {
+function currentCharacterImagePlan() {
   const variant = selectedVariant();
-  const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
+  return variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
+}
+
+function currentCharacterImageReference() {
+  const plan = currentCharacterImagePlan();
   return plan?.characterReferencePrompts?.[Number(elements.characterImageRole.value) || state.characterImageGeneration.selectedIndex || 0] || null;
 }
 
@@ -3259,7 +3312,9 @@ function allReferenceAssetDescriptors(shotId) {
         dataUrl: reference.referenceImageDataUrl,
         sizeBytes: 0,
         durationSeconds: 0,
-        source: "character_reference"
+        source: "character_reference",
+        // 服务端仍会用 Plan 解析结果覆写这个值，这里只是让本地描述符与之一致。
+        sourceCharacterName: reference.characterName || ""
       });
     }
   }
@@ -3388,13 +3443,19 @@ function renderShotVideoReferenceList(shotId) {
     const assets = allReferenceAssetDescriptors(shotId);
     const previousReference = previousShotVideoReferenceContext(shotId);
     if (!assets.length) {
-      return `<p class="shot-video-reference-note">尚未选择参考素材。可加入上个镜头抽帧、已有首尾帧、角色参考图，或上传图片、视频和音频。${previousReference.available ? `上个镜头 ${escape(previousReference.previousShot.shotId)} 已就绪，勾选后预计抽取 ${escape(previousReference.estimatedFrameCount)} 张。` : `上个镜头不可用：${escape(previousReference.reason)}`}</p>`;
+      return `<div>
+      <span class="block-label">全能参考素材 · 0 项</span>
+      <div class="shot-video-reference-box">
+        <p class="shot-video-reference-note">尚未选择参考素材。可加入上个镜头抽帧、已有首尾帧、角色参考图，或上传图片、视频和音频。${previousReference.available ? `上个镜头 ${escape(previousReference.previousShot.shotId)} 已就绪，勾选后预计抽取 ${escape(previousReference.estimatedFrameCount)} 张。` : `上个镜头不可用：${escape(previousReference.reason)}`}</p>
+      </div>
+    </div>`;
     }
     const labels = { image: "图片", video: "视频", audio: "音频" };
     return `<div>
       <span class="block-label">全能参考素材 · ${escape(assets.length)} 项</span>
-      <div class="shot-video-reference-assets">
-        ${assets.map((asset) => `<div class="shot-video-reference-asset">
+      <div class="shot-video-reference-box">
+        <div class="shot-video-reference-assets">
+          ${assets.map((asset) => `<div class="shot-video-reference-asset">
           <span>${escape(labels[asset.mediaType] || asset.mediaType)}</span>
           <strong title="${escape(asset.name)}">${escape(asset.name)}</strong>
           <small>${asset.source === "previous_shot_frames"
@@ -3412,6 +3473,7 @@ function renderShotVideoReferenceList(shotId) {
           ? ""
           : `上个镜头 ${escape(previousReference.previousShot.shotId)} 已就绪，可按需勾选，预计抽取 ${escape(previousReference.estimatedFrameCount)} 张。`
         : `上个镜头不可用：${escape(previousReference.reason)}`}</p>
+      </div>
     </div>`;
   }
   const context = shotFrameContext(shotId);
@@ -3595,6 +3657,7 @@ function renderShotVideoModalResults() {
   if (!state.shotVideoGeneration.open) return;
   const shotId = state.shotVideoGeneration.shotId;
   const stateItem = shotVideoStateItem(shotId);
+  elements.shotVideoResults.setAttribute("style", shotVideoAspectStyle(shotFrameContext(shotId)?.plan?.productionStrategy?.targetAspectRatio));
   if (!stateItem) {
     elements.shotVideoResults.innerHTML = "";
     return;
@@ -3779,6 +3842,13 @@ function updateShotVideoResult(shotId) {
   const resultBox = [...elements.animationPlan.querySelectorAll("[data-shot-video-result]")]
     .find((item) => String(item.dataset.shotVideoResult) === String(shotId));
   if (resultBox) resultBox.innerHTML = renderShotVideoResult(shotId);
+  const mediaCell = [...elements.animationPlan.querySelectorAll("[data-shot-video-media]")]
+    .find((item) => String(item.dataset.shotVideoMedia) === String(shotId));
+  const mediaContext = shotFrameContext(shotId);
+  if (mediaCell && mediaContext?.shot) {
+    mediaCell.setAttribute("style", shotVideoAspectStyle(mediaContext.plan?.productionStrategy?.targetAspectRatio));
+    mediaCell.innerHTML = renderShotVideoPromptCellBody(mediaContext.shot);
+  }
   const button = [...elements.animationPlan.querySelectorAll("[data-generate-shot-video]")]
     .find((item) => String(item.dataset.generateShotVideo) === String(shotId));
   if (button) button.disabled = shotVideoStateItem(shotId)?.status === "running";
@@ -3862,24 +3932,14 @@ function renderShotVideoResult(shotId) {
         ${endFrameUrl ? `<figure><img src="${escape(endFrameUrl)}" alt="尾帧"><figcaption>尾帧</figcaption></figure>` : ""}
       </div>`
     : "";
-  const videos = Array.isArray(stateItem.result?.videos) && stateItem.result.videos.length ? stateItem.result.videos : stateItem.result?.outputUrl ? [stateItem.result] : [];
+  // 可播放的候选已上移到上方 prompt 网格那一格，这里只留连续性回执、旧 v2 首尾帧预览与异常说明。
+  const videos = shotVideoPlayableCandidates(shotId);
   const continuityReceipt = stateItem.result?.continuityReferenceReceipt;
   const continuityHtml = continuityReceipt?.mode === SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
     ? `<p class="ready">连续性参考：${escape(continuityReceipt.sourceShotId)} 均匀抽帧，共 ${escape(continuityReceipt.frameCount)} 张普通参考图。</p>`
     : "";
-  const selectedIndex = Number.isFinite(Number(stateItem.selectedIndex ?? stateItem.result?.selectedIndex)) ? Number(stateItem.selectedIndex ?? stateItem.result?.selectedIndex) : 0;
-  const videoHtml = videos.length
-    ? `<div class="shot-video-candidate-list">${videos.map((video, index) => {
-        const url = video.outputUrl || video.url || "";
-        return `<div class="shot-video-result-card${index === selectedIndex ? " selected" : ""}">
-          <span>${index === selectedIndex ? "当前镜头视频" : `候选 ${index + 1}`}</span>
-          <video src="${escape(url)}" controls playsinline></video>
-          <a href="${escape(url)}" download>下载视频</a>
-        </div>`;
-      }).join("")}</div>`
-    : "";
-  return videoHtml
-    ? `${continuityHtml}${frameHtml}${videoHtml}`
+  return videos.length
+    ? `${continuityHtml}${frameHtml}`
     : `${continuityHtml}${frameHtml}<p>视频已生成，但未返回可播放地址。</p>`;
 }
 

@@ -16,6 +16,7 @@ import {
 } from "./validation.js";
 import { assertMiniMaxH3Duration } from "./minimax-h3-prompt.js";
 import {
+  buildReferenceManifestText,
   mediaFilenameSegment,
   normalizeShotVideoContinuityReferenceMode,
   SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
@@ -198,7 +199,21 @@ export async function generateShotVideo(options = {}) {
         });
         return combined;
       })();
-    let effectiveVideoPrompt = String(shot.videoPrompt || "").trim();
+    // 参考素材清单前置：服务端已经知道每张素材是什么，不写进正文模型就无从分辨。
+    // 放在正文之前而不是之后，是为了让 backgroundMusicMode=none 的禁配乐句仍然是
+    // 整条提示词的最后一句（CLAUDE.md 2.4 的逐字收尾语义）。
+    const referenceManifest = generationMode === "all_reference"
+      ? buildReferenceManifestText(inputArtifacts)
+      : "";
+    //
+    // 清单的安全性来自构造而不是事后校验：文本只由受控来源枚举、Plan 权威的
+    // sourceCharacterName 和 lineage 解析出的 sourceShotId 拼成，上传素材的原始
+    // 文件名（唯一的注入面）永远不进入。这里**不**补 ensureCharacterPromptMatchesBoundary：
+    // 视频提示词天然是多角色的，走的是 promptScope="multi_character"，而该分支在
+    // validation.js 里无条件短路返回空串，加上去只是一个看起来像闸门的空操作。
+    let effectiveVideoPrompt = [referenceManifest, String(shot.videoPrompt || "").trim()]
+      .filter(Boolean)
+      .join("\n");
     const videos = [];
     for (let index = 0; index < count; index += 1) {
       // ② 提交这一条候选给供应商之前：过期就不再产生新的付费调用。
@@ -251,6 +266,7 @@ export async function generateShotVideo(options = {}) {
       endFrameUrl: frames?.end?.url || "",
       endFramePath: frames?.end?.path || "",
       referenceSummary: generationMode === "all_reference" ? summarizeReferenceArtifacts(inputArtifacts) : null,
+      referenceManifest,
       videoPromptSource: options.videoPromptSource === "runtime_override" ? "runtime_override" : "animation_plan",
       sourceVideoPrompt: String(shot.videoPrompt || ""),
       effectiveVideoPrompt,

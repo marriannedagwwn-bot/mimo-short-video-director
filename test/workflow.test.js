@@ -11,7 +11,7 @@ import { CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS, characterPromptBoundaryMis
 import { buildRequestBody, MimoClient, ModelResponseError, parseModelJson } from "../src/mimo-client.js";
 import { buildQwenRequestBody, QwenClient } from "../src/qwen-client.js";
 import { JimengImageClient, buildCharacterReferenceImagePrompt, buildJimengImageRequestBody, buildShotFrameImagePrompt } from "../src/jimeng-client.js";
-import { RECONSTRUCTION_SYSTEM_PROMPT, SYSTEM_PROMPT, animationPlanPrompt, briefPrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "../src/prompts.js";
+import { RECONSTRUCTION_SYSTEM_PROMPT, SYSTEM_PROMPT, animationPlanPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "../src/prompts.js";
 import { parseRunVideoArgs } from "../src/run-video-command.js";
 import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError, ShotVideoProviderError } from "../src/shot-video-generator.js";
 import { executeGenericHttpWorker } from "../workers/generic-http-worker.mjs";
@@ -23,6 +23,7 @@ import { groundingContextDigest, sealReconstruction } from "../src/reconstructio
 import { sealGlobalCharacterBoundary } from "../src/character-boundary.js";
 import { ModelCallCoordinator } from "../src/model-call-coordinator.js";
 import { FULL_STORY_BEAT_SCENE_POSTPASS_SCHEMA_VERSION } from "../src/full-story-beat-scene-postpass.js";
+import { FullModelOutputLogWriter, MODEL_OUTPUT_LOG_SCOPES } from "../src/full-model-output-log.js";
 
 const frames = Array.from({ length: 8 }, (_, index) => ({
   timestamp: index * 5,
@@ -1324,6 +1325,133 @@ test("边界合规的人物参考精修不带任何提醒字段", async () => {
   assert.equal(result.referenceImageAdded, true);
 });
 
+test("人物参考精修的冲突优先级按是否固定角色分档", () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，狼耳少女，儿童体型",
+    constraints: "保持治愈风格",
+    vertical: "温馨/日常/治愈"
+  };
+  const workflow = new WorkflowService({ client: {} });
+  const context = globalBoundaryContext(workflow, { creatorProfile }, xiaobaiziBoundary());
+  const fixedPrompt = characterReferenceRefinePrompt({
+    ...context,
+    characterReference: { characterName: "小白子", appearancePrompt: "小白子，狼耳少女，带狼尾。" }
+  });
+  const supportingPrompt = characterReferenceRefinePrompt({
+    ...context,
+    characterReference: { characterName: "橘色小猫", appearancePrompt: "瘦小的橘色小猫，毛发被雨水打湿。" }
+  });
+
+  // 固定角色：以已签发边界为准，逐字保持原语义。
+  assert.match(fixedPrompt, /以文字设定和用户固定角色为准/u);
+  assert.doesNotMatch(fixedPrompt, /以参考图为准/u);
+  assert.match(fixedPrompt, /referenceImageOverrideNotice 必须是空字符串/u);
+
+  // 配角：用户上传的图是明确动作，冲突时以图为准，且不得因“不是同一个角色”放弃采用。
+  assert.match(supportingPrompt, /以参考图为准/u);
+  assert.match(supportingPrompt, /不得以“与当前角色不符”为由放弃采用这张图/u);
+  assert.doesNotMatch(supportingPrompt, /以文字设定和用户固定角色为准/u);
+});
+
+test("配角人物参考精修以参考图为准，覆盖提醒只用于展示", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，狼耳少女，儿童体型",
+    constraints: "保持治愈风格",
+    vertical: "温馨/日常/治愈"
+  };
+  const workflow = new WorkflowService({
+    client: {
+      async generateJsonWithMedia() {
+        return {
+          characterName: "橘色小猫",
+          storyRole: "被关爱对象",
+          identity: "被小白子照顾的小动物",
+          appearancePrompt: "q版狼耳少女形象，银白色长直发，蓝色大眼睛，猫一样的耳朵。",
+          consistencyTags: ["银白色长直发", "蓝色大眼睛"],
+          forbiddenChanges: ["不要偏离参考图中的人物外观"],
+          referenceImageNotes: "吸收参考图中的发色、瞳色与服装配色。",
+          referenceImageOverrideNotice: "已按参考图把外观改写为 q版狼耳少女；原文字设定是瘦小的橘色小猫、湿润毛发。"
+        };
+      }
+    }
+  });
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const result = await workflow.refineCharacterReference(globalBoundaryContext(workflow, {
+    imageName: "xiaobaizi.png",
+    imageDataUrl: "data:image/png;base64,AA==",
+    creatorProfile,
+    creativeBrief,
+    selectedVariant: { id: "V1", title: "风车与彩虹" },
+    fullStory: { title: "风车与彩虹" },
+    characterReference: {
+      characterName: "橘色小猫",
+      storyRole: "被关爱对象",
+      identity: "被小白子照顾的小动物",
+      appearancePrompt: "瘦小的橘色小猫，毛发被雨水打湿。",
+      consistencyTags: ["橘色毛发", "瘦小体型"],
+      forbiddenChanges: ["不要添加非猫类特征"]
+    }
+  }, xiaobaiziBoundary()));
+
+  // 即使图里是另一种角色，也照图改写，不再保留原设定。
+  assert.match(result.appearancePrompt, /q版狼耳少女/u);
+  assert.deepEqual(result.consistencyTags, ["银白色长直发", "蓝色大眼睛"]);
+  assert.match(result.referenceImageOverrideNotice, /原文字设定是瘦小的橘色小猫/u);
+  // 配角不进入全局角色边界判定，不得借这条路冒出边界提醒。
+  assert.equal(Object.hasOwn(result, "boundaryWarning"), false);
+  // 提醒只用于展示：剥离后不进 Artifact。
+  const { referenceImageOverrideNotice, ...persisted } = result;
+  assert.equal(Object.hasOwn(persisted, "referenceImageOverrideNotice"), false);
+  assert.equal(persisted.characterName, "橘色小猫");
+});
+
+test("固定角色人物参考精修不接受参考图覆盖，也不沿用上一版提醒", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，狼耳少女，儿童体型",
+    constraints: "保持治愈风格",
+    vertical: "温馨/日常/治愈"
+  };
+  const workflow = new WorkflowService({
+    client: {
+      async generateJsonWithMedia() {
+        return {
+          characterName: "小白子",
+          storyRole: "主角",
+          identity: "狼耳少女，村里的热心帮手",
+          appearancePrompt: "参考图中的小白子，狼耳与狼尾保持灰白色，粉色上衣和蓝色背带裙，儿童比例。",
+          consistencyTags: ["狼耳", "狼尾", "粉色上衣"],
+          forbiddenChanges: ["不要变成成人"],
+          referenceImageNotes: "吸收参考图中的服装配色。",
+          referenceImageOverrideNotice: "已按参考图去掉狼耳。"
+        };
+      }
+    }
+  });
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const result = await workflow.refineCharacterReference(globalBoundaryContext(workflow, {
+    imageName: "xiaobaizi.png",
+    imageDataUrl: "data:image/png;base64,AA==",
+    creatorProfile,
+    creativeBrief,
+    selectedVariant: { id: "V1", title: "风车与彩虹" },
+    fullStory: { title: "风车与彩虹" },
+    characterReference: {
+      characterName: "小白子",
+      storyRole: "主角",
+      identity: "狼耳少女",
+      appearancePrompt: "小白子，狼耳少女，带狼尾。",
+      consistencyTags: ["狼耳", "狼尾"],
+      forbiddenChanges: ["不要变成成人"],
+      referenceImageOverrideNotice: "上一版遗留的旧提醒"
+    }
+  }, xiaobaiziBoundary()));
+
+  // 固定角色没有覆盖权：模型写了覆盖说明也丢弃，上一版遗留的提醒同样不得沿用。
+  assert.equal(Object.hasOwn(result, "referenceImageOverrideNotice"), false);
+  assert.equal(Object.hasOwn(result, "boundaryWarning"), false);
+  assert.match(result.appearancePrompt, /狼耳与狼尾/u);
+});
+
 test("人物参考图更新后同步镜头里的角色外观描述", () => {
   const plan = {
     characterReferencePrompts: [{
@@ -1934,8 +2062,11 @@ test("即梦角色参考图请求使用 5.0 Lite 流式图片生成参数", () =
     { model: "doubao-seedream-5-0-260128", size: "1728x2304", outputFormat: "png", imageField: "image", maxImages: 6, watermark: false },
     { referenceImageDataUrl: "data:image/png;base64,AA==", characterReference, count: 3 }
   );
-  assert.match(prompt, /参考我上传的这张图片，不要水果摊，生成一张小白子/);
-  assert.match(prompt, /人物必须是站立姿态的全身图/);
+  assert.match(prompt, /参考我上传的这张图片，生成一张角色参考图。/);
+  assert.match(prompt, /角色外观：小白子，q版狼耳少女/);
+  assert.match(prompt, /人物站立，全身入镜/);
+  // 项目残留的水果摊硬编码已删除，不得再出现在任何角色图提示词里。
+  assert.doesNotMatch(prompt, /水果/);
   assert.equal(body.model, "doubao-seedream-5-0-260128");
   assert.equal(body.stream, true);
   assert.equal(body.response_format, "b64_json");
@@ -4281,4 +4412,163 @@ test("完整剧情提示词禁止把垂直赛道的画风词写进 location", ()
   assert.match(prompt, /视觉风格由下游 Animation Plan 的 visualBible 统一签发/u);
   // 赛道本身仍要照常传给模型，约束的是它不能流进 location。
   assert.match(prompt, /垂直赛道：治愈\/温情\/日常生活\/日系 2\.5D 新海诚光景/u);
+});
+
+
+async function readStageModelOutputRecords(root) {
+  const records = [];
+  const walk = async (directory) => {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else if (entry.name === "metadata.json") {
+        const metadata = JSON.parse(await fs.readFile(full, "utf8"));
+        const content = metadata.output.present
+          ? await fs.readFile(path.join(path.dirname(full), "model-output.txt"), "utf8")
+          : "";
+        records.push({ metadata, content });
+      }
+    }
+  };
+  await walk(root);
+  return records;
+}
+
+test("client 的 onCompletion 观察每次模型原文，回调抛错也不影响调用结果", async (t) => {
+  const server = http.createServer(async (request, response) => {
+    for await (const chunk of request) void chunk;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}');
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => closeServer(server));
+  const client = new QwenClient({
+    baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
+    apiKey: "",
+    model: "qwen3.7-max",
+    maxCompletionTokens: 16384,
+    enableThinking: false,
+    jsonRetryAttempts: 0
+  });
+
+  const observed = [];
+  const result = await client.generateJson({
+    prompt: "返回 JSON",
+    onCompletion: (completion) => {
+      observed.push(completion.content);
+      // 观测必须 fail-open：sidecar 抛错不得让模型调用失败。
+      throw new Error("sidecar 挂了");
+    }
+  });
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(observed, ['{"ok":true}']);
+});
+
+test("阶段模型输出日志记录创意简报的成功调用与完整原文", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "stage-model-output-ok-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const creatorProfile = {
+    fixedCharacter: "小白子，狼耳少女，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
+    vertical: "治愈/温情/日常",
+    constraints: ""
+  };
+  const validBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const rawContent = JSON.stringify(validBrief);
+  const workflow = new WorkflowService({
+    client: {
+      async generateJson({ onCompletion }) {
+        await onCompletion({
+          content: rawContent,
+          raw: rawContent,
+          finishReason: "stop",
+          requestId: "provider-req-1",
+          usage: null
+        });
+        return validBrief;
+      }
+    },
+    stageModelOutputLogWriters: new Map([[
+      MODEL_OUTPUT_LOG_SCOPES.BRIEF,
+      new FullModelOutputLogWriter({ scope: MODEL_OUTPUT_LOG_SCOPES.BRIEF, outputRoot: root })
+    ]])
+  });
+
+  await workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile });
+
+  const records = await readStageModelOutputRecords(root);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].metadata.scope, "brief");
+  assert.equal(records[0].metadata.attempt.stage, "brief");
+  assert.equal(records[0].metadata.attempt.status, "succeeded");
+  assert.equal(records[0].metadata.attempt.code, "MODEL_COMPLETION_ACCEPTED");
+  assert.equal(records[0].metadata.provider.providerRequestId, "provider-req-1");
+  assert.equal(records[0].content, rawContent);
+});
+
+test("创意简报校验失败时把模型原文与错误码写进阶段日志", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "stage-model-output-fail-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const creatorProfile = {
+    fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾，学生/村民，村里的热心帮手",
+    vertical: "治愈/温情/日常",
+    constraints: ""
+  };
+  const invalidBrief = creativeBriefFixture(creatorProfile, {
+    newRole: "神秘少女阿花",
+    mappingLogic: "小白子的剧作功能错误地交给了阿花"
+  });
+  const rawContent = JSON.stringify(invalidBrief);
+  const workflow = new WorkflowService({
+    client: {
+      async generateJson({ onCompletion }) {
+        await onCompletion({ content: rawContent, raw: rawContent, finishReason: "stop", requestId: "", usage: null });
+        return invalidBrief;
+      }
+    },
+    stageModelOutputLogWriters: new Map([[
+      MODEL_OUTPUT_LOG_SCOPES.BRIEF,
+      new FullModelOutputLogWriter({ scope: MODEL_OUTPUT_LOG_SCOPES.BRIEF, outputRoot: root })
+    ]])
+  });
+
+  await assert.rejects(
+    () => workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile }),
+    OutputContractError
+  );
+
+  const records = await readStageModelOutputRecords(root);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].metadata.attempt.status, "failed");
+  assert.equal(records[0].metadata.attempt.category, "output-contract");
+  assert.equal(records[0].metadata.attempt.code, "OUTPUT_CONTRACT_INVALID");
+  // 失败那次的完整原文必须原样留下，这正是本地排查唯一能看的东西。
+  assert.equal(records[0].content, rawContent);
+});
+
+test("阶段日志写入失败只告警，不改变阶段成败", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，狼耳少女，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
+    vertical: "治愈/温情/日常",
+    constraints: ""
+  };
+  const validBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const workflow = new WorkflowService({
+    client: {
+      async generateJson({ onCompletion }) {
+        await onCompletion({ content: JSON.stringify(validBrief), raw: "", finishReason: "stop", requestId: "", usage: null });
+        return validBrief;
+      }
+    },
+    stageModelOutputLogWriters: new Map([[
+      MODEL_OUTPUT_LOG_SCOPES.BRIEF,
+      { enabled: true, recordAttempt() { throw new Error("磁盘满了"); } }
+    ]])
+  });
+
+  // 关键是它没有抛错：sidecar 写盘失败不得让创意简报阶段失败。
+  const result = await workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile });
+  assert.equal(Array.isArray(result.roleAndOccupationMapping), true);
+  assert.equal(result.roleAndOccupationMapping.length > 0, true);
 });

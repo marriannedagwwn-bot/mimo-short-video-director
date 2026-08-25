@@ -78,6 +78,27 @@ const animationModelOutputLogWriter = new FullModelOutputLogWriter({
     logLabel: "Animation Plan 模型全量输出"
   })
 });
+// 走 generateValidatedJson 的六个阶段共用一个 root，按 stage 各建一个 writer；
+// 不配置 STAGE_MODEL_OUTPUT_LOG_DIR 就完全不写。
+const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
+  MODEL_OUTPUT_LOG_SCOPES.ANALYSIS,
+  MODEL_OUTPUT_LOG_SCOPES.RECONSTRUCTION,
+  MODEL_OUTPUT_LOG_SCOPES.BRIEF,
+  MODEL_OUTPUT_LOG_SCOPES.VARIANTS,
+  MODEL_OUTPUT_LOG_SCOPES.VISUAL_GUARDRAILS,
+  MODEL_OUTPUT_LOG_SCOPES.CHARACTER_REFERENCE
+];
+const stageModelOutputLogRoot = await resolvePrivateModelOutputLogRoot({
+  workspaceRoot: root,
+  configuredValue: process.env.STAGE_MODEL_OUTPUT_LOG_DIR,
+  servedRoot: path.join(root, "public"),
+  environmentVariableName: "STAGE_MODEL_OUTPUT_LOG_DIR",
+  logLabel: "工作流阶段模型全量输出"
+});
+const stageModelOutputLogWriters = new Map(STAGE_MODEL_OUTPUT_LOG_SCOPES.map((scope) => [
+  scope,
+  new FullModelOutputLogWriter({ scope, outputRoot: stageModelOutputLogRoot })
+]));
 const animationPromptCapture = new AnimationPromptCapture({
   outputRoot: process.env.ANIMATION_PROMPT_CAPTURE_DIR || "",
   modelOutputLogWriter: animationModelOutputLogWriter
@@ -122,7 +143,8 @@ const workflow = new WorkflowService({
   characterBoundaryKey: characterBoundaryKeyEntry.key,
   attemptStore,
   partialRepairDebugWriter,
-  fullModelOutputLogWriter
+  fullModelOutputLogWriter,
+  stageModelOutputLogWriters
 });
 const castOrchestration = new CastOrchestrationService({
   environment: config.fullStoryV2Pipeline.environment,
@@ -422,6 +444,9 @@ server.listen(config.port, () => {
     }
     if (animationModelOutputLogWriter.enabled) {
       console.log(`Animation Plan 全量模型输出日志已开启：${animationModelOutputLogWriter.outputRoot}`);
+    }
+    if (stageModelOutputLogRoot) {
+      console.log(`工作流阶段全量模型输出日志已开启：${stageModelOutputLogRoot}`);
     }
   if (animationPromptCapture.enabled) {
     console.log(`动画 AI Prompt 抓取已开启：${animationPromptCapture.outputRoot}`);
@@ -768,7 +793,14 @@ async function streamCharacterReferenceImages(request, response) {
     if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
     const count = Math.max(1, Math.min(config.jimeng.maxImages, Math.round(Number(body.count) || 1)));
     const imageModel = modelOverrideFor(body, "imageGeneration") || config.jimeng.model;
-    const prompt = String(body.prompt || "").trim() || buildCharacterReferenceImagePrompt(body.characterReference, count);
+    // 浏览器正常总会送 prompt（用户可编辑）；这里是它为空时的回退，同样要带上
+    // 全片视觉锁定，否则角色图会在不知道全片风格的情况下生成。
+    const prompt = String(body.prompt || "").trim()
+      || buildCharacterReferenceImagePrompt(
+        body.characterReference,
+        count,
+        body.animationPlan?.visualBible || body.visualBible || null
+      );
     // 角色参考图是用户可改写提示词的环节：边界偏差只提醒，不阻断本次生成。
     // 成片渲染链路（/api/generate-shot-video、旧 v2 首尾帧）仍然硬失败。
     const boundaryWarnings = [

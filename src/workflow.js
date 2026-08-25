@@ -30,7 +30,8 @@ import {
   mergeAnimationVideoPromptSemanticRepair,
   planAnimationVideoPromptSemanticRepair
 } from "./animation-video-prompt-semantic-repair.js";
-import { ModelCallCoordinator } from "./model-call-coordinator.js";
+import { randomUUID } from "node:crypto";
+import { ModelCallCoordinator, classifyAttemptError } from "./model-call-coordinator.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
 import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText } from "./validation.js";
@@ -79,7 +80,8 @@ export class WorkflowService {
     attemptStore = null,
     modelCallCoordinator = null,
     partialRepairDebugWriter = null,
-    fullModelOutputLogWriter = null
+    fullModelOutputLogWriter = null,
+    stageModelOutputLogWriters = null
   } = {}) {
     this.clients = normalizeClients(clients);
     if (client && !Object.keys(this.clients).length) this.clients.MiMo = client;
@@ -129,6 +131,10 @@ export class WorkflowService {
     this.fullModelOutputLogWriter = fullModelOutputLogWriter
       && typeof fullModelOutputLogWriter.recordAttempt === "function"
       ? fullModelOutputLogWriter
+      : null;
+    // 走 generateValidatedJson 的阶段各自一个 writer，键就是 stage id；没有配置就是 null。
+    this.stageModelOutputLogWriters = stageModelOutputLogWriters instanceof Map
+      ? stageModelOutputLogWriters
       : null;
   }
 
@@ -542,11 +548,16 @@ export class WorkflowService {
       ...options,
       client: settings.client,
       model: settings.model,
-      maxCompletionTokens: settings.maxCompletionTokens
+      maxCompletionTokens: settings.maxCompletionTokens,
+      stage,
+      provider: settings.provider || "",
+      modelOutputLogWriter: this.stageModelOutputLogWriters?.get(stage) || null
     });
   }
 
-  async generateValidatedJson({ client = this.client, prompt, systemPrompt = null, model = null, maxCompletionTokens = null, frames = [], video = null, validate, retryContext = null, onResolvedMediaMode = null }) {
+  async generateValidatedJson({ client = this.client, prompt, systemPrompt = null, model = null, maxCompletionTokens = null, frames = [], video = null, validate, retryContext = null, onResolvedMediaMode = null, stage = "", provider = "", modelOutputLogWriter = null }) {
+    // 纯观测 sidecar：只收集本次的模型原文，不改重试预算、控制流与任何错误语义。
+    const recorder = stageModelOutputRecorder(modelOutputLogWriter, { stage, provider, model });
     const request = {
       prompt,
       systemPrompt,
@@ -554,17 +565,25 @@ export class WorkflowService {
       maxCompletionTokens,
       onResolvedMediaMode,
       jsonRetryAttempts: 0,
-      strictJson: true
+      strictJson: true,
+      ...(recorder ? { onCompletion: (completion) => recorder.observe(completion) } : {})
     };
-    const first = frames.length || video
-      ? await client.generateJsonWithMedia({ ...request, frames, video })
-      : await client.generateJson(request);
-    // A parsed candidate may only receive another content-model call through
-    // a stage adapter that signs exact targets and performs an atomic merge.
-    // Generic whole-artifact regeneration would grant the model unrelated
-    // write access and can leak the complete failed Artifact back into the
-    // correction prompt, so unsupported stages fail closed here.
-    return validate(first);
+    try {
+      const first = frames.length || video
+        ? await client.generateJsonWithMedia({ ...request, frames, video })
+        : await client.generateJson(request);
+      // A parsed candidate may only receive another content-model call through
+      // a stage adapter that signs exact targets and performs an atomic merge.
+      // Generic whole-artifact regeneration would grant the model unrelated
+      // write access and can leak the complete failed Artifact back into the
+      // correction prompt, so unsupported stages fail closed here.
+      const value = await validate(first);
+      await recorder?.flush({ status: "succeeded" });
+      return value;
+    } catch (error) {
+      await recorder?.flush({ status: "failed", error });
+      throw error;
+    }
   }
 
   async generateAnimationFoundationWithPartialRepair({
@@ -1610,6 +1629,56 @@ function groundedStageInput(input, groundingKey) {
   }
 }
 
+// 阶段模型输出观测：先把本次调用拿到的每条 completion 收下来，等阶段判定出来再一次性落盘。
+// 失败判定复用 classifyAttemptError，错误码不另建第二份映射。纯 sidecar：不改重试预算、
+// 不改控制流、不改错误语义，写盘异常一律吞掉（fail-open）。
+function stageModelOutputRecorder(writer, { stage = "", provider = "", model = null } = {}) {
+  if (!writer || typeof writer.recordAttempt !== "function" || !writer.enabled) return null;
+  const completions = [];
+  const operationId = `operation:${randomUUID()}`;
+  let previousAtMs = Date.now();
+  return {
+    observe(completion) {
+      const finishedAtMs = Date.now();
+      completions.push({ completion: completion || {}, startedAtMs: previousAtMs, finishedAtMs });
+      previousAtMs = finishedAtMs;
+    },
+    async flush({ status = "succeeded", error = null } = {}) {
+      if (!completions.length) return;
+      const issue = status === "failed" ? classifyAttemptError(error) : null;
+      for (let callIndex = 0; callIndex < completions.length; callIndex += 1) {
+        const { completion, startedAtMs, finishedAtMs } = completions[callIndex];
+        // 只有最后一条对应本次阶段判定；更早的 completion 已被 client 内部丢弃，不臆造结论。
+        const final = callIndex === completions.length - 1;
+        try {
+          await writer.recordAttempt({
+            operationId,
+            callIndex,
+            stage,
+            provider,
+            model: model || "",
+            reason: callIndex === 0 ? "primary" : "client-retry",
+            status: final ? status : "superseded",
+            category: final && issue ? issue.category : "",
+            code: final ? (issue ? issue.code : "MODEL_COMPLETION_ACCEPTED") : "",
+            retryable: Boolean(final && issue?.retryable),
+            finishReason: String(completion.finishReason || ""),
+            providerRequestId: String(completion.requestId || ""),
+            usage: completion.usage || null,
+            content: typeof completion.content === "string" ? completion.content : "",
+            contentPresent: typeof completion.content === "string",
+            startedAt: new Date(startedAtMs).toISOString(),
+            finishedAt: new Date(finishedAtMs).toISOString(),
+            durationMs: Math.max(0, finishedAtMs - startedAtMs)
+          });
+        } catch {
+          // writer 自身已经吞掉写入异常，这里只兜住意外抛出。
+        }
+      }
+    }
+  };
+}
+
 function normalizeCharacterReference(result = {}, fallback = {}, input = {}) {
   const value = result.characterReference || result;
   const characterName = String(value.characterName || fallback.characterName || "").trim();
@@ -1629,9 +1698,19 @@ function normalizeCharacterReference(result = {}, fallback = {}, input = {}) {
     referenceImageNotes: String(value.referenceImageNotes || value.imageAnalysis || fallback.referenceImageNotes || "").trim()
   };
   // 人物参考精修是用户上传环节：边界偏差只随结果回传提醒，不阻断用户继续下一步。
-  // boundaryWarning 只用于展示，浏览器写回 Plan 前必须剥离，不进入 Artifact。
+  // boundaryWarning 与 referenceImageOverrideNotice 都只用于展示，浏览器写回 Plan 前必须剥离，不进入 Artifact。
+  // 配角以用户上传的参考图为准，覆盖了什么由模型如实回报；固定角色没有覆盖权，
+  // 那条路的唯一提醒通道仍是 boundaryWarning，模型即使写了覆盖说明也丢弃。
+  const fixedCharacterName = String(input.visualGuardrails?.fixedCharacterBoundary?.characterName || "").trim();
+  const referenceImageOverrideNotice = characterName === fixedCharacterName
+    ? ""
+    : String(value.referenceImageOverrideNotice || "").trim();
+  // 提醒只描述本次这一步，绝不从上一版角色参考沿用。
+  delete normalized.referenceImageOverrideNotice;
   const boundaryWarning = characterReferenceBoundaryMismatch(normalized, input.visualGuardrails);
-  return boundaryWarning ? { ...normalized, boundaryWarning: `模型输出未通过校验：${boundaryWarning}` } : normalized;
+  if (boundaryWarning) normalized.boundaryWarning = `模型输出未通过校验：${boundaryWarning}`;
+  if (referenceImageOverrideNotice) normalized.referenceImageOverrideNotice = referenceImageOverrideNotice;
+  return normalized;
 }
 
 function normalizeStringArray(value, fallback = []) {

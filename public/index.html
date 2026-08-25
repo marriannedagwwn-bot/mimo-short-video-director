@@ -219,7 +219,7 @@
             <input id="characterImageInput" type="file" accept="image/*" hidden>
             <span>上传参考图片</span>
             <strong id="characterImageDropTitle">点击或拖入图片</strong>
-            <small id="characterImageDropHint">即梦会参考这张图，但会移除水果摊，只生成角色全身图。</small>
+            <small id="characterImageDropHint">即梦会参考这张图，但只生成干净背景下的角色全身图。</small>
           </label>
           <div class="reference-image-preview hidden" id="characterImagePreviewWrap">
             <img id="characterImagePreview" alt="参考图片预览">
@@ -347,7 +347,7 @@
           </div>
           <div class="shot-video-reference-list" id="shotVideoReferenceList"></div>
         </div>
-        <div class="modal-panel">
+        <div class="modal-panel shot-video-output-panel">
           <span class="block-label">视频提示词预览 · 可编辑</span>
           <textarea class="prompt-preview prompt-preview-editor shot-video-prompt-editor" id="shotVideoPromptPreview" rows="14"></textarea>
           <p class="story-status" id="shotVideoStatus"></p>
@@ -355,9 +355,9 @@
             <span>用可灵 AI 生成</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
           </button>
+          <div class="generated-reference-results shot-video-results" id="shotVideoResults"></div>
         </div>
       </div>
-      <div class="generated-reference-results shot-video-results" id="shotVideoResults"></div>
     </div>
   </div>
 

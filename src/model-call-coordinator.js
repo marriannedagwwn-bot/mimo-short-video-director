@@ -251,7 +251,7 @@ async function requestSingleCompletion(client, request, provider) {
   };
 }
 
-function classifyAttemptError(error) {
+export function classifyAttemptError(error) {
   if (error instanceof OutputContractError) {
     const diagnostics = Array.isArray(error.details) ? error.details : [];
     const schemaFailure = diagnostics.some((detail) => (

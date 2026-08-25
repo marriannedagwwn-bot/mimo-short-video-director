@@ -140,6 +140,10 @@ Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主�
 - `all_reference` 不得混用 `first_frame` / `last_frame`，不得把可灵 image-to-video 静默当作 Omni API。
 - `continuityReferenceMode: "none" | "previous_shot_frames"` 是独立的运行时开关，**不改变也不推断 `generationMode`**，也不是 `direct_shot` Schema 字段。启用时：上一镜只由当前 Plan `shotPlan[]` 紧邻前项确定；服务端读取上一镜 current `shotVideo` Artifact 的已选候选，只接受当前 media namespace 内的受信 mp4，用 FFmpeg 按 `t = 时长×i/4` 均匀截取 **5 张** JPEG（首帧、末帧和中间三等分点；末帧回退 0.1 秒以保证可解码）作为普通 `reference_image`，与其他图片共同受 9 图上限约束，超限明确失败。张数固定，不随镜头时长变化——3.1 把单镜放宽到 4–15 秒后，每秒一帧会让超过 9 秒的镜头直接撞上限，也会把锁角色长相的角色参考图挤出这 9 个位置。5 张同时落在 MiniMax 的免费额度内。它只增强一致性，**不能覆盖**当前 Full Story/Plan、`fixedCharacterBoundary` 或 Foundation 场景事实。
 - `POST /api/generate-shot-video` 必须始终绑定当前签发 Animation Plan，不得依据客户端自报 `animationPromptSchemaVersion` 降级为无 lineage 请求。服务端从 Plan 唯一解析 exact shot；只允许 `promptOverride` 覆盖本次媒体提示词，动作/时长/场景/声音/负面词/验收条件仍来自 Plan。输出文件名必须含不可碰撞的请求 nonce，返回前须过 ffprobe 视频流/时长校验。
+- **运行时参考素材清单**：`all_reference` 模式下服务端在 `shot.videoPrompt` **之前**确定性拼一段清单，说明每张素材是什么（`buildReferenceManifestText()`，`src/shot-video-continuity.js`）。参考图以 `reference_image` 发送时不带任何文字身份，模型无从分辨哪张是角色、哪张是上一镜抽帧。**前置而非后置**，以保证 `backgroundMusicMode: none` 的禁配乐句仍是整条提示词的最后一句。
+  - 清单**只能**使用受控来源枚举、Plan 权威的 `sourceCharacterName`（由 `resolveAuthoritativeShotVideoReferenceAssets` 按已签发 `characterReferencePrompts[].referenceImageDataUrl` 唯一匹配后覆写）、lineage 解析出的 `sourceShotId` 与帧数。**禁止写入 `upload` 素材的 `name`/`logicalName`**——那是原始用户文件名，是这条链路唯一的注入面，上传素材一律只写「用户上传的参考素材」。安全性来自构造，不是事后校验。
+  - 它不是 Plan 字段、不改 Schema、不签发 revision、不 stale 媒体、不调模型；`sourceVideoPrompt` 保留 Plan 原值，`effectiveVideoPrompt` 与新增回执字段 `referenceManifest` 记录本次实际发送内容。`first_last_frame` 路径逐字不变。
+  - 不要在这里补 `ensureCharacterPromptMatchesBoundary`：视频提示词天然多角色，走 `promptScope: "multi_character"`，而该分支在 `src/validation.js` 里**无条件短路返回空串**，加上去只是一个看起来像闸门的空操作。`server.js` 现有那道检查同理，它对视频提示词也不生效。
 - **生成期间的过期复验是硬约束**：服务端把复验回调交给 `generateShotVideo`，生成器必须在①任何供应商调用与文件写入之前、②每条候选提交供应商之前、③每条候选落盘并通过 ffprobe 之后、④组装返回值之前各执行一次，**覆盖全部供应商**，禁止按 provider、模型或提示词方言设门（历史上只有已下线的 H3 路径复验，那是缺陷不是设计）。任一次失败即 fail closed：删除本次已写入的全部候选 mp4，`ProductionStateError`（409）原样上抛，禁止包装、禁止保留产物、禁止降级为成功。清理只删本次调用自己算出的含 nonce 路径，禁止扫描目录；旧 v2 首尾帧 PNG 文件名不含 nonce，不在覆盖内。只有过期触发清理——供应商错误与 ffprobe 失败维持既有语义。浏览器的事后关卡与它是叠加关系，不能用来解释复验缺失。
 
 ### 2.7 模型 provider 边界
@@ -158,7 +162,12 @@ DeepSeek 模型 ID 只登记 `deepseek-v4-flash`（页面首选）与 `deepseek-
 
 - `Visual Guardrails` 是固定角色语义的**唯一生成阶段**。允许视觉模型结合用户设定、参考分析、脚本还原、创意简报与模型常识生成开放语义边界；**不得新增本地物种关键词字典替代模型判断**。
 - 服务端签发的 `fixedCharacterBoundary` 是后续 Variants、Legacy Full Story、Animation Plan、人物参考精修、角色图、视频生成，以及旧 v2 兼容路径的**唯一**固定角色事实来源。后续阶段不得重新解析 `creatorProfile.fixedCharacter`、重新推断关键词或生成第二份边界。
+- **角色参考图提示词接入 `visualBible`。** `/api/generate-character-reference-images` 送给图像模型的提示词由 `public/character-reference-prompt.js` **单份**构建，浏览器预览框与服务端回退共用它——用户看到并可编辑的必须逐字等于实际发送的。字段顺序按 `docs/video-prompt-guide.md` 模板 1：光线 → 角色外观 → 姿态表情 → 干净背景 → 风格色调 → 景别/取景/机位。风格与光线取自当前 Plan 的 `visualBible`（`overallStyle`/`animationStyle`/`colorPalette`/`lighting`），**缺失时整行省略，不编造**。`cameraLanguage` 是镜头语言，不属于角色参考图的取景说明，不得搬入。
+  依据：`videoPrompt` 197/197 写了全片风格色调、188/197 写了光线，而给它当视觉锚点的角色图此前完全不知道全片调子，直接冲突「角色一致性」这个验收方向。
 - **执行力度分两档，事实来源不变。** 角色参考阶段——`/api/refine-character-reference` 的精修结果、`/api/generate-character-reference-images` 的 `characterReference` 与用户可编辑 prompt——遇到边界偏差**只提醒不阻断**：服务端仍按边界完整判定，把偏差原文放进响应 `boundaryWarning` 或 `boundary-warning` 流事件，浏览器以 `warn` 色展示并照常完成本次操作，用户不必重新上传。依据是本节已有的「用户明确肯定/否定 > 已签发模型推断」。`boundaryWarning` **只用于展示**，浏览器写回 Plan 前必须剥离，不进入 Artifact。成片渲染链路（`/api/generate-shot-video`、`shot-video-generator` 的 `effectiveVideoPrompt`、旧 v2 首尾帧 `/api/generate-shot-frame-image`）**仍然硬失败**：`ensureCharacterReferenceMatchesBoundary` / `ensureCharacterPromptMatchesBoundary` 逐字保留抛错语义，只提醒的那三处改调同一判定的收集器 `characterReferenceBoundaryMismatch` / `characterPromptBoundaryMismatch`（返回空串即合规）。判定规则只有一份，禁止另建第二套词表。
+- **已核实的实现细节，别按字面理解上一条**：`characterPromptBoundaryMismatch`（`src/validation.js`）在 `promptScope === "multi_character"` 时**无条件短路返回空串**，不做任何词条匹配。而两条成片渲染链路——`/api/generate-shot-video`（`server.js`）与旧 v2 `/api/generate-shot-frame-image`——传的**都是** `multi_character`。因此这两处对**提示词正文**的扫描实际不生效；真正在渲染前硬失败的是 `ensureCharacterReferenceMatchesBoundary` 对结构化角色参考的判定（那是另一个函数，没有该短路）。
+  这个短路本身是有意的：视频/多图提示词天然含多个角色，程序无法把某个禁止特征归属到具体角色，硬扫会误伤合法配角。**要不要给多角色提示词补一套可归属的判定，是架构决定，不得在实施顺手改 `promptScope` 或放宽该函数。** 在此之前，任何声称「渲染前提示词正文已被边界拦截」的推断都是错的。
+- **人物参考精修的冲突优先级分两档。** `/api/refine-character-reference` 遇到参考图与文字设定冲突时：**配角（非固定角色）以用户上传的参考图为准**——按图改写 `appearancePrompt` / `consistencyTags` / `forbiddenChanges`，即使图里明显是另一种角色也照图改写，不得以「与当前角色不符」为由放弃采用；`characterName` 与 `storyRole` 承担的剧情功能不变，变的只是外观。依据同样是本节的「用户明确肯定/否定 > 已签发模型推断」：配角的文字设定本身是模型推断产物，而上传图片是用户的明确动作。**固定角色仍以已签发 `fixedCharacterBoundary` 为准**，参考图只能补充不冲突的细节——让图片覆盖边界只会把失败推迟到成片渲染的 `ensureCharacterReferenceMatchesBoundary`。覆盖结果由模型写进 `referenceImageOverrideNotice`，与 `boundaryWarning` 同规格：**只用于展示**，浏览器写回 Plan 前必须剥离，不进入 Artifact；固定角色路径一律丢弃该字段，那条路的唯一提醒通道仍是 `boundaryWarning`。分档判定只用 `characterName` 与边界名的身份比较，不新建第二套词表。
 - **签名密钥必须持久化**：`groundingKey` 与 `characterBoundaryKey` 保存在状态根目录的 `.grounding-key` / `.character-boundary-key`（可由 `WORKFLOW_GROUNDING_KEY` / `WORKFLOW_CHARACTER_BOUNDARY_KEY` 覆盖，环境变量优先），与 `.package-signing-key` 共用`src/persistent-key.js` 的读取或创建逻辑。**跨进程重启不得改变**——换钥会让全部已落盘 Artifact 的 `groundingSeal` 与`boundarySignature` 作废。缺失即生成；环境变量非法、文件损坏或长度不足一律硬失败，**禁止静默回退为随机生成**，也禁止覆盖长度不足的文件。密钥材料不得进入 config 对象、响应或日志。已落盘 Artifact 不得用新密钥重新签发。
 - 生产环境必须校验 `boundarySignature`。**仅当**服务端显式配置 `WORKFLOW_RUNTIME_ENVIRONMENT=test|development` 且 `WORKFLOW_SIGNATURE_POLICY=test_package_unverified` 时可跳过 HMAC 比较（`sourceDigest` 与 `boundaryDigest` 仍必须匹配）。该策略**只能来自服务端环境，禁止由请求体控制**。
 - 冲突优先级：**用户明确肯定/否定 > 已签发模型推断**。无法消解的冲突必须阻断，不能静默选边。用户或权威上游数据改变后，旧边界必须失效并重新生成。
@@ -283,8 +292,9 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：**
 | `PARTIAL_REPAIR_DEBUG_DIR` | 已成功签发 repair plan 后的四阶段记录（trigger / prompt / response / result），单文件默认 ≤ 256 KiB |
 | `FULL_STORY_MODEL_OUTPUT_LOG_DIR` | Full Story primary / retry-repair / Beat–Scene postpass 的完整 completion `content`，metadata 含 `stage` |
 | `ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR` | Animation Plan 原始 completion，固定 `scope=animationPlan`，覆盖 Foundation、每批 shot、实际发生的语义修复与复审 |
+| `STAGE_MODEL_OUTPUT_LOG_DIR` | 共用 `generateValidatedJson` 的六个阶段（Analyze / Reconstruct / 创意简报 / 主题变体 / 角色与表达边界 / 人物参考精修）的原始 completion，按 stage 分 scope；成功与失败都记，失败判定复用 `classifyAttemptError` |
 
-统一约束：
+统一约束（第四套与前三套逐字同规格）：
 
 - **只写**目标 currentValue、结构化 diagnostics、最小 authority、拒绝原因、模型 completion content。**禁止写入**完整 Story/Foundation/Animation Plan（partial-repair 记录）、请求 Prompt、原始 HTTP envelope、Header、API Key、Cookie、Data URL、Base64 媒体。
 - 没有签发 plan 时不得创建 repair 记录；未发生的 repair 不得伪造记录。

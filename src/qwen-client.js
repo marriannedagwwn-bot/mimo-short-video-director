@@ -33,7 +33,8 @@ export class QwenClient {
     systemPrompt = null,
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
-    strictJson = false
+    strictJson = false,
+    onCompletion = null
   } = {}) {
     return this.requestJson({
       prompt,
@@ -42,7 +43,8 @@ export class QwenClient {
       systemPrompt,
       requestTimeoutMs,
       jsonRetryAttempts,
-      strictJson
+      strictJson,
+      onCompletion
     });
   }
 
@@ -56,7 +58,8 @@ export class QwenClient {
     onResolvedMediaMode = null,
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
-    strictJson = false
+    strictJson = false,
+    onCompletion = null
   } = {}) {
     const canUseVideo = Boolean(video?.dataUrl) && this.config.mediaMode !== "frames";
     try {
@@ -70,6 +73,7 @@ export class QwenClient {
         systemPrompt,
         requestTimeoutMs,
         strictJson,
+        onCompletion,
         jsonRetryAttempts: jsonRetryAttempts === null && canUseVideo && this.config.mediaMode === "auto" && frames.length > 0
           ? 0
           : jsonRetryAttempts
@@ -92,7 +96,8 @@ export class QwenClient {
         systemPrompt,
         requestTimeoutMs,
         jsonRetryAttempts,
-        strictJson
+        strictJson,
+        onCompletion
       });
       notifyResolvedMediaMode(onResolvedMediaMode, "frames");
       return result;
@@ -109,7 +114,8 @@ export class QwenClient {
     systemPrompt = null,
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
-    strictJson = false
+    strictJson = false,
+    onCompletion = null
   }) {
     const retryAttempts = jsonRetryAttempts === null
       ? Number.isFinite(Number(this.config.jsonRetryAttempts)) ? Number(this.config.jsonRetryAttempts) : 2
@@ -129,6 +135,7 @@ export class QwenClient {
         systemPrompt,
         requestTimeoutMs
       });
+      await notifyCompletion(onCompletion, completion);
       const content = completion.content;
       try {
         return strictJson
@@ -331,4 +338,14 @@ function retryTokenLimit(value) {
   const current = Number(value || 12288);
   if (!Number.isFinite(current)) return 16384;
   return Math.min(65536, Math.max(16384, Math.ceil(current * 1.35)));
+}
+
+// 只观测，不参与控制流：回调抛错或 reject 一律吞掉，日志 sidecar 不得改变模型调用的成败。
+async function notifyCompletion(onCompletion, completion) {
+  if (typeof onCompletion !== "function") return;
+  try {
+    await onCompletion(completion);
+  } catch {
+    // 观测失败必须 fail-open。
+  }
 }

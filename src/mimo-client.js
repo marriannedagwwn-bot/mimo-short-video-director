@@ -49,7 +49,8 @@ export class MimoClient {
     systemPrompt = null,
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
-    strictJson = false
+    strictJson = false,
+    onCompletion = null
   } = {}) {
     return this.generateJsonWithMedia({
       prompt,
@@ -59,7 +60,8 @@ export class MimoClient {
       systemPrompt,
       requestTimeoutMs,
       jsonRetryAttempts,
-      strictJson
+      strictJson,
+      onCompletion
     });
   }
 
@@ -73,7 +75,8 @@ export class MimoClient {
     onResolvedMediaMode = null,
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
-    strictJson = false
+    strictJson = false,
+    onCompletion = null
   }) {
     const canUseVideo = Boolean(video?.dataUrl) && this.config.mediaMode !== "frames";
     try {
@@ -87,6 +90,7 @@ export class MimoClient {
         systemPrompt,
         requestTimeoutMs,
         strictJson,
+        onCompletion,
         jsonRetryAttempts: jsonRetryAttempts === null && canUseVideo && this.config.mediaMode === "auto" && frames.length > 0
           ? 0
           : jsonRetryAttempts
@@ -109,7 +113,8 @@ export class MimoClient {
         systemPrompt,
         requestTimeoutMs,
         jsonRetryAttempts,
-        strictJson
+        strictJson,
+        onCompletion
       });
       notifyResolvedMediaMode(onResolvedMediaMode, "frames");
       return result;
@@ -126,7 +131,8 @@ export class MimoClient {
     systemPrompt = null,
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
-    strictJson = false
+    strictJson = false,
+    onCompletion = null
   }) {
     const retryAttempts = jsonRetryAttempts === null
       ? Number.isFinite(Number(this.config.jsonRetryAttempts)) ? Number(this.config.jsonRetryAttempts) : 2
@@ -146,6 +152,7 @@ export class MimoClient {
         systemPrompt,
         requestTimeoutMs
       });
+      await notifyCompletion(onCompletion, completion);
       const content = completion.content;
       try {
         return strictJson
@@ -353,4 +360,14 @@ export function parseSingleJsonObject(content, providerName = "模型") {
     );
   }
   return value;
+}
+
+// 只观测，不参与控制流：回调抛错或 reject 一律吞掉，日志 sidecar 不得改变模型调用的成败。
+async function notifyCompletion(onCompletion, completion) {
+  if (typeof onCompletion !== "function") return;
+  try {
+    await onCompletion(completion);
+  } catch {
+    // 观测失败必须 fail-open。
+  }
 }

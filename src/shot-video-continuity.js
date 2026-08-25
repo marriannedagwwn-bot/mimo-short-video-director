@@ -288,3 +288,88 @@ function unsafePreviousVideoError() {
     httpStatus: 409
   });
 }
+
+// 运行时参考素材清单：把服务端已经验证过的素材身份写进提示词正文。
+//
+// 只允许使用受控来源枚举、Plan 权威的 sourceCharacterName 和 lineage 解析出的
+// sourceShotId。**绝不能**写入 upload 素材的 name/logicalName——那是原始用户
+// 文件名，是这条链路上唯一的注入面。上传素材一律只写「用户上传的参考素材」。
+const REFERENCE_MEDIA_WORDS = Object.freeze({
+  image: "参考图",
+  video: "参考视频",
+  audio: "参考音频"
+});
+
+// 抽帧 Artifact 的 source 是单数形态；运行时开关常量是复数形态，两个都认。
+const PREVIOUS_SHOT_FRAME_SOURCE = "previous_shot_frame";
+const CONTROL_CHARACTER_PATTERN = /[\p{Cc}\p{Cf}]/gu;
+
+function manifestSafeTerm(value, maxLength) {
+  // Plan 权威值仍然过一遍消毒：控制字符和超长内容不该进提示词。
+  return String(value || "").replace(CONTROL_CHARACTER_PATTERN, "").trim().slice(0, maxLength);
+}
+
+function manifestGroupKey(artifact = {}) {
+  return [
+    String(artifact.mediaType || ""),
+    String(artifact.source || ""),
+    manifestSafeTerm(artifact.sourceCharacterName, 40),
+    manifestSafeTerm(artifact.sourceShotId, 16)
+  ].join(" ");
+}
+
+function manifestClause(artifact, label) {
+  const source = String(artifact.source || "");
+  if ([PREVIOUS_SHOT_FRAME_SOURCE, SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES].includes(source)) {
+    const shotId = manifestSafeTerm(artifact.sourceShotId, 16) || "上一镜";
+    return `${label} 是上一镜 ${shotId} 的均匀抽帧，只用于承接角色外观、服装、道具与场景状态，不要复制它的构图与动作`;
+  }
+  if (source === "character_reference") {
+    const name = manifestSafeTerm(artifact.sourceCharacterName, 40);
+    return name
+      ? `${label} 是「${name}」的角色参考图，只用于锁定该角色的长相与服装`
+      : `${label} 是角色参考图，只用于锁定角色的长相与服装`;
+  }
+  if (source === "workflow_start_frame") return `${label} 是本镜已选的首帧画面，只作普通参考`;
+  if (source === "workflow_end_frame") return `${label} 是本镜已选的尾帧画面，只作普通参考`;
+  return `${label} 是用户上传的参考素材`;
+}
+
+/**
+ * Builds the deterministic reference manifest prepended to the runtime video prompt.
+ * Input is the already-assembled, already-validated artifact list; ordering and
+ * numbering come from that array so the text always matches what the provider receives.
+ */
+export function buildReferenceManifestText(inputArtifacts = []) {
+  const artifacts = Array.isArray(inputArtifacts) ? inputArtifacts : [];
+  const perTypeCount = { image: 0, video: 0, audio: 0 };
+  const numbered = [];
+  for (const artifact of artifacts) {
+    const mediaType = String(artifact?.mediaType || "");
+    if (!Object.hasOwn(REFERENCE_MEDIA_WORDS, mediaType)) continue;
+    perTypeCount[mediaType] += 1;
+    numbered.push({ artifact, mediaType, index: perTypeCount[mediaType] });
+  }
+  if (!numbered.length) return "";
+
+  const clauses = [];
+  let run = null;
+  const flush = () => {
+    if (!run) return;
+    const word = REFERENCE_MEDIA_WORDS[run.mediaType];
+    const label = run.first === run.last ? `${word}${run.first}` : `${word}${run.first}-${run.last}`;
+    clauses.push(manifestClause(run.artifact, label));
+    run = null;
+  };
+  for (const entry of numbered) {
+    const key = manifestGroupKey(entry.artifact);
+    if (run && run.key === key && entry.index === run.last + 1) {
+      run.last = entry.index;
+      continue;
+    }
+    flush();
+    run = { key, mediaType: entry.mediaType, artifact: entry.artifact, first: entry.index, last: entry.index };
+  }
+  flush();
+  return `本次提供的参考素材：${clauses.join("；")}。`;
+}

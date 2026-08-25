@@ -201,3 +201,21 @@ test("日志目录不可写时 fail-open 并只产生脱敏告警", async (t) =>
   assert.equal(warnings.length, 1);
   assert.doesNotMatch(warnings[0], /PRIVATE_MODEL_OUTPUT/u);
 });
+
+
+test("阶段模型输出日志接受六个工作流 scope，非法 scope 仍拒绝", () => {
+  for (const scope of [
+    MODEL_OUTPUT_LOG_SCOPES.ANALYSIS,
+    MODEL_OUTPUT_LOG_SCOPES.RECONSTRUCTION,
+    MODEL_OUTPUT_LOG_SCOPES.BRIEF,
+    MODEL_OUTPUT_LOG_SCOPES.VARIANTS,
+    MODEL_OUTPUT_LOG_SCOPES.VISUAL_GUARDRAILS,
+    MODEL_OUTPUT_LOG_SCOPES.CHARACTER_REFERENCE
+  ]) {
+    const writer = new FullModelOutputLogWriter({ scope, outputRoot: "" });
+    assert.equal(writer.scope, scope);
+    // 没有配置 outputRoot 就是完全关闭，不创建任何目录。
+    assert.equal(writer.enabled, false);
+  }
+  assert.throws(() => new FullModelOutputLogWriter({ scope: "notAStage" }), TypeError);
+});

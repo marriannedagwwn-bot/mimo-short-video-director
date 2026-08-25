@@ -5,7 +5,13 @@ import { createHash, randomUUID } from "node:crypto";
 export const FULL_MODEL_OUTPUT_LOG_SCHEMA_VERSION = "full-model-output-log/1.0";
 export const MODEL_OUTPUT_LOG_SCOPES = Object.freeze({
   FULL_STORY: "fullStory",
-  ANIMATION_PLAN: "animationPlan"
+  ANIMATION_PLAN: "animationPlan",
+  ANALYSIS: "analysis",
+  RECONSTRUCTION: "reconstruction",
+  BRIEF: "brief",
+  VARIANTS: "variants",
+  VISUAL_GUARDRAILS: "visualGuardrails",
+  CHARACTER_REFERENCE: "characterReference"
 });
 
 export async function resolvePrivateModelOutputLogRoot({
@@ -192,7 +198,7 @@ function logContext(value, scope) {
 function requireModelOutputLogScope(value) {
   const scope = String(value || "").trim();
   if (!Object.values(MODEL_OUTPUT_LOG_SCOPES).includes(scope)) {
-    throw new TypeError("模型全量输出日志 scope 只允许 fullStory 或 animationPlan");
+    throw new TypeError(`模型全量输出日志 scope 只允许 ${Object.values(MODEL_OUTPUT_LOG_SCOPES).join(" / ")}`);
   }
   return scope;
 }

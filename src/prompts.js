@@ -1396,6 +1396,14 @@ export function characterReferenceRefinePrompt(input) {
   const boundaryConstraint = fixedBoundaryApplies
     ? "appearancePrompt 必须完整保留全局角色边界 requiredTraits；参考图只能补充不冲突的发型、服装和色彩，不得重新推断、删除、替换或新增固定角色事实。"
     : "当前项不是固定角色；只保持该角色已有 identity 与 appearancePrompt，不得套用固定角色的 requiredTraits。";
+  // 冲突优先级分两档：固定角色以已签发边界为准；配角的文字设定本身是模型推断产物，
+  // 而上传参考图是用户的明确动作，按“用户明确肯定/否定 > 已签发模型推断”以图为准。
+  const conflictPolicy = fixedBoundaryApplies
+    ? "如果参考图与文字设定冲突，以文字设定和用户固定角色为准，只吸收安全的视觉细节。"
+    : "如果参考图与该角色的文字设定冲突，以参考图为准：按图改写 appearancePrompt、consistencyTags 和 forbiddenChanges。即使图里明显是另一种角色（物种、性别、年龄或整体形象都不同），也必须照图改写，不得以“与当前角色不符”为由放弃采用这张图。characterName 不变，storyRole 承担的剧情功能与角色关系也不变——变的只是外观。";
+  const overrideNoticeInstruction = fixedBoundaryApplies
+    ? "固定角色不允许被参考图覆盖，referenceImageOverrideNotice 必须是空字符串。"
+    : "referenceImageOverrideNotice：如果按参考图改写覆盖了原有文字设定，用一句话写清楚覆盖了什么、原设定是什么；没有覆盖时留空字符串。";
   const visualGuardrailsText = formatVisualGuardrailsForPrompt(input.visualGuardrails, {
     includeSourceSimilarityRules: false
   });
@@ -1406,7 +1414,7 @@ export function characterReferenceRefinePrompt(input) {
 目标：
 - 让 appearancePrompt 更贴近参考图中的人物外观、服装、发型、色彩和可稳定复现的视觉特征。
 - 保持原剧情身份、角色关系和固定角色设定，不要改剧情、不要换角色、不要新增无关设定。
-- 如果参考图与文字设定冲突，以文字设定和用户固定角色为准，只吸收安全的视觉细节。
+- ${conflictPolicy}
 
 固定角色：${input.creatorProfile?.fixedCharacter || "未指定"}
 垂直赛道：${input.creatorProfile?.vertical || "未指定"}
@@ -1439,10 +1447,12 @@ AI 视觉负面提示词通用规则：${visualGuardrailsText}
   "appearancePrompt":"",
   "consistencyTags":[],
   "forbiddenChanges":[],
-  "referenceImageNotes":""
+  "referenceImageNotes":"",
+  "referenceImageOverrideNotice":""
 }
 
-referenceImageNotes 简要说明从参考图吸收了哪些稳定视觉信息；不要描述隐私、不要猜测真实身份。${JSON_ONLY}`;
+referenceImageNotes 简要说明从参考图吸收了哪些稳定视觉信息；不要描述隐私、不要猜测真实身份。
+${overrideNoticeInstruction}${JSON_ONLY}`;
 }
 
 function formatTime(seconds) {
