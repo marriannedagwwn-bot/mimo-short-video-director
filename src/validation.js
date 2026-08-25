@@ -2376,18 +2376,49 @@ export function parseSceneTimeRangeSeconds(timeRange) {
 
 // 返回空字符串表示合规；非空字符串就是唯一的偏差描述。
 // 角色参考阶段只提醒不阻断，成片渲染阶段仍由 ensure* 包装器硬失败。
-export function characterReferenceBoundaryMismatch(value, visualGuardrails = null) {
-  const boundary = visualGuardrails?.fixedCharacterBoundary;
-  if (!boundary || String(value?.characterName || "").trim() !== String(boundary.characterName || "").trim()) return "";
-  const fields = [
+// 判定与补写必须共用同一份扫描口径：补写要补的，就是判定要查的那几个字段。
+// 两边各写一份必然漂移，那正是「判定规则只有一份」要防的事。
+function characterReferenceBoundaryScanFields(value = {}) {
+  return [
     value.characterName,
     value.storyRole,
     value.identity,
     value.appearancePrompt,
     ...(Array.isArray(value.consistencyTags) ? value.consistencyTags : [])
   ].filter(Boolean).join("\n");
+}
+
+// 返回这条角色参考缺失的全局必需事实（exact canonicalName）。非固定角色恒为空数组，
+// 与 characterReferenceBoundaryMismatch 的短路口径一致。
+export function characterReferenceMissingRequiredTraits(value, visualGuardrails = null) {
+  return missingRequiredTraitEntries(value, visualGuardrails).map((trait) => trait.canonicalName);
+}
+
+// 可由服务端确定性补回的缺失事实：**只包含非 appearance scope**。
+// 外观必需事实缺失意味着模型真的把长相写错了（比如把狼耳少女写成短发儿童），
+// 补一个标签不会让图里长出狼耳——那种情况必须继续提醒，并在成片渲染前硬失败。
+// 身份、性格、职业、剧情功能这类事实天然不属于给图像模型的外观描述，判定又同时扫
+// identity 与 consistencyTags，把它们补回标签是如实记账，不是掩盖。
+export function characterReferenceRestorableMissingTraits(value, visualGuardrails = null) {
+  return missingRequiredTraitEntries(value, visualGuardrails)
+    .filter((trait) => trait.scope !== "appearance")
+    .map((trait) => trait.canonicalName);
+}
+
+function missingRequiredTraitEntries(value, visualGuardrails = null) {
+  const boundary = visualGuardrails?.fixedCharacterBoundary;
+  if (!boundary || String(value?.characterName || "").trim() !== String(boundary.characterName || "").trim()) return [];
+  const fields = characterReferenceBoundaryScanFields(value);
+  const missing = new Set(findMissingGlobalCharacterTraits(fields, boundary.requiredTraits));
+  return (boundary.requiredTraits || []).filter((trait) => missing.has(trait?.canonicalName));
+}
+
+export function characterReferenceBoundaryMismatch(value, visualGuardrails = null) {
+  const boundary = visualGuardrails?.fixedCharacterBoundary;
+  if (!boundary || String(value?.characterName || "").trim() !== String(boundary.characterName || "").trim()) return "";
+  const fields = characterReferenceBoundaryScanFields(value);
   const forbiddenHits = findTerms(fields, collectGlobalCharacterForbiddenTerms(visualGuardrails));
-  const missingRequiredTraits = findMissingGlobalCharacterTraits(fields, boundary.requiredTraits);
+  const missingRequiredTraits = characterReferenceMissingRequiredTraits(value, visualGuardrails);
   const mismatches = [];
   if (forbiddenHits.length) mismatches.push(`混入全局边界禁止特征：${forbiddenHits.join("、")}`);
   if (missingRequiredTraits.length) mismatches.push(`缺少全局必需角色事实：${missingRequiredTraits.join("、")}`);

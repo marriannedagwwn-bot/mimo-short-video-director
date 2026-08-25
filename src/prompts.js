@@ -1393,6 +1393,11 @@ export function characterReferenceRefinePrompt(input) {
   const visualPolicyText = fixedBoundaryApplies
     ? globalCharacterBoundaryText(input.visualGuardrails)
     : "当前参考项不是固定角色；不得把固定角色边界移植到该配角。";
+  // 校验是字面比对，不是语义比对：把每条必需事实的可接受词逐条列出来，模型才知道
+  // 「穿着适合户外写生的村民服装」改写成具体衣物时会把「村民」这个身份词一起弄丢。
+  const requiredTraitTermsText = fixedBoundaryApplies
+    ? formatRequiredTraitTermsForPrompt(input.visualGuardrails)
+    : "";
   const boundaryConstraint = fixedBoundaryApplies
     ? "appearancePrompt 必须完整保留全局角色边界 requiredTraits；参考图只能补充不冲突的发型、服装和色彩，不得重新推断、删除、替换或新增固定角色事实。"
     : "当前项不是固定角色；只保持该角色已有 identity 与 appearancePrompt，不得套用固定角色的 requiredTraits。";
@@ -1437,7 +1442,7 @@ AI 视觉负面提示词通用规则：${visualGuardrailsText}
     ? "不得把固定角色改成其签发边界禁止的身份或外观；来源角色组合只可作为独立配角，不能覆盖固定角色。"
     : "当前项是非固定角色；可以保留其已有企鹅装、玩偶感、职业或其他来源外观，不得仅因它与原片相似就删除或替换。"}
 - ${boundaryConstraint}
-- forbiddenChanges 应包含“不要偏离参考图中的人物外观”和必要的一致性禁止项。
+- forbiddenChanges 应包含“不要偏离参考图中的人物外观”和必要的一致性禁止项。${requiredTraitTermsText}
 
 输出结构：
 {
@@ -1453,6 +1458,21 @@ AI 视觉负面提示词通用规则：${visualGuardrailsText}
 
 referenceImageNotes 简要说明从参考图吸收了哪些稳定视觉信息；不要描述隐私、不要猜测真实身份。
 ${overrideNoticeInstruction}${JSON_ONLY}`;
+}
+
+// 必需事实的可接受词表，逐条列给模型。下游是字面 includes 判定，同义改写会被判成缺失；
+// 身份、性格、剧情功能这类词天然不属于外观描述，所以明确允许写进 identity 或 consistencyTags。
+function formatRequiredTraitTermsForPrompt(visualGuardrails) {
+  const traits = visualGuardrails?.fixedCharacterBoundary?.requiredTraits;
+  if (!Array.isArray(traits) || !traits.length) return "";
+  const lines = traits.map((trait) => {
+    const terms = Array.isArray(trait?.terms) && trait.terms.length ? trait.terms : [trait?.canonicalName];
+    return `  · ${String(trait?.canonicalName || "")}（可接受写法：${terms.filter(Boolean).join(" / ")}）`;
+  });
+  return `
+- 下列每一条全局必需角色事实，都必须在 appearancePrompt、identity 或 consistencyTags 里**至少逐字出现一个**可接受写法。校验是字面比对，换成同义表达会被判定为缺失：
+${lines.join("\n")}
+- 身份、性格、剧情功能类的事实不必硬塞进外观描述，写进 identity 或 consistencyTags 同样算数。`;
 }
 
 function formatTime(seconds) {

@@ -1405,6 +1405,149 @@ test("配角人物参考精修以参考图为准，覆盖提醒只用于展示",
   assert.equal(persisted.characterName, "橘色小猫");
 });
 
+test("精修丢掉身份类必需事实时，服务端按签发顺序补回一致性标签并如实提醒", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，狼耳少女，儿童，学生/村民，村里的热心帮手",
+    constraints: "保持治愈风格",
+    vertical: "温馨/日常/治愈"
+  };
+  // 真实场景：参考图精修把「穿着适合户外写生的村民服装」换成照片里的具体衣物，
+  // identity 类的「村民」两个字就没了，而判定是字面比对。
+  const rewrittenAppearance = "参考图中的小白子，狼耳与狼尾保持灰白色，白色衬衫、蓝色领带、黑色百褶短裙、黑色过膝袜。";
+  const workflow = new WorkflowService({
+    client: {
+      async generateJsonWithMedia() {
+        return {
+          characterName: "小白子",
+          storyRole: "主角",
+          identity: "狼耳少女",
+          appearancePrompt: rewrittenAppearance,
+          consistencyTags: ["狼耳", "狼尾", "白色衬衫"],
+          forbiddenChanges: ["不要变成成人"],
+          referenceImageNotes: "吸收参考图中的服装配色。"
+        };
+      }
+    }
+  });
+  const boundary = xiaobaiziBoundary();
+  boundary.requiredTraits.push(boundaryTrait("学生或村民身份", ["学生", "村民"], "identity"));
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const context = globalBoundaryContext(workflow, {
+    imageName: "xiaobaizi.png",
+    imageDataUrl: "data:image/png;base64,AA==",
+    creatorProfile,
+    creativeBrief,
+    selectedVariant: { id: "V1", title: "风车与彩虹" },
+    fullStory: { title: "风车与彩虹" },
+    characterReference: {
+      characterName: "小白子",
+      storyRole: "主角",
+      identity: "狼耳少女",
+      appearancePrompt: "小白子，狼耳少女，带狼尾，穿着适合户外写生的村民服装。",
+      consistencyTags: ["狼耳", "狼尾"],
+      forbiddenChanges: ["不要变成成人"]
+    }
+  }, boundary);
+
+  const result = await workflow.refineCharacterReference(context);
+
+  // 外观逐字冻结，只在标签尾部追加 exact canonicalName。
+  assert.equal(result.appearancePrompt, rewrittenAppearance);
+  assert.deepEqual(result.consistencyTags, ["狼耳", "狼尾", "白色衬衫", "学生或村民身份"]);
+  // 补回之后不再报缺失，成片渲染链路也不会再被这条拦下。
+  assert.equal(Object.hasOwn(result, "boundaryWarning"), false);
+  assert.doesNotThrow(() => ensureCharacterReferenceMatchesBoundary(
+    (({ boundaryRestoreNotice, ...rest }) => rest)(result),
+    context.visualGuardrails
+  ));
+  // 服务端改了模型输出就必须说出来，而且只用于展示。
+  assert.match(result.boundaryRestoreNotice, /学生或村民身份/u);
+  const { boundaryRestoreNotice, ...persisted } = result;
+  assert.equal(Object.hasOwn(persisted, "boundaryRestoreNotice"), false);
+});
+
+test("外观类必需事实缺失不会被补标签顶替，仍然提醒并在渲染前硬失败", async () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，狼耳少女，儿童体型",
+    constraints: "保持治愈风格",
+    vertical: "温馨/日常/治愈"
+  };
+  const workflow = new WorkflowService({
+    client: {
+      async generateJsonWithMedia() {
+        return {
+          characterName: "小白子",
+          storyRole: "主角",
+          // 把狼耳少女写成了短发儿童：这是真的把长相写错了，补标签不会让图里长出狼耳。
+          appearancePrompt: "参考图中的小白子，短发，粉色上衣和蓝色背带裙，儿童比例。",
+          consistencyTags: ["短发", "粉色上衣"],
+          forbiddenChanges: ["不要变成成人"],
+          referenceImageNotes: "吸收参考图中的服装配色。"
+        };
+      }
+    }
+  });
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
+  const context = globalBoundaryContext(workflow, {
+    imageName: "xiaobaizi.png",
+    imageDataUrl: "data:image/png;base64,AA==",
+    creatorProfile,
+    creativeBrief,
+    selectedVariant: { id: "V1", title: "风车与彩虹" },
+    fullStory: { title: "风车与彩虹" },
+    characterReference: {
+      characterName: "小白子",
+      storyRole: "主角",
+      identity: "狼耳少女",
+      appearancePrompt: "小白子，狼耳少女，带狼尾。",
+      consistencyTags: ["狼耳", "狼尾"],
+      forbiddenChanges: ["不要变成成人"]
+    }
+  }, xiaobaiziBoundary());
+
+  const result = await workflow.refineCharacterReference(context);
+
+  assert.equal(Object.hasOwn(result, "boundaryRestoreNotice"), false);
+  assert.deepEqual(result.consistencyTags, ["短发", "粉色上衣"]);
+  // 缺的是 appearance scope 的狼尾（狼耳由沿用下来的 identity「狼耳少女」满足），不补标签。
+  assert.match(result.boundaryWarning, /缺少全局必需角色事实：狼尾/u);
+  // 同一份内容进入成片渲染链路仍然硬失败。
+  assert.throws(
+    () => ensureCharacterReferenceMatchesBoundary(
+      (({ boundaryWarning, ...rest }) => rest)(result),
+      context.visualGuardrails
+    ),
+    OutputContractError
+  );
+});
+
+test("固定角色的精修提示词逐条列出必需事实的可接受写法，配角不列", () => {
+  const creatorProfile = {
+    fixedCharacter: "小白子，狼耳少女，学生/村民",
+    constraints: "",
+    vertical: "温馨/日常/治愈"
+  };
+  const workflow = new WorkflowService({ client: {} });
+  const boundary = xiaobaiziBoundary();
+  boundary.requiredTraits.push(boundaryTrait("学生或村民身份", ["学生", "村民"], "identity"));
+  const context = globalBoundaryContext(workflow, { creatorProfile }, boundary);
+
+  const fixedPrompt = characterReferenceRefinePrompt({
+    ...context,
+    characterReference: { characterName: "小白子", appearancePrompt: "小白子，狼耳少女。" }
+  });
+  assert.match(fixedPrompt, /校验是字面比对，换成同义表达会被判定为缺失/u);
+  assert.match(fixedPrompt, /学生或村民身份（可接受写法：学生或村民身份 \/ 学生 \/ 村民）/u);
+  assert.match(fixedPrompt, /写进 identity 或 consistencyTags 同样算数/u);
+
+  // 配角不参与全局角色边界判定，不该收到这份词表。
+  const supportingPrompt = characterReferenceRefinePrompt({
+    ...context,
+    characterReference: { characterName: "橘色小猫", appearancePrompt: "瘦小的橘色小猫。" }
+  });
+  assert.doesNotMatch(supportingPrompt, /校验是字面比对/u);
+});
+
 test("固定角色人物参考精修不接受参考图覆盖，也不沿用上一版提醒", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，狼耳少女，儿童体型",

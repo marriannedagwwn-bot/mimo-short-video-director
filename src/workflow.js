@@ -34,7 +34,7 @@ import { randomUUID } from "node:crypto";
 import { ModelCallCoordinator, classifyAttemptError } from "./model-call-coordinator.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText } from "./validation.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText } from "./validation.js";
 import {
   deriveDirectShotSkeleton,
   directShotSkeletonForScenes,
@@ -1707,9 +1707,24 @@ function normalizeCharacterReference(result = {}, fallback = {}, input = {}) {
     : String(value.referenceImageOverrideNotice || "").trim();
   // 提醒只描述本次这一步，绝不从上一版角色参考沿用。
   delete normalized.referenceImageOverrideNotice;
+  delete normalized.boundaryRestoreNotice;
+  // 精修可以按参考图改写外观，但不得因此丢掉全局必需角色事实——「穿着适合户外写生的村民
+  // 服装」被换成具体衣物时，identity 类的「村民」就没了，而判定是字面比对。缺哪条就在
+  // consistencyTags 尾部按签发顺序补它的 exact canonicalName：冻结 appearancePrompt，
+  // 不用同义词、不重排、不改写外观，与 Foundation 局部纠错同一条最小补写语义。
+  // 缺失清单来自与判定共用的扫描口径，不另建。只补非 appearance 事实：外观写错了
+  // 必须继续提醒并在渲染前硬失败，补标签不能顶替把长相写对。
+  const restoredRequiredTraits = characterReferenceRestorableMissingTraits(normalized, input.visualGuardrails);
+  if (restoredRequiredTraits.length) {
+    normalized.consistencyTags = [...normalized.consistencyTags, ...restoredRequiredTraits];
+  }
   const boundaryWarning = characterReferenceBoundaryMismatch(normalized, input.visualGuardrails);
   if (boundaryWarning) normalized.boundaryWarning = `模型输出未通过校验：${boundaryWarning}`;
   if (referenceImageOverrideNotice) normalized.referenceImageOverrideNotice = referenceImageOverrideNotice;
+  // 服务端改了模型输出就必须说出来，不做静默修补。
+  if (restoredRequiredTraits.length) {
+    normalized.boundaryRestoreNotice = `模型改写外观时丢了全局必需角色事实，已按签发顺序补进一致性标签：${restoredRequiredTraits.join("、")}`;
+  }
   return normalized;
 }
 

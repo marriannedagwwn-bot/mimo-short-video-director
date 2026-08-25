@@ -2178,9 +2178,9 @@ async function refineCharacterReferenceWithImage(indexValue, file) {
       }
     });
     assertCurrentProductionRequest(planToken);
-    // boundaryWarning 与 referenceImageOverrideNotice 只用于提醒展示，绝不写进 Plan Artifact。
-    const { boundaryWarning = "", referenceImageOverrideNotice = "", ...refinedFields } = refined || {};
-    const refineNotice = [referenceImageOverrideNotice, boundaryWarning].filter(Boolean).join("；");
+    // 这三个都只用于提醒展示，绝不写进 Plan Artifact。
+    const { boundaryWarning = "", referenceImageOverrideNotice = "", boundaryRestoreNotice = "", ...refinedFields } = refined || {};
+    const refineNotice = [referenceImageOverrideNotice, boundaryRestoreNotice, boundaryWarning].filter(Boolean).join("；");
     const updatedPlan = structuredClone(plan);
     const previousInPlan = updatedPlan.characterReferencePrompts[index];
     const updated = {
