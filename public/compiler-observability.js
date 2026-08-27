@@ -62,6 +62,7 @@ export class ApiRequestError extends Error {
     this.category = normalized.category || "";
     this.metadata = isRecord(normalized.metadata) ? normalized.metadata : null;
     this.code = normalized.code || normalized.errorCode || "";
+    this.details = Array.isArray(normalized.details) ? normalized.details : [];
   }
 }
 

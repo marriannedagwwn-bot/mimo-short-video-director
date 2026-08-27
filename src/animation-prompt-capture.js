@@ -71,6 +71,7 @@ export class AnimationPromptCapture {
       sequence: 0,
       promptCount: 0,
       promptPhaseCounts: new Map(),
+      modelOutputAttempts: [],
       traceContext: modelOutputTraceContext(metadata.traceContext, metadata.variantId),
       metadata: {
         route: String(metadata.route || "/api/animation-plan"),
@@ -93,6 +94,7 @@ export class AnimationPromptCapture {
     return this.storage.run(context, async () => {
       try {
         const result = await callback({ captureId, directory });
+        await this.finalizeModelOutputAttempts(context, { status: "passed" });
         if (this.enabled) {
           await writeJsonAtomic(path.join(directory, "session-complete.json"), {
             captureVersion: CAPTURE_VERSION,
@@ -104,7 +106,9 @@ export class AnimationPromptCapture {
         }
         return result;
       } catch (error) {
+        await this.finalizeModelOutputAttempts(context, { status: "failed", error });
         if (this.enabled) {
+          const failure = modelOutputFailure(error);
           await writeJsonAtomic(path.join(directory, "session-complete.json"), {
             captureVersion: CAPTURE_VERSION,
             captureId,
@@ -112,7 +116,8 @@ export class AnimationPromptCapture {
             status: "rejected",
             promptCount: context.promptCount,
             errorName: String(error?.name || "Error"),
-            errorMessage: String(error?.message || error)
+            code: failure.code,
+            diagnostics: failure.diagnostics
           });
         }
         throw error;
@@ -192,7 +197,9 @@ export class AnimationPromptCapture {
     if (!this.modelOutputLoggingEnabled) return;
     try {
       const projection = await safeCompletionProjection(response);
-      await this.writeModelOutputAttempt(call, projection);
+      const recordRef = await this.writeModelOutputAttempt(call, projection);
+      const context = this.storage.getStore();
+      if (context && recordRef) context.modelOutputAttempts.push({ call, projection, recordRef });
     } catch {
       this.onWarning("Animation Plan 模型输出观测失败（日志已跳过）");
     }
@@ -201,7 +208,7 @@ export class AnimationPromptCapture {
   async captureTransportFailure(call, error) {
     if (!this.modelOutputLoggingEnabled) return;
     try {
-      await this.writeModelOutputAttempt(call, {
+      const projection = {
         contentPresent: false,
         content: "",
         providerRequestId: "",
@@ -210,7 +217,10 @@ export class AnimationPromptCapture {
         status: "failed",
         category: "transport",
         code: "MODEL_TRANSPORT_ERROR"
-      });
+      };
+      const recordRef = await this.writeModelOutputAttempt(call, projection);
+      const context = this.storage.getStore();
+      if (context && recordRef) context.modelOutputAttempts.push({ call, projection, recordRef });
     } catch {
       this.onWarning("Animation Plan 模型输出观测失败（日志已跳过）");
     }
@@ -242,6 +252,51 @@ export class AnimationPromptCapture {
       contentPresent: projection.contentPresent,
       content: projection.content
     });
+  }
+
+  async finalizeModelOutputAttempts(context, { status, error = null } = {}) {
+    if (!this.modelOutputLoggingEnabled
+      || typeof this.modelOutputLogWriter.finalizeAttempt !== "function") return;
+    const attempts = Array.isArray(context?.modelOutputAttempts)
+      ? context.modelOutputAttempts
+      : [];
+    for (let index = 0; index < attempts.length; index += 1) {
+      const attempt = attempts[index];
+      const next = attempts[index + 1] || null;
+      let result;
+      if (attempt.projection.status === "failed") {
+        result = {
+          validationStatus: "failed",
+          errorName: "ModelResponseError",
+          category: attempt.projection.category,
+          code: attempt.projection.code,
+          diagnostics: []
+        };
+      } else if (next && validationRetryTransition(next.call.label)) {
+        const diagnostics = semanticAuditDiagnosticsFromCompletion(
+          attempt.call.label,
+          attempt.projection.content
+        );
+        result = {
+          validationStatus: "failed",
+          errorName: diagnostics.length ? "SemanticAuditFailure" : "OutputContractError",
+          category: "output-contract",
+          code: diagnostics[0]?.code || "OUTPUT_CONTRACT_INVALID",
+          diagnostics
+        };
+      } else if (index === attempts.length - 1 && status === "failed") {
+        result = modelOutputFailure(error);
+      } else {
+        result = {
+          validationStatus: "passed",
+          errorName: "",
+          category: "success",
+          code: "MODEL_COMPLETION_ACCEPTED",
+          diagnostics: []
+        };
+      }
+      await this.modelOutputLogWriter.finalizeAttempt(attempt.recordRef, result).catch(() => {});
+    }
   }
 }
 
@@ -373,6 +428,69 @@ function classifyPromptPhase(label, phaseCounts) {
     return label.replace(/-semantic-audit$/u, "-semantic-re-audit");
   }
   return label;
+}
+
+function validationRetryTransition(nextLabel) {
+  return [
+    "provider-json-retry",
+    "animation-foundation-validation-retry",
+    "animation-foundation-partial-repair",
+    "animation-shot-batch-second-pass",
+    "animation-shot-prompt-partial-repair",
+    "animation-artifact-partial-repair",
+    "animation-video-prompt-semantic-repair"
+  ].includes(String(nextLabel || ""));
+}
+
+function semanticAuditDiagnosticsFromCompletion(label, content) {
+  if (!String(label || "").includes("semantic-audit")) return [];
+  let value;
+  try {
+    value = JSON.parse(String(content || ""));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(value?.shots)) return [];
+  return value.shots.flatMap((shot, shotIndex) => (
+    Array.isArray(shot?.issues) ? shot.issues.map((issue) => ({
+      code: String(issue?.relation || "ANIMATION_VIDEO_PROMPT_SEMANTIC_CONFLICT"),
+      jsonPointer: `/shotPlan/${shotIndex}/${escapeJsonPointerToken(issue?.field)}`,
+      reason: redactSensitiveDiagnosticText(
+        issue?.productionImpact || issue?.relation || "视频提示词语义审计未通过"
+      )
+    })) : []
+  ));
+}
+
+function modelOutputFailure(error) {
+  const details = Array.isArray(error?.diagnostics)
+    ? error.diagnostics
+    : (Array.isArray(error?.details) ? error.details : []);
+  const diagnostics = details.map((detail) => ({
+    code: String(detail?.code || detail?.errorCode || "VALIDATION_ERROR"),
+    jsonPointer: String(detail?.jsonPointer || (String(detail?.path || "").startsWith("/") ? detail.path : "")),
+    reason: redactSensitiveDiagnosticText(
+      detail?.reason || detail?.message || detail?.code || "校验失败"
+    )
+  }));
+  return {
+    validationStatus: "failed",
+    errorName: String(error?.name || "Error"),
+    category: String(error?.category || "output-contract"),
+    code: String(diagnostics[0]?.code || error?.code || "OUTPUT_CONTRACT_INVALID"),
+    diagnostics
+  };
+}
+
+function escapeJsonPointerToken(value) {
+  return String(value || "").replaceAll("~", "~0").replaceAll("/", "~1");
+}
+
+function redactSensitiveDiagnosticText(value) {
+  return String(value || "")
+    .replace(/data:[A-Za-z0-9.+-]+\/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gu, "[data-url-redacted]")
+    .replace(/[A-Za-z0-9+/]{80,}={0,2}/gu, "[base64-redacted]")
+    .slice(0, 2_000);
 }
 
 function compactTimestamp(value) {

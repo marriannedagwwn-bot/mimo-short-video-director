@@ -9,6 +9,7 @@ import {
   FullModelOutputLogWriter,
   MODEL_OUTPUT_LOG_SCOPES
 } from "../src/full-model-output-log.js";
+import { OutputContractError } from "../src/validation.js";
 
 test("animation prompt capture 保存 wire-effective prompt 且不记录请求头或媒体", async (t) => {
   const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), "animation-prompt-capture-"));
@@ -185,12 +186,63 @@ test("Animation Plan output-only 模式保存 exact completion 且不落 Prompt�
   assert.equal(metadata.production.productionRequestId, "production-request-a");
   assert.equal(metadata.attempt.phase, "animation-shot-batch");
   assert.equal(metadata.attempt.sequence, 1);
+  assert.equal(metadata.attempt.validationStatus, "passed");
   assert.equal(metadata.provider.name, "Qwen");
   assert.equal(metadata.provider.providerRequestId, "provider-request-id");
   assert.doesNotMatch(
     `${metadataText}\n${await fs.readFile(outputPath, "utf8")}`,
     /MUST_NOT_BE_LOGGED|SYSTEM_PROMPT_MUST_NOT_BE_LOGGED|USER_PROMPT_MUST_NOT_BE_LOGGED/u
   );
+});
+
+test("Animation Plan 失败 attempt 记录稳定诊断与 build identity 且 metadata 不落敏感负载", async (t) => {
+  const modelOutputRoot = await fs.mkdtemp(path.join(os.tmpdir(), "animation-model-output-failed-"));
+  t.after(() => fs.rm(modelOutputRoot, { recursive: true, force: true }));
+  const writer = new FullModelOutputLogWriter({
+    outputRoot: modelOutputRoot,
+    scope: MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN,
+    gitCommit: "abcdef1234567890",
+    buildId: "animation-test-build"
+  });
+  const capture = new AnimationPromptCapture({ modelOutputLogWriter: writer });
+  const capturedFetch = capture.wrapFetch(async () => new Response(JSON.stringify({
+    choices: [{ message: { content: "{\"shotPlan\":[]}" }, finish_reason: "stop" }]
+  }), { status: 200 }));
+
+  await assert.rejects(
+    () => capture.run({ variantId: "V1" }, async () => {
+      await capturedFetch("https://provider.example/v1/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({
+          model: "test-model",
+          messages: [{ role: "user", content: "直接视频镜头批次" }]
+        })
+      });
+      throw new OutputContractError("镜头校验失败", [{
+        code: "DIRECT_SHOT_TEST_FAILURE",
+        jsonPointer: "/shotPlan/0/videoPrompt",
+        reason: "提示词与签发事实冲突",
+        boundarySignature: "MUST_NOT_BE_LOGGED_SIGNATURE",
+        referenceImageDataUrl: "data:image/png;base64,MUST_NOT_BE_LOGGED_DATA_URL"
+      }]);
+    }),
+    /镜头校验失败/u
+  );
+
+  const files = await recursiveFiles(modelOutputRoot);
+  const metadataPath = files.find((file) => file.endsWith("metadata.json"));
+  const metadataText = await fs.readFile(metadataPath, "utf8");
+  const metadata = JSON.parse(metadataText);
+  assert.equal(metadata.gitCommit, "abcdef1234567890");
+  assert.equal(metadata.buildId, "animation-test-build");
+  assert.equal(metadata.attempt.validationStatus, "failed");
+  assert.equal(metadata.attempt.errorName, "OutputContractError");
+  assert.deepEqual(metadata.attempt.diagnostics, [{
+    code: "DIRECT_SHOT_TEST_FAILURE",
+    jsonPointer: "/shotPlan/0/videoPrompt",
+    reason: "提示词与签发事实冲突"
+  }]);
+  assert.doesNotMatch(metadataText, /MUST_NOT_BE_LOGGED|data:image|base64|boundarySignature/u);
 });
 
 test("Animation Plan 输出日志写入失败不改变模型 Response", async () => {

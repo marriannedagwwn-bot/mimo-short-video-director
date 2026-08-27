@@ -59,6 +59,8 @@ test("完整保存模型 content、不截断，并按 Production request 隔离"
   const content = `${"剧情正文😀".repeat(55_000)}\n木质摇椅、白色毯子、橘子、米色雨伞`;
   const writer = new FullModelOutputLogWriter({
     outputRoot: root,
+    gitCommit: "0123456789abcdef0123456789abcdef01234567",
+    buildId: "test-build-1",
     now: () => new Date("2026-08-14T10:00:00.000Z"),
     idFactory: (() => {
       let index = 0;
@@ -97,8 +99,11 @@ test("完整保存模型 content、不截断，并按 Production request 隔离"
   const metadataText = await fs.readFile(result.metadataPath, "utf8");
   const metadata = JSON.parse(metadataText);
   assert.equal(metadata.production.productionRequestId, "request-1");
+  assert.equal(metadata.gitCommit, "0123456789abcdef0123456789abcdef01234567");
+  assert.equal(metadata.buildId, "test-build-1");
   assert.equal(metadata.attempt.stage, "fullStoryBeatScenePostpass");
   assert.equal(metadata.attempt.phase, "primary");
+  assert.equal(metadata.attempt.validationStatus, "failed");
   assert.equal(metadata.provider.providerRequestId, "provider-request-1");
   assert.equal(metadata.output.bytes, Buffer.byteLength(content, "utf8"));
   assert.equal(

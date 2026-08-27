@@ -26,12 +26,16 @@ const RUN_MANIFEST_VERSION = "1.0";
 export class ProductionStateStore {
   constructor({
     rootDir,
+    gitCommit = "",
+    buildId = "",
     now = () => new Date(),
     idFactory = () => randomUUID()
   } = {}) {
     const configuredRoot = String(rootDir || "").trim();
     if (!configuredRoot) throw new TypeError("ProductionStateStore.rootDir 不能为空");
     this.rootDir = path.resolve(configuredRoot);
+    this.gitCommit = safeBuildIdentity(gitCommit);
+    this.buildId = safeBuildIdentity(buildId);
     this.now = typeof now === "function" ? now : () => new Date();
     this.idFactory = typeof idFactory === "function" ? idFactory : () => randomUUID();
     this.runLocks = new Map();
@@ -51,6 +55,8 @@ export class ProductionStateStore {
       projectId: resolvedProjectId,
       runId,
       status: "active",
+      gitCommit: this.gitCommit,
+      buildId: this.buildId,
       createdAt,
       updatedAt: createdAt,
       metadata: plainObject(metadata),
@@ -59,7 +65,12 @@ export class ProductionStateStore {
       counters: {},
       latest: {},
       artifacts: [],
-      events: [{ type: "run.created", createdAt }]
+      events: [{
+        type: "run.created",
+        createdAt,
+        gitCommit: this.gitCommit,
+        buildId: this.buildId
+      }]
     };
     await fs.mkdir(this.runDirectory(resolvedProjectId, runId), { recursive: true, mode: 0o700 });
     await this.writeManifest(manifest);
@@ -111,22 +122,36 @@ export class ProductionStateStore {
     return this.withRunLock(projectId, runId, async () => {
       const manifest = await this.readManifest(projectId, runId);
       const updatedAt = this.timestamp();
+      const gitCommit = this.gitCommit || safeBuildIdentity(manifest.gitCommit);
+      const buildId = this.buildId || safeBuildIdentity(manifest.buildId) || gitCommit;
+      const failure = status === "failed" ? sanitizeStageFailure(input.error) : null;
       manifest.stages ||= {};
       manifest.stages[stageId] = {
         stageId,
         status,
         requestId,
         updatedAt,
+        gitCommit,
+        buildId,
         ...(status === "failed" ? {
-          error: {
-            code: String(input.error?.code || "STAGE_FAILED").slice(0, 120),
-            message: String(input.error?.message || "阶段执行失败").slice(0, 1_000)
-          }
+          error: { stage: stageId, gitCommit, buildId, ...failure }
         } : {})
       };
       advanceCheckpoint(manifest, updatedAt);
       manifest.events ||= [];
-      manifest.events.push({ type: `stage.${status}`, stageId, requestId, createdAt: updatedAt });
+      manifest.events.push({
+        type: `stage.${status}`,
+        stageId,
+        requestId,
+        createdAt: updatedAt,
+        gitCommit,
+        buildId,
+        ...(failure ? {
+          code: failure.code,
+          category: failure.category,
+          diagnostics: structuredClone(failure.diagnostics)
+        } : {})
+      });
       manifest.events = manifest.events.slice(-2_000);
       await this.writeManifest(manifest);
       return {
@@ -703,12 +728,54 @@ function runSummary(manifest) {
     projectId: manifest.projectId,
     runId: manifest.runId,
     status: manifest.status,
+    gitCommit: String(manifest.gitCommit || ""),
+    buildId: String(manifest.buildId || ""),
     createdAt: manifest.createdAt,
     updatedAt: manifest.updatedAt,
     metadata: structuredClone(manifest.metadata || {}),
     stages: structuredClone(manifest.stages || {}),
     checkpoint: structuredClone(manifest.checkpoint || { sequence: 0, updatedAt: manifest.updatedAt })
   };
+}
+
+function sanitizeStageFailure(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const diagnostics = sanitizeStageDiagnostics(source.diagnostics || source.details);
+  return {
+    code: safeFailureCode(diagnostics[0]?.code || source.code || "STAGE_FAILED"),
+    category: safeFailureCode(source.category || "unknown"),
+    message: redactSensitiveText(source.message || diagnostics[0]?.reason || "阶段执行失败", 1_000),
+    diagnostics
+  };
+}
+
+function sanitizeStageDiagnostics(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 100).map((item) => {
+    const source = item && typeof item === "object" && !Array.isArray(item) ? item : {};
+    const pointer = String(source.jsonPointer || (String(source.path || "").startsWith("/") ? source.path : ""));
+    return {
+      code: safeFailureCode(source.code || source.errorCode || "VALIDATION_ERROR"),
+      jsonPointer: pointer.startsWith("/") ? pointer.slice(0, 1_000) : "",
+      reason: redactSensitiveText(source.reason || source.message || source.code || "校验失败", 2_000)
+    };
+  });
+}
+
+function safeFailureCode(value) {
+  const normalized = String(value || "").trim().replace(/[^A-Za-z0-9_.:/-]+/gu, "_");
+  return (normalized || "UNKNOWN_ERROR").slice(0, 160);
+}
+
+function safeBuildIdentity(value) {
+  return String(value || "").trim().replace(/[^A-Za-z0-9._-]+/gu, "").slice(0, 128);
+}
+
+function redactSensitiveText(value, limit) {
+  return String(value || "")
+    .replace(/data:[A-Za-z0-9.+-]+\/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gu, "[data-url-redacted]")
+    .replace(/[A-Za-z0-9+/]{80,}={0,2}/gu, "[base64-redacted]")
+    .slice(0, limit);
 }
 
 function advanceCheckpoint(manifest, updatedAt) {

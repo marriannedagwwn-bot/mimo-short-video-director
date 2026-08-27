@@ -746,11 +746,17 @@ async function requestProductionArtifact({
     return responseContent;
   } catch (error) {
     if (isArtifactRequestCurrent(state.production, token)) {
+      const diagnostics = Array.isArray(error.details) ? error.details : [];
       await api("/api/production/stage/update", {
         ...token,
         stageId: artifactId,
         status: "failed",
-        error: { code: error.code || "STAGE_FAILED", message: error.message || "阶段执行失败" }
+        error: {
+          code: diagnostics[0]?.code || error.code || "STAGE_FAILED",
+          category: error.category || "unknown",
+          message: error.message || "阶段执行失败",
+          diagnostics
+        }
       }).catch(() => {});
     }
     throw error;

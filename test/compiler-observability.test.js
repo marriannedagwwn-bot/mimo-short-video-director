@@ -43,6 +43,24 @@ test("generic API errors keep the existing short detail message behavior", () =>
   assert.equal(error.metadata, null);
 });
 
+test("API error 保留服务端已脱敏的稳定 diagnostics 供 Production manifest 落盘", () => {
+  const details = [{
+    code: "DIRECT_SHOT_SCENE_TIME_RANGE_INVALID",
+    jsonPointer: "/sceneScript/1/timeRange",
+    reason: "timeRange 无法解析"
+  }];
+  const error = createApiRequestError({
+    error: "模型输出未通过校验",
+    category: "output-contract",
+    code: "OUTPUT_CONTRACT_INVALID",
+    details
+  }, 502);
+
+  assert.equal(error.code, "OUTPUT_CONTRACT_INVALID");
+  assert.equal(error.category, "output-contract");
+  assert.equal(error.details, details);
+});
+
 test("compiler stage is inferred from Character Feature error names", () => {
   assert.equal(compilerFailureStage({
     name: "CharacterFeatureCompilerProtocolError"

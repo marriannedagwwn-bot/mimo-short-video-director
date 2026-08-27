@@ -20,6 +20,7 @@ import {
   planAnimationFoundationPartialRepair
 } from "./animation-foundation-partial-repair.js";
 import {
+  animationVideoPromptSemanticAuditDiagnostics,
   animationVideoPromptSemanticAuditCatalogPayload,
   createAnimationVideoPromptSemanticAuditCatalog,
   deriveAnimationVideoPromptSemanticAuditOverall,
@@ -1247,9 +1248,23 @@ export class WorkflowService {
       mergeAnimationPlan(foundation, shotPlan, validatedInput, directShotSkeleton),
       validatedInput
     );
+    let initialVideoPromptSemanticAudit = null;
+    if (directShotMode) {
+      const semanticOutcome = await this.auditInitialAnimationVideoPromptSemantics({
+        ...validatedInput,
+        sourcePlan: animationPlan,
+        rewrittenPlan: animationPlan,
+        targetProfile: videoPromptProfile
+      });
+      animationPlan = semanticOutcome.animationPlan;
+      initialVideoPromptSemanticAudit = semanticOutcome.semanticAudit;
+    }
     const directShotMetadata = directShotMode
       ? {
-        ...disabledDirectShotCompilerMetadata(compilerSettings)
+        ...disabledDirectShotCompilerMetadata(compilerSettings),
+        ...(initialVideoPromptSemanticAudit
+          ? { videoPromptSemanticAudit: initialVideoPromptSemanticAudit }
+          : {})
       }
       : null;
     return {
@@ -1272,8 +1287,8 @@ export class WorkflowService {
   async auditInitialAnimationVideoPromptSemantics(input) {
     return this.auditAnimationVideoPromptSemanticsWithBoundedRepair(input, {
       auditMode: "initial",
-      stageLabel: "MiniMax H3 首次 Animation Plan 视频提示词语义审计",
-      failurePrefix: "MiniMax H3 首次视频提示词与镜头事实不一致"
+      stageLabel: "首次 Animation Plan 视频提示词语义审计",
+      failurePrefix: "首次视频提示词与镜头事实不一致"
     });
   }
 
@@ -1341,12 +1356,16 @@ export class WorkflowService {
       });
     } catch (error) {
       if (!(error instanceof OutputContractError)) throw error;
-      throw new InputError(`${failurePrefix}：${formatAnimationVideoPromptSemanticAuditFailure(firstAudit.audit)}；${error.message}`);
+      throw new InputError(
+        `${failurePrefix}：${formatAnimationVideoPromptSemanticAuditFailure(firstAudit.audit)}；${error.message}`,
+        animationVideoPromptSemanticAuditDiagnostics(firstAudit.audit)
+      );
     }
     if (!repairPlan) {
       throw new InputError(
         `${failurePrefix}：${formatAnimationVideoPromptSemanticAuditFailure(firstAudit.audit)}。`
-        + "审计发现结构化 shot 事实冲突，或未能签发唯一安全的 videoPrompt 修复目标；本次明确终止。"
+        + "审计发现结构化 shot 事实冲突，或未能签发唯一安全的 videoPrompt 修复目标；本次明确终止。",
+        animationVideoPromptSemanticAuditDiagnostics(firstAudit.audit)
       );
     }
 
@@ -1401,7 +1420,8 @@ export class WorkflowService {
       if (finalAudit.overall.verdict !== "pass") {
         throw new InputError(
           `${failurePrefix}：唯一一次有界 videoPrompt 修复复审仍未通过：`
-          + formatAnimationVideoPromptSemanticAuditFailure(finalAudit.audit)
+          + formatAnimationVideoPromptSemanticAuditFailure(finalAudit.audit),
+          animationVideoPromptSemanticAuditDiagnostics(finalAudit.audit)
         );
       }
       await this.recordPartialRepairDebugResult(debugSession, { status: "repaired" });

@@ -33,12 +33,18 @@ const DIRECT_SHOT_ACCEPTANCE = [
 
 function createLiveWorkflow(generateAnimationJson, {
   animationShotBatchSceneCount = 6,
-  partialRepairDebugWriter = null
+  partialRepairDebugWriter = null,
+  semanticAuditResponder = passingAnimationVideoPromptSemanticAudit
 } = {}) {
   const animationCalls = [];
+  const semanticAuditCalls = [];
   const staticProviderCalls = [];
   const animationClient = {
     async generateJson(args) {
+      if (/ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2/u.test(args.prompt)) {
+        semanticAuditCalls.push(args);
+        return semanticAuditResponder(args.prompt, semanticAuditCalls.length, args);
+      }
       animationCalls.push(args);
       return generateAnimationJson(args, animationCalls.length);
     }
@@ -61,7 +67,7 @@ function createLiveWorkflow(generateAnimationJson, {
     partialRepairDebugWriter,
     ...(animationShotBatchSceneCount === null ? {} : { animationShotBatchSceneCount })
   });
-  return { workflow, animationCalls, staticProviderCalls };
+  return { workflow, animationCalls, semanticAuditCalls, staticProviderCalls };
 }
 
 function partialRepairDebugSpy(sessionId) {
@@ -401,7 +407,161 @@ test("live direct_shot 保留模型视频字段且完全绕过三个编译阶段
   assert.equal(metadata.staticFrameCompiler.disabled, true);
   assert.deepEqual(metadata.staticFrameCompiler.runs, []);
   assert.equal(metadata.localPromptCompiler.disabled, true);
+  assert.equal(metadata.videoPromptSemanticAudit.auditMode, "initial");
+  assert.equal(metadata.videoPromptSemanticAudit.verdict, "pass");
 });
+
+test("初始 createAnimationPlanWithMetadata 对统一 seedance_2_0 Profile 必定执行语义审计", async () => {
+  for (const videoPromptTarget of [
+    { provider: "Seedance", model: "doubao-seedance-2-0-260128" },
+    { provider: "MiniMax", model: "MiniMax-H3" }
+  ]) {
+    let foundation;
+    let batch;
+    const { workflow, semanticAuditCalls } = createLiveWorkflow((args, callNumber) => {
+      if (callNumber === 1) return structuredClone(foundation);
+      if (callNumber === 2) return structuredClone(batch);
+      throw new Error(`初始语义审计通过路径出现意外的第 ${callNumber} 次业务模型调用`);
+    });
+    const context = { ...fixture(workflow), videoPromptTarget };
+    const modelPlan = mockAnimationPlan(context);
+    foundation = foundationFrom(modelPlan);
+    batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
+
+    const { animationPlan, metadata } = await workflow.createAnimationPlanWithMetadata(context);
+
+    assert.equal(animationPlan.productionStrategy.videoPromptProfile.profileId, "seedance_2_0");
+    assert.equal(animationPlan.productionStrategy.videoPromptProfile.provider, videoPromptTarget.provider);
+    assert.equal(animationPlan.productionStrategy.videoPromptProfile.model, videoPromptTarget.model);
+    assert.equal(semanticAuditCalls.length, 1);
+    assert.match(semanticAuditCalls[0].prompt, /ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2/u);
+    assert.equal(metadata.videoPromptSemanticAudit.rounds, 1);
+    assert.deepEqual(metadata.videoPromptSemanticAudit.repairedShotIds, []);
+  }
+});
+
+test("初始语义审计发现结构化 shot 冲突时 fail closed 且不调用 Prompt 修复", async () => {
+  let foundation;
+  let batch;
+  const { workflow, animationCalls, semanticAuditCalls } = createLiveWorkflow((args, callNumber) => {
+    if (/ANIMATION_VIDEO_PROMPT_SEMANTIC_REPAIR_V1/u.test(args.prompt)) {
+      throw new Error("结构化语义错误不得进入 videoPrompt 修复");
+    }
+    if (callNumber === 1) return structuredClone(foundation);
+    if (callNumber === 2) return structuredClone(batch);
+    throw new Error(`结构化语义失败路径出现意外的第 ${callNumber} 次业务模型调用`);
+  }, {
+    semanticAuditResponder: failingShotFactsAnimationVideoPromptSemanticAudit
+  });
+  const context = fixture(workflow);
+  const modelPlan = mockAnimationPlan(context);
+  foundation = foundationFrom(modelPlan);
+  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
+
+  await assert.rejects(
+    () => workflow.createAnimationPlanWithMetadata(context),
+    (error) => {
+      assert.match(error.message, /结构化 shot 事实冲突/u);
+      assert.equal(error.details?.[0]?.code, "story_action_reordered");
+      assert.equal(error.details?.[0]?.jsonPointer, "/shotPlan/0/characterAction");
+      return true;
+    }
+  );
+
+  assert.equal(semanticAuditCalls.length, 1);
+  assert.equal(animationCalls.filter((call) => (
+    /ANIMATION_VIDEO_PROMPT_SEMANTIC_REPAIR_V1/u.test(call.prompt)
+  )).length, 0);
+});
+
+test("初始纯 videoPrompt 语义冲突只修复一次，复审通过后返回修复 Plan", async () => {
+  let foundation;
+  let batch;
+  const { workflow, animationCalls, semanticAuditCalls } = createLiveWorkflow((args, callNumber) => {
+    if (/ANIMATION_VIDEO_PROMPT_SEMANTIC_REPAIR_V1/u.test(args.prompt)) {
+      const payload = animationVideoPromptSemanticRepairPayload(args.prompt);
+      return animationVideoPromptSemanticRepairEnvelope(
+        args.prompt,
+        payload.targets.map((target) => appendBeforeNoMusicSentence(
+          target.currentValue,
+          "关键摄影节拍按签发顺序完整出现。"
+        ))
+      );
+    }
+    if (callNumber === 1) return structuredClone(foundation);
+    if (callNumber === 2) return structuredClone(batch);
+    throw new Error(`Prompt 修复成功路径出现意外的第 ${callNumber} 次业务模型调用`);
+  }, {
+    semanticAuditResponder: (prompt, auditCallNumber) => (
+      auditCallNumber === 1
+        ? failingVideoPromptAnimationSemanticAudit(prompt)
+        : passingAnimationVideoPromptSemanticAudit(prompt)
+    )
+  });
+  const context = fixture(workflow);
+  const modelPlan = mockAnimationPlan(context);
+  foundation = foundationFrom(modelPlan);
+  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
+
+  const { animationPlan, metadata } = await workflow.createAnimationPlanWithMetadata(context);
+
+  assert.equal(semanticAuditCalls.length, 2);
+  assert.equal(animationCalls.filter((call) => (
+    /ANIMATION_VIDEO_PROMPT_SEMANTIC_REPAIR_V1/u.test(call.prompt)
+  )).length, 1);
+  assert.match(animationPlan.shotPlan[0].videoPrompt, /关键摄影节拍按签发顺序完整出现/u);
+  assert.equal(metadata.videoPromptSemanticAudit.rounds, 2);
+  assert.deepEqual(metadata.videoPromptSemanticAudit.repairedShotIds, ["A01"]);
+});
+
+test("初始纯 videoPrompt 修复后的唯一复审仍失败时整份 Plan 失败且不循环修复", async () => {
+  let foundation;
+  let batch;
+  const { workflow, animationCalls, semanticAuditCalls } = createLiveWorkflow((args, callNumber) => {
+    if (/ANIMATION_VIDEO_PROMPT_SEMANTIC_REPAIR_V1/u.test(args.prompt)) {
+      const payload = animationVideoPromptSemanticRepairPayload(args.prompt);
+      return animationVideoPromptSemanticRepairEnvelope(
+        args.prompt,
+        payload.targets.map((target) => appendBeforeNoMusicSentence(
+          target.currentValue,
+          "修复候选仍待复审。"
+        ))
+      );
+    }
+    if (callNumber === 1) return structuredClone(foundation);
+    if (callNumber === 2) return structuredClone(batch);
+    throw new Error(`Prompt 修复失败路径出现意外的第 ${callNumber} 次业务模型调用`);
+  }, {
+    semanticAuditResponder: (prompt) => failingVideoPromptAnimationSemanticAudit(prompt)
+  });
+  const context = fixture(workflow);
+  const modelPlan = mockAnimationPlan(context);
+  foundation = foundationFrom(modelPlan);
+  batch = { shotPlan: structuredClone(modelPlan.shotPlan) };
+
+  await assert.rejects(
+    () => workflow.createAnimationPlanWithMetadata(context),
+    (error) => {
+      assert.match(error.message, /唯一一次有界 videoPrompt 修复复审仍未通过/u);
+      assert.equal(error.details?.[0]?.code, "required_camera_beat_missing");
+      assert.equal(error.details?.[0]?.jsonPointer, "/shotPlan/0/videoPrompt");
+      return true;
+    }
+  );
+
+  assert.equal(semanticAuditCalls.length, 2);
+  assert.equal(animationCalls.filter((call) => (
+    /ANIMATION_VIDEO_PROMPT_SEMANTIC_REPAIR_V1/u.test(call.prompt)
+  )).length, 1);
+});
+
+function appendBeforeNoMusicSentence(prompt, addition) {
+  const sentence = "全片无背景音乐，只保留现场环境声与动作声。";
+  const value = String(prompt || "");
+  return value.endsWith(sentence)
+    ? `${value.slice(0, -sentence.length)}${addition}${sentence}`
+    : `${value}${addition}`;
+}
 
 test("live Foundation 的特定发色与缺失角色事实只修固定角色子树并保持其余 Foundation", async () => {
   const fullStorySentinel = "FOUNDATION_REPAIR_FULL_STORY_SENTINEL";

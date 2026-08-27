@@ -53,15 +53,18 @@ import { loadOrCreatePersistentKey } from "./src/persistent-key.js";
 import { ProductionStateStore } from "./src/production-state-store.js";
 import { ProductionStateError, normalizeArtifactId, safeIdentifier } from "./src/production-lineage.js";
 import { readModelUsageFromError, runWithUsageAccounting } from "./src/token-usage.js";
+import { resolveBuildIdentity } from "./src/build-identity.js";
 
 loadEnv();
 const root = path.dirname(fileURLToPath(import.meta.url));
 const config = getConfig();
+const buildIdentity = resolveBuildIdentity({ workspaceRoot: root });
 const partialRepairDebugWriter = new PartialRepairDebugWriter({
   outputRoot: process.env.PARTIAL_REPAIR_DEBUG_DIR
     || path.join(root, "debug", "partial-repairs")
 });
 const fullModelOutputLogWriter = new FullModelOutputLogWriter({
+  ...buildIdentity,
   outputRoot: await resolvePrivateModelOutputLogRoot({
     workspaceRoot: root,
     configuredValue: process.env.FULL_STORY_MODEL_OUTPUT_LOG_DIR,
@@ -69,6 +72,7 @@ const fullModelOutputLogWriter = new FullModelOutputLogWriter({
   })
 });
 const animationModelOutputLogWriter = new FullModelOutputLogWriter({
+  ...buildIdentity,
   scope: MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN,
   outputRoot: await resolvePrivateModelOutputLogRoot({
     workspaceRoot: root,
@@ -97,7 +101,11 @@ const stageModelOutputLogRoot = await resolvePrivateModelOutputLogRoot({
 });
 const stageModelOutputLogWriters = new Map(STAGE_MODEL_OUTPUT_LOG_SCOPES.map((scope) => [
   scope,
-  new FullModelOutputLogWriter({ scope, outputRoot: stageModelOutputLogRoot })
+  new FullModelOutputLogWriter({
+    ...buildIdentity,
+    scope,
+    outputRoot: stageModelOutputLogRoot
+  })
 ]));
 const animationPromptCapture = new AnimationPromptCapture({
   outputRoot: process.env.ANIMATION_PROMPT_CAPTURE_DIR || "",
@@ -115,6 +123,7 @@ const modelStages = buildModelStages(stageDefaults, config);
 const clients = { MiMo: mimoClient, Qwen: qwenClient, DeepSeek: deepseekClient };
 const attemptStore = new AttemptStore();
 const productionStateStore = new ProductionStateStore({
+  ...buildIdentity,
   rootDir: config.workflowRuntime.productionStateDirectory
 });
 // 这两把密钥必须跨重启保持不变：落盘 Artifact 上的 groundingSeal 与 boundarySignature
@@ -435,6 +444,7 @@ server.requestTimeout = config.serverRequestTimeoutMs;
 
 server.listen(config.port, () => {
   console.log(`AI 短视频导演：http://localhost:${config.port}`);
+  console.log(`Build identity：gitCommit=${buildIdentity.gitCommit} buildId=${buildIdentity.buildId}`);
   console.log(`Production Lineage 状态目录：${config.workflowRuntime.productionStateDirectory}`);
   // 只报来源，永远不打印密钥本身。
   console.log(`签名密钥来源：Grounding ${groundingKeyEntry.source} / 全局角色边界 ${characterBoundaryKeyEntry.source}`);

@@ -55,6 +55,8 @@ export class FullModelOutputLogWriter {
   constructor({
     outputRoot = "",
     scope = MODEL_OUTPUT_LOG_SCOPES.FULL_STORY,
+    gitCommit = "",
+    buildId = "",
     now = () => new Date(),
     idFactory = () => randomUUID(),
     onWarning = (message) => console.warn(message)
@@ -63,6 +65,8 @@ export class FullModelOutputLogWriter {
       ? path.resolve(String(outputRoot).trim())
       : "";
     this.scope = requireModelOutputLogScope(scope);
+    this.gitCommit = safeIdentity(gitCommit);
+    this.buildId = safeIdentity(buildId);
     this.now = typeof now === "function" ? now : () => new Date();
     this.idFactory = typeof idFactory === "function" ? idFactory : () => randomUUID();
     this.onWarning = typeof onWarning === "function" ? onWarning : () => {};
@@ -100,6 +104,8 @@ export class FullModelOutputLogWriter {
         schemaVersion: FULL_MODEL_OUTPUT_LOG_SCHEMA_VERSION,
         recordedAt,
         scope: this.scope,
+        gitCommit: this.gitCommit,
+        buildId: this.buildId,
         production: context,
         attempt: {
           operationId,
@@ -112,7 +118,10 @@ export class FullModelOutputLogWriter {
           reason: String(payload.reason || ""),
           status: String(payload.status || ""),
           category: String(payload.category || ""),
-          code: String(payload.code || ""),
+          code: safeDiagnosticCode(payload.code, ""),
+          validationStatus: validationStatus(payload.validationStatus, payload.status),
+          errorName: safeErrorName(payload.errorName),
+          diagnostics: safeValidationDiagnostics(payload.diagnostics),
           retryable: Boolean(payload.retryable),
           startedAt: String(payload.startedAt || ""),
           finishedAt: String(payload.finishedAt || ""),
@@ -174,6 +183,53 @@ export class FullModelOutputLogWriter {
       if (finalizedOutputPath) await fs.unlink(finalizedOutputPath).catch(() => {});
       if (attemptDirectory) await fs.rmdir(attemptDirectory).catch(() => {});
       this.onWarning(`${this.scope} 全量模型输出日志写入失败：${safeErrorMessage(error)}`);
+      return null;
+    }
+  }
+
+  async finalizeAttempt(recordRef, payload = {}) {
+    if (!this.enabled) return null;
+    const metadataPath = path.resolve(String(recordRef?.metadataPath || ""));
+    if (!metadataPath || !pathIsWithin(metadataPath, this.outputRoot)) return null;
+    let temporaryPath = "";
+    try {
+      const record = JSON.parse(await fs.readFile(metadataPath, "utf8"));
+      if (record?.schemaVersion !== FULL_MODEL_OUTPUT_LOG_SCHEMA_VERSION || record?.scope !== this.scope) {
+        throw new TypeError("模型输出 metadata 与当前 writer 不匹配");
+      }
+      const status = validationStatus(payload.validationStatus || payload.status, "");
+      const diagnostics = safeValidationDiagnostics(payload.diagnostics || payload.details);
+      record.gitCommit = this.gitCommit || safeIdentity(record.gitCommit);
+      record.buildId = this.buildId || safeIdentity(record.buildId);
+      record.attempt = {
+        ...record.attempt,
+        status: status === "passed" ? "succeeded" : "failed",
+        validationStatus: status,
+        errorName: safeErrorName(payload.errorName),
+        diagnostics,
+        category: String(payload.category || record.attempt?.category || "").slice(0, 120),
+        code: safeDiagnosticCode(
+          payload.code
+          || diagnostics[0]?.code
+          || record.attempt?.code
+          || (status === "passed" ? "MODEL_COMPLETION_ACCEPTED" : "OUTPUT_CONTRACT_INVALID"),
+          status === "passed" ? "MODEL_COMPLETION_ACCEPTED" : "OUTPUT_CONTRACT_INVALID"
+        )
+      };
+      temporaryPath = path.join(
+        path.dirname(metadataPath),
+        `.metadata.json.${safeSegment(this.idFactory())}.tmp`
+      );
+      await fs.writeFile(temporaryPath, `${JSON.stringify(record, null, 2)}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "wx"
+      });
+      await fs.rename(temporaryPath, metadataPath);
+      return { metadataPath, outputPath: String(recordRef?.outputPath || "") };
+    } catch (error) {
+      if (temporaryPath) await fs.unlink(temporaryPath).catch(() => {});
+      this.onWarning(`${this.scope} 模型输出校验元数据写入失败：${safeErrorMessage(error)}`);
       return null;
     }
   }
@@ -253,6 +309,51 @@ function sha256(value) {
 
 function nonEmptyText(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function safeIdentity(value) {
+  return String(value || "").trim().replace(/[^A-Za-z0-9._-]+/gu, "").slice(0, 128);
+}
+
+function validationStatus(explicit, attemptStatus) {
+  const normalized = String(explicit || "").trim().toLowerCase();
+  if (["passed", "failed", "pending"].includes(normalized)) return normalized;
+  const status = String(attemptStatus || "").trim().toLowerCase();
+  if (["succeeded", "fulfilled", "passed"].includes(status)) return "passed";
+  if (["failed", "rejected"].includes(status)) return "failed";
+  return "pending";
+}
+
+function safeErrorName(value) {
+  return String(value || "").trim().replace(/[^A-Za-z0-9_.:-]+/gu, "").slice(0, 160);
+}
+
+function safeValidationDiagnostics(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 100).map((item) => {
+    const source = item && typeof item === "object" && !Array.isArray(item) ? item : {};
+    const pointer = String(source.jsonPointer || (String(source.path || "").startsWith("/") ? source.path : ""));
+    return {
+      code: safeDiagnosticCode(source.code || source.errorCode, "VALIDATION_ERROR"),
+      jsonPointer: pointer.startsWith("/") ? pointer.slice(0, 1_000) : "",
+      reason: redactSensitiveMetadataText(
+        source.reason || source.message || source.code || "校验失败",
+        2_000
+      )
+    };
+  });
+}
+
+function safeDiagnosticCode(value, fallback) {
+  const normalized = String(value || "").trim().replace(/[^A-Za-z0-9_.:/-]+/gu, "_");
+  return (normalized || fallback).slice(0, 160);
+}
+
+function redactSensitiveMetadataText(value, limit) {
+  return String(value || "")
+    .replace(/data:[A-Za-z0-9.+-]+\/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gu, "[data-url-redacted]")
+    .replace(/[A-Za-z0-9+/]{80,}={0,2}/gu, "[base64-redacted]")
+    .slice(0, limit);
 }
 
 function nonNegativeInteger(value) {

@@ -58,6 +58,62 @@ test("persistent run checkpoints artifacts and restores them after a new store i
     assert.ok(loaded.checkpoint.sequence >= 2);
   });
 });
+
+test("stage.failed manifest 写入稳定诊断与 build identity 并剥离敏感字段", async (t) => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-production-failure-test-"));
+  t.after(() => fs.rm(rootDir, { recursive: true, force: true }));
+  const store = new ProductionStateStore({
+    rootDir,
+    gitCommit: "abcdef1234567890",
+    buildId: "production-test-build",
+    idFactory: () => "failure-run"
+  });
+  const run = await store.createRun({ projectId: "project-failure" });
+
+  await store.recordStage({
+    projectId: run.projectId,
+    runId: run.runId,
+    stageId: "animationPlan:V1",
+    status: "failed",
+    requestId: "request-animation-failure",
+    error: {
+      code: "OUTPUT_CONTRACT_INVALID",
+      category: "output-contract",
+      message: "模型失败 data:image/png;base64,QUJDREVGRw==",
+      diagnostics: [{
+        code: "DIRECT_SHOT_TEST_FAILURE",
+        jsonPointer: "/shotPlan/0/videoPrompt",
+        reason: "提示词与签发事实冲突",
+        prompt: "MUST_NOT_BE_LOGGED_PROMPT",
+        boundarySignature: "MUST_NOT_BE_LOGGED_SIGNATURE"
+      }]
+    }
+  });
+
+  const loaded = await store.loadRun(run);
+  const stage = loaded.stages["animationPlan:V1"];
+  assert.equal(loaded.gitCommit, "abcdef1234567890");
+  assert.equal(loaded.buildId, "production-test-build");
+  assert.equal(stage.error.code, "DIRECT_SHOT_TEST_FAILURE");
+  assert.equal(stage.error.stage, "animationPlan:V1");
+  assert.deepEqual(stage.error.diagnostics, [{
+    code: "DIRECT_SHOT_TEST_FAILURE",
+    jsonPointer: "/shotPlan/0/videoPrompt",
+    reason: "提示词与签发事实冲突"
+  }]);
+  const failedEvent = loaded.events.find((event) => event.type === "stage.failed");
+  assert.equal(failedEvent.code, "DIRECT_SHOT_TEST_FAILURE");
+  assert.equal(failedEvent.gitCommit, "abcdef1234567890");
+  assert.equal(failedEvent.buildId, "production-test-build");
+  const manifestText = await fs.readFile(
+    path.join(rootDir, run.projectId, run.runId, "manifest.json"),
+    "utf8"
+  );
+  assert.doesNotMatch(
+    manifestText,
+    /MUST_NOT_BE_LOGGED|data:image|boundarySignature|QUJDREVGRw/u
+  );
+});
 test("same-id upstream change stales Story, Plan and media, while key reordering is idempotent", async () => {
   await withStore(async ({ store }) => {
     const run = await store.createRun({ projectId: "project-stale" });

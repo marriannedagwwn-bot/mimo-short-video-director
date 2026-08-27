@@ -384,7 +384,8 @@ export function createAnimationVideoPromptSemanticAuditCatalog(input = {}, { can
   assertCatalogMatchesCandidate(catalog, candidate);
   issuedCatalogs.set(catalog, deepFreeze({
     catalogDigest: contentDigest(catalog),
-    candidateDigest: contentDigest(candidate)
+    candidateDigest: contentDigest(candidate),
+    candidateShotIds: candidate.shotPlan.map((shot) => String(shot?.shotId || ""))
   }));
   return catalog;
 }
@@ -504,7 +505,8 @@ export function validateAnimationVideoPromptSemanticAuditResponse(value, catalog
   validatedAudits.set(audit, deepFreeze({
     catalog,
     catalogDigest: catalogBinding.catalogDigest,
-    candidateDigest: catalogBinding.candidateDigest
+    candidateDigest: catalogBinding.candidateDigest,
+    candidateShotIds: catalogBinding.candidateShotIds
   }));
   return audit;
 }
@@ -537,6 +539,28 @@ export function deriveAnimationVideoPromptSemanticAuditOverall(audit) {
   });
 }
 
+/**
+ * Project the already-validated semantic issues into the workflow's existing
+ * code + RFC 6901 JSON Pointer + reason diagnostic shape. This is an
+ * observability projection only: relation remains the stable code and no new
+ * semantic decision is introduced here.
+ */
+export function animationVideoPromptSemanticAuditDiagnostics(audit) {
+  assertValidatedAnimationVideoPromptSemanticAudit(audit);
+  const binding = validatedAudits.get(audit);
+  return audit.shots.flatMap((shot, reviewedShotIndex) => (
+    shot.issues.map((issue) => ({
+      code: String(issue.relation || "ANIMATION_VIDEO_PROMPT_SEMANTIC_CONFLICT"),
+      path: `animationPlan.shotPlan[${semanticAuditShotIndex(binding, shot, reviewedShotIndex)}].${issue.field}`,
+      jsonPointer: `/shotPlan/${semanticAuditShotIndex(binding, shot, reviewedShotIndex)}/${escapeJsonPointerToken(issue.field)}`,
+      reason: String(issue.productionImpact || issue.relation || "视频提示词语义审计未通过"),
+      shotId: String(shot.shotId || ""),
+      layer: String(issue.layer || ""),
+      category: String(issue.category || "")
+    }))
+  ));
+}
+
 /** Reject raw or reconstructed responses at trust boundaries such as repair adapters. */
 export function assertValidatedAnimationVideoPromptSemanticAudit(
   audit,
@@ -565,6 +589,17 @@ export function assertValidatedAnimationVideoPromptSemanticAudit(
     }
   }
   return audit;
+}
+
+function escapeJsonPointerToken(value) {
+  return String(value || "").replaceAll("~", "~0").replaceAll("/", "~1");
+}
+
+function semanticAuditShotIndex(binding, shot, fallbackIndex) {
+  const index = Array.isArray(binding?.candidateShotIds)
+    ? binding.candidateShotIds.indexOf(String(shot?.shotId || ""))
+    : -1;
+  return index >= 0 ? index : fallbackIndex;
 }
 
 function validateIssue({ issue, path, authorityFacts, candidateFields }) {

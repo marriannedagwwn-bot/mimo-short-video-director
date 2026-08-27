@@ -83,7 +83,7 @@ export const animationVideoPromptSemanticRepairAdapter = Object.freeze({
         mutablePointers: [path],
         allowedReplacementKinds: ["string"],
         repairInstruction: [
-          "Rewrite only this shot's complete MiniMax H3 videoPrompt string.",
+          "Rewrite only this shot's complete Seedance-style Chinese videoPrompt string.",
           "Resolve every listed material issue against the supplied authority without changing any signed story fact.",
           "Preserve all already-correct character, location, prop, action, camera, dialogue, sound, continuity, duration, and final-state facts.",
           "Return no path, patch operation, structured shot, Foundation, or complete Animation Plan."
