@@ -46,7 +46,7 @@ Brief
  ↓
 Visual Guardrails
  ↓
-Variants
+Story Candidates（`themeVariants` wire name）
  ↓
 Legacy Full Story
  ↓
@@ -57,6 +57,14 @@ Video Generation
 上述业务 JSON 之外，Production Lineage v1 作为服务端 sidecar 运行：每次浏览器主流程创建独立 project/run；各成功阶段提交 Artifact revision、content digest、实际上游 dependencies、Stage 状态与 Checkpoint。它不改变模型字段含义，也不是第二份角色或剧情事实来源。
 
 Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Artifact stale。模型请求开始时冻结依赖 revision，返回时同时经过浏览器 request token 与服务端 `expectedCurrentRevision`/dependency 校验。Animation Plan 每个 revision 签发独立 media namespace。
+
+`themeVariants` 保留原 wire shape 和 Artifact 名称，但 `variants[]` 已升级为递归 `additionalProperties:false` 的严格 Story Candidates。原有字段保留，只新增五个必填非空候选级字段：`keyChoice`、`climax`、`emotionalPayoff`、`novelty`、`visualPotential`；禁止在此阶段增加 Full Story、`characterBible`、`sceneScript`、`shotPlan` 或镜头级数据。确定性校验只负责严格字段、非空数组、唯一 id、Beat 连续编号与必填内容、固定主角，以及至少两个候选的 `dramaticFunction` 序列 + `keyChoice` + `climax` + `emotionalPayoff` 签名不同。禁止用老人、下雨、礼物等题材关键词判断分化，禁止本地代码裁决选择是否有意义或情绪是否成立。
+
+每个 Candidate 必须有一个主要承担角色性格或人物关系质感的 Beat，但它仍必须改变关系、情绪、信息或后续选择条件；删除后必须损失角色弧、关系推进、情绪积累或后续因果之一。禁止恢复「完全不推进主线、删除后故事仍完整」的旧 Prompt 规则。
+
+用户明确选择后，完整 Candidate 作为 `variant:<id>` Artifact 签发。`POST /api/full-story` 必须同时绑定该 Artifact 的精确 `artifactId/revision/contentDigest`；服务端在调用 Full Story 模型前后都必须复验 current Candidate、请求副本 digest、running target/request 和 target revision，并用落盘 Candidate 替换客户端副本。`candidateBinding` 只是请求 sidecar，不进入 Prompt、Legacy Full Story wire shape 或 Artifact。同 id 任意内容变化都必须换 digest/revision 并使旧下游 stale。
+
+状态恢复时，current Full Story 或 Animation Plan 可恢复其 `selectedVariantId`；没有下游时，只有 current `variant:<id>` 明确选择记录才能恢复。仅有 `themeVariants` 时 `selectedVariantId` 必须保持 `null`，禁止默认回退到 V1。离线质量基线只记录固定 fixture、九项人工评测维度、真实 token usage 和确定性 validation failure；不调用外部模型，不伪造主观分数。当前没有 Story Selection/Blueprint/Script Doctor/Targeted Rewrite/Production Package 4.0；Phase 2 只预留「已签发 Candidate 内容 + 精确 lineage reference」输入接缝。
 
 当前 `direct_shot` 必须由请求显式传入 `animationPlanMode: "direct_shot"`，且 `productionStrategy.format` 为 `direct_shot_video`。每个 shot 保留 `videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes` 以及镜头标识、时长、剧情目的、负面词和验收标准；禁止 `startFrame`、`endFrame`、`motion`、`startFramePrompt`、`endFramePrompt` 五个端点字段。
 

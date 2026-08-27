@@ -1,0 +1,223 @@
+{
+  "schemaVersion": "story-quality-evaluation-input/1.0",
+  "fixtureSetId": "story-candidates-phase1-baseline",
+  "description": "Phase 1 固定契约样本；只用于离线评测格式与人工评分基线，不代表质量得分。",
+  "cases": [
+    {
+      "caseId": "fixed-protagonist-two-structures",
+      "description": "同一固定主角下的两个不同结构候选。",
+      "creatorProfile": {
+        "fixedCharacter": "小白子，Q版狼耳少女，村里的热心帮手",
+        "vertical": "治愈温情日常",
+        "constraints": "60 秒内完成"
+      },
+      "generation": {
+        "provider": null,
+        "model": null,
+        "tokenUsage": null
+      },
+      "storyCandidates": {
+        "variants": [
+          {
+            "id": "V1",
+            "title": "停电前的最后一段录音",
+            "oneLineHook": "全村只剩一块有电的电池，小白子为什么把它装进一台坏掉的旧录音机？",
+            "logline": "小白子要在临时供电结束前修好旧录音机并送到山坡小屋，途中每一次用电都迫使她重新选择。",
+            "verticalFit": "以村庄互助、日常维修和克制关系表达承载治愈情绪。",
+            "characterSetup": {
+              "protagonist": "小白子，村里的热心帮手",
+              "careRecipient": "独居在山坡小屋、听力逐渐下降的木匠爷爷",
+              "helper": "负责临时供电登记的杂货铺店员"
+            },
+            "newTask": "在临时供电结束前修复旧录音机并送到山坡小屋。",
+            "emotionalMedium": "一盘只录到一半、尚未确认内容的旧磁带。",
+            "environmentPressure": "停电后的临时电源只剩一次完整测试所需的电量。",
+            "storyOutline": [
+              {
+                "beat": 1,
+                "phase": "任务钩子",
+                "action": "小白子从维修盒里取出最后一块电池，主动答应在临时供电结束前修好录音机。",
+                "emotion": "紧迫",
+                "dramaticFunction": "建立稀缺资源与明确期限",
+                "estimatedSeconds": 12
+              },
+              {
+                "beat": 2,
+                "phase": "关系增压",
+                "action": "小白子发现木匠爷爷一直把空录音机放在餐桌对面的座位上，她改变测试顺序，先查磁带再修机器。",
+                "emotion": "克制的心疼",
+                "dramaticFunction": "通过关系细节改变信息状态与修理策略",
+                "estimatedSeconds": 14
+              },
+              {
+                "beat": 3,
+                "phase": "关键选择",
+                "action": "小白子拒绝先给自己的通讯器充电，把最后电量用于录音机的一次带载测试，并亲手处理卡带故障。",
+                "emotion": "担心转为坚定",
+                "dramaticFunction": "让主角承担不可撤回的选择成本",
+                "estimatedSeconds": 20
+              },
+              {
+                "beat": 4,
+                "phase": "兑现",
+                "action": "小白子把录音机送到木匠爷爷手边，按下播放键后安静坐到空座位旁，等他决定是否继续播放。",
+                "emotion": "释然中保留余味",
+                "dramaticFunction": "以主角行动兑现关系而不替对方解释情绪",
+                "estimatedSeconds": 14
+              }
+            ],
+            "highValueBeatMapping": [
+              {
+                "briefBeat": "任务与期限",
+                "newExpression": "最后一块电池绑定一次修理机会",
+                "retainedValue": "开场建立具体结果问题"
+              },
+              {
+                "briefBeat": "成本证明",
+                "newExpression": "主角放弃给自己的通讯器充电",
+                "retainedValue": "用不可撤回的选择证明关系重量"
+              },
+              {
+                "briefBeat": "日常兑现",
+                "newExpression": "主角坐到空座位旁等待",
+                "retainedValue": "用动作而非说教完成情绪回报"
+              }
+            ],
+            "keyDialogueDirections": [
+              "木匠爷爷只问：你听过里面的声音了吗？",
+              "小白子回答自己只检查了磁带能否转动，不替他说明录音内容。"
+            ],
+            "endingRitual": "播放键按下后，小白子把维修盒放到空座位旁，并约定下次带一盘空磁带来录新的声音。",
+            "transformationProof": {
+              "changedCharacters": "主角改为小白子，关系对象改为独居木匠爷爷。",
+              "changedTask": "任务改为在限电条件下修复并送达录音机。",
+              "changedDetailsAndProps": "以电池、磁带、通讯器和维修盒形成新的选择成本。",
+              "changedDialogue": "对白围绕是否听过录音与尊重对方决定重新设计。",
+              "changedVisualExpression": "用电量指示、卡带转动和空座位完成视觉叙事。"
+            },
+            "experienceFidelity": {
+              "positioning": "保留普通人关系中的具体任务型短故事。",
+              "audience": "面向喜欢克制关心与日常互助的观众。",
+              "emotion": "从紧迫、心疼到坚定和释然。",
+              "plotDriver": "由一次不可重复的修理机会持续驱动。",
+              "highValueBeats": "保留目标期限、选择成本和生活化兑现。"
+            },
+            "originalityRiskCheck": {
+              "riskLevel": "low",
+              "possibleSimilarity": "仍使用任务、受阻和关系兑现等通用功能。",
+              "mitigation": "用限电修理、测试顺序与空座位关系细节形成独立因果。"
+            },
+            "keyChoice": "小白子把最后电量用于录音机的带载测试，而不是先恢复自己的通讯器。",
+            "climax": "录音机再次卡带时，小白子必须在临时供电结束前完成唯一一次拆机处理和测试。",
+            "emotionalPayoff": "录音能够播放后，小白子不追问内容，而是坐到空座位旁陪木匠爷爷自己决定。",
+            "novelty": "把电量分配变成主角的不可撤回选择，并让修理顺序由关系信息改变。",
+            "visualPotential": "电量指示灯、透明卡带转轮、昏暗小屋与被推到空座位旁的维修盒都可直接形成画面节点。"
+          },
+          {
+            "id": "V2",
+            "title": "凌晨第一炉面包",
+            "oneLineHook": "烤炉已经降温，小白子为什么先拆掉刚修好的计时器？",
+            "logline": "小白子答应帮新学徒赶上清晨第一炉面包，却在修好故障后发现真正危险来自一张被误读的配方卡。",
+            "verticalFit": "以村庄早餐店的具体劳动、师徒关系和共同承担形成生活流治愈感。",
+            "characterSetup": {
+              "protagonist": "小白子，村里的热心帮手",
+              "careRecipient": "第一次独立值夜班、害怕拖累师傅的新学徒",
+              "helper": "住在隔壁、熟悉旧烤炉声响的退休面包师"
+            },
+            "newTask": "在开门前协助新学徒修好计时器并完成第一炉面包。",
+            "emotionalMedium": "写满修改痕迹、夹着一张新便签的旧配方卡。",
+            "environmentPressure": "凌晨低温让面团发酵变慢，开门时间却不能推迟。",
+            "storyOutline": [
+              {
+                "beat": 1,
+                "phase": "先给出失败结果",
+                "action": "小白子赶到店里，看见第一盘面团已经塌陷，主动让新学徒停止继续加热。",
+                "emotion": "错愕",
+                "dramaticFunction": "用已经发生的失败建立追因问题",
+                "estimatedSeconds": 10
+              },
+              {
+                "beat": 2,
+                "phase": "错误归因",
+                "action": "小白子检查计时器并完成修理，却从烤炉声和面团状态判断故障并不是唯一原因。",
+                "emotion": "短暂放心后再度警觉",
+                "dramaticFunction": "让一次表面成功转成更深问题",
+                "estimatedSeconds": 12
+              },
+              {
+                "beat": 3,
+                "phase": "关系信息改变条件",
+                "action": "小白子听见新学徒承认他把师傅的修改当成责备，便和他逐行核对配方卡，找出被遮住的低温调整说明。",
+                "emotion": "防备转为信任",
+                "dramaticFunction": "通过坦白改变关系状态与后续制作条件",
+                "estimatedSeconds": 14
+              },
+              {
+                "beat": 4,
+                "phase": "共同选择",
+                "action": "小白子提出拆下刚修好的计时器改接温度探针，新学徒决定承担重新和面的时间成本，两人分工重做。",
+                "emotion": "专注",
+                "dramaticFunction": "由双方选择触发最终行动而非等待帮助",
+                "estimatedSeconds": 14
+              },
+              {
+                "beat": 5,
+                "phase": "开放兑现",
+                "action": "小白子把第一炉中外形最不整齐的面包摆到展示架中央，新学徒写下自己的低温记录留给下一班。",
+                "emotion": "踏实",
+                "dramaticFunction": "让不完美结果成为关系与能力变化的可见证据",
+                "estimatedSeconds": 10
+              }
+            ],
+            "highValueBeatMapping": [
+              {
+                "briefBeat": "任务钩子",
+                "newExpression": "故事从第一盘面团已经失败开始",
+                "retainedValue": "立即提出能否补救的结果问题"
+              },
+              {
+                "briefBeat": "关系推进",
+                "newExpression": "学徒坦白误读配方卡后共同核对",
+                "retainedValue": "关系状态变化直接改变行动条件"
+              },
+              {
+                "briefBeat": "生活化结尾",
+                "newExpression": "留下低温记录并展示不整齐的面包",
+                "retainedValue": "用劳动痕迹兑现成长而非口头总结"
+              }
+            ],
+            "keyDialogueDirections": [
+              "新学徒具体说：我以为红笔那句是在说我不该碰这台炉子。",
+              "小白子不安慰他，只问：那我们把每一处修改都重新读一遍，行吗？"
+            ],
+            "endingRitual": "两人把不整齐的第一只面包摆在中央，并约定每个夜班都在配方卡背面留下一条真实温度记录。",
+            "transformationProof": {
+              "changedCharacters": "主角改为小白子，关系核心改为与新学徒共同承担。",
+              "changedTask": "任务改为修理烤炉计时器并补救第一炉面包。",
+              "changedDetailsAndProps": "以温度探针、面团、配方卡和夜班记录构成新细节。",
+              "changedDialogue": "对白围绕误读、核对和分工展开，不解释主题。",
+              "changedVisualExpression": "以塌陷面团、红笔修改、探针读数和展示架完成信息推进。"
+            },
+            "experienceFidelity": {
+              "positioning": "保留具体劳动中的关系型情绪故事。",
+              "audience": "面向关注新手成长、互助和生活细节的观众。",
+              "emotion": "从失败、误判到信任和踏实。",
+              "plotDriver": "由开门期限与补救失败面团持续驱动。",
+              "highValueBeats": "保留任务压力、关系变化和日常仪式收束。"
+            },
+            "originalityRiskCheck": {
+              "riskLevel": "low",
+              "possibleSimilarity": "仍包含技能帮助和共同完成任务的通用关系结构。",
+              "mitigation": "以错误归因、配方卡误读和拆除刚修好零件形成独立结构。"
+            },
+            "keyChoice": "小白子拆下刚修好的计时器改接温度探针，新学徒选择承担重新和面的时间成本。",
+            "climax": "开门倒计时中，两人必须依靠重新读出的低温说明和临时温度探针完成唯一一炉补救。",
+            "emotionalPayoff": "新学徒不再隐藏失误，而是主动把自己的夜班记录留给下一班；小白子用展示不完美面包认可他的承担。",
+            "novelty": "先让修理成功，再揭示关系误读才是核心障碍，并让主角主动拆掉刚完成的成果。",
+            "visualPotential": "塌陷面团、红笔配方卡、被拆下的计时器、探针数字和第一炉不整齐面包形成连续视觉证据。"
+          }
+        ]
+      }
+    }
+  ]
+}

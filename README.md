@@ -20,9 +20,19 @@ npm start
 
 Creative Brief 中的 `controlledRewriteVariables.sourceValue`、`protectedExpressions.sourceExpression` 和 Visual Guardrails 中的 `sourceSimilarityRules` 只记录原片表面表达的来源，不再作为下游正文禁词。原片道具、拟声词或角色组合可以随所选剧情进入 Variant、Legacy Full Story 与 Animation Plan 的正向业务字段，包括 `visibleAction`、对白、声音和 `videoPrompt`；系统不会仅因为某个表达出现在来源上下文中就把它机械写入正向内容。`sourceSimilarityRules` 只在生成请求实际携带原片参考时，为 `reference_leak` 提供证据；`dialogueRules` 也只能来自用户明确约束，不会由原片对白或拟声词自动生成。固定主角仍须服从已签发的 `fixedCharacterBoundary`，上述放行不授权修改其身份或外观。
 
-Creative Brief 的 `allowedNarrativeComponents` 使用服务端固定的七项通用叙事分类。实时模型不会自行决定分类名，只为每一项填写非空的安全复用说明；即使本次不采用某类构件，也必须保留该项并说明限制，避免同义改名或漏项导致契约失败。每条说明还必须以 `【原片有】` 或 `【原片没有】` 开头先判定原片是否真的存在该构件，避免模型替原片补出它并不存在的叙事构件（例如原片只是陪伴，却被写成送货任务）。判定为「原片有」时还必须引用上游依据，服务端会按字符覆盖率回查核对；允许转述措辞，但编造的情节会被拒绝。生成多个主题变体时，各方案不得共用同一条剧作功能序列，避免四个变体只是同一个故事换布景。主题变体卡片右上角的「换一批」按钮会用同一份已签发的上游证据（参考片分析、脚本还原、创意简报、角色边界）重新调用一次变体生成，不重跑前四个阶段；数量沿用当前「主题变体数量」设置。换一批会签发新的 `themeVariants` revision，服务端据此递归作废下游的完整剧情、镜头计划与镜头媒体，因此下游已有产出时页面会先逐项列出将失效的内容并明确征求同意，拒绝时不发起任何请求、不改动任何状态。
+Creative Brief 的 `allowedNarrativeComponents` 使用服务端固定的七项通用叙事分类。实时模型不会自行决定分类名，只为每一项填写非空的安全复用说明；即使本次不采用某类构件，也必须保留该项并说明限制，避免同义改名或漏项导致契约失败。每条说明还必须以 `【原片有】` 或 `【原片没有】` 开头先判定原片是否真的存在该构件，避免模型替原片补出它并不存在的叙事构件（例如原片只是陪伴，却被写成送货任务）。判定为「原片有」时还必须引用上游依据，服务端会按字符覆盖率回查核对；允许转述措辞，但编造的情节会被拒绝。
 
 服务端会将该边界与当前上游数据摘要绑定并签名。主题变体、Legacy Full Story、Animation Plan、人物参考精修、角色图、旧 v2 首尾帧和视频生成只消费同一份已签发边界，不会在每个阶段重新识别关键词或重新推断角色特征。修改固定角色、赛道、限制、字幕或参考视频会使旧边界失效，页面要求重新运行工作流。
+
+## Story Candidates Phase 1
+
+`themeVariants` 保留原有 wire shape 和 Artifact 名称，但 `variants[]` 已按递归 `additionalProperties: false` 的严格 Story Candidate Schema 校验。原有候选字段全部保留，只新增五个候选级非空字符串：`keyChoice`、`climax`、`emotionalPayoff`、`novelty`、`visualPotential`。本地代码只检查契约、唯一 id、Beat 顺序、固定主角，以及至少两个候选在 `dramaticFunction` 序列 + `keyChoice` + `climax` + `emotionalPayoff` 投影上不同；不用题材关键词或本地语义评分判断故事质量。
+
+用户点选 Candidate 后，完整内容以 `variant:<id>` Artifact 签发。Full Story 请求同时绑定它的 `artifactId/revision/contentDigest`；服务端在模型调用前后各复验一次 current Candidate，用落盘内容替换请求副本，且不把 binding sidecar 传入 Prompt 或 Legacy Full Story。因此同一 id 下修改标题、任务、关键选择或高潮都会换 digest/revision，旧请求与旧下游不能继续被视为 current。
+
+恢复时只认 current Full Story/Animation Plan 的 `selectedVariantId` 或 current `variant:<id>` 明确选择记录；只有 Theme Variants 时 `selectedVariantId` 保持 `null`，不再默认选中 V1。离线质量基线用法见 [docs/story-quality-evaluation.md](docs/story-quality-evaluation.md)；该入口不调用外部模型，九项主观维度默认都是未评分。
+
+本轮没有 Story Selection/Blueprint/Script Doctor/Rewrite/Production Package 4.0。Phase 2 唯一预留接缝是已签发 Candidate 的完整内容与精确 lineage reference；未来 Blueprint 必须消费这对受信输入，不能只凭 id 识别候选。
 
 ## 模型输出有界纠错
 
