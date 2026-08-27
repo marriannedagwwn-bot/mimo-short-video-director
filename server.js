@@ -13,7 +13,7 @@ import { buildShotFrameMultiImagePrompt } from "./public/shot-frame-multi-image-
 import { computeDependencyHash, computePromptHash } from "./src/frame-dependency.js";
 import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./src/frame-reference-request.js";
 import { WorkflowService } from "./src/workflow.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, characterPromptBoundaryMismatch, characterReferenceBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, InputError, requireAnimationPlanAspectRatio } from "./src/validation.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, characterPromptBoundaryMismatch, characterReferenceBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, ensureStoryCandidateContract, ensureThemeVariantsMatchProfile, InputError, requireAnimationPlanAspectRatio } from "./src/validation.js";
 import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
 import { resolveAuthoritativeShotVideoInput, resolveAuthoritativeShotVideoReferenceAssets, resolvePreviousShotFrameReference } from "./src/shot-video-continuity.js";
 import {
@@ -49,6 +49,10 @@ import {
   resolveAnimationPlanModelOutputTrace,
   resolveFullStoryModelOutputTrace
 } from "./src/full-model-output-trace.js";
+import {
+  assertFullStoryCandidateBindingCurrent,
+  resolveFullStoryCandidateBinding
+} from "./src/full-story-candidate-binding.js";
 import { loadOrCreatePersistentKey } from "./src/persistent-key.js";
 import { ProductionStateStore } from "./src/production-state-store.js";
 import { ProductionStateError, normalizeArtifactId, safeIdentifier } from "./src/production-lineage.js";
@@ -191,9 +195,32 @@ const routes = {
   "/api/brief": (body) => workflow.createBrief(body),
   "/api/visual-guardrails": (body) => workflow.createVisualGuardrails(body),
   "/api/variants": (body) => workflow.createVariants(body),
-  "/api/full-story": async (body, { request } = {}) => workflow.createFullStory(body, {
-    traceContext: await fullStoryModelOutputTrace(request, body)
-  }),
+  "/api/full-story": async (body, { request } = {}) => {
+    const validateBoundCandidate = (candidate) => {
+      ensureStoryCandidateContract(candidate, { path: "selectedCandidate" });
+      ensureThemeVariantsMatchProfile(
+        { variants: [candidate] },
+        body?.creatorProfile,
+        body?.creativeBrief,
+        body?.visualGuardrails
+      );
+      return candidate;
+    };
+    const candidateBinding = await resolveFullStoryCandidateBinding({
+      headers: request?.headers || {},
+      body,
+      loadRun: (input) => productionStateStore.loadRun(input),
+      validateCandidate: validateBoundCandidate
+    });
+    const result = await workflow.createFullStory(candidateBinding.input, {
+      traceContext: await fullStoryModelOutputTrace(request, candidateBinding.input)
+    });
+    await assertFullStoryCandidateBindingCurrent(candidateBinding, {
+      loadRun: (input) => productionStateStore.loadRun(input),
+      validateCandidate: validateBoundCandidate
+    });
+    return result;
+  },
   "/api/animation-plan": async (body, { request } = {}) => animationPromptCapture.run({
     route: "/api/animation-plan",
     variantId: body?.variant?.id,

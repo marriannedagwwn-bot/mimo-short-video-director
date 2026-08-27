@@ -117,16 +117,31 @@ test("stage.failed manifest 写入稳定诊断与 build identity 并剥离敏感
 test("same-id upstream change stales Story, Plan and media, while key reordering is idempotent", async () => {
   await withStore(async ({ store }) => {
     const run = await store.createRun({ projectId: "project-stale" });
+    const originalCandidate = {
+      id: "V1",
+      title: "旧主题",
+      newTask: "送回修好的旧钟",
+      keyChoice: "先救下受困邻居再绕路",
+      climax: "闭馆前让旧钟重新报时",
+      characterSetup: { protagonist: "奶奶" }
+    };
     const variant = await commit(store, run, {
       artifactId: "variant:V1",
       artifactType: "selectedVariant",
-      content: { id: "V1", title: "旧主题", characterSetup: { protagonist: "奶奶" } }
+      content: originalCandidate
     });
     const reordered = await commit(store, run, {
       artifactId: "variant:V1",
       artifactType: "selectedVariant",
       expectedCurrentRevision: variant.lineage.revision,
-      content: { characterSetup: { protagonist: "奶奶" }, title: "旧主题", id: "V1" }
+      content: {
+        characterSetup: { protagonist: "奶奶" },
+        climax: "闭馆前让旧钟重新报时",
+        keyChoice: "先救下受困邻居再绕路",
+        newTask: "送回修好的旧钟",
+        title: "旧主题",
+        id: "V1"
+      }
     });
     assert.equal(reordered.reused, true);
 
@@ -154,7 +169,13 @@ test("same-id upstream change stales Story, Plan and media, while key reordering
       artifactId: "variant:V1",
       artifactType: "selectedVariant",
       expectedCurrentRevision: variant.lineage.revision,
-      content: { id: "V1", title: "新主题", characterSetup: { protagonist: "奶奶" } }
+      content: {
+        ...originalCandidate,
+        title: "新主题",
+        newTask: "修好并送回停摆的怀表",
+        keyChoice: "放弃近路，先把唯一电池留给求助者",
+        climax: "列车开走前让怀表重新走动"
+      }
     });
     assert.deepEqual(changed.staleArtifactIds, [
       "animationPlan:V1",
@@ -165,6 +186,17 @@ test("same-id upstream change stales Story, Plan and media, while key reordering
     assert.equal(loaded.latestArtifacts["fullStory:V1"].lineage.status, "stale");
     assert.equal(loaded.latestArtifacts["animationPlan:V1"].lineage.status, "stale");
     assert.equal(loaded.latestArtifacts["shotVideo:V1:S01"].lineage.status, "stale");
+
+    await assert.rejects(
+      commit(store, run, {
+        artifactId: "fullStory:V1",
+        artifactType: "fullStory",
+        expectedCurrentRevision: story.lineage.revision,
+        content: { selectedVariantId: "V1", sceneScript: [{ sceneId: "OLD" }] },
+        dependencies: [lineageRef(variant.lineage)]
+      }),
+      (error) => error.code === "ARTIFACT_DEPENDENCY_STALE"
+    );
 
     await assert.rejects(
       commit(store, run, {

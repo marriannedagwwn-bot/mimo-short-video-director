@@ -44,6 +44,10 @@ import {
   shotVideoResultKey
 } from "./shot-video-continuity.js";
 import {
+  resolveImportedVariant,
+  resolveRestoredVariantId
+} from "./variant-restore.js";
+import {
   runtimePromptOverride,
   shouldAppendSeedanceNoTextRule,
   videoPromptProfileLabel,
@@ -1354,7 +1358,7 @@ async function generateFullStory({ force = false } = {}) {
   beginStageUsage();
   setStoryStatus(`正在调用 ${storyModelLabel()} 生成完整剧情…`, "active");
   try {
-    await ensureSelectedVariantArtifact(variant);
+    const candidateLineage = await ensureSelectedVariantArtifact(variant);
     const fullStory = await requestProductionArtifact({
       endpoint: "/api/full-story",
       requestBody: {
@@ -1364,6 +1368,7 @@ async function generateFullStory({ force = false } = {}) {
         visualGuardrails: state.output.visualGuardrails,
         themeVariants: state.output.themeVariants,
         variant,
+        candidateBinding: lineageDependency(candidateLineage),
         creatorProfile: profile()
       },
       artifactId: `fullStory:${variant.id}`,
@@ -4526,12 +4531,7 @@ function restoreRunArtifacts(latestArtifacts = {}) {
   }
   state.output.fullStories = state.fullStories;
   state.output.animationPlans = state.animationPlans;
-  const latestPlanId = [...currentEntries].reverse().find(([artifactId]) => artifactId.startsWith("animationPlan:"))?.[0];
-  const latestStoryId = [...currentEntries].reverse().find(([artifactId]) => artifactId.startsWith("fullStory:"))?.[0];
-  state.selectedVariantId = latestPlanId?.slice("animationPlan:".length)
-    || latestStoryId?.slice("fullStory:".length)
-    || state.output.themeVariants?.variants?.[0]?.id
-    || null;
+  state.selectedVariantId = resolveRestoredVariantId(latestArtifacts);
   if (state.selectedVariantId) {
     state.output.fullStory = state.fullStories[state.selectedVariantId] || null;
     state.output.animationPlan = state.animationPlans[state.selectedVariantId] || null;
@@ -4692,7 +4692,7 @@ async function importStoryTestPackage(file) {
 function restoreStoryPackage(payload, production) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("测试包 JSON 格式无效。");
   if (!production?.projectId || !production?.runId || !production?.artifacts) throw new Error("服务端没有返回隔离后的生产 Run。");
-  const variant = normalizeImportedVariant(payload);
+  const variant = resolveImportedVariant(payload);
   if (!variant?.id) throw new Error("测试包缺少 selectedVariant 或主题变体 id。");
   const id = String(variant.id);
   const fullStory = payload.fullStory || payload.fullStories?.[id] || payload.output?.fullStory || null;
@@ -4806,17 +4806,6 @@ function legacySourceVideoMetadata(metadata) {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata) || metadata.staticFrameCompiler) return null;
   const videoKeys = ["name", "size", "type", "duration", "width", "height"];
   return videoKeys.some((key) => metadata[key] !== undefined) ? metadata : null;
-}
-
-function normalizeImportedVariant(payload) {
-  const variant = payload.selectedVariant || payload.variant || payload.output?.selectedVariant || null;
-  if (variant?.id) return variant;
-  const variants = payload.themeVariants?.variants || payload.output?.themeVariants?.variants || [];
-  const fullStory = payload.fullStory || payload.output?.fullStory || null;
-  const animationPlan = payload.animationPlan || payload.output?.animationPlan || null;
-  const id = fullStory?.selectedVariantId || animationPlan?.selectedVariantId || variants[0]?.id || "";
-  if (id) return variants.find((item) => String(item.id) === String(id)) || { id, title: fullStory?.title || animationPlan?.title || id, characterSetup: { protagonist: payload.creatorProfile?.fixedCharacter || "" } };
-  return variant;
 }
 
 function mergeImportedThemeVariants(themeVariants, variant) {

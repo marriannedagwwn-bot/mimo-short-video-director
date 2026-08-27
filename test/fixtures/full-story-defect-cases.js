@@ -70,8 +70,8 @@ export const recoveryDefectCases = Object.freeze([
 export const downstreamDefectCases = Object.freeze([
   {
     id: "DS-05",
-    expectation: "current-accepts-same-id-changed-variant-context",
-    description: "Full Story 没有绑定完整 variant/profile/brief/guardrails digest"
+    expectation: "profile-validator-remains-id-scoped-server-binding-owns-candidate-digest",
+    description: "ensureFullStoryMatchesProfile 只守输出字段；Full Story 入口的完整 Candidate 由服务端 revision/digest binding 另行锁定"
   }
 ]);
 

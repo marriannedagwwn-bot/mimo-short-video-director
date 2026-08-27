@@ -123,7 +123,7 @@ test("RC-05 characterization: Phase 1 Coordinator retries a transient HTTP failu
   }
 });
 
-test("DS-05 characterization: same variant id does not bind the full variant context", () => {
+test("DS-05 boundary: profile validator stays id-scoped because server Candidate binding owns the full digest", () => {
   const story = validFullStoryFixture();
   const changedVariant = {
     ...characterizationContext.variant,
