@@ -547,6 +547,10 @@ test("主题变体同时提供结构保真与表达变换证明", async () => {
   for (const variant of result.themeVariants.variants) {
     assert.deepEqual(Object.keys(variant.experienceFidelity), ["positioning", "audience", "emotion", "plotDriver", "highValueBeats"]);
     assert.deepEqual(Object.keys(variant.transformationProof), ["changedCharacters", "changedTask", "changedDetailsAndProps", "changedDialogue", "changedVisualExpression"]);
+    for (const field of ["keyChoice", "climax", "emotionalPayoff", "novelty", "visualPotential"]) {
+      assert.equal(typeof variant[field], "string");
+      assert.ok(variant[field].trim());
+    }
   }
 });
 
@@ -2776,7 +2780,11 @@ test("brief 提示词区分来源事实、非机械注入与固定角色边界",
 
 test("模型漏掉必要字段时拒绝把结果标记为成功", () => {
   assert.throws(() => ensureOutputContract({ storySynopsis: "只有一个字段" }, "referenceAnalysis"), /缺少必要字段/);
-  assert.throws(() => ensureOutputContract({ variants: [] }, "themeVariants"), /至少需要一个主题方案/);
+  assert.throws(
+    () => ensureOutputContract({ variants: [] }, "themeVariants"),
+    (error) => error instanceof OutputContractError
+      && error.details.some((detail) => detail.code === "STORY_CANDIDATES_SCHEMA_MIN_ITEMS")
+  );
   assert.throws(() => ensureOutputContract({ selectedVariantId: "V1" }, "fullStory"), /缺少必要字段/);
   assert.throws(() => ensureOutputContract({ selectedVariantId: "V1" }, "animationPlan"), /缺少必要字段/);
 });
@@ -3373,13 +3381,18 @@ test("主题变体必须锁定用户指定固定角色，不能另起主角名",
           newTask: "送音乐盒",
           emotionalMedium: "磁带",
           environmentPressure: "黄昏",
+          keyChoice: "小雨选择独自把音乐盒送到退休老师家。",
+          climax: "小雨在天黑前按响退休老师家的门铃。",
+          emotionalPayoff: "老师收到音乐盒后确认自己仍被学生记得。",
+          novelty: "用音乐盒送达任务连接师生关系。",
+          visualPotential: "黄昏街道、音乐盒与烤红薯形成可见对照。",
           storyOutline: [{ beat: 1, phase: "任务", action: "小雨接过音乐盒出发", emotion: "期待", dramaticFunction: "建立任务", estimatedSeconds: 6 }],
           highValueBeatMapping: [],
           keyDialogueDirections: [],
           endingRitual: "老师请小雨吃红薯",
-          transformationProof: { changedCharacters: "", changedTask: "", changedDetailsAndProps: "", changedDialogue: "", changedVisualExpression: "" },
-          experienceFidelity: { positioning: "", audience: "", emotion: "", plotDriver: "", highValueBeats: "" },
-          originalityRiskCheck: { riskLevel: "low", possibleSimilarity: "", mitigation: "" }
+          transformationProof: { changedCharacters: "改为学生与退休老师", changedTask: "改为送音乐盒", changedDetailsAndProps: "使用磁带与红薯", changedDialogue: "使用师生口吻", changedVisualExpression: "使用黄昏街道" },
+          experienceFidelity: { positioning: "温情日常", audience: "关系共鸣受众", emotion: "期待到温暖", plotDriver: "限时送达", highValueBeats: "任务、送达、回应" },
+          originalityRiskCheck: { riskLevel: "low", possibleSimilarity: "保留通用送达结构", mitigation: "更换人物关系与任务媒介" }
         }] };
       }
     }
@@ -3419,13 +3432,18 @@ test("主题变体允许按剧情复用原片角色组合，但不覆盖固定�
           newTask: "送画作",
           emotionalMedium: "儿童画",
           environmentPressure: "大雾",
+          keyChoice: "小白子选择接受志愿者指路，但坚持亲自把画送到小月手中。",
+          climax: "小白子穿过最后一段浓雾，把完好的画亲手交给小月。",
+          emotionalPayoff: "小月确认自己的画被认真对待，小白子也接受同行者的善意。",
+          novelty: "让来源角色组合成为不替主角完成任务的独立帮助者。",
+          visualPotential: "大雾、背包中的画与抵达后摆正画作形成清晰状态变化。",
           storyOutline: [{ beat: 1, phase: "任务", action: "小白子整理背包，跟着企鹅服志愿者老张出发。", emotion: "期待", dramaticFunction: "建立任务", estimatedSeconds: 6 }],
           highValueBeatMapping: [],
           keyDialogueDirections: [],
           endingRitual: "小白子与小月一起把画作摆正。",
-          transformationProof: { changedCharacters: "", changedTask: "", changedDetailsAndProps: "", changedDialogue: "", changedVisualExpression: "" },
-          experienceFidelity: { positioning: "", audience: "", emotion: "", plotDriver: "", highValueBeats: "" },
-          originalityRiskCheck: { riskLevel: "low", possibleSimilarity: "", mitigation: "" }
+          transformationProof: { changedCharacters: "固定主角保持小白子", changedTask: "改为送画作", changedDetailsAndProps: "使用儿童画与背包", changedDialogue: "使用新关系对白", changedVisualExpression: "使用雾中山村" },
+          experienceFidelity: { positioning: "治愈日常", audience: "关系共鸣受众", emotion: "期待到温暖", plotDriver: "雾中送达", highValueBeats: "任务、帮助、兑现" },
+          originalityRiskCheck: { riskLevel: "low", possibleSimilarity: "保留通用帮助结构", mitigation: "任务与关系表达重新设计" }
         }] };
       }
     }
@@ -3473,13 +3491,18 @@ test("主题变体允许按剧情复用 mustChange 来源道具", async () => {
           newTask: "送录取通知书",
           emotionalMedium: "录取通知书",
           environmentPressure: "大雾",
+          keyChoice: "小白子选择在大雾中继续亲自送达录取通知书。",
+          climax: "小白子赶在天黑前把录取通知书交到邻居手中。",
+          emotionalPayoff: "邻居收到通知书后与小白子确认共同庆祝的约定。",
+          novelty: "在当前剧情需要下直接复用来源道具，但重新设计因果与关系。",
+          visualPotential: "大雾、通知书封套与孔明灯升起形成连续可见动作。",
           storyOutline: [{ beat: 1, phase: "任务", action: "小白子抱着录取通知书出发。", emotion: "期待", dramaticFunction: "建立任务", estimatedSeconds: 6 }],
           highValueBeatMapping: [],
           keyDialogueDirections: [],
           endingRitual: "两人一起放孔明灯。",
-          transformationProof: { changedCharacters: "", changedTask: "", changedDetailsAndProps: "", changedDialogue: "", changedVisualExpression: "" },
-          experienceFidelity: { positioning: "", audience: "", emotion: "", plotDriver: "", highValueBeats: "" },
-          originalityRiskCheck: { riskLevel: "low", possibleSimilarity: "", mitigation: "" }
+          transformationProof: { changedCharacters: "固定主角保持小白子", changedTask: "当前剧情使用录取通知书送达", changedDetailsAndProps: "使用通知书与孔明灯", changedDialogue: "使用邻里口吻", changedVisualExpression: "使用雾中村路" },
+          experienceFidelity: { positioning: "治愈日常", audience: "关系共鸣受众", emotion: "期待到庆祝", plotDriver: "限时送达", highValueBeats: "任务、抵达、庆祝" },
+          originalityRiskCheck: { riskLevel: "low", possibleSimilarity: "可能复用来源道具", mitigation: "因果、人物关系与动作重新设计" }
         }] };
       }
     }

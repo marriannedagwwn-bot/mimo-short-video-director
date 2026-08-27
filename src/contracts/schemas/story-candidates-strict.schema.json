@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "internal://story-candidates-strict",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["variants"],
+  "properties": {
+    "variants": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/storyCandidate" }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "nonEmptyStringArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "storyCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "oneLineHook",
+        "logline",
+        "verticalFit",
+        "characterSetup",
+        "newTask",
+        "emotionalMedium",
+        "environmentPressure",
+        "storyOutline",
+        "highValueBeatMapping",
+        "keyDialogueDirections",
+        "endingRitual",
+        "transformationProof",
+        "experienceFidelity",
+        "originalityRiskCheck",
+        "keyChoice",
+        "climax",
+        "emotionalPayoff",
+        "novelty",
+        "visualPotential"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "oneLineHook": { "$ref": "#/$defs/nonEmptyString" },
+        "logline": { "$ref": "#/$defs/nonEmptyString" },
+        "verticalFit": { "$ref": "#/$defs/nonEmptyString" },
+        "characterSetup": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["protagonist", "careRecipient", "helper"],
+          "properties": {
+            "protagonist": { "$ref": "#/$defs/nonEmptyString" },
+            "careRecipient": { "$ref": "#/$defs/nonEmptyString" },
+            "helper": { "$ref": "#/$defs/nonEmptyString" }
+          }
+        },
+        "newTask": { "$ref": "#/$defs/nonEmptyString" },
+        "emotionalMedium": { "$ref": "#/$defs/nonEmptyString" },
+        "environmentPressure": { "$ref": "#/$defs/nonEmptyString" },
+        "storyOutline": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["beat", "phase", "action", "emotion", "dramaticFunction", "estimatedSeconds"],
+            "properties": {
+              "beat": { "type": "integer", "minimum": 1 },
+              "phase": { "$ref": "#/$defs/nonEmptyString" },
+              "action": { "$ref": "#/$defs/nonEmptyString" },
+              "emotion": { "$ref": "#/$defs/nonEmptyString" },
+              "dramaticFunction": { "$ref": "#/$defs/nonEmptyString" },
+              "estimatedSeconds": { "type": "number" }
+            }
+          }
+        },
+        "highValueBeatMapping": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["briefBeat", "newExpression", "retainedValue"],
+            "properties": {
+              "briefBeat": { "$ref": "#/$defs/nonEmptyString" },
+              "newExpression": { "$ref": "#/$defs/nonEmptyString" },
+              "retainedValue": { "$ref": "#/$defs/nonEmptyString" }
+            }
+          }
+        },
+        "keyDialogueDirections": { "$ref": "#/$defs/nonEmptyStringArray" },
+        "endingRitual": { "$ref": "#/$defs/nonEmptyString" },
+        "transformationProof": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "changedCharacters",
+            "changedTask",
+            "changedDetailsAndProps",
+            "changedDialogue",
+            "changedVisualExpression"
+          ],
+          "properties": {
+            "changedCharacters": { "$ref": "#/$defs/nonEmptyString" },
+            "changedTask": { "$ref": "#/$defs/nonEmptyString" },
+            "changedDetailsAndProps": { "$ref": "#/$defs/nonEmptyString" },
+            "changedDialogue": { "$ref": "#/$defs/nonEmptyString" },
+            "changedVisualExpression": { "$ref": "#/$defs/nonEmptyString" }
+          }
+        },
+        "experienceFidelity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["positioning", "audience", "emotion", "plotDriver", "highValueBeats"],
+          "properties": {
+            "positioning": { "$ref": "#/$defs/nonEmptyString" },
+            "audience": { "$ref": "#/$defs/nonEmptyString" },
+            "emotion": { "$ref": "#/$defs/nonEmptyString" },
+            "plotDriver": { "$ref": "#/$defs/nonEmptyString" },
+            "highValueBeats": { "$ref": "#/$defs/nonEmptyString" }
+          }
+        },
+        "originalityRiskCheck": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["riskLevel", "possibleSimilarity", "mitigation"],
+          "properties": {
+            "riskLevel": { "$ref": "#/$defs/nonEmptyString" },
+            "possibleSimilarity": { "$ref": "#/$defs/nonEmptyString" },
+            "mitigation": { "$ref": "#/$defs/nonEmptyString" }
+          }
+        },
+        "keyChoice": { "$ref": "#/$defs/nonEmptyString" },
+        "climax": { "$ref": "#/$defs/nonEmptyString" },
+        "emotionalPayoff": { "$ref": "#/$defs/nonEmptyString" },
+        "novelty": { "$ref": "#/$defs/nonEmptyString" },
+        "visualPotential": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  }
+}

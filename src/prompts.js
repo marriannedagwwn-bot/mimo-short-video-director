@@ -459,10 +459,17 @@ creativeBrief：${JSON.stringify(input.creativeBrief)}
 叙事质量硬约束（这些约束负责让方案好看，不得与上述固定角色边界冲突；冲突时以固定角色边界为准）：
 - 施动性：storyOutline 中每个 beat 的 action 主语必须是固定角色本人。至少 3 个 beat 里固定角色是发起者而不是反应者——她主动想要、主动决定、主动争取、遭遇挫折，或亲手解决问题。把主角写成只“陪着、帮忙拿着、看着、站在一旁、跟着上车、发出声音、摇尾巴、眼眶泛红”的旁观者属于不合格；纯情绪反应镜头不计入这 3 个 beat。
 - 悬念：oneLineHook、logline 和 characterSetup.careRecipient 都不得提前陈述本片最大情绪反转的结果。该结果只能留到对应 beat 首次揭晓，人物卡里只能写揭晓之前观众已经知道的身份。如果观众在第 1 个 beat 之前就知道结局会发生什么，这个方案不合格。
-- 结构分化：${count} 个方案之间不得共用同一条 dramaticFunction 序列。至少两个方案在危机位置、成败节奏或结尾情绪上真正不同，例如让主角先失败一次、把最大波折放到接近结尾、或用没有完全达成的愿望收尾。只更换季节、天气、交通工具、道具材质、动物或帮助者称谓不算不同主题。
-- 质感留白：每个方案至少要有 1 个 beat 不推进主线，只承担固定角色的性格、癖好或人物关系质感，并在该 beat 的 dramaticFunction 里写明它不推进主线。判据是：删掉它故事依然完整，但角色会明显变扁平。
+- 结构分化：${count} 个候选中至少有两个的结构签名不同；签名由 dramaticFunction 序列、keyChoice、climax 和 emotionalPayoff 共同组成。它们要在危机位置、成败节奏、主角关键选择、高潮动作或情绪兑现上至少分化一项。只更换季节、天气、交通工具、道具材质、动物或帮助者称谓不算结构分化。
+- 人物质感与因果：每个方案至少有一个主要承担角色性格或人物关系质感的 Beat，但该 Beat 仍必须改变关系状态、情绪状态、信息状态或后续选择条件；删除后必须使角色弧线、关系推进、情绪积累或后续因果至少损失一项。
 - 具体承诺：endingRitual 及其对应 beat 必须包含一句具体、可引用、且只属于本方案的承诺或约定内容，不能只写“拉钩约定”“许愿”“告别”这类动作名称。keyDialogueDirections 至少给出 careRecipient 的一句具体台词方向，不能只描述情绪。
 - 完播悬念：每个方案必须自己设计至少一个“被刻意拖住不答的具体问句”，并在 storyOutline 对应 beat 的 dramaticFunction 里写明它在第几拍抛出、第几拍兑现；抛出与兑现之间至少间隔 2 个 beat。该问句必须是观众看完第 1 拍后会主动想问的具体问题，不能是“接下来会怎样”“他们能成功吗”这类通用悬念。oneLineHook 可以点出这个问题，但绝不能在同一句里给出答案；答案也不得提前写进 logline 或 characterSetup。如果上方提供了原片完播问句形态参考，只能学它的提问方式，不得复用它的提问对象、答案或兑现事件。
+
+Story Candidate 关键字段：
+- keyChoice：固定主角在压力下亲自作出的关键选择，以及该选择如何改变后续行动条件；只写候选级摘要，不展开 Full Story。
+- climax：本候选最高压力点中固定主角必须完成的决定性动作与可见结果。
+- emotionalPayoff：前文情绪积累最终兑现成的关系、情绪或行动状态变化。
+- novelty：本候选相对其他候选的新任务、新因果结构或新关系表达，不写抽象分数。
+- visualPotential：最值得拍摄的可见动作、环境变化或道具状态变化，不写分场、镜头或 shotPlan。
 
 输出结构：
 {
@@ -470,6 +477,7 @@ creativeBrief：${JSON.stringify(input.creativeBrief)}
     "id":"V1", "title":"", "oneLineHook":"", "logline":"", "verticalFit":"",
     "characterSetup":{"protagonist":"", "careRecipient":"", "helper":""},
     "newTask":"", "emotionalMedium":"", "environmentPressure":"",
+    "keyChoice":"", "climax":"", "emotionalPayoff":"", "novelty":"", "visualPotential":"",
     "storyOutline":[{"beat":1, "phase":"", "action":"", "emotion":"", "dramaticFunction":"", "estimatedSeconds":0}],
     "highValueBeatMapping":[{"briefBeat":"", "newExpression":"", "retainedValue":""}],
     "keyDialogueDirections":[], "endingRitual":"",

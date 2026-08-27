@@ -1,4 +1,8 @@
-import { validateLegacyFullStoryStrict } from "./contracts/contract-validator.js";
+import {
+  validateLegacyFullStoryStrict,
+  validateStoryCandidateStrict,
+  validateStoryCandidatesStrict
+} from "./contracts/contract-validator.js";
 import { GLOBAL_CHARACTER_BOUNDARY_VERSION } from "./character-boundary.js";
 import { assertVideoPromptProfile } from "../public/video-prompt-profiles.js";
 
@@ -293,6 +297,15 @@ export function hasExplicitStandardNameSuffix(value, standardName) {
 
 export function ensureOutputContract(value, contract) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new OutputContractError(`${contract} 必须是对象`);
+  if (contract === "themeVariants") {
+    const schemaResult = validateStoryCandidatesStrict(value);
+    if (!schemaResult.ok) {
+      throw new OutputContractError(
+        `themeVariants Story Candidates 结构校验失败：${schemaResult.diagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+        schemaResult.diagnostics
+      );
+    }
+  }
   if (contract === "fullStory") {
     const schemaResult = validateLegacyFullStoryStrict(value);
     if (!schemaResult.ok) {
@@ -323,7 +336,10 @@ export function ensureOutputContract(value, contract) {
   if (contract === "visualGuardrails") {
     validateVisualGuardrailsContract(value);
   }
-  if (contract === "themeVariants" && value.variants.length < 1) throw new OutputContractError("themeVariants 至少需要一个主题方案");
+  if (contract === "themeVariants") {
+    if (value.variants.length < 1) throw new OutputContractError("themeVariants 至少需要一个主题方案");
+    validateStoryCandidateSetStructure(value.variants);
+  }
   if (contract === "fullStory") {
     if (value.beatSheet.length < 6) throw new OutputContractError("fullStory 至少需要 6 个剧情节拍");
     if (value.sceneScript.length < 6) throw new OutputContractError("fullStory 至少需要 6 个可拍摄分场");
@@ -2078,12 +2094,76 @@ export function ensureCreativeBriefMatchesProfile(value, creatorProfile = {}, up
   return value;
 }
 
-// 多个变体共用同一条 dramaticFunction 序列时，它们只是同一个故事的不同布景，
-// 变体数量就失去意义。这里只裁决"全部雷同"这一个可确定性判定的下界：
-// 无法判断"是否真的足够不同"，那属于语义，不在本地校验范围内。
+export function ensureStoryCandidateContract(candidate, { path = "storyCandidate" } = {}) {
+  const label = String(path || "storyCandidate");
+  const schemaResult = validateStoryCandidateStrict(candidate);
+  if (!schemaResult.ok) {
+    throw new OutputContractError(
+      `${label} 结构校验失败：${schemaResult.diagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+      schemaResult.diagnostics
+    );
+  }
+  const sequenceDiagnostics = storyCandidateBeatSequenceDiagnostics(candidate);
+  if (sequenceDiagnostics.length) {
+    throw new OutputContractError(
+      `${label} 的 storyOutline beat 必须按 1..N 连续编号且顺序一致`,
+      sequenceDiagnostics
+    );
+  }
+  return candidate;
+}
+
+function validateStoryCandidateSetStructure(variants) {
+  const details = [];
+  const seenIds = new Map();
+  variants.forEach((candidate, candidateIndex) => {
+    const id = String(candidate.id).trim();
+    const firstIndex = seenIds.get(id);
+    if (firstIndex !== undefined) {
+      details.push({
+        code: "STORY_CANDIDATE_ID_DUPLICATE",
+        path: `/variants/${candidateIndex}/id`,
+        reason: `候选 id「${id}」与 /variants/${firstIndex}/id 重复`
+      });
+    } else {
+      seenIds.set(id, candidateIndex);
+    }
+    details.push(...storyCandidateBeatSequenceDiagnostics(candidate, `/variants/${candidateIndex}`));
+  });
+  if (!details.length) return;
+  throw new OutputContractError(
+    `themeVariants Story Candidates 结构校验失败：${details.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+    details
+  );
+}
+
+function storyCandidateBeatSequenceDiagnostics(candidate, basePath = "") {
+  return candidate.storyOutline.flatMap((beat, beatIndex) => {
+    const expectedBeat = beatIndex + 1;
+    if (beat.beat === expectedBeat) return [];
+    return [{
+      code: "STORY_CANDIDATE_BEAT_SEQUENCE_INVALID",
+      path: `${basePath}/storyOutline/${beatIndex}/beat`,
+      reason: `beat 必须为 ${expectedBeat}，实际为 ${String(beat.beat)}`
+    }];
+  });
+}
+
+function storyCandidateStructureSignature(candidate) {
+  return JSON.stringify({
+    dramaticFunctions: candidate.storyOutline.map((beat) => String(beat.dramaticFunction).trim()),
+    keyChoice: String(candidate.keyChoice).trim(),
+    climax: String(candidate.climax).trim(),
+    emotionalPayoff: String(candidate.emotionalPayoff).trim()
+  });
+}
+
+// 多个候选共用同一条结构签名时，它们只是同一个故事的不同布景。
+// 这里只裁决"全部雷同"这个可确定性下界；无法判断选择是否有意义、情绪是否成立，
+// 这些属于语义质量，不在本地校验范围内。
 function validateVariantStructuralDivergence(variants) {
   if (!Array.isArray(variants) || variants.length < 2) return;
-  const sequences = variants.map((variant, index) => {
+  const signatures = variants.map((variant, index) => {
     const outline = Array.isArray(variant?.storyOutline) ? variant.storyOutline : [];
     const functions = outline.map((beat) => String(beat?.dramaticFunction || "").trim());
     if (!outline.length || functions.some((entry) => !entry)) {
@@ -2092,19 +2172,26 @@ function validateVariantStructuralDivergence(variants) {
         + "每个 beat 都必须填写非空 dramaticFunction，否则无法判定各方案的结构是否真的不同"
       );
     }
-    return functions.join(" › ");
+    return storyCandidateStructureSignature(variant);
   });
-  if (new Set(sequences).size > 1) return;
+  if (new Set(signatures).size > 1) return;
+  const detail = {
+    code: "STORY_CANDIDATE_STRUCTURE_NOT_DIVERGENT",
+    path: "/variants",
+    reason: `${variants.length} 个候选共用同一条结构签名`
+  };
   throw new OutputContractError(
-    `themeVariants 的 ${variants.length} 个方案共用同一条 dramaticFunction 序列（${sequences[0]}）。`
-    + "至少要有两个方案在危机位置、成败节奏或结尾情绪上结构不同；"
-    + "只更换季节、天气、交通工具、道具或帮助者称谓不构成不同主题。"
+    `themeVariants 的 ${variants.length} 个候选共用同一条结构签名。`
+    + "至少要有两个方案在危机位置、成败节奏、主角关键选择、高潮或情绪兑现上结构不同；"
+    + "只更换季节、天气、交通工具、道具或帮助者称谓不构成不同主题。",
+    [detail]
   );
 }
 
 export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}, creativeBrief = null, visualGuardrails = null) {
   validateVariantStructuralDivergence(value?.variants);
-  const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
+  const signedBoundaryName = String(visualGuardrails?.fixedCharacterBoundary?.characterName || "").trim();
+  const fixedName = signedBoundaryName || extractFixedCharacterName(creatorProfile.fixedCharacter);
   if (!fixedName) return value;
   const protagonistLeakTerms = collectGlobalCharacterForbiddenTerms(visualGuardrails);
   const mismatches = [];
@@ -2117,6 +2204,11 @@ export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}, crea
       variant?.newTask,
       variant?.emotionalMedium,
       variant?.environmentPressure,
+      variant?.keyChoice,
+      variant?.climax,
+      variant?.emotionalPayoff,
+      variant?.novelty,
+      variant?.visualPotential,
       ...(Array.isArray(variant?.storyOutline) ? variant.storyOutline.map((beat) => beat?.action) : []),
       variant?.endingRitual
     ].filter(Boolean).join("\n");

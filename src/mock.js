@@ -223,11 +223,16 @@ export function mockVariants(input) {
     newTask: seed.task,
     emotionalMedium: seed.medium,
     environmentPressure: seed.pressure,
+    keyChoice: `${fixed}选择先承担额外成本保护任务与关系，而不是按最省事的方式放弃。`,
+    climax: `${fixed}在${seed.pressure}造成的最后阻碍中亲手完成${seed.task}的决定性动作。`,
+    emotionalPayoff: `${seed.ending}，此前没有说出口的关心转化为双方都能确认的关系变化。`,
+    novelty: `以${seed.medium}连接任务与关系，并让帮助只改变条件、不替${fixed}完成选择。`,
+    visualPotential: `${seed.pressure}、任务物状态变化与${seed.ending}形成可见的动作和环境对照。`,
     storyOutline: [
-      { beat: 1, phase: "钩子", action: "任务物出问题，明确最后期限", emotion: "紧迫", dramaticFunction: seed.shape[0], estimatedSeconds: 4 },
-      { beat: 2, phase: "推进", action: "常规方案失效，主角付出额外成本保护任务", emotion: "担心", dramaticFunction: seed.shape[1], estimatedSeconds: 14 },
-      { beat: 3, phase: "转折", action: `${seed.helper}看出困境并提供具体帮助`, emotion: "温暖", dramaticFunction: seed.shape[2], estimatedSeconds: 12 },
-      { beat: 4, phase: "兑现", action: seed.ending, emotion: "释然", dramaticFunction: seed.shape[3], estimatedSeconds: 10 }
+      { beat: 1, phase: "钩子", action: `${fixed}发现任务物出问题，并确认最后期限。`, emotion: "紧迫", dramaticFunction: seed.shape[0], estimatedSeconds: 4 },
+      { beat: 2, phase: "推进", action: `${fixed}在常规方案失效后，选择付出额外成本保护任务与关系。`, emotion: "担心", dramaticFunction: seed.shape[1], estimatedSeconds: 14 },
+      { beat: 3, phase: "转折", action: `${fixed}让${seed.helper}看见真实困境，并接受一项不替自己完成任务的具体帮助。`, emotion: "温暖", dramaticFunction: seed.shape[2], estimatedSeconds: 12 },
+      { beat: 4, phase: "兑现", action: `${fixed}抵达后见证并参与结尾动作：${seed.ending}。`, emotion: "释然", dramaticFunction: seed.shape[3], estimatedSeconds: 10 }
     ],
     highValueBeatMapping: [
       { briefBeat: "任务与期限", newExpression: seed.task, retainedValue: "快速建立观看问题" },
