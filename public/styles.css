@@ -82,6 +82,7 @@ h1 em { color: var(--accent); font-style: normal; }
 .field > span { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; color: var(--ink); font-size: 12px; font-weight: 650; }
 .field small { color: var(--muted); font-weight: 400; }
 .field b { color: var(--accent); font-size: 9px; letter-spacing: .1em; }
+.field-hint { display: block; margin: -4px 0 8px; font-size: 11px; line-height: 1.55; }
 .field input, .field textarea, .field select { width: 100%; border: 1px solid var(--line); outline: none; border-radius: 11px; background: rgba(255,255,255,.63); padding: 12px 13px; color: var(--ink); font-size: 13px; transition: .2s; resize: vertical; }
 .field input:focus, .field textarea:focus, .field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(240,90,42,.08); }
 .field textarea::placeholder, .field input::placeholder { color: #aaa59c; }
