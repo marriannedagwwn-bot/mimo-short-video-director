@@ -22,6 +22,12 @@ Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主�
 
 Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通过递归 strict Schema，且只新增 `keyChoice/climax/emotionalPayoff/novelty/visualPotential` 五个候选级字段。本地校验不使用题材关键词或主观语义打分。选中候选以 current `variant:<id>` Artifact 的精确 revision/digest 绑定 Full Story，服务端在模型调用前后复验；`candidateBinding` 不进入 Prompt 或 Legacy Full Story wire shape。状态恢复只认 current Story/Plan 或明确 `variant:<id>` 记录，仅有 Theme Variants 时必须保持未选中，禁止默认 V1。当前没有 Story Selection/Blueprint/Script Doctor/Targeted Rewrite/Production Package 4.0；Phase 2 只预留「已签发 Candidate 内容 + 精确 lineage reference」接缝。
 
+**可选叙事构件（2026-08-28）**：`characterSetup.careRecipient`、`characterSetup.helper`、`emotionalMedium`、`endingRitual` 以及 Full Story 的 `characterBible.careRecipient` 全部从 required 降级为**可选键**。它们曾强制每个候选长成「主角＋被关爱对象＋帮助者＋情感信物＋仪式结尾」，与 Prompt 要求的候选间根本差异直接矛盾。写了就仍必须合规（非空字符串；`careRecipient` 对象五个子字段齐全），不需要就整个键省略，**禁止输出空字符串或占位文本**。`characterSetup.protagonist`、`characterBible.protagonist` 与 `characterBible.helpers`（可为 `[]`）仍必填，固定角色锁定不受影响。
+
+**逐字投影校验（2026-08-28，确定性硬失败）**：`keyChoice` / `climax` / `emotionalPayoff` 必须**逐字等于** `storyOutline` 中某一拍的 `action`——同一个字符串，不多不少。因果序只裁决「关键选择拍 < 高潮拍 < 最后一拍」，`emotionalPayoff` 必须是最后一拍。**「两拍之间至少隔一拍写后果」留在 Prompt，不由校验器硬裁**——那是来自旧固定六拍布局的剧作观点，而选择直接引发高潮是完全成立的写法；用位置代理替代语义判断，正是本轮在拆的东西。判定只用字符串相等与下标比较，**不做语义判断、不使用任何词表**，同一句话匹配到多拍时报 `STORY_CANDIDATE_PROJECTION_AMBIGUOUS` 而不是任选一拍。诊断码：`STORY_CANDIDATE_PROJECTION_NOT_VERBATIM` / `..._OUT_OF_ORDER` / `..._AMBIGUOUS`。
+
+这条约束 Prompt 一直就写着，但此前**没有校验器**。放开固定拍号（原 Beat 3/5/6）后实测合规率从 60/60 掉到 31/48，某些上游甚至 0/12——顶层写压缩摘要、`storyOutline` 写另一件事，同一个候选出现两版剧情，下游 Full Story 无从判断哪个是事实。它是阻止候选内部多版本事实的唯一机制，因此补成确定性硬失败。
+
 系统的核心目标是：剧情一致性、角色一致性、镜头连续性、AI 输出可验证性、生产流程可恢复性。任何修改都以这五项为验收方向，而不是代码量或实现速度。
 
 ---
@@ -184,6 +190,10 @@ DeepSeek 模型 ID 只登记 `deepseek-v4-flash`（页面首选）与 `deepseek-
 ### 2.10 Story Contract
 
 每个 scene 必须有：`sceneId`、`location`、`characters`、`visibleAction`、`shotAndSound`。
+
+`characterBible.careRecipient` 是可选键：当前 Variant 没有被照料对象时整个省略，`helpers` 无帮助者时输出 `[]`。**Full Story 不得把候选阶段省略的叙事构件补回来**——七项 taxonomy 是 Creative Brief 记录「原片有没有某类构件」的分类，不是本片必备构件，也不是承接清单。承接范围只有一个来源：当前选中 Variant 实际写出的内容。
+
+对白质量硬约束：**禁止复述同场 `visibleAction` 里观众已经能直接看见的信息**，禁止用旁白式台词直接播报人物内心。能靠表情、动作、停顿、眼神和道具互动表达的内容优先不写成台词；宁可一场戏没有对白，也不要用台词解说画面。`dialogueStyleGuide.forbiddenDialoguePatterns` 必须至少列出「复述画面已有信息」和「台词直接播报内心」两条。这些是 Prompt 生成约束，**没有确定性校验兜底**——判断一句台词是否在复述画面需要语义判断，写死词表会误伤合法的反应性台词。
 
 `characters` = **本场实际出镜角色**，不是被提及的人、地点名称、道具归属或回忆对象。
 

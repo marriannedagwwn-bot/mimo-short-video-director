@@ -52,18 +52,34 @@
               {
                 "beat": 3,
                 "phase": "关键选择",
-                "action": "小白子拒绝先给自己的通讯器充电，把最后电量用于录音机的一次带载测试，并亲手处理卡带故障。",
-                "emotion": "担心转为坚定",
-                "dramaticFunction": "让主角承担不可撤回的选择成本",
-                "estimatedSeconds": 20
+                "action": "小白子把最后电量用于录音机的带载测试，而不是先恢复自己的通讯器。",
+                "emotion": "克制",
+                "dramaticFunction": "主角亲自作出关键选择并放弃自身利益",
+                "estimatedSeconds": 10
               },
               {
                 "beat": 4,
+                "phase": "后果收窄",
+                "action": "临时供电只剩最后一段，卡带没有第二次拆机机会。",
+                "emotion": "紧张",
+                "dramaticFunction": "选择造成的直接后果，使高潮成为唯一一次机会",
+                "estimatedSeconds": 8
+              },
+              {
+                "beat": 5,
+                "phase": "高潮",
+                "action": "录音机再次卡带时，小白子必须在临时供电结束前完成唯一一次拆机处理和测试。",
+                "emotion": "紧张",
+                "dramaticFunction": "主角亲手完成决定性动作并产生可见结果",
+                "estimatedSeconds": 10
+              },
+              {
+                "beat": 6,
                 "phase": "兑现",
-                "action": "小白子把录音机送到木匠爷爷手边，按下播放键后安静坐到空座位旁，等他决定是否继续播放。",
-                "emotion": "释然中保留余味",
-                "dramaticFunction": "以主角行动兑现关系而不替对方解释情绪",
-                "estimatedSeconds": 14
+                "action": "录音能够播放后，小白子不追问内容，而是坐到空座位旁陪木匠爷爷自己决定。",
+                "emotion": "释然",
+                "dramaticFunction": "把积累的关系与情绪转化为可见状态变化",
+                "estimatedSeconds": 10
               }
             ],
             "highValueBeatMapping": [
@@ -146,26 +162,34 @@
               },
               {
                 "beat": 3,
-                "phase": "关系信息改变条件",
-                "action": "小白子听见新学徒承认他把师傅的修改当成责备，便和他逐行核对配方卡，找出被遮住的低温调整说明。",
-                "emotion": "防备转为信任",
-                "dramaticFunction": "通过坦白改变关系状态与后续制作条件",
-                "estimatedSeconds": 14
+                "phase": "关键选择",
+                "action": "小白子拆下刚修好的计时器改接温度探针，新学徒选择承担重新和面的时间成本。",
+                "emotion": "决断",
+                "dramaticFunction": "两人共同承担代价作出关键选择",
+                "estimatedSeconds": 10
               },
               {
                 "beat": 4,
-                "phase": "共同选择",
-                "action": "小白子提出拆下刚修好的计时器改接温度探针，新学徒决定承担重新和面的时间成本，两人分工重做。",
-                "emotion": "专注",
-                "dramaticFunction": "由双方选择触发最终行动而非等待帮助",
-                "estimatedSeconds": 14
+                "phase": "后果收窄",
+                "action": "重新和面吃掉了余量，开门前只剩唯一一炉的机会。",
+                "emotion": "紧张",
+                "dramaticFunction": "选择造成的直接后果，使高潮成为唯一一次机会",
+                "estimatedSeconds": 8
               },
               {
                 "beat": 5,
+                "phase": "高潮",
+                "action": "开门倒计时中，两人必须依靠重新读出的低温说明和临时温度探针完成唯一一炉补救。",
+                "emotion": "紧张",
+                "dramaticFunction": "主角亲手完成决定性动作并产生可见结果",
+                "estimatedSeconds": 10
+              },
+              {
+                "beat": 6,
                 "phase": "开放兑现",
-                "action": "小白子把第一炉中外形最不整齐的面包摆到展示架中央，新学徒写下自己的低温记录留给下一班。",
-                "emotion": "踏实",
-                "dramaticFunction": "让不完美结果成为关系与能力变化的可见证据",
+                "action": "新学徒不再隐藏失误，而是主动把自己的夜班记录留给下一班；小白子用展示不完美面包认可他的承担。",
+                "emotion": "释然",
+                "dramaticFunction": "把积累的关系与情绪转化为可见状态变化",
                 "estimatedSeconds": 10
               }
             ],

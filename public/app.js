@@ -1145,11 +1145,11 @@ function renderVariants(data) {
       <p class="variant-logline">${escape(variant.logline)}</p>
       <div class="variant-cast">
         <span><b>主角</b>${escape(variant.characterSetup?.protagonist || "待确认")}</span>
-        <span><b>被关爱对象</b>${escape(variant.characterSetup?.careRecipient || "待确认")}</span>
-        <span><b>帮助者</b>${escape(variant.characterSetup?.helper || "待确认")}</span>
+        ${optionalCastSpan("被关爱对象", variant.characterSetup?.careRecipient)}
+        ${optionalCastSpan("帮助者", variant.characterSetup?.helper)}
       </div>
       <ul class="mini-beats">${(variant.storyOutline || []).map((beat) => `<li><b>${escape(beat.beat)}</b><span><strong>${escape(beat.phase)}</strong> · ${escape(beat.action)}</span></li>`).join("")}</ul>
-      <div class="variant-ending"><b>结尾仪式：</b>${escape(variant.endingRitual)}</div>
+      ${variant.endingRitual ? `<div class="variant-ending"><b>结尾仪式：</b>${escape(variant.endingRitual)}</div>` : ""}
       <button class="outline-button variant-story-button" type="button" data-story-variant="${escape(variant.id)}">进入完整剧情 →</button>
     </div>`).join("")}</div>`;
   reveal(elements.variants);
@@ -1341,7 +1341,7 @@ function renderSelectedVariantSummary(variant) {
       <span><b>主角</b>${escape(variant.characterSetup?.protagonist || "待确认")}</span>
       <span><b>任务</b>${escape(variant.newTask || "待确认")}</span>
       <span><b>压力</b>${escape(variant.environmentPressure || "待确认")}</span>
-      <span><b>媒介</b>${escape(variant.emotionalMedium || "待确认")}</span>
+      ${optionalCastSpan("媒介", variant.emotionalMedium)}
     </div>`;
 }
 
@@ -5001,6 +5001,13 @@ function formatShotNegativeEntriesMarkdown(shot = {}, target = "image") {
 
 function escape(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
+}
+// careRecipient / helper / emotionalMedium 是可选叙事构件：故事不需要就整个字段省略。
+// 缺席时整行不渲染——渲染成“待确认”会让用户以为模型漏填了，实际是这个故事根本不需要它。
+function optionalCastSpan(label, value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  return `<span><b>${escape(label)}</b>${escape(text)}</span>`;
 }
 function formatDialogue(items = []) {
   if (!Array.isArray(items) || !items.length) return "无对白，以动作和声画推进";

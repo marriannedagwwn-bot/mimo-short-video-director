@@ -113,19 +113,51 @@ flowchart LR
 
 Phase 2 的预留接缝只是「已签发 Candidate 内容 + 精确 lineage reference」：未来 Blueprint 若实施，必须消费这一对受信输入，不能再只用 id 猜候选。当前没有 Story Selection/Blueprint Artifact、API 或额外 LLM 调用。离线质量基线的输入、结果与人工评分边界见 `docs/story-quality-evaluation.md`。
 
+#### Phase 1.2 候选结构自由度（2026-08-28）
+
+上一轮把候选写得彼此雷同的原因不在模型，而在容器：Schema 强制每个候选必须有 `careRecipient`、`helper`、`emotionalMedium`、`endingRitual`，Prompt 又把 `storyOutline` 固定成 6 拍、相位固定为「钩子、障碍、关键选择、后果、高潮、兑现」，并把 `keyChoice`/`climax`/`emotionalPayoff` 钉死在 Beat 3/5/6。Prompt 一边要求任意两个候选至少三个维度根本不同，容器一边规定它们共用同一套人物功能配置和同一条骨架。本轮解开这两处：
+
+- **可选叙事构件**：上述四个候选级字段与 Full Story 的 `characterBible.careRecipient` 降级为可选键。写了仍必须合规，不需要就整个键省略，禁止空字符串或占位文本。`protagonist` 与固定角色锁定不受影响。Prompt 另加一条批次约束：`count` 个候选里最多 2 个可以同时写出 `careRecipient` 与 `helper`。
+- **结构自由度**：`storyOutline` 改为 5–7 拍，候选之间可用不同拍数；`phase` 由候选自己命名以描述该拍的实际职责，**禁止**套用原来那套固定词表，也不得全组共用同一串 `phase`。三个顶层字段仍逐字绑定到某一拍，但落在第几拍由候选自己的因果结构决定，只保留因果序约束：关键选择拍 < 高潮拍 < 最后一拍，且关键选择拍与高潮拍之间至少隔一拍写该选择的直接后果。
+
+- **逐字投影校验**：放开拍号带来一个必须补上的确定性校验。`keyChoice`/`climax`/`emotionalPayoff` 必须逐字等于某一拍的 `action`，因果序只裁决「关键选择拍 < 高潮拍 < 最后一拍」；「中间隔一拍写后果」留在 Prompt，不由校验器硬裁——那是来自旧固定六拍布局的剧作观点。这条 Prompt 一直写着但从未被校验；固定拍号时实测 60/60 合规，放开后掉到 31/48、个别上游 0/12。它是消除候选内部多版本事实的唯一机制，故补成硬失败。判定只比较字符串与下标，不做语义判断。
+
+三项都只改生成约束与 Schema required 集合，不新增 Schema 字段、不新增模型调用、不新增关键词规则，也不改写已签发的旧 Artifact。旧候选带着这四个字段仍然合法。分化校验同步从「全组完全雷同才失败」收紧为两两比较，并在报错里点名具体是哪一对雷同。
+
+Full Story 阶段同步修掉一处跨阶段契约冲突：该阶段过去把七项 taxonomy 与 Variant 内容并列写成「都必须忠实承接」，与 Creative Brief 阶段「不会把该构件变成每个新方案的必选项」直接矛盾，等于候选阶段省略掉的构件会在下一阶段被补回来。现在承接范围只认当前 Variant 实际写出的内容。同时新增对白质量约束：禁止复述同场 `visibleAction` 已可见的信息，禁止旁白式播报内心。两者都是 Prompt 生成约束，没有确定性校验兜底。
+
+#### 候选因果引擎的主导变量是 creatorProfile，不是 Brief（2026-08-28 实测）
+
+解开模板后仍观察到候选之间因果引擎雷同：四个候选的关键选择都是「放弃某样东西去帮忙」，末拍相位是同一个词。当时的假设是 `creativeBrief` 把原片因果链夹带进了候选阶段——`storyEngine` 已按 Phase 1.1 挡在投影之外，但 `emotionStructure[].function` 与 `reusableHighValueBeats[].dramaticValue` 仍进入投影，且实测有 4/24 条 `dramaticFunction` 逐字复制自这两个字段，而结构分化签名恰恰由 `dramaticFunction` 计算。
+
+**该假设被真实回放否定，因此没有修改 Brief 投影范围。** 对照实验只改 `creatorProfile.fixedCharacter`，其余上游、赛道、模型与提示词全部不变：
+
+| 人设 | 逐字投影 | 末拍相位种类 | 因果引擎 |
+| --- | --- | --- | --- |
+| 「村里的热心帮手」 | 12/12 | 1 种（四个候选同词） | 四个候选都是「放弃 X 去帮忙 → 被感谢」 |
+| 「村里最不爱管闲事的人」 | 12/12 | 4 种 | 突发扑救 / 延迟回响 / 工程式创意 / 表演介入，各不相同 |
+
+关键点：**两次的 `creativeBrief` 都把 A→B→C 完整写在 `emotionStructure` 与 `reusableDramaticValues` 里**（「善举获得外部奖励，情感势能爆发」「将荣誉分享给长辈，升华亲情主题」），而换人设那批四个候选**没有一个**执行转赠长辈。Brief 开着这条路，候选没走。所以 Brief 投影不是收敛主因，收紧它属于改错地方，还会削弱原本正常工作的抽象保真。
+
+原因在 `fixedCharacterBoundary`：它把人设签成必需事实并传给每个下游阶段。「村里的热心帮手」被签成 `scope: storyFunction`——主角的**剧情功能**就是帮手，那么每个候选都是善举是设定要求的结果，不是候选阶段失守。换成「最不爱管闲事」后签成 `scope: personality`，`keyChoice` 随即从「放弃某物去帮忙」变成「决定介入」，每个候选内部因此产生角色弧线，相位名也出现「旁观者状态」「疏离旁观」。
+
+**因此：`creatorProfile.fixedCharacter` 中的剧情功能定位会直接决定候选集的因果引擎。** 调它比调 Prompt 或校验器的杠杆大得多。写死剧情功能（帮手、送信员、照顾者）会让整组候选共享同一个引擎，且这一层无法由下游的反套路约束或结构分化校验挽回——那些约束只能阻止候选**重复**同一条完整因果组合，不能凭空创造出人设不允许的欲望类型。
+
+保留的限制：换人设后四个故事**仍然都是主角帮了别人**，只是入场方式从「默认助人」变成「旁观→介入」。人设词改变的是进入冲突的方式，不取消助人本身。另外该实验只覆盖候选阶段，没有回放到 Full Story 与 Animation Plan。
+
 #### Phase 1.1 回放结论与 Phase 2 边界
 
 真实生产包回放表明，严格字段和确定性结构签名通过，不等于候选已经在语义层形成不同故事。`creativeBrief` 是抽象层，但历史 Artifact 可能把原片的具体动作、道具解法、分享方式和告别顺序写进 `storyEngine`、`reusableHighValueBeats.mustRetain` 或 `nonNegotiableExperience`；下游 Variants 随后可能只替换道具和措辞，却共享同一条「目标 → 压力 → 机智解法 → 成果分享 → 告别」因果链。Phase 1.1 同时校准 Brief Prompt 与 Variants Prompt：新 Brief 的强保真字段只能写抽象剧作价值；Variants 只展开定位、受众、核心情绪、情绪结构和 `reusableHighValueBeats[].dramaticValue` 的安全投影，不展开历史 `storyEngine`、具体 Beat/`mustRetain`、`samePlotDriver`、`sameBeatValue` 或 `creativeDistancePolicy` 值。这个投影不会原地改写已签发旧 Brief，也不新增 Schema 字段、deterministic validator、模型调用或关键词规则。
 
-候选批次的**语义差异**与当前确定性**文本签名差异**不是同一个保证。现有校验只证明至少两个 Candidate 在 `dramaticFunction` 序列、`keyChoice`、`climax`、`emotionalPayoff` 的 canonical 文本投影上不同；它不能证明危机、选择成本、因果结构或情绪兑现实质不同。老人、雨、礼物、毛线球等题材词不能成为本地分化判据。批次级语义分化、选择是否有意义、Beat 是否必要和情绪是否成立，仍属于离线人工评测或未来 Phase 2 的窄语义评审职责。
+候选批次的**语义差异**与当前确定性**文本签名差异**不是同一个保证。现有校验证明**任意两个** Candidate 在 `dramaticFunction` 序列、`keyChoice`、`climax`、`emotionalPayoff` 的 canonical 文本投影上都不同（2026-08-28 从「全组完全雷同才失败」收紧为两两比较——旧口径让「4 个候选里 3 个雷同」合法通过，等于 Prompt 的分化要求没有执行力）；它不能证明危机、选择成本、因果结构或情绪兑现实质不同。老人、雨、礼物、毛线球等题材词不能成为本地分化判据。批次级语义分化、选择是否有意义、Beat 是否必要和情绪是否成立，仍属于离线人工评测或未来 Phase 2 的窄语义评审职责。
 
-Prompt 中关于施动性、因果、人物质感、悬念、承诺和连贯性的要求，目前只是生成约束，不是已落地的内容正确性证明。`keyChoice`/Beat 3、`climax`/Beat 5、`emotionalPayoff`/Beat 6 的逐字投影，以及 `highValueBeatMapping.newExpression` 对六拍正文的逐字投影，可以消除候选内部的多版本事实，却不能证明这些事实在现实语义上成立；真实 5×4 回放仍由人工发现同一物品重复分配、动作先后回退等问题。Candidate digest/revision 绑定也只证明 Full Story 使用了哪份 current Candidate，不证明 Full Story 或 Animation Plan 的自由文本在语义上完整、无重复、无跳接或无角色外观漂移。Phase 1.1 发现的三条具体下游失败样本只登记在 `docs/GitHub-Benchmark-后续改造待办.md` 的 T09，本轮不修改 Legacy Full Story、Animation Plan、partial repair 权限或最终 wire shape。
+Prompt 中关于施动性、因果、人物质感、悬念、承诺和连贯性的要求，目前只是生成约束，不是已落地的内容正确性证明。`keyChoice`/关键选择拍、`climax`/高潮拍、`emotionalPayoff`/最后一拍的逐字投影，以及 `highValueBeatMapping.newExpression` 对 `storyOutline` 正文的逐字投影，可以消除候选内部的多版本事实，却不能证明这些事实在现实语义上成立；真实 5×4 回放仍由人工发现同一物品重复分配、动作先后回退等问题。Candidate digest/revision 绑定也只证明 Full Story 使用了哪份 current Candidate，不证明 Full Story 或 Animation Plan 的自由文本在语义上完整、无重复、无跳接或无角色外观漂移。Phase 1.1 发现的三条具体下游失败样本只登记在 `docs/GitHub-Benchmark-后续改造待办.md` 的 T09，本轮不修改 Legacy Full Story、Animation Plan、partial repair 权限或最终 wire shape。
 
 ### 阶段六：fullStory
 
 用户选择一个 `themeVariants.variants[]` 后，进入独立完整剧情页。该阶段不重新发散主题，只围绕被选中的主题变体扩写，输出：
 
-- `characterBible`：锁定固定角色、被关爱对象、帮助者与对白规则。
+- `characterBible`：锁定固定角色、对白规则，以及本片实际存在的配角。`protagonist` 与 `helpers` 必填（`helpers` 可为 `[]`），`careRecipient` 是**可选键**——当前 Variant 没有被照料对象时整个省略，不输出空对象或占位文本；输出时五个子字段必须齐全。Full Story 不得把候选阶段省略的被照料对象、帮助者、情感媒介或仪式结尾补回来。
 - `beatSheet`：45–90 秒短视频的完整剧情节拍。
 - `sceneScript`：可拍摄分场，包含地点、人物、可见动作、对白、镜头/声音、情绪节点和剧作功能。`characters` 只写本场实际出镜角色，数组必填但允许空数组——无人出镜的空镜（雨水、道具特写、建立镜头、人物离开后的空镜、纯转场环境镜头）正确值就是 `[]`，整片则至少要有一个场次非空，否则抛 `FULL_STORY_NO_VISIBLE_CHARACTER_SCENE`。可选的 `offscreenSoundSources` 登记只以声音出现、明确不出镜的角色名。`shotAndSound` 同时承载画面描述与声音来源，程序不得靠正则或关键词区分，因此扫描按字段职责分档：`visibleAction` 只认 `characters`，`shotAndSound` 认两者并集。登记只豁免 `shotAndSound`、绝不豁免 `visibleAction`，所以无法靠登记声源隐藏出镜角色；同名同时出现在两个字段时明确失败不选边；`dialogue[].speaker` 仍必须逐字存在于同场 `characters`。
 - `keyProps`、`shootingPlan`、`retentionPlan`：进入拍摄筹备需要的道具、场景和完播设计。

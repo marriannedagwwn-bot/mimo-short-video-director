@@ -136,3 +136,38 @@ test("Animation entry applies the same strict Full Story validator before any do
   );
   assert.equal(providerCalls, 0);
 });
+
+// characterBible.careRecipient 曾是 required，等于要求每部片都必须有一个被照料对象。
+// 候选阶段放开了这个角色位，如果 Full Story 仍强制它，模板只是被推迟一个阶段重新长回来。
+test("Full Story 没有被照料对象时省略 careRecipient 仍然合法", () => {
+  const value = validStory();
+  delete value.characterBible.careRecipient;
+  assert.equal(ensureOutputContract(value, "fullStory"), value);
+});
+
+test("没有帮助者时 helpers 输出空数组仍然合法", () => {
+  const value = validStory();
+  delete value.characterBible.careRecipient;
+  value.characterBible.helpers = [];
+  assert.equal(ensureOutputContract(value, "fullStory"), value);
+});
+
+test("careRecipient 一旦输出，五个子字段仍必须齐全", () => {
+  const value = validStory();
+  delete value.characterBible.careRecipient.implicitNeed;
+  assert.throws(() => ensureOutputContract(value, "fullStory"), OutputContractError);
+
+  const empty = validStory();
+  empty.characterBible.careRecipient = {};
+  assert.throws(() => ensureOutputContract(empty, "fullStory"), OutputContractError);
+});
+
+test("protagonist 与 helpers 仍然必填，放开 careRecipient 不得波及其余角色契约", () => {
+  const noProtagonist = validStory();
+  delete noProtagonist.characterBible.protagonist;
+  assert.throws(() => ensureOutputContract(noProtagonist, "fullStory"), OutputContractError);
+
+  const noHelpers = validStory();
+  delete noHelpers.characterBible.helpers;
+  assert.throws(() => ensureOutputContract(noHelpers, "fullStory"), OutputContractError);
+});

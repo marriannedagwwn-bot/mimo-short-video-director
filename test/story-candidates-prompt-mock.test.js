@@ -70,6 +70,7 @@ test("Variants Prompt replaces the disposable beat conflict and declares only ca
   assert.match(prompt, /主要承担角色性格或人物关系质感/u);
   assert.match(prompt, /仍必须改变关系状态、情绪状态、信息状态或后续选择条件/u);
   assert.match(prompt, /删除后必须使角色弧线、关系推进、情绪积累或后续因果至少损失一项/u);
+  assert.match(prompt, /4 个候选的结构签名必须两两不同/u);
   assert.match(prompt, /签名由 dramaticFunction 序列、keyChoice、climax 和 emotionalPayoff 共同组成/u);
 
   for (const field of ["keyChoice", "climax", "emotionalPayoff", "novelty", "visualPotential"]) {
@@ -108,11 +109,11 @@ test("Variants Prompt replaces the disposable beat conflict and declares only ca
   assert.match(prompt, /做八项内部自检/u);
   assert.match(prompt, /keyChoice 是否能明确定位到 storyOutline 中一个具体 Beat/u);
   assert.match(prompt, /keyChoice 产生的 consequence 是否实际推动后续 climax/u);
-  assert.match(prompt, /顶层 climax 是否逐字等于 storyOutline 中唯一高潮 Beat/u);
-  assert.match(prompt, /Beat 5 必须同时包含固定主角亲自完成的决定性动作/u);
+  assert.match(prompt, /顶层 climax 是否逐字等于 storyOutline 中唯一那个“高潮拍”的 action/u);
+  assert.match(prompt, /高潮拍必须同时包含固定主角亲自完成的决定性动作/u);
   assert.match(prompt, /配角可以协助、阻拦或回应，但不能替主角作出最终决定、完成解决动作或独占可见结果/u);
   assert.match(prompt, /高潮 Beat 的 dramaticFunction 是否明确承担高潮与结果改变/u);
-  assert.match(prompt, /顶层 emotionalPayoff 是否逐字等于最后一个兑现 Beat/u);
+  assert.match(prompt, /顶层 emotionalPayoff 是否逐字等于 storyOutline 最后一拍的 action/u);
   assert.match(prompt, /前文已经建立的行动、信息和关系变化合法到达/u);
   assert.match(prompt, /已经送出、损坏、遗失或随角色离开的物品/u);
   assert.match(prompt, /同一人物、物品、环境和行动媒介不得同时处于两个地点或两个互斥状态/u);
@@ -134,29 +135,50 @@ test("Variants Prompt replaces the disposable beat conflict and declares only ca
   assert.doesNotMatch(prompt, /SENTINEL_CONCRETE_PLOT_DRIVER/u);
   assert.doesNotMatch(prompt, /SENTINEL_CONCRETE_BEAT_VALUE/u);
   assert.doesNotMatch(prompt, /SENTINEL_CONCRETE_DISTANCE_POLICY/u);
-  assert.match(prompt, /先在内部完成六拍 storyOutline，并把它作为本候选唯一剧情事实源/u);
-  assert.match(prompt, /action 与顶层 keyChoice 逐字相同/u);
-  assert.match(prompt, /action 与顶层 climax 逐字相同/u);
-  assert.match(prompt, /Beat 6 action 与顶层 emotionalPayoff 逐字相同/u);
+  assert.match(prompt, /先在内部完成 storyOutline，并把它作为本候选唯一剧情事实源/u);
+  assert.match(prompt, /keyChoice = “关键选择拍”的 action/u);
+  assert.match(prompt, /climax = “高潮拍”的 action/u);
+  assert.match(prompt, /emotionalPayoff = 最后一拍的 action/u);
+  // 放开固定拍号后，逐字绑定的合规率实测从 60\/60 掉到 31\/48 甚至 0\/12。
+  // 措辞必须明确“同一个字符串”，并如实告知服务端会硬校验。
+  assert.match(prompt, /绑定方式是同一个字符串.*一字不差、不多不少/u);
+  assert.match(prompt, /不得在 action 里追加顶层字段没有的时间、地点、声音、情绪或铺垫/u);
+  assert.match(prompt, /也不得把顶层字段写成该 action 的压缩摘要/u);
+  assert.match(prompt, /服务端会逐字校验这三条绑定，不一致直接判失败/u);
   assert.match(prompt, /A=主角完成帮助、送达或类似服务任务/u);
   assert.match(prompt, /A、B、C 同时为真的候选总数必须 ≤1/u);
   assert.match(prompt, /该布尔矩阵只用于内部自检，不得出现在 JSON 中/u);
   assert.match(prompt, /顶层只能有 variants/u);
   assert.match(prompt, /数组必须恰好包含 4 个完整对象/u);
-  assert.match(prompt, /每个 storyOutline 恰好使用 6 个连续编号 Beat/u);
-  assert.match(prompt, /phase 依次固定为“钩子、障碍、关键选择、后果、高潮、兑现”/u);
-  assert.match(prompt, /Beat 3 必须完整承载 keyChoice/u);
-  assert.match(prompt, /Beat 5 是唯一高潮，action 与顶层 climax 逐字相同/u);
-  assert.match(prompt, /决定性动作必须由固定主角亲自完成/u);
-  assert.match(prompt, /Beat 6 action 与顶层 emotionalPayoff 逐字相同/u);
+  assert.match(prompt, /每个 storyOutline 使用 5 到 7 个连续编号 Beat/u);
+  assert.match(prompt, /拍数本身就是一种合法的结构分化/u);
+  // 相位词表从“必须照用”反转成“禁止照用”：固定六拍是候选彼此雷同的结构性原因。
+  assert.match(prompt, /禁止套用“钩子、障碍、关键选择、后果、高潮、兑现”这套固定词表/u);
+  assert.doesNotMatch(prompt, /phase 依次固定为/u);
+  assert.match(prompt, /不得让 4 个候选共用同一串 phase/u);
+  assert.match(prompt, /落在第几拍由本候选自己的因果结构决定，不再固定拍号/u);
+  assert.match(prompt, /关键选择拍 < 高潮拍 < 最后一拍/u);
+  assert.match(prompt, /关键选择拍与高潮拍之间至少隔一拍/u);
+  assert.match(prompt, /该拍必须同时包含固定主角亲自完成的决定性动作和它造成的可见结果/u);
+  assert.match(prompt, /不能把配角自己的选择或行动冒充成主角高潮/u);
   assert.match(prompt, /猫耳、猫娘称谓或猫系拟声词不自动授权猫爪、猫尾、超常嗅觉、超常听觉/u);
   assert.match(prompt, /highValueBeatMapping 恰好使用 2 个完整对象/u);
   assert.match(prompt, /newExpression 必须逐字复制本候选 storyOutline 某个 action 中的一段连续原文/u);
-  assert.match(prompt, /Beat 5 不得首次引入决定性人物、物品、地点、线索或能力/u);
-  assert.match(prompt, /Beat 4 必须产生 Beat 5 实际使用的具体信息、物理状态、机会或代价/u);
+  assert.match(prompt, /高潮拍不得首次引入决定性人物、物品、地点、线索或能力/u);
+  assert.match(prompt, /关键选择拍与高潮拍之间那一拍必须产生高潮实际使用的具体信息、物理状态、机会或代价/u);
   assert.match(prompt, /keyDialogueDirections 使用 2–3 个非空纯字符串/u);
   assert.match(prompt, /绝不能输出 \{character,direction\} 对象/u);
   assert.match(prompt, /所有必填字段都必须出现并保持输出结构展示的精确类型/u);
+  // 可选叙事构件：这四个字段曾是 Schema 必填位，强制每个候选都长成
+  // “主角＋被关爱对象＋帮助者＋情感信物＋仪式结尾”，是候选彼此雷同的根因之一。
+  assert.match(prompt, /characterSetup\.careRecipient、characterSetup\.helper、emotionalMedium、endingRitual 全部可选/u);
+  assert.match(prompt, /不需要就整个键省略，不要输出空字符串/u);
+  assert.match(prompt, /省略它们不降低候选质量，也不算结构缺陷/u);
+  assert.match(prompt, /最多 2 个可以同时写出 careRecipient 与 helper/u);
+  assert.match(prompt, /protagonist 仍然必填/u);
+  // 输出结构样例不得再把可选键当成必填空位展示，否则模型会照着填。
+  assert.doesNotMatch(prompt, /"characterSetup":\{"protagonist":"", "careRecipient"/u);
+  assert.doesNotMatch(prompt, /"keyDialogueDirections":\[\], "endingRitual":""/u);
   assert.doesNotMatch(prompt, /"characterBible"\s*:/u);
   assert.doesNotMatch(prompt, /"sceneScript"\s*:/u);
   assert.doesNotMatch(prompt, /"shotPlan"\s*:/u);

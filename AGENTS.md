@@ -58,7 +58,13 @@ Video Generation
 
 Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Artifact stale。模型请求开始时冻结依赖 revision，返回时同时经过浏览器 request token 与服务端 `expectedCurrentRevision`/dependency 校验。Animation Plan 每个 revision 签发独立 media namespace。
 
-`themeVariants` 保留原 wire shape 和 Artifact 名称，但 `variants[]` 已升级为递归 `additionalProperties:false` 的严格 Story Candidates。原有字段保留，只新增五个必填非空候选级字段：`keyChoice`、`climax`、`emotionalPayoff`、`novelty`、`visualPotential`；禁止在此阶段增加 Full Story、`characterBible`、`sceneScript`、`shotPlan` 或镜头级数据。确定性校验只负责严格字段、非空数组、唯一 id、Beat 连续编号与必填内容、固定主角，以及至少两个候选的 `dramaticFunction` 序列 + `keyChoice` + `climax` + `emotionalPayoff` 签名不同。禁止用老人、下雨、礼物等题材关键词判断分化，禁止本地代码裁决选择是否有意义或情绪是否成立。
+`themeVariants` 保留原 wire shape 和 Artifact 名称，但 `variants[]` 已升级为递归 `additionalProperties:false` 的严格 Story Candidates。原有字段保留，只新增五个必填非空候选级字段：`keyChoice`、`climax`、`emotionalPayoff`、`novelty`、`visualPotential`；禁止在此阶段增加 Full Story、`characterBible`、`sceneScript`、`shotPlan` 或镜头级数据。确定性校验只负责严格字段、非空数组、唯一 id、Beat 连续编号与必填内容、固定主角，以及**任意两个**候选的 `dramaticFunction` 序列 + `keyChoice` + `climax` + `emotionalPayoff` 签名都不同。禁止用老人、下雨、礼物等题材关键词判断分化，禁止本地代码裁决选择是否有意义或情绪是否成立。
+
+**可选叙事构件（2026-08-28）**：`characterSetup.careRecipient`、`characterSetup.helper`、`emotionalMedium`、`endingRitual` 是**可选键**，不是必填位。此前它们全部 required，等于强制每个候选长成「主角＋被关爱对象＋帮助者＋情感信物＋仪式结尾」，与本阶段要求的候选间根本差异直接矛盾——模板由容器签发，模型无法绕开。现在：写了就仍必须是非空字符串，不需要就整个键省略，**禁止输出空字符串或占位文本**。`characterSetup.protagonist` 仍必填，固定角色锁定语义逐字不变。Prompt 另加一条批次约束：`count` 个候选里最多 2 个可以同时写出 `careRecipient` 与 `helper`；该约束只在 Prompt 层，没有确定性校验。
+
+**结构自由度（2026-08-28）**：`storyOutline` 由「恰好 6 拍 + 固定相位词表『钩子、障碍、关键选择、后果、高潮、兑现』+ `keyChoice`/`climax`/`emotionalPayoff` 钉死在 Beat 3/5/6」改为 5–7 拍、`phase` 由候选自己命名（**禁止**套用那套固定词表，也不得全组共用同一串 `phase`）。三个顶层字段仍逐字绑定到 `storyOutline` 中的某一拍，但落在第几拍由候选自己的因果结构决定，只保留因果序约束：关键选择拍 < 高潮拍 < 最后一拍。Prompt 另要求两拍之间隔一拍写该选择的直接后果、且高潮拍不得首次引入决定性人物、物品、地点、线索或能力，这两条只作生成约束，不由校验器硬裁。拍数本身即为一种合法的结构分化。**逐字投影校验（2026-08-28，确定性硬失败）**：`keyChoice` / `climax` / `emotionalPayoff` 必须**逐字等于** `storyOutline` 中某一拍的 `action`——同一个字符串，不多不少。因果序只裁决「关键选择拍 < 高潮拍 < 最后一拍」，`emotionalPayoff` 必须是最后一拍。**「两拍之间至少隔一拍写后果」留在 Prompt，不由校验器硬裁**——那是来自旧固定六拍布局的剧作观点，而选择直接引发高潮是完全成立的写法。判定只用字符串相等与下标比较，**不做语义判断、不使用任何词表**，同一句话匹配到多拍时报 `STORY_CANDIDATE_PROJECTION_AMBIGUOUS` 而不是任选一拍。诊断码：`STORY_CANDIDATE_PROJECTION_NOT_VERBATIM` / `..._OUT_OF_ORDER` / `..._AMBIGUOUS`。
+
+这条约束 Prompt 一直就写着，但此前**没有校验器**。放开固定拍号（原 Beat 3/5/6）后实测合规率从 60/60 掉到 31/48，某些上游甚至 0/12——顶层写压缩摘要、`storyOutline` 写另一件事，同一个候选出现两版剧情，下游 Full Story 无从判断哪个是事实。它是阻止候选内部多版本事实的唯一机制，因此补成确定性硬失败。
 
 每个 Candidate 必须有一个主要承担角色性格或人物关系质感的 Beat，但它仍必须改变关系、情绪、信息或后续选择条件；删除后必须损失角色弧、关系推进、情绪积累或后续因果之一。禁止恢复「完全不推进主线、删除后故事仍完整」的旧 Prompt 规则。
 
@@ -371,6 +377,23 @@ Compiler、Retry、Recovery、Fallback、Source of Truth 修改时：
 镜头动画实现
 动作生成
 视频生成
+
+### 承接范围与可选构件（2026-08-28）
+
+承接范围只有一个来源：**当前选中 Variant 实际写出的内容**。此前该阶段把七项 taxonomy（送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾）与 Variant 内容并列写成「都必须忠实承接」，与 Creative Brief 阶段「`allowedNarrativeComponents` 只记录原片是否存在某类构件，不会把该构件变成每个新方案的必选项」直接冲突——效果是候选阶段省略掉的构件会在下一阶段被原样补回来，模板只是推迟一个阶段重新长出。
+
+现在明确：七项 taxonomy 是 Creative Brief 记录「原片有没有某类通用构件」的分类，**不是本片必备构件，也不是承接清单**。Variant 没写 `careRecipient` 就不得新增被照料对象，没写 `helper` 就不得新增提供帮助的外部角色，没写 `emotionalMedium` 就不得发明信物，没写 `endingRitual` 就不得加仪式化收尾。
+
+对应地 `characterBible.careRecipient` 是**可选键**：不存在时整个省略，不输出空对象或占位文本；输出时 `nameOrLabel`/`identity`/`explicitNeed`/`implicitNeed`/`relationshipToProtagonist` 五个子字段必须齐全。`characterBible.protagonist` 与 `characterBible.helpers` 仍必填，`helpers` 无帮助者时输出 `[]`。旧 Story 带着 `careRecipient` 仍然合法，本次不重新签发任何已落盘 Artifact。
+
+### 对白质量（2026-08-28）
+
+Prompt 级硬约束，**没有确定性校验兜底**——判断一句台词是否在复述画面需要语义判断，写死词表会误伤合法的反应性台词，而 Full Story 失败代价很高：
+
+- 对白不得复述同场 `visibleAction` 里观众已经能直接看见的信息。
+- 不得用旁白式台词直接播报人物内心。
+- 能靠表情、动作、停顿、眼神和道具互动表达的内容优先写进 `visibleAction` 或 `shotAndSound`，不写成台词；宁可一场戏没有对白，也不要用台词解说画面。
+- `dialogueStyleGuide.forbiddenDialoguePatterns` 必须至少列出「复述画面已有信息」和「台词直接播报内心」两条。
 
 ---
 

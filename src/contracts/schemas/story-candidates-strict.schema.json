@@ -31,12 +31,10 @@
         "verticalFit",
         "characterSetup",
         "newTask",
-        "emotionalMedium",
         "environmentPressure",
         "storyOutline",
         "highValueBeatMapping",
         "keyDialogueDirections",
-        "endingRitual",
         "transformationProof",
         "experienceFidelity",
         "originalityRiskCheck",
@@ -55,7 +53,7 @@
         "characterSetup": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["protagonist", "careRecipient", "helper"],
+          "required": ["protagonist"],
           "properties": {
             "protagonist": { "$ref": "#/$defs/nonEmptyString" },
             "careRecipient": { "$ref": "#/$defs/nonEmptyString" },

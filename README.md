@@ -26,7 +26,11 @@ Creative Brief 的 `allowedNarrativeComponents` 使用服务端固定的七项�
 
 ## Story Candidates Phase 1
 
-`themeVariants` 保留原有 wire shape 和 Artifact 名称，但 `variants[]` 已按递归 `additionalProperties: false` 的严格 Story Candidate Schema 校验。原有候选字段全部保留，只新增五个候选级非空字符串：`keyChoice`、`climax`、`emotionalPayoff`、`novelty`、`visualPotential`。本地代码只检查契约、唯一 id、Beat 顺序、固定主角，以及至少两个候选在 `dramaticFunction` 序列 + `keyChoice` + `climax` + `emotionalPayoff` 投影上不同；不用题材关键词或本地语义评分判断故事质量。
+`themeVariants` 保留原有 wire shape 和 Artifact 名称，但 `variants[]` 已按递归 `additionalProperties: false` 的严格 Story Candidate Schema 校验。原有候选字段全部保留，只新增五个候选级非空字符串：`keyChoice`、`climax`、`emotionalPayoff`、`novelty`、`visualPotential`。本地代码只检查契约、唯一 id、Beat 顺序、固定主角，以及**任意两个**候选在 `dramaticFunction` 序列 + `keyChoice` + `climax` + `emotionalPayoff` 投影上都不同；不用题材关键词或本地语义评分判断故事质量。
+
+其中 `characterSetup.careRecipient`、`characterSetup.helper`、`emotionalMedium`、`endingRitual` 是**可选键**：写了必须非空，不需要就整个省略。它们此前是必填位，等于强制每个候选都长成「主角＋被关爱对象＋帮助者＋情感信物＋仪式结尾」。`storyOutline` 同时从「恰好 6 拍 + 固定相位词表」放开为 5–7 拍、相位由候选自行命名，`keyChoice`/`climax`/`emotionalPayoff` 仍逐字绑定到某一拍，但不再钉死在固定拍号，只保留「关键选择拍 < 高潮拍 < 最后一拍且中间隔一拍」的因果序约束。Full Story 侧对应放开 `characterBible.careRecipient`，并禁止把候选阶段省略的叙事构件补回来。
+
+放开拍号的同时补了一条确定性硬校验：`keyChoice`/`climax`/`emotionalPayoff` 必须逐字等于 `storyOutline` 中某一拍的 `action`，且「关键选择拍 < 高潮拍 < 最后一拍」（「中间隔一拍」只写在 Prompt，不由校验器硬裁）。这条 Prompt 一直写着却从未被校验，放开拍号后合规率实测从 60/60 掉到 31/48，会让同一个候选出现两版剧情。判定只比较字符串与下标，不做语义判断。
 
 用户点选 Candidate 后，完整内容以 `variant:<id>` Artifact 签发。Full Story 请求同时绑定它的 `artifactId/revision/contentDigest`；服务端在模型调用前后各复验一次 current Candidate，用落盘内容替换请求副本，且不把 binding sidecar 传入 Prompt 或 Legacy Full Story。因此同一 id 下修改标题、任务、关键选择或高潮都会换 digest/revision，旧请求与旧下游不能继续被视为 current。
 

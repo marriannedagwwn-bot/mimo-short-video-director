@@ -30,7 +30,7 @@
     "characterBible": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["protagonist", "careRecipient", "helpers"],
+      "required": ["protagonist", "helpers"],
       "properties": {
         "protagonist": {
           "type": "object",

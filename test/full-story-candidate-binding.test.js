@@ -26,14 +26,13 @@ const baseCandidate = Object.freeze({
   newTask: "在闭馆前送回修好的旧钟",
   emotionalMedium: "旧钟重新响起的报时声",
   environmentPressure: "街区停电且道路封闭",
-  storyOutline: [{
-    beat: 1,
-    phase: "受命",
-    action: "阿岚接过修好的旧钟并承诺闭馆前送达",
-    emotion: "郑重",
-    dramaticFunction: "建立目标与时限",
-    estimatedSeconds: 8
-  }],
+  storyOutline: [
+    { beat: 1, phase: "受命", action: "阿岚接过修好的旧钟并承诺闭馆前送达", emotion: "郑重", dramaticFunction: "建立目标与时限", estimatedSeconds: 8 },
+    { beat: 2, phase: "抉择", action: "阿岚放弃近路，先帮助受困邻居再绕行", emotion: "犹豫", dramaticFunction: "主角亲自作出关键选择", estimatedSeconds: 8 },
+    { beat: 3, phase: "后果", action: "绕行耗尽了余量，闭馆时间只剩最后几分钟", emotion: "紧张", dramaticFunction: "选择造成的直接后果，使高潮成为可能", estimatedSeconds: 8 },
+    { beat: 4, phase: "高潮", action: "闭馆铃响前，她靠手摇发条让旧钟重新报时", emotion: "紧张", dramaticFunction: "主角亲手完成决定性动作并产生可见结果", estimatedSeconds: 8 },
+    { beat: 5, phase: "兑现", action: "老人听见熟悉报时声，终于放下多年的等待", emotion: "释然", dramaticFunction: "把积累的关系与情绪转化为可见状态变化", estimatedSeconds: 8 }
+  ],
   highValueBeatMapping: [],
   keyDialogueDirections: [],
   endingRitual: "老人和阿岚一起给旧钟上弦",

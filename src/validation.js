@@ -2110,6 +2110,14 @@ export function ensureStoryCandidateContract(candidate, { path = "storyCandidate
       sequenceDiagnostics
     );
   }
+  const projectionDiagnostics = storyCandidateProjectionDiagnostics(candidate);
+  if (projectionDiagnostics.length) {
+    throw new OutputContractError(
+      `${label} 的 keyChoice/climax/emotionalPayoff 必须逐字投影 storyOutline：`
+      + projectionDiagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；"),
+      projectionDiagnostics
+    );
+  }
   return candidate;
 }
 
@@ -2129,12 +2137,79 @@ function validateStoryCandidateSetStructure(variants) {
       seenIds.set(id, candidateIndex);
     }
     details.push(...storyCandidateBeatSequenceDiagnostics(candidate, `/variants/${candidateIndex}`));
+    details.push(...storyCandidateProjectionDiagnostics(candidate, `/variants/${candidateIndex}`));
   });
   if (!details.length) return;
   throw new OutputContractError(
     `themeVariants Story Candidates 结构校验失败：${details.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
     details
   );
+}
+
+// 三个顶层字段必须逐字等于 storyOutline 中某一拍的 action，否则同一个候选就有了两版剧情：
+// 顶层写压缩摘要、outline 写另一件事，下游 Full Story 无从判断哪个是事实。
+// 旧 Prompt 用固定拍号（Beat 3/5/6）让这件事是机械的，实测 60/60 合规；
+// 放开拍号后只靠措辞约束，实测掉到 31/48 甚至 0/12——所以这里补确定性校验。
+//
+// 判定只用字符串相等与下标比较：不做语义判断，不使用任何词表。
+// 因果序只裁决可唯一推导的部分：「关键选择拍 < 高潮拍 < 最后一拍」。
+// 「两拍之间至少隔一拍写后果」留在 Prompt，不在这里硬裁——那是剧作观点，
+// 来自旧的固定六拍布局，而选择直接引发高潮是完全成立的写法。
+function storyCandidateProjectionDiagnostics(candidate, basePath = "") {
+  const outline = candidate.storyOutline;
+  const actions = outline.map((beat) => String(beat.action));
+  const details = [];
+  const indexOfField = (field) => {
+    const value = String(candidate[field]);
+    const matches = actions.reduce((acc, action, index) => (action === value ? [...acc, index] : acc), []);
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      details.push({
+        code: "STORY_CANDIDATE_PROJECTION_AMBIGUOUS",
+        path: `${basePath}/${field}`,
+        reason: `与多拍 action 同时逐字相同（第 ${matches.map((index) => index + 1).join("、")} 拍），无法唯一定位`
+      });
+      return null;
+    }
+    const contained = actions.findIndex((action) => action.includes(value) || value.includes(action));
+    details.push({
+      code: "STORY_CANDIDATE_PROJECTION_NOT_VERBATIM",
+      path: `${basePath}/${field}`,
+      reason: contained >= 0
+        ? `必须与 storyOutline 第 ${contained + 1} 拍的 action 完全相同，当前只是它的一部分或它的超集`
+        : "必须逐字等于 storyOutline 中某一拍的 action，当前与任何一拍都不相同"
+    });
+    return null;
+  };
+
+  const keyChoiceIndex = indexOfField("keyChoice");
+  const climaxIndex = indexOfField("climax");
+  const payoff = String(candidate.emotionalPayoff);
+  const lastIndex = actions.length - 1;
+  if (actions[lastIndex] !== payoff) {
+    details.push({
+      code: "STORY_CANDIDATE_PROJECTION_NOT_VERBATIM",
+      path: `${basePath}/emotionalPayoff`,
+      reason: `必须逐字等于 storyOutline 最后一拍（第 ${lastIndex + 1} 拍）的 action`
+    });
+  }
+  if (keyChoiceIndex === null || climaxIndex === null) return details;
+
+  if (climaxIndex <= keyChoiceIndex) {
+    details.push({
+      code: "STORY_CANDIDATE_PROJECTION_OUT_OF_ORDER",
+      path: `${basePath}/climax`,
+      reason: `高潮拍（第 ${climaxIndex + 1} 拍）必须晚于关键选择拍（第 ${keyChoiceIndex + 1} 拍）`
+    });
+  }
+  if (climaxIndex >= lastIndex) {
+    details.push({
+      code: "STORY_CANDIDATE_PROJECTION_OUT_OF_ORDER",
+      path: `${basePath}/climax`,
+      reason: `高潮拍必须早于最后一拍（第 ${lastIndex + 1} 拍）`
+    });
+  }
+  return details;
 }
 
 function storyCandidateBeatSequenceDiagnostics(candidate, basePath = "") {
@@ -2158,9 +2233,11 @@ function storyCandidateStructureSignature(candidate) {
   });
 }
 
-// 多个候选共用同一条结构签名时，它们只是同一个故事的不同布景。
-// 这里只裁决"全部雷同"这个可确定性下界；无法判断选择是否有意义、情绪是否成立，
-// 这些属于语义质量，不在本地校验范围内。
+// 两个候选共用同一条结构签名时，它们只是同一个故事的不同布景。
+// 判定口径是两两比较：任意一对候选签名相同就失败。此前只裁决"全组完全雷同"，
+// 那让"4 个候选里 3 个雷同"合法通过，等于 Prompt 里的分化要求没有任何执行力。
+// 仍然只裁决可确定性的结构重复；选择是否有意义、情绪是否成立属于语义质量，
+// 不在本地校验范围内。
 function validateVariantStructuralDivergence(variants) {
   if (!Array.isArray(variants) || variants.length < 2) return;
   const signatures = variants.map((variant, index) => {
@@ -2174,17 +2251,28 @@ function validateVariantStructuralDivergence(variants) {
     }
     return storyCandidateStructureSignature(variant);
   });
-  if (new Set(signatures).size > 1) return;
-  const detail = {
+  const label = (index) => variants[index]?.id || `V${index + 1}`;
+  const seen = new Map();
+  const collisions = [];
+  signatures.forEach((signature, index) => {
+    if (seen.has(signature)) {
+      collisions.push({ first: seen.get(signature), duplicate: index });
+      return;
+    }
+    seen.set(signature, index);
+  });
+  if (!collisions.length) return;
+  const pairs = collisions.map(({ first, duplicate }) => `${label(first)} 与 ${label(duplicate)}`);
+  const details = collisions.map(({ first, duplicate }) => ({
     code: "STORY_CANDIDATE_STRUCTURE_NOT_DIVERGENT",
-    path: "/variants",
-    reason: `${variants.length} 个候选共用同一条结构签名`
-  };
+    path: `/variants/${duplicate}`,
+    reason: `与 /variants/${first}（${label(first)}）共用同一条结构签名`
+  }));
   throw new OutputContractError(
-    `themeVariants 的 ${variants.length} 个候选共用同一条结构签名。`
-    + "至少要有两个方案在危机位置、成败节奏、主角关键选择、高潮或情绪兑现上结构不同；"
+    `themeVariants 存在结构签名相同的候选：${pairs.join("；")}。`
+    + "每两个方案都必须在危机位置、成败节奏、主角关键选择、高潮或情绪兑现上结构不同；"
     + "只更换季节、天气、交通工具、道具或帮助者称谓不构成不同主题。",
-    [detail]
+    details
   );
 }
 
