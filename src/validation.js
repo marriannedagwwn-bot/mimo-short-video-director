@@ -2113,7 +2113,7 @@ export function ensureStoryCandidateContract(candidate, { path = "storyCandidate
   const projectionDiagnostics = storyCandidateProjectionDiagnostics(candidate);
   if (projectionDiagnostics.length) {
     throw new OutputContractError(
-      `${label} 的 keyChoice/climax/emotionalPayoff 必须逐字投影 storyOutline：`
+      `${label} 的关键拍号或派生投影不成立：`
       + projectionDiagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；"),
       projectionDiagnostics
     );
@@ -2146,67 +2146,117 @@ function validateStoryCandidateSetStructure(variants) {
   );
 }
 
-// 三个顶层字段必须逐字等于 storyOutline 中某一拍的 action，否则同一个候选就有了两版剧情：
-// 顶层写压缩摘要、outline 写另一件事，下游 Full Story 无从判断哪个是事实。
-// 旧 Prompt 用固定拍号（Beat 3/5/6）让这件事是机械的，实测 60/60 合规；
-// 放开拍号后只靠措辞约束，实测掉到 31/48 甚至 0/12——所以这里补确定性校验。
+// keyChoice / climax / emotionalPayoff 是可从 storyOutline 唯一推导的值：
+// 给定拍号，它们就是那一拍的 action。因此服务端独占签发，模型只标拍号。
 //
-// 判定只用字符串相等与下标比较：不做语义判断，不使用任何词表。
-// 因果序只裁决可唯一推导的部分：「关键选择拍 < 高潮拍 < 最后一拍」。
-// 「两拍之间至少隔一拍写后果」留在 Prompt，不在这里硬裁——那是剧作观点，
-// 来自旧的固定六拍布局，而选择直接引发高潮是完全成立的写法。
-function storyCandidateProjectionDiagnostics(candidate, basePath = "") {
-  const outline = candidate.storyOutline;
-  const actions = outline.map((beat) => String(beat.action));
+// 此前要求模型自己在一份两万字符的 JSON 的两个远距离位置逐字重复同一个长句，
+// 实测不可靠：debug 侧车记录的真实调用里合规率两极分布（多次 0/12，也有 12/12），
+// 加强措辞后仍出现 2/12 与 9/12 两次硬失败。失败模式是模型在**改写**而非复制——
+// 砍掉前置准备再把主语补回句首，让顶层成为能独立成句的摘要。而"顶层不得含准备"
+// 恰恰是 Prompt 自己的要求，两条规则互相冲突，调措辞救不了。
+//
+// 这与 direct_shot 的处理一致（见 CLAUDE.md 2.3）：可唯一推导的字段由服务端签发，
+// 模型回显不构成新事实。
+
+export const STORY_CANDIDATE_BEAT_INDEX_FIELDS = Object.freeze([
+  ["keyChoiceBeat", "keyChoice"],
+  ["climaxBeat", "climax"]
+]);
+
+function storyCandidateBeatIndexDiagnostics(candidate, basePath = "") {
+  const outline = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline : [];
   const details = [];
-  const indexOfField = (field) => {
-    const value = String(candidate[field]);
-    const matches = actions.reduce((acc, action, index) => (action === value ? [...acc, index] : acc), []);
-    if (matches.length === 1) return matches[0];
-    if (matches.length > 1) {
+  const indices = {};
+  for (const [indexField] of STORY_CANDIDATE_BEAT_INDEX_FIELDS) {
+    const raw = candidate?.[indexField];
+    if (!Number.isInteger(raw)) {
       details.push({
-        code: "STORY_CANDIDATE_PROJECTION_AMBIGUOUS",
-        path: `${basePath}/${field}`,
-        reason: `与多拍 action 同时逐字相同（第 ${matches.map((index) => index + 1).join("、")} 拍），无法唯一定位`
+        code: "STORY_CANDIDATE_BEAT_INDEX_INVALID",
+        path: `${basePath}/${indexField}`,
+        reason: `必须是整数拍号，当前为 ${JSON.stringify(raw)}`
       });
-      return null;
+      continue;
     }
-    const contained = actions.findIndex((action) => action.includes(value) || value.includes(action));
+    if (raw < 1 || raw > outline.length) {
+      details.push({
+        code: "STORY_CANDIDATE_BEAT_INDEX_OUT_OF_RANGE",
+        path: `${basePath}/${indexField}`,
+        reason: `拍号 ${raw} 超出 storyOutline 范围（共 ${outline.length} 拍）`
+      });
+      continue;
+    }
+    indices[indexField] = raw;
+  }
+  return { details, indices, lastBeat: outline.length };
+}
+
+// 因果序只裁决「关键选择拍 < 高潮拍」这一条。
+//
+// 「高潮拍必须早于最后一拍」曾经也在这里硬裁，已移除：它规定的是故事形状而不是一致性。
+// climaxBeat 等于最后一拍时 climax 与 emotionalPayoff 取到同一个字符串，那是冗余不是矛盾，
+// 而本契约的立论是消除候选内部的两版剧情——两个字段相同恰恰是它的反面。
+// 实测中模型两轮独立采样各产出 2 个「五拍、高潮收尾」的候选，那是成立的写法。
+// 「最后一拍写高潮之后的兑现」与「两拍之间隔一拍写后果」同属剧作观点，都只留在 Prompt。
+function storyCandidateBeatOrderDiagnostics({ indices, lastBeat }, basePath = "") {
+  const { keyChoiceBeat, climaxBeat } = indices;
+  if (keyChoiceBeat === undefined || climaxBeat === undefined) return [];
+  const details = [];
+  if (climaxBeat <= keyChoiceBeat) {
     details.push({
-      code: "STORY_CANDIDATE_PROJECTION_NOT_VERBATIM",
-      path: `${basePath}/${field}`,
-      reason: contained >= 0
-        ? `必须与 storyOutline 第 ${contained + 1} 拍的 action 完全相同，当前只是它的一部分或它的超集`
-        : "必须逐字等于 storyOutline 中某一拍的 action，当前与任何一拍都不相同"
+      code: "STORY_CANDIDATE_PROJECTION_OUT_OF_ORDER",
+      path: `${basePath}/climaxBeat`,
+      reason: `高潮拍（第 ${climaxBeat} 拍）必须晚于关键选择拍（第 ${keyChoiceBeat} 拍）`
     });
-    return null;
+  }
+  return details;
+}
+
+// 签发路径：按拍号覆写三个字符串。模型若回显了它们，一律无条件覆盖。
+// 返回新对象，不原地修改输入。
+export function deriveStoryCandidateProjections(value) {
+  if (!value || typeof value !== "object" || !Array.isArray(value.variants)) return value;
+  const details = [];
+  const variants = value.variants.map((candidate, index) => {
+    const basePath = `/variants/${index}`;
+    if (!candidate || typeof candidate !== "object") return candidate;
+    const probe = storyCandidateBeatIndexDiagnostics(candidate, basePath);
+    details.push(...probe.details, ...storyCandidateBeatOrderDiagnostics(probe, basePath));
+    if (probe.details.length) return candidate;
+    const outline = candidate.storyOutline;
+    return {
+      ...candidate,
+      keyChoice: String(outline[probe.indices.keyChoiceBeat - 1].action),
+      climax: String(outline[probe.indices.climaxBeat - 1].action),
+      emotionalPayoff: String(outline[probe.lastBeat - 1].action)
+    };
+  });
+  if (details.length) {
+    throw new OutputContractError(
+      `themeVariants 的关键拍号无法定位：${details.map((d) => `${d.path} ${d.reason}`).join("；")}`,
+      details
+    );
+  }
+  return { ...value, variants };
+}
+
+// 入站复核：不重新派生（那会改变 content digest，破坏 variant:<id> 的 lineage 绑定），
+// 只核对已签发的三个字符串仍与拍号指向的 action 一致。签发路径必然通过。
+function storyCandidateProjectionDiagnostics(candidate, basePath = "") {
+  const probe = storyCandidateBeatIndexDiagnostics(candidate, basePath);
+  const details = [...probe.details, ...storyCandidateBeatOrderDiagnostics(probe, basePath)];
+  if (probe.details.length) return details;
+  const outline = candidate.storyOutline;
+  const expected = {
+    keyChoice: outline[probe.indices.keyChoiceBeat - 1].action,
+    climax: outline[probe.indices.climaxBeat - 1].action,
+    emotionalPayoff: outline[probe.lastBeat - 1].action
   };
-
-  const keyChoiceIndex = indexOfField("keyChoice");
-  const climaxIndex = indexOfField("climax");
-  const payoff = String(candidate.emotionalPayoff);
-  const lastIndex = actions.length - 1;
-  if (actions[lastIndex] !== payoff) {
+  for (const [field, want] of Object.entries(expected)) {
+    if (String(candidate[field]) === String(want)) continue;
     details.push({
-      code: "STORY_CANDIDATE_PROJECTION_NOT_VERBATIM",
-      path: `${basePath}/emotionalPayoff`,
-      reason: `必须逐字等于 storyOutline 最后一拍（第 ${lastIndex + 1} 拍）的 action`
-    });
-  }
-  if (keyChoiceIndex === null || climaxIndex === null) return details;
-
-  if (climaxIndex <= keyChoiceIndex) {
-    details.push({
-      code: "STORY_CANDIDATE_PROJECTION_OUT_OF_ORDER",
-      path: `${basePath}/climax`,
-      reason: `高潮拍（第 ${climaxIndex + 1} 拍）必须晚于关键选择拍（第 ${keyChoiceIndex + 1} 拍）`
-    });
-  }
-  if (climaxIndex >= lastIndex) {
-    details.push({
-      code: "STORY_CANDIDATE_PROJECTION_OUT_OF_ORDER",
-      path: `${basePath}/climax`,
-      reason: `高潮拍必须早于最后一拍（第 ${lastIndex + 1} 拍）`
+      code: "STORY_CANDIDATE_PROJECTION_NOT_DERIVED",
+      path: `${basePath}/${field}`,
+      reason: `必须等于服务端按拍号派生的值（storyOutline 对应拍的 action），当前与之不符`
     });
   }
   return details;

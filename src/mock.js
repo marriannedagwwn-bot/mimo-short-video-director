@@ -201,7 +201,7 @@ export function mockVisualGuardrails(input) {
   };
 }
 
-// keyChoice / climax / emotionalPayoff 必须逐字等于某一拍的 action，
+// keyChoice / climax / emotionalPayoff 由服务端按 keyChoiceBeat / climaxBeat 派生，
 // 因果序还要求「关键选择拍 < 高潮拍 < 最后一拍」且中间隔一拍。
 // 这里先写死五拍，再把三个顶层字段从 action 原样取出——
 // 顺序反过来（先写顶层再编 outline）就会像模型那样写出两版剧情。
@@ -214,6 +214,8 @@ function mockCandidateProjection(fixed, seed) {
     { beat: 5, phase: "关系兑现", action: `${seed.ending}，此前没有说出口的关心转化为双方都能确认的关系变化。`, emotion: "释然", dramaticFunction: "以可见状态变化完成情绪兑现", estimatedSeconds: 8 }
   ];
   return {
+    keyChoiceBeat: 2,
+    climaxBeat: 4,
     keyChoice: storyOutline[1].action,
     climax: storyOutline[3].action,
     emotionalPayoff: storyOutline[4].action,

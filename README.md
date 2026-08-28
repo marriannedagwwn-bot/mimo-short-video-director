@@ -30,7 +30,7 @@ Creative Brief 的 `allowedNarrativeComponents` 使用服务端固定的七项�
 
 其中 `characterSetup.careRecipient`、`characterSetup.helper`、`emotionalMedium`、`endingRitual` 是**可选键**：写了必须非空，不需要就整个省略。它们此前是必填位，等于强制每个候选都长成「主角＋被关爱对象＋帮助者＋情感信物＋仪式结尾」。`storyOutline` 同时从「恰好 6 拍 + 固定相位词表」放开为 5–7 拍、相位由候选自行命名，`keyChoice`/`climax`/`emotionalPayoff` 仍逐字绑定到某一拍，但不再钉死在固定拍号，只保留「关键选择拍 < 高潮拍 < 最后一拍且中间隔一拍」的因果序约束。Full Story 侧对应放开 `characterBible.careRecipient`，并禁止把候选阶段省略的叙事构件补回来。
 
-放开拍号的同时补了一条确定性硬校验：`keyChoice`/`climax`/`emotionalPayoff` 必须逐字等于 `storyOutline` 中某一拍的 `action`，且「关键选择拍 < 高潮拍 < 最后一拍」（「中间隔一拍」只写在 Prompt，不由校验器硬裁）。这条 Prompt 一直写着却从未被校验，放开拍号后合规率实测从 60/60 掉到 31/48，会让同一个候选出现两版剧情。判定只比较字符串与下标，不做语义判断。
+放开拍号的同时把这三个字段改为**服务端派生**：模型只输出 `keyChoiceBeat`/`climaxBeat` 两个整数拍号，服务端从 `storyOutline` 取出 `keyChoice`/`climax`/`emotionalPayoff`（后者恒取最后一拍），模型回显一律覆盖。此前要求模型逐字重复长句，实测合规率两极分布并多次硬失败——这三个值可从 `storyOutline` 唯一推导，不应由模型回显，与 direct_shot 的处理一致。
 
 用户点选 Candidate 后，完整内容以 `variant:<id>` Artifact 签发。Full Story 请求同时绑定它的 `artifactId/revision/contentDigest`；服务端在模型调用前后各复验一次 current Candidate，用落盘内容替换请求副本，且不把 binding sidecar 传入 Prompt 或 Legacy Full Story。因此同一 id 下修改标题、任务、关键选择或高潮都会换 digest/revision，旧请求与旧下游不能继续被视为 current。
 

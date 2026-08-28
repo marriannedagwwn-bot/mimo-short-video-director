@@ -55,6 +55,8 @@ const baseCandidate = Object.freeze({
     possibleSimilarity: "保留限时送达的抽象驱动力",
     mitigation: "人物、任务、道具、场景和高潮均采用新表达"
   },
+  keyChoiceBeat: 2,
+  climaxBeat: 4,
   keyChoice: "阿岚放弃近路，先帮助受困邻居再绕行",
   climax: "闭馆铃响前，她靠手摇发条让旧钟重新报时",
   emotionalPayoff: "老人听见熟悉报时声，终于放下多年的等待",

@@ -512,7 +512,7 @@ creativeBrief 抽象保真投影（这是唯一可以作为候选正向要求的
 - 完播悬念：每个方案必须自己设计至少一个“被刻意拖住不答的具体问句”，并在 storyOutline 对应 beat 的 dramaticFunction 里写明它在第几拍抛出、第几拍兑现；抛出与兑现之间至少间隔 2 个 beat。该问句必须是观众看完第 1 拍后会主动想问的具体问题，不能是“接下来会怎样”“他们能成功吗”这类通用悬念。oneLineHook 可以点出这个问题，但绝不能在同一句里给出答案；答案也不得提前写进 logline 或 characterSetup。如果上方提供了原片完播问句形态参考，只能学它的提问方式，不得复用它的提问对象、答案或兑现事件。
 
 可选叙事构件（这四个字段是可选的，绝不是每个候选的必填位）：
-- characterSetup.careRecipient、characterSetup.helper、emotionalMedium、endingRitual 全部可选，类型都是非空字符串。只有当本候选的因果链真的需要“一个被照料的对象”“一个提供帮助的外部角色”“一件承载情绪的媒介物”“一个生活化收尾仪式”时才写它；不需要就整个键省略，不要输出空字符串，也不要为了填满结构编造一个不参与因果的角色或物件。
+- 四个可选字段及其**准确位置**：careRecipient 与 helper 在 characterSetup 对象**内**；emotionalMedium 与 endingRitual 在候选**顶层**，与 newTask、environmentPressure 平级，**不在 characterSetup 内**。类型都是非空字符串。characterSetup 对象内除 protagonist、careRecipient、helper 外不得出现任何其他键，放错位置会直接判失败。只有当本候选的因果链真的需要“一个被照料的对象”“一个提供帮助的外部角色”“一件承载情绪的媒介物”“一个生活化收尾仪式”时才写它；不需要就整个键省略，不要输出空字符串，也不要为了填满结构编造一个不参与因果的角色或物件。
 - 省略它们不降低候选质量，也不算结构缺陷。主角的欲望可以指向自己、指向一个不知情的对象，或指向一件事而不是一个人；阻力可以来自主角自己的判断失误、能力上限或过去，不必来自天气或外部好心人；结局可以是关系没有修复、信息刚刚被理解，或主角作出一个改变后续行为的决定，不必是一场仪式。
 - ${count} 个候选里最多 2 个可以同时写出 careRecipient 与 helper。如果全组每个候选都写满这四个字段，说明它们共用同一套人物功能配置，必须先重写其中至少两个候选的因果引擎再输出。
 - 这条放开不改变固定角色边界：protagonist 仍然必填，仍然必须锁定上方固定角色。
@@ -527,36 +527,37 @@ creativeBrief 抽象保真投影（这是唯一可以作为候选正向要求的
 - creativeBrief 原文中的 storyEngine、reusableHighValueBeats[].beat/mustRetain/adaptableSurface、nonNegotiableExperience.samePlotDriver/sameBeatValue 与 creativeDistancePolicy 不进入上方正向投影；历史值只代表来源实例，不能复现或补写。上方 reusableDramaticValues 只要求迁移 dramaticValue，不要求复现来源具体动作。每个 experienceFidelity.plotDriver 必须描述当前候选自己独有的因果驱动力，不能机械抄写 Brief 的具体事件链。
 - highValueBeatMapping 要证明“新表达如何产生同一种价值”，不得把来源桥段逐项换名后按原顺序重演。具体任务、奖励、接收者、转赠对象和结尾形式只有 creatorProfile 明确要求时才是硬约束。
 
-Story Candidate 关键字段：
-- keyChoice：固定主角在压力下亲自作出的关键选择；只写候选级摘要，不展开 Full Story；摘要只含该选择本身，直接后果留给下一 Beat。
-- climax：本候选最高压力点中固定主角必须完成的决定性动作与可见结果。
-- emotionalPayoff：前文情绪积累最终兑现成的关系、情绪或行动状态变化。
+Story Candidate 关键字段（本阶段所有字段都只写候选级摘要，不展开 Full Story，不写分场、镜头或 shotPlan）：
+- keyChoiceBeat：整数拍号，指向 storyOutline 里写着固定主角在压力下亲自作出关键选择的那一拍。
+- climaxBeat：整数拍号，指向本候选最高压力点、固定主角完成决定性动作并产生可见结果的那一拍。
 - novelty：本候选相对其他候选的新任务、新因果结构或新关系表达，不写抽象分数。
 - visualPotential：最值得拍摄的可见动作、环境变化或道具状态变化，不写分场、镜头或 shotPlan。
 
 提交 JSON 前做八项内部自检；只修正候选内容，不得输出自检答案、分数、说明或任何新字段：
-1. keyChoice 是否能明确定位到 storyOutline 中一个具体 Beat，而不是只在顶层摘要里出现？顶层 keyChoice 必须逐字等于“关键选择拍”的 action，只写选择动作，不能拼入后续的后果、高潮或结尾。
+1. keyChoiceBeat 指向的那一拍，action 是否确实写的是主角亲自作出的关键选择，而不是铺垫或后果？拍号数错会让服务端取到错误的剧情。
 2. keyChoice 产生的 consequence 是否实际推动后续 climax，不能选择发生后剧情仍按原路线自动抵达高潮？删除该选择后，原高潮必须无法以同样方式发生。
-3. 顶层 climax 是否逐字等于 storyOutline 中唯一那个“高潮拍”的 action？高潮拍必须同时包含固定主角亲自完成的决定性动作和该动作造成的可见结果；配角可以协助、阻拦或回应，但不能替主角作出最终决定、完成解决动作或独占可见结果。不得把高潮前的准备或高潮后的转赠、返家、团聚、颁奖和结尾拼进高潮拍或顶层 climax。
+3. climaxBeat 指向的那一拍，是否同时包含固定主角亲自完成的决定性动作和该动作造成的可见结果？配角可以协助、阻拦或回应，但不能替主角作出最终决定、完成解决动作或独占可见结果。高潮之后的转赠、返家、团聚、颁奖和结尾不得拼进这一拍。
 4. 该高潮 Beat 的 dramaticFunction 是否明确承担高潮与结果改变，不得自称只是铺垫、过渡、预告或为下一拍准备？
-5. 顶层 emotionalPayoff 是否逐字等于 storyOutline 最后一拍的 action，并能由前文已经建立的行动、信息和关系变化合法到达？最后一拍必须把可见的关系、情绪、信息或后续行动状态写进 action，不得凭空奖励、和解或感动；experienceFidelity.plotDriver、highValueBeatMapping 与 endingRitual 也不得偷偷加入 storyOutline 没发生的奖励、转赠、角色或事件。
+5. 最后一拍是否把可见的关系、情绪、信息或后续行动状态写进 action，并能由前文已经建立的行动、信息和关系变化合法到达？它就是本候选的情绪兑现，不得凭空奖励、和解或感动；experienceFidelity.plotDriver、highValueBeatMapping 与 endingRitual 也不得偷偷加入 storyOutline 没发生的奖励、转赠、角色或事件。
 6. 已经送出、损坏、遗失或随角色离开的物品，是否没有在后文无解释地重新出现？同一人物、物品、环境和行动媒介不得同时处于两个地点或两个互斥状态；人物取得、交还、交换、修补、拆下或带走物品的动作，以及环境状态改变和行动媒介切换，都必须在对应 Beat 明写。例如待寄物还在快递站时，远方收件人不能已拿着同一件物品；前一拍刚确认的环境状态不能在下一拍无事件反转；同一成果不能一会儿落在地面、一会儿又变成未说明来源的纸面成果。
 7. 结尾新出现的角色，是否已有同行、明确邀请、可见到达或时间跳转依据，而不是瞬间出现在现场？任何首次在后半段出现的角色或物品都必须在同一 Beat 写明其到达或取得来源；人物离开原地点、首次失败后又在另一地点被找到，必须写明线索、寻找或移动动作，不能直接跳到新地点；endingRitual 不得引入兑现 Beat 中没有的人物、物品或动作。
 8. novelty 是否来自新目标、新因果结构、新选择代价、高潮机制或关系表达，而不只是天气、道具、地点或 NPC 的替换？
 
 输出稳定性要求：
-- 先在内部完成 storyOutline，并把它作为本候选唯一剧情事实源，再填写其他字段。characterSetup、newTask、environmentPressure、keyChoice、climax、emotionalPayoff、highValueBeatMapping.newExpression、endingRitual、experienceFidelity 与 originalityRiskCheck 只能投影 storyOutline 已经发生的事实，不能各写一版剧情，不能新增 storyOutline 中没有的人物、物品、奖励、地点、动作或结局。
+- 先在内部完成 storyOutline，并把它作为本候选唯一剧情事实源，再填写其他字段。characterSetup、newTask、environmentPressure、highValueBeatMapping.newExpression、endingRitual、experienceFidelity 与 originalityRiskCheck 只能投影 storyOutline 已经发生的事实，不能各写一版剧情，不能新增 storyOutline 中没有的人物、物品、奖励、地点、动作或结局。
 - 顶层只能有 variants；数组必须恰好包含 ${count} 个完整对象，按 V1、V2……编号。写完一个 Candidate 的全部字段并闭合对象后才能开始下一个；任何 Candidate 字段都不得落到顶层或相邻 Candidate 外。
 - 每个 storyOutline 使用 5 到 7 个连续编号 Beat。候选之间可以使用不同的拍数，拍数本身就是一种合法的结构分化。
 - phase 由本候选自己命名，写这一拍在本候选因果链中实际承担的职责。禁止套用“钩子、障碍、关键选择、后果、高潮、兑现”这套固定词表，也不得让 ${count} 个候选共用同一串 phase。
-- 三个顶层字段各自绑定到 storyOutline 中的一拍，落在第几拍由本候选自己的因果结构决定，不再固定拍号。**绑定方式是同一个字符串**：把该拍的 action 原样复制成顶层字段，一字不差、不多不少。
-- 这条最容易写错，务必逐字核对：不得在 action 里追加顶层字段没有的时间、地点、声音、情绪或铺垫，也不得把顶层字段写成该 action 的压缩摘要。写完后拿这两个字符串直接比对，长度和标点都必须完全一致；只要有一个字不同就是不合格，必须改到相同为止。**服务端会逐字校验这三条绑定，不一致直接判失败。**
-- 三条绑定分别是：keyChoice = “关键选择拍”的 action，只写选择动作本身，不能拼入后果、高潮或结尾；climax = “高潮拍”的 action，该拍必须同时包含固定主角亲自完成的决定性动作和它造成的可见结果，不能把配角自己的选择或行动冒充成主角高潮；emotionalPayoff = 最后一拍的 action。
+- **不要输出 keyChoice、climax、emotionalPayoff 这三个字段。** 它们由服务端从 storyOutline 直接取，你只需要用两个整数指出是哪几拍：keyChoiceBeat 填关键选择发生在第几拍，climaxBeat 填高潮发生在第几拍。emotionalPayoff 固定取最后一拍，不需要拍号。
+- 因此这三处剧情只需要写一遍，就写在 storyOutline 的 action 里，不必也不要在顶层再复述一遍。前置准备、时间标记、地点交代都可以自然留在对应拍的 action 中。
+- 拍号必须满足 keyChoiceBeat < climaxBeat（这条会被服务端硬校验）。
+- 建议让最后一拍写高潮**之后**才发生的事：危机已经解决，这一拍呈现它给关系、情绪、信息或后续行动留下的可见变化。这样 climax 与 emotionalPayoff 才是两件不同的事。若本候选确实在高潮那一拍收尾，也可以把 climaxBeat 指向最后一拍，此时两个字段取到同一句话——这是允许的，但要清楚你放弃了一拍兑现。
+- 关键选择拍写主角亲自作出的选择动作；高潮拍必须同时包含固定主角亲自完成的决定性动作和它造成的可见结果，不能把配角自己的选择或行动冒充成主角高潮。
 - 这三拍的先后必须是「关键选择拍 < 高潮拍 < 最后一拍」，且关键选择拍与高潮拍之间至少隔一拍，用来写该选择造成、并使高潮成为可能的直接后果。各候选的欲望、障碍、选择类型、后果、高潮机制、关系变化和结尾状态仍必须根本不同；放开拍数与相位命名是为了让这些差异真正表达出来，不是允许写成流水账。
 - 输出前在内部对四个候选各计算三个布尔值：A=主角完成帮助、送达或类似服务任务；B=外部角色因此给予奖励、荣誉或可转移利益；C=该利益随后被赠予、分享给、共同用于或带回奶奶/重要关系人。A、B、C 同时为真的候选总数必须 ≤1，且若存在只能是 V1；若 V2–V${count} 任一行三项全真，必须先重写该候选的因果引擎再输出。该布尔矩阵只用于内部自检，不得出现在 JSON 中，也不按老人、雨、礼物等词面判定。
 - highValueBeatMapping 恰好使用 2 个完整对象，不要求把来源每个 Beat 都映射一次。每个 newExpression 必须逐字复制本候选 storyOutline 某个 action 中的一段连续原文，不得改写，不得添加 storyOutline 之外的奖励、转赠、聚餐、角色、物品或事件。keyDialogueDirections 使用 2–3 个非空纯字符串，只写“角色：台词方向”，绝不能输出 {character,direction} 对象。
 - 高潮拍不得首次引入决定性人物、物品、地点、线索或能力；高潮所需事实必须在它之前的拍中建立。关键选择拍与高潮拍之间那一拍必须产生高潮实际使用的具体信息、物理状态、机会或代价，不能只写辛苦、赶路或情绪铺垫。删除那一拍后，高潮必须无法以同样方式发生。
-- 所有必填字段都必须出现并保持输出结构展示的精确类型；上面列为可选的 careRecipient、helper、emotionalMedium、endingRitual 只在本候选真的需要时才添加，添加时必须是非空字符串。不要输出省略号、注释、分析矩阵、自检结果或未定义字段。每个字符串保持一条简洁事实，避免在多个字段重复整段剧情，以保证四个 Candidate 都能完整闭合。
+- 所有必填字段都必须出现并保持输出结构展示的精确类型；上面列为可选的 careRecipient、helper、emotionalMedium、endingRitual 只在本候选真的需要时才添加，添加时必须是非空字符串。keyChoice、climax、emotionalPayoff 由服务端派生，输出它们会被直接覆盖，不要浪费篇幅。不要输出省略号、注释、分析矩阵、自检结果或未定义字段。每个字符串保持一条简洁事实，避免在多个字段重复整段剧情，以保证四个 Candidate 都能完整闭合。
 
 输出结构：
 {
@@ -564,7 +565,7 @@ Story Candidate 关键字段：
     "id":"V1", "title":"", "oneLineHook":"", "logline":"", "verticalFit":"",
     "characterSetup":{"protagonist":""},
     "newTask":"", "environmentPressure":"",
-    "keyChoice":"", "climax":"", "emotionalPayoff":"", "novelty":"", "visualPotential":"",
+    "keyChoiceBeat":2, "climaxBeat":5, "novelty":"", "visualPotential":"",
     "storyOutline":[{"beat":1, "phase":"", "action":"", "emotion":"", "dramaticFunction":"", "estimatedSeconds":0}],
     "highValueBeatMapping":[{"briefBeat":"", "newExpression":"", "retainedValue":""}],
     "keyDialogueDirections":[],

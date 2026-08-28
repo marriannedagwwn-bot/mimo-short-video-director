@@ -35,7 +35,9 @@ import { randomUUID } from "node:crypto";
 import { ModelCallCoordinator, classifyAttemptError } from "./model-call-coordinator.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText } from "./validation.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
+  deriveStoryCandidateProjections
+} from "./validation.js";
 import {
   deriveDirectShotSkeleton,
   directShotSkeletonForScenes,
@@ -357,11 +359,21 @@ export class WorkflowService {
     requireText(profile.vertical, "垂直赛道");
     const visualGuardrails = this.assertGlobalCharacterBoundary(input);
     const validatedInput = { ...input, visualGuardrails };
-    if (!this.hasLiveClient) return ensureThemeVariantsMatchProfile(ensureOutputContract(mockVariants(validatedInput), "themeVariants"), profile, input.creativeBrief, visualGuardrails);
+    if (!this.hasLiveClient) {
+      return ensureThemeVariantsMatchProfile(
+        ensureOutputContract(deriveStoryCandidateProjections(mockVariants(validatedInput)), "themeVariants"),
+        profile, input.creativeBrief, visualGuardrails
+      );
+    }
     const prompt = variantsPrompt(validatedInput);
     return this.generateStageJson("variants", validatedInput, {
       prompt,
-      validate: (result) => ensureThemeVariantsMatchProfile(ensureOutputContract(result, "themeVariants"), profile, input.creativeBrief, visualGuardrails)
+      // keyChoice/climax/emotionalPayoff 由服务端按模型给出的拍号派生：先派生再校验，
+      // 使 ensureOutputContract 校验的是派生后的对象。模型回显的旧值一律被覆盖。
+      validate: (result) => ensureThemeVariantsMatchProfile(
+        ensureOutputContract(deriveStoryCandidateProjections(result), "themeVariants"),
+        profile, input.creativeBrief, visualGuardrails
+      )
     });
   }
 

@@ -4,7 +4,8 @@ import { mockVariants } from "../src/mock.js";
 import {
   OutputContractError,
   ensureOutputContract,
-  ensureStoryCandidateContract
+  ensureStoryCandidateContract,
+  deriveStoryCandidateProjections
 } from "../src/validation.js";
 
 const creatorProfile = Object.freeze({
@@ -234,11 +235,10 @@ test("可选构件仍受 additionalProperties 约束，不能借省略夹带新�
   assert.throws(() => ensureOutputContract(value, "themeVariants"), OutputContractError);
 });
 
-// keyChoice/climax/emotionalPayoff 必须逐字等于 storyOutline 中某一拍的 action。
-// 丢了这条，同一个候选就有两版剧情：顶层写压缩摘要、outline 写另一件事，
-// 下游 Full Story 无从判断哪个是事实。旧 Prompt 用固定拍号（Beat 3/5/6）
-// 让这件事是机械的，实测 60/60 合规；放开拍号后只靠措辞，实测掉到 31/48 甚至 0/12。
-function candidateWithOutline(actions) {
+// keyChoice/climax/emotionalPayoff 由服务端从 storyOutline 按拍号派生，模型只标拍号。
+// 此前要求模型逐字重复同一个长句，实测两极分布（多次 0/12，加强措辞后仍有 2/12 与 9/12），
+// 失败模式是模型改写而非复制。派生消除整类失败，与 direct_shot 的处理一致。
+function candidateWithOutline(actions, { keyChoiceBeat = 2, climaxBeat = 4 } = {}) {
   const value = validCandidates(1);
   const candidate = value.variants[0];
   candidate.storyOutline = actions.map((action, index) => ({
@@ -249,76 +249,93 @@ function candidateWithOutline(actions) {
     dramaticFunction: `功能${index + 1}`,
     estimatedSeconds: 8
   }));
+  candidate.keyChoiceBeat = keyChoiceBeat;
+  candidate.climaxBeat = climaxBeat;
   return { value, candidate };
 }
 
-test("顶层三字段逐字等于对应拍 action 时通过", () => {
-  const { value, candidate } = candidateWithOutline(["开场", "作出选择", "选择的后果", "亲手解决", "关系兑现"]);
-  candidate.keyChoice = "作出选择";
-  candidate.climax = "亲手解决";
-  candidate.emotionalPayoff = "关系兑现";
-  assert.equal(ensureOutputContract(value, "themeVariants"), value);
+const FIVE = ["开场", "作出选择", "选择的后果", "亲手解决", "关系兑现"];
+
+test("服务端按拍号派生三个字段，模型不需要输出它们", () => {
+  const { value, candidate } = candidateWithOutline(FIVE);
+  delete candidate.keyChoice;
+  delete candidate.climax;
+  delete candidate.emotionalPayoff;
+  const derived = deriveStoryCandidateProjections(value);
+  assert.equal(ensureOutputContract(derived, "themeVariants"), derived);
+  const out = derived.variants[0];
+  assert.equal(out.keyChoice, "作出选择");
+  assert.equal(out.climax, "亲手解决");
+  assert.equal(out.emotionalPayoff, "关系兑现");
+  // 派生不得原地修改输入
+  assert.equal(candidate.keyChoice, undefined);
 });
 
-test("顶层字段只是 action 的压缩摘要时必须失败", () => {
-  const { value, candidate } = candidateWithOutline(["开场", "天色渐暗，她作出选择", "选择的后果", "亲手解决", "关系兑现"]);
-  candidate.keyChoice = "她作出选择";
-  candidate.climax = "亲手解决";
-  candidate.emotionalPayoff = "关系兑现";
+test("模型回显了错误字符串时被无条件覆盖，不报错", () => {
+  const { value, candidate } = candidateWithOutline(FIVE);
+  candidate.keyChoice = "模型自己改写的压缩摘要";
+  candidate.climax = "另一版剧情";
+  candidate.emotionalPayoff = "第三版剧情";
+  const derived = deriveStoryCandidateProjections(value);
+  assert.doesNotThrow(() => ensureOutputContract(derived, "themeVariants"));
+  assert.equal(derived.variants[0].keyChoice, "作出选择");
+  assert.equal(derived.variants[0].climax, "亲手解决");
+  assert.equal(derived.variants[0].emotionalPayoff, "关系兑现");
+});
+
+test("emotionalPayoff 恒取最后一拍，不需要拍号", () => {
+  const { value } = candidateWithOutline(["开场", "作出选择", "后果", "亲手解决", "最后一拍"]);
+  assert.equal(deriveStoryCandidateProjections(value).variants[0].emotionalPayoff, "最后一拍");
+});
+
+test("拍号缺失、非整数或越界都明确失败", () => {
+  for (const [bad, code] of [
+    [undefined, "STORY_CANDIDATE_BEAT_INDEX_INVALID"],
+    ["2", "STORY_CANDIDATE_BEAT_INDEX_INVALID"],
+    [2.5, "STORY_CANDIDATE_BEAT_INDEX_INVALID"],
+    [0, "STORY_CANDIDATE_BEAT_INDEX_OUT_OF_RANGE"],
+    [99, "STORY_CANDIDATE_BEAT_INDEX_OUT_OF_RANGE"]
+  ]) {
+    const { value, candidate } = candidateWithOutline(FIVE);
+    candidate.keyChoiceBeat = bad;
+    assert.throws(
+      () => deriveStoryCandidateProjections(value),
+      (error) => hasDiagnostic(error, code, "/variants/0/keyChoiceBeat"),
+      `keyChoiceBeat=${JSON.stringify(bad)} 应报 ${code}`
+    );
+  }
+});
+
+test("因果序：高潮拍必须晚于关键选择拍", () => {
+  const early = candidateWithOutline(FIVE, { keyChoiceBeat: 4, climaxBeat: 2 });
   assert.throws(
-    () => ensureOutputContract(value, "themeVariants"),
-    (error) => hasDiagnostic(error, "STORY_CANDIDATE_PROJECTION_NOT_VERBATIM", "/variants/0/keyChoice")
-      && /只是它的一部分或它的超集/u.test(error.message)
+    () => deriveStoryCandidateProjections(early.value),
+    (error) => hasDiagnostic(error, "STORY_CANDIDATE_PROJECTION_OUT_OF_ORDER", "/variants/0/climaxBeat")
   );
 });
 
-test("emotionalPayoff 必须是最后一拍，落在中间拍也失败", () => {
-  const { value, candidate } = candidateWithOutline(["开场", "作出选择", "关系兑现", "亲手解决", "收尾空镜"]);
-  candidate.keyChoice = "作出选择";
-  candidate.climax = "亲手解决";
-  candidate.emotionalPayoff = "关系兑现";
+// 「高潮必须早于最后一拍」规定的是故事形状而不是一致性：两者相同只会让
+// climax 与 emotionalPayoff 取到同一个字符串，那是冗余不是矛盾。
+// 实测模型两轮独立采样各产出 2 个「五拍、高潮收尾」候选，是成立的写法。
+test("高潮拍落在最后一拍是合法结构，此时两个字段取到同一句话", () => {
+  const { value } = candidateWithOutline(FIVE, { keyChoiceBeat: 2, climaxBeat: 5 });
+  const derived = deriveStoryCandidateProjections(value);
+  assert.doesNotThrow(() => ensureOutputContract(derived, "themeVariants"));
+  assert.equal(derived.variants[0].climax, "关系兑现");
+  assert.equal(derived.variants[0].emotionalPayoff, "关系兑现");
+});
+
+test("关键选择拍紧接高潮拍是合法结构，不用位置代理裁决剧作观点", () => {
+  const { value } = candidateWithOutline(FIVE, { keyChoiceBeat: 2, climaxBeat: 3 });
+  assert.doesNotThrow(() => ensureOutputContract(deriveStoryCandidateProjections(value), "themeVariants"));
+});
+
+test("入站复核发现字符串与拍号不符时失败（防篡改，签发路径必然通过）", () => {
+  const { value } = candidateWithOutline(FIVE);
+  const derived = deriveStoryCandidateProjections(value);
+  derived.variants[0].climax = "被改过的高潮";
   assert.throws(
-    () => ensureOutputContract(value, "themeVariants"),
-    (error) => hasDiagnostic(error, "STORY_CANDIDATE_PROJECTION_NOT_VERBATIM", "/variants/0/emotionalPayoff")
+    () => ensureOutputContract(derived, "themeVariants"),
+    (error) => hasDiagnostic(error, "STORY_CANDIDATE_PROJECTION_NOT_DERIVED", "/variants/0/climax")
   );
-});
-
-test("高潮拍不得早于或等于关键选择拍", () => {
-  const { value, candidate } = candidateWithOutline(["亲手解决", "填充", "作出选择", "填充二", "关系兑现"]);
-  candidate.keyChoice = "作出选择";
-  candidate.climax = "亲手解决";
-  candidate.emotionalPayoff = "关系兑现";
-  assert.throws(
-    () => ensureOutputContract(value, "themeVariants"),
-    (error) => hasDiagnostic(error, "STORY_CANDIDATE_PROJECTION_OUT_OF_ORDER", "/variants/0/climax")
-  );
-});
-
-test("关键选择拍紧接高潮拍是合法结构，校验器不得用位置代理裁决剧作观点", () => {
-  const { value, candidate } = candidateWithOutline(["开场", "作出选择", "亲手解决", "填充", "关系兑现"]);
-  candidate.keyChoice = "作出选择";
-  candidate.climax = "亲手解决";
-  candidate.emotionalPayoff = "关系兑现";
-  assert.equal(ensureOutputContract(value, "themeVariants"), value);
-});
-
-test("同一句话出现在多拍时无法唯一定位，明确失败而不是任选一拍", () => {
-  const { value, candidate } = candidateWithOutline(["作出选择", "填充", "作出选择", "亲手解决", "关系兑现"]);
-  candidate.keyChoice = "作出选择";
-  candidate.climax = "亲手解决";
-  candidate.emotionalPayoff = "关系兑现";
-  assert.throws(
-    () => ensureOutputContract(value, "themeVariants"),
-    (error) => hasDiagnostic(error, "STORY_CANDIDATE_PROJECTION_AMBIGUOUS", "/variants/0/keyChoice")
-  );
-});
-
-test("投影判定只比较字符串，不做语义判断", () => {
-  // 语义上明显是同一个选择，但字面不同 —— 仍然必须失败。
-  // 这条锁住“不得引入近义词表或语义相似度”这个边界。
-  const { value, candidate } = candidateWithOutline(["开场", "她决定留下来帮忙", "后果", "亲手解决", "关系兑现"]);
-  candidate.keyChoice = "她选择留下来帮忙";
-  candidate.climax = "亲手解决";
-  candidate.emotionalPayoff = "关系兑现";
-  assert.throws(() => ensureOutputContract(value, "themeVariants"), OutputContractError);
 });

@@ -41,6 +41,8 @@
         "keyChoice",
         "climax",
         "emotionalPayoff",
+        "keyChoiceBeat",
+        "climaxBeat",
         "novelty",
         "visualPotential"
       ],
@@ -135,6 +137,8 @@
             "mitigation": { "$ref": "#/$defs/nonEmptyString" }
           }
         },
+        "keyChoiceBeat": { "type": "integer", "minimum": 1 },
+        "climaxBeat": { "type": "integer", "minimum": 1 },
         "keyChoice": { "$ref": "#/$defs/nonEmptyString" },
         "climax": { "$ref": "#/$defs/nonEmptyString" },
         "emotionalPayoff": { "$ref": "#/$defs/nonEmptyString" },

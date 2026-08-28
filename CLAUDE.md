@@ -24,7 +24,11 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
 
 **可选叙事构件（2026-08-28）**：`characterSetup.careRecipient`、`characterSetup.helper`、`emotionalMedium`、`endingRitual` 以及 Full Story 的 `characterBible.careRecipient` 全部从 required 降级为**可选键**。它们曾强制每个候选长成「主角＋被关爱对象＋帮助者＋情感信物＋仪式结尾」，与 Prompt 要求的候选间根本差异直接矛盾。写了就仍必须合规（非空字符串；`careRecipient` 对象五个子字段齐全），不需要就整个键省略，**禁止输出空字符串或占位文本**。`characterSetup.protagonist`、`characterBible.protagonist` 与 `characterBible.helpers`（可为 `[]`）仍必填，固定角色锁定不受影响。
 
-**逐字投影校验（2026-08-28，确定性硬失败）**：`keyChoice` / `climax` / `emotionalPayoff` 必须**逐字等于** `storyOutline` 中某一拍的 `action`——同一个字符串，不多不少。因果序只裁决「关键选择拍 < 高潮拍 < 最后一拍」，`emotionalPayoff` 必须是最后一拍。**「两拍之间至少隔一拍写后果」留在 Prompt，不由校验器硬裁**——那是来自旧固定六拍布局的剧作观点，而选择直接引发高潮是完全成立的写法；用位置代理替代语义判断，正是本轮在拆的东西。判定只用字符串相等与下标比较，**不做语义判断、不使用任何词表**，同一句话匹配到多拍时报 `STORY_CANDIDATE_PROJECTION_AMBIGUOUS` 而不是任选一拍。诊断码：`STORY_CANDIDATE_PROJECTION_NOT_VERBATIM` / `..._OUT_OF_ORDER` / `..._AMBIGUOUS`。
+**关键拍号与服务端派生投影（2026-08-28，取代逐字投影校验）**：`keyChoice` / `climax` / `emotionalPayoff` **由服务端从 `storyOutline` 确定性派生**，模型只输出两个整数拍号 `keyChoiceBeat` / `climaxBeat`；`emotionalPayoff` 恒取最后一拍，不需要拍号。模型回显这三个字符串时**一律无条件覆盖**，与 direct_shot 的「回显不构成新事实」同规格。
+
+此前要求模型自己在一份两万字符的 JSON 的两个远距离位置逐字重复同一个长句，实测不可靠：debug 侧车记录的真实调用中合规率两极分布（多次 0/12），加强措辞后仍出现 2/12 与 9/12 两次硬失败。失败模式是模型在**改写**而非复制——砍掉前置准备再把主语补回句首，让顶层成为能独立成句的摘要；而「顶层不得含准备」恰恰是 Prompt 自己的要求，两条规则互相冲突，调措辞救不了。派生把这类失败整类消除，同时让前置准备、时间标记可以自然留在拍内。
+
+校验只裁决可唯一推导的部分：拍号必须是整数且在 `storyOutline` 范围内，且「关键选择拍 < 高潮拍」（**「高潮拍必须早于最后一拍」已移除**——它规定的是故事形状不是一致性，两者相同只让两个字段取到同一句话，是冗余不是矛盾）。「两拍之间隔一拍写后果」仍只留在 Prompt。签发时派生，入站复核只核对字符串与拍号一致（**不重新派生**——那会改变 content digest，破坏 `variant:<id>` 的 lineage 绑定）。诊断码：`STORY_CANDIDATE_BEAT_INDEX_INVALID` / `..._OUT_OF_RANGE` / `STORY_CANDIDATE_PROJECTION_OUT_OF_ORDER` / `STORY_CANDIDATE_PROJECTION_NOT_DERIVED`。
 
 这条约束 Prompt 一直就写着，但此前**没有校验器**。放开固定拍号（原 Beat 3/5/6）后实测合规率从 60/60 掉到 31/48，某些上游甚至 0/12——顶层写压缩摘要、`storyOutline` 写另一件事，同一个候选出现两版剧情，下游 Full Story 无从判断哪个是事实。它是阻止候选内部多版本事实的唯一机制，因此补成确定性硬失败。
 
