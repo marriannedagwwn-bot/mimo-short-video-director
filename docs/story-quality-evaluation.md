@@ -76,27 +76,32 @@ node scripts/story-quality-evaluation.mjs \
 
 ## 结果格式
 
-结果版本为 `story-quality-evaluation-result/1.0`。每个 case 记录：
+结果版本为 `story-quality-evaluation-result/1.1`（1.0 → 1.1：新增 `characterNecessity` 维度，并为每条主观维度补 `test` 判据）。每个 case 记录：
 
 - `candidateSetDigest`：整组 Candidate 摘要；
 - `caseDimensions.tokenUsage`：真实 token 数据或明确的 unavailable/null；
 - `caseDimensions.validationFailure`：当前本地 validator 的实际结果；
 - `candidateAssessments[].candidateDigest`：单个 Candidate 摘要；
-- `candidateAssessments[].dimensions`：九项留给人工复核的主观维度。
+- `candidateAssessments[].dimensions`：十项留给人工复核的主观维度。
 
-九项主观维度是：
+十项主观维度是：
 
-| 维度 | 人工复核问题 | 方向 |
+每条维度都带一个 `test` 字段：**可机械执行的判据**，不需要编剧训练也能得出一致结论。它只指导人工阅读，脚本不据此自动评分。
+
+| 维度 | 机械判据（`test`） | 方向 |
 | --- | --- | --- |
-| `hook` | 是否提出具体观看问题且没有提前泄露兑现结果 | 越高越好 |
-| `protagonistGoal` | 主角目标、阻力和未完成代价是否清楚 | 越高越好 |
-| `protagonistAgency` | 关键推进是否来自主角决定与行动 | 越高越好 |
-| `causality` | beat 之间是否存在可解释的因果触发 | 越高越好 |
-| `escalation` | 压力、代价或选择难度是否升级 | 越高越好 |
-| `beatNecessity` | 删除 beat 是否损失角色弧、关系、情绪或后续因果 | 越高越好 |
-| `clicheRisk` | 是否依赖可互换套路或通用煽情 | 越低越好 |
-| `dialogueRedundancy` | 对白是否重复画面、情绪或已知信息 | 越低越好 |
-| `emotionalPayoff` | 高潮、关键选择和结尾是否兑现铺垫 | 越高越好 |
+| `hook` | **预测测试**：只看第 1 拍能否猜到结局怎么解决 | 越高越好 |
+| `protagonistGoal` | **追问测试**：主角想要什么？不做会失去什么？两问都要能从 `storyOutline` 直接答出 | 越高越好 |
+| `protagonistAgency` | **选择测试**：`keyChoice` 的另一个选项有人会真选吗？没人会选就不是选择，只是正确反应 | 越高越好 |
+| `causality` | **连接测试**：逐拍问「这拍是因为上一拍发生的吗」，「只是接着发生」的拍越多分越低 | 越高越好 |
+| `escalation` | **加码测试**：每拍是否新增限制、信息、代价、选择难度或时间压力中的至少一种 | 越高越好 |
+| `beatNecessity` | **删除测试**：逐拍遮住，故事还成立的那拍就是废拍 | 越高越好 |
+| `clicheRisk` | **换皮测试**：换掉地点、道具、NPC、天气后还是同一个故事吗 | 越低越好 |
+| `dialogueRedundancy` | **遮挡测试**：遮住台词只看 `visibleAction`，信息还够吗 | 越低越好 |
+| `emotionalPayoff` | **来源测试**：最后一拍的情绪由前面哪几拍挣来的，指不出来源即低分 | 越高越好 |
+| `characterNecessity` | **替换测试**：把主角换成任意路人，故事还一样吗 | 越高越好 |
+
+`characterNecessity` 是 1.1 新增。此前九项都测「故事本身怎么样」，没有一项测「这个故事是不是非该固定角色不可」——而固定角色是本系统的核心约束。实测中它能区分「谁来演都一样」（婴儿车滑坡，换谁都会去追）和「非她不可」（狼耳少女用手影演一只狼）。
 
 新生成的模板对每一项都只写：
 

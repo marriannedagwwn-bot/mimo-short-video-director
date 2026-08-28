@@ -11,7 +11,7 @@ import {
 } from "../src/validation.js";
 
 export const STORY_QUALITY_INPUT_SCHEMA_VERSION = "story-quality-evaluation-input/1.0";
-export const STORY_QUALITY_RESULT_SCHEMA_VERSION = "story-quality-evaluation-result/1.0";
+export const STORY_QUALITY_RESULT_SCHEMA_VERSION = "story-quality-evaluation-result/1.1";
 
 export const STORY_QUALITY_SUBJECTIVE_DIMENSIONS = Object.freeze([
   "hook",
@@ -22,7 +22,8 @@ export const STORY_QUALITY_SUBJECTIVE_DIMENSIONS = Object.freeze([
   "beatNecessity",
   "clicheRisk",
   "dialogueRedundancy",
-  "emotionalPayoff"
+  "emotionalPayoff",
+  "characterNecessity"
 ]);
 
 export const STORY_QUALITY_CASE_DIMENSIONS = Object.freeze([
@@ -31,21 +32,34 @@ export const STORY_QUALITY_CASE_DIMENSIONS = Object.freeze([
 ]);
 
 const RUBRIC = Object.freeze({
-  hook: rubric("candidate", "manual", "开场是否提出具体观看问题，且没有提前泄露兑现结果。", "higher_is_better"),
-  protagonistGoal: rubric("candidate", "manual", "主角目标、阻力与未完成代价是否清楚。", "higher_is_better"),
-  protagonistAgency: rubric("candidate", "manual", "关键推进是否来自主角的决定与行动。", "higher_is_better"),
-  causality: rubric("candidate", "manual", "各 beat 是否以前一行动的结果触发下一步。", "higher_is_better"),
-  escalation: rubric("candidate", "manual", "压力、代价或选择难度是否逐步升级。", "higher_is_better"),
-  beatNecessity: rubric("candidate", "manual", "删除 beat 是否会损失角色弧、关系推进、情绪积累或后续因果。", "higher_is_better"),
-  clicheRisk: rubric("candidate", "manual", "是否依赖可互换的套路、通用煽情或陈词滥调。", "lower_is_better"),
-  dialogueRedundancy: rubric("candidate", "manual", "对白是否重复画面、解释情绪或重复已知信息。", "lower_is_better"),
-  emotionalPayoff: rubric("candidate", "manual", "高潮、关键选择与结尾是否兑现此前的关系和情绪铺垫。", "higher_is_better"),
+  hook: rubric("candidate", "manual", "开场是否提出具体观看问题，且没有提前泄露兑现结果。", "higher_is_better",
+    "预测测试：只看第 1 拍，能不能猜到结局怎么解决？猜得到记低分。结尾出现前文没有铺垫、但回头看成立的回响，记高分。"),
+  protagonistGoal: rubric("candidate", "manual", "主角目标、阻力与未完成代价是否清楚。", "higher_is_better",
+    "追问测试：主角想要什么？不做会失去什么？两个问题都要能从 storyOutline 直接答出来，答不出记低分。"),
+  protagonistAgency: rubric("candidate", "manual", "关键推进是否来自主角的决定与行动。", "higher_is_better",
+    "选择测试：keyChoice 的另一个选项，有人会真的选吗？没人会选（例如「眼看婴儿车滑下马路而不追」）就不是选择，只是正确反应，记低分。另一个选项也成立且有代价，记高分。"),
+  causality: rubric("candidate", "manual", "各 beat 是否以前一行动的结果触发下一步。", "higher_is_better",
+    "连接测试：逐拍问「这一拍是因为上一拍发生的吗」。答案是「只是接着发生」而非「因此发生」的拍越多，分越低。"),
+  escalation: rubric("candidate", "manual", "压力、代价或选择难度是否逐步升级。", "higher_is_better",
+    "加码测试：从第 2 拍起，每拍是否出现新限制、新信息、更高代价、更难选择或更紧时间压力中的至少一种？全程同一强度记低分。"),
+  beatNecessity: rubric("candidate", "manual", "删除 beat 是否会损失角色弧、关系推进、情绪积累或后续因果。", "higher_is_better",
+    "删除测试：逐拍遮住，故事还成立吗？成立的拍就是废拍（例如只补了辛苦感、没改变任何条件的那种）。废拍越多分越低。"),
+  clicheRisk: rubric("candidate", "manual", "是否依赖可互换的套路、通用煽情或陈词滥调。", "lower_is_better",
+    "换皮测试：把地点、道具、NPC、天气全换掉，故事还是同一个吗？还是同一个说明结构是模板。注意判定的是完整因果组合的重复，不是某个词出现与否。"),
+  dialogueRedundancy: rubric("candidate", "manual", "对白是否重复画面、解释情绪或重复已知信息。", "lower_is_better",
+    "遮挡测试：把台词全遮住只看 visibleAction，信息还够吗？够，说明台词没在解说画面，记低分（本维度越低越好）。反过来，遮住画面只看台词就能懂全部剧情，记高分。"),
+  emotionalPayoff: rubric("candidate", "manual", "高潮、关键选择与结尾是否兑现此前的关系和情绪铺垫。", "higher_is_better",
+    "来源测试：最后一拍的情绪，是由前面哪几拍挣来的？指不出具体来源，或兑现靠奖品、感谢、突然到场的角色，记低分。"),
+  characterNecessity: rubric("candidate", "manual", "这个故事是否非该固定角色不可。", "higher_is_better",
+    "替换测试：把主角换成任意一个路人，故事还一样吗？一样说明角色可替换，记低分。角色的已签发特征（外观、性格、身份、习惯）直接构成解决方案的一部分时记高分——例如狼耳少女用手影演一只狼。"),
   tokenUsage: Object.freeze({ scope: "case", mode: "observed", description: "生成该候选集合时供应商实际返回的 token usage；没有记录时保持 unavailable/null。" }),
   validationFailure: Object.freeze({ scope: "case", mode: "deterministic", description: "用当前 Story Candidates contract 与结构校验器实际复验得到的失败记录。" })
 });
 
-function rubric(scope, mode, description, direction) {
-  return Object.freeze({ scope, mode, description, scale: Object.freeze({ min: 1, max: 5, direction }) });
+// test 是可机械执行的判据：不需要编剧训练也能得出一致结论，
+// 避免主观维度退化成凭感觉打分。它只指导人工阅读，脚本不据此自动评分。
+function rubric(scope, mode, description, direction, test = "") {
+  return Object.freeze({ scope, mode, description, test, scale: Object.freeze({ min: 1, max: 5, direction }) });
 }
 
 function isRecord(value) {
