@@ -113,6 +113,14 @@ flowchart LR
 
 Phase 2 的预留接缝只是「已签发 Candidate 内容 + 精确 lineage reference」：未来 Blueprint 若实施，必须消费这一对受信输入，不能再只用 id 猜候选。当前没有 Story Selection/Blueprint Artifact、API 或额外 LLM 调用。离线质量基线的输入、结果与人工评分边界见 `docs/story-quality-evaluation.md`。
 
+#### Phase 1.1 回放结论与 Phase 2 边界
+
+真实生产包回放表明，严格字段和确定性结构签名通过，不等于候选已经在语义层形成不同故事。`creativeBrief` 是抽象层，但历史 Artifact 可能把原片的具体动作、道具解法、分享方式和告别顺序写进 `storyEngine`、`reusableHighValueBeats.mustRetain` 或 `nonNegotiableExperience`；下游 Variants 随后可能只替换道具和措辞，却共享同一条「目标 → 压力 → 机智解法 → 成果分享 → 告别」因果链。Phase 1.1 同时校准 Brief Prompt 与 Variants Prompt：新 Brief 的强保真字段只能写抽象剧作价值；Variants 只展开定位、受众、核心情绪、情绪结构和 `reusableHighValueBeats[].dramaticValue` 的安全投影，不展开历史 `storyEngine`、具体 Beat/`mustRetain`、`samePlotDriver`、`sameBeatValue` 或 `creativeDistancePolicy` 值。这个投影不会原地改写已签发旧 Brief，也不新增 Schema 字段、deterministic validator、模型调用或关键词规则。
+
+候选批次的**语义差异**与当前确定性**文本签名差异**不是同一个保证。现有校验只证明至少两个 Candidate 在 `dramaticFunction` 序列、`keyChoice`、`climax`、`emotionalPayoff` 的 canonical 文本投影上不同；它不能证明危机、选择成本、因果结构或情绪兑现实质不同。老人、雨、礼物、毛线球等题材词不能成为本地分化判据。批次级语义分化、选择是否有意义、Beat 是否必要和情绪是否成立，仍属于离线人工评测或未来 Phase 2 的窄语义评审职责。
+
+Prompt 中关于施动性、因果、人物质感、悬念、承诺和连贯性的要求，目前只是生成约束，不是已落地的内容正确性证明。`keyChoice`/Beat 3、`climax`/Beat 5、`emotionalPayoff`/Beat 6 的逐字投影，以及 `highValueBeatMapping.newExpression` 对六拍正文的逐字投影，可以消除候选内部的多版本事实，却不能证明这些事实在现实语义上成立；真实 5×4 回放仍由人工发现同一物品重复分配、动作先后回退等问题。Candidate digest/revision 绑定也只证明 Full Story 使用了哪份 current Candidate，不证明 Full Story 或 Animation Plan 的自由文本在语义上完整、无重复、无跳接或无角色外观漂移。Phase 1.1 发现的三条具体下游失败样本只登记在 `docs/GitHub-Benchmark-后续改造待办.md` 的 T09，本轮不修改 Legacy Full Story、Animation Plan、partial repair 权限或最终 wire shape。
+
 ### 阶段六：fullStory
 
 用户选择一个 `themeVariants.variants[]` 后，进入独立完整剧情页。该阶段不重新发散主题，只围绕被选中的主题变体扩写，输出：

@@ -34,6 +34,8 @@ Creative Brief 的 `allowedNarrativeComponents` 使用服务端固定的七项�
 
 本轮没有 Story Selection/Blueprint/Script Doctor/Rewrite/Production Package 4.0。Phase 2 唯一预留接缝是已签发 Candidate 的完整内容与精确 lineage reference；未来 Blueprint 必须消费这对受信输入，不能只凭 id 识别候选。
 
+Phase 1.1 的真实包回放进一步明确：当前结构签名保证的是字段文本投影不同，不是整批候选的语义因果链一定不同。Creative Brief Prompt 现在只允许强保真字段记录抽象剧作价值；Theme Variants Prompt 只展开定位、受众、核心情绪、情绪结构与 `dramaticValue` 投影，不再把历史 Brief 中可能具体化的 `storyEngine`、`mustRetain`、`samePlotDriver`、`sameBeatValue` 或 `creativeDistancePolicy` 值当作正向候选命令。旧 Brief Artifact 本身不会被改写。Prompt 中的因果、Beat 必要性和连贯性要求仍不是确定性验证；真实 5×4 回放中的 Schema 与精确字段投影可以全部通过，人工仍可能发现物品状态或动作顺序矛盾。Brief 抽象层风险和三条已知下游失败样本已登记到 [`T09 Phase 2 Story Blueprint 与候选语义质量闭环`](docs/GitHub-Benchmark-%E5%90%8E%E7%BB%AD%E6%94%B9%E9%80%A0%E5%BE%85%E5%8A%9E.md#t09phase-2-story-blueprint-%E4%B8%8E%E5%80%99%E9%80%89%E8%AF%AD%E4%B9%89%E8%B4%A8%E9%87%8F%E9%97%AD%E7%8E%AF)；本轮未修改 Story Candidate Schema、Full Story 或 Animation Plan 行为。
+
 ## 模型输出有界纠错
 
 当前主流程不再把一份已经解析、但校验失败的完整 Artifact 直接交给模型整包重写。服务端只接受稳定的结构化 diagnostics（`code + RFC 6901 JSON Pointer + reason`）；当候选完整、路径可信、目标已存在且权威事实唯一时，才签发一次局部计划。当前有两套互不混用的协议：Legacy Full Story 使用专用 `full_story_partial_repair/1.0`；`artifact_partial_repair/1.0` 编排 Animation Foundation 固定角色安全子集。第二次请求只包含错误目标的当前值、修复说明和最小权威投影，模型只能按服务端 `repairId` 返回 replacement，不能自报 path、JSON Patch 或额外操作。

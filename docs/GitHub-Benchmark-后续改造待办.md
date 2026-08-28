@@ -43,6 +43,8 @@
 ```text
 已完成 T00 Production Lineage
               │
+              ├── T09 Phase 2 Story Blueprint / 候选语义质量闭环
+              │
               ├── T01 Full Story 角色与 Variant 契约闭环
               │        └── T02 Animation Plan 角色边界语义门
               │                  └── T07 连续性桥接 Prototype
@@ -61,6 +63,7 @@ T08 跨环境 Production Package 仅在部署需求成立后启动
 | 优先级 | 任务 | 判断 |
 |---|---|---|
 | 已完成 | T00 | 不重复实现，只维护回归测试 |
+| Backlog / 待评估 | T09 | 先固定真实失败样本与语义边界，再决定是否实施 Story Blueprint |
 | P1 | T01、T02 | 直接影响剧情、角色和镜头正确性 |
 | P1 | T03 | 降低上下文重复与模型职责过载，需要 A/B 数据 |
 | P2 | T04、T05 | 提高付费媒体生成的可追踪性与恢复能力 |
@@ -207,6 +210,42 @@ T08 跨环境 Production Package 仅在部署需求成立后启动
 - [ ] 角色边界仍只有一份服务端事实源，不新增本地物种关键词字典或第二套边界。
 - [ ] 完整 Node 24 测试、真实失败包和合法反例通过。
 - [ ] 完成后自动勾选本任务全部子项和父项，并填写完成记录。
+
+完成记录：待填写。
+
+### T09：Phase 2 Story Blueprint 与候选语义质量闭环
+
+- [ ] **T09 父任务：用真实回放证明 Phase 2 架构必要性后，再决定是否引入 Story Blueprint**
+
+任务状态与边界：
+
+- 本项来自 Story Candidates Phase 1.1 的只读真实生产包回放，目前只是 backlog，不代表 Story Blueprint 已获准实施。
+- Phase 1.1 不新增 Story Selection API/Artifact、Story Blueprint、Script Doctor、Targeted Rewrite、Full Story 编排或模型调用；Legacy Full Story 与 Animation Plan 的行为、wire shape 和 partial repair 权限保持不变。
+- 未来若实施 Blueprint，唯一输入接缝仍是 current `variant:<id>` 的完整签发内容及精确 `artifactId/revision/contentDigest`；Blueprint 不得只凭 Variant ID 工作，也不得回头把原片或 Brief 当成第二份候选真相。
+
+Phase 1.1 已确认的三个边界：
+
+1. **Brief 抽象层边界**：`creativeBrief` 应保存可复用的剧作功能，但真实输出可能把具体动作、道具解法、分享方式和告别顺序写入 `storyEngine`、`reusableHighValueBeats.mustRetain` 或 `nonNegotiableExperience`，使 Variants 围绕同一条表面因果链做微调。Phase 1.1 对 Brief Prompt 作抽象层校准，并让 Variants 只展开定位、受众、情绪结构和 `dramaticValue` 投影；历史具体字段仍留在原 Artifact 中用于审计，不会被原地推断、改写或作为正向命令展开。Phase 2 必须先定义哪些字段属于抽象价值、哪些只是来源表达，以及合法的高保真反例。
+2. **候选批次语义差异边界**：当前 deterministic gate 只比较 `dramaticFunction` 序列、`keyChoice`、`climax` 与 `emotionalPayoff` 的文本投影。不同措辞或不同道具可以形成不同签名，却仍共享同一条目标、压力、解法、成果和告别链。未来只能通过固定真实 fixture、人工基线或证据绑定的窄语义评审判断这种差异，禁止用人物、天气、礼物、毛线球或其他题材关键词充当语义裁判。
+3. **Prompt-only coherence 边界**：Prompt 对施动性、因果、Beat 必要性、空间过渡和角色一致性的要求，不等于通过了可验证门禁；Candidate lineage 也只证明请求绑定的版本，不证明下游自由文本连贯。未来必须分别说明 deterministic contract、语义 verdict、人工选择和禁止自动 repair 的责任，不得因 Prompt 写过一句要求就宣称问题已解决。
+
+只登记、不在本轮修复的下游失败样本：
+
+- [ ] Full Story `sceneScript` 的 S4 `visibleAction` 重复写入“抱着毛线球冒雨跑回家”。这是动作冗余/Beat–Scene 一致性样本；未来检查必须能区分真实重复与合法的持续动作、回顾或不同阶段，不能按短语出现次数直接删除文本。
+- [ ] 爷爷没有可见到达、同行、进入或其他过渡，却出现在奶奶家结尾。这是人物出镜与空间因果连续性样本；未来必须对照已签发角色职责、相邻 scene 的 `characters/location/visibleAction` 和明确过渡证据，不能靠姓名或地点关键词猜测。
+- [ ] 小白子被下游重新推断出“白色猫尾巴”。这是固定角色外观事实漂移样本；未来只能以验签 `fixedCharacterBoundary` 的 required/allowed/forbidden facts 定案，禁止建立“猫就应有白色猫尾巴”之类本地物种词表，也不得用模型常识补写未签发身体特征。
+
+后续调查与验收草案：
+
+- [ ] 把真实 Brief、整批 Story Candidates 和上述三条下游失败样本固定为不可变 fixture，记录 source artifact revision/digest；无法取得原始 Artifact 时必须明确标为用户报告样本，不得补造 project/run 或证据路径。
+- [ ] 用离线质量入口记录 `protagonistAgency`、`causality`、`escalation`、`beatNecessity`、`clicheRisk` 与 `emotionalPayoff` 的人工基线；普通 `npm test` 只锁格式、digest 和确定性 validator 结果，不伪造语义分数。
+- [ ] 比较三种最小方案：只强化 Brief/Variants Prompt、增加一次 Candidate 集合窄语义评审、引入签发 Story Blueprint。必须记录新增 token、失败率、误杀合法高保真改编的比例和退出条件。
+- [ ] 若选择语义评审，它只能返回候选级/批次级 verdict、证据路径和 reason，不能自动重写 Candidate、Full Story 或 Animation Plan；Prompt-only 规则仍不得包装成 validator。
+- [ ] 若选择 Story Blueprint，先定义 goal、pressure、choice、consequence、climax、emotional payoff 与 scene-transition/cast evidence 的单一 owner，再决定 Artifact/API；不得先新增 wire shape 再补事实来源。
+- [ ] 回放必须至少包含合法反例：不同候选共享题材或同一情感媒介但因果结构确实不同；角色跨场出现且有明确同行/进入证据；持续动作在相邻 Beat 中合法延续；签发边界明确允许的猫尾外观。
+- [ ] 只有真实样本 A/B 证明收益且不扩大误杀、调用或 repair 权限后，才提交单独实施计划；否则保持本项未完成并记录“不引入”。
+
+预计涉及（仅在未来单独获准实施 Phase 2 后）：`src/prompts.js`、可能新增的只读语义评审/Blueprint contract、固定质量 fixtures、Prompt contract tests，以及对应 docs。Phase 1.1 只校准现有 Brief/Variants Prompt 及其文档/测试，不实施上述 Phase 2 代码，也不修改 Full Story 或 Animation Plan 行为。
 
 完成记录：待填写。
 
