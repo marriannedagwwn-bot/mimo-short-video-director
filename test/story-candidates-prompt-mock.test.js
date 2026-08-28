@@ -166,12 +166,23 @@ test("Variants Prompt replaces the disposable beat conflict and declares only ca
   assert.doesNotMatch(prompt, /phase 依次固定为/u);
   assert.match(prompt, /不得让 4 个候选共用同一串 phase/u);
   assert.doesNotMatch(prompt, /不再固定拍号/u);
-  assert.match(prompt, /关键选择拍 < 高潮拍 < 最后一拍/u);
-  assert.match(prompt, /关键选择拍与高潮拍之间至少隔一拍/u);
+  // 这两条曾锁住一句与拍号方案矛盾的旧文本（「先后必须是 关键选择拍 < 高潮拍 < 最后一拍，
+  // 且之间至少隔一拍」），改拍号时漏改而断言恰好让它活了下来。现在两者都是建议，
+  // 硬校验只剩 keyChoiceBeat < climaxBeat，断言反过来锁住「不得再出现硬性措辞」。
+  assert.doesNotMatch(prompt, /先后必须是「关键选择拍 < 高潮拍 < 最后一拍」/u);
+  assert.doesNotMatch(prompt, /且关键选择拍与高潮拍之间至少隔一拍/u);
+  assert.match(prompt, /建议在关键选择拍与高潮拍之间留一拍/u);
+  assert.match(prompt, /选择直接引发高潮也成立，不强制/u);
   assert.match(prompt, /高潮拍必须同时包含固定主角亲自完成的决定性动作和它造成的可见结果/u);
   assert.match(prompt, /不能把配角自己的选择或行动冒充成主角高潮/u);
   assert.match(prompt, /猫耳、猫娘称谓或猫系拟声词不自动授权猫爪、猫尾、超常嗅觉、超常听觉/u);
   assert.match(prompt, /highValueBeatMapping 恰好使用 2 个完整对象/u);
+  // 四轮真实回放里三次栽在这里：模型把 newExpression 的键名写成 action。
+  // 该字段的说明本身就要求「复制某个 action 里的原文」，输出结构样例又只给空字符串占位，
+  // 两处都在给 action 这个键名加权，因此需要一句显式否定把键名和取值来源分开。
+  assert.match(prompt, /每个对象的键固定且只有三个：briefBeat、newExpression、retainedValue/u);
+  assert.match(prompt, /\*\*绝不能把 newExpression 写成 action\*\*/u);
+  assert.match(prompt, /action 是 storyOutline 里的键名，不是这里的键名/u);
   assert.match(prompt, /newExpression 必须逐字复制本候选 storyOutline 某个 action 中的一段连续原文/u);
   assert.match(prompt, /高潮拍不得首次引入决定性人物、物品、地点、线索或能力/u);
   assert.match(prompt, /关键选择拍与高潮拍之间那一拍必须产生高潮实际使用的具体信息、物理状态、机会或代价/u);
