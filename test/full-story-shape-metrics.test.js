@@ -115,3 +115,26 @@ test("全片台词出自同一人时提示——这是实测中最病态的形�
   assert.deepEqual(w.map((x) => x.code), ["DOMINANT_SPEAKER"]);
   assert.match(w[0].label, /100% 台词出自「奶奶」/u);
 });
+
+// 阈值曾写成小数 0.67，把「六场里四场同配置」正好三分之二的情况漏掉了
+// （4/6 = 0.6667 < 0.67）——而那恰恰是要抓的形态。改用分数 2/3。
+test("六场里四场同配置正好是三分之二，必须被标出", () => {
+  const same = () => scene("教室窗边座位", ["小白子", "芙芙猫"]);
+  const story = {
+    sceneScript: [same(), same(), same(), same(),
+      scene("教室窗边座位", ["小白子"]),
+      scene("教室门口", ["小白子", "芙芙猫"])]
+  };
+  const w = fullStoryShapeWarnings(story);
+  assert.deepEqual(w.map((x) => x.code), ["REPEATED_SCENE_CONFIG"]);
+  assert.match(w[0].label, /4\/6 场画面配置相同/u);
+});
+
+test("不足三分之二时仍然放行", () => {
+  const same = () => scene("教室", ["小白子", "芙芙猫"]);
+  const story = {
+    sceneScript: [same(), same(), same(),
+      scene("门口", ["小白子"]), scene("操场", ["芙芙猫"]), scene("走廊", ["小白子", "奶奶"])]
+  };
+  assert.deepEqual(fullStoryShapeWarnings(story), [], "3/6 未达三分之二");
+});

@@ -25,8 +25,10 @@
 // **同地点占比不作为提示项**：它的中位数就是 0.50——六十秒短片集中在一两个
 // 地点是这个赛道的常态，不是缺陷。按 0.5 标会命中 60%，那种提示等于噪声，
 // 会把真正异常的那 10% 淹掉。该数字仍然计算并展示，只是不触发提示。
+// repeatedConfigShare 用分数而不是小数：写 0.67 会把「六场里四场同配置」
+// 这种正好三分之二的情况排除在外（4/6 = 0.6667 < 0.67），而那恰恰是要抓的形态。
 export const SHAPE_METRIC_THRESHOLDS = Object.freeze({
-  repeatedConfigShare: 0.67,
+  repeatedConfigShare: 2 / 3,
   topSpeakerShare: 0.9,
   minDialogueLines: 4
 });
