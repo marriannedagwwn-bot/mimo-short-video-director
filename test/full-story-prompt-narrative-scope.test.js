@@ -188,3 +188,60 @@ test("不传目标时文案与历史逐字一致，旧调用方行为不变", ()
   assert.match(text, /剧情应适合 45-90 秒短视频，默认以 60 秒为目标/u);
   assert.match(text, /合计必须落在 45-90 秒内，默认贴近 60 秒/u);
 });
+
+// 《画不圆的太阳》与原片《打枣》逐场对照：差距不在写没写氛围
+// （shotAndSound 与 retentionPlan 都填得实），而在 visibleAction 的动作类型——
+// 原片是「把铁锅扣头上当头盔」「爬着追滚远的枣子」这类大幅度动作，
+// 且有一半与主线任务无关（趴桌听收音机、爷爷摇蒲扇）；
+// 生成的那份六场全是桌前微表情（皱眉、擦、歪头），视频模型拍不出信息量。
+const TEXTURE_ANALYSIS = Object.freeze({
+  retentionDrivers: [
+    { driver: "萌系角色吸引力", payoff: "看到她戴锅防砸的可爱举动" },
+    { driver: "怀旧与治愈氛围", payoff: "打枣、洗枣、听收音机等细节" }
+  ],
+  observedFacts: [
+    { factType: "visible_object", observation: "桌上放着一台老式收音机" },
+    { factType: "visible_action", observation: "小女孩把红枣递给爷爷" }
+  ],
+  shotRhythm: { shotPatterns: ["特写（人物表情）", "中景（互动场景）", "全景（院落环境）"] }
+});
+
+test("原片生活质感提成具名投影，只取环境道具不取动作事实", () => {
+  const text = fullStoryPrompt({
+    creatorProfile, creativeBrief: {}, visualGuardrails: {},
+    sourceScriptReconstruction: {}, variant: leanVariant,
+    referenceAnalysis: TEXTURE_ANALYSIS
+  });
+  assert.match(text, /原片的生活质感来源（只看它靠什么\*\*类型\*\*的东西留住观众，不要复用具体内容）/u);
+  assert.match(text, /萌系角色吸引力（靠「看到她戴锅防砸的可爱举动」兑现）/u);
+  assert.match(text, /环境道具（注意其中与主线任务无关的那些）：桌上放着一台老式收音机/u);
+  assert.match(text, /景别构成：特写（人物表情）、中景（互动场景）、全景（院落环境）/u);
+  // visible_action 是主线动作，不属于「环境道具」，不该混进投影。
+  // 断言只能限定在投影段内——整份 referenceAnalysis JSON 本来就会原样出现在
+  // 提示词的另一处（既有行为），在全文里找这句话必然命中。
+  const start = text.indexOf("原片的生活质感来源");
+  const projection = text.slice(start, text.indexOf("\n\n", start));
+  assert.doesNotMatch(projection, /小女孩把红枣递给爷爷/u);
+  assert.match(projection, /老式收音机/u);
+});
+
+test("生活细节与萌点约束到位，且把微表情明确排除在萌点之外", () => {
+  const text = prompt();
+  assert.match(text, /至少 2 场的 visibleAction 要包含一个\*\*与主线任务无关或只有半相关\*\*的生活动作或环境道具/u);
+  assert.match(text, /趴在木桌旁听收音机、爷爷摇着蒲扇站在门口目送/u);
+  assert.match(text, /这些细节只占一两句，不得挤掉主线动作/u);
+  assert.match(text, /萌点必须是\*\*动作\*\*，不是形容/u);
+  assert.match(text, /把小铁锅扣在头上当头盔防砸/u);
+  assert.match(text, /\*\*皱眉、歪头、眨眼、抿嘴这类微表情不算萌点\*\*/u);
+  assert.match(text, /不看脸、只看身体轮廓，观众能认出她在做什么吗/u);
+});
+
+test("参考片没有质感素材时不注入空投影", () => {
+  assert.doesNotMatch(prompt(), /原片的生活质感来源/u);
+  const empty = fullStoryPrompt({
+    creatorProfile, creativeBrief: {}, visualGuardrails: {},
+    sourceScriptReconstruction: {}, variant: leanVariant,
+    referenceAnalysis: { retentionDrivers: [], observedFacts: [], shotRhythm: {} }
+  });
+  assert.doesNotMatch(empty, /原片的生活质感来源/u);
+});

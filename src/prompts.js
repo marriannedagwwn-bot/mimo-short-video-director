@@ -600,9 +600,49 @@ function sourceDialogueStyleText(referenceAnalysis, sourceScriptReconstruction) 
   return `\n原片对白风格（必须对齐，见下方硬约束）：${parts.join("，")}${sample}\n`;
 }
 
+// 原片的生活质感来源。与 sourceDialogueStyleText 同规格：数据本来就在
+// referenceAnalysis 里，但只埋在整份 JSON 中、没有任何指令让模型对齐。
+//
+// 实测对照《打枣》与《画不圆的太阳》：原片的萌点是「把小铁锅扣头上当头盔」
+// 这种大幅度身体动作，氛围来自「趴桌听收音机」这类与主线无关的生活细节；
+// 生成的那份六场全是桌前微表情（皱眉、擦、歪头），动作幅度小到视频模型
+// 拍不出信息量。差距不在写没写氛围，在 visibleAction 里的动作类型。
+function sourceTextureText(referenceAnalysis) {
+  const drivers = (referenceAnalysis?.retentionDrivers || [])
+    .map((item) => {
+      const driver = String(item?.driver || "").trim();
+      const payoff = String(item?.payoff || "").trim();
+      if (!driver && !payoff) return "";
+      return payoff ? `${driver}（靠「${payoff}」兑现）` : driver;
+    })
+    .filter(Boolean)
+    .slice(0, 4);
+
+  const props = (referenceAnalysis?.observedFacts || [])
+    .filter((fact) => fact?.factType === "visible_object")
+    .map((fact) => String(fact?.observation || "").trim())
+    .filter(Boolean)
+    .slice(0, 6);
+
+  const patterns = (referenceAnalysis?.shotRhythm?.shotPatterns || [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+
+  if (!drivers.length && !props.length && !patterns.length) return "";
+
+  const lines = [
+    "\n原片的生活质感来源（只看它靠什么**类型**的东西留住观众，不要复用具体内容）：",
+    drivers.length ? `观看动力：${drivers.join("；")}` : "",
+    props.length ? `环境道具（注意其中与主线任务无关的那些）：${props.join("；")}` : "",
+    patterns.length ? `景别构成：${patterns.join("、")}` : ""
+  ].filter(Boolean);
+  return `${lines.join("\n")}\n`;
+}
+
 export function fullStoryPrompt(input) {
   const variant = input.variant || {};
   const sourceDialogueText = sourceDialogueStyleText(input.referenceAnalysis, input.sourceScriptReconstruction);
+  const sourceTexture = sourceTextureText(input.referenceAnalysis);
   // 用户在「设定创作宇宙」选的目标时长。窗口跟随目标而不是固定 45-90：
   // 原片 96 秒时若仍写「必须落在 45-90 秒内」，就与「与原片对齐」自相矛盾。
   // ±15% 给模型排场次的余地，又不至于跑偏一倍。
@@ -628,7 +668,7 @@ export function fullStoryPrompt(input) {
 创作限制：${input.creatorProfile?.constraints || "无"}
 选中主题变体：${JSON.stringify(variant)}
 creativeBrief：${JSON.stringify(input.creativeBrief)}
-referenceAnalysis 摘要：${JSON.stringify(input.referenceAnalysis || {})}${sourceDialogueText}
+referenceAnalysis 摘要：${JSON.stringify(input.referenceAnalysis || {})}${sourceDialogueText}${sourceTexture}
 sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstruction || {})}
 原片表面表达参考（不是正向内容禁词）：${forbiddenText}
 固定角色外观边界：${visualPolicyText}
@@ -645,6 +685,9 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - 允许不等于必须使用：不得因为来源上下文列出了这些表达，就机械把它们补进 visibleAction、dialogue、shotAndSound、keyProps 或其他正向字段。只能按当前 Variant 的剧情需要自然采用。
 - visualGuardrails.positivePromptBoundary 继续约束固定主角的签发身份与必需特征；sourceSimilarityRules 只保留来源证据与实际视觉参考泄漏职责，不能覆盖用户这次的放行决定。
 - 对白必须服从 visualGuardrails.dialogueRules 与用户限制；可以用动作备注补足信息，不要让角色突然改变说话方式。
+- 生活细节：至少 2 场的 visibleAction 要包含一个**与主线任务无关或只有半相关**的生活动作或环境道具。原片正例：趴在木桌旁听收音机、爷爷摇着蒲扇站在门口目送——听收音机和摇蒲扇都不是"收枣"这个任务的一部分，但正是它们让院子像一个真实存在的地方，而不是一个任务演示台。这些细节只占一两句，不得挤掉主线动作。
+- 萌点必须是**动作**，不是形容。至少一处萌点要是幅度大到一眼能看见的身体动作。原片正例：把小铁锅扣在头上当头盔防砸、爬着去追滚远的枣子。反例：「她做了个可爱的动作」「表情很萌」——形容词不可拍，视频模型只能渲染具体动作。**皱眉、歪头、眨眼、抿嘴这类微表情不算萌点**，幅度太小，在一个几秒的镜头里拍不出信息量。
+- 动作幅度自查：写完每场问一句——这个动作放进一个四秒镜头里，不看脸、只看身体轮廓，观众能认出她在做什么吗？认不出来就说明幅度不够，换一个更大的动作。整片如果所有动作都发生在一张桌子前、都靠表情传递，那么无论故事多好，成片都会是静止的。
 - 对白不得复述同场 visibleAction 里观众已经能直接看见的信息。**写完每一句台词后，逐句做这个自查：把这句话遮住，只看同场 visibleAction，观众会不会漏掉任何信息？不会漏，就说明这句在复述画面，必须删掉或改写成只有台词能做到的事。** 实测反面例子：visibleAction 已经写了「她站起身，从衣柜里拿出厚外套和手电筒」，台词却写「穿上厚外套，带上手电筒」——画面演完的事被念了第二遍。正确做法是把这句换成关系表达，例如摸摸头说一句「你呀你，真拿你没办法」：同样让观众知道她答应了，但传递的是宠溺，而外套和手电筒交给画面。
 - 让对白承担画面单独做不到的事：人物性格、情绪、潜台词、关系变化、误会、选择、对已发生动作的反应，或观众还不知道的信息。
 - **不得让任何角色把本片的主题、意义或感悟说出来。** 「下次流星雨我们还一起来」「原来陪伴才是最重要的」「你长大了」这类台词是写给观众的结论，不是人物会说的话。主题必须由观众从画面和行为里自己得出；把它念出来会让整场戏塌掉。结尾尤其容易犯这个错——如果最后一场的台词在总结前面发生了什么，删掉它，让画面收尾。
