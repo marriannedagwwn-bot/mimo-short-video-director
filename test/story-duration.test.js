@@ -71,13 +71,13 @@ test("非法档位回退到 60，不把脏值送进提示词", () => {
   }
 });
 
-test("下拉标签在有原片时显示秒数，无原片时显示待上传", () => {
+test("下拉标签在有原片时显示秒数，无原片时只显示「与原片对齐」", () => {
   const withSource = storyDurationOptions({ metadata: { duration: 79 } });
   assert.equal(withSource[0].label, "与原片对齐 · 79 秒");
   assert.equal(withSource[0].value, STORY_DURATION_SOURCE);
   assert.deepEqual(withSource.slice(1).map((o) => o.label), ["45 秒", "60 秒", "75 秒", "90 秒"]);
 
-  assert.equal(storyDurationOptions({})[0].label, "与原片对齐（待上传）");
+  assert.equal(storyDurationOptions({})[0].label, "与原片对齐");
 });
 
 test("请求侧只拦明显非法的值，不裁决时长合不合适", () => {

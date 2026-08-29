@@ -62,7 +62,7 @@ export function storyDurationOptions(context = {}) {
     {
       value: STORY_DURATION_SOURCE,
       seconds: sourceSeconds ?? STORY_DURATION_FALLBACK_SECONDS,
-      label: sourceSeconds ? `与原片对齐 · ${sourceSeconds} 秒` : "与原片对齐（待上传）"
+      label: sourceSeconds ? `与原片对齐 · ${sourceSeconds} 秒` : "与原片对齐"
     },
     ...STORY_DURATION_PRESETS.map((seconds) => ({ value: String(seconds), seconds, label: `${seconds} 秒` }))
   ];
