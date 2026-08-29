@@ -36,7 +36,8 @@ import { ModelCallCoordinator, classifyAttemptError } from "./model-call-coordin
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
 import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
-  deriveStoryCandidateProjections
+  deriveStoryCandidateProjections,
+  deriveFullStoryTargetDuration
 } from "./validation.js";
 import {
   deriveDirectShotSkeleton,
@@ -424,11 +425,18 @@ export class WorkflowService {
     const visualGuardrails = this.assertGlobalCharacterBoundary(groundedInput);
     const validatedInput = { ...groundedInput, visualGuardrails };
     const settings = this.resolveStage("fullStory", validatedInput);
-    if (!this.hasLiveClient) return ensureFullStoryMatchesProfile(ensureOutputContract(mockFullStory(validatedInput), "fullStory"), profile, input.creativeBrief, input.variant, visualGuardrails);
+    if (!this.hasLiveClient) {
+      return ensureFullStoryMatchesProfile(
+        ensureOutputContract(deriveFullStoryTargetDuration(mockFullStory(validatedInput)), "fullStory"),
+        profile, input.creativeBrief, input.variant, visualGuardrails
+      );
+    }
     this.assertStageClient(settings, "完整剧情");
     const prompt = fullStoryPrompt({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
+    // targetDurationSeconds 由服务端从 sceneScript 时间轴派生：先派生再校验，
+    // 模型声明的值一律被覆盖（可唯一推导，回显不构成新事实）。
     const validateFullStory = (result) => ensureFullStoryMatchesProfile(
-      ensureOutputContract(result, "fullStory"),
+      ensureOutputContract(deriveFullStoryTargetDuration(result), "fullStory"),
       profile,
       input.creativeBrief,
       input.variant,

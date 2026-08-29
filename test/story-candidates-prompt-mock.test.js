@@ -219,3 +219,22 @@ test("Demo Mock emits strict Story Candidates with distinct structural signature
   }));
   assert.ok(new Set(signatures).size >= 2);
 });
+
+// 实测连续两批 4/4 的 logline 都提前泄露了兑现结果，keyDialogueDirections
+// 则 3/4 出现「配角替观众总结主角弧线」——后者的对白质量约束此前只写进了
+// Full Story，候选阶段完全没有覆盖。
+test("候选提示词覆盖 logline 泄露与台词解说两个实测缺口", () => {
+  const prompt = variantsPrompt({
+    count: 4,
+    creatorProfile,
+    creativeBrief: { contentType: "治愈短片", targetAudience: "家庭观众", coreEmotion: "温暖" },
+    referenceAnalysis: {},
+    visualGuardrails: {}
+  });
+  assert.match(prompt, /logline 最容易违反这条/u);
+  assert.match(prompt, /logline 只写到「主角面临什么选择」为止就停下/u);
+  assert.match(prompt, /如果他能说出结尾发生了什么，就是泄露了/u);
+  assert.match(prompt, /这些台词方向同样受对白质量约束/u);
+  assert.match(prompt, /不得让配角替观众总结主角的性格或成长/u);
+  assert.match(prompt, /那是把人物弧线用台词讲出来/u);
+});

@@ -5,7 +5,8 @@ import {
   OutputContractError,
   ensureOutputContract,
   ensureStoryCandidateContract,
-  deriveStoryCandidateProjections
+  deriveStoryCandidateProjections,
+  deriveFullStoryTargetDuration
 } from "../src/validation.js";
 
 const creatorProfile = Object.freeze({
@@ -338,4 +339,34 @@ test("入站复核发现字符串与拍号不符时失败（防篡改，签发�
     () => ensureOutputContract(derived, "themeVariants"),
     (error) => hasDiagnostic(error, "STORY_CANDIDATE_PROJECTION_NOT_DERIVED", "/variants/0/climax")
   );
+});
+
+// targetDurationSeconds 与拍号同规格：可从同一 Artifact 内的其他内容唯一推导，
+// 因此由服务端签发而不是模型独立编写。
+test("Full Story 时长按场次跨度之和派生，覆盖模型声明值", () => {
+  const story = {
+    targetDurationSeconds: 60,
+    sceneScript: [
+      { timeRange: "00:00-00:15" },
+      { timeRange: "00:15-00:35" },
+      { timeRange: "00:35-00:53" }
+    ]
+  };
+  const derived = deriveFullStoryTargetDuration(story);
+  assert.equal(derived.targetDurationSeconds, 53);
+  assert.equal(story.targetDurationSeconds, 60, "不得原地修改输入");
+});
+
+test("场次之间留白不计入时长：取跨度之和而不是首尾之差", () => {
+  const withGap = {
+    targetDurationSeconds: 60,
+    sceneScript: [{ timeRange: "00:00-00:10" }, { timeRange: "00:20-00:30" }]
+  };
+  // 首尾之差是 30 秒，但留白不产生镜头，成片只有 20 秒。
+  assert.equal(deriveFullStoryTargetDuration(withGap).targetDurationSeconds, 20);
+});
+
+test("时间轴不可解析时静默让出，由 direct_shot 骨架统一裁决", () => {
+  const broken = { targetDurationSeconds: 60, sceneScript: [{ timeRange: "不是时间" }] };
+  assert.equal(deriveFullStoryTargetDuration(broken).targetDurationSeconds, 60);
 });

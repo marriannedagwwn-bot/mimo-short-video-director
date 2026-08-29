@@ -2366,6 +2366,29 @@ export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}, crea
   return value;
 }
 
+// targetDurationSeconds 可从 sceneScript 的时间轴唯一推导：它就是各场 timeRange 跨度之和，
+// 也正是下游 productionStrategy.targetRuntimeSeconds 的算法（CLAUDE.md 2.3）。
+// 因此它不该由模型独立编写——实测 65 份历史 Full Story 中 24 份（37%）自相矛盾，
+// 最大偏差 +50 秒：声明 60 秒却写了 106 秒的场次，页面照着声明值显示「60 秒」，
+// 而实际派生出 10 个镜头的 106 秒成片，按镜头计费。
+//
+// 与候选拍号同规格：可唯一推导的值由服务端签发，模型回显不构成新事实。
+// 场次之间允许留白（只禁重叠与回退），所以取跨度之和而不是首尾之差——
+// 留白不产生镜头，也就不进入成片时长。
+export function deriveFullStoryTargetDuration(value) {
+  if (!value || typeof value !== "object" || !Array.isArray(value.sceneScript)) return value;
+  let total = 0;
+  for (const scene of value.sceneScript) {
+    const span = parseSceneTimeRangeSeconds(scene?.timeRange);
+    // 时间轴本身不可解析时不在这里裁决：sceneScript 的 timeRange 校验
+    // 由 direct_shot 骨架派生统一负责，这里静默让出，避免两处给出不同的失败。
+    if (span === null) return value;
+    total += span;
+  }
+  if (total <= 0) return value;
+  return { ...value, targetDurationSeconds: total };
+}
+
 export function ensureFullStoryMatchesProfile(value, creatorProfile = {}, creativeBrief = null, variant = null, visualGuardrails = null) {
   const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
   if (variant?.id && String(value.selectedVariantId || "") !== String(variant.id)) {

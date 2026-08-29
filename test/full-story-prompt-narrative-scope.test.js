@@ -87,3 +87,14 @@ test("候选写了这些构件时，承接要求照常生效", () => {
   assert.match(text, /一张褪色便签/u);
   assert.match(text, /Variant 已选用的人物、任务细节、道具、媒介、结尾方式和对白方向必须忠实承接/u);
 });
+
+// targetDurationSeconds 由服务端从 sceneScript 时间轴派生。
+// 实测 65 份历史 Full Story 中 24 份（37%）自相矛盾，最大偏差 +50 秒：
+// 声明 60 秒却排出 106 秒的场次，页面照声明值显示「60 秒」，
+// 而下游按时间轴派生出 10 个镜头的 106 秒成片，按镜头计费。
+test("Full Story 提示词写明时长由时间轴决定且会被服务端覆盖", () => {
+  const text = prompt();
+  assert.match(text, /由 sceneScript 各场 timeRange 的跨度之和决定，不是由 targetDurationSeconds 这个数字决定/u);
+  assert.match(text, /合计必须落在 45-90 秒内/u);
+  assert.match(text, /服务端会按时间轴重新计算 targetDurationSeconds 并覆盖你写的值/u);
+});
