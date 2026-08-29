@@ -12,6 +12,7 @@ import {
 } from "./shot-reference-images.js";
 import { computeDependencyHash, computePromptHash } from "./frame-dependency.js";
 import { fullStoryShapeWarnings } from "./full-story-shape-metrics.js";
+import { STORY_DURATION_SOURCE, resolveStoryDurationTarget, storyDurationOptions } from "./story-duration.js";
 import { buildShotFrameMultiImagePrompt } from "./shot-frame-multi-image-prompt.js";
 import {
   createApiRequestError,
@@ -71,6 +72,7 @@ const state = {
   animationPlanMetadata: {},
   animationAspectRatioDrafts: {},
   animationAspectRatioDefault: "16:9",
+  storyDurationTarget: STORY_DURATION_SOURCE,
   backgroundMusicDrafts: {},
   animationPromptRewriting: false,
   shotVideoResults: {},
@@ -150,6 +152,7 @@ const elements = {
   storyGenerate: $("#generateFullStory"), fullStory: $("#fullStoryResult"), backToResults: $("#backToResults"),
   animationGenerate: $("#generateAnimationPlan"), animationStatus: $("#animationStatus"), animationPlan: $("#animationPlanResult"),
   animationAspectRatio: $("#animationAspectRatio"),
+  storyDurationTarget: $("#storyDurationTarget"),
   exportStoryPackage: $("#exportStoryPackage"), copyAnimationPack: $("#copyAnimationPack"),
   importStoryPackage: $("#importStoryPackage"), exportStoryTestPackage: $("#exportStoryTestPackage"),
   storyPackageFile: $("#storyPackageFile"), storyPackageStatus: $("#storyPackageStatus"),
@@ -309,6 +312,10 @@ function bindEvents() {
   elements.storyGenerate.addEventListener("click", () => generateFullStory({ force: true }));
   elements.animationGenerate.addEventListener("click", () => generateAnimationPlan({ force: true }));
   elements.animationAspectRatio.addEventListener("change", () => handleDefaultAspectRatioChange(elements.animationAspectRatio.value));
+  elements.storyDurationTarget.addEventListener("change", () => {
+    state.storyDurationTarget = elements.storyDurationTarget.value;
+  });
+  renderStoryDurationOptions();
   elements.exportStoryPackage.addEventListener("click", exportCurrentStoryPackage);
   elements.copyAnimationPack.addEventListener("click", copyAnimationProductionPack);
   elements.importStoryPackage.addEventListener("click", () => elements.storyPackageFile.click());
@@ -498,6 +505,7 @@ async function handleFile(file) {
     state.frames = sampled.frames;
     state.videoDataUrl = videoDataUrl;
     state.metadata = sampled.metadata;
+    renderStoryDurationOptions();
     elements.fileMeta.textContent = `${formatBytes(file.size)} · ${formatTime(sampled.metadata.duration)} · ${sampled.metadata.width}×${sampled.metadata.height}`;
     elements.frames.innerHTML = sampled.frames.map((frame, index) => `<div class="frame"><img src="${frame.dataUrl}" alt="采样画面 ${index + 1}"><span>F${index + 1} · ${formatTime(frame.timestamp)}</span></div>`).join("");
     const mediaNote = videoDataUrl
@@ -1346,6 +1354,19 @@ function renderSelectedVariantSummary(variant) {
     </div>`;
 }
 
+// 「与原片对齐」的标签带上实际秒数，让用户在生成前就知道会得到多长。
+// 上传参考片后与恢复旧 run 后都要刷新一次。
+function renderStoryDurationOptions() {
+  const options = storyDurationOptions({
+    metadata: state.metadata,
+    sourceScriptReconstruction: state.output?.sourceScriptReconstruction
+  });
+  elements.storyDurationTarget.innerHTML = options
+    .map((option) => `<option value="${escape(option.value)}">${escape(option.label)}</option>`)
+    .join("");
+  elements.storyDurationTarget.value = state.storyDurationTarget;
+}
+
 async function generateFullStory({ force = false } = {}) {
   if (state.storyRunning) return;
   const variant = selectedVariant();
@@ -1370,7 +1391,13 @@ async function generateFullStory({ force = false } = {}) {
         themeVariants: state.output.themeVariants,
         variant,
         candidateBinding: lineageDependency(candidateLineage),
-        creatorProfile: profile()
+        creatorProfile: profile(),
+        // 只是给模型的目标；Artifact 里的 targetDurationSeconds 仍由服务端从
+        // sceneScript 时间轴派生，模型没打准时页面显示的也是派生出的真实值。
+        targetDurationSeconds: resolveStoryDurationTarget(state.storyDurationTarget, {
+          metadata: state.metadata,
+          sourceScriptReconstruction: state.output.sourceScriptReconstruction
+        })
       },
       artifactId: `fullStory:${variant.id}`,
       artifactType: "fullStory",

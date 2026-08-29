@@ -603,6 +603,14 @@ function sourceDialogueStyleText(referenceAnalysis, sourceScriptReconstruction) 
 export function fullStoryPrompt(input) {
   const variant = input.variant || {};
   const sourceDialogueText = sourceDialogueStyleText(input.referenceAnalysis, input.sourceScriptReconstruction);
+  // 用户在「设定创作宇宙」选的目标时长。窗口跟随目标而不是固定 45-90：
+  // 原片 96 秒时若仍写「必须落在 45-90 秒内」，就与「与原片对齐」自相矛盾。
+  // ±15% 给模型排场次的余地，又不至于跑偏一倍。
+  // 未传目标时文案与历史逐字一致，旧调用方行为不变。
+  const durationTarget = Number(input.targetDurationSeconds);
+  const durationText = Number.isFinite(durationTarget) && durationTarget > 0
+    ? `剧情应适合约 ${Math.round(durationTarget)} 秒的短视频。**这个目标由 sceneScript 各场 timeRange 的跨度之和决定，不是由 targetDurationSeconds 这个数字决定。**写完场次后把各场跨度加一遍：合计必须落在 ${Math.floor(durationTarget * 0.85)}-${Math.ceil(durationTarget * 1.15)} 秒内，尽量贴近 ${Math.round(durationTarget)} 秒。`
+    : "剧情应适合 45-90 秒短视频，默认以 60 秒为目标。**这个目标由 sceneScript 各场 timeRange 的跨度之和决定，不是由 targetDurationSeconds 这个数字决定。**写完场次后把各场跨度加一遍：合计必须落在 45-90 秒内，默认贴近 60 秒。";
   const forbiddenTerms = collectProtectedTermsFromBrief(input.creativeBrief, input.creatorProfile?.fixedCharacter || "");
   const forbiddenText = forbiddenTerms.length ? forbiddenTerms.join("、") : "无";
   const visualPolicyText = globalCharacterBoundaryText(input.visualGuardrails);
@@ -690,7 +698,7 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
   "uncertainties":[{"field":"", "reason":"", "safeFallback":""}]
 }
 
-选中 Variant 的 storyOutline 是 5–7 拍的**候选级摘要**，不是本阶段的节拍表。beatSheet 是 Full Story 自己的叙事结构，**不要与 storyOutline 一一对应**——摘要里的一拍展开成两场戏是正常的，把 5 拍摘要原样抄成 5 个 beatSheet 是错的。sceneScript 至少 6 场，beatSheet 至少 6 个节拍；候选摘要只有 5 拍时，必须把它展开到至少 6 拍，而不是照抄拍数。剧情应适合 45-90 秒短视频，默认以 60 秒为目标。**这个目标由 sceneScript 各场 timeRange 的跨度之和决定，不是由 targetDurationSeconds 这个数字决定。**写完场次后把各场跨度加一遍：合计必须落在 45-90 秒内，默认贴近 60 秒。服务端会按时间轴重新计算 targetDurationSeconds 并覆盖你写的值，所以写 60 但排出 106 秒的场次，成片就是 106 秒、镜头数翻倍，而不是 60 秒。不要输出分镜号空泛堆叠；每场都要推进任务、关系或情绪。${JSON_ONLY}`;
+选中 Variant 的 storyOutline 是 5–7 拍的**候选级摘要**，不是本阶段的节拍表。beatSheet 是 Full Story 自己的叙事结构，**不要与 storyOutline 一一对应**——摘要里的一拍展开成两场戏是正常的，把 5 拍摘要原样抄成 5 个 beatSheet 是错的。sceneScript 至少 6 场，beatSheet 至少 6 个节拍；候选摘要只有 5 拍时，必须把它展开到至少 6 拍，而不是照抄拍数。${durationText}服务端会按时间轴重新计算 targetDurationSeconds 并覆盖你写的值，所以写 60 但排出 106 秒的场次，成片就是 106 秒、镜头数翻倍，而不是 60 秒。不要输出分镜号空泛堆叠；每场都要推进任务、关系或情绪。${JSON_ONLY}`;
 }
 
 export function animationPlanPrompt(input) {

@@ -150,3 +150,41 @@ test("参考片没有 dialogueStyle 时不注入空投影", () => {
   const text = prompt();
   assert.doesNotMatch(text, /原片对白风格（必须对齐/u);
 });
+
+// 时长目标只进提示词；Artifact 里的 targetDurationSeconds 仍由服务端从
+// sceneScript 时间轴派生（deriveFullStoryTargetDuration），模型没打准时
+// 页面显示的也是派生出的真实值。
+test("传入目标时长时生成对应的目标句与窗口句", () => {
+  const at79 = fullStoryPrompt({
+    creatorProfile, creativeBrief: {}, visualGuardrails: {},
+    referenceAnalysis: {}, sourceScriptReconstruction: {}, variant: leanVariant,
+    targetDurationSeconds: 79
+  });
+  assert.match(at79, /剧情应适合约 79 秒的短视频/u);
+  assert.match(at79, /合计必须落在 67-91 秒内，尽量贴近 79 秒/u);
+
+  const at45 = fullStoryPrompt({
+    creatorProfile, creativeBrief: {}, visualGuardrails: {},
+    referenceAnalysis: {}, sourceScriptReconstruction: {}, variant: leanVariant,
+    targetDurationSeconds: 45
+  });
+  assert.match(at45, /合计必须落在 38-52 秒内/u);
+});
+
+// 窗口跟随目标而不是固定 45-90：原片 96 秒时若仍写「必须落在 45-90 秒内」，
+// 就与「与原片对齐」自相矛盾。
+test("原片超过 90 秒时窗口跟随目标上移，不与对齐设定打架", () => {
+  const at96 = fullStoryPrompt({
+    creatorProfile, creativeBrief: {}, visualGuardrails: {},
+    referenceAnalysis: {}, sourceScriptReconstruction: {}, variant: leanVariant,
+    targetDurationSeconds: 96
+  });
+  assert.match(at96, /合计必须落在 81-111 秒内/u);
+  assert.doesNotMatch(at96, /45-90 秒/u);
+});
+
+test("不传目标时文案与历史逐字一致，旧调用方行为不变", () => {
+  const text = prompt();
+  assert.match(text, /剧情应适合 45-90 秒短视频，默认以 60 秒为目标/u);
+  assert.match(text, /合计必须落在 45-90 秒内，默认贴近 60 秒/u);
+});

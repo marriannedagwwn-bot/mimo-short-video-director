@@ -54,6 +54,7 @@ import {
   resolveFullStoryCandidateBinding
 } from "./src/full-story-candidate-binding.js";
 import { loadOrCreatePersistentKey } from "./src/persistent-key.js";
+import { STORY_DURATION_MAX_SECONDS, STORY_DURATION_MIN_SECONDS, isValidStoryDurationSeconds } from "./public/story-duration.js";
 import { ProductionStateStore } from "./src/production-state-store.js";
 import { ProductionStateError, normalizeArtifactId, safeIdentifier } from "./src/production-lineage.js";
 import { readModelUsageFromError, runWithUsageAccounting } from "./src/token-usage.js";
@@ -196,6 +197,14 @@ const routes = {
   "/api/visual-guardrails": (body) => workflow.createVisualGuardrails(body),
   "/api/variants": (body) => workflow.createVariants(body),
   "/api/full-story": async (body, { request } = {}) => {
+    // 用户在「设定创作宇宙」选的目标时长。只进提示词，不写入 Artifact、不参与派生——
+    // Artifact 里的 targetDurationSeconds 仍由 deriveFullStoryTargetDuration 从时间轴签发。
+    // 这里只拦明显非法的值，不裁决「这个时长合不合适」。
+    if (body?.targetDurationSeconds !== undefined && !isValidStoryDurationSeconds(body.targetDurationSeconds)) {
+      throw new InputError(
+        `targetDurationSeconds 必须是 ${STORY_DURATION_MIN_SECONDS}-${STORY_DURATION_MAX_SECONDS} 之间的整数秒`
+      );
+    }
     const validateBoundCandidate = (candidate) => {
       ensureStoryCandidateContract(candidate, { path: "selectedCandidate" });
       ensureThemeVariantsMatchProfile(
