@@ -98,3 +98,14 @@ test("Full Story 提示词写明时长由时间轴决定且会被服务端覆盖
   assert.match(text, /合计必须落在 45-90 秒内/u);
   assert.match(text, /服务端会按时间轴重新计算 targetDurationSeconds 并覆盖你写的值/u);
 });
+
+// 候选 storyOutline 放开为 5–7 拍后，5 拍候选进 Full Story 会被模型按 1:1 映射成
+// 5 个 beatSheet，撞上 beatSheet >= 6。实测同一个 5 拍候选六次尝试四次失败。
+// 根因是提示词从未提到 storyOutline，模型无从知道两者不是一一对应。
+test("提示词说明 storyOutline 是候选摘要，beatSheet 必须展开而不是照抄拍数", () => {
+  const text = prompt();
+  assert.match(text, /storyOutline 是 5–7 拍的\*\*候选级摘要\*\*，不是本阶段的节拍表/u);
+  assert.match(text, /\*\*不要与 storyOutline 一一对应\*\*/u);
+  assert.match(text, /把 5 拍摘要原样抄成 5 个 beatSheet 是错的/u);
+  assert.match(text, /候选摘要只有 5 拍时，必须把它展开到至少 6 拍/u);
+});
