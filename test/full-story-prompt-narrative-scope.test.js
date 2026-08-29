@@ -61,11 +61,11 @@ test("characterBible.careRecipient 被声明为可选键，且形状说明留在
 test("对白质量约束禁止复述画面与播报内心", () => {
   const text = prompt();
   assert.match(text, /对白不得复述同场 visibleAction 里观众已经能直接看见的信息/u);
-  assert.match(text, /画面已经说完的事，台词再说一遍就等于浪费这一句/u);
+  assert.match(text, /画面演完的事被念了第二遍/u);
   assert.match(text, /人物性格、情绪、潜台词、关系变化、误会、选择/u);
   assert.match(text, /宁可让一场戏没有对白，也不要用台词解说画面/u);
   assert.match(text, /不得用旁白式台词直接播报人物内心/u);
-  assert.match(text, /forbiddenDialoguePatterns 必须至少列出“复述画面已有信息”和“台词直接播报内心”两条/u);
+  assert.match(text, /forbiddenDialoguePatterns 必须至少列出“复述画面已有信息”“台词直接播报内心”“角色说出本片主题或感悟”三条/u);
 });
 
 test("放开可选构件不影响固定角色锁定与既有场次契约", () => {
@@ -108,4 +108,45 @@ test("提示词说明 storyOutline 是候选摘要，beatSheet 必须展开而�
   assert.match(text, /\*\*不要与 storyOutline 一一对应\*\*/u);
   assert.match(text, /把 5 拍摘要原样抄成 5 个 beatSheet 是错的/u);
   assert.match(text, /候选摘要只有 5 拍时，必须把它展开到至少 6 拍/u);
+});
+
+// 实测成片的三个对白缺陷，全部来自同一份 Full Story：
+//   1. S4 的 visibleAction 已写「从衣柜里拿出厚外套和手电筒」，台词又念一遍
+//      「穿上厚外套，带上手电筒」——而它自己声明的第一条禁忌就是「复述画面已有信息」
+//   2. S6 用「下次流星雨，我们还一起来」把主题念给观众
+//   3. 参考片 dialogueStyle.informationDensity 是「低」（对白只承担关系，末场无台词），
+//      成片却让配角用三句台词分别扛起冲突、转折与主题
+test("对白约束给出可执行自查，并禁止角色说出主题", () => {
+  const text = prompt();
+  assert.match(text, /把这句话遮住，只看同场 visibleAction，观众会不会漏掉任何信息/u);
+  assert.match(text, /不会漏，就说明这句在复述画面/u);
+  assert.match(text, /你呀你，真拿你没办法/u);
+  assert.match(text, /\*\*不得让任何角色把本片的主题、意义或感悟说出来。\*\*/u);
+  assert.match(text, /结尾尤其容易犯这个错/u);
+  assert.match(text, /角色说出本片主题或感悟/u);
+});
+
+test("原片对白风格提成具名投影并要求对齐信息密度", () => {
+  const text = fullStoryPrompt({
+    creatorProfile, creativeBrief: {}, visualGuardrails: {},
+    referenceAnalysis: {
+      dialogueStyle: {
+        tone: "亲切、童真", sentencePattern: "短句为主，口语化",
+        informationDensity: "低", subtext: "通过简单互动传递温情"
+      }
+    },
+    sourceScriptReconstruction: { scenes: [{ dialogueGist: "奶奶叮嘱慢点啊" }, { dialogueGist: "好啦" }] },
+    variant: leanVariant
+  });
+  assert.match(text, /原片对白风格（必须对齐，见下方硬约束）/u);
+  assert.match(text, /信息密度「低」/u);
+  assert.match(text, /原片各场对白大意（只看它们承担了什么，不要复用内容）/u);
+  assert.match(text, /奶奶叮嘱慢点啊/u);
+  assert.match(text, /对白的信息密度必须对齐上方「原片对白风格」/u);
+  assert.match(text, /原片某场没有对白时，本片对应功能的场次也应当敢于不写对白/u);
+});
+
+test("参考片没有 dialogueStyle 时不注入空投影", () => {
+  const text = prompt();
+  assert.doesNotMatch(text, /原片对白风格（必须对齐/u);
 });

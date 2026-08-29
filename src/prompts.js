@@ -578,8 +578,31 @@ Story Candidate 关键字段（本阶段所有字段都只写候选级摘要，�
 每个方案必须是不同的具体主题，不是只换职业名称。必须能看出保留了什么剧作价值、改写或继续使用了什么具体表达；不得为了迎合来源规则而强行加入原片元素。${JSON_ONLY}`;
 }
 
+// 原片对白风格此前只以整份 referenceAnalysis JSON 的形式出现在提示词里，
+// 没有任何一句指令让模型对齐它。实测后果：参考片 informationDensity 是「低」
+// （对白只承担关系与情绪，最后一场甚至没有台词），成片却让配角用三句台词
+// 分别扛起冲突、转折和主题。数据在，指令不在。这里把它提成具名投影。
+function sourceDialogueStyleText(referenceAnalysis, sourceScriptReconstruction) {
+  const style = referenceAnalysis?.dialogueStyle;
+  if (!style || typeof style !== "object") return "";
+  const parts = [
+    style.tone ? `语气「${style.tone}」` : "",
+    style.sentencePattern ? `句式「${style.sentencePattern}」` : "",
+    style.informationDensity ? `信息密度「${style.informationDensity}」` : "",
+    style.subtext ? `潜台词方式「${style.subtext}」` : ""
+  ].filter(Boolean);
+  if (!parts.length) return "";
+  const gists = (sourceScriptReconstruction?.scenes || [])
+    .map((scene) => String(scene?.dialogueGist || "").trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const sample = gists.length ? `\n原片各场对白大意（只看它们承担了什么，不要复用内容）：${gists.join("；")}` : "";
+  return `\n原片对白风格（必须对齐，见下方硬约束）：${parts.join("，")}${sample}\n`;
+}
+
 export function fullStoryPrompt(input) {
   const variant = input.variant || {};
+  const sourceDialogueText = sourceDialogueStyleText(input.referenceAnalysis, input.sourceScriptReconstruction);
   const forbiddenTerms = collectProtectedTermsFromBrief(input.creativeBrief, input.creatorProfile?.fixedCharacter || "");
   const forbiddenText = forbiddenTerms.length ? forbiddenTerms.join("、") : "无";
   const visualPolicyText = globalCharacterBoundaryText(input.visualGuardrails);
@@ -597,7 +620,7 @@ export function fullStoryPrompt(input) {
 创作限制：${input.creatorProfile?.constraints || "无"}
 选中主题变体：${JSON.stringify(variant)}
 creativeBrief：${JSON.stringify(input.creativeBrief)}
-referenceAnalysis 摘要：${JSON.stringify(input.referenceAnalysis || {})}
+referenceAnalysis 摘要：${JSON.stringify(input.referenceAnalysis || {})}${sourceDialogueText}
 sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstruction || {})}
 原片表面表达参考（不是正向内容禁词）：${forbiddenText}
 固定角色外观边界：${visualPolicyText}
@@ -614,10 +637,13 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - 允许不等于必须使用：不得因为来源上下文列出了这些表达，就机械把它们补进 visibleAction、dialogue、shotAndSound、keyProps 或其他正向字段。只能按当前 Variant 的剧情需要自然采用。
 - visualGuardrails.positivePromptBoundary 继续约束固定主角的签发身份与必需特征；sourceSimilarityRules 只保留来源证据与实际视觉参考泄漏职责，不能覆盖用户这次的放行决定。
 - 对白必须服从 visualGuardrails.dialogueRules 与用户限制；可以用动作备注补足信息，不要让角色突然改变说话方式。
-- 对白不得复述同场 visibleAction 里观众已经能直接看见的信息。苹果已经掉在地上时，不要写“你的苹果掉到地上了，我来帮你捡吧”——画面已经说完的事，台词再说一遍就等于浪费这一句。让对白承担画面单独做不到的事：人物性格、情绪、潜台词、关系变化、误会、选择、对已发生动作的反应，或观众还不知道的信息。
+- 对白不得复述同场 visibleAction 里观众已经能直接看见的信息。**写完每一句台词后，逐句做这个自查：把这句话遮住，只看同场 visibleAction，观众会不会漏掉任何信息？不会漏，就说明这句在复述画面，必须删掉或改写成只有台词能做到的事。** 实测反面例子：visibleAction 已经写了「她站起身，从衣柜里拿出厚外套和手电筒」，台词却写「穿上厚外套，带上手电筒」——画面演完的事被念了第二遍。正确做法是把这句换成关系表达，例如摸摸头说一句「你呀你，真拿你没办法」：同样让观众知道她答应了，但传递的是宠溺，而外套和手电筒交给画面。
+- 让对白承担画面单独做不到的事：人物性格、情绪、潜台词、关系变化、误会、选择、对已发生动作的反应，或观众还不知道的信息。
+- **不得让任何角色把本片的主题、意义或感悟说出来。** 「下次流星雨我们还一起来」「原来陪伴才是最重要的」「你长大了」这类台词是写给观众的结论，不是人物会说的话。主题必须由观众从画面和行为里自己得出；把它念出来会让整场戏塌掉。结尾尤其容易犯这个错——如果最后一场的台词在总结前面发生了什么，删掉它，让画面收尾。
+- **对白的信息密度必须对齐上方「原片对白风格」。** 如果原片信息密度是「低」，说明它的台词只承担关系与情绪，冲突、转折和结果都由画面完成——那么本片也必须如此，不得让配角用台词分别扛起冲突、转折和主题。对齐的是密度和承担范围，不是复用原片的具体台词。原片某场没有对白时，本片对应功能的场次也应当敢于不写对白。
 - 能靠表情、动作、停顿、眼神和道具互动表达的内容优先不写成台词；写进 visibleAction 或 shotAndSound。宁可让一场戏没有对白，也不要用台词解说画面。
 - 不得用旁白式台词直接播报人物内心（“我好难过”“我一定要完成这件事”）。内心状态通过角色做了什么、犹豫了多久、改变了什么决定来表达。
-- dialogueStyleGuide.forbiddenDialoguePatterns 必须至少列出“复述画面已有信息”和“台词直接播报内心”两条，并按本片实际风险补充其余条目。
+- dialogueStyleGuide.forbiddenDialoguePatterns 必须至少列出“复述画面已有信息”“台词直接播报内心”“角色说出本片主题或感悟”三条，并按本片实际风险补充其余条目。**写下这三条之后要真的遵守它们**——实测出现过在同一份输出里声明了禁忌、又在场次对白里逐条违反的情况。
 - 每场戏都要能拍：写清地点、人物、动作、对白/声画信息、镜头建议、情绪节点和剧作功能。
 - sceneScript 每场的 location、characters 和 visibleAction 都必须完整填写：location、visibleAction 必须是非空字符串，characters 必须是角色名称字符串数组（键必须存在）。
 - 无人出镜的场次，characters 的正确值就是空数组 []：空院子里的雨水、屋外烟囱远景、桌面道具特写、城市建立镜头、角色离开后留下的空镜、纯转场环境镜头都属于这一类。**不得为了填满字段硬塞一个没有出镜的角色**。空镜场次照样可以有 visibleAction（写画面里实际发生的可见变化）、shotAndSound 和 offscreenSoundSources（空院子配画外呼喊是合法组合）。
