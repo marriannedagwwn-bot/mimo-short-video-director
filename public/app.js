@@ -11,6 +11,7 @@ import {
   shotRelatedCharacterReferences
 } from "./shot-reference-images.js";
 import { computeDependencyHash, computePromptHash } from "./frame-dependency.js";
+import { fullStoryShapeWarnings } from "./full-story-shape-metrics.js";
 import { buildShotFrameMultiImagePrompt } from "./shot-frame-multi-image-prompt.js";
 import {
   createApiRequestError,
@@ -1402,8 +1403,17 @@ async function generateFullStory({ force = false } = {}) {
 }
 
 function renderFullStory(data) {
+  // 形状提示只统计结构化字段（地点+出镜角色、说话者分布），不做语义判断，
+  // 也不阻断任何操作——目的是让画面单调和台词集中在生成视频之前就被看见。
+  const shapeWarnings = fullStoryShapeWarnings(data);
+  const shapeStrip = shapeWarnings.length
+    ? `<div class="shape-warnings">${shapeWarnings
+        .map((w) => `<span class="shape-warning" title="${escape(w.detail)}">${escape(w.label)}</span>`)
+        .join("")}</div>`
+    : "";
   elements.fullStory.innerHTML = `${resultHeader("FULL STORY", data.title || "完整剧情", `${escape(data.targetDurationSeconds || 60)} 秒`)}
     <div class="summary-strip">${escape(data.oneLinePremise || data.shootingSynopsis)}</div>
+    ${shapeStrip}
     <div class="data-grid">
       ${cell("主角锁定", data.characterBible?.protagonist?.identity || data.characterBible?.protagonist?.name)}
       ${cell("被关爱对象", joinParts(data.characterBible?.careRecipient, ["identity", "implicitNeed"]))}
