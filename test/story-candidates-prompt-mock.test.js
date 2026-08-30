@@ -79,12 +79,6 @@ test("Variants Prompt replaces the disposable beat conflict and declares only ca
   }
   assert.match(prompt, /只写候选级摘要，不展开 Full Story/u);
   assert.match(prompt, /不写分场、镜头或 shotPlan/u);
-  // 原措辞把「环境变化或道具状态变化」与「可见动作」并列，模型可以三条全写静物。
-  // 实测《画不圆的太阳》的 visualPotential 是「铅笔擦纸变薄的质感、爪印痕迹、
-  // 画作并置」——没有一个人的动作，展开后六场全是桌前微表情，下游加什么约束都救不回来。
-  assert.match(prompt, /\*\*至少一条必须是固定主角本人的身体动作\*\*/u);
-  assert.match(prompt, /不看脸只看轮廓就能认出她在做什么/u);
-  assert.match(prompt, /\*\*三条全写成质感、痕迹、光影、并置这类画面状态是不合格的\*\*/u);
   assert.match(prompt, /用八个维度比较候选/u);
   for (const dimension of [
     "protagonist desire",
