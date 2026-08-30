@@ -116,6 +116,7 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
 - 它**不是**运行时 provider/model 锁。**模型不得输出、推断或修改它。** `profileId` 恒为 `seedance_2_0`；`provider`/`model` 只如实记录用户首次生成时选的运行时视频模型，**不参与 mismatch 判定**。
 - **已下线方言的兼容**：旧 Plan 带 `profileId: "minimax_h3"` 时，`getVideoPromptProfileMismatch` 返回 `unsupported_current_profile`——Plan 仍可加载查看，但生成视频前必须重新生成 Plan。该降级只认这一对精确的 `profileId + guideVersion` 白名单；**损坏或被篡改的 Profile 仍然硬失败**，`assertVideoPromptProfile` 本身始终严格。
 - **只有一种方言**：`videoPrompt` 是一条自包含、可直接交给视频模型的中文自然语言完整提示词，**同一条提示词同时提交给 Seedance 2.0 与 MiniMax H3**，运行时视频模型不再决定提示词写法，按「Foundation 风格与物理光线 → 地点环境 → 出镜主体与已锁定外观 → `visibleAction` 顺序动作链与可见结果 → 内部摄影/剪辑顺序 → 节奏、对白和声音 → 稳定约束与停止条件」组织。
+- **第 ⑤ 项必须逐拍写明该拍画面里出现的角色**，写到的角色必须完整入画（含面部），不得只给手部、局部肢体或无头躯干；多角色同场时至少有一拍让他们同时完整同框。依据是 2026-08-30 双人对话镜头（A02）的三臂实测：原写法只说「内部摄影/剪辑顺序」、没有主体槽位，配角被埋进长句后频繁退化成无头躯干加一只写实比例的大手，双人同框仅 4/9；补上逐拍主体后升到 9/9，追平 H3 原生六段方言。**这也是不恢复原生方言的依据**——原生方言的优势来自 `subject_definitions` 与逐拍 `[Shot N]` 强制声明主体，而那个槽位在中文模板里同样能加。该实验保留了原提示词里那段截断的外观散文仍然有效，说明散文轰炸不是病因。**这是 Prompt 生成约束，没有确定性校验兜底**——判断一条提示词有没有写全主体需要语义判断。
 - Plan 阶段两种 Profile 都不得生成尚未绑定的 `@图片/@视频/@音频` 或 `<Subject/Picture/Video/Audio N>`。
 
 **`productionStrategy.backgroundMusicMode`** — 主题变体卡上的背景音乐开关，取值只有 `"none"` / `"allowed"`，**默认 `none`**。与 `videoPromptProfile` 同级：由服务端根据请求 `backgroundMusicEnabled` 签发，**模型不得输出、推断或修改**，回显即拒绝。
