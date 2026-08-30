@@ -139,3 +139,37 @@ test("地点真的分散时放行", () => {
     scene("操场", ["小白子"]), scene("走廊", ["小白子"]), scene("回家路上", ["小白子"])
   ])), [], "四个地点，最多 2/6 同配置");
 });
+
+// 地点维度是双侧的：此前只提示「过于集中」，漏了「过碎」。
+// 逐镜生成时地点频繁切换会让环境连续性、道具数量与角色比例更容易漂移。
+// 按时长归一化而不是数个数：5 个地点在 60 秒里正常（43% 的历史故事有 5 个以上，
+// 中位数 4），塞进 44 秒就偏碎。
+test("地点过碎按时长归一化后提示", () => {
+  const s = {
+    ...story([
+      scene("院子", ["小白子"]), scene("屋顶", ["小白子"]), scene("菜地", ["小白子"]),
+      scene("河边", ["小白子"]), scene("村口", ["小白子"]), scene("小路", ["小白子"])
+    ]),
+    targetDurationSeconds: 44
+  };
+  const w = fullStoryShapeWarnings(s);
+  const frag = w.find((x) => x.code === "FRAGMENTED_LOCATIONS");
+  assert.ok(frag, "44 秒 6 个地点 = 1.36/10 秒，应提示");
+  assert.match(frag.label, /44 秒里换了 6 个地点/u);
+});
+
+test("同样的地点数放进更长的片子里不提示", () => {
+  const scenes = [
+    scene("院子", ["小白子"]), scene("屋顶", ["小白子"]), scene("菜地", ["小白子"]),
+    scene("河边", ["小白子"]), scene("村口", ["小白子"]), scene("小路", ["小白子"])
+  ];
+  const s = { ...story(scenes), targetDurationSeconds: 90 };
+  assert.equal(fullStoryShapeWarnings(s).some((x) => x.code === "FRAGMENTED_LOCATIONS"), false,
+    "90 秒 6 个地点 = 0.67/10 秒，正是中位数");
+});
+
+test("缺少时长时不判定过碎，不拿默认值猜", () => {
+  const s = story([scene("A", ["小白子"]), scene("B", ["小白子"]), scene("C", ["小白子"])]);
+  assert.equal(fullStoryShapeMetrics(s).durationSeconds, 0);
+  assert.equal(fullStoryShapeWarnings(s).some((x) => x.code === "FRAGMENTED_LOCATIONS"), false);
+});

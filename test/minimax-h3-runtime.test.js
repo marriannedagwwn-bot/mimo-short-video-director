@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -81,54 +82,158 @@ test("MiniMax H3 worker 严格拒绝非法时长、超长 Prompt 和超过 12 �
   }), /最终请求体不得超过|拒绝截断或丢弃/u);
 });
 
-async function injectedGeneratorFixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "minimax-h3-injected-"));
+// 静默回退是 CLAUDE.md 五、第 4 条禁止的「失败时返回默认值」：`.env` 里那个
+// MINIMAX_VIDEO_RESOLUTION=1080K 曾被悄悄改写成 2K，计费与产出都和用户以为的不一样。
+test("MiniMax H3 worker 对显式非法的 resolution / ratio 明确失败，不静默回退", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "minimax-h3-worker-normalize-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const imagePath = path.join(root, "image.png");
+  await fs.writeFile(imagePath, "image");
+
+  const writeConfig = async (name, extra) => {
+    const configPath = path.join(root, name);
+    await fs.writeFile(configPath, JSON.stringify({
+      videoEndpoint: "http://127.0.0.1:1/v2/video_generation",
+      providerPreset: "minimax_h3_video_generation",
+      videoModel: "MiniMax-H3",
+      apiKey: "test-key",
+      ...extra
+    }));
+    return configPath;
+  };
+  const baseRequest = {
+    taskId: "normalize",
+    capability: "all_reference_video_generation",
+    outputKey: "preview.normalize",
+    provider: "MiniMax",
+    model: "MiniMax-H3",
+    prompt: "valid prompt",
+    inputArtifacts: [{ path: imagePath, mediaType: "image", role: "reference_image" }],
+    parameters: { durationSeconds: 5, aspectRatio: "9:16" }
+  };
+
+  const badResolutionConfig = await writeConfig("bad-resolution.json", { resolution: "1080K" });
+  await assert.rejects(() => executeGenericHttpWorker({
+    config: badResolutionConfig,
+    request: baseRequest,
+    output: path.join(root, "bad-resolution.mp4")
+  }), /resolution 只支持 768P 或 2K.*1080K/su);
+
+  const badRatioConfig = await writeConfig("bad-ratio.json", {});
+  await assert.rejects(() => executeGenericHttpWorker({
+    config: badRatioConfig,
+    request: { ...baseRequest, parameters: { ...baseRequest.parameters, aspectRatio: "5:4" } },
+    output: path.join(root, "bad-ratio.mp4")
+  }), /ratio 只支持.*5:4/su);
+
+  // 未配置仍走缺省（2K / adaptive）——缺省不是覆盖，这条路径必须保留。
+  // 端点指向 127.0.0.1:1，所以只要走到网络就说明请求体已经构建成功。
+  const defaultConfig = await writeConfig("default-resolution.json", {});
+  await assert.rejects(() => executeGenericHttpWorker({
+    config: defaultConfig,
+    request: { ...baseRequest, parameters: { durationSeconds: 5 } },
+    output: path.join(root, "default.mp4")
+  }), (error) => !/只支持/u.test(error.message));
+});
+
+// MiniMax 有两个平级区域，路径与请求体一致、API Key 各自只在本区域有效。
+// 此前只特判了 api.minimaxi.com，国际端点既拿不到 V1 拦截也拿不到路径补全。
+test("MiniMax H3 端点规范化对国内与国际两个区域一视同仁", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "minimax-h3-region-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const imagePath = path.join(root, "image.png");
+  await fs.writeFile(imagePath, "image");
+  const request = {
+    taskId: "region",
+    capability: "all_reference_video_generation",
+    outputKey: "preview.region",
+    provider: "MiniMax",
+    model: "MiniMax-H3",
+    prompt: "valid prompt",
+    inputArtifacts: [{ path: imagePath, mediaType: "image", role: "reference_image" }],
+    parameters: { durationSeconds: 5, aspectRatio: "9:16" }
+  };
+  const writeConfig = async (name, videoEndpoint) => {
+    const configPath = path.join(root, name);
+    await fs.writeFile(configPath, JSON.stringify({ videoEndpoint, videoModel: "MiniMax-H3", apiKey: "test-key" }));
+    return configPath;
+  };
+
+  for (const [index, host] of ["api.minimaxi.com", "api.minimax.io"].entries()) {
+    // 旧版 V1 接口在两个区域都必须被拦截，而不是只在国内被拦截。
+    const v1Config = await writeConfig(`v1-${index}.json`, `https://${host}/v1/video_generation`);
+    await assert.rejects(() => executeGenericHttpWorker({
+      config: v1Config,
+      request,
+      output: path.join(root, `v1-${index}.mp4`)
+    }), /必须使用 V2 \/v2\/video_generation 接口/u);
+
+    // 只给 origin 时两个区域都应补全出 /v2/video_generation；补全成功的证明是
+    // 请求走到了网络层（该主机在测试环境不可达），而不是停在端点缺失。
+    const originConfig = await writeConfig(`origin-${index}.json`, `https://${host}`);
+    await assert.rejects(() => executeGenericHttpWorker({
+      config: originConfig,
+      request,
+      output: path.join(root, `origin-${index}.mp4`)
+    }), (error) => !/缺少 .* 的 HTTP endpoint/u.test(error.message));
+  }
+});
+
+// 供应商已经说清楚了原因，只报一个 "failed" 等于把它丢掉——CLAUDE.md 五、第 4 条。
+// 实测 MiniMax 返回 task.error = {code:"2013", message:"...image size 64x64,
+// expected each side in [256, 5760]"}，不带出来完全排查不动。
+test("轮询到失败状态时逐字带出供应商给出的失败原因", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "minimax-h3-failure-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const imagePath = path.join(root, "image.png");
+  await fs.writeFile(imagePath, "image");
+
+  const server = http.createServer(async (req, res) => {
+    for await (const _chunk of req) { /* drain */ }
+    res.writeHead(200, { "content-type": "application/json" });
+    if (req.method === "POST") return res.end(JSON.stringify({ task_id: "fail-task" }));
+    res.end(JSON.stringify({
+      task: {
+        id: "fail-task",
+        status: "failed",
+        error: {
+          code: "2013",
+          message: "content[1].image_url: invalid param: image size 64x64, expected each side in [256, 5760]"
+        }
+      }
+    }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const { port } = server.address();
+
   const configPath = path.join(root, "provider.json");
   await fs.writeFile(configPath, JSON.stringify({
-    videoEndpoint: "https://provider.invalid/v2/video_generation",
+    videoEndpoint: `http://127.0.0.1:${port}/v2/video_generation`,
     providerPreset: "minimax_h3_video_generation",
     videoModel: "MiniMax-H3",
-    apiKey: "test-key"
+    apiKey: "test-key",
+    pollIntervalMs: 5
   }));
-  return {
-    root,
-    options: {
-      configPath,
-      outputRoot: path.join(root, "generated"),
-      videoProvider: "MiniMax",
-      videoModel: "MiniMax-H3",
-      videoPromptProfile: H3_PROFILE,
-      generationMode: "all_reference",
-      referenceAssets: [{
-        mediaType: "image",
-        name: "xiaobaizi.png",
-        source: "character_reference",
-        sourceCharacterName: "小白子",
-        dataUrl: `data:image/png;base64,${Buffer.from("signed character bytes").toString("base64")}`
-      }],
-      videoOutputProbe: async () => {},
-      auditMiniMaxH3ExpandedPromptSemantics: async () => ({
-        schemaVersion: "test/1.0",
-        verdict: "pass",
-        issues: []
-      }),
-      shot: {
-        shotId: "A01",
-        sourceSceneId: "S1",
-        durationSeconds: 5,
-        videoPrompt: BASE_PROMPT,
-        dialogueOrSubtitle: ""
-      }
-    }
-  };
-}
 
-function contextIrOnlyRunner(prompt) {
-  return async ({ request, output, receipt }) => {
-    const task = JSON.parse(await fs.readFile(request, "utf8"));
-    assert.equal(task.capability, "h3_context_ir");
-    await fs.writeFile(output, prompt);
-    await fs.writeFile(receipt, JSON.stringify({ providerTaskId: "context-ir-task" }));
-  };
-}
+  await assert.rejects(() => executeGenericHttpWorker({
+    config: configPath,
+    request: {
+      taskId: "failure",
+      capability: "all_reference_video_generation",
+      outputKey: "preview.failure",
+      provider: "MiniMax",
+      model: "MiniMax-H3",
+      prompt: "valid prompt",
+      inputArtifacts: [{ path: imagePath, mediaType: "image", role: "reference_image" }],
+      parameters: { durationSeconds: 5, aspectRatio: "9:16" }
+    },
+    output: path.join(root, "failed.mp4")
+  }), (error) => {
+    assert.match(error.message, /供应商任务失败：failed/u);
+    // 原文逐字保留，不改写、不翻译。
+    assert.match(error.message, /expected each side in \[256, 5760\]/u);
+    assert.match(error.message, /2013/u);
+    return true;
+  });
+});

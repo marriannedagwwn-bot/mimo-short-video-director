@@ -245,3 +245,14 @@ test("参考片没有质感素材时不注入空投影", () => {
   });
   assert.doesNotMatch(empty, /原片的生活质感来源/u);
 });
+
+// 实测 74 份 Full Story 中有 2 份在 transformationProof 里虚构原片事实，
+// 两次是同一个幻觉：上游只写「穿着企鹅装的短发女孩」，它补成「企鹅快递员」
+// 并顺带编出「送货任务」——而同一份 creativeBrief 明写着「送达任务【原片没有】」。
+test("transformationProof 里描述原片的部分必须能回上游找到依据", () => {
+  const text = prompt();
+  assert.match(text, /关于原片的那一半必须能在 sourceScriptReconstruction 或 referenceAnalysis 里逐字找到依据/u);
+  assert.match(text, /把其中描述原片的词单独拎出来，回上游搜一遍/u);
+  assert.match(text, /快递员和送货任务是凭空补的职业与任务/u);
+  assert.match(text, /会污染改编距离判断与原创性检查/u);
+});

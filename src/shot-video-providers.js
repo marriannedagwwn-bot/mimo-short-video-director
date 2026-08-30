@@ -14,6 +14,9 @@ export const MINIMAX_VIDEO_MODELS = Object.freeze([
 ]);
 
 export const KLING_CN_V3_ENDPOINT = "https://api-beijing.klingai.com/image-to-video/kling-3.0";
+// 只是 MINIMAX_VIDEO_ENDPOINT 缺省时的默认值，取国内区域。MiniMax 的国内
+// （api.minimaxi.com）与国际（api.minimax.io）两个区域路径与请求体完全一致，
+// 但 API Key 各自只在本区域有效——用哪个区域由用户配置显式决定，不做推断。
 export const MINIMAX_H3_ENDPOINT = "https://api.minimaxi.com/v2/video_generation";
 
 const SHOT_VIDEO_PROVIDERS = Object.freeze(["Kling", "Seedance", "MiniMax"]);

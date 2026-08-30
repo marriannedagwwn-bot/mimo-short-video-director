@@ -12,6 +12,9 @@
 //
 // 这些指标**不是校验器**：六场同一个地点不违法，只是通常更弱。
 // 全部只用于展示，不抛错、不阻断、不改变任何 Artifact。
+//
+// 地点维度是**双侧**的：过于集中（同机位同布景）和过碎（逐镜换景，
+// 对逐镜 AI 视频意味着环境连续性、道具数量与角色比例都更容易漂）都会提示。
 
 // 阈值按 75 份历史 Full Story 的实际分布标定，目标是让提示稀有到值得看。
 //
@@ -25,7 +28,13 @@
 export const SHAPE_METRIC_THRESHOLDS = Object.freeze({
   repeatedConfigShare: 0.8,
   topSpeakerShare: 0.9,
-  minDialogueLines: 4
+  minDialogueLines: 4,
+  // 地点密度的另一侧：过碎和过于集中都是问题，此前只提示后者。
+  // 按时长归一化而不是数地点个数——5 个地点在 60 秒里正常（43% 的历史故事
+  // 有 5 个以上地点，中位数就是 4），塞进 44 秒就偏碎。
+  // 每 10 秒地点数：中位 0.67、p90 1.00、最大 1.17。取 1.1 命中 2/76（3%）；
+  // 取 1.0 会命中 21%，那是常态不是异常。
+  locationsPerTenSeconds: 1.1
 });
 
 function sceneList(fullStory) {
@@ -65,6 +74,8 @@ export function fullStoryShapeMetrics(fullStory) {
   const scenes = sceneList(fullStory);
   if (!scenes.length) return null;
 
+  const rawDuration = Number(fullStory?.targetDurationSeconds);
+  const durationSeconds = Number.isFinite(rawDuration) && rawDuration > 0 ? rawDuration : 0;
   const protagonistName = String(fullStory?.characterBible?.protagonist?.name || "").trim();
   const configs = countTop(scenes.map((scene) => configKey(scene, protagonistName)));
   const locations = countTop(scenes.map((scene) => String(scene.location || "").trim()));
@@ -85,7 +96,9 @@ export function fullStoryShapeMetrics(fullStory) {
     topSpeaker: speakers.top || "",
     topSpeakerLines: speakers.max,
     topSpeakerShare: lines.length ? speakers.max / lines.length : 0,
-    silentScenes
+    silentScenes,
+    durationSeconds,
+    locationsPerTenSeconds: durationSeconds > 0 ? (locations.distinct / durationSeconds) * 10 : 0
   };
 }
 
@@ -101,6 +114,13 @@ export function fullStoryShapeWarnings(fullStory, thresholds = SHAPE_METRIC_THRE
       code: "REPEATED_SCENE_CONFIG",
       label: `${m.repeatedConfigScenes}/${m.sceneCount} 场画面配置相同`,
       detail: `有 ${m.repeatedConfigScenes} 场戏发生在同一地点且主角在场情况相同，全片只有 ${m.distinctConfigs} 种画面配置（${m.distinctLocations} 个地点）。同机位同布景，剪辑出来会偏单调。`
+    });
+  }
+  if (m.durationSeconds > 0 && m.locationsPerTenSeconds >= thresholds.locationsPerTenSeconds) {
+    out.push({
+      code: "FRAGMENTED_LOCATIONS",
+      label: `${m.durationSeconds} 秒里换了 ${m.distinctLocations} 个地点`,
+      detail: `平均每 10 秒换 ${m.locationsPerTenSeconds.toFixed(1)} 个地点。逐镜生成时，环境连续性、道具数量与角色比例都更容易在镜头之间漂移，剪出来容易变成一组漂亮片段而不是连续故事。`
     });
   }
   if (m.dialogueLines >= thresholds.minDialogueLines && m.topSpeakerShare >= thresholds.topSpeakerShare) {

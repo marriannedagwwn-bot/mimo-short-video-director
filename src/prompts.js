@@ -678,6 +678,7 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - selectedVariantId 必须等于选中主题变体 id：${variant.id || "未指定"}。
 - 主角必须锁定为上方固定角色，不能改名、不能换身份、不能降级为旁观者或帮助者。
 - 固定角色的姓名、身份、性格、职业、剧情功能和外观必须以已签发的全局角色边界为唯一事实来源；不得再次解析 fixedCharacter 或重新推断角色特征。
+- transformationProof 描述「原片是什么、被改成了什么」时，**关于原片的那一半必须能在 sourceScriptReconstruction 或 referenceAnalysis 里逐字找到依据**。自查方法：写完每条 changed* 后，把其中描述原片的词单独拎出来，回上游搜一遍；搜不到就说明是你补出来的，必须删掉或换成真正写着的内容。实测反面例子：上游只写了「穿着企鹅装的短发女孩」，transformationProof 却写成「将原片企鹅快递员改为猫耳少女」「将送货任务改为找回作业纸页」——企鹅装是真的，**快递员和送货任务是凭空补的职业与任务**，而同一份 creativeBrief 明写着「送达任务【原片没有】」。这类虚构会污染改编距离判断与原创性检查。
 - 承接范围只有一个来源：当前选中 Variant 实际写出的内容。Variant 已选用的人物、任务细节、道具、媒介、结尾方式和对白方向必须忠实承接；本阶段只负责扩写，不得为了“与原片不同”再次替换 Variant 已确定的内容。
 - 送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾这七项，是 creativeBrief 用来记录“原片有没有某类通用构件”的分类，不是本片的必备构件，也不是承接清单。当前 Variant 没有使用其中某一项时，本阶段不得把它补回来：Variant 没写 careRecipient 就不得新增一个被照料对象，没写 helper 就不得新增一个提供帮助的外部角色，没写 emotionalMedium 就不得为故事发明一件信物，没写 endingRitual 就不得给它加一场仪式化收尾。
 - 对应地，characterBible.careRecipient 是可选键：只有当前 Variant 确实存在一个被照料对象时才输出它，并且五个子字段必须齐全；不存在时整个键省略，不要输出空对象或占位文本。需要输出时它的形状是 "careRecipient":{"nameOrLabel":"", "identity":"", "explicitNeed":"", "implicitNeed":"", "relationshipToProtagonist":""}，放在 characterBible 内、protagonist 与 helpers 之间。characterBible.helpers 没有帮助者时输出空数组 []，不得为了填满结构编造一个不参与因果的帮助者。
