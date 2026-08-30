@@ -235,7 +235,7 @@ export async function generateShotVideo(options = {}) {
         videoPromptProfile: options.videoPromptProfile,
       });
       const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: options.workerRunner });
-      await assertUsableVideoOutput(outputPath, {
+      const measuredDurationSeconds = await assertUsableVideoOutput(outputPath, {
         outputProbe: options.videoOutputProbe,
         skipFfprobeForInjectedWorker: Boolean(options.workerRunner) && !options.videoOutputProbe
       });
@@ -243,6 +243,14 @@ export async function generateShotVideo(options = {}) {
       await assertCurrentOrDiscard();
       videos.push({
         candidateIndex: index,
+        // 供应商实际产出的时长，与 Plan 要求的时长并列记录。
+        // 两者不等**不是失败**：实测 MiniMax H3 请求 5 秒稳定产出 5.167 秒
+        // （9/9 完全一致），请求 4 秒得 4.458 秒——这是供应商的确定性行为，
+        // 硬失败会让该供应商 100% 不可用，重生成也拿不到不同结果。
+        // 这里只负责让偏差不再是静默的：数值如实上报，是否、如何对齐成片总长
+        // 属于契约决定（容差多少、失败还是告警、以谁为准），不在这里替它选。
+        plannedDurationSeconds: Number(shot.durationSeconds) || 0,
+        measuredDurationSeconds,
         provider: videoProvider,
         model: videoModel,
         taskId: request.taskId,
@@ -487,11 +495,14 @@ async function assertUsableVideoOutput(outputPath, { outputProbe, skipFfprobeFor
   } finally {
     await file.close();
   }
+  // 返回实测时长供调用方如实记录。注入的 outputProbe 若给出有限正数就采用它，
+  // 否则视为「这条链路测不出时长」返回 0——0 表示未测得，不表示时长为零。
   if (typeof outputProbe === "function") {
-    await outputProbe(outputPath);
-  } else if (!skipFfprobeForInjectedWorker) {
-    await probePlayableVideoOutput(outputPath);
+    const probed = Number(await outputProbe(outputPath));
+    return Number.isFinite(probed) && probed > 0 ? probed : 0;
   }
+  if (!skipFfprobeForInjectedWorker) return probePlayableVideoOutput(outputPath);
+  return 0;
 }
 
 async function probePlayableVideoOutput(outputPath) {
@@ -515,6 +526,7 @@ async function probePlayableVideoOutput(outputPath) {
       .find((value) => Number.isFinite(value) && value > 0)
       || Number(metadata.format?.duration);
     if (!Number.isFinite(duration) || duration <= 0) throw new Error("视频时长无效");
+    return duration;
   } catch (error) {
     throw new ShotVideoProviderError(`视频生成服务返回的文件无法通过 ffprobe 播放性校验：${error.message || "无有效视频流"}。`);
   }

@@ -97,7 +97,7 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：�
 视频生成存在两个显式模式：
 
 - `first_last_frame`：首尾帧是精确端点，Kling、Seedance、MiniMax H3 可用；无端点的 `direct_shot` 不可使用，必须明确失败。
-- `all_reference`：图片/视频/音频仅作为多模态参考，必须至少包含合法图片或视频，不能只输入音频；当前只允许 Seedance 2.0 与 MiniMax H3（两者消费同一条 Seedance 方言提示词），不得混用 `first_frame` / `last_frame`，不得把可灵 image-to-video 静默当作 Omni API。
+- `all_reference`：图片/视频/音频仅作为多模态参考，必须至少包含合法图片或视频，不能只输入音频；当前只允许 Seedance 2.0 与 MiniMax H3（两者消费同一条 Seedance 方言提示词），不得混用 `first_frame` / `last_frame`，不得把可灵 image-to-video 静默当作 Omni API。H3 Context-IR 已随提示词方言一并下线且没有公开 API（官方仓库说明 H3-Context-IR 未开源），此前 worker 中的 `POST /v2/h3_context_ir` 打的是不存在的端点，相关能力、端点派生与请求体已全部删除，不得重新接入。MiniMax H3 的 `resolution` 与 `ratio` 只在未配置时走缺省（`2K` / `adaptive`）；显式配置了官方取值以外的值必须明确失败，不得静默回退成默认值。供应商轮询失败必须带回它自己给出的原因，并在人类可读摘要之后附结构化 `{"error":{...}}`，否则 `describeProviderError` 查不到官方码表、用户拿不到可执行提示；内容审核 `1027`（输出涉敏）是非确定性的，但**不得擅自加入自动重试**——那是在第三方安全闸门上循环重试，代码无法区分误判与真违规，是否重试由用户显式决定。成片实际时长与 Plan 要求时长并列记录在每条候选的 `plannedDurationSeconds` / `measuredDurationSeconds`（`0` 表示未测得），偏差既不静默也不硬失败：实测 H3 请求 5 秒稳定产出 5.167 秒，硬失败会让该供应商 100% 不可用；是否对齐成片总长仍是未决的契约问题。
 
 模式由请求 `generationMode` 决定，不得根据端点字段缺失、provider、模型名或素材存在性自动推断或降级。
 

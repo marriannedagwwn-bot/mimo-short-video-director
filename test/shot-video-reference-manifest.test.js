@@ -188,3 +188,52 @@ test("first_last_frame 路径不生成清单，提示词逐字等于 Plan 原值
   assert.equal(result.effectiveVideoPrompt, "小白子从画左走到画右。");
   assert.equal(providerRequest.prompt, "小白子从画左走到画右。");
 });
+
+// 实测 MiniMax H3 请求 5 秒稳定产出 5.167 秒（9/9 完全一致），请求 4 秒得 4.458 秒。
+// 这是供应商的确定性行为，硬失败会让该供应商 100% 不可用；但它此前完全静默——
+// probePlayableVideoOutput 只校验「有视频流且时长 > 0」，从不比对 Plan 时长。
+// 现在两个数值并列如实上报，是否对齐成片总长仍是未决的契约问题，不在这里替它选。
+test("成片实际时长与 Plan 要求时长并列上报，偏差不再静默也不硬失败", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-duration-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+
+  const result = await generateShotVideo({
+    outputRoot: path.join(root, "generated"),
+    publicBasePath: "/generated-videos",
+    videoProvider: "MiniMax",
+    videoModel: "MiniMax-H3",
+    generationMode: "all_reference",
+    animationPromptSchemaVersion: "3.0",
+    configPath: await (async () => {
+      const configPath = path.join(root, "provider.json");
+      await fs.writeFile(configPath, JSON.stringify({
+        videoEndpoint: "https://provider.invalid/v2/video_generation",
+        providerPreset: "minimax_h3_video_generation",
+        videoModel: "MiniMax-H3",
+        apiKey: "test-key"
+      }));
+      return configPath;
+    })(),
+    referenceAssets: [{
+      mediaType: "image",
+      name: "ref.png",
+      dataUrl: `data:image/png;base64,${Buffer.from("ref").toString("base64")}`,
+      source: "character_reference",
+      sourceCharacterName: "小白子"
+    }],
+    workerRunner: async ({ output, receipt }) => {
+      await fs.writeFile(output, Buffer.alloc(600, 3));
+      await fs.writeFile(receipt, JSON.stringify({ ok: true }));
+    },
+    // 供应商实际给了 5.166667 秒，而 Plan 要的是 5 秒。
+    videoOutputProbe: async () => 5.166667,
+    shot: { shotId: "A01", durationSeconds: 5, videoPrompt: `固定镜头。${NO_MUSIC_SENTENCE}` }
+  });
+
+  const video = result.videos[0];
+  assert.equal(video.plannedDurationSeconds, 5);
+  assert.equal(video.measuredDurationSeconds, 5.166667);
+  // 偏差可见，但生成本身没有因此失败——硬失败会让 H3 100% 不可用。
+  assert.notEqual(video.measuredDurationSeconds, video.plannedDurationSeconds);
+  assert.equal(result.videos.length, 1);
+});

@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { executeGenericHttpWorker } from "../workers/generic-http-worker.mjs";
+import { describeProviderError, providerErrorDisplayText } from "../src/provider-error-codes.js";
 
 // MiniMax H3 仍是镜头视频供应商，只是不再有专属提示词方言。
 // 这里覆盖的是供应商运行时限额：时长、Prompt 长度、混合参考数量。
@@ -234,6 +235,59 @@ test("轮询到失败状态时逐字带出供应商给出的失败原因", async
     // 原文逐字保留，不改写、不翻译。
     assert.match(error.message, /expected each side in \[256, 5760\]/u);
     assert.match(error.message, /2013/u);
+    // 结构化错误对象必须一并带上，否则官方码表查不到——worker 是独立进程，
+    // 错误只能以 stderr 文本回来，码表解析依赖消息里的这段 JSON。
+    const described = describeProviderError({ provider: "MiniMax", payload: error.message });
+    assert.equal(described?.code, "2013");
+    assert.equal(described?.matchedBy, "code");
+    return true;
+  });
+});
+
+// 内容审核 1027 是非确定性的输出侧拦截，用户必须拿到「换一个表述重新生成」这句
+// 可执行提示，而不是只看到一串原文。此前轮询失败一律查不到码表。
+test("输出内容审核拦截能查到官方码表并给出可执行提示", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "minimax-h3-1027-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const imagePath = path.join(root, "image.png");
+  await fs.writeFile(imagePath, "image");
+
+  const server = http.createServer(async (req, res) => {
+    for await (const _chunk of req) { /* drain */ }
+    res.writeHead(200, { "content-type": "application/json" });
+    if (req.method === "POST") return res.end(JSON.stringify({ task_id: "sensitive-task" }));
+    res.end(JSON.stringify({
+      task: { id: "sensitive-task", status: "failed", error: { code: "1027", message: "output new_sensitive" } }
+    }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const { port } = server.address();
+
+  const configPath = path.join(root, "provider.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    videoEndpoint: `http://127.0.0.1:${port}/v2/video_generation`,
+    providerPreset: "minimax_h3_video_generation",
+    videoModel: "MiniMax-H3",
+    apiKey: "test-key",
+    pollIntervalMs: 5
+  }));
+
+  await assert.rejects(() => executeGenericHttpWorker({
+    config: configPath,
+    request: {
+      taskId: "sensitive", capability: "all_reference_video_generation", outputKey: "preview.sensitive",
+      provider: "MiniMax", model: "MiniMax-H3", prompt: "valid prompt",
+      inputArtifacts: [{ path: imagePath, mediaType: "image", role: "reference_image" }],
+      parameters: { durationSeconds: 5, aspectRatio: "9:16" }
+    },
+    output: path.join(root, "sensitive.mp4")
+  }), (error) => {
+    assert.match(error.message, /output new_sensitive/u);   // 原文保留
+    const described = describeProviderError({ provider: "MiniMax", payload: error.message });
+    assert.equal(described?.code, "1027");
+    assert.match(providerErrorDisplayText(described), /输出内容涉敏被拦截/u);
+    assert.match(providerErrorDisplayText(described), /换一个表述重新生成/u);
     return true;
   });
 });

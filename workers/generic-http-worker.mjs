@@ -70,11 +70,14 @@ async function executeRequest(request, options, config) {
     root: options.root || "",
     output: options.output
   };
+  // 惰性守卫：`referenceManifest` 的生产者随 H3 提示词方言一起下线（e1d2d63），
+  // 当前没有任何调用方会带上它，所以这段恒不执行。保留是因为恢复原生方言时
+  // `<Subject N>`/`<Picture N>` 必须由 content[] 下标唯一推导，仍要靠它复核字节。
   if (request.referenceManifest) {
     assertReferenceManifestMatchesArtifacts(request.referenceManifest, context.inputArtifacts);
   }
   const { body, negativePromptDelivery } = buildRequestBody(context, config);
-  if (isMiniMaxH3Capability(context.request.capability, config)) {
+  if (isMiniMaxH3VideoGeneration(context.request.capability, config)) {
     assertMiniMaxH3RequestBodySize(body, config);
   }
   const startedAt = Date.now();
@@ -112,12 +115,6 @@ async function executeRequest(request, options, config) {
 function endpointFor(capability, config) {
   const endpoints = config.endpoints || {};
   let endpoint = endpoints[capability] || "";
-  if (capability === "h3_context_ir" && endpoint) return String(endpoint).trim();
-  if (!endpoint && capability === "h3_context_ir") {
-    const explicitContextIrEndpoint = config.h3ContextIrEndpoint || config.contextIrEndpoint;
-    if (explicitContextIrEndpoint) return String(explicitContextIrEndpoint).trim();
-    endpoint = deriveMiniMaxH3ContextIrEndpoint(config.videoEndpoint || config.endpoint);
-  }
   if (!endpoint && capability === "image_generation") endpoint = config.imageEndpoint || config.endpoint;
   if (!endpoint && isVideoGenerationCapability(capability)) endpoint = config.videoEndpoint || config.endpoint;
   if (!endpoint && capability === "video_quality_review") endpoint = config.reviewEndpoint || config.endpoint;
@@ -130,22 +127,13 @@ function modelFor(capability, config) {
   const models = config.models || {};
   if (models[capability]) return models[capability];
   if (capability === "image_generation") return config.imageModel || config.model || "";
-  if (isVideoGenerationCapability(capability) || capability === "h3_context_ir") return config.videoModel || config.model || "";
+  if (isVideoGenerationCapability(capability)) return config.videoModel || config.model || "";
   if (capability === "video_quality_review") return config.reviewModel || config.model || "";
   if (capability === "video_assembly") return config.assemblyModel || config.model || "";
   return config.model || "";
 }
 
 function buildRequestBody(context, config) {
-  if (isMiniMaxH3ContextIr(context.request.capability, config)) {
-    return {
-      body: buildMiniMaxH3ContextIrBody(context, config),
-      negativePromptDelivery: unsupportedNegativePromptDelivery(
-        context.request.compiledNegativePrompt,
-        activeNegativePromptEntries(context.request.negativePromptEntries)
-      )
-    };
-  }
   const template = config.bodyTemplates?.[context.request.capability] || config.bodyTemplate;
   const negativePromptDelivery = resolveNegativePromptDelivery(context, config, template);
   const providerContext = contextForNegativePromptDelivery(context, negativePromptDelivery);
@@ -254,13 +242,6 @@ function resolveNegativePromptDelivery(context, config, template) {
     const providerFields = uniquePaths([...templateFields, ...configuredFields]);
     if (!providerFields.length) return unsupportedNegativePromptDelivery(compiled, entries);
     return nativeNegativePromptDelivery(compiled, providerFields.join(", "));
-  }
-
-  if (
-    isMiniMaxH3VideoGeneration(capability, config)
-    && context.request.promptDialect === "minimax_h3_ref2va_six_section"
-  ) {
-    return unsupportedNegativePromptDelivery(compiled, entries);
   }
 
   if (isModelArkContentGeneration(capability, config) || isMiniMaxH3VideoGeneration(capability, config)) {
@@ -433,7 +414,7 @@ async function resolveProviderResult(first, request, config) {
     providerTaskId = providerTaskId || firstValue(current, taskIdPathsFor(request, config));
     const status = String(firstValue(current, statusPathsFor(request, config)) || "").toLowerCase();
     if (failureStatusesFor(request, config).map(String).map((item) => item.toLowerCase()).includes(status)) {
-      throw new Error(`供应商任务失败：${status}`);
+      throw new Error(`供应商任务失败：${status}${describeProviderTaskFailure(current, request, config)}`);
     }
     artifact = extractArtifact(current, request, config);
     if (artifact) return { ...artifact, providerTaskId };
@@ -470,7 +451,7 @@ function extractArtifact(data, request, config) {
 
 function taskIdPathsFor(request, config) {
   if (config.taskIdPaths) return config.taskIdPaths;
-  if (isMiniMaxH3Capability(request.capability, config)) {
+  if (isMiniMaxH3VideoGeneration(request.capability, config)) {
     return uniquePaths(["task_id", ...defaultTaskIdPaths()]);
   }
   if (isKlingV3ImageToVideo(request.capability, config)) {
@@ -484,7 +465,7 @@ function taskIdPathsFor(request, config) {
 
 function statusPathsFor(request, config) {
   if (config.statusPaths) return config.statusPaths;
-  if (isMiniMaxH3Capability(request.capability, config)) {
+  if (isMiniMaxH3VideoGeneration(request.capability, config)) {
     return uniquePaths(["task.status", ...defaultStatusPaths()]);
   }
   if (isKlingV3ImageToVideo(request.capability, config)) {
@@ -521,9 +502,6 @@ function resultUrlPathsFor(request, config) {
 
 function resultTextPathsFor(request, config) {
   if (config.resultTextPaths) return config.resultTextPaths;
-  if (isMiniMaxH3ContextIr(request.capability, config)) {
-    return uniquePaths(["task.content.prompt", ...defaultResultTextPaths()]);
-  }
   return defaultResultTextPaths();
 }
 
@@ -543,8 +521,7 @@ function failureStatusesFor(request, config) {
 
 function textArtifactAllowed(request, config) {
   if (config.allowTextArtifact === true) return true;
-  return request.capability === "video_quality_review"
-    || isMiniMaxH3ContextIr(request.capability, config);
+  return request.capability === "video_quality_review";
 }
 
 function pollTargetFor(data, providerTaskId, config) {
@@ -552,6 +529,9 @@ function pollTargetFor(data, providerTaskId, config) {
   if (typeof pollUrl === "string" && pollUrl.trim()) return pollUrl;
   const template = config.pollEndpointTemplate || "";
   if (template && providerTaskId) return template.replace(/\{taskId\}/gu, encodeURIComponent(providerTaskId));
+  // 这里传的能力字面量只用来过 isVideoGenerationCapability 的类型闸门；真正的判定
+  // 来自 config 的 preset/model/endpoint，所以 all_reference 也命中同一条轮询地址。
+  // pollTargetFor 拿不到 request，改成透传能力是另一件事，别在这里顺手做。
   if (isMiniMaxH3VideoGeneration("first_last_frame_video_generation", config) && providerTaskId && config.resolvedEndpoint) {
     const origin = new URL(String(config.resolvedEndpoint)).origin;
     return `${origin}/v2/query/video_generation/${encodeURIComponent(providerTaskId)}`;
@@ -579,6 +559,16 @@ function isModelArkContentGeneration(capability, config) {
   return ["modelark", "modelark_content_generation", "dreamina", "jimeng"].includes(presetFor(capability, config));
 }
 
+// MiniMax 有两个平级的 API 区域，端点路径与请求体完全一致，只是签发的 API Key
+// 各自只在本区域有效：api.minimaxi.com（国内，platform.minimaxi.com 签发）与
+// api.minimax.io（国际，platform.minimax.io 签发）。此前只特判了国内那一个，
+// 于是国际端点既拿不到 V1 拦截也拿不到路径补全。
+const MINIMAX_API_HOSTNAMES = Object.freeze(["api.minimaxi.com", "api.minimax.io"]);
+
+function isMiniMaxApiHostname(value) {
+  return MINIMAX_API_HOSTNAMES.includes(hostnameFor(value));
+}
+
 function isMiniMaxH3VideoGeneration(capability, config) {
   if (!isVideoGenerationCapability(capability)) return false;
   const preset = presetFor(capability, config);
@@ -586,21 +576,7 @@ function isMiniMaxH3VideoGeneration(capability, config) {
   const endpoint = String(config.resolvedEndpoint || config.videoEndpoint || config.endpoint || "");
   return preset === "minimax_h3_video_generation"
     || model === "MiniMax-H3"
-    || (hostnameFor(endpoint) === "api.minimaxi.com" && /\/v2\/video_generation\/?$/u.test(endpoint));
-}
-
-function isMiniMaxH3ContextIr(capability, config) {
-  if (capability !== "h3_context_ir") return false;
-  const preset = presetFor(capability, config);
-  const model = String(config.videoModel || config.model || "").trim();
-  const endpoint = String(config.resolvedEndpoint || config.h3ContextIrEndpoint || config.contextIrEndpoint || "");
-  return preset === "minimax_h3_video_generation"
-    || model === "MiniMax-H3"
-    || /\/v2\/h3_context_ir\/?$/u.test(endpoint);
-}
-
-function isMiniMaxH3Capability(capability, config) {
-  return isMiniMaxH3VideoGeneration(capability, config) || isMiniMaxH3ContextIr(capability, config);
+    || (isMiniMaxApiHostname(endpoint) && /\/v2\/video_generation\/?$/u.test(endpoint));
 }
 
 function isKlingImageToVideo(capability, config) {
@@ -626,12 +602,11 @@ function isKlingV3ImageToVideo(capability, config) {
 
 function normalizeEndpointForPreset(capability, endpoint, config) {
   if (!endpoint) return endpoint;
-  if (capability === "h3_context_ir") return deriveMiniMaxH3ContextIrEndpoint(endpoint);
   if (isMiniMaxH3VideoGeneration(capability, { ...config, videoEndpoint: endpoint, endpoint })) {
     const clean = String(endpoint).replace(/\/$/u, "");
     try {
       const parsed = new URL(clean);
-      if (parsed.hostname === "api.minimaxi.com") {
+      if (MINIMAX_API_HOSTNAMES.includes(parsed.hostname)) {
         if (/^\/v1(?:\/|$)/u.test(parsed.pathname)) {
           throw new Error("MiniMax H3 必须使用 V2 /v2/video_generation 接口，不能复用旧版 /v1/video_generation。");
         }
@@ -667,24 +642,6 @@ function normalizeEndpointForPreset(capability, endpoint, config) {
   if (/\/contents\/generations\/tasks$/u.test(clean)) return clean;
   if (/\/api\/v3$/u.test(clean)) return `${clean}/contents/generations/tasks`;
   return endpoint;
-}
-
-function deriveMiniMaxH3ContextIrEndpoint(value = "") {
-  const endpoint = String(value || "").trim();
-  if (!endpoint) return "";
-  try {
-    const url = new URL(endpoint);
-    url.pathname = "/v2/h3_context_ir";
-    url.search = "";
-    url.hash = "";
-    return url.toString();
-  } catch {
-    if (/\/v2\/h3_context_ir\/?$/u.test(endpoint)) return endpoint;
-    if (/\/v2\/video_generation\/?$/u.test(endpoint)) {
-      return endpoint.replace(/\/v2\/video_generation\/?$/u, "/v2/h3_context_ir");
-    }
-    return "";
-  }
 }
 
 function buildModelArkContentGenerationBody(context, config, negativePromptDelivery = {}) {
@@ -745,24 +702,6 @@ function buildMiniMaxH3VideoBody(context, config, negativePromptDelivery = {}) {
       ? normalizeMiniMaxRatio(parameters.aspectRatio || config.ratio)
       : "adaptive",
     aigc_watermark: config.watermark === true
-  };
-}
-
-function buildMiniMaxH3ContextIrBody(context, config) {
-  const parameters = context.request.parameters || {};
-  const duration = Object.hasOwn(parameters, "durationSeconds")
-    ? parameters.durationSeconds
-    : config.duration;
-  const prompt = requireTextWithinLimit(
-    context.request.prompt || "",
-    miniMaxH3PromptMaxChars(config),
-    "MiniMax H3 Context-IR 提示词"
-  );
-  return {
-    model: context.model || config.model || "MiniMax-H3",
-    content: buildAllReferenceContent(context.inputArtifacts || [], prompt, "MiniMax H3 Context-IR", { maxTotal: 12 }),
-    duration: normalizeMiniMaxDuration(duration),
-    ratio: normalizeMiniMaxRatio(parameters.aspectRatio || config.ratio)
   };
 }
 
@@ -922,16 +861,40 @@ function normalizeMiniMaxDuration(value) {
   return seconds;
 }
 
+// 官方 H3 只有这两档输出，取值区分大小写地写进请求体。
+const MINIMAX_RESOLUTIONS = Object.freeze(["768P", "2K"]);
+const MINIMAX_RATIOS = Object.freeze(["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"]);
+
+/**
+ * 未配置时用默认值是缺省；**已显式配置却非法时必须明确失败**。
+ *
+ * 这两个函数原本一律静默回退（`1080K` → `2K`、任意错值 → `adaptive`），
+ * `.env` 里那个 `MINIMAX_VIDEO_RESOLUTION=1080K` 就这样被悄悄改成了 2K——
+ * 计费与产出都和用户以为的不是一回事。CLAUDE.md 五、第 4 条：失败时返回
+ * 默认值是错的，明确报错才是对的。
+ */
 function normalizeMiniMaxResolution(value) {
-  const resolution = String(value || "2K").trim().toUpperCase();
-  return ["768P", "2K"].includes(resolution) ? resolution : "2K";
+  const configured = String(value ?? "").trim();
+  if (!configured) return "2K";
+  const resolution = configured.toUpperCase();
+  if (!MINIMAX_RESOLUTIONS.includes(resolution)) {
+    throw new Error(
+      `MiniMax H3 resolution 只支持 ${MINIMAX_RESOLUTIONS.join(" 或 ")}，当前配置为“${configured}”；请修正 MINIMAX_VIDEO_RESOLUTION，不会静默改写分辨率。`
+    );
+  }
+  return resolution;
 }
 
 function normalizeMiniMaxRatio(value) {
-  const ratio = String(value || "adaptive").trim().toLowerCase();
-  return ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"].includes(ratio)
-    ? ratio
-    : "adaptive";
+  const configured = String(value ?? "").trim();
+  if (!configured) return "adaptive";
+  const ratio = configured.toLowerCase();
+  if (!MINIMAX_RATIOS.includes(ratio)) {
+    throw new Error(
+      `MiniMax H3 ratio 只支持 ${MINIMAX_RATIOS.join(" / ")}，当前为“${configured}”；不会静默改写画幅。`
+    );
+  }
+  return ratio;
 }
 
 function truncateText(value, maxChars) {
@@ -1078,7 +1041,7 @@ function assertReferenceManifestMatchesArtifacts(manifest, artifacts) {
 }
 
 function buildMiniMaxH3ProviderPromptReceipt(request, body, config) {
-  if (!isMiniMaxH3Capability(request.capability, config)) return null;
+  if (!isMiniMaxH3VideoGeneration(request.capability, config)) return null;
   const submittedPrompt = Array.isArray(body.content)
     ? String(body.content.find((item) => item?.type === "text")?.text || "")
     : "";
@@ -1415,6 +1378,50 @@ function defaultSuccessStatuses() {
 
 function defaultFailureStatuses() {
   return ["failed", "failure", "error", "canceled", "cancelled", "expired"];
+}
+
+function defaultFailureReasonPaths() {
+  return [
+    // MiniMax v2：task.error.{code,message}
+    "task.error.message", "task.error.code",
+    // 可灵：data.task_status_msg；Ark / OpenAI 兼容：error.message
+    "data.task_status_msg", "error.message", "error.code",
+    "data.error.message", "data.message", "message",
+    "result.error.message", "result.message"
+  ];
+}
+
+/**
+ * 轮询到失败状态时，把供应商给出的原因**逐字**附在错误后面。
+ *
+ * 只带状态字面量（"供应商任务失败：failed"）等于把供应商已经说清楚的原因丢掉，
+ * 用户看不到任何可执行信息——这正是 CLAUDE.md 五、第 4 条说的隐藏错误。实测
+ * MiniMax 会返回 `task.error = {code:"2013", message:"content[1].image_url:
+ * invalid param: image size 64x64, expected each side in [256, 5760]"}`，
+ * 不带出来就完全排查不动。
+ *
+ * 按 5.1 的规矩：原文逐字保留，不改写、不翻译、不猜测；取不到就什么都不加。
+ */
+function describeProviderTaskFailure(payload, request, config) {
+  const paths = config.failureReasonPaths || defaultFailureReasonPaths();
+  const seen = [];
+  for (const path of paths) {
+    const value = firstValue(payload, [path]);
+    if (value === null || value === undefined) continue;
+    const text = String(typeof value === "object" ? JSON.stringify(value) : value).trim();
+    if (text && !seen.includes(text)) seen.push(text);
+  }
+  const summary = seen.length ? `（供应商原文：${seen.join(" / ")}）` : "";
+  // 再把供应商的错误对象原样附在末尾。worker 是独立进程，错误只能以 stderr
+  // 文本回到服务端，所以结构化信息必须搭在这条消息里：src/provider-error-codes.js
+  // 的 splitTransportPrefix 从第一个 { 起解析，据此才查得到官方码表
+  // （例如 1027 → 「输出内容涉敏被拦截」）。没有它，轮询失败一律查不到码，
+  // 用户只能看到一串原文、拿不到下一步该做什么。
+  const errorObject = firstValue(payload, ["task.error", "error", "data.error"]);
+  const structured = errorObject && typeof errorObject === "object"
+    ? ` ${JSON.stringify({ error: errorObject })}`
+    : "";
+  return `${summary}${structured}`;
 }
 
 function parseArgs(args) {
