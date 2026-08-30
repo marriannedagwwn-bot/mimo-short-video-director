@@ -231,7 +231,7 @@ test("生活细节与萌点约束到位，且把微表情明确排除在萌点�
   assert.match(text, /趴在木桌旁听收音机、爷爷摇着蒲扇站在门口目送/u);
   assert.match(text, /这些细节只占一两句，不得挤掉主线动作/u);
   assert.match(text, /萌点必须是\*\*动作\*\*，不是形容/u);
-  assert.match(text, /把小铁锅扣在头上当头盔防砸/u);
+  assert.match(text, /环境——乡村院落本来就有小铁锅/u);
   assert.match(text, /\*\*皱眉、歪头、眨眼、抿嘴这类微表情不算萌点\*\*/u);
   assert.match(text, /不看脸、只看身体轮廓，观众能认出她在做什么吗/u);
 });
@@ -255,4 +255,17 @@ test("transformationProof 里描述原片的部分必须能回上游找到依据
   assert.match(text, /把其中描述原片的词单独拎出来，回上游搜一遍/u);
   assert.match(text, /快递员和送货任务是凭空补的职业与任务/u);
   assert.match(text, /会污染改编距离判断与原创性检查/u);
+});
+
+// 上一轮只要求「萌点是大动作」，实测模型用「芙芙猫舔爪子」「打起了呼噜」交差——
+// 幅度不够，而且是配角的动作、与剧情无关。打枣的标准是萌点必须同时是剧情的一环：
+// 戴铁锅同时满足前因、环境、人物、声音、视觉、后续六条。
+test("萌点必须由主角完成且承担剧情功能，宠物小动作不算", () => {
+  const text = prompt();
+  assert.match(text, /必须\*\*由固定主角本人完成\*\*——把萌点安排给配角或宠物不算数/u);
+  assert.match(text, /\*\*宠物舔爪子、打呼噜同样不算\*\*/u);
+  assert.match(text, /萌点还必须\*\*同时承担剧情功能\*\*，不能是贴上去的可爱装饰/u);
+  assert.match(text, /前因——爷爷刚提醒过会被枣砸到/u);
+  assert.match(text, /后续——戴着锅继续把枣捡完/u);
+  assert.match(text, /把这个萌点删掉，剧情会不会缺一块/u);
 });
