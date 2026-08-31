@@ -95,7 +95,7 @@ ${JSON.stringify(targets)}
 - 不得新增剧情、动作、角色、道具或镜头；除了把已有的台词说出来，不要引入任何新事实。
 - 不得输出 path、op、完整镜头对象或任何额外字段。
 
-严格输出唯一结构：
+只输出一个 JSON 对象，不要 Markdown，不要解释。严格使用以下结构：
 {"schemaVersion":"${ANIMATION_SHOT_DIALOGUE_REPAIR_SCHEMA_VERSION}","baseDigest":${JSON.stringify(plan.baseDigest)},"repairs":[{"repairId":"...","replacement":"补写后的完整 videoPrompt"}]}
 
 repairs 必须与待修复目标**等量、同序**，repairId 逐一对应。`;

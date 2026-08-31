@@ -68,6 +68,10 @@ test("补写把缺失台词插回 videoPrompt，并从头通过完整批次校�
   assert.match(prompt, /ANIMATION_SHOT_DIALOGUE_REPAIR_V1/u);
   assert.match(prompt, new RegExp(LINE, "u"));
   assert.doesNotMatch(prompt, /creatorProfile|visualGuardrails|fixedCharacterBoundary/u);
+  // Qwen 的 response_format: json_object 要求 messages 里必须出现 "json" 这个词，
+  // 否则整个请求被 400 拒掉（InternalError.Algo.InvalidParameter）。模板里的
+  // JSON.stringify 求值后不会留下这个词，所以必须显式检查生成出来的文本。
+  assert.match(prompt, /JSON/u);
 
   const merged = mergeAnimationShotDialogueRepair(
     candidate,
