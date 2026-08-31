@@ -255,8 +255,10 @@ function firstMetadataValue(value, wantedKey, depth = 0, seen = new WeakSet()) {
 function apiErrorMessage(payload, status, fallbackMessage, compilerStage) {
   const message = displayScalar(payload.error || fallbackMessage || (status ? `请求失败（${status}）` : "请求失败"));
   if (compilerStage) return message;
-  // 服务端认出了供应商官方错误码时，展示可执行的那句话；供应商原文仍然
-  // 完整留在 payload.detail 里，需要排查时随时可取，不算隐藏错误。
+  // 服务端认出了供应商官方错误码时，展示可执行的那句话，并把供应商原文一并带出。
+  // 注意 ModelResponseError 分支（server-error.js）的响应体没有 detail 字段，
+  // 原文只存在于 providerError.providerMessage；只渲染 title/guidance 会让唯一有用的
+  // 那句话消失——实测 kimi-k3 的「Parameter 'temperature' is not supported」就是这样被吞掉的。
   const explained = providerErrorText(payload.providerError);
   if (explained) return `${message}：${explained}`;
   const detail = typeof payload.detail === "string" ? payload.detail.trim().slice(0, 240) : "";
@@ -272,7 +274,11 @@ function providerErrorText(providerError) {
   const label = providerError.matchedBy === "code" && providerError.code
     ? `${displayScalar(providerError.provider)} ${displayScalar(providerError.code)}`
     : `${displayScalar(providerError.provider)}${providerError.httpStatus ? ` HTTP ${displayScalar(providerError.httpStatus)}` : ""}`;
-  return `${title}（${label}）。${guidance}`;
+  // 供应商原文放在最后，逐字不改，只截长度。按状态码兜底命中时（matchedBy === "httpStatus"）
+  // guidance 只能给出通用建议，原文往往是唯一说明白问题的那一句，绝不能省。
+  const raw = displayScalar(providerError.providerMessage).slice(0, 240);
+  const explained = `${title}（${label}）。${guidance}`;
+  return raw ? `${explained}供应商原文：${raw}` : explained;
 }
 
 function normalizeCompilerStage(value) {

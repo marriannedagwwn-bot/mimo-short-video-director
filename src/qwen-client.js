@@ -246,13 +246,27 @@ function notifyResolvedMediaMode(callback, mode) {
   if (typeof callback === "function") callback(mode);
 }
 
+// 网关按模型拒绝 temperature 的清单。与 provider-error-codes.js 同规格：只登记供应商
+// 实测返回的事实，不猜测、不按模型名前缀推断——kimi-k2.7-code 就正常接受 temperature，
+// 所以「kimi 系列都不支持」是错的。
+// 来源：2026-08-30 对 baseUrl/chat/completions 的实测响应
+//   kimi-k3 -> HTTP 400 "Parameter 'temperature'=0.3 is not supported for kimi-k3 model."
+// 只影响 temperature；同一模型的 top_p、response_format、max_tokens 均正常。
+// 不在清单里的模型一律照常发送 temperature，供应商拒绝就如实抛错，不静默重试、不降级。
+const MODELS_REJECTING_TEMPERATURE = new Set(["kimi-k3"]);
+
+export function modelAcceptsTemperature(model) {
+  return !MODELS_REJECTING_TEMPERATURE.has(String(model || "").trim());
+}
+
 export function buildQwenRequestBody(config, { prompt, frames = [], video = null, useVideo = false }, overrides = {}) {
   const visualContent = buildQwenVisualContent(config, { frames, video, useVideo });
   const userContent = visualContent.length ? [...visualContent, { type: "text", text: prompt }] : prompt;
+  const model = overrides.model || config.model;
   const body = {
-    model: overrides.model || config.model,
+    model,
     max_tokens: overrides.maxCompletionTokens ?? config.maxCompletionTokens ?? 12288,
-    temperature: 0.3,
+    ...(modelAcceptsTemperature(model) ? { temperature: 0.3 } : {}),
     top_p: 0.95,
     stream: false,
     messages: [

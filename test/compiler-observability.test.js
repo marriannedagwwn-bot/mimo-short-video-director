@@ -164,3 +164,44 @@ test("non-compiler failures do not render a compiler panel", () => {
 
   assert.equal(renderCompilerFailureDetails(error), "");
 });
+
+// 2026-08-30：kimi-k3 被网关以 HTTP 400 拒绝，唯一说明白原因的那句
+// 「Parameter 'temperature'=0.3 is not supported for kimi-k3 model.」
+// 被展示层丢掉了——providerErrorText 只渲染 title 与 guidance，而 ModelResponseError
+// 分支的响应体没有 detail 字段可回退，于是用户屏幕上只剩三句同义的「请求不合法」。
+// 按状态码兜底命中时 guidance 只能给通用建议，原文是唯一可执行的信息。
+test("按 httpStatus 兜底命中时仍然展示供应商原文", () => {
+  const error = createApiRequestError({
+    error: "Qwen 请求失败（400）",
+    category: "provider",
+    code: "MODEL_RESPONSE_ERROR",
+    providerError: {
+      provider: "Qwen",
+      code: "",
+      httpStatus: 400,
+      matchedBy: "httpStatus",
+      title: "请求不合法",
+      guidance: "检查请求参数是否符合该供应商的接口要求。",
+      retryable: false,
+      providerMessage: "Parameter 'temperature'=0.3 is not supported for kimi-k3 model."
+    }
+  }, 502, "");
+  assert.match(error.message, /请求不合法（Qwen HTTP 400）/u);
+  assert.match(error.message, /供应商原文：Parameter 'temperature'=0\.3 is not supported for kimi-k3 model\./u);
+});
+
+test("没有供应商原文时文案不变，不留空的「供应商原文：」尾巴", () => {
+  const error = createApiRequestError({
+    error: "Qwen 请求失败（400）",
+    providerError: {
+      provider: "Qwen",
+      httpStatus: 400,
+      matchedBy: "httpStatus",
+      title: "请求不合法",
+      guidance: "检查请求参数是否符合该供应商的接口要求。",
+      providerMessage: ""
+    }
+  }, 502, "");
+  assert.doesNotMatch(error.message, /供应商原文/u);
+  assert.match(error.message, /检查请求参数是否符合该供应商的接口要求。$/u);
+});

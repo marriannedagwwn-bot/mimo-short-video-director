@@ -9,7 +9,7 @@ import { getConfig } from "../src/config.js";
 import { InputError, OutputContractError } from "../src/validation.js";
 import { CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS, characterPromptBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile, extractFixedCharacterName, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms } from "../src/validation.js";
 import { buildRequestBody, MimoClient, ModelResponseError, parseModelJson } from "../src/mimo-client.js";
-import { buildQwenRequestBody, QwenClient } from "../src/qwen-client.js";
+import { buildQwenRequestBody, modelAcceptsTemperature, QwenClient } from "../src/qwen-client.js";
 import { JimengImageClient, buildCharacterReferenceImagePrompt, buildJimengImageRequestBody, buildShotFrameImagePrompt } from "../src/jimeng-client.js";
 import { RECONSTRUCTION_SYSTEM_PROMPT, SYSTEM_PROMPT, animationPlanPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "../src/prompts.js";
 import { parseRunVideoArgs } from "../src/run-video-command.js";
@@ -2073,6 +2073,32 @@ test("Qwen 请求使用 OpenAI 兼容文本格式和 qwen3.7-max", () => {
   assert.equal(body.messages[0].role, "system");
   assert.equal(body.messages[1].role, "user");
   assert.equal(body.messages[1].content, "生成完整剧情");
+});
+
+// 2026-08-30 实测：网关对 kimi-k3 返回
+// HTTP 400 "Parameter 'temperature'=0.3 is not supported for kimi-k3 model."
+// 而 temperature 此前是写死的，任何阶段选中 kimi-k3 都会在 1 秒内必挂。
+// 只有 temperature 被拒，同一模型的 top_p / response_format / max_tokens 都正常。
+test("已知拒绝 temperature 的模型不发送该参数，其余参数与其它模型一致", () => {
+  const config = { model: "qwen3.7-max", jsonMode: true, maxCompletionTokens: 16384 };
+  const kimi = buildQwenRequestBody(config, { prompt: "p" }, { model: "kimi-k3" });
+  assert.equal(Object.prototype.hasOwnProperty.call(kimi, "temperature"), false);
+  // 只摘掉 temperature，其余一个都不能少——否则就是借着修一个参数改变了采样行为。
+  assert.equal(kimi.top_p, 0.95);
+  assert.equal(kimi.max_tokens, 16384);
+  assert.deepEqual(kimi.response_format, { type: "json_object" });
+  assert.equal(kimi.model, "kimi-k3");
+});
+
+// 清单只登记实测事实，不按模型名前缀推断：kimi-k2.7-code 实测接受 temperature，
+// 因此「kimi 开头都不支持」是错的，写成前缀匹配会静默改变一批模型的采样行为。
+test("未登记的模型照常发送 temperature，包括同系列的其它模型", () => {
+  const config = { model: "qwen3.7-max", jsonMode: true, maxCompletionTokens: 16384 };
+  assert.equal(buildQwenRequestBody(config, { prompt: "p" }, { model: "qwen3.7-max" }).temperature, 0.3);
+  assert.equal(buildQwenRequestBody(config, { prompt: "p" }, { model: "kimi-k2.7-code" }).temperature, 0.3);
+  assert.equal(modelAcceptsTemperature("kimi-k3"), false);
+  assert.equal(modelAcceptsTemperature("kimi-k2.7-code"), true);
+  assert.equal(modelAcceptsTemperature(""), true);
 });
 
 test("MiMo 与 Qwen 请求允许 reconstruction 覆盖为证据还原 system prompt", () => {

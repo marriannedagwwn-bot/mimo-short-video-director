@@ -415,6 +415,10 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：**
 
 接入点只有三处错误出口（视频 / 图片 / 文本），全部在 `src/server-error.js`。命中依据分 `code`（供应商业务码）与 `httpStatus`（按状态兜底）两种，展示标签必须如实标明是哪一种——按状态命中时不得把响应体里那个无关的 `code` 显示成来源。这三处的 `retryable` 跟随官方文档判定。
 
+**原文必须真的显示出来（2026-08-30）。** 按 `httpStatus` 兜底命中时，`guidance` 只能给通用建议（「检查请求参数是否符合该供应商的接口要求」），此时供应商原文是唯一可执行的信息，`providerErrorText`（`public/compiler-observability.js`）必须把 `providerError.providerMessage` 一并渲染。注意 `ModelResponseError` 分支（`src/server-error.js`）的响应体**没有 `detail` 字段**，原文只存在于 `providerMessage`——只渲染 `title`/`guidance` 会让唯一有用的那句消失。实测代价：kimi-k3 的「Parameter 'temperature'=0.3 is not supported」被吞掉，用户屏幕上只剩三句同义的「请求不合法」，只能靠翻 debug 目录才查得出来。
+
+**按模型拒绝 `temperature` 的清单（`src/qwen-client.js`）与错误码表同规格。** `MODELS_REJECTING_TEMPERATURE` 只登记供应商实测返回的事实，标注来源与核对日期；**禁止按模型名前缀推断**——`kimi-k2.7-code` 实测接受 `temperature`，写成前缀匹配会静默改变一批模型的采样行为。命中时**只摘掉 `temperature`**，`top_p`/`response_format`/`max_tokens` 一个都不能少，否则就是借着修一个参数改变采样行为。不在清单里的模型照常发送，供应商拒绝就如实抛错，**不静默重试、不降级**。来源：2026-08-30 实测 `kimi-k3` → HTTP 400 `Parameter 'temperature'=0.3 is not supported for kimi-k3 model.`
+
 ---
 
 ## 六、当前不存在的功能
