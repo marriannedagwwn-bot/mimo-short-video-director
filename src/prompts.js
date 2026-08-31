@@ -720,9 +720,17 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - location 只写这一场实际发生的可拍摄物理地点，例如「村口老树下」「邻居爷爷家院子」「河边小桥」。不得把垂直赛道、画风、渲染风格、光线、色调或画质词写进 location：「日系2.5D新海诚光景风格的集市旁草地」是错误输出，正确写法是「集市旁草地」。视觉风格由下游 Animation Plan 的 visualBible 统一签发，在这里重复它只会让每场地点看起来一模一样，反而丢失了地点本身的信息。
 - characters 中已锁定的主角、被关爱对象和已登记帮助者必须使用 characterBible 中的标准名称，不得添加括号、身份、外观说明、空格后缀、别名或昵称。场次型临时配角可以使用独立且明确的名称，不必强行加入 helpers。
 - dialogue 只使用结构化数组；每条 speaker 必须逐字存在于同场 characters。当前结构不支持 offscreen、voiceOver、narrator 或 isVisible 标记，不得要求系统根据台词正文或 shotAndSound 猜测画外说话人。
+- **画外说话人的台词不写进 dialogue，把原话连「」一起写进同场 shotAndSound。** 例：shotAndSound 写「门内传出一个苍老女声「谁呀？」」。shotAndSound 会完整传给下游镜头阶段，写在那里的原话才有机会被视频模型说出来；只写「传出说话声」而不写说了什么，那句台词就不会被说出来。说话人的名字仍然不写——按上面的写法用「一个苍老女声」这类描述代替。
 - 所有地点、实际参与本场的人物和关键可见动作必须写入 location、characters、visibleAction；dialogue、shotAndSound、shootingNotes、emotionNode、dramaticFunction 等字段只能补充，不能替代这些结构字段。
-- characters 只写本场实际出镜的角色。若 shotAndSound 里要写某个角色的画外声音（例如「屋外传来妈妈喊白子回家吃饭的声音」），把该角色名登记到 offscreenSoundSources，不要把它塞进 characters——那会让下游把没出镜的人渲染进画面。没有画外声源时保持 offscreenSoundSources 为空数组。
-- offscreenSoundSources 只登记「谁不出镜」，不能用来省略 visibleAction：实际出镜的角色必须同时写进 characters 和 visibleAction，登记成声源不会豁免这条要求。同一个名字不得同时出现在 characters 和 offscreenSoundSources。
+- characters 只写本场实际出镜的角色。画外声音不要把说话人塞进 characters——那会让下游把没出镜的人渲染进画面；优先按下面的写法把名字从 shotAndSound 里去掉。
+- 「出镜」只看这一场的画面里能不能看见这个人，与他站得多远、是不是本场主体无关：远景里弯腰翻晒谷子的奶奶、背景中路过的行人、屋檐下坐着不说话的老人，只要画面里看得见就必须写进 characters。实测反面例子：visibleAction 写了「远处，奶奶正弯腰用木耙翻晒金黄的谷子」，characters 却只写了主角和宠物——远处出现的人也是出镜的人，这是错的。
+- **反过来，visibleAction 和 shotAndSound 里不得出现任何不在本场画面里的角色名。** 这两个字段是可见事实字段，名字写进去就等于声称这个人在画面里。不在画面里的人有三种常见写法，都必须改写成不带名字的说法：
+  - 画外声音**不带主体**：不写「屋外传来李奶奶喊白子回家的声音」，写「屋外传来喊白子回家的声音」或「屋外传来一个苍老女声的呼喊」。观众听下去自然知道是谁，先不点名反而更有悬念。
+  - 写在道具上的名字**只写可见特征、不写名字**：不写「贴着「李奶奶」标签的快递盒」，写「贴着手写标签的快递盒」。
+  - 地点的归属称呼**放进 location**：location 照写「李奶奶家门口」，visibleAction 只写「小白子站在木门前，举起手又放下」。名字在 location 里完整保留，不会丢。
+- **去掉的只有名字，不是可见细节。** 「贴着手写标签的快递盒」合格，「一个快递盒」不合格——标签是视频模型该渲染的东西，不能渲染的只有那三个字。同理「屋外传来一个苍老女声的呼喊」比「屋外有声音」好。名字在 location、dialogue 的台词正文、beatSheet、characterBible、shootingNotes 里都可以自由出现，只有这两个可见事实字段要干净。
+- **有人在这一场离场时，先决定这一场到底有没有他。** characters 是你对这一场的选角声明，visibleAction 不能演一个你没选的角色。三条出路自己挑：①他确实在画面里露了脸（哪怕只是转身走开的背影）——写进 characters；②这一场你想让他不在——**写离场的结果，不写离场的动作**，例如不写「奶奶转身回屋拿更多被子」，写「木门在身后合上，晾衣绳边只剩下小白子」；③这个动作其实属于上一场——挪到上一场结尾，本场从他走后开始。实测反面例子：visibleAction 以「奶奶转身回屋拿更多被子」开头、characters 却只有主角和宠物，这三条一条都没做到。
+- 名字实在无法从 shotAndSound 里去掉时（例如身份就是本场信息本身），才把该角色名登记到 offscreenSoundSources。它只豁免 shotAndSound，**绝不豁免 visibleAction**：实际出镜的角色必须同时写进 characters 和 visibleAction，登记成声源不会豁免这条要求。同一个名字不得同时出现在 characters 和 offscreenSoundSources。没有这种情况时保持空数组。
 
 输出 fullStory，严格使用以下结构：
 {

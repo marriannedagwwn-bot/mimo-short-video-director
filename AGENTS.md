@@ -472,6 +472,20 @@ Full Story 输出必须满足：
 
 `shotAndSound` 一条自由文本同时承载画面描述（可能出镜）与声音来源（不代表出镜），程序不得靠正则或关键词区分两者，因此由模型显式登记。扫描口径按字段职责分档：`visibleAction` 只认 `characters`；`shotAndSound` 认 `characters` 与 `offscreenSoundSources` 的并集。
 
+「出镜」的判据只有一条：**这一场的画面里能不能看见这个人**，与他站得多远、是不是本场主体无关。远景里弯腰翻晒谷子的奶奶、背景中路过的行人、屋檐下不说话的老人都必须写进 `characters`。**反过来，`visibleAction` 与 `shotAndSound` 里不得出现任何不在本场画面里的角色名（2026-08-31）。** 这两个字段是可见事实字段，名字写进去就等于声称这个人在画面里，没有例外。原先契约列的三种情况（地点归属称呼、只被提到、回忆或转述）**不再是豁免**，而是必须改写成不带名字的写法：
+
+- 画外声音不带主体：「屋外传来喊白子回家的声音」「屋外传来一个苍老女声的呼喊」。
+- 道具上的名字只写可见特征：「贴着手写标签的快递盒」。
+- 地点的归属称呼放进 `location`：`location` 照写「李奶奶家门口」，`visibleAction` 只写「小白子站在木门前，举起手又放下」。
+
+**去掉的只有名字，不是可见细节**——「一个快递盒」不合格，标签是视频模型该渲染的东西。名字在 `location`、`dialogue[].line`、`beatSheet`、`characterBible`、`shootingNotes` 里都可以自由出现；扫描只覆盖那两个字段，`shotAndSound` 甚至不进 Animation 阶段的场次投影，因此这条规则实际不造成信息损失。
+
+这条的价值在于**让现有校验器变正确，而不是让它变聪明**：裸子串匹配恰好就是它的判据，永远不需要语义判断。依据是 2026-08-31 取证——那三条豁免写在契约和提示词里，扫描却一条都没实现，回扫 180 份可解析历史输出，`FULL_STORY_SCENE_VISUAL_CHARACTER_MISSING` 命中 45 条，约三分之二是模型照提示词写了合法文本反被判失败。
+
+期间曾短暂引入过 `nonVisualMentions` 登记字段，**已删除，不得重新引入**：它连 `visibleAction` 一起豁免，破坏了「登记只豁免 `shotAndSound`」这条不对称，上线后三次真实调用全部拿它登记离场动作。`offscreenSoundSources` 保留，降级为「名字实在无法从 `shotAndSound` 去掉」时的兜底，它只豁免 `shotAndSound` 的不对称不变。
+
+**离场不单独做机制。** `characters` 是本场的选角声明，`visibleAction` 不能演一个没选的角色，三条出路：确实露了脸就写进 `characters`；想让他不在这一场就**写离场的结果而不是离场的动作**（「木门在身后合上，晾衣绳边只剩下小白子」）；动作属于上一场就挪回上一场结尾。七次调用、三个提示词版本都没能说服模型把离场角色写进 `characters`（加「离场也算出镜」后 `prompt_tokens` 14096→14243 证明文本确实送达，同一句照样失败，模型还在 `shotAndSound` 写了「中景展示奶奶离开的背影」）。当前这一版改成承认模型意图并给出替代写法，没有把握；失败仍是响亮硬失败，**不得挂自动纠错**——校验器只证明名字出现了，正解有两个，推导不唯一。依据是 2026-08-30 的实测——同一轮连续三次 `FULL_STORY_SCENE_VISUAL_CHARACTER_MISSING`，都是模型把远景背景人物当成不出镜（`visibleAction` 写「远处，奶奶正弯腰用木耙翻晒金黄的谷子」，`characters` 只有主角和宠物）。校验器一直拦得住，补的是提示词里缺的可执行判据。
+
 登记只豁免 `shotAndSound`，绝不豁免 `visibleAction`：实际参与本场的人物必须写进 `visibleAction`，所以无法靠登记声源隐藏一个出镜角色。同名同时出现在两个字段时抛 `FULL_STORY_SCENE_SOUND_SOURCE_ALSO_VISIBLE`，不自动选边；登记了却未被 `shotAndSound` 引用是合法的；名称精确性与 `characters` 共用同一份判定。该字段不在局部纠错可写范围内，postpass 必须逐字冻结；`dialogue[].speaker` 仍必须逐字存在于同场 `characters`。旧 Story 缺该字段时行为不变。
 
 `location` 只写本场实际发生的**可拍摄物理地点**，不是画风、光线或色调。`creatorProfile.vertical` 里的风格词不得流进 `location`：正确写法是「集市旁草地」，错误写法是「日系2.5D新海诚光景风格的集市旁草地」。视觉风格由下游 Animation Plan 的 `visualBible` 统一签发，在 Full Story 重复它会让每场地点看起来一模一样，反而丢掉地点本身的信息。
@@ -769,4 +783,6 @@ GitHub Benchmark 后续改造必须以 `docs/GitHub-Benchmark-后续改造待办
 
 本项目必须使用 node24 启动，禁止直接使用 25+版本直接运行，在项目运行时，如果修改了服务器相关的文件，自动重启服务器。
 
-供应商错误码提示（`src/provider-error-codes.js`）是纯展示层：把 MiniMax、火山方舟 Ark（Seedance 视频与即梦图片共用）、可灵、阿里云百炼 DashScope（Qwen）、DeepSeek 与小米 MiMo 的官方错误码翻译成可执行中文提示，不影响是否抛错、抛什么错、重试预算或 HTTP 状态码，也不参与任何业务校验。硬规则三条：供应商原文逐字保留在既有 `detail` 字段，解释只放进新增的 `providerError`，不得用友好文案顶替原文；匹配不到一律返回 `null` 让调用方回退原文，禁止编造安慰性描述；码表只抄官方文档，文件头标注出处 URL 与核对日期，不得靠猜测补条目。接入点只有 `src/server-error.js` 的三处错误出口（视频 / 图片 / 文本）。命中依据分供应商业务码与 HTTP 状态兜底两种，展示标签必须如实标明是哪一种；按状态命中时不得把响应体里无关的 `code` 显示成来源。这三处的 `retryable` 跟随官方文档判定。
+供应商错误码提示（`src/provider-error-codes.js`）是纯展示层：把 MiniMax、火山方舟 Ark（Seedance 视频与即梦图片共用）、可灵、阿里云百炼 DashScope（Qwen）、DeepSeek 与小米 MiMo 的官方错误码翻译成可执行中文提示，不影响是否抛错、抛什么错、重试预算或 HTTP 状态码，也不参与任何业务校验。硬规则三条：供应商原文逐字保留在既有 `detail` 字段，解释只放进新增的 `providerError`，不得用友好文案顶替原文；匹配不到一律返回 `null` 让调用方回退原文，禁止编造安慰性描述；码表只抄官方文档，文件头标注出处 URL 与核对日期，不得靠猜测补条目。接入点只有 `src/server-error.js` 的三处错误出口（视频 / 图片 / 文本）。命中依据分供应商业务码与 HTTP 状态兜底两种，展示标签必须如实标明是哪一种；按状态命中时不得把响应体里无关的 `code` 显示成来源。这三处的 `retryable` 跟随官方文档判定。 按 HTTP 状态兜底命中时 `guidance` 只能给通用建议，供应商原文是唯一可执行的信息，`providerErrorText`（`public/compiler-observability.js`）必须一并渲染 `providerError.providerMessage`：`ModelResponseError` 分支（`src/server-error.js`）的响应体没有 `detail` 字段可回退，只渲染 `title`/`guidance` 会让唯一有用的那句消失（实测 kimi-k3 的「Parameter 'temperature'=0.3 is not supported」就是这样被吞掉的）。
+
+同一规格适用于 `src/qwen-client.js` 的 `MODELS_REJECTING_TEMPERATURE`：只登记供应商实测返回的事实并标注来源与核对日期，**禁止按模型名前缀推断**（`kimi-k2.7-code` 实测接受 `temperature`）；命中时只摘掉 `temperature`，`top_p`/`response_format`/`max_tokens` 逐字保留；不在清单里的模型照常发送，供应商拒绝就如实抛错，不静默重试、不降级。

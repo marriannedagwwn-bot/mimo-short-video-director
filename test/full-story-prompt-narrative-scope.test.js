@@ -293,3 +293,76 @@ test("引号规则来自共享 JSON 输出契约，覆盖其它转抄原文的�
   assert.match(analysisPrompt({ metadata: {}, frames: [] }), shared);
   assert.match(reconstructionPrompt({ referenceAnalysis: {}, metadata: {}, frames: [] }), shared);
 });
+
+// 2026-08-30：同一轮里连续三次 FULL_STORY_SCENE_VISUAL_CHARACTER_MISSING，都是同一个误解——
+// visibleAction 写了「远处，奶奶正弯腰用木耙翻晒金黄的谷子」，characters 却只有主角和宠物。
+// 模型把「远景里的背景人物」当成了不出镜。提示词此前只反复讲画外音那一种情况，
+// 从没说过「站得远也算出镜」。这条有确定性校验兜底（校验器已经在拦），补的是可执行判据。
+test("远景与背景里看得见的人也必须写进 characters", () => {
+  const text = prompt();
+  assert.match(text, /「出镜」只看这一场的画面里能不能看见这个人，与他站得多远、是不是本场主体无关/u);
+  assert.match(text, /远处，奶奶正弯腰用木耙翻晒金黄的谷子/u);
+  // 2026-08-31 契约变更：这条原本还列着「不算出镜的只有三种」豁免（地点归属称呼、
+  // 只被提到、回忆转述）。豁免已被删除——不是放松而是收紧：那三种情况现在一律要求
+  // 改写成不带名字的写法，可见事实字段里出现名字就等于声称这个人在画面里，没有例外。
+  // 改写范式由下面「visibleAction 与 shotAndSound 不得出现不在画面里的角色名」覆盖。
+  assert.doesNotMatch(text, /仍然不算出镜的只有三种/u);
+});
+
+
+
+// 2026-08-31：契约原先承诺三种「提到了但不算出镜」的豁免，扫描却是裸子串匹配、一条
+// 都没实现——回扫 180 份可解析历史输出，45 条命中里约三分之二是模型照提示词写了合法
+// 文本反被判失败。修法不是让校验器变聪明（补词表＝关键词白名单，或让模型登记豁免＝
+// 给 visibleAction 开后门，实测模型三次全在拿它登记离场），而是让规则和这个裸匹配对齐：
+// 可见事实字段里出现名字，就等于声称这个人在画面里。
+test("visibleAction 与 shotAndSound 不得出现不在画面里的角色名", () => {
+  const text = prompt();
+  assert.match(text, /visibleAction 和 shotAndSound 里不得出现任何不在本场画面里的角色名/u);
+  // 三种改写范式各要给出可照抄的写法，只讲禁令模型不知道该怎么落笔。
+  assert.match(text, /不写「屋外传来李奶奶喊白子回家的声音」，写「屋外传来喊白子回家的声音」/u);
+  assert.match(text, /不写「贴着「李奶奶」标签的快递盒」，写「贴着手写标签的快递盒」/u);
+  assert.match(text, /location 照写「李奶奶家门口」/u);
+});
+
+// 去名字不能滑成去细节，否则会直接伤到 videoPrompt 的可渲染信息与生活质感约束。
+test("只去名字不去可见细节，且说明名字在其它字段照常保留", () => {
+  const text = prompt();
+  assert.match(text, /\*\*去掉的只有名字，不是可见细节。\*\*/u);
+  assert.match(text, /「一个快递盒」不合格/u);
+  assert.match(text, /名字在 location、dialogue 的台词正文、beatSheet、characterBible、shootingNotes 里都可以自由出现/u);
+});
+
+// 离场不单独做机制：它是同一条纪律的另一个触发点。前三版提示词都在跟模型争
+// 「她算不算出镜」，七次没让步；这一版改成承认它的意图并直接给替代写法。
+test("离场给出三条出路，并把选角声明的语义说清楚", () => {
+  const text = prompt();
+  assert.match(text, /characters 是你对这一场的选角声明，visibleAction 不能演一个你没选的角色/u);
+  assert.match(text, /\*\*写离场的结果，不写离场的动作\*\*/u);
+  assert.match(text, /写「木门在身后合上，晾衣绳边只剩下小白子」/u);
+  assert.match(text, /挪到上一场结尾，本场从他走后开始/u);
+});
+
+// offscreenSoundSources 保留为兜底，但必须退到「名字实在去不掉」之后，
+// 且那条不对称（只豁免 shotAndSound）不能松。
+test("offscreenSoundSources 降为兜底，仍绝不豁免 visibleAction", () => {
+  const text = prompt();
+  assert.match(text, /名字实在无法从 shotAndSound 里去掉时/u);
+  assert.match(text, /只豁免 shotAndSound，\*\*绝不豁免 visibleAction\*\*/u);
+  assert.match(text, /同一个名字不得同时出现在 characters 和 offscreenSoundSources/u);
+  // 已删除的机制不得残留在提示词里。
+  assert.doesNotMatch(text, /nonVisualMentions/u);
+});
+
+// 2026-08-31 live 探针：模型把画外的「谁呀？」编码成了 dialogue 条目，撞上
+// FULL_STORY_SCENE_DIALOGUE_SPEAKER_MISSING。规则一直只说「不许写进 dialogue」，
+// 从没说原话该放哪；而 shotAndSound 是完整传给镜头阶段的（resolveAnimationBatchScenes
+// 返回的是整个场次对象），写在那里才有机会被视频模型说出来。
+test("画外台词有明确去处：原话写进 shotAndSound，且仍不写说话人名字", () => {
+  const text = prompt();
+  assert.match(text, /\*\*画外说话人的台词不写进 dialogue，把原话连「」一起写进同场 shotAndSound。\*\*/u);
+  assert.match(text, /门内传出一个苍老女声「谁呀？」/u);
+  assert.match(text, /只写「传出说话声」而不写说了什么，那句台词就不会被说出来/u);
+  // 给了去处不等于放开点名。
+  assert.match(text, /说话人的名字仍然不写/u);
+});
