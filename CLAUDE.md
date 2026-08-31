@@ -117,6 +117,9 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
 - **已下线方言的兼容**：旧 Plan 带 `profileId: "minimax_h3"` 时，`getVideoPromptProfileMismatch` 返回 `unsupported_current_profile`——Plan 仍可加载查看，但生成视频前必须重新生成 Plan。该降级只认这一对精确的 `profileId + guideVersion` 白名单；**损坏或被篡改的 Profile 仍然硬失败**，`assertVideoPromptProfile` 本身始终严格。
 - **只有一种方言**：`videoPrompt` 是一条自包含、可直接交给视频模型的中文自然语言完整提示词，**同一条提示词同时提交给 Seedance 2.0 与 MiniMax H3**，运行时视频模型不再决定提示词写法，按「Foundation 风格与物理光线 → 地点环境 → 出镜主体与已锁定外观 → `visibleAction` 顺序动作链与可见结果 → 内部摄影/剪辑顺序 → 节奏、对白和声音 → 稳定约束与停止条件」组织。
 - **第 ⑤ 项必须逐拍写明该拍画面里出现的角色**，写到的角色必须完整入画（含面部），不得只给手部、局部肢体或无头躯干；多角色同场时至少有一拍让他们同时完整同框。依据是 2026-08-30 双人对话镜头（A02）的三臂实测：原写法只说「内部摄影/剪辑顺序」、没有主体槽位，配角被埋进长句后频繁退化成无头躯干加一只写实比例的大手，双人同框仅 4/9；补上逐拍主体后升到 9/9，追平 H3 原生六段方言。**这也是不恢复原生方言的依据**——原生方言的优势来自 `subject_definitions` 与逐拍 `[Shot N]` 强制声明主体，而那个槽位在中文模板里同样能加。该实验保留了原提示词里那段截断的外观散文仍然有效，说明散文轰炸不是病因。**这是 Prompt 生成约束，没有确定性校验兜底**——判断一条提示词有没有写全主体需要语义判断。
+- **第 ⑥ 项的台词必须把原话逐字写进 `videoPrompt`，这一条有确定性校验兜底。** 视频模型直接生成人声，只写「某人在说话」「传出说话声」而不写说了什么，那句台词就不会被说出来。`shotDialogueMissingFromVideoPrompt()`（`src/validation.js`）在 `ensureAnimationDirectShotContract` 里硬失败，诊断码 `DIRECT_SHOT_DIALOGUE_MISSING_FROM_VIDEO_PROMPT`。
+  判据是**最长连续逐字命中 ≥ 6 字**，不是覆盖率——长文本里任意两个中文串都会偶然共享少量字符，覆盖率量的是巧合。阈值来自实测：187 条实词对白的分布是双峰的，run≤4 占 57%（偶然重合），run≥9 占 35%（确实引用了原话），中间 5–8 只有 8.6%，6 落在谷底。**不切句**：501 条真实对白里 494 条没有 `「」`，说话人分隔混用换行、句号和裸文本，切句只能靠猜。话语正文短于 10 字整条豁免——那多是拟声词与非语言发声（嗷呜、喵），按描述写合法，也短到无法区分引用与巧合。
+  依据是一份已签发 Plan 的 A05 整句丢了奶奶的台词而当时无人拦得住；按同一判据回扫历史语料，实词对白有 61% 不合规——那衡量的是旧提示词从没要求写原话，不是新阈值太严。
 - Plan 阶段两种 Profile 都不得生成尚未绑定的 `@图片/@视频/@音频` 或 `<Subject/Picture/Video/Audio N>`。
 
 **`productionStrategy.backgroundMusicMode`** — 主题变体卡上的背景音乐开关，取值只有 `"none"` / `"allowed"`，**默认 `none`**。与 `videoPromptProfile` 同级：由服务端根据请求 `backgroundMusicEnabled` 签发，**模型不得输出、推断或修改**，回显即拒绝。

@@ -364,7 +364,8 @@ function seedanceRewriteForPlan(plan) {
   return {
     videoPrompts: plan.shotPlan.map((shot) => ({
       shotId: shot.shotId,
-      videoPrompt: `温暖治愈的手绘动画质感。${shot.characterAction}。镜头按动作顺序执行${shot.cameraMotion}。在 ${shot.durationSeconds} 秒内完成后立即停止。`
+      // 台词原话必须跟着改写走：改写只换供应商表达，不授权丢掉对白内容。
+      videoPrompt: `温暖治愈的手绘动画质感。${shot.characterAction}。镜头按动作顺序执行${shot.cameraMotion}。${shot.dialogueOrSubtitle ? `${shot.dialogueOrSubtitle}；对白只作为声音。` : ""}在 ${shot.durationSeconds} 秒内完成后立即停止。`
     }))
   };
 }

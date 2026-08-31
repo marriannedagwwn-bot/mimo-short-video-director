@@ -12,7 +12,8 @@ import {
   NO_BACKGROUND_MUSIC_SENTENCE,
   materializeGlobalCharacterBoundaryViews,
   normalizeBackgroundMusicMode,
-  pruneAnimationPlanNegativePrompts
+  pruneAnimationPlanNegativePrompts,
+  shotDialogueMissingFromVideoPrompt
 } from "../src/validation.js";
 import { deriveDirectShotSkeleton } from "../src/direct-shot-timeline.js";
 import { WorkflowService } from "../src/workflow.js";
@@ -160,7 +161,8 @@ function createPromptRewriteWorkflow(getSourcePlan) {
       return {
         videoPrompts: sourcePlan.shotPlan.map((shot) => ({
           shotId: shot.shotId,
-          videoPrompt: `温暖治愈的手绘动画质感。${shot.characterAction}。镜头按动作顺序执行 ${shot.cameraMotion}。在 ${shot.durationSeconds} 秒内完成后立即停止。`
+          // 台词原话必须跟着改写走：改写只换供应商表达，不授权丢掉对白内容。
+          videoPrompt: `温暖治愈的手绘动画质感。${shot.characterAction}。镜头按动作顺序执行 ${shot.cameraMotion}。${shot.dialogueOrSubtitle ? `${shot.dialogueOrSubtitle}；对白只作为声音。` : ""}在 ${shot.durationSeconds} 秒内完成后立即停止。`
         }))
       };
     }
@@ -622,4 +624,43 @@ test("Foundation 提示词声明用户选择，并声明该字段由服务端签
 
   const open = animationFoundationPrompt({ ...context, backgroundMusicMode: "allowed" });
   assert.match(open, /用户选择的背景音乐：开启，允许使用背景音乐/u);
+});
+
+// dialogueOrSubtitle 是对白的唯一权威。视频模型直接生成人声，没写进 videoPrompt
+// 的台词不会被说出来——实测一份已签发 Plan 的 A05 就整句丢了奶奶的台词，而当时
+// 没有任何校验拦得住。判据是最长连续逐字命中而不是覆盖率：长文本里任意两个中文串
+// 都会偶然共享少量字符。187 条真实实词对白的分布是双峰的（run≤4 占 57%，run≥9
+// 占 35%，中间 5–8 只有 8.6%），阈值取谷底的 6。
+test("videoPrompt 丢掉 dialogueOrSubtitle 的台词原话时确定性失败", () => {
+  const missing = shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "奶奶：「这谷子要是淋了雨，今年冬天就没粥喝啦，幸好有人帮忙。」小白子：「嗷呜～」",
+    videoPrompt: "奶奶伸手摸摸小白子的猫耳，小白子「嗷呜～」叫着用头顶蹭奶奶的手心。"
+  });
+  assert.match(missing, /这谷子要是淋了雨/u);
+
+  // 只写「在说话」不写说了什么，同样不合格。
+  assert.notEqual(shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "伞匠奶奶：这把大红伞啊，标签上的字被雨打湿了，但我记得是村口面包店订的",
+    videoPrompt: "伞匠奶奶一边整理伞骨一边絮絮说着什么，小白子仰头认真听着。"
+  }), "");
+});
+
+test("原话已写入、拟声词与无对白都不误伤", () => {
+  // 原话逐字带上了：合规。
+  assert.equal(shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "奶奶：「这谷子要是淋了雨，今年冬天就没粥喝啦。」",
+    videoPrompt: "奶奶念叨着说：这谷子要是淋了雨，今年冬天就没粥喝啦，语气心疼。"
+  }), "");
+
+  // 拟声词与非语言发声按描述写是合法的，也短到无法区分引用与巧合，整条豁免。
+  assert.equal(shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "小白子：嗷呜～",
+    videoPrompt: "小白子发出欢快的叫声，猫耳竖起。"
+  }), "");
+
+  // 空对白不参与判定。
+  assert.equal(shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "",
+    videoPrompt: "固定镜头，空院子里雨水落进水缸。"
+  }), "");
 });

@@ -984,7 +984,71 @@ function ensureAnimationDirectShotContract(shot, path) {
   if (!shot.negativePrompts || !Array.isArray(shot.negativePrompts.image) || shot.negativePrompts.image.length) {
     throw new OutputContractError(`${path}.negativePrompts.image 在 direct_shot 模式必须为 []`);
   }
+  const missingDialogue = shotDialogueMissingFromVideoPrompt(shot);
+  if (missingDialogue) {
+    throw new OutputContractError(
+      `${path}.videoPrompt 没有写入 dialogueOrSubtitle 的台词原话：${missingDialogue}。`
+      + "视频模型直接生成人声，只写「某人在说话」不会让这句台词被说出来。",
+      [{
+        code: "DIRECT_SHOT_DIALOGUE_MISSING_FROM_VIDEO_PROMPT",
+        path: `${path}.videoPrompt`,
+        reason: "videoPrompt must quote the spoken words from dialogueOrSubtitle verbatim."
+      }]
+    );
+  }
   return shot;
+}
+
+// 长文本里任意两个中文串都会偶然共享少量字符，所以判据是**最长连续逐字命中**
+// 而不是覆盖率。实测 187 条实词对白的分布是双峰的：run≤4 占 57%（纯属偶然重合），
+// run≥9 占 35%（确实引用了原话），中间 5–8 只有 8.6%。阈值取谷底的 6。
+const DIALOGUE_VERBATIM_MIN_RUN = 6;
+// 短于这个长度的多是拟声词与非语言发声（嗷呜、喵、嗷～），按描述写是合法的，
+// 也短到无法用「连续命中」区分引用与巧合，因此整条豁免。
+const DIALOGUE_VERBATIM_MIN_LENGTH = 10;
+
+/**
+ * 返回 videoPrompt 里缺失的台词原话；返回空串表示合规。
+ *
+ * 只裁决可唯一推导的部分：`dialogueOrSubtitle` 是对白的唯一权威，videoPrompt
+ * 必须把它的原话带上——视频模型直接生成人声，没写进提示词的台词不会被说出来。
+ * 这里**不切句**：实测 501 条真实对白里 494 条没有 `「」`，说话人分隔混用换行、
+ * 句号和裸文本，切句只能靠猜，而猜出来的边界会让判定本身不可信。
+ */
+export function shotDialogueMissingFromVideoPrompt(shot = {}) {
+  const spoken = dialogueSpokenText(shot.dialogueOrSubtitle);
+  if (spoken.length < DIALOGUE_VERBATIM_MIN_LENGTH) return "";
+  const prompt = normalizeDialogueChars(shot.videoPrompt);
+  if (longestCommonRun(spoken, prompt) >= DIALOGUE_VERBATIM_MIN_RUN) return "";
+  return String(shot.dialogueOrSubtitle || "").trim().slice(0, 40);
+}
+
+/** 去掉「说话人：」前缀与全部标点，只留下应当被逐字带进 videoPrompt 的话语本身。 */
+function dialogueSpokenText(value) {
+  return normalizeDialogueChars(String(value || "").replace(/[^：:\n。]{1,8}[：:]/gu, ""));
+}
+
+function normalizeDialogueChars(value) {
+  return String(value || "").replace(/[^\p{Script=Han}A-Za-z0-9]/gu, "");
+}
+
+/** 最长连续公共子串长度。滚动一行，避免为长 videoPrompt 分配整张表。 */
+function longestCommonRun(a, b) {
+  if (!a || !b) return 0;
+  let previous = new Uint32Array(b.length + 1);
+  let best = 0;
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = new Uint32Array(b.length + 1);
+    const left = a[i - 1];
+    for (let j = 1; j <= b.length; j += 1) {
+      if (left === b[j - 1]) {
+        current[j] = previous[j - 1] + 1;
+        if (current[j] > best) best = current[j];
+      }
+    }
+    previous = current;
+  }
+  return best;
 }
 
 /**
