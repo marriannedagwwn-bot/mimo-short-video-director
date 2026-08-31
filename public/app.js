@@ -13,6 +13,7 @@ import {
 import { computeDependencyHash, computePromptHash } from "./frame-dependency.js";
 import { fullStoryShapeWarnings } from "./full-story-shape-metrics.js";
 import { STORY_DURATION_SOURCE, resolveStoryDurationTarget, storyDurationOptions } from "./story-duration.js";
+import { CHARACTER_EXPRESSION_RULES_STORAGE_KEY } from "./character-expression-rules.js";
 import { buildShotFrameMultiImagePrompt } from "./shot-frame-multi-image-prompt.js";
 import {
   createApiRequestError,
@@ -139,7 +140,7 @@ const elements = {
   input: $("#videoInput"), dropzone: $("#dropzone"), uploadTitle: $("#uploadTitle"), uploadHint: $("#uploadHint"),
   videoInfo: $("#videoInfo"), preview: $("#videoPreview"), fileName: $("#fileName"), fileMeta: $("#fileMeta"),
   frames: $("#frames"), frameStatus: $("#frameStatus"), replace: $("#replaceVideo"), transcript: $("#transcript"),
-  fixedCharacter: $("#fixedCharacter"), vertical: $("#vertical"), constraints: $("#constraints"), variantCount: $("#variantCount"),
+  fixedCharacter: $("#fixedCharacter"), vertical: $("#vertical"), constraints: $("#constraints"), characterExpressionRules: $("#characterExpressionRules"), variantCount: $("#variantCount"),
   run: $("#runWorkflow"), error: $("#errorMessage"), modelState: $("#modelState"),
   pipelineUsage: $("#pipelineUsage"),
   openModelSettings: $("#openModelSettings"), modelSettingsModal: $("#modelSettingsModal"), closeModelSettings: $("#closeModelSettings"),
@@ -255,6 +256,8 @@ init();
 
 async function init() {
   restoreProfile();
+  restoreCharacterExpressionRules();
+  elements.characterExpressionRules.addEventListener("input", saveCharacterExpressionRules);
   bindEvents();
   validateReady();
   try {
@@ -1504,6 +1507,8 @@ async function generateAnimationPlan({ force = false } = {}) {
         variant,
         fullStory,
         creatorProfile: profile(),
+        // 只进 Foundation 与逐镜提示词，不写入 Artifact、不进 digest、不 stale 任何东西。
+        characterExpressionRules: characterExpressionRules(),
         animationPlanMode,
         targetAspectRatio,
         backgroundMusicEnabled: backgroundMusicEnabled(variant.id),
@@ -4472,6 +4477,20 @@ function globalCharacterBoundaryContext() {
   };
 }
 function saveProfile() { localStorage.setItem("directorProfile", JSON.stringify(profile())); }
+// 角色表情规则单独存。**绝不能并进 directorProfile**：那是 profile() 的存档，而
+// profile() 整体进 character-boundary 的 sourceDigest，混进去会让「改一句表情」
+// 作废全局角色边界并要求重跑整条工作流。表情是表演表现，不是角色身份事实。
+function characterExpressionRules() { return elements.characterExpressionRules.value.trim(); }
+function saveCharacterExpressionRules() {
+  try { localStorage.setItem(CHARACTER_EXPRESSION_RULES_STORAGE_KEY, elements.characterExpressionRules.value); } catch {}
+}
+function restoreCharacterExpressionRules() {
+  // catch 只兜 localStorage 本身不可用（隐私模式、站点数据被禁），不兜代码错误——
+  // 第一版把整段包进 try 里，常量的 TDZ ReferenceError 被静默吞掉，刷新后文本框一直是空的。
+  let saved = null;
+  try { saved = localStorage.getItem(CHARACTER_EXPRESSION_RULES_STORAGE_KEY); } catch { return; }
+  if (typeof saved === "string") elements.characterExpressionRules.value = saved;
+}
 function restoreProfile() { try { const data = JSON.parse(localStorage.getItem("directorProfile")); if (data) { elements.fixedCharacter.value = data.fixedCharacter || ""; elements.vertical.value = data.vertical || ""; elements.constraints.value = data.constraints || ""; } } catch {} }
 
 function persistActiveProductionRun() {

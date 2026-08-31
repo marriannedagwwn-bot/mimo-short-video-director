@@ -92,6 +92,16 @@ Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Art
 
 Animation Plan 的 `targetAspectRatio` 当前只允许 `9:16` 或 `16:9`。首次生成时必须锁入 `productionStrategy.targetAspectRatio` 并与 Foundation 输出一致；已有 Plan 切换画幅时以用户选择更新计划级输出事实，不调用模型、不重写 shot，但必须签发新 Plan revision/media namespace，使旧画幅媒体 stale。后续视频生成从当前签发 Plan 读取；不得向 direct-shot 的 exact shot 字段增加 `aspectRatio`。页面的计划总长由 `shotPlan[].durationSeconds` 合计派生；3.1 起 `targetRuntimeSeconds` 由服务端注入为同一个合计值，两者定义上相等，偏差恒为 0。浏览器把画幅控件放在「设定创作宇宙」面板（#animationAspectRatio），它只是新 Plan 的默认值（全局默认为 16:9）：写进 state.animationAspectRatioDefault，取值优先级为「该变体草稿 → 该变体已签发 Plan → 全局默认」；拨动它不触碰任何已签发 Plan，不签发 revision、不 stale 媒体。已生成的 Plan 卡片里画幅是纯展示 data-cell，不再提供就地切换的下拉框，因此当前浏览器不暴露「已有 Plan 就地切换画幅」这条路径，要换画幅只能重新生成 Plan；上述切换画幅契约描述的仍是该操作一旦发生时必须满足的语义，withAnimationPlanAspectRatio()（public/animation-plan-settings.js）与其单元测试保留，随时可重新接回 UI。
 
+### 角色表情规则
+
+「设定创作宇宙」面板的 `#characterExpressionRules` 是用户手写的「情绪 = 可见特征」映射（例：`芙芙猫：开心=眯眼、嘴呈 w 形、耳朵朝前`）。与 `targetDurationSeconds` 同规格：**只作为目标进入提示词，不写入任何 Artifact、不参与派生、不进 digest、不 stale 任何已签发内容**。改它不触碰已签发 Plan，也不征求同意，下次生成 Animation Plan 时才生效。判定与 1000 字符上限在 `public/character-expression-rules.js`，浏览器与服务端共用一份；请求侧只拒绝类型错误与超长，不裁决内容质量。
+
+**不得并入 `creatorProfile`。** 那三个字段整体进 `src/character-boundary.js` 的 `sourceDigest`，任何变动都会作废全局角色边界并要求重跑整条工作流。表情是表演表现，不该承受该代价；发色一类身份事实则相反，应写进 `creatorProfile.fixedCharacter` 并承受重跑。浏览器侧同理使用独立的 localStorage key，不并入 `directorProfile`。
+
+**注入面只有两个**：`animationDirectFoundationPrompt` 与 `animationDirectShotBatchPrompt`；旧 v2 兼容路径逐字不注入。刻意排除 Full Story（它写的是 `emotionNode` 情绪节点，不是表情渲染）、`/api/refine-character-reference`（它改 `appearancePrompt`，而 `buildCharacterVisualAnchor` 只取首句、上限 180 字，塞入表情散文会顶掉外观事实）与角色参考图提示词（`REFERENCE_SHEET_POSE` 固定为「表情中性平和」，那是身份锚点）。
+
+该字段只约束表情与表演，**不得改变角色身份、外观或物种**，`fixedCharacterBoundary` 始终优先。此约束有确定性兜底：模型若据此写出命中禁止特征的外观事实，`ensureCharacterReferenceMatchesBoundary` 仍在成片渲染前硬失败。「模型有没有照着写表情」本身没有兜底，属于生成质量。
+
 Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：暂时弃置，后续优化或删除。旧 v2 代码保留兼容，但不参与当前 `direct_shot` 主流程。
 
 视频生成存在两个显式模式：

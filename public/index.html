@@ -97,6 +97,11 @@
           <span>创作限制 <small>可选</small></span>
           <textarea id="constraints" rows="3" placeholder="例：60 秒内；单人可拍；不出现儿童；预算 500 元以内。"></textarea>
         </label>
+        <label class="field">
+          <span>角色表情规则 <small>可选</small></span>
+          <small class="field-hint">写「情绪 = 可见特征」的映射，按角色分行。只影响表情与表演，不改角色外观；改它不会作废已生成的内容，下次生成分镜时生效。</small>
+          <textarea id="characterExpressionRules" rows="3" placeholder="例：芙芙猫：开心=眯眼、嘴呈 w 形、耳朵朝前；委屈=眼下挂泪珠、耳朵向两侧压平；惊讶=瞳孔放大、呆毛竖直。"></textarea>
+        </label>
         <label class="field inline-field">
           <span>主题变体数量</span>
           <select id="variantCount">

@@ -8,6 +8,21 @@ import {
 } from "./validation.js";
 import { formatDirectShotSkeleton } from "./direct-shot-timeline.js";
 import { VIDEO_PROMPT_PROFILE_IDS } from "../public/video-prompt-profiles.js";
+import { normalizeCharacterExpressionRules } from "../public/character-expression-rules.js";
+
+// 用户手写的「情绪 → 可见特征」映射。只进提示词，不进任何 Artifact、digest 或 lineage
+// （与 targetDurationSeconds 同规格，见 public/character-expression-rules.js）。
+// 未设置时返回空串——两处调用点整段省略，保证不传时的提示词与历史逐字一致。
+// 只注入 direct_shot 的两个提示词；旧 v2 兼容路径逐字不变。
+function characterExpressionRulesText(input) {
+  const rules = normalizeCharacterExpressionRules(input?.characterExpressionRules);
+  if (!rules) return "";
+  return `
+角色表情规则（用户指定）：${rules}
+- 这段规则**只约束表情、神态与表演方式**，不得据此改变角色身份、外观、物种、服装或颜色；与固定角色外观边界冲突时一律以边界为准。
+- 需要写某个角色的情绪时，按这里给出的可见特征写（眼睛、嘴形、耳朵、肢体的具体状态），不要用“表情可爱”“神态自然”“情绪到位”这类看不出画面的措辞。
+- 规则没有覆盖到的情绪照常自由发挥，不要为了套用规则而改变剧情要求的情绪。`;
+}
 
 const JSON_ONLY = `
 只输出一个合法 JSON 对象，不要 Markdown 代码块，不要解释。不得输出思维过程。
@@ -1120,7 +1135,7 @@ function animationDirectFoundationPrompt(input) {
 用户选择的背景音乐：${backgroundMusicDeclaration}
 
 垂直赛道：${input.creatorProfile?.vertical || "未指定"}
-创作限制：${input.creatorProfile?.constraints || "无"}
+创作限制：${input.creatorProfile?.constraints || "无"}${characterExpressionRulesText(input)}
 完整剧情基础事实 fullStory：${JSON.stringify(foundationStoryContext)}
 固定角色外观边界（唯一角色事实源）：${globalCharacterBoundaryText(input.visualGuardrails)}
 visualGuardrails 附加规则（不重复 fixedCharacterBoundary）：${formatVisualGuardrailsForPrompt(
@@ -1370,7 +1385,7 @@ function animationDirectShotBatchPrompt(input) {
 镜头编号要求：${shotIdInstruction}
 
 固定角色：${input.creatorProfile?.fixedCharacter || "未指定"}
-创作限制：${input.creatorProfile?.constraints || "无"}
+创作限制：${input.creatorProfile?.constraints || "无"}${characterExpressionRulesText(input)}
 选中主题变体：${JSON.stringify(variant)}
 全剧必要上下文：${JSON.stringify({
     selectedVariantId: fullStory.selectedVariantId,

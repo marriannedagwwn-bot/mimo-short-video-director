@@ -55,6 +55,7 @@ import {
 } from "./src/full-story-candidate-binding.js";
 import { loadOrCreatePersistentKey } from "./src/persistent-key.js";
 import { STORY_DURATION_MAX_SECONDS, STORY_DURATION_MIN_SECONDS, isValidStoryDurationSeconds } from "./public/story-duration.js";
+import { CHARACTER_EXPRESSION_RULES_MAX_CHARS, isValidCharacterExpressionRules } from "./public/character-expression-rules.js";
 import { ProductionStateStore } from "./src/production-state-store.js";
 import { ProductionStateError, normalizeArtifactId, safeIdentifier } from "./src/production-lineage.js";
 import { readModelUsageFromError, runWithUsageAccounting } from "./src/token-usage.js";
@@ -230,15 +231,23 @@ const routes = {
     });
     return result;
   },
-  "/api/animation-plan": async (body, { request } = {}) => animationPromptCapture.run({
+  "/api/animation-plan": async (body, { request } = {}) => {
+    // 用户在「设定创作宇宙」写的角色表情规则。与 targetDurationSeconds 同规格：
+    // 只进 Foundation 与逐镜提示词，不写入 Artifact、不参与派生、不进 digest。
+    // 这里只拦明显非法的值，不裁决「这条规则写得好不好」。
+    if (body?.characterExpressionRules !== undefined && !isValidCharacterExpressionRules(body.characterExpressionRules)) {
+      throw new InputError(`characterExpressionRules 必须是不超过 ${CHARACTER_EXPRESSION_RULES_MAX_CHARS} 字符的字符串`);
+    }
+    return animationPromptCapture.run({
     route: "/api/animation-plan",
     variantId: body?.variant?.id,
     animationPlanMode: body?.animationPlanMode,
     provider: String(body?.modelOverrides?.animationPlan?.provider || stageDefaults.animationPlan.provider || ""),
     traceContext: await animationPlanModelOutputTrace(request, body)
   }, () => body?.includeCompilerMetadata
-    ? workflow.createAnimationPlanWithMetadata(body)
-    : workflow.createAnimationPlan(body)),
+      ? workflow.createAnimationPlanWithMetadata(body)
+      : workflow.createAnimationPlan(body));
+  },
   "/api/animation-plan/video-prompts/rewrite": async (body, { request } = {}) => {
     const productionMedia = await resolveProductionMediaContext(body, { required: true });
     return animationPromptCapture.run({

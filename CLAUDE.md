@@ -144,6 +144,16 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
 - **画幅只在生成前选择。** 浏览器把画幅控件放在「设定创作宇宙」面板（`#animationAspectRatio`），它只是**新 Plan 的默认值**（全局默认 `16:9`）：写进 `state.animationAspectRatioDefault`，取值优先级为「该变体草稿 → 该变体已签发 Plan → 全局默认」。拨动它**不触碰任何已签发 Plan**——不签发 revision、不 stale 媒体。已生成的 Plan 卡片里画幅是**纯展示**（`data-cell`），不再提供就地切换的下拉框。
 - 因此当前浏览器**不暴露**「已有 Plan 就地切换画幅」这条路径；要换画幅只能重新生成 Plan。上面那条契约描述的仍是该操作一旦发生时必须满足的语义，`withAnimationPlanAspectRatio()`（`public/animation-plan-settings.js`）与其单元测试保留，随时可重新接回 UI。
 
+**角色表情规则（2026-08-31）**：「设定创作宇宙」面板的 `#characterExpressionRules`，用户手写的「情绪 = 可见特征」映射。与 `targetDurationSeconds` 同规格：**只进提示词，不写入任何 Artifact、不参与派生、不进 digest、不 stale 任何东西**；改它不触碰已签发 Plan，也不弹窗征求同意，下次生成 Plan 时才生效。判定与上限在 `public/character-expression-rules.js`（1000 字符），浏览器与服务端共用一份；请求侧只拦类型错误与超长，不裁决内容。
+
+**禁止把它并进 `creatorProfile`。** `creatorProfile` 恰好三个字段且整体进 `character-boundary.js` 的 `sourceDigest`，`handleProfileInput` 在它变动时作废全局角色边界并要求重跑整条工作流。表情是**表演表现**，不该承受那个代价；发色那类**身份事实**则相反，就该写进 `fixedCharacter` 并承受重跑。浏览器侧同理：它存在独立的 `directorCharacterExpressionRules` key，不进 `directorProfile`。
+
+**注入面刻意只有两个**：`animationDirectFoundationPrompt`（模型在那里写 `consistencyTags`）与 `animationDirectShotBatchPrompt`（写 `videoPrompt` / `characterAction`）。**旧 v2 兼容路径逐字不注入。** 明确排除三处：Full Story 写的是 `emotionNode` 情绪节点、不是表情渲染；`/api/refine-character-reference` 会改 `appearancePrompt`，而 `buildCharacterVisualAnchor` 只取它第一句、上限 180 字，塞表情散文会顶掉外观事实；角色参考图的 `REFERENCE_SHEET_POSE` 写死「表情中性平和」，那是身份锚点，有意为之。
+
+它**只管表情与表演，不得改变角色身份、外观或物种**，`fixedCharacterBoundary` 始终优先。这条**有确定性兜底**：模型若把它写成外观事实并命中禁止特征，`ensureCharacterReferenceMatchesBoundary` 仍在成片渲染前硬失败（实测夹带「翅膀」→ `混入全局边界禁止特征：翅膀`）。但「模型有没有照着写表情」没有兜底——那需要语义判断。
+
+依据：用户想锁固定搭档的表情，实测三条现有路径都不通——上传表情图后 refine 能读懂，却把结果写进 `referenceImageNotes`，而该字段全项目没有任何代码读进提示词；写进 `constraints` 会进 10 个阶段且改一字就作废边界；让 refine 写进 `consistencyTags` 则会被下一次重新生成 Plan 抹掉。
+
 ### 2.6 视频生成模式
 
 | 模式 | 语义 | 可用供应商 |
