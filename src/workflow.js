@@ -20,6 +20,11 @@ import {
   planAnimationFoundationPartialRepair
 } from "./animation-foundation-partial-repair.js";
 import {
+  animationShotDialogueRepairPrompt,
+  mergeAnimationShotDialogueRepair,
+  planAnimationShotDialogueRepair
+} from "./animation-shot-dialogue-repair.js";
+import {
   animationVideoPromptSemanticAuditDiagnostics,
   animationVideoPromptSemanticAuditCatalogPayload,
   createAnimationVideoPromptSemanticAuditCatalog,
@@ -1046,16 +1051,32 @@ export class WorkflowService {
     policy
   }) {
     let validatedBatch;
+    let repairedCandidate = null;
     try {
       validatedBatch = validate(structuredClone(candidate));
     } catch (error) {
       if (!isRecoverableAnimationModelOutputError(error)) throw error;
-      return animationBatchAttemptFailure({
-        error,
+      // 只允许一次有界补写：把缺失的台词原话插回 videoPrompt。这是整个批次路径上
+      // 唯一的局部纠错，失败即 fail closed，绝不整批重写。
+      const repaired = await this.repairAnimationShotBatchDialogue({
+        client,
+        model,
+        maxCompletionTokens,
         candidate,
-        phase: "validation"
+        error,
+        validate
       });
+      if (!repaired) {
+        return animationBatchAttemptFailure({
+          error,
+          candidate,
+          phase: "validation"
+        });
+      }
+      validatedBatch = repaired.validatedBatch;
+      repairedCandidate = repaired.candidate;
     }
+    if (repairedCandidate) candidate = repairedCandidate;
 
     const review = await this.reviewAnimationShotBatch({
       client,
@@ -1070,6 +1091,50 @@ export class WorkflowService {
       phase: review.status === "protocol_failure" ? "action_state_review_protocol" : "action_state_review",
       kind: review.status === "protocol_failure" ? "audit_protocol" : "semantic"
     });
+  }
+
+  /**
+   * 一次有界的 videoPrompt 台词补写。返回 null 表示不可修复，调用方 fail closed。
+   *
+   * 预算严格一次模型调用：这里不接受第二次尝试，补写结果必须从头通过**完整**批次
+   * 校验（同一个 validate），不是只复查被改的那一条。任何环节失败都退回原始错误，
+   * 绝不把半修好的候选当成功。
+   */
+  async repairAnimationShotBatchDialogue({
+    client,
+    model,
+    maxCompletionTokens,
+    candidate,
+    error,
+    validate
+  }) {
+    let plan;
+    try {
+      plan = planAnimationShotDialogueRepair(candidate, error);
+    } catch {
+      return null;
+    }
+    if (!plan) return null;
+
+    let envelope;
+    try {
+      envelope = await client.generateJson({
+        prompt: animationShotDialogueRepairPrompt(plan),
+        model,
+        maxCompletionTokens: animationAuditTokenLimit(maxCompletionTokens)
+      });
+    } catch (repairError) {
+      if (!isRecoverableAnimationModelOutputError(repairError)) throw repairError;
+      return null;
+    }
+
+    try {
+      const merged = mergeAnimationShotDialogueRepair(candidate, envelope, plan);
+      return { candidate: merged, validatedBatch: validate(structuredClone(merged)) };
+    } catch (mergeError) {
+      if (!isRecoverableAnimationModelOutputError(mergeError)) throw mergeError;
+      return null;
+    }
   }
 
   async reviewAnimationShotBatch({ client, model, maxCompletionTokens, validatedBatch }) {

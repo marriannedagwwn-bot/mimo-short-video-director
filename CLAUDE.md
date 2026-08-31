@@ -120,6 +120,8 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
 - **第 ⑥ 项的台词必须把原话逐字写进 `videoPrompt`，这一条有确定性校验兜底。** 视频模型直接生成人声，只写「某人在说话」「传出说话声」而不写说了什么，那句台词就不会被说出来。`shotDialogueMissingFromVideoPrompt()`（`src/validation.js`）在 `ensureAnimationDirectShotContract` 里硬失败，诊断码 `DIRECT_SHOT_DIALOGUE_MISSING_FROM_VIDEO_PROMPT`。
   判据是**最长连续逐字命中 ≥ 6 字**，不是覆盖率——长文本里任意两个中文串都会偶然共享少量字符，覆盖率量的是巧合。阈值来自实测：187 条实词对白的分布是双峰的，run≤4 占 57%（偶然重合），run≥9 占 35%（确实引用了原话），中间 5–8 只有 8.6%，6 落在谷底。**不切句**：501 条真实对白里 494 条没有 `「」`，说话人分隔混用换行、句号和裸文本，切句只能靠猜。话语正文短于 10 字整条豁免——那多是拟声词与非语言发声（嗷呜、喵），按描述写合法，也短到无法区分引用与巧合。
   依据是一份已签发 Plan 的 A05 整句丢了奶奶的台词而当时无人拦得住；按同一判据回扫历史语料，实词对白有 61% 不合规——那衡量的是旧提示词从没要求写原话，不是新阈值太严。
+  **它有一次有界补写兜底，不是直接 fail closed。** `direct_shot` 对已解析候选不整批重试（`workflow.js` 的 `if (directShotMode && firstOutcome.hadParsedCandidate) throw`），所以模型从来不知道自己错了、也没有矫正机会——实测同一句台词连续两次被漏写，每次烧掉约 6.8 万 token。因此新增第四个局部纠错协议 `animation_shot_dialogue_repair/1.0`（`src/animation-shot-dialogue-repair.js`），在 `evaluateAnimationShotBatchCandidate` 的校验失败分支上**只触发一次**。
+  协议约束与既有三个同规格：服务端私有签发计划身份（`WeakSet`，序列化副本不可合并）、`baseDigest` 冻结候选、模型只返回等量同序 `{repairId, replacement}`、不得返回 path/op/完整对象。**目标不从错误消息里解析路径**——改为用与校验器同一个函数重新扫描候选，保证要修的与会被拒的是同一批。合并在克隆上原子进行，并证明两件事：目标之外逐字节不变；目标之内**原文逐字保留、只允许插入**（按收尾句切成头尾两段，替换值必须以头段为前缀、尾段为后缀，中间的插入内容必须含缺失台词原话），与 Beat–Scene postpass 的追加式同规格。合并后**从头重跑完整批次校验**，不是只复查被改的那条。任何环节失败都退回原始错误 fail closed，**禁止第二次补写**。
 - Plan 阶段两种 Profile 都不得生成尚未绑定的 `@图片/@视频/@音频` 或 `<Subject/Picture/Video/Audio N>`。
 
 **`productionStrategy.backgroundMusicMode`** — 主题变体卡上的背景音乐开关，取值只有 `"none"` / `"allowed"`，**默认 `none`**。与 `videoPromptProfile` 同级：由服务端根据请求 `backgroundMusicEnabled` 签发，**模型不得输出、推断或修改**，回显即拒绝。
