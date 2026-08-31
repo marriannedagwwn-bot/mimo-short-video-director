@@ -664,3 +664,26 @@ test("原话已写入、拟声词与无对白都不误伤", () => {
     videoPrompt: "固定镜头，空院子里雨水落进水缸。"
   }), "");
 });
+
+// 真实回归：模型把「谢谢，再见」逐字写进了 videoPrompt，却让店员全程只是「站在
+// 门口目送」，那一句戏会哑。带「」时逐句判定，报错只点名真正丢的那句。
+test("对白自带「」时逐句判定，只报真正缺失的那一句", () => {
+  const missing = shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "便利店店员：「这小猫我们会帮忙找领养的，你放心」；小白子：「谢谢，再见」",
+    videoPrompt: "全景：便利店店员穿着制服站在门口，双臂怀抱小奶猫。切中景：小白子直起身，向店员挥手，"
+      + "嘴巴微张说出「谢谢，再见」，猫耳轻微抖动。店员怀抱小猫站在门口目送。"
+  });
+  assert.equal(missing, "这小猫我们会帮忙找领养的，你放心");
+
+  // 两句都带上就放行。
+  assert.equal(shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "店员：「这小猫我们会帮忙找领养的，你放心」；小白子：「谢谢，再见」",
+    videoPrompt: "店员说这小猫我们会帮忙找领养的，你放心。小白子挥手说出「谢谢，再见」。"
+  }), "");
+
+  // 逐句豁免同样按句长算：两句都是拟声词，整条放行。
+  assert.equal(shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "小白子：「嗷呜～」芙芙猫：「喵～」",
+    videoPrompt: "小白子发出欢快的叫声，芙芙猫跟着叫了一声。"
+  }), "");
+});

@@ -1016,16 +1016,29 @@ const DIALOGUE_VERBATIM_MIN_LENGTH = 10;
  * 句号和裸文本，切句只能靠猜，而猜出来的边界会让判定本身不可信。
  */
 export function shotDialogueMissingFromVideoPrompt(shot = {}) {
-  const spoken = dialogueSpokenText(shot.dialogueOrSubtitle);
-  if (spoken.length < DIALOGUE_VERBATIM_MIN_LENGTH) return "";
   const prompt = normalizeDialogueChars(shot.videoPrompt);
-  if (longestCommonRun(spoken, prompt) >= DIALOGUE_VERBATIM_MIN_RUN) return "";
-  return String(shot.dialogueOrSubtitle || "").trim().slice(0, 40);
+  const missing = dialogueSpokenLines(shot.dialogueOrSubtitle).filter((line) => {
+    const spoken = normalizeDialogueChars(line);
+    if (spoken.length < DIALOGUE_VERBATIM_MIN_LENGTH) return false;
+    return longestCommonRun(spoken, prompt) < DIALOGUE_VERBATIM_MIN_RUN;
+  });
+  return missing.join("；").slice(0, 120);
 }
 
-/** 去掉「说话人：」前缀与全部标点，只留下应当被逐字带进 videoPrompt 的话语本身。 */
-function dialogueSpokenText(value) {
-  return normalizeDialogueChars(String(value || "").replace(/[^：:\n。]{1,8}[：:]/gu, ""));
+/**
+ * 拆出应当被逐字带进 videoPrompt 的话语。
+ *
+ * 模型自己写了 `「」` 时那是**明确分隔符**，逐句判定不需要任何猜测，报错也能精确
+ * 指出是哪一句丢了。没有 `「」` 的（历史语料里 494/501）退回整段判定：说话人分隔
+ * 混用换行、句号和裸文本，切句只能靠猜，而猜出来的边界会让判定本身不可信。
+ * 整段判定较粗——只要有一句被逐字引用就算过——这是不猜的代价，不是疏漏。
+ */
+function dialogueSpokenLines(value) {
+  const text = String(value || "").trim();
+  if (!text) return [];
+  const quoted = [...text.matchAll(/「([^」]+)」/gu)].map((match) => match[1]);
+  if (quoted.length) return quoted;
+  return [text.replace(/[^：:\n。]{1,8}[：:]/gu, "")];
 }
 
 function normalizeDialogueChars(value) {
