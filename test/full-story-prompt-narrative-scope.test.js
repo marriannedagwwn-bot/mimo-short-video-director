@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fullStoryPrompt } from "../src/prompts.js";
+import { analysisPrompt, fullStoryPrompt, reconstructionPrompt } from "../src/prompts.js";
 
 const creatorProfile = Object.freeze({
   fixedCharacter: "小白子，q版狼耳少女，村里的热心帮手",
@@ -268,4 +268,28 @@ test("萌点必须由主角完成且承担剧情功能，宠物小动作不算",
   assert.match(text, /前因——爷爷刚提醒过会被枣砸到/u);
   assert.match(text, /后续——戴着锅继续把枣捡完/u);
   assert.match(text, /把这个萌点删掉，剧情会不会缺一块/u);
+});
+
+// 2026-08-30 实测：12 次 Full Story 截断的退化段起点全部落在同一偏移（约 490），
+// 都是模型把 creatorProfile.constraints 里的全角引号“谢谢、再见”抄成未转义的
+// 半角双引号，当场闭合 JSON 字符串，然后在 `:"",  ":"` 上重复到 16384 token 上限，
+// 每次烧掉 214–284 秒。历史 99 份可解析输出里 41 份自发用单引号、2 份用全角引号，
+// 零份用裸半角引号——这条规则只是把已被验证有效的写法显式化。
+// 无确定性兜底：无法在生成前预判模型会吐哪种引号。
+test("JSON 输出契约禁止字符串值内出现裸半角双引号", () => {
+  const text = prompt();
+  assert.match(text, /字符串值内部不得出现半角双引号/u);
+  assert.match(text, /需要引用词句时用「」或单引号/u);
+  // 不能退化成「要求模型自己写 \\" 转义」——转义正是它当前失败的动作。
+  assert.match(text, /上游文本里的全角引号“”必须原样保留，不得改写成半角双引号/u);
+  assert.match(text, /未转义的半角双引号会当场闭合字符串，让整份输出作废/u);
+});
+
+// 这条规则讲的是 JSON 序列化本身，属于 JSON_ONLY 共享输出契约，不是 Full Story 的
+// 局部补丁：Analyze / Reconstruct 同样要把带引号的原片字幕转抄进字符串值。
+// 若有人把它挪进 fullStoryPrompt 正文，这个断言会失败。
+test("引号规则来自共享 JSON 输出契约，覆盖其它转抄原文的阶段", () => {
+  const shared = /字符串值内部不得出现半角双引号/u;
+  assert.match(analysisPrompt({ metadata: {}, frames: [] }), shared);
+  assert.match(reconstructionPrompt({ referenceAnalysis: {}, metadata: {}, frames: [] }), shared);
 });
