@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadOrCreatePersistentKey, PersistentKeyError } from "./persistent-key.js";
+import { ProductionRunCoordinator } from "./production-run-coordinator.js";
 import {
   PRODUCTION_LINEAGE_SCHEMA_VERSION,
   PRODUCTION_PACKAGE_TYPE,
@@ -29,7 +30,9 @@ export class ProductionStateStore {
     gitCommit = "",
     buildId = "",
     now = () => new Date(),
-    idFactory = () => randomUUID()
+    idFactory = () => randomUUID(),
+    coordinator = new ProductionRunCoordinator(),
+    artifactWriteGuard = null
   } = {}) {
     const configuredRoot = String(rootDir || "").trim();
     if (!configuredRoot) throw new TypeError("ProductionStateStore.rootDir 不能为空");
@@ -38,7 +41,8 @@ export class ProductionStateStore {
     this.buildId = safeBuildIdentity(buildId);
     this.now = typeof now === "function" ? now : () => new Date();
     this.idFactory = typeof idFactory === "function" ? idFactory : () => randomUUID();
-    this.runLocks = new Map();
+    this.coordinator = coordinator;
+    this.artifactWriteGuard = typeof artifactWriteGuard === "function" ? artifactWriteGuard : null;
   }
 
   async createRun({ projectId = "", metadata = {} } = {}) {
@@ -82,6 +86,9 @@ export class ProductionStateStore {
     const runId = safeIdentifier(input.runId, "runId");
     return this.withRunLock(projectId, runId, async () => {
       const manifest = await this.readManifest(projectId, runId);
+      if (this.artifactWriteGuard) {
+        await this.artifactWriteGuard({ manifest, input, projectId, runId });
+      }
       return this.commitArtifactUnlocked(manifest, input);
     });
   }
@@ -89,76 +96,120 @@ export class ProductionStateStore {
   async loadRun({ projectId, runId, includeContent = true } = {}) {
     const safeProjectId = safeIdentifier(projectId, "projectId");
     const safeRunId = safeIdentifier(runId, "runId");
-    return this.withRunLock(safeProjectId, safeRunId, async () => {
-      const manifest = await this.readManifest(safeProjectId, safeRunId);
-      const latestArtifacts = {};
-      for (const [artifactId, revision] of Object.entries(manifest.latest || {})) {
-        const artifact = findArtifact(manifest, artifactId, revision);
-        if (!artifact) continue;
-        latestArtifacts[artifactId] = {
-          lineage: publicLineage(artifact),
-          ...(includeContent ? { content: await this.readArtifactContent(manifest, artifact) } : {})
-        };
-      }
-      return {
-        ...runSummary(manifest),
-        latestArtifacts,
-        events: structuredClone(manifest.events || [])
+    // Manifest writes are atomic and Artifact content files are immutable and
+    // published before the manifest. Reads therefore need no Run lock and see
+    // either a complete old snapshot or a complete new snapshot.
+    const manifest = await this.readManifest(safeProjectId, safeRunId);
+    return this.loadRunUnlocked(manifest, { includeContent });
+  }
+
+  async loadRunUnlocked(manifest, { includeContent = true } = {}) {
+    const latestArtifacts = {};
+    for (const [artifactId, revision] of Object.entries(manifest.latest || {})) {
+      const artifact = findArtifact(manifest, artifactId, revision);
+      if (!artifact) continue;
+      latestArtifacts[artifactId] = {
+        lineage: publicLineage(artifact),
+        ...(includeContent ? { content: await this.readArtifactContent(manifest, artifact) } : {})
       };
-    });
+    }
+    return {
+      ...runSummary(manifest),
+      latestArtifacts,
+      events: structuredClone(manifest.events || [])
+    };
+  }
+
+  async readCurrentLineageSnapshot({ projectId, runId, artifactIds = null } = {}) {
+    const safeProjectId = safeIdentifier(projectId, "projectId");
+    const safeRunId = safeIdentifier(runId, "runId");
+    const manifest = await this.readManifest(safeProjectId, safeRunId);
+    const selectedIds = Array.isArray(artifactIds)
+      ? new Set(artifactIds.map((artifactId) => normalizeArtifactId(artifactId)))
+      : null;
+    const artifacts = {};
+    for (const [artifactId, revision] of Object.entries(manifest.latest || {})) {
+      if (selectedIds && !selectedIds.has(artifactId)) continue;
+      const artifact = findArtifact(manifest, artifactId, revision);
+      if (artifact) artifacts[artifactId] = publicLineage(artifact);
+    }
+    return {
+      projectId: safeProjectId,
+      runId: safeRunId,
+      checkpoint: structuredClone(manifest.checkpoint || {}),
+      artifacts
+    };
   }
 
   async recordStage(input = {}) {
     const projectId = safeIdentifier(input.projectId, "projectId");
     const runId = safeIdentifier(input.runId, "runId");
+    return this.withRunLock(projectId, runId, async () => {
+      const manifest = await this.readManifest(projectId, runId);
+      return this.recordStageUnlocked(manifest, input);
+    });
+  }
+
+  async recordStageUnlocked(manifest, input = {}) {
     const stageId = normalizeArtifactId(input.stageId);
     const status = String(input.status || "").trim();
-    if (!["running", "failed", "cancelled"].includes(status)) {
-      throw new ProductionStateError("stage status 只能是 running、failed 或 cancelled", {
+    const allowedStatuses = ["running", "failed", "cancelled", "interrupted", "conflicted", "abandoned"];
+    if (!allowedStatuses.includes(status)) {
+      throw new ProductionStateError(`stage status 只能是 ${allowedStatuses.join("、")}`, {
         code: "PRODUCTION_STAGE_STATUS_INVALID"
       });
     }
     const requestId = safeIdentifier(input.requestId, "requestId");
-    return this.withRunLock(projectId, runId, async () => {
-      const manifest = await this.readManifest(projectId, runId);
-      const updatedAt = this.timestamp();
-      const gitCommit = this.gitCommit || safeBuildIdentity(manifest.gitCommit);
-      const buildId = this.buildId || safeBuildIdentity(manifest.buildId) || gitCommit;
-      const failure = status === "failed" ? sanitizeStageFailure(input.error) : null;
-      manifest.stages ||= {};
-      manifest.stages[stageId] = {
-        stageId,
-        status,
-        requestId,
-        updatedAt,
-        gitCommit,
-        buildId,
-        ...(status === "failed" ? {
-          error: { stage: stageId, gitCommit, buildId, ...failure }
-        } : {})
-      };
-      advanceCheckpoint(manifest, updatedAt);
-      manifest.events ||= [];
-      manifest.events.push({
-        type: `stage.${status}`,
-        stageId,
-        requestId,
-        createdAt: updatedAt,
-        gitCommit,
-        buildId,
-        ...(failure ? {
-          code: failure.code,
-          category: failure.category,
-          diagnostics: structuredClone(failure.diagnostics)
-        } : {})
-      });
-      manifest.events = manifest.events.slice(-2_000);
-      await this.writeManifest(manifest);
+    const currentStage = manifest.stages?.[stageId] || null;
+    if (
+      status !== "running"
+      && input.expectedRequestId
+      && currentStage?.requestId !== safeIdentifier(input.expectedRequestId, "expectedRequestId")
+    ) {
       return {
-        stage: structuredClone(manifest.stages[stageId]),
-        checkpoint: structuredClone(manifest.checkpoint)
+        applied: false,
+        stage: currentStage ? structuredClone(currentStage) : null,
+        checkpoint: structuredClone(manifest.checkpoint || {})
       };
+    }
+    const updatedAt = this.timestamp();
+    const gitCommit = this.gitCommit || safeBuildIdentity(manifest.gitCommit);
+    const buildId = this.buildId || safeBuildIdentity(manifest.buildId) || gitCommit;
+    const terminalReason = status === "running" ? null : sanitizeStageTerminalReason(input.error, status);
+    manifest.stages ||= {};
+    manifest.stages[stageId] = {
+      stageId,
+      status,
+      requestId,
+      updatedAt,
+      gitCommit,
+      buildId,
+      ...(terminalReason ? {
+        error: { stage: stageId, gitCommit, buildId, ...terminalReason }
+      } : {})
+    };
+    advanceCheckpoint(manifest, updatedAt);
+    manifest.events ||= [];
+    manifest.events.push({
+      type: `stage.${status}`,
+      stageId,
+      requestId,
+      createdAt: updatedAt,
+      gitCommit,
+      buildId,
+      ...(terminalReason ? {
+        code: terminalReason.code,
+        category: terminalReason.category,
+        diagnostics: structuredClone(terminalReason.diagnostics)
+      } : {})
     });
+    manifest.events = manifest.events.slice(-2_000);
+    await this.writeManifest(manifest);
+    return {
+      applied: true,
+      stage: structuredClone(manifest.stages[stageId]),
+      checkpoint: structuredClone(manifest.checkpoint)
+    };
   }
 
   async sealPackage({ projectId, runId, payload } = {}) {
@@ -406,6 +457,16 @@ export class ProductionStateStore {
     const dependencies = normalizeDependencies(input.dependencies || []);
     for (const dependency of dependencies) this.requireCurrentDependency(manifest, dependency);
     const current = currentArtifact(manifest, artifactId);
+    const digest = contentDigest(input.content);
+    if (
+      current
+      && current.status === "current"
+      && current.requestId === requestId
+      && current.contentDigest === digest
+      && sameDependencies(current.dependencies, dependencies)
+    ) {
+      return this.reuseArtifactUnlocked(manifest, { current, artifactId, artifactType, requestId });
+    }
     if (Object.prototype.hasOwnProperty.call(input, "expectedCurrentRevision")) {
       const expected = input.expectedCurrentRevision
         ? safeIdentifier(input.expectedCurrentRevision, "expectedCurrentRevision")
@@ -421,43 +482,6 @@ export class ProductionStateStore {
           }
         );
       }
-    }
-    const digest = contentDigest(input.content);
-    if (
-      current
-      && current.status === "current"
-      && current.contentDigest === digest
-      && sameDependencies(current.dependencies, dependencies)
-    ) {
-      const completedAt = this.timestamp();
-      manifest.stages ||= {};
-      manifest.stages[artifactId] = {
-        stageId: artifactId,
-        artifactType,
-        status: "completed",
-        requestId,
-        revision: current.revision,
-        contentDigest: current.contentDigest,
-        updatedAt: completedAt,
-        reused: true
-      };
-      advanceCheckpoint(manifest, completedAt);
-      manifest.events ||= [];
-      manifest.events.push({
-        type: "artifact.reused",
-        artifactId,
-        revision: current.revision,
-        requestId,
-        createdAt: completedAt
-      });
-      manifest.events = manifest.events.slice(-2_000);
-      await this.writeManifest(manifest);
-      return {
-        lineage: publicLineage(current),
-        reused: true,
-        staleArtifactIds: [],
-        checkpoint: structuredClone(manifest.checkpoint)
-      };
     }
     if (current) {
       current.status = "superseded";
@@ -527,6 +551,38 @@ export class ProductionStateStore {
       lineage: publicLineage(artifact),
       reused: false,
       staleArtifactIds,
+      checkpoint: structuredClone(manifest.checkpoint)
+    };
+  }
+
+  async reuseArtifactUnlocked(manifest, { current, artifactId, artifactType, requestId }) {
+    const completedAt = this.timestamp();
+    manifest.stages ||= {};
+    manifest.stages[artifactId] = {
+      stageId: artifactId,
+      artifactType,
+      status: "completed",
+      requestId,
+      revision: current.revision,
+      contentDigest: current.contentDigest,
+      updatedAt: completedAt,
+      reused: true
+    };
+    advanceCheckpoint(manifest, completedAt);
+    manifest.events ||= [];
+    manifest.events.push({
+      type: "artifact.reused",
+      artifactId,
+      revision: current.revision,
+      requestId,
+      createdAt: completedAt
+    });
+    manifest.events = manifest.events.slice(-2_000);
+    await this.writeManifest(manifest);
+    return {
+      lineage: publicLineage(current),
+      reused: true,
+      staleArtifactIds: [],
       checkpoint: structuredClone(manifest.checkpoint)
     };
   }
@@ -655,17 +711,7 @@ export class ProductionStateStore {
   }
 
   async withRunLock(projectId, runId, operation) {
-    const key = `${projectId}/${runId}`;
-    const previous = this.runLocks.get(key) || Promise.resolve();
-    let release;
-    const gate = new Promise((resolve) => { release = resolve; });
-    this.runLocks.set(key, previous.then(() => gate));
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
+    return this.coordinator.withRunLock(projectId, runId, operation);
   }
 }
 
@@ -738,13 +784,13 @@ function runSummary(manifest) {
   };
 }
 
-function sanitizeStageFailure(value) {
+function sanitizeStageTerminalReason(value, status = "failed") {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const diagnostics = sanitizeStageDiagnostics(source.diagnostics || source.details);
   return {
-    code: safeFailureCode(diagnostics[0]?.code || source.code || "STAGE_FAILED"),
+    code: safeFailureCode(diagnostics[0]?.code || source.code || `STAGE_${String(status).toUpperCase()}`),
     category: safeFailureCode(source.category || "unknown"),
-    message: redactSensitiveText(source.message || diagnostics[0]?.reason || "阶段执行失败", 1_000),
+    message: redactSensitiveText(source.message || diagnostics[0]?.reason || `阶段已${status}`, 1_000),
     diagnostics
   };
 }

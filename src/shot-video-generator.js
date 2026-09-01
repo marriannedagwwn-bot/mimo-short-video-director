@@ -32,6 +32,7 @@ import {
   resolveShotVideoSetting,
   shotVideoRuntimeConfig
 } from "./shot-video-providers.js";
+import { afterDurableProviderCall, beforeDurableProviderCall } from "./durable-task-context.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -234,7 +235,13 @@ export async function generateShotVideo(options = {}) {
         prompt: effectiveVideoPrompt,
         videoPromptProfile: options.videoPromptProfile,
       });
+      const providerTimeoutMs = Number(providerRuntime.pollTimeoutMs || config.pollTimeoutMs || 900_000);
+      await beforeDurableProviderCall(`video_provider_candidate_${index + 1}`, providerTimeoutMs);
       const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: options.workerRunner });
+      await afterDurableProviderCall(`video_provider_candidate_${index + 1}_returned`, {
+        candidateIndex: index,
+        candidateCount: count
+      });
       const measuredDurationSeconds = await assertUsableVideoOutput(outputPath, {
         outputProbe: options.videoOutputProbe,
         skipFfprobeForInjectedWorker: Boolean(options.workerRunner) && !options.videoOutputProbe

@@ -623,6 +623,48 @@ function sourceDialogueStyleText(referenceAnalysis, sourceScriptReconstruction) 
 // 这种大幅度身体动作，氛围来自「趴桌听收音机」这类与主线无关的生活细节；
 // 生成的那份六场全是桌前微表情（皱眉、擦、歪头），动作幅度小到视频模型
 // 拍不出信息量。差距不在写没写氛围，在 visibleAction 里的动作类型。
+// 原片的空间与对白密度，全部从 sourceScriptReconstruction 现算，不写死任何数值——
+// 换一支参考片，这里的目标就自动变成新片的密度。
+//
+// 起因：要求 visualPotential 写主角身体动作之后，模型给每个动作配了一个新地点，
+// 44 秒六场六个地点（密度 1.36/10 秒）。而《打枣》44 秒只用了两个地点
+// （院落门口、院落内，密度 0.45），六场大动作——敲竹竿、爬着追枣、扣锅躲枣雨、
+// 洗枣、趴桌听收音机、推车出门——全在同一个院子里完成。
+// 大动作不需要换景，这一条只有拿原片当锚才说得清楚。
+function sourceSpatialText(sourceScriptReconstruction) {
+  const scenes = sourceScriptReconstruction?.scenes;
+  if (!Array.isArray(scenes) || !scenes.length) return "";
+
+  const bounds = /^\s*(\d{1,3}):(\d{1,2})\s*[-–—]\s*(\d{1,3}):(\d{1,2})\s*$/u;
+  let endSeconds = 0;
+  for (const scene of scenes) {
+    const m = bounds.exec(String(scene?.timeRange || ""));
+    if (!m) continue;
+    const end = Number(m[3]) * 60 + Number(m[4]);
+    if (end > endSeconds) endSeconds = end;
+  }
+
+  const locations = [...new Set(scenes
+    .map((scene) => String(scene?.location || "").trim())
+    .filter(Boolean))];
+  const withDialogue = scenes.filter((scene) => String(scene?.dialogueGist || "").trim()).length;
+  if (!locations.length) return "";
+
+  const lines = ["\n原片的空间与对白密度（本片应当向这些数值靠拢）："];
+  if (endSeconds > 0) {
+    lines.push(`原片 ${endSeconds} 秒里只用了 ${locations.length} 个地点：${locations.join("、")}。`
+      + `平均每 10 秒 ${((locations.length / endSeconds) * 10).toFixed(2)} 个地点。`);
+    lines.push("注意它的大动作全部发生在这几个地点之内——**换的是动作和机位，不是地点**。"
+      + "不要为了写出一个大动作就新开一个场景；把动作放进已有空间里，用景别和走位制造变化。");
+  } else {
+    lines.push(`原片只用了 ${locations.length} 个地点：${locations.join("、")}。大动作全部在这几个地点内完成。`);
+  }
+  lines.push(`原片 ${scenes.length} 场里有 ${withDialogue} 场带对白——`
+    + "对白密度不低，但每一句都很短、只承担关系与情绪，不承担剧情推进。"
+    + "本片同样不要靠减少对白来显得克制，而要靠**让每句话都不解释剧情**。");
+  return `${lines.join("\n")}\n`;
+}
+
 function sourceTextureText(referenceAnalysis) {
   const drivers = (referenceAnalysis?.retentionDrivers || [])
     .map((item) => {
@@ -659,6 +701,7 @@ export function fullStoryPrompt(input) {
   const variant = input.variant || {};
   const sourceDialogueText = sourceDialogueStyleText(input.referenceAnalysis, input.sourceScriptReconstruction);
   const sourceTexture = sourceTextureText(input.referenceAnalysis);
+  const sourceSpatial = sourceSpatialText(input.sourceScriptReconstruction);
   // 用户在「设定创作宇宙」选的目标时长。窗口跟随目标而不是固定 45-90：
   // 原片 96 秒时若仍写「必须落在 45-90 秒内」，就与「与原片对齐」自相矛盾。
   // ±15% 给模型排场次的余地，又不至于跑偏一倍。
@@ -684,7 +727,7 @@ export function fullStoryPrompt(input) {
 创作限制：${input.creatorProfile?.constraints || "无"}
 选中主题变体：${JSON.stringify(variant)}
 creativeBrief：${JSON.stringify(input.creativeBrief)}
-referenceAnalysis 摘要：${JSON.stringify(input.referenceAnalysis || {})}${sourceDialogueText}${sourceTexture}
+referenceAnalysis 摘要：${JSON.stringify(input.referenceAnalysis || {})}${sourceDialogueText}${sourceTexture}${sourceSpatial}
 sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstruction || {})}
 原片表面表达参考（不是正向内容禁词）：${forbiddenText}
 固定角色外观边界：${visualPolicyText}
@@ -702,9 +745,9 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - 允许不等于必须使用：不得因为来源上下文列出了这些表达，就机械把它们补进 visibleAction、dialogue、shotAndSound、keyProps 或其他正向字段。只能按当前 Variant 的剧情需要自然采用。
 - visualGuardrails.positivePromptBoundary 继续约束固定主角的签发身份与必需特征；sourceSimilarityRules 只保留来源证据与实际视觉参考泄漏职责，不能覆盖用户这次的放行决定。
 - 对白必须服从 visualGuardrails.dialogueRules 与用户限制；可以用动作备注补足信息，不要让角色突然改变说话方式。
-- 生活细节：至少 2 场的 visibleAction 要包含一个**与主线任务无关或只有半相关**的生活动作或环境道具。原片正例：趴在木桌旁听收音机、爷爷摇着蒲扇站在门口目送——听收音机和摇蒲扇都不是"收枣"这个任务的一部分，但正是它们让院子像一个真实存在的地方，而不是一个任务演示台。这些细节只占一两句，不得挤掉主线动作。
+- 生活细节：至少 2 场的 visibleAction 要包含一个**与主线任务无关或只有半相关**的生活动作或环境道具。（下面这个例子来自另一部参考片，只用来说明什么叫「与主线无关」，不要照抄它的内容）例：趴在木桌旁听收音机、老人摇着蒲扇站在门口目送——听收音机和摇蒲扇都不是"收枣"这个任务的一部分，但正是它们让院子像一个真实存在的地方，而不是一个任务演示台。这些细节只占一两句，不得挤掉主线动作。
 - 萌点必须是**动作**，不是形容，而且必须**由固定主角本人完成**——把萌点安排给配角或宠物不算数。至少一处萌点要是幅度大到一眼能看见的身体动作。反例：「她做了个可爱的动作」「表情很萌」——形容词不可拍。**皱眉、歪头、眨眼、抿嘴这类微表情不算萌点**，幅度太小；**宠物舔爪子、打呼噜同样不算**，那是环境细节不是主角的萌点。
-- 萌点还必须**同时承担剧情功能**，不能是贴上去的可爱装饰。判断标准看原片那个铁锅头盔：①前因——爷爷刚提醒过会被枣砸到；②环境——乡村院落本来就有小铁锅；③人物——她会用笨拙又机灵的办法解决问题；④声音——枣噼里啪啦砸在锅上；⑤视觉——锅柄向后伸出，轮廓瞬间变滑稽；⑥后续——戴着锅继续把枣捡完。六条同时成立，所以它不是单纯的可爱动作，而是一个有因果功能的桥段。自查：把这个萌点删掉，剧情会不会缺一块？不会缺，就说明它只是装饰，重写一个。
+- 萌点还必须**同时承担剧情功能**，不能是贴上去的可爱装饰。判断标准用下面这个例子说明（同样来自另一部参考片，只示范判据，不要照抄内容）——铁锅头盔：①前因——爷爷刚提醒过会被枣砸到；②环境——乡村院落本来就有小铁锅；③人物——她会用笨拙又机灵的办法解决问题；④声音——枣噼里啪啦砸在锅上；⑤视觉——锅柄向后伸出，轮廓瞬间变滑稽；⑥后续——戴着锅继续把枣捡完。六条同时成立，所以它不是单纯的可爱动作，而是一个有因果功能的桥段。自查：把这个萌点删掉，剧情会不会缺一块？不会缺，就说明它只是装饰，重写一个。
 - 动作幅度自查：写完每场问一句——这个动作放进一个四秒镜头里，不看脸、只看身体轮廓，观众能认出她在做什么吗？认不出来就说明幅度不够，换一个更大的动作。整片如果所有动作都发生在一张桌子前、都靠表情传递，那么无论故事多好，成片都会是静止的。
 - 对白不得复述同场 visibleAction 里观众已经能直接看见的信息。**写完每一句台词后，逐句做这个自查：把这句话遮住，只看同场 visibleAction，观众会不会漏掉任何信息？不会漏，就说明这句在复述画面，必须删掉或改写成只有台词能做到的事。** 实测反面例子：visibleAction 已经写了「她站起身，从衣柜里拿出厚外套和手电筒」，台词却写「穿上厚外套，带上手电筒」——画面演完的事被念了第二遍。正确做法是把这句换成关系表达，例如摸摸头说一句「你呀你，真拿你没办法」：同样让观众知道她答应了，但传递的是宠溺，而外套和手电筒交给画面。
 - 让对白承担画面单独做不到的事：人物性格、情绪、潜台词、关系变化、误会、选择、对已发生动作的反应，或观众还不知道的信息。

@@ -1,6 +1,7 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
 import { ModelResponseError, parseModelJson, parseStrictModelJson } from "./mimo-client.js";
 import { recordModelUsage } from "./token-usage.js";
+import { afterDurableProviderCall, beforeDurableProviderCall } from "./durable-task-context.js";
 
 export class QwenClient {
   constructor(config) {
@@ -168,6 +169,8 @@ export class QwenClient {
       { prompt, frames, video, useVideo },
       { model, maxCompletionTokens, systemPrompt }
     );
+    const effectiveTimeoutMs = requestTimeoutMs ?? this.config.requestTimeoutMs ?? 900_000;
+    await beforeDurableProviderCall("model_provider_call", effectiveTimeoutMs);
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -175,9 +178,10 @@ export class QwenClient {
         ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {})
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(requestTimeoutMs ?? this.config.requestTimeoutMs ?? 900_000)
+      signal: AbortSignal.timeout(effectiveTimeoutMs)
     });
     const raw = await response.text();
+    await afterDurableProviderCall("model_provider_response");
     const headerRequestId = response.headers.get("x-request-id")
       || response.headers.get("request-id")
       || "";

@@ -21,6 +21,19 @@ export function loadEnv(file = path.resolve(".env")) {
 
 export function getConfig() {
   const serverRequestTimeoutMs = Math.round(clampNumber(process.env.SERVER_REQUEST_TIMEOUT_MS, 900000, 30000, 3600000));
+  const durableTaskGlobalConcurrency = optionalInteger(process.env.DURABLE_TASK_MAX_CONCURRENCY, 1, 64);
+  const durableTaskWorkflowConcurrency = Math.round(clampNumber(
+    process.env.DURABLE_TASK_WORKFLOW_CONCURRENCY,
+    durableTaskGlobalConcurrency || 2,
+    1,
+    64
+  ));
+  const durableTaskMediaConcurrency = Math.round(clampNumber(
+    process.env.DURABLE_TASK_MEDIA_CONCURRENCY,
+    durableTaskGlobalConcurrency || 4,
+    1,
+    64
+  ));
   const productionStateDirectory = path.resolve(
     process.env.WORKFLOW_PRODUCTION_STATE_DIR?.trim() || "runtime/production-runs"
   );
@@ -131,6 +144,26 @@ export function getConfig() {
     port: Number(process.env.PORT || 4173),
     serverRequestTimeoutMs,
     modelPrices,
+    durableTasks: {
+      localStallMs: Math.round(clampNumber(process.env.DURABLE_TASK_LOCAL_STALL_MS, 300_000, 25, 3_600_000)),
+      providerGraceMs: Math.round(clampNumber(process.env.DURABLE_TASK_PROVIDER_GRACE_MS, 120_000, 0, 600_000)),
+      maxQueuedBytes: Math.round(clampNumber(
+        process.env.DURABLE_TASK_MAX_QUEUED_BYTES,
+        140 * 1024 * 1024,
+        1024,
+        2 * 1024 * 1024 * 1024
+      )),
+      pools: {
+        workflow: {
+          limit: durableTaskWorkflowConcurrency,
+          queueLimit: Math.round(clampNumber(process.env.DURABLE_TASK_WORKFLOW_QUEUE_LIMIT, 8, 0, 1_000))
+        },
+        media: {
+          limit: durableTaskMediaConcurrency,
+          queueLimit: Math.round(clampNumber(process.env.DURABLE_TASK_MEDIA_QUEUE_LIMIT, 8, 0, 1_000))
+        }
+      }
+    },
     workflowRuntime: {
       environment: workflowRuntimeEnvironment,
       signaturePolicy: workflowSignaturePolicy,

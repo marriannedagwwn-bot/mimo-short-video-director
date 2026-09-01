@@ -228,7 +228,7 @@ test("原片生活质感提成具名投影，只取环境道具不取动作事�
 test("生活细节与萌点约束到位，且把微表情明确排除在萌点之外", () => {
   const text = prompt();
   assert.match(text, /至少 2 场的 visibleAction 要包含一个\*\*与主线任务无关或只有半相关\*\*的生活动作或环境道具/u);
-  assert.match(text, /趴在木桌旁听收音机、爷爷摇着蒲扇站在门口目送/u);
+  assert.match(text, /趴在木桌旁听收音机、老人摇着蒲扇站在门口目送/u);
   assert.match(text, /这些细节只占一两句，不得挤掉主线动作/u);
   assert.match(text, /萌点必须是\*\*动作\*\*，不是形容/u);
   assert.match(text, /环境——乡村院落本来就有小铁锅/u);
@@ -365,4 +365,62 @@ test("画外台词有明确去处：原话写进 shotAndSound，且仍不写说�
   assert.match(text, /只写「传出说话声」而不写说了什么，那句台词就不会被说出来/u);
   // 给了去处不等于放开点名。
   assert.match(text, /说话人的名字仍然不写/u);
+});
+
+// 空间密度全部从 sourceScriptReconstruction 现算，不写死任何数值——
+// 换一支参考片，目标就自动变成新片的密度。
+//
+// 起因：要求 visualPotential 写主角身体动作后，模型给每个动作配了一个新地点，
+// 44 秒六场六个地点（1.36/10 秒）。而原片 44 秒只用两个地点（0.45），
+// 六场大动作全在同一个院子里完成——大动作不需要换景。
+const DENSE_SOURCE = Object.freeze({
+  scenes: [
+    { timeRange: "00:00-00:04", location: "农村院落门口", dialogueGist: "木门吱呀声" },
+    { timeRange: "00:04-00:13", location: "农村院落内", dialogueGist: "爷爷说枣熟了" },
+    { timeRange: "00:13-00:24", location: "农村院落内", dialogueGist: "提醒慢点捡" },
+    { timeRange: "00:24-00:44", location: "农村院落门口", dialogueGist: "道别" }
+  ]
+});
+
+test("空间与对白密度从参考片现算，不写死数值", () => {
+  const text = fullStoryPrompt({
+    creatorProfile, creativeBrief: {}, visualGuardrails: {}, referenceAnalysis: {},
+    sourceScriptReconstruction: DENSE_SOURCE, variant: leanVariant
+  });
+  assert.match(text, /原片 44 秒里只用了 2 个地点：农村院落门口、农村院落内/u);
+  assert.match(text, /平均每 10 秒 0\.45 个地点/u);
+  assert.match(text, /\*\*换的是动作和机位，不是地点\*\*/u);
+  assert.match(text, /不要为了写出一个大动作就新开一个场景/u);
+  assert.match(text, /原片 4 场里有 4 场带对白/u);
+  assert.match(text, /不要靠减少对白来显得克制/u);
+});
+
+test("换一支参考片，投影数值随之改变", () => {
+  const roadTrip = {
+    scenes: [
+      { timeRange: "00:00-00:15", location: "车站", dialogueGist: "买票" },
+      { timeRange: "00:15-00:30", location: "山路", dialogueGist: "" },
+      { timeRange: "00:30-00:45", location: "海边", dialogueGist: "到了" },
+      { timeRange: "00:45-01:00", location: "旅馆", dialogueGist: "" }
+    ]
+  };
+  const text = fullStoryPrompt({
+    creatorProfile, creativeBrief: {}, visualGuardrails: {}, referenceAnalysis: {},
+    sourceScriptReconstruction: roadTrip, variant: leanVariant
+  });
+  assert.match(text, /原片 60 秒里只用了 4 个地点：车站、山路、海边、旅馆/u);
+  assert.match(text, /平均每 10 秒 0\.67 个地点/u);
+  assert.match(text, /原片 4 场里有 2 场带对白/u);
+  assert.doesNotMatch(text, /农村院落/u);
+});
+
+test("没有参考片时不注入空间投影", () => {
+  assert.doesNotMatch(prompt(), /原片的空间与对白密度/u);
+});
+
+// 写死的举例必须标明来自另一部片子，否则模型会把它们当成本片素材照抄
+test("提示词里的固定举例标注了来源，不会被当成本片内容", () => {
+  const text = prompt();
+  assert.match(text, /下面这个例子来自另一部参考片，只用来说明什么叫「与主线无关」，不要照抄它的内容/u);
+  assert.match(text, /同样来自另一部参考片，只示范判据，不要照抄内容/u);
 });

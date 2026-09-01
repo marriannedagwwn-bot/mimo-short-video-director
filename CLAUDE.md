@@ -20,6 +20,14 @@ Analyze → Reconstruct → Brief → Visual Guardrails → Story Candidates (`t
 
 Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主流程创建独立 project/run，各成功阶段提交 Artifact revision、content digest、上游 dependencies、Stage 状态与 Checkpoint。**它不改变模型字段含义，不是第二份剧情或角色事实来源。**
 
+**Durable Task v1（2026-09-01）**：浏览器只创建、轮询和重新 attach；服务端 Runner 执行 provider 调用、校验与 Artifact commit。AI 导演是一个 `directorPipeline` 父任务和 Analyze、Reconstruct、Brief、Visual Guardrails、Variants 五个顺序子任务，父任务创建时原子 claim 五个目标。Task Store 是每个 Run 私有的 `tasks/index.json`，只保存执行状态、冻结 lineage、创建时 provider/model、progress、usage、结果 refs 与脱敏错误；Prompt、Data URL、Base64 和完整请求体禁止落盘，ProductionStateStore 的 current Artifact 仍是唯一业务事实。
+
+状态固定为 `queued | running | completed | failed | conflicted | interrupted | abandoned`。冻结后绝不自动换成新 current；每次 provider 调用前后及锁内 commit 都复验 revision/digest。相同 active operation 复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`；只有相同 requestId、digest 与 dependencies 的重复 finalize 可复用 revision。任务没有总墙钟 deadline：provider watchdog 使用自身 timeout 加 120 秒，本地阶段使用 300 秒无进展窗口并随进度续期，超时为 `failed/TASK_STALLED`。`abandoned` 与 `interrupted` 都不表示远端取消，供应商调用可能已经计费。
+
+per-Run Coordinator 是不可重入 FIFO 锁。持锁路径只能调用 `commitArtifactUnlocked`、`recordStageUnlocked`、`loadRunUnlocked` 和 Task Store unlocked 方法；禁止从锁内调用对应公开方法，也禁止在临界区执行 provider、网络、FFmpeg 或模型校验。lineage snapshot、Task GET 与 atomic manifest load 均为锁外读。
+
+刷新或 HTTP 断线不停止同一 Node 进程内 Runner。Node 重启后，同 requestId 已完成 commit 的任务可 reconciliation 为 completed，其余 active 任务标 `interrupted`、释放 claim 且绝不自动重调 provider。继续需要媒体的阶段必须重新上传 SHA-256 与 Run metadata 中 `sourceVideoDigest` 一致的源文件。T04 quarantine、T05 provider task-id 接管/重启恢复、lease、多 worker 与正式 batch queue 仍未实现。
+
 Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通过递归 strict Schema，且只新增 `keyChoice/climax/emotionalPayoff/novelty/visualPotential` 五个候选级字段。本地校验不使用题材关键词或主观语义打分。选中候选以 current `variant:<id>` Artifact 的精确 revision/digest 绑定 Full Story，服务端在模型调用前后复验；`candidateBinding` 不进入 Prompt 或 Legacy Full Story wire shape。状态恢复只认 current Story/Plan 或明确 `variant:<id>` 记录，仅有 Theme Variants 时必须保持未选中，禁止默认 V1。当前没有 Story Selection/Blueprint/Script Doctor/Targeted Rewrite/Production Package 4.0；Phase 2 只预留「已签发 Candidate 内容 + 精确 lineage reference」接缝。
 
 **可选叙事构件（2026-08-28）**：`characterSetup.careRecipient`、`characterSetup.helper`、`emotionalMedium`、`endingRitual` 以及 Full Story 的 `characterBible.careRecipient` 全部从 required 降级为**可选键**。它们曾强制每个候选长成「主角＋被关爱对象＋帮助者＋情感信物＋仪式结尾」，与 Prompt 要求的候选间根本差异直接矛盾。写了就仍必须合规（非空字符串；`careRecipient` 对象五个子字段齐全），不需要就整个键省略，**禁止输出空字符串或占位文本**。`characterSetup.protagonist`、`characterBible.protagonist` 与 `characterBible.helpers`（可为 `[]`）仍必填，固定角色锁定不受影响。
@@ -221,6 +229,8 @@ DeepSeek 模型 ID 只登记 `deepseek-v4-flash`（页面首选）与 `deepseek-
 `characterBible.careRecipient` 是可选键：当前 Variant 没有被照料对象时整个省略，`helpers` 无帮助者时输出 `[]`。**Full Story 不得把候选阶段省略的叙事构件补回来**——七项 taxonomy 是 Creative Brief 记录「原片有没有某类构件」的分类，不是本片必备构件，也不是承接清单。承接范围只有一个来源：当前选中 Variant 实际写出的内容。
 
 **剧情时长目标（2026-08-29）**：浏览器「设定创作宇宙」面板的「剧情时长」下拉（`#storyDurationTarget`）提供「与原片对齐」与 45/60/75/90 四档，默认对齐原片。原片时长两级回退：上传时读出的 `metadata.duration`（精确）→ `sourceScriptReconstruction` 末场时间轴终点（恢复旧 run 时用，与真实时长差 0–5 秒）→ 60 秒。**该值只作为目标进入 Full Story 提示词，不写入任何 Artifact、不参与派生**——`targetDurationSeconds` 仍由 `deriveFullStoryTargetDuration()` 从 `sceneScript` 时间轴确定性派生并覆盖模型输出，模型没打准时 Artifact 与页面显示的都是时间轴的真实合计。提示词窗口跟随目标（±15%）而非固定 45-90——原片 96 秒时仍写「必须落在 45-90 秒内」会与「与原片对齐」自相矛盾。请求侧只校验 20–180 的整数秒，**不新增校验拦截「模型没达到目标」**：那是生成质量不是数据一致性。不传该字段时提示词文案与历史逐字一致。
+
+**原片空间与对白密度投影（2026-09-01）**：`fullStoryPrompt` 从 `sourceScriptReconstruction` **现算**原片的地点数、时长、每 10 秒地点密度与带对白场次比例，作为本片的靠拢目标，**不写死任何数值**——换参考片自动跟着变。起因是实测过冲：要求 `visualPotential` 写主角身体动作后，模型给每个动作配了一个新地点，44 秒六场六个地点（1.36/10 秒），而原片《打枣》44 秒只用两个地点（0.45），六场大动作全在同一个院子里完成。提示词明确「换的是动作和机位，不是地点」。对白同理：原片 6/6 场带对白，密度不低，短在**每句都不承担剧情推进**——因此不要靠减少对白显得克制。提示词里写死的举例（铁锅头盔、听收音机）已标注「来自另一部参考片，只示范判据，不要照抄内容」。
 
 **生活质感硬约束（2026-08-29）**：至少 2 场的 `visibleAction` 要包含一个**与主线任务无关或只有半相关**的生活动作或环境道具；至少一处萌点必须是**幅度大到一眼能看见的身体动作**，且**必须由固定主角本人完成**并**同时承担剧情功能**。**皱眉、歪头、眨眼这类微表情不算，宠物舔爪子、打呼噜同样不算**——前者幅度太小，后者是环境细节不是主角萌点。功能性判据看原片的铁锅头盔：前因（刚被提醒会被砸）、环境（院子里本来就有锅）、人物（她会用笨办法）、声音（枣砸锅上）、视觉（轮廓变滑稽）、后续（戴着继续捡枣）六条同时成立。自查：删掉这个萌点剧情会不会缺一块。候选阶段同步收紧 `visualPotential`——**至少一条必须是固定主角本人的身体动作**，三条全写质感、痕迹、光影、并置这类画面状态即不合格。依据是实测：一份 `visualPotential` 全是静物的候选，展开后六场全是桌前微表情，Full Story 再加约束也救不回来；模型还会把萌点要求满足在宠物身上绕开。自查方法：这个动作放进四秒镜头、不看脸只看身体轮廓，观众能否认出在做什么。原片质感来源（`retentionDrivers` 的观看动力与兑现、`observedFacts` 里 `visible_object` 的环境道具、`shotRhythm.shotPatterns` 的景别构成）提成具名投影，与对白风格投影同规格——数据一直在 `referenceAnalysis` 里，此前只埋在整份 JSON 中、无任何指令让模型对齐。依据是实测对照：原片萌点是「把铁锅扣头上当头盔」这类大动作、氛围来自「趴桌听收音机」这类与主线无关的细节，而生成的一份六场全是桌前微表情。**这些是 Prompt 生成约束，没有确定性校验兜底**——判断动作够不够萌、细节算不算生活化需要语义判断。
 

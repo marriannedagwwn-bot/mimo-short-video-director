@@ -9,10 +9,13 @@ import {
 } from "../src/production-lineage.js";
 import {
   beginArtifactRequest,
+  durableTaskTargetContext,
   emptyProductionState,
   isArtifactRequestCurrent,
+  matchingCurrentArtifactLineage,
   planProductionContext,
-  productionRequestHeaders
+  productionRequestHeaders,
+  taskResultIsCurrent
 } from "../public/production-lineage-client.js";
 
 test("contentDigest ignores object key order but detects content changes", () => {
@@ -101,4 +104,76 @@ test("plan production context is available only for a current namespaced plan", 
   });
   production.artifacts["animationPlan:V1"].status = "stale";
   assert.equal(planProductionContext(production, "animationPlan:V1"), null);
+});
+
+test("browser reuses an identical current selected Variant after refresh without creating a new revision", async () => {
+  const production = emptyProductionState();
+  const variant = { id: "V1", title: "同一候选", nested: { b: 2, a: 1 } };
+  const dependencies = [{
+    artifactId: "themeVariants",
+    revision: "themeVariants-r1",
+    contentDigest: "a".repeat(64)
+  }];
+  production.artifacts["variant:V1"] = {
+    artifactId: "variant:V1",
+    revision: "variant-V1-r1",
+    contentDigest: contentDigest(variant),
+    dependencies,
+    status: "current"
+  };
+
+  assert.deepEqual(await matchingCurrentArtifactLineage(production, {
+    artifactId: "variant:V1",
+    content: { nested: { a: 1, b: 2 }, title: "同一候选", id: "V1" },
+    dependencies
+  }), production.artifacts["variant:V1"]);
+  assert.equal(await matchingCurrentArtifactLineage(production, {
+    artifactId: "variant:V1",
+    content: { ...variant, title: "内容已变化" },
+    dependencies
+  }), null);
+  assert.equal(await matchingCurrentArtifactLineage(production, {
+    artifactId: "variant:V1",
+    content: variant,
+    dependencies: [{ ...dependencies[0], revision: "themeVariants-r2" }]
+  }), null);
+  production.artifacts["variant:V1"].status = "stale";
+  assert.equal(await matchingCurrentArtifactLineage(production, {
+    artifactId: "variant:V1",
+    content: variant,
+    dependencies
+  }), null);
+});
+
+test("refresh recovery parses media and character-image Task targets without guessing UI state", () => {
+  assert.deepEqual(durableTaskTargetContext({ targetArtifactIds: ["characterImages:V2:3"] }), {
+    artifactId: "characterImages:V2:3",
+    variantId: "V2",
+    shotId: "",
+    frameKind: "",
+    roleIndex: 3
+  });
+  assert.deepEqual(durableTaskTargetContext({ targetArtifactIds: ["shotFrame:V2:A01:end"] }), {
+    artifactId: "shotFrame:V2:A01:end",
+    variantId: "V2",
+    shotId: "A01",
+    frameKind: "end",
+    roleIndex: null
+  });
+  assert.equal(durableTaskTargetContext({ targetArtifactIds: ["shotVideo:V3:A02"] }).shotId, "A02");
+});
+
+test("completed Task progress is restored only while its exact Artifact revision remains current", () => {
+  const production = emptyProductionState();
+  const ref = {
+    artifactId: "characterImages:V1:0",
+    revision: "characterImages-V1-0-r1",
+    contentDigest: "b".repeat(64)
+  };
+  production.artifacts[ref.artifactId] = { ...ref, status: "current" };
+  const task = { resultArtifactRefs: [ref] };
+  assert.equal(taskResultIsCurrent(production, task), true);
+  production.artifacts[ref.artifactId] = { ...ref, revision: "characterImages-V1-0-r2", status: "current" };
+  assert.equal(taskResultIsCurrent(production, task), false);
+  assert.equal(taskResultIsCurrent(production, { resultArtifactRefs: [] }), false);
 });

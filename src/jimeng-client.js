@@ -1,6 +1,11 @@
 import { InputError } from "./validation.js";
 import { buildShotFrameImagePrompt as buildSharedShotFrameImagePrompt } from "../public/shot-frame-prompt.js";
 import { buildCharacterReferenceImagePrompt as buildSharedCharacterReferenceImagePrompt } from "../public/character-reference-prompt.js";
+import {
+  afterDurableProviderCall,
+  beforeDurableProviderCall,
+  durableTaskHeartbeat
+} from "./durable-task-context.js";
 
 export class JimengImageConfigError extends Error {}
 export class JimengImageProviderError extends Error {
@@ -44,6 +49,8 @@ export class JimengImageClient {
     const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/images/generations`;
     const body = buildJimengImageRequestBody(this.config, input);
     const requestReceipt = buildJimengImageRequestReceipt(body, input.negativePromptDelivery);
+    const timeoutMs = this.config.timeoutMs || 300_000;
+    await beforeDurableProviderCall("image_provider_call", timeoutMs);
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -51,7 +58,7 @@ export class JimengImageClient {
         authorization: `Bearer ${this.config.apiKey}`
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.config.timeoutMs || 300_000)
+      signal: AbortSignal.timeout(timeoutMs)
     });
 
     if (!response.ok) {
@@ -62,10 +69,15 @@ export class JimengImageClient {
     if (!contentType.includes("text/event-stream")) {
       const envelope = await response.json();
       await emitNonStreamingEnvelope(envelope, onEvent);
+      await afterDurableProviderCall("image_provider_response");
       return requestReceipt;
     }
     if (!response.body) throw new JimengImageProviderError("即梦没有返回可读取的流式响应");
-    await parseSseStream(response.body, onEvent);
+    await parseSseStream(response.body, async (event) => {
+      await durableTaskHeartbeat({ providerEvent: String(event?.type || "image_event") });
+      await onEvent(event);
+    });
+    await afterDurableProviderCall("image_provider_response");
     return requestReceipt;
   }
 }
