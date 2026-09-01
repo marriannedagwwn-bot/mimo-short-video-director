@@ -9,6 +9,8 @@ export const ANIMATION_SHOT_DIALOGUE_REPAIR_SCHEMA_VERSION = "animation_shot_dia
 
 const DIALOGUE_MISSING_CODE = "DIRECT_SHOT_DIALOGUE_MISSING_FROM_VIDEO_PROMPT";
 const MAX_REPAIR_TARGETS = 6;
+// 插入内容在台词本身之外还允许的字数，够写一句说话动作的框架句。
+const INSERTION_LENGTH_ALLOWANCE = 120;
 
 // 服务端私有签发身份：模型拿到的序列化计划无法伪造成可合并计划。
 const issuedRepairPlans = new WeakSet();
@@ -83,20 +85,20 @@ export function animationShotDialogueRepairPrompt(plan) {
 
 ANIMATION_SHOT_DIALOGUE_REPAIR_V1
 
-服务端已冻结原批次；你看不到也不得重写整份 Plan。只处理下面列出的镜头，且**只能往 videoPrompt 里插入台词原话**。
+服务端已冻结原批次。**不要重写、不要复述、不要输出 currentVideoPrompt。** 你只需要为每个目标写出**一小段要插入的新句子**，服务端会自己把它拼进原提示词里。
 
 待修复目标：
 ${JSON.stringify(targets)}
 
 硬约束：
-- 原 currentVideoPrompt 的每一个字都必须逐字保留、顺序不变。你只能**插入**新内容，不得删除、改写、调换或精简任何既有文字。
-- 插入的内容必须包含 missingSpokenLines 里的台词**原话**，一字不差。写成自然的说话动作，例如：她抬头说「原话」。
-- mustEndWith 非 null 时，那句话必须仍然是整条 videoPrompt 的最后一句，新内容插在它**之前**。
-- 不得新增剧情、动作、角色、道具或镜头；除了把已有的台词说出来，不要引入任何新事实。
-- 不得输出 path、op、完整镜头对象或任何额外字段。
+- insertion 只写一句到两句话，把 missingSpokenLines 里的台词**原话一字不差**地说出来。写成自然的说话动作，例如：她低头说「原话」。
+- 台词原话必须逐字出现在 insertion 里，标点可以在原话之外补，但原话本身不得改写、精简或换词。
+- 不得复述 currentVideoPrompt 里已有的任何内容，不得新增剧情、动作、角色、道具或镜头。除了把已有台词说出来，不要引入任何新事实。
+- insertion 每条不得超过 ${INSERTION_LENGTH_ALLOWANCE} 字加上台词本身的长度。写长了会被拒绝。
+- 不得输出 path、op、replacement、完整镜头对象或任何额外字段。
 
 只输出一个 JSON 对象，不要 Markdown，不要解释。严格使用以下结构：
-{"schemaVersion":"${ANIMATION_SHOT_DIALOGUE_REPAIR_SCHEMA_VERSION}","baseDigest":${JSON.stringify(plan.baseDigest)},"repairs":[{"repairId":"...","replacement":"补写后的完整 videoPrompt"}]}
+{"schemaVersion":"${ANIMATION_SHOT_DIALOGUE_REPAIR_SCHEMA_VERSION}","baseDigest":${JSON.stringify(plan.baseDigest)},"repairs":[{"repairId":"...","insertion":"要插入的新句子"}]}
 
 repairs 必须与待修复目标**等量、同序**，repairId 逐一对应。`;
 }
@@ -120,18 +122,16 @@ export function mergeAnimationShotDialogueRepair(candidate, envelope, plan) {
 
   const merged = structuredClone(candidate);
   envelope.repairs.forEach((repair, index) => {
-    assertExactKeys(repair, ["repairId", "replacement"], `animationShotDialogueRepair.repairs[${index}]`);
+    assertExactKeys(repair, ["repairId", "insertion"], `animationShotDialogueRepair.repairs[${index}]`);
     const target = plan.targets[index];
     if (repair.repairId !== target.repairId) {
       throw new OutputContractError(`videoPrompt 台词补写 repairs[${index}].repairId 必须等于 ${target.repairId}`);
     }
-    const replacement = repair.replacement;
-    if (typeof replacement !== "string" || !replacement.trim()) {
-      throw new OutputContractError(`videoPrompt 台词补写 ${target.repairId} 的 replacement 必须是非空字符串`);
-    }
-    assertOriginalPreservedWithInsertion(target, replacement);
+    const insertion = repair.insertion;
+    assertInsertionAuthorized(target, insertion);
     const shotIndex = Number(target.pointer.split("/")[2]);
-    merged.shotPlan[shotIndex].videoPrompt = replacement;
+    // 原文由服务端**按构造**保留：模型从来没有机会碰它。
+    merged.shotPlan[shotIndex].videoPrompt = spliceInsertion(target, insertion);
   });
 
   assertOnlyTargetsChanged(candidate, merged, plan.targets);
@@ -139,39 +139,48 @@ export function mergeAnimationShotDialogueRepair(candidate, envelope, plan) {
 }
 
 /**
- * 原文必须逐字保留，只允许插入。
+ * 模型只提供插入内容，服务端把它拼进原文——原文**按构造**逐字保留，模型碰不到。
  *
- * 判定方式是确定性的：把原文按「收尾句之前 / 收尾句」切成头尾两段，替换值必须以
- * 头段为前缀、以尾段为后缀，中间多出来的就是插入内容——它必须含缺失台词原话。
- * 没有收尾句时退化为「必须以原文为前缀」，与 Beat–Scene postpass 的追加式同规格。
+ * 这一版刻意不再让模型返回整条改写后的 videoPrompt：实测它会把 400 多字原文
+ * 整体重写（措辞全换），于是「原文必须逐字保留」把每一次补写都拦死。要求模型
+ * 逐字复述长文本在本仓库已有先例证明不可靠（见 CLAUDE.md 关键拍号那节的 0/12），
+ * 与 Beat–Scene postpass 只收 `addition` 的做法对齐才是正确形状。
  */
-function assertOriginalPreservedWithInsertion(target, replacement) {
-  const original = target.currentValue;
-  const tail = target.trailingSentence || "";
-  const head = tail ? original.slice(0, original.length - tail.length) : original;
-  if (!replacement.startsWith(head)) {
-    throw new OutputContractError(
-      `videoPrompt 台词补写 ${target.repairId} 改动了原文：只能插入，不能删除或改写既有文字。`
-    );
+function assertInsertionAuthorized(target, insertion) {
+  if (typeof insertion !== "string" || !insertion.trim()) {
+    throw new OutputContractError(`videoPrompt 台词补写 ${target.repairId} 的 insertion 必须是非空字符串`);
   }
-  if (tail && !replacement.endsWith(tail)) {
-    throw new OutputContractError(
-      `videoPrompt 台词补写 ${target.repairId} 必须让「${tail}」仍然是整条提示词的最后一句。`
-    );
-  }
-  const insertion = tail
-    ? replacement.slice(head.length, replacement.length - tail.length)
-    : replacement.slice(head.length);
-  if (!insertion.trim()) {
-    throw new OutputContractError(`videoPrompt 台词补写 ${target.repairId} 没有插入任何内容。`);
-  }
-  for (const line of splitMissingLines(target.missingLines)) {
+  const lines = splitMissingLines(target.missingLines);
+  for (const line of lines) {
     if (!insertion.includes(line)) {
       throw new OutputContractError(
         `videoPrompt 台词补写 ${target.repairId} 的插入内容缺少台词原话：${line}`
       );
     }
   }
+  // 长度上限防止模型借 insertion 夹带一整条重写：够写「她低头说「原话」，语气心疼。」
+  // 这类框架句，但装不下一份提示词。
+  const allowance = target.missingLines.length + INSERTION_LENGTH_ALLOWANCE;
+  if (insertion.length > allowance) {
+    throw new OutputContractError(
+      `videoPrompt 台词补写 ${target.repairId} 的插入内容过长（${insertion.length} 字，上限 ${allowance}）：只写把台词说出来的那一两句，不要复述原提示词。`
+    );
+  }
+  // 不得把原文的开头抄进来——那是在试图重写而不是插入。
+  const originalOpening = target.currentValue.slice(0, 12);
+  if (originalOpening && insertion.includes(originalOpening)) {
+    throw new OutputContractError(
+      `videoPrompt 台词补写 ${target.repairId} 复述了原提示词开头：只需要写新插入的那句话。`
+    );
+  }
+}
+
+/** 把插入内容拼在收尾句之前；没有收尾句时追加到末尾。 */
+function spliceInsertion(target, insertion) {
+  const original = target.currentValue;
+  const tail = target.trailingSentence || "";
+  const head = tail ? original.slice(0, original.length - tail.length) : original;
+  return `${head}${insertion.trim()}${tail}`;
 }
 
 /** 目标之外必须逐字节不变；目标本身只允许变成 replacement。 */

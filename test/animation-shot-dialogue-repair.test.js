@@ -43,18 +43,15 @@ function planFor(candidate) {
   return { plan: planAnimationShotDialogueRepair(candidate, error), error };
 }
 
-function envelope(plan, replacement, repairId = "D1") {
+function envelope(plan, insertion, repairId = "D1") {
   return {
     schemaVersion: ANIMATION_SHOT_DIALOGUE_REPAIR_SCHEMA_VERSION,
     baseDigest: plan.baseDigest,
-    repairs: [{ repairId, replacement }]
+    repairs: [{ repairId, insertion }]
   };
 }
 
-function insertBeforeMusic(original, addition) {
-  const head = original.slice(0, original.length - NO_BACKGROUND_MUSIC_SENTENCE.length);
-  return `${head}${addition}${NO_BACKGROUND_MUSIC_SENTENCE}`;
-}
+const GOOD_INSERTION = `奶奶低头笑着说「${LINE}」，语气心疼。`;
 
 test("补写把缺失台词插回 videoPrompt，并从头通过完整批次校验", () => {
   const candidate = { shotPlan: [shot()] };
@@ -73,47 +70,47 @@ test("补写把缺失台词插回 videoPrompt，并从头通过完整批次校�
   // JSON.stringify 求值后不会留下这个词，所以必须显式检查生成出来的文本。
   assert.match(prompt, /JSON/u);
 
-  const merged = mergeAnimationShotDialogueRepair(
-    candidate,
-    envelope(plan, insertBeforeMusic(candidate.shotPlan[0].videoPrompt, `奶奶笑着说「${LINE}」。`)),
-    plan
-  );
+  const merged = mergeAnimationShotDialogueRepair(candidate, envelope(plan, GOOD_INSERTION), plan);
   assert.equal(shotDialogueMissingFromVideoPrompt(merged.shotPlan[0]), "");
+  // 原文由服务端按构造保留，收尾句仍是最后一句。
+  assert.ok(merged.shotPlan[0].videoPrompt.startsWith("奶奶推门走出来"));
+  assert.ok(merged.shotPlan[0].videoPrompt.endsWith(NO_BACKGROUND_MUSIC_SENTENCE));
   assert.doesNotThrow(() => validate(structuredClone(merged)));
   // 原候选不被改动：合并发生在克隆上。
   assert.equal(shotDialogueMissingFromVideoPrompt(candidate.shotPlan[0]), LINE);
 });
 
-test("补写只能插入：删改原文、挤掉收尾句、没带台词原话都硬失败", () => {
+test("插入内容受约束：没带原话、夹带整条重写、空插入都硬失败", () => {
   const candidate = { shotPlan: [shot()] };
   const { plan } = planFor(candidate);
   const original = candidate.shotPlan[0].videoPrompt;
 
   assert.throws(
-    () => mergeAnimationShotDialogueRepair(candidate, envelope(plan, `换一条全新的提示词，奶奶说「${LINE}」。${NO_BACKGROUND_MUSIC_SENTENCE}`), plan),
-    /改动了原文/u
-  );
-  assert.throws(
-    () => mergeAnimationShotDialogueRepair(candidate, envelope(plan, `${original.slice(0, original.length - NO_BACKGROUND_MUSIC_SENTENCE.length)}奶奶说「${LINE}」。`), plan),
-    /仍然是整条提示词的最后一句/u
-  );
-  assert.throws(
-    () => mergeAnimationShotDialogueRepair(candidate, envelope(plan, insertBeforeMusic(original, "奶奶絮絮说了几句关心的话。")), plan),
+    () => mergeAnimationShotDialogueRepair(candidate, envelope(plan, "奶奶絮絮说了几句关心的话。"), plan),
     /缺少台词原话/u
   );
+  // 实测失败模式：模型把整条 videoPrompt 重写后塞回来。
   assert.throws(
-    () => mergeAnimationShotDialogueRepair(candidate, envelope(plan, original), plan),
-    /没有插入任何内容/u
+    () => mergeAnimationShotDialogueRepair(candidate, envelope(plan, `${original.slice(0, 20)}，奶奶说「${LINE}」。`), plan),
+    /复述了原提示词开头/u
+  );
+  assert.throws(
+    () => mergeAnimationShotDialogueRepair(candidate, envelope(plan, `奶奶说「${LINE}」。${"补充描写".repeat(40)}`), plan),
+    /插入内容过长/u
+  );
+  assert.throws(
+    () => mergeAnimationShotDialogueRepair(candidate, envelope(plan, "   "), plan),
+    /必须是非空字符串/u
   );
 });
 
 test("信封协议本身受约束：字段、数量、repairId、baseDigest 都不可偏离", () => {
   const candidate = { shotPlan: [shot()] };
   const { plan } = planFor(candidate);
-  const good = insertBeforeMusic(candidate.shotPlan[0].videoPrompt, `奶奶说「${LINE}」。`);
+  const good = GOOD_INSERTION;
 
   assert.throws(() => mergeAnimationShotDialogueRepair(candidate, {
-    ...envelope(plan, good), path: "/shotPlan/0/videoPrompt"
+    ...envelope(plan, good), replacement: "整条重写"
   }, plan), /只允许字段/u);
   assert.throws(() => mergeAnimationShotDialogueRepair(candidate, envelope(plan, good, "D2"), plan), /repairId 必须等于 D1/u);
   assert.throws(() => mergeAnimationShotDialogueRepair(candidate, {
@@ -147,7 +144,6 @@ test("不属于台词缺失的失败一律不进入补写通道", () => {
 // 确认补写真的被触发、预算只有一次、失败一律 fail closed。
 test("批次评估在台词缺失时触发一次补写，成功后返回校验通过的批次", async () => {
   const { WorkflowService } = await import("../src/workflow.js");
-  const original = shot().videoPrompt;
   let repairCalls = 0;
   const client = {
     async generateJson({ prompt }) {
@@ -156,7 +152,7 @@ test("批次评估在台词缺失时触发一次补写，成功后返回校验�
       return {
         schemaVersion: ANIMATION_SHOT_DIALOGUE_REPAIR_SCHEMA_VERSION,
         baseDigest: JSON.parse(prompt.match(/"baseDigest":("[a-f0-9]{64}")/u)[1]),
-        repairs: [{ repairId: "D1", replacement: insertBeforeMusic(original, `奶奶笑着说「${LINE}」。`) }]
+        repairs: [{ repairId: "D1", insertion: `奶奶笑着说「${LINE}」。` }]
       };
     }
   };
@@ -185,7 +181,7 @@ test("补写结果仍然不合规时 fail closed，不做第二次尝试", async
       return {
         schemaVersion: ANIMATION_SHOT_DIALOGUE_REPAIR_SCHEMA_VERSION,
         baseDigest: JSON.parse(prompt.match(/"baseDigest":("[a-f0-9]{64}")/u)[1]),
-        repairs: [{ repairId: "D1", replacement: insertBeforeMusic(shot().videoPrompt, "奶奶说了句关心的话。") }]
+        repairs: [{ repairId: "D1", insertion: "奶奶说了句关心的话。" }]
       };
     }
   };
