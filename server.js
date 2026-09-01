@@ -57,9 +57,19 @@ import { loadOrCreatePersistentKey } from "./src/persistent-key.js";
 import { STORY_DURATION_MAX_SECONDS, STORY_DURATION_MIN_SECONDS, isValidStoryDurationSeconds } from "./public/story-duration.js";
 import { CHARACTER_EXPRESSION_RULES_MAX_CHARS, isValidCharacterExpressionRules } from "./public/character-expression-rules.js";
 import { ProductionStateStore } from "./src/production-state-store.js";
-import { ProductionStateError, normalizeArtifactId, safeIdentifier } from "./src/production-lineage.js";
+import { ProductionStateError, contentDigest, lineageRef, normalizeArtifactId, safeIdentifier } from "./src/production-lineage.js";
+import { ProductionRunCoordinator } from "./src/production-run-coordinator.js";
+import { DurableTaskStore, DURABLE_TASK_TERMINAL_STATUSES } from "./src/durable-task-store.js";
+import { DurableTaskManager } from "./src/durable-task-manager.js";
+import { runWithDurableTaskContext } from "./src/durable-task-context.js";
 import { readModelUsageFromError, runWithUsageAccounting } from "./src/token-usage.js";
 import { resolveBuildIdentity } from "./src/build-identity.js";
+import {
+  PRODUCTION_REQUEST_HEADER_NAMES,
+  productionRequestHeaders
+} from "./public/production-lineage-client.js";
+import { shotVideoArtifactIdFor } from "./public/shot-video-continuity.js";
+import { syncShotCharacterReference } from "./public/character-reference-sync.js";
 
 loadEnv();
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -128,8 +138,13 @@ const stageDefaults = buildStageDefaults(config, { mimoClient, qwenClient });
 const modelStages = buildModelStages(stageDefaults, config);
 const clients = { MiMo: mimoClient, Qwen: qwenClient, DeepSeek: deepseekClient };
 const attemptStore = new AttemptStore();
+const productionRunCoordinator = new ProductionRunCoordinator();
 const productionStateStore = new ProductionStateStore({
   ...buildIdentity,
+  rootDir: config.workflowRuntime.productionStateDirectory,
+  coordinator: productionRunCoordinator
+});
+const durableTaskStore = new DurableTaskStore({
   rootDir: config.workflowRuntime.productionStateDirectory
 });
 // 这两把密钥必须跨重启保持不变：落盘 Artifact 上的 groundingSeal 与 boundarySignature
@@ -160,6 +175,15 @@ const workflow = new WorkflowService({
   partialRepairDebugWriter,
   fullModelOutputLogWriter,
   stageModelOutputLogWriters
+});
+const durableTaskManager = new DurableTaskManager({
+  productionStore: productionStateStore,
+  taskStore: durableTaskStore,
+  coordinator: productionRunCoordinator,
+  localStallMs: config.durableTasks.localStallMs,
+  providerGraceMs: config.durableTasks.providerGraceMs,
+  maxQueuedBytes: config.durableTasks.maxQueuedBytes,
+  pools: config.durableTasks.pools
 });
 const castOrchestration = new CastOrchestrationService({
   environment: config.fullStoryV2Pipeline.environment,
@@ -362,6 +386,1170 @@ const routes = {
   "/api/run": (body) => workflow.run(body)
 };
 
+const DIRECTOR_PIPELINE_STAGES = Object.freeze([
+  {
+    key: "analysis",
+    taskKind: "analyze",
+    artifactId: "referenceAnalysis",
+    artifactType: "referenceAnalysis",
+    dependencyIds: [],
+    route: "/api/analyze",
+    buildInput: (raw) => ({ ...pipelineMediaInput(raw) })
+  },
+  {
+    key: "reconstruction",
+    taskKind: "reconstruct",
+    artifactId: "sourceScriptReconstruction",
+    artifactType: "sourceScriptReconstruction",
+    dependencyIds: ["referenceAnalysis"],
+    route: "/api/reconstruct",
+    buildInput: (raw, artifacts) => ({
+      ...pipelineMediaInput(raw),
+      referenceAnalysis: artifacts.referenceAnalysis
+    })
+  },
+  {
+    key: "brief",
+    taskKind: "brief",
+    artifactId: "creativeBrief",
+    artifactType: "creativeBrief",
+    dependencyIds: ["referenceAnalysis", "sourceScriptReconstruction"],
+    route: "/api/brief",
+    buildInput: (raw, artifacts) => ({
+      referenceAnalysis: artifacts.referenceAnalysis,
+      sourceScriptReconstruction: artifacts.sourceScriptReconstruction,
+      creatorProfile: raw.creatorProfile,
+      modelOverrides: raw.modelOverrides
+    })
+  },
+  {
+    key: "visualGuardrails",
+    taskKind: "visualGuardrails",
+    artifactId: "visualGuardrails",
+    artifactType: "visualGuardrails",
+    dependencyIds: ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief"],
+    route: "/api/visual-guardrails",
+    buildInput: (raw, artifacts) => ({
+      ...pipelineMediaInput(raw),
+      referenceAnalysis: artifacts.referenceAnalysis,
+      sourceScriptReconstruction: artifacts.sourceScriptReconstruction,
+      creativeBrief: artifacts.creativeBrief
+    })
+  },
+  {
+    key: "variants",
+    taskKind: "variants",
+    artifactId: "themeVariants",
+    artifactType: "themeVariants",
+    dependencyIds: ["creativeBrief", "visualGuardrails"],
+    route: "/api/variants",
+    buildInput: (raw, artifacts) => ({
+      referenceAnalysis: artifacts.referenceAnalysis,
+      sourceScriptReconstruction: artifacts.sourceScriptReconstruction,
+      creativeBrief: artifacts.creativeBrief,
+      visualGuardrails: artifacts.visualGuardrails,
+      creatorProfile: raw.creatorProfile,
+      count: raw.count,
+      modelOverrides: raw.modelOverrides
+    })
+  }
+]);
+
+function taskDefinitionForRequest(body = {}) {
+  const projectId = safeIdentifier(body.projectId, "projectId");
+  const runId = safeIdentifier(body.runId, "runId");
+  const kind = String(body.kind || "").trim();
+  const input = plainObject(body.input);
+  if (kind === "directorPipeline") {
+    const forbiddenResumeKeys = ["resumeFromStage", "startStage", "stageIndex", "resumeStage"]
+      .filter((key) => Object.prototype.hasOwnProperty.call(input, key));
+    if (forbiddenResumeKeys.length) {
+      throw new ProductionStateError("Pipeline 续跑阶段只能由服务端根据 current Artifact 链决定。", {
+        code: "TASK_RESUME_HINT_FORBIDDEN",
+        httpStatus: 400,
+        details: forbiddenResumeKeys.map((key) => ({ key }))
+      });
+    }
+    return directorPipelineTaskDefinition({ projectId, runId, input });
+  }
+  if (["analyze", "reconstruct", "brief", "visualGuardrails"].includes(kind)) {
+    const stage = DIRECTOR_PIPELINE_STAGES.find((item) => item.taskKind === kind);
+    return pipelineStageTaskDefinition({ projectId, runId, raw: input, stage });
+  }
+  if (kind === "variants") return standaloneVariantsTaskDefinition({ projectId, runId, input });
+  if (kind === "fullStory") return fullStoryTaskDefinition({ projectId, runId, input });
+  if (kind === "animationPlan") return animationPlanTaskDefinition({ projectId, runId, input });
+  if (kind === "animationPromptRewrite") return animationPromptRewriteTaskDefinition({ projectId, runId, input });
+  if (kind === "characterReferenceRefine") return characterReferenceRefineTaskDefinition({ projectId, runId, input });
+  if (kind === "characterReferenceImages") return characterReferenceImagesTaskDefinition({ projectId, runId, input });
+  if (kind === "shotVideo") return shotVideoTaskDefinition({ projectId, runId, input });
+  if (kind === "shotFrameImage") return shotFrameTaskDefinition({ projectId, runId, input });
+  throw new ProductionStateError(`不支持 Durable Task kind：${kind || "(空)"}`, {
+    code: "TASK_KIND_UNSUPPORTED",
+    httpStatus: 400
+  });
+}
+
+function directorPipelineTaskDefinition({ projectId, runId, input }) {
+  const inputDigest = contentDigest(nonArtifactInputDigestSource(input));
+  return {
+    projectId,
+    runId,
+    kind: "directorPipeline",
+    pool: "workflow",
+    targetArtifactIds: DIRECTOR_PIPELINE_STAGES.map((stage) => stage.artifactId),
+    modelSnapshot: modelSnapshotFor(input, DIRECTOR_PIPELINE_STAGES.map((stage) => stage.key)),
+    prepare: async ({ run }) => {
+      const expectedSourceDigest = String(run.metadata?.sourceVideoDigest || "").trim().toLowerCase();
+      const actualSourceDigest = String(input.sourceVideoDigest || "").trim().toLowerCase();
+      const requiresSourceMedia = ["referenceAnalysis", "sourceScriptReconstruction", "visualGuardrails"]
+        .some((artifactId) => run.latestArtifacts?.[artifactId]?.lineage?.status !== "current");
+      if (requiresSourceMedia && expectedSourceDigest && actualSourceDigest !== expectedSourceDigest) {
+        throw new ProductionStateError("重新上传的视频与当前 Run 的原始文件 SHA-256 不一致。", {
+          code: "TASK_SOURCE_VIDEO_DIGEST_MISMATCH",
+          httpStatus: 409,
+          details: [{ expectedSourceDigest, actualSourceDigest: actualSourceDigest || null }]
+        });
+      }
+      return {
+        input: structuredClone(input),
+        inputDigest,
+        targetArtifactIds: DIRECTOR_PIPELINE_STAGES.map((stage) => stage.artifactId),
+        modelSnapshot: modelSnapshotFor(input, DIRECTOR_PIPELINE_STAGES.map((stage) => stage.key)),
+        progress: { completedStages: 0, totalStages: DIRECTOR_PIPELINE_STAGES.length }
+      };
+    },
+    execute: async (raw, context) => {
+      const completed = [];
+      const usages = [];
+      for (const stage of DIRECTOR_PIPELINE_STAGES) {
+        const snapshot = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
+        const existing = snapshot.latestArtifacts?.[stage.artifactId];
+        if (existing?.lineage?.status === "current") {
+          completed.push(lineageRef(existing.lineage));
+          await context.heartbeat({
+            completedStages: completed.length,
+            totalStages: DIRECTOR_PIPELINE_STAGES.length,
+            currentStage: stage.artifactId,
+            reusedCurrentArtifact: true
+          });
+          continue;
+        }
+        assertPipelineMediaAvailable(stage, raw);
+        await context.heartbeat({
+          completedStages: completed.length,
+          totalStages: DIRECTOR_PIPELINE_STAGES.length,
+          currentStage: stage.artifactId
+        });
+        const child = await context.runChild(pipelineStageTaskDefinition({ projectId, runId, raw, stage }));
+        completed.push(...(child.resultArtifactRefs || []));
+        if (child.usage) usages.push(child.usage);
+        await context.heartbeat({
+          completedStages: completed.length,
+          totalStages: DIRECTOR_PIPELINE_STAGES.length,
+          currentStage: stage.artifactId
+        });
+      }
+      const run = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
+      return {
+        resultArtifactRefs: completed,
+        usage: mergeTaskUsages(usages),
+        progress: { completedStages: DIRECTOR_PIPELINE_STAGES.length, totalStages: DIRECTOR_PIPELINE_STAGES.length },
+        compatibilityResult: Object.fromEntries(DIRECTOR_PIPELINE_STAGES.map((stage) => [
+          stage.artifactId,
+          run.latestArtifacts?.[stage.artifactId]?.content
+        ]))
+      };
+    }
+  };
+}
+
+function pipelineStageTaskDefinition({ projectId, runId, raw, stage }) {
+  return artifactRouteTaskDefinition({
+    projectId,
+    runId,
+    kind: stage.taskKind,
+    pool: "workflow",
+    artifactId: stage.artifactId,
+    artifactType: stage.artifactType,
+    dependencyIds: stage.dependencyIds,
+    modelStages: [stage.key],
+    rawInput: raw,
+    prepareInput: (run) => {
+      assertCompatibleArtifactCopies(run, raw, [
+        ["referenceAnalysis", "referenceAnalysis"],
+        ["sourceScriptReconstruction", "sourceScriptReconstruction"],
+        ["creativeBrief", "creativeBrief"],
+        ["visualGuardrails", "visualGuardrails"]
+      ]);
+      return stage.buildInput(raw, currentArtifactContents(run));
+    },
+    invoke: (trustedInput, request) => routes[stage.route](trustedInput, { request })
+  });
+}
+
+function standaloneVariantsTaskDefinition({ projectId, runId, input }) {
+  const stage = DIRECTOR_PIPELINE_STAGES.at(-1);
+  return pipelineStageTaskDefinition({ projectId, runId, raw: input, stage });
+}
+
+function fullStoryTaskDefinition({ projectId, runId, input }) {
+  const variantId = safeIdentifier(input.variantId || input.variant?.id, "variantId");
+  const artifactId = `fullStory:${variantId}`;
+  const dependencyIds = [
+    "referenceAnalysis",
+    "sourceScriptReconstruction",
+    "creativeBrief",
+    "visualGuardrails",
+    "themeVariants",
+    `variant:${variantId}`
+  ];
+  return artifactRouteTaskDefinition({
+    projectId,
+    runId,
+    kind: "fullStory",
+    pool: "workflow",
+    artifactId,
+    artifactType: "fullStory",
+    dependencyIds,
+    modelStages: ["fullStory"],
+    rawInput: input,
+    prepareInput: (run) => {
+      assertCompatibleArtifactCopies(run, input, [
+        ["referenceAnalysis", "referenceAnalysis"],
+        ["sourceScriptReconstruction", "sourceScriptReconstruction"],
+        ["creativeBrief", "creativeBrief"],
+        ["visualGuardrails", "visualGuardrails"],
+        ["themeVariants", "themeVariants"],
+        ["variant", `variant:${variantId}`]
+      ]);
+      assertCompatibleLineageCopy(run, `variant:${variantId}`, input.candidateBinding, "candidateBinding");
+      const artifacts = currentArtifactContents(run, dependencyIds);
+      const candidateLineage = requireCurrentArtifact(run, `variant:${variantId}`).lineage;
+      return {
+        referenceAnalysis: artifacts.referenceAnalysis,
+        sourceScriptReconstruction: artifacts.sourceScriptReconstruction,
+        creativeBrief: artifacts.creativeBrief,
+        visualGuardrails: artifacts.visualGuardrails,
+        themeVariants: artifacts.themeVariants,
+        variant: artifacts[`variant:${variantId}`],
+        candidateBinding: lineageRef(candidateLineage),
+        creatorProfile: input.creatorProfile,
+        targetDurationSeconds: input.targetDurationSeconds,
+        modelOverrides: input.modelOverrides
+      };
+    },
+    invoke: (trustedInput, request) => routes["/api/full-story"](trustedInput, { request })
+  });
+}
+
+function animationPlanTaskDefinition({ projectId, runId, input }) {
+  const variantId = safeIdentifier(input.variantId || input.variant?.id, "variantId");
+  const artifactId = `animationPlan:${variantId}`;
+  const dependencyIds = [
+    "referenceAnalysis",
+    "sourceScriptReconstruction",
+    "creativeBrief",
+    "visualGuardrails",
+    `variant:${variantId}`,
+    `fullStory:${variantId}`
+  ];
+  return artifactRouteTaskDefinition({
+    projectId,
+    runId,
+    kind: "animationPlan",
+    pool: "workflow",
+    artifactId,
+    artifactType: "animationPlan",
+    dependencyIds,
+    modelStages: ["animationPlan", "staticFrameCompiler"],
+    rawInput: input,
+    createMediaNamespace: true,
+    contentForArtifact: (value) => normalizeAnimationPlanTaskResponse(value).animationPlan,
+    prepareInput: (run) => {
+      assertCompatibleArtifactCopies(run, input, [
+        ["referenceAnalysis", "referenceAnalysis"],
+        ["sourceScriptReconstruction", "sourceScriptReconstruction"],
+        ["creativeBrief", "creativeBrief"],
+        ["visualGuardrails", "visualGuardrails"],
+        ["variant", `variant:${variantId}`],
+        ["fullStory", `fullStory:${variantId}`]
+      ]);
+      const artifacts = currentArtifactContents(run, dependencyIds);
+      return {
+        referenceAnalysis: artifacts.referenceAnalysis,
+        sourceScriptReconstruction: artifacts.sourceScriptReconstruction,
+        creativeBrief: artifacts.creativeBrief,
+        visualGuardrails: artifacts.visualGuardrails,
+        variant: artifacts[`variant:${variantId}`],
+        fullStory: artifacts[`fullStory:${variantId}`],
+        creatorProfile: input.creatorProfile,
+        characterExpressionRules: input.characterExpressionRules,
+        animationPlanMode: input.animationPlanMode || "direct_shot",
+        targetAspectRatio: input.targetAspectRatio,
+        backgroundMusicEnabled: input.backgroundMusicEnabled,
+        videoPromptTarget: input.videoPromptTarget,
+        includeCompilerMetadata: input.includeCompilerMetadata !== false,
+        modelOverrides: input.modelOverrides
+      };
+    },
+    invoke: (trustedInput, request) => routes["/api/animation-plan"](trustedInput, { request })
+  });
+}
+
+function animationPromptRewriteTaskDefinition({ projectId, runId, input }) {
+  const variantId = safeIdentifier(input.variantId || input.variant?.id, "variantId");
+  const artifactId = `animationPlan:${variantId}`;
+  const currentPlan = input.productionContext?.planArtifactId || artifactId;
+  if (normalizeArtifactId(currentPlan) !== artifactId) {
+    throw new ProductionStateError("提示词重写目标与 Variant 不一致", { code: "TASK_TARGET_MISMATCH", httpStatus: 409 });
+  }
+  return artifactRouteTaskDefinition({
+    projectId,
+    runId,
+    kind: "animationPromptRewrite",
+    pool: "workflow",
+    artifactId,
+    artifactType: "animationPlan",
+    dependencyIds: [],
+    preserveTargetDependencies: true,
+    modelStages: ["animationPlan"],
+    rawInput: input,
+    createMediaNamespace: true,
+    contentForArtifact: (value) => normalizeAnimationPlanTaskResponse(value).animationPlan,
+    prepareInput: (run) => {
+      const plan = requireCurrentArtifact(run, artifactId);
+      assertCompatibleArtifactCopies(run, input, [
+        ["creativeBrief", "creativeBrief"],
+        ["variant", `variant:${variantId}`],
+        ["fullStory", `fullStory:${variantId}`],
+        ["visualGuardrails", "visualGuardrails"]
+      ]);
+      assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry: plan });
+      const dependencies = plan.lineage.dependencies || [];
+      const artifacts = currentArtifactContents(run);
+      return {
+        creatorProfile: input.creatorProfile,
+        creativeBrief: artifacts.creativeBrief,
+        variant: artifacts[`variant:${variantId}`],
+        fullStory: artifacts[`fullStory:${variantId}`],
+        visualGuardrails: artifacts.visualGuardrails,
+        fixedCharacterBoundary: artifacts.visualGuardrails?.fixedCharacterBoundary,
+        animationPlanMode: "direct_shot",
+        videoPromptTarget: input.videoPromptTarget,
+        productionContext: productionContextForLineage(projectId, runId, plan.lineage),
+        modelOverrides: input.modelOverrides,
+        __dependencies: dependencies
+      };
+    },
+    resolveDependencies: (trustedInput) => trustedInput.__dependencies,
+    invoke: (trustedInput, request) => {
+      const { __dependencies, ...routeInput } = trustedInput;
+      return routes["/api/animation-plan/video-prompts/rewrite"](routeInput, { request });
+    }
+  });
+}
+
+function characterReferenceRefineTaskDefinition({ projectId, runId, input }) {
+  const variantId = safeIdentifier(input.variantId || input.selectedVariantId, "variantId");
+  const roleIndex = requireNonNegativeInteger(input.roleIndex, "roleIndex");
+  const artifactId = `animationPlan:${variantId}`;
+  return artifactRouteTaskDefinition({
+    projectId,
+    runId,
+    kind: "characterReferenceRefine",
+    pool: "media",
+    artifactId,
+    artifactType: "animationPlan",
+    dependencyIds: [],
+    modelStages: ["characterReference"],
+    rawInput: input,
+    createMediaNamespace: true,
+    prepareInput: (run) => {
+      const planEntry = requireCurrentArtifact(run, artifactId);
+      const plan = structuredClone(planEntry.content);
+      const characterReference = plan.characterReferencePrompts?.[roleIndex];
+      if (!characterReference) {
+        throw new ProductionStateError("Animation Plan 中没有对应角色参考项", {
+          code: "TASK_CHARACTER_REFERENCE_MISSING",
+          httpStatus: 409
+        });
+      }
+      assertCompatibleArtifactCopies(run, input, [
+        ["referenceAnalysis", "referenceAnalysis"],
+        ["sourceScriptReconstruction", "sourceScriptReconstruction"],
+        ["creativeBrief", "creativeBrief"],
+        ["visualGuardrails", "visualGuardrails"],
+        ["selectedVariant", `variant:${variantId}`],
+        ["fullStory", `fullStory:${variantId}`]
+      ]);
+      if (Object.prototype.hasOwnProperty.call(input, "characterReference")) {
+        assertCompatibleValueCopy(
+          stripReferenceImageData(characterReference),
+          input.characterReference,
+          "characterReference"
+        );
+      }
+      if (Object.prototype.hasOwnProperty.call(input, "animationPlan")) {
+        assertCompatibleValueCopy({
+          title: plan.title,
+          productionStrategy: plan.productionStrategy,
+          visualBible: plan.visualBible
+        }, input.animationPlan, "animationPlan partial copy");
+      }
+      const artifacts = currentArtifactContents(run);
+      const { referenceImageDataUrl: _oldImage, ...safeCharacterReference } = characterReference;
+      return {
+        imageName: String(input.imageName || "reference.png"),
+        imageDataUrl: input.imageDataUrl,
+        characterReference: safeCharacterReference,
+        creatorProfile: input.creatorProfile,
+        referenceAnalysis: artifacts.referenceAnalysis,
+        sourceScriptReconstruction: artifacts.sourceScriptReconstruction,
+        creativeBrief: artifacts.creativeBrief,
+        visualGuardrails: artifacts.visualGuardrails,
+        selectedVariant: artifacts[`variant:${variantId}`],
+        fullStory: artifacts[`fullStory:${variantId}`],
+        animationPlan: {
+          title: plan.title,
+          productionStrategy: plan.productionStrategy,
+          visualBible: plan.visualBible
+        },
+        modelOverrides: input.modelOverrides,
+        __plan: plan,
+        __roleIndex: roleIndex,
+        __dependencies: planEntry.lineage.dependencies || []
+      };
+    },
+    resolveDependencies: (trustedInput) => trustedInput.__dependencies,
+    noticesForResult: (refined) => [
+      refined?.referenceImageOverrideNotice,
+      refined?.boundaryRestoreNotice,
+      refined?.boundaryWarning
+    ].filter(Boolean),
+    contentForArtifact: (refined, trustedInput) => {
+      const {
+        boundaryWarning: _boundaryWarning,
+        boundaryRestoreNotice: _boundaryRestoreNotice,
+        referenceImageOverrideNotice: _referenceImageOverrideNotice,
+        ...refinedFields
+      } = refined || {};
+      const updatedPlan = structuredClone(trustedInput.__plan);
+      const previous = updatedPlan.characterReferencePrompts[trustedInput.__roleIndex];
+      const updated = {
+        ...previous,
+        ...refinedFields,
+        referenceImageAdded: true,
+        referenceImageName: trustedInput.imageName,
+        referenceImageDataUrl: trustedInput.imageDataUrl
+      };
+      updatedPlan.characterReferencePrompts[trustedInput.__roleIndex] = updated;
+      syncShotCharacterReference(updatedPlan, previous, updated);
+      return updatedPlan;
+    },
+    invoke: (trustedInput) => {
+      const { __plan, __roleIndex, __dependencies, ...routeInput } = trustedInput;
+      return routes["/api/refine-character-reference"](routeInput);
+    }
+  });
+}
+
+function characterReferenceImagesTaskDefinition({ projectId, runId, input }) {
+  const variantId = safeIdentifier(input.variantId || input.selectedVariantId, "variantId");
+  const roleIndex = requireNonNegativeInteger(input.roleIndex, "roleIndex");
+  const artifactId = `characterImages:${variantId}:${roleIndex}`;
+  const planArtifactId = `animationPlan:${variantId}`;
+  const imageModel = modelOverrideFor(input, "imageGeneration") || config.jimeng.model;
+  return {
+    projectId,
+    runId,
+    kind: "characterReferenceImages",
+    pool: "media",
+    targetArtifactIds: [artifactId],
+    dependencyIds: [planArtifactId],
+    modelSnapshot: { imageGeneration: { provider: "Jimeng", model: imageModel } },
+    prepare: async ({ run }) => {
+      const planEntry = requireCurrentArtifact(run, planArtifactId);
+      const characterReference = planEntry.content?.characterReferencePrompts?.[roleIndex];
+      if (!characterReference) {
+        throw new ProductionStateError("Animation Plan 中没有对应角色参考项", {
+          code: "TASK_CHARACTER_REFERENCE_MISSING",
+          httpStatus: 409
+        });
+      }
+      assertCompatibleArtifactCopies(run, input, [
+        ["referenceAnalysis", "referenceAnalysis"],
+        ["sourceScriptReconstruction", "sourceScriptReconstruction"],
+        ["creativeBrief", "creativeBrief"],
+        ["visualGuardrails", "visualGuardrails"],
+        ["selectedVariant", `variant:${variantId}`]
+      ]);
+      if (Object.prototype.hasOwnProperty.call(input, "characterReference")) {
+        assertCompatibleValueCopy(
+          stripReferenceImageData(characterReference),
+          input.characterReference,
+          "characterReference"
+        );
+      }
+      assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry: planEntry });
+      const count = Math.max(1, Math.min(config.jimeng.maxImages, Math.round(Number(input.count) || 1)));
+      const prompt = String(input.prompt || "").trim()
+        || buildCharacterReferenceImagePrompt(characterReference, count, planEntry.content?.visualBible || null);
+      return {
+        input: {
+          count,
+          prompt,
+          promptDigest: contentDigest(prompt),
+          referenceImageDataUrl: input.referenceImageDataUrl,
+          characterReference: stripReferenceImageData(characterReference),
+          creatorProfile: input.creatorProfile,
+          referenceAnalysis: requireCurrentArtifact(run, "referenceAnalysis").content,
+          sourceScriptReconstruction: requireCurrentArtifact(run, "sourceScriptReconstruction").content,
+          creativeBrief: requireCurrentArtifact(run, "creativeBrief").content,
+          visualGuardrails: requireCurrentArtifact(run, "visualGuardrails").content,
+          selectedVariant: requireCurrentArtifact(run, `variant:${variantId}`).content,
+          productionContext: productionContextForLineage(projectId, runId, planEntry.lineage),
+          imageModel,
+          artifactId,
+          roleIndex
+        },
+        idempotencyInput: {
+          count,
+          promptDigest: contentDigest(prompt),
+          referenceImageDigest: contentDigest(String(input.referenceImageDataUrl || "")),
+          model: imageModel
+        },
+        targetArtifactIds: [artifactId],
+        dependencyIds: [planArtifactId],
+        modelSnapshot: { imageGeneration: { provider: "Jimeng", model: imageModel } },
+        progress: { expectedCount: count, readyCount: 0, results: [], promptDigest: contentDigest(prompt) }
+      };
+    },
+    execute: (trustedInput, context) => executeCharacterReferenceImagesTask(trustedInput, context)
+  };
+}
+
+async function executeCharacterReferenceImagesTask(input, context) {
+  if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
+  const productionMedia = await resolveProductionMediaContext({ productionContext: input.productionContext }, { required: true });
+  const visualGuardrails = workflow.assertGlobalCharacterBoundary(input);
+  const boundaryWarnings = [
+    characterReferenceBoundaryMismatch(input.characterReference, visualGuardrails),
+    characterPromptBoundaryMismatch(input.prompt, visualGuardrails, {
+      characterName: input.characterReference?.characterName || ""
+    })
+  ].filter(Boolean);
+  const ready = [];
+  const failed = [];
+  const { usage } = await runWithUsageAccounting(
+    () => runWithDurableTaskContext(context, () => jimengClient.generateImagesStream({
+      referenceImageDataUrl: input.referenceImageDataUrl,
+      characterReference: input.characterReference,
+      count: input.count,
+      prompt: input.prompt,
+      model: input.imageModel
+    }, async (event) => {
+      if (event.type === "image_generation.partial_succeeded") {
+        const image = await persistGeneratedImage(event, input.characterReference, productionMedia);
+        const result = {
+          type: "image",
+          status: "ready",
+          imageIndex: Number(event.image_index) || 0,
+          characterName: input.characterReference?.characterName || "",
+          model: event.model || input.imageModel,
+          created: event.created || Math.round(Date.now() / 1000),
+          size: event.size || image.size || "",
+          url: image.url,
+          filename: image.filename,
+          prompt: input.prompt
+        };
+        ready.push(result);
+        await context.heartbeat({
+          expectedCount: input.count,
+          readyCount: ready.length,
+          failedCount: failed.length,
+          results: [...ready, ...failed]
+        });
+        return;
+      }
+      if (event.type === "image_generation.partial_failed") {
+        failed.push({
+          type: "image-error",
+          status: "error",
+          imageIndex: Number(event.image_index) || 0,
+          code: String(event.error?.code || ""),
+          error: String(event.error?.message || "单张图片生成失败")
+        });
+        await context.heartbeat({
+          expectedCount: input.count,
+          readyCount: ready.length,
+          failedCount: failed.length,
+          results: [...ready, ...failed]
+        });
+        return;
+      }
+      if (event.error) {
+        throw new ProductionStateError(String(event.error.message || "即梦图片生成失败"), {
+          code: String(event.error.code || "CHARACTER_IMAGE_STREAM_FAILED"),
+          category: "provider"
+        });
+      }
+    })),
+    { prices: config.modelPrices }
+  );
+  if (usage) await context.updateUsage(usage);
+  if (!ready.length) {
+    throw new ProductionStateError("生成结束，但没有返回可用图片。", {
+      code: "CHARACTER_IMAGES_EMPTY",
+      category: "provider"
+    });
+  }
+  await context.assertFrozenContextCurrent();
+  const content = {
+    characterName: input.characterReference?.characterName || "",
+    // Artifact 保持旧浏览器提交的精确业务形状；status 只属于 Task progress。
+    results: ready.map(({ status: _status, ...result }) => result)
+  };
+  const committed = await context.commitArtifact({
+    artifactId: input.artifactId,
+    artifactType: "characterImages",
+    content
+  });
+  return {
+    compatibilityResult: {
+      ...content,
+      partialSuccess: ready.length < input.count,
+      failedCount: failed.length,
+      boundaryWarnings
+    },
+    usage,
+    notices: boundaryWarnings,
+    progress: {
+      expectedCount: input.count,
+      readyCount: ready.length,
+      failedCount: failed.length,
+      partialSuccess: ready.length < input.count,
+      results: [...ready, ...failed]
+    },
+    resultArtifactRefs: [lineageRef(committed.lineage)]
+  };
+}
+
+function shotVideoTaskDefinition({ projectId, runId, input }) {
+  const variantId = safeIdentifier(input.variantId || input.selectedVariantId, "variantId");
+  const shotId = safeIdentifier(input.shotId || input.shot?.shotId, "shotId");
+  const artifactId = shotVideoArtifactIdFor(variantId, shotId);
+  const planArtifactId = `animationPlan:${variantId}`;
+  const setting = shotVideoRequestSetting(input);
+  return artifactRouteTaskDefinition({
+    projectId,
+    runId,
+    kind: "shotVideo",
+    pool: "media",
+    artifactId,
+    artifactType: "shotVideo",
+    dependencyIds: [],
+    modelStages: [],
+    modelSnapshot: { shotVideo: { provider: setting.provider, model: setting.model } },
+    rawInput: input,
+    prepareInput: (run) => {
+      const planEntry = requireCurrentArtifact(run, planArtifactId);
+      assertCompatibleArtifactCopies(run, input, [
+        ["referenceAnalysis", "referenceAnalysis"],
+        ["sourceScriptReconstruction", "sourceScriptReconstruction"],
+        ["creativeBrief", "creativeBrief"],
+        ["visualGuardrails", "visualGuardrails"]
+      ]);
+      assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry: planEntry });
+      const dependencies = [lineageRef(planEntry.lineage)];
+      if (input.continuityReferenceMode === "previous_shot_frames") {
+        const planShots = planEntry.content?.shotPlan || [];
+        const index = planShots.findIndex((shot) => String(shot.shotId) === shotId);
+        if (index > 0) {
+          const previousId = shotVideoArtifactIdFor(variantId, planShots[index - 1].shotId);
+          dependencies.push(lineageRef(requireCurrentArtifact(run, previousId).lineage));
+        }
+      }
+      return {
+        ...input,
+        selectedVariantId: variantId,
+        shotId,
+        productionContext: productionContextForLineage(projectId, runId, planEntry.lineage),
+        __dependencies: dependencies
+      };
+    },
+    resolveDependencies: (trustedInput) => trustedInput.__dependencies,
+    contentForArtifact: (result) => {
+      const videos = Array.isArray(result?.videos) && result.videos.length
+        ? result.videos
+        : result?.outputUrl ? [result] : [];
+      const expected = Math.max(1, Math.min(4, Number(input.count) || 1));
+      if (videos.length !== expected) {
+        throw new ProductionStateError(`视频数量不足：请求 ${expected} 条，实际返回 ${videos.length} 条。`, {
+          code: "SHOT_VIDEO_COUNT_MISMATCH"
+        });
+      }
+      const selectedIndex = 0;
+      return {
+        status: "ready",
+        result: {
+          ...result,
+          videos,
+          selectedIndex,
+          outputUrl: videos[selectedIndex]?.outputUrl || result.outputUrl || ""
+        },
+        selectedIndex
+      };
+    },
+    invoke: (trustedInput) => {
+      const { __dependencies, ...routeInput } = trustedInput;
+      return routes["/api/generate-shot-video"](routeInput);
+    }
+  });
+}
+
+function shotFrameTaskDefinition({ projectId, runId, input }) {
+  const variantId = safeIdentifier(input.variantId || input.selectedVariantId, "variantId");
+  const shotId = safeIdentifier(input.shotId || input.shot?.shotId, "shotId");
+  const frameKind = input.frameKind === "end" ? "end" : "start";
+  const artifactId = `shotFrame:${variantId}:${shotId}:${frameKind}`;
+  const planArtifactId = `animationPlan:${variantId}`;
+  const imageModel = modelOverrideFor(input, "imageGeneration") || config.jimeng.model;
+  return artifactRouteTaskDefinition({
+    projectId,
+    runId,
+    kind: "shotFrameImage",
+    pool: "media",
+    artifactId,
+    artifactType: "shotFrame",
+    dependencyIds: [planArtifactId],
+    modelStages: [],
+    rawInput: input,
+    prepareInput: (run) => {
+      const planEntry = requireCurrentArtifact(run, planArtifactId);
+      assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry: planEntry });
+      const authoritativeShot = (planEntry.content?.shotPlan || [])
+        .find((shot) => String(shot.shotId || "") === shotId);
+      if (!authoritativeShot) {
+        throw new ProductionStateError("当前 Animation Plan 中没有目标 shot", {
+          code: "MEDIA_PLAN_SHOT_MISSING",
+          httpStatus: 409
+        });
+      }
+      return {
+        ...input,
+        selectedVariantId: variantId,
+        frameKind,
+        shot: structuredClone(authoritativeShot),
+        visualBible: structuredClone(planEntry.content?.visualBible || {}),
+        animationPromptSchemaVersion: String(planEntry.content?.promptSchemaVersion || ""),
+        productionContext: productionContextForLineage(projectId, runId, planEntry.lineage)
+      };
+    },
+    contentForArtifact: async (result) => {
+      const images = Array.isArray(result.images) && result.images.length ? result.images : [result];
+      const persisted = await Promise.all(images.map(async (image) => ({
+        ...image,
+        dataUrl: await generatedPublicUrlToDataUrl(image.url)
+      })));
+      const normalized = {
+        ...result,
+        images: persisted,
+        selectedIndex: -1,
+        url: "",
+        dataUrl: ""
+      };
+      return {
+        status: input.autoSelectFirst ? "ready" : "pending",
+        frameKind,
+        result: normalized,
+        selectedIndex: input.autoSelectFirst ? 0 : -1,
+        message: `已生成 ${persisted.length} 张候选图，请选择一张添加到镜头。`
+      };
+    },
+    invoke: (trustedInput) => generateShotFrameImage(trustedInput),
+    modelSnapshot: { imageGeneration: { provider: "Jimeng", model: imageModel } }
+  });
+}
+
+function artifactRouteTaskDefinition({
+  projectId,
+  runId,
+  kind,
+  pool,
+  artifactId,
+  artifactType,
+  dependencyIds,
+  modelStages,
+  rawInput,
+  prepareInput,
+  invoke,
+  contentForArtifact = (value) => value,
+  createMediaNamespace = false,
+  resolveDependencies = null,
+  modelSnapshot = null,
+  noticesForResult = null
+}) {
+  const frozenModelSnapshot = modelSnapshot || modelSnapshotFor(rawInput, modelStages);
+  const frozenInputDigest = contentDigest(nonArtifactInputDigestSource(rawInput));
+  return {
+    projectId,
+    runId,
+    kind,
+    pool,
+    targetArtifactIds: [artifactId],
+    dependencyIds,
+    modelSnapshot: frozenModelSnapshot,
+    prepare: async ({ run }) => {
+      const trustedInput = await prepareInput(run);
+      const resolvedDependencies = resolveDependencies ? resolveDependencies(trustedInput, run) : null;
+      return {
+        input: trustedInput,
+        inputDigest: frozenInputDigest,
+        targetArtifactIds: [artifactId],
+        ...(resolvedDependencies ? { frozenDependencies: resolvedDependencies } : { dependencyIds }),
+        modelSnapshot: frozenModelSnapshot
+      };
+    },
+    execute: (trustedInput, context) => executeArtifactRouteTask({
+      trustedInput,
+      context,
+      artifactId,
+      artifactType,
+      invoke,
+      contentForArtifact,
+      createMediaNamespace,
+      dependencies: resolveDependencies ? resolveDependencies(trustedInput) : null,
+      noticesForResult
+    })
+  };
+}
+
+async function executeArtifactRouteTask({
+  trustedInput,
+  context,
+  artifactId,
+  artifactType,
+  invoke,
+  contentForArtifact,
+  createMediaNamespace,
+  dependencies,
+  noticesForResult
+}) {
+  await context.assertFrozenContextCurrent();
+  const task = await context.getTask();
+  const headers = productionRequestHeaders({
+    projectId: task.projectId,
+    runId: task.runId,
+    artifactId,
+    requestId: task.requestId,
+    expectedCurrentRevision: task.targetExpectedRevisions?.[artifactId] || null
+  });
+  const { result, usage } = await runWithUsageAccounting(
+    () => runWithDurableTaskContext(context, () => invoke(trustedInput, { headers })),
+    { prices: config.modelPrices }
+  );
+  if (usage) await context.updateUsage(usage);
+  await context.assertFrozenContextCurrent();
+  const committed = await context.commitArtifact({
+    artifactId,
+    artifactType,
+    content: await contentForArtifact(result, trustedInput),
+    ...(dependencies ? { dependencies } : {}),
+    createMediaNamespace
+  });
+  return {
+    compatibilityResult: result,
+    usage,
+    notices: noticesForResult ? noticesForResult(result, trustedInput) : [],
+    resultArtifactRefs: [lineageRef(committed.lineage)],
+    progress: { committedArtifactId: artifactId }
+  };
+}
+
+function pipelineMediaInput(raw = {}) {
+  return {
+    frames: raw.frames,
+    ...(raw.video ? { video: raw.video } : {}),
+    metadata: raw.metadata,
+    transcript: raw.transcript,
+    creatorProfile: raw.creatorProfile,
+    modelOverrides: raw.modelOverrides
+  };
+}
+
+function assertPipelineMediaAvailable(stage, raw) {
+  if (!["analysis", "reconstruction", "visualGuardrails"].includes(stage.key)) return;
+  if (Array.isArray(raw.frames) && raw.frames.length >= 3) return;
+  throw new ProductionStateError("继续该阶段需要重新上传同一源视频（服务重启后大型媒体不会持久化）。", {
+    code: "TASK_SOURCE_MEDIA_REQUIRED",
+    httpStatus: 409,
+    details: [{ sourceVideoDigest: String(raw.sourceVideoDigest || "") }]
+  });
+}
+
+function currentArtifactContents(run, requiredIds = []) {
+  for (const artifactId of requiredIds) requireCurrentArtifact(run, artifactId);
+  return Object.fromEntries(Object.entries(run.latestArtifacts || {})
+    .filter(([, entry]) => entry?.lineage?.status === "current")
+    .map(([artifactId, entry]) => [artifactId, structuredClone(entry.content)]));
+}
+
+function requireCurrentArtifact(run, artifactId) {
+  const safeArtifactId = normalizeArtifactId(artifactId);
+  const entry = run.latestArtifacts?.[safeArtifactId];
+  if (!entry?.lineage || entry.lineage.status !== "current") {
+    throw new ProductionStateError(`缺少 current Artifact：${safeArtifactId}`, {
+      code: "TASK_DEPENDENCY_MISSING",
+      httpStatus: 409
+    });
+  }
+  return entry;
+}
+
+function assertCompatibleArtifactCopies(run, input, mappings = []) {
+  for (const [inputKey, artifactId] of mappings) {
+    if (!Object.prototype.hasOwnProperty.call(input || {}, inputKey)) continue;
+    const entry = requireCurrentArtifact(run, artifactId);
+    assertCompatibleValueCopy(entry.content, input[inputKey], inputKey, {
+      artifactId: entry.lineage.artifactId,
+      expectedDigest: entry.lineage.contentDigest
+    });
+  }
+}
+
+function assertCompatibleValueCopy(expected, actual, label, details = {}) {
+  const expectedDigest = details.expectedDigest || contentDigest(expected);
+  const actualDigest = contentDigest(actual);
+  if (actualDigest === expectedDigest) return true;
+  throw new ProductionStateError(`浏览器携带的 ${label} 与服务端 current Artifact 不一致。`, {
+    code: "TASK_BROWSER_ARTIFACT_MISMATCH",
+    httpStatus: 409,
+    details: [{
+      ...(details.artifactId ? { artifactId: details.artifactId } : {}),
+      expectedDigest,
+      actualDigest
+    }]
+  });
+}
+
+function assertCompatibleLineageCopy(run, artifactId, copy, label) {
+  if (copy === undefined || copy === null) return true;
+  const entry = requireCurrentArtifact(run, artifactId);
+  const expected = lineageRef(entry.lineage);
+  const actual = {
+    artifactId: String(copy.artifactId || ""),
+    revision: String(copy.revision || ""),
+    contentDigest: String(copy.contentDigest || "").trim().toLowerCase()
+  };
+  if (
+    actual.artifactId === expected.artifactId
+    && actual.revision === expected.revision
+    && actual.contentDigest === expected.contentDigest
+  ) return true;
+  throw new ProductionStateError(`浏览器携带的 ${label} 与服务端 current lineage 不一致。`, {
+    code: "TASK_BROWSER_ARTIFACT_MISMATCH",
+    httpStatus: 409,
+    details: [{ artifactId: expected.artifactId, expectedRevision: expected.revision, actualRevision: actual.revision || null }]
+  });
+}
+
+function assertCompatibleProductionContext(context, { projectId, runId, entry }) {
+  if (context === undefined || context === null) return true;
+  const expected = productionContextForLineage(projectId, runId, entry.lineage);
+  const actual = context && typeof context === "object" && !Array.isArray(context) ? context : {};
+  if (
+    String(actual.projectId || "") === expected.projectId
+    && String(actual.runId || "") === expected.runId
+    && String(actual.planArtifactId || "") === expected.planArtifactId
+    && String(actual.planRevision || "") === expected.planRevision
+    && String(actual.planDigest || "").trim().toLowerCase() === expected.planDigest
+    && String(actual.mediaNamespace || "") === String(expected.mediaNamespace || "")
+  ) return true;
+  throw new ProductionStateError("浏览器携带的 Animation Plan productionContext 已不是服务端 current lineage。", {
+    code: "TASK_BROWSER_ARTIFACT_MISMATCH",
+    httpStatus: 409,
+    details: [{
+      artifactId: expected.planArtifactId,
+      expectedRevision: expected.planRevision,
+      actualRevision: String(actual.planRevision || "") || null
+    }]
+  });
+}
+
+function modelSnapshotFor(input, stages = []) {
+  return Object.fromEntries(stages.map((stage) => {
+    const settings = workflow.resolveStage(stage, input);
+    return [stage, {
+      provider: settings.provider,
+      model: settings.model,
+      maxCompletionTokens: settings.maxCompletionTokens,
+      requestTimeoutMs: settings.requestTimeoutMs
+    }];
+  }));
+}
+
+function nonArtifactInputDigestSource(input = {}) {
+  const copy = structuredClone(input);
+  for (const key of [
+    "referenceAnalysis",
+    "sourceScriptReconstruction",
+    "creativeBrief",
+    "visualGuardrails",
+    "themeVariants",
+    "variant",
+    "fullStory",
+    "animationPlan",
+    "candidateBinding",
+    "productionContext"
+  ]) delete copy[key];
+  return copy;
+}
+
+function normalizeAnimationPlanTaskResponse(value) {
+  if (value?.animationPlan && typeof value.animationPlan === "object") {
+    return { animationPlan: value.animationPlan, metadata: value.metadata || null };
+  }
+  return { animationPlan: value, metadata: null };
+}
+
+function productionContextForLineage(projectId, runId, lineage) {
+  return {
+    projectId,
+    runId,
+    planArtifactId: lineage.artifactId,
+    planRevision: lineage.revision,
+    planDigest: lineage.contentDigest,
+    mediaNamespace: lineage.mediaNamespace
+  };
+}
+
+function mergeTaskUsages(usages = []) {
+  const list = usages.filter(Boolean);
+  if (!list.length) return null;
+  const byModel = new Map();
+  const result = {
+    calls: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    costCny: 0,
+    costKnown: true,
+    byModel: []
+  };
+  for (const usage of list) {
+    result.calls += Number(usage.calls) || 0;
+    result.promptTokens += Number(usage.promptTokens) || 0;
+    result.completionTokens += Number(usage.completionTokens) || 0;
+    result.totalTokens += Number(usage.totalTokens) || 0;
+    if (usage.costCny === null || usage.costCny === undefined) result.costKnown = false;
+    else result.costCny += Number(usage.costCny) || 0;
+    for (const item of usage.byModel || []) {
+      const key = `${item.provider || ""}\u0000${item.model || ""}`;
+      const entry = byModel.get(key) || { ...item, calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, costCny: 0 };
+      entry.calls += Number(item.calls) || 0;
+      entry.promptTokens += Number(item.promptTokens) || 0;
+      entry.completionTokens += Number(item.completionTokens) || 0;
+      entry.totalTokens += Number(item.totalTokens) || 0;
+      if (item.costCny === null || item.costCny === undefined) entry.costCny = null;
+      else if (entry.costCny !== null) entry.costCny += Number(item.costCny) || 0;
+      byModel.set(key, entry);
+    }
+  }
+  result.costCny = result.costKnown ? Math.round(result.costCny * 100) / 100 : null;
+  result.byModel = [...byModel.values()].map((item) => ({
+    ...item,
+    costCny: item.costCny === null ? null : Math.round(item.costCny * 100) / 100
+  }));
+  return result;
+}
+
+function legacyTaskRequest(pathname, body, request) {
+  const coordinates = productionCoordinates(request, body);
+  if (!coordinates) return null;
+  const kindByPath = {
+    "/api/analyze": "analyze",
+    "/api/reconstruct": "reconstruct",
+    "/api/brief": "brief",
+    "/api/visual-guardrails": "visualGuardrails",
+    "/api/variants": "variants",
+    "/api/full-story": "fullStory",
+    "/api/animation-plan": "animationPlan",
+    "/api/animation-plan/video-prompts/rewrite": "animationPromptRewrite",
+    "/api/refine-character-reference": "characterReferenceRefine",
+    "/api/generate-shot-video": "shotVideo",
+    "/api/generate-shot-frame-image": "shotFrameImage"
+  };
+  const kind = kindByPath[pathname];
+  if (!kind) return null;
+  return {
+    ...coordinates,
+    kind,
+    input: {
+      ...body,
+      ...(body.variant?.id ? { variantId: body.variant.id } : {}),
+      ...(body.selectedVariantId ? { variantId: body.selectedVariantId } : {})
+    }
+  };
+}
+
+function productionCoordinates(request, body = {}) {
+  const projectId = String(request?.headers?.["x-mimo-project-id"] || body.productionContext?.projectId || "").trim();
+  const runId = String(request?.headers?.["x-mimo-run-id"] || body.productionContext?.runId || "").trim();
+  if (!projectId || !runId) return null;
+  return { projectId, runId };
+}
+
+function compatibilityProductionRequestToken(request) {
+  const artifactId = String(request?.headers?.[PRODUCTION_REQUEST_HEADER_NAMES.artifactId] || "").trim();
+  const requestId = String(request?.headers?.[PRODUCTION_REQUEST_HEADER_NAMES.requestId] || "").trim();
+  if (!artifactId || !requestId) return null;
+  return {
+    artifactId,
+    requestId,
+    expectedCurrentRevision: String(
+      request?.headers?.[PRODUCTION_REQUEST_HEADER_NAMES.expectedCurrentRevision] || ""
+    ).trim() || null
+  };
+}
+
+async function runLegacyDurableTask(pathname, body, request) {
+  const taskRequest = legacyTaskRequest(pathname, body, request);
+  if (!taskRequest) return null;
+  const productionRequestToken = compatibilityProductionRequestToken(request);
+  const created = await durableTaskManager.createTask({
+    ...taskDefinitionForRequest(taskRequest),
+    ...(productionRequestToken ? { productionRequestToken } : {}),
+    requestBytes: Buffer.byteLength(JSON.stringify(body || {}), "utf8")
+  });
+  const outcome = await durableTaskManager.waitForTask({
+    projectId: created.task.projectId,
+    runId: created.task.runId,
+    taskId: created.task.taskId
+  });
+  if (outcome.task.status !== "completed") throw taskTerminalError(outcome.task);
+  let result = outcome.compatibilityResult;
+  if (result === undefined && outcome.task.resultArtifactRefs?.length === 1) {
+    const run = await productionStateStore.loadRun({
+      projectId: outcome.task.projectId,
+      runId: outcome.task.runId,
+      includeContent: true
+    });
+    result = run.latestArtifacts?.[outcome.task.resultArtifactRefs[0].artifactId]?.content;
+  }
+  return { result, usage: outcome.task.usage || null, task: outcome.task };
+}
+
+function taskTerminalError(task) {
+  const error = new ProductionStateError(task.error?.message || `任务以 ${task.status} 结束`, {
+    code: task.error?.code || `TASK_${String(task.status || "failed").toUpperCase()}`,
+    httpStatus: task.status === "conflicted" ? 409 : 500,
+    details: task.error?.details || []
+  });
+  error.category = task.error?.category || "task";
+  return error;
+}
+
 const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
@@ -435,11 +1623,59 @@ const server = http.createServer(async (request, response) => {
         }
       });
     }
+    if (request.method === "GET" && url.pathname === "/api/tasks") {
+      const tasks = await durableTaskStore.listTasks({
+        projectId: url.searchParams.get("projectId"),
+        runId: url.searchParams.get("runId"),
+        activeOnly: url.searchParams.get("active") === "1"
+      });
+      return json(response, 200, { ok: true, mode: workflow.mode, tasks, result: tasks });
+    }
+    const taskPath = /^\/api\/tasks\/([^/]+)$/u.exec(url.pathname);
+    if (request.method === "GET" && taskPath) {
+      const task = await durableTaskStore.getTask({
+        projectId: url.searchParams.get("projectId"),
+        runId: url.searchParams.get("runId"),
+        taskId: decodeURIComponent(taskPath[1])
+      });
+      return json(response, 200, { ok: true, mode: workflow.mode, task, result: task });
+    }
+    if (request.method === "POST" && url.pathname === "/api/tasks/create") {
+      const body = await readJson(request, { limit: 70 * 1024 * 1024 });
+      const requestBytes = Buffer.byteLength(JSON.stringify(body), "utf8");
+      const limit = taskRequestBodyLimit(body.kind);
+      if (requestBytes > limit) throw new InputError("任务请求过大，请减少参考素材数量或尺寸");
+      const created = await durableTaskManager.createTask({
+        ...taskDefinitionForRequest(body),
+        requestBytes
+      });
+      return json(response, 202, {
+        ok: true,
+        mode: workflow.mode,
+        task: created.task,
+        reused: created.reused,
+        result: created
+      });
+    }
+    const releasePath = /^\/api\/tasks\/([^/]+)\/release$/u.exec(url.pathname);
+    if (request.method === "POST" && releasePath) {
+      const body = await readJson(request);
+      const task = await durableTaskManager.releaseTask({
+        projectId: body.projectId,
+        runId: body.runId,
+        taskId: decodeURIComponent(releasePath[1])
+      });
+      return json(response, 200, { ok: true, mode: workflow.mode, task, result: task });
+    }
     if (request.method === "POST" && url.pathname === "/api/generate-character-reference-images") {
       return streamCharacterReferenceImages(request, response);
     }
     if (request.method === "POST" && url.pathname === "/api/generate-shot-frame-image") {
       const body = await readJson(request);
+      const durable = await runLegacyDurableTask(url.pathname, body, request);
+      if (durable) {
+        return json(response, 200, { ok: true, mode: workflow.mode, result: durable.result, usage: durable.usage });
+      }
       const result = await generateShotFrameImage(body);
       return json(response, 200, { ok: true, mode: workflow.mode, result });
     }
@@ -467,7 +1703,16 @@ const server = http.createServer(async (request, response) => {
       const body = await readJson(request, {
         limit: url.pathname === "/api/generate-shot-video" ? 70 * 1024 * 1024 : undefined
       });
-      // usage 只挂在响应信封上：result 就是 Artifact 内容，多一个字段会污染 digest。
+      const durable = await runLegacyDurableTask(url.pathname, body, request);
+      if (durable) {
+        return json(response, 200, {
+          ok: true,
+          mode: workflow.mode,
+          result: durable.result,
+          usage: durable.usage
+        });
+      }
+      // 没有 Production Run 的旧测试/诊断调用保持原同步执行；浏览器主路径均由 Durable Task 接管。
       const { result, usage } = await runWithUsageAccounting(
         () => routes[url.pathname](body, { request }),
         { prices: config.modelPrices }
@@ -486,6 +1731,8 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.requestTimeout = config.serverRequestTimeoutMs;
+
+await durableTaskManager.reconcileInterruptedTasks();
 
 server.listen(config.port, () => {
   console.log(`AI 短视频导演：http://localhost:${config.port}`);
@@ -725,12 +1972,25 @@ async function readJson(request, options = {}) {
   }
 }
 
+function taskRequestBodyLimit(kind) {
+  return [
+    "directorPipeline",
+    "characterReferenceImages",
+    "characterReferenceRefine",
+    "shotVideo",
+    "shotFrameImage"
+  ].includes(String(kind || "").trim())
+    ? 70 * 1024 * 1024
+    : 32 * 1024 * 1024;
+}
+
 async function handleProductionStateRequest(pathname, body = {}) {
   if (pathname === "/api/production/run/start") {
     return productionStateStore.createRun({
       projectId: body.projectId,
       metadata: {
         sourceVideo: plainObject(body.metadata?.sourceVideo),
+        sourceVideoDigest: String(body.metadata?.sourceVideoDigest || "").trim().toLowerCase(),
         creatorProfile: plainObject(body.metadata?.creatorProfile),
         transcript: String(body.metadata?.transcript || ""),
         startedBy: "browser-workflow"
@@ -831,6 +2091,48 @@ function plainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function requireNonNegativeInteger(value, label) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 0) {
+    throw new ProductionStateError(`${label} 必须是非负整数`, {
+      code: "TASK_INPUT_INVALID",
+      httpStatus: 400
+    });
+  }
+  return number;
+}
+
+function stripReferenceImageData(value = {}) {
+  const copy = structuredClone(value && typeof value === "object" ? value : {});
+  delete copy.referenceImageDataUrl;
+  return copy;
+}
+
+async function generatedPublicUrlToDataUrl(urlValue) {
+  const url = new URL(String(urlValue || ""), "http://localhost");
+  if (!url.pathname.startsWith("/generated-images/")) {
+    throw new ProductionStateError("生成图片 URL 不属于受信输出目录", {
+      code: "GENERATED_IMAGE_PATH_INVALID",
+      httpStatus: 500
+    });
+  }
+  const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
+  const file = path.resolve(publicDir, relative);
+  const allowedRoot = path.resolve(publicDir, "generated-images");
+  if (file !== allowedRoot && !file.startsWith(`${allowedRoot}${path.sep}`)) {
+    throw new ProductionStateError("生成图片路径越界", {
+      code: "GENERATED_IMAGE_PATH_INVALID",
+      httpStatus: 500
+    });
+  }
+  const data = await fs.readFile(file);
+  const extension = path.extname(file).toLowerCase();
+  const mimeType = extension === ".png" ? "image/png"
+    : extension === ".webp" ? "image/webp"
+      : "image/jpeg";
+  return `data:${mimeType};base64,${data.toString("base64")}`;
+}
+
 async function streamCharacterReferenceImages(request, response) {
   response.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -843,6 +2145,27 @@ async function streamCharacterReferenceImages(request, response) {
   };
   try {
     const body = await readJson(request);
+    if (body.productionContext?.projectId && body.productionContext?.runId) {
+      const durableInput = await legacyCharacterImageTaskInput(body);
+      const created = await durableTaskManager.createTask({
+        ...taskDefinitionForRequest({
+          projectId: body.productionContext.projectId,
+          runId: body.productionContext.runId,
+          kind: "characterReferenceImages",
+          input: durableInput
+        }),
+        requestBytes: Buffer.byteLength(JSON.stringify(body || {}), "utf8")
+      });
+      send("progress", {
+        type: "start",
+        message: `角色参考图任务${created.reused ? "已重新接管" : "已创建"}…`,
+        model: created.task.modelSnapshot?.imageGeneration?.model || config.jimeng.model,
+        count: durableInput.count,
+        prompt: durableInput.prompt
+      });
+      await streamDurableCharacterImageTask(created.task, send, response, durableInput.prompt);
+      return;
+    }
     const productionMedia = await resolveProductionMediaContext(body, { required: true });
     const visualGuardrails = workflow.assertGlobalCharacterBoundary(body);
     if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
@@ -922,6 +2245,80 @@ async function streamCharacterReferenceImages(request, response) {
   } finally {
     response.end();
   }
+}
+
+async function legacyCharacterImageTaskInput(body) {
+  const projectId = safeIdentifier(body.productionContext.projectId, "projectId");
+  const runId = safeIdentifier(body.productionContext.runId, "runId");
+  const planArtifactId = normalizeArtifactId(body.productionContext.planArtifactId);
+  const variantId = safeIdentifier(
+    body.selectedVariant?.id || planArtifactId.slice("animationPlan:".length),
+    "variantId"
+  );
+  const run = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
+  const plan = requireCurrentArtifact(run, planArtifactId).content;
+  let roleIndex = Number(body.roleIndex);
+  if (!Number.isInteger(roleIndex) || roleIndex < 0) {
+    const characterName = String(body.characterReference?.characterName || "").trim();
+    roleIndex = (plan.characterReferencePrompts || []).findIndex((item) => (
+      String(item.characterName || "").trim() === characterName
+    ));
+  }
+  roleIndex = requireNonNegativeInteger(roleIndex, "roleIndex");
+  const count = Math.max(1, Math.min(config.jimeng.maxImages, Math.round(Number(body.count) || 1)));
+  const characterReference = plan.characterReferencePrompts?.[roleIndex] || body.characterReference;
+  return {
+    ...body,
+    variantId,
+    roleIndex,
+    count,
+    prompt: String(body.prompt || "").trim()
+      || buildCharacterReferenceImagePrompt(characterReference, count, plan.visualBible || null)
+  };
+}
+
+async function streamDurableCharacterImageTask(initialTask, send, response, prompt) {
+  let task = initialTask;
+  const delivered = new Set();
+  while (["queued", "running"].includes(task.status)) {
+    for (const result of task.progress?.results || []) {
+      const key = `${result.status}:${result.imageIndex}`;
+      if (delivered.has(key)) continue;
+      delivered.add(key);
+      if (result.status === "ready") send("image", { ...result, type: "image", prompt });
+      else if (result.status === "error") send("image-error", { ...result, type: "image-error" });
+    }
+    if (response.destroyed || response.writableEnded) return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    task = await durableTaskStore.getTask({
+      projectId: task.projectId,
+      runId: task.runId,
+      taskId: task.taskId
+    });
+  }
+  for (const result of task.progress?.results || []) {
+    const key = `${result.status}:${result.imageIndex}`;
+    if (delivered.has(key)) continue;
+    delivered.add(key);
+    if (result.status === "ready") send("image", { ...result, type: "image", prompt });
+    else if (result.status === "error") send("image-error", { ...result, type: "image-error" });
+  }
+  if (task.status === "completed") {
+    for (const notice of task.notices || []) send("progress", { type: "boundary-warning", message: notice });
+    send("completed", {
+      type: "completed",
+      usage: task.usage || {},
+      model: task.modelSnapshot?.imageGeneration?.model || config.jimeng.model,
+      partialSuccess: Boolean(task.progress?.partialSuccess)
+    });
+    send("done", { type: "done" });
+    return;
+  }
+  send("error", {
+    type: "error",
+    code: task.error?.code || "TASK_FAILED",
+    error: task.error?.message || `任务以 ${task.status} 结束`
+  });
 }
 
 async function generateShotFrameImage(body = {}) {
