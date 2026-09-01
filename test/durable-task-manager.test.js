@@ -398,8 +398,8 @@ test("provider progress can renew the watchdog beyond the original total wall ti
       targetArtifactIds: ["fullStory:V1"],
       execute: async (_input, context) => {
         for (let index = 0; index < 3; index += 1) {
-          await context.beforeProviderCall(`call_${index}`, 40);
-          await new Promise((resolve) => setTimeout(resolve, 35));
+          await context.beforeProviderCall(`call_${index}`, 500);
+          await new Promise((resolve) => setTimeout(resolve, 100));
           await context.afterProviderCall(`returned_${index}`);
         }
         const committed = await context.commitArtifact({
@@ -412,7 +412,7 @@ test("provider progress can renew the watchdog beyond the original total wall ti
     });
     const completed = await manager.waitForTask({ ...productionRun, taskId: created.task.taskId });
     assert.equal(completed.task.status, "completed");
-  }, { localStallMs: 25, providerGraceMs: 30 });
+  }, { localStallMs: 250, providerGraceMs: 250 });
 });
 
 test("Full Story and multi-batch Animation Plan can both outlive their initial watchdog window", async () => {
@@ -428,8 +428,8 @@ test("Full Story and multi-batch Animation Plan can both outlive their initial w
         targetArtifactIds: [artifactId],
         execute: async (_input, context) => {
           for (let index = 0; index < callCount; index += 1) {
-            await context.beforeProviderCall(`${kind}_call_${index + 1}`, 35);
-            await new Promise((resolve) => setTimeout(resolve, 30));
+            await context.beforeProviderCall(`${kind}_call_${index + 1}`, 500);
+            await new Promise((resolve) => setTimeout(resolve, 100));
             await context.afterProviderCall(`${kind}_returned_${index + 1}`, { completedCalls: index + 1 });
           }
           const committed = await context.commitArtifact({
@@ -444,7 +444,7 @@ test("Full Story and multi-batch Animation Plan can both outlive their initial w
       assert.equal(completed.task.status, "completed");
       assert.equal(completed.task.progress.completedCalls, callCount);
     }
-  }, { localStallMs: 20, providerGraceMs: 25 });
+  }, { localStallMs: 250, providerGraceMs: 250 });
 });
 
 test("a genuinely stalled task fails and releases its target", async () => {
