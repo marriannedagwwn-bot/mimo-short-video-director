@@ -327,6 +327,8 @@ Phase 1.1 已确认的三个边界：
 
 - [ ] **T05 父任务：异步 Provider 任务恢复与队列全部通过验收**
 
+当前基线（2026-09-01，**不计为 T05 完成**）：已实现单 Node、本地文件状态的 Durable Task v1。浏览器刷新/HTTP 断线可重新 attach 同一进程内 Runner；有真实 queued 状态、分池并发、无进展 watchdog、冻结 lineage、目标 claim、usage 和 restart reconciliation。Node 重启后不能接管 provider，未完成任务只会标 `interrupted` 且不会自动重调。当前没有持久 provider task ID、provider query/resume/cancel、lease、多 worker、正式 batch queue 或 orphan quarantine，因此下列 T05 子项与父项全部继续保持未勾选。
+
 依赖：T04。
 
 来源项目与启发：

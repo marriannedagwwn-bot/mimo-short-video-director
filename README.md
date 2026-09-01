@@ -246,7 +246,18 @@ JIMENG_MAX_IMAGES=6
 - 导出当前生产包 JSON：当前测试/规划包版本为 `3.0`。服务端校验当前 Variant → Full Story → Animation Plan revision 后写入 `productionLineage`、内容摘要和本机持久 HMAC 签名；被修改的文件、旧版文件或血缘不一致的文件不能导入。
 - 复制动画生产包 Markdown：当前 `direct_shot` 输出角色/场景/资产参考和逐镜 `videoPrompt`、运镜、动作、声音、连续性、视频负面词及验收标准；旧 v2 才输出逐镜首帧／尾帧。
 
-浏览器启动一次工作流时，服务端会在 `runtime/production-runs/` 建立轻量 Run，并在每个阶段成功后持久化 Artifact、revision、依赖摘要、Stage 状态和 Checkpoint。相同 JSON 仅键顺序变化不会制造新 revision；同一 Variant ID 的实际内容变化会确定性标记旧 Story、Plan 和媒体为 stale。刷新页面后可恢复最近 Run 的已完成 JSON 阶段，但不会持久化原始上传视频，也不会续接刷新前仍在供应商执行的请求。详见 [Production Lineage 与持久状态](docs/production-lineage-state.md)。
+浏览器启动一次工作流时，服务端会在 `runtime/production-runs/` 建立 Run，并在每个阶段成功后持久化 Artifact、revision、依赖摘要、Stage 状态和 Checkpoint。同一 Task 使用相同 requestId 重复 finalize 时，相同 JSON（包括仅键顺序变化）复用原 revision；不同 requestId 不获得该豁免。同一 Variant ID 的实际内容变化会确定性标记旧 Story、Plan 和媒体为 stale。
+
+Durable Task v1 另在每个 Run 的私有 `tasks/index.json` 保存执行 sidecar。AI 导演是一个 `directorPipeline` 父任务和五个顺序子任务；Full Story、Animation Plan、角色参考图和镜头媒体也由服务端 Runner 执行、校验并提交，浏览器只创建、轮询和重新 attach。刷新或 HTTP 断线不会中止同一 Node 进程内仍在运行的任务；重复创建相同 active operation 会返回同一 `taskId`，同一目标的不同 operation 会返回 `TASK_TARGET_BUSY`。任务没有总墙钟 deadline，watchdog 只检测“当前 provider/local operation 长时间没有进展”，并在每次 provider 返回或流事件后续期。
+
+Node 重启仍是明确边界：Prompt、Data URL、Base64 和完整请求体不落 Task Store，所以未完成任务会变为 `interrupted`，不会自动重新调用 provider；远端任务可能已经提交并计费。Brief/Variants 可以直接从 current Artifact 链继续，需要媒体的 Analyze/Reconstruct/Visual Guardrails 则要求重新上传 SHA-256 与原 Run 一致的源文件。`abandoned` 只是释放本地提交权，不等于远端取消。T04 媒体 quarantine、T05 provider task-id 查询/接管和正式跨进程 batch queue 尚未实现。详见 [Production Lineage 与持久状态](docs/production-lineage-state.md)。
+
+任务控制面：
+
+- `POST /api/tasks/create`：创建或复用任务，返回 `202`；
+- `GET /api/tasks?projectId=&runId=`：锁外读取该 Run 的任务 sidecar；
+- `GET /api/tasks/:taskId?projectId=&runId=`：读取单个任务；
+- `POST /api/tasks/:taskId/release`：强制释放目标并标记 `abandoned`，不承诺取消远端调用。
 
 ## 单镜头视频：首尾帧 / 全能参考
 

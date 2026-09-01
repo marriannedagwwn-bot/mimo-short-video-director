@@ -9,6 +9,8 @@
 
 lineage 是服务端确定性签发的 sidecar。任何 LLM 都不能生成、补写或修改 revision、digest、dependency 或 media namespace。
 
+Task sidecar 同样不是业务事实源。它只记录 `taskId`、父子关系、状态、冻结引用、模型快照、进度、usage、结果 Artifact refs 和脱敏错误；不保存 Prompt、Data URL、Base64、完整请求体或 Artifact 内容。ProductionStateStore 中的 current Artifact 仍是唯一业务权威。
+
 ## 2. 身份与冻结点
 
 浏览器每次从视频输入运行主流程时创建一个 Run：
@@ -18,7 +20,8 @@ projectId
 └── runId
     ├── Stage 状态
     ├── Artifact revisions
-    └── Checkpoint
+    ├── Checkpoint
+    └── tasks/index.json（Durable Task 执行 sidecar）
 ```
 
 每个 Artifact 成功提交就是一个数据冻结点。服务端对 canonical JSON 计算 SHA-256；对象键顺序不影响摘要，数组顺序和真实值变化会影响摘要。同一 artifact 的不同内容使用单调 revision，例如 `fullStory-V1-r2`。
@@ -87,21 +90,35 @@ Animation Plan 全量模型输出日志遵循同一 lineage 隔离，但使用�
 
 Animation Plan 同样只有在 Foundation/shot 合并、完整契约校验、逐镜证据审计以及必要的有界修复全部通过后，才作为一次 Artifact revision 提交；中间候选、修复中间态都不是 Artifact，也不是恢复数据。
 
-默认每个 `shotVideo` 只依赖当前 Animation Plan。若某镜请求显式使用 `continuityReferenceMode=previous_shot_frames`，它还必须依赖 Plan 顺序中紧邻上一镜的 current `shotVideo` 精确 revision/digest；服务端回执提供该 source lineage，浏览器提交媒体 Artifact 时冻结它。上一镜重生成或切换候选会签发新 revision，并递归使所有引用旧 revision 的后镜视频 stale。切换后镜自己的候选只是更新同一媒体 Artifact，必须原样保留已有依赖，不能退回为只依赖 Plan。
+默认每个 `shotVideo` 只依赖当前 Animation Plan。若某镜请求显式使用 `continuityReferenceMode=previous_shot_frames`，它还必须依赖 Plan 顺序中紧邻上一镜的 current `shotVideo` 精确 revision/digest；Task 创建时由服务端冻结该 source lineage，并由 Runner 按精确媒体形状提交 Artifact。上一镜重生成或切换候选会签发新 revision，并递归使所有引用旧 revision 的后镜视频 stale。切换后镜自己的候选只是更新同一媒体 Artifact，必须原样保留已有依赖，不能退回为只依赖 Plan。
 
 浏览器恢复和运行时缓存必须按 `variantId + shotId`（旧 v2 帧再加 `frameKind`）区分媒体结果。服务端只将具体下游 Artifact 标为 stale 时，前端只移除对应缓存项；不得清空其他 Variant、上一镜或同 Plan 内仍为 current 的媒体结果。
 
 ## 4. 异步请求规则
 
-模型调用开始前，浏览器冻结：
+Durable Task 创建时，服务端在共享的 per-Run Coordinator 临界区内读取 current Artifact、冻结依赖并一次占用全部写目标。浏览器若携带 Artifact 副本，只用于 digest 复核；Runner 使用服务端冻结内容，冻结后不得在调用前偷偷换成更新后的 current 内容。
+
+冻结集合包括：
 
 - `projectId` / `runId`
 - 目标 `artifactId`
-- `requestId`
+- Task 独立签发的 `requestId`
 - `expectedCurrentRevision`
 - 完整上游 dependency revisions
+- dependency content digests
+- 创建时的 provider/model 快照与非 Artifact 输入摘要
 
-模型返回后先检查浏览器内 request token；提交时服务端再检查目标 revision 与所有依赖是否仍为 current。较新的请求、Story 或 Plan 已经出现时，旧响应必须明确失败，不能选择任一版本静默覆盖。
+每次实际 provider 调用前只比较 current revision/digest 与冻结值，不重新取内容。调用前已变化时，Task 在付费调用前变为 `conflicted`；调用期间变化时，provider 返回后的复检或锁内 commit guard 使其变为 `conflicted`，不提交结果。`ARTIFACT_REVISION_CONFLICT` 与 `ARTIFACT_DEPENDENCY_STALE` 也归入同一终态。
+
+每个目标最多有一个 active owner。`directorPipeline` 创建时一次占用 `referenceAnalysis`、`sourceScriptReconstruction`、`creativeBrief`、`visualGuardrails`、`themeVariants` 五个目标；五个子任务顺序调用现有 WorkflowService 并逐阶段独立提交。目标没有 claim 时，既有浏览器快速提交和 package import 保持可用；有 claim 时，只有 owner Task/child Task 能在 Coordinator lock 内调用 `commitArtifactUnlocked`。release、watchdog 或重启后 owner 失效，迟到结果不能回写。
+
+相同 active operation 的幂等键由 kind、全部目标、目标 expected revisions、冻结 dependencies、模型快照和非 Artifact 输入摘要组成；完全相同则复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`。同一 Task 重复 finalize 时，服务端先识别相同 requestId、digest 与 dependencies，再比较 expected revision，因此只复用原 revision；不同 requestId 没有该豁免。
+
+Run Coordinator 是显式不可重入的 FIFO 锁。持锁代码只能使用 `commitArtifactUnlocked`、`recordStageUnlocked`、`loadRunUnlocked` 和 Task Store 的 unlocked 方法，禁止从锁内调用公开 `commitArtifact()`、`recordStage()` 或 `loadRun()`。临界区只做本地状态操作，不含 provider、网络、FFmpeg 或模型校验。`readCurrentLineageSnapshot`、`GET /api/tasks` 与原子 manifest snapshot 的 `loadRun` 均为锁外读取；provider 返回后仍执行复检和锁内 commit 校验覆盖竞态。
+
+任务状态固定为 `queued | running | completed | failed | conflicted | interrupted | abandoned`。所有带原因的终态共用脱敏规则；终态 Stage 更新必须匹配 `expectedRequestId`，旧请求不能覆盖新 Stage。
+
+调度器分为 workflow/text（2 running、8 queued）和 media（4 running、8 queued），queued 请求体总预算默认 140MB。超出限制返回 `TASK_CAPACITY_EXCEEDED`，不创建失败 Task。任务没有总墙钟 deadline：provider 调用前把 watchdog 设置为 provider 自身 timeout/poll timeout 加 120 秒，本地校验、合并和 commit 使用 300 秒无进展窗口；每次 provider 返回、流事件和阶段进展都会续期。watchdog 触发后 Task 变为 `failed/TASK_STALLED` 并释放目标，错误明确提示远端调用可能已经提交并计费。
 
 
 合法反例：JSON 对象只调整键顺序时 digest 不变，应复用当前 revision。非法串线：Variant 仍叫 `V1`，但标题、角色或剧情内容已变化时 digest 必须变化，旧 Story/Plan 不能继续使用。
@@ -139,18 +156,26 @@ public/generated-videos/<mediaNamespace>/
 默认状态根目录为 `runtime/production-runs/`，可通过服务端环境变量 `WORKFLOW_PRODUCTION_STATE_DIR` 修改。每个 Run 的 manifest 记录：
 
 - Run 元数据和状态；
-- Stage 的 `running` / `completed` / `failed` / `stale`；
+- Stage 的 `running` / `completed` / `failed` / `stale`，以及 `interrupted` / `conflicted` / `abandoned`；
 - Artifact revision、digest、dependencies 和状态；
 - 单调 Checkpoint sequence；
 - 有界事件记录。
 
 Artifact 内容独立写入原子替换的 JSON 文件。浏览器只在服务端提交成功后更新页面主状态。刷新页面时通过 localStorage 中的 project/run 指针读取最近 checkpoint，只恢复 `current` Artifact。
 
+`tasks/index.json` 同样原子写入，路径中的 project/run/task ID 都经过 `safeIdentifier` 与根目录包含校验。公开 Task 包含冻结 provider/model 和持久 usage；恢复 UI 不得拿刷新后的下拉框设置冒充原任务模型。角色参考图的逐张结果进入脱敏 progress，断线后可以恢复计数与预览；Prompt 只记录 digest，不进入 Task sidecar。
+
+同一 Node 进程内，Runner 独立于 HTTP response。刷新或 HTTP 断线后，第二个页面查询同一 Run 即可 attach；旧同步 HTTP 入口只等待同一 Task 终态，断线只结束等待者。角色图片旧 SSE wire 订阅 Task progress，SSE 断线只移除订阅者。
+
+Node 启动 reconciliation 会检查 active Task：current Artifact 已由同一 requestId 成功提交时补记 completed；五个 pipeline 目标均已 current 时父任务补记 completed；其余 queued/running 变为 `interrupted` 并释放 claims，绝不自动重调 provider。浏览器可在同一 Run 从首个未完成阶段继续；需要媒体的阶段必须重新上传 `sourceVideoDigest` 相同的原始文件。
+
 当前恢复边界：
 
 - 不持久化原始上传视频、浏览器 Object URL 或抽帧源文件；
-- 不接管刷新前尚未完成的 provider 请求；
-- 不提供跨机器共享存储、任务队列或多用户权限；
+- 不持久化大型请求体，所以 Node 重启后不能恢复内存 Runner；
+- 不保存或查询远端 provider task ID，不具备 provider restart resume/cancel；
+- 不提供跨机器共享存储、多 Node worker、lease 或正式 batch queue；
+- 失败/中断时已经落盘但未提交的角色图仍是孤儿文件，等待 T04 quarantine；
 - 已完成的 Story、Plan 和已登记媒体可以恢复并继续下游操作。
 
 ## 7. v3 测试/规划包
