@@ -1,8 +1,16 @@
 import { shotRelatedCharacterReferences } from "../public/shot-reference-images.js";
 import { ProductionStateError } from "./production-lineage.js";
+import { requireAnimationPlanAspectRatio } from "./validation.js";
 
 export const SHOT_VIDEO_BATCH_CONTROL_RUNNING = "running";
 export const SHOT_VIDEO_BATCH_CONTROL_PAUSED = "paused";
+
+export function requireShotVideoBatchAspectRatio(plan = {}) {
+  return requireAnimationPlanAspectRatio(
+    plan?.productionStrategy?.targetAspectRatio,
+    "productionStrategy.targetAspectRatio"
+  );
+}
 
 export function buildShotVideoBatchReferenceAssets(shot = {}, characterReferences = []) {
   const references = shotRelatedCharacterReferences(shot, characterReferences)

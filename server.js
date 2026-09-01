@@ -29,6 +29,7 @@ import {
 import {
   buildShotVideoBatchReferenceAssets,
   createShotVideoBatchItems,
+  requireShotVideoBatchAspectRatio,
   updateShotVideoBatchItem,
   waitForShotVideoBatchControl
 } from "./src/shot-video-batch.js";
@@ -78,6 +79,7 @@ import {
 import {
   SHOT_VIDEO_CONTINUITY_NONE,
   SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES,
+  shouldIncludePreviousShotFrames,
   shotVideoArtifactIdFor
 } from "./public/shot-video-continuity.js";
 import { syncShotCharacterReference } from "./public/character-reference-sync.js";
@@ -1279,10 +1281,13 @@ function shotVideoBatchTaskDefinition({ projectId, runId, input }) {
               selectedVariantId: trusted.variantId,
               count: trusted.count,
               generationMode: "all_reference",
-              continuityReferenceMode: trusted.includePreviousShotFrames && previousReady
+              continuityReferenceMode: shouldIncludePreviousShotFrames({
+                requested: trusted.includePreviousShotFrames,
+                available: previousReady
+              })
                 ? SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
                 : SHOT_VIDEO_CONTINUITY_NONE,
-              aspectRatio: requireAnimationPlanAspectRatio(trusted.plan),
+              aspectRatio: requireShotVideoBatchAspectRatio(trusted.plan),
               animationPromptSchemaVersion: trusted.plan.promptSchemaVersion || "",
               shotId,
               referenceAssets,

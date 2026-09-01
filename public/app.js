@@ -46,6 +46,7 @@ import {
   selectedShotVideoCandidate,
   SHOT_VIDEO_CONTINUITY_NONE,
   SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES,
+  shouldIncludePreviousShotFrames,
   shotVideoArtifactIdFor,
   shotVideoResultKey
 } from "./shot-video-continuity.js";
@@ -3300,9 +3301,12 @@ async function openShotVideoGenerator(shotId) {
   state.shotVideoGeneration.shotId = String(shotId);
   state.shotVideoGeneration.count = Number(elements.shotVideoCount.value) || 1;
   state.shotVideoGeneration.referenceAssets = [];
-  state.shotVideoGeneration.includePreviousShotFrames = false;
+  state.shotVideoGeneration.includePreviousShotFrames = shouldIncludePreviousShotFrames({
+    requested: true,
+    available: previousShotVideoReferenceContext(shotId).available
+  });
   elements.shotVideoGenerationMode.value = state.shotVideoGeneration.generationMode;
-  elements.shotVideoIncludePreviousShotFrames.checked = false;
+  elements.shotVideoIncludePreviousShotFrames.checked = state.shotVideoGeneration.includePreviousShotFrames;
   elements.shotVideoIncludeEndpointFrames.checked = state.shotVideoGeneration.includeEndpointFrames;
   elements.shotVideoIncludeCharacterReferences.checked = state.shotVideoGeneration.includeCharacterReferences;
   setShotVideoGeneratorRunning(false);

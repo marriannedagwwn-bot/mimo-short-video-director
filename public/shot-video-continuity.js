@@ -1,6 +1,10 @@
 export const SHOT_VIDEO_CONTINUITY_NONE = "none";
 export const SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES = "previous_shot_frames";
 
+export function shouldIncludePreviousShotFrames({ requested = false, available = false } = {}) {
+  return Boolean(requested && available);
+}
+
 export function shotVideoArtifactIdFor(variantId, shotId) {
   return `shotVideo:${String(variantId || "")}:${String(shotId || "")}`;
 }

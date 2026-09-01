@@ -3,10 +3,21 @@ import assert from "node:assert/strict";
 import {
   buildShotVideoBatchReferenceAssets,
   createShotVideoBatchItems,
+  requireShotVideoBatchAspectRatio,
   updateShotVideoBatchItem
 } from "../src/shot-video-batch.js";
 
 const image = "data:image/png;base64,aW1hZ2U=";
+
+test("batch reads the signed aspect ratio from the animation plan strategy", () => {
+  assert.equal(requireShotVideoBatchAspectRatio({
+    productionStrategy: { targetAspectRatio: "16:9" }
+  }), "16:9");
+  assert.throws(
+    () => requireShotVideoBatchAspectRatio({ productionStrategy: { targetAspectRatio: "1:1" } }),
+    /productionStrategy\.targetAspectRatio 只允许 9:16 或 16:9/u
+  );
+});
 
 test("batch all-reference assets use only characters related to the current direct shot", () => {
   const references = [

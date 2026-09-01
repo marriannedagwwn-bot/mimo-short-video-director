@@ -9,6 +9,7 @@ import {
   mediaFilenameSegment,
   previousShotInPlan,
   selectedShotVideoCandidate,
+  shouldIncludePreviousShotFrames,
   shotFrameResultKey,
   shotVideoArtifactIdFor,
   shotVideoResultKey
@@ -28,6 +29,12 @@ import {
 
 const PLAN_DIGEST = "a".repeat(64);
 const VIDEO_DIGEST = "b".repeat(64);
+
+test("上一镜视频可用时才默认加入普通参考图", () => {
+  assert.equal(shouldIncludePreviousShotFrames({ requested: true, available: true }), true);
+  assert.equal(shouldIncludePreviousShotFrames({ requested: true, available: false }), false);
+  assert.equal(shouldIncludePreviousShotFrames({ requested: false, available: true }), false);
+});
 
 test("视频生成只从当前 Plan 解析 exact shot，运行时只允许显式覆盖 videoPrompt", () => {
   const planEntry = {
