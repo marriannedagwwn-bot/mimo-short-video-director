@@ -1,3 +1,5 @@
+import { canonicalize, sha256Hex } from "./frame-dependency.js";
+
 export const ACTIVE_PRODUCTION_RUN_STORAGE_KEY = "mimoActiveProductionRunV1";
 export const PRODUCTION_REQUEST_HEADER_NAMES = Object.freeze({
   projectId: "x-mimo-project-id",
@@ -84,6 +86,58 @@ export function lineageDependency(lineage = {}) {
     revision: lineage.revision,
     contentDigest: lineage.contentDigest
   };
+}
+
+export async function matchingCurrentArtifactLineage(production, {
+  artifactId,
+  content,
+  dependencies = null
+} = {}) {
+  const lineage = production?.artifacts?.[String(artifactId || "")];
+  if (!lineage || lineage.status !== "current") return null;
+  const digest = await sha256Hex(canonicalize(content));
+  if (lineage.contentDigest !== digest) return null;
+  if (dependencies !== null && !sameLineageDependencies(lineage.dependencies, dependencies)) return null;
+  return structuredClone(lineage);
+}
+
+export function durableTaskTargetContext(task = {}) {
+  const artifactId = String(task.targetArtifactIds?.[0] || "");
+  const context = { artifactId, variantId: "", shotId: "", frameKind: "", roleIndex: null };
+  let match = /^characterImages:([^:]+):(\d+)$/u.exec(artifactId);
+  if (match) return { ...context, variantId: match[1], roleIndex: Number(match[2]) };
+  match = /^shotFrame:([^:]+):(.+):(start|end)$/u.exec(artifactId);
+  if (match) return { ...context, variantId: match[1], shotId: match[2], frameKind: match[3] };
+  match = /^shotVideo:([^:]+):(.+)$/u.exec(artifactId);
+  if (match) return { ...context, variantId: match[1], shotId: match[2] };
+  match = /^(?:fullStory|animationPlan|variant):([^:]+)$/u.exec(artifactId);
+  return match ? { ...context, variantId: match[1] } : context;
+}
+
+export function taskResultIsCurrent(production, task = {}) {
+  const refs = Array.isArray(task.resultArtifactRefs) ? task.resultArtifactRefs : [];
+  if (!refs.length) return false;
+  return refs.every((ref) => {
+    const current = production?.artifacts?.[String(ref?.artifactId || "")];
+    return Boolean(
+      current
+      && current.status === "current"
+      && current.revision === ref.revision
+      && current.contentDigest === ref.contentDigest
+    );
+  });
+}
+
+function sameLineageDependencies(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+  const normalized = (items) => items
+    .map((item) => ({
+      artifactId: String(item?.artifactId || ""),
+      revision: String(item?.revision || ""),
+      contentDigest: String(item?.contentDigest || "")
+    }))
+    .sort((a, b) => a.artifactId.localeCompare(b.artifactId));
+  return canonicalize(normalized(left)) === canonicalize(normalized(right));
 }
 
 export function planProductionContext(production, planArtifactId) {

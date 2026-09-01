@@ -102,8 +102,10 @@ h1 em { color: var(--accent); font-style: normal; }
 .primary-button:not(:disabled):hover { background: var(--accent); transform: translateY(-1px); }
 .primary-button:disabled { opacity: .36; cursor: not-allowed; }
 .primary-button.running svg { animation: nudge .9s infinite; }
+.profile-card > #releaseActiveTasks { width: 100%; margin-top: 9px; }
 @keyframes nudge { 50% { transform: translateX(4px); } }
 .error-message { min-height: 18px; margin: 10px 0 0; color: #b42318; font-size: 11px; line-height: 1.5; }
+.error-message.notice { color: var(--muted); }
 
 .pipeline-section { padding-top: 92px; }
 .pipeline-head { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 28px; }
@@ -424,6 +426,7 @@ h1 em { color: var(--accent); font-style: normal; }
 .shot-video-candidate.selected { border-color: rgba(10,116,92,.45); background: rgba(10,116,92,.06); }
 .shot-video-result p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .shot-video-result p.active { color: var(--accent); }
+.shot-video-result p.capacity { color: #b54708; }
 .shot-video-result p.error { color: #b42318; }
 .shot-video-candidate-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 200px)); justify-content: start; align-items: start; gap: 9px; }
 .shot-video-result-card { padding: 8px; display: grid; gap: 6px; border: 1px solid rgba(29,27,24,.08); border-radius: 12px; background: rgba(255,255,255,.5); }
