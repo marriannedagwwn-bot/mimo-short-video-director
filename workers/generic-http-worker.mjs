@@ -10,6 +10,20 @@ import {
   shotVideoRuntimeConfig
 } from "../src/shot-video-providers.js";
 
+// 这些常量必须声明在下面那句顶层 `if (isMainModule()) await main();` **之前**。
+// worker 以子进程运行时，main() 在模块求值到第 55 行时就把整个请求跑完了，此时
+// 文件后半部分的 const 还在暂时性死区里——函数声明会提升，const 不会。
+// 实测代价：把数组字面量从函数内提成模块常量后，子进程路径每次都抛
+// "Cannot access 'MINIMAX_RESOLUTIONS' before initialization"，而 import 调用
+// （测试与实验用的路径）因为整个模块先求值完，完全正常，于是掩盖了整整两个提交。
+
+// MiniMax 有两个平级的 API 区域，端点路径与请求体完全一致，只是签发的 API Key
+// 各自只在本区域有效：api.minimaxi.com（国内）与 api.minimax.io（国际）。
+const MINIMAX_API_HOSTNAMES = Object.freeze(["api.minimaxi.com", "api.minimax.io"]);
+// 官方 H3 只有这两档输出，取值区分大小写地写进请求体。
+const MINIMAX_RESOLUTIONS = Object.freeze(["768P", "2K"]);
+const MINIMAX_RATIOS = Object.freeze(["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"]);
+
 async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   if (options.help || !options.request || !options.output) {
@@ -559,12 +573,6 @@ function isModelArkContentGeneration(capability, config) {
   return ["modelark", "modelark_content_generation", "dreamina", "jimeng"].includes(presetFor(capability, config));
 }
 
-// MiniMax 有两个平级的 API 区域，端点路径与请求体完全一致，只是签发的 API Key
-// 各自只在本区域有效：api.minimaxi.com（国内，platform.minimaxi.com 签发）与
-// api.minimax.io（国际，platform.minimax.io 签发）。此前只特判了国内那一个，
-// 于是国际端点既拿不到 V1 拦截也拿不到路径补全。
-const MINIMAX_API_HOSTNAMES = Object.freeze(["api.minimaxi.com", "api.minimax.io"]);
-
 function isMiniMaxApiHostname(value) {
   return MINIMAX_API_HOSTNAMES.includes(hostnameFor(value));
 }
@@ -860,10 +868,6 @@ function normalizeMiniMaxDuration(value) {
   }
   return seconds;
 }
-
-// 官方 H3 只有这两档输出，取值区分大小写地写进请求体。
-const MINIMAX_RESOLUTIONS = Object.freeze(["768P", "2K"]);
-const MINIMAX_RATIOS = Object.freeze(["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"]);
 
 /**
  * 未配置时用默认值是缺省；**已显式配置却非法时必须明确失败**。

@@ -291,3 +291,65 @@ test("输出内容审核拦截能查到官方码表并给出可执行提示", as
     return true;
   });
 });
+
+// worker 在生产里是 spawn 出来的子进程：模块求值到 `if (isMainModule()) await main();`
+// 就把整个请求跑完，文件后半部分的模块级 const 还在暂时性死区里。而所有既有测试都用
+// import 调用 executeGenericHttpWorker，那条路会先把整个模块求值完，于是完全测不到。
+// 实测代价：把两个数组字面量提成模块常量后，子进程路径每次都抛
+// "Cannot access 'MINIMAX_RESOLUTIONS' before initialization"，连过两个提交没被发现。
+test("worker 以子进程运行时模块常量不在暂时性死区里", async (t) => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const execFileAsync = promisify(execFile);
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "minimax-h3-subprocess-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+
+  const imagePath = path.join(root, "ref.png");
+  await fs.writeFile(imagePath, "image");
+  const requestPath = path.join(root, "request.json");
+  await fs.writeFile(requestPath, JSON.stringify({
+    taskId: "subprocess",
+    capability: "all_reference_video_generation",
+    outputKey: "preview.subprocess",
+    provider: "MiniMax",
+    model: "MiniMax-H3",
+    prompt: "有效提示词",
+    inputArtifacts: [{ path: imagePath, mediaType: "image", role: "reference_image" }],
+    parameters: { durationSeconds: 5, aspectRatio: "16:9" }
+  }));
+  const writeConfig = async (name, resolution) => {
+    const configPath = path.join(root, name);
+    await fs.writeFile(configPath, JSON.stringify({
+      videoEndpoint: "http://127.0.0.1:1/v2/video_generation",
+      providerPreset: "minimax_h3_video_generation",
+      videoModel: "MiniMax-H3",
+      apiKey: "test-key",
+      resolution
+    }));
+    return configPath;
+  };
+  const runWorker = async (configPath, output) => {
+    try {
+      await execFileAsync(process.execPath, [
+        path.resolve("workers/generic-http-worker.mjs"),
+        "--config", configPath,
+        "--request", requestPath,
+        "--output", path.join(root, output),
+        "--receipt", path.join(root, `${output}.receipt.json`)
+      ]);
+      return "";
+    } catch (error) {
+      return String(error.stderr || error.message || "");
+    }
+  };
+
+  // 合法配置：必须走到网络层才失败，而不是死在模块初始化上。
+  const ok = await runWorker(await writeConfig("good.json", "768P"), "good.mp4");
+  assert.doesNotMatch(ok, /before initialization/u);
+  assert.match(ok, /fetch failed|ECONNREFUSED|ECONNRESET/u);
+
+  // 收严的校验在子进程里同样生效，而不是被 TDZ 顶掉。
+  const bad = await runWorker(await writeConfig("bad.json", "1080K"), "bad.mp4");
+  assert.match(bad, /resolution 只支持 768P 或 2K/u);
+  assert.doesNotMatch(bad, /before initialization/u);
+});
