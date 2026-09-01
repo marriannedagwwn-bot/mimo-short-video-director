@@ -191,7 +191,28 @@
           <button class="outline-button animation-button" id="generateAnimationPlan" type="button" disabled>生成动画镜头生产包</button>
           <div class="story-export-actions">
             <button class="outline-button" id="exportStoryPackage" type="button" disabled>导出当前生产包 JSON</button>
-            <button class="outline-button" id="copyAnimationPack" type="button" disabled>复制动画生产包 Markdown</button>
+            <button class="outline-button shot-video-batch-start" id="startShotVideoBatch" type="button" disabled>批量生成全部镜头视频</button>
+          </div>
+          <div class="shot-video-batch-panel hidden" id="shotVideoBatchPanel" aria-live="polite">
+            <div class="shot-video-batch-summary">
+              <div>
+                <strong id="shotVideoBatchTitle">批量视频生成</strong>
+                <span id="shotVideoBatchStatus">等待开始</span>
+              </div>
+              <span id="shotVideoBatchCount">0 / 0</span>
+            </div>
+            <div class="shot-video-batch-track" aria-hidden="true"><span id="shotVideoBatchProgress"></span></div>
+            <div class="shot-video-batch-footer">
+              <div class="shot-video-batch-items" id="shotVideoBatchItems"></div>
+              <div class="shot-video-batch-controls">
+                <button class="batch-icon-button" id="pauseShotVideoBatch" type="button" aria-label="暂停批量生成" title="暂停批量生成">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg>
+                </button>
+                <button class="batch-icon-button terminate" id="terminateShotVideoBatch" type="button" aria-label="终止批量生成" title="终止批量生成">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>

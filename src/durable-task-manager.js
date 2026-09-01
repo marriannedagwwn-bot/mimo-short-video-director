@@ -289,6 +289,7 @@ export class DurableTaskManager {
       return await this.getTaskById(childId);
     } catch (error) {
       await this.failFromError(childId, error, { releaseClaims: false });
+      await this.refreshParentUsage(parentId);
       throw error;
     } finally {
       childRuntime.active = false;
@@ -603,16 +604,79 @@ export class DurableTaskManager {
   }
 
   async releaseTask({ projectId, runId, taskId } = {}) {
+    return this.finishControlledTask({
+      projectId,
+      runId,
+      taskId,
+      status: "abandoned",
+      reason: {
+        code: "TASK_ABANDONED",
+        category: "control-plane",
+        message: "任务已强制释放；远端调用可能仍在执行并产生费用。"
+      }
+    });
+  }
+
+  async controlTask({ projectId, runId, taskId, action } = {}) {
     const safeProjectId = safeIdentifier(projectId, "projectId");
     const safeRunId = safeIdentifier(runId, "runId");
     const safeTaskId = safeIdentifier(taskId, "taskId");
     const task = await this.taskStore.getTask({ projectId: safeProjectId, runId: safeRunId, taskId: safeTaskId });
     if (DURABLE_TASK_TERMINAL_STATUSES.includes(task.status)) return task;
-    const reason = {
-      code: "TASK_ABANDONED",
-      category: "control-plane",
-      message: "任务已强制释放；远端调用可能仍在执行并产生费用。"
-    };
+    if (task.kind !== "shotVideoBatch" || task.parentTaskId) {
+      throw new ProductionStateError("只有镜头视频批量任务支持暂停、继续和终止", {
+        code: "TASK_CONTROL_UNSUPPORTED",
+        httpStatus: 409
+      });
+    }
+    const normalizedAction = String(action || "").trim().toLowerCase();
+    if (normalizedAction === "terminate") {
+      return this.finishControlledTask({
+        projectId: safeProjectId,
+        runId: safeRunId,
+        taskId: safeTaskId,
+        status: "cancelled",
+        reason: {
+          code: "SHOT_VIDEO_BATCH_TERMINATED",
+          category: "control-plane",
+          message: "镜头视频批量任务已终止；已提交给供应商的当前片段可能仍在执行并产生费用。"
+        }
+      });
+    }
+    if (!["pause", "resume"].includes(normalizedAction)) {
+      throw new ProductionStateError("任务控制 action 只允许 pause、resume 或 terminate", {
+        code: "TASK_CONTROL_ACTION_INVALID",
+        httpStatus: 400
+      });
+    }
+    const now = this.timestamp();
+    const controlState = normalizedAction === "pause" ? "paused" : "running";
+    await this.updateTaskAtomic(safeProjectId, safeRunId, safeTaskId, (index, current) => {
+      if (!DURABLE_TASK_ACTIVE_STATUSES.includes(current.status)) return false;
+      this.taskStore.updateTaskUnlocked(index, safeTaskId, {
+        phase: controlState,
+        progress: mergeProgress(current.progress, {
+          controlState,
+          controlUpdatedAt: now
+        }),
+        lastProgressAt: now
+      }, { activeOnly: true });
+      this.taskStore.appendEventUnlocked(index, {
+        type: `task.control.${normalizedAction}`,
+        taskId: safeTaskId,
+        createdAt: now
+      });
+      return true;
+    });
+    return this.taskStore.getTask({ projectId: safeProjectId, runId: safeRunId, taskId: safeTaskId });
+  }
+
+  async finishControlledTask({ projectId, runId, taskId, status, reason } = {}) {
+    const safeProjectId = safeIdentifier(projectId, "projectId");
+    const safeRunId = safeIdentifier(runId, "runId");
+    const safeTaskId = safeIdentifier(taskId, "taskId");
+    const task = await this.taskStore.getTask({ projectId: safeProjectId, runId: safeRunId, taskId: safeTaskId });
+    if (DURABLE_TASK_TERMINAL_STATUSES.includes(task.status)) return task;
     const abandonedIds = await this.coordinator.withRunLock(safeProjectId, safeRunId, async () => {
       const manifest = await this.productionStore.readManifest(safeProjectId, safeRunId);
       const index = await this.taskStore.readIndex(safeProjectId, safeRunId);
@@ -624,21 +688,21 @@ export class DurableTaskManager {
         const current = index.tasks[id];
         if (!current || !DURABLE_TASK_ACTIVE_STATUSES.includes(current.status)) continue;
         this.taskStore.updateTaskUnlocked(index, id, {
-          status: "abandoned",
-          phase: "abandoned",
+          status,
+          phase: status,
           completedAt: now,
           lastProgressAt: now,
           watchdogDueAt: null,
           error: reason,
           usage: id === root.taskId ? aggregateChildUsage(index, root) || current.usage : current.usage
         }, { activeOnly: true });
-        this.taskStore.appendEventUnlocked(index, { type: "task.abandoned", taskId: id, createdAt: now });
+        this.taskStore.appendEventUnlocked(index, { type: `task.${status}`, taskId: id, createdAt: now });
         if (current.targetArtifactIds.length === 1) {
           await this.productionStore.recordStageUnlocked(manifest, {
             projectId: safeProjectId,
             runId: safeRunId,
             stageId: current.targetArtifactIds[0],
-            status: "abandoned",
+            status,
             requestId: current.requestId,
             expectedRequestId: current.requestId,
             error: reason

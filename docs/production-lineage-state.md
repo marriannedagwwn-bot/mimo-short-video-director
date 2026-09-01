@@ -116,9 +116,13 @@ Durable Task 创建时，服务端在共享的 per-Run Coordinator 临界区内�
 
 Run Coordinator 是显式不可重入的 FIFO 锁。持锁代码只能使用 `commitArtifactUnlocked`、`recordStageUnlocked`、`loadRunUnlocked` 和 Task Store 的 unlocked 方法，禁止从锁内调用公开 `commitArtifact()`、`recordStage()` 或 `loadRun()`。临界区只做本地状态操作，不含 provider、网络、FFmpeg 或模型校验。`readCurrentLineageSnapshot`、`GET /api/tasks` 与原子 manifest snapshot 的 `loadRun` 均为锁外读取；provider 返回后仍执行复检和锁内 commit 校验覆盖竞态。
 
-任务状态固定为 `queued | running | completed | failed | conflicted | interrupted | abandoned`。所有带原因的终态共用脱敏规则；终态 Stage 更新必须匹配 `expectedRequestId`，旧请求不能覆盖新 Stage。
+任务状态固定为 `queued | running | completed | failed | conflicted | interrupted | abandoned | cancelled`。`cancelled` 只表示受控任务已终止并释放本地提交权，不证明远端调用已取消。所有带原因的终态共用脱敏规则；终态 Stage 更新必须匹配 `expectedRequestId`，旧请求不能覆盖新 Stage。
 
 调度器分为 workflow/text（2 running、8 queued）和 media（4 running、8 queued），queued 请求体总预算默认 140MB。超出限制返回 `TASK_CAPACITY_EXCEEDED`，不创建失败 Task。任务没有总墙钟 deadline：provider 调用前把 watchdog 设置为 provider 自身 timeout/poll timeout 加 120 秒，本地校验、合并和 commit 使用 300 秒无进展窗口；每次 provider 返回、流事件和阶段进展都会续期。watchdog 触发后 Task 变为 `failed/TASK_STALLED` 并释放目标，错误明确提示远端调用可能已经提交并计费。
+
+`shotVideoBatch` 是当前进程内的 Plan 级顺序父任务。创建时一次 claim 当前 Variant 的全部 `shotVideo:<variantId>:<shotId>` 目标，冻结 current Animation Plan lineage、启动时的镜头视频 provider/model 和全能参考配置；每镜复用既有 `shotVideo` Runner 独立提交 Artifact，父任务只持久化调度进度和脱敏结果引用，不复制 Prompt 或媒体正文。已存在且 current 的镜头视频标为 `reused`，其余镜头按 Plan 顺序生成；每个子任务完成后立即刷新父任务 progress，因此浏览器刷新后可从 `tasks/index.json` 重新 attach，并从 current Artifact 恢复已完成视频。
+
+批量控制只允许 `pause | resume | terminate`。暂停保持父任务 `running` 和全部 claims，只在镜头边界阻止下一次 provider 提交；正在轮询或下载的当前镜头不会被强停。终止把父子任务标为 `cancelled`、释放 claims 并禁止迟到结果 commit，但已经提交给供应商的请求可能继续运行和计费。它不是跨进程 batch queue：Node 重启后仍按 Durable Task v1 规则变为 `interrupted`，不会从远端 task id 接管或自动续跑。
 
 
 合法反例：JSON 对象只调整键顺序时 digest 不变，应复用当前 revision。非法串线：Variant 仍叫 `V1`，但标题、角色或剧情内容已变化时 digest 必须变化，旧 Story/Plan 不能继续使用。

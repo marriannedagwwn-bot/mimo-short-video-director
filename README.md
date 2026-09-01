@@ -244,7 +244,7 @@ JIMENG_MAX_IMAGES=6
 动画生产包生成后，剧情页保留两个供应商交付出口：
 
 - 导出当前生产包 JSON：当前测试/规划包版本为 `3.0`。服务端校验当前 Variant → Full Story → Animation Plan revision 后写入 `productionLineage`、内容摘要和本机持久 HMAC 签名；被修改的文件、旧版文件或血缘不一致的文件不能导入。
-- 复制动画生产包 Markdown：当前 `direct_shot` 输出角色/场景/资产参考和逐镜 `videoPrompt`、运镜、动作、声音、连续性、视频负面词及验收标准；旧 v2 才输出逐镜首帧／尾帧。
+- 批量生成全部镜头视频：当前 `direct_shot` 的逐镜 `videoPrompt` 由服务端按 Animation Plan 顺序提交，固定使用 `all_reference`；角色参考图来自已签发的 Plan，已存在的 current 镜头视频会直接复用。
 
 浏览器启动一次工作流时，服务端会在 `runtime/production-runs/` 建立 Run，并在每个阶段成功后持久化 Artifact、revision、依赖摘要、Stage 状态和 Checkpoint。同一 Task 使用相同 requestId 重复 finalize 时，相同 JSON（包括仅键顺序变化）复用原 revision；不同 requestId 不获得该豁免。同一 Variant ID 的实际内容变化会确定性标记旧 Story、Plan 和媒体为 stale。
 
@@ -257,6 +257,7 @@ Node 重启仍是明确边界：Prompt、Data URL、Base64 和完整请求体不
 - `POST /api/tasks/create`：创建或复用任务，返回 `202`；
 - `GET /api/tasks?projectId=&runId=`：锁外读取该 Run 的任务 sidecar；
 - `GET /api/tasks/:taskId?projectId=&runId=`：读取单个任务；
+- `POST /api/tasks/:taskId/control`：对 `shotVideoBatch` 执行 `pause | resume | terminate`；
 - `POST /api/tasks/:taskId/release`：强制释放目标并标记 `abandoned`，不承诺取消远端调用。
 
 ## 单镜头视频：首尾帧 / 全能参考
@@ -272,6 +273,8 @@ Node 重启仍是明确边界：Prompt、Data URL、Base64 和完整请求体不
 全能参考模式新增“把上个镜头内容作为普通参考图”开关，默认不勾选。勾选后，系统按当前 Animation Plan 的 `shotPlan[]` 顺序找到紧邻上一业务镜头，从当前 Run/Plan namespace 中读取它已选中的 current 视频候选，再由服务端 FFmpeg 均匀截取 5 张 JPEG（首帧、末帧和中间三等分点），作为 `reference_image` 与本镜头角色图、旧 v2 已选首尾帧和用户上传媒体一起发送。张数固定为 5：9 图上限是和角色参考图共用的，抽帧占满会把锁角色长相的图挤出去，5 张也正好落在 MiniMax 的免费额度内。第一镜、上一镜未生成/已 stale、旧 Plan URL、非当前 namespace 文件都会明确失败；`S1` 是剧情场次而不是场地，`LOC01` 只是场景视觉参考组，即使两者相同也不承诺物理地点无缝连续。该开关只加强身份、画风和短时表演连续性，当前镜头的剧情动作、固定角色边界与目标场景仍优先；跨地点、跨时段或上一镜本身有漂移时应保持关闭。视频请求始终由服务端从当前 Plan 解析 exact shot；弹窗中的文本编辑只形成有回执的本次 `promptOverride`，不能伪造镜头动作、时长或场景。
 
 全能参考必须至少包含合法图片或视频；共同限制为最多 9 张图片、3 段视频、3 段音频，单段视频或音频 2–15 秒，视频总时长与音频总时长分别不超过 15 秒，且不能只上传音频。上一镜实际抽帧也计入 9 图上限，超限不会静默丢图。服务端提交异步任务、轮询终态，并把 mp4 下载到 `public/generated-videos/<project>/<run>/<plan-revision>-<digest>/`。使用上一镜抽帧的后镜媒体还依赖上一镜 `shotVideo` 的精确 revision/digest；上一镜重生成或切换候选后，依赖它的后镜视频会递归 stale。文件名同时带 Plan revision/digest 前缀和随机请求 nonce；返回文件还会经过 ffprobe 可播放性验证。上一镜源视频与逐秒 JPEG 的 SHA-256 写入连续性回执。生成期间服务端会反复复验 Plan 与上一镜候选是否仍为 current（任何供应商调用前、每条候选提交前、每条候选落盘后、返回前各一次）：一旦发现你已经重新生成 Plan 或切换了上一镜候选，剩余候选不再提交供应商，本次已经下载的 mp4 会被删除，请求以 409 失败，不会留下孤儿文件，旧 Plan 的异步结果也不会挂到新 Plan。已经提交给供应商的那一条无法中途撤回，它的花费收不回来。
+
+“批量生成全部镜头视频”创建一个持久化的 `shotVideoBatch` 父任务，并顺序运行每镜已有的 `shotVideo` Runner。任务进度、每镜状态、usage 和已提交 Artifact 都写入该 Run 的 `tasks/index.json` / Production State；刷新页面会重新 attach，单镜提交成功后 UI 立即恢复该视频。批量只支持 Seedance 2.0 与 MiniMax H3 的 `all_reference`，不会调用或回退到尚未优化的首尾帧模式；当前模型为 Kling 时会明确要求先切换供应商。暂停只阻止下一镜提交，当前供应商调用会继续至终态；终止会释放尚未提交的镜头与本地回写权，已经提交的远端请求仍可能完成并计费。Node 重启仍会把未完成批量任务标为 `interrupted`，不会自动重调供应商。
 
 可灵 3.0 使用新版独立协议和 API Key：
 
@@ -337,7 +340,7 @@ VIDEO_HTTP_POLL_TIMEOUT_MS=600000
 
 供应商原文逐字保留在响应的 `detail` 字段，解释放在新增的 `providerError` 里——排查时随时可取。匹配不到官方码时不做任何解释，直接回退原文展示。
 
-该内置链路只服务于页面内的单镜头试片。仓库已有本地轻量 Run/Artifact/Checkpoint 状态库，但仍不提供 JSONL 任务队列、批量执行器、本地视觉质检或 ffmpeg 成片合成；整片批量生成和后期由外部供应商程序负责。
+该内置链路支持页面内单镜头试片和当前 Run 的顺序全能参考批量生成。它仍不提供跨进程 JSONL/lease 队列、远端任务接管、本地视觉质检或 ffmpeg 成片合成；Node 重启后的续跑和最终后期仍由后续 Production Workspace 负责。
 
 ## 结构
 

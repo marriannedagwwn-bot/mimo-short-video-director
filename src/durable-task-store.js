@@ -16,7 +16,8 @@ export const DURABLE_TASK_TERMINAL_STATUSES = Object.freeze([
   "failed",
   "conflicted",
   "interrupted",
-  "abandoned"
+  "abandoned",
+  "cancelled"
 ]);
 const ALL_STATUSES = new Set([...DURABLE_TASK_ACTIVE_STATUSES, ...DURABLE_TASK_TERMINAL_STATUSES]);
 

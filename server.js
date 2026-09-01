@@ -18,6 +18,7 @@ import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError,
 import { resolveAuthoritativeShotVideoInput, resolveAuthoritativeShotVideoReferenceAssets, resolvePreviousShotFrameReference } from "./src/shot-video-continuity.js";
 import {
   inferShotVideoProvider,
+  isShotVideoGenerationModeSupported,
   isShotVideoModelAllowed,
   normalizeShotVideoProvider,
   resolveShotVideoSetting,
@@ -25,6 +26,12 @@ import {
   shotVideoProviderCatalog,
   shotVideoRuntimeConfig
 } from "./src/shot-video-providers.js";
+import {
+  buildShotVideoBatchReferenceAssets,
+  createShotVideoBatchItems,
+  updateShotVideoBatchItem,
+  waitForShotVideoBatchControl
+} from "./src/shot-video-batch.js";
 import { AttemptStore } from "./src/attempt-store.js";
 import {
   CAST_CONFIRMATION_API_PATH,
@@ -68,7 +75,11 @@ import {
   PRODUCTION_REQUEST_HEADER_NAMES,
   productionRequestHeaders
 } from "./public/production-lineage-client.js";
-import { shotVideoArtifactIdFor } from "./public/shot-video-continuity.js";
+import {
+  SHOT_VIDEO_CONTINUITY_NONE,
+  SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES,
+  shotVideoArtifactIdFor
+} from "./public/shot-video-continuity.js";
 import { syncShotCharacterReference } from "./public/character-reference-sync.js";
 
 loadEnv();
@@ -482,6 +493,7 @@ function taskDefinitionForRequest(body = {}) {
   if (kind === "animationPromptRewrite") return animationPromptRewriteTaskDefinition({ projectId, runId, input });
   if (kind === "characterReferenceRefine") return characterReferenceRefineTaskDefinition({ projectId, runId, input });
   if (kind === "characterReferenceImages") return characterReferenceImagesTaskDefinition({ projectId, runId, input });
+  if (kind === "shotVideoBatch") return shotVideoBatchTaskDefinition({ projectId, runId, input });
   if (kind === "shotVideo") return shotVideoTaskDefinition({ projectId, runId, input });
   if (kind === "shotFrameImage") return shotFrameTaskDefinition({ projectId, runId, input });
   throw new ProductionStateError(`不支持 Durable Task kind：${kind || "(空)"}`, {
@@ -1108,6 +1120,234 @@ function shotVideoTaskDefinition({ projectId, runId, input }) {
   });
 }
 
+function shotVideoBatchTaskDefinition({ projectId, runId, input }) {
+  const variantId = safeIdentifier(input.variantId || input.selectedVariantId, "variantId");
+  const planArtifactId = `animationPlan:${variantId}`;
+  const setting = shotVideoRequestSetting(input);
+  if (!isShotVideoGenerationModeSupported(setting.provider, "all_reference")) {
+    throw new ProductionStateError(
+      `${setting.provider} 不支持全能参考批量生成；请将镜头视频供应商切换为 Seedance 或 MiniMax。`,
+      { code: "SHOT_VIDEO_BATCH_PROVIDER_UNSUPPORTED" }
+    );
+  }
+  return {
+    projectId,
+    runId,
+    kind: "shotVideoBatch",
+    pool: "media",
+    modelSnapshot: { shotVideo: { provider: setting.provider, model: setting.model } },
+    prepare: async ({ run }) => {
+      const planEntry = requireCurrentArtifact(run, planArtifactId);
+      assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry: planEntry });
+      const plan = planEntry.content || {};
+      const shots = Array.isArray(plan.shotPlan) ? plan.shotPlan.filter(Boolean) : [];
+      if (!shots.length) {
+        throw new ProductionStateError("当前 Animation Plan 没有可批量生成的视频镜头", {
+          code: "SHOT_VIDEO_BATCH_EMPTY"
+        });
+      }
+      const shotIds = shots.map((shot) => safeIdentifier(shot.shotId, "shotId"));
+      if (new Set(shotIds).size !== shotIds.length) {
+        throw new ProductionStateError("Animation Plan 中存在重复 shotId，不能批量生成", {
+          code: "SHOT_VIDEO_BATCH_DUPLICATE_SHOT"
+        });
+      }
+      const targetArtifactIds = shotIds.map((shotId) => shotVideoArtifactIdFor(variantId, shotId));
+      const isReady = (shot) => run.latestArtifacts?.[shotVideoArtifactIdFor(variantId, shot.shotId)]?.lineage?.status === "current";
+      const items = createShotVideoBatchItems(shots, isReady);
+      const firstPendingIndex = items.findIndex((item) => item.status !== "completed");
+      if (firstPendingIndex >= 0) {
+        const firstPendingShot = shots[firstPendingIndex];
+        const hasCharacterReference = buildShotVideoBatchReferenceAssets(
+          firstPendingShot,
+          plan.characterReferencePrompts || []
+        ).length > 0;
+        const previousArtifactReady = firstPendingIndex > 0
+          && run.latestArtifacts?.[targetArtifactIds[firstPendingIndex - 1]]?.lineage?.status === "current";
+        if (!hasCharacterReference && !previousArtifactReady) {
+          throw new ProductionStateError(
+            `镜头 ${firstPendingShot.shotId} 没有角色参考图，也没有可复用的上一镜视频；全能参考模式至少需要一项视觉参考。`,
+            { code: "SHOT_VIDEO_BATCH_REFERENCE_REQUIRED" }
+          );
+        }
+      }
+      const artifacts = currentArtifactContents(run, [
+        "referenceAnalysis",
+        "sourceScriptReconstruction",
+        "creativeBrief",
+        "visualGuardrails"
+      ]);
+      return {
+        input: {
+          variantId,
+          selectedVariantId: variantId,
+          count: Math.max(1, Math.min(4, Number(input.count) || 1)),
+          includePreviousShotFrames: input.includePreviousShotFrames !== false,
+          modelOverrides: plainObject(input.modelOverrides),
+          productionContext: productionContextForLineage(projectId, runId, planEntry.lineage),
+          plan: structuredClone(plan),
+          shots: structuredClone(shots),
+          creatorProfile: plainObject(run.metadata?.creatorProfile),
+          referenceAnalysis: artifacts.referenceAnalysis,
+          sourceScriptReconstruction: artifacts.sourceScriptReconstruction,
+          creativeBrief: artifacts.creativeBrief,
+          visualGuardrails: artifacts.visualGuardrails
+        },
+        targetArtifactIds,
+        frozenDependencies: [lineageRef(planEntry.lineage)],
+        modelSnapshot: { shotVideo: { provider: setting.provider, model: setting.model } },
+        progress: {
+          controlState: "running",
+          totalShots: shots.length,
+          completedShots: items.filter((item) => item.status === "completed").length,
+          generatedShots: 0,
+          failedShots: 0,
+          currentShotId: "",
+          items
+        }
+      };
+    },
+    execute: async (trusted, context) => {
+      let task = await context.getTask();
+      let items = Array.isArray(task.progress?.items)
+        ? task.progress.items
+        : createShotVideoBatchItems(trusted.shots);
+      const resultArtifactRefs = [];
+      let generatedShots = Number(task.progress?.generatedShots) || 0;
+      let failedShots = Number(task.progress?.failedShots) || 0;
+      let completedShots = items.filter((item) => item.status === "completed").length;
+      for (let index = 0; index < trusted.shots.length; index += 1) {
+        await waitForShotVideoBatchControl(context);
+        const shot = trusted.shots[index];
+        const shotId = String(shot.shotId);
+        const artifactId = shotVideoArtifactIdFor(trusted.variantId, shotId);
+        const snapshot = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
+        const existing = snapshot.latestArtifacts?.[artifactId];
+        if (existing?.lineage?.status === "current") {
+          if (!resultArtifactRefs.some((item) => item.artifactId === artifactId)) {
+            resultArtifactRefs.push(lineageRef(existing.lineage));
+          }
+          items = updateShotVideoBatchItem(items, shotId, {
+            status: "completed",
+            message: items[index]?.status === "completed" ? "已存在当前视频结果" : "视频已生成"
+          });
+          completedShots = items.filter((item) => item.status === "completed").length;
+          await context.heartbeat({ completedShots, generatedShots, failedShots, currentShotId: "", items });
+          continue;
+        }
+        const previousArtifactId = index > 0
+          ? shotVideoArtifactIdFor(trusted.variantId, trusted.shots[index - 1].shotId)
+          : "";
+        const previousReady = previousArtifactId
+          && snapshot.latestArtifacts?.[previousArtifactId]?.lineage?.status === "current";
+        const referenceAssets = buildShotVideoBatchReferenceAssets(
+          shot,
+          trusted.plan.characterReferencePrompts || []
+        );
+        if (!referenceAssets.length && !(trusted.includePreviousShotFrames && previousReady)) {
+          failedShots += 1;
+          items = updateShotVideoBatchItem(items, shotId, {
+            status: "failed",
+            message: "缺少角色参考图或可复用的上一镜视频"
+          });
+          await context.heartbeat({ completedShots, generatedShots, failedShots, currentShotId: "", items });
+          continue;
+        }
+        items = updateShotVideoBatchItem(items, shotId, {
+          status: "running",
+          message: `正在用 ${setting.provider} ${setting.model} 生成`
+        });
+        await context.heartbeat({
+          completedShots,
+          generatedShots,
+          failedShots,
+          currentShotId: shotId,
+          currentShotIndex: index,
+          items
+        });
+        try {
+          const child = await context.runChild(shotVideoTaskDefinition({
+            projectId,
+            runId,
+            input: {
+              creatorProfile: trusted.creatorProfile,
+              referenceAnalysis: trusted.referenceAnalysis,
+              sourceScriptReconstruction: trusted.sourceScriptReconstruction,
+              creativeBrief: trusted.creativeBrief,
+              visualGuardrails: trusted.visualGuardrails,
+              variantId: trusted.variantId,
+              selectedVariantId: trusted.variantId,
+              count: trusted.count,
+              generationMode: "all_reference",
+              continuityReferenceMode: trusted.includePreviousShotFrames && previousReady
+                ? SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
+                : SHOT_VIDEO_CONTINUITY_NONE,
+              aspectRatio: requireAnimationPlanAspectRatio(trusted.plan),
+              animationPromptSchemaVersion: trusted.plan.promptSchemaVersion || "",
+              shotId,
+              referenceAssets,
+              productionContext: trusted.productionContext,
+              modelOverrides: trusted.modelOverrides
+            }
+          }));
+          resultArtifactRefs.push(...(child.resultArtifactRefs || []));
+          generatedShots += 1;
+          completedShots += 1;
+          items = updateShotVideoBatchItem(items, shotId, {
+            status: "completed",
+            message: `已生成 ${trusted.count} 条视频候选`,
+            taskId: child.taskId
+          });
+        } catch (error) {
+          if (isFatalShotVideoBatchError(error)) throw error;
+          failedShots += 1;
+          items = updateShotVideoBatchItem(items, shotId, {
+            status: "failed",
+            message: error.message || "视频生成失败"
+          });
+        }
+        await context.heartbeat({
+          completedShots,
+          generatedShots,
+          failedShots,
+          currentShotId: "",
+          currentShotIndex: index,
+          items
+        });
+      }
+      task = await context.getTask();
+      return {
+        resultArtifactRefs,
+        usage: task.usage || null,
+        progress: {
+          controlState: "running",
+          batchStatus: failedShots ? "partial" : "completed",
+          totalShots: trusted.shots.length,
+          completedShots,
+          generatedShots,
+          failedShots,
+          currentShotId: "",
+          items
+        }
+      };
+    }
+  };
+}
+
+function isFatalShotVideoBatchError(error) {
+  return [
+    "SHOT_VIDEO_BATCH_TERMINATED",
+    "TASK_OWNERSHIP_LOST",
+    "TASK_FROZEN_CONTEXT_CONFLICT",
+    "ARTIFACT_REVISION_CONFLICT",
+    "ARTIFACT_DEPENDENCY_STALE",
+    "MEDIA_PLAN_ASPECT_RATIO_MISMATCH",
+    "SHOT_VIDEO_CURRENT_SHOT_NOT_IN_PLAN",
+    "SHOT_VIDEO_PLAN_SCHEMA_MISMATCH",
+    "SHOT_VIDEO_PLAN_VARIANT_MISMATCH"
+  ].includes(error?.code);
+}
+
 function shotFrameTaskDefinition({ projectId, runId, input }) {
   const variantId = safeIdentifier(input.variantId || input.selectedVariantId, "variantId");
   const shotId = safeIdentifier(input.shotId || input.shot?.shotId, "shotId");
@@ -1664,6 +1904,17 @@ const server = http.createServer(async (request, response) => {
         projectId: body.projectId,
         runId: body.runId,
         taskId: decodeURIComponent(releasePath[1])
+      });
+      return json(response, 200, { ok: true, mode: workflow.mode, task, result: task });
+    }
+    const controlPath = /^\/api\/tasks\/([^/]+)\/control$/u.exec(url.pathname);
+    if (request.method === "POST" && controlPath) {
+      const body = await readJson(request);
+      const task = await durableTaskManager.controlTask({
+        projectId: body.projectId,
+        runId: body.runId,
+        taskId: decodeURIComponent(controlPath[1]),
+        action: body.action
       });
       return json(response, 200, { ok: true, mode: workflow.mode, task, result: task });
     }

@@ -912,6 +912,61 @@ test("release is idempotent and a late second finalize cannot change the termina
   }, { localStallMs: 5_000 });
 });
 
+test("shot video batch pause and resume are persisted without releasing its claims", async () => {
+  await withManager(async ({ productionStore, manager }) => {
+    const productionRun = await productionStore.createRun({ projectId: "project-video-batch-pause" });
+    const created = await manager.createTask({
+      ...productionRun,
+      kind: "shotVideoBatch",
+      pool: "media",
+      targetArtifactIds: ["shotVideo:V1:S01"],
+      progress: { controlState: "running", totalShots: 1 },
+      execute: async () => new Promise(() => {})
+    });
+    await waitUntil(() => manager.getTaskById(created.task.taskId), (task) => task.status === "running");
+    const paused = await manager.controlTask({ ...productionRun, taskId: created.task.taskId, action: "pause" });
+    assert.equal(paused.status, "running");
+    assert.equal(paused.progress.controlState, "paused");
+    const resumed = await manager.controlTask({ ...productionRun, taskId: created.task.taskId, action: "resume" });
+    assert.equal(resumed.status, "running");
+    assert.equal(resumed.progress.controlState, "running");
+    assert.equal((await manager.getTaskById(created.task.taskId)).progress.controlState, "running");
+    await manager.releaseTask({ ...productionRun, taskId: created.task.taskId });
+  }, { localStallMs: 5_000 });
+});
+
+test("terminating a shot video batch is durable and rejects late completion", async () => {
+  await withManager(async ({ productionStore, manager }) => {
+    const productionRun = await productionStore.createRun({ projectId: "project-video-batch-terminate" });
+    const targetArtifactId = "shotVideo:V1:S01";
+    const created = await manager.createTask({
+      ...productionRun,
+      kind: "shotVideoBatch",
+      pool: "media",
+      targetArtifactIds: [targetArtifactId],
+      execute: async () => new Promise(() => {})
+    });
+    await waitUntil(() => manager.getTaskById(created.task.taskId), (task) => task.status === "running");
+    const terminated = await manager.controlTask({
+      ...productionRun,
+      taskId: created.task.taskId,
+      action: "terminate"
+    });
+    assert.equal(terminated.status, "cancelled");
+    assert.equal(terminated.error.code, "SHOT_VIDEO_BATCH_TERMINATED");
+    assert.equal(await manager.completeTask(created.task.taskId, {}), false);
+    const replacement = await manager.createTask({
+      ...productionRun,
+      kind: "shotVideo",
+      pool: "media",
+      targetArtifactIds: [targetArtifactId],
+      execute: async () => ({})
+    });
+    assert.equal(replacement.reused, false);
+    await manager.waitForTask({ ...productionRun, taskId: replacement.task.taskId });
+  }, { localStallMs: 5_000 });
+});
+
 test("DURABLE_TASK_MAX_CONCURRENCY=1 configures real queued execution defaults", () => {
   const previous = process.env.DURABLE_TASK_MAX_CONCURRENCY;
   process.env.DURABLE_TASK_MAX_CONCURRENCY = "1";

@@ -116,6 +116,12 @@ const state = {
     includeCharacterReferences: true,
     referenceAssets: []
   },
+  shotVideoBatch: {
+    taskId: "",
+    status: "idle",
+    controlState: "running",
+    lastRenderedCompletedShots: -1
+  },
   mode: "demo",
   mediaMode: "auto",
   storyModel: "mimo-v2.5-pro",
@@ -158,7 +164,11 @@ const elements = {
   animationGenerate: $("#generateAnimationPlan"), animationStatus: $("#animationStatus"), animationPlan: $("#animationPlanResult"),
   animationAspectRatio: $("#animationAspectRatio"),
   storyDurationTarget: $("#storyDurationTarget"),
-  exportStoryPackage: $("#exportStoryPackage"), copyAnimationPack: $("#copyAnimationPack"),
+  exportStoryPackage: $("#exportStoryPackage"), startShotVideoBatch: $("#startShotVideoBatch"),
+  shotVideoBatchPanel: $("#shotVideoBatchPanel"), shotVideoBatchTitle: $("#shotVideoBatchTitle"),
+  shotVideoBatchStatus: $("#shotVideoBatchStatus"), shotVideoBatchCount: $("#shotVideoBatchCount"),
+  shotVideoBatchProgress: $("#shotVideoBatchProgress"), shotVideoBatchItems: $("#shotVideoBatchItems"),
+  pauseShotVideoBatch: $("#pauseShotVideoBatch"), terminateShotVideoBatch: $("#terminateShotVideoBatch"),
   importStoryPackage: $("#importStoryPackage"), exportStoryTestPackage: $("#exportStoryTestPackage"),
   storyPackageFile: $("#storyPackageFile"), storyPackageStatus: $("#storyPackageStatus"),
   characterImageModal: $("#characterImageModal"), closeCharacterImageModal: $("#closeCharacterImageModal"),
@@ -328,7 +338,9 @@ function bindEvents() {
   });
   renderStoryDurationOptions();
   elements.exportStoryPackage.addEventListener("click", exportCurrentStoryPackage);
-  elements.copyAnimationPack.addEventListener("click", copyAnimationProductionPack);
+  elements.startShotVideoBatch.addEventListener("click", startShotVideoBatch);
+  elements.pauseShotVideoBatch.addEventListener("click", toggleShotVideoBatchPause);
+  elements.terminateShotVideoBatch.addEventListener("click", terminateShotVideoBatch);
   elements.importStoryPackage.addEventListener("click", () => elements.storyPackageFile.click());
   elements.exportStoryTestPackage.addEventListener("click", exportStoryTestPackage);
   elements.storyPackageFile.addEventListener("change", (event) => {
@@ -788,11 +800,11 @@ async function readDurableTask(taskId) {
 async function waitForDurableTask(initialTask, onProgress = null) {
   let task = initialTask;
   while (["queued", "running"].includes(task.status)) {
-    if (onProgress) onProgress(task);
+    if (onProgress) await onProgress(task);
     await new Promise((resolve) => window.setTimeout(resolve, 1500));
     task = await readDurableTask(task.taskId);
   }
-  if (onProgress) onProgress(task);
+  if (onProgress) await onProgress(task);
   if (task.status !== "completed") {
     const error = new Error(task.error?.message || `任务以 ${task.status} 结束`);
     error.code = task.error?.code || `TASK_${String(task.status || "failed").toUpperCase()}`;
@@ -932,6 +944,13 @@ function resetDirectorClientState() {
   state.animationAspectRatioDrafts = {};
   state.shotVideoResults = {};
   state.shotFrameResults = {};
+  state.shotVideoBatch = {
+    taskId: "",
+    status: "idle",
+    controlState: "running",
+    lastRenderedCompletedShots: -1
+  };
+  elements.shotVideoBatchPanel.classList.add("hidden");
   state.characterReferenceStatuses = {};
   state.productionTasks = {};
   state.production = emptyProductionState();
@@ -3783,6 +3802,183 @@ function buildShotVideoPromptPreview(shot = {}, promptSchemaVersion = "", videoP
   ].filter(Boolean).join("\n");
 }
 
+async function startShotVideoBatch() {
+  if (state.shotVideoBatch.taskId) return;
+  const variant = selectedVariant();
+  const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : null;
+  if (!variant || !plan?.shotPlan?.length) {
+    return setAnimationStatus("请先生成 Animation Plan，再批量生成镜头视频。", "error");
+  }
+  const setting = shotVideoSetting();
+  if (!shotVideoModeSupported(setting.provider, "all_reference")) {
+    return setAnimationStatus(
+      `${shotVideoProviderLabel(setting.provider)} 不支持全能参考模式，请在模型设置中切换为 Seedance 或 MiniMax。`,
+      "error"
+    );
+  }
+  try {
+    const productionContext = currentPlanProductionContext(variant.id);
+    state.shotVideoBatch = {
+      taskId: "creating",
+      status: "queued",
+      controlState: "running",
+      lastRenderedCompletedShots: -1
+    };
+    renderShotVideoBatchProgress({
+      status: "queued",
+      progress: {
+        controlState: "running",
+        totalShots: plan.shotPlan.length,
+        completedShots: 0,
+        failedShots: 0,
+        items: plan.shotPlan.map((shot) => ({ shotId: shot.shotId, status: "pending", message: "等待提交" }))
+      }
+    });
+    updateStoryExportActions();
+    const created = await createDurableTask("shotVideoBatch", withModelOverrides({
+      variantId: variant.id,
+      selectedVariantId: variant.id,
+      generationMode: "all_reference",
+      includePreviousShotFrames: true,
+      count: 1,
+      productionContext
+    }));
+    state.shotVideoBatch.taskId = created.task.taskId;
+    await monitorShotVideoBatch(created.task);
+  } catch (error) {
+    state.shotVideoBatch.taskId = "";
+    state.shotVideoBatch.status = "failed";
+    renderShotVideoBatchProgress({
+      status: "failed",
+      error: { message: error.message || "批量视频任务创建失败" },
+      progress: { controlState: "running", totalShots: plan.shotPlan.length, completedShots: 0, failedShots: 0, items: [] }
+    });
+    setAnimationStatus(error.message || "批量视频任务创建失败", "error");
+    updateStoryExportActions();
+  }
+}
+
+async function monitorShotVideoBatch(initialTask, { restored = false } = {}) {
+  state.shotVideoBatch.taskId = initialTask.taskId;
+  state.shotVideoBatch.status = initialTask.status;
+  if (restored) state.shotVideoBatch.lastRenderedCompletedShots = -1;
+  try {
+    const completed = await waitForDurableTask(initialTask, async (task) => {
+      renderShotVideoBatchProgress(task);
+      const processedShots = Number(task.progress?.completedShots || 0) + Number(task.progress?.failedShots || 0);
+      if (processedShots !== state.shotVideoBatch.lastRenderedCompletedShots) {
+        state.shotVideoBatch.lastRenderedCompletedShots = processedShots;
+        if (processedShots > 0) {
+          await reloadActiveProductionRun();
+          renderShotVideoBatchProgress(task);
+        }
+      }
+    });
+    await reloadActiveProductionRun();
+    renderShotVideoBatchProgress(completed);
+    const failedShots = Number(completed.progress?.failedShots) || 0;
+    setAnimationStatus(
+      failedShots
+        ? `批量视频生成完成，${failedShots} 个镜头失败；已保留其余成功片段。`
+        : "全部镜头视频已生成完成。",
+      failedShots ? "warn" : "ready"
+    );
+  } catch (error) {
+    const task = error.task || initialTask;
+    renderShotVideoBatchProgress(task);
+    if (task.status === "cancelled" || error.code === "SHOT_VIDEO_BATCH_TERMINATED") {
+      await reloadActiveProductionRun().catch(() => null);
+      renderShotVideoBatchProgress(task);
+      setAnimationStatus("批量视频生成已终止；已完成片段已经保留。", "warn");
+    } else {
+      setAnimationStatus(error.message || "批量视频生成中断", "error");
+    }
+  } finally {
+    state.shotVideoBatch.taskId = "";
+    updateStoryExportActions();
+    void refreshReleaseActiveTasksButton();
+  }
+}
+
+function renderShotVideoBatchProgress(task = {}) {
+  const progress = task.progress || {};
+  const items = Array.isArray(progress.items) ? progress.items : [];
+  const batchSetting = task.modelSnapshot?.shotVideo;
+  const batchLabel = batchSetting?.model
+    ? modelDisplayLabel(batchSetting.provider, batchSetting.model)
+    : shotVideoProviderLabel();
+  const totalShots = Number(progress.totalShots) || items.length;
+  const completedShots = Number(progress.completedShots) || 0;
+  const failedShots = Number(progress.failedShots) || 0;
+  const processedShots = Math.min(totalShots, completedShots + failedShots);
+  const controlState = String(progress.controlState || "running");
+  const terminal = ["completed", "failed", "cancelled", "abandoned", "conflicted", "interrupted"].includes(task.status);
+  state.shotVideoBatch.status = task.status || state.shotVideoBatch.status;
+  state.shotVideoBatch.controlState = controlState;
+  elements.shotVideoBatchPanel.classList.remove("hidden");
+  elements.shotVideoBatchCount.textContent = `${processedShots} / ${totalShots}`;
+  elements.shotVideoBatchProgress.style.width = `${totalShots ? Math.round(processedShots / totalShots * 100) : 0}%`;
+  elements.shotVideoBatchTitle.textContent = `${batchLabel} 全能参考批量生成`;
+  elements.shotVideoBatchStatus.textContent = shotVideoBatchStatusText(task, progress);
+  elements.shotVideoBatchItems.innerHTML = items.map((item) => `<span class="${escape(item.status || "pending")}" title="${escape(item.message || "")}">${escape(item.shotId || "镜头")}</span>`).join("");
+  elements.pauseShotVideoBatch.disabled = terminal;
+  elements.terminateShotVideoBatch.disabled = terminal;
+  const paused = controlState === "paused";
+  elements.pauseShotVideoBatch.setAttribute("aria-label", paused ? "继续批量生成" : "暂停批量生成");
+  elements.pauseShotVideoBatch.setAttribute("title", paused ? "继续批量生成" : "暂停批量生成");
+  elements.pauseShotVideoBatch.innerHTML = paused
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg>';
+}
+
+function shotVideoBatchStatusText(task, progress) {
+  if (task.status === "cancelled") return "已终止，完成片段已保留";
+  if (task.status === "failed") return task.error?.message || "批量任务失败";
+  if (task.status === "completed") {
+    const failed = Number(progress.failedShots) || 0;
+    return failed ? `已完成，${failed} 个镜头失败` : "全部镜头已完成";
+  }
+  if (progress.controlState === "paused") return "已暂停，将在当前片段完成后停止提交";
+  if (task.status === "queued") return "等待服务器媒体队列";
+  if (progress.currentShotId) return `正在生成 ${progress.currentShotId}`;
+  return "准备下一镜";
+}
+
+async function toggleShotVideoBatchPause() {
+  const taskId = state.shotVideoBatch.taskId;
+  if (!taskId || taskId === "creating") return;
+  const action = state.shotVideoBatch.controlState === "paused" ? "resume" : "pause";
+  try {
+    const task = await controlDurableTask(taskId, action);
+    renderShotVideoBatchProgress(task);
+  } catch (error) {
+    setAnimationStatus(error.message || "批量任务控制失败", "error");
+  }
+}
+
+async function terminateShotVideoBatch() {
+  const taskId = state.shotVideoBatch.taskId;
+  if (!taskId || taskId === "creating") return;
+  const confirmed = window.confirm(
+    "确认终止剩余镜头的视频生成？\n\n已完成片段会保留；当前已提交给供应商的片段可能仍会执行并产生费用。"
+  );
+  if (!confirmed) return;
+  try {
+    const task = await controlDurableTask(taskId, "terminate");
+    renderShotVideoBatchProgress(task);
+  } catch (error) {
+    setAnimationStatus(error.message || "终止批量任务失败", "error");
+  }
+}
+
+function controlDurableTask(taskId, action) {
+  return api(`/api/tasks/${encodeURIComponent(taskId)}/control`, {
+    projectId: state.production.projectId,
+    runId: state.production.runId,
+    action
+  });
+}
+
 async function generateShotVideo(shotId, promptOverride = "", options = {}) {
   const variant = selectedVariant();
   const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
@@ -4611,6 +4807,7 @@ function updateShotVideoProviderUi() {
   elements.animationPlan.querySelectorAll("[data-generate-shot-video]").forEach((button) => {
     button.textContent = `用 ${label} 生成此镜头视频`;
   });
+  elements.startShotVideoBatch.textContent = `用 ${label} 批量生成全部镜头视频`;
   if (state.shotVideoGeneration.open) {
     updateShotVideoGeneratorPreview({ preservePrompt: true });
   }
@@ -4760,6 +4957,8 @@ async function restoreActiveProductionRun() {
       for (const artifactId of task.targetArtifactIds || []) state.productionTasks[artifactId] = task;
     }
     const activeTasks = allTasks.filter((task) => ["queued", "running"].includes(task.status));
+    const latestShotVideoBatch = allTasks.find((task) => task.kind === "shotVideoBatch" && !task.parentTaskId);
+    if (latestShotVideoBatch) renderShotVideoBatchProgress(latestShotVideoBatch);
     const activeCharacterImages = activeTasks.find((task) => task.kind === "characterReferenceImages");
     if (!activeCharacterImages) {
       const completedCharacterImages = allTasks.find((task) => (
@@ -4836,6 +5035,9 @@ function markRestoredTaskRunning(task) {
     state.animationRunning = true;
     setAnimationRunning(true);
     setAnimationStatus(`正在重新接管 ${task.kind}${model ? ` · ${model}` : ""}…`, "active");
+  } else if (task.kind === "shotVideoBatch") {
+    state.shotVideoBatch.taskId = task.taskId;
+    renderShotVideoBatchProgress(task);
   } else if (task.kind === "shotVideo" && target.shotId) {
     setShotVideoStateItem(target.shotId, { status: "running", message: "已重新接管服务端视频任务…" }, target.variantId);
   } else if (task.kind === "shotFrameImage" && target.shotId) {
@@ -4863,6 +5065,10 @@ function adoptCharacterImageTaskTarget(task) {
 }
 
 async function attachRestoredStandaloneTask(task) {
+  if (task.kind === "shotVideoBatch") {
+    await monitorShotVideoBatch(task, { restored: true });
+    return;
+  }
   try {
     const completed = await waitForDurableTask(task, (current) => {
       if (current.kind === "characterReferenceImages") applyCharacterImageTaskProgress(current);
@@ -5100,7 +5306,7 @@ function updateStoryExportActions() {
   const hasAnimation = Boolean(pack?.animationPlan);
   elements.exportStoryPackage.disabled = !hasStory;
   elements.exportStoryTestPackage.disabled = !hasStory;
-  elements.copyAnimationPack.disabled = !hasAnimation;
+  elements.startShotVideoBatch.disabled = !hasAnimation || Boolean(state.shotVideoBatch.taskId);
 }
 
 function exportJson() {

@@ -58,13 +58,15 @@ Video Generation
 
 **Durable Task v1（2026-09-01）**：浏览器主流程不再持有长 provider workflow 或提交模型 Artifact。服务端把 AI 导演表示为一个 `directorPipeline` 父任务和 Analyze、Reconstruct、Brief、Visual Guardrails、Variants 五个顺序子任务；Full Story、Animation Plan、人物精修、角色图片、旧 v2 镜头帧和 shotVideo 也由同一 Task Manager 执行、校验并 commit。Task Store 位于每个 Run 的私有 `tasks/index.json`，只保存执行状态、冻结 lineage refs、创建时的 provider/model、progress、usage、结果 Artifact refs 和脱敏错误；禁止保存 Prompt、Data URL、Base64、完整请求体或第二份业务内容。ProductionStateStore 的 current Artifact 仍是唯一业务权威。
 
-Task 状态只有 `queued | running | completed | failed | conflicted | interrupted | abandoned`。`conflicted` 只由 provider 前/后或 commit 前冻结 revision/digest 变化以及 `ARTIFACT_REVISION_CONFLICT` / `ARTIFACT_DEPENDENCY_STALE` 产生；冻结后绝不自动刷新成新 current 内容。所有写目标在创建时原子 claim，`directorPipeline` 一次 claim 五个目标；未 claim 的既有浏览器快速提交和 import 保持可用，有 claim 时只允许 active owner/child commit。相同 operation 复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`；release/watchdog/restart 后迟到 Runner 不能回写。`abandoned` 不是远端取消，远端调用仍可能计费。
+Task 状态只有 `queued | running | completed | failed | conflicted | interrupted | abandoned | cancelled`。`conflicted` 只由 provider 前/后或 commit 前冻结 revision/digest 变化以及 `ARTIFACT_REVISION_CONFLICT` / `ARTIFACT_DEPENDENCY_STALE` 产生；冻结后绝不自动刷新成新 current 内容。所有写目标在创建时原子 claim，`directorPipeline` 一次 claim 五个目标；未 claim 的既有浏览器快速提交和 import 保持可用，有 claim 时只允许 active owner/child commit。相同 operation 复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`；release/watchdog/restart 后迟到 Runner 不能回写。`abandoned` 和 `cancelled` 都不是远端取消，远端调用仍可能计费。
 
 Durable Task 没有总墙钟 deadline。provider 调用的无进展 watchdog 使用该 provider 自身 request/poll timeout + 120 秒，本地校验/合并/commit 使用 300 秒，并在 provider 返回、图片流事件、候选和阶段进展时续期。workflow/text 池为 2 running / 8 queued，media 池为 4 running / 8 queued，全局 queued 请求体预算默认 140MB；超过容量返回 `TASK_CAPACITY_EXCEEDED`，不伪造失败 Task。
 
 per-Run Coordinator 是显式不可重入 FIFO 锁。持锁代码只能调用 `commitArtifactUnlocked`、`recordStageUnlocked`、`loadRunUnlocked` 和 Task Store unlocked 方法，禁止从锁内调用公开的 `commitArtifact()` / `recordStage()` / `loadRun()`；临界区内禁止 provider、网络、FFmpeg 或模型校验。`readCurrentLineageSnapshot`、Task GET 和 atomic manifest snapshot 的 `loadRun` 必须锁外读取；provider 返回后仍保留复检与锁内 commit guard。
 
-刷新/HTTP 断线只移除等待者，Runner 在同一 Node 进程继续。Node 重启时，大型请求体和 provider 执行上下文没有持久化：已由同 requestId 成功提交的任务可 reconciliation 为 completed，其余 queued/running 必须标 `interrupted` 并释放 claim，绝不自动重调 provider。继续 Analyze/Reconstruct/Visual Guardrails 时必须重新上传 SHA-256 与 Run metadata 中 `sourceVideoDigest` 相同的原文件；Brief/Variants 可直接复用 current 上游。T04 quarantine、T05 provider task-id 接管/重启恢复、lease 和正式 batch queue 仍未实现，禁止把 Durable Task v1 描述成完成了它们。
+刷新/HTTP 断线只移除等待者，Runner 在同一 Node 进程继续。Node 重启时，大型请求体和 provider 执行上下文没有持久化：已由同 requestId 成功提交的任务可 reconciliation 为 completed，其余 queued/running 必须标 `interrupted` 并释放 claim，绝不自动重调 provider。继续 Analyze/Reconstruct/Visual Guardrails 时必须重新上传 SHA-256 与 Run metadata 中 `sourceVideoDigest` 相同的原文件；Brief/Variants 可直接复用 current 上游。T04 quarantine、T05 provider task-id 接管/重启恢复、lease 和正式跨进程 batch queue 仍未实现，禁止把 Durable Task v1 描述成完成了它们。
+
+`shotVideoBatch` 是受控的当前进程内顺序父任务：创建时一次 claim 当前 Plan 的全部 `shotVideo:<variantId>:<shotId>`，固定使用启动时 Seedance 2.0 或 MiniMax H3 的 `all_reference` 配置，并为每镜调用既有 `shotVideo` 子 Runner。角色参考图只能来自已签发 Plan；已存在 current 视频可复用。父任务将 `controlState`、逐镜状态、usage 和 Artifact refs 持久化到 `tasks/index.json`，每镜完成即 commit 并更新 progress，刷新页面必须重新 attach。`pause` 只在镜头边界阻止下一次提交，当前 provider 调用继续；`terminate` 标记父子任务 `cancelled`、释放 claims 并禁止迟到 commit，但不能撤回已提交远端请求。该能力不得描述为跨 Node 重启恢复的正式 batch queue，也不得静默切到尚未优化的 `first_last_frame`。
 
 Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Artifact stale。模型请求开始时冻结依赖 revision，返回时同时经过浏览器 request token 与服务端 `expectedCurrentRevision`/dependency 校验。Animation Plan 每个 revision 签发独立 media namespace。
 
@@ -760,7 +762,7 @@ Full Story Contract：
 - 持久化状态
 - 媒体生命周期
 
-尚未实现远端任务接管、批量队列、完整视觉 QA 和成片恢复。
+已实现当前 Run 内的顺序 `shotVideoBatch` 与刷新恢复；尚未实现远端任务接管、跨进程批量队列、完整视觉 QA 和成片恢复。
 
 GitHub Benchmark 后续改造必须以 `docs/GitHub-Benchmark-后续改造待办.md` 为执行清单。
 每完成一个实施步骤，执行者必须在同一次工作中自动勾选对应子项；只有验收标准全部满足时才能勾选父任务，并填写完成记录。
