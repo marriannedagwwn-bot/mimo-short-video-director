@@ -318,17 +318,27 @@ function manifestGroupKey(artifact = {}) {
   ].join(" ");
 }
 
-function manifestClause(artifact, label) {
+function manifestClause(artifact, label, { hasCharacterReference = false } = {}) {
   const source = String(artifact.source || "");
   if ([PREVIOUS_SHOT_FRAME_SOURCE, SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES].includes(source)) {
     const shotId = manifestSafeTerm(artifact.sourceShotId, 16) || "上一镜";
-    return `${label} 是上一镜 ${shotId} 的均匀抽帧，只用于承接角色外观、服装、道具与场景状态，不要复制它的构图与动作`;
+    // 抽帧**不承接角色外观与服装**。它承接的是场景侧的状态。
+    //
+    // 原措辞让它「承接角色外观、服装、道具与场景状态」，而角色参考图那句同时写着
+    // 「锁定该角色的长相与服装」——两句都声称管服装，清单自己把冲突制度化了。
+    // 实测代价：A01 把校服画成了米色无袖（本身就违背角色参考图），抽帧把这个错误
+    // 当成事实传给 A02，于是 A02 在 8 秒内两次换装（3.4 秒黑色校服、7.9 秒米色）。
+    // 上一镜是**待核实的产出**，角色参考图才是签发权威，两者冲突时没有理由让前者赢。
+    const appearanceRule = hasCharacterReference
+      ? "；角色的长相与服装一律以角色参考图为准，不要沿用抽帧里的角色外观"
+      : "";
+    return `${label} 是上一镜 ${shotId} 的均匀抽帧，只用于承接场景、道具、光线与位置关系${appearanceRule}，不要复制它的构图与动作`;
   }
   if (source === "character_reference") {
     const name = manifestSafeTerm(artifact.sourceCharacterName, 40);
     return name
-      ? `${label} 是「${name}」的角色参考图，只用于锁定该角色的长相与服装`
-      : `${label} 是角色参考图，只用于锁定角色的长相与服装`;
+      ? `${label} 是「${name}」的角色参考图，是该角色长相与服装的唯一依据`
+      : `${label} 是角色参考图，是角色长相与服装的唯一依据`;
   }
   if (source === "workflow_start_frame") return `${label} 是本镜已选的首帧画面，只作普通参考`;
   if (source === "workflow_end_frame") return `${label} 是本镜已选的尾帧画面，只作普通参考`;
@@ -352,13 +362,19 @@ export function buildReferenceManifestText(inputArtifacts = []) {
   }
   if (!numbered.length) return "";
 
+  // 只有本次确实带了角色参考图，才让抽帧把外观权威让给它——否则等于指向一个
+  // 不存在的素材，反而让模型无所适从。
+  const hasCharacterReference = numbered.some(
+    (entry) => String(entry.artifact?.source || "") === "character_reference"
+  );
+
   const clauses = [];
   let run = null;
   const flush = () => {
     if (!run) return;
     const word = REFERENCE_MEDIA_WORDS[run.mediaType];
     const label = run.first === run.last ? `${word}${run.first}` : `${word}${run.first}-${run.last}`;
-    clauses.push(manifestClause(run.artifact, label));
+    clauses.push(manifestClause(run.artifact, label, { hasCharacterReference }));
     run = null;
   };
   for (const entry of numbered) {

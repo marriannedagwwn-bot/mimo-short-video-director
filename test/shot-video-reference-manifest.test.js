@@ -237,3 +237,38 @@ test("成片实际时长与 Plan 要求时长并列上报，偏差不再静默�
   assert.notEqual(video.measuredDurationSeconds, video.plannedDurationSeconds);
   assert.equal(result.videos.length, 1);
 });
+
+// 实测回放：A01 把校服画成米色无袖（本身就违背角色参考图），抽帧把这个错误当成事实
+// 传给 A02，而清单里两句话都声称管服装——角色参考图「锁定长相与服装」，抽帧「承接
+// 角色外观、服装…」。模型拿到互相矛盾的视觉证据，在 8 秒内换了两次装。
+// 上一镜是待核实的产出，角色参考图才是签发权威，冲突时没有理由让前者赢。
+test("抽帧不承接角色外观与服装，冲突时让位给角色参考图", () => {
+  const characterRef = (name) => ({
+    mediaType: "image",
+    source: "character_reference",
+    sourceCharacterName: name
+  });
+  const previousFrame = (shotId) => ({
+    mediaType: "image",
+    source: "previous_shot_frame",
+    sourceShotId: shotId
+  });
+
+  const withBoth = buildReferenceManifestText([
+    characterRef("小白子"),
+    ...Array.from({ length: 5 }, () => previousFrame("A01"))
+  ]);
+  // 角色参考图是唯一依据。
+  assert.match(withBoth, /「小白子」的角色参考图，是该角色长相与服装的唯一依据/u);
+  // 抽帧只承接场景侧状态，并明确让位。
+  assert.match(withBoth, /上一镜 A01 的均匀抽帧，只用于承接场景、道具、光线与位置关系/u);
+  assert.match(withBoth, /角色的长相与服装一律以角色参考图为准，不要沿用抽帧里的角色外观/u);
+  assert.match(withBoth, /不要复制它的构图与动作/u);
+  // 抽帧那句不得再声称管外观或服装——这正是当初制造冲突的措辞。
+  assert.doesNotMatch(withBoth, /均匀抽帧，只用于承接角色外观/u);
+
+  // 没有角色参考图时不得指向一个不存在的素材。
+  const framesOnly = buildReferenceManifestText([previousFrame("A01"), previousFrame("A01")]);
+  assert.match(framesOnly, /只用于承接场景、道具、光线与位置关系，不要复制它的构图与动作/u);
+  assert.doesNotMatch(framesOnly, /以角色参考图为准/u);
+});
