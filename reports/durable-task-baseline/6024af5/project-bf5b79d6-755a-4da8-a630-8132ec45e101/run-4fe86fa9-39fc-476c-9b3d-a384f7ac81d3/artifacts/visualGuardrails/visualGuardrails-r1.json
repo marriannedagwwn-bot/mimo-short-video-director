@@ -1,0 +1,81 @@
+{
+  "fixedCharacterBoundary": {
+    "schemaVersion": "2.0",
+    "characterName": "验收猫",
+    "canonicalDescription": "验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套",
+    "bodyForm": "演示模式只锁定用户完整原文，不执行本地关键词推断。",
+    "requiredTraits": [
+      {
+        "canonicalName": "验收猫",
+        "terms": [
+          "验收猫"
+        ],
+        "scope": "identity",
+        "evidenceLevel": "explicit",
+        "triggerEvidence": [
+          {
+            "sourcePath": "creatorProfile.fixedCharacter",
+            "evidence": "验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套"
+          }
+        ],
+        "reason": "演示模式没有模型调用，只锁定可确定的固定角色名称；完整语义边界需要视觉模型生成。"
+      }
+    ],
+    "allowedTraits": [],
+    "forbiddenTraits": [],
+    "unresolvedConflicts": [],
+    "sourceDigest": "sha256:06392d2b9b66fb1944b39cfac9cd07a0593b67abaabe57877d9efdf76f92a217",
+    "boundaryDigest": "sha256:e5b3378bd413c1d1f8d606324780880077c2bba27be5c6e64be26bf0fac8d3c8",
+    "boundarySignature": "eL2jcfdfAQTJXxibzH_1xMQs4mQOKnLYn3XpP6mYmmI"
+  },
+  "allowedPositiveTraits": [
+    {
+      "term": "验收猫",
+      "scope": "identity",
+      "reason": "演示模式没有模型调用，只锁定可确定的固定角色名称；完整语义边界需要视觉模型生成。"
+    }
+  ],
+  "positivePromptBoundary": [
+    {
+      "rule": "固定角色「验收猫」必须沿用：验收猫；该边界只约束固定角色，不套用到配角、道具、对白或声音；后续阶段不得重新推断、删除或替换固定角色事实",
+      "triggerEvidence": [
+        {
+          "sourcePath": "creatorProfile.fixedCharacter",
+          "evidence": "验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套"
+        }
+      ],
+      "severity": "block"
+    }
+  ],
+  "sourceSimilarityRules": [
+    {
+      "text": "记录原片表面表达“罕见道具、动作、机位连续对应”；仅在实际使用原片视觉参考时用于 reference_leak 风险判断，不构成正向内容禁词。",
+      "sourceExpression": "罕见道具、动作、机位连续对应",
+      "triggerEvidence": [
+        {
+          "sourcePath": "creativeBrief.protectedExpressions[1].sourceExpression",
+          "evidence": "罕见道具、动作、机位连续对应"
+        }
+      ],
+      "appliesWhenReferenceUsed": true
+    }
+  ],
+  "dialogueRules": [
+    {
+      "text": "对白克制；禁止字幕水印；固定角色外观不可变化。",
+      "triggerEvidence": [
+        {
+          "sourcePath": "creatorProfile.constraints",
+          "evidence": "对白克制；禁止字幕水印；固定角色外观不可变化。"
+        }
+      ]
+    }
+  ],
+  "stageInstructions": {
+    "themeVariants": "按 positivePromptBoundary 审查固定角色；sourceSimilarityRules 不是正向内容禁词。",
+    "fullStory": "服从固定角色边界和用户明确 dialogueRules；来源表面表达允许按剧情使用，不得机械注入。",
+    "animationPlan": "结合当前镜头动作、道具、参考输入和真实失败记录，逐镜生成可为空的图片/视频 render negative。"
+  },
+  "rationale": "本阶段一次性签发全局角色边界；后续只消费该边界，不重新解析固定角色。",
+  "uncertainties": []
+}

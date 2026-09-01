@@ -1,0 +1,24 @@
+{
+  "twoTabAttach": {
+    "taskId": "task-d57152e6-0171-4535-9bc7-c5076f6e0296",
+    "activeTaskCount": 1,
+    "firstTabAttached": true,
+    "secondTabAttached": true,
+    "releaseButtonVisibleBeforeModelHealthCompleted": true,
+    "duplicateTaskCreated": false
+  },
+  "sseDisconnect": {
+    "taskId": "task-e40edc72-1ff2-4588-a01b-42d48623a2a9",
+    "disconnectedBeforeProviderReturn": true,
+    "terminalStatus": "completed",
+    "readyCount": 1,
+    "stubImageCalls": 1
+  },
+  "legacySynchronousAnalyze": {
+    "httpStatus": 200,
+    "legacyResponseHasResult": true,
+    "durableTaskStatus": "completed",
+    "durableTaskKind": "analyze",
+    "artifactDigest": "1f9d17b353a12f67cb51d5032f625eaef803d75a5e78131533bd0029e6d158f7"
+  }
+}

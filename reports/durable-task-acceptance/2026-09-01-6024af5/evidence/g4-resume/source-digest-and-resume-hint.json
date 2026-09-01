@@ -1,0 +1,14 @@
+{
+  "projectId": "project-8a3f6f37-0f6d-4d05-a27c-29529e3bba83",
+  "runId": "run-802e3b12-93e5-4976-ba8a-ad360c77208f",
+  "sourceDigestMismatch": {
+    "httpStatus": 409,
+    "code": "TASK_SOURCE_VIDEO_DIGEST_MISMATCH"
+  },
+  "clientResumeHint": {
+    "httpStatus": 400,
+    "code": "TASK_RESUME_HINT_FORBIDDEN"
+  },
+  "providerCalls": 0,
+  "taskCount": 0
+}

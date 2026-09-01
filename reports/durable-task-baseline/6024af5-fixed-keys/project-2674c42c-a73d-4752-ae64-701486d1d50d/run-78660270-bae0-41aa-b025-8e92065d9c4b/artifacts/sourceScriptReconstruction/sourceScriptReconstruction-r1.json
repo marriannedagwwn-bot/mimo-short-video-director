@@ -1,0 +1,201 @@
+{
+  "scenes": [
+    {
+      "sceneId": "S1",
+      "timeRange": "00:00-00:08",
+      "location": "出发点",
+      "characters": [
+        "主角"
+      ],
+      "visibleActions": [
+        "确认任务物",
+        "迅速出发"
+      ],
+      "dialogueGist": "以一句简短信息交代必须完成的事",
+      "shotDesign": [
+        {
+          "shotSize": "特写转中景",
+          "camera": "快速切换",
+          "visibleContent": "任务物与主角行动"
+        }
+      ],
+      "emotionNode": "目标建立",
+      "dramaticFunction": "钩子：给出任务和期限",
+      "turningPoint": "主角选择立即行动",
+      "keyProps": [
+        "任务物"
+      ],
+      "sourceEvidence": [
+        "F1",
+        "F2"
+      ],
+      "confidence": 64
+    },
+    {
+      "sceneId": "S2",
+      "timeRange": "00:08-00:25",
+      "location": "途中空间",
+      "characters": [
+        "主角"
+      ],
+      "visibleActions": [
+        "赶路",
+        "遇到外部阻力",
+        "保护任务物"
+      ],
+      "dialogueGist": "对白稀少，以动作体现坚持",
+      "shotDesign": [
+        {
+          "shotSize": "全景与移动中景",
+          "camera": "跟拍",
+          "visibleContent": "人物与环境的对抗"
+        }
+      ],
+      "emotionNode": "压力上升",
+      "dramaticFunction": "增加完成任务的成本",
+      "turningPoint": "原方案失效",
+      "keyProps": [
+        "任务物",
+        "交通或防护物"
+      ],
+      "sourceEvidence": [
+        "F3",
+        "F4"
+      ],
+      "confidence": 58
+    },
+    {
+      "sceneId": "S3",
+      "timeRange": "00:25-00:36",
+      "location": "临时停靠点",
+      "characters": [
+        "主角",
+        "帮助者"
+      ],
+      "visibleActions": [
+        "陌生人察觉困难",
+        "提供具体帮助",
+        "主角继续前进"
+      ],
+      "dialogueGist": "帮助者少问原因，直接提供可执行帮助",
+      "shotDesign": [
+        {
+          "shotSize": "双人中景转反应近景",
+          "camera": "节奏放缓",
+          "visibleContent": "帮助发生与情绪变化"
+        }
+      ],
+      "emotionNode": "善意转折",
+      "dramaticFunction": "将外部阻力转化为情绪回报",
+      "turningPoint": "主角获得继续完成任务的条件",
+      "keyProps": [
+        "新的帮助工具"
+      ],
+      "sourceEvidence": [
+        "F5",
+        "F6"
+      ],
+      "confidence": 55
+    },
+    {
+      "sceneId": "S4",
+      "timeRange": "00:36-00:44",
+      "location": "到达点",
+      "characters": [
+        "主角",
+        "被关爱对象"
+      ],
+      "visibleActions": [
+        "完成送达或照料",
+        "用日常小动作收尾"
+      ],
+      "dialogueGist": "不直接解释付出，以一句普通回应压住情绪",
+      "shotDesign": [
+        {
+          "shotSize": "近景与物件特写",
+          "camera": "固定停留",
+          "visibleContent": "接收动作和关系反应"
+        }
+      ],
+      "emotionNode": "情绪兑现",
+      "dramaticFunction": "让显性任务回应隐性需求",
+      "turningPoint": "观众理解任务真正意义",
+      "keyProps": [
+        "重新设计的情感媒介"
+      ],
+      "sourceEvidence": [
+        "F7",
+        "F8"
+      ],
+      "confidence": 61
+    }
+  ],
+  "coreEventSequence": [
+    {
+      "order": 1,
+      "event": "接到或确认任务",
+      "causalRole": "建立观看问题",
+      "sceneRefs": [
+        "S1"
+      ]
+    },
+    {
+      "order": 2,
+      "event": "途中受阻",
+      "causalRole": "提高付出成本",
+      "sceneRefs": [
+        "S2"
+      ]
+    },
+    {
+      "order": 3,
+      "event": "获得帮助",
+      "causalRole": "提供善意转折",
+      "sceneRefs": [
+        "S3"
+      ]
+    },
+    {
+      "order": 4,
+      "event": "抵达并完成生活化仪式",
+      "causalRole": "兑现关系情绪",
+      "sceneRefs": [
+        "S4"
+      ]
+    }
+  ],
+  "relationshipPattern": "一方不善表达但用行动承担，另一方的真实需求在结尾才被观众理解。",
+  "endingAction": {
+    "action": "以重新设计的日常照料动作结束",
+    "emotionalMeaning": "完成的不是物品交付，而是对关系的确认",
+    "evidence": [
+      "F8"
+    ]
+  },
+  "turningPoints": [
+    {
+      "sceneRef": "S2",
+      "from": "任务看似顺利",
+      "to": "原方案失效",
+      "trigger": "环境阻力"
+    },
+    {
+      "sceneRef": "S3",
+      "from": "独自承担",
+      "to": "获得善意支持",
+      "trigger": "帮助者主动介入"
+    }
+  ],
+  "uncertainties": [
+    {
+      "timeRange": "00:00-00:44",
+      "unknown": "精确对白、未采样动作与场景边界",
+      "safeAssumption": "只复原画面可支持的剧作功能，不将细节视为事实"
+    }
+  ],
+  "groundingSeal": {
+    "version": "1.0",
+    "contextDigest": "sha256:1aced75726df411509b35f96840e1580604abd04ee4000dcc80fca491949434f",
+    "signature": "hmac-sha256:2e73919d86c1694e0f9e8f42be5f476bd89b1438a236852e45711141484d2714"
+  }
+}

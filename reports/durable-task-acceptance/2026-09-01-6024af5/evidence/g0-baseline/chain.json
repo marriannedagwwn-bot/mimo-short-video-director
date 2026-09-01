@@ -1,0 +1,62 @@
+{
+  "acceptanceFixtureVersion": "1.0",
+  "mode": "legacy",
+  "baseUrl": "http://127.0.0.1:4174",
+  "projectId": "project-bf5b79d6-755a-4da8-a630-8132ec45e101",
+  "runId": "run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3",
+  "variantId": "V1",
+  "shotId": "A01",
+  "digestTable": [],
+  "currentDigests": {
+    "referenceAnalysis": {
+      "revision": "referenceAnalysis-r1",
+      "contentDigest": "e9fedc8aa4a4ddb94b0048d8f47cf5168adfee53ed6af89bfe8fa96ed7e84950",
+      "status": "current"
+    },
+    "sourceScriptReconstruction": {
+      "revision": "sourceScriptReconstruction-r1",
+      "contentDigest": "974d351ddab9efcfa2737803147ecdae7f5c09896611edea3f61a7799e37fa69",
+      "status": "current"
+    },
+    "creativeBrief": {
+      "revision": "creativeBrief-r1",
+      "contentDigest": "cfedafa751de45968ca1527ee2e6f86822c47ae41f14e988cd185fc0bb34702f",
+      "status": "current"
+    },
+    "visualGuardrails": {
+      "revision": "visualGuardrails-r1",
+      "contentDigest": "698bc16a30a8f4e2dfea3b258cf73030e5b52a32ec466b974858e1720c9b9dd0",
+      "status": "current"
+    },
+    "themeVariants": {
+      "revision": "themeVariants-r1",
+      "contentDigest": "7f16c79c2d5e98c08edfa316f62c8a2d42aada16546639e008e021aa018c804f",
+      "status": "current"
+    },
+    "variant:V1": {
+      "revision": "variant-V1-r1",
+      "contentDigest": "c3ce23bd0992eebd62b482857f632e5d045c0f712c7ac2bf728b6af3fb8418ef",
+      "status": "current"
+    },
+    "fullStory:V1": {
+      "revision": "fullStory-V1-r1",
+      "contentDigest": "d1a0dea323790fafd5f8162646ccd6d20a327ca21c946c35dfeebfe3576e8d88",
+      "status": "current"
+    },
+    "animationPlan:V1": {
+      "revision": "animationPlan-V1-r2",
+      "contentDigest": "026cdfb0204a47e5786dc5927c8af832d917884de97e0e22cebf25300cf2ba2b",
+      "status": "current"
+    },
+    "characterImages:V1:0": {
+      "revision": "characterImages-V1-0-r1",
+      "contentDigest": "2d589e2473f6e5fbcc54844cc860d0c71135d68386873ae42760cae7ca5e4f00",
+      "status": "current"
+    },
+    "shotVideo:V1:A01": {
+      "revision": "shotVideo-V1-A01-r2",
+      "contentDigest": "f9f155a17bdb414212a78c4aee50f6adbee07f6eea470130efd6bf6b6b504c4d",
+      "status": "current"
+    }
+  }
+}
