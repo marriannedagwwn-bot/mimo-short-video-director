@@ -318,10 +318,21 @@ function manifestGroupKey(artifact = {}) {
   ].join(" ");
 }
 
-function manifestClause(artifact, label, { hasCharacterReference = false } = {}) {
+function manifestClause(artifact, label, { hasCharacterReference = false, endLabel = "" } = {}) {
   const source = String(artifact.source || "");
   if ([PREVIOUS_SHOT_FRAME_SOURCE, SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES].includes(source)) {
     const shotId = manifestSafeTerm(artifact.sourceShotId, 16) || "上一镜";
+    // 五张帧里只有最后一张是「上一镜结束时的状态」，另外四张是过程。抽帧按
+    // t = 时长×i/4 均匀采样（首帧、末帧与中间三等分点），所以这一批的最后一张
+    // 就是末帧——这是确定性事实，不是推断。
+    //
+    // 不点名会出事：清单原来把五张当成一个整体介绍，模型没有理由认为第五张比
+    // 第一张更重要。实测 A02 的奔跑段直接复用了参考图3（A01 的**起点**构图，
+    // 大树在左、晾衣绳在右），于是角色在空间上倒退了整整一镜——A01 结束时她
+    // 已经贴到房子边上，A02 却把她送回大树下重跑一遍。
+    const continuationRule = endLabel
+      ? `其中${endLabel}是上一镜的最后一帧，本镜必须从它的状态与位置继续，其余几张只说明这一镜经过了什么，不代表本镜的起始位置`
+      : "它是上一镜的最后一帧，本镜必须从它的状态与位置继续";
     // 抽帧**不承接角色外观与服装**。它承接的是场景侧的状态。
     //
     // 原措辞让它「承接角色外观、服装、道具与场景状态」，而角色参考图那句同时写着
@@ -332,7 +343,7 @@ function manifestClause(artifact, label, { hasCharacterReference = false } = {})
     const appearanceRule = hasCharacterReference
       ? "；角色的长相与服装一律以角色参考图为准，不要沿用抽帧里的角色外观"
       : "";
-    return `${label} 是上一镜 ${shotId} 的均匀抽帧，只用于承接场景、道具、光线与位置关系${appearanceRule}，不要复制它的构图与动作`;
+    return `${label} 是上一镜 ${shotId} 从头到尾的均匀抽帧，${continuationRule}；这批帧只用于承接场景、道具与光线${appearanceRule}，不要复制它的构图与动作`;
   }
   if (source === "character_reference") {
     const name = manifestSafeTerm(artifact.sourceCharacterName, 40);
@@ -374,7 +385,9 @@ export function buildReferenceManifestText(inputArtifacts = []) {
     if (!run) return;
     const word = REFERENCE_MEDIA_WORDS[run.mediaType];
     const label = run.first === run.last ? `${word}${run.first}` : `${word}${run.first}-${run.last}`;
-    clauses.push(manifestClause(run.artifact, label, { hasCharacterReference }));
+    // 抽帧成组时点名末帧的编号；单张时它自己就是末帧，由 manifestClause 处理。
+    const endLabel = run.first === run.last ? "" : `${word}${run.last}`;
+    clauses.push(manifestClause(run.artifact, label, { hasCharacterReference, endLabel }));
     run = null;
   };
   for (const entry of numbered) {

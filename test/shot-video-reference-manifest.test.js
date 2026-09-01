@@ -29,7 +29,7 @@ test("参考素材清单按媒体类型编号，并把连续同源素材合并�
   assert.match(manifest, /参考图1 是「铃木奶奶」的角色参考图/u);
   assert.match(manifest, /参考图2 是「小白子」的角色参考图/u);
   // 连续三张同源抽帧合并成一段区间，而不是逐张罗列。
-  assert.match(manifest, /参考图3-5 是上一镜 A03 的均匀抽帧/u);
+  assert.match(manifest, /参考图3-5 是上一镜 A03 从头到尾的均匀抽帧/u);
   // 视频与图片各自从 1 开始编号。
   assert.match(manifest, /参考视频1 是用户上传的参考素材/u);
   assert.equal(manifest.startsWith("本次提供的参考素材："), true);
@@ -135,7 +135,7 @@ test("all_reference 生成把清单前置到 videoPrompt，且不改写 Plan 原
 
   assert.equal(result.referenceManifest.startsWith("本次提供的参考素材："), true);
   assert.match(result.referenceManifest, /参考图1 是「小白子」的角色参考图/u);
-  assert.match(result.referenceManifest, /参考图2-6 是上一镜 A01 的均匀抽帧/u);
+  assert.match(result.referenceManifest, /参考图2-6 是上一镜 A01 从头到尾的均匀抽帧/u);
 
   // Plan 原值逐字保留，清单只活在运行时提示词里。
   assert.equal(result.sourceVideoPrompt, videoPrompt);
@@ -261,7 +261,8 @@ test("抽帧不承接角色外观与服装，冲突时让位给角色参考图",
   // 角色参考图是唯一依据。
   assert.match(withBoth, /「小白子」的角色参考图，是该角色长相与服装的唯一依据/u);
   // 抽帧只承接场景侧状态，并明确让位。
-  assert.match(withBoth, /上一镜 A01 的均匀抽帧，只用于承接场景、道具、光线与位置关系/u);
+  assert.match(withBoth, /上一镜 A01 从头到尾的均匀抽帧/u);
+  assert.match(withBoth, /这批帧只用于承接场景、道具与光线/u);
   assert.match(withBoth, /角色的长相与服装一律以角色参考图为准，不要沿用抽帧里的角色外观/u);
   assert.match(withBoth, /不要复制它的构图与动作/u);
   // 抽帧那句不得再声称管外观或服装——这正是当初制造冲突的措辞。
@@ -269,6 +270,41 @@ test("抽帧不承接角色外观与服装，冲突时让位给角色参考图",
 
   // 没有角色参考图时不得指向一个不存在的素材。
   const framesOnly = buildReferenceManifestText([previousFrame("A01"), previousFrame("A01")]);
-  assert.match(framesOnly, /只用于承接场景、道具、光线与位置关系，不要复制它的构图与动作/u);
+  assert.match(framesOnly, /这批帧只用于承接场景、道具与光线，不要复制它的构图与动作/u);
   assert.doesNotMatch(framesOnly, /以角色参考图为准/u);
+});
+
+// 五张抽帧里只有最后一张是「上一镜结束时的状态」，另外四张是过程。不点名会出事：
+// 实测 A02 的奔跑段复用了参考图3（A01 的起点构图，大树在左、晾衣绳在右），角色在
+// 空间上倒退了整整一镜——A01 结束时她已贴到房子边，A02 却把她送回大树下重跑一遍。
+test("抽帧成组时点名末帧，并说明其余几张不代表本镜起始位置", () => {
+  const characterRef = (name) => ({
+    mediaType: "image",
+    source: "character_reference",
+    sourceCharacterName: name
+  });
+  const frame = (timestampSeconds) => ({
+    mediaType: "image",
+    source: "previous_shot_frame",
+    sourceShotId: "A01",
+    timestampSeconds
+  });
+
+  const manifest = buildReferenceManifestText([
+    characterRef("小白子"),
+    frame(0), frame(1.8), frame(3.6), frame(5.4), frame(7.2)
+  ]);
+  // 抽帧编号 2-6，末帧是参考图6。
+  assert.match(manifest, /参考图2-6 是上一镜 A01 从头到尾的均匀抽帧/u);
+  assert.match(manifest, /其中参考图6是上一镜的最后一帧，本镜必须从它的状态与位置继续/u);
+  assert.match(manifest, /其余几张只说明这一镜经过了什么，不代表本镜的起始位置/u);
+
+  // 单张抽帧时它自己就是末帧，不该出现「其余几张」。
+  const single = buildReferenceManifestText([characterRef("小白子"), frame(7.2)]);
+  assert.match(single, /参考图2 是上一镜 A01 从头到尾的均匀抽帧，它是上一镜的最后一帧/u);
+  assert.doesNotMatch(single, /其余几张/u);
+
+  // 抽帧不再声称承接「位置关系」这种整体概念——位置只由末帧那一张给出。
+  assert.doesNotMatch(manifest, /承接场景、道具、光线与位置关系/u);
+  assert.match(manifest, /这批帧只用于承接场景、道具与光线/u);
 });
