@@ -2747,7 +2747,13 @@ export function characterReferenceBoundaryMismatch(value, visualGuardrails = nul
   const boundary = visualGuardrails?.fixedCharacterBoundary;
   if (!boundary || String(value?.characterName || "").trim() !== String(boundary.characterName || "").trim()) return "";
   const fields = characterReferenceBoundaryScanFields(value);
-  const forbiddenHits = findTerms(fields, collectGlobalCharacterForbiddenTerms(visualGuardrails));
+  // 否定语境放行：「无企鹅服装、无动物拟态服装」是模型在**服从**边界，不是把禁止
+  // 特征写了回来。缺了这个参数，模型照做反而被判违规——实测 appearancePrompt 结尾
+  // 那句「无企鹅服装，无动物拟态服装」把整条角色参考在成片渲染前拦死。
+  // 判定与 characterPromptBoundaryMismatch 共用同一份实现，不新建第二套词表。
+  const forbiddenHits = findTerms(fields, collectGlobalCharacterForbiddenTerms(visualGuardrails), {
+    allowNegativeContext: true
+  });
   const missingRequiredTraits = characterReferenceMissingRequiredTraits(value, visualGuardrails);
   const mismatches = [];
   if (forbiddenHits.length) mismatches.push(`混入全局边界禁止特征：${forbiddenHits.join("、")}`);
