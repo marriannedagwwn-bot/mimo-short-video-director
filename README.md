@@ -62,6 +62,8 @@ Animation Plan 使用独立的 `ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR`。它在真
 
 两类日志都不保存输入 Prompt、HTTP 请求/响应包、Header、API Key、Cookie、Data URL 或 Base64 媒体。目录必须位于非 `public/` 的本机私有路径，文件内容可能包含完整未通过校验的剧情或镜头提示词，应按敏感调试数据管理。未配置对应环境变量时完全禁用；读取、解析或写入日志失败只产生脱敏告警，不改变校验、重试次数、Artifact 提交或错误结论。日志不是 Production Lineage、事实来源、恢复数据或导出包内容，只能从启用后的下一次请求开始记录，不能追溯此前已丢失的响应。当前本机建议配置为：
 
+为兼容 Windows 路径长度限制，已绑定 Production 的目录名只保留可读 Artifact 名称，并把 project/run、production request 和 operation 标识写成短 SHA-256 摘要；完整标识仍逐字保存在同目录的 `metadata.json`，摘要只负责文件系统隔离，不参与业务 lineage。
+
 ```dotenv
 FULL_STORY_MODEL_OUTPUT_LOG_DIR=debug/full-story-model-outputs
 ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR=debug/animation-plan-model-outputs

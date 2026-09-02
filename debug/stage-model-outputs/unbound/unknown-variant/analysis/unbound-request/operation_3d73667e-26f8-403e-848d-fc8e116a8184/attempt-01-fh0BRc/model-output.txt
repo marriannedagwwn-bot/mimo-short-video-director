@@ -1,0 +1,333 @@
+{
+  "contentPositioning": {
+    "format": "动画短片",
+    "genre": "治愈系/日常",
+    "contentPromise": "通过可爱角色与温馨日常互动，传递家庭亲情与善意回馈的治愈体验",
+    "platformFit": "适合短视频平台传播的轻松治愈向内容"
+  },
+  "targetAudience": {
+    "primary": "喜欢萌系角色与温馨日常故事的年轻观众",
+    "psychologicalNeeds": [
+      "情感抚慰",
+      "对纯真互动的向往",
+      "家庭温暖的代入感"
+    ],
+    "watchingContext": "碎片化时间内的轻松观看，寻求情绪放松"
+  },
+  "storySynopsis": "两个可爱角色（咕嘎与糯糯）在奶奶的注视下整理旧衣物，随后将衣物捐赠给回收站志愿者。等待期间她们玩石子游戏，获得志愿者奖励的小红花。傍晚回家与奶奶共进晚餐时，两人将小红花别在奶奶身上，画面在温馨夕阳中结束。",
+  "characters": [
+    {
+      "nameOrLabel": "咕嘎",
+      "role": "主角之一",
+      "traits": [
+        "活泼",
+        "拟人化企鹅造型",
+        "行动力强"
+      ],
+      "relationshipToProtagonist": "与糯糯共同行动的小伙伴",
+      "evidence": [
+        {
+          "source": "video",
+          "startSecond": 2,
+          "endSecond": 6
+        }
+      ]
+    },
+    {
+      "nameOrLabel": "糯糯",
+      "role": "主角之一",
+      "traits": [
+        "安静",
+        "浅蓝色长发",
+        "配合度高"
+      ],
+      "relationshipToProtagonist": "与咕嘎共同行动的小伙伴",
+      "evidence": [
+        {
+          "source": "video",
+          "startSecond": 1,
+          "endSecond": 3
+        }
+      ]
+    },
+    {
+      "nameOrLabel": "奶奶",
+      "role": "长辈/家庭核心",
+      "traits": [
+        "慈祥",
+        "微笑",
+        "白发戴眼镜"
+      ],
+      "relationshipToProtagonist": "咕嘎与糯糯的长辈，提供家庭温暖",
+      "evidence": [
+        {
+          "source": "video",
+          "startSecond": 10,
+          "endSecond": 11
+        }
+      ]
+    },
+    {
+      "nameOrLabel": "志愿者阿姨",
+      "role": "社区工作人员",
+      "traits": [
+        "友善",
+        "穿红马甲",
+        "奖励孩子"
+      ],
+      "relationshipToProtagonist": "接收捐赠并给予正面反馈的成年人",
+      "evidence": [
+        {
+          "source": "video",
+          "startSecond": 19,
+          "endSecond": 23
+        }
+      ]
+    }
+  ],
+  "protagonistIdentity": {
+    "occupation": "无明确职业（儿童/拟人化角色）",
+    "socialRole": "家庭中的晚辈，社区善意行为的参与者",
+    "currentSituation": "协助整理并捐赠旧衣物，获得奖励后与家人共享晚餐",
+    "evidence": [
+      {
+        "source": "video",
+        "startSecond": 15,
+        "endSecond": 18
+      }
+    ]
+  },
+  "careRecipient": {
+    "identity": "奶奶",
+    "explicitNeed": "无明确表达的需求",
+    "implicitNeed": "情感陪伴与来自晚辈的关爱",
+    "relationship": "咕嘎与糯糯的长辈",
+    "evidence": [
+      {
+        "source": "video",
+        "startSecond": 56,
+        "endSecond": 61
+      }
+    ]
+  },
+  "dialogueStyle": {
+    "tone": "轻柔、亲切、充满童趣",
+    "sentencePattern": "短句为主，多使用语气词与拟声词",
+    "informationDensity": "低，侧重情绪传递而非信息量",
+    "subtext": "通过简单对话强化角色间的亲密与善意"
+  },
+  "shotRhythm": {
+    "openingHookSeconds": 2,
+    "averagePerceivedPace": "舒缓",
+    "rhythmDescription": "以中近景为主，节奏平稳，配合动作与表情变化自然过渡",
+    "shotPatterns": [
+      "室内整理衣物的中景",
+      "户外拉车与捐赠的全景",
+      "游戏与奖励的特写",
+      "晚餐场景的俯拍拉远"
+    ]
+  },
+  "emotionCurve": [
+    {
+      "phase": "开端",
+      "timeRange": "0-14秒",
+      "emotion": "温馨、 playful",
+      "intensity": 60,
+      "trigger": "咕嘎用身体压平衣物，奶奶微笑注视",
+      "evidence": [
+        {
+          "source": "video",
+          "startSecond": 3,
+          "endSecond": 10
+        }
+      ]
+    },
+    {
+      "phase": "发展",
+      "timeRange": "15-28秒",
+      "emotion": "积极、期待",
+      "intensity": 70,
+      "trigger": "两人拉车前往捐赠点，志愿者热情迎接",
+      "evidence": [
+        {
+          "source": "video",
+          "startSecond": 15,
+          "endSecond": 23
+        }
+      ]
+    },
+    {
+      "phase": "等待",
+      "timeRange": "29-38秒",
+      "emotion": "专注、愉悦",
+      "intensity": 65,
+      "trigger": "蹲地玩石子游戏",
+      "evidence": [
+        {
+          "source": "video",
+          "startSecond": 31,
+          "endSecond": 38
+        }
+      ]
+    },
+    {
+      "phase": "奖励",
+      "timeRange": "39-48秒",
+      "emotion": "惊喜、开心",
+      "intensity": 80,
+      "trigger": "志愿者为两人别上小红花",
+      "evidence": [
+        {
+          "source": "video",
+          "startSecond": 43,
+          "endSecond": 48
+        }
+      ]
+    },
+    {
+      "phase": "回馈",
+      "timeRange": "49-64秒",
+      "emotion": "感动、满足",
+      "intensity": 90,
+      "trigger": "将小红花别在奶奶身上，三人共进晚餐",
+      "evidence": [
+        {
+          "source": "video",
+          "startSecond": 54,
+          "endSecond": 64
+        }
+      ]
+    }
+  ],
+  "retentionDrivers": [
+    {
+      "driver": "角色可爱度与互动趣味性",
+      "viewerQuestion": "咕嘎和糯糯接下来会做什么？",
+      "payoff": "看到她们完成捐赠并获得奖励",
+      "evidence": [
+        {
+          "source": "video",
+          "startSecond": 2,
+          "endSecond": 10
+        }
+      ]
+    },
+    {
+      "driver": "情感回馈的悬念",
+      "viewerQuestion": "小红花会如何处理？",
+      "payoff": "两人将花送给奶奶，完成情感闭环",
+      "evidence": [
+        {
+          "source": "video",
+          "startSecond": 54,
+          "endSecond": 61
+        }
+      ]
+    }
+  ],
+  "whyWatchToEnd": "观众被可爱角色与温馨氛围吸引，期待看到善意行为如何转化为家庭情感的升华，最终在夕阳晚餐场景中获得情感满足。",
+  "analysisConfidence": 85,
+  "observedFacts": [
+    {
+      "factType": "visible_action",
+      "observation": "咕嘎趴在叠好的衣物上用身体压平",
+      "importance": "core",
+      "evidenceRefs": [
+        {
+          "source": "video",
+          "startSecond": 3,
+          "endSecond": 5
+        }
+      ]
+    },
+    {
+      "factType": "visible_action",
+      "observation": "糯糯推着载有衣物的小车，咕嘎在前方拉车",
+      "importance": "core",
+      "evidenceRefs": [
+        {
+          "source": "video",
+          "startSecond": 15,
+          "endSecond": 18
+        }
+      ]
+    },
+    {
+      "factType": "visible_object",
+      "observation": "志愿者阿姨穿着红色马甲，胸前有回收标志",
+      "importance": "supporting",
+      "evidenceRefs": [
+        {
+          "source": "video",
+          "startSecond": 19,
+          "endSecond": 22
+        }
+      ]
+    },
+    {
+      "factType": "visible_action",
+      "observation": "咕嘎与糯糯蹲在地上用石子玩格子游戏",
+      "importance": "core",
+      "evidenceRefs": [
+        {
+          "source": "video",
+          "startSecond": 31,
+          "endSecond": 38
+        }
+      ]
+    },
+    {
+      "factType": "visible_object",
+      "observation": "志愿者为咕嘎和糯糯胸前别上红色花朵形状的徽章",
+      "importance": "core",
+      "evidenceRefs": [
+        {
+          "source": "video",
+          "startSecond": 44,
+          "endSecond": 48
+        }
+      ]
+    },
+    {
+      "factType": "visible_action",
+      "observation": "咕嘎与糯糯将红色花朵徽章别在奶奶的衣襟上",
+      "importance": "core",
+      "evidenceRefs": [
+        {
+          "source": "video",
+          "startSecond": 54,
+          "endSecond": 60
+        }
+      ]
+    },
+    {
+      "factType": "visible_location",
+      "observation": "三人围坐在户外木桌旁吃面条，背景为夕阳下的院落",
+      "importance": "core",
+      "evidenceRefs": [
+        {
+          "source": "video",
+          "startSecond": 51,
+          "endSecond": 64
+        }
+      ]
+    }
+  ],
+  "uncertainties": [
+    {
+      "field": "角色具体年龄",
+      "reason": "画面未提供明确年龄信息，仅通过体型与行为推断为儿童",
+      "neededEvidence": "角色设定资料或对话中的年龄提及"
+    },
+    {
+      "field": "奶奶与角色的血缘关系",
+      "reason": "虽称呼为奶奶，但未明确是亲祖母还是社区长辈",
+      "neededEvidence": "对话或字幕中的关系说明"
+    },
+    {
+      "field": "捐赠衣物的具体去向",
+      "reason": "画面仅显示回收站，未说明衣物后续用途",
+      "neededEvidence": "志愿者对话或字幕中的去向说明"
+    }
+  ]
+}

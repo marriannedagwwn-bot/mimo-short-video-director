@@ -1,0 +1,105 @@
+{
+  "schemaVersion": "full_story_beat_scene_postpass/1.0",
+  "status": "pass",
+  "reviews": [
+    {
+      "beatIndex": 0,
+      "beat": 1,
+      "sceneIds": [
+        "S1"
+      ],
+      "verdict": "pass",
+      "issueCode": "none",
+      "beatEvidence": "",
+      "sceneEvidence": "",
+      "nextStateEvidence": "",
+      "reason": "",
+      "completionId": ""
+    },
+    {
+      "beatIndex": 1,
+      "beat": 2,
+      "sceneIds": [
+        "S2"
+      ],
+      "verdict": "pass",
+      "issueCode": "none",
+      "beatEvidence": "",
+      "sceneEvidence": "",
+      "nextStateEvidence": "",
+      "reason": "",
+      "completionId": ""
+    },
+    {
+      "beatIndex": 2,
+      "beat": 3,
+      "sceneIds": [
+        "S3"
+      ],
+      "verdict": "pass",
+      "issueCode": "none",
+      "beatEvidence": "",
+      "sceneEvidence": "",
+      "nextStateEvidence": "",
+      "reason": "",
+      "completionId": ""
+    },
+    {
+      "beatIndex": 3,
+      "beat": 4,
+      "sceneIds": [
+        "S4"
+      ],
+      "verdict": "pass",
+      "issueCode": "none",
+      "beatEvidence": "",
+      "sceneEvidence": "",
+      "nextStateEvidence": "",
+      "reason": "",
+      "completionId": ""
+    },
+    {
+      "beatIndex": 4,
+      "beat": 5,
+      "sceneIds": [
+        "S5"
+      ],
+      "verdict": "pass",
+      "issueCode": "none",
+      "beatEvidence": "",
+      "sceneEvidence": "",
+      "nextStateEvidence": "",
+      "reason": "",
+      "completionId": ""
+    },
+    {
+      "beatIndex": 5,
+      "beat": 6,
+      "sceneIds": [
+        "S6"
+      ],
+      "verdict": "pass",
+      "issueCode": "none",
+      "beatEvidence": "",
+      "sceneEvidence": "",
+      "nextStateEvidence": "",
+      "reason": "",
+      "completionId": ""
+    },
+    {
+      "beatIndex": 6,
+      "beat": 7,
+      "sceneIds": [
+        "S7"
+      ],
+      "verdict": "pass",
+      "issueCode": "none",
+      "beatEvidence": "",
+      "sceneEvidence": "",
+      "nextStateEvidence": "",
+      "reason": "",
+      "completionId": ""
+    }
+  ],
+  "completions": []
+}

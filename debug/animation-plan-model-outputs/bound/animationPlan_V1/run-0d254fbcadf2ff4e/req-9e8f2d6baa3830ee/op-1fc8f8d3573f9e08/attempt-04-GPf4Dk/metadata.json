@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "full-model-output-log/1.0",
+  "recordedAt": "2026-09-01T21:13:52.541Z",
+  "scope": "animationPlan",
+  "gitCommit": "unknown",
+  "buildId": "unknown",
+  "production": {
+    "verified": true,
+    "projectId": "project-5f8f4cad-6f27-49f9-958f-ae4847757ed8",
+    "runId": "run-b9c43cac-a9d6-4061-9f1f-a7d4fc9ea392",
+    "artifactId": "animationPlan:V1",
+    "productionRequestId": "request-9b2c4174-20d6-426b-b517-016a1962e7e8",
+    "variantId": "V1"
+  },
+  "attempt": {
+    "operationId": "animation-plan:20260901T211039706Z-362e8e5f-9220-4b80-9d4a-c23350c20d67",
+    "attemptId": "call:20260901T211039706Z-362e8e5f-9220-4b80-9d4a-c23350c20d67:4",
+    "callIndex": 3,
+    "stage": "",
+    "phase": "animation-shot-batch",
+    "sequence": 4,
+    "batchIndex": null,
+    "reason": "animation-shot-batch",
+    "status": "failed",
+    "category": "output-contract",
+    "code": "OUTPUT_CONTRACT_INVALID",
+    "validationStatus": "failed",
+    "errorName": "OutputContractError",
+    "diagnostics": [],
+    "retryable": false,
+    "startedAt": "2026-09-01T21:13:08.762Z",
+    "finishedAt": "2026-09-01T21:13:52.541Z",
+    "durationMs": 43779
+  },
+  "provider": {
+    "name": "Qwen",
+    "model": "qwen3.7-max",
+    "providerRequestId": "f2b64981-2126-9ce0-a11a-f44917aacde8",
+    "finishReason": "stop",
+    "usage": {
+      "prompt_tokens": 13238,
+      "completion_tokens": 4400,
+      "total_tokens": 17638
+    }
+  },
+  "output": {
+    "present": true,
+    "file": "model-output.txt",
+    "bytes": 6525,
+    "sha256": "5e363aaf37c4dc56432c74851481de93e019c9041531565719b0cc06ab35fbd7"
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "animation_video_prompt_semantic_audit/2.0",
+  "shots": [
+    {
+      "shotId": "A01",
+      "shotFactsVerdict": "pass",
+      "videoPromptVerdict": "pass",
+      "issues": []
+    },
+    {
+      "shotId": "A02",
+      "shotFactsVerdict": "pass",
+      "videoPromptVerdict": "pass",
+      "issues": []
+    },
+    {
+      "shotId": "A03",
+      "shotFactsVerdict": "pass",
+      "videoPromptVerdict": "pass",
+      "issues": []
+    },
+    {
+      "shotId": "A04",
+      "shotFactsVerdict": "pass",
+      "videoPromptVerdict": "pass",
+      "issues": []
+    },
+    {
+      "shotId": "A05",
+      "shotFactsVerdict": "pass",
+      "videoPromptVerdict": "pass",
+      "issues": []
+    },
+    {
+      "shotId": "A06",
+      "shotFactsVerdict": "pass",
+      "videoPromptVerdict": "pass",
+      "issues": []
+    },
+    {
+      "shotId": "A07",
+      "shotFactsVerdict": "pass",
+      "videoPromptVerdict": "pass",
+      "issues": []
+    }
+  ]
+}

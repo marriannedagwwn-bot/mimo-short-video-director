@@ -1,0 +1,33 @@
+{
+  "shotPlan":[{
+    "shotId":"A05",
+    "sourceSceneId":"S5",
+    "sceneId":"LOC02",
+    "durationSeconds":10,
+    "storyPurpose":"展示主角坚持与成长，奶奶的无声关怀为情感升华铺垫",
+    "emotionalTarget":"专注、温暖",
+    "videoPrompt":"治愈系日系 2.5D 风格，融合新海诚光景的细腻光影与吉卜力工作室的温暖质感。简洁温馨的学生卧室，窗外天色已暗，室内由暖橙色台灯提供主要光源，光线柔和带有轻微光晕。浅灰蓝色长直发少女小白子（带有刘海与两侧碎发，穿深蓝色校服西装外套、白衬衫、蓝领带、深蓝短裙，佩戴蓝色长围巾，头顶有一个光环，无头饰）盘腿坐在地板上，双手熟练地操作编织针，动作流畅而有节奏。芙芙猫（白色与浅蓝色相间蓬松卷发、头顶卷曲呆毛、猫耳、浅蓝色尾巴）蜷缩在她脚边安静打盹。中景展示台灯下小白子专注的身影，切至特写呈现她熟练的编织动作与毛线在针间穿梭的细节。片刻后，银灰短发的奶奶（慈祥面容，穿米色针织开衫与深色长裙）出现在卧室门口，看见小白子专注的背影，嘴角露出欣慰的微笑，没有打扰，悄悄回身离开。硬切至门边地板，一杯热牛奶被轻轻放在地板上，杯口冒着淡淡热气。全片无背景音乐，只保留现场环境声与动作声。",
+    "cameraMotion":"中景展示台灯下小白子专注的身影 → 切至特写呈现熟练的编织动作与毛线穿梭细节 → 硬切至中景奶奶出现在门口的身影 → 切至特写奶奶放牛奶的动作与杯口热气",
+    "characterAction":"小白子盘腿坐在地板上熟练编织，动作流畅有节奏；芙芙猫蜷缩在她脚边打盹；奶奶出现在门口，看见小白子专注的背影，微笑后悄悄回身离开；片刻后一杯热牛奶被轻轻放在门边地板上",
+    "dialogueOrSubtitle":"",
+    "soundDesign":"台灯开关声、毛线针有节奏的碰撞声、芙芙猫轻微的呼噜声、门轻开声、杯子轻放声",
+    "continuityNotes":"承接上一场小白子决定改变策略重新观察旧围巾后的状态，本场她已按照新思路全力投入编织且动作越来越熟练；本镜头结束时热牛奶已放在门边，小白子尚未察觉；下一场将展示她完成围巾的最终成果",
+    "negativePrompts":{"image":[],"video":[{"text":"避免小白子服装变化或头饰出现","appliesTo":"video","triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter","evidence":"无头饰，但头顶有一个光环"}],"reasonCode":"explicit_identity_conflict","priority":"high","enabled":true},{"text":"避免芙芙猫出现拟人化肢体","appliesTo":"video","triggerEvidence":[{"sourcePath":"creativeBrief.protectedExpressions","evidence":"不得将翅膀、兽爪、肉垫、鸟喙等非人类结构赋予小白子或芙芙猫"}],"reasonCode":"explicit_identity_conflict","priority":"high","enabled":true}]},
+    "acceptanceCriteria":["小白子全程保持浅灰蓝色长直发、深蓝色校服套装、蓝色长围巾、头顶光环、无头饰的固定外观","编织动作流畅熟练，奶奶出现与放牛奶的动作按顺序完整呈现","台灯暖光与窗外暮色形成对比，热牛奶杯口有可见热气"]
+  },{
+    "shotId":"A06",
+    "sourceSceneId":"S6",
+    "sceneId":"LOC02",
+    "durationSeconds":10,
+    "storyPurpose":"高潮：主角亲手完成作品，可见成果证明她的选择与努力",
+    "emotionalTarget":"满足、自豪",
+    "videoPrompt":"治愈系日系 2.5D 风格，融合新海诚光景的细腻光影与吉卜力工作室的温暖质感。简洁温馨的学生卧室，窗外夜色深沉，室内由暖橙色台灯提供主要光源。浅灰蓝色长直发少女小白子（带有刘海与两侧碎发，穿深蓝色校服西装外套、白衬衫、蓝领带、深蓝短裙，佩戴蓝色长围巾，头顶有一个光环，无头饰）盘腿坐在地板上，手持剪刀剪断最后一根线头。她双手举起完成的新围巾（手工编织质感，保留核心图案并加入小花元素，颜色为深红、米色与蓝色交织）在台灯下端详，光线穿透织物，纹理清晰可见，她脸上露出满足与自豪的笑容。她把新围巾叠好，放在旁边那条边缘起毛、有明显破洞的旧围巾（深红与米色交织花纹）旁边，两条围巾并排呈现出传承与创新的对比。特写呈现剪断线头的动作，切至中景小白子举起围巾对着光源端详，再切至特写两条围巾并排的对比画面。全片无背景音乐，只保留现场环境声与动作声。",
+    "cameraMotion":"特写呈现剪断线头的动作 → 切至中景小白子举起围巾对着光源端详 → 切至特写两条围巾并排的对比画面",
+    "characterAction":"小白子手持剪刀剪断最后一根线头；双手举起完成的新围巾在台灯下端详，光线穿透织物，脸上露出满足与自豪的笑容；把新围巾叠好放在旧围巾旁边，两条围巾并排呈现",
+    "dialogueOrSubtitle":"",
+    "soundDesign":"剪刀剪断线头的清脆声、织物展开的轻微声响",
+    "continuityNotes":"承接上一场小白子熟练编织且门边已有热牛奶的状态，本场她完成围巾的最后工序并端详成果；新围巾保留核心图案但加入小花元素，与旧围巾形成可见对比；下一场将展示第二天早晨奶奶发现新围巾的情感兑现",
+    "negativePrompts":{"image":[],"video":[{"text":"避免小白子服装变化或头饰出现","appliesTo":"video","triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter","evidence":"无头饰，但头顶有一个光环"}],"reasonCode":"explicit_identity_conflict","priority":"high","enabled":true},{"text":"避免新围巾与旧围巾花纹完全相同","appliesTo":"video","triggerEvidence":[{"sourcePath":"animationPlan.shotPlan.A06.videoPrompt","evidence":"新围巾的花纹与旧围巾不完全相同，但保留了核心图案并加入了小白子自己设计的小花元素"}],"reasonCode":"shot_object_confusion","priority":"medium","enabled":true}]},
+    "acceptanceCriteria":["小白子全程保持浅灰蓝色长直发、深蓝色校服套装、蓝色长围巾、头顶光环、无头饰的固定外观","剪断线头、举起围巾端详、两条围巾并排的动作按顺序完整呈现","光线穿透新围巾织物的效果明显可见，两条围巾花纹有可辨识的差异"]
+  }]
+}

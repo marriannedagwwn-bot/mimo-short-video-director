@@ -89,14 +89,12 @@ export class FullModelOutputLogWriter {
       const contentPresent = payload.contentPresent === true
         || (payload.contentPresent !== false && Boolean(exactOutputText(payload.content)));
       const modelContent = contentPresent ? exactOutputText(payload.content) : "";
-      const directory = path.join(
-        this.outputRoot,
-        context.verified ? safeSegment(context.projectId) : "unbound",
-        context.verified ? safeSegment(context.runId) : safeSegment(context.variantId || "unknown-variant"),
-        context.verified ? safeSegment(context.artifactId) : this.scope,
-        context.verified ? safeSegment(context.productionRequestId) : "unbound-request",
-        safeSegment(operationId)
-      );
+      const directory = modelOutputAttemptDirectory({
+        outputRoot: this.outputRoot,
+        context,
+        scope: this.scope,
+        operationId
+      });
       const attemptName = `attempt-${String(callIndex + 1).padStart(2, "0")}`;
       const metadataFilename = "metadata.json";
       const outputFilename = "model-output.txt";
@@ -296,6 +294,39 @@ function usageSummary(value) {
 function safeSegment(value) {
   const segment = String(value || "").trim().replace(/[^A-Za-z0-9_-]+/gu, "_").slice(0, 180);
   return segment && segment !== "." && segment !== ".." ? segment : "unknown";
+}
+
+function modelOutputAttemptDirectory({ outputRoot, context, scope, operationId }) {
+  const operationSegment = stablePathToken("op", operationId);
+  if (context.verified) {
+    return path.join(
+      outputRoot,
+      "bound",
+      boundedReadableSegment(context.artifactId || scope),
+      stablePathToken("run", `${context.projectId}\0${context.runId}`),
+      stablePathToken("req", context.productionRequestId),
+      operationSegment
+    );
+  }
+  return path.join(
+    outputRoot,
+    "unbound",
+    boundedReadableSegment(context.variantId || "unknown-variant"),
+    scope,
+    "unbound-request",
+    operationSegment
+  );
+}
+
+function stablePathToken(prefix, value) {
+  return `${prefix}-${sha256(value).slice(0, 16)}`;
+}
+
+function boundedReadableSegment(value, maxLength = 40) {
+  const segment = safeSegment(value);
+  if (segment.length <= maxLength) return segment;
+  const digest = sha256(value).slice(0, 12);
+  return `${segment.slice(0, maxLength - digest.length - 1)}-${digest}`;
 }
 
 function timestamp(value) {

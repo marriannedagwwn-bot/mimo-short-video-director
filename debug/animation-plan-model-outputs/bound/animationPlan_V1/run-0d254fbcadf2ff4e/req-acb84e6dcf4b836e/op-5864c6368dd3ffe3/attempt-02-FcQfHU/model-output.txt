@@ -1,0 +1,33 @@
+{
+  "shotPlan":[{
+    "shotId":"A01",
+    "sourceSceneId":"S1",
+    "sceneId":"LOC01",
+    "durationSeconds":15,
+    "storyPurpose":"建立祖孙亲密关系，展示旧围巾的情感价值与物理状态，为后续行动提供动机",
+    "emotionalTarget":"温馨、关切",
+    "videoPrompt":"日系2.5D新海诚光景搭配吉卜力工作室风格，柔和写实与手绘质感融合。温馨客厅，木质地板，窗边有摇椅，夕阳透过窗户洒入，暖橙色调，背景有书架与绿植。浅灰蓝色长直发少女小白子，带有刘海与两侧碎发，穿深蓝色校服西装外套、白衬衫、蓝领带、深蓝短裙，佩戴蓝色长围巾，头顶有一个柔和发光的光环，无头饰；慈祥老人奶奶，银灰色短发，居家米白色针织开衫，温和笑容；白色与浅蓝色相间蓬松卷发、头顶卷曲呆毛、猫耳、浅蓝色尾巴的小猫芙芙猫。夕阳暖光中，芙芙猫蜷在奶奶脚边打盹，奶奶坐在窗边摇椅上织毛衣，脖子上围着一条边缘起毛、有明显破洞的暖棕色旧围巾。小白子推门进来，放下书包，走近奶奶，用「嗷呜～」配合指向围巾破洞的动作表达关心。奶奶放下毛衣，摸摸小白子的头，笑着说「这条围巾跟了我二十年啦」。小白子低头看自己脖子上的蓝色长围巾，若有所思地摸了摸围巾边缘。中景展示客厅温馨氛围与摇椅上的奶奶，随后特写旧围巾的磨损细节与破洞，再特写小白子关切的眼神与若有所思的表情。全片无背景音乐，只保留现场环境声与动作声。",
+    "cameraMotion":"中景固定展示客厅温馨氛围与摇椅上的奶奶和芙芙猫，缓慢推进至旧围巾磨损细节特写，随后切至小白子面部特写捕捉关切与若有所思的表情变化。",
+    "characterAction":"芙芙猫蜷在奶奶脚边打盹；奶奶坐在摇椅上织毛衣，脖子上围着旧围巾；小白子推门进来，放下书包，走近奶奶，用「嗷呜～」配合指向围巾破洞的动作表达关心；奶奶放下毛衣，摸摸小白子的头，笑着说台词；小白子低头看自己脖子上的蓝色长围巾，若有所思地摸了摸围巾边缘。",
+    "dialogueOrSubtitle":"奶奶：「这条围巾跟了我二十年啦」",
+    "soundDesign":"环境声：摇椅轻微晃动声、毛线针碰撞声、脚步声、书包放下声；动作声：小白子发出「嗷呜～」声、奶奶温和说话声。",
+    "continuityNotes":"本镜头为全片开场，建立客厅空间与祖孙关系；旧围巾的磨损状态与小白子若有所思的表情为下一场S2的秘密筹备行动提供动机承接。",
+    "negativePrompts":{"image":[],"video":[{"text":"小白子出现头饰、发饰、帽子或发带","appliesTo":"video","triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter","evidence":"无头饰，但头顶有一个光环"}],"reasonCode":"explicit_identity_conflict","priority":"high","enabled":true},{"text":"小白子出现拟人动物外壳、翅膀、兽爪、肉垫或鸟喙","appliesTo":"video","triggerEvidence":[{"sourcePath":"creativeBrief.protectedExpressions","evidence":"不得将翅膀、兽爪、肉垫、鸟喙等非人类结构赋予小白子或芙芙猫"}],"reasonCode":"explicit_identity_conflict","priority":"high","enabled":true},{"text":"芙芙猫拟人化站立或穿人类服装","appliesTo":"video","triggerEvidence":[{"sourcePath":"characterReferencePrompts","evidence":"芙芙猫forbiddenChanges包含拟人化站立和人类服装"}],"reasonCode":"explicit_identity_conflict","priority":"high","enabled":true}]},
+    "acceptanceCriteria":["小白子完整呈现浅灰蓝色长直发、深蓝色校服套装、蓝色长围巾、头顶光环、无头饰，奶奶与芙芙猫外观符合锁定设定","旧围巾边缘起毛与明显破洞的细节在特写中清晰可见，小白子指向破洞并发出「嗷呜～」声的动作完整呈现","奶奶说出「这条围巾跟了我二十年啦」台词，小白子低头若有所思地摸自己围巾边缘的动作作为镜头结尾"]
+  },{
+    "shotId":"A02",
+    "sourceSceneId":"S2",
+    "sceneId":"LOC02",
+    "durationSeconds":10,
+    "storyPurpose":"展示主角主动性与计划能力，建立「花纹复杂」障碍",
+    "emotionalTarget":"期待、紧张",
+    "videoPrompt":"日系2.5D新海诚光景搭配吉卜力工作室风格，柔和写实与手绘质感融合。简洁卧室，木质衣柜，书桌与台灯，地板空间足够铺开织物，傍晚自然光从窗外透入。浅灰蓝色长直发少女小白子，带有刘海与两侧碎发，穿深蓝色校服西装外套、白衬衫、蓝领带、深蓝短裙，佩戴蓝色长围巾，头顶有一个柔和发光的光环，无头饰；白色与浅蓝色相间蓬松卷发、头顶卷曲呆毛、猫耳、浅蓝色尾巴的小猫芙芙猫；边缘起毛、有明显破洞的暖棕色旧围巾，花纹复杂但磨损；手持金属边框放大镜；木质针线盒内含编织针与多色毛线团。小白子踮脚从衣柜顶层取针线盒，身体前倾保持平衡，差点摔倒但稳住了。她把旧围巾铺在地板上，用放大镜贴近织物逐格观察花纹，在笔记本上画下图案草稿。芙芙猫在旁边好奇地用爪子拨弄毛线团，毛线滚出去一段。中景展示小白子踮脚取物的紧张感，随后特写放大镜下的织物纹理与复杂花纹，再特写笔记本上的图案草稿。全片无背景音乐，只保留现场环境声与动作声。",
+    "cameraMotion":"中景固定展示小白子踮脚从衣柜顶层取针线盒的紧张动作，随后切至地板俯拍特写展示放大镜下的织物纹理，最后切至笔记本上图案草稿的特写。",
+    "characterAction":"小白子踮脚从衣柜顶层取针线盒，身体前倾保持平衡，差点摔倒但稳住了；她把旧围巾铺在地板上，用放大镜贴近织物逐格观察花纹，在笔记本上画下图案草稿；芙芙猫在旁边好奇地用爪子拨弄毛线团，毛线滚出去一段。",
+    "dialogueOrSubtitle":"",
+    "soundDesign":"环境声：衣柜门轻响、毛线滚动的细微声响、铅笔在纸上绘画声；动作声：小白子踮脚时的轻微喘息声、针线盒放置声。",
+    "continuityNotes":"承接S1小白子若有所思后的行动，旧围巾从奶奶脖子上转移到卧室地板供研究；针线盒、放大镜与笔记本作为新道具首次出现；芙芙猫拨弄毛线团的动作为后续S3材料不足与编织过程埋下伏笔。",
+    "negativePrompts":{"image":[],"video":[{"text":"小白子出现头饰、发饰、帽子或发带","appliesTo":"video","triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter","evidence":"无头饰，但头顶有一个光环"}],"reasonCode":"explicit_identity_conflict","priority":"high","enabled":true},{"text":"小白子出现拟人动物外壳、翅膀、兽爪、肉垫或鸟喙","appliesTo":"video","triggerEvidence":[{"sourcePath":"creativeBrief.protectedExpressions","evidence":"不得将翅膀、兽爪、肉垫、鸟喙等非人类结构赋予小白子或芙芙猫"}],"reasonCode":"explicit_identity_conflict","priority":"high","enabled":true},{"text":"芙芙猫拟人化站立或穿人类服装","appliesTo":"video","triggerEvidence":[{"sourcePath":"characterReferencePrompts","evidence":"芙芙猫forbiddenChanges包含拟人化站立和人类服装"}],"reasonCode":"explicit_identity_conflict","priority":"high","enabled":true},{"text":"旧围巾无破洞或磨损细节","appliesTo":"video","triggerEvidence":[{"sourcePath":"assetPrompts","evidence":"旧围巾边缘起毛、有明显破洞"}],"reasonCode":"shot_object_confusion","priority":"medium","enabled":true}]},
+    "acceptanceCriteria":["小白子踮脚取针线盒时身体前倾差点摔倒但稳住的紧张动作完整呈现，放大镜贴近旧围巾逐格观察花纹的动作清晰可见","放大镜特写中旧围巾的复杂花纹与磨损质感清晰可辨，笔记本上出现图案草稿","芙芙猫用爪子拨弄毛线团、毛线滚出去一段的动作作为画面点缀完整呈现"]
+  }]
+}

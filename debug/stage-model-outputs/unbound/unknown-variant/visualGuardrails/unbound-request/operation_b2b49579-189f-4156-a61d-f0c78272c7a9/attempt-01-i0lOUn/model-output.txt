@@ -1,0 +1,52 @@
+{
+  "fixedCharacterBoundary":{
+    "schemaVersion":"2.0",
+    "characterName":"小白子",
+    "canonicalDescription":"q 版猫耳少女，形象类似于猫娘，拥有猫一样的耳朵，性格活泼可爱，充满阳光，聪明伶俐，身份为学生或村民，是最不爱管闲事的人。",
+    "bodyForm":"q 版少女体型，带有猫耳特征",
+    "requiredTraits":[
+      {"canonicalName":"猫耳", "terms":["猫一样的耳朵", "猫耳"], "scope":"appearance", "evidenceLevel":"explicit", "triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter", "evidence":"q 版猫耳少女，形象类似于猫娘，猫一样的耳朵"}], "reason":"固定角色核心外观特征"},
+      {"canonicalName":"q 版体型", "terms":["q 版"], "scope":"appearance", "evidenceLevel":"explicit", "triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter", "evidence":"q 版猫耳少女"}], "reason":"固定角色体型设定"},
+      {"canonicalName":"活泼可爱", "terms":["活泼", "可爱"], "scope":"personality", "evidenceLevel":"explicit", "triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter", "evidence":"性格活泼可爱，充满阳光"}], "reason":"固定角色核心性格"},
+      {"canonicalName":"阳光", "terms":["充满阳光"], "scope":"personality", "evidenceLevel":"explicit", "triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter", "evidence":"性格活泼可爱，充满阳光"}], "reason":"固定角色核心性格"},
+      {"canonicalName":"聪明伶俐", "terms":["聪明", "伶俐"], "scope":"personality", "evidenceLevel":"explicit", "triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter", "evidence":"聪明伶俐"}], "reason":"固定角色核心性格"},
+      {"canonicalName":"学生或村民身份", "terms":["学生", "村民"], "scope":"occupation", "evidenceLevel":"explicit", "triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter", "evidence":"学生/村民"}], "reason":"固定角色社会身份"},
+      {"canonicalName":"不爱管闲事", "terms":["最不爱管闲事的人"], "scope":"personality", "evidenceLevel":"explicit", "triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter", "evidence":"最不爱管闲事的人"}], "reason":"固定角色核心性格特质"}
+    ],
+    "allowedTraits":[
+      {"canonicalName":"简单人话表达", "terms":["谢谢", "再见"], "scope":"storyFunction", "evidenceLevel":"explicit", "triggerEvidence":[{"sourcePath":"creatorProfile.constraints", "evidence":"小白子会‘谢谢、再见’等简单人话"}], "reason":"允许在剧情需要时使用简单人类语言"},
+      {"canonicalName":"拟声词表达", "terms":["嗷呜～", "嗷～"], "scope":"storyFunction", "evidenceLevel":"explicit", "triggerEvidence":[{"sourcePath":"creatorProfile.constraints", "evidence":"复杂交流以‘嗷呜～、嗷～’配合语气、表情和动作清晰表达不同含义"}], "reason":"允许使用拟声词配合表情动作进行复杂交流"},
+      {"canonicalName":"与路人简单互动", "terms":["擦肩而过", "打招呼", "短暂交谈"], "scope":"storyFunction", "evidenceLevel":"explicit", "triggerEvidence":[{"sourcePath":"creatorProfile.constraints", "evidence":"可以根据场景需要自然加入 1～2 名路人或临时角色。这些角色可以与小白子擦肩而过、打招呼、短暂交谈或产生简单互动"}], "reason":"允许与临时角色产生简单互动"}
+    ],
+    "forbiddenTraits":[
+      {"canonicalName":"企鹅造型", "terms":["拟人化企鹅造型", "企鹅服", "翅膀"], "scope":"appearance", "evidenceLevel":"inferred", "triggerEvidence":[{"sourcePath":"creativeBrief.protectedExpressions", "evidence":"不得将企鹅造型、翅膀、企鹅服等视觉元素赋予固定主角小白子或芙芙猫"}], "reason":"明确禁止继承原片企鹅视觉元素"},
+      {"canonicalName":"快递员身份", "terms":["快递员"], "scope":"occupation", "evidenceLevel":"inferred", "triggerEvidence":[{"sourcePath":"creativeBrief.roleAndOccupationMapping", "evidence":"不继承原片企鹅服、快递员身份和视觉外壳"}], "reason":"明确禁止继承原片职业身份"},
+      {"canonicalName":"浅蓝色长发人类女孩造型", "terms":["浅蓝色长发", "人类女孩"], "scope":"appearance", "evidenceLevel":"inferred", "triggerEvidence":[{"sourcePath":"creativeBrief.roleAndOccupationMapping", "evidence":"不继承原片浅蓝色长发人类女孩造型"}], "reason":"明确禁止继承原片伙伴角色视觉外壳"}
+    ],
+    "unresolvedConflicts":[]
+  },
+  "allowedPositiveTraits":[],
+  "positivePromptBoundary":[],
+  "sourceSimilarityRules":[
+    {"text":"拟人化企鹅造型、翅膀动作、企鹅服", "sourceExpression":"拟人化企鹅造型、翅膀动作、企鹅服", "triggerEvidence":[{"sourcePath":"creativeBrief.protectedExpressions[0].sourceExpression", "evidence":"拟人化企鹅造型、翅膀动作、企鹅服"}], "appliesWhenReferenceUsed":true},
+    {"text":"红色花朵徽章", "sourceExpression":"红色花朵徽章", "triggerEvidence":[{"sourcePath":"creativeBrief.protectedExpressions[1].sourceExpression", "evidence":"红色花朵徽章"}], "appliesWhenReferenceUsed":true},
+    {"text":"粉笔格子、石子", "sourceExpression":"粉笔格子、石子", "triggerEvidence":[{"sourcePath":"creativeBrief.protectedExpressions[2].sourceExpression", "evidence":"粉笔格子、石子"}], "appliesWhenReferenceUsed":true},
+    {"text":"整理并捐赠旧衣物", "sourceExpression":"整理并捐赠旧衣物", "triggerEvidence":[{"sourcePath":"creativeBrief.protectedExpressions[3].sourceExpression", "evidence":"整理并捐赠旧衣物"}], "appliesWhenReferenceUsed":true},
+    {"text":"用石子玩格子游戏", "sourceExpression":"用石子玩格子游戏", "triggerEvidence":[{"sourcePath":"creativeBrief.protectedExpressions[4].sourceExpression", "evidence":"用石子玩格子游戏"}], "appliesWhenReferenceUsed":true},
+    {"text":"夕阳下院子共进晚餐", "sourceExpression":"夕阳下院子共进晚餐", "triggerEvidence":[{"sourcePath":"creativeBrief.protectedExpressions[5].sourceExpression", "evidence":"夕阳下院子共进晚餐"}], "appliesWhenReferenceUsed":true}
+  ],
+  "dialogueRules":[
+    {"text":"小白子会‘谢谢、再见’等简单人话，复杂交流以‘嗷呜～、嗷～’配合语气、表情和动作清晰表达不同含义", "triggerEvidence":[{"sourcePath":"creatorProfile.constraints", "evidence":"小白子会‘谢谢、再见’等简单人话，复杂交流以‘嗷呜～、嗷～’配合语气、表情和动作清晰表达不同含义"}]}
+  ],
+  "stageInstructions":{
+    "themeVariants":"正向提示词服从角色边界；渲染负面提示词由 themeVariants 按当前镜头和明确证据逐镜生成。",
+    "fullStory":"正向提示词服从角色边界；渲染负面提示词由 fullStory 按当前镜头和明确证据逐镜生成。",
+    "animationPlan":"正向提示词服从角色边界；渲染负面提示词由 animationPlan 按当前镜头和明确证据逐镜生成。"
+  },
+  "rationale":"本阶段仅对固定角色小白子进行完整语义判断，形成后续全部阶段共用且不得重算的全局角色边界。小白子必须保持 q 版猫耳少女外观、活泼可爱阳光聪明伶俐的性格、学生或村民身份、不爱管闲事的核心特质。禁止继承原片企鹅造型、翅膀、企鹅服、快递员身份等视觉与职业元素。允许在剧情需要时使用简单人话和拟声词表达，允许与临时角色产生简单互动。sourceSimilarityRules 仅记录原片可识别表面表达，供实际使用原片视觉参考时判断 reference_leak，不作为剧情或台词禁词。dialogueRules 仅约束角色说话方式，不混入渲染负面提示词。",
+  "uncertainties":[
+    {"field":"小白子的具体年龄", "reason":"用户描述中未明确年龄信息，仅通过 q 版体型和学生身份推断为儿童或青少年", "safeFallback":"视为儿童或青少年角色，保持 q 版体型特征"},
+    {"field":"小白子与芙芙猫的具体关系", "reason":"用户描述中仅说明芙芙猫为固定搭档，未明确是宠物、朋友还是其他关系", "safeFallback":"视为亲密伙伴或搭档关系，共同行动"},
+    {"field":"小白子的具体生活环境", "reason":"用户描述中提及学生或村民身份，但未明确是城市学生还是乡村村民", "safeFallback":"根据剧情需要灵活设定，保持治愈日常基调"}
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "full-model-output-log/1.0",
+  "recordedAt": "2026-09-01T20:21:27.133Z",
+  "scope": "visualGuardrails",
+  "gitCommit": "unknown",
+  "buildId": "unknown",
+  "production": {
+    "verified": false,
+    "projectId": "",
+    "runId": "",
+    "artifactId": "",
+    "productionRequestId": "",
+    "variantId": ""
+  },
+  "attempt": {
+    "operationId": "operation:23a8ef4f-a7d6-4e92-98f7-dd16621a6a32",
+    "attemptId": "",
+    "callIndex": 0,
+    "stage": "visualGuardrails",
+    "phase": "primary",
+    "sequence": null,
+    "batchIndex": null,
+    "reason": "primary",
+    "status": "failed",
+    "category": "output-contract",
+    "code": "OUTPUT_CONTRACT_INVALID",
+    "validationStatus": "failed",
+    "errorName": "",
+    "diagnostics": [],
+    "retryable": true,
+    "startedAt": "2026-09-01T20:19:44.319Z",
+    "finishedAt": "2026-09-01T20:21:27.130Z",
+    "durationMs": 102811
+  },
+  "provider": {
+    "name": "Qwen",
+    "model": "qwen3.7-plus",
+    "providerRequestId": "cc139120-46e5-941a-82c0-25d6409629bb",
+    "finishReason": "stop",
+    "usage": {
+      "prompt_tokens": 46808,
+      "completion_tokens": 5129,
+      "total_tokens": 51937
+    }
+  },
+  "output": {
+    "present": true,
+    "file": "model-output.txt",
+    "bytes": 12173,
+    "sha256": "8b1664cdc697830b31c55a3fd9250c8bc3f4c012c57f40140fc77114969a843d"
+  }
+}

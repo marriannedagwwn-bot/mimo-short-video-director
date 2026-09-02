@@ -1,0 +1,212 @@
+{
+  "contentType": "动画短片",
+  "targetAudience": "喜欢萌系角色与温馨日常故事的年轻观众",
+  "coreEmotion": "治愈、温暖、善意回馈",
+  "storyEngine": {
+    "desire": "主角希望完成一件有意义的小事，获得外界认可或自我满足",
+    "obstacle": "任务执行过程中的小困难或等待带来的无聊感",
+    "escalation": "主角在等待或执行中展现童趣与伙伴互动，增强观众情感投入",
+    "turningMechanism": "外界给予主角正面反馈，形成情绪高点",
+    "payoff": "主角将获得的荣誉或情感回报转赠给重要关系对象，完成情感闭环"
+  },
+  "emotionStructure": [
+    {
+      "stage": "开端",
+      "function": "建立角色关系与日常基调",
+      "targetEmotion": "温馨、 playful",
+      "intensity": 60
+    },
+    {
+      "stage": "发展",
+      "function": "推动任务执行，展示社区互动",
+      "targetEmotion": "积极、期待",
+      "intensity": 70
+    },
+    {
+      "stage": "过渡",
+      "function": "填充等待时间，强化童趣与伙伴关系",
+      "targetEmotion": "专注、愉悦",
+      "intensity": 65
+    },
+    {
+      "stage": "转折",
+      "function": "给予正面反馈，制造情绪高点",
+      "targetEmotion": "惊喜、开心",
+      "intensity": 80
+    },
+    {
+      "stage": "结局",
+      "function": "完成情感回馈，升华关系价值",
+      "targetEmotion": "感动、满足",
+      "intensity": 90
+    }
+  ],
+  "roleAndOccupationMapping": [
+    {
+      "sourceFunction": "主动帮助他人、参与社区善意行为的儿童角色",
+      "newRole": "小白子，q 版猫耳少女，形象类似于猫娘，猫一样的耳朵，性格活泼可爱，充满阳光，聪明伶俐，学生/村民 · 最不爱管闲事的人。",
+      "newOccupationOrIdentity": "学生/村民",
+      "mappingLogic": "保留主动参与善意行为的叙事功能，不继承原片企鹅服、快递员身份和视觉外壳"
+    },
+    {
+      "sourceFunction": "配合主角行动、提供陪伴感的伙伴角色",
+      "newRole": "芙芙猫",
+      "newOccupationOrIdentity": "白色与浅蓝色相间的蓬松卷发，头顶卷曲呆毛，猫耳，浅蓝色尾巴的猫尾的小猫",
+      "mappingLogic": "保留伙伴陪伴与互动功能，不继承原片浅蓝色长发人类女孩造型"
+    },
+    {
+      "sourceFunction": "提供家庭温暖与情感回馈对象的长辈角色",
+      "newRole": "奶奶（或社区长辈）",
+      "newOccupationOrIdentity": "慈祥长辈",
+      "mappingLogic": "保留家庭情感核心与回馈对象功能，不强制要求血缘关系"
+    },
+    {
+      "sourceFunction": "接收善意行为并给予正面反馈的社区工作人员",
+      "newRole": "社区志愿者或工作人员",
+      "newOccupationOrIdentity": "社区服务人员",
+      "mappingLogic": "保留外部认可与情绪转折触发功能，不继承红马甲等具体视觉标签"
+    }
+  ],
+  "reusableHighValueBeats": [
+    {
+      "beat": "主角用童趣方式完成任务准备",
+      "dramaticValue": "展现角色性格与日常温馨感，建立观众好感",
+      "mustRetain": "主角以活泼、创意方式参与任务准备，体现角色特质",
+      "adaptableSurface": ["具体任务内容", "准备动作", "道具类型"],
+      "sourceSceneRefs": ["S1"]
+    },
+    {
+      "beat": "主角与伙伴协作执行任务",
+      "dramaticValue": "强化伙伴关系与行动力，推动剧情发展",
+      "mustRetain": "主角与伙伴共同行动，展现协作与默契",
+      "adaptableSurface": ["任务形式", "交通工具", "路径场景"],
+      "sourceSceneRefs": ["S2"]
+    },
+    {
+      "beat": "等待期间玩童趣游戏",
+      "dramaticValue": "填充叙事节奏，展现童真与伙伴互动趣味",
+      "mustRetain": "主角在等待中自发进行童趣活动，增强角色可爱度",
+      "adaptableSurface": ["游戏类型", "道具", "场地"],
+      "sourceSceneRefs": ["S3"]
+    },
+    {
+      "beat": "外界给予主角正面奖励",
+      "dramaticValue": "制造情绪高点，为后续情感回馈埋下伏笔",
+      "mustRetain": "主角的关键行动必须产生足以推动后续剧情和情绪的回报",
+      "adaptableSurface": ["奖励形式", "颁发方式", "奖励物"],
+      "sourceSceneRefs": ["S4"]
+    },
+    {
+      "beat": "主角将奖励转赠给重要关系对象",
+      "dramaticValue": "完成情感闭环，将外界善意转化为家庭或关系温暖",
+      "mustRetain": "结尾必须把前文积累的情绪转化为主角与重要关系对象之间可见的关系变化，且兑现强度不低于来源",
+      "adaptableSurface": ["转赠动作", "关系对象身份", "场景氛围"],
+      "sourceSceneRefs": ["S5"]
+    }
+  ],
+  "controlledRewriteVariables": [
+    {
+      "variable": "任务内容",
+      "sourceValue": "整理并捐赠旧衣物",
+      "allowedDirections": ["社区清洁", "帮助邻居", "收集废品", "送还失物"],
+      "mustChange": true,
+      "reason": "避免照搬原片具体任务，保持新鲜感"
+    },
+    {
+      "variable": "奖励形式",
+      "sourceValue": "红色花朵徽章",
+      "allowedDirections": ["贴纸", "手工小物", "口头表扬", "小零食"],
+      "mustChange": true,
+      "reason": "奖励物需适配新任务与角色设定"
+    },
+    {
+      "variable": "等待期间活动",
+      "sourceValue": "用石子玩格子游戏",
+      "allowedDirections": ["跳绳", "捉迷藏", "画画", "观察昆虫"],
+      "mustChange": true,
+      "reason": "活动需符合新场景与角色特质"
+    },
+    {
+      "variable": "情感回馈场景",
+      "sourceValue": "夕阳下院子共进晚餐",
+      "allowedDirections": ["清晨厨房", "雨天屋檐", "星空下庭院", "节日餐桌"],
+      "mustChange": true,
+      "reason": "场景氛围可调整以适配新情绪基调"
+    }
+  ],
+  "protectedExpressions": [
+    {
+      "expressionType": "角色视觉外壳",
+      "sourceExpression": "拟人化企鹅造型、翅膀动作、企鹅服",
+      "prohibition": "不得将企鹅造型、翅膀、企鹅服等视觉元素赋予固定主角小白子或芙芙猫",
+      "safeAlternativePrinciple": "固定主角必须保持猫耳少女与猫尾小猫的原始设定，不继承原片动物拟态外壳"
+    },
+    {
+      "expressionType": "具体奖励物",
+      "sourceExpression": "红色花朵徽章",
+      "prohibition": "不得强制要求新片使用红色花朵徽章作为奖励",
+      "safeAlternativePrinciple": "奖励物可重新设计，但需具备可佩戴或可转赠的物理属性"
+    },
+    {
+      "expressionType": "具体游戏道具",
+      "sourceExpression": "粉笔格子、石子",
+      "prohibition": "不得强制要求新片使用粉笔格子与石子作为等待期间游戏道具",
+      "safeAlternativePrinciple": "游戏道具可替换，但需符合童趣与场景逻辑"
+    }
+  ],
+  "minimumTransformationRules": [
+    {
+      "dimension": "任务内容",
+      "minimumChange": "必须更换为不同于「整理并捐赠旧衣物」的社区或家庭善意行为",
+      "acceptanceCheck": "新任务是否具备可执行性、童趣感与情感回馈潜力"
+    },
+    {
+      "dimension": "奖励形式",
+      "minimumChange": "必须更换为不同于「红色花朵徽章」的正面反馈物",
+      "acceptanceCheck": "新奖励是否具备可转赠性与情绪象征意义"
+    },
+    {
+      "dimension": "角色视觉",
+      "minimumChange": "必须保持小白子猫耳少女与芙芙猫猫尾小猫的固定设定，不继承原片企鹅造型",
+      "acceptanceCheck": "角色外观是否符合 fixedCharacter 描述"
+    }
+  ],
+  "allowedNarrativeComponents": [
+    {
+      "component": "送达任务",
+      "howToReuseSafely": "【原片有】「糯糯推着载满衣物的小车，咕嘎在前方拉车」，主角需将某物送达某处，可复用但需更换任务内容与送达对象"
+    },
+    {
+      "component": "旅途结构",
+      "howToReuseSafely": "【原片有】「两人拉车前往回收站捐赠衣物」，主角从家出发前往社区某处，可复用但需更换路径与场景细节"
+    },
+    {
+      "component": "情感媒介",
+      "howToReuseSafely": "【原片有】「志愿者为咕嘎和糯糯胸前别上红色花朵徽章」，主角获得可转赠的情感象征物，可复用但需更换媒介物"
+    },
+    {
+      "component": "获得帮助",
+      "howToReuseSafely": "【原片没有】原片主角未接受他人帮助，而是主动提供帮助；本次不采用此构件"
+    },
+    {
+      "component": "被关爱对象",
+      "howToReuseSafely": "【原片有】「咕嘎与糯糯将红色花朵徽章别在奶奶的衣襟上」，主角将情感回馈给长辈，可复用但需保持关系对象为家庭或社区长辈"
+    },
+    {
+      "component": "天气或空间推动情绪",
+      "howToReuseSafely": "【原片有】「夕阳余晖中，三人在院子里吃饭，画面温暖」，利用夕阳与户外空间强化温馨感，可复用但可更换天气或时间段"
+    },
+    {
+      "component": "生活化或仪式化结尾",
+      "howToReuseSafely": "【原片有】「三人围坐在户外木桌旁吃面条」，以日常聚餐收尾，可复用但可更换为其他生活化或轻度仪式化场景"
+    }
+  ],
+  "nonNegotiableExperience": {
+    "samePositioning": "治愈系/日常动画短片，传递善意与家庭温暖",
+    "sameAudience": "喜欢萌系角色与温馨日常故事的年轻观众",
+    "sameEmotion": "治愈、温暖、善意回馈的核心情绪体验",
+    "samePlotDriver": "主角完成善意行为后获得外界认可，并将认可转化为对重要关系对象的情感回馈",
+    "sameBeatValue": "童趣准备、伙伴协作、等待游戏、外界奖励、情感转赠五个桥段的情绪兑现强度"
+  },
+  "creativeDistancePolicy": "只保留内容定位、目标受众、核心情绪体验、角色关系价值、高价值桥段的剧作功能与情绪兑现强度；具体任务内容、奖励形式、游戏道具、场景氛围、事件顺序与结尾形式均可重新组合，不得仅更换人物或物件后照搬来源骨架。"
+}

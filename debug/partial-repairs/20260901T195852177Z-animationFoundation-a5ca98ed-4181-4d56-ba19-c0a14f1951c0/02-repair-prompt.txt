@@ -1,0 +1,31 @@
+你现在只执行 animationFoundation 的有界局部纠错。
+
+ARTIFACT_PARTIAL_REPAIR_V1
+
+服务端已经冻结原候选。你只能根据下方目标、诊断、修复说明和最小权威上下文返回每个目标的完整 replacement；不得重写完整 Artifact，不得新增诊断中没有要求的事实。
+
+局部纠错输入：
+{"schemaVersion":"artifact_partial_repair/1.0","artifactType":"animationFoundation","baseDigest":"2a9bd53840e5f112457b9330da2fc464653895bf603fe18050f277f26a439ae2","authority":{"fixedCharacterBoundary":{"schemaVersion":"2.0","characterName":"小白子","canonicalDescription":"q 版猫耳少女，形象类似于猫娘，拥有猫一样的耳朵，性格活泼可爱，充满阳光，聪明伶俐，身份为学生或村民，是最不爱管闲事的人。","bodyForm":"q 版少女体型，带有猫耳特征","requiredTraits":[{"canonicalName":"猫耳","terms":["猫耳","猫一样的耳朵"],"scope":"appearance"},{"canonicalName":"q 版体型","terms":["q 版体型","q 版"],"scope":"appearance"},{"canonicalName":"活泼可爱","terms":["活泼可爱","活泼","可爱"],"scope":"personality"},{"canonicalName":"阳光","terms":["阳光","充满阳光"],"scope":"personality"},{"canonicalName":"聪明伶俐","terms":["聪明伶俐","聪明","伶俐"],"scope":"personality"},{"canonicalName":"学生或村民身份","terms":["学生或村民身份","学生","村民"],"scope":"occupation"},{"canonicalName":"不爱管闲事","terms":["不爱管闲事","最不爱管闲事的人"],"scope":"personality"}],"forbiddenTraits":[{"canonicalName":"企鹅造型","terms":["企鹅造型","拟人化企鹅造型","企鹅服","翅膀"],"scope":"appearance"},{"canonicalName":"快递员身份","terms":["快递员身份","快递员"],"scope":"occupation"},{"canonicalName":"浅蓝色长发人类女孩造型","terms":["浅蓝色长发人类女孩造型","浅蓝色长发","人类女孩"],"scope":"appearance"}],"sourceDigest":"sha256:c08484ff7d959649bac862e72ba3b7e45ddd1c2bef742d692c8bba7dbf27389e","boundaryDigest":"sha256:91e7ff34ef575bb131a68a86125284e87202d86df068a6462c23218e8e8efed3","boundarySignature":"[REDACTED]"},"fixedCharacterProfile":"小白子，q 版猫耳少女，形象类似于猫娘，猫一样的耳朵，性格活泼可爱，充满阳光，聪明伶俐，学生/村民 · 最不爱管闲事的人。","sourcePaths":["visualGuardrails.fixedCharacterBoundary.requiredTraits"]},"targets":[{"repairId":"R1","targetLabel":"固定角色「小白子」的角色参考对象","currentValue":{"characterName":"小白子","storyRole":"protagonist","identity":"q版猫耳少女，学生或村民，活泼可爱、充满阳光、聪明伶俐，最不爱管闲事的人","appearancePrompt":"q版猫耳少女，猫一样的耳朵，圆润大眼，短发或中长发，穿着日常学生或村民便服，体型娇小可爱，四肢比例偏Q版","consistencyTags":["猫耳","q版体型","活泼可爱","阳光","聪明伶俐","学生或村民身份"],"forbiddenChanges":["企鹅造型","快递员身份","浅蓝色长发人类女孩造型","翅膀","企鹅服"]},"diagnostics":[{"code":"ANIMATION_FIXED_CHARACTER_REQUIRED_TRAITS_MISSING","jsonPointer":"/characterReferencePrompts/0","reason":"固定角色参考缺少全局必需角色事实：q 版体型","missingRequiredTraits":["q 版体型"],"authority":{"characterName":"小白子","boundaryDigest":"sha256:91e7ff34ef575bb131a68a86125284e87202d86df068a6462c23218e8e8efed3","sourcePaths":["visualGuardrails.fixedCharacterBoundary.requiredTraits"]}}],"repairInstruction":"保持 appearancePrompt 与全部既有字段逐字不变；仅在 consistencyTags 原数组尾部按给定顺序追加缺失事实的签发 canonicalName。","modelContext":{"mutableFields":["consistencyTags"],"missingRequiredTraitCanonicalNames":["q 版体型"],"expectedConsistencyTags":["猫耳","q版体型","活泼可爱","阳光","聪明伶俐","学生或村民身份","q 版体型"],"mutationPolicy":"append_signed_canonical_names_to_consistency_tags_only"}}]}
+
+只返回以下精确 JSON 协议：
+{
+  "schemaVersion":"artifact_partial_repair/1.0",
+  "baseDigest":"2a9bd53840e5f112457b9330da2fc464653895bf603fe18050f277f26a439ae2",
+  "repairs":[
+    {"repairId":"R1","replacement":null}
+  ]
+}
+
+要求：
+- repairs 必须与 targets 数量和顺序完全一致，每个 repairId 恰好出现一次。
+- replacement 是对应目标的完整替换值，不是 JSON Patch。
+- 响应不得包含 path、op、reason、diagnostics 或任何额外字段；目标路径只能由服务端 repairId 决定。
+- 只能修复明确授权的内容，其余合法事实必须保持不变。
+- 只输出一个 JSON 对象，不要 Markdown，不要解释。
+- replacement 必须保持 currentValue 的字段集合；只能修改 modelContext.mutableFields。
+- characterName 与其他未命中字段必须逐字保留。
+- 缺失 requiredTraits 只能通过在 consistencyTags 尾部依次追加 modelContext.missingRequiredTraitCanonicalNames 中的签发 canonicalName 修复；不得把同义词写入其他字段。
+- 没有禁止表达诊断时，appearancePrompt 必须逐字不变，consistencyTags 必须逐项等于 modelContext.expectedConsistencyTags。
+- 存在禁止表达诊断时，只能从 diagnostics 精确命中的 mutableFields 中删除命中表达；缺失 requiredTraits 仍只能追加到 consistencyTags。
+- 不得新增、删除或改名角色，不得改变剧情职责，不得把固定角色边界套到配角。
+- 不得返回完整 Animation Foundation、Animation Plan 或 Full Story。

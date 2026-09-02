@@ -1,0 +1,10 @@
+{
+  "characterName": "芙芙猫",
+  "storyRole": "固定搭档",
+  "identity": "小白子的宠物猫",
+  "appearancePrompt": "浅蓝色蓬松卷发的小猫，头顶有卷曲呆毛，猫耳，浅蓝色蓬松尾巴，白色身体，Q版可爱风格",
+  "consistencyTags": ["浅蓝色蓬松卷发", "卷曲呆毛", "猫耳", "浅蓝色蓬松尾巴", "白色身体"],
+  "forbiddenChanges": ["不要偏离参考图中的人物外观", "拟人化站立", "人类服装", "翅膀", "兽爪变形"],
+  "referenceImageNotes": "参考图显示角色为浅蓝色蓬松卷发、猫耳、猫尾巴的小猫，整体Q版可爱风格。",
+  "referenceImageOverrideNotice": "参考图更强调浅蓝色蓬松卷发和整体可爱外观，覆盖了原设定中颜色描述的细节。"
+}

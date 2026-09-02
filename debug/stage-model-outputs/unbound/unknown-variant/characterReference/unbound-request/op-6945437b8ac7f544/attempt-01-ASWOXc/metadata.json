@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "full-model-output-log/1.0",
+  "recordedAt": "2026-09-01T21:26:51.760Z",
+  "scope": "characterReference",
+  "gitCommit": "unknown",
+  "buildId": "unknown",
+  "production": {
+    "verified": false,
+    "projectId": "",
+    "runId": "",
+    "artifactId": "",
+    "productionRequestId": "",
+    "variantId": ""
+  },
+  "attempt": {
+    "operationId": "operation:dd3a4087-a070-4447-9012-41e9a6c8ae93",
+    "attemptId": "",
+    "callIndex": 0,
+    "stage": "characterReference",
+    "phase": "primary",
+    "sequence": null,
+    "batchIndex": null,
+    "reason": "primary",
+    "status": "succeeded",
+    "category": "",
+    "code": "MODEL_COMPLETION_ACCEPTED",
+    "validationStatus": "passed",
+    "errorName": "",
+    "diagnostics": [],
+    "retryable": false,
+    "startedAt": "2026-09-01T21:26:28.709Z",
+    "finishedAt": "2026-09-01T21:26:51.759Z",
+    "durationMs": 23050
+  },
+  "provider": {
+    "name": "MiMo",
+    "model": "mimo-v2.5",
+    "providerRequestId": "90b17520-a381-4d6a-a2f7-b170a30115a9_8a3490c9f7634c988d428c38f624ec63",
+    "finishReason": "stop",
+    "usage": {
+      "prompt_tokens": 10581,
+      "completion_tokens": 852,
+      "total_tokens": 11433
+    }
+  },
+  "output": {
+    "present": true,
+    "file": "model-output.txt",
+    "bytes": 1055,
+    "sha256": "281745be4865a8ce65ddadfd9433522b685c045b61db4e710b2a31a8733559b8"
+  }
+}

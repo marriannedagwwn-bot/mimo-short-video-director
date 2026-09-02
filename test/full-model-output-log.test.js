@@ -35,13 +35,22 @@ test("配置位于 public 或经符号链接落入 public 时保持禁用", asyn
     onWarning: (message) => warnings.push(message)
   }), "");
   const linkedRoot = path.join(workspace, "linked-public");
-  await fs.symlink(servedRoot, linkedRoot);
-  assert.equal(await resolvePrivateModelOutputLogRoot({
-    workspaceRoot: workspace,
-    configuredValue: "linked-public/full-story",
-    servedRoot,
-    onWarning: (message) => warnings.push(message)
-  }), "");
+  let symlinkSupported = true;
+  try {
+    await fs.symlink(servedRoot, linkedRoot);
+  } catch (error) {
+    if (process.platform !== "win32" || !["EPERM", "EACCES"].includes(error?.code)) throw error;
+    symlinkSupported = false;
+    t.diagnostic("Windows 当前权限不允许创建目录符号链接，跳过符号链接逃逸检查");
+  }
+  if (symlinkSupported) {
+    assert.equal(await resolvePrivateModelOutputLogRoot({
+      workspaceRoot: workspace,
+      configuredValue: "linked-public/full-story",
+      servedRoot,
+      onWarning: (message) => warnings.push(message)
+    }), "");
+  }
   if (process.platform === "darwin" || process.platform === "win32") {
     assert.equal(await resolvePrivateModelOutputLogRoot({
       workspaceRoot: workspace,
@@ -50,7 +59,8 @@ test("配置位于 public 或经符号链接落入 public 时保持禁用", asyn
       onWarning: (message) => warnings.push(message)
     }), "");
   }
-  assert.equal(warnings.length, process.platform === "darwin" || process.platform === "win32" ? 4 : 3);
+  const caseInsensitiveWarningCount = process.platform === "darwin" || process.platform === "win32" ? 1 : 0;
+  assert.equal(warnings.length, 2 + Number(symlinkSupported) + caseInsensitiveWarningCount);
 });
 
 test("完整保存模型 content、不截断，并按 Production request 隔离", async (t) => {
@@ -111,13 +121,43 @@ test("完整保存模型 content、不截断，并按 Production request 隔离"
     createHash("sha256").update(content, "utf8").digest("hex")
   );
   assert.doesNotMatch(metadataText, /MUST_NOT_BE_LOGGED/u);
-  assert.equal((await fs.stat(path.dirname(result.metadataPath))).mode & 0o777, 0o700);
-  assert.equal((await fs.stat(result.metadataPath)).mode & 0o777, 0o600);
-  assert.equal((await fs.stat(result.outputPath)).mode & 0o777, 0o600);
+  if (process.platform !== "win32") {
+    assert.equal((await fs.stat(path.dirname(result.metadataPath))).mode & 0o777, 0o700);
+    assert.equal((await fs.stat(result.metadataPath)).mode & 0o777, 0o600);
+    assert.equal((await fs.stat(result.outputPath)).mode & 0o777, 0o600);
+  }
   assert.deepEqual((await fs.readdir(path.dirname(result.metadataPath))).sort(), [
     "metadata.json",
     "model-output.txt"
   ]);
+});
+
+test("Production 长标识使用有界摘要目录并在 metadata 保留完整身份", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "full-model-output-bounded-path-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const context = {
+    verified: true,
+    projectId: "project-5f8f4cad-6f27-49f9-958f-ae4847757ed8",
+    runId: "run-b9c43cac-a9d6-4061-9f1f-a7d4fc9ea392",
+    artifactId: "fullStory:V1",
+    productionRequestId: "request-c3ea3eae-4831-4bf0-b087-ac77e79045b8",
+    variantId: "V1"
+  };
+  const operationId = "operation:199da5ae-45ab-4b08-98e3-cec16809917e";
+  const writer = new FullModelOutputLogWriter({ outputRoot: root });
+  const result = await writer.recordAttempt({
+    context,
+    operationId,
+    callIndex: 0,
+    content: "完整但未通过校验的模型输出"
+  });
+
+  const relativePath = path.relative(root, result.metadataPath);
+  assert.ok(relativePath.length < 150, `日志相对路径仍过长：${relativePath.length}`);
+  assert.doesNotMatch(relativePath, /5f8f4cad|b9c43cac|c3ea3eae|199da5ae/u);
+  const metadata = JSON.parse(await fs.readFile(result.metadataPath, "utf8"));
+  assert.deepEqual(metadata.production, context);
+  assert.equal(metadata.attempt.operationId, operationId);
 });
 
 test("同一 operation/callIndex 的并发观测使用独立 attempt 目录且不覆盖", async (t) => {
