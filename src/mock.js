@@ -245,6 +245,7 @@ export function mockVariants(input) {
     newTask: seed.task,
     emotionalMedium: seed.medium,
     environmentPressure: seed.pressure,
+    narrativeMode: index % 2 === 1 ? "slice_of_life" : "dramatic",
     ...mockCandidateProjection(fixed, seed),
     novelty: `以${seed.medium}连接任务与关系，并让帮助只改变条件、不替${fixed}完成选择。`,
     visualPotential: `${seed.pressure}、任务物状态变化与${seed.ending}形成可见的动作和环境对照。`,

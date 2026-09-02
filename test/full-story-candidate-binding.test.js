@@ -55,6 +55,7 @@ const baseCandidate = Object.freeze({
     possibleSimilarity: "保留限时送达的抽象驱动力",
     mitigation: "人物、任务、道具、场景和高潮均采用新表达"
   },
+  narrativeMode: "dramatic",
   keyChoiceBeat: 2,
   climaxBeat: 4,
   keyChoice: "阿岚放弃近路，先帮助受困邻居再绕行",

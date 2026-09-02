@@ -1342,6 +1342,7 @@ function renderVariants(data) {
             <span class="variant-switch-track" aria-hidden="true"></span>
             <span class="variant-switch-label">配乐</span>
           </label>
+          ${narrativeModeBadge(variant.narrativeMode)}
           <span class="risk">相似风险 ${escape(variant.originalityRiskCheck?.riskLevel || "-")}</span>
         </div>
       </div>
@@ -5684,6 +5685,15 @@ function escape(value) {
 }
 // careRecipient / helper / emotionalMedium 是可选叙事构件：故事不需要就整个字段省略。
 // 缺席时整行不渲染——渲染成“待确认”会让用户以为模型漏填了，实际是这个故事根本不需要它。
+// 候选的叙事路径徽章。参考片基本不靠戏剧结构留人，因此候选契约允许
+// slice_of_life（生活片段型）——主角可以没有目标、不作艰难抉择。
+// 标出来让用户按口味挑，而不是每次都拿到四个任务型故事。
+function narrativeModeBadge(mode) {
+  if (mode === "slice_of_life") return `<span class="mode-badge mode-slice">生活型</span>`;
+  if (mode === "dramatic") return `<span class="mode-badge mode-dramatic">剧情型</span>`;
+  return "";
+}
+
 function optionalCastSpan(label, value) {
   const text = String(value ?? "").trim();
   if (!text) return "";

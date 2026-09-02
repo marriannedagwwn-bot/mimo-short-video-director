@@ -2403,8 +2403,42 @@ function validateVariantStructuralDivergence(variants) {
   );
 }
 
+// 每批候选里必须有足够比例的「生活片段型」。
+//
+// 依据是对参考片的逐支拆解：它们基本没有戏剧结构——《好朋友为你遮风挡雨》的主角
+// 从第 3 场起一直睡到片尾，《打枣》的转折是「戴锅防砸」这种解决眼前小麻烦，
+// 《捐旧衣服》和《晨练》的转折都是别人给的。而候选契约此前把「主角有目标、
+// 作出关键选择、亲自完成高潮」写成无条件硬要求，于是每个候选都在执行剧作功能，
+// 观众感到的「刻意」正是这套约束在起作用。
+//
+// 这里只裁决**可数的分布**：数枚举值的个数是纯算术。
+// **无法核实「它真的是生活片段」**——那需要语义判断，模型可以把四个都标成
+// slice_of_life 蒙混过关。这是已知弱点，靠真实回放与人工评分观察，不加词表补救。
+export const SLICE_OF_LIFE_MODE = "slice_of_life";
+
+export function requiredSliceOfLifeCount(total) {
+  return total >= 4 ? 2 : 1;
+}
+
+function validateVariantNarrativeModeMix(variants) {
+  if (!Array.isArray(variants) || variants.length < 2) return;
+  const required = requiredSliceOfLifeCount(variants.length);
+  const slice = variants.filter((variant) => variant?.narrativeMode === SLICE_OF_LIFE_MODE);
+  if (slice.length >= required) return;
+  throw new OutputContractError(
+    `themeVariants 的 ${variants.length} 个候选里只有 ${slice.length} 个标记为生活片段型（slice_of_life），`
+    + `至少需要 ${required} 个。参考片基本不靠戏剧结构留人，全批都写成任务型会让成片显得刻意。`,
+    [{
+      code: "STORY_CANDIDATE_NARRATIVE_MODE_MIX",
+      path: "/variants",
+      reason: `slice_of_life 候选 ${slice.length} 个，少于要求的 ${required} 个`
+    }]
+  );
+}
+
 export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}, creativeBrief = null, visualGuardrails = null) {
   validateVariantStructuralDivergence(value?.variants);
+  validateVariantNarrativeModeMix(value?.variants);
   const signedBoundaryName = String(visualGuardrails?.fixedCharacterBoundary?.characterName || "").trim();
   const fixedName = signedBoundaryName || extractFixedCharacterName(creatorProfile.fixedCharacter);
   if (!fixedName) return value;

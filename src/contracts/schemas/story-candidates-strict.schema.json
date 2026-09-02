@@ -43,6 +43,7 @@
         "emotionalPayoff",
         "keyChoiceBeat",
         "climaxBeat",
+        "narrativeMode",
         "novelty",
         "visualPotential"
       ],
@@ -137,6 +138,7 @@
             "mitigation": { "$ref": "#/$defs/nonEmptyString" }
           }
         },
+        "narrativeMode": { "enum": ["dramatic", "slice_of_life"] },
         "keyChoiceBeat": { "type": "integer", "minimum": 1 },
         "climaxBeat": { "type": "integer", "minimum": 1 },
         "keyChoice": { "$ref": "#/$defs/nonEmptyString" },

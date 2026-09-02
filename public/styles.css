@@ -85,6 +85,11 @@ h1 em { color: var(--accent); font-style: normal; }
 .field-hint { display: block; margin: -4px 0 8px; font-size: 11px; line-height: 1.55; }
 /* Full Story 形状提示：只在结构化指标明显偏离历史分布时出现（实测命中约 10%），
    稀有才值得看。纯展示，不阻断任何操作。 */
+/* 候选叙事路径徽章：形状逐字对齐紧邻的 .risk（同一行的兄弟元素），
+   配色沿用项目已有的两对小字色底组合（#b54708/#fff3e8 与 muted/#efebe4），不自创第二套色板 */
+.mode-badge { padding: 5px 7px; border-radius: 6px; font-size: 8px; white-space: nowrap; }
+.mode-badge.mode-dramatic { color: #b54708; background: #fff3e8; }
+.mode-badge.mode-slice { color: var(--muted); background: #efebe4; }
 .shape-warnings { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .shape-warning { font-size: 11px; line-height: 1.5; padding: 3px 9px; border-radius: 999px;
   color: #b54708; border: 1px solid currentColor; background: #fff3e8; cursor: help; }
