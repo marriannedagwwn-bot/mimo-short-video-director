@@ -124,6 +124,42 @@ test("character_reference 只能绑定当前签发 Plan 的 exact 角色图，�
   );
 });
 
+test("character_audio_reference 只能绑定当前签发 Plan 的 exact 角色声音", () => {
+  const signedDataUrl = "data:audio/mpeg;base64,c2lnbmVk";
+  const plan = {
+    characterReferencePrompts: [{
+      characterName: "芙芙猫",
+      referenceAudioClips: [{
+        id: "meow",
+        label: "喵喵",
+        fileName: "meow.mp3",
+        mimeType: "audio/mpeg",
+        dataUrl: signedDataUrl,
+        durationSeconds: 3,
+        sizeBytes: 64
+      }]
+    }]
+  };
+  const resolved = resolveAuthoritativeShotVideoReferenceAssets([{
+    mediaType: "audio",
+    name: "客户端自报名称",
+    dataUrl: signedDataUrl,
+    source: "character_audio_reference"
+  }], plan);
+  assert.equal(resolved[0].mediaType, "audio");
+  assert.equal(resolved[0].sourceCharacterName, "芙芙猫");
+  assert.equal(resolved[0].name, "芙芙猫参考声音");
+
+  assert.throws(
+    () => resolveAuthoritativeShotVideoReferenceAssets([{
+      mediaType: "audio",
+      dataUrl: "data:audio/mpeg;base64,Zm9yZ2Vk",
+      source: "character_audio_reference"
+    }], plan),
+    /不属于当前签发 Animation Plan/u
+  );
+});
+
 test("上一业务镜头按当前 Plan 顺序解析，结果状态按 variant 隔离", () => {
   const plan = {
     shotPlan: [

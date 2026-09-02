@@ -1163,7 +1163,7 @@ function shotVideoBatchTaskDefinition({ projectId, runId, input }) {
         const hasCharacterReference = buildShotVideoBatchReferenceAssets(
           firstPendingShot,
           plan.characterReferencePrompts || []
-        ).length > 0;
+        ).some((asset) => asset.mediaType === "image");
         const previousArtifactReady = firstPendingIndex > 0
           && run.latestArtifacts?.[targetArtifactIds[firstPendingIndex - 1]]?.lineage?.status === "current";
         if (!hasCharacterReference && !previousArtifactReady) {
@@ -1246,7 +1246,8 @@ function shotVideoBatchTaskDefinition({ projectId, runId, input }) {
           shot,
           trusted.plan.characterReferencePrompts || []
         );
-        if (!referenceAssets.length && !(trusted.includePreviousShotFrames && previousReady)) {
+        const hasVisualReference = referenceAssets.some((asset) => ["image", "video"].includes(asset.mediaType));
+        if (!hasVisualReference && !(trusted.includePreviousShotFrames && previousReady)) {
           failedShots += 1;
           items = updateShotVideoBatchItem(items, shotId, {
             status: "failed",
@@ -2361,6 +2362,7 @@ function requireNonNegativeInteger(value, label) {
 function stripReferenceImageData(value = {}) {
   const copy = structuredClone(value && typeof value === "object" ? value : {});
   delete copy.referenceImageDataUrl;
+  delete copy.referenceAudioClips;
   return copy;
 }
 

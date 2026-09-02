@@ -8,6 +8,7 @@ import {
 } from "../src/shot-video-batch.js";
 
 const image = "data:image/png;base64,aW1hZ2U=";
+const audio = "data:audio/mpeg;base64,YXVkaW8=";
 
 test("batch reads the signed aspect ratio from the animation plan strategy", () => {
   assert.equal(requireShotVideoBatchAspectRatio({
@@ -31,6 +32,59 @@ test("batch all-reference assets use only characters related to the current dire
   assert.deepEqual(assets.map((item) => item.sourceCharacterName), ["小白"]);
   assert.equal(assets[0].source, "character_reference");
   assert.equal(assets[0].mediaType, "image");
+});
+
+test("batch automatically includes signed voice references for characters in the current shot", () => {
+  const references = [
+    {
+      characterName: "芙芙猫",
+      referenceImageDataUrl: image,
+      referenceAudioClips: [{
+        id: "meow",
+        label: "喵喵",
+        fileName: "meow.mp3",
+        mimeType: "audio/mpeg",
+        dataUrl: audio,
+        durationSeconds: 3,
+        sizeBytes: 128
+      }]
+    },
+    {
+      characterName: "小白",
+      referenceAudioClips: [{
+        id: "hello",
+        label: "对白",
+        fileName: "hello.mp3",
+        mimeType: "audio/mpeg",
+        dataUrl: `${audio}Mg==`,
+        durationSeconds: 3,
+        sizeBytes: 128
+      }]
+    }
+  ];
+  const assets = buildShotVideoBatchReferenceAssets({
+    shotId: "A01",
+    videoPrompt: "芙芙猫抬头喵喵叫。"
+  }, references);
+  assert.deepEqual(assets.map((item) => item.mediaType), ["image", "audio"]);
+  assert.equal(assets[1].source, "character_audio_reference");
+  assert.equal(assets[1].sourceCharacterName, "芙芙猫");
+});
+
+test("batch rejects too many character voice references in one shot", () => {
+  const referenceAudioClips = Array.from({ length: 4 }, (_, index) => ({
+    id: `clip-${index}`,
+    label: `叫声 ${index + 1}`,
+    fileName: `clip-${index}.mp3`,
+    mimeType: "audio/mpeg",
+    dataUrl: `${audio}${index}`,
+    durationSeconds: 3,
+    sizeBytes: 128
+  }));
+  assert.throws(() => buildShotVideoBatchReferenceAssets({
+    shotId: "A01",
+    videoPrompt: "芙芙猫叫了起来。"
+  }, [{ characterName: "芙芙猫", referenceImageDataUrl: image, referenceAudioClips }]), /超过全能参考上限 3 段/u);
 });
 
 test("batch progress keeps existing videos and updates one shot without rewriting the others", () => {

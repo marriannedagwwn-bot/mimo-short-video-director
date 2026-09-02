@@ -6,6 +6,7 @@ import {
   SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
 } from "../public/shot-video-continuity.js";
 import { lineageRef, ProductionStateError } from "./production-lineage.js";
+import { characterReferenceAudioClips } from "../public/character-reference-audio.js";
 
 export {
   mediaFilenameSegment,
@@ -81,6 +82,13 @@ export function resolveAuthoritativeShotVideoReferenceAssets(referenceAssets, pl
       characterName: String(reference.characterName || "").trim(),
       dataUrl: String(reference.referenceImageDataUrl || "").trim()
     }));
+  const signedCharacterAudio = (Array.isArray(plan.characterReferencePrompts)
+    ? plan.characterReferencePrompts
+    : [])
+    .flatMap((reference) => characterReferenceAudioClips(reference).map((clip) => ({
+      characterName: String(reference.characterName || "").trim(),
+      dataUrl: clip.dataUrl
+    })));
   return assets.map((asset, index) => {
     const source = String(asset?.source || "upload").trim() || "upload";
     if (["previous_shot_frame", "previous_shot_frames"].includes(source)) {
@@ -89,8 +97,24 @@ export function resolveAuthoritativeShotVideoReferenceAssets(referenceAssets, pl
         { code: "SHOT_VIDEO_REFERENCE_SOURCE_RESERVED", httpStatus: 409 }
       );
     }
-    if (source !== "character_reference") return structuredClone(asset);
     const dataUrl = String(asset?.dataUrl || "").trim();
+    if (source === "character_audio_reference") {
+      const matches = signedCharacterAudio.filter((reference) => reference.dataUrl === dataUrl);
+      if (matches.length !== 1) {
+        throw new ProductionStateError(
+          `referenceAssets[${index}] 声明为 character_audio_reference，但内容不属于当前签发 Animation Plan 的唯一角色参考声音。`,
+          { code: "SHOT_VIDEO_CHARACTER_AUDIO_REFERENCE_UNTRUSTED", httpStatus: 409 }
+        );
+      }
+      return {
+        ...structuredClone(asset),
+        mediaType: "audio",
+        name: `${matches[0].characterName || "角色"}参考声音`,
+        source: "character_audio_reference",
+        sourceCharacterName: matches[0].characterName
+      };
+    }
+    if (source !== "character_reference") return structuredClone(asset);
     const matches = signedCharacterImages.filter((reference) => reference.dataUrl === dataUrl);
     if (matches.length !== 1) {
       throw new ProductionStateError(
@@ -350,6 +374,12 @@ function manifestClause(artifact, label, { hasCharacterReference = false, endLab
     return name
       ? `${label} 是「${name}」的角色参考图，是该角色长相与服装的唯一依据`
       : `${label} 是角色参考图，是角色长相与服装的唯一依据`;
+  }
+  if (source === "character_audio_reference") {
+    const name = manifestSafeTerm(artifact.sourceCharacterName, 40);
+    return name
+      ? `${label} 是「${name}」的角色声音参考，用于保持该角色的音色与叫声特征`
+      : `${label} 是角色声音参考，用于保持角色的音色与叫声特征`;
   }
   if (source === "workflow_start_frame") return `${label} 是本镜已选的首帧画面，只作普通参考`;
   if (source === "workflow_end_frame") return `${label} 是本镜已选的尾帧画面，只作普通参考`;

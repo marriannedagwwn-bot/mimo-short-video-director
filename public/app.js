@@ -4,6 +4,10 @@ import { compileShotNegativePrompt } from "./negative-prompts.js";
 import { buildShotFrameImagePrompt, compileShotFrameNegativePrompt } from "./shot-frame-prompt.js";
 import { buildCharacterReferenceImagePrompt } from "./character-reference-prompt.js";
 import {
+  characterReferenceAudioClips,
+  validateCharacterReferenceAudioClips
+} from "./character-reference-audio.js";
+import {
   buildFrameReferenceManifest,
   canReusePreviousEndFrameAsStart,
   resolveFrameReferenceMode,
@@ -83,6 +87,7 @@ const state = {
   shotVideoResults: {},
   shotFrameResults: {},
   characterReferenceStatuses: {},
+  characterAudioStatuses: {},
   production: emptyProductionState(),
   characterImageGeneration: {
     open: false,
@@ -474,18 +479,30 @@ function bindEvents() {
     if (reuseFrameButton) return reusePreviousTailAsStart(reuseFrameButton.dataset.reusePreviousTail);
     const button = event.target.closest("[data-generate-shot-video]");
     if (button) return openShotVideoGenerator(button.dataset.generateShotVideo);
+    const referenceUploadButton = event.target.closest("[data-character-reference-upload]");
+    if (referenceUploadButton) return openCharacterReferenceInput(referenceUploadButton.dataset.characterReferenceUpload);
+    const audioUploadButton = event.target.closest("[data-character-audio-upload]");
+    if (audioUploadButton) return openCharacterAudioInput(audioUploadButton.dataset.characterAudioUpload);
+    const audioRemoveButton = event.target.closest("[data-character-audio-remove]");
+    if (audioRemoveButton) {
+      return removeCharacterReferenceAudio(
+        audioRemoveButton.dataset.characterAudioIndex,
+        audioRemoveButton.dataset.characterAudioRemove
+      );
+    }
+    if (event.target.closest("[data-character-audio-clips]")) return;
     if (event.target.closest("[data-character-reference-input]")) return;
     const card = event.target.closest("[data-character-reference-card]");
     if (card) return openCharacterReferenceInput(card.dataset.characterReferenceCard);
   });
-  elements.animationPlan.addEventListener("keydown", (event) => {
-    if (!["Enter", " "].includes(event.key)) return;
-    const card = event.target.closest("[data-character-reference-card]");
-    if (!card) return;
-    event.preventDefault();
-    openCharacterReferenceInput(card.dataset.characterReferenceCard);
-  });
   elements.animationPlan.addEventListener("change", (event) => {
+    const audioInput = event.target.closest("[data-character-audio-input]");
+    if (audioInput) {
+      const files = [...(audioInput.files || [])];
+      audioInput.value = "";
+      if (files.length) addCharacterReferenceAudioFiles(audioInput.dataset.characterAudioInput, files);
+      return;
+    }
     const input = event.target.closest("[data-character-reference-input]");
     if (input && input.files[0]) {
       refineCharacterReferenceWithImage(input.dataset.characterReferenceInput, input.files[0]);
@@ -953,6 +970,7 @@ function resetDirectorClientState() {
   };
   elements.shotVideoBatchPanel.classList.add("hidden");
   state.characterReferenceStatuses = {};
+  state.characterAudioStatuses = {};
   state.productionTasks = {};
   state.production = emptyProductionState();
   localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
@@ -1035,7 +1053,10 @@ function applyStaleProductionArtifacts(artifactIds = []) {
         || String(state.output.animationPlan?.selectedVariantId || "") === variantId
       ) delete state.output.animationPlan;
       dropStaleMediaResults(state, artifactId);
-      if (String(state.selectedVariantId || "") === variantId) state.characterReferenceStatuses = {};
+      if (String(state.selectedVariantId || "") === variantId) {
+        state.characterReferenceStatuses = {};
+        state.characterAudioStatuses = {};
+      }
       elements.animationPlan.innerHTML = "";
       elements.animationPlan.classList.add("hidden");
     } else if (artifactId.startsWith("fullStory:")) {
@@ -2313,21 +2334,173 @@ function renderCharacterReferencePrompts(items = []) {
     const key = characterReferenceStatusKey(index);
     const status = state.characterReferenceStatuses[key];
     const hasReference = Boolean(item.referenceImageAdded || item.referenceImageDataUrl);
+    const audioClips = characterReferenceAudioClips(item);
+    const audioStatus = state.characterAudioStatuses[characterAudioStatusKey(index)];
     const statusText = status?.message || (hasReference ? "点击或拖入图片可更换人物参考图" : "点击或拖入人物参考图");
-    return `<div class="rule character-reference-card${hasReference ? " has-reference-image" : ""}" data-character-reference-card="${escape(index)}" role="button" tabindex="0" aria-label="${escape(item.characterName || "角色")}人物参考图上传区">
+    return `<div class="rule character-reference-card${hasReference ? " has-reference-image" : ""}" data-character-reference-card="${escape(index)}">
       <div class="reference-card-top">
         <strong>${escape(item.characterName)}<br><small>${escape(item.storyRole)}</small></strong>
+        <input class="hidden" type="file" accept=".mp3,.m4a,.wav,audio/mpeg,audio/mp4,audio/wav,audio/x-wav" multiple data-character-audio-input="${escape(index)}">
+        ${audioStatus?.message ? `<span class="character-audio-status ${escape(audioStatus.status || "")}">${escape(audioStatus.message)}</span>` : ""}
+        <button class="character-audio-upload-button" type="button" data-character-audio-upload="${escape(index)}"${audioStatus?.status === "running" ? " disabled" : ""}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+          <span>${audioClips.length ? "添加音色/叫声" : "上传音色/叫声"}</span>
+        </button>
         ${hasReference ? `<span class="reference-image-badge">已添加人物参考图</span>` : ""}
       </div>
       <div class="character-reference-body">
         <p>${escape(item.appearancePrompt)}<br><b>一致性标签：</b>${escape((item.consistencyTags || []).join(" / "))}<br><b>禁止变化：</b>${escape((item.forbiddenChanges || []).join(" / "))}${item.referenceImageNotes ? `<br><b>参考图吸收：</b>${escape(item.referenceImageNotes)}` : ""}</p>
         <div class="character-reference-actions">
           <input class="hidden" type="file" accept="image/*" data-character-reference-input="${escape(index)}">
-          <span class="character-reference-status ${escape(status?.status || "idle")}">${escape(statusText)}</span>
+          <button class="character-reference-status ${escape(status?.status || "idle")}" type="button" data-character-reference-upload="${escape(index)}">${escape(statusText)}</button>
         </div>
+        ${renderCharacterReferenceAudioClips(audioClips, index)}
       </div>
     </div>`;
   }).join("") || "<p class=\"long-copy\">无角色参考提示词。</p>"}</div>`;
+}
+
+function renderCharacterReferenceAudioClips(clips, characterIndex) {
+  if (!clips.length) return "";
+  return `<div class="character-audio-clips" data-character-audio-clips>
+    <span class="character-audio-heading">参考音色/叫声 · ${escape(clips.length)} 段</span>
+    ${clips.map((clip) => `<div class="character-audio-clip">
+      <div class="character-audio-clip-meta">
+        <strong title="${escape(clip.fileName)}">${escape(clip.label)}</strong>
+        <small>${escape(clip.durationSeconds.toFixed(2))} 秒</small>
+      </div>
+      <audio controls preload="metadata" src="${escape(clip.dataUrl)}" aria-label="试听 ${escape(clip.label)}"></audio>
+      <button class="character-audio-remove-button" type="button" data-character-audio-index="${escape(characterIndex)}" data-character-audio-remove="${escape(clip.id)}" aria-label="删除 ${escape(clip.label)}" title="删除参考声音">×</button>
+    </div>`).join("")}
+  </div>`;
+}
+
+function openCharacterAudioInput(indexValue) {
+  if (state.characterAudioStatuses[characterAudioStatusKey(indexValue)]?.status === "running") return;
+  const input = [...elements.animationPlan.querySelectorAll("[data-character-audio-input]")]
+    .find((item) => String(item.dataset.characterAudioInput) === String(indexValue));
+  if (input) input.click();
+}
+
+async function addCharacterReferenceAudioFiles(indexValue, files) {
+  const index = Number(indexValue);
+  const variant = selectedVariant();
+  const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
+  const item = plan?.characterReferencePrompts?.[index];
+  if (!variant || !plan || !item) return setAnimationStatus("没有找到对应角色参考项。", "error");
+  const key = characterAudioStatusKey(index);
+  state.characterAudioStatuses[key] = { status: "running", message: "正在保存参考声音…" };
+  renderAnimationPlan(plan);
+
+  try {
+    const additions = [];
+    for (const file of files) {
+      const mimeType = characterAudioMimeType(file);
+      if (!mimeType) throw new Error(`${file.name} 不是支持的 MP3、M4A 或 WAV 音频。`);
+      if (file.size > 8 * 1024 * 1024) throw new Error(`${file.name} 不能超过 8MB。`);
+      const durationSeconds = await browserMediaDuration(file, "audio");
+      const rawDataUrl = await readFileAsDataUrl(file);
+      additions.push({
+        id: crypto.randomUUID(),
+        label: characterAudioLabel(file.name),
+        fileName: file.name,
+        mimeType,
+        dataUrl: normalizeAudioDataUrlMime(rawDataUrl, mimeType),
+        sizeBytes: file.size,
+        durationSeconds
+      });
+    }
+    const existingClips = characterReferenceAudioClips(item);
+    const seenDataUrls = new Set();
+    const clips = [...existingClips, ...additions].filter((clip) => {
+      if (seenDataUrls.has(clip.dataUrl)) return false;
+      seenDataUrls.add(clip.dataUrl);
+      return true;
+    });
+    if (clips.length === existingClips.length) throw new Error("所选参考声音已经上传过。");
+    const issue = validateCharacterReferenceAudioClips(clips);
+    if (issue) throw new Error(issue);
+    const updatedPlan = structuredClone(plan);
+    updatedPlan.characterReferencePrompts[index].referenceAudioClips = clips;
+    await commitProductionArtifact({
+      artifactId: animationPlanArtifactId(variant.id),
+      artifactType: "animationPlan",
+      content: updatedPlan,
+      dependencyRefs: currentPlanDependencyRefs(variant.id),
+      createMediaNamespace: true
+    });
+    assertSelectedVariant(variant.id);
+    state.animationPlans[variant.id] = updatedPlan;
+    state.output.animationPlans = state.animationPlans;
+    state.output.animationPlan = updatedPlan;
+    state.characterAudioStatuses[key] = { status: "ready", message: `已保存 ${clips.length} 段参考声音` };
+    renderAnimationPlan(updatedPlan);
+    setAnimationStatus(`${item.characterName || "角色"} 的参考声音已保存，单镜头与批量全能参考生成会自动使用。`, "ready");
+    updateStoryExportActions();
+  } catch (error) {
+    state.characterAudioStatuses[key] = { status: "error", message: error.message || "参考声音保存失败" };
+    renderAnimationPlan(plan);
+    setAnimationStatus(error.message || "参考声音保存失败。", "error");
+  }
+}
+
+async function removeCharacterReferenceAudio(indexValue, clipId) {
+  const index = Number(indexValue);
+  const variant = selectedVariant();
+  const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
+  const item = plan?.characterReferencePrompts?.[index];
+  if (!variant || !plan || !item) return setAnimationStatus("没有找到对应角色参考项。", "error");
+  const key = characterAudioStatusKey(index);
+  if (state.characterAudioStatuses[key]?.status === "running") return;
+  const previousClips = characterReferenceAudioClips(item);
+  const clips = previousClips.filter((clip) => String(clip.id) !== String(clipId));
+  if (clips.length === previousClips.length) return;
+  state.characterAudioStatuses[key] = { status: "running", message: "正在删除参考声音…" };
+  renderAnimationPlan(plan);
+  try {
+    const updatedPlan = structuredClone(plan);
+    if (clips.length) updatedPlan.characterReferencePrompts[index].referenceAudioClips = clips;
+    else delete updatedPlan.characterReferencePrompts[index].referenceAudioClips;
+    await commitProductionArtifact({
+      artifactId: animationPlanArtifactId(variant.id),
+      artifactType: "animationPlan",
+      content: updatedPlan,
+      dependencyRefs: currentPlanDependencyRefs(variant.id),
+      createMediaNamespace: true
+    });
+    assertSelectedVariant(variant.id);
+    state.animationPlans[variant.id] = updatedPlan;
+    state.output.animationPlans = state.animationPlans;
+    state.output.animationPlan = updatedPlan;
+    state.characterAudioStatuses[key] = { status: "ready", message: clips.length ? `剩余 ${clips.length} 段参考声音` : "参考声音已删除" };
+    renderAnimationPlan(updatedPlan);
+    setAnimationStatus(`${item.characterName || "角色"} 的参考声音已更新。`, "ready");
+    updateStoryExportActions();
+  } catch (error) {
+    state.characterAudioStatuses[key] = { status: "error", message: error.message || "参考声音删除失败" };
+    renderAnimationPlan(plan);
+    setAnimationStatus(error.message || "参考声音删除失败。", "error");
+  }
+}
+
+function characterAudioStatusKey(index) {
+  const variant = selectedVariant();
+  return `${variant?.id || "variant"}:${index}`;
+}
+
+function characterAudioMimeType(file) {
+  const declared = String(file?.type || "").toLowerCase();
+  if (["audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav"].includes(declared)) return declared;
+  const extension = String(file?.name || "").toLowerCase().split(".").at(-1);
+  return ({ mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav" })[extension] || "";
+}
+
+function characterAudioLabel(fileName) {
+  return String(fileName || "参考声音").replace(/\.[^.]+$/u, "").trim().slice(0, 40) || "参考声音";
+}
+
+function normalizeAudioDataUrlMime(dataUrl, mimeType) {
+  return String(dataUrl || "").replace(/^data:[^;,]*;/iu, `data:${mimeType};`);
 }
 
 function renderShotFramePromptCard(shotId, frameKind, label, prompt) {
@@ -2769,6 +2942,7 @@ function currentCharacterImageReference() {
 
 function stripReferenceImageData(item = {}) {
   const { referenceImageDataUrl, ...safe } = item;
+  delete safe.referenceAudioClips;
   return safe;
 }
 
@@ -3585,18 +3759,31 @@ function allReferenceAssetDescriptors(shotId) {
   if (state.shotVideoGeneration.includeCharacterReferences) {
     const references = shotRelatedCharacterReferences(context.shot, context.plan.characterReferencePrompts || []);
     for (const reference of references) {
-      if (!reference?.referenceImageDataUrl) continue;
-      assets.push({
-        id: `character-${reference.characterName || assets.length}`,
-        mediaType: "image",
-        name: `${reference.characterName || "角色"}参考图`,
-        dataUrl: reference.referenceImageDataUrl,
-        sizeBytes: 0,
-        durationSeconds: 0,
-        source: "character_reference",
-        // 服务端仍会用 Plan 解析结果覆写这个值，这里只是让本地描述符与之一致。
-        sourceCharacterName: reference.characterName || ""
-      });
+      if (reference?.referenceImageDataUrl) {
+        assets.push({
+          id: `character-${reference.characterName || assets.length}`,
+          mediaType: "image",
+          name: `${reference.characterName || "角色"}参考图`,
+          dataUrl: reference.referenceImageDataUrl,
+          sizeBytes: 0,
+          durationSeconds: 0,
+          source: "character_reference",
+          // 服务端仍会用 Plan 解析结果覆写这个值，这里只是让本地描述符与之一致。
+          sourceCharacterName: reference.characterName || ""
+        });
+      }
+      for (const clip of characterReferenceAudioClips(reference)) {
+        assets.push({
+          id: `character-audio-${clip.id}`,
+          mediaType: "audio",
+          name: `${reference.characterName || "角色"} · ${clip.label}`,
+          dataUrl: clip.dataUrl,
+          sizeBytes: clip.sizeBytes,
+          durationSeconds: clip.durationSeconds,
+          source: "character_audio_reference",
+          sourceCharacterName: reference.characterName || ""
+        });
+      }
     }
   }
   if (state.shotVideoGeneration.includeEndpointFrames && hasPlannedEndpoints(context.shot)) {
@@ -3745,7 +3932,7 @@ function renderShotVideoReferenceList(shotId) {
               ? `${escape(asset.durationSeconds.toFixed(2))} 秒`
               : asset.sizeBytes
                 ? escape(formatBytes(asset.sizeBytes))
-                : escape(asset.source === "character_reference" ? "角色锁定" : "工作流参考")}</small>
+                : escape(["character_reference", "character_audio_reference"].includes(asset.source) ? "角色锁定" : "工作流参考")}</small>
           ${asset.source === "upload" ? `<button class="shot-video-reference-remove" type="button" data-remove-shot-video-reference="${escape(asset.id)}" aria-label="移除 ${escape(asset.name)}">×</button>` : ""}
         </div>`).join("")}
       </div>
@@ -5431,6 +5618,7 @@ function restoreStoryPackage(payload, production) {
   state.shotFrameResults = {};
   state.shotVideoResults = {};
   state.characterReferenceStatuses = {};
+  state.characterAudioStatuses = {};
   if (fullStory) {
     state.fullStories[id] = fullStory;
     state.output.fullStory = fullStory;
@@ -5586,10 +5774,14 @@ function formatAnimationPackMarkdown(pack) {
     "## 角色参考图 Prompt"
   );
   for (const item of plan.characterReferencePrompts || []) {
+    const audioClips = characterReferenceAudioClips(item);
     lines.push(
       "",
       `### ${item.characterName || "角色"}`,
       item.referenceImageAdded ? `参考图：已添加人物参考图${item.referenceImageName ? `（${item.referenceImageName}）` : ""}` : "参考图：未添加",
+      audioClips.length
+        ? `参考音色/叫声：${audioClips.map((clip) => `${clip.label}（${clip.durationSeconds.toFixed(2)} 秒）`).join(" / ")}`
+        : "参考音色/叫声：未添加",
       item.appearancePrompt || "",
       item.referenceImageNotes ? `参考图吸收：${item.referenceImageNotes}` : "",
       `一致性标签：${(item.consistencyTags || []).join(" / ")}`
