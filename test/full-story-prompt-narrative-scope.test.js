@@ -322,8 +322,12 @@ test("visibleAction 与 shotAndSound 不得出现不在画面里的角色名", (
   // 三种改写范式各要给出可照抄的写法，只讲禁令模型不知道该怎么落笔。
   assert.match(text, /不写「屋外传来李奶奶喊白子回家的声音」，写「屋外传来喊白子回家的声音」/u);
   assert.match(text, /不写「贴着「李奶奶」标签的快递盒」，写「贴着手写标签的快递盒」/u);
-  assert.match(text, /不写 location「李奶奶家门口」或「奶奶家的客厅」，只写「门口」或「客厅」/u);
-  assert.doesNotMatch(text, /location 照写「李奶奶家门口」/u);
+  assert.match(text, /location 照写「奶奶家的客厅」「李奶奶家门口」/u);
+  // 2026-09-02 实测卡住的写法：location 带归属没问题（它不在扫描范围内），
+  // 是 visibleAction 把那个短语原样抄了一遍。诱因写在这里，别写成「location 也不许写归属」。
+  assert.match(text, /不要再抄进 visibleAction/u);
+  assert.match(text, /奶奶正在卧室睡觉、根本没出镜，抄进来就等于声称她在画面里/u);
+  assert.doesNotMatch(text, /地点的归属称呼\*\*也不得放进 location\*\*/u);
 });
 
 // 去名字不能滑成去细节，否则会直接伤到 videoPrompt 的可渲染信息与生活质感约束。
@@ -331,8 +335,8 @@ test("只去名字不去可见细节，且说明名字在其它字段照常保�
   const text = prompt();
   assert.match(text, /\*\*去掉的只有名字，不是可见细节。\*\*/u);
   assert.match(text, /「一个快递盒」不合格/u);
-  assert.match(text, /名字在 dialogue 的台词正文、beatSheet、characterBible、shootingNotes 里可以自由出现/u);
-  assert.match(text, /location、visibleAction 和 shotAndSound 必须遵守各自的无专名规则/u);
+  assert.match(text, /名字在 location、dialogue 的台词正文、beatSheet、characterBible、shootingNotes 里都可以自由出现/u);
+  assert.match(text, /只有 visibleAction 和 shotAndSound 这两个可见事实字段要干净/u);
 });
 
 // 离场不单独做机制：它是同一条纪律的另一个触发点。前三版提示词都在跟模型争

@@ -4665,8 +4665,10 @@ test("完整剧情提示词禁止把垂直赛道的画风词写进 location", ()
   });
 
   assert.match(prompt, /location 只写这一场实际发生的可拍摄物理地点/u);
-  assert.match(prompt, /客厅场景只能写「客厅」，卧室只写「卧室」，厨房只写「厨房」/u);
-  assert.match(prompt, /「奶奶家的客厅」「李奶奶家门口」「小白子的卧室」「某公司办公室」都不合格/u);
+  // location 必须保留归属：它是 Foundation 判断「哪几场是同一个地点」的唯一信号。
+  // 两个不同的院子都写成「院子」会被合并成同一个 LOC 并共用场景参考，且无人报错。
+  assert.match(prompt, /写「奶奶家的客厅」和「小白子家的客厅」，不要都写成「客厅」/u);
+  assert.match(prompt, /两个「客厅」会被合并成同一个房间/u);
   assert.match(prompt, /不得把垂直赛道、画风、渲染风格、光线、色调或画质词写进 location/u);
   // 反例与正例都要在提示词里出现，模型才知道边界在哪。
   assert.match(prompt, /「日系2\.5D新海诚光景风格的草地」是错误输出/u);

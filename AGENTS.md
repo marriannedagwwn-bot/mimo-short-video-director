@@ -492,7 +492,9 @@ Full Story 输出必须满足：
 - 道具上的名字只写可见特征：「贴着手写标签的快递盒」。
 - 地点的归属称呼也不得进入 `location`：不写「李奶奶家门口」或「奶奶家的客厅」，只写通用空间名称「门口」或「客厅」；归属关系确有剧情意义时放进 `beatSheet`、`characterBible` 或 `shootingNotes`。
 
-**去掉的只有名字，不是可见细节**——「一个快递盒」不合格，标签是视频模型该渲染的东西。名字在 `dialogue[].line`、`beatSheet`、`characterBible`、`shootingNotes` 里可以自由出现；`location`、`visibleAction` 与 `shotAndSound` 必须遵守各自的无专名规则。
+**去掉的只有名字，不是可见细节**——「一个快递盒」不合格，标签是视频模型该渲染的东西。名字在 `location`、`dialogue[].line`、`beatSheet`、`characterBible`、`shootingNotes` 里都可以自由出现；扫描只覆盖 `visibleAction` 与 `shotAndSound` 两个字段，`shotAndSound` 甚至不进 Animation 阶段的场次投影，因此这条规则实际不造成信息损失。
+
+**归属称呼放进 `location` 之后，不要再抄进 `visibleAction`。** 这是这条规则实测最常见的失败写法：`location` 写「奶奶家的客厅」，`visibleAction` 跟着写「小白子和芙芙猫在奶奶的客厅里玩」，而奶奶正在卧室睡觉、根本没出镜——抄过去就等于声称她在画面里，硬失败。正确写法是 `visibleAction` 只写「在客厅地毯上玩毛线球」。
 
 这条的价值在于**让现有校验器变正确，而不是让它变聪明**：裸子串匹配恰好就是它的判据，永远不需要语义判断。依据是 2026-08-31 取证——那三条豁免写在契约和提示词里，扫描却一条都没实现，回扫 180 份可解析历史输出，`FULL_STORY_SCENE_VISUAL_CHARACTER_MISSING` 命中 45 条，约三分之二是模型照提示词写了合法文本反被判失败。
 
@@ -502,9 +504,11 @@ Full Story 输出必须满足：
 
 登记只豁免 `shotAndSound`，绝不豁免 `visibleAction`：实际参与本场的人物必须写进 `visibleAction`，所以无法靠登记声源隐藏一个出镜角色。同名同时出现在两个字段时抛 `FULL_STORY_SCENE_SOUND_SOURCE_ALSO_VISIBLE`，不自动选边；登记了却未被 `shotAndSound` 引用是合法的；名称精确性与 `characters` 共用同一份判定。该字段不在局部纠错可写范围内，postpass 必须逐字冻结；`dialogue[].speaker` 仍必须逐字存在于同场 `characters`。旧 Story 缺该字段时行为不变。
 
-`location` 只写本场实际发生的**通用可拍摄物理空间名称**，不得带人物、角色、家庭、店铺、机构或品牌的专名与归属：客厅只写「客厅」，不能写「奶奶家的客厅」；门口、卧室、厨房、院子、办公室等同理。`creatorProfile.vertical` 里的风格词也不得流进 `location`：正确写法是「草地」，错误写法是「日系2.5D新海诚光景风格的草地」。视觉风格由下游 Animation Plan 的 `visualBible` 统一签发。
+`location` 只写本场实际发生的**可拍摄物理地点**，不是画风、光线或色调。`creatorProfile.vertical` 里的风格词不得流进 `location`：正确写法是「草地」，错误写法是「日系2.5D新海诚光景风格的草地」。视觉风格由下游 Animation Plan 的 `visualBible` 统一签发，在 Full Story 重复它会让每场地点看起来一模一样，反而丢掉地点本身的信息。
 
-该约束暂时只写在 `fullStoryPrompt` 硬约束里，**没有确定性校验兜底**；本次不修改 `characters`、Scene Contract 或服务端修复逻辑。上游 `sourceScriptReconstruction.scenes[].location` 不受此约束影响，它本来就只写原片观察到的地点。
+**同类空间必须靠归属或方位区分开**，`location` 是唯一能承载这个信息的字段。Animation Foundation 被要求「相同地点应复用同一个 sceneId……不同地点不得错误合并」，而它判断「是不是同一个地点」的信号只有 `location` 与 `visibleAction`——后者按上面的规则不许写归属。两个不同的院子都写成「院子」，就会被合并成同一个 LOC、共用一套场景参考，渲染成同一个房间，**且没有任何校验器会报错**。回扫 124 份历史故事，62% 的 `location` 带归属称呼，剥掉后有 2.4% 出现真实碰撞（「院子」← 小白子家院子 / 小禾家院子；「门口」← 爷爷家门口 / 奶奶家门口）。
+
+该约束写在 `fullStoryPrompt` 硬约束里，**没有确定性校验兜底**——判断一个词属于地点还是画风需要语义判断，写死词表会误伤「日系村落」这类合法地名，而 Full Story 失败的代价很高。上游 `sourceScriptReconstruction.scenes[].location` 不受此约束影响，它本来就只写原片观察到的地点。
 
 
 ---

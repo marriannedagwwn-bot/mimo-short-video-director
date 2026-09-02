@@ -760,7 +760,7 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - sceneScript 每场的 location、characters 和 visibleAction 都必须完整填写：location、visibleAction 必须是非空字符串，characters 必须是角色名称字符串数组（键必须存在）。
 - 无人出镜的场次，characters 的正确值就是空数组 []：空院子里的雨水、屋外烟囱远景、桌面道具特写、城市建立镜头、角色离开后留下的空镜、纯转场环境镜头都属于这一类。**不得为了填满字段硬塞一个没有出镜的角色**。空镜场次照样可以有 visibleAction（写画面里实际发生的可见变化）、shotAndSound 和 offscreenSoundSources（空院子配画外呼喊是合法组合）。
 - 但整片至少要有一个场次的 characters 非空：单场空镜合法，全片没有任何角色出镜则不成立。
-- location 只写这一场实际发生的可拍摄物理地点，并且只使用不含归属和专名的通用空间名称：客厅场景只能写「客厅」，卧室只写「卧室」，厨房只写「厨房」；院子、门口、草地、河边、小桥等同理。禁止写人物、角色、家庭、店铺、机构或品牌的名称和归属关系，例如「奶奶家的客厅」「李奶奶家门口」「小白子的卧室」「某公司办公室」都不合格，必须分别简化为「客厅」「门口」「卧室」「办公室」。不得把垂直赛道、画风、渲染风格、光线、色调或画质词写进 location：「日系2.5D新海诚光景风格的草地」是错误输出，正确写法是「草地」。视觉风格由下游 Animation Plan 的 visualBible 统一签发，在这里重复它只会让每场地点看起来一模一样，反而丢失了地点本身的信息。
+- location 只写这一场实际发生的可拍摄物理地点，例如「村口老树下」「邻居爷爷家院子」「河边小桥」。**同类空间要靠归属或方位分得开**：两场戏都在客厅时，写「奶奶家的客厅」和「小白子家的客厅」，不要都写成「客厅」——下游要靠 location 判断哪几场是同一个地点、该不该复用同一套场景参考，两个「客厅」会被合并成同一个房间。不得把垂直赛道、画风、渲染风格、光线、色调或画质词写进 location：「日系2.5D新海诚光景风格的草地」是错误输出，正确写法是「草地」。视觉风格由下游 Animation Plan 的 visualBible 统一签发，在这里重复它只会让每场地点看起来一模一样，反而丢失了地点本身的信息。
 - characters 中已锁定的主角、被关爱对象和已登记帮助者必须使用 characterBible 中的标准名称，不得添加括号、身份、外观说明、空格后缀、别名或昵称。场次型临时配角可以使用独立且明确的名称，不必强行加入 helpers。
 - dialogue 只使用结构化数组；每条 speaker 必须逐字存在于同场 characters。当前结构不支持 offscreen、voiceOver、narrator 或 isVisible 标记，不得要求系统根据台词正文或 shotAndSound 猜测画外说话人。
 - **画外说话人的台词不写进 dialogue，把原话连「」一起写进同场 shotAndSound。** 例：shotAndSound 写「门内传出一个苍老女声「谁呀？」」。shotAndSound 会完整传给下游镜头阶段，写在那里的原话才有机会被视频模型说出来；只写「传出说话声」而不写说了什么，那句台词就不会被说出来。说话人的名字仍然不写——按上面的写法用「一个苍老女声」这类描述代替。
@@ -770,8 +770,8 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - **反过来，visibleAction 和 shotAndSound 里不得出现任何不在本场画面里的角色名。** 这两个字段是可见事实字段，名字写进去就等于声称这个人在画面里。不在画面里的人有三种常见写法，都必须改写成不带名字的说法：
   - 画外声音**不带主体**：不写「屋外传来李奶奶喊白子回家的声音」，写「屋外传来喊白子回家的声音」或「屋外传来一个苍老女声的呼喊」。观众听下去自然知道是谁，先不点名反而更有悬念。
   - 写在道具上的名字**只写可见特征、不写名字**：不写「贴着「李奶奶」标签的快递盒」，写「贴着手写标签的快递盒」。
-  - 地点的归属称呼**也不得放进 location**：不写 location「李奶奶家门口」或「奶奶家的客厅」，只写「门口」或「客厅」。归属关系确有剧情意义时，写进 beatSheet、characterBible 或 shootingNotes；不得为了保留归属，把不在画面里的角色名移入 visibleAction 或 shotAndSound。
-- **去掉的只有名字，不是可见细节。** 「贴着手写标签的快递盒」合格，「一个快递盒」不合格——标签是视频模型该渲染的东西，不能渲染的只有那三个字。同理「屋外传来一个苍老女声的呼喊」比「屋外有声音」好。名字在 dialogue 的台词正文、beatSheet、characterBible、shootingNotes 里可以自由出现；location、visibleAction 和 shotAndSound 必须遵守各自的无专名规则。
+  - 地点的归属称呼**放进 location，但不要再抄进 visibleAction**：location 照写「奶奶家的客厅」「李奶奶家门口」，visibleAction 只写「小白子和芙芙猫在客厅地毯上玩毛线球」「小白子站在木门前，举起手又放下」。名字在 location 里完整保留，不会丢。把 location 那个短语原样抄一遍进 visibleAction 是这里最常见的失败写法：奶奶正在卧室睡觉、根本没出镜，抄进来就等于声称她在画面里。
+- **去掉的只有名字，不是可见细节。** 「贴着手写标签的快递盒」合格，「一个快递盒」不合格——标签是视频模型该渲染的东西，不能渲染的只有那三个字。同理「屋外传来一个苍老女声的呼喊」比「屋外有声音」好。名字在 location、dialogue 的台词正文、beatSheet、characterBible、shootingNotes 里都可以自由出现，只有 visibleAction 和 shotAndSound 这两个可见事实字段要干净。
 - **有人在这一场离场时，先决定这一场到底有没有他。** characters 是你对这一场的选角声明，visibleAction 不能演一个你没选的角色。三条出路自己挑：①他确实在画面里露了脸（哪怕只是转身走开的背影）——写进 characters；②这一场你想让他不在——**写离场的结果，不写离场的动作**，例如不写「奶奶转身回屋拿更多被子」，写「木门在身后合上，晾衣绳边只剩下小白子」；③这个动作其实属于上一场——挪到上一场结尾，本场从他走后开始。实测反面例子：visibleAction 以「奶奶转身回屋拿更多被子」开头、characters 却只有主角和宠物，这三条一条都没做到。
 - 名字实在无法从 shotAndSound 里去掉时（例如身份就是本场信息本身），才把该角色名登记到 offscreenSoundSources。它只豁免 shotAndSound，**绝不豁免 visibleAction**：实际出镜的角色必须同时写进 characters 和 visibleAction，登记成声源不会豁免这条要求。同一个名字不得同时出现在 characters 和 offscreenSoundSources。没有这种情况时保持空数组。
 
