@@ -86,12 +86,11 @@
         </div>
         <label class="field">
           <span>固定角色 <b>必填</b></span>
-          <small class="field-hint">写性格、处事方式和习惯动作。写死剧情功能（如「村里的热心帮手」「送信员」）会被签成角色必需事实并传给后续每个阶段，导致所有候选共用同一个故事引擎。</small>
-          <textarea id="fixedCharacter" rows="5" placeholder="例：阿岚，28 岁社区修理师，寡言，习惯先动手后解释；标志动作是把工具按尺寸排齐。"></textarea>
+          <textarea id="fixedCharacter" rows="5" placeholder="填写角色名称，以及必须长期保持一致的身份、外观、性格、处事方式和习惯动作；不要写死某一集的剧情任务或功能。"></textarea>
         </label>
         <label class="field">
           <span>垂直赛道 <b>必填</b></span>
-          <input id="vertical" type="text" placeholder="例：家电维修 / 宠物救助 / 乡村美食">
+          <input id="vertical" type="text" placeholder="填写账号长期稳定的内容领域、题材边界与目标受众；不要写某一集的具体剧情。">
         </label>
         <label class="field">
           <span>创作限制 <small>可选</small></span>
@@ -99,8 +98,7 @@
         </label>
         <label class="field">
           <span>角色表情规则 <small>可选</small></span>
-          <small class="field-hint">写「情绪 = 可见特征」的映射，按角色分行。只影响表情与表演，不改角色外观；改它不会作废已生成的内容，下次生成分镜时生效。</small>
-          <textarea id="characterExpressionRules" rows="3" placeholder="例：芙芙猫：开心=眯眼、嘴呈 w 形、耳朵朝前；委屈=眼下挂泪珠、耳朵向两侧压平；惊讶=瞳孔放大、呆毛竖直。"></textarea>
+          <textarea id="characterExpressionRules" rows="3" placeholder="按角色分行填写“情绪 = 可见特征”；只描述表情与表演，不改变角色身份、外观或物种；下次生成动画镜头生产包时生效。"></textarea>
         </label>
         <label class="field inline-field">
           <span>主题变体数量</span>

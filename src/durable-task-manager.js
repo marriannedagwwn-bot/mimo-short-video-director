@@ -549,7 +549,9 @@ export class DurableTaskManager {
         lastProgressAt: now,
         watchdogDueAt: null,
         error,
-        usage: readModelUsageFromError(error) || aggregateChildUsage(index, current) || current.usage
+        // 父任务的 error usage 只对应刚失败的那个子调用；一旦已有子任务，
+        // Task Store 中的逐子任务汇总才是这次父任务的完整计费口径。
+        usage: aggregateChildUsage(index, current) || readModelUsageFromError(error) || current.usage
       }, { activeOnly: true });
       this.taskStore.appendEventUnlocked(index, { type: `task.${status}`, taskId, createdAt: now });
       if (current.targetArtifactIds.length === 1) {

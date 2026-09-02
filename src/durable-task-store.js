@@ -136,7 +136,7 @@ export class DurableTaskStore {
       frozenDependencies: normalizeDependencies(input.frozenDependencies || []),
       modelSnapshot: sanitizeTaskValue(input.modelSnapshot || {}, 0),
       progress: sanitizeTaskValue(input.progress || {}, 0),
-      usage: sanitizeTaskValue(input.usage || null, 0),
+      usage: sanitizeTaskUsage(input.usage || null),
       resultArtifactRefs: normalizeResultRefs(input.resultArtifactRefs || []),
       notices: sanitizeStringArray(input.notices),
       error: null,
@@ -174,7 +174,7 @@ export class DurableTaskStore {
     if (patch.status !== undefined) task.status = normalizeTaskStatus(patch.status);
     if (patch.phase !== undefined) task.phase = safePhase(patch.phase);
     if (patch.progress !== undefined) task.progress = sanitizeTaskValue(patch.progress, 0);
-    if (patch.usage !== undefined) task.usage = sanitizeTaskValue(patch.usage, 0);
+    if (patch.usage !== undefined) task.usage = sanitizeTaskUsage(patch.usage);
     if (patch.modelSnapshot !== undefined) task.modelSnapshot = sanitizeTaskValue(patch.modelSnapshot, 0);
     if (patch.resultArtifactRefs !== undefined) task.resultArtifactRefs = normalizeResultRefs(patch.resultArtifactRefs);
     if (patch.notices !== undefined) task.notices = sanitizeStringArray(patch.notices);
@@ -370,6 +370,30 @@ function sanitizeStringArray(value) {
   return value.slice(0, 100).map((item) => redactSensitiveText(item, 2_000));
 }
 
+function sanitizeTaskUsage(value) {
+  const sanitized = sanitizeTaskValue(value, 0);
+  if (!value || typeof value !== "object" || Array.isArray(value) || !sanitized) return sanitized;
+  const promptTokens = value.promptTokens;
+  if (typeof promptTokens === "number" && Number.isFinite(promptTokens) && promptTokens >= 0) {
+    sanitized.promptTokens = promptTokens;
+  }
+  if (Array.isArray(value.byModel) && Array.isArray(sanitized.byModel)) {
+    sanitized.byModel.forEach((item, index) => {
+      const source = value.byModel[index];
+      const modelPromptTokens = source?.promptTokens;
+      if (
+        item && typeof item === "object" && !Array.isArray(item)
+        && typeof modelPromptTokens === "number"
+        && Number.isFinite(modelPromptTokens)
+        && modelPromptTokens >= 0
+      ) {
+        item.promptTokens = modelPromptTokens;
+      }
+    });
+  }
+  return sanitized;
+}
+
 function sanitizeTaskValue(value, depth) {
   if (depth > 5) return null;
   if (value === null || value === undefined) return value ?? null;
@@ -381,7 +405,7 @@ function sanitizeTaskValue(value, depth) {
   for (const [key, entry] of Object.entries(value).slice(0, 200)) {
     if (
       /prompt|dataurl|base64|cookie|authorization|api.?key|secret/iu.test(key)
-      && !/promptDigest$/iu.test(key)
+      && !/^promptDigest$/iu.test(key)
     ) continue;
     result[String(key).slice(0, 120)] = sanitizeTaskValue(entry, depth + 1);
   }

@@ -1,5 +1,10 @@
 import { syncShotCharacterReference } from "./character-reference-sync.js";
 import { formatStageUsageSuffix, mergeStageUsage } from "./token-usage-format.js";
+import { storyPackageFilename } from "./export-filename.js";
+import {
+  createDirectorArtifactSynchronizer,
+  formatDirectorCompletionStatus
+} from "./director-pipeline-ui.js";
 import { compileShotNegativePrompt } from "./negative-prompts.js";
 import { buildShotFrameImagePrompt, compileShotFrameNegativePrompt } from "./shot-frame-prompt.js";
 import { buildCharacterReferenceImagePrompt } from "./character-reference-prompt.js";
@@ -212,6 +217,21 @@ const elements = {
   generatedImagePreview: $("#generatedImagePreview"), generatedImagePreviewImage: $("#generatedImagePreviewImage"),
   generatedImagePreviewCaption: $("#generatedImagePreviewCaption"), closeGeneratedImagePreview: $("#closeGeneratedImagePreview")
 };
+
+const directorArtifactSynchronizer = createDirectorArtifactSynchronizer({
+  reloadRun: (task) => reloadActiveProductionRun(task),
+  renderCompletedStages: ({ previousCompletedStages, completedStages }) => {
+    renderRestoredDirectorArtifacts({
+      fromStage: previousCompletedStages,
+      toStage: completedStages
+    });
+  },
+  onReloadError: (error) => {
+    // 一次临时 fetch 失败不应打断 Durable Task attach；checkpoint 不前移，
+    // 下一次轮询会对同一个 completedStages 再尝试一次。
+    console.warn("已完成阶段暂时无法同步，等待下一次任务轮询重试", error);
+  }
+});
 
 const MODEL_STAGE_DEFS = [
   { key: "analysis", label: "参考片分析", hint: "视频解析、定位、人物、节奏", capability: "视觉模型", capabilityKind: "vision" },
@@ -723,9 +743,11 @@ async function runWorkflow() {
     elements.releaseActiveTasks.classList.remove("hidden");
     const completedTask = await waitForDurableTask(task, updateDirectorTaskProgress);
     recordStageUsage(completedTask.usage);
-    await reloadActiveProductionRun();
-    renderRestoredDirectorArtifacts();
-    elements.pipelineUsage.textContent = `AI 导演阶段完成${formatStageUsageSuffix(completedTask.usage)}`;
+    await directorArtifactSynchronizer.sync(completedTask);
+    elements.pipelineUsage.textContent = formatDirectorCompletionStatus(
+      completedTask,
+      formatStageUsageSuffix(completedTask.usage)
+    );
     elements.pipelineUsage.className = "story-status ready";
     elements.export.classList.remove("hidden");
     elements.variants.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -908,19 +930,27 @@ async function forceReleaseActiveTasks() {
   validateReady();
 }
 
-async function reloadActiveProductionRun() {
+async function reloadActiveProductionRun(expectedProduction = state.production) {
+  const projectId = String(expectedProduction?.projectId || "");
+  const runId = String(expectedProduction?.runId || "");
+  if (!projectId || !runId) throw new Error("当前没有可重新加载的 Production Run");
   const run = await api("/api/production/run/load", {
-    projectId: state.production.projectId,
-    runId: state.production.runId,
+    projectId,
+    runId,
     includeContent: true
   });
+  if (state.production.projectId !== projectId || state.production.runId !== runId) {
+    const error = new Error("Production Run 已切换，已忽略旧任务的迟到同步结果");
+    error.code = "DIRECTOR_RUN_SYNC_STALE";
+    throw error;
+  }
   state.production = productionStateFromRun(run);
   restoreRunArtifacts(run.latestArtifacts || {});
   persistActiveProductionRun();
   return run;
 }
 
-function updateDirectorTaskProgress(task) {
+async function updateDirectorTaskProgress(task) {
   const artifactToStage = {
     referenceAnalysis: "analysis",
     sourceScriptReconstruction: "script",
@@ -943,17 +973,39 @@ function updateDirectorTaskProgress(task) {
     ? `AI 导演任务排队中${model ? ` · ${model}` : ""}`
     : `AI 导演执行中 ${completedCount}/5${model ? ` · ${model}` : ""}`;
   elements.pipelineUsage.className = "story-status active";
+  await directorArtifactSynchronizer.sync(task);
 }
 
-function renderRestoredDirectorArtifacts() {
-  if (state.output.referenceAnalysis) { renderAnalysis(state.output.referenceAnalysis); setStage("analysis", "done"); }
-  if (state.output.sourceScriptReconstruction) { renderScript(state.output.sourceScriptReconstruction); setStage("script", "done"); }
-  if (state.output.creativeBrief) { renderBrief(state.output.creativeBrief); setStage("brief", "done"); }
-  if (state.output.visualGuardrails) { renderVisualGuardrails(state.output.visualGuardrails); setStage("guardrails", "done"); }
-  if (state.output.themeVariants) { renderVariants(state.output.themeVariants); setStage("variants", "done"); }
+function renderRestoredDirectorArtifacts({ fromStage = 0, toStage = 5 } = {}) {
+  const stages = [
+    ["referenceAnalysis", "analysis", renderAnalysis],
+    ["sourceScriptReconstruction", "script", renderScript],
+    ["creativeBrief", "brief", renderBrief],
+    ["visualGuardrails", "guardrails", renderVisualGuardrails],
+    ["themeVariants", "variants", renderVariants]
+  ];
+  stages.slice(Math.max(0, fromStage), Math.max(0, toStage)).forEach(([artifactId, stage, render]) => {
+    if (!state.output[artifactId]) return;
+    render(state.output[artifactId]);
+    setStage(stage, "done");
+  });
+}
+
+function renderedDirectorStageCount() {
+  const artifactIds = [
+    "referenceAnalysis",
+    "sourceScriptReconstruction",
+    "creativeBrief",
+    "visualGuardrails",
+    "themeVariants"
+  ];
+  let count = 0;
+  while (count < artifactIds.length && state.output[artifactIds[count]]) count += 1;
+  return count;
 }
 
 function resetDirectorClientState() {
+  directorArtifactSynchronizer.reset();
   state.output = {};
   state.characterBoundaryProfile = null;
   state.fullStories = {};
@@ -5171,7 +5223,8 @@ async function restoreActiveProductionRun() {
     if (pipeline) {
       state.running = true;
       setRunning(true);
-      updateDirectorTaskProgress(pipeline);
+      directorArtifactSynchronizer.markRendered(pipeline, renderedDirectorStageCount());
+      void updateDirectorTaskProgress(pipeline);
       void attachRestoredDirectorPipeline(pipeline);
     }
     for (const task of activeTasks.filter((item) => !item.parentTaskId && item.kind !== "directorPipeline")) {
@@ -5189,9 +5242,11 @@ async function restoreActiveProductionRun() {
 async function attachRestoredDirectorPipeline(task) {
   try {
     const completed = await waitForDurableTask(task, updateDirectorTaskProgress);
-    await reloadActiveProductionRun();
-    renderRestoredDirectorArtifacts();
-    elements.pipelineUsage.textContent = `AI 导演阶段完成${formatStageUsageSuffix(completed.usage)}`;
+    await directorArtifactSynchronizer.sync(completed);
+    elements.pipelineUsage.textContent = formatDirectorCompletionStatus(
+      completed,
+      formatStageUsageSuffix(completed.usage)
+    );
     elements.pipelineUsage.className = "story-status ready";
   } catch (error) {
     elements.pipelineUsage.textContent = error.task?.usage
@@ -5516,8 +5571,7 @@ async function exportCurrentStoryPackage() {
   if (!pack?.fullStory) return setStoryStatus("请先生成完整剧情，再导出当前生产包。", "error");
   try {
     const sealed = await sealProductionPackage(pack);
-    const suffix = sealed.animationPlan ? "动画生产包" : "完整剧情";
-    downloadJson(sealed, `短视频${suffix}-${sealed.selectedVariant?.id || "variant"}-${Date.now()}.json`);
+    downloadJson(sealed, storyPackageFilename(sealed));
   } catch (error) {
     setStoryStatus(error.message || "生产包签发失败。", "error");
   }
@@ -5528,8 +5582,7 @@ async function exportStoryTestPackage() {
   if (!pack?.fullStory) return setStoryPackageStatus("请先生成或导入完整剧情，再导出测试包。", "error");
   try {
     const sealed = await sealProductionPackage(pack);
-    const suffix = sealed.animationPlan ? "完整剧情-动画测试包" : "完整剧情测试包";
-    downloadJson(sealed, `短视频${suffix}-${sealed.selectedVariant?.id || "variant"}-${Date.now()}.json`);
+    downloadJson(sealed, storyPackageFilename(sealed, { testPackage: true }));
     setStoryPackageStatus(`已导出签名的 ${sealed.animationPlan ? "完整剧情 + 动画生产包" : "完整剧情"} 测试包。`, "ready");
   } catch (error) {
     setStoryPackageStatus(error.message || "测试包签发失败。", "error");

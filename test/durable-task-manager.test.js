@@ -9,6 +9,7 @@ import { DurableTaskStore } from "../src/durable-task-store.js";
 import { DurableTaskManager } from "../src/durable-task-manager.js";
 import { contentDigest } from "../src/production-lineage.js";
 import { getConfig } from "../src/config.js";
+import { recordModelUsage, runWithUsageAccounting } from "../src/token-usage.js";
 
 async function withManager(run, managerOptions = {}) {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-durable-task-test-"));
@@ -141,6 +142,66 @@ test("director pipeline keeps running after the browser poller disappears at Cre
     assert.equal(completed.task.status, "completed");
     const finalRun = await productionStore.loadRun({ ...productionRun, includeContent: false });
     assert.ok(targets.every((artifactId) => finalRun.latestArtifacts[artifactId]?.lineage?.status === "current"));
+  });
+});
+
+test("a failed director parent aggregates completed and failing child usage", async () => {
+  await withManager(async ({ productionStore, manager }) => {
+    const productionRun = await productionStore.createRun({ projectId: "project-parent-failed-usage" });
+    const firstUsage = {
+      calls: 1,
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      costCny: 0.1,
+      costKnown: true,
+      byModel: [{
+        provider: "Fixture",
+        model: "first-model",
+        calls: 1,
+        promptTokens: 10,
+        completionTokens: 5,
+        totalTokens: 15,
+        costCny: 0.1
+      }]
+    };
+    const created = await manager.createTask({
+      ...productionRun,
+      kind: "directorPipeline",
+      targetArtifactIds: ["referenceAnalysis", "sourceScriptReconstruction"],
+      execute: async (_input, context) => {
+        await context.runChild({
+          kind: "analysis",
+          targetArtifactIds: ["referenceAnalysis"],
+          input: { stage: 1 },
+          execute: async () => ({ usage: firstUsage })
+        });
+        await context.runChild({
+          kind: "reconstruction",
+          targetArtifactIds: ["sourceScriptReconstruction"],
+          input: { stage: 2 },
+          execute: async () => runWithUsageAccounting(async () => {
+            recordModelUsage({
+              provider: "Fixture",
+              model: "failed-model",
+              usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 }
+            });
+            throw new Error("fixture provider failure");
+          }, {
+            prices: new Map([["failed-model", { inputPerMillion: 1_000, outputPerMillion: 2_000 }]])
+          })
+        });
+      }
+    });
+
+    const terminal = await manager.waitForTask({ ...productionRun, taskId: created.task.taskId });
+    assert.equal(terminal.task.status, "failed");
+    assert.equal(terminal.task.usage.calls, 2);
+    assert.equal(terminal.task.usage.promptTokens, 30);
+    assert.equal(terminal.task.usage.completionTokens, 10);
+    assert.equal(terminal.task.usage.totalTokens, 40);
+    assert.equal(terminal.task.usage.costCny, 0.13);
+    assert.deepEqual(terminal.task.usage.byModel.map((item) => item.model), ["first-model", "failed-model"]);
   });
 });
 
@@ -799,13 +860,24 @@ test("task paths reject traversal and terminal reasons redact data URLs", async 
       targetArtifactIds: ["characterImages:V1:0"],
       progress: {
         prompt: "do not persist",
+        promptTokens: "not usage and must not bypass prompt redaction",
         promptDigest: "a".repeat(64),
         imageDataUrl: `data:image/png;base64,${"A".repeat(120)}`
+      },
+      usage: {
+        calls: 1,
+        promptTokens: 12,
+        completionTokens: 3,
+        totalTokens: 15,
+        byModel: [{ provider: "Fixture", model: "fixture-model", promptTokens: 12, completionTokens: 3, totalTokens: 15 }]
       }
     });
     assert.equal(created.task.progress.prompt, undefined);
+    assert.equal(created.task.progress.promptTokens, undefined);
     assert.equal(created.task.progress.imageDataUrl, undefined);
     assert.equal(created.task.progress.promptDigest, "a".repeat(64));
+    assert.equal(created.task.usage.promptTokens, 12);
+    assert.equal(created.task.usage.byModel[0].promptTokens, 12);
     await productionStore.recordStage({
       ...productionRun,
       stageId: "referenceAnalysis",
