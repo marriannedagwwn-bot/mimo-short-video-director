@@ -1,0 +1,20 @@
+本提交实际包含两件不相干的工作，提交信息只描述了第一件。
+
+【提交信息描述的】原片空间与对白密度投影，约 180 行：
+  src/prompts.js（sourceSpatialText，49 行）
+  test/full-story-prompt-narrative-scope.test.js（60 行）
+  CLAUDE.md 中「原片空间与对白密度投影（2026-09-01）」一段
+
+【提交信息未提及的】Durable Task v1 整套实现，约 2900 行：
+  src/durable-task-manager.js（1070）、src/durable-task-store.js（418）
+  test/durable-task-manager.test.js（1136）
+  src/durable-task-context.js、src/production-run-coordinator.js
+  src/production-state-store.js（262 行改动）、src/config.js（DURABLE_TASK_* 并发配置）
+  qwen/mimo/deepseek/jimeng client 与 shot-video-generator 挂 provider call 钩子
+  test/production-lineage.test.js（77）
+  CLAUDE.md 中「Durable Task v1（2026-09-01）」四段
+
+成因：git add -A -- src test CLAUDE.md 把工作区里另一条在建功能一并扫入。
+两部分都通过测试且已在 CLAUDE.md 记录契约，不是误提交的垃圾代码。
+未拆分：已推送 origin/codex/story-quality-phase1，其后压有 12 个继续建设
+Durable Task 的提交，改写历史的风险大于收益。
