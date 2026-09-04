@@ -530,3 +530,26 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
   .character-audio-clip audio { grid-column: 1 / -1; grid-row: 2; }
   footer { padding: 20px 16px; }
 }
+
+/* 剧情体检面板。配色全部复用既有的三对小字色底组合，不自创色板：
+   严重=#b42318/#fff3f0（同 .compiler-flag.no）、建议=#b54708/#fff3e8（同 .mode-dramatic）、
+   小问题与「只沾边」=muted/#efebe4（同 .compiler-flag）、已兑现=var(--green)/#edf6f1（同 .risk） */
+.story-review { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.story-review-hint { margin-left: 10px; color: var(--muted); font-size: 9px; }
+.story-review-body { margin-top: 12px; }
+.story-review-status { color: var(--muted); font-size: 10px; line-height: 1.7; }
+.story-review-status.error { color: #b42318; }
+.story-review-foot { margin-top: 12px; color: var(--muted); font-size: 9px; }
+.review-headline { padding: 9px 12px; border-radius: 8px; background: #efebe4; font-size: 10px; font-weight: 750; }
+.review-check, .review-issue { margin-top: 10px; padding: 11px 13px; border-radius: 10px; background: #fff; border: 1px solid var(--line); font-size: 10px; line-height: 1.7; }
+.review-check p, .review-issue p { margin: 3px 0 0; }
+.review-check-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.review-check-head .scene-id { position: static; width: auto; height: auto; padding: 3px 7px; }
+.review-verdict, .review-severity { padding: 3px 7px; border-radius: 5px; font-size: 8px; white-space: nowrap; }
+.review-verdict.verdict-not_depicted, .review-severity.severity-BLOCKER { color: #b42318; background: #fff3f0; }
+.review-verdict.verdict-partially_depicted, .review-severity.severity-MINOR { color: var(--muted); background: #efebe4; }
+.review-verdict.verdict-depicted { color: var(--green); background: #edf6f1; }
+.review-severity.severity-MAJOR { color: #b54708; background: #fff3e8; }
+.review-scenes { color: var(--muted); font-size: 9px; }
+.review-evidence { color: var(--muted); }
+.review-issue.severity-BLOCKER { border-color: rgba(180, 35, 24, .3); }

@@ -639,6 +639,46 @@ function sourceDialogueStyleText(referenceAnalysis, sourceScriptReconstruction) 
 // （院落门口、院落内，密度 0.45），六场大动作——敲竹竿、爬着追枣、扣锅躲枣雨、
 // 洗枣、趴桌听收音机、推车出门——全在同一个院子里完成。
 // 大动作不需要换景，这一条只有拿原片当锚才说得清楚。
+// 原片第一场的实际形状。**不写死任何数值，全部从 sourceScriptReconstruction 现算**，
+// 换参考片自动跟着变。
+//
+// 起因：5 份生产包的第一场全是「小白子背着书包走在放学路上 / 坐在长椅上」——
+// 主角独自前往某处。而参考片《帮奶奶捐旧衣服》的第一场是三个角色、活动已经在进行中，
+// 而且全片最大的萌点（咕嘎趴在衣服上压平、自称「咕嘎牌熨斗」）就在这里。
+// 回扫 124 份历史 Full Story：40% 第一场只有 ≤1 个角色，35% 开头是移动/抵达措辞。
+// ChatGPT 评分里「实际前 3 秒停留力」在每一版都是最弱维度之一。
+//
+// 这是 Prompt 生成约束，**没有确定性校验兜底**——判断一个开场算不算「已经在进行中」
+// 需要语义判断，写死词表会误伤「她推门进屋，锅已经在灶上响」这类合法写法。
+function sourceOpeningShapeText(sourceScriptReconstruction) {
+  const scenes = sourceScriptReconstruction?.scenes;
+  if (!Array.isArray(scenes) || !scenes.length) return "";
+  const first = scenes[0];
+  if (!first || typeof first !== "object") return "";
+
+  const characters = Array.isArray(first.characters)
+    ? first.characters.map((name) => String(name || "").trim()).filter(Boolean)
+    : [];
+  const actions = Array.isArray(first.visibleActions)
+    ? first.visibleActions.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  if (!characters.length && !actions.length) return "";
+
+  const lines = ["\n\n原片第一场是怎么开的（本片第一场应当向它靠拢）："];
+  const range = String(first.timeRange || "").trim();
+  if (characters.length) {
+    lines.push(`原片开场${range ? `（${range}）` : ""}画面里就有 ${characters.length} 个角色：${characters.join("、")}。`);
+  }
+  if (actions.length) {
+    lines.push(`开拍时那件事**已经在进行中**，不是有人正赶过去：${actions.slice(0, 3).join("；")}。`);
+  }
+  lines.push("**本片第一场不要写成「主角走在路上 / 放学路过 / 坐着等待」这类前往与抵达。**"
+    + "镜头切进来的第一秒，那件事就该已经在发生，主角要么已经身处其中，要么下一拍就被卷进去。"
+    + "同时把本片最好的那个身体动作萌点尽量放在开头，而不是留到中段——"
+    + "原片就是这么做的，它把全片最大的笑点放在了第一场。");
+  return lines.join("\n");
+}
+
 function sourceSpatialText(sourceScriptReconstruction) {
   const scenes = sourceScriptReconstruction?.scenes;
   if (!Array.isArray(scenes) || !scenes.length) return "";
@@ -705,11 +745,103 @@ function sourceTextureText(referenceAnalysis) {
   return `${lines.join("\n")}\n`;
 }
 
+// 剧情体检：Full Story 生成之后的独立验收，**只出报告，不改剧情、不阻断生产**。
+//
+// 它检查的是现有校验器全都查不到的一类问题：**字段声称的事，画面里到底有没有。**
+// `dramaticFunction: "建立悬念"` 只是一个标签，不能证明真有悬念；
+// `retentionPlan[].viewerQuestion` 写着一个问题，不能证明观众看得到引发那个问题的画面。
+// 依据是一份已签发 Plan 的实测：剧情与 Plan 都把「末班车已经开走」当作开场核心信息，
+// 而 A01 的画面里没有公交车驶离、没有末班车广播、没有司机关门——观众实际只看到
+// 一个女孩晚上坐在站台看地图，那个悬念从未成立过。现有校验器一条都抓不到。
+//
+// 覆盖率由服务端确定性核验（ensureStoryQualityReviewCoversStory），所以这里要把
+// 「逐条、同序、逐字回显」写死：模型漏掉任何一条都会当场失败，不存在蒙混过关。
+export function storyQualityReviewPrompt(fullStory) {
+  const scenes = Array.isArray(fullStory?.sceneScript) ? fullStory.sceneScript : [];
+  const retention = Array.isArray(fullStory?.retentionPlan) ? fullStory.retentionPlan : [];
+  return `你不是这个故事的作者，你是短视频剧情质量评审。
+
+完整剧情：${JSON.stringify(fullStory)}
+
+最高判断原则：**一个完全不知道创作背景的普通观众，刷到最终成片时会看到什么。**
+不要因为这份剧情通过了结构校验就认为它质量合格。
+
+## 一条压倒一切的纪律：声明不等于呈现
+
+剧情里的 dramaticFunction、emotionNode、viewerQuestion、payoff 全都只是**标签**，
+它们是作者的意图声明，**不是证据**。
+
+判断任何一条声明成不成立，只能回到这两个地方找依据：
+- sceneScript[].visibleAction —— 观众看得见的
+- sceneScript[].dialogue —— 观众听得见的
+
+shotAndSound、shootingNotes、beatSheet 都不算——它们是拍摄说明与叙事目标，不是画面本身。
+
+反例：某一场写着 dramaticFunction「建立悬念」、留存设计写着观众会问「末班车都走了，
+她为什么还不走」，而该场 visibleAction 只有「小白子坐在站台长椅上，手里捧着路线图」——
+既没有公交车驶离、也没有末班车广播、没有时刻表熄灭。观众实际只会看到
+「一个女孩晚上坐在公交站看地图」，根本不知道有末班车这回事。
+**这条声明就是 not_depicted。**
+
+## 你要产出三块内容
+
+### 一、sceneFunctionChecks —— 逐场核对，一场都不能少
+
+剧情共 ${scenes.length} 个场次，你必须按 sceneScript 的**原始顺序**给出**恰好 ${scenes.length} 项**。
+
+每项：
+- sceneId：逐字照抄该场的 sceneId
+- declaredFunction：**逐字照抄**该场 dramaticFunction 的原文，一个字都不能改、不能概括，**也不要在后面追加你自己的注解**
+- whatViewerSees：这一场观众实际看见与听见了什么（只依据 visibleAction 与 dialogue）
+- verdict：depicted（确实兑现）/ partially_depicted（沾边但不足）/ not_depicted（画面里根本没有）
+
+### 二、retentionChecks —— 逐条核对留存设计${retention.length ? `，共 ${retention.length} 条` : "（本片没有，给空数组）"}
+
+按 retentionPlan 的原始顺序给出**恰好 ${retention.length} 项**。
+
+每项：
+- index：从 0 开始的序号，与 retentionPlan 逐位对应
+- viewerQuestion：**逐字照抄**原文，不要追加注解
+- shownInScenes：哪些场次的画面真正提供了引发这个疑问所需的信息（可以为空数组）
+- whatViewerSees：观众实际看到的是什么
+- verdict：同上三选一
+
+### 三、issues —— 硬伤清单
+
+只写**真正拖低成片质量**的问题，最多 6 条，按严重程度排序。没有就给空数组。
+
+- BLOCKER：核心因果断裂；高潮不存在；关键信息只写在文字里、画面从未呈现；
+  物理不可能（同一只手同时做两件事、道具凭空出现或消失）；角色突然知道此前没有获得的信息。
+- MAJOR：连续 30 秒以上没有状态变化；固定搭档删掉后剧情完全不受影响；
+  高价值道具没有回收；情绪回报只靠哭、笑、夕阳、拥抱。
+- MINOR：台词在解释画面已有的信息；某段偏长；某个动作可以更自然。
+
+每条必须给：
+- sceneIds：涉及哪几场（必须是剧情里真实存在的 sceneId）
+- evidence：**从剧情里摘的原文**，不是你的概括
+- problem：具体问题
+- recommendedFix：具体到场次的最小修改建议
+
+不得提出新增角色或改变固定角色身份的建议。
+
+## 输出
+
+{"schemaVersion":"story-quality-review/1.0","selectedVariantId":"${String(fullStory?.selectedVariantId || "")}",
+ "retentionChecks":[{"index":0,"viewerQuestion":"","shownInScenes":[],"whatViewerSees":"","verdict":""}],
+ "sceneFunctionChecks":[{"sceneId":"","declaredFunction":"","whatViewerSees":"","verdict":""}],
+ "issues":[{"severity":"","type":"","sceneIds":[],"evidence":"","problem":"","recommendedFix":""}],
+ "summary":""}
+
+summary 写一句话：这个故事最值得保留的是什么、最该先修的是什么。
+${JSON_ONLY}`;
+}
+
 export function fullStoryPrompt(input) {
   const variant = input.variant || {};
   const sourceDialogueText = sourceDialogueStyleText(input.referenceAnalysis, input.sourceScriptReconstruction);
   const sourceTexture = sourceTextureText(input.referenceAnalysis);
   const sourceSpatial = sourceSpatialText(input.sourceScriptReconstruction);
+  const sourceOpening = sourceOpeningShapeText(input.sourceScriptReconstruction);
   // 用户在「设定创作宇宙」选的目标时长。窗口跟随目标而不是固定 45-90：
   // 原片 96 秒时若仍写「必须落在 45-90 秒内」，就与「与原片对齐」自相矛盾。
   // ±15% 给模型排场次的余地，又不至于跑偏一倍。
@@ -735,7 +867,7 @@ export function fullStoryPrompt(input) {
 创作限制：${input.creatorProfile?.constraints || "无"}
 选中主题变体：${JSON.stringify(variant)}
 creativeBrief：${JSON.stringify(input.creativeBrief)}
-referenceAnalysis 摘要：${JSON.stringify(input.referenceAnalysis || {})}${sourceDialogueText}${sourceTexture}${sourceSpatial}
+referenceAnalysis 摘要：${JSON.stringify(input.referenceAnalysis || {})}${sourceDialogueText}${sourceTexture}${sourceSpatial}${sourceOpening}
 sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstruction || {})}
 原片表面表达参考（不是正向内容禁词）：${forbiddenText}
 固定角色外观边界：${visualPolicyText}
@@ -756,6 +888,7 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - 生活细节：至少 2 场的 visibleAction 要包含一个**与主线任务无关或只有半相关**的生活动作或环境道具。（下面这个例子来自另一部参考片，只用来说明什么叫「与主线无关」，不要照抄它的内容）例：趴在木桌旁听收音机、老人摇着蒲扇站在门口目送——听收音机和摇蒲扇都不是"收枣"这个任务的一部分，但正是它们让院子像一个真实存在的地方，而不是一个任务演示台。这些细节只占一两句，不得挤掉主线动作。
 - 萌点必须是**动作**，不是形容，而且必须**由固定主角本人完成**——把萌点安排给配角或宠物不算数。至少一处萌点要是幅度大到一眼能看见的身体动作。反例：「她做了个可爱的动作」「表情很萌」——形容词不可拍。**皱眉、歪头、眨眼、抿嘴这类微表情不算萌点**，幅度太小；**宠物舔爪子、打呼噜同样不算**，那是环境细节不是主角的萌点。
 - 萌点还必须**同时承担剧情功能**，不能是贴上去的可爱装饰。判断标准用下面这个例子说明（同样来自另一部参考片，只示范判据，不要照抄内容）——铁锅头盔：①前因——爷爷刚提醒过会被枣砸到；②环境——乡村院落本来就有小铁锅；③人物——她会用笨拙又机灵的办法解决问题；④声音——枣噼里啪啦砸在锅上；⑤视觉——锅柄向后伸出，轮廓瞬间变滑稽；⑥后续——戴着锅继续把枣捡完。六条同时成立，所以它不是单纯的可爱动作，而是一个有因果功能的桥段。自查：把这个萌点删掉，剧情会不会缺一块？不会缺，就说明它只是装饰，重写一个。
+- **在两场或更多场次里出镜的角色，必须登记进 characterBible。** 主角写 protagonist，被照料对象写 careRecipient，其余一律写进 helpers[]——固定搭档（宠物、伙伴）尤其容易漏，它常常全片都在画面里却没有登记。这条有确定性校验，漏登记会直接判失败。只出镜一场的临时配角（路过的邻居、放学的孩子们）不需要登记，不要为他们硬凑 helpingAction。登记不是形式：visibleAction 的可见角色扫描只认 characterBible 里的名字，没登记的角色对它完全隐形。
 - 动作幅度自查：写完每场问一句——这个动作放进一个四秒镜头里，不看脸、只看身体轮廓，观众能认出她在做什么吗？认不出来就说明幅度不够，换一个更大的动作。整片如果所有动作都发生在一张桌子前、都靠表情传递，那么无论故事多好，成片都会是静止的。
 - 对白不得复述同场 visibleAction 里观众已经能直接看见的信息。**写完每一句台词后，逐句做这个自查：把这句话遮住，只看同场 visibleAction，观众会不会漏掉任何信息？不会漏，就说明这句在复述画面，必须删掉或改写成只有台词能做到的事。** 实测反面例子：visibleAction 已经写了「她站起身，从衣柜里拿出厚外套和手电筒」，台词却写「穿上厚外套，带上手电筒」——画面演完的事被念了第二遍。正确做法是把这句换成关系表达，例如摸摸头说一句「你呀你，真拿你没办法」：同样让观众知道她答应了，但传递的是宠溺，而外套和手电筒交给画面。
 - 让对白承担画面单独做不到的事：人物性格、情绪、潜台词、关系变化、误会、选择、对已发生动作的反应，或观众还不知道的信息。

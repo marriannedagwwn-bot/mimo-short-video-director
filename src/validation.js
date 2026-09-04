@@ -1,7 +1,8 @@
 import {
   validateLegacyFullStoryStrict,
   validateStoryCandidateStrict,
-  validateStoryCandidatesStrict
+  validateStoryCandidatesStrict,
+  validateStoryQualityReviewStrict
 } from "./contracts/contract-validator.js";
 import { GLOBAL_CHARACTER_BOUNDARY_VERSION } from "./character-boundary.js";
 import { assertVideoPromptProfile } from "../public/video-prompt-profiles.js";
@@ -57,7 +58,8 @@ const outputContracts = {
   visualGuardrails: ["fixedCharacterBoundary", "allowedPositiveTraits", "positivePromptBoundary", "sourceSimilarityRules", "dialogueRules", "stageInstructions", "rationale", "uncertainties"],
   themeVariants: ["variants"],
   fullStory: ["selectedVariantId", "title", "oneLinePremise", "targetDurationSeconds", "shootingSynopsis", "characterBible", "beatSheet", "sceneScript", "keyProps", "shootingPlan", "dialogueStyleGuide", "retentionPlan", "experienceFidelity", "transformationProof", "continuityAndSafetyCheck", "uncertainties"],
-  animationPlan: ["selectedVariantId", "title", "productionStrategy", "visualBible", "characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "editPlan", "generationChecklist", "modelAgnosticNotes", "continuityAndSafetyCheck", "uncertainties"]
+  animationPlan: ["selectedVariantId", "title", "productionStrategy", "visualBible", "characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "editPlan", "generationChecklist", "modelAgnosticNotes", "continuityAndSafetyCheck", "uncertainties"],
+  storyQualityReview: ["schemaVersion", "selectedVariantId", "retentionChecks", "sceneFunctionChecks", "issues", "summary"]
 };
 
 const animationFoundationFields = outputContracts.animationPlan.filter((field) => field !== "shotPlan");
@@ -306,6 +308,15 @@ export function ensureOutputContract(value, contract) {
       );
     }
   }
+  if (contract === "storyQualityReview") {
+    const schemaResult = validateStoryQualityReviewStrict(value);
+    if (!schemaResult.ok) {
+      throw new OutputContractError(
+        `storyQualityReview 结构校验失败：${schemaResult.diagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+        schemaResult.diagnostics
+      );
+    }
+  }
   if (contract === "fullStory") {
     const schemaResult = validateLegacyFullStoryStrict(value);
     if (!schemaResult.ok) {
@@ -324,7 +335,8 @@ export function ensureOutputContract(value, contract) {
     visualGuardrails: ["allowedPositiveTraits", "positivePromptBoundary", "sourceSimilarityRules", "dialogueRules", "uncertainties"],
     themeVariants: ["variants"],
     fullStory: ["beatSheet", "sceneScript", "keyProps", "shootingPlan", "retentionPlan", "uncertainties"],
-    animationPlan: ["characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "generationChecklist", "modelAgnosticNotes", "uncertainties"]
+    animationPlan: ["characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "generationChecklist", "modelAgnosticNotes", "uncertainties"],
+    storyQualityReview: ["retentionChecks", "sceneFunctionChecks", "issues"]
   }[contract] || [];
   const wrongArrays = arrayFields.filter((key) => !Array.isArray(value[key]));
   if (wrongArrays.length) throw new OutputContractError(`${contract} 字段类型无效：${wrongArrays.join("、")} 必须是数组`);
@@ -363,6 +375,7 @@ function validateFullStorySceneContract(value) {
   const details = [];
   const seenSceneIds = new Map();
   const standardNames = collectFullStoryStandardCharacterNames(value.characterBible);
+  validateFullStoryRecurringCharactersAreRegistered(value.sceneScript, standardNames, details);
 
   value.sceneScript.forEach((scene, sceneIndex) => {
     const scenePath = `fullStory.sceneScript[${sceneIndex}]`;
@@ -695,6 +708,67 @@ function validateFullStoryDialogueSpeakers({
   });
 }
 
+/**
+ * 跨场复现的出镜角色必须登记进 characterBible
+ * （protagonist.name / helpers[].nameOrLabel / careRecipient.nameOrLabel）。
+ * 纯集合比较加计数，不含语义判断。
+ *
+ * 这不只是补一张登记表——**它是 visibleAction 扫描能工作的前提**。
+ * collectFullStoryStandardCharacterNames() 的搜索名单只来自 characterBible，
+ * 所以一个没登记的角色对 FULL_STORY_SCENE_VISUAL_CHARACTER_MISSING 完全隐形：
+ * 那道闸门会被它本该抓的那个错误解除武装。实测《午后的柿子树》helpers 是 []、
+ * 无 careRecipient，standardNames 只剩「小白子」，于是 S1 的 visibleAction
+ * 「奶奶正拿着长竹竿打柿子」配 characters:['小白子'] 顺利通过，而奶奶实际出镜 5 场。
+ *
+ * **门槛是「出镜 ≥ 2 场」，不是「凡出镜必登记」。** 后者会撞上一条既有的明确契约：
+ * 一次性场次型配角（路过的张姨、放学孩童们）允许不登记——给「放学孩童们」填
+ * helpingAction 是荒谬的。按 124 份历史 Full Story 标定，这个区分本来就存在于数据里：
+ * 只出镜 1 场的角色 51% 没登记（正是路人群体），出镜 2 场以上未登记只占 4%–11%。
+ * 分界线就在 1 与 2 之间——影片会回头再拍一次的角色属于选角，路过一次的不属于。
+ * 阈值 ≥2 会拒绝 6.4% 的历史角色条目。
+ *
+ * **不挂自动纠错**：正解有两个——补进 characterBible，或者把人从后续场次的 characters
+ * 移走并改写可见事实字段——推导不唯一，猜错就是凭空签发一条角色事实。明确失败。
+ */
+export const FULL_STORY_RECURRING_CHARACTER_MIN_SCENES = 2;
+
+function validateFullStoryRecurringCharactersAreRegistered(sceneScript, standardNames, details) {
+  const registered = new Set(standardNames);
+  if (!registered.size || !Array.isArray(sceneScript)) return;
+
+  const appearances = new Map();
+  sceneScript.forEach((scene, sceneIndex) => {
+    const characters = scene && typeof scene === "object" ? scene.characters : null;
+    if (!Array.isArray(characters)) return;
+    const seenInScene = new Set();
+    characters.forEach((characterName, characterIndex) => {
+      if (typeof characterName !== "string") return;
+      const normalized = characterName.trim();
+      if (!normalized || seenInScene.has(normalized) || registered.has(normalized)) return;
+      // 带后缀的标准名已经由 FULL_STORY_SCENE_CHARACTER_NAME_INEXACT 报过，
+      // 同一处不重复报第二条，否则真正要改的地方会被两条消息互相掩盖。
+      if (standardNames.some((standardName) => hasExplicitStandardNameSuffix(normalized, standardName))) return;
+      seenInScene.add(normalized);
+      const record = appearances.get(normalized) || { scenes: 0, first: null, sceneIds: [] };
+      record.scenes += 1;
+      if (!record.first) record.first = `fullStory.sceneScript[${sceneIndex}].characters[${characterIndex}]`;
+      record.sceneIds.push(scene?.sceneId || `#${sceneIndex + 1}`);
+      appearances.set(normalized, record);
+    });
+  });
+
+  appearances.forEach((record, name) => {
+    if (record.scenes < FULL_STORY_RECURRING_CHARACTER_MIN_SCENES) return;
+    pushFullStorySceneViolation(details, {
+      code: "FULL_STORY_SCENE_CHARACTER_NOT_REGISTERED",
+      path: record.first,
+      reason: `「${name}」在 ${record.scenes} 场里出镜（${record.sceneIds.join("、")}），`
+        + `跨场复现的角色必须登记进 characterBible 的 protagonist、helpers[] 或 careRecipient，`
+        + `否则这个名字对可见事实扫描完全隐形。只出镜一场的临时配角不受此约束。`
+        + `若他本来就不该出现在这些画面里，则应从 characters 移除并改写 visibleAction。`
+    });
+  });
+}
 function collectFullStoryStandardCharacterNames(characterBible = {}) {
   const names = [
     characterBible?.protagonist?.name,
@@ -2486,6 +2560,158 @@ export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}, crea
 // 与候选拍号同规格：可唯一推导的值由服务端签发，模型回显不构成新事实。
 // 场次之间允许留白（只禁重叠与回退），所以取跨度之和而不是首尾之差——
 // 留白不产生镜头，也就不进入成片时长。
+/**
+ * 剧情体检的覆盖率核验。
+ *
+ * 评审的价值全在「逐条看过」上——模型完全可以只报它碰巧注意到的两三条，
+ * 交回一份看起来很专业、实际漏检大半的报告。所以覆盖率**不靠模型自觉**：
+ *
+ *   1. sceneFunctionChecks 必须与 sceneScript 逐位对齐（同长度、同 sceneId、同顺序）
+ *   2. retentionChecks 必须与 retentionPlan 同长度、index 逐位递增
+ *   3. 回显的 declaredFunction / viewerQuestion 必须**包含**剧情原文（忽略空白），
+ *      核验通过后由服务端用原文无条件覆盖
+ *   4. issues[].sceneIds 引用的场次必须真实存在
+ *
+ * 这四条是纯计数与字符串比较，**不含语义判断**，与拍号派生同规格。
+ * 判定「这个功能到底有没有兑现」本身是语义的，没有兜底——那是本机制已知的边界：
+ * 它保证模型逐条看过，不保证它看得对。
+ *
+ * 回显的作用是证明模型读的是这一条：复述成大意就分不清「读了第 3 条」和
+ * 「读了第 5 条却写在第 3 位」。判据是**包含**而不是相等——实测模型不复述，
+ * 但爱在原文后面追加自己的注解（「高潮：在环境压力下完成保护行动」→
+ * 「……，产出可见结果」），10 份里 3 份栽在这上面。包含关系同样能唯一确定读的是哪一条，
+ * 却不会因为多说一句就判失败；截断和复述仍然会被拒。
+ *
+ * 核验通过后服务端用原文覆盖这两个字段——它们可从剧情唯一推导，
+ * **回显不构成新事实**，与 direct_shot 骨架同规格。面板上显示的因此永远是剧情真正写的那句。
+ *
+ * 漏检就明确失败、不做任何补齐——评审调用比一份漏检的报告便宜得多。
+ */
+export function ensureStoryQualityReviewCoversStory(review, fullStory) {
+  requireObject(review, "storyQualityReview");
+  requireObject(fullStory, "fullStory");
+  const details = [];
+  const scenes = Array.isArray(fullStory.sceneScript) ? fullStory.sceneScript : [];
+  const retention = Array.isArray(fullStory.retentionPlan) ? fullStory.retentionPlan : [];
+  const sceneChecks = Array.isArray(review.sceneFunctionChecks) ? review.sceneFunctionChecks : [];
+  const retentionChecks = Array.isArray(review.retentionChecks) ? review.retentionChecks : [];
+
+  const push = (code, path, reason) => details.push({ code, path, reason });
+
+  if (sceneChecks.length !== scenes.length) {
+    push(
+      "STORY_REVIEW_SCENE_COVERAGE_INCOMPLETE",
+      "/sceneFunctionChecks",
+      `剧情有 ${scenes.length} 个场次，评审只覆盖了 ${sceneChecks.length} 个；每一场都必须逐条核对`
+    );
+  }
+  scenes.forEach((scene, index) => {
+    const check = sceneChecks[index];
+    if (!check || typeof check !== "object") return;
+    const sceneId = String(scene?.sceneId || "").trim();
+    if (String(check.sceneId || "").trim() !== sceneId) {
+      push(
+        "STORY_REVIEW_SCENE_ID_MISMATCH",
+        `/sceneFunctionChecks/${index}/sceneId`,
+        `第 ${index + 1} 项应当核对场次「${sceneId}」，实际写的是「${String(check.sceneId || "")}」；必须与 sceneScript 逐位同序`
+      );
+    }
+    const declared = String(scene?.dramaticFunction || "");
+    if (!storyReviewEchoCoversSource(check.declaredFunction, declared)) {
+      push(
+        "STORY_REVIEW_DECLARATION_NOT_VERBATIM",
+        `/sceneFunctionChecks/${index}/declaredFunction`,
+        `declaredFunction 必须完整包含 ${sceneId} 的 dramaticFunction 原文，不得复述、概括或截断`
+      );
+    }
+  });
+
+  if (retentionChecks.length !== retention.length) {
+    push(
+      "STORY_REVIEW_RETENTION_COVERAGE_INCOMPLETE",
+      "/retentionChecks",
+      `剧情有 ${retention.length} 条留存设计，评审只覆盖了 ${retentionChecks.length} 条；每一条都必须逐条核对`
+    );
+  }
+  retention.forEach((entry, index) => {
+    const check = retentionChecks[index];
+    if (!check || typeof check !== "object") return;
+    if (Number(check.index) !== index) {
+      push(
+        "STORY_REVIEW_RETENTION_INDEX_MISMATCH",
+        `/retentionChecks/${index}/index`,
+        `第 ${index + 1} 项的 index 必须是 ${index}，且与 retentionPlan 逐位同序`
+      );
+    }
+    const question = String(entry?.viewerQuestion || "");
+    if (!storyReviewEchoCoversSource(check.viewerQuestion, question)) {
+      push(
+        "STORY_REVIEW_DECLARATION_NOT_VERBATIM",
+        `/retentionChecks/${index}/viewerQuestion`,
+        `viewerQuestion 必须完整包含 retentionPlan[${index}] 的原文，不得复述、概括或截断`
+      );
+    }
+  });
+
+  const knownSceneIds = new Set(scenes.map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean));
+  const collectSceneIds = (value, path) => {
+    if (!Array.isArray(value)) return;
+    value.forEach((sceneId, index) => {
+      const normalized = String(sceneId || "").trim();
+      if (!normalized || knownSceneIds.has(normalized)) return;
+      push(
+        "STORY_REVIEW_UNKNOWN_SCENE_ID",
+        `${path}/${index}`,
+        `引用了剧情里不存在的场次「${normalized}」`
+      );
+    });
+  };
+  (Array.isArray(review.issues) ? review.issues : []).forEach((issue, index) => {
+    collectSceneIds(issue?.sceneIds, `/issues/${index}/sceneIds`);
+  });
+  retentionChecks.forEach((check, index) => {
+    collectSceneIds(check?.shownInScenes, `/retentionChecks/${index}/shownInScenes`);
+  });
+
+  if (details.length) {
+    throw new OutputContractError(
+      `storyQualityReview 覆盖率核验失败：${details.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+      details
+    );
+  }
+  // 回显不构成新事实：这两个字段可从剧情唯一推导，一律用原文覆盖模型追加的注解。
+  sceneChecks.forEach((check, index) => {
+    check.declaredFunction = String(scenes[index]?.dramaticFunction || "");
+  });
+  retentionChecks.forEach((check, index) => {
+    check.viewerQuestion = String(retention[index]?.viewerQuestion || "");
+  });
+  return review;
+}
+
+/**
+ * 回显必须完整包含原文（忽略空白与标点差异）。截断、复述、读错条目都不满足。
+ *
+ * 归一化到标点这一层的理由：**覆盖率并不靠这条检查保证**——
+ * 「有没有漏检」由数量相等保证，「有没有错位」由 sceneId / index 逐位比对保证。
+ * 回显唯一多提供的是「你有没有真看这一条的内容」，比前两者弱得多。
+ * 而实测它挡下的全是标点差异（「关键选择，打破…」被回显成「关键选择：打破…」），
+ * 那不构成任何歧义。把标点也归一化之后，复述与截断仍然会被拒，
+ * 覆盖率的两道真闸门一个字都没动。
+ */
+function storyReviewEchoCoversSource(echo, source) {
+  const target = normalizeStoryReviewEcho(source);
+  if (!target) return true;
+  return normalizeStoryReviewEcho(echo).includes(target);
+}
+
+/** 去掉空白与中英文标点，只留下实词——身份判定不该被一个冒号推翻。 */
+function normalizeStoryReviewEcho(value) {
+  return String(value ?? "")
+    .replace(/\s/gu, "")
+    .replace(/[\p{P}\p{S}]/gu, "");
+}
+
 export function deriveFullStoryTargetDuration(value) {
   if (!value || typeof value !== "object" || !Array.isArray(value.sceneScript)) return value;
   let total = 0;

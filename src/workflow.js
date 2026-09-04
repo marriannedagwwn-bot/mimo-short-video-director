@@ -1,5 +1,5 @@
-import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
-import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "./mock.js";
+import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { compileCharacterFeatures } from "./character-feature-compiler.js";
 import { AttemptStore } from "./attempt-store.js";
@@ -42,7 +42,8 @@ import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
 import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
   deriveStoryCandidateProjections,
-  deriveFullStoryTargetDuration
+  deriveFullStoryTargetDuration,
+  ensureStoryQualityReviewCoversStory
 } from "./validation.js";
 import {
   deriveDirectShotSkeleton,
@@ -354,6 +355,36 @@ export class WorkflowService {
         input.creatorProfile,
         briefUpstream
       )
+    });
+  }
+
+  /**
+   * 剧情体检：对已生成的 Full Story 做独立验收。
+   *
+   * **只出报告**——不修改剧情、不签发 Artifact、不进 lineage、不 stale 任何东西、
+   * 不阻断后续 Animation Plan。与 boundaryWarning 同规格，纯展示。
+   *
+   * **已知偏差**：默认沿用剧情阶段的 provider，也就是写这份剧情的那个模型——
+   * 自己批改自己会偏松（实测同一份剧情，作者模型自评 AI 可执行性 8.0、物理可信度 8.0，
+   * 外部模型读同一份给 6.8、6.8）。本来要默认换一家，但 10 份实测下来 MiMo 太松
+   * （2/62 处 vs 13/91 处）、DeepSeek 产不出严格 JSON（5/10 失败），都不胜任。
+   * 它是纯文本阶段（不在 requiresMediaModel 里），可按阶段 override 换任意一家。
+   */
+  async createStoryQualityReview(input) {
+    requireObject(input, "请求");
+    const fullStory = requireObject(input.fullStory, "fullStory");
+    // 体检的对象必须先是一份合法剧情，否则报告没有意义。
+    ensureOutputContract(fullStory, "fullStory");
+    const validate = (result) => ensureStoryQualityReviewCoversStory(
+      ensureOutputContract(result, "storyQualityReview"),
+      fullStory
+    );
+    if (!this.hasLiveClient) return validate(mockStoryQualityReview(fullStory));
+    const settings = this.resolveStage("storyQualityReview", input);
+    this.assertStageClient(settings, "剧情体检");
+    return this.generateStageJson("storyQualityReview", input, {
+      prompt: storyQualityReviewPrompt(fullStory),
+      validate
     });
   }
 

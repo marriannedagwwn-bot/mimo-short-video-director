@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "internal://story-quality-review-strict",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "selectedVariantId",
+    "retentionChecks",
+    "sceneFunctionChecks",
+    "issues",
+    "summary"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "story-quality-review/1.0" },
+    "selectedVariantId": { "$ref": "#/$defs/nonEmptyString" },
+    "retentionChecks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/retentionCheck" }
+    },
+    "sceneFunctionChecks": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/sceneFunctionCheck" }
+    },
+    "issues": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/issue" }
+    },
+    "summary": { "$ref": "#/$defs/nonEmptyString" }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "sceneIdList": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "verdict": {
+      "enum": ["depicted", "partially_depicted", "not_depicted"]
+    },
+    "retentionCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "viewerQuestion", "shownInScenes", "whatViewerSees", "verdict"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "viewerQuestion": { "$ref": "#/$defs/nonEmptyString" },
+        "shownInScenes": { "$ref": "#/$defs/sceneIdList" },
+        "whatViewerSees": { "$ref": "#/$defs/nonEmptyString" },
+        "verdict": { "$ref": "#/$defs/verdict" }
+      }
+    },
+    "sceneFunctionCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sceneId", "declaredFunction", "whatViewerSees", "verdict"],
+      "properties": {
+        "sceneId": { "$ref": "#/$defs/nonEmptyString" },
+        "declaredFunction": { "$ref": "#/$defs/nonEmptyString" },
+        "whatViewerSees": { "$ref": "#/$defs/nonEmptyString" },
+        "verdict": { "$ref": "#/$defs/verdict" }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "type", "sceneIds", "evidence", "problem", "recommendedFix"],
+      "properties": {
+        "severity": { "enum": ["BLOCKER", "MAJOR", "MINOR"] },
+        "type": { "$ref": "#/$defs/nonEmptyString" },
+        "sceneIds": { "$ref": "#/$defs/sceneIdList" },
+        "evidence": { "$ref": "#/$defs/nonEmptyString" },
+        "problem": { "$ref": "#/$defs/nonEmptyString" },
+        "recommendedFix": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  }
+}

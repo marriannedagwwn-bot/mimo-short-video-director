@@ -60,6 +60,8 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
 | CLI 生成 | `npm run run:video` |
 
 - **必须使用 Node 24**（`.nvmrc` = `24`，`engines: ">=24 <25"`）。禁止直接用 25+ 运行。
+- **`npm start` / `npm run dev` 带 `--use-env-proxy`，不要删。** Node 的内置 `fetch` **默认不读 `HTTP_PROXY` / `HTTPS_PROXY` 环境变量**，而在需要代理才能出网的环境里，服务进程会直连各家 API 并超时——表现是所有阶段一起报「服务器内部错误」或 `TypeError: fetch failed`，而同一台机器上 `curl` 却完全正常（curl 自己读代理）。2026-09-04 实测：直连 `dashscope.aliyuncs.com` 超时 12 秒，加上该 flag 后立刻拿到正常响应。没有代理的环境上这个 flag 无害。
+  排查口诀：**`curl` 通而服务不通，先查代理**，别去翻供应商余额或改代码。
 - 服务运行期间修改了服务端相关文件，需要自动重启服务器。
 - `npm test` 通过是**必要条件，不是充分条件**：它不能证明新引入的业务契约正确。
 
@@ -198,6 +200,28 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
 ### 2.7 模型 provider 边界
 
 工作流 LLM provider：**Qwen / MiMo / DeepSeek**。
+
+### 2.13 剧情体检（storyQualityReview v1，2026-09-04）
+
+Full Story 生成之后的**独立验收，只出报告**：不修改剧情、不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、**不阻断后续 Animation Plan**。与 `boundaryWarning` 同规格，纯展示；刷新页面即失（v1 有意不持久化）。手动触发，`POST /api/story-quality-review`。
+
+它检查的是现有校验器全都查不到的一类问题：**字段声称的事，画面里到底有没有。** `dramaticFunction: "建立悬念"` 只是标签不是证据；`retentionPlan[].viewerQuestion` 写着一个问题，不能证明观众看得到引发那个问题的画面。依据是一份已签发 Plan 的实测：剧情与 Plan 都把「末班车已经开走」当作开场核心信息，而首镜画面里没有公交车驶离、没有末班车广播，观众实际只看到一个女孩晚上坐在站台看地图。判定依据**只认 `visibleAction` 与 `dialogue`**——`shotAndSound`、`shootingNotes`、`beatSheet` 是拍摄说明与叙事目标，不是画面本身。
+
+输出三块：`sceneFunctionChecks`（逐场核对 `dramaticFunction`）、`retentionChecks`（逐条核对 `retentionPlan`）、`issues`（`BLOCKER`/`MAJOR`/`MINOR` 三档硬伤）。三档判定 `depicted` / `partially_depicted` / `not_depicted`。
+
+**覆盖率由服务端确定性核验**（`ensureStoryQualityReviewCoversStory`）——模型完全可以只报它碰巧注意到的两三条，交回一份看起来很专业、实际漏检大半的报告：
+- `sceneFunctionChecks` 与 `sceneScript` **数量相等且 `sceneId` 逐位相同**
+- `retentionChecks` 与 `retentionPlan` **数量相等且 `index` 逐位递增**
+- 回显的 `declaredFunction` / `viewerQuestion` 必须**包含**剧情原文（归一化掉空白与标点）
+- `issues[].sceneIds` 与 `shownInScenes` 引用的场次必须真实存在
+
+**真正的覆盖率保证是前两条（数量 + 逐位 id），不是回显。** 回显只多提供「你有没有真看这一条的内容」这个较弱信号，所以判据从「逐字相等」放宽到「包含且归一化标点」：实测严格相等挡下的全是模型在原文后追加注解（千问 10 份里 3 份）和标点替换（MiMo 把「关键选择，打破…」写成「关键选择：打破…」），都不构成歧义；复述与截断仍然被拒。核验通过后**服务端用剧情原文无条件覆盖这两个字段**——它们可从剧情唯一推导，**回显不构成新事实**，与 direct_shot 骨架同规格。
+
+「有没有兑现」本身是语义判断，**没有确定性兜底**：覆盖率只保证模型逐条看过，不保证它看得对。
+
+**明确不做，三条都有实测依据**：①**不打总分、不设门槛**——实测 13 份的模型综合分挤在 7.8–8.3、中位 8.2，ChatGPT 给参考片也才 8.4，此刻画任何线都是拍脑袋；可比对的数字改由 `public/story-review-metrics.js` 从逐条判定里**数出来**（未兑现数、三档硬伤数），跨故事直接可比、不随措辞漂。②**不自动改剧情**——实测「评审→重写」单轮平均只涨 +0.17（6 组对照，落在评分者噪声 MAD 0.45 内），且 40% 撞契约硬失败。③**不阻断生产**——现有闸门全是确定性的，模型意见当硬闸门是另一回事，§2.8 明写「用户明确肯定/否定 > 已签发模型推断」。
+
+**评审模型的已知偏差**：默认沿用剧情阶段的 provider，也就是写这份剧情的那个模型，自己批自己会偏松（实测同一份剧情自评「AI 可执行性 8.0 / 物理可信度 8.0」，外部模型给 6.8 / 6.8）。本来要默认换一家，但同一批 10 份实测下来现有备选都不胜任：`mimo-v2.5-pro` 7/10 成功且太松（2/62 处 vs 千问 13/91 处），`deepseek-v4-flash` 5/10、反复产不出严格 JSON，`deepseek-v4-pro` 连接中断。一个查不出问题的评审比偏松的评审更没用，稳定性也是硬要求。**先用能干活的那个并如实记下偏差，不靠静默降级掩盖**；它是纯文本阶段（不在 `requiresMediaModel` 里），可按阶段 override 换任意一家。
 
 DeepSeek **只允许**用于纯文本阶段：Brief、Variants、Legacy Full Story、Animation Plan、Static Frame Compiler（仅旧 v2 兼容路径）。
 

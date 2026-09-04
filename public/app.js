@@ -1,6 +1,7 @@
 import { syncShotCharacterReference } from "./character-reference-sync.js";
 import { formatStageUsageSuffix, mergeStageUsage } from "./token-usage-format.js";
 import { storyPackageFilename } from "./export-filename.js";
+import { storyReviewHeadline, storyReviewMetrics } from "./story-review-metrics.js";
 import {
   createDirectorArtifactSynchronizer,
   formatDirectorCompletionStatus
@@ -1742,7 +1743,12 @@ function renderFullStory(data) {
       ${cell("驱动力", data.experienceFidelity?.plotDriver)}${cell("高价值桥段", data.experienceFidelity?.highValueBeats)}${cell("改写证明", data.transformationProof?.changedVisualExpression)}
     </div>`)}
     <div class="warning-box"><b>连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
-    ${uncertainties(data.uncertainties)}`;
+    ${uncertainties(data.uncertainties)}
+    <div class="story-review">
+      <button type="button" class="outline-button" data-story-review>检查剧情硬伤</button>
+      <span class="story-review-hint">读一遍这份剧情，核对每条声明在画面里有没有兑现。只出报告，不改剧情。</span>
+      <div class="story-review-body" data-story-review-body></div>
+    </div>`;
   reveal(elements.fullStory);
 }
 
@@ -1759,6 +1765,74 @@ async function generateAnimationPlan({ force = false } = {}) {
   } catch (error) {
     return setAnimationStatus(`${error.message} 请先在模型设置中选择 Seedance 2.0 或 MiniMax H3。`, "error");
   }
+  const button = elements.fullStory.querySelector("[data-story-review]");
+  if (button) button.addEventListener("click", () => runStoryQualityReview(data, button));
+}
+
+// 剧情体检：手动触发，只出报告。不改剧情、不签发 Artifact、不阻断后续阶段。
+async function runStoryQualityReview(fullStory, button) {
+  const body = elements.fullStory.querySelector("[data-story-review-body]");
+  if (!body || button.disabled) return;
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "体检中…";
+  body.innerHTML = `<p class="story-review-status">正在逐场核对声明与画面，通常十几秒…</p>`;
+  try {
+    const review = await api("/api/story-quality-review", { fullStory });
+    body.innerHTML = renderStoryQualityReview(review);
+  } catch (error) {
+    // 评审失败要把原因完整显示出来——它常常是覆盖率核验拦下的漏检，用户需要看到是哪一条。
+    body.innerHTML = `<p class="story-review-status error">${escape(error?.message || "体检失败")}</p>`;
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+const REVIEW_VERDICT_LABEL = { depicted: "已兑现", partially_depicted: "只沾边", not_depicted: "画面里没有" };
+const REVIEW_SEVERITY_LABEL = { BLOCKER: "严重", MAJOR: "建议", MINOR: "小问题" };
+
+function renderStoryQualityReview(review) {
+  const metrics = storyReviewMetrics(review);
+  // 未兑现的排在前面：那才是要看的；已兑现的折叠进一句统计，不占版面。
+  const unmet = (list, keyOf) => (list || []).filter((item) => item.verdict !== "depicted").map(keyOf);
+  const sceneRows = unmet(review.sceneFunctionChecks, (check) => `
+    <div class="review-check">
+      <div class="review-check-head">
+        <span class="scene-id">${escape(check.sceneId)}</span>
+        <span class="review-verdict verdict-${escape(check.verdict)}">${escape(REVIEW_VERDICT_LABEL[check.verdict] || check.verdict)}</span>
+      </div>
+      <p><b>声称：</b>${escape(check.declaredFunction)}</p>
+      <p><b>观众实际看到：</b>${escape(check.whatViewerSees)}</p>
+    </div>`);
+  const retentionRows = unmet(review.retentionChecks, (check) => `
+    <div class="review-check">
+      <div class="review-check-head">
+        <span class="scene-id">留存 ${Number(check.index) + 1}</span>
+        <span class="review-verdict verdict-${escape(check.verdict)}">${escape(REVIEW_VERDICT_LABEL[check.verdict] || check.verdict)}</span>
+      </div>
+      <p><b>声称观众会问：</b>${escape(check.viewerQuestion)}</p>
+      <p><b>观众实际看到：</b>${escape(check.whatViewerSees)}</p>
+    </div>`);
+  const issueRows = (review.issues || []).map((issue) => `
+    <div class="review-issue severity-${escape(issue.severity)}">
+      <div class="review-check-head">
+        <span class="review-severity severity-${escape(issue.severity)}">${escape(REVIEW_SEVERITY_LABEL[issue.severity] || issue.severity)}</span>
+        <span class="review-scenes">${escape((issue.sceneIds || []).join("、") || "全片")}</span>
+      </div>
+      <p>${escape(issue.problem)}</p>
+      <p class="review-evidence">原文：${escape(issue.evidence)}</p>
+      <p><b>建议：</b>${escape(issue.recommendedFix)}</p>
+    </div>`);
+
+  return `
+    <div class="review-headline">${escape(storyReviewHeadline(review))}</div>
+    <p class="story-review-status">${escape(review.summary || "")}</p>
+    ${issueRows.length ? block("硬伤", issueRows.join("")) : ""}
+    ${sceneRows.length || retentionRows.length
+      ? block("声明与画面对不上的地方", retentionRows.join("") + sceneRows.join(""))
+      : `<p class="story-review-status">逐条核对了 ${metrics.declarationsChecked} 条声明，都能在画面里找到依据。</p>`}
+    <p class="story-review-foot">这是一份参考报告，不阻断后续生成；判断有没有道理由你决定。刷新页面后不保留。</p>`;
   if (!force && state.animationPlans[variant.id]) {
     renderAnimationPlan(state.animationPlans[variant.id]);
     return;

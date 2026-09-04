@@ -970,3 +970,30 @@ function time(seconds) {
   const value = Math.max(0, Math.floor(seconds));
   return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
 }
+
+// Demo 模式的剧情体检。**从剧情确定性派生**，一律给 depicted、不报硬伤——
+// mock 的职责是让离线链路跑通并满足覆盖率核验，不是伪造评审结论。
+// 与 §八「demo mock 不得伪造语义审计结果」同规格：宁可什么都不说，也不编一个判断。
+export function mockStoryQualityReview(fullStory) {
+  const scenes = Array.isArray(fullStory?.sceneScript) ? fullStory.sceneScript : [];
+  const retention = Array.isArray(fullStory?.retentionPlan) ? fullStory.retentionPlan : [];
+  return {
+    schemaVersion: "story-quality-review/1.0",
+    selectedVariantId: String(fullStory?.selectedVariantId || "V1"),
+    retentionChecks: retention.map((entry, index) => ({
+      index,
+      viewerQuestion: String(entry?.viewerQuestion || ""),
+      shownInScenes: [],
+      whatViewerSees: "demo 模式不调用模型，未做实际核对。",
+      verdict: "depicted"
+    })),
+    sceneFunctionChecks: scenes.map((scene) => ({
+      sceneId: String(scene?.sceneId || ""),
+      declaredFunction: String(scene?.dramaticFunction || ""),
+      whatViewerSees: "demo 模式不调用模型，未做实际核对。",
+      verdict: "depicted"
+    })),
+    issues: [],
+    summary: "demo 模式：未调用模型，本报告不构成任何质量判断。"
+  };
+}

@@ -31,6 +31,20 @@ function validStory() {
   return mockFullStory(context);
 }
 
+// 从 characterBible 注销一个角色时，必须同时把他从场次里撤下来。
+// 只删登记、留着人在画面里，那不是「没有被照料对象的故事」，而是一个跨场复现却
+// 无人登记的角色——FULL_STORY_SCENE_CHARACTER_NOT_REGISTERED 正是为这种不一致而设。
+// 这两条测试要证的是 schema 允许省略这个角色位，不是允许故事自相矛盾。
+function withoutCharacter(story, name) {
+  story.sceneScript.forEach((scene) => {
+    scene.characters = scene.characters.filter((character) => character !== name);
+    scene.visibleAction = scene.visibleAction.split(name).join("邻居");
+    scene.shotAndSound = scene.shotAndSound.split(name).join("邻居");
+    scene.dialogue = scene.dialogue.filter((line) => line.speaker !== name);
+  });
+  return story;
+}
+
 test("internal legacy Full Story schema accepts the current canonical shape", () => {
   assert.equal(ensureOutputContract(validStory(), "fullStory").selectedVariantId, "V1");
 });
@@ -140,13 +154,14 @@ test("Animation entry applies the same strict Full Story validator before any do
 // characterBible.careRecipient 曾是 required，等于要求每部片都必须有一个被照料对象。
 // 候选阶段放开了这个角色位，如果 Full Story 仍强制它，模板只是被推迟一个阶段重新长回来。
 test("Full Story 没有被照料对象时省略 careRecipient 仍然合法", () => {
-  const value = validStory();
+  const value = withoutCharacter(validStory(), "铃木奶奶");
   delete value.characterBible.careRecipient;
   assert.equal(ensureOutputContract(value, "fullStory"), value);
 });
 
 test("没有帮助者时 helpers 输出空数组仍然合法", () => {
-  const value = validStory();
+  const value = withoutCharacter(validStory(), "铃木奶奶");
+  for (const helper of value.characterBible.helpers) withoutCharacter(value, helper.nameOrLabel);
   delete value.characterBible.careRecipient;
   value.characterBible.helpers = [];
   assert.equal(ensureOutputContract(value, "fullStory"), value);

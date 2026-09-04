@@ -302,6 +302,8 @@ const routes = {
   },
   "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
   "/api/generate-shot-video": async (body) => {
+  // 剧情体检：只出报告。不签发 Artifact、不进 lineage、不 stale 任何东西、不阻断后续阶段。
+  "/api/story-quality-review": (body) => workflow.createStoryQualityReview(body),
     const productionMedia = await resolveProductionMediaContext(body, { required: true });
     const authoritativeInput = resolveAuthoritativeShotVideoInput({
       planArtifactId: productionMedia.planArtifactId,
@@ -2034,7 +2036,20 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
       config.staticFrameCompiler.maxCompletionTokens,
       config.staticFrameCompiler.requestTimeoutMs
     ),
-    characterReference: stageSetting(provider, source.characterReferenceModel || source.videoModel || source.model, source.characterReferenceMaxCompletionTokens || source.maxCompletionTokens)
+    characterReference: stageSetting(provider, source.characterReferenceModel || source.videoModel || source.model, source.characterReferenceMaxCompletionTokens || source.maxCompletionTokens),
+    // 剧情体检沿用剧情阶段的 provider。它是纯文本阶段（不在 requiresMediaModel 里），
+    // 用户随时可以按阶段 override 换成别家。
+    //
+    // 本来想默认换一个模型——写剧情的模型给自己批改作业会偏松（实测同一份剧情，
+    // 作者模型自评「AI 可执行性 8.0 / 物理可信度 8.0」，外部模型读同一份给 6.8 / 6.8）。
+    // 但把三家放在同一批 10 份剧情上实测之后，现有备选没有一个能胜任：
+    //   Qwen  qwen3.7-max   10/10 成功，标出 13/91 处声明未兑现、26 条硬伤
+    //   MiMo  mimo-v2.5-pro  7/10 成功，只标出 2/62 处、4 条硬伤——太松，且有一次输出本身不合 schema
+    //   DeepSeek v4-flash    5/10 成功，反复产不出严格 JSON；v4-pro 连接中断
+    // 一个查不出问题的评审比偏松的评审更没用，稳定性也是硬要求（输出必须过递归 strict schema）。
+    // 所以先用能干活的那个，**并如实记下它自评偏松这个已知偏差**——
+    // 换更合适的评审模型是后续的事，不靠静默降级掩盖。
+    storyQualityReview: stageSetting(provider, source.storyModel || source.model, source.storyMaxCompletionTokens || source.maxCompletionTokens)
   };
 }
 
