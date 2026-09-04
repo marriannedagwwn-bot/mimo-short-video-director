@@ -34,7 +34,7 @@ test("batch all-reference assets use only characters related to the current dire
   assert.equal(assets[0].mediaType, "image");
 });
 
-test("batch automatically includes signed voice references for characters in the current shot", () => {
+test("batch includes signed voice references only for explicit dialogue speakers", () => {
   const references = [
     {
       characterName: "芙芙猫",
@@ -64,11 +64,36 @@ test("batch automatically includes signed voice references for characters in the
   ];
   const assets = buildShotVideoBatchReferenceAssets({
     shotId: "A01",
-    videoPrompt: "芙芙猫抬头喵喵叫。"
+    videoPrompt: "芙芙猫抬头喵喵叫。",
+    dialogueOrSubtitle: "芙芙猫：「喵～」"
   }, references);
   assert.deepEqual(assets.map((item) => item.mediaType), ["image", "audio"]);
   assert.equal(assets[1].source, "character_audio_reference");
   assert.equal(assets[1].sourceCharacterName, "芙芙猫");
+});
+
+test("batch keeps a visible non-speaking character image but omits its voice reference", () => {
+  const references = [{
+    characterName: "芙芙猫",
+    referenceImageDataUrl: image,
+    referenceAudioClips: [{
+      id: "meow",
+      label: "喵喵",
+      fileName: "meow.mp3",
+      mimeType: "audio/mpeg",
+      dataUrl: audio,
+      durationSeconds: 3,
+      sizeBytes: 128
+    }]
+  }];
+  const assets = buildShotVideoBatchReferenceAssets({
+    shotId: "A01",
+    videoPrompt: "芙芙猫始终完整出镜，跟在小白子脚边。",
+    characterAction: "芙芙猫抬头看向果树。",
+    dialogueOrSubtitle: "果园爷爷：「小白子来啦，正好帮爷爷摘几个果子。」小白子：「嗷呜～」"
+  }, references);
+  assert.deepEqual(assets.map((item) => item.mediaType), ["image"]);
+  assert.equal(assets[0].sourceCharacterName, "芙芙猫");
 });
 
 test("batch rejects too many character voice references in one shot", () => {
@@ -83,7 +108,8 @@ test("batch rejects too many character voice references in one shot", () => {
   }));
   assert.throws(() => buildShotVideoBatchReferenceAssets({
     shotId: "A01",
-    videoPrompt: "芙芙猫叫了起来。"
+    videoPrompt: "芙芙猫叫了起来。",
+    dialogueOrSubtitle: "芙芙猫：「喵喵喵喵」"
   }, [{ characterName: "芙芙猫", referenceImageDataUrl: image, referenceAudioClips }]), /超过全能参考上限 3 段/u);
 });
 

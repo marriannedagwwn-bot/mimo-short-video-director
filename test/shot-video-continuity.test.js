@@ -124,7 +124,7 @@ test("character_reference 只能绑定当前签发 Plan 的 exact 角色图，�
   );
 });
 
-test("character_audio_reference 只能绑定当前签发 Plan 的 exact 角色声音", () => {
+test("character_audio_reference 只能绑定当前镜头明确说话人的 exact 角色声音", () => {
   const signedDataUrl = "data:audio/mpeg;base64,c2lnbmVk";
   const plan = {
     characterReferencePrompts: [{
@@ -145,7 +145,10 @@ test("character_audio_reference 只能绑定当前签发 Plan 的 exact 角色�
     name: "客户端自报名称",
     dataUrl: signedDataUrl,
     source: "character_audio_reference"
-  }], plan);
+  }], plan, {
+    shotId: "A02",
+    dialogueOrSubtitle: "芙芙猫：「喵～」"
+  });
   assert.equal(resolved[0].mediaType, "audio");
   assert.equal(resolved[0].sourceCharacterName, "芙芙猫");
   assert.equal(resolved[0].name, "芙芙猫参考声音");
@@ -153,9 +156,26 @@ test("character_audio_reference 只能绑定当前签发 Plan 的 exact 角色�
   assert.throws(
     () => resolveAuthoritativeShotVideoReferenceAssets([{
       mediaType: "audio",
+      dataUrl: signedDataUrl,
+      source: "character_audio_reference"
+    }], plan, {
+      shotId: "A01",
+      videoPrompt: "芙芙猫始终完整出镜，跟在小白子脚边。",
+      dialogueOrSubtitle: "果园爷爷：「小白子来啦，正好帮爷爷摘几个果子。」小白子：「嗷呜～」"
+    }),
+    (error) => error.code === "SHOT_VIDEO_CHARACTER_AUDIO_REFERENCE_NOT_SPEAKER"
+      && /没有在当前镜头的 dialogueOrSubtitle 中明确发声/u.test(error.message)
+  );
+
+  assert.throws(
+    () => resolveAuthoritativeShotVideoReferenceAssets([{
+      mediaType: "audio",
       dataUrl: "data:audio/mpeg;base64,Zm9yZ2Vk",
       source: "character_audio_reference"
-    }], plan),
+    }], plan, {
+      shotId: "A02",
+      dialogueOrSubtitle: "芙芙猫：「喵～」"
+    }),
     /不属于当前签发 Animation Plan/u
   );
 });

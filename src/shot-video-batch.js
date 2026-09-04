@@ -4,7 +4,7 @@ import {
   CHARACTER_REFERENCE_AUDIO_MAX_SECONDS,
   CHARACTER_REFERENCE_AUDIO_MAX_TOTAL_SECONDS,
   CHARACTER_REFERENCE_AUDIO_MIN_SECONDS,
-  characterReferenceAudioClips
+  shotRelatedCharacterAudioClips
 } from "../public/character-reference-audio.js";
 import { ProductionStateError } from "./production-lineage.js";
 import { requireAnimationPlanAspectRatio } from "./validation.js";
@@ -36,17 +36,17 @@ export function buildShotVideoBatchReferenceAssets(shot = {}, characterReference
         sourceCharacterName: characterName
       });
     }
-    for (const clip of characterReferenceAudioClips(reference)) {
-      assets.push({
-        mediaType: "audio",
-        name: `${characterName || "角色"}参考声音`,
-        dataUrl: clip.dataUrl,
-        sizeBytes: clip.sizeBytes,
-        durationSeconds: clip.durationSeconds,
-        source: "character_audio_reference",
-        sourceCharacterName: characterName
-      });
-    }
+  }
+  for (const { characterName, clip } of shotRelatedCharacterAudioClips(shot, characterReferences)) {
+    assets.push({
+      mediaType: "audio",
+      name: `${characterName || "角色"}参考声音`,
+      dataUrl: clip.dataUrl,
+      sizeBytes: clip.sizeBytes,
+      durationSeconds: clip.durationSeconds,
+      source: "character_audio_reference",
+      sourceCharacterName: characterName
+    });
   }
   const imageCount = assets.filter((asset) => asset.mediaType === "image").length;
   const audioAssets = assets.filter((asset) => asset.mediaType === "audio");

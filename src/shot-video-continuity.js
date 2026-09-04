@@ -6,7 +6,10 @@ import {
   SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
 } from "../public/shot-video-continuity.js";
 import { lineageRef, ProductionStateError } from "./production-lineage.js";
-import { characterReferenceAudioClips } from "../public/character-reference-audio.js";
+import {
+  characterReferenceAudioClips,
+  shotRelatedCharacterAudioClips
+} from "../public/character-reference-audio.js";
 
 export {
   mediaFilenameSegment,
@@ -72,23 +75,24 @@ export function resolveAuthoritativeShotVideoInput({
   };
 }
 
-export function resolveAuthoritativeShotVideoReferenceAssets(referenceAssets, plan = {}) {
+export function resolveAuthoritativeShotVideoReferenceAssets(referenceAssets, plan = {}, shot = {}) {
   const assets = Array.isArray(referenceAssets) ? referenceAssets : [];
-  const signedCharacterImages = (Array.isArray(plan.characterReferencePrompts)
+  const characterReferences = Array.isArray(plan.characterReferencePrompts)
     ? plan.characterReferencePrompts
-    : [])
+    : [];
+  const signedCharacterImages = characterReferences
     .filter((reference) => String(reference?.referenceImageDataUrl || "").trim())
     .map((reference) => ({
       characterName: String(reference.characterName || "").trim(),
       dataUrl: String(reference.referenceImageDataUrl || "").trim()
     }));
-  const signedCharacterAudio = (Array.isArray(plan.characterReferencePrompts)
-    ? plan.characterReferencePrompts
-    : [])
+  const signedCharacterAudio = characterReferences
     .flatMap((reference) => characterReferenceAudioClips(reference).map((clip) => ({
       characterName: String(reference.characterName || "").trim(),
       dataUrl: clip.dataUrl
     })));
+  const currentShotCharacterAudio = shotRelatedCharacterAudioClips(shot, characterReferences)
+    .map(({ characterName, clip }) => ({ characterName, dataUrl: clip.dataUrl }));
   return assets.map((asset, index) => {
     const source = String(asset?.source || "upload").trim() || "upload";
     if (["previous_shot_frame", "previous_shot_frames"].includes(source)) {
@@ -104,6 +108,15 @@ export function resolveAuthoritativeShotVideoReferenceAssets(referenceAssets, pl
         throw new ProductionStateError(
           `referenceAssets[${index}] 声明为 character_audio_reference，但内容不属于当前签发 Animation Plan 的唯一角色参考声音。`,
           { code: "SHOT_VIDEO_CHARACTER_AUDIO_REFERENCE_UNTRUSTED", httpStatus: 409 }
+        );
+      }
+      const currentShotMatches = currentShotCharacterAudio.filter((reference) => (
+        reference.dataUrl === dataUrl && reference.characterName === matches[0].characterName
+      ));
+      if (currentShotMatches.length !== 1) {
+        throw new ProductionStateError(
+          `角色「${matches[0].characterName || "未知"}」没有在当前镜头的 dialogueOrSubtitle 中明确发声，拒绝附带其角色参考声音。`,
+          { code: "SHOT_VIDEO_CHARACTER_AUDIO_REFERENCE_NOT_SPEAKER", httpStatus: 409 }
         );
       }
       return {

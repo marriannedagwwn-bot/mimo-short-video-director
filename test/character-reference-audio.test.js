@@ -23,17 +23,31 @@ test("character audio clips ignore malformed and non-audio data URLs", () => {
   }), [clip()]);
 });
 
-test("character audio clips follow the current shot cast selection", () => {
+test("character audio clips do not follow visual presence when the character has no dialogue", () => {
   const selected = shotRelatedCharacterAudioClips({
     shotId: "A01",
-    videoPrompt: "芙芙猫抬头喵喵叫。"
+    videoPrompt: "芙芙猫始终完整出镜，跟在小白子脚边。",
+    characterAction: "芙芙猫抬头看向果树。",
+    dialogueOrSubtitle: "果园爷爷：「小白子来啦，正好帮爷爷摘几个果子。」小白子：「嗷呜～」"
   }, [
     { characterName: "芙芙猫", referenceAudioClips: [clip()] },
     { characterName: "小白", referenceAudioClips: [clip({ id: "hello", label: "对白" })] }
   ]);
-  assert.equal(selected.length, 1);
-  assert.equal(selected[0].characterName, "芙芙猫");
-  assert.equal(selected[0].clip.label, "喵喵");
+  assert.deepEqual(selected, []);
+});
+
+test("character audio clips require the exact character name as an explicit dialogue speaker", () => {
+  const selected = shotRelatedCharacterAudioClips({
+    shotId: "A02",
+    videoPrompt: "小白子和芙芙猫同时完整出镜。",
+    dialogueOrSubtitle: "小白子：「嗷呜～」芙芙猫（轻声）：「喵～」"
+  }, [
+    { characterName: "小白", referenceAudioClips: [clip({ id: "wrong-prefix", label: "不应命中" })] },
+    { characterName: "小白子", referenceAudioClips: [clip({ id: "howl", label: "嗷呜" })] },
+    { characterName: "芙芙猫", referenceAudioClips: [clip()] }
+  ]);
+  assert.deepEqual(selected.map((item) => item.characterName), ["小白子", "芙芙猫"]);
+  assert.deepEqual(selected.map((item) => item.clip.label), ["嗷呜", "喵喵"]);
 });
 
 test("character audio validation enforces clip count and total duration", () => {

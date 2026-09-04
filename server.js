@@ -319,7 +319,8 @@ const routes = {
       characterReferences: authoritativeInput.characterReferences,
       referenceAssets: resolveAuthoritativeShotVideoReferenceAssets(
         body.referenceAssets,
-        productionMedia.planEntry.content
+        productionMedia.planEntry.content,
+        authoritativeInput.shot
       ),
       animationPromptSchemaVersion: authoritativeInput.promptSchemaVersion,
       videoPromptSource: authoritativeInput.promptSource,

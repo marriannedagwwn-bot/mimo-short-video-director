@@ -1,5 +1,3 @@
-import { shotRelatedCharacterReferences } from "./shot-reference-images.js";
-
 export const CHARACTER_REFERENCE_AUDIO_MAX_CLIPS = 3;
 export const CHARACTER_REFERENCE_AUDIO_MAX_TOTAL_SECONDS = 15.05;
 export const CHARACTER_REFERENCE_AUDIO_MIN_SECONDS = 2;
@@ -21,12 +19,39 @@ export function characterReferenceAudioClips(reference = {}) {
 }
 
 export function shotRelatedCharacterAudioClips(shot = {}, characterReferences = []) {
-  return shotRelatedCharacterReferences(shot, characterReferences).flatMap((reference) => (
+  const references = Array.isArray(characterReferences) ? characterReferences.filter(Boolean) : [];
+  const dialogueOrSubtitle = String(shot?.dialogueOrSubtitle || "");
+  return references.filter((reference) => (
+    dialogueNamesCharacterAsSpeaker(
+      dialogueOrSubtitle,
+      String(reference?.characterName || "").trim()
+    )
+  )).flatMap((reference) => (
     characterReferenceAudioClips(reference).map((clip) => ({
       characterName: String(reference?.characterName || "").trim(),
       clip
     }))
   ));
+}
+
+/**
+ * 角色参考声音只用于 `dialogueOrSubtitle` 明确标出的当前说话人。
+ *
+ * 不能复用图片的「本镜出镜角色」匹配：全能参考供应商会直接消费参考音频，角色只要
+ * 出现在 videoPrompt / characterAction 里就附带原音，会把整段样音当成本镜背景声音。
+ * 这里要求 exact 角色名后紧跟冒号（允许一个表演括注），既支持常见的
+ * `角色：「台词」`，也避免把 `小白子：` 误命中为角色 `小白`。
+ */
+function dialogueNamesCharacterAsSpeaker(dialogueOrSubtitle, characterName) {
+  const text = String(dialogueOrSubtitle || "");
+  const name = String(characterName || "").trim();
+  if (!text || !name) return false;
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const speakerPattern = new RegExp(
+    `(?:^|[\\s，,。；;！？!?、。「『“”\"」』）)\\]】])${escapedName}(?:\\s*[（(][^\\n\\r（）()：:]{1,40}[）)])?\\s*[：:]`,
+    "u"
+  );
+  return speakerPattern.test(text);
 }
 
 export function validateCharacterReferenceAudioClips(clips = []) {

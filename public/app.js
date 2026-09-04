@@ -11,6 +11,7 @@ import { buildShotFrameImagePrompt, compileShotFrameNegativePrompt } from "./sho
 import { buildCharacterReferenceImagePrompt } from "./character-reference-prompt.js";
 import {
   characterReferenceAudioClips,
+  shotRelatedCharacterAudioClips,
   validateCharacterReferenceAudioClips
 } from "./character-reference-audio.js";
 import {
@@ -2561,7 +2562,7 @@ async function addCharacterReferenceAudioFiles(indexValue, files) {
     state.output.animationPlan = updatedPlan;
     state.characterAudioStatuses[key] = { status: "ready", message: `已保存 ${clips.length} 段参考声音` };
     renderAnimationPlan(updatedPlan);
-    setAnimationStatus(`${item.characterName || "角色"} 的参考声音已保存，单镜头与批量全能参考生成会自动使用。`, "ready");
+    setAnimationStatus(`${item.characterName || "角色"} 的参考声音已保存；仅当该角色在镜头对白中明确发声时，单镜头与批量全能参考生成才会使用。`, "ready");
     updateStoryExportActions();
   } catch (error) {
     state.characterAudioStatuses[key] = { status: "error", message: error.message || "参考声音保存失败" };
@@ -3883,7 +3884,8 @@ function allReferenceAssetDescriptors(shotId) {
     }
   }
   if (state.shotVideoGeneration.includeCharacterReferences) {
-    const references = shotRelatedCharacterReferences(context.shot, context.plan.characterReferencePrompts || []);
+    const characterReferences = context.plan.characterReferencePrompts || [];
+    const references = shotRelatedCharacterReferences(context.shot, characterReferences);
     for (const reference of references) {
       if (reference?.referenceImageDataUrl) {
         assets.push({
@@ -3898,18 +3900,18 @@ function allReferenceAssetDescriptors(shotId) {
           sourceCharacterName: reference.characterName || ""
         });
       }
-      for (const clip of characterReferenceAudioClips(reference)) {
-        assets.push({
-          id: `character-audio-${clip.id}`,
-          mediaType: "audio",
-          name: `${reference.characterName || "角色"} · ${clip.label}`,
-          dataUrl: clip.dataUrl,
-          sizeBytes: clip.sizeBytes,
-          durationSeconds: clip.durationSeconds,
-          source: "character_audio_reference",
-          sourceCharacterName: reference.characterName || ""
-        });
-      }
+    }
+    for (const { characterName, clip } of shotRelatedCharacterAudioClips(context.shot, characterReferences)) {
+      assets.push({
+        id: `character-audio-${clip.id}`,
+        mediaType: "audio",
+        name: `${characterName || "角色"} · ${clip.label}`,
+        dataUrl: clip.dataUrl,
+        sizeBytes: clip.sizeBytes,
+        durationSeconds: clip.durationSeconds,
+        source: "character_audio_reference",
+        sourceCharacterName: characterName
+      });
     }
   }
   if (state.shotVideoGeneration.includeEndpointFrames && hasPlannedEndpoints(context.shot)) {
@@ -4062,7 +4064,7 @@ function renderShotVideoReferenceList(shotId) {
           ${asset.source === "upload" ? `<button class="shot-video-reference-remove" type="button" data-remove-shot-video-reference="${escape(asset.id)}" aria-label="移除 ${escape(asset.name)}">×</button>` : ""}
         </div>`).join("")}
       </div>
-      <p class="shot-video-reference-note">这些素材会以 reference_image / reference_video / reference_audio 发送，不会混入 first_frame / last_frame。上一镜抽帧只增强一致性，当前镜头的剧情、角色边界与目标场景仍优先。${previousReference.available
+      <p class="shot-video-reference-note">这些素材会以 reference_image / reference_video / reference_audio 发送，不会混入 first_frame / last_frame。角色参考声音只在“对白/字幕”明确标出该角色发声时加入。上一镜抽帧只增强一致性，当前镜头的剧情、角色边界与目标场景仍优先。${previousReference.available
         ? state.shotVideoGeneration.includePreviousShotFrames
           ? ""
           : `上个镜头 ${escape(previousReference.previousShot.shotId)} 已就绪，可按需勾选，预计抽取 ${escape(previousReference.estimatedFrameCount)} 张。`
