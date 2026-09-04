@@ -23,6 +23,21 @@ const MINIMAX_API_HOSTNAMES = Object.freeze(["api.minimaxi.com", "api.minimax.io
 // 官方 H3 只有这两档输出，取值区分大小写地写进请求体。
 const MINIMAX_RESOLUTIONS = Object.freeze(["768P", "2K"]);
 const MINIMAX_RATIOS = Object.freeze(["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"]);
+// MiniMax 的参考音频白名单只有 WAV 和 MP3（官方 video-generation v2 文档，2026-09-02 核对），
+// 而它是从 data URL 的 MIME **子类型**反推扩展名的：audio/mpeg 会被读成 ".mpeg" 当场拒绝——
+// 实测 2013 `content[3].audio_url: invalid param: audio format ".mpeg" not allowed`，
+// 而 audio/mpeg 恰恰是 MP3 的 IANA 标准写法，也是 worker 从 .mp3 文件推出来的那个。
+//
+// 用它的 withMiniMaxAudioMime() **只改格式标签，不动任何一个字节**，也只作用于 MiniMax
+// 这一条传输路径：我们自己的 Artifact 仍然保留 IANA 正确的 audio/mpeg（浏览器里的 <audio>
+// 试听依赖它），供应商的解析怪癖在边界上适配，不回头污染事实来源。Seedance 的音频规格
+// 未经核对，不在这里一并改——那需要各自的官方依据。
+const MINIMAX_AUDIO_MIME_ALIASES = Object.freeze({
+  "audio/mpeg": "audio/mp3",
+  "audio/mp3": "audio/mp3",
+  "audio/wav": "audio/wav",
+  "audio/x-wav": "audio/wav"
+});
 
 async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
@@ -49,9 +64,31 @@ async function main(argv = process.argv.slice(2)) {
   try {
     await executeGenericHttpWorker(options);
   } catch (error) {
-    console.error(error.message);
+    console.error(describeWorkerFailure(error));
     process.exitCode = 1;
   }
+}
+
+// worker 是独立进程，错误只能以 stderr 文本回到服务端，所以这里是**唯一**能把原因说清楚的地方。
+// 原来只打 error.message：undici 的失败一律是 `TypeError: fetch failed`，真正的原因
+// （ECONNRESET / ENOTFOUND / ETIMEDOUT / 证书错误）全在 error.cause 里，被整条丢掉。
+// 实测代价：一次批量里 A01 挂在 113 秒、A02 挂在 5 秒——两种完全不同的失败，
+// 回到页面上都只剩「fetch failed」四个字，谁也判断不了是提交、轮询还是下载出的问题。
+// 纯诊断：不改抛不抛、不改重试预算、不改退出码。
+function describeWorkerFailure(error) {
+  const parts = [];
+  let current = error;
+  for (let depth = 0; current && depth < 5; depth += 1) {
+    const text = String(current.message || current).trim();
+    // undici 会把同一句 "fetch failed" 叠好几层，只有最内层带真正的 code。
+    // 外层消息本来就把内层原样包着，所以用子串判断跳过——相等判断抓不到。
+    if (text && !parts.some((part) => part.includes(text))) {
+      const code = current.code || current.errno || "";
+      parts.push(depth === 0 ? text : `底层原因${code ? `（${code}）` : ""}：${text}`);
+    }
+    current = current.cause;
+  }
+  return parts.join(" ← ");
 }
 
 export async function executeGenericHttpWorker(options = {}) {
@@ -688,8 +725,26 @@ function buildModelArkContentGenerationBody(context, config, negativePromptDeliv
   return body;
 }
 
+// 白名单与依据见文件顶部的 MINIMAX_AUDIO_MIME_ALIASES（必须声明在 await main() 之前）。
+function withMiniMaxAudioMime(artifacts) {
+  return artifacts.map((artifact) => {
+    if (String(artifact?.mediaType || "").trim().toLowerCase() !== "audio") return artifact;
+    const dataUrl = firstArtifactDataUrl(artifact);
+    const declared = String(dataUrl.match(/^data:([^;,]+)[;,]/u)?.[1] || artifact.mimeType || "").toLowerCase();
+    const accepted = MINIMAX_AUDIO_MIME_ALIASES[declared];
+    if (!accepted) {
+      // 送出去只会换回一句不知所云的 2013，不如在这里说清楚它不收哪种格式。
+      throw new Error(
+        `MiniMax H3 参考音频只接受 WAV 与 MP3，${artifact.filename || "该音频"} 的格式是「${declared || "未知"}」，不能提交。`
+      );
+    }
+    if (declared === accepted) return artifact;
+    return { ...artifact, dataUrl: dataUrl.replace(/^data:[^;,]+/u, `data:${accepted}`) };
+  });
+}
+
 function buildMiniMaxH3VideoBody(context, config, negativePromptDelivery = {}) {
-  const artifacts = context.inputArtifacts || [];
+  const artifacts = withMiniMaxAudioMime(context.inputArtifacts || []);
   const prompt = requireTextWithinLimit([
     context.request.prompt || "",
     negativePromptDelivery.appliedMode === "positive_constraint" ? negativePromptDelivery.appliedText : ""
@@ -1079,7 +1134,10 @@ async function requestHttp(url, init, config) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number(config.timeoutMs || 120000));
   try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
+    const response = await withRequestContext(
+      `${init.method === "POST" ? "提交任务" : "轮询任务状态"}（${hostnameFor(url) || url}）`,
+      () => fetch(url, { ...init, signal: controller.signal })
+    );
     const contentType = response.headers.get("content-type") || "";
     const buffer = Buffer.from(await response.arrayBuffer());
     if (!response.ok) {
@@ -1095,11 +1153,26 @@ async function requestHttp(url, init, config) {
   }
 }
 
+// 失败时补一句「哪一步、打的哪个 host」。`fetch failed` 不说是提交、轮询还是下载，
+// 而这三步的处理方式完全不同（提交失败可以直接重来，下载失败意味着供应商很可能已经出片并计费）。
+// 只在抛错路径上拼字符串，成功路径零开销；原始错误挂在 cause 上，一个字都不丢。
+async function withRequestContext(label, run) {
+  try {
+    return await run();
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    throw new Error(`${label}失败：${error?.message || error}`, { cause: error });
+  }
+}
+
 async function downloadToFile(url, outputPath, config) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number(config.timeoutMs || 120000));
   try {
-    const response = await fetch(url, { headers: downloadHeadersFor(config), signal: controller.signal });
+    const response = await withRequestContext(
+      `下载成片（${hostnameFor(url) || url}）`,
+      () => fetch(url, { headers: downloadHeadersFor(config), signal: controller.signal })
+    );
     const buffer = Buffer.from(await response.arrayBuffer());
     if (!response.ok) throw new Error(`下载产物失败 HTTP ${response.status}: ${buffer.toString("utf8").slice(0, 1000)}`);
     await fs.writeFile(outputPath, buffer);

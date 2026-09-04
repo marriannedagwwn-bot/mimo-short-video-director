@@ -120,7 +120,7 @@ Run Coordinator 是显式不可重入的 FIFO 锁。持锁代码只能使用 `co
 
 调度器分为 workflow/text（2 running、8 queued）和 media（4 running、8 queued），queued 请求体总预算默认 140MB。超出限制返回 `TASK_CAPACITY_EXCEEDED`，不创建失败 Task。任务没有总墙钟 deadline：provider 调用前把 watchdog 设置为 provider 自身 timeout/poll timeout 加 120 秒，本地校验、合并和 commit 使用 300 秒无进展窗口；每次 provider 返回、流事件和阶段进展都会续期。watchdog 触发后 Task 变为 `failed/TASK_STALLED` 并释放目标，错误明确提示远端调用可能已经提交并计费。
 
-`shotVideoBatch` 是当前进程内的 Plan 级顺序父任务。创建时一次 claim 当前 Variant 的全部 `shotVideo:<variantId>:<shotId>` 目标，冻结 current Animation Plan lineage、启动时的镜头视频 provider/model 和全能参考配置；每镜复用既有 `shotVideo` Runner 独立提交 Artifact，父任务只持久化调度进度和脱敏结果引用，不复制 Prompt 或媒体正文。已存在且 current 的镜头视频标为 `reused`，其余镜头按 Plan 顺序生成；每个子任务完成后立即刷新父任务 progress，因此浏览器刷新后可从 `tasks/index.json` 重新 attach，并从 current Artifact 恢复已完成视频。
+`shotVideoBatch` 是当前进程内的 Plan 级顺序父任务。创建时一次 claim 当前 Variant 的全部 `shotVideo:<variantId>:<shotId>` 目标，冻结 current Animation Plan lineage、启动时的镜头视频 provider/model 和全能参考配置；每镜复用既有 `shotVideo` Runner 独立提交 Artifact，父任务只持久化调度进度和脱敏结果引用，不复制 Prompt 或媒体正文。已存在且 current 的镜头视频标为 `reused`，其余镜头在创建时先逐镜预检参考素材上限（角色参考图与上一镜抽帧共用 9 图上限、每镜语音 ≤3 段且总时长 ≤15 秒），任一镜超限即拒绝创建并一次列全，不产生供应商调用；通过预检后按 Plan 顺序生成，运行期单镜参考素材问题只失败该镜、不中止整批；每个子任务完成后立即刷新父任务 progress，因此浏览器刷新后可从 `tasks/index.json` 重新 attach，并从 current Artifact 恢复已完成视频。
 
 批量控制只允许 `pause | resume | terminate`。暂停保持父任务 `running` 和全部 claims，只在镜头边界阻止下一次 provider 提交；正在轮询或下载的当前镜头不会被强停。终止把父子任务标为 `cancelled`、释放 claims 并禁止迟到结果 commit，但已经提交给供应商的请求可能继续运行和计费。它不是跨进程 batch queue：Node 重启后仍按 Durable Task v1 规则变为 `interrupted`，不会从远端 task id 接管或自动续跑。
 

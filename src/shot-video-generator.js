@@ -7,6 +7,16 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { compileShotNegativePrompt } from "../public/negative-prompts.js";
 import {
+  ALL_REFERENCE_MAX_AUDIOS,
+  ALL_REFERENCE_MAX_IMAGES,
+  ALL_REFERENCE_MAX_VIDEO_BYTES,
+  ALL_REFERENCE_MAX_VIDEOS,
+  ALL_REFERENCE_MEDIA_MAX_SECONDS,
+  ALL_REFERENCE_MEDIA_MIN_SECONDS,
+  ALL_REFERENCE_MEDIA_TOTAL_SECONDS,
+  MINIMAX_H3_MAX_TOTAL_ASSETS
+} from "../public/all-reference-limits.js";
+import {
   assertVideoPromptProfile,
   VIDEO_PROMPT_PROFILE_IDS
 } from "../public/video-prompt-profiles.js";
@@ -196,7 +206,7 @@ export async function generateShotVideo(options = {}) {
           ...(continuityReference?.artifacts || [])
         ];
         validateAllReferenceArtifacts(combined, {
-          maxTotal: miniMaxH3Runtime ? 12 : Number.POSITIVE_INFINITY
+          maxTotal: miniMaxH3Runtime ? MINIMAX_H3_MAX_TOTAL_ASSETS : Number.POSITIVE_INFINITY
         });
         return combined;
       })();
@@ -843,24 +853,27 @@ function validateAllReferenceArtifacts(artifacts, { maxTotal = Number.POSITIVE_I
   const videos = grouped.video || [];
   const audios = grouped.audio || [];
   if (!images.length && !videos.length) throw new ShotVideoConfigError("全能参考模式不能只上传音频；至少需要一张图片或一段视频。");
-  if (images.length > 9) throw new ShotVideoConfigError(`全能参考图片最多 9 张，当前 ${images.length} 张。`);
-  if (videos.length > 3) throw new ShotVideoConfigError(`全能参考视频最多 3 段，当前 ${videos.length} 段。`);
-  if (audios.length > 3) throw new ShotVideoConfigError(`全能参考音频最多 3 段，当前 ${audios.length} 段。`);
+  if (images.length > ALL_REFERENCE_MAX_IMAGES) throw new ShotVideoConfigError(`全能参考图片最多 ${ALL_REFERENCE_MAX_IMAGES} 张，当前 ${images.length} 张。`);
+  if (videos.length > ALL_REFERENCE_MAX_VIDEOS) throw new ShotVideoConfigError(`全能参考视频最多 ${ALL_REFERENCE_MAX_VIDEOS} 段，当前 ${videos.length} 段。`);
+  if (audios.length > ALL_REFERENCE_MAX_AUDIOS) throw new ShotVideoConfigError(`全能参考音频最多 ${ALL_REFERENCE_MAX_AUDIOS} 段，当前 ${audios.length} 段。`);
   if (artifacts.length > maxTotal) {
     throw new ShotVideoConfigError(`MiniMax H3 混合参考素材总数最多 ${maxTotal} 项，当前 ${artifacts.length} 项。`);
   }
   for (const item of [...videos, ...audios]) {
-    if (item.durationSeconds < 2 || item.durationSeconds > 15) {
-      throw new ShotVideoConfigError(`${item.filename} 时长必须在 2–15 秒之间，当前 ${formatDuration(item.durationSeconds)} 秒。`);
+    if (
+      item.durationSeconds < ALL_REFERENCE_MEDIA_MIN_SECONDS
+      || item.durationSeconds > ALL_REFERENCE_MEDIA_MAX_SECONDS
+    ) {
+      throw new ShotVideoConfigError(`${item.filename} 时长必须在 ${ALL_REFERENCE_MEDIA_MIN_SECONDS}–${ALL_REFERENCE_MEDIA_MAX_SECONDS} 秒之间，当前 ${formatDuration(item.durationSeconds)} 秒。`);
     }
   }
-  if (videos.some((item) => item.sizeBytes > 50 * 1024 * 1024)) {
+  if (videos.some((item) => item.sizeBytes > ALL_REFERENCE_MAX_VIDEO_BYTES)) {
     throw new ShotVideoConfigError("单段参考视频不得超过 50MB。");
   }
   const videoDuration = videos.reduce((sum, item) => sum + item.durationSeconds, 0);
   const audioDuration = audios.reduce((sum, item) => sum + item.durationSeconds, 0);
-  if (videoDuration > 15.05) throw new ShotVideoConfigError(`参考视频总时长不得超过 15 秒，当前 ${formatDuration(videoDuration)} 秒。`);
-  if (audioDuration > 15.05) throw new ShotVideoConfigError(`参考音频总时长不得超过 15 秒，当前 ${formatDuration(audioDuration)} 秒。`);
+  if (videoDuration > ALL_REFERENCE_MEDIA_TOTAL_SECONDS) throw new ShotVideoConfigError(`参考视频总时长不得超过 ${ALL_REFERENCE_MEDIA_MAX_SECONDS} 秒，当前 ${formatDuration(videoDuration)} 秒。`);
+  if (audioDuration > ALL_REFERENCE_MEDIA_TOTAL_SECONDS) throw new ShotVideoConfigError(`参考音频总时长不得超过 ${ALL_REFERENCE_MEDIA_MAX_SECONDS} 秒，当前 ${formatDuration(audioDuration)} 秒。`);
 }
 
 function assertAllReferenceRequestSize(options) {

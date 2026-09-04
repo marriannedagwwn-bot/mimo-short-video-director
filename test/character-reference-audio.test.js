@@ -64,3 +64,55 @@ test("character audio validation enforces clip count and total duration", () => 
     clip({ id: "4" })
   ]), /最多上传 3 段/u);
 });
+
+// 说话人判定的边界行为。这些不是补充覆盖，而是锁住两个**方向相反**的承诺：
+// ① 名字互为前缀时不得误命中（判定函数的注释里声称做到了，但原本没有用例锁住）；
+// ② 漏判必须比误判安全——判不出说话人时宁可不发音频。误发一次的代价是整段样音
+//    被当成背景音铺满全片（2026-09-03 A01 实测），漏发的代价只是这一镜没有音色参考。
+test("角色名互为前缀时，说话人判定不会互相误命中", () => {
+  // 角色叫「小白」，而台词的说话人是「小白子」——不能命中。
+  assert.deepEqual(
+    shotRelatedCharacterAudioClips(
+      { dialogueOrSubtitle: "小白子：「嗷呜～」" },
+      [{ characterName: "小白", referenceAudioClips: [clip()] }]
+    ),
+    []
+  );
+  // 反向同样不能命中。
+  assert.deepEqual(
+    shotRelatedCharacterAudioClips(
+      { dialogueOrSubtitle: "小白：「嗷呜～」" },
+      [{ characterName: "小白子", referenceAudioClips: [clip()] }]
+    ),
+    []
+  );
+  // exact 名字才算数。
+  assert.deepEqual(
+    shotRelatedCharacterAudioClips(
+      { dialogueOrSubtitle: "小白子：「嗷呜～」" },
+      [{ characterName: "小白子", referenceAudioClips: [clip()] }]
+    ).map((item) => item.characterName),
+    ["小白子"]
+  );
+});
+
+test("判不出说话人时一律不发音频，宁可漏判也不误发", () => {
+  const references = [{ characterName: "芙芙猫", referenceAudioClips: [clip()] }];
+  const picks = (dialogueOrSubtitle) => shotRelatedCharacterAudioClips({ dialogueOrSubtitle }, references).length;
+
+  // 会命中的写法：冒号标出说话人，允许表演括注、半角冒号、句中第二个说话人。
+  assert.equal(picks("芙芙猫：「喵～」"), 1);
+  assert.equal(picks("芙芙猫（轻声）：「喵呜」"), 1);
+  assert.equal(picks("芙芙猫: 喵～"), 1);
+  assert.equal(picks("小白子：「走吧」芙芙猫：「喵～」"), 1);
+
+  // 只是被提到，不是说话人——这正是 A01 那一镜的形状，必须判 0。
+  assert.equal(picks("小白子对芙芙猫说：「走吧」"), 0);
+  // 把 soundDesign 式的描述写进对白字段也不算说话人。
+  assert.equal(picks("芙芙猫轻轻叫了一声"), 0);
+  // 没有冒号、或与他人并列的写法目前判不出说话人，按安全方向漏判。
+  assert.equal(picks("芙芙猫「喵～」"), 0);
+  assert.equal(picks("小白子和芙芙猫：「一起喵」"), 0);
+  // 字段为空时同样不发。
+  assert.equal(picks(""), 0);
+});

@@ -186,7 +186,7 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
 - **MiniMax H3 的 `resolution` 与 `ratio` 未配置时才走缺省（`2K` / `adaptive`）；显式配置了非法值必须明确失败**，不得静默回退。合法取值只有官方的 `768P` / `2K` 与六种画幅加 `adaptive`。`.env` 里曾长期写着非法的 `MINIMAX_VIDEO_RESOLUTION=1080K` 并被悄悄改写成 2K，计费与产出都与配置不符——这正是「失败时返回默认值」的典型代价。
 - **供应商轮询失败必须把它自己给出的原因带回来**，包括可查码表的结构化错误对象。worker 是独立进程，错误只能以 stderr 文本回到服务端，所以 `describeProviderTaskFailure()` 在人类可读摘要之后再附一段 `{"error":{...}}`——`splitTransportPrefix` 从第一个 `{` 起解析，没有它则 `describeProviderError` 一律返回 `null`，用户只看到原文、拿不到下一步动作。典型场景是内容审核 `1027`（输出涉敏），它是**非确定性**的：同一条提示词重试常能通过。**当前没有、也不得擅自加入对内容审核的自动重试**——那等于在第三方安全闸门上套「问到放行为止」的循环，且代码无法区分误判与真违规；是否重试由用户显式决定。
 - **成片实际时长与 Plan 要求时长并列上报，偏差既不静默也不硬失败。** `assertUsableVideoOutput()` 返回实测时长，每条候选记录 `plannedDurationSeconds` 与 `measuredDurationSeconds`（`0` 表示该链路未测得，不表示时长为零）。实测 H3 请求 5 秒稳定产出 5.167 秒（9/9 完全一致）、请求 4 秒得 4.458 秒——这是供应商的确定性行为，**硬失败会让该供应商 100% 不可用，重生成也拿不到不同结果**。是否以及如何对齐成片总长（容差、失败还是告警、以谁为准）仍是未决的契约问题，不得在此擅自选边。
-- `continuityReferenceMode: "none" | "previous_shot_frames"` 是独立的运行时开关，**不改变也不推断 `generationMode`**，也不是 `direct_shot` Schema 字段。启用时：上一镜只由当前 Plan `shotPlan[]` 紧邻前项确定；服务端读取上一镜 current `shotVideo` Artifact 的已选候选，只接受当前 media namespace 内的受信 mp4，用 FFmpeg 按 `t = 时长×i/4` 均匀截取 **5 张** JPEG（首帧、末帧和中间三等分点；末帧回退 0.1 秒以保证可解码）作为普通 `reference_image`，与其他图片共同受 9 图上限约束，超限明确失败。张数固定，不随镜头时长变化——3.1 把单镜放宽到 4–15 秒后，每秒一帧会让超过 9 秒的镜头直接撞上限，也会把锁角色长相的角色参考图挤出这 9 个位置。5 张同时落在 MiniMax 的免费额度内。它只增强一致性，**不能覆盖**当前 Full Story/Plan、`fixedCharacterBoundary` 或 Foundation 场景事实。
+- `continuityReferenceMode: "none" | "previous_shot_frames"` 是独立的运行时开关，**不改变也不推断 `generationMode`**，也不是 `direct_shot` Schema 字段。启用时：上一镜只由当前 Plan `shotPlan[]` 紧邻前项确定；服务端读取上一镜 current `shotVideo` Artifact 的已选候选，只接受当前 media namespace 内的受信 mp4，用 FFmpeg 按 `t = 时长×i/4` 均匀截取 **5 张** JPEG（首帧、末帧和中间三等分点；末帧回退 0.1 秒以保证可解码）作为普通 `reference_image`，与其他图片共同受 9 图上限约束，超限明确失败。**批量路径在创建任务时就按 happy path 投影抽帧张数逐镜预检这条上限**（首镜投影为 0），超限一次列全并拒绝开工，不产生任何供应商调用；上限数字只有一份，在 `public/all-reference-limits.js`，禁止在校验器、浏览器预检或批量路径各自再写一遍字面量。张数固定，不随镜头时长变化——3.1 把单镜放宽到 4–15 秒后，每秒一帧会让超过 9 秒的镜头直接撞上限，也会把锁角色长相的角色参考图挤出这 9 个位置。5 张同时落在 MiniMax 的免费额度内。它只增强一致性，**不能覆盖**当前 Full Story/Plan、`fixedCharacterBoundary` 或 Foundation 场景事实。
 - `POST /api/generate-shot-video` 必须始终绑定当前签发 Animation Plan，不得依据客户端自报 `animationPromptSchemaVersion` 降级为无 lineage 请求。服务端从 Plan 唯一解析 exact shot；只允许 `promptOverride` 覆盖本次媒体提示词，动作/时长/场景/声音/负面词/验收条件仍来自 Plan。输出文件名必须含不可碰撞的请求 nonce，返回前须过 ffprobe 视频流/时长校验。
 - **运行时参考素材清单**：`all_reference` 模式下服务端在 `shot.videoPrompt` **之前**确定性拼一段清单，说明每张素材是什么（`buildReferenceManifestText()`，`src/shot-video-continuity.js`）。参考图以 `reference_image` 发送时不带任何文字身份，模型无从分辨哪张是角色、哪张是上一镜抽帧。**前置而非后置**，以保证 `backgroundMusicMode: none` 的禁配乐句仍是整条提示词的最后一句。
   - **抽帧不承接角色外观与服装，冲突时让位给角色参考图。** 原措辞让抽帧「承接角色外观、服装、道具与场景状态」，而角色参考图那句同时写着「锁定该角色的长相与服装」——两句都声称管服装，清单自己把冲突制度化了。实测代价：A01 把校服画成米色无袖（本身就违背角色参考图），抽帧把这个错误当成事实传给 A02，模型拿到互相矛盾的视觉证据，在 8 秒内两次换装。**上一镜是待核实的产出，角色参考图才是签发权威**，冲突时没有理由让前者赢。现在抽帧只承接「场景、道具、光线与位置关系」，并在**本次确实带了角色参考图时**才追加「角色的长相与服装一律以角色参考图为准」——没带就不追加，否则等于指向一个不存在的素材。
@@ -195,11 +195,11 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
   - 清单**只能**使用受控来源枚举、Plan 权威的 `sourceCharacterName`（由 `resolveAuthoritativeShotVideoReferenceAssets` 按已签发 `characterReferencePrompts[].referenceImageDataUrl` 唯一匹配后覆写）、lineage 解析出的 `sourceShotId` 与帧数。**禁止写入 `upload` 素材的 `name`/`logicalName`**——那是原始用户文件名，是这条链路唯一的注入面，上传素材一律只写「用户上传的参考素材」。安全性来自构造，不是事后校验。
   - 它不是 Plan 字段、不改 Schema、不签发 revision、不 stale 媒体、不调模型；`sourceVideoPrompt` 保留 Plan 原值，`effectiveVideoPrompt` 与新增回执字段 `referenceManifest` 记录本次实际发送内容。`first_last_frame` 路径逐字不变。
   - 不要在这里补 `ensureCharacterPromptMatchesBoundary`：视频提示词天然多角色，走 `promptScope: "multi_character"`，而该分支在 `src/validation.js` 里**无条件短路返回空串**，加上去只是一个看起来像闸门的空操作。`server.js` 现有那道检查同理，它对视频提示词也不生效。
+- **角色参考声音只发给本镜的明确说话人（2026-09-03）。** 用户可以给每个角色上传参考语音（`characterReferencePrompts[].referenceAudioClips`），但**发不发送由该角色是不是本镜说话人决定，不是由它出不出镜决定**。判据是 `shot.dialogueOrSubtitle` 里出现 exact 角色名后紧跟冒号（允许一个表演括注），判定只有一份 `shotRelatedCharacterAudioClips()`（`public/character-reference-audio.js`），批量、单镜与服务端权威解析共用；服务端 `resolveAuthoritativeShotVideoReferenceAssets` 对非说话人的音频硬拒，诊断码 `SHOT_VIDEO_CHARACTER_AUDIO_REFERENCE_NOT_SPEAKER`（409）。角色参考**图**不受此约束，仍按出镜发送。
+  依据是 2026-09-03 的 A01 实测：芙芙猫在该镜没有任何对白，只是出镜，系统仍附带了它 4.73 秒的样音，成片里整段背景持续喵叫，与原样音在相同时间位置高度相关——**供应商把样音直接混进了成片，不是提取音色再合成**。判定刻意偏向漏判：判不出说话人就不发。回扫历史 574 条有对白的镜头，53% 根本没写说话人标注，这些镜头一律不发音频——漏发只是少一个音色参考，误发会让整段样音铺满全片。
+  **供应商侧没有 per-character 绑定，这条闸门治标不治因。** MiniMax 官方文档写明 `audio_url` 只是「参考音频（仅多模态参考场景）」，**没有任何把音色定向到画面中某个主体的机制**；我们唯一的绑定是参考素材清单里那句中文，模型可以无视。所以在该角色确实说话的镜头里，原音被直接播放仍可能重演。清单文案因此显式排除观察到的两种误用（当背景音铺满、在不发声的时间重复），但那是 Prompt 约束，**没有确定性校验兜底**。要「加工后的叫声」必须在本链路之外做独立的声音生成或替换步骤，**不得把 raw 样音当成音色合成器**。
+  格式：MiniMax 只接受 **WAV 与 MP3**，单段 2–15 秒、每镜 ≤3 段、合计 ≤15 秒。MP3 的 IANA MIME 是 `audio/mpeg`，而 MiniMax 从 MIME 子类型反推扩展名会读成 `.mpeg` 并以 2013 拒绝，因此**只在 MiniMax 传输边界**把标签改写成 `audio/mp3`（`MINIMAX_AUDIO_MIME_ALIASES`，必须声明在 worker 顶层 `await main()` 之前，否则子进程路径会落进暂时性死区）；Artifact 里仍保留 IANA 正确的 `audio/mpeg`，字节一个不改。`.m4a` MiniMax 不收，会在提交前明确失败。
 - **生成期间的过期复验是硬约束**：服务端把复验回调交给 `generateShotVideo`，生成器必须在①任何供应商调用与文件写入之前、②每条候选提交供应商之前、③每条候选落盘并通过 ffprobe 之后、④组装返回值之前各执行一次，**覆盖全部供应商**，禁止按 provider、模型或提示词方言设门（历史上只有已下线的 H3 路径复验，那是缺陷不是设计）。任一次失败即 fail closed：删除本次已写入的全部候选 mp4，`ProductionStateError`（409）原样上抛，禁止包装、禁止保留产物、禁止降级为成功。清理只删本次调用自己算出的含 nonce 路径，禁止扫描目录；旧 v2 首尾帧 PNG 文件名不含 nonce，不在覆盖内。只有过期触发清理——供应商错误与 ffprobe 失败维持既有语义。浏览器的事后关卡与它是叠加关系，不能用来解释复验缺失。
-
-### 2.7 模型 provider 边界
-
-工作流 LLM provider：**Qwen / MiMo / DeepSeek**。
 
 ### 2.13 剧情体检（storyQualityReview v1，2026-09-04）
 
@@ -222,6 +222,10 @@ Full Story 生成之后的**独立验收，只出报告**：不修改剧情、�
 **明确不做，三条都有实测依据**：①**不打总分、不设门槛**——实测 13 份的模型综合分挤在 7.8–8.3、中位 8.2，ChatGPT 给参考片也才 8.4，此刻画任何线都是拍脑袋；可比对的数字改由 `public/story-review-metrics.js` 从逐条判定里**数出来**（未兑现数、三档硬伤数），跨故事直接可比、不随措辞漂。②**不自动改剧情**——实测「评审→重写」单轮平均只涨 +0.17（6 组对照，落在评分者噪声 MAD 0.45 内），且 40% 撞契约硬失败。③**不阻断生产**——现有闸门全是确定性的，模型意见当硬闸门是另一回事，§2.8 明写「用户明确肯定/否定 > 已签发模型推断」。
 
 **评审模型的已知偏差**：默认沿用剧情阶段的 provider，也就是写这份剧情的那个模型，自己批自己会偏松（实测同一份剧情自评「AI 可执行性 8.0 / 物理可信度 8.0」，外部模型给 6.8 / 6.8）。本来要默认换一家，但同一批 10 份实测下来现有备选都不胜任：`mimo-v2.5-pro` 7/10 成功且太松（2/62 处 vs 千问 13/91 处），`deepseek-v4-flash` 5/10、反复产不出严格 JSON，`deepseek-v4-pro` 连接中断。一个查不出问题的评审比偏松的评审更没用，稳定性也是硬要求。**先用能干活的那个并如实记下偏差，不靠静默降级掩盖**；它是纯文本阶段（不在 `requiresMediaModel` 里），可按阶段 override 换任意一家。
+
+### 2.7 模型 provider 边界
+
+工作流 LLM provider：**Qwen / MiMo / DeepSeek**。
 
 DeepSeek **只允许**用于纯文本阶段：Brief、Variants、Legacy Full Story、Animation Plan、Static Frame Compiler（仅旧 v2 兼容路径）。
 

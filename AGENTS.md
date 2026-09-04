@@ -66,7 +66,7 @@ per-Run Coordinator 是显式不可重入 FIFO 锁。持锁代码只能调用 `c
 
 刷新/HTTP 断线只移除等待者，Runner 在同一 Node 进程继续。Node 重启时，大型请求体和 provider 执行上下文没有持久化：已由同 requestId 成功提交的任务可 reconciliation 为 completed，其余 queued/running 必须标 `interrupted` 并释放 claim，绝不自动重调 provider。继续 Analyze/Reconstruct/Visual Guardrails 时必须重新上传 SHA-256 与 Run metadata 中 `sourceVideoDigest` 相同的原文件；Brief/Variants 可直接复用 current 上游。T04 quarantine、T05 provider task-id 接管/重启恢复、lease 和正式跨进程 batch queue 仍未实现，禁止把 Durable Task v1 描述成完成了它们。
 
-`shotVideoBatch` 是受控的当前进程内顺序父任务：创建时一次 claim 当前 Plan 的全部 `shotVideo:<variantId>:<shotId>`，固定使用启动时 Seedance 2.0 或 MiniMax H3 的 `all_reference` 配置，并为每镜调用既有 `shotVideo` 子 Runner。角色参考图只能来自已签发 Plan；已存在 current 视频可复用。父任务将 `controlState`、逐镜状态、usage 和 Artifact refs 持久化到 `tasks/index.json`，每镜完成即 commit 并更新 progress，刷新页面必须重新 attach。`pause` 只在镜头边界阻止下一次提交，当前 provider 调用继续；`terminate` 标记父子任务 `cancelled`、释放 claims 并禁止迟到 commit，但不能撤回已提交远端请求。该能力不得描述为跨 Node 重启恢复的正式 batch queue，也不得静默切到尚未优化的 `first_last_frame`。
+`shotVideoBatch` 是受控的当前进程内顺序父任务：创建时一次 claim 当前 Plan 的全部 `shotVideo:<variantId>:<shotId>`，固定使用启动时 Seedance 2.0 或 MiniMax H3 的 `all_reference` 配置，并为每镜调用既有 `shotVideo` 子 Runner。角色参考图只能来自已签发 Plan；已存在 current 视频可复用。父任务将 `controlState`、逐镜状态、usage 和 Artifact refs 持久化到 `tasks/index.json`，每镜完成即 commit 并更新 progress，刷新页面必须重新 attach。`pause` 只在镜头边界阻止下一次提交，当前 provider 调用继续；`terminate` 标记父子任务 `cancelled`、释放 claims 并禁止迟到 commit，但不能撤回已提交远端请求。创建时先逐镜预检参考素材上限——角色参考图与上一镜抽帧**共用同一个 9 图上限**（抽帧张数按 happy path 投影，首镜为 0）、每镜语音 ≤3 段且单段 2–15 秒、总时长 ≤15 秒——任一待办镜头超限即拒绝创建任务并一次列全全部问题，不产生任何供应商调用；上限只有一份，取自 `public/all-reference-limits.js`。运行期单镜参考素材问题只失败该镜，不得中止整批。该能力不得描述为跨 Node 重启恢复的正式 batch queue，也不得静默切到尚未优化的 `first_last_frame`。
 
 Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Artifact stale。模型请求开始时冻结依赖 revision，返回时同时经过浏览器 request token 与服务端 `expectedCurrentRevision`/dependency 校验。Animation Plan 每个 revision 签发独立 media namespace。
 
@@ -132,6 +132,8 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：�
 `all_reference` 可另行显式传入运行时 `continuityReferenceMode: "none" | "previous_shot_frames"`；它不得改变或推断 `generationMode`，也不是 `direct_shot` Schema 字段。启用 `previous_shot_frames` 时，上一镜只由当前 Plan `shotPlan[]` 的紧邻前项确定；服务端必须读取上一镜 current `shotVideo` Artifact 的已选候选，只接受当前 media namespace 内的受信 mp4，并用 FFmpeg 按 `t = 时长×i/4` 均匀截取 **5 张** JPEG（首帧、末帧和中间三等分点；末帧回退 0.1 秒以保证可解码）作为普通 `reference_image`。张数固定为 5，不随镜头时长变化：3.1 把单镜时长放宽到 4–15 秒后，每秒一帧会让超过 9 秒的镜头直接撞上 9 图上限，也会把角色参考图挤出共用额度。时间戳由 `previousShotFrameTimestamps()` 确定性计算并逐帧写进回执。实际抽帧与其他图片共同受 9 图上限约束，超限明确失败。该参考只增强一致性，不能覆盖当前 Full Story/Plan、`fixedCharacterBoundary` 或 Foundation 场景事实；跨地点、跨时段或上一镜漂移是关闭该开关的合法反例。
 
 
+角色参考声音（`characterReferencePrompts[].referenceAudioClips`）**只发给本镜的明确说话人**，不随出镜发送：判据是 `shot.dialogueOrSubtitle` 中 exact 角色名后紧跟冒号（允许一个表演括注），判定只有一份 `shotRelatedCharacterAudioClips()`，批量、单镜与服务端权威解析共用；服务端对非说话人的音频硬拒，诊断码 `SHOT_VIDEO_CHARACTER_AUDIO_REFERENCE_NOT_SPEAKER`（409）。角色参考图不受此约束。判定刻意偏向漏判——判不出说话人就不发。依据是 2026-09-03 A01 实测：芙芙猫在该镜无对白只出镜，样音仍被附带，成片整段背景持续喵叫，供应商把样音直接混进了成片而非提取音色。**MiniMax 侧没有把音色定向到某个主体的机制**（官方文档：`audio_url` 仅为多模态参考场景的参考音频），所以该角色确实说话的镜头里原音直接播放仍可能重演；参考素材清单的文案显式排除「当背景音铺满」「在不发声时重复」两种误用，但那是 Prompt 约束，没有确定性校验兜底。要「加工后的叫声」必须在本链路之外做独立的声音生成或替换步骤。格式上 MiniMax 只接受 WAV 与 MP3，单段 2–15 秒、每镜 ≤3 段、合计 ≤15 秒；MP3 的 `audio/mpeg` 会被它按 MIME 子类型读成 `.mpeg` 并以 2013 拒绝，因此只在 MiniMax 传输边界改写成 `audio/mp3`，Artifact 保留 IANA 正确的 `audio/mpeg`，字节不变。
+
 `POST /api/generate-shot-video` 必须始终绑定当前签发 Animation Plan，不能依据客户端自报 `animationPromptSchemaVersion` 降级为无 lineage 请求。服务端从 Plan 唯一解析 exact shot；只允许独立 `promptOverride` 覆盖本次媒体提示词，动作、时长、场景、声音、负面词和验收条件仍来自 Plan。输出文件名必须包含不可碰撞的请求 nonce，并在返回前通过 ffprobe 视频流/时长校验。生成期间还必须无条件复验生产上下文是否仍为 current——在任何供应商调用与文件写入之前、每条候选提交供应商之前、每条候选落盘并通过 ffprobe 之后、组装返回值之前各一次，覆盖全部视频供应商，不得按 provider、模型或提示词方言设门。任一次复验失败即 fail closed：删除本次请求已写入的全部候选 mp4，并把 `ProductionStateError`（409）原样上抛，不得包装成配置或供应商错误、不得保留产物、不得降级为成功返回。清理只针对本次调用自己算出的含 nonce 路径，旧 v2 首尾帧 PNG 不在覆盖内；只有过期触发清理，供应商错误与 ffprobe 失败维持既有语义。
 
 `all_reference` 模式下，服务端在 `shot.videoPrompt` 之前确定性拼接一段**运行时参考素材清单**（`buildReferenceManifestText()`，`src/shot-video-continuity.js`），说明每张素材各是什么：参考图以 `reference_image` 发送时不携带任何文字身份，模型无从分辨哪张是角色参考、哪张是上一镜抽帧。清单前置而不是后置，以保证 `backgroundMusicMode: none` 的禁配乐句仍然是整条提示词的最后一句。抽帧成组时清单必须点名末帧：五张按 `t = 时长×i/4` 均匀采样，只有最后一张是上一镜结束时的状态，清单确定性写明「其中参考图N 是上一镜的最后一帧，本镜必须从它的状态与位置继续，其余几张只说明这一镜经过了什么，不代表本镜的起始位置」（末帧编号取自分组区间末位，不需要推断）；不点名的实测代价是下一镜复用了上一镜**起点**的构图，角色在空间上倒退整整一镜。抽帧**不承接角色外观与服装，也不整批承接位置关系**（位置只由末帧那一张给出）：它只承接「场景、道具与光线」，并在本次确实带了角色参考图时追加「角色的长相与服装一律以角色参考图为准，不要沿用抽帧里的角色外观」（没带角色参考图则不追加，避免指向不存在的素材）。原措辞让抽帧与角色参考图两句都声称管服装，等于把冲突写进规则——实测上一镜把服装画错后，该错误被抽帧当成事实传给下一镜，模型在同一镜内两次换装。上一镜是待核实的产出，角色参考图是签发权威，冲突时以后者为准。这只消除清单自相矛盾一项；抽帧同时携带外观与构图且通道上无法分离，「不要复制构图与动作」只是文本约束，抽帧数量的取舍仍未决。清单只允许使用受控来源枚举、Plan 权威的 `sourceCharacterName`（由 `resolveAuthoritativeShotVideoReferenceAssets` 按已签发 `characterReferencePrompts[].referenceImageDataUrl` 唯一匹配后覆写）、lineage 解析出的 `sourceShotId` 与帧数；**禁止写入 `upload` 素材的 `name`/`logicalName`**，那是原始用户文件名，是这条链路上唯一的注入面，上传素材一律只写「用户上传的参考素材」——安全性来自构造而不是事后校验。它不是 Plan 字段、不改 Schema、不签发 revision、不 stale 媒体、不调用模型：`sourceVideoPrompt` 保留 Plan 原值，`effectiveVideoPrompt` 与新增回执字段 `referenceManifest` 记录本次实际发送内容，`first_last_frame` 路径逐字不变。这里不得补 `ensureCharacterPromptMatchesBoundary`——视频提示词天然多角色，走 `promptScope: "multi_character"`，而该分支在 `src/validation.js` 中无条件短路返回空串，加上去只是一个看起来像闸门的空操作。
@@ -141,8 +143,6 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：�
 使用上一镜抽帧生成的后镜 `shotVideo` Artifact 必须同时依赖当前 Animation Plan 与上一镜 `shotVideo` 的精确 revision/digest；上一镜重生成或切换候选必须递归使下游视频 stale。切换后镜自身候选时必须保留既有媒体依赖。浏览器中的 `shotVideoResults` 与旧 v2 `shotFrameResults` 都必须按 variant + shotId 隔离，禁止只用 `A01` 作为状态键；单个媒体 stale 只能移除对应结果，不能清空其他 current 媒体。
 
 ---
-
-## 当前模型 provider 边界
 
 ## 剧情体检（storyQualityReview v1，2026-09-04）
 
@@ -165,6 +165,8 @@ Full Story 生成之后的**独立验收，只出报告**：不修改剧情、�
 **明确不做，三条都有实测依据**：①**不打总分、不设门槛**——实测 13 份的模型综合分挤在 7.8–8.3、中位 8.2，ChatGPT 给参考片也才 8.4，此刻画任何线都是拍脑袋；可比对的数字改由 `public/story-review-metrics.js` 从逐条判定里**数出来**（未兑现数、三档硬伤数），跨故事直接可比、不随措辞漂。②**不自动改剧情**——实测「评审→重写」单轮平均只涨 +0.17（6 组对照，落在评分者噪声 MAD 0.45 内），且 40% 撞契约硬失败。③**不阻断生产**——现有闸门全是确定性的，模型意见当硬闸门是另一回事，「当前全局角色边界」一节明写「用户明确肯定/否定 > 已签发模型推断」。
 
 **评审模型的已知偏差**：默认沿用剧情阶段的 provider，也就是写这份剧情的那个模型，自己批自己会偏松（实测同一份剧情自评「AI 可执行性 8.0 / 物理可信度 8.0」，外部模型给 6.8 / 6.8）。本来要默认换一家，但同一批 10 份实测下来现有备选都不胜任：`mimo-v2.5-pro` 7/10 成功且太松（2/62 处 vs 千问 13/91 处），`deepseek-v4-flash` 5/10、反复产不出严格 JSON，`deepseek-v4-pro` 连接中断。一个查不出问题的评审比偏松的评审更没用，稳定性也是硬要求。**先用能干活的那个并如实记下偏差，不靠静默降级掩盖**；它是纯文本阶段（不在 `requiresMediaModel` 里），可按阶段 override 换任意一家。
+
+## 当前模型 provider 边界
 
 工作流 LLM provider 包括：
 

@@ -30,6 +30,7 @@ import {
   buildShotVideoBatchReferenceAssets,
   createShotVideoBatchItems,
   requireShotVideoBatchAspectRatio,
+  shotVideoBatchReferenceIssues,
   updateShotVideoBatchItem,
   waitForShotVideoBatchControl
 } from "./src/shot-video-batch.js";
@@ -77,6 +78,7 @@ import {
   productionRequestHeaders
 } from "./public/production-lineage-client.js";
 import {
+  PREVIOUS_SHOT_REFERENCE_FRAME_COUNT,
   SHOT_VIDEO_CONTINUITY_NONE,
   SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES,
   shouldIncludePreviousShotFrames,
@@ -300,10 +302,10 @@ const routes = {
       animationPlan: productionMedia.planEntry.content
     }));
   },
-  "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
-  "/api/generate-shot-video": async (body) => {
   // 剧情体检：只出报告。不签发 Artifact、不进 lineage、不 stale 任何东西、不阻断后续阶段。
   "/api/story-quality-review": (body) => workflow.createStoryQualityReview(body),
+  "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
+  "/api/generate-shot-video": async (body) => {
     const productionMedia = await resolveProductionMediaContext(body, { required: true });
     const authoritativeInput = resolveAuthoritativeShotVideoInput({
       planArtifactId: productionMedia.planArtifactId,
@@ -1160,21 +1162,30 @@ function shotVideoBatchTaskDefinition({ projectId, runId, input }) {
       const targetArtifactIds = shotIds.map((shotId) => shotVideoArtifactIdFor(variantId, shotId));
       const isReady = (shot) => run.latestArtifacts?.[shotVideoArtifactIdFor(variantId, shot.shotId)]?.lineage?.status === "current";
       const items = createShotVideoBatchItems(shots, isReady);
-      const firstPendingIndex = items.findIndex((item) => item.status !== "completed");
-      if (firstPendingIndex >= 0) {
-        const firstPendingShot = shots[firstPendingIndex];
-        const hasCharacterReference = buildShotVideoBatchReferenceAssets(
-          firstPendingShot,
-          plan.characterReferencePrompts || []
-        ).some((asset) => asset.mediaType === "image");
-        const previousArtifactReady = firstPendingIndex > 0
-          && run.latestArtifacts?.[targetArtifactIds[firstPendingIndex - 1]]?.lineage?.status === "current";
-        if (!hasCharacterReference && !previousArtifactReady) {
-          throw new ProductionStateError(
-            `镜头 ${firstPendingShot.shotId} 没有角色参考图，也没有可复用的上一镜视频；全能参考模式至少需要一项视觉参考。`,
-            { code: "SHOT_VIDEO_BATCH_REFERENCE_REQUIRED" }
-          );
-        }
+      // 批前预检：逐个待办镜头核对参考素材会不会超出供应商上限，命中就一次列全并拒绝开工。
+      //
+      // 此前这里只检查首个待办镜头「至少有一项视觉参考」，于是第 7 镜的音频超限要等到
+      // 前 6 镜都付过费之后才暴露——而且那种失败还会把整批带走（见 execute 里的隔离注释）。
+      //
+      // 抽帧张数按 happy path 投影：includePreviousShotFrames 打开时，除首镜外每一镜都会
+      // 拿到上一镜的抽帧。**已知的保守性**：如果实际运行时上一镜失败了，那一镜不会有抽帧、
+      // 图片数更少、本来可能通过，这里仍然会拦住它。这是「拒绝开工」这个选择自带的代价，
+      // 不是缺陷——不接受这个代价就得改成「预标记 failed 后照常开工」。
+      const includePreviousShotFrames = input.includePreviousShotFrames !== false;
+      const referenceIssues = [];
+      for (const [index, shot] of shots.entries()) {
+        if (items[index]?.status === "completed") continue;
+        referenceIssues.push(...shotVideoBatchReferenceIssues(shot, plan.characterReferencePrompts || [], {
+          continuityFrameCount: includePreviousShotFrames && index > 0
+            ? PREVIOUS_SHOT_REFERENCE_FRAME_COUNT
+            : 0
+        }));
+      }
+      if (referenceIssues.length) {
+        throw new ProductionStateError(
+          `以下镜头的参考素材超出全能参考上限，批量生成不会开始：\n${referenceIssues.map((issue) => `· ${issue.message}`).join("\n")}`,
+          { code: referenceIssues[0].code }
+        );
       }
       const artifacts = currentArtifactContents(run, [
         "referenceAnalysis",
@@ -1187,7 +1198,7 @@ function shotVideoBatchTaskDefinition({ projectId, runId, input }) {
           variantId,
           selectedVariantId: variantId,
           count: Math.max(1, Math.min(4, Number(input.count) || 1)),
-          includePreviousShotFrames: input.includePreviousShotFrames !== false,
+          includePreviousShotFrames,
           modelOverrides: plainObject(input.modelOverrides),
           productionContext: productionContextForLineage(projectId, runId, planEntry.lineage),
           plan: structuredClone(plan),
@@ -1245,10 +1256,26 @@ function shotVideoBatchTaskDefinition({ projectId, runId, input }) {
           : "";
         const previousReady = previousArtifactId
           && snapshot.latestArtifacts?.[previousArtifactId]?.lineage?.status === "current";
-        const referenceAssets = buildShotVideoBatchReferenceAssets(
-          shot,
-          trusted.plan.characterReferencePrompts || []
-        );
+        // 单镜参考素材问题必须只失败这一镜。这行原本在下面那个 try 之外，抛出的
+        // ProductionStateError 会直接冒出 execute，把整批判 failed——而同一类问题发生在
+        // runChild 里只会标记该镜 failed 然后继续。同一种故障两种后果，这里补齐。
+        // 批前预检正常情况下已经拦住了这些，剩下的是冻结输入与预检投影不一致的兜底。
+        let referenceAssets;
+        try {
+          referenceAssets = buildShotVideoBatchReferenceAssets(
+            shot,
+            trusted.plan.characterReferencePrompts || []
+          );
+        } catch (error) {
+          if (isFatalShotVideoBatchError(error)) throw error;
+          failedShots += 1;
+          items = updateShotVideoBatchItem(items, shotId, {
+            status: "failed",
+            message: error.message || "参考素材不符合全能参考上限"
+          });
+          await context.heartbeat({ completedShots, generatedShots, failedShots, currentShotId: "", items });
+          continue;
+        }
         const hasVisualReference = referenceAssets.some((asset) => ["image", "video"].includes(asset.mediaType));
         if (!hasVisualReference && !(trusted.includePreviousShotFrames && previousReady)) {
           failedShots += 1;

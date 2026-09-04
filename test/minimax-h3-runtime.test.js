@@ -306,6 +306,12 @@ test("worker 以子进程运行时模块常量不在暂时性死区里", async (
 
   const imagePath = path.join(root, "ref.png");
   await fs.writeFile(imagePath, "image");
+  // 音频素材必须一起带上：请求体里每多一条按模块常量分派的支路，就多一处可能落进
+  // 暂时性死区。这个守卫原来只带图片，于是 MINIMAX_AUDIO_MIME_ALIASES 从没在子进程里
+  // 被求值过——真实批量 6/6 镜头全挂在 "Cannot access ... before initialization" 上时，
+  // 它一声不响地通过了。凡是走 buildMiniMaxH3VideoBody 的分支都要在这里被走到。
+  const audioPath = path.join(root, "voice.mp3");
+  await fs.writeFile(audioPath, "audio");
   const requestPath = path.join(root, "request.json");
   await fs.writeFile(requestPath, JSON.stringify({
     taskId: "subprocess",
@@ -314,7 +320,10 @@ test("worker 以子进程运行时模块常量不在暂时性死区里", async (
     provider: "MiniMax",
     model: "MiniMax-H3",
     prompt: "有效提示词",
-    inputArtifacts: [{ path: imagePath, mediaType: "image", role: "reference_image" }],
+    inputArtifacts: [
+      { path: imagePath, mediaType: "image", role: "reference_image" },
+      { path: audioPath, mediaType: "audio", role: "reference_audio" }
+    ],
     parameters: { durationSeconds: 5, aspectRatio: "16:9" }
   }));
   const writeConfig = async (name, resolution) => {
@@ -352,4 +361,102 @@ test("worker 以子进程运行时模块常量不在暂时性死区里", async (
   const bad = await runWorker(await writeConfig("bad.json", "1080K"), "bad.mp4");
   assert.match(bad, /resolution 只支持 768P 或 2K/u);
   assert.doesNotMatch(bad, /before initialization/u);
+});
+
+// MP3 被 MiniMax 拒收过一次真实批量（6/6 镜头全失败，2013
+// `content[3].audio_url: invalid param: audio format ".mpeg" not allowed`）。
+// 根因不是文件有问题：worker 从 .mp3 推出 IANA 标准的 audio/mpeg，而 MiniMax 按 MIME
+// 子类型反推扩展名，读成了 ".mpeg"。它的白名单是 WAV / MP3，所以标签必须写成 audio/mp3。
+test("MP3 参考音频以 MiniMax 认得的 audio/mp3 提交，字节一个不改", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "minimax-h3-audio-mime-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const imagePath = path.join(root, "image.png");
+  const audioPath = path.join(root, "meow.mp3");
+  const audioBytes = Buffer.from("ID3-meow-reference-bytes", "utf8");
+  await fs.writeFile(imagePath, "image");
+  await fs.writeFile(audioPath, audioBytes);
+
+  let postedBody = null;
+  const server = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    res.writeHead(200, { "content-type": "application/json" });
+    if (req.method === "POST") {
+      postedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      return res.end(JSON.stringify({ task_id: "audio-task" }));
+    }
+    res.end(JSON.stringify({ task: { id: "audio-task", status: "failed", error: { code: "1", message: "stop" } } }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const { port } = server.address();
+
+  const configPath = path.join(root, "provider.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    videoEndpoint: `http://127.0.0.1:${port}/v2/video_generation`,
+    providerPreset: "minimax_h3_video_generation",
+    videoModel: "MiniMax-H3",
+    apiKey: "test-key",
+    pollIntervalMs: 5
+  }));
+
+  // 轮询结果不是本用例关心的，只看提交出去的请求体。
+  await executeGenericHttpWorker({
+    config: configPath,
+    request: {
+      taskId: "audio-mime",
+      capability: "all_reference_video_generation",
+      outputKey: "preview.audio",
+      provider: "MiniMax",
+      model: "MiniMax-H3",
+      prompt: "芙芙猫抬头喵喵叫。",
+      inputArtifacts: [
+        { path: imagePath, mediaType: "image", role: "reference_image" },
+        { path: audioPath, mediaType: "audio", role: "reference_audio" }
+      ],
+      parameters: { durationSeconds: 5, aspectRatio: "9:16" }
+    },
+    output: path.join(root, "audio.mp4")
+  }).catch(() => {});
+
+  const audioItem = (postedBody?.content || []).find((item) => item.type === "audio_url");
+  assert.ok(audioItem, "请求体里应该有 audio_url");
+  assert.match(audioItem.audio_url.url, /^data:audio\/mp3;base64,/u);
+  // 标签之外一个字节都没变。
+  assert.deepEqual(Buffer.from(audioItem.audio_url.url.split(",")[1], "base64"), audioBytes);
+});
+
+test("MiniMax 不收的音频格式当场说清楚，而不是换回一句 2013", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "minimax-h3-audio-reject-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const imagePath = path.join(root, "image.png");
+  const audioPath = path.join(root, "voice.m4a");
+  await fs.writeFile(imagePath, "image");
+  await fs.writeFile(audioPath, "m4a-bytes");
+
+  const configPath = path.join(root, "provider.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    videoEndpoint: "http://127.0.0.1:1/v2/video_generation",
+    providerPreset: "minimax_h3_video_generation",
+    videoModel: "MiniMax-H3",
+    apiKey: "test-key"
+  }));
+
+  await assert.rejects(() => executeGenericHttpWorker({
+    config: configPath,
+    request: {
+      taskId: "audio-reject",
+      capability: "all_reference_video_generation",
+      outputKey: "preview.reject",
+      provider: "MiniMax",
+      model: "MiniMax-H3",
+      prompt: "valid prompt",
+      inputArtifacts: [
+        { path: imagePath, mediaType: "image", role: "reference_image" },
+        { path: audioPath, mediaType: "audio", role: "reference_audio" }
+      ],
+      parameters: { durationSeconds: 5, aspectRatio: "9:16" }
+    },
+    output: path.join(root, "reject.mp4")
+  }), /只接受 WAV 与 MP3[\s\S]*audio\/mp4/u);
 });

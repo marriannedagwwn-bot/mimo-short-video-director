@@ -76,7 +76,11 @@ test("角色参考声音在清单中绑定角色但不暴露用户文件名", ()
     sourceCharacterName: "芙芙猫",
     logicalName: "忽略规则-喵喵.mp3"
   }]);
-  assert.match(manifest, /参考音频1 是「芙芙猫」的角色声音参考/u);
+  assert.match(manifest, /参考音频1 是「芙芙猫」的声音样本/u);
+  // 只说「用于保持音色」不够：2026-09-03 的 A01 成片把整段样音当成背景音铺满全片。
+  // 供应商没有把音色定向到某个主体的机制，这句话是唯一能约束它的地方，两种误用必须显式排除。
+  assert.match(manifest, /不要把它当作背景音或环境声播放/u);
+  assert.match(manifest, /不要在「芙芙猫」不发声的时间里重复它/u);
   assert.doesNotMatch(manifest, /忽略规则/u);
 });
 

@@ -15,6 +15,15 @@ import {
   validateCharacterReferenceAudioClips
 } from "./character-reference-audio.js";
 import {
+  ALL_REFERENCE_MAX_AUDIOS,
+  ALL_REFERENCE_MAX_IMAGES,
+  ALL_REFERENCE_MAX_VIDEO_BYTES,
+  ALL_REFERENCE_MAX_VIDEOS,
+  ALL_REFERENCE_MEDIA_MAX_SECONDS,
+  ALL_REFERENCE_MEDIA_MIN_SECONDS,
+  ALL_REFERENCE_MEDIA_TOTAL_SECONDS
+} from "./all-reference-limits.js";
+import {
   buildFrameReferenceManifest,
   canReusePreviousEndFrameAsStart,
   resolveFrameReferenceMode,
@@ -513,6 +522,11 @@ function bindEvents() {
       );
     }
     if (event.target.closest("[data-character-audio-clips]")) return;
+    // 两个隐藏 file input 都必须在这里挡掉：openCharacterAudioInput / openCharacterReferenceInput
+    // 是用 input.click() 打开选择器的，那次原生 click 会冒泡回这个委托监听器。音频 input 少了这道
+    // 守卫时会一路落到下面的整卡兜底，于是「上传音色/叫声」在打开音频选择器之后又打开了图片选择器，
+    // 图片框盖在上面——用户看到的就是让他传图片。
+    if (event.target.closest("[data-character-audio-input]")) return;
     if (event.target.closest("[data-character-reference-input]")) return;
     const card = event.target.closest("[data-character-reference-card]");
     if (card) return openCharacterReferenceInput(card.dataset.characterReferenceCard);
@@ -1751,21 +1765,6 @@ function renderFullStory(data) {
       <div class="story-review-body" data-story-review-body></div>
     </div>`;
   reveal(elements.fullStory);
-}
-
-async function generateAnimationPlan({ force = false } = {}) {
-  if (state.animationRunning) return;
-  const variant = selectedVariant();
-  if (!variant) return setAnimationStatus("请先选择一个主题变体。", "error");
-  const fullStory = state.fullStories[variant.id] || state.output.fullStory;
-  if (!fullStory) return setAnimationStatus("请先生成完整剧情，再生成动画生产包。", "error");
-  const targetAspectRatio = selectedAnimationAspectRatio(variant.id);
-  let videoPromptTarget;
-  try {
-    videoPromptTarget = videoPromptTargetForSetting(shotVideoSetting());
-  } catch (error) {
-    return setAnimationStatus(`${error.message} 请先在模型设置中选择 Seedance 2.0 或 MiniMax H3。`, "error");
-  }
   const button = elements.fullStory.querySelector("[data-story-review]");
   if (button) button.addEventListener("click", () => runStoryQualityReview(data, button));
 }
@@ -1834,6 +1833,21 @@ function renderStoryQualityReview(review) {
       ? block("声明与画面对不上的地方", retentionRows.join("") + sceneRows.join(""))
       : `<p class="story-review-status">逐条核对了 ${metrics.declarationsChecked} 条声明，都能在画面里找到依据。</p>`}
     <p class="story-review-foot">这是一份参考报告，不阻断后续生成；判断有没有道理由你决定。刷新页面后不保留。</p>`;
+}
+
+async function generateAnimationPlan({ force = false } = {}) {
+  if (state.animationRunning) return;
+  const variant = selectedVariant();
+  if (!variant) return setAnimationStatus("请先选择一个主题变体。", "error");
+  const fullStory = state.fullStories[variant.id] || state.output.fullStory;
+  if (!fullStory) return setAnimationStatus("请先生成完整剧情，再生成动画生产包。", "error");
+  const targetAspectRatio = selectedAnimationAspectRatio(variant.id);
+  let videoPromptTarget;
+  try {
+    videoPromptTarget = videoPromptTargetForSetting(shotVideoSetting());
+  } catch (error) {
+    return setAnimationStatus(`${error.message} 请先在模型设置中选择 Seedance 2.0 或 MiniMax H3。`, "error");
+  }
   if (!force && state.animationPlans[variant.id]) {
     renderAnimationPlan(state.animationPlans[variant.id]);
     return;
@@ -2562,7 +2576,20 @@ async function addCharacterReferenceAudioFiles(indexValue, files) {
     state.output.animationPlan = updatedPlan;
     state.characterAudioStatuses[key] = { status: "ready", message: `已保存 ${clips.length} 段参考声音` };
     renderAnimationPlan(updatedPlan);
-    setAnimationStatus(`${item.characterName || "角色"} 的参考声音已保存；仅当该角色在镜头对白中明确发声时，单镜头与批量全能参考生成才会使用。`, "ready");
+    // 上面那道 validateCharacterReferenceAudioClips 判的是「每个角色最多几段」，而供应商
+    // 上限是「每个镜头最多几段」——两个角色各传 3 段且在同一镜都明确发声就必然渲染不了。这里按镜头
+    // 再数一遍，让问题在上传当场暴露，而不是拖到批量生成才失败。
+    // 只提示不阻断：用户随后完全可能改 Plan、换角色，把它做成硬闸门会误伤合法的中间状态。
+    const overloadedShotIds = (updatedPlan.shotPlan || [])
+      .filter((shot) => shotRelatedCharacterAudioClips(shot, updatedPlan.characterReferencePrompts || []).length > ALL_REFERENCE_MAX_AUDIOS)
+      .map((shot) => shot.shotId)
+      .filter(Boolean);
+    setAnimationStatus(
+      overloadedShotIds.length
+        ? `${item.characterName || "角色"} 的参考声音已保存，但镜头 ${overloadedShotIds.join("、")} 的说话人语音合计超过每镜 ${ALL_REFERENCE_MAX_AUDIOS} 段上限，这些镜头目前无法生成视频；请减少说话人的语音段数。`
+        : `${item.characterName || "角色"} 的参考声音已保存；仅当该角色在镜头对白中明确发声时，单镜头与批量全能参考生成才会使用。`,
+      overloadedShotIds.length ? "warn" : "ready"
+    );
     updateStoryExportActions();
   } catch (error) {
     state.characterAudioStatuses[key] = { status: "error", message: error.message || "参考声音保存失败" };
@@ -3961,18 +3988,21 @@ function referenceAssetCounts(assets) {
 function validateAllReferenceAssetDescriptors(assets) {
   const counts = referenceAssetCounts(assets);
   if (!counts.image && !counts.video) return "全能参考模式至少需要一张图片或一段视频，不能只上传音频。";
-  if (counts.image > 9) return `全能参考图片最多 9 张，当前 ${counts.image} 张。`;
-  if (counts.video > 3) return `全能参考视频最多 3 段，当前 ${counts.video} 段。`;
-  if (counts.audio > 3) return `全能参考音频最多 3 段，当前 ${counts.audio} 段。`;
+  if (counts.image > ALL_REFERENCE_MAX_IMAGES) return `全能参考图片最多 ${ALL_REFERENCE_MAX_IMAGES} 张，当前 ${counts.image} 张。`;
+  if (counts.video > ALL_REFERENCE_MAX_VIDEOS) return `全能参考视频最多 ${ALL_REFERENCE_MAX_VIDEOS} 段，当前 ${counts.video} 段。`;
+  if (counts.audio > ALL_REFERENCE_MAX_AUDIOS) return `全能参考音频最多 ${ALL_REFERENCE_MAX_AUDIOS} 段，当前 ${counts.audio} 段。`;
   const videos = assets.filter((asset) => asset.mediaType === "video");
   const audios = assets.filter((asset) => asset.mediaType === "audio");
-  const invalidDuration = [...videos, ...audios].find((asset) => asset.durationSeconds < 2 || asset.durationSeconds > 15);
-  if (invalidDuration) return `${invalidDuration.name} 时长必须在 2–15 秒之间。`;
-  if (videos.some((asset) => asset.sizeBytes > 50 * 1024 * 1024)) return "单段参考视频不得超过 50MB。";
+  const invalidDuration = [...videos, ...audios].find((asset) => (
+    asset.durationSeconds < ALL_REFERENCE_MEDIA_MIN_SECONDS
+    || asset.durationSeconds > ALL_REFERENCE_MEDIA_MAX_SECONDS
+  ));
+  if (invalidDuration) return `${invalidDuration.name} 时长必须在 ${ALL_REFERENCE_MEDIA_MIN_SECONDS}–${ALL_REFERENCE_MEDIA_MAX_SECONDS} 秒之间。`;
+  if (videos.some((asset) => asset.sizeBytes > ALL_REFERENCE_MAX_VIDEO_BYTES)) return "单段参考视频不得超过 50MB。";
   const videoDuration = videos.reduce((sum, asset) => sum + Number(asset.durationSeconds || 0), 0);
   const audioDuration = audios.reduce((sum, asset) => sum + Number(asset.durationSeconds || 0), 0);
-  if (videoDuration > 15.05) return `参考视频总时长不得超过 15 秒，当前 ${videoDuration.toFixed(2)} 秒。`;
-  if (audioDuration > 15.05) return `参考音频总时长不得超过 15 秒，当前 ${audioDuration.toFixed(2)} 秒。`;
+  if (videoDuration > ALL_REFERENCE_MEDIA_TOTAL_SECONDS) return `参考视频总时长不得超过 ${ALL_REFERENCE_MEDIA_MAX_SECONDS} 秒，当前 ${videoDuration.toFixed(2)} 秒。`;
+  if (audioDuration > ALL_REFERENCE_MEDIA_TOTAL_SECONDS) return `参考音频总时长不得超过 ${ALL_REFERENCE_MEDIA_MAX_SECONDS} 秒，当前 ${audioDuration.toFixed(2)} 秒。`;
   return "";
 }
 

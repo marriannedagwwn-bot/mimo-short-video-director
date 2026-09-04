@@ -388,11 +388,21 @@ function manifestClause(artifact, label, { hasCharacterReference = false, endLab
       ? `${label} 是「${name}」的角色参考图，是该角色长相与服装的唯一依据`
       : `${label} 是角色参考图，是角色长相与服装的唯一依据`;
   }
+  // 参考音频只说「用于保持音色」是不够的，实测会被当成可以直接播放的素材。
+  //
+  // 2026-09-03 的 A01 成片里，芙芙猫在整段背景中持续喵叫，与上传的 4.73 秒样音在
+  // 相同时间位置高度相关——供应商把样音直接混进了成片，而不是提取音色再合成。
+  // 官方文档也确认 `audio_url` 只是「参考音频（仅多模态参考场景）」，**没有任何
+  // 把音色定向到画面中某个主体的机制**，所以这句话是我们唯一能约束它的地方。
+  //
+  // 因此除了说明这是谁的声音，还必须显式排除观察到的那两种误用：当成背景音铺满全片、
+  // 在该角色不发声的时间里重复。这是 Prompt 约束，**没有确定性校验兜底**——判断成片里
+  // 有没有把样音当环境声播放需要听觉判断。真正的兜底是上游那道说话人闸门：
+  // 该角色不是本镜明确说话人时，这段音频根本不会被发送。
   if (source === "character_audio_reference") {
     const name = manifestSafeTerm(artifact.sourceCharacterName, 40);
-    return name
-      ? `${label} 是「${name}」的角色声音参考，用于保持该角色的音色与叫声特征`
-      : `${label} 是角色声音参考，用于保持角色的音色与叫声特征`;
+    const subject = name ? `「${name}」` : "该角色";
+    return `${label} 是${subject}的声音样本，${subject}在本镜确实会发声；只用它决定${subject}发声时的音色，不要把它当作背景音或环境声播放，也不要在${subject}不发声的时间里重复它`;
   }
   if (source === "workflow_start_frame") return `${label} 是本镜已选的首帧画面，只作普通参考`;
   if (source === "workflow_end_frame") return `${label} 是本镜已选的尾帧画面，只作普通参考`;
