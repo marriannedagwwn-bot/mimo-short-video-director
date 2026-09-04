@@ -21,3 +21,12 @@ frames/
 # Local Codex VPN tooling; never commit.
 .codex-ufi-vpn-manager/
 .codex-ufi-vpn-module/
+
+# .env 的手工备份。`.env` 那一行挡不住带后缀的副本，而这些备份里是全套真实
+# API 密钥（QWEN / MIMO / DEEPSEEK / MINIMAX / SEEDANCE / JIMENG / VIDEO_HTTP）——
+# 一次随手的 `git add -A` 就会把它们推到远端。
+.env.bak-*
+
+# 人工评分记录（问卷原始回答与评分结果）。它们是一次性的调查数据，不是仓库事实来源；
+# 评分方法论本身在 scripts/story-quality-evaluation.mjs 与其 fixture 里，那部分是跟踪的。
+评分系统/
