@@ -1,7 +1,8 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
 import { ModelResponseError, parseModelJson, parseStrictModelJson } from "./mimo-client.js";
 import { recordModelUsage } from "./token-usage.js";
-import { afterDurableProviderCall, beforeDurableProviderCall } from "./durable-task-context.js";
+import { afterDurableProviderCall, beforeDurableProviderCall, durableTaskHeartbeat } from "./durable-task-context.js";
+import { SseStreamIncompleteError, readSseCompletion } from "./sse-stream.js";
 
 export class QwenClient {
   constructor(config) {
@@ -196,15 +197,16 @@ export class QwenClient {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(effectiveTimeoutMs)
     });
-    const raw = await response.text();
-    await afterDurableProviderCall("model_provider_response");
     const headerRequestId = response.headers.get("x-request-id")
       || response.headers.get("request-id")
       || "";
+    // 错误响应体是普通 JSON 而不是 SSE，所以这一分支必须留在读流之前。
     if (!response.ok) {
+      const errorBody = await response.text();
+      await afterDurableProviderCall("model_provider_response");
       throw new ModelResponseError(
         `${providerName} 请求失败（${response.status}）`,
-        raw,
+        errorBody,
         response.status,
         {
           provider: providerName,
@@ -214,30 +216,49 @@ export class QwenClient {
       );
     }
 
-    let envelope;
+    // 流读取期间定期更新 Durable Task 进度，让界面看得到「还在出字」。
+    // 只更新 progress，不参与超时裁决：provider watchdog 仍是自身 timeout + 120 秒。
+    let lastHeartbeatAt = 0;
+    const onProgress = ({ contentLength }) => {
+      const now = Date.now();
+      if (now - lastHeartbeatAt < 10_000) return;
+      lastHeartbeatAt = now;
+      // fire-and-forget：观测失败不得改变传输结论
+      Promise.resolve(durableTaskHeartbeat({ streamedChars: contentLength })).catch(() => {});
+    };
+
+    let stream;
     try {
-      envelope = JSON.parse(raw);
-    } catch {
-      throw new ModelResponseError(
-        `${providerName} 返回了无法解析的响应包`,
-        raw,
-        0,
-        {
-          provider: providerName,
-          code: "MODEL_ENVELOPE_INVALID",
-          requestId: headerRequestId
-        }
-      );
+      stream = await readSseCompletion(response.body, { onProgress });
+    } catch (error) {
+      await afterDurableProviderCall("model_provider_response");
+      if (error instanceof SseStreamIncompleteError) {
+        // 半截内容绝不当成结果返回：否则残缺 JSON 会被下游报成「JSON 格式错误」，
+        // 把传输中断伪装成模型输出问题。
+        throw new ModelResponseError(
+          `${providerName} ${error.message}`,
+          error.raw,
+          0,
+          {
+            provider: providerName,
+            code: "MODEL_STREAM_INCOMPLETE",
+            requestId: headerRequestId
+          }
+        );
+      }
+      throw error;
     }
-    const choice = envelope.choices?.[0];
-    const content = choice?.message?.content;
-    const requestId = headerRequestId || String(envelope.id || "");
-    const usage = envelope.usage && typeof envelope.usage === "object"
-      ? envelope.usage
+    await afterDurableProviderCall("model_provider_response");
+
+    const raw = stream.raw;
+    const content = stream.content;
+    const requestId = headerRequestId || String(stream.id || "");
+    const usage = stream.usage && typeof stream.usage === "object"
+      ? stream.usage
       : null;
     // 记入当前请求的 token 记账作用域；作用域外是 no-op，异常内部吞掉。
     recordModelUsage({ provider: providerName, model: body.model, usage });
-    const finishReason = String(choice?.finish_reason || "");
+    const finishReason = String(stream.finishReason || "");
     if (typeof content !== "string") {
       throw new ModelResponseError(
         `${providerName} 响应缺少 message.content`,
@@ -290,7 +311,13 @@ export function buildQwenRequestBody(config, { prompt, frames = [], video = null
     max_tokens: overrides.maxCompletionTokens ?? config.maxCompletionTokens ?? 12288,
     ...(modelAcceptsTemperature(model) ? { temperature: 0.3 } : {}),
     top_p: 0.95,
-    stream: false,
+    // 流式传输。非流式长请求会在约 306 秒被上游掐断（2026-09-05 实测：kimi-k3 与
+    // qwen3.8-max-0902 各两次，306503/306696/306704/306861ms，跨模型同一个数字，
+    // 四次全部零字节输出），而成功调用最慢 234 秒——余量只剩 72 秒。悬崖在传输层，
+    // 与模型无关，所以这里对全部模型开启，不维护按模型的清单。
+    stream: true,
+    // usage 只在最后一个数据块里返回，不带这个选项就拿不到 token 记账。
+    stream_options: { include_usage: true },
     messages: [
       {
         role: "system",

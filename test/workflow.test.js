@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import { sseChunks, sseResponse } from "./helpers/sse-response.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -1004,13 +1005,18 @@ test("Qwen 和 MiMo 生成请求使用 15 分钟配置但健康检查仍为 5 �
       observedTimeouts.push(milliseconds);
       return originalTimeout(1_000);
     };
-    globalThis.fetch = async (url) => {
+    globalThis.fetch = async (url, init) => {
       if (String(url).endsWith("/models")) {
         return new Response(JSON.stringify({ data: [{ id: "configured-model" }] }), {
           status: 200,
           headers: { "content-type": "application/json" }
         });
       }
+      // 这个 mock 由 Qwen / MiMo / DeepSeek 共用同一个 baseUrl，无法按 URL 区分。
+      // 按请求自己声明的 stream 决定响应格式，与真实服务器的行为一致：
+      // qwen-client 走流式，另外两个仍是完整 JSON 响应体。
+      const requested = JSON.parse(String(init?.body || "{}"));
+      if (requested.stream) return sseResponse({ content: "{}" });
       return new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), {
         status: 200,
         headers: { "content-type": "application/json" }
@@ -2067,7 +2073,11 @@ test("Qwen 请求使用 OpenAI 兼容文本格式和 qwen3.7-max", () => {
   );
   assert.equal(body.model, "qwen3.7-max");
   assert.equal(body.max_tokens, 16384);
-  assert.equal(body.stream, false);
+  // 流式对 qwen-client 的全部模型开启：非流式长请求会在约 306 秒被上游掐断，
+  // 而成功调用最慢 234 秒，余量只剩 72 秒（依据见 src/sse-stream.js 头部注释）。
+  // usage 只在最后一个数据块里返回，不带 stream_options 就拿不到 token 记账。
+  assert.equal(body.stream, true);
+  assert.deepEqual(body.stream_options, { include_usage: true });
   assert.equal(body.enable_thinking, false);
   assert.deepEqual(body.response_format, { type: "json_object" });
   assert.equal(body.messages[0].role, "system");
@@ -2094,10 +2104,11 @@ test("智谱 GLM 5.3 JSON 请求保留思考、降低推理深度且不发送不
 test("Qwen 兼容客户端使用实际智谱名称报告 token 截断", async () => {
   const originalFetch = globalThis.fetch;
   try {
-    globalThis.fetch = async () => new Response(JSON.stringify({
-      choices: [{ message: { content: "" }, finish_reason: "length" }],
+    globalThis.fetch = async () => sseResponse({
+      content: "",
+      finishReason: "length",
       usage: { prompt_tokens: 10, completion_tokens: 16384, total_tokens: 16394 }
-    }), { status: 200, headers: { "content-type": "application/json" } });
+    });
 
     const client = new QwenClient({
       baseUrl: "https://provider.invalid/v1",
@@ -2128,9 +2139,7 @@ test("Qwen 兼容客户端使用实际智谱名称报告 token 截断", async ()
 test("智谱未截断但正文不是 JSON 时不再误报为 Qwen", async () => {
   const originalFetch = globalThis.fetch;
   try {
-    globalThis.fetch = async () => new Response(JSON.stringify({
-      choices: [{ message: { content: "not json" }, finish_reason: "stop" }]
-    }), { status: 200, headers: { "content-type": "application/json" } });
+    globalThis.fetch = async () => sseResponse({ content: "not json", finishReason: "stop" });
 
     const client = new QwenClient({
       baseUrl: "https://provider.invalid/v1",
@@ -2277,8 +2286,8 @@ test("auto 模式下 Qwen video_url 失败时回退为关键帧列表", async (t
       response.end('{"error":"unsupported video"}');
       return;
     }
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end('{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}');
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(sseChunks({ content: '{"ok":true}' }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => closeServer(server));
@@ -2720,6 +2729,7 @@ test("auto 模式在服务拒绝 video_url 时回退关键帧", async (t) => {
       response.end('{"error":"unsupported video"}');
       return;
     }
+    // MimoClient 仍是非流式，本次只有 qwen-client 改为 SSE
     response.writeHead(200, { "content-type": "application/json" });
     response.end('{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}');
   });
@@ -4787,8 +4797,8 @@ async function readStageModelOutputRecords(root) {
 test("client 的 onCompletion 观察每次模型原文，回调抛错也不影响调用结果", async (t) => {
   const server = http.createServer(async (request, response) => {
     for await (const chunk of request) void chunk;
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end('{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}');
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(sseChunks({ content: '{"ok":true}' }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => closeServer(server));

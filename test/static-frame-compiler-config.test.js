@@ -4,6 +4,7 @@ import { getConfig } from "../src/config.js";
 import { MimoClient, ModelResponseError } from "../src/mimo-client.js";
 import { QwenClient } from "../src/qwen-client.js";
 import { DeepSeekClient } from "../src/deepseek-client.js";
+import { sseResponse } from "./helpers/sse-response.js";
 
 const COMPILER_ENV_KEYS = [
   "STATIC_FRAME_COMPILER_PROVIDER",
@@ -92,10 +93,16 @@ test("Qwen、MiMo 与 DeepSeek 显式禁用 JSON 内容重试，并使用单次�
       observedTimeouts.push(milliseconds);
       return new AbortController().signal;
     };
+    const compilerContent = "```json\n{\"patches\":[]}\n```";
     globalThis.fetch = async (url, init) => {
       fetchCalls.push({ url: String(url), init });
+      // 三个 client 共用同一个 mock，按请求自己声明的 stream 决定响应格式，
+      // 与真实服务器一致：qwen-client 走 SSE，MiMo 与 DeepSeek 仍是完整 JSON。
+      if (JSON.parse(String(init?.body || "{}")).stream) {
+        return sseResponse({ content: compilerContent });
+      }
       return new Response(JSON.stringify({
-        choices: [{ message: { content: "```json\n{\"patches\":[]}\n```" } }]
+        choices: [{ message: { content: compilerContent } }]
       }), {
         status: 200,
         headers: { "content-type": "application/json" }

@@ -227,6 +227,25 @@ Full Story 生成之后的**独立验收，只出报告**：不修改剧情、�
 
 工作流 LLM provider：**Qwen / MiMo / DeepSeek**。
 
+**qwen-client 全模型流式传输（2026-09-05）**：`buildQwenRequestBody` 对**全部模型**发送 `stream: true` 与 `stream_options: { include_usage: true }`，响应由 `src/sse-stream.js` 唯一一份 SSE 解析读取。`deepseek-client.js` 与 `mimo-client.js` 传输层与它同构，但本次**未改**，仍是非流式。
+
+依据是 debug 侧车的实测：非流式长请求会在约 306 秒被上游掐断。kimi-k3 与 qwen3.8-max-0902 各两次，耗时 306503 / 306696 / 306704 / 306861 ms，浮动仅 358ms、**跨两个不同模型**——是确定性的固定超时，不是网络抖动；四次全部 `usage: null`、`finishReason: ""`、零字节输出。而全部成功调用 ≤ **234 秒**（最慢是 qwen3.7-max 的 variants，14321 completion tokens），余量只剩 72 秒。**悬崖在传输层不在模型**，所以不维护按模型的清单——那是治标，换个更长的 prompt 就会再撞上。
+
+**根因只定位到一半，如实记录**：已排除我们自己的 fetch timeout（`QWEN_REQUEST_TIMEOUT_MS=900000`）；也已排除本地代理（`127.0.0.1:7892`）的隧道空闲超时——实测纯 CONNECT 与 CONNECT+TLS 两条隧道静默 **600 秒以上仍然存活**。dashscope 固有往返开销实测 1.9–4.2 秒，与「上游约 300 秒响应超时 + 建连开销」一致，但**具体是哪一层未能确定**（区分需要向 dashscope 发真实长请求，会计费）。这不影响结论：只要超时判据是「长时间没有数据」，流式就是对症的。
+
+约束：
+
+- **流不完整必须失败，绝不返回半截内容。** 读到流结束但既没有 `[DONE]` 也没有任何 `finish_reason` 时抛 `MODEL_STREAM_INCOMPLETE`。返回半截内容会让残缺 JSON 被下游报成「JSON 格式错误」，把传输问题伪装成模型输出问题。
+- 该错误码在 `classifyAttemptError` 里**必须单独分类**为 `category: "transport"` + `retryable: true`。不单独分类会落到 `ModelResponseError` 的兜底分支（`status=0` → `protocol` 且 `retryable: false`），把可重试的网络中断变成不可重试的协议错误。
+- **禁止非流式自动回退。** 流式失败就如实报错——自动降级是第五节第 4 条的「失败时返回默认值」。
+- `delta.reasoning_content` 单独收集，**绝不混进正文**；`usage` 只在最后一个数据块里返回，缺 `stream_options` 就拿不到 token 记账。
+- 解码必须用 `TextDecoder` 的 `{ stream: true }`：一个汉字的 UTF-8 字节可能被拆到两个数据块，对每块单独解码会产生乱码。
+- 返回形状与非流式**逐字一致**的 7 个字段：`content` / `finishReason` / `requestId` / `usage` / `providerName` / `model` / `raw`。`providerName` 被 `model-call-coordinator` 与 `workflow` 用于错误归属，`model` 用于用量记账，漏掉会静默降级到回退值。
+- 测试 mock 必须发 SSE，判定只有一份在 `test/helpers/sse-response.js`。三个 client 共用同一个 baseUrl 的 mock 按请求自报的 `stream` 决定响应格式，与真实服务器一致。
+
+**尚未实测**：`.env` 的 `QWEN_JSON_MODE=true` 会让非 Zhipu 模型同时带 `stream: true` 与 `response_format`。这个组合是否被 dashscope 兼容模式支持没有核实过；若不支持，应改为流式时按模型跳过 `response_format`——本地严格 JSON 校验本来就在，不依赖 provider 的 JSON mode。
+
+
 DeepSeek **只允许**用于纯文本阶段：Brief、Variants、Legacy Full Story、Animation Plan、Static Frame Compiler（仅旧 v2 兼容路径）。
 
 **禁止** DeepSeek 用于需要图片或视频输入的阶段：Analyze、Reconstruct、Visual Guardrails、Character Reference。

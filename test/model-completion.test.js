@@ -6,6 +6,7 @@ import {
   parseSingleJsonObject
 } from "../src/mimo-client.js";
 import { QwenClient } from "../src/qwen-client.js";
+import { sseResponse } from "./helpers/sse-response.js";
 
 test("MiMo requestCompletion performs one call and preserves completion metadata", async () => {
   const originalFetch = globalThis.fetch;
@@ -44,14 +45,14 @@ test("Qwen requestCompletion reads body request id when no request-id header is 
   let calls = 0;
   globalThis.fetch = async () => {
     calls += 1;
-    return new Response(JSON.stringify({
+    // qwen-client 自 2026-09-05 起走流式，响应体里的 id 由 SSE 数据块携带。
+    // 本测试的意图不变：没有 request-id 响应头时，requestId 从响应体读取。
+    return sseResponse({
       id: "qwen-body-request",
-      choices: [{
-        finish_reason: "stop",
-        message: { content: "{\"ok\":true}" }
-      }],
+      content: "{\"ok\":true}",
+      finishReason: "stop",
       usage: { total_tokens: 12 }
-    }), { status: 200 });
+    });
   };
   try {
     const completion = await new QwenClient(config()).requestCompletion({

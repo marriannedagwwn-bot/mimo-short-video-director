@@ -281,6 +281,20 @@ export function classifyAttemptError(error) {
         diagnostics: []
       };
     }
+    // 流式响应在收到结束标志前中断，是传输失败而不是协议错误。不单独分类的话
+    // 它会落到本分支末尾的兜底（status=0 → category "protocol"、retryable false），
+    // 把一个本该重试的网络中断变成不可重试的协议错误。
+    if (error.code === "MODEL_STREAM_INCOMPLETE") {
+      return {
+        message: error.message,
+        category: "transport",
+        code: error.code,
+        origin: "provider",
+        httpStatus: 502,
+        retryable: true,
+        diagnostics: []
+      };
+    }
     if (["MODEL_ENVELOPE_INVALID", "MODEL_CONTENT_MISSING"].includes(error.code)) {
       return {
         message: error.message,
