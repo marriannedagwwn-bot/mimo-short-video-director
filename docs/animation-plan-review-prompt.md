@@ -183,6 +183,20 @@
 **分数只用于同一片子改前改后的纵向对比，不作放行门槛。** 不要建议「低于 X 分不能生产」。
 真正有用的是 `issues`、`otherFindings` 与 `upgradePath` 里的具体内容，不是那个数字。
 
+### 服务端会做的确定性校验（写不对会被打回）
+
+以下几条不依赖任何语义判断，服务端收到报告后会逐条核对，不通过直接拒绝：
+
+1. `shotEvaluations` 与 `sceneCheck` 的条数必须等于 `shotPlan`，`shotId` 逐位相同。
+2. 所有出现在 `evidencePaths` / `affectedPaths` / `propTracking[].trace[].shotId` /
+   `issues[].shotIds` 里的镜头号，必须真实存在于 `shotPlan`。写了不存在的镜头号即失败。
+3. `propTracking[]` 的 `disappeared` 与 `positionUnclear` **不得同时为 true**。
+   彻底消失就只标 `disappeared`。
+4. `propTracking[].trace` 里的 `shotId` 必须按 `shotPlan` 的顺序排列，不得乱序或重复。
+5. `dimensions` 必须恰好 12 条，`id` 与权重表一一对应，`weight` 之和为 1。
+
+这些是格式契约，不是评审质量要求——它们只保证你没有漏看、没有编造镜头号。
+
 ### 输出格式
 
 只输出 JSON，不要解释性文字，不要 Markdown 代码围栏。
@@ -253,6 +267,15 @@
 
 **路径一律用 `shotId` 定位，禁止用数组下标。** 写 `shotPlan[A03].videoPrompt`，
 不要写 `shotPlan[2].videoPrompt`——下标是 0 起还是 1 起会产生歧义，而 `shotId` 唯一。
+
+### 交给修订阶段的净预算约定
+
+`netActionBudget` 不只是给人看的说明，它会被下游修订阶段当作硬指标执行：
+修订模型必须为每个被约束的镜头显式列出 `removedActions[]` 与 `addedActions[]`，
+服务端校验 `removedActions.length >= addedActions.length`。
+
+所以你在写 `netActionBudget` 时，**必须指名一个具体的、可以被删掉的旧动作**，
+而不是只说「注意不要太满」。没有可删的旧动作，就不要提这条升级建议。
 
 `affectedPaths` 是关键：修一个问题往往要同时改动作、连续性说明、验收标准和检查清单，
 只改 `videoPrompt` 会让方案内部自相矛盾。若某个问题需要改 Plan 级字段
