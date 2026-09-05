@@ -235,7 +235,17 @@ const routes = {
   "/api/reconstruct": (body) => workflow.reconstruct(body),
   "/api/brief": (body) => workflow.createBrief(body),
   "/api/visual-guardrails": (body) => workflow.createVisualGuardrails(body),
-  "/api/variants": (body) => workflow.createVariants(body),
+  "/api/variants": (body) => {
+    // 与 /api/full-story 同规格：候选的 estimatedSeconds 合计决定下游成片长度，
+    // 所以目标时长必须在这一阶段就能送到。只进提示词，不写入 Artifact、不参与
+    // 派生。这里只拦明显非法的值，不裁决「这个时长合不合适」。
+    if (body?.targetDurationSeconds !== undefined && !isValidStoryDurationSeconds(body.targetDurationSeconds)) {
+      throw new InputError(
+        `targetDurationSeconds 必须是 ${STORY_DURATION_MIN_SECONDS}-${STORY_DURATION_MAX_SECONDS} 之间的整数秒`
+      );
+    }
+    return workflow.createVariants(body);
+  },
   "/api/full-story": async (body, { request } = {}) => {
     // 用户在「设定创作宇宙」选的目标时长。只进提示词，不写入 Artifact、不参与派生——
     // Artifact 里的 targetDurationSeconds 仍由 deriveFullStoryTargetDuration 从时间轴签发。
@@ -468,6 +478,9 @@ const DIRECTOR_PIPELINE_STAGES = Object.freeze([
       visualGuardrails: artifacts.visualGuardrails,
       creatorProfile: raw.creatorProfile,
       count: raw.count,
+      // 白名单是显式构造：漏掉这个键会让 Durable 路径静默丢弃目标时长，
+      // 表现为「浏览器直调有效、走任务队列无效」。
+      targetDurationSeconds: raw.targetDurationSeconds,
       modelOverrides: raw.modelOverrides
     })
   }

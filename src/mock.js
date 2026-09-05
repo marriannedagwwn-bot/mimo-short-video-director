@@ -205,14 +205,27 @@ export function mockVisualGuardrails(input) {
 // 因果序还要求「关键选择拍 < 高潮拍 < 最后一拍」且中间隔一拍。
 // 这里先写死五拍，再把三个顶层字段从 action 原样取出——
 // 顺序反过来（先写顶层再编 outline）就会像模型那样写出两版剧情。
-function mockCandidateProjection(fixed, seed) {
-  const storyOutline = [
+// 按目标时长等比缩放各拍秒数：取整后把余数逐秒给靠前的拍，做法与 direct_shot
+// 长场次均分一致。目标缺失时逐字保持历史值（44 秒），不引入新行为。
+function scaleOutlineSeconds(storyOutline, targetDurationSeconds) {
+  const target = Number(targetDurationSeconds);
+  if (!Number.isFinite(target) || target <= 0) return storyOutline;
+  const base = storyOutline.reduce((sum, beat) => sum + beat.estimatedSeconds, 0);
+  if (base <= 0) return storyOutline;
+  const scaled = storyOutline.map((beat) => Math.max(1, Math.floor(beat.estimatedSeconds * target / base)));
+  let remainder = Math.round(target) - scaled.reduce((sum, seconds) => sum + seconds, 0);
+  for (let index = 0; remainder > 0; index = (index + 1) % scaled.length, remainder -= 1) scaled[index] += 1;
+  return storyOutline.map((beat, index) => ({ ...beat, estimatedSeconds: scaled[index] }));
+}
+
+function mockCandidateProjection(fixed, seed, targetDurationSeconds) {
+  const storyOutline = scaleOutlineSeconds([
     { beat: 1, phase: "任务出现", action: `${fixed}发现任务物出问题，并确认最后期限。`, emotion: "紧迫", dramaticFunction: seed.shape[0], estimatedSeconds: 4 },
     { beat: 2, phase: "承担代价", action: `${fixed}选择付出额外成本保护任务与关系，而不是按最省事的方式放弃。`, emotion: "担心", dramaticFunction: seed.shape[1], estimatedSeconds: 12 },
     { beat: 3, phase: "条件改变", action: `${fixed}让${seed.helper}看见真实困境，并接受一项不替自己完成任务的具体帮助。`, emotion: "温暖", dramaticFunction: seed.shape[2], estimatedSeconds: 10 },
     { beat: 4, phase: "亲手解决", action: `${fixed}在${seed.pressure}造成的最后阻碍中亲手完成${seed.task}的决定性动作。`, emotion: "紧张", dramaticFunction: seed.shape[3], estimatedSeconds: 10 },
     { beat: 5, phase: "关系兑现", action: `${seed.ending}，此前没有说出口的关心转化为双方都能确认的关系变化。`, emotion: "释然", dramaticFunction: "以可见状态变化完成情绪兑现", estimatedSeconds: 8 }
-  ];
+  ], targetDurationSeconds);
   return {
     keyChoiceBeat: 2,
     climaxBeat: 4,
@@ -246,7 +259,7 @@ export function mockVariants(input) {
     emotionalMedium: seed.medium,
     environmentPressure: seed.pressure,
     narrativeMode: index % 2 === 1 ? "slice_of_life" : "dramatic",
-    ...mockCandidateProjection(fixed, seed),
+    ...mockCandidateProjection(fixed, seed, input.targetDurationSeconds),
     novelty: `以${seed.medium}连接任务与关系，并让帮助只改变条件、不替${fixed}完成选择。`,
     visualPotential: `${seed.pressure}、任务物状态变化与${seed.ending}形成可见的动作和环境对照。`,
     highValueBeatMapping: [

@@ -74,3 +74,29 @@ export function isValidStoryDurationSeconds(value) {
     && value >= STORY_DURATION_MIN_SECONDS
     && value <= STORY_DURATION_MAX_SECONDS;
 }
+
+// 目标时长的容差窗口。比例只有这一份：Full Story 提示词、主题变体提示词和
+// 变体卡片的判色都必须走 storyDurationWindow()，禁止各自再写 0.85 / 1.15。
+// 取整方向也在这里定死（下界 floor、上界 ceil），否则三处会算出不同的边界。
+export const STORY_DURATION_WINDOW_RATIO = 0.15;
+
+export function storyDurationWindow(target) {
+  const seconds = Number(target);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return {
+    min: Math.floor(seconds * (1 - STORY_DURATION_WINDOW_RATIO)),
+    max: Math.ceil(seconds * (1 + STORY_DURATION_WINDOW_RATIO))
+  };
+}
+
+// 候选级摘要的合计时长。estimatedSeconds 的 schema 只有 { type: "number" }，
+// 所以这里跳过非有限值而不是抛错——它是展示与提示词投影用途，不是校验器。
+export function storyOutlineTotalSeconds(storyOutline) {
+  if (!Array.isArray(storyOutline)) return 0;
+  let total = 0;
+  for (const beat of storyOutline) {
+    const seconds = Number(beat?.estimatedSeconds);
+    if (Number.isFinite(seconds) && seconds > 0) total += seconds;
+  }
+  return total;
+}

@@ -32,7 +32,13 @@ import {
 } from "./shot-reference-images.js";
 import { computeDependencyHash, computePromptHash } from "./frame-dependency.js";
 import { fullStoryShapeWarnings } from "./full-story-shape-metrics.js";
-import { STORY_DURATION_SOURCE, resolveStoryDurationTarget, storyDurationOptions } from "./story-duration.js";
+import {
+  STORY_DURATION_SOURCE,
+  resolveStoryDurationTarget,
+  storyDurationOptions,
+  storyDurationWindow,
+  storyOutlineTotalSeconds
+} from "./story-duration.js";
 import { CHARACTER_EXPRESSION_RULES_STORAGE_KEY } from "./character-expression-rules.js";
 import { buildShotFrameMultiImagePrompt } from "./shot-frame-multi-image-prompt.js";
 import {
@@ -1431,6 +1437,7 @@ function renderVariants(data) {
             <span class="variant-switch-track" aria-hidden="true"></span>
             <span class="variant-switch-label">配乐</span>
           </label>
+          ${variantDurationBadge(variant.storyOutline)}
           ${narrativeModeBadge(variant.narrativeMode)}
           <span class="risk">相似风险 ${escape(variant.originalityRiskCheck?.riskLevel || "-")}</span>
         </div>
@@ -1487,7 +1494,14 @@ async function regenerateThemeVariants() {
         creativeBrief: state.output.creativeBrief,
         visualGuardrails: state.output.visualGuardrails,
         creatorProfile: profile(),
-        count: Number(elements.variantCount.value)
+        count: Number(elements.variantCount.value),
+        // 只是给模型的目标，与 Full Story 那处同一个调用形状：不写入 Artifact、
+        // 不参与派生。候选的 estimatedSeconds 合计会决定下游成片长度，所以目标
+        // 必须在这一阶段就送到，否则模型只能凭空估。
+        targetDurationSeconds: resolveStoryDurationTarget(state.storyDurationTarget, {
+          metadata: state.metadata,
+          sourceScriptReconstruction: state.output.sourceScriptReconstruction
+        })
       },
       artifactId: "themeVariants",
       artifactType: "themeVariants",
@@ -6039,6 +6053,24 @@ function escape(value) {
 // 候选的叙事路径徽章。参考片基本不靠戏剧结构留人，因此候选契约允许
 // slice_of_life（生活片段型）——主角可以没有目标、不作艰难抉择。
 // 标出来让用户按口味挑，而不是每次都拿到四个任务型故事。
+// 候选合计时长徽章。纯展示：不进 Artifact、不参与派生、不 stale 任何东西。
+// 存在理由是这个数字此前完全不可见，而它实际决定成片长度——下游 Full Story 按
+// 它排场次时间轴，Animation Plan 再按时间轴派生镜头。用户此前只能在生成完
+// Full Story 之后才发现片子变长了。
+function variantDurationBadge(storyOutline) {
+  const total = storyOutlineTotalSeconds(storyOutline);
+  if (total <= 0) return "";
+  const window = storyDurationWindow(resolveStoryDurationTarget(state.storyDurationTarget, {
+    metadata: state.metadata,
+    sourceScriptReconstruction: state.output.sourceScriptReconstruction
+  }));
+  const offTarget = Boolean(window) && (total < window.min || total > window.max);
+  const title = window
+    ? `候选各拍 estimatedSeconds 合计 ${total} 秒，当前目标窗口 ${window.min}-${window.max} 秒。成片长度由这个合计决定。`
+    : `候选各拍 estimatedSeconds 合计 ${total} 秒。成片长度由这个合计决定。`;
+  return `<span class="duration-badge${offTarget ? " duration-off" : ""}" title="${escape(title)}">约 ${escape(total)} 秒</span>`;
+}
+
 function narrativeModeBadge(mode) {
   if (mode === "slice_of_life") return `<span class="mode-badge mode-slice">生活型</span>`;
   if (mode === "dramatic") return `<span class="mode-badge mode-dramatic">剧情型</span>`;

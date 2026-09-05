@@ -9,6 +9,7 @@ import {
 import { formatDirectShotSkeleton } from "./direct-shot-timeline.js";
 import { VIDEO_PROMPT_PROFILE_IDS } from "../public/video-prompt-profiles.js";
 import { normalizeCharacterExpressionRules } from "../public/character-expression-rules.js";
+import { storyDurationWindow } from "../public/story-duration.js";
 
 // 用户手写的「情绪 → 可见特征」映射。只进提示词，不进任何 Artifact、digest 或 lineage
 // （与 targetDurationSeconds 同规格，见 public/character-expression-rules.js）。
@@ -494,6 +495,13 @@ export function variantsPrompt(input) {
     includeSourceSimilarityRules: false
   });
   const creativeBriefProjection = variantsCreativeBriefProjection(input.creativeBrief);
+  // 用户在「设定创作宇宙」选的目标时长。与 Full Story 同规格：只进提示词，
+  // 不写入 Artifact、不参与派生、不加校验器。**不传时整段省略**，保证历史调用方
+  // 拿到的提示词逐字不变（同 §2.10 对 Full Story 立的规矩）。
+  const durationWindow = storyDurationWindow(input.targetDurationSeconds);
+  const durationRule = durationWindow
+    ? `\n- 本片目标时长约 ${Math.round(Number(input.targetDurationSeconds))} 秒：每个候选 storyOutline 各拍的 estimatedSeconds 合计必须落在 ${durationWindow.min}-${durationWindow.max} 秒内。**这个合计会直接决定成片长度**——下游按它排场次时间轴，再按时间轴派生镜头，写出 95 秒就会得到 95 秒的成片和翻倍的镜头数，不会被自动压回目标。拍数仍然自由（5–7 拍），靠调整每一拍的长度贴近目标，不要靠增删拍数。`
+    : "";
   return `${SYSTEM_PROMPT}
 
 根据 creativeBrief 为指定固定角色和垂直赛道生成 ${count} 个可以实际拍摄的主题变体。
@@ -570,7 +578,7 @@ Story Candidate 关键字段（本阶段所有字段都只写候选级摘要，�
 输出稳定性要求：
 - 先在内部完成 storyOutline，并把它作为本候选唯一剧情事实源，再填写其他字段。characterSetup、newTask、environmentPressure、highValueBeatMapping.newExpression、endingRitual、experienceFidelity 与 originalityRiskCheck 只能投影 storyOutline 已经发生的事实，不能各写一版剧情，不能新增 storyOutline 中没有的人物、物品、奖励、地点、动作或结局。
 - 顶层只能有 variants；数组必须恰好包含 ${count} 个完整对象，按 V1、V2……编号。写完一个 Candidate 的全部字段并闭合对象后才能开始下一个；任何 Candidate 字段都不得落到顶层或相邻 Candidate 外。
-- 每个 storyOutline 使用 5 到 7 个连续编号 Beat。候选之间可以使用不同的拍数，拍数本身就是一种合法的结构分化。
+- 每个 storyOutline 使用 5 到 7 个连续编号 Beat。候选之间可以使用不同的拍数，拍数本身就是一种合法的结构分化。${durationRule}
 - phase 由本候选自己命名，写这一拍在本候选因果链中实际承担的职责。禁止套用“钩子、障碍、关键选择、后果、高潮、兑现”这套固定词表，也不得让 ${count} 个候选共用同一串 phase。
 - **不要输出 keyChoice、climax、emotionalPayoff 这三个字段。** 它们由服务端从 storyOutline 直接取，你只需要用两个整数指出是哪几拍：keyChoiceBeat 填关键选择发生在第几拍，climaxBeat 填高潮发生在第几拍。emotionalPayoff 固定取最后一拍，不需要拍号。
 - 因此这三处剧情只需要写一遍，就写在 storyOutline 的 action 里，不必也不要在顶层再复述一遍。前置准备、时间标记、地点交代都可以自然留在对应拍的 action 中。
@@ -847,8 +855,9 @@ export function fullStoryPrompt(input) {
   // ±15% 给模型排场次的余地，又不至于跑偏一倍。
   // 未传目标时文案与历史逐字一致，旧调用方行为不变。
   const durationTarget = Number(input.targetDurationSeconds);
-  const durationText = Number.isFinite(durationTarget) && durationTarget > 0
-    ? `剧情应适合约 ${Math.round(durationTarget)} 秒的短视频。**这个目标由 sceneScript 各场 timeRange 的跨度之和决定，不是由 targetDurationSeconds 这个数字决定。**写完场次后把各场跨度加一遍：合计必须落在 ${Math.floor(durationTarget * 0.85)}-${Math.ceil(durationTarget * 1.15)} 秒内，尽量贴近 ${Math.round(durationTarget)} 秒。`
+  const durationWindow = storyDurationWindow(durationTarget);
+  const durationText = durationWindow
+    ? `剧情应适合约 ${Math.round(durationTarget)} 秒的短视频。**这个目标由 sceneScript 各场 timeRange 的跨度之和决定，不是由 targetDurationSeconds 这个数字决定。**写完场次后把各场跨度加一遍：合计必须落在 ${durationWindow.min}-${durationWindow.max} 秒内，尽量贴近 ${Math.round(durationTarget)} 秒。`
     : "剧情应适合 45-90 秒短视频，默认以 60 秒为目标。**这个目标由 sceneScript 各场 timeRange 的跨度之和决定，不是由 targetDurationSeconds 这个数字决定。**写完场次后把各场跨度加一遍：合计必须落在 45-90 秒内，默认贴近 60 秒。";
   const forbiddenTerms = collectProtectedTermsFromBrief(input.creativeBrief, input.creatorProfile?.fixedCharacter || "");
   const forbiddenText = forbiddenTerms.length ? forbiddenTerms.join("、") : "无";
@@ -879,6 +888,7 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - 固定角色的姓名、身份、性格、职业、剧情功能和外观必须以已签发的全局角色边界为唯一事实来源；不得再次解析 fixedCharacter 或重新推断角色特征。
 - transformationProof 描述「原片是什么、被改成了什么」时，**关于原片的那一半必须能在 sourceScriptReconstruction 或 referenceAnalysis 里逐字找到依据**。自查方法：写完每条 changed* 后，把其中描述原片的词单独拎出来，回上游搜一遍；搜不到就说明是你补出来的，必须删掉或换成真正写着的内容。实测反面例子：上游只写了「穿着企鹅装的短发女孩」，transformationProof 却写成「将原片企鹅快递员改为猫耳少女」「将送货任务改为找回作业纸页」——企鹅装是真的，**快递员和送货任务是凭空补的职业与任务**，而同一份 creativeBrief 明写着「送达任务【原片没有】」。这类虚构会污染改编距离判断与原创性检查。
 - 承接范围只有一个来源：当前选中 Variant 实际写出的内容。Variant 已选用的人物、任务细节、道具、媒介、结尾方式和对白方向必须忠实承接；本阶段只负责扩写，不得为了“与原片不同”再次替换 Variant 已确定的内容。
+- **但 storyOutline 里的 estimatedSeconds 不属于必须承接的剧情内容，它只是候选阶段的粗略估计。** 冲突时以本阶段上方给出的时长目标为准：sceneScript 各场 timeRange 的跨度之和服从时长目标，不服从 estimatedSeconds 的合计。允许按比例压缩或放大每一拍的长度，但**不得因此增删、合并、拆分或改写任何剧情动作**——变的只有每段占多少秒。实测反面例子：候选六拍的 estimatedSeconds 合计 95 秒，而本阶段目标是 65 秒，模型把六个数字逐位照抄进 timeRange，成片直接变成 95 秒、镜头数按 15 秒上限翻倍。照抄那六个数字是错的。
 - 送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾这七项，是 creativeBrief 用来记录“原片有没有某类通用构件”的分类，不是本片的必备构件，也不是承接清单。当前 Variant 没有使用其中某一项时，本阶段不得把它补回来：Variant 没写 careRecipient 就不得新增一个被照料对象，没写 helper 就不得新增一个提供帮助的外部角色，没写 emotionalMedium 就不得为故事发明一件信物，没写 endingRitual 就不得给它加一场仪式化收尾。
 - 对应地，characterBible.careRecipient 是可选键：只有当前 Variant 确实存在一个被照料对象时才输出它，并且五个子字段必须齐全；不存在时整个键省略，不要输出空对象或占位文本。需要输出时它的形状是 "careRecipient":{"nameOrLabel":"", "identity":"", "explicitNeed":"", "implicitNeed":"", "relationshipToProtagonist":""}，放在 characterBible 内、protagonist 与 helpers 之间。characterBible.helpers 没有帮助者时输出空数组 []，不得为了填满结构编造一个不参与因果的帮助者。
 - creativeBrief、protectedExpressions、controlledRewriteVariables 与 sourceSimilarityRules 中的原片道具组合、拟声词和角色组合允许出现在任意剧情、角色、对白、声音或拍摄字段；它们不再作为 Full Story 的内容禁词。

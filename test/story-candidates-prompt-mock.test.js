@@ -244,3 +244,71 @@ test("候选提示词覆盖 logline 泄露与台词解说两个实测缺口", ()
   assert.match(prompt, /不得让配角替观众总结主角的性格或成长/u);
   assert.match(prompt, /那是把人物弧线用台词讲出来/u);
 });
+
+// 剧情时长目标传进候选阶段（2026-09-05）。起因：用户选「与原片对齐 · 65 秒」却
+// 拿到 95 秒成片——候选 storyOutline 的 estimatedSeconds 合计就是 95，Full Story
+// 逐位照抄。此前候选阶段完全收不到时长目标，模型只能凭空估。
+test("传入目标时长时，候选提示词写明合计窗口与它对成片长度的决定作用", () => {
+  const prompt = variantsPrompt({
+    count: 4,
+    creatorProfile,
+    creativeBrief: {},
+    referenceAnalysis: {},
+    visualGuardrails: {},
+    targetDurationSeconds: 65
+  });
+
+  assert.match(prompt, /本片目标时长约 65 秒/u);
+  assert.match(prompt, /estimatedSeconds 合计必须落在 55-75 秒内/u);
+  assert.match(prompt, /这个合计会直接决定成片长度/u);
+  // 拍数自由度不能被时长目标顺手收紧——5–7 拍是既有的结构分化手段
+  assert.match(prompt, /拍数仍然自由（5–7 拍）/u);
+});
+
+test("不传目标时长时，候选提示词与历史逐字一致", () => {
+  // 这条是防回归的关键：新增段落必须整段省略，而不是写成「未指定」之类的占位。
+  // 同 §2.10 对 Full Story 立的规矩，否则会静默改变所有旧调用方的提示词。
+  const base = {
+    count: 4,
+    creatorProfile,
+    creativeBrief: {},
+    referenceAnalysis: {},
+    visualGuardrails: {}
+  };
+  const without = variantsPrompt(base);
+  const with65 = variantsPrompt({ ...base, targetDurationSeconds: 65 });
+
+  assert.doesNotMatch(without, /目标时长/u);
+  assert.doesNotMatch(without, /estimatedSeconds 合计/u);
+  // 删掉新增的那一行之后，两份提示词必须逐字相等
+  assert.equal(with65.replace(/\n- 本片目标时长约 65 秒：[^\n]*/u, ""), without);
+});
+
+test("非法或缺失的目标时长不产生时长文案，也不抛错", () => {
+  for (const bad of [0, -1, null, NaN, "abc"]) {
+    const prompt = variantsPrompt({
+      count: 4,
+      creatorProfile,
+      creativeBrief: {},
+      referenceAnalysis: {},
+      visualGuardrails: {},
+      targetDurationSeconds: bad
+    });
+    assert.doesNotMatch(prompt, /本片目标时长/u, String(bad));
+  }
+});
+
+test("mock 候选的 estimatedSeconds 跟随目标，不传时保持历史值", () => {
+  const base = { count: 2, creatorProfile };
+  const total = (input) => mockVariants(input).variants[0]
+    .storyOutline.reduce((sum, beat) => sum + beat.estimatedSeconds, 0);
+
+  assert.equal(total(base), 44, "不传目标时逐字保持历史值，不引入新行为");
+  assert.equal(total({ ...base, targetDurationSeconds: 65 }), 65);
+  assert.equal(total({ ...base, targetDurationSeconds: 45 }), 45);
+  assert.equal(total({ ...base, targetDurationSeconds: 90 }), 90);
+  // 每拍至少 1 秒，余数逐秒给靠前的拍（做法同 direct_shot 长场次均分）
+  const short = mockVariants({ ...base, targetDurationSeconds: 20 }).variants[0].storyOutline;
+  assert.ok(short.every((beat) => beat.estimatedSeconds >= 1));
+  assert.equal(short.reduce((sum, beat) => sum + beat.estimatedSeconds, 0), 20);
+});

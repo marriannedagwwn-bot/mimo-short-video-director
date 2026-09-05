@@ -87,6 +87,11 @@ h1 em { color: var(--accent); font-style: normal; }
    稀有才值得看。纯展示，不阻断任何操作。 */
 /* 候选叙事路径徽章：形状逐字对齐紧邻的 .risk（同一行的兄弟元素），
    配色沿用项目已有的两对小字色底组合（#b54708/#fff3e8 与 muted/#efebe4），不自创第二套色板 */
+/* 候选合计时长徽章：形状与配色同样对齐 .risk，超出目标窗口时改用项目已有的
+   橙色告警对（#b54708/#fff3e8），不自创第三套色板。纯展示，不阻断任何操作。 */
+.duration-badge { padding: 5px 7px; border-radius: 6px; font-size: 8px; white-space: nowrap;
+  color: var(--green); background: #edf6f1; }
+.duration-badge.duration-off { color: #b54708; background: #fff3e8; }
 .mode-badge { padding: 5px 7px; border-radius: 6px; font-size: 8px; white-space: nowrap; }
 .mode-badge.mode-dramatic { color: #b54708; background: #fff3e8; }
 .mode-badge.mode-slice { color: var(--muted); background: #efebe4; }

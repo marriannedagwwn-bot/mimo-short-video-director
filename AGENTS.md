@@ -88,6 +88,10 @@ Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Art
 
 这条约束 Prompt 一直就写着，但此前**没有校验器**。放开固定拍号（原 Beat 3/5/6）后实测合规率从 60/60 掉到 31/48，某些上游甚至 0/12——顶层写压缩摘要、`storyOutline` 写另一件事，同一个候选出现两版剧情，下游 Full Story 无从判断哪个是事实。它是阻止候选内部多版本事实的唯一机制，因此补成确定性硬失败。
 
+**剧情时长目标进入候选阶段（2026-09-05）**：`storyOutline[].estimatedSeconds` 的合计**事实上决定成片长度**——Full Story 照它排 `sceneScript` 时间轴，Animation Plan 再按时间轴派生镜头。该字段本身没有代码消费者、没有校验器（strict schema 只有 `{ "type": "number" }`），唯一影响路径是随 `JSON.stringify(variant)` 整体注入 Full Story 提示词。此前候选阶段完全收不到用户选的时长目标（浏览器请求体、Durable `buildInput` 白名单、`variantsPrompt` 三处都没有），模型只能凭空估。实测代价：目标 65 秒，候选估成 12/15/18/15/20/15 = 95 秒，Full Story 六场 `timeRange` 跨度逐位照抄，成片 95 秒、镜头数翻倍——当时 `fullStoryPrompt` 同时写着「忠实承接 Variant 实际写出的内容」与「合计必须落在 55-75 秒内」，两条都是硬约束且未定义优先级，模型选了承接上游。这是提示词自相矛盾，不是模型没打准。
+
+修复三处缺一不可：`targetDurationSeconds` 传进 `/api/variants`（含 `server.js` 入口的 20–180 整数校验与 Durable `buildInput` 白名单——白名单是显式构造，漏掉会让任务队列路径静默丢字段）；`variantsPrompt` 要求合计落在窗口内并说明它决定成片长度；`fullStoryPrompt` 声明冲突优先级：**`estimatedSeconds` 不属于必须逐字承接的剧情内容**，`timeRange` 服从时长目标，允许按比例调整每拍长度但不得增删、合并、拆分或改写剧情动作。窗口比例（±15%）与取整方向只有一份，在 `public/story-duration.js` 的 `storyDurationWindow()`，两处提示词与变体卡片判色共用，禁止各自再写 `0.85` / `1.15`。**不加校验器**（与 Full Story 同规格：模型不听提示词是生成质量问题）；变体卡片的合计时长徽章是纯展示，不进 Artifact、不参与派生、不 stale 任何东西；不传目标时 `variantsPrompt` 与 `mockVariants` 逐字保持历史行为。已签发的旧候选 `estimatedSeconds` 不变，只能靠优先级声明兜底，同样没有确定性兜底。
+
 每个 Candidate 必须有一个主要承担角色性格或人物关系质感的 Beat，但它仍必须改变关系、情绪、信息或后续选择条件；删除后必须损失角色弧、关系推进、情绪积累或后续因果之一。禁止恢复「完全不推进主线、删除后故事仍完整」的旧 Prompt 规则。
 
 用户明确选择后，完整 Candidate 作为 `variant:<id>` Artifact 签发。`POST /api/full-story` 必须同时绑定该 Artifact 的精确 `artifactId/revision/contentDigest`；服务端在调用 Full Story 模型前后都必须复验 current Candidate、请求副本 digest、running target/request 和 target revision，并用落盘 Candidate 替换客户端副本。`candidateBinding` 只是请求 sidecar，不进入 Prompt、Legacy Full Story wire shape 或 Artifact。同 id 任意内容变化都必须换 digest/revision 并使旧下游 stale。

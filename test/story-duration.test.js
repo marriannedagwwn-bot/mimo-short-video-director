@@ -8,7 +8,9 @@ import {
   isValidStoryDurationSeconds,
   resolveSourceDurationSeconds,
   resolveStoryDurationTarget,
-  storyDurationOptions
+  storyDurationOptions,
+  storyDurationWindow,
+  storyOutlineTotalSeconds
 } from "../public/story-duration.js";
 
 const RECON = {
@@ -87,4 +89,38 @@ test("请求侧只拦明显非法的值，不裁决时长合不合适", () => {
   for (const bad of [0, -1, 19, 181, 60.5, "60", null, undefined, NaN]) {
     assert.equal(isValidStoryDurationSeconds(bad), false, String(bad));
   }
+});
+
+test("目标窗口只有一份比例，取整方向固定为下界 floor、上界 ceil", () => {
+  // 65 秒是「与原片对齐」的实测值，55/75 必须与 fullStoryPrompt 历史行为逐字一致
+  assert.deepEqual(storyDurationWindow(65), { min: 55, max: 75 });
+  assert.deepEqual(storyDurationWindow(60), { min: 51, max: 69 });
+  assert.deepEqual(storyDurationWindow(45), { min: 38, max: 52 });
+  assert.deepEqual(storyDurationWindow(90), { min: 76, max: 104 });
+  // 取整方向：0.85/1.15 的乘积几乎总是小数，下界不能进位、上界不能截断，
+  // 否则提示词文案与卡片判色会算出不同的边界。
+  assert.equal(storyDurationWindow(65).min, Math.floor(65 * 0.85));
+  assert.equal(storyDurationWindow(65).max, Math.ceil(65 * 1.15));
+});
+
+test("目标缺失或非法时窗口返回 null，由调用方决定整段省略", () => {
+  for (const bad of [0, -1, null, undefined, NaN, "abc"]) {
+    assert.equal(storyDurationWindow(bad), null, String(bad));
+  }
+});
+
+test("候选合计跳过非有限秒数而不是抛错", () => {
+  // 实测那份 95 秒候选的六拍
+  assert.equal(storyOutlineTotalSeconds([
+    { estimatedSeconds: 12 }, { estimatedSeconds: 15 }, { estimatedSeconds: 18 },
+    { estimatedSeconds: 15 }, { estimatedSeconds: 20 }, { estimatedSeconds: 15 }
+  ]), 95);
+  // estimatedSeconds 的 schema 只有 { type: "number" }，没有 minimum，
+  // 所以这里是展示口径而不是校验器：坏值跳过，不阻断渲染。
+  assert.equal(storyOutlineTotalSeconds([
+    { estimatedSeconds: 10 }, { estimatedSeconds: "x" }, { estimatedSeconds: 0 },
+    { estimatedSeconds: -5 }, {}, { estimatedSeconds: 8 }
+  ]), 18);
+  assert.equal(storyOutlineTotalSeconds(null), 0);
+  assert.equal(storyOutlineTotalSeconds([]), 0);
 });
