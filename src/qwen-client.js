@@ -118,6 +118,7 @@ export class QwenClient {
     strictJson = false,
     onCompletion = null
   }) {
+    const providerName = qwenCompatibleProviderName(model || this.config.model);
     const retryAttempts = jsonRetryAttempts === null
       ? Number.isFinite(Number(this.config.jsonRetryAttempts)) ? Number(this.config.jsonRetryAttempts) : 2
       : Math.max(0, Number(jsonRetryAttempts) || 0);
@@ -139,18 +140,32 @@ export class QwenClient {
       await notifyCompletion(onCompletion, completion);
       const content = completion.content;
       try {
+        if (completion.finishReason === "length") {
+          throw new ModelResponseError(
+            `${providerName} 输出因 token 上限被截断`,
+            completion.raw,
+            0,
+            {
+              provider: providerName,
+              code: "MODEL_OUTPUT_TRUNCATED",
+              requestId: completion.requestId,
+              finishReason: completion.finishReason,
+              usage: completion.usage
+            }
+          );
+        }
         return strictJson
-          ? parseStrictModelJson(content, "Qwen")
-          : parseModelJson(content, "Qwen");
+          ? parseStrictModelJson(content, providerName)
+          : parseModelJson(content, providerName);
       } catch (error) {
         if (!(error instanceof ModelResponseError) || attempt >= retryAttempts) throw error;
         lastJsonError = error;
-        activePrompt = jsonRetryPrompt(prompt, content);
+        activePrompt = jsonRetryPrompt(prompt, content, providerName);
         activeMaxTokens = retryTokenLimit(activeMaxTokens ?? this.config.maxCompletionTokens);
       }
     }
 
-    throw lastJsonError || new ModelResponseError("Qwen 未返回合法 JSON");
+    throw lastJsonError || new ModelResponseError(`${providerName} 未返回合法 JSON`);
   }
 
   async requestCompletion({
@@ -169,6 +184,7 @@ export class QwenClient {
       { prompt, frames, video, useVideo },
       { model, maxCompletionTokens, systemPrompt }
     );
+    const providerName = qwenCompatibleProviderName(body.model);
     const effectiveTimeoutMs = requestTimeoutMs ?? this.config.requestTimeoutMs ?? 900_000;
     await beforeDurableProviderCall("model_provider_call", effectiveTimeoutMs);
     const response = await fetch(endpoint, {
@@ -187,11 +203,11 @@ export class QwenClient {
       || "";
     if (!response.ok) {
       throw new ModelResponseError(
-        `Qwen 请求失败（${response.status}）`,
+        `${providerName} 请求失败（${response.status}）`,
         raw,
         response.status,
         {
-          provider: "Qwen",
+          provider: providerName,
           code: "MODEL_HTTP_ERROR",
           requestId: headerRequestId
         }
@@ -203,11 +219,11 @@ export class QwenClient {
       envelope = JSON.parse(raw);
     } catch {
       throw new ModelResponseError(
-        "Qwen 返回了无法解析的响应包",
+        `${providerName} 返回了无法解析的响应包`,
         raw,
         0,
         {
-          provider: "Qwen",
+          provider: providerName,
           code: "MODEL_ENVELOPE_INVALID",
           requestId: headerRequestId
         }
@@ -220,15 +236,15 @@ export class QwenClient {
       ? envelope.usage
       : null;
     // 记入当前请求的 token 记账作用域；作用域外是 no-op，异常内部吞掉。
-    recordModelUsage({ provider: "Qwen", model: body.model, usage });
+    recordModelUsage({ provider: providerName, model: body.model, usage });
     const finishReason = String(choice?.finish_reason || "");
     if (typeof content !== "string") {
       throw new ModelResponseError(
-        "Qwen 响应缺少 message.content",
+        `${providerName} 响应缺少 message.content`,
         raw,
         0,
         {
-          provider: "Qwen",
+          provider: providerName,
           code: "MODEL_CONTENT_MISSING",
           requestId,
           finishReason,
@@ -241,6 +257,8 @@ export class QwenClient {
       finishReason,
       requestId,
       usage,
+      providerName,
+      model: body.model,
       raw
     };
   }
@@ -283,9 +301,27 @@ export function buildQwenRequestBody(config, { prompt, frames = [], video = null
       { role: "user", content: userContent }
     ]
   };
-  if (typeof config.enableThinking === "boolean") body.enable_thinking = config.enableThinking;
-  if (config.jsonMode) body.response_format = { type: "json_object" };
+  if (isZhipuGlm53Model(model)) {
+    // GLM 5.3/5.3-Flash cannot disable thinking and defaults to max reasoning.
+    // This client only performs JSON workflow calls, so low reasoning preserves
+    // enough of the output budget for the final answer.
+    body.enable_thinking = true;
+    body.reasoning_effort = "low";
+  } else if (typeof config.enableThinking === "boolean") {
+    body.enable_thinking = config.enableThinking;
+  }
+  // Zhipu GLM 5.3 does not support OpenAI structured output. The workflow still
+  // enforces strict JSON locally after the completion is returned.
+  if (config.jsonMode && !isZhipuGlm53Model(model)) body.response_format = { type: "json_object" };
   return body;
+}
+
+export function qwenCompatibleProviderName(model = "") {
+  return /^ZHIPU\//iu.test(String(model).trim()) ? "Zhipu" : "Qwen";
+}
+
+export function isZhipuGlm53Model(model = "") {
+  return /^ZHIPU\/GLM-5\.3(?:-Flash)?$/iu.test(String(model).trim());
 }
 
 function buildQwenVisualContent(config, { frames = [], video = null, useVideo = false } = {}) {
@@ -332,10 +368,10 @@ function compactObject(value) {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== null && item !== undefined && item !== ""));
 }
 
-function jsonRetryPrompt(originalPrompt, failedContent) {
+function jsonRetryPrompt(originalPrompt, failedContent, providerName = "Qwen") {
   return `${originalPrompt}
 
-上一次 Qwen 输出不是完整合法 JSON，可能被截断或包含了无法解析的内容。请重新输出一次。
+上一次 ${providerName} 输出不是完整合法 JSON，可能被截断或包含了无法解析的内容。请重新输出一次。
 
 纠偏要求：
 - 只输出一个完整 JSON 对象，不要 Markdown，不要解释。

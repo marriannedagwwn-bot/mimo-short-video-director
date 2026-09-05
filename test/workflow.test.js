@@ -9,7 +9,7 @@ import { getConfig } from "../src/config.js";
 import { InputError, OutputContractError } from "../src/validation.js";
 import { CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS, characterPromptBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile, extractFixedCharacterName, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms } from "../src/validation.js";
 import { buildRequestBody, MimoClient, ModelResponseError, parseModelJson } from "../src/mimo-client.js";
-import { buildQwenRequestBody, modelAcceptsTemperature, QwenClient } from "../src/qwen-client.js";
+import { buildQwenRequestBody, isZhipuGlm53Model, modelAcceptsTemperature, qwenCompatibleProviderName, QwenClient } from "../src/qwen-client.js";
 import { JimengImageClient, buildCharacterReferenceImagePrompt, buildJimengImageRequestBody, buildShotFrameImagePrompt } from "../src/jimeng-client.js";
 import { RECONSTRUCTION_SYSTEM_PROMPT, SYSTEM_PROMPT, animationPlanPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "../src/prompts.js";
 import { parseRunVideoArgs } from "../src/run-video-command.js";
@@ -2073,6 +2073,87 @@ test("Qwen 请求使用 OpenAI 兼容文本格式和 qwen3.7-max", () => {
   assert.equal(body.messages[0].role, "system");
   assert.equal(body.messages[1].role, "user");
   assert.equal(body.messages[1].content, "生成完整剧情");
+});
+
+test("智谱 GLM 5.3 JSON 请求保留思考、降低推理深度且不发送不支持的结构化输出参数", () => {
+  const body = buildQwenRequestBody(
+    { model: "qwen3.7-max", jsonMode: true, maxCompletionTokens: 16384, enableThinking: false },
+    { prompt: "生成创作简报" },
+    { model: "ZHIPU/GLM-5.3-Flash" }
+  );
+
+  assert.equal(body.model, "ZHIPU/GLM-5.3-Flash");
+  assert.equal(body.enable_thinking, true);
+  assert.equal(body.reasoning_effort, "low");
+  assert.equal(Object.prototype.hasOwnProperty.call(body, "response_format"), false);
+  assert.equal(qwenCompatibleProviderName(body.model), "Zhipu");
+  assert.equal(isZhipuGlm53Model(body.model), true);
+  assert.equal(isZhipuGlm53Model("ZHIPU/GLM-5.2"), false);
+});
+
+test("Qwen 兼容客户端使用实际智谱名称报告 token 截断", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "" }, finish_reason: "length" }],
+      usage: { prompt_tokens: 10, completion_tokens: 16384, total_tokens: 16394 }
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    const client = new QwenClient({
+      baseUrl: "https://provider.invalid/v1",
+      apiKey: "",
+      model: "qwen3.7-max",
+      maxCompletionTokens: 16384,
+      enableThinking: true,
+      jsonMode: true,
+      jsonRetryAttempts: 0
+    });
+
+    await assert.rejects(
+      client.generateJson({
+        prompt: "只返回 JSON",
+        model: "ZHIPU/GLM-5.3-Flash",
+        strictJson: true,
+        jsonRetryAttempts: 0
+      }),
+      (error) => error instanceof ModelResponseError
+        && error.code === "MODEL_OUTPUT_TRUNCATED"
+        && /Zhipu 输出因 token 上限被截断/u.test(error.message)
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("智谱未截断但正文不是 JSON 时不再误报为 Qwen", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "not json" }, finish_reason: "stop" }]
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    const client = new QwenClient({
+      baseUrl: "https://provider.invalid/v1",
+      apiKey: "",
+      model: "qwen3.7-max",
+      maxCompletionTokens: 16384,
+      enableThinking: true,
+      jsonMode: true,
+      jsonRetryAttempts: 0
+    });
+
+    await assert.rejects(
+      client.generateJson({
+        prompt: "只返回 JSON",
+        model: "ZHIPU/GLM-5.3-Flash",
+        strictJson: true,
+        jsonRetryAttempts: 0
+      }),
+      (error) => error instanceof ModelResponseError && /Zhipu 未返回严格 JSON/u.test(error.message)
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 // 2026-08-30 实测：网关对 kimi-k3 返回

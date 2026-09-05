@@ -54,13 +54,14 @@ export class ModelCallCoordinator {
       let candidate = null;
       try {
         completion = await requestSingleCompletion(client, activeRequest, provider);
+        const completionProvider = completion.providerName || provider || "模型";
         if (completion.finishReason === "length") {
           throw new ModelResponseError(
-            `${provider || "模型"} 输出因 token 上限被截断`,
+            `${completionProvider} 输出因 token 上限被截断`,
             completion.raw,
             0,
             {
-              provider,
+              provider: completionProvider,
               code: "MODEL_OUTPUT_TRUNCATED",
               requestId: completion.requestId,
               finishReason: completion.finishReason,
@@ -69,14 +70,14 @@ export class ModelCallCoordinator {
           );
         }
         candidate = completion.parsed === undefined
-          ? parseSingleJsonObject(completion.content, provider || "模型")
+          ? parseSingleJsonObject(completion.content, completionProvider)
           : completion.parsed;
         const value = await validate(candidate);
         const attempt = this.recordAttempt({
           operationId,
           callIndex,
           stage,
-          provider,
+          provider: completionProvider,
           model: activeRequest.model,
           reason: callIndex === 0 ? "primary" : "coordinator-retry",
           startedAtMs,
@@ -105,7 +106,7 @@ export class ModelCallCoordinator {
           operationId,
           callIndex,
           stage,
-          provider: provider || error?.provider,
+          provider: completion?.providerName || error?.provider || provider,
           model: activeRequest.model,
           reason: callIndex === 0 ? "primary" : "coordinator-retry",
           startedAtMs,
