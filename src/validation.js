@@ -1963,11 +1963,27 @@ function validateGlobalCharacterBoundary(boundary) {
       throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary.unresolvedConflicts[${index}] 字段不能为空`);
     }
   });
-  const requiredTerms = new Set(boundary.requiredTraits.flatMap((trait) => trait.terms));
-  const forbiddenTerms = new Set(boundary.forbiddenTraits.flatMap((trait) => trait.terms));
-  const conflicts = [...requiredTerms].filter((term) => forbiddenTerms.has(term));
+  // 冲突判定必须与下游扫描器同口径。全部扫描器用的都是子串（hasForbiddenOccurrence /
+  // findMissingGlobalCharacterTraits 走 text.indexOf），这里此前用的是精确相等，
+  // 于是「无头饰」required 与「头饰」forbidden 被判为不冲突，矛盾流过下游六个阶段，
+  // 到 Full Story 才以一条指错方向的消息炸掉（2026-09-05 实测三次、约 7.6 万 token）。
+  //
+  // 方向必须是单向的：required 文本里必然出现 R，若 F 是 R 的子串，服从 required 就
+  // 自动违反 forbidden，无解。反过来 R ⊂ F 完全合法——「猫耳少女」含 required「猫耳」
+  // 而不含 forbidden「非猫耳动物器官」。回扫 95 份已签发边界，反方向碰撞 14 份且全部
+  // 合法，做成双向会误杀 15%。
+  const requiredTerms = [...new Set(boundary.requiredTraits.flatMap((trait) => trait.terms))];
+  const forbiddenTerms = [...new Set(boundary.forbiddenTraits.flatMap((trait) => trait.terms))];
+  const conflicts = [];
+  for (const required of requiredTerms) {
+    for (const forbidden of forbiddenTerms) {
+      if (!required || !forbidden || !required.includes(forbidden)) continue;
+      conflicts.push(`required「${required}」包含 forbidden「${forbidden}」`);
+    }
+  }
   if (conflicts.length) {
-    throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary 同时要求并禁止：${conflicts.join("、")}`);
+    // 两端都要点名：只列一个词时用户无法判断该改 required 还是 forbidden。
+    throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary 同时要求并禁止：${conflicts.join("；")}`);
   }
 }
 

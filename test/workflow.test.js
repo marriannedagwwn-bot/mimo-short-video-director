@@ -4297,8 +4297,84 @@ test("角色边界术语归一化不会掩盖要求与禁止冲突", () => {
       materializeGlobalCharacterBoundaryViews(normalizeGlobalCharacterBoundaryTerms(raw), creatorProfile),
       "visualGuardrails"
     ),
-    /同时要求并禁止：狼尾/u
+    /同时要求并禁止：required「狼尾」包含 forbidden「狼尾」/u
   );
+});
+
+// 判定必须与下游扫描器同口径（子串），否则模型服从 required 就自动违反 forbidden。
+// 2026-09-05 实测：「无头饰」required 与「头饰」forbidden 被精确相等判为不冲突，
+// 矛盾一路流到 Full Story 才炸，连续三次、约 7.6 万 token。
+test("必需写法包含禁止写法的边界必须在签发时就失败（否定型）", () => {
+  const creatorProfile = { fixedCharacter: "小白子，狼耳少女", vertical: "治愈日常", constraints: "" };
+  const raw = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
+  raw.fixedCharacterBoundary = xiaobaiziBoundary({ tail: "none", forbidClaws: false });
+  raw.fixedCharacterBoundary.requiredTraits.push(boundaryTrait("无头饰", ["没有头饰"], "appearance"));
+  raw.fixedCharacterBoundary.forbiddenTraits.push(
+    boundaryTrait("头饰", ["发饰", "发夹"], "appearance", "inferred")
+  );
+  assert.throws(
+    () => ensureOutputContract(
+      materializeGlobalCharacterBoundaryViews(normalizeGlobalCharacterBoundaryTerms(raw), creatorProfile),
+      "visualGuardrails"
+    ),
+    /同时要求并禁止：required「无头饰」包含 forbidden「头饰」/u
+  );
+});
+
+// 正向型没有 allowNegativeContext 兜底：边界把「浅灰蓝色长发」列为该必需事实的可接受
+// 写法之一，同时禁止「蓝色长发」，模型按边界自己认可的拼法写就会在成片渲染前硬失败。
+test("必需写法包含禁止写法的边界必须在签发时就失败（正向型）", () => {
+  const creatorProfile = { fixedCharacter: "小白子，浅灰蓝色长发少女", vertical: "治愈日常", constraints: "" };
+  const raw = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
+  raw.fixedCharacterBoundary = xiaobaiziBoundary({ tail: "none", forbidClaws: false });
+  raw.fixedCharacterBoundary.requiredTraits.push(
+    boundaryTrait("浅灰蓝色长直发", ["浅灰蓝色长发", "长直发"], "appearance")
+  );
+  raw.fixedCharacterBoundary.forbiddenTraits.push(
+    boundaryTrait("原片蓝发女孩外观", ["蓝色长发", "红色连衣裙"], "appearance", "inferred")
+  );
+  assert.throws(
+    () => ensureOutputContract(
+      materializeGlobalCharacterBoundaryViews(normalizeGlobalCharacterBoundaryTerms(raw), creatorProfile),
+      "visualGuardrails"
+    ),
+    /同时要求并禁止：required「浅灰蓝色长发」包含 forbidden「蓝色长发」/u
+  );
+});
+
+// 合法反例：反方向（forbidden ⊃ required）必须放行。文本「猫耳少女」含 required 而不含
+// forbidden，两者可同时满足。回扫 95 份已签发边界，反方向碰撞 14 份且全部合法——
+// 做成双向判定会误杀 15%。
+test("禁止写法包含必需写法是合法边界，不得误判为冲突", () => {
+  const creatorProfile = { fixedCharacter: "小白子，猫耳少女", vertical: "治愈日常", constraints: "" };
+  const raw = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
+  raw.fixedCharacterBoundary = xiaobaiziBoundary({ tail: "none", forbidClaws: false });
+  raw.fixedCharacterBoundary.requiredTraits.push(boundaryTrait("猫耳", [], "appearance"));
+  raw.fixedCharacterBoundary.forbiddenTraits.push(
+    boundaryTrait("非猫耳动物器官", ["其他兽耳"], "appearance", "inferred")
+  );
+  const verified = ensureOutputContract(
+    materializeGlobalCharacterBoundaryViews(normalizeGlobalCharacterBoundaryTerms(raw), creatorProfile),
+    "visualGuardrails"
+  );
+  const forbiddenNames = verified.fixedCharacterBoundary.forbiddenTraits.map((trait) => trait.canonicalName);
+  assert.ok(forbiddenNames.includes("非猫耳动物器官"));
+});
+
+// allowedTraits 是可选事实，本次刻意不扩大判定范围（磁盘上 95 份边界该方向碰撞为 0）。
+test("allowedTraits 包含禁止写法本次不拦截", () => {
+  const creatorProfile = { fixedCharacter: "小白子，狼耳少女", vertical: "治愈日常", constraints: "" };
+  const raw = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
+  raw.fixedCharacterBoundary = xiaobaiziBoundary({ tail: "none", forbidClaws: false });
+  raw.fixedCharacterBoundary.allowedTraits.push(boundaryTrait("无头饰", [], "appearance"));
+  raw.fixedCharacterBoundary.forbiddenTraits.push(
+    boundaryTrait("头饰", ["发饰"], "appearance", "inferred")
+  );
+  const verified = ensureOutputContract(
+    materializeGlobalCharacterBoundaryViews(normalizeGlobalCharacterBoundaryTerms(raw), creatorProfile),
+    "visualGuardrails"
+  );
+  assert.ok(verified.fixedCharacterBoundary.allowedTraits.some((trait) => trait.canonicalName === "无头饰"));
 });
 
 test("固定角色生成必须沿用全局事实，配角不继承主角边界，逐镜仍禁止冲突特征", () => {

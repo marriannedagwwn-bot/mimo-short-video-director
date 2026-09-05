@@ -395,6 +395,8 @@ creativeBrief 已识别的原片表面表达参考：${protectedText}
 - 用户明确肯定或否定的设定高于模型常识。配饰、服装、图案、兴趣、临时扮演和文化风格不得升级为真实器官或固定身份。
 - requiredTraits 是后续必须沿用的全局事实；allowedTraits 是可按剧情选择但不能改变含义的事实；forbiddenTraits 是后续正向内容不得出现的事实。
 - requiredTraits、allowedTraits、forbiddenTraits 中每项自行给出 canonicalName 和 terms；canonicalName 是你判断的标准名称，terms 只补充本次边界接受的其他同义表达，不来自程序词典；服务端会确定性地把 canonicalName 纳入最终匹配词集合。
+- **任何 requiredTrait 的 canonicalName 与 terms，都不得包含任一 forbiddenTrait 的 canonicalName 或 term。** 下游是子串匹配：required 的写法必须出现在正文里，而 forbidden 的写法一旦作为子串出现就判失败，所以「必需写法里含有禁止写法」是一个无解的边界，服务端会直接拒绝签发。例如把「浅灰蓝色长发」列为必需写法、同时禁止「蓝色长发」，模型无论怎么写都过不了。要禁的是原片那一版外观时，就把禁止项写成不与必需写法重叠的表述。
+- **否定短语（「无 X」「没有 X」「不戴 X」）只写进 forbiddenTraits，不要写进 requiredTraits。** 禁止清单本身就表达「不得出现 X」，把「无 X」再列为必需事实，等于要求正文写出一个含有禁止词的字符串，与上一条直接冲突。用户说「无头饰」时，正确做法是 forbiddenTraits 加一条「头饰」，requiredTraits 不加任何条目。
 - scope 只允许 identity、appearance、personality、occupation、storyFunction；evidenceLevel 只允许 explicit 或 inferred。
 - 用户文字自身存在无法消解的明确冲突时写入 unresolvedConflicts，不得擅自选择一方。存在 unresolvedConflicts 时工作流会阻断，不进入后续阶段。
 - allowedPositiveTraits 和 positivePromptBoundary 由服务端根据全局边界确定性生成。你必须输出空数组，不得自行填写。
