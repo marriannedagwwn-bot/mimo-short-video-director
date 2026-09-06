@@ -826,8 +826,12 @@ function revisionShotBudgetLine(shot, row) {
       + `与加内容(${increase.join("、")})——只准替换，不准净增`;
   }
   if (decrease.length) return `- ${shot.shotId}（${size}）：只准减，不准加（${decrease.join("、")}）`;
+  // 「可加」这个说法已经删掉：删≥加对每一个被修订的镜头无例外成立。
+  // 实测一份真实修订输出里，恰恰是这类「终审要求加内容」的镜头全部净增而畅通无阻
+  // （A03 删 0 加 1、A07 删 3 加 4、A08 删 0 加 1），旧措辞等于在邀请模型净增。
   if (increase.length) {
-    return `- ${shot.shotId}（${size}）：可加，但先确认没有 pacing 问题（${increase.join("、")}）`;
+    return `- ${shot.shotId}（${size}）：要落实新增（${increase.join("、")}），`
+      + "但仍须先替换后新增——removedActions 的条目数不得少于 addedActions";
   }
   return `- ${shot.shotId}（${size}）：本镜没有被点名，只在承接需要时做最小改动`;
 }

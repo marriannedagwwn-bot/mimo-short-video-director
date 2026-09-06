@@ -5,7 +5,7 @@ import { WorkflowService } from "../src/workflow.js";
 import { mockAnimationPlanRevision, mockAnimationPlanReview } from "../src/mock.js";
 import { animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt } from "../src/prompts.js";
 import { InputError } from "../src/validation.js";
-import { revisionShotLoad, revisionTargetShotIds } from "../src/animation-plan-review-validation.js";
+import { ensureRevisionContract, revisionShotLoad, revisionTargetShotIds } from "../src/animation-plan-review-validation.js";
 
 // 合成 direct_shot Plan。用合成夹具而不是真实生产包，是为了让「受约束镜头净增被拦」
 // 这类断言在任何机器上都能跑；真实包的回放另有一条测试守着。
@@ -224,11 +224,11 @@ test("受约束镜头第一次净增被拦，带诊断重试一次后通过", as
     upgrades: [upgradeFor("A03", "UPG-003")]
   });
   const { workflow, prompts } = liveWorkflow([
-    // 第一次：A01 净增（删 0 加 2），A03 合法
+    // 第一次：A01 净增（删 0 加 2）被拦；A03 已经符合删≥加，不该被要求重做
     {
       revisedShots: [
         revisedRow(plan, "A01", { removedActions: [], addedActions: ["新动作一", "新动作二"] }),
-        revisedRow(plan, "A03", { removedActions: [], addedActions: ["新动作三"], changeSummary: "A03 加一个" })
+        revisedRow(plan, "A03", { removedActions: ["她蹲下。"], addedActions: ["新动作三"], changeSummary: "A03 一换一" })
       ]
     },
     // 第二次：只重做被拦的 A01
@@ -477,4 +477,52 @@ test("越界被拒后，重试提示词不得把越界镜头当成待重做镜�
   const blocked = retry.slice(retry.indexOf("# 被拦镜头的原始 characterAction")).split("# 你上一次的输出")[0];
   assert.match(blocked, /A01/u);
   assert.doesNotMatch(blocked, /A03/u, "A03 从来就不在授权范围内，不该出现在待重做清单里");
+});
+
+// 真实数据回放：这是 2026-09-06 手工跑修订时模型的**实际输出**，也是把净预算收紧为
+// 全局默认的直接依据。旧规则（只约束被判过 pacing / ai_risk 的镜头）在这份数据上
+// 一条都拦不住——A03 删 0 加 1、A07 删 3 加 4、A08 删 0 加 1 全部净增而畅通，
+// 而这三镜的报告条目**恰恰全是「要求加内容」**，所以「只在没被要求加内容时才约束」
+// 那种写法同样一个都拦不住，必须是无例外的全局默认。
+//
+// A07 就是外部评审指出的手部逻辑那一镜（单臂抱猫却双手递猫粮）。
+// 夹具不在仓库里时跳过，不让本地缺文件变成红灯。
+test("真实修订输出回放：三处净增全部被拦", (t) => {
+  const paths = {
+    pkg: "C:/Users/QinFeng/Downloads/雨天的流浪猫窝.json",
+    report: "C:/Users/QinFeng/Downloads/雨天的流浪猫窝-评审报告-新提示词.json",
+    revision: "C:/Users/QinFeng/Downloads/雨天的流浪猫窝-修订输出.json"
+  };
+  if (!Object.values(paths).every((path) => fs.existsSync(path))) {
+    t.skip("真实修订夹具不存在，跳过");
+    return;
+  }
+  const plan = JSON.parse(fs.readFileSync(paths.pkg, "utf8")).animationPlan;
+  const report = JSON.parse(fs.readFileSync(paths.report, "utf8"));
+  const revision = JSON.parse(fs.readFileSync(paths.revision, "utf8"));
+
+  let error = null;
+  try {
+    ensureRevisionContract(revision, plan, report);
+  } catch (caught) {
+    error = caught;
+  }
+  assert.ok(error, "这份真实修订输出必须被拦下");
+  const blocked = error.details
+    .filter((detail) => detail.code === "REVISION_NET_ACTION_BUDGET_EXCEEDED")
+    .map((detail) => detail.reason.slice(0, 3).trim());
+  assert.deepEqual(blocked, ["A03", "A07", "A08"]);
+
+  // 这三镜没有一个被判过 pacing / ai_risk——旧规则正是因此放行的
+  const load = revisionShotLoad(report, plan.shotPlan.map((shot) => shot.shotId));
+  for (const id of ["A03", "A07", "A08"]) {
+    assert.equal(load.get(id).constrained, false, `${id} 不在受判名单里，旧规则不会拦它`);
+    assert.ok(load.get(id).increase.length > 0, `${id} 的条目全是「要求加内容」`);
+  }
+
+  // 已知仍然放行的一类：A02 删 1 加 1，长度相等而复杂度暴涨
+  // （删的是「路人撑伞走过的第二次强调」，加的是「外套滑落→露头→发抖→压住→重新裹紧」）。
+  // 数条目数管不了这个，本次没有改判据——见 CLAUDE.md 2.14 的已知局限。
+  const a02 = revision.revisedShots.find((row) => row.shotId === "A02");
+  assert.equal(a02.removedActions.length, a02.addedActions.length);
 });

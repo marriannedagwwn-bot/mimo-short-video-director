@@ -126,10 +126,10 @@ test("修订结果不得改动服务端签发字段", () => {
   assert.throws(() => ensureRevisionContract(revision, plan, report), /durationSeconds|签发/u);
 });
 
-test("受约束镜头净增动作被拦，未受约束的不拦", () => {
+test("净增动作被拦，且不限于被判过 pacing 的镜头", () => {
   const plan = samplePlan(3);
   const report = mockAnimationPlanReview(plan);
-  // 把 A01 判为节奏有风险，使它进入受约束名单
+  // A01 被判为节奏有风险；A03 没有被点名。删≥加对两者都成立。
   report.issues = [{
     issueId: "P1",
     severity: "MAJOR",
@@ -156,7 +156,10 @@ test("受约束镜头净增动作被拦，未受约束的不拦", () => {
   });
   // 判定权在服务端：只数数组长度，不听模型自述
   assert.throws(() => ensureRevisionContract(netAdd("A01"), plan, report), /删除|净增|不少于/u);
-  assert.doesNotThrow(() => ensureRevisionContract(netAdd("A03"), plan, report));
+  // 2026-09-06 收紧：净增对**每一个被修订的镜头**都拦。只约束受判镜头时，实测在真实
+  // 数据上等于没有闸门——一份真实修订输出里 A03 删 0 加 1、A07 删 3 加 4、A08 删 0 加 1
+  // 全部畅通，而这三镜的报告条目恰恰全是「要求加内容」，旧规则一个都拦不住。
+  assert.throws(() => ensureRevisionContract(netAdd("A03"), plan, report), /先替换后新增/u);
 });
 
 test("真实报告回放：新 schema 不误伤实际模型输出", (t) => {

@@ -252,7 +252,9 @@ export function revisionTargetShotIds(entries, shotIds) {
  * 实测事故正是同一镜同时收到「这镜太挤」与三条「往这镜加动作」，模型只执行了「加」，
  * 结果 pacing 6.2、aiStability 5.8、physicalFeasibility 6.9 三项同时退化。
  *
- * `constrained` 恒等于 `decrease.length > 0`，是 ensureRevisionContract 的硬闸门依据。
+ * `constrained` 恒等于 `decrease.length > 0`。**它已不再是净预算闸门的开关**——
+ * 删≥加对每一个被修订的镜头无例外成立（见 ensureRevisionContract）；`constrained`
+ * 现在只用于提示词的措辞分档与错误消息的归因。
  *
  * @param {object} report 终审报告
  * @param {string[]} shotIds 当前 Plan 的 shotId 顺序，用于解析 0 基下标路径
@@ -284,14 +286,15 @@ export function revisionShotLoad(report, shotIds) {
 /**
  * 校验定向修订结果。
  *
- * 核心是净预算：被终审判过 pacing / ai_risk 的镜头，删除的动作数必须不少于新增的。
+ * 核心是净预算：**每一个被修订的镜头**，删除的动作数都必须不少于新增的。
+ * 判定只数模型自己列出的两个数组的长度。
  * 判定只数模型自己列出的两个数组的长度——「什么算一个动作」由模型声明，
  * 但声明之后就不能再改口。实测模型会在自由文本里辩称新增动作「并入了现有动作链」，
  * 显式数组消除了这个解释空间。
  *
  * @param {object} revision 模型返回的 { revisedShots: [...] }
  * @param {object} animationPlan 被修订的 Plan
- * @param {object} report 上一轮终审报告，用于判定哪些镜头受约束
+ * @param {object} report 上一轮终审报告，用于错误消息归因与镜头号解析
  */
 export function ensureRevisionContract(revision, animationPlan, report) {
   if (!revision || typeof revision !== "object") {
@@ -362,10 +365,16 @@ export function ensureRevisionContract(revision, animationPlan, report) {
         "必须显式列出 removedActions[] 与 addedActions[]（没有改动时写空数组）");
       return;
     }
-    if (constrained.has(id) && added.length > removed.length) {
+    // 净预算对**每一个被修订的镜头**成立，不只是被判过 pacing / ai_risk 的那些。
+    // 原先只约束受判镜头，实测在真实数据上等于没有闸门：一份真实修订输出里
+    // A03 删 0 加 1、A07 删 3 加 4、A08 删 0 加 1 全部净增而畅通无阻——
+    // 而这三镜的条目**恰恰全是 increase**（终审要求往里加内容），
+    // 所以「只在没被要求加内容时才约束」这种写法一个都拦不住，必须是无例外的全局默认。
+    if (added.length > removed.length) {
       push(details, "REVISION_NET_ACTION_BUDGET_EXCEEDED", `/revisedShots/${index}`,
-        `${id} 被终审判为节奏或稳定性有风险，新增 ${added.length} 个动作但只删除 ${removed.length} 个；`
-        + "受约束镜头必须删除数不少于新增数");
+        `${id} 新增 ${added.length} 个动作但只删除 ${removed.length} 个；`
+        + (constrained.has(id) ? "本镜已被终审判为节奏或稳定性有风险，" : "")
+        + "任何镜头都必须先替换后新增，删除数不得少于新增数");
     }
   });
 

@@ -8,6 +8,7 @@ public/generated-images/
 public/generated-videos/
 runtime-captures/
 runtime/production-runs/
+runtime/*.log
 frames/
 
 # Large local reference videos; keep them out of Git/Codex workspace snapshots.
