@@ -314,6 +314,7 @@ const routes = {
   },
   // 剧情体检：只出报告。不签发 Artifact、不进 lineage、不 stale 任何东西、不阻断后续阶段。
   "/api/story-quality-review": (body) => workflow.createStoryQualityReview(body),
+  "/api/animation-plan-review": (body) => workflow.createAnimationPlanReview(body),
   "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
   "/api/generate-shot-video": async (body) => {
     const productionMedia = await resolveProductionMediaContext(body, { required: true });
@@ -2090,7 +2091,17 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
     // 一个查不出问题的评审比偏松的评审更没用，稳定性也是硬要求（输出必须过递归 strict schema）。
     // 所以先用能干活的那个，**并如实记下它自评偏松这个已知偏差**——
     // 换更合适的评审模型是后续的事，不靠静默降级掩盖。
-    storyQualityReview: stageSetting(provider, source.storyModel || source.model, source.storyMaxCompletionTokens || source.maxCompletionTokens)
+    storyQualityReview: stageSetting(provider, source.storyModel || source.model, source.storyMaxCompletionTokens || source.maxCompletionTokens),
+    // 分镜终审同样沿用剧情 provider，但 **必须单独放宽 timeout**：
+    // 实测这个阶段正常出字最长 941 秒，而全局默认 900000 会在它成功前 41 秒把它掐死
+    // ——那次失败完全是我们自己造成的，与上游无关。
+    // 不动全局默认值：现有阶段实测最长 234 秒，900 秒有 3.8 倍余量。
+    animationPlanReview: stageSetting(
+      provider,
+      source.storyModel || source.model,
+      source.storyMaxCompletionTokens || source.maxCompletionTokens,
+      1800000
+    )
   };
 }
 

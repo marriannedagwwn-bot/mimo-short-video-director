@@ -1010,3 +1010,75 @@ export function mockStoryQualityReview(fullStory) {
     summary: "demo 模式：未调用模型，本报告不构成任何质量判断。"
   };
 }
+
+// demo 模式的分镜终审。按传入 Plan 的真实 shotPlan 生成三张覆盖表，
+// 保证 mock 输出能通过与 live 完全相同的校验链——不得出现 mock 通过而 live 失败的偏差。
+export function mockAnimationPlanReview(animationPlan) {
+  const shots = Array.isArray(animationPlan?.shotPlan) ? animationPlan.shotPlan : [];
+  const scenes = Array.isArray(animationPlan?.sceneReferencePrompts) ? animationPlan.sceneReferencePrompts : [];
+  const locationOf = (sceneId) => {
+    const hit = scenes.find((scene) => String(scene?.sceneId || "") === String(sceneId || ""));
+    return String(hit?.locationName || hit?.sceneName || sceneId || "");
+  };
+  const note = "demo 模式不调用模型，未做实际核对。";
+  const DIMENSIONS = [
+    ["realizedOpeningHook", 0.10], ["memorableMoment", 0.10], ["causalClarity", 0.10],
+    ["protagonistAgency", 0.07], ["supportingAgency", 0.05], ["objectArc", 0.06],
+    ["pacingAndDuration", 0.10], ["emotionalPayoff", 0.10], ["visualReadability", 0.09],
+    ["continuity", 0.09], ["physicalFeasibility", 0.07], ["aiStability", 0.07]
+  ];
+  return {
+    schemaVersion: "animation-plan-review/4.0",
+    overallScore: 0,
+    dominantDefect: {
+      type: "pacing",
+      severity: "MINOR",
+      description: note
+    },
+    emotionalResponseAssessment: {
+      needed: false,
+      existingPayoffBeats: [],
+      reason: note
+    },
+    strengths: [{
+      what: "demo 占位",
+      whyItWorks: note,
+      evidencePaths: [],
+      mustNotLose: note
+    }],
+    dimensions: DIMENSIONS.map(([id, weight]) => ({
+      id,
+      weight,
+      score: 0,
+      evidencePaths: [],
+      diagnosis: note,
+      viewerImpact: note,
+      recommendedChange: note
+    })),
+    shotEvaluations: shots.map((shot) => ({
+      shotId: String(shot?.shotId || ""),
+      declaredPurpose: String(shot?.storyPurpose || ""),
+      actuallyDepicted: "depicted",
+      whatViewerSees: note,
+      issues: []
+    })),
+    propTracking: [],
+    sceneCheck: shots.map((shot) => ({
+      shotId: String(shot?.shotId || ""),
+      declaredSceneId: String(shot?.sceneId || ""),
+      declaredLocation: locationOf(shot?.sceneId),
+      promptOpensIn: note,
+      consistent: true
+    })),
+    issues: [],
+    otherFindings: [],
+    upgradePath: [],
+    revisionBrief: {
+      priorityIssueIds: [],
+      priorityUpgradeIds: [],
+      mustPreserve: [note],
+      conflictWarnings: [],
+      revisionMode: "targeted_patch"
+    }
+  };
+}

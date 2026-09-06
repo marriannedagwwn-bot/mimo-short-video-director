@@ -10,6 +10,16 @@ import { formatDirectShotSkeleton } from "./direct-shot-timeline.js";
 import { VIDEO_PROMPT_PROFILE_IDS } from "../public/video-prompt-profiles.js";
 import { normalizeCharacterExpressionRules } from "../public/character-expression-rules.js";
 import { storyDurationWindow } from "../public/story-duration.js";
+import fs from "node:fs";
+
+// 分镜终审的提示词正文存为资源文件，与 contract-validator 读 schema 同一模式。
+// 正文含 268 个反引号与 234 个半角双引号，硬写进模板字面量要逐个转义——那是引入
+// 静默错别字的最好办法（本次实施中已经因此损坏过一次文件）。模块加载时读一次。
+// docs/animation-plan-review-prompt.md 有供人类阅读的同一份，由测试锁定两者逐字相等。
+const ANIMATION_PLAN_REVIEW_BODY = fs.readFileSync(
+  new URL("./animation-plan-review-prompt.md", import.meta.url),
+  "utf8"
+).replace(/^<!--[\s\S]*?-->\s*/u, "").trim();
 
 // 用户手写的「情绪 → 可见特征」映射。只进提示词，不进任何 Artifact、digest 或 lineage
 // （与 targetDurationSeconds 同规格，见 public/character-expression-rules.js）。
@@ -766,6 +776,26 @@ function sourceTextureText(referenceAnalysis) {
 //
 // 覆盖率由服务端确定性核验（ensureStoryQualityReviewCoversStory），所以这里要把
 // 「逐条、同序、逐字回显」写死：模型漏掉任何一条都会当场失败，不存在蒙混过关。
+/**
+ * 分镜终审。评审阶段**必须**同时收到剧情与分镜方案：
+ * 没有剧情作对照物，就发现不了「剧情写了、videoPrompt 没拍」这一整类缺陷——
+ * 实测某片剧情首句写着末班车尾灯消失，而首镜提示词一帧车都没有，只给分镜是看不出来的。
+ * 修订阶段则相反，只带分镜：那时问题已经定位，再给剧情只会让模型顺手重编故事。
+ */
+export function animationPlanReviewPrompt(fullStory, animationPlan) {
+  return `${ANIMATION_PLAN_REVIEW_BODY}
+
+---
+
+以下是要评审的完整内容。
+
+fullStory（对照基准，它说明这个故事打算让观众看到什么）：
+${JSON.stringify(fullStory)}
+
+animationPlan（唯一会被拍出来的东西）：
+${JSON.stringify(animationPlan)}`;
+}
+
 export function storyQualityReviewPrompt(fullStory) {
   const scenes = Array.isArray(fullStory?.sceneScript) ? fullStory.sceneScript : [];
   const retention = Array.isArray(fullStory?.retentionPlan) ? fullStory.retentionPlan : [];

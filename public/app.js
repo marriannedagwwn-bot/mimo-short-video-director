@@ -1806,6 +1806,84 @@ async function runStoryQualityReview(fullStory, button) {
 const REVIEW_VERDICT_LABEL = { depicted: "已兑现", partially_depicted: "只沾边", not_depicted: "画面里没有" };
 const REVIEW_SEVERITY_LABEL = { BLOCKER: "严重", MAJOR: "建议", MINOR: "小问题" };
 
+const DEFECT_TYPE_LABEL = {
+  identity_logic: "身份逻辑冲突", causal_logic: "因果断裂", opening_hook: "开场没建立观看理由",
+  motivation: "动机缺失", emotional_payoff: "情绪没有兑现", continuity: "跨镜不连续",
+  prop_state: "道具状态断裂", physical_logic: "动作物理上不成立", pacing: "节奏与时长不匹配",
+  escalation: "故事停滞", character_agency: "结果不是主角选择造成的",
+  visual_readability: "画面讲不清楚", ai_execution_risk: "AI 生成风险高"
+};
+
+function renderAnimationPlanReview(review) {
+  const defect = review.dominantDefect || {};
+  const issues = review.issues || [];
+  const strengths = review.strengths || [];
+  const upgrades = review.upgradePath || [];
+  const findings = review.otherFindings || [];
+  const brokenProps = (review.propTracking || []).filter((p) => p.disappeared || p.positionUnclear);
+  const sceneMismatch = (review.sceneCheck || []).filter((s) => s.consistent === false);
+  const order = { BLOCKER: 0, MAJOR: 1, MINOR: 2 };
+
+  const list = (items, render) => items.map(render).join("") || "";
+
+  return `
+    <div class="plan-review-defect severity-${escape(defect.severity || "MAJOR")}">
+      <div class="plan-review-defect-head">
+        <span class="review-severity severity-${escape(defect.severity || "MAJOR")}">${escape(REVIEW_SEVERITY_LABEL[defect.severity] || defect.severity || "")}</span>
+        <b>当前最主要的问题：${escape(DEFECT_TYPE_LABEL[defect.type] || defect.type || "未判定")}</b>
+      </div>
+      <p>${escape(defect.description || "")}</p>
+    </div>
+
+    <p class="story-review-status">
+      综合 ${escape(review.overallScore)} 分 ·
+      <span class="plan-review-score-note">这个数字只用于同一片子改前改后对比，不作放行门槛——实测两个模型评同一份方案总分只差 0.06，而单个维度能差 1 分</span>
+    </p>
+
+    ${issues.length ? `<details open><summary>硬伤 ${issues.length} 条</summary>
+      ${list([...issues].sort((a, b) => order[a.severity] - order[b.severity]), (item) => `
+        <div class="review-check">
+          <div class="review-check-head">
+            <span class="review-severity severity-${escape(item.severity)}">${escape(REVIEW_SEVERITY_LABEL[item.severity] || item.severity)}</span>
+            <span class="scene-id">${escape(item.category)}</span>
+          </div>
+          <p>${escape(item.problem)}</p>
+          <p class="review-fix"><b>怎么改：</b>${escape(item.revisionIntent)}</p>
+        </div>`)}
+    </details>` : ""}
+
+    ${upgrades.length ? `<details><summary>升级建议 ${upgrades.length} 条</summary>
+      ${list(upgrades, (item) => `
+        <div class="review-check">
+          <div class="review-check-head"><span class="scene-id">${escape(item.principle)}</span></div>
+          <p class="review-current">${escape(item.currentState)}</p>
+          <p class="review-fix"><b>改成：</b>${escape(item.concreteChange)}</p>
+          ${item.whyOnlyThisStory ? `<p class="review-why">只能发生在本片：${escape(item.whyOnlyThisStory)}</p>` : ""}
+        </div>`)}
+    </details>` : ""}
+
+    ${strengths.length ? `<details><summary>做得好的 ${strengths.length} 处（修订时别改掉）</summary>
+      ${list(strengths, (item) => `
+        <div class="review-check">
+          <div class="review-check-head"><span class="scene-id">${escape(item.what)}</span></div>
+          <p>${escape(item.whyItWorks)}</p>
+          <p class="review-keep"><b>不能丢：</b>${escape(item.mustNotLose)}</p>
+        </div>`)}
+    </details>` : ""}
+
+    ${brokenProps.length || sceneMismatch.length || findings.length ? `<details><summary>其他核对结果</summary>
+      ${list(brokenProps, (p) => `<div class="review-check"><div class="review-check-head">
+        <span class="review-severity severity-${p.disappeared ? "MAJOR" : "MINOR"}">${p.disappeared ? "道具消失" : "位置不清"}</span>
+        <span class="scene-id">${escape(p.prop)}</span></div><p>${escape(p.problem || "")}</p></div>`)}
+      ${list(sceneMismatch, (s) => `<div class="review-check"><div class="review-check-head">
+        <span class="review-severity severity-MINOR">场景不符</span><span class="scene-id">${escape(s.shotId)}</span>
+        </div><p>${escape(s.problem || "")}</p></div>`)}
+      ${list(findings, (f) => `<div class="review-check"><div class="review-check-head">
+        <span class="scene-id">其他发现</span></div><p>${escape(f.finding)}</p>
+        <p class="review-why">${escape(f.whyItMatters)}</p></div>`)}
+    </details>` : ""}`;
+}
+
 function renderStoryQualityReview(review) {
   const metrics = storyReviewMetrics(review);
   // 未兑现的排在前面：那才是要看的；已兑现的折叠进一句统计，不占版面。
@@ -2140,9 +2218,42 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
     </div>`)}
     ${block("生成验收清单", `<div class="rule-list">${(data.generationChecklist || []).map((item) => `<div class="rule"><strong>${escape(item.check)}</strong><p>${escape(item.passCriteria)}</p></div>`).join("")}</div>`)}
     <div class="warning-box"><b>动画连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
-    ${uncertainties(data.uncertainties)}`;
+    ${uncertainties(data.uncertainties)}
+    <div class="story-review">
+      <button type="button" class="outline-button" data-plan-review>分镜终审</button>
+      <span class="story-review-hint">对照剧情逐镜核对：声称要拍的画面有没有真的写进提示词。只出报告，不改方案。</span>
+      <div class="story-review-body" data-plan-review-body></div>
+    </div>`;
   syncAnimationAspectRatioControls(data);
   reveal(elements.animationPlan);
+  const reviewButton = elements.animationPlan.querySelector("[data-plan-review]");
+  if (reviewButton) reviewButton.addEventListener("click", () => runAnimationPlanReview(data, reviewButton));
+}
+
+// 分镜终审：手动触发，只出报告。不改 Plan、不签发 Artifact、不进 lineage、刷新即失。
+// 评审必须同时把剧情送过去——没有对照物就发现不了「剧情写了、镜头没拍」。
+async function runAnimationPlanReview(animationPlan, button) {
+  const body = elements.animationPlan.querySelector("[data-plan-review-body]");
+  const fullStory = state.output.fullStory;
+  if (!body || button.disabled) return;
+  if (!fullStory) {
+    body.innerHTML = `<p class="story-review-status error">终审需要对照当前剧情，请先生成完整剧情。</p>`;
+    return;
+  }
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "终审中…";
+  // 实测这个阶段正常出字要十几分钟，说清楚免得用户以为卡死了。
+  body.innerHTML = `<p class="story-review-status">正在逐镜、逐道具、逐场景核对，这一步比较慢，通常十分钟以上…</p>`;
+  try {
+    const review = await api("/api/animation-plan-review", { animationPlan, fullStory });
+    body.innerHTML = renderAnimationPlanReview(review);
+  } catch (error) {
+    body.innerHTML = `<p class="story-review-status error">${escape(error?.message || "终审失败")}</p>`;
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
 }
 
 function renderVideoPromptProfileCell(plan = {}) {

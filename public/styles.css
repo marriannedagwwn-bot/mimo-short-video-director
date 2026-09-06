@@ -558,3 +558,17 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
 .review-scenes { color: var(--muted); font-size: 9px; }
 .review-evidence { color: var(--muted); }
 .review-issue.severity-BLOCKER { border-color: rgba(180, 35, 24, .3); }
+
+/* 分镜终审报告。复用剧情体检的 .review-check / .review-severity 等既有样式，
+   这里只补三处它没有的：置顶的主要缺陷卡、分数旁的免责说明、升级建议的三段文案。 */
+.plan-review-defect { margin-top: 10px; padding: 12px 14px; border-radius: 10px;
+  background: #fff3e8; border: 1px solid #f0c9a8; font-size: 10px; line-height: 1.7; }
+.plan-review-defect.severity-BLOCKER { background: #fdecec; border-color: #f0b6b6; }
+.plan-review-defect.severity-MINOR { background: #efebe4; border-color: var(--line); }
+.plan-review-defect-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.plan-review-defect p { margin: 0; }
+/* 分数是最容易被误当成门槛的东西，说明必须紧跟着它，不能折叠起来 */
+.plan-review-score-note { color: var(--muted); }
+.review-current { color: var(--muted); }
+.review-fix, .review-keep { color: var(--ink); }
+.review-why { color: var(--muted); font-style: normal; }

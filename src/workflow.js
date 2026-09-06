@@ -1,7 +1,8 @@
-import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
-import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
+import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockAnimationPlanReview, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { compileCharacterFeatures } from "./character-feature-compiler.js";
+import { ensureReviewReportContract } from "./animation-plan-review-validation.js";
 import { AttemptStore } from "./attempt-store.js";
 import {
   fullStoryPartialRepairPrompt,
@@ -384,6 +385,40 @@ export class WorkflowService {
     this.assertStageClient(settings, "剧情体检");
     return this.generateStageJson("storyQualityReview", input, {
       prompt: storyQualityReviewPrompt(fullStory),
+      validate
+    });
+  }
+
+  /**
+   * 分镜终审。Animation Plan 生成之后的独立验收，只出报告：不修改 Plan、
+   * 不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、不阻断后续生产。
+   * 与剧情体检同规格，纯展示，刷新页面即失。
+   *
+   * 它检查的是现有校验器全都查不到的一类问题：**剧情声称的事，镜头里到底拍没拍**。
+   * 实测案例：剧情首句写「末班车的红色尾灯刚刚消失在路口转角」，而首镜 videoPrompt
+   * 从人物坐在长椅上开始，一帧车都没有——「末班车已走」只写进了 continuityNotes，
+   * 那是给生成器的备注，不会被拍出来。全片赖以成立的悬念从未建立。
+   *
+   * 评分只用于同一片子改前改后的纵向对比，**不作放行门槛**：实测两个模型对同一份
+   * Plan 总分只差 0.06，而逐个维度能差 ±1.0，这个数字没有分辨力。真正有用的是
+   * dominantDefect、issues 与 upgradePath 里的具体内容。
+   */
+  async createAnimationPlanReview(input) {
+    requireObject(input, "请求");
+    const animationPlan = requireObject(input.animationPlan, "animationPlan");
+    const fullStory = requireObject(input.fullStory, "fullStory");
+    // 被评审的两份必须先各自合法，否则报告没有意义。
+    ensureOutputContract(animationPlan, "animationPlan");
+    ensureOutputContract(fullStory, "fullStory");
+    const validate = (result) => ensureReviewReportContract(
+      ensureOutputContract(result, "animationPlanReview"),
+      animationPlan
+    );
+    if (!this.hasLiveClient) return validate(mockAnimationPlanReview(animationPlan));
+    const settings = this.resolveStage("animationPlanReview", input);
+    this.assertStageClient(settings, "分镜终审");
+    return this.generateStageJson("animationPlanReview", input, {
+      prompt: animationPlanReviewPrompt(fullStory, animationPlan),
       validate
     });
   }
@@ -3211,7 +3246,8 @@ function stageLabel(stage) {
     fullStory: "完整剧情",
     animationPlan: "动画镜头生产包",
     staticFrameCompiler: "Static Frame Compiler",
-    characterReference: "人物参考修正"
+    characterReference: "人物参考修正",
+    animationPlanReview: "分镜终审"
   })[stage] || stage;
 }
 

@@ -2,6 +2,7 @@ import {
   validateLegacyFullStoryStrict,
   validateStoryCandidateStrict,
   validateStoryCandidatesStrict,
+  validateAnimationPlanReviewStrict,
   validateStoryQualityReviewStrict
 } from "./contracts/contract-validator.js";
 import { GLOBAL_CHARACTER_BOUNDARY_VERSION } from "./character-boundary.js";
@@ -59,7 +60,8 @@ const outputContracts = {
   themeVariants: ["variants"],
   fullStory: ["selectedVariantId", "title", "oneLinePremise", "targetDurationSeconds", "shootingSynopsis", "characterBible", "beatSheet", "sceneScript", "keyProps", "shootingPlan", "dialogueStyleGuide", "retentionPlan", "experienceFidelity", "transformationProof", "continuityAndSafetyCheck", "uncertainties"],
   animationPlan: ["selectedVariantId", "title", "productionStrategy", "visualBible", "characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "editPlan", "generationChecklist", "modelAgnosticNotes", "continuityAndSafetyCheck", "uncertainties"],
-  storyQualityReview: ["schemaVersion", "selectedVariantId", "retentionChecks", "sceneFunctionChecks", "issues", "summary"]
+  storyQualityReview: ["schemaVersion", "selectedVariantId", "retentionChecks", "sceneFunctionChecks", "issues", "summary"],
+  animationPlanReview: ["schemaVersion", "overallScore", "dominantDefect", "strengths", "dimensions", "shotEvaluations", "propTracking", "sceneCheck", "issues", "otherFindings", "upgradePath", "revisionBrief"]
 };
 
 const animationFoundationFields = outputContracts.animationPlan.filter((field) => field !== "shotPlan");
@@ -308,11 +310,31 @@ export function ensureOutputContract(value, contract) {
       );
     }
   }
+  if (contract === "animationPlanReview") {
+    const schemaResult = validateAnimationPlanReviewStrict(value);
+    if (!schemaResult.ok) {
+      throw new OutputContractError(
+        `animationPlanReview 结构校验失败：${schemaResult.diagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+        schemaResult.diagnostics
+      );
+    }
+  }
   if (contract === "storyQualityReview") {
     const schemaResult = validateStoryQualityReviewStrict(value);
     if (!schemaResult.ok) {
       throw new OutputContractError(
         `storyQualityReview 结构校验失败：${schemaResult.diagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+        schemaResult.diagnostics
+      );
+    }
+  }
+  // 分镜终审报告。schema 只管结构，穷举覆盖与引用真实性由
+  // ensureReviewReportContract 裁决——分工与 themeVariants 一致。
+  if (contract === "animationPlanReview") {
+    const schemaResult = validateAnimationPlanReviewStrict(value);
+    if (!schemaResult.ok) {
+      throw new OutputContractError(
+        `animationPlanReview 结构校验失败：${schemaResult.diagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
         schemaResult.diagnostics
       );
     }
@@ -336,7 +358,8 @@ export function ensureOutputContract(value, contract) {
     themeVariants: ["variants"],
     fullStory: ["beatSheet", "sceneScript", "keyProps", "shootingPlan", "retentionPlan", "uncertainties"],
     animationPlan: ["characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "generationChecklist", "modelAgnosticNotes", "uncertainties"],
-    storyQualityReview: ["retentionChecks", "sceneFunctionChecks", "issues"]
+    storyQualityReview: ["retentionChecks", "sceneFunctionChecks", "issues"],
+    animationPlanReview: ["strengths", "dimensions", "shotEvaluations", "propTracking", "sceneCheck", "issues", "otherFindings", "upgradePath"]
   }[contract] || [];
   const wrongArrays = arrayFields.filter((key) => !Array.isArray(value[key]));
   if (wrongArrays.length) throw new OutputContractError(`${contract} 字段类型无效：${wrongArrays.join("、")} 必须是数组`);
