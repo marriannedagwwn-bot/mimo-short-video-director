@@ -200,6 +200,87 @@ export function ensureReviewReportContract(report, animationPlan) {
   return report;
 }
 
+// 一个条目（issue 或 upgrade）点名了哪几个镜头。
+//
+// 权威来源是结构化的 affectedPaths / evidencePaths——那是可唯一推导的。
+// 只有当这两个数组一个镜头都解析不出来时，才退回到正文里的镜头号：schema 允许
+// 这两个数组为空，此时条目**完全无法归属**，既不会进入净预算也不会出现在提示词的
+// 每镜预算行里，模型于是收不到任何约束提示。回退只在这种「否则彻底丢失」的情况下
+// 生效，不会给已经有结构化路径的条目额外加镜头，因此不会把正文里顺带提到的
+// 对照镜头误判成受影响镜头。
+function referencedShotIds(entry, shotIds, known) {
+  const out = new Set();
+  for (const key of ["affectedPaths", "evidencePaths"]) {
+    for (const path of Array.isArray(entry?.[key]) ? entry[key] : []) {
+      for (const id of shotIdsInPath(path, shotIds)) out.add(id);
+    }
+  }
+  if (out.size) return [...out];
+  for (const match of String(entry?.problem || "").matchAll(/A\d+/gu)) {
+    if (known.has(match[0])) out.add(match[0]);
+  }
+  return [...out];
+}
+
+/**
+ * 一组 issue / upgrade 一共点名了哪些镜头，按 shotPlan 顺序去重返回。
+ * 与净预算共用 referencedShotIds，所以「哪些镜头会被送去修订」与
+ * 「哪些镜头受净预算约束」用的是同一条解析规则。
+ *
+ * @param {object[]} entries 选中的 issue / upgrade
+ * @param {string[]} shotIds 当前 Plan 的 shotId 顺序
+ * @returns {string[]}
+ */
+export function revisionTargetShotIds(entries, shotIds) {
+  const known = new Set(shotIds);
+  const hit = new Set();
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    for (const id of referencedShotIds(entry, shotIds, known)) hit.add(id);
+  }
+  return shotIds.filter((id) => hit.has(id));
+}
+
+/**
+ * 逐镜净预算分类。**提示词与校验器共用这一份**——两边各算一次必然漂移，
+ * 结果就是模型被要求做 A、却按 B 被拒。
+ *
+ * 每个被点名的镜头得到两个清单：
+ *   - decrease：把这一镜判为 pacing / ai_risk 的 issue（要求减负）
+ *   - increase：其余 issue 与全部 upgrade（要求加内容）
+ *
+ * 两者同时非空就是**冲突镜头**：只准替换，不准净增。这个检测必须有——
+ * 实测事故正是同一镜同时收到「这镜太挤」与三条「往这镜加动作」，模型只执行了「加」，
+ * 结果 pacing 6.2、aiStability 5.8、physicalFeasibility 6.9 三项同时退化。
+ *
+ * `constrained` 恒等于 `decrease.length > 0`，是 ensureRevisionContract 的硬闸门依据。
+ *
+ * @param {object} report 终审报告
+ * @param {string[]} shotIds 当前 Plan 的 shotId 顺序，用于解析 0 基下标路径
+ * @returns {Map<string, {decrease: string[], increase: string[], constrained: boolean}>}
+ */
+export function revisionShotLoad(report, shotIds) {
+  const known = new Set(shotIds);
+  const load = new Map();
+  const entry = (id) => {
+    if (!load.has(id)) load.set(id, { decrease: [], increase: [], constrained: false });
+    return load.get(id);
+  };
+  for (const issue of Array.isArray(report?.issues) ? report.issues : []) {
+    const decreases = /pacing|ai_risk/u.test(String(issue?.category || ""));
+    for (const id of referencedShotIds(issue, shotIds, known)) {
+      const row = entry(id);
+      row[decreases ? "decrease" : "increase"].push(String(issue?.issueId || ""));
+      if (decreases) row.constrained = true;
+    }
+  }
+  for (const upgrade of Array.isArray(report?.upgradePath) ? report.upgradePath : []) {
+    for (const id of referencedShotIds(upgrade, shotIds, known)) {
+      entry(id).increase.push(String(upgrade?.upgradeId || ""));
+    }
+  }
+  return load;
+}
+
 /**
  * 校验定向修订结果。
  *
@@ -221,16 +302,12 @@ export function ensureRevisionContract(revision, animationPlan, report) {
   const known = new Set(shotIds);
   const details = [];
 
-  // 受约束镜头：被判过 pacing 或 ai_risk 的
-  const constrained = new Set();
-  for (const issue of Array.isArray(report?.issues) ? report.issues : []) {
-    if (!/pacing|ai_risk/u.test(String(issue?.category || ""))) continue;
-    for (const key of ["affectedPaths", "evidencePaths"]) {
-      for (const path of Array.isArray(issue?.[key]) ? issue[key] : []) {
-        for (const id of shotIdsInPath(path, shotIds)) constrained.add(id);
-      }
-    }
-  }
+  // 受约束镜头：被判过 pacing 或 ai_risk 的。判定与提示词里的每镜预算行
+  // **共用 revisionShotLoad**——两边各算一次会让模型被要求做 A 却按 B 被拒。
+  const load = revisionShotLoad(report, shotIds);
+  const constrained = new Set(
+    [...load].filter(([, row]) => row.constrained).map(([id]) => id)
+  );
 
   // 服务端签发字段：修订结果里出现即拒绝，防止模型改时长或场次归属
   const SEALED = ["shotId", "sourceSceneId", "sceneId", "durationSeconds", "storyPurpose", "emotionalTarget"];

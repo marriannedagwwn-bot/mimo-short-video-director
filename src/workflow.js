@@ -1,8 +1,14 @@
-import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
-import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockAnimationPlanReview, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
+import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { compileCharacterFeatures } from "./character-feature-compiler.js";
-import { ensureReviewReportContract } from "./animation-plan-review-validation.js";
+import {
+  ReviewContractError,
+  ensureReviewReportContract,
+  ensureRevisionContract,
+  revisionShotLoad,
+  revisionTargetShotIds
+} from "./animation-plan-review-validation.js";
 import { AttemptStore } from "./attempt-store.js";
 import {
   fullStoryPartialRepairPrompt,
@@ -41,7 +47,7 @@ import { randomUUID } from "node:crypto";
 import { ModelCallCoordinator, classifyAttemptError } from "./model-call-coordinator.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanDirectShotContract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
   deriveStoryCandidateProjections,
   deriveFullStoryTargetDuration,
   ensureStoryQualityReviewCoversStory
@@ -423,6 +429,159 @@ export class WorkflowService {
     });
   }
 
+  /**
+   * 定向修订。按终审报告只改被点名的那几个镜头，**不签发任何东西**：
+   * 返回合并后的候选 Plan 供页面预览，用户确认后才由浏览器走既有的 Plan revision
+   * 签发流程。把「作废该变体全部已生成媒体」这个重代价推迟到确认那一刻——
+   * 实测修订第一次输出常常要被打回，自动签发会造成大量无谓的 revision 与媒体作废。
+   *
+   * **只发分镜，不发 fullStory**：问题已由终审定位，再给剧情只会让模型顺手重编故事。
+   *
+   * 预算两次 provider 调用。**第一次被拦是常规路径不是异常路径**：事前用提示词约束
+   * 「不许往挤的镜头加动作」三次加码全部无效（模型改口称「并入原有动作链，不增加
+   * 独立动作段」），因为「一个动作」没有客观定义，判定权在模型手里就永远有解释空间。
+   * 解法是要求显式台账 removedActions / addedActions、服务端只数长度；实测两个模型
+   * 第一次都被拦（删 2 加 7 / 删 2 加 4），带算术诊断重试后都一次通过，且结果更好。
+   */
+  async createAnimationPlanRevision(input) {
+    requireObject(input, "请求");
+    const animationPlan = requireObject(input.animationPlan, "animationPlan");
+    const report = requireObject(input.report, "report");
+    ensureOutputContract(animationPlan, "animationPlan");
+    // 修订的可写字段就是 direct_shot 的那七个；旧 v2 首尾帧 Plan 的字段完全不同，
+    // 不得借这条路径改写，明确失败而不是静默按 direct_shot 处理。
+    if (animationPlan.promptSchemaVersion !== ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
+      throw new InputError(
+        `定向修订只支持 direct_shot Plan（promptSchemaVersion ${ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION}）`
+      );
+    }
+    // 报告必须是**这一份 Plan** 的报告：ensureReviewReportContract 逐位核对三张覆盖表，
+    // 拿另一份 Plan 的报告来修订会当场失败，不会静默按 shotId 对齐。
+    //
+    // 这里的 report 是**请求输入**，不是本阶段的模型输出——与终审阶段正相反。
+    // ReviewContractError 不在 serializeServerError 的分支表里，原样上抛会变成
+    // 500「服务器内部错误」，用户看不出是自己传了不匹配的报告。转成 InputError 才是
+    // 如实的归属：错在客户端，400，并带上校验器数出来的具体不一致。
+    try {
+      ensureReviewReportContract(ensureOutputContract(report, "animationPlanReview"), animationPlan);
+    } catch (error) {
+      const contractFailure = error instanceof ReviewContractError || error instanceof OutputContractError;
+      if (!contractFailure) throw error;
+      const inputError = new InputError(`report 不是这份 animationPlan 的合法终审报告：${error.message}`);
+      inputError.details = error.details;
+      throw inputError;
+    }
+
+    const shotIds = animationPlan.shotPlan.map((shot) => String(shot?.shotId || ""));
+    const load = revisionShotLoad(report, shotIds);
+    const selection = resolveAnimationPlanRevisionSelection(input, report, shotIds);
+    const finalize = (revision) => this.finalizeAnimationPlanRevision({
+      revision,
+      animationPlan,
+      report,
+      targetShotIds: selection.targetShotIds
+    });
+
+    if (!this.hasLiveClient) {
+      const outcome = finalize(mockAnimationPlanRevision(animationPlan, report, selection.targetShotIds));
+      return { ...outcome, metadata: revisionMetadata({ provider: "demo", model: "demo" }) };
+    }
+
+    const settings = this.resolveStage("animationPlanRevision", input);
+    this.assertStageClient(settings, stageLabel("animationPlanRevision"));
+
+    // 第一次被拦时留下的状态：候选、诊断、要重做的镜头。
+    let rejected = null;
+    // 实数调用次数。不能用 rejected 推断——第一次是传输失败时它仍是 null，
+    // 但供应商确实被调用了两次，少报就等于把花掉的钱藏起来。
+    let providerCalls = 0;
+    const outcome = await this.modelCallCoordinator.runJson({
+      client: settings.client,
+      request: {
+        prompt: animationPlanRevisionPrompt({
+          animationPlan,
+          report,
+          issues: selection.issues,
+          upgrades: selection.upgrades,
+          load,
+          targetShotIds: selection.targetShotIds
+        }),
+        model: settings.model,
+        maxCompletionTokens: settings.maxCompletionTokens,
+        requestTimeoutMs: settings.requestTimeoutMs
+      },
+      provider: settings.provider || "",
+      stage: "animationPlanRevision",
+      maxProviderCalls: 2,
+      attemptObserver: () => { providerCalls += 1; },
+      retryTokenLimit,
+      // 传输中断也在这 2 次预算内重试（实测失败率约三分之一，其中一类是几秒就断、
+      // 一个 token 都没烧）。没有候选可修时重发原提示词，不发重试提示词。
+      retryPrompt: ({ originalPrompt }) => (rejected
+        ? animationPlanRevisionRepairPrompt({
+          animationPlan,
+          previousRevision: rejected.candidate,
+          details: rejected.details,
+          blockedShotIds: rejected.blockedShotIds,
+          load
+        })
+        : originalPrompt),
+      validate: (candidate) => {
+        const isRepair = rejected !== null;
+        const revision = isRepair
+          ? mergeRevisionAttempts(rejected.candidate, candidate)
+          : candidate;
+        try {
+          return finalize(revision);
+        } catch (error) {
+          if (!(error instanceof ReviewContractError)) throw error;
+          if (!isRepair) {
+            rejected = {
+              candidate,
+              details: error.details,
+              blockedShotIds: blockedRevisionShotIds(
+                error.details, candidate, shotIds, selection.targetShotIds
+              )
+            };
+          }
+          // ReviewContractError 不在 classifyAttemptError 的分支里，会落到
+          // 「internal / retryable: false」的兜底，让本该重试的内容错误无法重试。
+          // 转成 OutputContractError 才能被判为可重试的 output-contract，
+          // 并把结构化 details 带进 diagnostics 供重试提示词使用。
+          throw revisionContractAsOutputContract(error);
+        }
+      }
+    });
+
+    return {
+      ...outcome,
+      metadata: revisionMetadata({
+        provider: settings.provider || "",
+        model: settings.model || "",
+        providerCalls,
+        firstAttemptRejection: rejected
+          ? { details: rejected.details, redoneShotIds: rejected.blockedShotIds }
+          : null
+      })
+    };
+  }
+
+  /**
+   * 合并并从头复验。修订结果本身过 ensureRevisionContract，合并后的整份 Plan 再过
+   * direct_shot 契约与背景音乐收尾句——**采纳时签发的是这份合并结果**，所以它必须
+   * 在这里就通过成片渲染前的确定性闸门（尤其是台词必须逐字出现在 videoPrompt），
+   * 而不是等到用户点了采纳、媒体已经作废之后才失败。
+   */
+  finalizeAnimationPlanRevision({ revision, animationPlan, report, targetShotIds }) {
+    assertRevisionStaysInScope(revision, targetShotIds);
+    ensureRevisionContract(revision, animationPlan, report);
+    const merged = mergeAnimationPlanRevision(animationPlan, revision);
+    assertOnlyRevisionFieldsChanged(animationPlan, merged);
+    ensureAnimationPlanDirectShotContract(merged, { path: "animationPlan" });
+    validateSeedanceBackgroundMusicSentence(merged, merged, 0);
+    return { animationPlan: merged, revision };
+  }
+
   async createVariants(input) {
     requireObject(input, "请求");
     requireObject(input.creativeBrief, "creativeBrief");
@@ -641,13 +800,14 @@ export class WorkflowService {
       client: settings.client,
       model: settings.model,
       maxCompletionTokens: settings.maxCompletionTokens,
+      requestTimeoutMs: settings.requestTimeoutMs,
       stage,
       provider: settings.provider || "",
       modelOutputLogWriter: this.stageModelOutputLogWriters?.get(stage) || null
     });
   }
 
-  async generateValidatedJson({ client = this.client, prompt, systemPrompt = null, model = null, maxCompletionTokens = null, frames = [], video = null, validate, retryContext = null, onResolvedMediaMode = null, stage = "", provider = "", modelOutputLogWriter = null }) {
+  async generateValidatedJson({ client = this.client, prompt, systemPrompt = null, model = null, maxCompletionTokens = null, requestTimeoutMs = null, frames = [], video = null, validate, retryContext = null, onResolvedMediaMode = null, stage = "", provider = "", modelOutputLogWriter = null }) {
     // 纯观测 sidecar：只收集本次的模型原文，不改重试预算、控制流与任何错误语义。
     const recorder = stageModelOutputRecorder(modelOutputLogWriter, { stage, provider, model });
     const request = {
@@ -655,6 +815,12 @@ export class WorkflowService {
       systemPrompt,
       model,
       maxCompletionTokens,
+      // 按阶段放宽的 timeout 必须真的送到 client。三家 client 的 generateJson 都收这个
+      // 参数，但在此之前没有任何阶段把 resolveStage 解析出来的值传下来，于是
+      // animationPlanReview 配的 1800000 完全没有生效，仍按全局 900000 被掐——
+      // 实测该阶段正常出字最长 941 秒，正落在被掐的区间里。
+      // 其余阶段的默认值是 null，传 null 与不传逐字等价，行为不变。
+      requestTimeoutMs,
       onResolvedMediaMode,
       jsonRetryAttempts: 0,
       strictJson: true,
@@ -2486,6 +2652,182 @@ function validateSeedanceBackgroundMusicSentence(batch, foundation, shotIndexOff
   });
 }
 
+// 定向修订里模型唯一可写的七个字段。与 ensureRevisionContract 的 WRITABLE 一致，
+// 合并按这份清单逐字段覆盖——服务端签发的六个字段因此**由构造保证**不可能被改动。
+const ANIMATION_PLAN_REVISION_WRITABLE_FIELDS = Object.freeze([
+  "videoPrompt", "cameraMotion", "characterAction", "dialogueOrSubtitle",
+  "soundDesign", "continuityNotes", "acceptanceCriteria"
+]);
+
+// 本次要改哪些问题与建议。默认用报告自己排的优先级；报告没排就全取。
+// 请求点名了不存在的 id 一律明确失败——静默忽略会让用户以为改了、实际没改。
+function resolveAnimationPlanRevisionSelection(input, report, shotIds) {
+  const allIssues = Array.isArray(report?.issues) ? report.issues : [];
+  const allUpgrades = Array.isArray(report?.upgradePath) ? report.upgradePath : [];
+  const brief = report?.revisionBrief || {};
+  const pick = (requested, fallback, pool, key, label) => {
+    if (requested !== undefined && requested !== null) {
+      if (!Array.isArray(requested)) throw new InputError(`${label} 必须是数组`);
+      const wanted = requested.map((id) => String(id || "").trim()).filter(Boolean);
+      const known = new Set(pool.map((item) => String(item?.[key] || "")));
+      const unknown = wanted.filter((id) => !known.has(id));
+      if (unknown.length) throw new InputError(`${label} 引用了报告里不存在的条目：${unknown.join("、")}`);
+      return pool.filter((item) => wanted.includes(String(item?.[key] || "")));
+    }
+    const defaults = (Array.isArray(fallback) ? fallback : []).map((id) => String(id || ""));
+    if (!defaults.length) return null;
+    return pool.filter((item) => defaults.includes(String(item?.[key] || "")));
+  };
+  let issues = pick(input.selectedIssueIds, brief.priorityIssueIds, allIssues, "issueId", "selectedIssueIds");
+  let upgrades = pick(input.selectedUpgradeIds, brief.priorityUpgradeIds, allUpgrades, "upgradeId", "selectedUpgradeIds");
+  // 报告没给优先级、请求也没点名时才全取；只要任意一侧有明确选择就不再自动扩大范围。
+  if (issues === null && upgrades === null) {
+    issues = allIssues;
+    upgrades = allUpgrades;
+  }
+  issues = issues || [];
+  upgrades = upgrades || [];
+  if (!issues.length && !upgrades.length) {
+    throw new InputError("本次修订没有选中任何问题或升级建议");
+  }
+  const targetShotIds = revisionTargetShotIds([...issues, ...upgrades], shotIds);
+  if (!targetShotIds.length) {
+    throw new InputError("选中的问题与升级建议没有指向任何存在的镜头，无法定向修订");
+  }
+  return { issues, upgrades, targetShotIds };
+}
+
+// 模型只被授权改本次点名的镜头。返回了范围外的镜头就是自行扩大写入范围，
+// 必须明确失败——那不是「顺手多改了一点」，是越权写入未经评审的镜头。
+function assertRevisionStaysInScope(revision, targetShotIds) {
+  const rows = Array.isArray(revision?.revisedShots) ? revision.revisedShots : [];
+  const allowed = new Set(targetShotIds);
+  const outside = rows
+    .map((row) => String(row?.shotId || ""))
+    .filter((id) => id && !allowed.has(id));
+  if (!outside.length) return revision;
+  throw new ReviewContractError(
+    `定向修订越界：本次只授权修改 ${targetShotIds.join("、")}，但结果包含 ${outside.join("、")}`,
+    outside.map((id) => ({
+      code: "REVISION_SHOT_OUT_OF_SCOPE",
+      path: `/revisedShots/${rows.findIndex((row) => String(row?.shotId || "") === id)}/shotId`,
+      reason: `${id} 不在本次授权修改的镜头内，只能修改 ${targetShotIds.join("、")}`
+    }))
+  );
+}
+
+// 只按可写字段逐个覆盖。不做整对象替换：那会让模型漏写的键消失、多写的键混进 Plan。
+function mergeAnimationPlanRevision(animationPlan, revision) {
+  const byId = new Map(
+    (Array.isArray(revision?.revisedShots) ? revision.revisedShots : [])
+      .map((row) => [String(row?.shotId || ""), row])
+  );
+  return {
+    ...structuredClone(animationPlan),
+    shotPlan: animationPlan.shotPlan.map((shot) => {
+      const row = byId.get(String(shot?.shotId || ""));
+      const merged = structuredClone(shot);
+      if (!row) return merged;
+      for (const field of ANIMATION_PLAN_REVISION_WRITABLE_FIELDS) {
+        if (row[field] !== undefined) merged[field] = structuredClone(row[field]);
+      }
+      return merged;
+    })
+  };
+}
+
+// 证明可写字段之外逐字节不变。合并由构造保证这一点，但 CLAUDE.md 第三节要求
+// 有界纠错必须**证明**目标之外没被改动，而不是相信构造。
+function assertOnlyRevisionFieldsChanged(sourcePlan, mergedPlan) {
+  const strip = (plan) => ({
+    ...plan,
+    shotPlan: plan.shotPlan.map((shot) => {
+      const rest = { ...shot };
+      for (const field of ANIMATION_PLAN_REVISION_WRITABLE_FIELDS) delete rest[field];
+      return rest;
+    })
+  });
+  if (JSON.stringify(strip(sourcePlan)) !== JSON.stringify(strip(mergedPlan))) {
+    throw new OutputContractError("定向修订改动了可写字段之外的内容，已拒绝合并");
+  }
+  const sourceKeys = sourcePlan.shotPlan.map((shot) => Object.keys(shot).sort().join(","));
+  const mergedKeys = mergedPlan.shotPlan.map((shot) => Object.keys(shot).sort().join(","));
+  if (JSON.stringify(sourceKeys) !== JSON.stringify(mergedKeys)) {
+    throw new OutputContractError("定向修订增删了镜头字段，已拒绝合并");
+  }
+  return mergedPlan;
+}
+
+// 重试只重做被拦的镜头，其余沿用上一次的输出：省 token，也避免动到已经通过的部分。
+function mergeRevisionAttempts(previousRevision, retryRevision) {
+  const rows = new Map(
+    (Array.isArray(previousRevision?.revisedShots) ? previousRevision.revisedShots : [])
+      .map((row) => [String(row?.shotId || ""), row])
+  );
+  for (const row of Array.isArray(retryRevision?.revisedShots) ? retryRevision.revisedShots : []) {
+    rows.set(String(row?.shotId || ""), row);
+  }
+  return { revisedShots: [...rows.values()] };
+}
+
+// 从结构化诊断里解析出要重做的镜头。三条路径都试：修订结果下标、正文里的镜头号、
+// 合并后 Plan 的 shotPlan 下标。一个都解析不出来时重做全部目标镜头——
+// 宁可多发一点上下文，也不能靠猜某个镜头没问题而把它排除在外。
+//
+// 结果**必须收敛到本次授权的镜头内**：越界诊断（REVISION_SHOT_OUT_OF_SCOPE）点名的
+// 恰恰是不该改的那些镜头，原样带进重试提示词等于把它们的原文发过去、请模型接着改。
+function blockedRevisionShotIds(details, candidate, shotIds, targetShotIds) {
+  const allowed = new Set(targetShotIds);
+  const resolved = resolveBlockedShotIds(details, candidate, shotIds).filter((id) => allowed.has(id));
+  return resolved.length ? resolved : [...targetShotIds];
+}
+
+function resolveBlockedShotIds(details, candidate, shotIds) {
+  const rows = Array.isArray(candidate?.revisedShots) ? candidate.revisedShots : [];
+  const known = new Set(shotIds);
+  const hit = new Set();
+  for (const detail of Array.isArray(details) ? details : []) {
+    const text = `${detail?.path || ""} ${detail?.reason || ""}`;
+    const revised = /\/revisedShots\/(\d+)/u.exec(String(detail?.path || ""));
+    if (revised) {
+      const id = String(rows[Number(revised[1])]?.shotId || "");
+      if (known.has(id)) hit.add(id);
+    }
+    const planIndex = /shotPlan\[(\d+)\]/u.exec(text);
+    if (planIndex && shotIds[Number(planIndex[1])]) hit.add(shotIds[Number(planIndex[1])]);
+    for (const match of text.matchAll(/A\d+/gu)) {
+      if (known.has(match[0])) hit.add(match[0]);
+    }
+  }
+  return shotIds.filter((id) => hit.has(id));
+}
+
+// ReviewContractError 不在 classifyAttemptError 的分支表里，会落到
+// 「internal / retryable: false」的兜底，把本该重试一次的内容错误变成不可重试。
+// 转成 OutputContractError 后被判为 output-contract、retryable，details 进 diagnostics。
+function revisionContractAsOutputContract(error) {
+  const wrapped = new OutputContractError(error.message, error.details);
+  wrapped.code = error.code;
+  return wrapped;
+}
+
+function revisionMetadata({
+  provider = "",
+  model = "",
+  providerCalls = 1,
+  firstAttemptRejection = null
+} = {}) {
+  return {
+    animationPlanRevision: {
+      provider,
+      model,
+      providerCalls,
+      // 服务端拦过一次就必须说出来，不能让用户以为模型一次就写对了。
+      firstAttemptRejection
+    }
+  };
+}
+
 function resolveExplicitAnimationPrimaryCharacterName(input = {}, foundation = {}, {
   path = "animationFoundation"
 } = {}) {
@@ -3247,7 +3589,8 @@ function stageLabel(stage) {
     animationPlan: "动画镜头生产包",
     staticFrameCompiler: "Static Frame Compiler",
     characterReference: "人物参考修正",
-    animationPlanReview: "分镜终审"
+    animationPlanReview: "分镜终审",
+    animationPlanRevision: "分镜修订"
   })[stage] || stage;
 }
 

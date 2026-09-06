@@ -2247,10 +2247,183 @@ async function runAnimationPlanReview(animationPlan, button) {
   body.innerHTML = `<p class="story-review-status">正在逐镜、逐道具、逐场景核对，这一步比较慢，通常十分钟以上…</p>`;
   try {
     const review = await api("/api/animation-plan-review", { animationPlan, fullStory });
-    body.innerHTML = renderAnimationPlanReview(review);
+    body.innerHTML = renderAnimationPlanReview(review) + renderRevisionLauncher(review);
+    bindAnimationPlanRevision(body, animationPlan, review);
   } catch (error) {
     body.innerHTML = `<p class="story-review-status error">${escape(error?.message || "终审失败")}</p>`;
   } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+// 修订结果按 variant 隔离，与终审报告同规格：只在页面上活着，刷新即失，
+// 不进 Artifact、不进 lineage。真正签发只发生在用户点「采纳」的那一刻。
+const animationPlanRevisions = new Map();
+
+// 模型唯一可写的七个字段，与服务端的 ANIMATION_PLAN_REVISION_WRITABLE_FIELDS 对应。
+// 这里只用于把「改了什么」展示出来，不参与任何判定。
+const REVISION_DIFF_FIELDS = [
+  ["videoPrompt", "视频提示词"],
+  ["characterAction", "动作"],
+  ["cameraMotion", "镜头运动"],
+  ["dialogueOrSubtitle", "对白/字幕"],
+  ["soundDesign", "声音"],
+  ["continuityNotes", "连续性备注"],
+  ["acceptanceCriteria", "验收标准"]
+];
+
+function renderRevisionLauncher(review) {
+  const count = (review.issues || []).length + (review.upgradePath || []).length;
+  if (!count) return "";
+  return `
+    <div class="plan-revision" data-plan-revision>
+      <button type="button" class="outline-button" data-run-plan-revision>按报告修订这 ${count} 条</button>
+      <span class="story-review-hint">只改被点名的镜头。结果先给你看，确认后才签发新 Plan 版本。</span>
+      <div class="plan-revision-body" data-plan-revision-body></div>
+    </div>`;
+}
+
+function revisionFieldValue(value) {
+  return Array.isArray(value) ? value.join(" / ") : String(value ?? "");
+}
+
+// 前后对照。逐字未变的字段不显示——把没改的东西也并排列出来，真正的改动就淹了。
+function renderRevisionShotDiff(sourceShot, row) {
+  const changed = REVISION_DIFF_FIELDS
+    .filter(([field]) => row[field] !== undefined
+      && revisionFieldValue(row[field]) !== revisionFieldValue(sourceShot?.[field]))
+    .map(([field, label]) => `
+      <div class="revision-field">
+        <span class="prompt-label">${escape(label)}</span>
+        <p class="revision-before">${escape(revisionFieldValue(sourceShot?.[field]))}</p>
+        <p class="revision-after">${escape(revisionFieldValue(row[field]))}</p>
+      </div>`).join("");
+  const ledger = (items, label, tone) => (items || []).length
+    ? `<div class="revision-ledger ${tone}"><b>${label} ${items.length}</b>${
+      items.map((item) => `<span class="tag">${escape(item)}</span>`).join("")}</div>`
+    : "";
+  return `
+    <div class="revision-shot">
+      <div class="review-check-head">
+        <span class="scene-id">${escape(row.shotId)}</span>
+        <span class="revision-summary">${escape(row.changeSummary || "")}</span>
+      </div>
+      ${ledger(row.removedActions, "删除动作", "removed")}
+      ${ledger(row.addedActions, "新增动作", "added")}
+      ${changed || `<p class="story-review-status">本镜没有实际改动。</p>`}
+    </div>`;
+}
+
+function renderRevisionPreview(entry) {
+  const shots = entry.sourcePlan.shotPlan || [];
+  const byId = new Map(shots.map((shot) => [String(shot.shotId), shot]));
+  const rejection = entry.metadata?.animationPlanRevision?.firstAttemptRejection;
+  return `
+    <p class="story-review-status">
+      模型改了 ${entry.revision.revisedShots.length} 个镜头。
+      <b>现在还没有签发</b>——Plan 与已生成的媒体都没有任何变化。
+      ${rejection
+        ? `第一次输出被服务端的净预算校验拦下（${escape(rejection.redoneShotIds.join("、"))} 已按诊断重做一次）。`
+        : ""}
+    </p>
+    ${entry.revision.revisedShots
+      .map((row) => renderRevisionShotDiff(byId.get(String(row.shotId)), row)).join("")}
+    <p class="story-review-status">
+      执行者有没有写反（「甲替乙」被写成「乙替甲」）<b>没有确定性校验兜底</b>，只能在这里人工看一眼。
+    </p>
+    <div class="shot-action-row">
+      <button type="button" class="outline-button" data-adopt-plan-revision>采纳并签发新 Plan 版本</button>
+      <button type="button" class="outline-button" data-discard-plan-revision>放弃</button>
+    </div>
+    <p class="story-review-foot">
+      采纳会签发新的 Plan revision 与新的媒体命名空间，并把该变体已生成的全部图片与视频标记为 stale（需要重做）。
+    </p>`;
+}
+
+function bindAnimationPlanRevision(body, animationPlan, review) {
+  const run = body.querySelector("[data-run-plan-revision]");
+  if (run) run.addEventListener("click", () => runAnimationPlanRevision(animationPlan, review, run));
+}
+
+// 定向修订：只改终审点名的镜头。**返回后不写回 Plan**——先预览，用户确认才签发。
+// 这样把「作废该变体全部已生成媒体」的重代价推迟到确认那一刻。
+async function runAnimationPlanRevision(animationPlan, review, button) {
+  const host = elements.animationPlan.querySelector("[data-plan-revision-body]");
+  if (!host || button.disabled) return;
+  const variant = selectedVariant();
+  if (!variant) {
+    host.innerHTML = `<p class="story-review-status error">没有选中的主题变体，无法修订。</p>`;
+    return;
+  }
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "修订中…";
+  host.innerHTML = `<p class="story-review-status">正在按报告改写被点名的镜头，这一步也比较慢，通常几分钟到十几分钟…</p>`;
+  try {
+    const outcome = await api("/api/animation-plan-revision", { animationPlan, report: review });
+    const entry = { ...outcome, sourcePlan: animationPlan, variantId: variant.id };
+    animationPlanRevisions.set(variant.id, entry);
+    host.innerHTML = renderRevisionPreview(entry);
+    const adopt = host.querySelector("[data-adopt-plan-revision]");
+    const discard = host.querySelector("[data-discard-plan-revision]");
+    if (adopt) adopt.addEventListener("click", () => adoptAnimationPlanRevision(variant.id, adopt));
+    if (discard) {
+      discard.addEventListener("click", () => {
+        animationPlanRevisions.delete(variant.id);
+        host.innerHTML = `<p class="story-review-status">已放弃这次修订，Plan 未改动。</p>`;
+      });
+    }
+  } catch (error) {
+    host.innerHTML = `<p class="story-review-status error">${escape(error?.message || "修订失败")}</p>`;
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+// 采纳：这才是唯一签发新 Plan revision 的地方。
+async function adoptAnimationPlanRevision(variantId, button) {
+  const entry = animationPlanRevisions.get(variantId);
+  if (!entry || button.disabled) return;
+  const variant = selectedVariant();
+  const plan = variant ? state.animationPlans[variant.id] : null;
+  if (!variant || variant.id !== variantId || !plan) {
+    setAnimationStatus("当前选中的主题已经变了，这次修订不再适用。", "error");
+    return;
+  }
+  // 修订是针对**当时那一份 Plan** 算出来的。中途 Plan 被重新生成或改过，
+  // 就必须重做修订，不能把基于旧内容的改写盖到新 Plan 上。
+  if (JSON.stringify(plan) !== JSON.stringify(entry.sourcePlan)) {
+    animationPlanRevisions.delete(variantId);
+    setAnimationStatus("Animation Plan 在修订期间已经变化，这次修订结果已作废，请重新终审并修订。", "error");
+    return;
+  }
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "签发中…";
+  setAnimationStatus("正在签发修订后的 Plan revision…", "active");
+  try {
+    await commitProductionArtifact({
+      artifactId: animationPlanArtifactId(variant.id),
+      artifactType: "animationPlan",
+      content: entry.animationPlan,
+      dependencyRefs: currentPlanDependencyRefs(variant.id),
+      createMediaNamespace: true
+    });
+    assertSelectedVariant(variant.id);
+    state.animationPlans[variant.id] = entry.animationPlan;
+    state.output.animationPlans = state.animationPlans;
+    state.output.animationPlan = entry.animationPlan;
+    animationPlanRevisions.delete(variantId);
+    renderAnimationPlan(entry.animationPlan);
+    setAnimationStatus(
+      `修订已采纳：${entry.revision.revisedShots.length} 个镜头已更新，已签发新 Plan revision，旧媒体已标记 stale。`,
+      "ready"
+    );
+    updateStoryExportActions();
+  } catch (error) {
+    setAnimationStatus(error.message || "修订签发失败；原 Animation Plan 保持不变。", "error");
     button.disabled = false;
     button.textContent = original;
   }

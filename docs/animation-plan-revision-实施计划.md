@@ -1,6 +1,6 @@
 # 落地第 2 步：定向修订阶段
 
-**状态：待实施。** 第 1 步（评审阶段）已完成并提交（`17d6a9c`）。
+**状态：已实施（2026-09-06）。** 第 1 步（评审阶段）已提交（`17d6a9c`），本步已按本文件落地，完成记录见文末。
 
 本文件是自包含的——执行时不需要参考任何会话记录，所有实测依据、提示词正文与陷阱都写在里面。
 
@@ -259,3 +259,83 @@ removedActions 只能列**原镜头里真实存在**的动作，不能编造一�
 - 不做第三次重试（两次 provider 调用是上限）
 - 不动全局 timeout 默认值
 - 不给评分设放行门槛
+
+---
+
+## 完成记录（2026-09-06）
+
+按本文件实施完毕。计划与落地的差异、以及实施中发现的既有缺陷都记在这里。
+
+### 落地清单
+
+| 计划条目 | 落点 |
+|---|---|
+| 修订提示词存成资源文件 | `src/animation-plan-revision-prompt.md`、`src/animation-plan-revision-repair-prompt.md` |
+| 净预算计算 | `revisionShotLoad()` / `revisionTargetShotIds()`（`src/animation-plan-review-validation.js`） |
+| 重试流程（2 次预算） | `WorkflowService.createAnimationPlanRevision`，走 `modelCallCoordinator.runJson` |
+| Stage 与端点 | `POST /api/animation-plan-revision`、`buildStageDefaults.animationPlanRevision`（timeout 1800000）、`stageLabel` |
+| mock | `mockAnimationPlanRevision`（逐字回显，不伪造改动） |
+| 先预览后签发 | `runAnimationPlanRevision` / `adoptAnimationPlanRevision`（`public/app.js`） |
+| 测试 | `test/animation-plan-revision.test.js`，20 条 |
+
+### 与计划不同的四处（都有理由）
+
+**① 净预算判定做成两个消费者共用的一份函数。** 计划里提示词那段 `load` 与校验器里的 `constrained`
+是两处独立代码。两边各算一次必然漂移，结果就是模型被要求做 A、却按 B 被拒。
+现在 `ensureRevisionContract` 的硬闸门与提示词的每镜预算行都读 `revisionShotLoad()` 的同一个结果。
+
+**② `problem` 正文里的镜头号只作回退，不无条件计入。** 计划写「另外 problem 正文里点名的 A\d{2}
+也要计入」，但那会把「A05 相比之下节奏正常」这种对照提及误判成受影响镜头。
+schema 允许 `affectedPaths` / `evidencePaths` 为空，此时条目**彻底无法归属**——
+回退只在这种否则就完全丢失的情况下生效。
+
+**③ 服务端返回合并后的整份 Plan，不只是 `revisedShots`。** 否则「采纳」时要么在浏览器里重写一遍合并与
+校验（第二份判定），要么签发一份从未通过 `ensureAnimationPlanDirectShotContract` 的 Plan。
+现在合并与复验都在服务端做完，浏览器拿到的候选 Plan 已经通过成片渲染前的确定性闸门
+（尤其是台词必须逐字出现在 `videoPrompt`、关闭背景音乐时的收尾句）。
+
+**④ 多加了一条越界闸门。** 模型返回本次未授权的镜头时抛 `REVISION_SHOT_OUT_OF_SCOPE`。
+计划没写这条，但「只改被点名的镜头」是这个阶段的定义，多改就是越权写入未经评审的镜头。
+
+### 实施中发现的既有缺陷（本次一并修掉）
+
+**按阶段配置的 `requestTimeoutMs` 从来没有生效过。** `resolveStage` 一直解析它，三家 client 的
+`generateJson` 也一直接收它，但 `generateStageJson` → `generateValidatedJson` 之间**没有传**。
+于是第 1 步给终审配的 `1800000` 完全是死配置，该阶段仍按全局 900000 被掐——
+而终审实测正常出字最长 941 秒，正落在被掐的区间里，`17d6a9c` 提交信息里描述的那次失败其实没有被修复。
+现已接通。其余阶段该值为 `null`，传 `null` 与不传逐字等价，行为不变；全局默认值未动。
+
+**入站 `report` 校验失败原本会变成 500。** `ReviewContractError` 不在 `serializeServerError` 的分支表里。
+终审阶段的 report 是模型输出（502 合理），但修订阶段的 report 是**请求输入**——
+原样上抛会让用户看到「服务器内部错误」，完全不知道是自己传了不匹配的报告。
+现转成 `InputError`（400）并带上校验器数出来的具体不一致。
+`animationPlan` 入参仍与终审端点保持一致的 502 行为，不在本步改。
+
+### 验证结果
+
+1. `npm test`（`--test-concurrency=1` 串行）：**1051 → 1071 条，新增 20 条全部通过**
+   （改动前基线用 `git stash` 在同一台机器上实测：1051 / pass 1047 / fail 4；改动后 pass 1067 / fail 4，
+   失败的是**完全相同的那 4 条**）。
+   **既有失败与本项无关，改动前后是同一批**：3 条 Windows 文件权限位断言
+   （实测 438 = `0o666`，断言期望 `0o600` / `0o700`）、1 条 `build identity` 读 HEAD。
+   另有 durable-task 时序 flaky（`waitUntil timeout`）：并发跑出现 2 条，串行跑降到 1 条。
+2. **真实生产包 demo 端到端**：8 镜的《雨天的流浪猫窝》+ 真实终审报告（6 issues / 5 upgrades），
+   端点正确解析出 7 个目标镜头并返回合并 Plan。
+3. **端点错误语义**：旧 v2 Plan → 400；空报告 → 400；真实报告配少一镜的 Plan → 400
+   并逐条列出「shotEvaluations 条数 8 与 shotPlan 的 7 不一致」「引用了不存在的镜头 A08」。
+4. **本步最重要的一条**（计划第 4 条验证）：对 `runtime/production-runs` 做全目录 SHA-256 快照，
+   **调用修订端点前后 192 个文件的哈希一个都没变**；随后在浏览器里点「采纳」，
+   才出现且**只**出现 2 处变化——新签发的 `animationPlan-V1-r2.json` 与更新后的 `manifest.json`。
+5. **浏览器端到端**：demo 实例导入生产包 → 终审（打桩为真实报告，因为 demo mock 报告没有任何 issue）
+   → 修订 → 预览显示前后对照、删/加台账与「第一次被拦，已按诊断重做一次」的提示 → 采纳 → Plan 卡片更新。
+   「放弃」不改任何东西。
+6. 「不自动写回」这条范围决定已由两条源码不变量测试锁住：`runAnimationPlanRevision` 内不得出现
+   `commitProductionArtifact` / `requestProductionArtifact`；修订路由不得触碰 `resolveProductionMediaContext`。
+
+### 仍然没做（与计划的「明确不做」一致）
+
+- **换模型兜底两个阶段都还没有实现**。落地方案第 6 节已决定「评审允许换模型但必须在报告里写明」，
+  但第 1 步没做，本步也没做。不要按已实现推断。
+- 不自动写回 Plan、不让修订看到 `fullStory`、不做第三次重试、不动全局 timeout 默认值、不给评分设放行门槛。
+- 未受约束镜头仍可净增（已知口子，是否收紧为全局默认仍是未决的取舍）。
+- 执行者反转没有确定性兜底，只能靠人工在预览时看；界面上已明确写出这一句。

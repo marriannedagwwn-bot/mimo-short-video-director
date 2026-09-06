@@ -223,6 +223,96 @@ Full Story 生成之后的**独立验收，只出报告**：不修改剧情、�
 
 **评审模型的已知偏差**：默认沿用剧情阶段的 provider，也就是写这份剧情的那个模型，自己批自己会偏松（实测同一份剧情自评「AI 可执行性 8.0 / 物理可信度 8.0」，外部模型给 6.8 / 6.8）。本来要默认换一家，但同一批 10 份实测下来现有备选都不胜任：`mimo-v2.5-pro` 7/10 成功且太松（2/62 处 vs 千问 13/91 处），`deepseek-v4-flash` 5/10、反复产不出严格 JSON，`deepseek-v4-pro` 连接中断。一个查不出问题的评审比偏松的评审更没用，稳定性也是硬要求。**先用能干活的那个并如实记下偏差，不靠静默降级掩盖**；它是纯文本阶段（不在 `requiresMediaModel` 里），可按阶段 override 换任意一家。
 
+### 2.14 分镜终审与定向修订（animationPlanReview / animationPlanRevision，2026-09-06）
+
+Animation Plan 生成之后的两段式验收。与剧情体检同规格：**只出报告、只出候选，不签发任何 Artifact**，
+不进 lineage、不参与派生、不阻断后续生产；报告与修订结果都不落盘，刷新页面即失。
+
+它查的是现有校验器全都查不到的一类问题：**剧情声称的事，镜头里到底拍没拍。** 实测案例：
+剧情首句写「末班车的红色尾灯刚刚消失在路口转角」，而首镜 videoPrompt 从人物坐在长椅上开始、
+一帧车都没有——「末班车已走」只写进了 `continuityNotes`，那是给生成器的备注，不会被拍出来，
+全片赖以成立的悬念从未建立。评审必须**同时**收到 `fullStory` 与 `animationPlan`：没有对照物就发现不了这一类落差。
+
+**修订反过来只带分镜，不带 `fullStory`。** 问题已由终审定位，再给剧情只会让模型顺手重编故事。
+
+**评分不作放行门槛**：实测两个模型评同一份 Plan 总分只差 0.06，而单个维度能差 ±1.0，这个数字没有分辨力；
+有用的是 `dominantDefect`、`issues` 与 `upgradePath` 的具体内容。
+
+#### 净预算：把「算不算净增」的判定权从模型手里拿走
+
+**事前用提示词约束无效，三次加码全部失败**：写「注意不要太满」它照加；改成「不允许净增加」它照加，
+还在摘要里写「本镜只替换未净增」；补一句「不要自称只替换而实际增加」，它换个说法
+「这四个是细节，均并入原有动作链，不增加独立动作段」。根因是**「一个动作」没有客观定义**，
+判定权在模型手里就永远有解释空间。
+
+解法是要求模型显式列出 `removedActions[]` / `addedActions[]` 台账，**服务端只数数组长度**。
+被终审判为 `pacing` / `ai_risk` 的镜头必须 `removed >= added`，诊断码 `REVISION_NET_ACTION_BUDGET_EXCEEDED`。
+同一份输入两个模型都如实报了数（删 2 加 7 / 删 2 加 4）并被拦下；带算术诊断重试一次后两个都一次通过，
+而且结果更好——第一次加 7 个动作把镜头塞满，重试后只留下终审真正要求的那一个。
+
+**因此第一次被拦是常规路径，不是异常路径。** 预算固定 2 次 provider 调用，第二次仍被拦即 fail closed
+（保留原 Plan、把两次诊断如实报出），与第三节局部纠错的纪律一致。**禁止第三次重试。**
+
+判定只有一份：`revisionShotLoad()`（`src/animation-plan-review-validation.js`）同时供**提示词的每镜预算行**与
+**校验器的硬闸门**使用。两边各算一次必然漂移，结果就是模型被要求做 A、却按 B 被拒。
+同一镜同时被要求减负与加内容时它判为**冲突镜头（只准替换）**——上一轮事故正是这个形状：
+模型只执行了「加」，`pacing` 6.2、`aiStability` 5.8、`physicalFeasibility` 6.9 三项同时退化。
+条目的镜头归属只认结构化的 `affectedPaths` / `evidencePaths`；**仅当这两个数组一个镜头都解析不出来**
+（schema 允许它们为空、此时条目彻底无法归属）才回退到 `problem` 正文里的镜头号，
+不会把正文顺带提到的对照镜头误判成受影响镜头。
+
+#### 服务端独占合并，并从头复验
+
+模型只返回七个可写字段（`videoPrompt` / `cameraMotion` / `characterAction` / `dialogueOrSubtitle` /
+`soundDesign` / `continuityNotes` / `acceptanceCriteria`）。六个签发字段（`shotId`、`sourceSceneId`、
+`sceneId`、`durationSeconds`、`storyPurpose`、`emotionalTarget`）出现即拒绝；合并按可写字段逐个覆盖，
+所以签发字段**由构造保证**不可能被改动，并另有 `assertOnlyRevisionFieldsChanged` 证明可写字段之外逐字节不变。
+模型返回本次未授权的镜头即 `REVISION_SHOT_OUT_OF_SCOPE`——那不是「顺手多改了一点」，是越权写入未经评审的镜头。
+
+合并结果必须**在这里**就通过 `ensureAnimationPlanDirectShotContract` 与背景音乐收尾句校验，
+而不是等用户点了采纳、媒体已经作废之后才失败：采纳时签发的就是这份合并结果，
+台词必须逐字出现在 `videoPrompt` 那道闸门同样适用。
+
+只支持 direct_shot Plan。旧 v2 首尾帧 Plan 的字段完全不同，走这条路径明确失败，不得静默按 direct_shot 处理。
+
+#### 先预览，确认后才签发（已定的范围决定）
+
+修订返回后**不自动写回 Plan**：先并排展示原文与修订版、台账与 `changeSummary`，用户点「采纳」才签发新
+Plan revision 与新 media namespace 并递归 stale 该变体已生成的全部媒体。这把重代价推迟到确认那一刻——
+实测修订第一次输出常常要被打回，自动签发会造成大量无谓的 revision 与媒体作废。
+浏览器在采纳前复核 `sourcePlan` 与当前 Plan 是否仍逐字相同，不同就作废本次修订，绝不把基于旧内容的改写盖到新 Plan 上。
+
+#### 两条没有确定性兜底的约束
+
+**执行者反转**：建议写「甲替乙做某事」，模型会为了句子连贯调换主语写成「乙替甲」，方向一反建议就作废
+（实测发生过：升级建议要求长辈替主角别碎发，模型写成主角替长辈）。铁律第 3 条为此而设，
+但判断执行者对不对需要语义判断，**只能靠人工在预览时看**，界面上明确写了这一句。
+**未受约束镜头仍可净增**：净预算只约束被判过 `pacing` / `ai_risk` 的镜头，其余镜头净增 1 个动作段按现有规则是正确行为。
+是否收紧为全局默认「先替换后新增」是**未决的取舍**，不得在此擅自选边。
+
+#### 两个提示词正文存为资源文件
+
+`src/animation-plan-review-prompt.md`（`docs/` 下有供人类阅读的同一份，测试锁定两者逐字相等）、
+`src/animation-plan-revision-prompt.md`、`src/animation-plan-revision-repair-prompt.md`，
+由 `src/prompts.js` 读取并剥掉开头的 HTML 注释头。**不要硬写进模板字面量**——终审那次因正文含大量反引号
+与半角双引号，硬写导致 `prompts.js` 损坏过一次。重试正文中间留了一行标记，服务端把结构化诊断替换进去；
+该标记的完整形态不得在头注释里重复写出，它自带的结束符会提前截断头注释、让说明文字混进真正发给模型的正文。
+
+#### 按阶段放宽的 timeout 现在才真正生效
+
+两个阶段都配 `requestTimeoutMs: 1800000`（终审实测正常出字最长 941 秒，修订实测 233–775 秒）。
+在此之前 `resolveStage` 解析出的这个值**没有任何阶段传下去**——`generateValidatedJson` 根本不接收它，
+于是终审配的 1800000 完全没生效、仍按全局 900000 被掐，而 941 秒正落在被掐的区间里。
+现已在 `generateStageJson` → `generateValidatedJson` → client 之间接通；其余阶段该值为 `null`，
+传 `null` 与不传逐字等价，行为不变。**不动全局默认值。**
+
+#### 传输不稳定与尚未做的兜底
+
+实测失败率约三分之一，两种形态：`fetch failed`（3–5 秒，没烧 token）与 `terminated`（几百秒才断，token 已烧）。
+换模型兜底实测有效（一份输入 qwen3.8 三次全败、kimi-k3 一次通过），`docs/animation-plan-review-落地方案.md`
+已决定「评审允许换模型但必须在报告里写明」，**但两个阶段目前都还没有实现换模型兜底**，不要按已实现来推断。
+修订的 metadata 会如实记录 provider、model、实际调用次数与第一次被拦的诊断——服务端拦过一次就必须说出来。
+
 ### 2.7 模型 provider 边界
 
 工作流 LLM provider：**Qwen / MiMo / DeepSeek**。

@@ -21,6 +21,21 @@ const ANIMATION_PLAN_REVIEW_BODY = fs.readFileSync(
   "utf8"
 ).replace(/^<!--[\s\S]*?-->\s*/u, "").trim();
 
+// 定向修订的两份正文，与上面同一模式。第二份中间留了一行标记，
+// 服务端把校验器的结构化诊断替换进去；除此之外逐字发送。
+const ANIMATION_PLAN_REVISION_BODY = fs.readFileSync(
+  new URL("./animation-plan-revision-prompt.md", import.meta.url),
+  "utf8"
+).replace(/^<!--[\s\S]*?-->\s*/u, "").trim();
+const ANIMATION_PLAN_REVISION_REPAIR_BODY = fs.readFileSync(
+  new URL("./animation-plan-revision-repair-prompt.md", import.meta.url),
+  "utf8"
+).replace(/^<!--[\s\S]*?-->\s*/u, "").trim();
+const REVISION_DIAGNOSTICS_MARKER = "<!-- 拦截原因插入点 -->";
+if (!ANIMATION_PLAN_REVISION_REPAIR_BODY.includes(REVISION_DIAGNOSTICS_MARKER)) {
+  throw new Error("animation-plan-revision-repair-prompt.md 缺少拦截原因插入点标记");
+}
+
 // 用户手写的「情绪 → 可见特征」映射。只进提示词，不进任何 Artifact、digest 或 lineage
 // （与 targetDurationSeconds 同规格，见 public/character-expression-rules.js）。
 // 未设置时返回空串——两处调用点整段省略，保证不传时的提示词与历史逐字一致。
@@ -794,6 +809,144 @@ ${JSON.stringify(fullStory)}
 
 animationPlan（唯一会被拍出来的东西）：
 ${JSON.stringify(animationPlan)}`;
+}
+
+// 每镜预算行。数字只描述现状密度，**不是**「一个动作」的客观定义——那个定义不存在，
+// 正是它不存在才要求模型自报 removedActions / addedActions 台账、由服务端数长度。
+// 所以这里如实写 characterAction 的分句数与 videoPrompt 字数，不谎称是动作段计数。
+function revisionShotBudgetLine(shot, row) {
+  const segments = String(shot?.characterAction || "")
+    .split(/[。；！？\n]+/u).map((part) => part.trim()).filter(Boolean).length;
+  const size = `${shot?.durationSeconds ?? "?"}秒，characterAction 现有 ${segments} 句，`
+    + `videoPrompt ${String(shot?.videoPrompt || "").length} 字`;
+  const decrease = row?.decrease || [];
+  const increase = row?.increase || [];
+  if (decrease.length && increase.length) {
+    return `- ${shot.shotId}（${size}）：⚠ 本镜同时被要求减负(${decrease.join("、")})`
+      + `与加内容(${increase.join("、")})——只准替换，不准净增`;
+  }
+  if (decrease.length) return `- ${shot.shotId}（${size}）：只准减，不准加（${decrease.join("、")}）`;
+  if (increase.length) {
+    return `- ${shot.shotId}（${size}）：可加，但先确认没有 pacing 问题（${increase.join("、")}）`;
+  }
+  return `- ${shot.shotId}（${size}）：本镜没有被点名，只在承接需要时做最小改动`;
+}
+
+// 只投影模型改得到的字段加少量只读上下文。sceneId / sourceSceneId 刻意不发：
+// 它们是服务端签发字段，发过去只会诱导模型回显，而回显即被 ensureRevisionContract 拒绝，
+// 白白烧掉两次调用预算里的一次。
+function revisionShotProjection(shot) {
+  return {
+    shotId: shot?.shotId,
+    durationSeconds: shot?.durationSeconds,
+    storyPurpose: shot?.storyPurpose,
+    emotionalTarget: shot?.emotionalTarget,
+    videoPrompt: shot?.videoPrompt,
+    cameraMotion: shot?.cameraMotion,
+    characterAction: shot?.characterAction,
+    dialogueOrSubtitle: shot?.dialogueOrSubtitle,
+    soundDesign: shot?.soundDesign,
+    continuityNotes: shot?.continuityNotes,
+    acceptanceCriteria: shot?.acceptanceCriteria
+  };
+}
+
+const REVISION_OUTPUT_FORMAT = `只输出 JSON，不要解释、不要 Markdown 围栏。字符串内部不得出现半角双引号，引用用「」。
+
+输出格式：
+{"revisedShots":[{"shotId":"","videoPrompt":"","cameraMotion":"","characterAction":"",
+"dialogueOrSubtitle":"","soundDesign":"","continuityNotes":"","acceptanceCriteria":[],
+"removedActions":[],"addedActions":[],"changeSummary":""}]}
+
+除上面列出的键以外不要输出任何其他键；shotId 之外的服务端签发字段
+（sourceSceneId、sceneId、durationSeconds、storyPurpose、emotionalTarget）出现即被拒绝。`;
+
+/**
+ * 定向修订。**只发分镜，不发 fullStory**——问题已由终审定位，再给剧情只会让模型
+ * 顺手重编故事；评审阶段则相反，必须带剧情作对照物才看得出「剧情写了、镜头没拍」。
+ *
+ * @param {object} params.animationPlan 被修订的 Plan
+ * @param {object} params.report 终审报告
+ * @param {object[]} params.issues 本次选中的 issues
+ * @param {object[]} params.upgrades 本次选中的 upgrades
+ * @param {Map} params.load revisionShotLoad() 的结果，与校验器共用同一份
+ * @param {string[]} params.targetShotIds 本次要改的镜头
+ */
+export function animationPlanRevisionPrompt({
+  animationPlan,
+  report,
+  issues = [],
+  upgrades = [],
+  load = new Map(),
+  targetShotIds = []
+}) {
+  const shots = Array.isArray(animationPlan?.shotPlan) ? animationPlan.shotPlan : [];
+  const targets = shots.filter((shot) => targetShotIds.includes(String(shot?.shotId || "")));
+  const mustPreserve = Array.isArray(report?.revisionBrief?.mustPreserve)
+    ? report.revisionBrief.mustPreserve
+    : [];
+  const section = (title, lines) => (lines.length ? `\n# ${title}\n${lines.join("\n")}\n` : "");
+  return `${ANIMATION_PLAN_REVISION_BODY}
+
+---
+${section("本次各镜的净预算", targets.map((shot) => revisionShotBudgetLine(shot, load.get(String(shot.shotId)))))}${
+  section("必须保住的（改动不得破坏这些）", mustPreserve.map((item) => `- ${item}`))}${
+  section("要解决的问题", issues.map((issue) => [
+    `- ${issue?.issueId}（${issue?.severity} / ${issue?.category}）：${issue?.problem}`,
+    `  怎么改：${issue?.revisionIntent}`,
+    ...(Array.isArray(issue?.mustPreserve) && issue.mustPreserve.length
+      ? [`  这条改动里不能丢：${issue.mustPreserve.join("；")}`]
+      : [])
+  ].join("\n")))}${
+  section("要落实的升级建议", upgrades.map((upgrade) => [
+    `- ${upgrade?.upgradeId}（${upgrade?.principle}）`,
+    `  现状：${upgrade?.currentState}`,
+    `  改成：${upgrade?.concreteChange}`,
+    `  净预算：${upgrade?.netActionBudget}`
+  ].join("\n")))}
+# 当前镜头（只改这几条，其余镜头不要输出）
+${JSON.stringify(targets.map(revisionShotProjection))}
+
+${REVISION_OUTPUT_FORMAT}`;
+}
+
+/**
+ * 修订被服务端确定性校验拦下后的重试。**第一次被拦是常规路径不是异常路径**：
+ * 事前的抽象规矩模型能解释绕过，事后的算术诊断它无从辩解，实测两个模型都是
+ * 「第一次删 2 加 7 被拦 → 带诊断重试 → 删 1 加 1 通过」，而且重试后的结果更好。
+ *
+ * @param {object} params.animationPlan 被修订的 Plan（提供被拦镜头的原始 characterAction）
+ * @param {object} params.previousRevision 上一次的模型输出
+ * @param {object[]} params.details 校验器给出的结构化诊断
+ * @param {string[]} params.blockedShotIds 本次要重做的镜头
+ * @param {Map} params.load revisionShotLoad() 的结果
+ */
+export function animationPlanRevisionRepairPrompt({
+  animationPlan,
+  previousRevision,
+  details = [],
+  blockedShotIds = [],
+  load = new Map()
+}) {
+  const shots = Array.isArray(animationPlan?.shotPlan) ? animationPlan.shotPlan : [];
+  const blocked = shots.filter((shot) => blockedShotIds.includes(String(shot?.shotId || "")));
+  const previousRows = (Array.isArray(previousRevision?.revisedShots) ? previousRevision.revisedShots : [])
+    .filter((row) => blockedShotIds.includes(String(row?.shotId || "")));
+  const diagnostics = details.length
+    ? details.map((detail) => `- ${detail?.path}：${detail?.reason}`).join("\n")
+    : "- （校验器未给出结构化诊断，按下面的规则整体复查被点名的镜头）";
+  return `${ANIMATION_PLAN_REVISION_REPAIR_BODY.replace(REVISION_DIAGNOSTICS_MARKER, diagnostics)}
+
+# 本次各镜的净预算
+${blocked.map((shot) => revisionShotBudgetLine(shot, load.get(String(shot.shotId)))).join("\n")}
+
+# 被拦镜头的原始 characterAction（removedActions 只能从这里面选）
+${blocked.map((shot) => `- ${shot.shotId}：${shot.characterAction}`).join("\n")}
+
+# 你上一次的输出（只重做这几条，不要输出其他镜头）
+${JSON.stringify(previousRows)}
+
+${REVISION_OUTPUT_FORMAT}`;
 }
 
 export function storyQualityReviewPrompt(fullStory) {

@@ -572,3 +572,19 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
 .review-current { color: var(--muted); }
 .review-fix, .review-keep { color: var(--ink); }
 .review-why { color: var(--muted); font-style: normal; }
+
+/* 定向修订预览。刻意做成「先看再签发」：采纳按钮之前，Plan 与媒体没有任何变化。 */
+.plan-revision { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.plan-revision-body { margin-top: 10px; }
+.revision-shot { margin-top: 10px; padding: 11px 13px; border-radius: 10px;
+  background: #fff; border: 1px solid var(--line); font-size: 10px; line-height: 1.7; }
+.revision-summary { color: var(--muted); }
+/* 台账是净预算判定的唯一依据（服务端只数条目数），必须显示出来而不是折叠 */
+.revision-ledger { margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.revision-ledger b { font-weight: 600; }
+.revision-ledger.removed b { color: #b54708; }
+.revision-ledger.added b { color: var(--green); }
+.revision-field { margin-top: 8px; }
+.revision-field p { margin: 3px 0 0; }
+.revision-before { color: var(--muted); text-decoration: line-through; }
+.revision-after { color: var(--ink); }

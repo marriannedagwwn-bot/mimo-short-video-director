@@ -1082,3 +1082,29 @@ export function mockAnimationPlanReview(animationPlan) {
     }
   };
 }
+
+// demo 模式的定向修订。**逐字回显原镜头，不伪造任何改动**——demo 不调用模型，
+// 编一版「改过的」提示词就是伪造生产内容，与 mockAnimationPlanReview 不伪造质量判断同理。
+//
+// 回显同时保证了合并后的 Plan 与源 Plan 逐字节相同，因此必然通过与 live 完全相同的
+// 校验链：ensureRevisionContract 的台账（0 >= 0）、direct_shot 契约、台词必须逐字
+// 出现在 videoPrompt、关闭背景音乐时的收尾句，一条都不会出现 mock 过而 live 挂的偏差。
+export function mockAnimationPlanRevision(animationPlan, report, targetShotIds = []) {
+  const shots = Array.isArray(animationPlan?.shotPlan) ? animationPlan.shotPlan : [];
+  const targets = shots.filter((shot) => targetShotIds.includes(String(shot?.shotId || "")));
+  return {
+    revisedShots: targets.map((shot) => ({
+      shotId: String(shot?.shotId || ""),
+      videoPrompt: shot?.videoPrompt,
+      cameraMotion: shot?.cameraMotion,
+      characterAction: shot?.characterAction,
+      dialogueOrSubtitle: shot?.dialogueOrSubtitle,
+      soundDesign: shot?.soundDesign,
+      continuityNotes: shot?.continuityNotes,
+      acceptanceCriteria: Array.isArray(shot?.acceptanceCriteria) ? [...shot.acceptanceCriteria] : [],
+      removedActions: [],
+      addedActions: [],
+      changeSummary: "demo 模式不调用模型，本镜逐字保持原样。"
+    }))
+  };
+}

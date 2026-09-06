@@ -315,6 +315,9 @@ const routes = {
   // 剧情体检：只出报告。不签发 Artifact、不进 lineage、不 stale 任何东西、不阻断后续阶段。
   "/api/story-quality-review": (body) => workflow.createStoryQualityReview(body),
   "/api/animation-plan-review": (body) => workflow.createAnimationPlanReview(body),
+  // 定向修订：按终审报告只改被点名的镜头。**不签发任何东西**——返回合并后的候选 Plan
+  // 供页面预览，用户点「采纳」时才由浏览器走既有的 Plan revision 签发流程。
+  "/api/animation-plan-revision": (body) => workflow.createAnimationPlanRevision(body),
   "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
   "/api/generate-shot-video": async (body) => {
     const productionMedia = await resolveProductionMediaContext(body, { required: true });
@@ -2097,6 +2100,14 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
     // ——那次失败完全是我们自己造成的，与上游无关。
     // 不动全局默认值：现有阶段实测最长 234 秒，900 秒有 3.8 倍余量。
     animationPlanReview: stageSetting(
+      provider,
+      source.storyModel || source.model,
+      source.storyMaxCompletionTokens || source.maxCompletionTokens,
+      1800000
+    ),
+    // 定向修订与终审同规格：沿用剧情 provider，timeout 同样放宽到 1800000
+    // （实测修订耗时 233–775 秒，且与终审一样存在几百秒才断的传输失败）。
+    animationPlanRevision: stageSetting(
       provider,
       source.storyModel || source.model,
       source.storyMaxCompletionTokens || source.maxCompletionTokens,

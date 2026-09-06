@@ -170,6 +170,48 @@ Full Story 生成之后的**独立验收，只出报告**：不修改剧情、�
 
 **评审模型的已知偏差**：默认沿用剧情阶段的 provider，也就是写这份剧情的那个模型，自己批自己会偏松（实测同一份剧情自评「AI 可执行性 8.0 / 物理可信度 8.0」，外部模型给 6.8 / 6.8）。本来要默认换一家，但同一批 10 份实测下来现有备选都不胜任：`mimo-v2.5-pro` 7/10 成功且太松（2/62 处 vs 千问 13/91 处），`deepseek-v4-flash` 5/10、反复产不出严格 JSON，`deepseek-v4-pro` 连接中断。一个查不出问题的评审比偏松的评审更没用，稳定性也是硬要求。**先用能干活的那个并如实记下偏差，不靠静默降级掩盖**；它是纯文本阶段（不在 `requiresMediaModel` 里），可按阶段 override 换任意一家。
 
+## 分镜终审与定向修订（animationPlanReview / animationPlanRevision，2026-09-06）
+
+Animation Plan 之后的两段式验收，与剧情体检同规格：**只出报告、只出候选，不签发任何 Artifact**，不进 lineage、不参与派生、不阻断后续生产，刷新页面即失。手动触发，`POST /api/animation-plan-review` 与 `POST /api/animation-plan-revision`。
+
+查的是现有校验器查不到的一类问题：**剧情声称的事，镜头里到底拍没拍。** 实测：剧情首句写「末班车的红色尾灯刚刚消失在路口转角」，而首镜 videoPrompt 一帧车都没有——「末班车已走」只写进了 `continuityNotes`，那是给生成器的备注，不会被拍出来。
+
+**两个阶段的输入不同，这是有意的**：评审必须同时收到 `fullStory` 与 `animationPlan`（没有对照物就发现不了这类落差）；修订**只带分镜，不带 `fullStory`**（问题已定位，再给剧情只会让模型顺手重编故事）。
+
+**评分不作放行门槛**：实测两个模型评同一份 Plan 总分只差 0.06、单维差 ±1.0，这个数字没有分辨力。
+
+### 净预算
+
+被终审判为 `pacing` / `ai_risk` 的镜头，修订输出的 `removedActions[]` 条目数必须 **>=** `addedActions[]`，诊断码 `REVISION_NET_ACTION_BUDGET_EXCEEDED`。服务端只数数组长度，不听模型自述。
+
+事前用提示词约束「不许往挤的镜头加动作」三次加码全部无效（模型最终改口称「均并入原有动作链，不增加独立动作段」），因为**「一个动作」没有客观定义**，判定权在模型手里就永远有解释空间。显式台账把判定权拿走。实测两个模型第一次都被拦（删 2 加 7 / 删 2 加 4），带算术诊断重试一次后都一次通过，且结果更好。
+
+**因此第一次被拦是常规路径。** 预算固定 2 次 provider 调用，第二次仍被拦即 fail closed，保留原 Plan 并如实报出两次诊断。**禁止第三次重试。**
+
+判定只有一份：`revisionShotLoad()` 同时供提示词的每镜预算行与校验器的硬闸门使用。同一镜同时被要求减负与加内容时判为**冲突镜头（只准替换）**——上一轮事故正是这个形状。镜头归属只认结构化的 `affectedPaths` / `evidencePaths`，仅当两者都解析不出镜头时才回退到 `problem` 正文里的镜头号。
+
+### 合并与复验
+
+模型只写七个字段（`videoPrompt`/`cameraMotion`/`characterAction`/`dialogueOrSubtitle`/`soundDesign`/`continuityNotes`/`acceptanceCriteria`）；六个签发字段出现即拒绝。合并按可写字段逐个覆盖，签发字段由构造保证不变，并另有断言证明可写字段之外逐字节不变。返回未授权镜头即 `REVISION_SHOT_OUT_OF_SCOPE`。
+
+合并结果必须**在签发之前**通过 `ensureAnimationPlanDirectShotContract` 与背景音乐收尾句校验——采纳时签发的就是这份合并结果。只支持 direct_shot Plan；旧 v2 首尾帧 Plan 明确失败。
+
+### 先预览，确认后签发
+
+修订返回后**不自动写回 Plan**。用户点「采纳」才签发新 Plan revision 与 media namespace、递归 stale 该变体已生成的全部媒体。实测修订第一次输出常常要被打回，自动签发会造成大量无谓的 revision 与媒体作废。采纳前复核 `sourcePlan` 与当前 Plan 是否仍逐字相同，不同即作废本次修订。
+
+### 没有确定性兜底的两条
+
+**执行者反转**（建议写「甲替乙」被写成「乙替甲」，方向一反建议就作废）只能靠人工在预览时看；**未受约束镜头仍可净增**是已知口子，是否收紧为全局默认是未决的取舍。
+
+### timeout
+
+两个阶段都配 `requestTimeoutMs: 1800000`（终审实测最长 941 秒，修订 233–775 秒）。此前 `resolveStage` 解析出的该值没有任何阶段传下去，终审配的 1800000 完全没生效；现已在 `generateStageJson` → `generateValidatedJson` → client 之间接通，其余阶段该值为 `null`、行为不变。不动全局默认值。
+
+**换模型兜底尚未实现**：落地方案已决定「评审允许换模型但必须写明」，两个阶段目前都还没做，不要按已实现推断。
+
+---
+
 ## 当前模型 provider 边界
 
 工作流 LLM provider 包括：
