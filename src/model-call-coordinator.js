@@ -284,7 +284,9 @@ export function classifyAttemptError(error) {
     // 流式响应在收到结束标志前中断，是传输失败而不是协议错误。不单独分类的话
     // 它会落到本分支末尾的兜底（status=0 → category "protocol"、retryable false），
     // 把一个本该重试的网络中断变成不可重试的协议错误。
-    if (error.code === "MODEL_STREAM_INCOMPLETE") {
+    // 与 MODEL_STREAM_INCOMPLETE 同规格：连接被对端切断是传输故障，必须可重试。
+    // 不单独分类会落到本分支末尾的兜底（status=0 → protocol 且 retryable false）。
+    if (error.code === "MODEL_STREAM_ABORTED" || error.code === "MODEL_STREAM_INCOMPLETE") {
       return {
         message: error.message,
         category: "transport",

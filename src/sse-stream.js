@@ -113,21 +113,38 @@ export async function readSseCompletion(body, { maxRawChars = DEFAULT_MAX_RAW_CH
     notify();
   };
 
-  const reader = typeof body.getReader === "function" ? body.getReader() : null;
-  if (reader) {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      // stream: true 是必须的：一个汉字的 UTF-8 字节可能被拆到两个数据块，
-      // 对每块单独 decode 会产生乱码。
-      consume(decoder.decode(value, { stream: true }));
+  // 连接在读流途中被对端切断时，undici 抛 TypeError: terminated。此前这个异常
+  // 直接上抛，已经收到的内容连同它一起丢掉——一次跑了近 600 秒才断的调用，
+  // 那几百秒生成的字连条日志都没留下，无从判断是刚开始就断还是快写完了。
+  // 这里把已收到的部分挂到异常上再抛，不改变「流不完整必须失败」的结论。
+  const attachPartial = (error) => {
+    if (error && typeof error === "object") {
+      error.partialRaw = truncateRaw(raw, maxRawChars);
+      error.partialContentLength = content.length;
+      error.partialChunks = chunks;
     }
-  } else {
-    for await (const value of body) {
-      consume(decoder.decode(value, { stream: true }));
+    return error;
+  };
+
+  try {
+    const reader = typeof body.getReader === "function" ? body.getReader() : null;
+    if (reader) {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        // stream: true 是必须的：一个汉字的 UTF-8 字节可能被拆到两个数据块，
+        // 对每块单独 decode 会产生乱码。
+        consume(decoder.decode(value, { stream: true }));
+      }
+    } else {
+      for await (const value of body) {
+        consume(decoder.decode(value, { stream: true }));
+      }
     }
+    consume(decoder.decode());
+  } catch (error) {
+    throw attachPartial(error);
   }
-  consume(decoder.decode());
   // 流结束时最后一行可能没有换行符
   if (buffer) {
     handleLine(buffer);

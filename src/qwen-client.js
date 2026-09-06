@@ -232,6 +232,23 @@ export class QwenClient {
       stream = await readSseCompletion(response.body, { onProgress });
     } catch (error) {
       await afterDurableProviderCall("model_provider_response");
+      // 连接被对端切断（undici 的 TypeError: terminated）时，已收到的内容挂在
+      // error.partialRaw 上。把规模带进错误消息，让日志能区分「刚开始就断」与
+      // 「快写完才断」——前者重试即可，后者说明该换策略（拆分请求或换模型）。
+      // 正文本身不进消息，只进 detail，避免把半截 JSON 混进人类可读的错误里。
+      if (typeof error?.partialContentLength === "number" && error.partialContentLength > 0) {
+        const kept = String(error.partialRaw || "");
+        throw new ModelResponseError(
+          `${providerName} 流式传输在收到 ${error.partialContentLength} 字正文（${error.partialChunks} 个数据块）后中断：${error.message}`,
+          kept,
+          0,
+          {
+            provider: providerName,
+            code: "MODEL_STREAM_ABORTED",
+            requestId: headerRequestId
+          }
+        );
+      }
       if (error instanceof SseStreamIncompleteError) {
         // 半截内容绝不当成结果返回：否则残缺 JSON 会被下游报成「JSON 格式错误」，
         // 把传输中断伪装成模型输出问题。

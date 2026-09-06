@@ -200,3 +200,35 @@ test("qwen-client 流式返回的字段与非流式逐字一致，中断则归�
     }
   );
 });
+
+test("连接被对端切断时保留已收到的内容，并归类为可重试的传输失败", async (t) => {
+  // 一次跑了近 600 秒才断的调用，此前那几百秒生成的字连日志都没留下，
+  // 无从判断是刚开始就断还是快写完了。残片必须挂到异常上带出来。
+  const { QwenClient } = await import("../src/qwen-client.js");
+  const { classifyAttemptError } = await import("../src/model-call-coordinator.js");
+  const http = await import("node:http");
+
+  const server = http.createServer((request, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.write(`data: {"id":"r1","choices":[{"delta":{"content":"已经写出来的正文"}}]}\n\n`);
+    setTimeout(() => response.destroy(), 30);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const { port } = server.address();
+
+  await assert.rejects(
+    () => new QwenClient({
+      baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "", model: "kimi-k3", maxCompletionTokens: 1000
+    }).requestCompletion({ prompt: "hi", model: "kimi-k3" }),
+    (error) => {
+      assert.equal(error.code, "MODEL_STREAM_ABORTED");
+      assert.match(error.message, /收到 8 字正文（1 个数据块）后中断/u);
+      assert.match(String(error.raw), /已经写出来的正文/u);
+      const classified = classifyAttemptError(error);
+      assert.equal(classified.category, "transport");
+      assert.equal(classified.retryable, true);
+      return true;
+    }
+  );
+});
