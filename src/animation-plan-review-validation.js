@@ -55,6 +55,15 @@ function push(details, code, path, reason) {
   details.push({ code, path, reason });
 }
 
+// dominantDefect 的允许类型。与提示词第零块的清单逐字一致——
+// 两边不同步会让合格报告被误拒，所以清单只有这一份，改动时必须同时改提示词。
+const DOMINANT_DEFECT_TYPES = new Set([
+  "identity_logic", "causal_logic", "opening_hook", "motivation",
+  "emotional_payoff", "continuity", "prop_state", "physical_logic",
+  "pacing", "escalation", "character_agency", "visual_readability",
+  "ai_execution_risk"
+]);
+
 /**
  * 校验终审报告。只裁决可唯一推导的部分。
  *
@@ -72,6 +81,19 @@ export function ensureReviewReportContract(report, animationPlan) {
   const known = new Set(shotIds);
   const order = new Map(shotIds.map((id, index) => [id, index]));
   const details = [];
+
+  // 0) dominantDefect 决定修订的优先级，选错类型会导致修错东西。
+  //    这里只裁决「类型是不是清单里的一个」——纯字符串匹配。
+  //    「选得对不对」是语义判断，不在这里裁决。
+  if (report.dominantDefect !== undefined) {
+    const defect = report.dominantDefect;
+    if (!defect || typeof defect !== "object" || Array.isArray(defect)) {
+      push(details, "REVIEW_DOMINANT_DEFECT_INVALID", "/dominantDefect", "dominantDefect 必须是对象");
+    } else if (!DOMINANT_DEFECT_TYPES.has(String(defect.type || ""))) {
+      push(details, "REVIEW_DOMINANT_DEFECT_TYPE_UNKNOWN", "/dominantDefect/type",
+        `「${defect.type}」不在允许的缺陷类型内；允许值：${[...DOMINANT_DEFECT_TYPES].join("、")}`);
+    }
+  }
 
   // 1) 逐镜与逐场景必须穷举且同序
   for (const [field, code] of [
