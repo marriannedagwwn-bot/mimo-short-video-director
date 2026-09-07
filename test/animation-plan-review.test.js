@@ -342,6 +342,58 @@ function stageWriters(scope, outputRoot) {
   return new Map([[scope, new FullModelOutputLogWriter({ scope, outputRoot })]]);
 }
 
+// 2026-09-07 实测：三张覆盖表这类**模型内容错误**被报成 HTTP 500「服务器内部错误」，
+// 用户完全看不出模型错在哪。根因是 ReviewContractError 不在 classifyAttemptError 的
+// 分支表里，落进「internal / retryable:false」兜底。修订路径早有同款转换器
+// （reviewContractAsOutputContract），终审这条路没接上。
+// 另外两个评审阶段的覆盖率校验在 validation.js 里、抛的就是 OutputContractError，不受影响。
+//
+// 注意终审这条路**没有重试**：generateValidatedJson 直接调 client、只发一次、
+// 对已解析候选 fail closed（第三节纪律）。转换买到的是正确归属与结构化诊断，
+// 不是多一次机会——锁住调用次数，免得日后有人误以为改分类就等于开了重试。
+test("终审的内容错误归类为 output-contract 而不是内部错误", async (t) => {
+  const pkgPath = "C:/Users/QinFeng/Downloads/雨天的流浪猫窝.json";
+  if (!fs.existsSync(pkgPath)) {
+    t.skip("生产包夹具不存在，跳过");
+    return;
+  }
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  const plan = pkg.animationPlan;
+  const report = mockAnimationPlanReview(plan);
+  // 覆盖表少一条 → REVIEW_SHOT_COVERAGE_MISMATCH，是最典型的模型漏报形态。
+  report.shotEvaluations.pop();
+
+  let calls = 0;
+  const workflow = new WorkflowService({
+    client: {
+      // onCompletion 只在配了 debug writer 时才传进来，这里没配，所以要容错。
+      async generateJson({ onCompletion } = {}) {
+        calls += 1;
+        if (typeof onCompletion === "function") {
+          await onCompletion({ content: JSON.stringify(report), finishReason: "stop", requestId: "r1", usage: null });
+        }
+        return report;
+      }
+    },
+    stageDefaults: { animationPlanReview: { provider: "MiMo", model: "test-model" } }
+  });
+
+  await assert.rejects(
+    () => workflow.createAnimationPlanReview({ animationPlan: plan, fullStory: pkg.fullStory }),
+    (error) => {
+      assert.notEqual(error.category, "internal", "内容错误不得落进 internal 兜底");
+      assert.ok(
+        (error.diagnostics || error.details || []).some(
+          (d) => d.code === "REVIEW_SHOT_COVERAGE_MISMATCH"
+        ),
+        "必须把结构化诊断带到调用方"
+      );
+      return true;
+    }
+  );
+  assert.equal(calls, 1, "终审对已解析候选 fail closed，不得因为改了分类就多调一次");
+});
+
 test("终审校验失败时把模型原文与错误码写进阶段侧车", async (t) => {
   const pkgPath = "C:/Users/QinFeng/Downloads/雨天的流浪猫窝.json";
   if (!fs.existsSync(pkgPath)) {

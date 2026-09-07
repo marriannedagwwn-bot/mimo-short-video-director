@@ -322,6 +322,14 @@ A07 正是外部评审指出手部逻辑仍然错误的那一镜（`characterAct
 
 只支持 direct_shot Plan。旧 v2 首尾帧 Plan 的字段完全不同，走这条路径明确失败，不得静默按 direct_shot 处理。
 
+**终审的 `ReviewContractError` 必须转成 `OutputContractError`（2026-09-07）。** 它不在
+`classifyAttemptError` 的分支表里，原样上抛会落进「internal / retryable: false」兜底——
+三张覆盖表数量对不上、引用了不存在的镜头号这类**模型内容错误**会变成一句 HTTP 500
+「服务器内部错误」，用户完全看不出模型错在哪。修订路径早有同款转换器
+（`reviewContractAsOutputContract`，现由两条路共用），终审此前没接上。
+**注意终审这条路没有重试**：它走 `generateValidatedJson`，只发一次、对已解析候选 fail closed，
+所以转换买到的是正确归属与能送到用户手里的结构化诊断，**不是多一次机会**。
+
 #### 先预览，确认后才签发（已定的范围决定）
 
 修订返回后**不自动写回 Plan**：先并排展示原文与修订版、台账与 `changeSummary`，用户点「采纳」才签发新
@@ -382,6 +390,7 @@ Plan revision 与新 media namespace 并递归 stale 该变体已生成的全部
 - **流不完整必须失败，绝不返回半截内容。** 读到流结束但既没有 `[DONE]` 也没有任何 `finish_reason` 时抛 `MODEL_STREAM_INCOMPLETE`。返回半截内容会让残缺 JSON 被下游报成「JSON 格式错误」，把传输问题伪装成模型输出问题。
 - 该错误码在 `classifyAttemptError` 里**必须单独分类**为 `category: "transport"` + `retryable: true`。不单独分类会落到 `ModelResponseError` 的兜底分支（`status=0` → `protocol` 且 `retryable: false`），把可重试的网络中断变成不可重试的协议错误。
 - **禁止非流式自动回退。** 流式失败就如实报错——自动降级是第五节第 4 条的「失败时返回默认值」。
+- **`terminated` 的包装判据是「收到过任何数据块」，不是「收到过正文」（2026-09-07）。** 连接中途被切断时 `qwen-client` 把它包装成可重试的 `MODEL_STREAM_ABORTED`，判据原为 `partialContentLength > 0`。但下一条明写 `reasoning_content` 单独收集、不算正文，而 qwen3.8-max 实测 **82% 的 completion token 是推理**（`reasoning_tokens` 23449 / `completion_tokens` 28466）——推理期断线时正文长度仍是 0，裸 `TypeError` 漏出包装、一路冒到 HTTP 层变成**不可重试的 500**。实测两次分镜终审失败（158 秒、649 秒）都是这个形状：流一直活着、模型一直在推理，只是还没吐正文。判据改为 `partialChunks > 0`，`classifyAttemptError` 逐字未改。**只改包装条件，不改「流不完整必须失败」的结论。** 只覆盖 `qwen-client`，另外两家仍是非流式。
 - `delta.reasoning_content` 单独收集，**绝不混进正文**；`usage` 只在最后一个数据块里返回，缺 `stream_options` 就拿不到 token 记账。
 - 解码必须用 `TextDecoder` 的 `{ stream: true }`：一个汉字的 UTF-8 字节可能被拆到两个数据块，对每块单独解码会产生乱码。
 - 返回形状与非流式**逐字一致**的 7 个字段：`content` / `finishReason` / `requestId` / `usage` / `providerName` / `model` / `raw`。`providerName` 被 `model-call-coordinator` 与 `workflow` 用于错误归属，`model` 用于用量记账，漏掉会静默降级到回退值。
