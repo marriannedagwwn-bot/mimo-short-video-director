@@ -91,6 +91,7 @@
     },
     "issueCategory": {
       "enum": [
+        "continuity",
         "unrealized_declaration",
         "physical_conflict",
         "prop_state_break",

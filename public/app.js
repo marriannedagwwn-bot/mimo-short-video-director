@@ -257,7 +257,14 @@ const MODEL_STAGE_DEFS = [
   { key: "visualGuardrails", label: "视觉规则", hint: "角色边界、原片来源记录、台词规则", capability: "视觉模型", capabilityKind: "vision" },
   { key: "variants", label: "主题变体", hint: "新故事方向", capability: "文本模型", capabilityKind: "text" },
   { key: "fullStory", label: "完整剧情", hint: "可拍分场剧本", capability: "文本模型", capabilityKind: "text" },
+  // 三个验收阶段。服务端从一开始就在 modelStages / stageHealth 里上报它们，
+  // 只是这张表漏了登记，于是面板选不到、sanitizedModelOverrides 也会把覆盖过滤掉——
+  // 这张表就是 override 白名单。都是纯文本阶段（不在 requiresMediaModel 里）。
+  // optional：它们由用户手动触发、不属于必经链路，不该参与 modelStagesReady 的就绪判定。
+  { key: "storyQualityReview", label: "剧情体检", hint: "逐场核对声明与画面，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "animationPlan", label: "动画生产包", hint: "首尾帧、镜头与视频提示词", capability: "文本模型", capabilityKind: "text" },
+  { key: "animationPlanReview", label: "分镜终审", hint: "对照剧情核查镜头，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
+  { key: "animationPlanRevision", label: "定向修订", hint: "按终审报告只改被点名的镜头", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "staticFrameCompiler", label: "静态帧编译器", hint: "叙事语言到静态视觉语言的语义合法化", capability: "文本模型", capabilityKind: "text" },
   { key: "characterReference", label: "人物图修正", hint: "根据上传图片修正角色描述", capability: "视觉模型", capabilityKind: "vision" },
   { key: "imageGeneration", label: "图片生成", hint: "角色参考图、镜头首尾帧图片", capability: "图片生成", capabilityKind: "image", providerLocked: true, optional: true },

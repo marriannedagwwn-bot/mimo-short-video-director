@@ -495,6 +495,14 @@ export class WorkflowService {
     // 实数调用次数。不能用 rejected 推断——第一次是传输失败时它仍是 null，
     // 但供应商确实被调用了两次，少报就等于把花掉的钱藏起来。
     let providerCalls = 0;
+    // 纯观测 sidecar。本阶段不走 generateStageJson（那条路自带 recorder），
+    // 所以按 Full Story 的既有写法自己接 coordinator 的 attemptObserver：
+    // 两次 provider 调用各留一条记录，第一次被拦是常规路径，原文必须留下来。
+    // 与其余阶段一致不传 context，记录落在 unbound 路径。
+    const revisionOutputLogWriter = this.stageModelOutputLogWriters?.get("animationPlanRevision") || null;
+    const recordRevisionAttempt = revisionOutputLogWriter?.enabled
+      ? (attempt) => revisionOutputLogWriter.recordAttempt(attempt)
+      : null;
     const outcome = await this.modelCallCoordinator.runJson({
       client: settings.client,
       request: {
@@ -513,7 +521,17 @@ export class WorkflowService {
       provider: settings.provider || "",
       stage: "animationPlanRevision",
       maxProviderCalls: 2,
-      attemptObserver: () => { providerCalls += 1; },
+      // 计数与落盘组合在一起。落盘是 fail-open 的：writer 自己吞写入异常，
+      // 这里再兜一层意外抛出，绝不让观测改变本次修订的成败或调用预算。
+      attemptObserver: async (attempt) => {
+        providerCalls += 1;
+        if (!recordRevisionAttempt) return;
+        try {
+          await recordRevisionAttempt(attempt);
+        } catch {
+          // 观测失败不改变结论。
+        }
+      },
       retryTokenLimit,
       // 传输中断也在这 2 次预算内重试（实测失败率约三分之一，其中一类是几秒就断、
       // 一个 token 都没烧）。没有候选可修时重发原提示词，不发重试提示词。

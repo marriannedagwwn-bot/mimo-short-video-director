@@ -113,15 +113,20 @@ const animationModelOutputLogWriter = new FullModelOutputLogWriter({
     logLabel: "Animation Plan 模型全量输出"
   })
 });
-// 走 generateValidatedJson 的六个阶段共用一个 root，按 stage 各建一个 writer；
+// 这些阶段共用一个 root，按 stage 各建一个 writer；
 // 不配置 STAGE_MODEL_OUTPUT_LOG_DIR 就完全不写。
+// 前八个走 generateStageJson，注册即生效；animationPlanRevision 走
+// modelCallCoordinator，由 workflow 自己接 attemptObserver，是唯一的例外。
 const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
   MODEL_OUTPUT_LOG_SCOPES.ANALYSIS,
   MODEL_OUTPUT_LOG_SCOPES.RECONSTRUCTION,
   MODEL_OUTPUT_LOG_SCOPES.BRIEF,
   MODEL_OUTPUT_LOG_SCOPES.VARIANTS,
   MODEL_OUTPUT_LOG_SCOPES.VISUAL_GUARDRAILS,
-  MODEL_OUTPUT_LOG_SCOPES.CHARACTER_REFERENCE
+  MODEL_OUTPUT_LOG_SCOPES.CHARACTER_REFERENCE,
+  MODEL_OUTPUT_LOG_SCOPES.STORY_QUALITY_REVIEW,
+  MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVIEW,
+  MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVISION
 ];
 const stageModelOutputLogRoot = await resolvePrivateModelOutputLogRoot({
   workspaceRoot: root,

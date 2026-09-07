@@ -1055,12 +1055,17 @@ export function mockAnimationPlanReview(animationPlan) {
       viewerImpact: note,
       recommendedChange: note
     })),
-    shotEvaluations: shots.map((shot) => ({
+    // 第一个镜头带一条 issues，其余留空：两个分支都要被 demo 走到。
+    // 全部写 [] 正是实测漏掉这类缺陷的原因——镜头级 issues 是纯字符串数组，
+    // 与顶层同名的对象数组形状不同，而非空分支从来没被构造过，
+    // 于是 mock 通过、live 因为模型按顶层对象结构填写而硬失败。
+    // note 不构成质量判断，与 strengths / dimensions 里的占位写法同规格。
+    shotEvaluations: shots.map((shot, index) => ({
       shotId: String(shot?.shotId || ""),
       declaredPurpose: String(shot?.storyPurpose || ""),
       actuallyDepicted: "depicted",
       whatViewerSees: note,
-      issues: []
+      issues: index === 0 ? [note] : []
     })),
     propTracking: [],
     sceneCheck: shots.map((shot) => ({

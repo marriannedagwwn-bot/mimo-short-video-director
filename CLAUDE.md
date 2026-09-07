@@ -238,6 +238,19 @@ Animation Plan 生成之后的两段式验收。与剧情体检同规格：**只
 **评分不作放行门槛**：实测两个模型评同一份 Plan 总分只差 0.06，而单个维度能差 ±1.0，这个数字没有分辨力；
 有用的是 `dominantDefect`、`issues` 与 `upgradePath` 的具体内容。
 
+**`issues` 在报告里出现两次且形状不同（2026-09-07）。** 顶层 `issues` 是结构化对象数组
+（`issueId` / `severity` / `category` / `evidencePaths` / `problem` / `revisionIntent`…），
+而 `shotEvaluations[].issues` 是**纯字符串数组**，每项一句话。实测代价：提示词的输出模板里
+镜头级只给了 `[]`、元素类型全文无任何示例，而 18 行之下就是同名的对象数组，模型于是按对象填，
+`/shotEvaluations/{0,2,4,5}/issues/0 类型必须为 string` 硬失败——失败模式印证这是一贯误读
+而非抖动：它判定有问题的镜头全部在 `issues/0` 失败，写 `[]` 的镜头全过。
+提示词现在既给非空示例也点名这处同名碰撞；`mockAnimationPlanReview` 给第一个镜头一条非空
+`issues`，两个分支都走到——此前全写 `[]`，正是 mock 通过而 live 失败的原因。
+**不重命名该字段**：镜头级 `issues` 没有任何消费者（`ensureReviewReportContract` 只核对
+`shotEvaluations` 的数量与 `shotId` 逐位一致，浏览器的 `renderAnimationPlanReview` 也不渲染它），
+重命名要动契约五个面，收益不抵代价。schema 是唯一且足够的闸门，**不给它挂自动纠错**——
+模型写的是自然语言判断，服务端无法把一个对象唯一地压成一句话。
+
 #### 净预算：把「算不算净增」的判定权从模型手里拿走
 
 **事前用提示词约束无效，三次加码全部失败**：写「注意不要太满」它照加；改成「不允许净增加」它照加，
@@ -545,7 +558,7 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：**
 | `PARTIAL_REPAIR_DEBUG_DIR` | 已成功签发 repair plan 后的四阶段记录（trigger / prompt / response / result），单文件默认 ≤ 256 KiB |
 | `FULL_STORY_MODEL_OUTPUT_LOG_DIR` | Full Story primary / retry-repair / Beat–Scene postpass 的完整 completion `content`，metadata 含 `stage` |
 | `ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR` | Animation Plan 原始 completion，固定 `scope=animationPlan`，覆盖 Foundation、每批 shot、实际发生的语义修复与复审 |
-| `STAGE_MODEL_OUTPUT_LOG_DIR` | 共用 `generateValidatedJson` 的六个阶段（Analyze / Reconstruct / 创意简报 / 主题变体 / 角色与表达边界 / 人物参考精修）的原始 completion，按 stage 分 scope；成功与失败都记，失败判定复用 `classifyAttemptError` |
+| `STAGE_MODEL_OUTPUT_LOG_DIR` | 九个阶段（Analyze / Reconstruct / 创意简报 / 主题变体 / 角色与表达边界 / 人物参考精修 / 剧情体检 / 分镜终审 / 定向修订）的原始 completion，按 stage 分 scope；成功与失败都记，失败判定复用 `classifyAttemptError`。前八个共用 `generateValidatedJson`，注册 scope 即生效；**定向修订走 `modelCallCoordinator`，由 `createAnimationPlanRevision` 自己接 `attemptObserver`**，两次 provider 调用各留一条。**scope 取值必须逐字等于 stage 名**——writer map 按 scope 建、按 stage 查，对不上就静默不写（2026-09-07 之前后三个阶段根本没注册，终审失败时原文永久丢失） |
 
 统一约束（第四套与前三套逐字同规格）：
 

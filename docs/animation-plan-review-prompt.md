@@ -54,6 +54,10 @@
 
 **表一 · 逐镜**：`shotEvaluations` 必须与 `shotPlan` **数量相等、`shotId` 逐位相同**，
 一镜不落。没有问题的镜头也要出现，写 `issues: []`。
+这里的 `issues` **每一项都是一句话字符串，不是对象**：有几条问题写几条，
+例如 `["台词没有逐字写进 videoPrompt", "奶奶双手已被占满却又要递猫粮"]`。
+**不要套用下面第二块 `issues` 的对象结构，那是另一个字段**——两处同名但形状不同，
+镜头级只收字符串，结构化的 `issueId` / `severity` / `category` 只属于第二块。
 
 **表二 · 逐道具**：`propTracking` 必须列出**每一件在至少一个镜头里出现过的可携带物品**
 （人物拿在手上、穿戴在身上、或会被交接转移的东西；固定不动的布景不算）。每件都要
@@ -151,8 +155,18 @@ ai_execution_risk  提示词超载或高风险要素过多
 却完全没发现片中一只动物先被描述为流浪、后又被确认是走失的宠物，而标题仍按前者命名。
 那是本片最大的问题，却因为分类里没有它的位置而被整体漏掉。
 
-另有两类按需报告：`pacing`（动作量与 `durationSeconds` 不匹配）、
+另有三类按需报告：`continuity`（跨镜连续性——人物姿态、位置、服装或空间在相邻镜头之间
+前后矛盾，或缺少可见的过渡状态）、`pacing`（动作量与 `durationSeconds` 不匹配）、
 `ai_risk`（动作链过长、提示词超载、精确文字或手部特写风险）。
+
+**`category` 的完整合法取值只有这十个**，写任何其它值整份报告都会作废：
+`unrealized_declaration` / `physical_conflict` / `prop_state_break` / `scene_mismatch` /
+`dialogue_not_in_prompt` / `identity_logic` / `causal_logic` / `continuity` / `pacing` / `ai_risk`。
+
+**不要把第零块 `dominantDefect` 那张表或评分维度表里的名字搬到这里。** 那是三套不同的取值，
+只有一部分重合：`prop_state`、`physical_logic`、`ai_execution_risk`、`opening_hook`、
+`motivation`、`emotional_payoff`、`escalation`、`character_agency`、`visual_readability`
+只属于 `dominantDefect`，不是合法的 `category`。
 
 ### 第三块：不属于以上任何一类的发现（`otherFindings`）
 
@@ -311,7 +325,7 @@ ai_execution_risk  提示词超载或高风险要素过多
     { "shotId": "", "declaredPurpose": "（逐字回显该镜 storyPurpose）",
       "actuallyDepicted": "depicted | partially_depicted | not_depicted",
       "whatViewerSees": "只根据 videoPrompt 描述观众实际看到的画面",
-      "issues": [] }
+      "issues": ["每条一句话，纯字符串，不是对象；没有问题写 []"] }
   ],
 
   "propTracking": [
@@ -331,7 +345,7 @@ ai_execution_risk  提示词超载或高风险要素过多
 
   "issues": [
     { "issueId": "", "severity": "BLOCKER | MAJOR | MINOR",
-      "category": "unrealized_declaration | physical_conflict | prop_state_break | scene_mismatch | dialogue_not_in_prompt | identity_logic | causal_logic | pacing | ai_risk",
+      "category": "unrealized_declaration | physical_conflict | prop_state_break | scene_mismatch | dialogue_not_in_prompt | identity_logic | causal_logic | continuity | pacing | ai_risk",
       "evidencePaths": [], "problem": "", "revisionIntent": "",
       "affectedPaths": [], "mustPreserve": [] }
   ],

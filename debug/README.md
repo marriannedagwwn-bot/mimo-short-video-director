@@ -40,7 +40,7 @@
 `model-output.txt` 是模型实际 completion content 的完整 UTF-8 文本；`metadata.json` 保存字节数、SHA-256、attempt 状态，以及彼此分离的 production/provider requestId。它不保存输入 Prompt、HTTP envelope、Header、密钥或媒体。正文可能包含完整失败剧情或镜头提示词，应视为敏感本机数据；不得提交、导出、恢复为 Story/Plan 或放进 `public/`。无模型正文的 timeout/transport attempt 只会有 metadata，不会伪造空输出文件。
 ## 工作流阶段全量模型输出
 
-`STAGE_MODEL_OUTPUT_LOG_DIR` 是第四套独立 sidecar，覆盖共用 `generateValidatedJson` 的六个阶段：Analyze、Reconstruct、创意简报、主题变体、角色与表达边界、人物参考精修。目录结构、权限与原子写与上一节完全一致，只是这些阶段在该层没有 Production Lineage 上下文，所以路径固定落在：
+`STAGE_MODEL_OUTPUT_LOG_DIR` 是第四套独立 sidecar，覆盖九个阶段：Analyze、Reconstruct、创意简报、主题变体、角色与表达边界、人物参考精修、剧情体检、分镜终审、定向修订。前八个共用 `generateValidatedJson`，在 `STAGE_MODEL_OUTPUT_LOG_SCOPES` 里注册即生效；**定向修订是唯一的例外**——它走 `modelCallCoordinator`，由 `createAnimationPlanRevision` 自己接 `attemptObserver`，两次 provider 调用各留一条记录。目录结构、权限与原子写与上一节完全一致，只是这些阶段在该层没有 Production Lineage 上下文，所以路径固定落在：
 
 ```text
 unbound/unknown-variant/<stage>/unbound-request/<operationId>/
@@ -49,7 +49,7 @@ unbound/unknown-variant/<stage>/unbound-request/<operationId>/
     metadata.json
 ```
 
-`<stage>` 就是阶段 id（`analysis` / `reconstruction` / `brief` / `variants` / `visualGuardrails` / `characterReference`）。**成功与失败都记**：`metadata.json` 的 `attempt.status` 为 `succeeded` 时 `code` 是 `MODEL_COMPLETION_ACCEPTED`，失败时 `category` / `code` 来自 `classifyAttemptError`（例如 `output-contract` / `OUTPUT_CONTRACT_INVALID`），复用与 Full Story 同一份分类，不另建映射。一次调用内如果 client 内部发生了 JSON 重试或视频退回逐帧，每条 completion 各留一条记录，只有最后一条带本次阶段判定，更早的标记为 `superseded`。
+`<stage>` 就是阶段 id（`analysis` / `reconstruction` / `brief` / `variants` / `visualGuardrails` / `characterReference` / `storyQualityReview` / `animationPlanReview` / `animationPlanRevision`）。**scope 取值必须逐字等于 stage 名**：writer map 按 scope 建、按 stage 查，对不上就静默不写——2026-09-07 之前后三个阶段压根没注册，终审失败时模型原文永久丢失、只能靠反推根因。**成功与失败都记**：`metadata.json` 的 `attempt.status` 为 `succeeded` 时 `code` 是 `MODEL_COMPLETION_ACCEPTED`，失败时 `category` / `code` 来自 `classifyAttemptError`（例如 `output-contract` / `OUTPUT_CONTRACT_INVALID`），复用与 Full Story 同一份分类，不另建映射。一次调用内如果 client 内部发生了 JSON 重试或视频退回逐帧，每条 completion 各留一条记录，只有最后一条带本次阶段判定，更早的标记为 `superseded`。
 
 它填的是这两类失败此前完全没有本地痕迹的空白：`OutputContractError` 只返回 502 而不落盘，`ModelResponseError` 的原文只在内存 `AttemptStore` 里存 30 分钟且没有接口能取。
 
