@@ -40,6 +40,16 @@ Creative Brief 的 `allowedNarrativeComponents` 使用服务端固定的七项�
 
 Phase 1.1 的真实包回放进一步明确：当前结构签名保证的是字段文本投影不同，不是整批候选的语义因果链一定不同。Creative Brief Prompt 现在只允许强保真字段记录抽象剧作价值；Theme Variants Prompt 只展开定位、受众、核心情绪、情绪结构与 `dramaticValue` 投影，不再把历史 Brief 中可能具体化的 `storyEngine`、`mustRetain`、`samePlotDriver`、`sameBeatValue` 或 `creativeDistancePolicy` 值当作正向候选命令。旧 Brief Artifact 本身不会被改写。Prompt 中的因果、Beat 必要性和连贯性要求仍不是确定性验证；真实 5×4 回放中的 Schema 与精确字段投影可以全部通过，人工仍可能发现物品状态或动作顺序矛盾。Brief 抽象层风险和三条已知下游失败样本已登记到 [`T09 Phase 2 Story Blueprint 与候选语义质量闭环`](docs/GitHub-Benchmark-%E5%90%8E%E7%BB%AD%E6%94%B9%E9%80%A0%E5%BE%85%E5%8A%9E.md#t09phase-2-story-blueprint-%E4%B8%8E%E5%80%99%E9%80%89%E8%AF%AD%E4%B9%89%E8%B4%A8%E9%87%8F%E9%97%AD%E7%8E%AF)；本轮未修改 Story Candidate Schema、Full Story 或 Animation Plan 行为。
 
+## 候选阶段的原片事实溯源与对照评审
+
+`transformationProof` 的五个 `changed*` 现在是 `{source, replacement}` 结构对：`source` 只写原片是什么，由服务端回上游确定性核对（复用创意简报那套字符覆盖率，阈值 0.75，允许转述）；原片在这个维度上确实没有对应物时，`source` 以 `原片没有` 开头即可（后面照常说明）。核对基准只有 `referenceAnalysis` 与 `sourceScriptReconstruction`，不含 `creativeBrief`。
+
+缺席声明第一版要求精确等于「原片没有」四个字，实测 20/20 全部失败——模型一律把它当成句子开头补完（「原片没有明确任务」）。放宽到前缀判定不削弱闸门：否定句不制造改写基线，正向声称仍然逐条回上游核对。同批实测还发现模型会把 `source` 的提问方向写反（回答「原片有没有我要加的东西」而不是「原片这一维度有什么」），提示词已改为正向引用优先并给出填好的样例，但这一条只能靠人工观察。
+
+起因是一次实测：一轮四个候选全部把原片写成「企鹅快递员 / 快递送达」，而两份上游文件里「快递」出现 0 次——「穿着企鹅连体衣」是真的，快递员是补出来的职业，而且同一份简报明写着原片没有送达任务。污染源是简报提示词里那句写死的举例（模型只换两个词就照抄了），防这件事的规则当时只写在 Full Story 提示词里、候选阶段收不到，两个字段又都没有校验器。现在举例不再含参考片具体名词，规则补进候选阶段，并加上这道确定性闸门。`highValueBeatMapping[]` 同时新增必填 `failureSignal`（这条保留机制没迁移成功时会长成什么样）。
+
+`POST /api/story-candidate-review` 是候选生成后的独立对照评审，与剧情体检同规格：**只出报告**，不改候选、不签发 Artifact、不进 lineage、不改变候选数量、不阻断后续，刷新页面即失。送审投影按允许清单构造，剥掉候选的全部自我评价字段（`novelty`、`retainedValue`、`experienceFidelity`、`transformationProof`、`originalityRiskCheck` 与每拍 `dramaticFunction`），只留动作链——让故事自己证明自己，而不是让解释替它过关；`failureSignal` 反而保留，它是证伪条件不是成功声明。报告不打总分，`verdict: drop` 只是结论，淘汰与否由用户决定。覆盖率由服务端确定性核验（候选数量与 id 逐位对齐、标题回显包含原文、拍号真实存在、推荐顺序是候选 id 的排列）；「判得对不对」是语义判断，没有确定性兜底。
+
 ## 模型输出有界纠错
 
 当前主流程不再把一份已经解析、但校验失败的完整 Artifact 直接交给模型整包重写。服务端只接受稳定的结构化 diagnostics（`code + RFC 6901 JSON Pointer + reason`）；当候选完整、路径可信、目标已存在且权威事实唯一时，才签发一次局部计划。当前有两套互不混用的协议：Legacy Full Story 使用专用 `full_story_partial_repair/1.0`；`artifact_partial_repair/1.0` 编排 Animation Foundation 固定角色安全子集。第二次请求只包含错误目标的当前值、修复说明和最小权威投影，模型只能按服务端 `repairId` 返回 replacement，不能自报 path、JSON Patch 或额外操作。

@@ -1,7 +1,7 @@
 import { syncShotCharacterReference } from "./character-reference-sync.js";
 import { formatStageUsageSuffix, mergeStageUsage } from "./token-usage-format.js";
 import { storyPackageFilename } from "./export-filename.js";
-import { storyReviewHeadline, storyReviewMetrics } from "./story-review-metrics.js";
+import { candidateReviewHeadline, storyReviewHeadline, storyReviewMetrics } from "./story-review-metrics.js";
 import {
   createDirectorArtifactSynchronizer,
   formatDirectorCompletionStatus
@@ -256,8 +256,9 @@ const MODEL_STAGE_DEFS = [
   { key: "brief", label: "创意简报", hint: "保留价值、受控变量", capability: "文本模型", capabilityKind: "text" },
   { key: "visualGuardrails", label: "视觉规则", hint: "角色边界、原片来源记录、台词规则", capability: "视觉模型", capabilityKind: "vision" },
   { key: "variants", label: "主题变体", hint: "新故事方向", capability: "文本模型", capabilityKind: "text" },
+  { key: "storyCandidateReview", label: "候选对照评审", hint: "横向比对候选动作链，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "fullStory", label: "完整剧情", hint: "可拍分场剧本", capability: "文本模型", capabilityKind: "text" },
-  // 三个验收阶段。服务端从一开始就在 modelStages / stageHealth 里上报它们，
+  // 四个验收阶段。服务端从一开始就在 modelStages / stageHealth 里上报它们，
   // 只是这张表漏了登记，于是面板选不到、sanitizedModelOverrides 也会把覆盖过滤掉——
   // 这张表就是 override 白名单。都是纯文本阶段（不在 requiresMediaModel 里）。
   // optional：它们由用户手动触发、不属于必经链路，不该参与 modelStagesReady 的就绪判定。
@@ -1459,8 +1460,94 @@ function renderVariants(data) {
       <ul class="mini-beats">${(variant.storyOutline || []).map((beat) => `<li><b>${escape(beat.beat)}</b><span><strong>${escape(beat.phase)}</strong> · ${escape(beat.action)}</span></li>`).join("")}</ul>
       ${variant.endingRitual ? `<div class="variant-ending"><b>结尾仪式：</b>${escape(variant.endingRitual)}</div>` : ""}
       <button class="outline-button variant-story-button" type="button" data-story-variant="${escape(variant.id)}"${regenerating ? " disabled" : ""}>进入完整剧情 →</button>
-    </div>`).join("")}</div>`;
+    </div>`).join("")}</div>
+    <div class="story-review">
+      <button type="button" class="outline-button" data-candidate-review${regenerating ? " disabled" : ""}>对照原片体检候选</button>
+      <span class="story-review-hint">只看动作链，不看候选的自我评价——评审拿不到新颖性、保留价值和体验保真这些字段。只出报告，不改候选、不淘汰、不影响后续。</span>
+      <div class="story-review-body" data-candidate-review-body></div>
+    </div>`;
   reveal(elements.variants);
+  const reviewButton = elements.variants.querySelector("[data-candidate-review]");
+  if (reviewButton) reviewButton.addEventListener("click", () => runStoryCandidateReview(data, reviewButton));
+}
+
+// 候选对照评审：手动触发，只出报告。不改候选、不签发 Artifact、不改变候选数量、
+// 不 stale 任何东西、不阻断后续阶段。报告不落盘，刷新页面即失。
+async function runStoryCandidateReview(themeVariants, button) {
+  const body = elements.variants.querySelector("[data-candidate-review-body]");
+  if (!body || button.disabled) return;
+  if (!state.output.sourceScriptReconstruction) {
+    body.innerHTML = `<p class="story-review-status error">缺少原片脚本还原，无法做对照评审。</p>`;
+    return;
+  }
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "体检中…";
+  body.innerHTML = `<p class="story-review-status">正在逐个候选核对动作链与原片机制，通常十几秒…</p>`;
+  try {
+    const review = await api("/api/story-candidate-review", {
+      themeVariants,
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+      visualGuardrails: state.output.visualGuardrails
+    });
+    body.innerHTML = renderStoryCandidateReview(review, themeVariants);
+  } catch (error) {
+    // 覆盖率核验拦下的漏检要完整显示：用户需要看到是哪个候选没被评到。
+    body.innerHTML = `<p class="story-review-status error">${escape(error?.message || "候选体检失败")}</p>`;
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+const CANDIDATE_VERDICT_LABEL = { pass: "可展开", revise: "需修改", drop: "建议淘汰" };
+
+// 评审结论与候选**自己的说辞**并排显示。
+// 模型看不到右边那一栏（服务端按允许清单剥掉了），你看得见——差在哪一眼就知道。
+function renderStoryCandidateReview(review, themeVariants) {
+  const byId = new Map((themeVariants?.variants || []).map((variant) => [String(variant.id), variant]));
+  const headline = candidateReviewHeadline(review);
+  const cards = (review.candidateChecks || []).map((check) => {
+    const candidate = byId.get(String(check.candidateId));
+    const interaction = check.coreInteraction || {};
+    const mechanisms = (check.mechanismChecks || []).map((entry) => `
+      <div class="review-check">
+        <div class="review-check-head">
+          <span class="scene-id">${escape(entry.sourceMechanism)}</span>
+          <span class="review-verdict verdict-${escape(entry.verdict)}">${escape(REVIEW_VERDICT_LABEL[entry.verdict] || entry.verdict)}</span>
+        </div>
+        <p><b>原片在哪兑现：</b>${escape(entry.whereInSource)}</p>
+        <p><b>本候选在哪兑现：</b>${escape(entry.whereInCandidate)}${(entry.beatIndexes || []).length ? `（第 ${escape((entry.beatIndexes || []).join("、"))} 拍）` : ""}</p>
+      </div>`).join("");
+    const claims = candidate ? `
+      <div class="candidate-review-claim">
+        <b>候选自己的说辞（评审看不到这一栏）</b>
+        <p><b>新颖性：</b>${escape(candidate.novelty || "—")}</p>
+        <p><b>保留价值：</b>${escape((candidate.highValueBeatMapping || []).map((entry) => entry.retainedValue).filter(Boolean).join("；") || "—")}</p>
+        <p><b>体验保真：</b>${escape(candidate.experienceFidelity?.plotDriver || "—")}</p>
+      </div>` : "";
+    return `
+      <details class="candidate-review-card" ${check.verdict === "pass" ? "" : "open"}>
+        <summary>
+          <span class="scene-id">${escape(check.candidateId)}</span>
+          <b>${escape(check.title)}</b>
+          <span class="review-verdict verdict-${check.verdict === "pass" ? "depicted" : check.verdict === "revise" ? "partially_depicted" : "not_depicted"}">${escape(CANDIDATE_VERDICT_LABEL[check.verdict] || check.verdict)}</span>
+        </summary>
+        <p class="review-why">${escape(check.why)}</p>
+        <div class="data-grid">
+          ${cell("具体困境", interaction.setback)}${cell("主角介入", interaction.intervention)}
+          ${cell("对方回应", interaction.response)}${cell("可见前后变化", interaction.visibleChange)}
+        </div>
+        ${mechanisms}
+        <p class="review-keep"><b>别改掉：</b>${escape(check.keepThis)}</p>
+        ${claims}
+      </details>`;
+  }).join("");
+  return `
+    <p class="story-review-status">${escape(headline)}</p>
+    <p class="story-review-status">推荐开发顺序：${escape((review.recommendedOrder || []).join(" → "))}</p>
+    ${cards}
+    <p class="story-review-summary">${escape(review.summary)}</p>`;
 }
 
 // 换一批：用同一份已签发的上游证据（referenceAnalysis / sourceScriptReconstruction /

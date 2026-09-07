@@ -559,6 +559,20 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
 .review-evidence { color: var(--muted); }
 .review-issue.severity-BLOCKER { border-color: rgba(180, 35, 24, .3); }
 
+/* 候选对照评审。复用剧情体检的 .story-review / .review-check / .review-verdict 等既有样式，
+   这里只补两处：逐候选的折叠卡，以及并排显示的「候选自己的说辞」。
+   后者刻意画成灰底次要块——它是被评审刻意屏蔽掉的那一栏，放在这里供人对照，
+   不是判定依据。 */
+.candidate-review-card { margin-top: 10px; padding: 11px 13px; border-radius: 10px;
+  background: #fff; border: 1px solid var(--line); font-size: 10px; line-height: 1.7; }
+.candidate-review-card > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.candidate-review-card > summary .scene-id { position: static; width: auto; height: auto; padding: 3px 7px; }
+.candidate-review-card .data-grid { margin-top: 8px; }
+.candidate-review-claim { margin-top: 10px; padding: 9px 11px; border-radius: 8px;
+  background: #efebe4; color: var(--muted); }
+.candidate-review-claim p { margin: 3px 0 0; }
+.story-review-summary { margin-top: 12px; color: var(--ink); font-size: 10px; line-height: 1.7; }
+
 /* 分镜终审报告。复用剧情体检的 .review-check / .review-severity 等既有样式，
    这里只补三处它没有的：置顶的主要缺陷卡、分数旁的免责说明、升级建议的三段文案。 */
 .plan-review-defect { margin-top: 10px; padding: 12px 14px; border-radius: 10px;

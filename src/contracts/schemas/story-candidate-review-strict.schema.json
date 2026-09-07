@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "internal://story-candidate-review-strict",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "candidateChecks",
+    "recommendedOrder",
+    "summary"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "story-candidate-review/1.0" },
+    "candidateChecks": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/candidateCheck" }
+    },
+    "recommendedOrder": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "summary": { "$ref": "#/$defs/nonEmptyString" }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "verdict": {
+      "enum": ["depicted", "partially_depicted", "not_depicted"]
+    },
+    "candidateVerdict": {
+      "enum": ["pass", "revise", "drop"]
+    },
+    "coreInteraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["setback", "intervention", "response", "visibleChange"],
+      "properties": {
+        "setback": { "$ref": "#/$defs/nonEmptyString" },
+        "intervention": { "$ref": "#/$defs/nonEmptyString" },
+        "response": { "$ref": "#/$defs/nonEmptyString" },
+        "visibleChange": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "mechanismCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceMechanism", "whereInSource", "whereInCandidate", "beatIndexes", "verdict"],
+      "properties": {
+        "sourceMechanism": { "$ref": "#/$defs/nonEmptyString" },
+        "whereInSource": { "$ref": "#/$defs/nonEmptyString" },
+        "whereInCandidate": { "$ref": "#/$defs/nonEmptyString" },
+        "beatIndexes": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "verdict": { "$ref": "#/$defs/verdict" }
+      }
+    },
+    "candidateCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidateId",
+        "title",
+        "coreInteraction",
+        "mechanismChecks",
+        "verdict",
+        "why",
+        "keepThis"
+      ],
+      "properties": {
+        "candidateId": { "$ref": "#/$defs/nonEmptyString" },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "coreInteraction": { "$ref": "#/$defs/coreInteraction" },
+        "mechanismChecks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/mechanismCheck" }
+        },
+        "verdict": { "$ref": "#/$defs/candidateVerdict" },
+        "why": { "$ref": "#/$defs/nonEmptyString" },
+        "keepThis": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  }
+}

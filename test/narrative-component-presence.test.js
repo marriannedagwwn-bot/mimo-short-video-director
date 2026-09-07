@@ -92,3 +92,27 @@ test("简报提示词要求存在性判定并给出反例", () => {
   assert.match(prompt, /必须以「【原片有】」或「【原片没有】」开头/u);
   assert.match(prompt, /不得写成「主角携带某物前往某户人家」/u);
 });
+
+// 2026-09-06 实测：mappingLogic 的举例正文里写死了「不继承原片企鹅服、快递员身份和视觉外壳」，
+// 而当天的简报输出是「不继承原片企鹅连体衣、快递员身份和视觉外壳」——**只换了两个词**。
+// 上游 referenceAnalysis 与 sourceScriptReconstruction 里「快递」出现 0 次：
+// 企鹅装是真的，快递员是从举例里抄来的。这个虚构随后被四个候选全部继承，
+// V1 还照着它把整条结构建成「主动承担送达任务」，而同一份简报明写着送达任务【原片没有】。
+//
+// 举例的措辞可以被抄，具体名词不行——所以举例里不再放任何参考片的具体名词。
+// 这一条**没有确定性兜底**（判断模型有没有在抄举例需要语义判断），
+// 它的兜底在下一个阶段：候选的 transformationProof.source 会被回上游硬核对。
+test("mappingLogic 举例不含参考片具体名词，避免被逐字抄成原片事实", () => {
+  const prompt = briefPrompt(input);
+  assert.match(prompt, /不继承原片主角的服装、职业外壳与视觉标签/u);
+  assert.doesNotMatch(prompt, /不继承原片企鹅服、快递员身份和视觉外壳/u);
+  assert.match(prompt, /\*\*举例里的措辞可以照搬，具体名词不行\*\*/u);
+  assert.match(prompt, /每一个描述原片的具体名词都必须是你在 referenceAnalysis 或 sourceScriptReconstruction 里真的读到的/u);
+});
+
+// 357 行那句仍然保留「企鹅快递员」——它说明的是「外壳职业不得覆盖固定主角」这条判据，
+// 删掉会丢掉一个真实存在的危险形状。按 §2.10 已有的做法给它加标注即可。
+test("仍需保留的举例带上「来自另一部参考片」标注", () => {
+  const prompt = briefPrompt(input);
+  assert.match(prompt, /这一句里的企鹅、企鹅快递员来自另一部参考片，只示范判据，不要照抄内容/u);
+});

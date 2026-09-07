@@ -115,7 +115,7 @@ const animationModelOutputLogWriter = new FullModelOutputLogWriter({
 });
 // 这些阶段共用一个 root，按 stage 各建一个 writer；
 // 不配置 STAGE_MODEL_OUTPUT_LOG_DIR 就完全不写。
-// 前八个走 generateStageJson，注册即生效；animationPlanRevision 走
+// 前九个走 generateStageJson，注册即生效；animationPlanRevision 走
 // modelCallCoordinator，由 workflow 自己接 attemptObserver，是唯一的例外。
 const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
   MODEL_OUTPUT_LOG_SCOPES.ANALYSIS,
@@ -124,6 +124,7 @@ const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
   MODEL_OUTPUT_LOG_SCOPES.VARIANTS,
   MODEL_OUTPUT_LOG_SCOPES.VISUAL_GUARDRAILS,
   MODEL_OUTPUT_LOG_SCOPES.CHARACTER_REFERENCE,
+  MODEL_OUTPUT_LOG_SCOPES.STORY_CANDIDATE_REVIEW,
   MODEL_OUTPUT_LOG_SCOPES.STORY_QUALITY_REVIEW,
   MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVIEW,
   MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVISION
@@ -319,6 +320,9 @@ const routes = {
   },
   // 剧情体检：只出报告。不签发 Artifact、不进 lineage、不 stale 任何东西、不阻断后续阶段。
   "/api/story-quality-review": (body) => workflow.createStoryQualityReview(body),
+  // 候选对照评审：同样只出报告。送审投影里剥掉候选的自我评价字段，让动作链自己说话；
+  // verdict 里的 drop 只是一句话，不删候选、不改数量、不触发任何 stale。
+  "/api/story-candidate-review": (body) => workflow.createStoryCandidateReview(body),
   "/api/animation-plan-review": (body) => workflow.createAnimationPlanReview(body),
   // 定向修订：按终审报告只改被点名的镜头。**不签发任何东西**——返回合并后的候选 Plan
   // 供页面预览，用户点「采纳」时才由浏览器走既有的 Plan revision 签发流程。
@@ -2078,6 +2082,12 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
     brief: stageSetting(provider, source.briefModel || source.model, source.briefMaxCompletionTokens || source.maxCompletionTokens),
     visualGuardrails: stageSetting(provider, source.visualModel || source.videoModel || source.model, source.visualMaxCompletionTokens || source.maxCompletionTokens),
     variants: stageSetting(provider, source.variantsModel || source.model, source.variantsMaxCompletionTokens || source.maxCompletionTokens),
+    // 候选对照评审沿用候选阶段的 provider/model，也就是**写这些候选的那个模型**。
+    // 自己批自己会偏松——§2.13 在剧情体检上实测过同一现象（同一份剧情自评
+    // 「AI 可执行性 8.0 / 物理可信度 8.0」，外部模型读同一份给 6.8 / 6.8）。
+    // 这里如实记下这个已知偏差，不靠静默换一家掩盖：它是纯文本阶段，
+    // 需要外部视角时按阶段 override 换 provider 即可。
+    storyCandidateReview: stageSetting(provider, source.variantsModel || source.model, source.variantsMaxCompletionTokens || source.maxCompletionTokens),
     fullStory: stageSetting(provider, source.storyModel || source.model, source.storyMaxCompletionTokens || source.maxCompletionTokens),
     animationPlan: stageSetting(provider, source.animationModel || source.storyModel || source.model, source.animationMaxCompletionTokens || source.maxCompletionTokens),
     staticFrameCompiler: stageSetting(

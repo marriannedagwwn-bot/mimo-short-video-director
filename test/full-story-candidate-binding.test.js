@@ -37,11 +37,11 @@ const baseCandidate = Object.freeze({
   keyDialogueDirections: [],
   endingRitual: "老人和阿岚一起给旧钟上弦",
   transformationProof: {
-    changedCharacters: "改为社区修理师与等待旧钟的老人",
-    changedTask: "改为送回修好的旧钟",
-    changedDetailsAndProps: "改为手摇灯、发条与钟摆",
-    changedDialogue: "围绕守时承诺重新设计",
-    changedVisualExpression: "以停电街区和机械运动组织画面"
+    changedCharacters: { source: "帮助者", replacement: "改为社区修理师与等待旧钟的老人" },
+    changedTask: { source: "完成送达或照料", replacement: "改为送回修好的旧钟" },
+    changedDetailsAndProps: { source: "任务物", replacement: "改为手摇灯、发条与钟摆" },
+    changedDialogue: { source: "对白稀少，以动作体现坚持", replacement: "围绕守时承诺重新设计" },
+    changedVisualExpression: { source: "近景与物件特写", replacement: "以停电街区和机械运动组织画面" }
   },
   experienceFidelity: {
     positioning: "生活情感短片",

@@ -3,6 +3,7 @@ import {
   validateStoryCandidateStrict,
   validateStoryCandidatesStrict,
   validateAnimationPlanReviewStrict,
+  validateStoryCandidateReviewStrict,
   validateStoryQualityReviewStrict
 } from "./contracts/contract-validator.js";
 import { GLOBAL_CHARACTER_BOUNDARY_VERSION } from "./character-boundary.js";
@@ -61,7 +62,8 @@ const outputContracts = {
   fullStory: ["selectedVariantId", "title", "oneLinePremise", "targetDurationSeconds", "shootingSynopsis", "characterBible", "beatSheet", "sceneScript", "keyProps", "shootingPlan", "dialogueStyleGuide", "retentionPlan", "experienceFidelity", "transformationProof", "continuityAndSafetyCheck", "uncertainties"],
   animationPlan: ["selectedVariantId", "title", "productionStrategy", "visualBible", "characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "editPlan", "generationChecklist", "modelAgnosticNotes", "continuityAndSafetyCheck", "uncertainties"],
   storyQualityReview: ["schemaVersion", "selectedVariantId", "retentionChecks", "sceneFunctionChecks", "issues", "summary"],
-  animationPlanReview: ["schemaVersion", "overallScore", "dominantDefect", "strengths", "dimensions", "shotEvaluations", "propTracking", "sceneCheck", "issues", "otherFindings", "upgradePath", "revisionBrief"]
+  animationPlanReview: ["schemaVersion", "overallScore", "dominantDefect", "strengths", "dimensions", "shotEvaluations", "propTracking", "sceneCheck", "issues", "otherFindings", "upgradePath", "revisionBrief"],
+  storyCandidateReview: ["schemaVersion", "candidateChecks", "recommendedOrder", "summary"]
 };
 
 const animationFoundationFields = outputContracts.animationPlan.filter((field) => field !== "shotPlan");
@@ -339,6 +341,17 @@ export function ensureOutputContract(value, contract) {
       );
     }
   }
+  // 候选对照评审报告。schema 只管结构，逐候选覆盖与引用真实性由
+  // ensureStoryCandidateReviewCoversCandidates 裁决——与上面两份评审同分工。
+  if (contract === "storyCandidateReview") {
+    const schemaResult = validateStoryCandidateReviewStrict(value);
+    if (!schemaResult.ok) {
+      throw new OutputContractError(
+        `storyCandidateReview 结构校验失败：${schemaResult.diagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+        schemaResult.diagnostics
+      );
+    }
+  }
   if (contract === "fullStory") {
     const schemaResult = validateLegacyFullStoryStrict(value);
     if (!schemaResult.ok) {
@@ -359,7 +372,8 @@ export function ensureOutputContract(value, contract) {
     fullStory: ["beatSheet", "sceneScript", "keyProps", "shootingPlan", "retentionPlan", "uncertainties"],
     animationPlan: ["characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "generationChecklist", "modelAgnosticNotes", "uncertainties"],
     storyQualityReview: ["retentionChecks", "sceneFunctionChecks", "issues"],
-    animationPlanReview: ["strengths", "dimensions", "shotEvaluations", "propTracking", "sceneCheck", "issues", "otherFindings", "upgradePath"]
+    animationPlanReview: ["strengths", "dimensions", "shotEvaluations", "propTracking", "sceneCheck", "issues", "otherFindings", "upgradePath"],
+    storyCandidateReview: ["candidateChecks", "recommendedOrder"]
   }[contract] || [];
   const wrongArrays = arrayFields.filter((key) => !Array.isArray(value[key]));
   if (wrongArrays.length) throw new OutputContractError(`${contract} 字段类型无效：${wrongArrays.join("、")} 必须是数组`);
@@ -2235,6 +2249,39 @@ function citationClauses(value) {
     .filter(Boolean);
 }
 
+// 并列连接词只在**整串覆盖率不足时**才用来二次切分，且切片必须 ≥2 字。
+//
+// 起因：`citationCoverage` 对每个上游字符串**独立**算 LCS 再取最大值，
+// 因此一条引用里并列两个真事实、而它们分散在不同上游句子里时，
+// 任何单句都只能覆盖一半。实测「棒棒糖与绿色挎包」覆盖率 0.50 被拦，
+// 而「棒棒糖」「绿色挎包」各自单独引用都通过——上游 keyProps 里两样都白纸黑字写着。
+// 「原片这一维度有什么」天然是并列的（道具就是好几件），所以这不是个别写法问题。
+//
+// **不能简单地把「与和及」加进 citationClauses 的分隔符**：它们大量出现在词内
+// （温和、参与、以及、涉及），无条件切分会产出「温」这种单字碎片，
+// 而越短的片段 LCS 覆盖率越容易虚高，等于凭空放松判定。
+//
+// 因此设计成只降假阳性、不降拦截力的形状：
+//   1. 整串够阈值就直接通过，行为与此前逐字一致；
+//   2. 不够时才按连接词切分，且**每一片都必须 ≥2 字**，否则维持原判定；
+//   3. 切开后**每一片都要独立够阈值**才放行，有一片不够就维持原判定。
+// 于是「快递员与送达任务」两片都找不到 → 仍然拦下；
+// 「棒棒糖与快递箱」真的那片过、编的那片不过 → 仍然拦下。
+// 编造无法因为被切开而变成真的。
+const CITATION_CONJUNCTION_SPLIT = /以及|[与和及]/u;
+const CITATION_CONJUNCTION_MIN_LENGTH = 2;
+
+function citationClauseCovered(clause, upstreamTexts, threshold) {
+  if (citationCoverage(clause, upstreamTexts) >= threshold) return true;
+  const parts = String(clause)
+    .split(CITATION_CONJUNCTION_SPLIT)
+    .map((part) => normalizeSourceExpressionExcerpt(part))
+    .filter(Boolean);
+  if (parts.length < 2) return false;
+  if (parts.some((part) => part.length < CITATION_CONJUNCTION_MIN_LENGTH)) return false;
+  return parts.every((part) => citationCoverage(part, upstreamTexts) >= threshold);
+}
+
 function validateNarrativeComponentCitations(components, upstream) {
   // 逐条归一化后各自保留：拼成一整串会让相邻字段在去空白后粘连，制造跨字段的假匹配。
   const upstreamTexts = collectUpstreamText(upstream)
@@ -2252,8 +2299,8 @@ function validateNarrativeComponentCitations(components, upstream) {
       );
     }
     const missing = citations.flatMap((citation) => citationClauses(citation)
-      .map((clause) => ({ clause, coverage: citationCoverage(clause, upstreamTexts) }))
-      .filter((entry) => entry.coverage < CITATION_COVERAGE_THRESHOLD));
+      .filter((clause) => !citationClauseCovered(clause, upstreamTexts, CITATION_COVERAGE_THRESHOLD))
+      .map((clause) => ({ clause, coverage: citationCoverage(clause, upstreamTexts) })));
     if (missing.length) {
       throw new OutputContractError(
         `${path} 引用的内容在上游找不到对应事实：`
@@ -2549,7 +2596,106 @@ function validateVariantNarrativeModeMix(variants) {
   );
 }
 
-export function ensureThemeVariantsMatchProfile(value, creatorProfile = {}, creativeBrief = null, visualGuardrails = null) {
+/**
+ * transformationProof.changed*.source 的合法出口：原片在这个维度上根本没有对应物。
+ *
+ * 留这个出口是闸门能成立的前提。schema 要求每个 source 非空，如果唯一合法写法是
+ * 「一段能在上游找到的原片事实」，那么原片确实没有送达任务时，模型只有两条路：
+ * 编一个，或者整批失败。**逼出来的编造正是这条闸门要拦的东西。**
+ *
+ * **判定是前缀，不是完全相等——第一版要求精确四个字，实测 20/20 全部失败。**
+ * 模型无一例外地把它当成句子开头补完（「原片没有明确任务」「原片没有人类角色对白」），
+ * 四个候选五个字段一个不落。这不是模型不听话：`原片没有` 天然读作一句话的开头，
+ * 要求它在这里戛然而止，是让措辞去对抗书写本能，本仓库已有多次同类失败记录。
+ *
+ * 放宽到前缀会让「原片没有把糖递给女孩」这类带内容的否定句免检——第一版正是为此
+ * 才要求完全相等。重新权衡后认为代价搞反了：**否定句不制造改写基线。**
+ * 这条闸门要拦的是「原片快递送达」那种凭空补出的原片事实，它会让下游照着一个
+ * 不存在的结构去改写；而「原片没有 X」无论后面写什么，都没有声称原片有过什么可供承接的东西，
+ * 最坏情况只是这一格信息量为零。用整条流水线硬失败去换这点收益不划算。
+ * 正向声称仍然逐条回上游核对，闸门的实际拦截能力没有变化。
+ */
+export const VARIANT_SOURCE_ABSENT_SENTINEL = "原片没有";
+
+const VARIANT_SOURCE_FACT_FIELDS = Object.freeze([
+  "changedCharacters",
+  "changedTask",
+  "changedDetailsAndProps",
+  "changedDialogue",
+  "changedVisualExpression"
+]);
+
+/**
+ * 候选的 transformationProof 里「原片是什么」那一半，必须回上游核对。
+ *
+ * 依据是 2026-09-06 的实测：一轮四个候选**全部**把原片写成「企鹅快递员 / 快递送达」，
+ * 而上游 referenceAnalysis 与 sourceScriptReconstruction 里「快递」出现 0 次
+ * （「穿着企鹅连体衣」是真的，快递员是补出来的职业），同一份 creativeBrief 还明写着
+ * 「送达任务【原片没有】」。V1 更照着这个虚构把整条结构建成「主动承担送达任务」——
+ * 一个不存在的原片结构成了改写基线。
+ *
+ * 防这件事的提示词规则当时**已经存在**，反面例子还一模一样，但它写在 fullStoryPrompt 里，
+ * 而 transformationProof 是候选阶段先产出的，变体阶段根本收不到那条规则；两个阶段
+ * 也都没有任何校验器。规则、依据、测试都有，只是装错了阶段。
+ *
+ * 判定复用简报那套 citationCoverage（LCS 字符覆盖率，阈值 0.75），**不新建第二套词表**：
+ * 允许转述（Brief 与候选阶段都在做归纳，逐字比对会把忠实转述判成编造），
+ * 但复用真词汇拼出来的编造过不了阈值。实测同一份真实上游：
+ * 「企鹅连体衣」「绿色挎包」「咕嘎递出棒棒糖」通过，「快递送达」0.25、「企鹅快递员」0.60 拦下。
+ *
+ * **核对基准只有 referenceAnalysis 与 sourceScriptReconstruction，绝不含 creativeBrief**——
+ * 今天正是简报自己先错（它的 mappingLogic 抄了提示词举例里的「快递员身份」），
+ * 拿它当基准等于给虚构盖章。
+ */
+function validateVariantSourceFactCitations(variants, upstream) {
+  const upstreamTexts = collectUpstreamText(upstream)
+    .map((entry) => normalizeSourceExpressionExcerpt(entry))
+    .filter(Boolean);
+  if (!upstreamTexts.length) return;
+  const details = [];
+  (Array.isArray(variants) ? variants : []).forEach((variant, index) => {
+    const label = variant?.id || `V${index + 1}`;
+    const proof = variant?.transformationProof;
+    if (!proof || typeof proof !== "object") return;
+    VARIANT_SOURCE_FACT_FIELDS.forEach((field) => {
+      const entry = proof[field];
+      if (!entry || typeof entry !== "object") return;
+      const source = String(entry.source || "").trim();
+      // 以「原片没有」开头即为缺席声明，后面的自由文本不再核对：它没有声称原片有过
+      // 任何可供承接的东西，因此不制造改写基线。判定是纯字符串前缀，不含语义。
+      if (!source || source.startsWith(VARIANT_SOURCE_ABSENT_SENTINEL)) return;
+      const unverified = citationClauses(source)
+        .filter((clause) => !citationClauseCovered(clause, upstreamTexts, CITATION_COVERAGE_THRESHOLD))
+        .map((clause) => ({ clause, coverage: citationCoverage(clause, upstreamTexts) }));
+      unverified.forEach((item) => {
+        details.push({
+          code: "STORY_CANDIDATE_SOURCE_FACT_UNVERIFIED",
+          path: `/variants/${index}/transformationProof/${field}/source`,
+          reason: `${label} 声称原片有「${item.clause}」，但上游找不到对应事实（覆盖率 ${item.coverage.toFixed(2)}）`
+        });
+      });
+    });
+  });
+  if (!details.length) return;
+  throw new OutputContractError(
+    `themeVariants 的 transformationProof 声称了原片并不存在的事实：`
+    + `${details.map((detail) => detail.reason).join("；")}。`
+    + `source 只写 referenceAnalysis 或 sourceScriptReconstruction 里真的写着的内容（允许转述），`
+    + `原片在这个维度上确实没有对应物时，source 以「${VARIANT_SOURCE_ABSENT_SENTINEL}」开头即可，不得为了填满字段编造一个改写基线。`,
+    details
+  );
+}
+
+export function ensureThemeVariantsMatchProfile(
+  value,
+  creatorProfile = {},
+  creativeBrief = null,
+  visualGuardrails = null,
+  upstream = null
+) {
+  // 溯源核对排在最前：一个候选如果连原片是什么都写错了，后面几项判定的对象就是错的。
+  // 与 ensureCreativeBriefMatchesProfile 同规格——没给上游就跳过，旧调用点行为逐字不变。
+  if (upstream) validateVariantSourceFactCitations(value?.variants, upstream);
   validateVariantStructuralDivergence(value?.variants);
   validateVariantNarrativeModeMix(value?.variants);
   const signedBoundaryName = String(visualGuardrails?.fixedCharacterBoundary?.characterName || "").trim();
@@ -2724,6 +2870,99 @@ export function ensureStoryQualityReviewCoversStory(review, fullStory) {
   });
   retentionChecks.forEach((check, index) => {
     check.viewerQuestion = String(retention[index]?.viewerQuestion || "");
+  });
+  return review;
+}
+
+/**
+ * 候选对照评审的覆盖率核验。
+ *
+ * 与 ensureStoryQualityReviewCoversStory 同规格，理由也一样：模型完全可以只挑它
+ * 碰巧注意到的一两个候选来点评，交回一份看起来很专业、实际漏检大半的报告。
+ * 所以覆盖率不靠模型自觉，靠这四条纯计数与字符串比较（**不含语义判断**）：
+ *
+ *   1. candidateChecks 与候选**数量相等且 candidateId 逐位相同**
+ *   2. 回显的 title 必须**包含**候选原文（复用 storyReviewEchoCoversSource，不写第二套）
+ *   3. mechanismChecks[].beatIndexes 引用的拍号必须在该候选 storyOutline 范围内
+ *   4. recommendedOrder 必须是全部候选 id 的一个排列，不多不少不重复
+ *
+ * 核验通过后服务端用原文无条件覆盖 title——它可从候选唯一推导，
+ * **回显不构成新事实**，与 direct_shot 骨架、剧情体检同规格。
+ *
+ * 「判得对不对」本身是语义的，**没有兜底**：这四条只保证模型逐个候选看过，
+ * 不保证它看得对。这是本机制已知的边界，与剧情体检写在同一处的那条完全一样。
+ */
+export function ensureStoryCandidateReviewCoversCandidates(review, candidates) {
+  requireObject(review, "storyCandidateReview");
+  const list = Array.isArray(candidates) ? candidates : [];
+  const checks = Array.isArray(review.candidateChecks) ? review.candidateChecks : [];
+  const details = [];
+  const push = (code, path, reason) => details.push({ code, path, reason });
+
+  if (checks.length !== list.length) {
+    push(
+      "CANDIDATE_REVIEW_COVERAGE_INCOMPLETE",
+      "/candidateChecks",
+      `本批有 ${list.length} 个候选，评审只覆盖了 ${checks.length} 个；每一个都必须逐条核对`
+    );
+  }
+  list.forEach((candidate, index) => {
+    const check = checks[index];
+    if (!check || typeof check !== "object") return;
+    const candidateId = String(candidate?.id || "").trim();
+    if (String(check.candidateId || "").trim() !== candidateId) {
+      push(
+        "CANDIDATE_REVIEW_ID_MISMATCH",
+        `/candidateChecks/${index}/candidateId`,
+        `第 ${index + 1} 项应当核对候选「${candidateId}」，实际写的是「${String(check.candidateId || "")}」；必须与 variants 逐位同序`
+      );
+    }
+    const title = String(candidate?.title || "");
+    if (!storyReviewEchoCoversSource(check.title, title)) {
+      push(
+        "CANDIDATE_REVIEW_TITLE_NOT_VERBATIM",
+        `/candidateChecks/${index}/title`,
+        `title 必须完整包含候选「${candidateId}」的标题原文，不得复述、概括或截断`
+      );
+    }
+    const beatCount = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline.length : 0;
+    (Array.isArray(check.mechanismChecks) ? check.mechanismChecks : []).forEach((mechanism, order) => {
+      (Array.isArray(mechanism?.beatIndexes) ? mechanism.beatIndexes : []).forEach((beat, position) => {
+        if (Number.isInteger(beat) && beat >= 1 && beat <= beatCount) return;
+        push(
+          "CANDIDATE_REVIEW_UNKNOWN_BEAT",
+          `/candidateChecks/${index}/mechanismChecks/${order}/beatIndexes/${position}`,
+          `引用了候选「${candidateId}」里不存在的拍号 ${beat}；该候选只有 ${beatCount} 拍`
+        );
+      });
+    });
+  });
+
+  const ids = list.map((candidate) => String(candidate?.id || "").trim()).filter(Boolean);
+  const order = (Array.isArray(review.recommendedOrder) ? review.recommendedOrder : [])
+    .map((entry) => String(entry || "").trim());
+  const missing = ids.filter((id) => !order.includes(id));
+  const unknown = order.filter((id) => !ids.includes(id));
+  const duplicated = order.filter((id, position) => order.indexOf(id) !== position);
+  if (missing.length || unknown.length || duplicated.length || order.length !== ids.length) {
+    push(
+      "CANDIDATE_REVIEW_ORDER_NOT_PERMUTATION",
+      "/recommendedOrder",
+      `recommendedOrder 必须是全部 ${ids.length} 个候选 id 的一个排列`
+      + `${missing.length ? `；漏了 ${missing.join("、")}` : ""}`
+      + `${unknown.length ? `；出现了不存在的 ${unknown.join("、")}` : ""}`
+      + `${duplicated.length ? `；重复了 ${[...new Set(duplicated)].join("、")}` : ""}`
+    );
+  }
+
+  if (details.length) {
+    throw new OutputContractError(
+      `storyCandidateReview 覆盖率核验失败：${details.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+      details
+    );
+  }
+  checks.forEach((check, index) => {
+    check.title = String(list[index]?.title || "");
   });
   return review;
 }

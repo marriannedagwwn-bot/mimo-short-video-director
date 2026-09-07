@@ -153,6 +153,22 @@ Full Story 阶段同步修掉一处跨阶段契约冲突：该阶段过去把七
 
 Prompt 中关于施动性、因果、人物质感、悬念、承诺和连贯性的要求，目前只是生成约束，不是已落地的内容正确性证明。`keyChoice`/关键选择拍、`climax`/高潮拍、`emotionalPayoff`/最后一拍的逐字投影，以及 `highValueBeatMapping.newExpression` 对 `storyOutline` 正文的逐字投影，可以消除候选内部的多版本事实，却不能证明这些事实在现实语义上成立；真实 5×4 回放仍由人工发现同一物品重复分配、动作先后回退等问题。Candidate digest/revision 绑定也只证明 Full Story 使用了哪份 current Candidate，不证明 Full Story 或 Animation Plan 的自由文本在语义上完整、无重复、无跳接或无角色外观漂移。Phase 1.1 发现的三条具体下游失败样本只登记在 `docs/GitHub-Benchmark-后续改造待办.md` 的 T09，本轮不修改 Legacy Full Story、Animation Plan、partial repair 权限或最终 wire shape。
 
+#### 原片事实溯源（2026-09-06）
+
+`transformationProof` 的五个 `changed*` 是 `{source, replacement}` 结构对：`source` 只写原片是什么、`replacement` 只写本片改成什么。`source` 由服务端确定性核对——要么能在 `referenceAnalysis` 或 `sourceScriptReconstruction` 里找到依据（复用创意简报那套字符覆盖率，阈值 0.75，允许转述），要么以 `原片没有` 开头（缺席声明，后面自由说明）。核对基准**不含 `creativeBrief`**：实测中正是简报先把原片写错（它的 `mappingLogic` 抄了提示词举例里的「快递员身份」），下游四个候选全部继承并放大成「原片快递送达」，而同一份简报的存在性判定明写着原片没有送达任务。诊断码 `STORY_CANDIDATE_SOURCE_FACT_UNVERIFIED`。
+
+缺席声明按**前缀**判定：第一版要求精确等于四个字，实测 20/20 全部失败（模型一律把它当句子开头补完）。否定句不制造改写基线，因此放宽到前缀不削弱这条闸门；正向声称仍逐条核对。同批实测还暴露模型会把 `source` 的提问方向写反（回答「原片有没有我要加的东西」而不是「原片这一维度有什么」），提示词已改为正向引用优先并给出填好的样例，但**这一条没有确定性兜底**。
+
+`highValueBeatMapping[]` 新增必填 `failureSignal`：这条保留机制没有迁移成功时会长成什么样。只有 schema 形状校验，没有语义兜底。
+
+#### 候选对照评审（storyCandidateReview，2026-09-06）
+
+`POST /api/story-candidate-review`。与剧情体检、分镜终审同规格：**只出报告**，不修改候选、不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、不改变候选数量、不阻断后续 Full Story；手动触发，刷新页面即失。
+
+送审投影按**允许清单**构造：只送 id、title、hook、logline、`narrativeMode`、`characterSetup`、`storyOutline` 动作链、`keyDialogueDirections` 与 `failureSignal`，剥掉 `novelty`、`visualPotential`、`experienceFidelity`、`transformationProof`、`originalityRiskCheck`、`retainedValue` 以及每拍 `dramaticFunction`——它们是生成者的自我解释与意图标签，送进去等于让解释替故事过关。`failureSignal` 是证伪条件而非成功声明，因此保留。
+
+覆盖率确定性核验：候选数量相等且 `candidateId` 逐位相同、`title` 回显必须包含原文、`beatIndexes` 必须在该候选拍数范围内、`recommendedOrder` 必须是全部候选 id 的一个排列；核验通过后用原文覆盖 `title`。不打总分；`verdict: drop` 只是报告结论，不删候选也不触发任何 stale。「判得对不对」是语义判断，没有确定性兜底。
+
 ### 阶段六：fullStory
 
 用户选择一个 `themeVariants.variants[]` 后，进入独立完整剧情页。该阶段不重新发散主题，只围绕被选中的主题变体扩写，输出：

@@ -201,6 +201,32 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
   格式：MiniMax 只接受 **WAV 与 MP3**，单段 2–15 秒、每镜 ≤3 段、合计 ≤15 秒。MP3 的 IANA MIME 是 `audio/mpeg`，而 MiniMax 从 MIME 子类型反推扩展名会读成 `.mpeg` 并以 2013 拒绝，因此**只在 MiniMax 传输边界**把标签改写成 `audio/mp3`（`MINIMAX_AUDIO_MIME_ALIASES`，必须声明在 worker 顶层 `await main()` 之前，否则子进程路径会落进暂时性死区）；Artifact 里仍保留 IANA 正确的 `audio/mpeg`，字节一个不改。`.m4a` MiniMax 不收，会在提交前明确失败。
 - **生成期间的过期复验是硬约束**：服务端把复验回调交给 `generateShotVideo`，生成器必须在①任何供应商调用与文件写入之前、②每条候选提交供应商之前、③每条候选落盘并通过 ffprobe 之后、④组装返回值之前各执行一次，**覆盖全部供应商**，禁止按 provider、模型或提示词方言设门（历史上只有已下线的 H3 路径复验，那是缺陷不是设计）。任一次失败即 fail closed：删除本次已写入的全部候选 mp4，`ProductionStateError`（409）原样上抛，禁止包装、禁止保留产物、禁止降级为成功。清理只删本次调用自己算出的含 nonce 路径，禁止扫描目录；旧 v2 首尾帧 PNG 文件名不含 nonce，不在覆盖内。只有过期触发清理——供应商错误与 ffprobe 失败维持既有语义。浏览器的事后关卡与它是叠加关系，不能用来解释复验缺失。
 
+### 2.12b 候选阶段的原片事实溯源与对照评审（2026-09-06）
+
+起因是实测：一轮**四个候选全部**把原片写成「企鹅快递员 / 快递送达」，而上游 `referenceAnalysis` 与 `sourceScriptReconstruction` 里「快递」出现 **0 次**（「穿着企鹅连体衣」是真的，快递员是补的）。同一份简报的 `allowedNarrativeComponents[0]` 还写对了「原片没有明确的送达任务」——**存在性判定写对了，别的字段照样编**，V1 还照着虚构把整条结构建成「主动承担送达任务」。
+
+污染链三段：①`briefPrompt` 的 `mappingLogic` 举例正文写死了「不继承原片企鹅服、**快递员身份**和视觉外壳」，当天输出只换了两个词，是在抄举例；②防这件事的规则**已存在**且反面例子一模一样，却写在 `fullStoryPrompt` 里，而 `transformationProof` 是候选阶段先产出的；③两个字段全项目零校验器。
+
+**① 简报举例去污染**：`mappingLogic` 举例不再含任何参考片具体名词，仍需保留的「企鹅快递员」加上 §2.10 同款标注「来自另一部参考片，只示范判据，不要照抄内容」。**没有确定性兜底**，兜底在 ②。
+
+**② 候选 `transformationProof` 改 `{source, replacement}` 结构对 + 确定性溯源校验**。分开两个槽位是全部要点——混在一个字符串里时程序无法知道哪一半在描述原片。`source` 只有两种合法取值：能在上游找到依据的原片事实（复用简报那套 `citationCoverage`，LCS 覆盖率 0.75，**允许转述**），或精确等于 sentinel `原片没有`（`VARIANT_SOURCE_ABSENT_SENTINEL`，**完全相等**判定）。
+
+留这个出口是闸门能成立的前提：schema 要求非空，没有出口就是在逼模型编造。**判定是前缀，不是完全相等**——第一版要求精确四个字，当天实测 **20/20 全部失败**：四个候选五个字段无一例外把它当成句子开头补完（「原片没有明确任务」「原片没有人类角色对白」）。`原片没有` 天然读作一句话的开头，要求它戛然而止是让措辞对抗书写本能。放宽的代价是带内容的否定句免检，但**否定句不制造改写基线**——它没有声称原片有过任何可供承接的东西，最坏只是这一格信息量为零；正向声称仍逐条核对，拦截能力不变。
+
+同一次实测还暴露第二个问题：模型把 `source` 的**提问方向写反了**——`changedDialogue.source` 写成「原片没有人类角色对白」，而那部参考片有一句「再见啦~」，还有女孩、咕嘎、简历、棒棒糖、绿色挎包。它在回答「原片有没有我要加的东西」，而这个字段问的是「原片这一维度**有什么**」。第一版提示词把缺席出口写成最显眼的一条，直接导致 20/20 全走这条路。现已改为：正向引用是默认路径并给出**填好的样例**，缺席出口降级为一行并注明「确实没有，而不是和本片不一样」。**这一条没有确定性兜底**——方向写反但格式合法的 source 无法用字符串判定识别。
+
+**核对基准只有 `referenceAnalysis` 与 `sourceScriptReconstruction`，绝不含 `creativeBrief`**——当天正是简报先错，拿它当基准等于给虚构盖章。`validateVariantSourceFactCitations` 由 `ensureThemeVariantsMatchProfile` 第 5 参数 `upstream` 驱动，`if (upstream)` 才执行，旧调用点逐字不变；诊断码 `STORY_CANDIDATE_SOURCE_FACT_UNVERIFIED`。浏览器请求体与 Durable `buildInput` 白名单本来就带这两份上游，无需管线改动。实测判别力：`企鹅连体衣`/`绿色挎包`/`咕嘎递出棒棒糖` 通过，`快递送达` 0.25、`企鹅快递员` 0.60 拦下，阈值不动。
+
+**Full Story 的 `transformationProof` 本轮不动**，那条提示词规则**逐字保留、没有合并**：两边判据严格程度本就不同（那边写「逐字找到依据」，这边校验器允许转述），揉成一句要么悄悄放松那一侧、要么让这一侧提示词比校验器更严。
+
+**③ `highValueBeatMapping` 补 `failureSignal`**：每条保留机制必须写证伪条件（这条机制没迁移成功时会长成什么样）。「温暖/治愈/关系改变/重获希望」单独出现不构成判据。**只有 schema 形状校验，没有语义兜底。**
+
+**④ 候选对照评审 `storyCandidateReview`**（`POST /api/story-candidate-review`）：与 §2.13、§2.14 同规格，**只出报告**——不改候选、不签发 Artifact、不进 lineage、不 stale、**不改变候选数量**、不阻断后续；刷新即失。
+
+送审投影**按允许清单构造**（`buildStoryCandidateReviewProjection`，安全性来自构造）：只送 id/title/hook/logline/`narrativeMode`/`characterSetup`/`storyOutline` 动作链/`keyDialogueDirections`/`failureSignal`；**刻意剥掉** `novelty`、`visualPotential`、`experienceFidelity`、`transformationProof`、`originalityRiskCheck`、`retainedValue` 与每拍 `dramaticFunction`。`failureSignal` 反而要送——**把「陷阱」给评审看、把「答案」藏起来**是有意的不对称。浏览器把评审结论与候选自述并排显示。
+
+覆盖率由 `ensureStoryCandidateReviewCoversCandidates` 确定性核验：数量相等且 `candidateId` 逐位相同、`title` 回显必须包含原文（复用 `storyReviewEchoCoversSource`）、`beatIndexes` 必须在该候选拍数范围内、`recommendedOrder` 是候选 id 的排列；通过后用原文覆盖 `title`。**「判得对不对」没有兜底。不打总分**（§2.13 已实测总分没有分辨力）。`verdict: drop` **只是一句话**，不删候选、不触发 stale，`STORY_CANDIDATE_NARRATIVE_MODE_MIX` 不受影响。评审默认沿用 `variants` 的 provider，**自己批自己偏松是已知偏差**，如实记录不静默换家。
+
 ### 2.13 剧情体检（storyQualityReview v1，2026-09-04）
 
 Full Story 生成之后的**独立验收，只出报告**：不修改剧情、不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、**不阻断后续 Animation Plan**。与 `boundaryWarning` 同规格，纯展示；刷新页面即失（v1 有意不持久化）。手动触发，`POST /api/story-quality-review`。
@@ -558,7 +584,7 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：**
 | `PARTIAL_REPAIR_DEBUG_DIR` | 已成功签发 repair plan 后的四阶段记录（trigger / prompt / response / result），单文件默认 ≤ 256 KiB |
 | `FULL_STORY_MODEL_OUTPUT_LOG_DIR` | Full Story primary / retry-repair / Beat–Scene postpass 的完整 completion `content`，metadata 含 `stage` |
 | `ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR` | Animation Plan 原始 completion，固定 `scope=animationPlan`，覆盖 Foundation、每批 shot、实际发生的语义修复与复审 |
-| `STAGE_MODEL_OUTPUT_LOG_DIR` | 九个阶段（Analyze / Reconstruct / 创意简报 / 主题变体 / 角色与表达边界 / 人物参考精修 / 剧情体检 / 分镜终审 / 定向修订）的原始 completion，按 stage 分 scope；成功与失败都记，失败判定复用 `classifyAttemptError`。前八个共用 `generateValidatedJson`，注册 scope 即生效；**定向修订走 `modelCallCoordinator`，由 `createAnimationPlanRevision` 自己接 `attemptObserver`**，两次 provider 调用各留一条。**scope 取值必须逐字等于 stage 名**——writer map 按 scope 建、按 stage 查，对不上就静默不写（2026-09-07 之前后三个阶段根本没注册，终审失败时原文永久丢失） |
+| `STAGE_MODEL_OUTPUT_LOG_DIR` | 十个阶段（Analyze / Reconstruct / 创意简报 / 主题变体 / 候选对照评审 / 角色与表达边界 / 人物参考精修 / 剧情体检 / 分镜终审 / 定向修订）的原始 completion，按 stage 分 scope；成功与失败都记，失败判定复用 `classifyAttemptError`。前九个共用 `generateValidatedJson`，注册 scope 即生效；**定向修订走 `modelCallCoordinator`，由 `createAnimationPlanRevision` 自己接 `attemptObserver`**，两次 provider 调用各留一条。**scope 取值必须逐字等于 stage 名**——writer map 按 scope 建、按 stage 查，对不上就静默不写（2026-09-07 之前后三个阶段根本没注册，终审失败时原文永久丢失） |
 
 统一约束（第四套与前三套逐字同规格）：
 

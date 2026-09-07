@@ -1,5 +1,5 @@
-import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
-import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
+import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { compileCharacterFeatures } from "./character-feature-compiler.js";
 import {
@@ -50,6 +50,7 @@ import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compi
 import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanDirectShotContract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
   deriveStoryCandidateProjections,
   deriveFullStoryTargetDuration,
+  ensureStoryCandidateReviewCoversCandidates,
   ensureStoryQualityReviewCoversStory
 } from "./validation.js";
 import {
@@ -396,6 +397,51 @@ export class WorkflowService {
   }
 
   /**
+   * 候选对照评审：主题变体生成之后的独立验收，**只出报告**——
+   * 不修改候选、不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、
+   * 不改变候选数量、不阻断后续 Full Story。与剧情体检同规格，纯展示，刷新页面即失。
+   *
+   * 它要暴露的是一类现有校验器全都查不到的问题：**候选声称保留了原片精华，
+   * 而动作链并不支持那个说法。** 所以送审投影里**刻意剥掉**了候选的自我评价字段
+   * （novelty / retainedValue / experienceFidelity / transformationProof /
+   * originalityRiskCheck），只留动作链——让故事自己证明自己，而不是让解释替它过关。
+   * 剥离由 buildStoryCandidateReviewProjection **按允许清单构造**，不是事后过滤。
+   *
+   * `verdict: "drop"` 只是报告里的一句话：**不删候选、不重新生成、不触发任何 stale**，
+   * 淘汰与否由用户看完报告自己决定。分布校验（narrativeMode 混合比例）因此不受影响。
+   *
+   * **已知偏差**：默认沿用候选阶段的 provider，也就是写这些候选的那个模型，
+   * 自己批自己会偏松（§2.13 在剧情体检上实测过同一现象：自评 8.0、外部模型 6.8）。
+   * 它是纯文本阶段（不在 requiresMediaModel 里），可按阶段 override 换任意一家。
+   */
+  async createStoryCandidateReview(input) {
+    requireObject(input, "请求");
+    const themeVariants = requireObject(input.themeVariants, "themeVariants");
+    // 评审对象必须先是一批合法候选，否则报告没有意义。
+    ensureOutputContract(themeVariants, "themeVariants");
+    const sourceScriptReconstruction = requireObject(
+      input.sourceScriptReconstruction,
+      "sourceScriptReconstruction"
+    );
+    const candidates = Array.isArray(themeVariants.variants) ? themeVariants.variants : [];
+    const validate = (result) => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(result, "storyCandidateReview"),
+      candidates
+    );
+    if (!this.hasLiveClient) return validate(mockStoryCandidateReview(candidates));
+    const settings = this.resolveStage("storyCandidateReview", input);
+    this.assertStageClient(settings, "候选对照评审");
+    return this.generateStageJson("storyCandidateReview", input, {
+      prompt: storyCandidateReviewPrompt(
+        candidates,
+        sourceScriptReconstruction,
+        input.visualGuardrails?.fixedCharacterBoundary || null
+      ),
+      validate
+    });
+  }
+
+  /**
    * 分镜终审。Animation Plan 生成之后的独立验收，只出报告：不修改 Plan、
    * 不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、不阻断后续生产。
    * 与剧情体检同规格，纯展示，刷新页面即失。
@@ -608,10 +654,20 @@ export class WorkflowService {
     requireText(profile.vertical, "垂直赛道");
     const visualGuardrails = this.assertGlobalCharacterBoundary(input);
     const validatedInput = { ...input, visualGuardrails };
+    // transformationProof.changed*.source 声称的原片事实要回上游核对，因此把这两份
+    // 一并交给校验器。**刻意不含 creativeBrief**：2026-09-06 实测正是简报自己先写错
+    // （它的 mappingLogic 抄了提示词举例里的「快递员身份」），拿它当核对基准
+    // 等于给虚构盖章。上游只有这两份是原片事实的权威来源。
+    const variantsUpstream = (input.referenceAnalysis && input.sourceScriptReconstruction)
+      ? {
+        referenceAnalysis: input.referenceAnalysis,
+        sourceScriptReconstruction: input.sourceScriptReconstruction
+      }
+      : null;
     if (!this.hasLiveClient) {
       return ensureThemeVariantsMatchProfile(
         ensureOutputContract(deriveStoryCandidateProjections(mockVariants(validatedInput)), "themeVariants"),
-        profile, input.creativeBrief, visualGuardrails
+        profile, input.creativeBrief, visualGuardrails, variantsUpstream
       );
     }
     const prompt = variantsPrompt(validatedInput);
@@ -621,7 +677,7 @@ export class WorkflowService {
       // 使 ensureOutputContract 校验的是派生后的对象。模型回显的旧值一律被覆盖。
       validate: (result) => ensureThemeVariantsMatchProfile(
         ensureOutputContract(deriveStoryCandidateProjections(result), "themeVariants"),
-        profile, input.creativeBrief, visualGuardrails
+        profile, input.creativeBrief, visualGuardrails, variantsUpstream
       )
     });
   }
@@ -3607,6 +3663,7 @@ function stageLabel(stage) {
     animationPlan: "动画镜头生产包",
     staticFrameCompiler: "Static Frame Compiler",
     characterReference: "人物参考修正",
+    storyCandidateReview: "候选对照评审",
     animationPlanReview: "分镜终审",
     animationPlanRevision: "分镜修订"
   })[stage] || stage;

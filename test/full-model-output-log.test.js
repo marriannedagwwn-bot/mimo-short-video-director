@@ -251,7 +251,7 @@ test("日志目录不可写时 fail-open 并只产生脱敏告警", async (t) =>
 // 2026-09-07：后三个是 2026-09-04 之后新增的阶段，此前一个都没注册 writer，
 // 于是终审失败时模型原文永久丢失、只能靠反推。scope 取值必须逐字等于 stage 名——
 // writer map 按 scope 建、按 stage 查，对不上就静默不写，是最难发现的那种失效。
-test("阶段模型输出日志接受九个工作流 scope，非法 scope 仍拒绝", () => {
+test("阶段模型输出日志接受十个工作流 scope，非法 scope 仍拒绝", () => {
   for (const scope of [
     MODEL_OUTPUT_LOG_SCOPES.ANALYSIS,
     MODEL_OUTPUT_LOG_SCOPES.RECONSTRUCTION,
@@ -259,6 +259,7 @@ test("阶段模型输出日志接受九个工作流 scope，非法 scope 仍拒�
     MODEL_OUTPUT_LOG_SCOPES.VARIANTS,
     MODEL_OUTPUT_LOG_SCOPES.VISUAL_GUARDRAILS,
     MODEL_OUTPUT_LOG_SCOPES.CHARACTER_REFERENCE,
+    MODEL_OUTPUT_LOG_SCOPES.STORY_CANDIDATE_REVIEW,
     MODEL_OUTPUT_LOG_SCOPES.STORY_QUALITY_REVIEW,
     MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVIEW,
     MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVISION

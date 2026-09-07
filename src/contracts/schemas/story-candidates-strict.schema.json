@@ -20,6 +20,15 @@
       "type": "array",
       "items": { "$ref": "#/$defs/nonEmptyString" }
     },
+    "sourceReplacementPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "replacement"],
+      "properties": {
+        "source": { "$ref": "#/$defs/nonEmptyString" },
+        "replacement": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
     "storyCandidate": {
       "type": "object",
       "additionalProperties": false,
@@ -88,11 +97,12 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["briefBeat", "newExpression", "retainedValue"],
+            "required": ["briefBeat", "newExpression", "retainedValue", "failureSignal"],
             "properties": {
               "briefBeat": { "$ref": "#/$defs/nonEmptyString" },
               "newExpression": { "$ref": "#/$defs/nonEmptyString" },
-              "retainedValue": { "$ref": "#/$defs/nonEmptyString" }
+              "retainedValue": { "$ref": "#/$defs/nonEmptyString" },
+              "failureSignal": { "$ref": "#/$defs/nonEmptyString" }
             }
           }
         },
@@ -109,11 +119,11 @@
             "changedVisualExpression"
           ],
           "properties": {
-            "changedCharacters": { "$ref": "#/$defs/nonEmptyString" },
-            "changedTask": { "$ref": "#/$defs/nonEmptyString" },
-            "changedDetailsAndProps": { "$ref": "#/$defs/nonEmptyString" },
-            "changedDialogue": { "$ref": "#/$defs/nonEmptyString" },
-            "changedVisualExpression": { "$ref": "#/$defs/nonEmptyString" }
+            "changedCharacters": { "$ref": "#/$defs/sourceReplacementPair" },
+            "changedTask": { "$ref": "#/$defs/sourceReplacementPair" },
+            "changedDetailsAndProps": { "$ref": "#/$defs/sourceReplacementPair" },
+            "changedDialogue": { "$ref": "#/$defs/sourceReplacementPair" },
+            "changedVisualExpression": { "$ref": "#/$defs/sourceReplacementPair" }
           }
         },
         "experienceFidelity": {

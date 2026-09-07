@@ -263,13 +263,22 @@ export function mockVariants(input) {
     novelty: `以${seed.medium}连接任务与关系，并让帮助只改变条件、不替${fixed}完成选择。`,
     visualPotential: `${seed.pressure}、任务物状态变化与${seed.ending}形成可见的动作和环境对照。`,
     highValueBeatMapping: [
-      { briefBeat: "任务与期限", newExpression: seed.task, retainedValue: "快速建立观看问题" },
-      { briefBeat: "外部帮助", newExpression: seed.helper, retainedValue: "普通人善意成为情绪转折" },
-      { briefBeat: "仪式化结尾", newExpression: seed.ending, retainedValue: "通过动作而非说教完成情绪兑现" }
+      { briefBeat: "任务与期限", newExpression: seed.task, retainedValue: "快速建立观看问题", failureSignal: "开场只交代情绪或身份，观众看不出有一件必须完成的事" },
+      { briefBeat: "外部帮助", newExpression: seed.helper, retainedValue: "普通人善意成为情绪转折", failureSignal: "帮助者直接替主角完成任务，主角只剩下道谢的动作" },
+      { briefBeat: "仪式化结尾", newExpression: seed.ending, retainedValue: "通过动作而非说教完成情绪兑现", failureSignal: "结尾靠台词宣布心意或靠夕阳与拥抱收束，没有可见的动作变化" }
     ],
     keyDialogueDirections: ["主角不解释自己的辛苦", "帮助者只确认需要什么", "结尾不直接说谢谢或我爱你"],
     endingRitual: seed.ending,
-    transformationProof: { changedCharacters: `人物映射为${fixed}及${vertical}原生关系`, changedTask: seed.task, changedDetailsAndProps: `${seed.medium}与${seed.pressure}`, changedDialogue: "按新职业口吻重写，禁止复用原句", changedVisualExpression: "围绕新工具、空间和动作重新设计镜头" },
+    // source 只引用 mockReconstruction 里真实存在的逐字原文，replacement 才写本片改法——
+    // 与 mockBrief 的【原片有】同规格：mock 必须自己就能通过真实契约校验，
+    // 否则会出现 mock 通过而 live 失败的偏差（CLAUDE.md §2.4）。
+    transformationProof: {
+      changedCharacters: { source: "帮助者", replacement: `人物映射为${fixed}及${vertical}原生关系` },
+      changedTask: { source: "完成送达或照料", replacement: seed.task },
+      changedDetailsAndProps: { source: "任务物", replacement: `${seed.medium}与${seed.pressure}` },
+      changedDialogue: { source: "对白稀少，以动作体现坚持", replacement: "按新职业口吻重写，禁止复用原句" },
+      changedVisualExpression: { source: "近景与物件特写", replacement: "围绕新工具、空间和动作重新设计镜头" }
+    },
     experienceFidelity: { positioning: "生活关系型情绪故事", audience: "保留对善意与关系共鸣敏感的受众", emotion: "好奇—担心—温暖—释然", plotDriver: "有期限的具体任务", highValueBeats: "成本证明、获得帮助、动作兑现" },
     originalityRiskCheck: { riskLevel: "low", possibleSimilarity: "保留任务旅途和帮助转折等通用结构", mitigation: "人物、任务、媒介、阻力、帮助方式和结尾动作均为新设计" }
   })) };
@@ -1008,6 +1017,40 @@ export function mockStoryQualityReview(fullStory) {
     })),
     issues: [],
     summary: "demo 模式：未调用模型，本报告不构成任何质量判断。"
+  };
+}
+
+// demo 模式的候选对照评审。按传入候选的真实 id / title / 拍数生成逐候选覆盖表，
+// 保证 mock 输出能通过与 live 完全相同的覆盖率核验——不得出现 mock 通过而 live 失败的偏差。
+export function mockStoryCandidateReview(candidates) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  return {
+    schemaVersion: "story-candidate-review/1.0",
+    candidateChecks: list.map((candidate) => {
+      const beats = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline.length : 0;
+      return {
+        candidateId: String(candidate?.id || ""),
+        title: String(candidate?.title || ""),
+        coreInteraction: {
+          setback: "demo 模式不调用模型，未做实际核对。",
+          intervention: "demo 模式不调用模型，未做实际核对。",
+          response: "demo 模式不调用模型，未做实际核对。",
+          visibleChange: "demo 模式不调用模型，未做实际核对。"
+        },
+        mechanismChecks: [{
+          sourceMechanism: "demo 模式未提炼原片机制。",
+          whereInSource: "demo 模式未定位原片动作。",
+          whereInCandidate: "demo 模式未定位候选动作。",
+          beatIndexes: beats ? [1] : [],
+          verdict: "depicted"
+        }],
+        verdict: "pass",
+        why: "demo 模式不调用模型，本判定不构成任何质量结论。",
+        keepThis: "demo 模式未作判断。"
+      };
+    }),
+    recommendedOrder: list.map((candidate) => String(candidate?.id || "")),
+    summary: "demo 模式：未调用模型，本报告不构成任何选题判断。"
   };
 }
 

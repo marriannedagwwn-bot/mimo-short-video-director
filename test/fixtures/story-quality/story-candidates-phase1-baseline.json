@@ -86,17 +86,20 @@
               {
                 "briefBeat": "任务与期限",
                 "newExpression": "最后一块电池绑定一次修理机会",
-                "retainedValue": "开场建立具体结果问题"
+                "retainedValue": "开场建立具体结果问题",
+                "failureSignal": "离线基线：该字段在本 fixture 采集时尚不存在，此处只占位以满足结构。"
               },
               {
                 "briefBeat": "成本证明",
                 "newExpression": "主角放弃给自己的通讯器充电",
-                "retainedValue": "用不可撤回的选择证明关系重量"
+                "retainedValue": "用不可撤回的选择证明关系重量",
+                "failureSignal": "离线基线：该字段在本 fixture 采集时尚不存在，此处只占位以满足结构。"
               },
               {
                 "briefBeat": "日常兑现",
                 "newExpression": "主角坐到空座位旁等待",
-                "retainedValue": "用动作而非说教完成情绪回报"
+                "retainedValue": "用动作而非说教完成情绪回报",
+                "failureSignal": "离线基线：该字段在本 fixture 采集时尚不存在，此处只占位以满足结构。"
               }
             ],
             "keyDialogueDirections": [
@@ -105,11 +108,26 @@
             ],
             "endingRitual": "播放键按下后，小白子把维修盒放到空座位旁，并约定下次带一盘空磁带来录新的声音。",
             "transformationProof": {
-              "changedCharacters": "主角改为小白子，关系对象改为独居木匠爷爷。",
-              "changedTask": "任务改为在限电条件下修复并送达录音机。",
-              "changedDetailsAndProps": "以电池、磁带、通讯器和维修盒形成新的选择成本。",
-              "changedDialogue": "对白围绕是否听过录音与尊重对方决定重新设计。",
-              "changedVisualExpression": "用电量指示、卡带转动和空座位完成视觉叙事。"
+              "changedCharacters": {
+                "source": "原片人物组合",
+                "replacement": "主角改为小白子，关系对象改为独居木匠爷爷。"
+              },
+              "changedTask": {
+                "source": "原片任务",
+                "replacement": "任务改为在限电条件下修复并送达录音机。"
+              },
+              "changedDetailsAndProps": {
+                "source": "原片道具",
+                "replacement": "以电池、磁带、通讯器和维修盒形成新的选择成本。"
+              },
+              "changedDialogue": {
+                "source": "原片对白风格",
+                "replacement": "对白围绕是否听过录音与尊重对方决定重新设计。"
+              },
+              "changedVisualExpression": {
+                "source": "原片场景调度",
+                "replacement": "用电量指示、卡带转动和空座位完成视觉叙事。"
+              }
             },
             "experienceFidelity": {
               "positioning": "保留普通人关系中的具体任务型短故事。",
@@ -199,17 +217,20 @@
               {
                 "briefBeat": "任务钩子",
                 "newExpression": "故事从第一盘面团已经失败开始",
-                "retainedValue": "立即提出能否补救的结果问题"
+                "retainedValue": "立即提出能否补救的结果问题",
+                "failureSignal": "离线基线：该字段在本 fixture 采集时尚不存在，此处只占位以满足结构。"
               },
               {
                 "briefBeat": "关系推进",
                 "newExpression": "学徒坦白误读配方卡后共同核对",
-                "retainedValue": "关系状态变化直接改变行动条件"
+                "retainedValue": "关系状态变化直接改变行动条件",
+                "failureSignal": "离线基线：该字段在本 fixture 采集时尚不存在，此处只占位以满足结构。"
               },
               {
                 "briefBeat": "生活化结尾",
                 "newExpression": "留下低温记录并展示不整齐的面包",
-                "retainedValue": "用劳动痕迹兑现成长而非口头总结"
+                "retainedValue": "用劳动痕迹兑现成长而非口头总结",
+                "failureSignal": "离线基线：该字段在本 fixture 采集时尚不存在，此处只占位以满足结构。"
               }
             ],
             "keyDialogueDirections": [
@@ -218,11 +239,26 @@
             ],
             "endingRitual": "两人把不整齐的第一只面包摆在中央，并约定每个夜班都在配方卡背面留下一条真实温度记录。",
             "transformationProof": {
-              "changedCharacters": "主角改为小白子，关系核心改为与新学徒共同承担。",
-              "changedTask": "任务改为修理烤炉计时器并补救第一炉面包。",
-              "changedDetailsAndProps": "以温度探针、面团、配方卡和夜班记录构成新细节。",
-              "changedDialogue": "对白围绕误读、核对和分工展开，不解释主题。",
-              "changedVisualExpression": "以塌陷面团、红笔修改、探针读数和展示架完成信息推进。"
+              "changedCharacters": {
+                "source": "原片人物组合",
+                "replacement": "主角改为小白子，关系核心改为与新学徒共同承担。"
+              },
+              "changedTask": {
+                "source": "原片任务",
+                "replacement": "任务改为修理烤炉计时器并补救第一炉面包。"
+              },
+              "changedDetailsAndProps": {
+                "source": "原片道具",
+                "replacement": "以温度探针、面团、配方卡和夜班记录构成新细节。"
+              },
+              "changedDialogue": {
+                "source": "原片对白风格",
+                "replacement": "对白围绕误读、核对和分工展开，不解释主题。"
+              },
+              "changedVisualExpression": {
+                "source": "原片场景调度",
+                "replacement": "以塌陷面团、红笔修改、探针读数和展示架完成信息推进。"
+              }
             },
             "experienceFidelity": {
               "positioning": "保留具体劳动中的关系型情绪故事。",

@@ -370,3 +370,51 @@ test("时间轴不可解析时静默让出，由 direct_shot 骨架统一裁决"
   const broken = { targetDurationSeconds: 60, sceneScript: [{ timeRange: "不是时间" }] };
   assert.equal(deriveFullStoryTargetDuration(broken).targetDurationSeconds, 60);
 });
+
+// transformationProof 的 changed* 是 {source, replacement} 结构对。
+// 分开两个槽位是为了让「原片是什么」能被服务端确定性核对——
+// 混在一个字符串里时，程序无法知道哪一半在描述原片，2026-09-06 那次
+// 四个候选全部编造「原片快递送达」正是没有任何东西能拦它。
+test("transformationProof 的 changed* 必须是 {source, replacement} 结构对", () => {
+  const value = validCandidates(2);
+  for (const candidate of value.variants) {
+    for (const field of Object.keys(candidate.transformationProof)) {
+      assert.deepEqual(Object.keys(candidate.transformationProof[field]), ["source", "replacement"]);
+    }
+  }
+  const flat = validCandidates(2);
+  flat.variants[0].transformationProof.changedTask = "原片快递送达替换为无人要求的透明伞送达";
+  assert.throws(
+    () => ensureOutputContract(flat, "themeVariants"),
+    (error) => hasDiagnostic(error, "STORY_CANDIDATES_SCHEMA_TYPE", "/variants/0/transformationProof/changedTask")
+  );
+  const halfPair = validCandidates(2);
+  delete halfPair.variants[0].transformationProof.changedTask.source;
+  assert.throws(
+    () => ensureOutputContract(halfPair, "themeVariants"),
+    (error) => hasDiagnostic(error, "STORY_CANDIDATES_SCHEMA_REQUIRED", "/variants/0/transformationProof/changedTask/source")
+  );
+});
+
+// failureSignal 是每条保留机制的证伪条件：这条机制没迁移成功时会长成什么样。
+// 只有 schema 形状校验，**没有语义兜底**——判断一条失败判据写得好不好需要语义判断。
+test("highValueBeatMapping 每项都必须写 failureSignal", () => {
+  const value = validCandidates(2);
+  for (const candidate of value.variants) {
+    for (const entry of candidate.highValueBeatMapping) {
+      assert.ok(String(entry.failureSignal).trim());
+    }
+  }
+  const missing = validCandidates(2);
+  delete missing.variants[0].highValueBeatMapping[0].failureSignal;
+  assert.throws(
+    () => ensureOutputContract(missing, "themeVariants"),
+    (error) => hasDiagnostic(error, "STORY_CANDIDATES_SCHEMA_REQUIRED", "/variants/0/highValueBeatMapping/0/failureSignal")
+  );
+  const blank = validCandidates(2);
+  blank.variants[0].highValueBeatMapping[0].failureSignal = "   ";
+  assert.throws(
+    () => ensureOutputContract(blank, "themeVariants"),
+    (error) => hasDiagnostic(error, "STORY_CANDIDATES_SCHEMA_EMPTY_STRING", "/variants/0/highValueBeatMapping/0/failureSignal")
+  );
+});

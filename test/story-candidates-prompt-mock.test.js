@@ -186,7 +186,7 @@ test("Variants Prompt replaces the disposable beat conflict and declares only ca
   // 四轮真实回放里三次栽在这里：模型把 newExpression 的键名写成 action。
   // 该字段的说明本身就要求「复制某个 action 里的原文」，输出结构样例又只给空字符串占位，
   // 两处都在给 action 这个键名加权，因此需要一句显式否定把键名和取值来源分开。
-  assert.match(prompt, /每个对象的键固定且只有三个：briefBeat、newExpression、retainedValue/u);
+  assert.match(prompt, /每个对象的键固定且只有四个：briefBeat、newExpression、retainedValue、failureSignal/u);
   assert.match(prompt, /\*\*绝不能把 newExpression 写成 action\*\*/u);
   assert.match(prompt, /action 是 storyOutline 里的键名，不是这里的键名/u);
   assert.match(prompt, /newExpression 必须逐字复制本候选 storyOutline 某个 action 中的一段连续原文/u);

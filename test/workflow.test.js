@@ -548,6 +548,13 @@ test("主题变体同时提供结构保真与表达变换证明", async () => {
   for (const variant of result.themeVariants.variants) {
     assert.deepEqual(Object.keys(variant.experienceFidelity), ["positioning", "audience", "emotion", "plotDriver", "highValueBeats"]);
     assert.deepEqual(Object.keys(variant.transformationProof), ["changedCharacters", "changedTask", "changedDetailsAndProps", "changedDialogue", "changedVisualExpression"]);
+    // 每个 changed* 都是 {source, replacement} 结构对：source 只写原片是什么，
+    // 会被服务端回上游核对；replacement 只写本片改成什么。
+    for (const field of Object.keys(variant.transformationProof)) {
+      assert.deepEqual(Object.keys(variant.transformationProof[field]), ["source", "replacement"]);
+      assert.ok(String(variant.transformationProof[field].source).trim());
+      assert.ok(String(variant.transformationProof[field].replacement).trim());
+    }
     for (const field of ["keyChoice", "climax", "emotionalPayoff", "novelty", "visualPotential"]) {
       assert.equal(typeof variant[field], "string");
       assert.ok(variant[field].trim());
@@ -3516,7 +3523,13 @@ test("主题变体必须锁定用户指定固定角色，不能另起主角名",
           highValueBeatMapping: [],
           keyDialogueDirections: [],
           endingRitual: "老师请小雨吃红薯",
-          transformationProof: { changedCharacters: "改为学生与退休老师", changedTask: "改为送音乐盒", changedDetailsAndProps: "使用磁带与红薯", changedDialogue: "使用师生口吻", changedVisualExpression: "使用黄昏街道" },
+          transformationProof: {
+            changedCharacters: { source: "帮助者", replacement: "改为学生与退休老师" },
+            changedTask: { source: "完成送达或照料", replacement: "改为送音乐盒" },
+            changedDetailsAndProps: { source: "任务物", replacement: "使用磁带与红薯" },
+            changedDialogue: { source: "对白稀少，以动作体现坚持", replacement: "使用师生口吻" },
+            changedVisualExpression: { source: "近景与物件特写", replacement: "使用黄昏街道" }
+          },
           experienceFidelity: { positioning: "温情日常", audience: "关系共鸣受众", emotion: "期待到温暖", plotDriver: "限时送达", highValueBeats: "任务、送达、回应" },
           originalityRiskCheck: { riskLevel: "low", possibleSimilarity: "保留通用送达结构", mitigation: "更换人物关系与任务媒介" }
         }] };
@@ -3576,7 +3589,13 @@ test("主题变体允许按剧情复用原片角色组合，但不覆盖固定�
           highValueBeatMapping: [],
           keyDialogueDirections: [],
           endingRitual: "小白子与小月一起把画作摆正。",
-          transformationProof: { changedCharacters: "固定主角保持小白子", changedTask: "改为送画作", changedDetailsAndProps: "使用儿童画与背包", changedDialogue: "使用新关系对白", changedVisualExpression: "使用雾中山村" },
+          transformationProof: {
+            changedCharacters: { source: "帮助者", replacement: "固定主角保持小白子" },
+            changedTask: { source: "完成送达或照料", replacement: "改为送画作" },
+            changedDetailsAndProps: { source: "任务物", replacement: "使用儿童画与背包" },
+            changedDialogue: { source: "对白稀少，以动作体现坚持", replacement: "使用新关系对白" },
+            changedVisualExpression: { source: "近景与物件特写", replacement: "使用雾中山村" }
+          },
           experienceFidelity: { positioning: "治愈日常", audience: "关系共鸣受众", emotion: "期待到温暖", plotDriver: "雾中送达", highValueBeats: "任务、帮助、兑现" },
           originalityRiskCheck: { riskLevel: "low", possibleSimilarity: "保留通用帮助结构", mitigation: "任务与关系表达重新设计" }
         }] };
@@ -3644,7 +3663,13 @@ test("主题变体允许按剧情复用 mustChange 来源道具", async () => {
           highValueBeatMapping: [],
           keyDialogueDirections: [],
           endingRitual: "两人一起放孔明灯。",
-          transformationProof: { changedCharacters: "固定主角保持小白子", changedTask: "当前剧情使用录取通知书送达", changedDetailsAndProps: "使用通知书与孔明灯", changedDialogue: "使用邻里口吻", changedVisualExpression: "使用雾中村路" },
+          transformationProof: {
+            changedCharacters: { source: "帮助者", replacement: "固定主角保持小白子" },
+            changedTask: { source: "完成送达或照料", replacement: "当前剧情使用录取通知书送达" },
+            changedDetailsAndProps: { source: "任务物", replacement: "使用通知书与孔明灯" },
+            changedDialogue: { source: "对白稀少，以动作体现坚持", replacement: "使用邻里口吻" },
+            changedVisualExpression: { source: "近景与物件特写", replacement: "使用雾中村路" }
+          },
           experienceFidelity: { positioning: "治愈日常", audience: "关系共鸣受众", emotion: "期待到庆祝", plotDriver: "限时送达", highValueBeats: "任务、抵达、庆祝" },
           originalityRiskCheck: { riskLevel: "low", possibleSimilarity: "可能复用来源道具", mitigation: "因果、人物关系与动作重新设计" }
         }] };

@@ -4,6 +4,7 @@ import {
   BACKGROUND_MUSIC_NONE,
   CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS,
     NO_BACKGROUND_MUSIC_SENTENCE,
+  VARIANT_SOURCE_ABSENT_SENTINEL,
   collectProtectedTermsFromBrief
 } from "./validation.js";
 import { formatDirectShotSkeleton } from "./direct-shot-timeline.js";
@@ -54,6 +55,50 @@ const JSON_ONLY = `
 只输出一个合法 JSON 对象，不要 Markdown 代码块，不要解释。不得输出思维过程。
 字符串值内部不得出现半角双引号 "。需要引用词句时用「」或单引号 '…'；上游文本里的全角引号“”必须原样保留，不得改写成半角双引号——未转义的半角双引号会当场闭合字符串，让整份输出作废。
 无法从证据确认的信息必须写入 uncertainties，不要把猜测包装成事实。所有数组即使为空也必须保留。`;
+
+// transformationProof 的「原片那一半」必须回上游核对。
+//
+// 这条规则原先只写在 fullStoryPrompt 里，而 **transformationProof 是候选阶段先产出的**——
+// 变体阶段同样输出这五个字段，却收不到这条规则。实测代价：2026-09-06 那一轮四个候选
+// 全部把原片写成「企鹅快递员 / 快递送达」，而上游 referenceAnalysis 与
+// sourceScriptReconstruction 里「快递」出现 0 次（「企鹅连体衣」是真的，快递员是补的），
+// 同一份 creativeBrief 还明写着「送达任务【原片没有】」。V1 更进一步，照着这个虚构
+// 把整条结构建成「主动承担送达任务」。
+//
+// **本轮只有候选阶段用这份正文，fullStoryPrompt 里那条逐字保留、没有合并。**
+// 原打算两边共用一份防漂移，实施时发现合不了，如实记下原因：
+//   1. 形状不同——候选阶段已改成 {source, replacement} 结构对并有确定性校验，
+//      Full Story 那份仍是自由字符串（改它要连带动 full-story-partial-repair 的
+//      白名单与 legacy schema，不在本轮范围）。
+//   2. 判据严格程度不同——Full Story 那条写的是「逐字找到依据」，而这里的校验器
+//      按字符覆盖率 0.75 判定、**明确允许转述**。把两者揉成一句，要么把 Full Story
+//      的要求悄悄放松（那一阶段没有任何校验器兜底），要么把这里的提示词写得比
+//      校验器更严、让模型为了合规去逐字复制长文本——本仓库已有 0/12 的先例。
+// 因此两处各自声明，代价是将来改判据要记得改两处。
+const TRANSFORMATION_PROOF_SOURCE_EVIDENCE_RULE = `- transformationProof 里**描述原片的那一部分，必须能在 referenceAnalysis 或 sourceScriptReconstruction 里找到依据**。允许转述，但必须回得到上游原文；回不到就是你补出来的。核对基准只有这两份，**不看 creativeBrief**——简报本身也可能写错。
+- 实测反面例子：上游只写了「穿着企鹅连体衣、背着绿色小包的小角色」，输出却写成「原片企鹅快递员」「原片快递送达」——**企鹅连体衣是真的，快递员和送达任务是凭空补的职业与任务**，而同一份 creativeBrief 明写着「送达任务【原片没有】」。这类虚构会污染改编距离判断与原创性检查，也会让下游照着一个并不存在的原片结构去改写。
+- 自查方法：写完之后把其中描述原片的词单独拎出来，回上游搜一遍；搜不到就删掉，或换成上游真正写着的内容。`;
+
+// 候选阶段专有：字段形状 + 缺席出口。
+//
+// **第一版把缺席出口写得太重，实测被滥用到 20/20。** 当时的措辞是「原片没有对应物时
+// 必须精确写成『原片没有』四个字」，占了整段最显眼的一条；结果四个候选五个字段
+// 全部走了这条路——而那部参考片明明有女孩和咕嘎、有简历棒棒糖绿色挎包、
+// 还有一句「再见啦~」。模型甚至把方向写反了：`changedDialogue.source` 写成
+// 「原片没有人类角色对白」，那是在回答「原片有没有我要加的东西」，
+// 而这个字段问的是「原片这一维度**有什么**」。
+//
+// 所以现在：正向引用是默认路径，给一个填好的例子（例子是最强的信号——
+// 本仓库刚刚因为简报提示词里一句写死的举例被逐字抄走而付出代价）；
+// 缺席出口降级为一行，并明确它只在原片真的没有时用。
+const VARIANT_TRANSFORMATION_PROOF_SHAPE_RULE = `- transformationProof 的每个 changed* 都是一对 {source, replacement}：**source 回答「原片这一维度有什么」，replacement 回答「本片改成什么」**，两半不要混写进同一个字符串。
+- **注意 source 的提问方向**：它问的是原片有什么，不是「原片有没有我打算加的东西」。原片有两个角色就把这两个角色写进 source，不要写成「原片没有我这套人物设定」——后者既没有信息量，也不是这个字段要的东西。
+- 填好的样子（假设上游写着「女孩坐在公交站长椅上看简历」「咕嘎从绿色挎包里拿出棒棒糖递给女孩」）：
+  \`"changedCharacters": {"source": "女孩与咕嘎", "replacement": "改为小白子与芙芙猫"}\`
+  \`"changedDetailsAndProps": {"source": "简历、棒棒糖与绿色挎包", "replacement": "改为速写本、橡皮与帆布包"}\`
+${TRANSFORMATION_PROOF_SOURCE_EVIDENCE_RULE}
+- **source 会被服务端确定性核对，过不了当场失败。**
+- 原片在这个维度上**确实没有对应物**时（而不是「和本片不一样」），source 以「${VARIANT_SOURCE_ABSENT_SENTINEL}」开头即可，后面照常说明。这是例外路径：原片真的有的东西必须如实引用，不要用它跳过核对。`;
 
 export const SYSTEM_PROMPT = `你是短视频导演与叙事分析师。你的任务不是机械照抄，也不是为了不同而不同，而是识别作品真正产生观看价值的结构，并进行受控改编。
 
@@ -354,8 +399,8 @@ export function briefPrompt(input) {
 创作限制：${input.creatorProfile?.constraints || "无"}
 fixedCharacter 是最高优先级角色设定，也是后续所有新故事的主角锁定项。creativeBrief 可以要求改写原片人物，但不得建议更换、重命名或弱化用户指定的固定角色；角色和职业映射必须服务于该固定角色与该垂直赛道。
 用户在 fixedCharacter 中明确写出的猫娘、猫耳少女、猫尾少女、猫系少女，以及明确声明为固定身体特征的猫耳或猫尾，属于目标角色自身设定，不属于原片表面表达。目标角色身份优先复述用户原词，不得泛化成“动物角色”“拟人动物”“兽类角色”“动物形象少女”，也不得由猫耳猫尾推导猫爪、肉垫、兽爪、翅膀、鸟喙或其他动物结构。只有猫耳发箍、猫耳头饰或可拆卸配饰不能证明猫娘身份。
-原片未经 fixedCharacter 授权的服装、动物拟态、玩偶感、外壳职业或视觉标签不能覆盖固定主角身份。比如参考片若出现企鹅服女孩，可以保留其剧作功能，也可以在当前剧情需要时把企鹅装角色作为独立配角或表面元素使用；但不能把“企鹅”“企鹅快递员”“翅膀/尾巴动作”等改写成固定主角自身的身份或身体特征。
-roleAndOccupationMapping 的第一项必须映射原片主角的剧作功能。newRole 必须原样包含固定角色“${input.creatorProfile?.fixedCharacter || "未指定"}”；newRole 与 newOccupationOrIdentity 只描述新角色的最终身份，优先使用 fixedCharacter 原词，不要混入“不要继承什么”的否定说明。mappingLogic 只解释剧作功能迁移，例如“保留主动帮助他人的叙事功能，不继承原片企鹅服、快递员身份和视觉外壳”。原片功能说明优先放入 sourceFunction，具体外壳的对比与规避信息优先放入 protectedExpressions。
+原片未经 fixedCharacter 授权的服装、动物拟态、玩偶感、外壳职业或视觉标签不能覆盖固定主角身份。比如参考片若出现企鹅服女孩，可以保留其剧作功能，也可以在当前剧情需要时把企鹅装角色作为独立配角或表面元素使用；但不能把“企鹅”“企鹅快递员”“翅膀/尾巴动作”等改写成固定主角自身的身份或身体特征。（这一句里的企鹅、企鹅快递员来自另一部参考片，只示范判据，不要照抄内容——本次参考片有没有这些东西，一律回 referenceAnalysis 与 sourceScriptReconstruction 里查。）
+roleAndOccupationMapping 的第一项必须映射原片主角的剧作功能。newRole 必须原样包含固定角色“${input.creatorProfile?.fixedCharacter || "未指定"}”；newRole 与 newOccupationOrIdentity 只描述新角色的最终身份，优先使用 fixedCharacter 原词，不要混入“不要继承什么”的否定说明。mappingLogic 只解释剧作功能迁移，例如“保留主动帮助他人的叙事功能，不继承原片主角的服装、职业外壳与视觉标签”。**举例里的措辞可以照搬，具体名词不行**：mappingLogic 里每一个描述原片的具体名词都必须是你在 referenceAnalysis 或 sourceScriptReconstruction 里真的读到的，读不到就用“服装”“职业外壳”“视觉标签”这类不指名的写法。原片功能说明优先放入 sourceFunction，具体外壳的对比与规避信息优先放入 protectedExpressions。
 referenceAnalysis：${JSON.stringify(input.referenceAnalysis)}
 sourceScriptReconstruction：${JSON.stringify(input.sourceScriptReconstruction)}
 
@@ -614,7 +659,9 @@ Story Candidate 关键字段（本阶段所有字段都只写候选级摘要，�
 - 关键选择拍写主角亲自作出的选择动作；高潮拍必须同时包含固定主角亲自完成的决定性动作和它造成的可见结果，不能把配角自己的选择或行动冒充成主角高潮。
 - 建议在关键选择拍与高潮拍之间留一拍，写该选择造成、并使高潮成为可能的直接后果；选择直接引发高潮也成立，不强制。各候选的欲望、障碍、选择类型、后果、高潮机制、关系变化和结尾状态仍必须根本不同；放开拍数与相位命名是为了让这些差异真正表达出来，不是允许写成流水账。
 - 输出前在内部对四个候选各计算三个布尔值：A=主角完成帮助、送达或类似服务任务；B=外部角色因此给予奖励、荣誉或可转移利益；C=该利益随后被赠予、分享给、共同用于或带回奶奶/重要关系人。A、B、C 同时为真的候选总数必须 ≤1，且若存在只能是 V1；若 V2–V${count} 任一行三项全真，必须先重写该候选的因果引擎再输出。该布尔矩阵只用于内部自检，不得出现在 JSON 中，也不按老人、雨、礼物等词面判定。
-- highValueBeatMapping 恰好使用 2 个完整对象，不要求把来源每个 Beat 都映射一次。每个对象的键固定且只有三个：briefBeat、newExpression、retainedValue。**绝不能把 newExpression 写成 action**——action 是 storyOutline 里的键名，不是这里的键名；这里要的是「从某个 action 里抄来的那段原文」，但键名仍然叫 newExpression。每个 newExpression 必须逐字复制本候选 storyOutline 某个 action 中的一段连续原文，不得改写，不得添加 storyOutline 之外的奖励、转赠、聚餐、角色、物品或事件。keyDialogueDirections 使用 2–3 个非空纯字符串，只写“角色：台词方向”，绝不能输出 {character,direction} 对象。
+- highValueBeatMapping 恰好使用 2 个完整对象，不要求把来源每个 Beat 都映射一次。每个对象的键固定且只有四个：briefBeat、newExpression、retainedValue、failureSignal。**绝不能把 newExpression 写成 action**——action 是 storyOutline 里的键名，不是这里的键名；这里要的是「从某个 action 里抄来的那段原文」，但键名仍然叫 newExpression。每个 newExpression 必须逐字复制本候选 storyOutline 某个 action 中的一段连续原文，不得改写，不得添加 storyOutline 之外的奖励、转赠、聚餐、角色、物品或事件。keyDialogueDirections 使用 2–3 个非空纯字符串，只写“角色：台词方向”，绝不能输出 {character,direction} 对象。
+- **failureSignal 写「什么情况代表这条机制没有迁移成功」**，也就是这条保留价值的证伪条件：如果本候选出现了它描述的样子，就说明只学到了外形。必须落到可见动作或可听内容上，例如“结尾只靠夕阳、拥抱或台词宣布温暖，主角对同一件事的态度没有任何可见变化”。“温暖”“治愈”“关系改变”“重获希望”这类词**单独出现不构成判据**——它们描述结果，不描述观众能看到什么。retainedValue 说这条机制成功时是什么样，failureSignal 说它失败时是什么样，两者不得互相复述。
+${VARIANT_TRANSFORMATION_PROOF_SHAPE_RULE}
 - 高潮拍不得首次引入决定性人物、物品、地点、线索或能力；高潮所需事实必须在它之前的拍中建立。关键选择拍与高潮拍之间那一拍必须产生高潮实际使用的具体信息、物理状态、机会或代价，不能只写辛苦、赶路或情绪铺垫。删除那一拍后，高潮必须无法以同样方式发生。
 - 所有必填字段都必须出现并保持输出结构展示的精确类型；上面列为可选的 careRecipient、helper、emotionalMedium、endingRitual 只在本候选真的需要时才添加，添加时必须是非空字符串。keyChoice、climax、emotionalPayoff 由服务端派生，输出它们会被直接覆盖，不要浪费篇幅。不要输出省略号、注释、分析矩阵、自检结果或未定义字段。每个字符串保持一条简洁事实，避免在多个字段重复整段剧情，以保证四个 Candidate 都能完整闭合。
 
@@ -626,9 +673,9 @@ Story Candidate 关键字段（本阶段所有字段都只写候选级摘要，�
     "newTask":"", "environmentPressure":"",
     "narrativeMode":"dramatic", "keyChoiceBeat":2, "climaxBeat":5, "novelty":"", "visualPotential":"",
     "storyOutline":[{"beat":1, "phase":"", "action":"", "emotion":"", "dramaticFunction":"", "estimatedSeconds":0}],
-    "highValueBeatMapping":[{"briefBeat":"", "newExpression":"", "retainedValue":""}],
+    "highValueBeatMapping":[{"briefBeat":"", "newExpression":"", "retainedValue":"", "failureSignal":""}],
     "keyDialogueDirections":[],
-    "transformationProof":{"changedCharacters":"", "changedTask":"", "changedDetailsAndProps":"", "changedDialogue":"", "changedVisualExpression":""},
+    "transformationProof":{"changedCharacters":{"source":"", "replacement":""}, "changedTask":{"source":"", "replacement":""}, "changedDetailsAndProps":{"source":"", "replacement":""}, "changedDialogue":{"source":"", "replacement":""}, "changedVisualExpression":{"source":"", "replacement":""}},
     "experienceFidelity":{"positioning":"", "audience":"", "emotion":"", "plotDriver":"", "highValueBeats":""},
     "originalityRiskCheck":{"riskLevel":"low", "possibleSimilarity":"", "mitigation":""}
   }]
@@ -951,6 +998,125 @@ ${blocked.map((shot) => `- ${shot.shotId}：${shot.characterAction}`).join("\n")
 ${JSON.stringify(previousRows)}
 
 ${REVISION_OUTPUT_FORMAT}`;
+}
+
+/**
+ * 候选对照评审送审投影：**按允许清单构造，不按排除清单过滤。**
+ *
+ * 安全性来自构造（同 buildReferenceManifestText 的思路）：将来候选加了新字段，
+ * 默认不进评审视野，不需要有人记得把它加进屏蔽名单。
+ *
+ * 被刻意排除的是生成者的**自我解释与意图标签**：novelty、visualPotential、
+ * experienceFidelity、transformationProof、originalityRiskCheck、
+ * highValueBeatMapping[].retainedValue、storyOutline[].dramaticFunction。
+ * 送进去就等于让解释替故事过关——评审会顺着「本候选保留了低压力陪伴」这句话去找证据，
+ * 而不是先看动作链里到底发生了什么。
+ *
+ * failureSignal 反而**要送**：它是证伪条件，不是成功声明。把「陷阱」给评审看、
+ * 把「答案」藏起来，是这套设计里有意的不对称。
+ */
+export function buildStoryCandidateReviewProjection(candidate) {
+  return {
+    id: String(candidate?.id || ""),
+    title: String(candidate?.title || ""),
+    oneLineHook: String(candidate?.oneLineHook || ""),
+    logline: String(candidate?.logline || ""),
+    narrativeMode: String(candidate?.narrativeMode || ""),
+    characterSetup: candidate?.characterSetup || {},
+    newTask: String(candidate?.newTask || ""),
+    environmentPressure: String(candidate?.environmentPressure || ""),
+    storyOutline: (Array.isArray(candidate?.storyOutline) ? candidate.storyOutline : []).map((beat) => ({
+      beat: beat?.beat,
+      phase: String(beat?.phase || ""),
+      action: String(beat?.action || ""),
+      emotion: String(beat?.emotion || ""),
+      estimatedSeconds: beat?.estimatedSeconds
+    })),
+    keyDialogueDirections: Array.isArray(candidate?.keyDialogueDirections) ? candidate.keyDialogueDirections : [],
+    failureSignals: (Array.isArray(candidate?.highValueBeatMapping) ? candidate.highValueBeatMapping : [])
+      .map((entry) => String(entry?.failureSignal || ""))
+      .filter(Boolean)
+  };
+}
+
+export function storyCandidateReviewPrompt(candidates, sourceScriptReconstruction, fixedCharacterBoundary = null) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  const projections = list.map((candidate) => buildStoryCandidateReviewProjection(candidate));
+  const boundaryText = fixedCharacterBoundary
+    ? `\n固定角色边界（不得建议改变角色身份或外观）：${JSON.stringify(fixedCharacterBoundary)}`
+    : "";
+  return `你不是这些候选的作者，你是短视频选题评审。
+
+原片动作稿（唯一的原作事实来源）：${JSON.stringify(sourceScriptReconstruction)}
+
+候选（共 ${list.length} 个）：${JSON.stringify(projections)}${boundaryText}
+
+## 一条压倒一切的纪律：只看动作，不看解释
+
+你收到的候选里**已经没有**它们的自我评价字段（新颖性、保留价值、体验保真、相似风险）。
+这是故意的：那些是作者对自己作品的判断，不是证据。你只能依据两处作判断——
+- storyOutline[].action —— 观众看得见的动作
+- keyDialogueDirections —— 观众听得见的方向
+
+phase、emotion 是作者的标签，可以参考，**不能当证据**。
+「温暖」「治愈」「关系改变」「重获希望」这类词单独出现同样不构成证据：
+它们描述结果，不描述观众看到了什么。
+
+本阶段的目标不是评「像不像原片题材」，而是：**在不照搬具体表达的前提下，
+这个候选有没有把原片真正起作用的机制迁移过来。**
+
+## 你要产出三块内容
+
+### 一、candidateChecks —— 逐个候选核对，一个都不能少
+
+必须按上面候选的**原始顺序**给出**恰好 ${list.length} 项**。每项：
+
+- candidateId / title：逐字照抄该候选的 id 与 title，不要追加注解
+- coreInteraction：把这个候选的关键互动拆成四段，每段都只写 action 里真的发生了的事——
+  - setback：谁因为什么**具体**小事受挫或遇到麻烦（不是「心情低落」这类状态）
+  - intervention：主角具体做了什么（一个能拍出来的身体动作）
+  - response：对方因此做了什么可见的回应
+  - visibleChange：结尾哪个动作证明前后真的不一样了
+  其中任何一段在动作链里找不到对应，就照实写「动作链里没有」——这正是要暴露的东西。
+- mechanismChecks：2–3 条。先从**原片动作稿**里挑出这个候选试图迁移的机制，然后核对：
+  - sourceMechanism：原片这个机制是什么（用你自己的话概括作用，不是抄场次）
+  - whereInSource：它在原片的哪个具体动作与位置上兑现
+  - whereInCandidate：候选用哪个**不同的**具体动作实现相近价值
+  - beatIndexes：对应候选的哪几拍（写拍号整数，必须真实存在）
+  - verdict：depicted（确实用新动作兑现了）/ partially_depicted（沾边但不足）/ not_depicted（只换了外形，机制没过来）
+- verdict：pass（可以直接展开）/ revise（值得发展但要先改一处）/ drop（核心机制缺失，局部改不动）
+- why：一句话，必须点到**具体动作**，不能只说「情绪不够」
+- keepThis：这个候选已经成立、修改时不能丢掉的那一处（即使 verdict 是 drop 也要写）
+
+判断时守住这几条：
+- **更换角色、道具、地点，不自动等于创意成立。** 换皮不算迁移。
+- **增加失败、身体代价、误会、奖励，不自动等于质量提高。**
+- **生活片段型（narrativeMode: slice_of_life）不强制有任务、牺牲或大反转。**
+  它的高潮可以只是一个具体的小办法或小意外，结尾可以只是一起做完之后的日常时刻。
+  用戏剧结构的标准去要求它是错的。
+- 候选自己写的 failureSignals 是它给自己设的证伪条件；如果动作链正好长成那个样子，直接判 not_depicted。
+
+### 二、recommendedOrder —— 推荐开发顺序
+
+全部 ${list.length} 个候选 id 的一个排列，最值得先做的排最前。
+不强制凑数量：全部判 revise 甚至 drop 都是合法结论。
+
+### 三、summary
+
+一句话：这一批里最值得先发展的是哪个、最该先改的是哪一处具体动作。
+
+**不要打总分。** 也不要建议新增角色或改变固定角色身份。
+
+## 输出
+
+{"schemaVersion":"story-candidate-review/1.0",
+ "candidateChecks":[{"candidateId":"","title":"",
+   "coreInteraction":{"setback":"","intervention":"","response":"","visibleChange":""},
+   "mechanismChecks":[{"sourceMechanism":"","whereInSource":"","whereInCandidate":"","beatIndexes":[1],"verdict":""}],
+   "verdict":"","why":"","keepThis":""}],
+ "recommendedOrder":[],
+ "summary":""}
+${JSON_ONLY}`;
 }
 
 export function storyQualityReviewPrompt(fullStory) {
