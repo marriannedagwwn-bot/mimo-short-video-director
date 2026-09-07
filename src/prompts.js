@@ -1082,6 +1082,7 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - 对应地，characterBible.careRecipient 是可选键：只有当前 Variant 确实存在一个被照料对象时才输出它，并且五个子字段必须齐全；不存在时整个键省略，不要输出空对象或占位文本。需要输出时它的形状是 "careRecipient":{"nameOrLabel":"", "identity":"", "explicitNeed":"", "implicitNeed":"", "relationshipToProtagonist":""}，放在 characterBible 内、protagonist 与 helpers 之间。characterBible.helpers 没有帮助者时输出空数组 []，不得为了填满结构编造一个不参与因果的帮助者。
 - creativeBrief、protectedExpressions、controlledRewriteVariables 与 sourceSimilarityRules 中的原片道具组合、拟声词和角色组合允许出现在任意剧情、角色、对白、声音或拍摄字段；它们不再作为 Full Story 的内容禁词。
 - 允许不等于必须使用：不得因为来源上下文列出了这些表达，就机械把它们补进 visibleAction、dialogue、shotAndSound、keyProps 或其他正向字段。只能按当前 Variant 的剧情需要自然采用。
+- **参考片的片尾署名字幕卡是来源表达，不是必须复用的构件。** 上方 referenceAnalysis / sourceScriptReconstruction 里若记录了原片的黑屏文字卡（例如「黑屏显示文字『⋯⋯继续加油~ 某某！』」），那是对原片的观察记录，不是本片的收尾方案：**不要为本片补一张「黑屏白字 + 主角名」的收尾卡，用最后一场的画面收尾。** 实测反面例子：选中候选的末拍本来就是一个画面结尾（她回头望了一眼对面楼顶，头顶的光环在暮色中发光），模型却另加了一场 S6 黑屏卡写「⋯⋯继续加油~ 小白子！」——这既不在候选里，也让主角名落进了可见事实字段，当场判失败。**sceneScript 凑不满 6 场时，正确做法是把某一拍展开成两场戏，加一张文字卡不算一场戏。**
 - visualGuardrails.positivePromptBoundary 继续约束固定主角的签发身份与必需特征；sourceSimilarityRules 只保留来源证据与实际视觉参考泄漏职责，不能覆盖用户这次的放行决定。
 - 对白必须服从 visualGuardrails.dialogueRules 与用户限制；可以用动作备注补足信息，不要让角色突然改变说话方式。
 - 生活细节：至少 2 场的 visibleAction 要包含一个**与主线任务无关或只有半相关**的生活动作或环境道具。（下面这个例子来自另一部参考片，只用来说明什么叫「与主线无关」，不要照抄它的内容）例：趴在木桌旁听收音机、老人摇着蒲扇站在门口目送——听收音机和摇蒲扇都不是"收枣"这个任务的一部分，但正是它们让院子像一个真实存在的地方，而不是一个任务演示台。这些细节只占一两句，不得挤掉主线动作。
@@ -1107,10 +1108,11 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - 所有地点、实际参与本场的人物和关键可见动作必须写入 location、characters、visibleAction；dialogue、shotAndSound、shootingNotes、emotionNode、dramaticFunction 等字段只能补充，不能替代这些结构字段。
 - characters 只写本场实际出镜的角色。画外声音不要把说话人塞进 characters——那会让下游把没出镜的人渲染进画面；优先按下面的写法把名字从 shotAndSound 里去掉。
 - 「出镜」只看这一场的画面里能不能看见这个人，与他站得多远、是不是本场主体无关：远景里弯腰翻晒谷子的奶奶、背景中路过的行人、屋檐下坐着不说话的老人，只要画面里看得见就必须写进 characters。实测反面例子：visibleAction 写了「远处，奶奶正弯腰用木耙翻晒金黄的谷子」，characters 却只写了主角和宠物——远处出现的人也是出镜的人，这是错的。
-- **反过来，visibleAction 和 shotAndSound 里不得出现任何不在本场画面里的角色名。** 这两个字段是可见事实字段，名字写进去就等于声称这个人在画面里。不在画面里的人有三种常见写法，都必须改写成不带名字的说法：
+- **反过来，visibleAction 和 shotAndSound 里不得出现任何不在本场画面里的角色名。** 这两个字段是可见事实字段，名字写进去就等于声称这个人在画面里。不在画面里的人有四种常见写法，都必须改写成不带名字的说法：
   - 画外声音**不带主体**：不写「屋外传来李奶奶喊白子回家的声音」，写「屋外传来喊白子回家的声音」或「屋外传来一个苍老女声的呼喊」。观众听下去自然知道是谁，先不点名反而更有悬念。
   - 写在道具上的名字**只写可见特征、不写名字**：不写「贴着「李奶奶」标签的快递盒」，写「贴着手写标签的快递盒」。
   - 地点的归属称呼**放进 location，但不要再抄进 visibleAction**：location 照写「奶奶家的客厅」「李奶奶家门口」，visibleAction 只写「小白子和芙芙猫在客厅地毯上玩毛线球」「小白子站在木门前，举起手又放下」。名字在 location 里完整保留，不会丢。把 location 那个短语原样抄一遍进 visibleAction 是这里最常见的失败写法：奶奶正在卧室睡觉、根本没出镜，抄进来就等于声称她在画面里。
+  - 屏幕上出现的文字里的角色名同样要去掉：片尾卡、字幕、招牌、门牌、快递单都算。不写「黑屏浮现白色文字『继续加油~ 小白子！』」，写「黑屏浮现一行白色发光文字」；确实要指定卡面原话时把它写进 shootingNotes。扫描是裸子串匹配，分不出这三个字是「画面里站着一个人」还是「屏幕上要渲染的字形」，写进可见事实字段一律判成前者。**visibleAction 和 shotAndSound 都适用**——把引文从一个字段挪到另一个字段不会通过，实测模型连续两次就是这样撞上同一条规则。
 - **去掉的只有名字，不是可见细节。** 「贴着手写标签的快递盒」合格，「一个快递盒」不合格——标签是视频模型该渲染的东西，不能渲染的只有那三个字。同理「屋外传来一个苍老女声的呼喊」比「屋外有声音」好。名字在 location、dialogue 的台词正文、beatSheet、characterBible、shootingNotes 里都可以自由出现，只有 visibleAction 和 shotAndSound 这两个可见事实字段要干净。
 - **有人在这一场离场时，先决定这一场到底有没有他。** characters 是你对这一场的选角声明，visibleAction 不能演一个你没选的角色。三条出路自己挑：①他确实在画面里露了脸（哪怕只是转身走开的背影）——写进 characters；②这一场你想让他不在——**写离场的结果，不写离场的动作**，例如不写「奶奶转身回屋拿更多被子」，写「木门在身后合上，晾衣绳边只剩下小白子」；③这个动作其实属于上一场——挪到上一场结尾，本场从他走后开始。实测反面例子：visibleAction 以「奶奶转身回屋拿更多被子」开头、characters 却只有主角和宠物，这三条一条都没做到。
 - 名字实在无法从 shotAndSound 里去掉时（例如身份就是本场信息本身），才把该角色名登记到 offscreenSoundSources。它只豁免 shotAndSound，**绝不豁免 visibleAction**：实际出镜的角色必须同时写进 characters 和 visibleAction，登记成声源不会豁免这条要求。同一个名字不得同时出现在 characters 和 offscreenSoundSources。没有这种情况时保持空数组。

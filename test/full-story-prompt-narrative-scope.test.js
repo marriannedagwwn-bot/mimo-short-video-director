@@ -319,7 +319,7 @@ test("远景与背景里看得见的人也必须写进 characters", () => {
 test("visibleAction 与 shotAndSound 不得出现不在画面里的角色名", () => {
   const text = prompt();
   assert.match(text, /visibleAction 和 shotAndSound 里不得出现任何不在本场画面里的角色名/u);
-  // 三种改写范式各要给出可照抄的写法，只讲禁令模型不知道该怎么落笔。
+  // 四种改写范式各要给出可照抄的写法，只讲禁令模型不知道该怎么落笔。
   assert.match(text, /不写「屋外传来李奶奶喊白子回家的声音」，写「屋外传来喊白子回家的声音」/u);
   assert.match(text, /不写「贴着「李奶奶」标签的快递盒」，写「贴着手写标签的快递盒」/u);
   assert.match(text, /location 照写「奶奶家的客厅」「李奶奶家门口」/u);
@@ -328,6 +328,41 @@ test("visibleAction 与 shotAndSound 不得出现不在画面里的角色名", (
   assert.match(text, /不要再抄进 visibleAction/u);
   assert.match(text, /奶奶正在卧室睡觉、根本没出镜，抄进来就等于声称她在画面里/u);
   assert.doesNotMatch(text, /地点的归属称呼\*\*也不得放进 location\*\*/u);
+});
+
+// 2026-09-06：屏幕上的文字是这条规则的第四种形状，此前三条范式一条都不覆盖。
+// 实测证据链：模型先把「黑屏浮现白色发光文字：「⋯⋯继续加油~ 小白子！」」写进 visibleAction
+// 被拦，下一次请求主动把引文挪到 shotAndSound、visibleAction 改干净，又被同一条规则拦住——
+// 它读懂了规则并照做，只是两个字段都在扫描范围内。所以范式必须点明两个字段都适用，
+// 否则模型只会在两个字段之间来回搬。名字去掉后原话按既有路由进 shootingNotes，信息不丢。
+test("屏幕文字里的角色名同样要去掉，两个可见事实字段都适用", () => {
+  const text = prompt();
+  assert.match(text, /屏幕上出现的文字里的角色名同样要去掉/u);
+  assert.match(text, /片尾卡、字幕、招牌、门牌、快递单都算/u);
+  assert.match(
+    text,
+    /不写「黑屏浮现白色文字『继续加油~ 小白子！』」，写「黑屏浮现一行白色发光文字」/u
+  );
+  // 去名字不能滑成去细节：原话仍要有落点，否则模型会连「这里有一行字」都不敢写。
+  assert.match(text, /确实要指定卡面原话时把它写进 shootingNotes/u);
+  // 裸子串匹配分不出「人」和「字形」——把判据说清，模型才知道这不是可以商量的语义题。
+  assert.match(text, /分不出这三个字是「画面里站着一个人」还是「屏幕上要渲染的字形」/u);
+  assert.match(text, /\*\*visibleAction 和 shotAndSound 都适用\*\*/u);
+  assert.match(text, /把引文从一个字段挪到另一个字段不会通过/u);
+});
+
+// 2026-09-06：片尾署名卡不是模型通病，是「参考片有这张卡」直接驱动的——
+// debug 现存 25 份可解析候选里，《明天》两个 run 5/5 带卡，其余 8 个 run 0/20。
+// 成因是 fullStoryPrompt 把整份 referenceAnalysis / sourceScriptReconstruction 塞进提示词，
+// 模型逐字读到原片那张卡就照抄。这条规则本质是 §「允许不等于必须使用」的具体化，
+// 所以写在承接/来源块里，而不是当成又一条可见事实字段禁令。
+test("参考片的片尾署名卡不得复用，文字卡不算一场戏", () => {
+  const text = prompt();
+  assert.match(text, /参考片的片尾署名字幕卡是来源表达，不是必须复用的构件/u);
+  assert.match(text, /不要为本片补一张「黑屏白字 \+ 主角名」的收尾卡，用最后一场的画面收尾/u);
+  // 助因：选中候选只有 5 拍而 sceneScript 至少 6 场，模型拿这张卡凑了第 6 场。
+  // 不说清这一点，模型会以为「不许加卡」和「必须 6 场」互相冲突。
+  assert.match(text, /加一张文字卡不算一场戏/u);
 });
 
 // 去名字不能滑成去细节，否则会直接伤到 videoPrompt 的可渲染信息与生活质感约束。
