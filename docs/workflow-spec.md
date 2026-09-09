@@ -155,7 +155,11 @@ Prompt 中关于施动性、因果、人物质感、悬念、承诺和连贯性�
 
 #### 原片事实溯源（2026-09-06）
 
-`transformationProof` 的五个 `changed*` 是 `{source, replacement}` 结构对：`source` 只写原片是什么、`replacement` 只写本片改成什么。`source` 由服务端确定性核对——要么能在 `referenceAnalysis` 或 `sourceScriptReconstruction` 里找到依据（复用创意简报那套字符覆盖率，阈值 0.75，允许转述），要么以 `原片没有` 开头（缺席声明，后面自由说明）。核对基准**不含 `creativeBrief`**：实测中正是简报先把原片写错（它的 `mappingLogic` 抄了提示词举例里的「快递员身份」），下游四个候选全部继承并放大成「原片快递送达」，而同一份简报的存在性判定明写着原片没有送达任务。诊断码 `STORY_CANDIDATE_SOURCE_FACT_UNVERIFIED`。
+`transformationProof` 的五个 `changed*` 保持 `{source, replacement}`：`source` 只记原片，`replacement` 只记本片。2026-09-09 起，有两份原片上游的生成路径先独立选择来源，再创作候选；选源输入只有冻结的 `referenceAnalysis` 与 `sourceScriptReconstruction`，不含新角色、Brief、Guardrails、候选或 replacement。模型只选人物、事件、对白、画面四维的目录 ID，非空、已知且不重复，不设人为的 4 条上限。服务端复制完整原文；引用 `dialogueGist` 时一同复制同场画面上下文，避免把黑屏字幕记录单独变成台词。道具直接来自全部 `scenes[].keyProps`，仅按精确文本去重；合法空清单签发“原片没有可引用的场次道具清单记录”，只声明清单为空，不声称画面没有物件。
+
+来源目录和派生值仅留在本次服务端私有上下文，候选模型只输出五个 `replacement`。服务端只覆盖已有五对字段的 `source`，不补缺失维度、不修改正文或其他字段，再执行完整候选校验。一个 variants Task 使用创建时的同一 provider/model 顺序调用两次、只提交一次 themeVariants，冻结四份上游直接依赖；任一调用失败即结束，不循环重试。两次调用沿用现有 watchdog、冲突检查与用量汇总，选源日志 scope 为 `variantSourceBaseline`，不新增中间 Artifact、Task 类型或业务 JSON 字段。旧调用点和已签发候选的来源校验仍保留字符覆盖率及 `原片没有` 前缀兼容。
+
+这保证引用可追溯和新角色输入隔离，不保证上游描述本身正确或模型选到了每个相关事实。原片转写中字幕/人声不明、外观缺失或动作矛盾不能由选源程序猜测修复。Full Story 承接候选正文与 replacement；source 仅作原片对照，不成为本片增补要求。
 
 缺席声明按**前缀**判定：第一版要求精确等于四个字，实测 20/20 全部失败（模型一律把它当句子开头补完）。否定句不制造改写基线，因此放宽到前缀不削弱这条闸门；正向声称仍逐条核对。同批实测还暴露模型会把 `source` 的提问方向写反（回答「原片有没有我要加的东西」而不是「原片这一维度有什么」），提示词已改为正向引用优先并给出填好的样例，但**这一条没有确定性兜底**。
 

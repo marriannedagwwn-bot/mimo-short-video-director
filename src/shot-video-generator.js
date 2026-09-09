@@ -43,6 +43,7 @@ import {
   shotVideoRuntimeConfig
 } from "./shot-video-providers.js";
 import { afterDurableProviderCall, beforeDurableProviderCall } from "./durable-task-context.js";
+import { assertWorkspaceMediaLifetime, requireWorkspaceMediaDirectory } from "./workspace-media-lifetime.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -154,7 +155,7 @@ export async function generateShotVideo(options = {}) {
   const filenamePrefix = options.filenamePrefix ? `${safeSegment(options.filenamePrefix)}-` : "";
   const stamp = new Date().toISOString().replace(/[-:.]/gu, "").replace(/Z$/u, "");
   const requestNonce = safeSegment(options.requestNonce || randomUUID());
-  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-"));
+  const workDir = await createShotVideoWorkDirectory(options);
   const count = clampVideoCount(options.count);
   // 供应商要跑几分钟，这期间用户可能重新生成 Plan 或切换上一镜候选。只靠事后
   // 关卡（浏览器 assertPlanProductionContextCurrent、commitProductionArtifact 的
@@ -162,9 +163,9 @@ export async function generateShotVideo(options = {}) {
   // 孤儿文件和过期成功结果回到 UI，所以生成期间必须自己复验。
   const writtenOutputPaths = [];
   const assertCurrentOrDiscard = async () => {
-    if (typeof options.assertProductionContextCurrent !== "function") return;
     try {
-      await options.assertProductionContextCurrent();
+      await assertWorkspaceMediaLifetime(options.lifetimeFile);
+      if (typeof options.assertProductionContextCurrent === "function") await options.assertProductionContextCurrent();
     } catch (error) {
       await discardStaleShotVideoOutputs(writtenOutputPaths);
       // 原样上抛：ProductionStateError 一旦被包成 ShotVideoConfigError/
@@ -176,7 +177,8 @@ export async function generateShotVideo(options = {}) {
   try {
     // ① 任何供应商调用与文件写入之前。
     await assertCurrentOrDiscard();
-    await fs.mkdir(outputRoot, { recursive: true });
+    if (options.lifetimeFile) await requireWorkspaceMediaDirectory(outputRoot, options.lifetimeFile);
+    else await fs.mkdir(outputRoot, { recursive: true });
     const frames = generationMode === "first_last_frame"
       ? await prepareFrameArtifacts({
         shot,
@@ -247,7 +249,7 @@ export async function generateShotVideo(options = {}) {
       });
       const providerTimeoutMs = Number(providerRuntime.pollTimeoutMs || config.pollTimeoutMs || 900_000);
       await beforeDurableProviderCall(`video_provider_candidate_${index + 1}`, providerTimeoutMs);
-      const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: options.workerRunner });
+      const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: options.workerRunner, lifetimeFile: options.lifetimeFile });
       await afterDurableProviderCall(`video_provider_candidate_${index + 1}_returned`, {
         candidateIndex: index,
         candidateCount: count
@@ -328,9 +330,34 @@ export async function generateShotVideo(options = {}) {
       receipt: firstVideo.receipt || {},
       generatedAt: new Date().toISOString()
     };
+  } catch (error) {
+    // A cancelled/deleted workspace can fail the durable post-provider check
+    // before assertCurrentOrDiscard runs. Remove late worker outputs as well.
+    if (options.lifetimeFile) await discardStaleShotVideoOutputs(writtenOutputPaths);
+    throw error;
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
   }
+}
+
+async function createShotVideoWorkDirectory(options) {
+  if (!options.workRoot) {
+    if (options.lifetimeFile) throw new ShotVideoConfigError("页面工作区的视频生成必须指定私有 workRoot");
+    return fs.mkdtemp(path.join(os.tmpdir(), "shot-video-"));
+  }
+  const workRoot = path.resolve(options.workRoot);
+  await assertWorkspaceMediaLifetime(options.lifetimeFile);
+  if (options.lifetimeFile && path.dirname(workRoot) !== path.dirname(path.resolve(options.lifetimeFile))) {
+    throw new ShotVideoConfigError("页面工作区的 workRoot 必须位于当前 Run 目录内");
+  }
+  try {
+    // Never recreate a deleted Run ancestor after its lifetime check.
+    await fs.mkdir(workRoot, { mode: 0o700 });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+  }
+  await requireWorkspaceMediaDirectory(workRoot, options.lifetimeFile);
+  return fs.mkdtemp(path.join(workRoot, "shot-video-"));
 }
 
 export function shotVideoGenerationPromptText(options = {}) {
@@ -363,13 +390,14 @@ async function prepareOneFrameArtifact(context) {
       publicBasePath,
       outputKey,
       basename: `${filenamePrefix}${shotId}-${frameKind}-${stamp}`,
-      dataUrl
+      dataUrl,
+      lifetimeFile: context.options.lifetimeFile
     });
   }
 
   const outputPath = path.join(outputRoot, `${filenamePrefix}${shotId}-${frameKind}-${stamp}.png`);
   const request = buildFrameRequest(shot, { frameKind, outputPath, outputKey, prompt });
-  const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: context.options.workerRunner });
+  const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: context.options.workerRunner, lifetimeFile: context.options.lifetimeFile });
   return {
     outputKey,
     path: outputPath,
@@ -549,11 +577,12 @@ async function probePlayableVideoOutput(outputPath) {
   }
 }
 
-async function writeDataUrlArtifact({ outputRoot, publicBasePath, outputKey, basename, dataUrl }) {
+async function writeDataUrlArtifact({ outputRoot, publicBasePath, outputKey, basename, dataUrl, lifetimeFile }) {
   const match = String(dataUrl || "").match(/^data:([^;,]+);base64,(.+)$/u);
   if (!match) throw new ShotVideoConfigError(`${basename} 不是有效的 base64 data URL`);
   const [, mimeType, payload] = match;
-  await fs.mkdir(outputRoot, { recursive: true });
+  if (lifetimeFile) await requireWorkspaceMediaDirectory(outputRoot, lifetimeFile);
+  else await fs.mkdir(outputRoot, { recursive: true });
   const filePath = path.join(outputRoot, `${basename}${extensionForMime(mimeType)}`);
   await fs.writeFile(filePath, Buffer.from(payload, "base64"));
   return {
@@ -565,7 +594,7 @@ async function writeDataUrlArtifact({ outputRoot, publicBasePath, outputKey, bas
   };
 }
 
-async function runGenericWorker({ request, outputPath, workDir, configPath, workerRunner = null }) {
+async function runGenericWorker({ request, outputPath, workDir, configPath, workerRunner = null, lifetimeFile = "" }) {
   const requestPath = path.join(workDir, `${safeSegment(request.taskId)}.request.json`);
   const receiptPath = path.join(workDir, `${safeSegment(request.taskId)}.receipt.json`);
   await fs.writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`);
@@ -575,7 +604,8 @@ async function runGenericWorker({ request, outputPath, workDir, configPath, work
     "--request", requestPath,
     "--output", outputPath,
     "--receipt", receiptPath,
-    "--root", process.cwd()
+    "--root", process.cwd(),
+    ...(lifetimeFile ? ["--lifetime-file", lifetimeFile] : [])
   ];
   try {
     if (typeof workerRunner === "function") {
@@ -584,7 +614,8 @@ async function runGenericWorker({ request, outputPath, workDir, configPath, work
         request: requestPath,
         output: outputPath,
         receipt: receiptPath,
-        root: process.cwd()
+        root: process.cwd(),
+        ...(lifetimeFile ? { lifetimeFile } : {})
       });
     } else {
       await execFileAsync(process.execPath, args, { maxBuffer: 10 * 1024 * 1024 });

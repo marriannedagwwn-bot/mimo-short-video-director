@@ -44,9 +44,9 @@ Phase 1.1 的真实包回放进一步明确：当前结构签名保证的是字�
 
 原片场次动作与对白现在以只读投影进入候选提示词，供机制对照和来源引用；Brief 中的具体情节解释不再与定位、受众、情绪曲线一起成为新片正向要求，角色规则投影也不再夹带 `stageInstructions` 的帮助、获奖、转赠模板。JSON 契约、拍号派生、已有 Artifact 与下游流程不变，这些调整不构成故事质量的确定性保证。
 
-`transformationProof` 的五个 `changed*` 现在是 `{source, replacement}` 结构对：`source` 只写原片是什么，由服务端回上游确定性核对（复用创意简报那套字符覆盖率，阈值 0.75，允许转述）；原片在这个维度上确实没有对应物时，`source` 以 `原片没有` 开头即可（后面照常说明）。核对基准只有 `referenceAnalysis` 与 `sourceScriptReconstruction`，不含 `creativeBrief`。
+`transformationProof` 的五个 `changed*` 保持 `{source, replacement}`。有完整原片上游时，先用当前候选模型独立选择原片证据 ID，再生成候选：选源输入只有冻结的 `referenceAnalysis` 与 `sourceScriptReconstruction`，不含新角色、简报或新剧情。服务端复制所选完整原文为所有候选共享的 `source`，候选模型只写 `replacement`；道具直接取全部场次 `keyProps` 并精确去重，场次对白引用同步保留画面上下文。一个 variants Task 顺序调用两次模型、只提交一次 Artifact，两次用量合计，不自动重试。来源选择另记 `variantSourceBaseline` 日志。未提供两份上游的旧调用点保持既有单次生成和来源校验行为。
 
-缺席声明第一版要求精确等于「原片没有」四个字，实测 20/20 全部失败——模型一律把它当成句子开头补完（「原片没有明确任务」）。放宽到前缀判定不削弱闸门：否定句不制造改写基线，正向声称仍然逐条回上游核对。同批实测还发现模型会把 `source` 的提问方向写反（回答「原片有没有我要加的东西」而不是「原片这一维度有什么」），提示词已改为正向引用优先并给出填好的样例，但这一条只能靠人工观察。
+旧来源校验保留 `原片没有` 前缀兼容。新生成路径不再让候选模型书写缺席声明，也不让它根据新角色反推原片事实。引用选择仍可能遗漏相关证据，上游转写中的含混或缺失也不会被自动修好，需结合原视频与字幕复核。
 
 起因是一次实测：一轮四个候选全部把原片写成「企鹅快递员 / 快递送达」，而两份上游文件里「快递」出现 0 次——「穿着企鹅连体衣」是真的，快递员是补出来的职业，而且同一份简报明写着原片没有送达任务。污染源是简报提示词里那句写死的举例（模型只换两个词就照抄了），防这件事的规则当时只写在 Full Story 提示词里、候选阶段收不到，两个字段又都没有校验器。现在举例不再含参考片具体名词，规则补进候选阶段，并加上这道确定性闸门。`highValueBeatMapping[]` 同时新增必填 `failureSignal`（这条保留机制没迁移成功时会长成什么样）。
 
@@ -262,9 +262,11 @@ JIMENG_MAX_IMAGES=6
 
 浏览器启动一次工作流时，服务端会在 `runtime/production-runs/` 建立 Run，并在每个阶段成功后持久化 Artifact、revision、依赖摘要、Stage 状态和 Checkpoint。同一 Task 使用相同 requestId 重复 finalize 时，相同 JSON（包括仅键顺序变化）复用原 revision；不同 requestId 不获得该豁免。同一 Variant ID 的实际内容变化会确定性标记旧 Story、Plan 和媒体为 stale。
 
+浏览器工作数据现在随标签页存活：原视频副本保存在私有工作区，Run 元数据同时记录可恢复的视频 URL 和 SHA-256；有效期内刷新或服务器重启后，同一标签页可恢复原视频、抽帧和已完成结果。更换视频立即清除该页旧 Run、媒体及应用保存的视频副本；关闭页面后有 60 秒刷新宽限期，随后服务端删除该页的全部工作数据。页面生命周期连接断开也会触发关闭清理；后台页面连接仍在时保持数据，无连接也未收到关闭通知时，以最后一次心跳起 2 分钟过期兜底；服务器关闭期间无法执行删除，下次启动补清。仅“设定创作宇宙”中的七项设置长期保存，模型覆盖设置只在标签页会话内保存。不会删除用户最初选择的文件或主动导出的文件，也不会自动认领或批量删除升级前没有页面归属的历史 Run。详见 [浏览器工作区生命周期](docs/production-lineage-state.md#浏览器工作区生命周期2026-09-09)。
+
 Durable Task v1 另在每个 Run 的私有 `tasks/index.json` 保存执行 sidecar。AI 导演是一个 `directorPipeline` 父任务和五个顺序子任务；Full Story、Animation Plan、角色参考图和镜头媒体也由服务端 Runner 执行、校验并提交，浏览器只创建、轮询和重新 attach。刷新或 HTTP 断线不会中止同一 Node 进程内仍在运行的任务；重复创建相同 active operation 会返回同一 `taskId`，同一目标的不同 operation 会返回 `TASK_TARGET_BUSY`。任务没有总墙钟 deadline，watchdog 只检测“当前 provider/local operation 长时间没有进展”，并在每次 provider 返回或流事件后续期。
 
-Node 重启仍是明确边界：Prompt、Data URL、Base64 和完整请求体不落 Task Store，所以未完成任务会变为 `interrupted`，不会自动重新调用 provider；远端任务可能已经提交并计费。Brief/Variants 可以直接从 current Artifact 链继续，需要媒体的 Analyze/Reconstruct/Visual Guardrails 则要求重新上传 SHA-256 与原 Run 一致的源文件。`abandoned` 只是释放本地提交权，不等于远端取消。T04 媒体 quarantine、T05 provider task-id 查询/接管和正式跨进程 batch queue 尚未实现。详见 [Production Lineage 与持久状态](docs/production-lineage-state.md)。
+Node 重启仍是明确边界：Prompt、Data URL、Base64 和完整请求体不落 Task Store，所以未完成任务会变为 `interrupted`，不会自动重新调用 provider；远端任务可能已经提交并计费。Brief/Variants 可以直接从 current Artifact 链继续，需要媒体的 Analyze/Reconstruct/Visual Guardrails 使用浏览器从已保存副本恢复并重新采样的原视频；没有副本的历史 Run 仍须重新上传 SHA-256 与原 Run 一致的源文件。`abandoned` 只是释放本地提交权，不等于远端取消。T04 媒体 quarantine、T05 provider task-id 查询/接管和正式跨进程 batch queue 尚未实现。详见 [Production Lineage 与持久状态](docs/production-lineage-state.md)。
 
 任务控制面：
 

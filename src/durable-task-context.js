@@ -2,6 +2,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 const storage = new AsyncLocalStorage();
 
+export function currentDurableTaskContext() {
+  return storage.getStore() || null;
+}
+
 export function runWithDurableTaskContext(context, operation) {
   if (!context) return operation();
   return storage.run(context, operation);

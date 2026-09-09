@@ -574,7 +574,7 @@ function variantsSourceEvidenceProjection(input) {
   };
 }
 
-export function variantsPrompt(input) {
+export function variantsPrompt(input, { deriveSource = false } = {}) {
   const count = Math.max(1, Math.min(6, Number(input.count) || 3));
   const forbiddenTerms = collectProtectedTermsFromBrief(input.creativeBrief, input.creatorProfile?.fixedCharacter || "");
   const forbiddenText = forbiddenTerms.length ? forbiddenTerms.join("、") : "无";
@@ -689,7 +689,9 @@ Story Candidate 关键字段（本阶段所有字段都只写候选级摘要，�
 - 输出前在内部对四个候选各计算三个布尔值：A=主角完成帮助、送达或类似服务任务；B=外部角色因此给予奖励、荣誉或可转移利益；C=该利益随后被赠予、分享给、共同用于或带回奶奶/重要关系人。A、B、C 同时为真的候选总数必须 ≤1，且若存在只能是 V1；若 V2–V${count} 任一行三项全真，必须先重写该候选的因果引擎再输出。该布尔矩阵只用于内部自检，不得出现在 JSON 中，也不按老人、雨、礼物等词面判定。
 - highValueBeatMapping 恰好使用 2 个完整对象，不要求把来源每个 Beat 都映射一次。每个对象的键固定且只有四个：briefBeat、newExpression、retainedValue、failureSignal。**绝不能把 newExpression 写成 action**——action 是 storyOutline 里的键名，不是这里的键名；这里要的是「从某个 action 里抄来的那段原文」，但键名仍然叫 newExpression。每个 newExpression 必须逐字复制本候选 storyOutline 某个 action 中的一段连续原文，不得改写，不得添加 storyOutline 之外的奖励、转赠、聚餐、角色、物品或事件。keyDialogueDirections 使用 2–3 个非空纯字符串，只写“角色：台词方向”，绝不能输出 {character,direction} 对象。
 - **failureSignal 写「什么情况代表这条机制没有迁移成功」**，也就是这条保留价值的证伪条件：如果本候选出现了它描述的样子，就说明只学到了外形。必须落到可见动作或可听内容上，例如“结尾只靠夕阳、拥抱或台词宣布温暖，主角对同一件事的态度没有任何可见变化”。“温暖”“治愈”“关系改变”“重获希望”这类词**单独出现不构成判据**——它们描述结果，不描述观众能看到什么。retainedValue 说这条机制成功时是什么样，failureSignal 说它失败时是什么样，两者不得互相复述。
-${VARIANT_TRANSFORMATION_PROOF_SHAPE_RULE}
+${deriveSource ? `- transformationProof 的五个 changed* 仍分别记录人物、任务、细节/道具、对白和视听表达的改编。每项只输出 {"replacement":"本片改成什么"}，必须保留全部五项；replacement 只能承接当前候选正文已写出的内容。
+- **不要输出 source。** 原片来源已由独立的原片证据步骤选定，服务端会复制完整原文填回 source，所有候选共用同一份原片基线。你不能改写、补写或声明原片没有某物；回显 source 也会被服务端覆盖。
+- source 是原片对照，replacement 是本片改编；原片人物、对白、道具和事件不因此成为本片的必备内容。原片对白记录可能包含字幕或发声描述，不能自动当作本片的人声台词。` : VARIANT_TRANSFORMATION_PROOF_SHAPE_RULE}
 - 高潮拍不得首次引入决定性人物、物品、地点、线索或能力；高潮所需事实必须在它之前的拍中建立。关键选择拍与高潮拍之间那一拍必须产生高潮实际使用的具体信息、物理状态、机会或代价，不能只写辛苦、赶路或情绪铺垫。删除那一拍后，高潮必须无法以同样方式发生。
 - 所有必填字段都必须出现并保持输出结构展示的精确类型；上面列为可选的 careRecipient、helper、emotionalMedium、endingRitual 只在本候选真的需要时才添加，添加时必须是非空字符串。keyChoice、climax、emotionalPayoff 由服务端派生，输出它们会被直接覆盖，不要浪费篇幅。不要输出省略号、注释、分析矩阵、自检结果或未定义字段。每个字符串保持一条简洁事实，避免在多个字段重复整段剧情，以保证四个 Candidate 都能完整闭合。
 
@@ -703,7 +705,7 @@ ${VARIANT_TRANSFORMATION_PROOF_SHAPE_RULE}
     "storyOutline":[{"beat":1, "phase":"", "action":"", "emotion":"", "dramaticFunction":"", "estimatedSeconds":0}],
     "highValueBeatMapping":[{"briefBeat":"", "newExpression":"", "retainedValue":"", "failureSignal":""}],
     "keyDialogueDirections":[],
-    "transformationProof":{"changedCharacters":{"source":"", "replacement":""}, "changedTask":{"source":"", "replacement":""}, "changedDetailsAndProps":{"source":"", "replacement":""}, "changedDialogue":{"source":"", "replacement":""}, "changedVisualExpression":{"source":"", "replacement":""}},
+    "transformationProof":${deriveSource ? '{"changedCharacters":{"replacement":""}, "changedTask":{"replacement":""}, "changedDetailsAndProps":{"replacement":""}, "changedDialogue":{"replacement":""}, "changedVisualExpression":{"replacement":""}}' : '{"changedCharacters":{"source":"", "replacement":""}, "changedTask":{"source":"", "replacement":""}, "changedDetailsAndProps":{"source":"", "replacement":""}, "changedDialogue":{"source":"", "replacement":""}, "changedVisualExpression":{"source":"", "replacement":""}}'},
     "experienceFidelity":{"positioning":"", "audience":"", "emotion":"", "plotDriver":"", "highValueBeats":""},
     "originalityRiskCheck":{"riskLevel":"low", "possibleSimilarity":"", "mitigation":""}
   }]
@@ -1270,7 +1272,7 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - 主角必须锁定为上方固定角色，不能改名、不能换身份、不能降级为旁观者或帮助者。
 - 固定角色的姓名、身份、性格、职业、剧情功能和外观必须以已签发的全局角色边界为唯一事实来源；不得再次解析 fixedCharacter 或重新推断角色特征。
 - transformationProof 描述「原片是什么、被改成了什么」时，**关于原片的那一半必须能在 sourceScriptReconstruction 或 referenceAnalysis 里逐字找到依据**。自查方法：写完每条 changed* 后，把其中描述原片的词单独拎出来，回上游搜一遍；搜不到就说明是你补出来的，必须删掉或换成真正写着的内容。实测反面例子：上游只写了「穿着企鹅装的短发女孩」，transformationProof 却写成「将原片企鹅快递员改为猫耳少女」「将送货任务改为找回作业纸页」——企鹅装是真的，**快递员和送货任务是凭空补的职业与任务**，而同一份 creativeBrief 明写着「送达任务【原片没有】」。这类虚构会污染改编距离判断与原创性检查。
-- 承接范围只有一个来源：当前选中 Variant 实际写出的内容。Variant 已选用的人物、任务细节、道具、媒介、结尾方式和对白方向必须忠实承接；本阶段只负责扩写，不得为了“与原片不同”再次替换 Variant 已确定的内容。
+- 承接范围只有一个来源：当前选中 Variant 实际写出的内容。transformationProof.*.source 仅为原片对照，不能向本片增加人物、道具、对白、事件或字幕卡；本片事实由候选正文及 replacement 表达，正文 storyOutline 是候选剧情事实的权威。原片记录为空也不要求删除本片已选用的内容。Variant 已选用的人物、任务细节、道具、媒介、结尾方式和对白方向必须忠实承接；本阶段只负责扩写，不得为了“与原片不同”再次替换 Variant 已确定的内容。
 - **但 storyOutline 里的 estimatedSeconds 不属于必须承接的剧情内容，它只是候选阶段的粗略估计。** 冲突时以本阶段上方给出的时长目标为准：sceneScript 各场 timeRange 的跨度之和服从时长目标，不服从 estimatedSeconds 的合计。允许按比例压缩或放大每一拍的长度，但**不得因此增删、合并、拆分或改写任何剧情动作**——变的只有每段占多少秒。实测反面例子：候选六拍的 estimatedSeconds 合计 95 秒，而本阶段目标是 65 秒，模型把六个数字逐位照抄进 timeRange，成片直接变成 95 秒、镜头数按 15 秒上限翻倍。照抄那六个数字是错的。
 - 送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾这七项，是 creativeBrief 用来记录“原片有没有某类通用构件”的分类，不是本片的必备构件，也不是承接清单。当前 Variant 没有使用其中某一项时，本阶段不得把它补回来：Variant 没写 careRecipient 就不得新增一个被照料对象，没写 helper 就不得新增一个提供帮助的外部角色，没写 emotionalMedium 就不得为故事发明一件信物，没写 endingRitual 就不得给它加一场仪式化收尾。
 - 对应地，characterBible.careRecipient 是可选键：只有当前 Variant 确实存在一个被照料对象时才输出它，并且五个子字段必须齐全；不存在时整个键省略，不要输出空对象或占位文本。需要输出时它的形状是 "careRecipient":{"nameOrLabel":"", "identity":"", "explicitNeed":"", "implicitNeed":"", "relationshipToProtagonist":""}，放在 characterBible 内、protagonist 与 helpers 之间。characterBible.helpers 没有帮助者时输出空数组 []，不得为了填满结构编造一个不参与因果的帮助者。

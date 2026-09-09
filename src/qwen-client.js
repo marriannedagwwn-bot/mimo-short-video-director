@@ -272,16 +272,15 @@ export class QwenClient {
       }
       throw error;
     }
-    await afterDurableProviderCall("model_provider_response");
-
     const raw = stream.raw;
     const content = stream.content;
     const requestId = headerRequestId || String(stream.id || "");
     const usage = stream.usage && typeof stream.usage === "object"
       ? stream.usage
       : null;
-    // 记入当前请求的 token 记账作用域；作用域外是 no-op，异常内部吞掉。
+    // 已完成响应的用量先记账；随后冻结复检失败也不能抹掉已发生的消耗。
     recordModelUsage({ provider: providerName, model: body.model, usage });
+    await afterDurableProviderCall("model_provider_response");
     const finishReason = String(stream.finishReason || "");
     if (typeof content !== "string") {
       throw new ModelResponseError(

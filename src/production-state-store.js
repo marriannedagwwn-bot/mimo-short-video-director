@@ -318,16 +318,27 @@ export class ProductionStateStore {
     };
   }
 
-  async importPackage(value) {
+  async importPackage(value, { browserWorkspaceId, onRunCreated } = {}) {
+    if (onRunCreated !== undefined && typeof onRunCreated !== "function") {
+      throw new TypeError("onRunCreated 必须是函数");
+    }
+    if (browserWorkspaceId !== undefined && (typeof browserWorkspaceId !== "string"
+      || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(browserWorkspaceId))) {
+      throw new ProductionStateError("页面工作区标识无效", {
+        code: "BROWSER_WORKSPACE_ID_INVALID", httpStatus: 400
+      });
+    }
     const validated = await this.validatePackage(value);
     const source = validated.payload;
     const created = await this.createRun({
       metadata: {
         importedFromPackageDigest: source.packageDigest,
         sourceVideo: plainObject(source.sourceVideo),
-        creatorProfile: plainObject(source.creatorProfile)
+        creatorProfile: plainObject(source.creatorProfile),
+        ...(browserWorkspaceId ? { browserWorkspaceId } : {})
       }
     });
+    if (onRunCreated) await onRunCreated(structuredClone(created));
     const common = {
       projectId: created.projectId,
       runId: created.runId,

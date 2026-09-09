@@ -165,22 +165,36 @@ public/generated-videos/<mediaNamespace>/
 - 单调 Checkpoint sequence；
 - 有界事件记录。
 
-Artifact 内容独立写入原子替换的 JSON 文件。浏览器只在服务端提交成功后更新页面主状态。刷新页面时通过 localStorage 中的 project/run 指针读取最近 checkpoint，只恢复 `current` Artifact。
+Artifact 内容独立写入原子替换的 JSON 文件。浏览器只在服务端提交成功后更新页面主状态。刷新页面时通过 sessionStorage 中的 workspace 指针读取该页面归属的 Run 和最近 checkpoint，只恢复 `current` Artifact；不再从旧 localStorage project/run 指针自动加载历史结果。
 
 `tasks/index.json` 同样原子写入，路径中的 project/run/task ID 都经过 `safeIdentifier` 与根目录包含校验。公开 Task 包含冻结 provider/model 和持久 usage；恢复 UI 不得拿刷新后的下拉框设置冒充原任务模型。角色参考图的逐张结果进入脱敏 progress，断线后可以恢复计数与预览；Prompt 只记录 digest，不进入 Task sidecar。
 
 同一 Node 进程内，Runner 独立于 HTTP response。刷新或 HTTP 断线后，第二个页面查询同一 Run 即可 attach；旧同步 HTTP 入口只等待同一 Task 终态，断线只结束等待者。角色图片旧 SSE wire 订阅 Task progress，SSE 断线只移除订阅者。
 
-Node 启动 reconciliation 会检查 active Task：current Artifact 已由同一 requestId 成功提交时补记 completed；五个 pipeline 目标均已 current 时父任务补记 completed；其余 queued/running 变为 `interrupted` 并释放 claims，绝不自动重调 provider。浏览器可在同一 Run 从首个未完成阶段继续；需要媒体的阶段必须重新上传 `sourceVideoDigest` 相同的原始文件。
+Node 启动 reconciliation 会检查 active Task：current Artifact 已由同一 requestId 成功提交时补记 completed；五个 pipeline 目标均已 current 时父任务补记 completed；其余 queued/running 变为 `interrupted` 并释放 claims，绝不自动重调 provider。浏览器可在同一 Run 从首个未完成阶段继续；需要媒体的阶段使用恢复副本重新采样，副本不存在时必须重新上传 `sourceVideoDigest` 相同的原始文件。
 
 当前恢复边界：
 
-- 不持久化原始上传视频、浏览器 Object URL 或抽帧源文件；
+- 浏览器工作区持久化原视频二进制副本；不保存 Object URL，抽帧在恢复时重新生成；
 - 不持久化大型请求体，所以 Node 重启后不能恢复内存 Runner；
 - 不保存或查询远端 provider task ID，不具备 provider restart resume/cancel；
 - 不提供跨机器共享存储、多 Node worker、lease 或正式 batch queue；
 - 失败/中断时已经落盘但未提交的角色图仍是孤儿文件，等待 T04 quarantine；
 - 已完成的 Story、Plan 和已登记媒体可以恢复并继续下游操作。
+
+### 浏览器工作区生命周期（2026-09-09）
+
+`BrowserWorkspaceStore` 与 Run/Task 分离，默认位于 `runtime/production-runs-browser-workspaces/<workspace UUID>/`（配置状态根目录时在其名称后追加 `-browser-workspaces`）。`session.json` 只保存时间、页面归属、generation、原视频元数据和 Run 引用，源文件以私有二进制文件原子保存，不进入 Task JSON。源上传上限 512 MB；`/api/browser-workspace/:id/source` 支持 GET/HEAD/Range，返回 `Cache-Control: no-store`。创建 Run 时服务端以已保存源文件的 SHA-256 和 URL 签入 Run metadata，拒绝旧代次或不同 digest；业务 Artifact wire shape 不变。
+
+浏览器 sessionStorage 只保存 workspace ID；每次文档加载生成独立 pageId。刷新用 start/resume 认领新 pageId，旧文档迟到的关闭通知、心跳、上传与 Run 创建被拒绝。换视频先 reset，再上传，即便新文件上传失败也不能复活旧结果；异步 UI 返回还要通过本地 epoch 检查。修改已签发边界对应的创作设置或明确放弃任务时，reset-run 清除旧结果但保留当前原视频；同源重跑替换 Run。导入包先校验有效性，再清除旧源视频和旧 Run，包中没有源文件字节时不与其他视频自动配对。
+
+页面通过 EventSource 保持一条生命周期连接，连接仍在时不因后台标签页暂停 JavaScript 心跳而过期。连接断开或 pagehide 关闭通知触发 60 秒刷新宽限期；5 秒一次 sweep 删除已到期工作区。刷新后的新页面、同一页面的连接重建可以撤销关闭，晚到的普通 heartbeat、上传和 reset 不能延后截止。连接 token 仅在内存中，每次连接独立签发，旧连接断开不能关闭替代连接或新文档。无生命周期连接且未收到关闭通知时，最后心跳起 2 分钟过期；Node 停止期间不能清理，下次启动执行到期清理。因此服务重启后恢复仅适用于尚未过期的工作区。这是单进程本地页面生命周期，不是跨 Node 批量任务 lease，也不能保证浏览器崩溃瞬间删除。
+
+清理仅认 manifest 中服务端写入的 `metadata.browserWorkspaceId`：先按 scheduler → Run 锁顺序撤销 active owner 与队列，再删除 Run、该 project/run 下的图片和视频、源视频副本及本次 Debug。启用的模型输出、局部修复和动画 Prompt 抓取通过可信 Durable Task 上下文落在 Run 的 `debug/` 子目录；旧无页面归属的调用保持原日志位置。仍有本机 Runner 时，保留仅含 ID 的清理记录并重扫迟到文件。视频 worker 的输入/参考素材临时目录也位于 Run 内，并通过本机 `--lifetime-file` 参数防止已关闭页面的迟到 worker 重建输出；该路径从不进入供应商请求。
+
+服务启动且尚未接收请求时，另行核对带有效 workspace UUID 归属的 Run 是否仍被对应 session 的 current Run 或 pendingCleanup 引用；仅清理确定没有引用的孤立 Run。无法读取归属时不猜测删除，历史无归属 Run 和符号链接跳过。导入 Run 在第一次 createRun 时即写入归属，以覆盖进程在导入一半、或创建成功但尚未 attach 时退出的窗口。导入与视频替换共用浏览器串行写队列，导入响应即便已被用户切换淘汰，也先推进客户端版本，再执行排队的视频替换，避免旧 generation 将后续操作卡在 409。
+
+长期保存白名单为固定角色、垂直赛道、创作限制、角色表情规则、候选数量、目标画幅和剧情时长。后三项与表情规则独立于 `creatorProfile`，不进入角色边界 digest；模型覆盖只在 sessionStorage 保存。升级时移除旧自动恢复指针，不将没有可信页面归属的历史 Run 纳入清理，也不删除用户选取的原始文件、外部导出文件或全局签名密钥。
 
 ## 7. v3 测试/规划包
 

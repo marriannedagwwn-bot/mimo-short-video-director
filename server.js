@@ -66,11 +66,16 @@ import { loadOrCreatePersistentKey } from "./src/persistent-key.js";
 import { STORY_DURATION_MAX_SECONDS, STORY_DURATION_MIN_SECONDS, isValidStoryDurationSeconds } from "./public/story-duration.js";
 import { CHARACTER_EXPRESSION_RULES_MAX_CHARS, isValidCharacterExpressionRules } from "./public/character-expression-rules.js";
 import { ProductionStateStore } from "./src/production-state-store.js";
+import { createProductionPackageDownloadHandler } from "./src/production-package-download.js";
+import { BrowserWorkspaceStore, BrowserWorkspaceError } from "./src/browser-workspace-store.js";
+import { createBrowserWorkspaceHandler, requiredWorkspaceGeneration, requiredWorkspacePageId } from "./src/browser-workspace-http.js";
+import { BrowserWorkspaceCleanup } from "./src/browser-workspace-cleanup.js";
+import { scopeBrowserWorkspaceDebugWriter, scopeBrowserWorkspacePromptCapture } from "./src/browser-workspace-debug.js";
 import { ProductionStateError, contentDigest, lineageRef, normalizeArtifactId, safeIdentifier } from "./src/production-lineage.js";
 import { ProductionRunCoordinator } from "./src/production-run-coordinator.js";
 import { DurableTaskStore, DURABLE_TASK_TERMINAL_STATUSES } from "./src/durable-task-store.js";
 import { DurableTaskManager } from "./src/durable-task-manager.js";
-import { runWithDurableTaskContext } from "./src/durable-task-context.js";
+import { currentDurableTaskContext, runWithDurableTaskContext } from "./src/durable-task-context.js";
 import { readModelUsageFromError, runWithUsageAccounting } from "./src/token-usage.js";
 import { resolveBuildIdentity } from "./src/build-identity.js";
 import {
@@ -90,19 +95,19 @@ loadEnv();
 const root = path.dirname(fileURLToPath(import.meta.url));
 const config = getConfig();
 const buildIdentity = resolveBuildIdentity({ workspaceRoot: root });
-const partialRepairDebugWriter = new PartialRepairDebugWriter({
+const partialRepairDebugWriter = scopeBrowserWorkspaceDebugWriter(new PartialRepairDebugWriter({
   outputRoot: process.env.PARTIAL_REPAIR_DEBUG_DIR
     || path.join(root, "debug", "partial-repairs")
-});
-const fullModelOutputLogWriter = new FullModelOutputLogWriter({
+}), (fallback) => browserWorkspaceDebugRoot("partial-repairs", fallback));
+const fullModelOutputLogWriter = scopeBrowserWorkspaceDebugWriter(new FullModelOutputLogWriter({
   ...buildIdentity,
   outputRoot: await resolvePrivateModelOutputLogRoot({
     workspaceRoot: root,
     configuredValue: process.env.FULL_STORY_MODEL_OUTPUT_LOG_DIR,
     servedRoot: path.join(root, "public")
   })
-});
-const animationModelOutputLogWriter = new FullModelOutputLogWriter({
+}), (fallback) => browserWorkspaceDebugRoot("full-story", fallback));
+const animationModelOutputLogWriter = scopeBrowserWorkspaceDebugWriter(new FullModelOutputLogWriter({
   ...buildIdentity,
   scope: MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN,
   outputRoot: await resolvePrivateModelOutputLogRoot({
@@ -112,16 +117,17 @@ const animationModelOutputLogWriter = new FullModelOutputLogWriter({
     environmentVariableName: "ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR",
     logLabel: "Animation Plan 模型全量输出"
   })
-});
+}), (fallback) => browserWorkspaceDebugRoot("animation-plan", fallback));
 // 这些阶段共用一个 root，按 stage 各建一个 writer；
 // 不配置 STAGE_MODEL_OUTPUT_LOG_DIR 就完全不写。
-// 前九个走 generateStageJson，注册即生效；animationPlanRevision 走
-// modelCallCoordinator，由 workflow 自己接 attemptObserver，是唯一的例外。
+// 普通阶段走 generateStageJson；原片来源提取复用 variants 配置但单独记日志；
+// animationPlanRevision 走 modelCallCoordinator，由 workflow 接 attemptObserver。
 const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
   MODEL_OUTPUT_LOG_SCOPES.ANALYSIS,
   MODEL_OUTPUT_LOG_SCOPES.RECONSTRUCTION,
   MODEL_OUTPUT_LOG_SCOPES.BRIEF,
   MODEL_OUTPUT_LOG_SCOPES.VARIANTS,
+  MODEL_OUTPUT_LOG_SCOPES.VARIANT_SOURCE_BASELINE,
   MODEL_OUTPUT_LOG_SCOPES.VISUAL_GUARDRAILS,
   MODEL_OUTPUT_LOG_SCOPES.CHARACTER_REFERENCE,
   MODEL_OUTPUT_LOG_SCOPES.STORY_CANDIDATE_REVIEW,
@@ -138,16 +144,16 @@ const stageModelOutputLogRoot = await resolvePrivateModelOutputLogRoot({
 });
 const stageModelOutputLogWriters = new Map(STAGE_MODEL_OUTPUT_LOG_SCOPES.map((scope) => [
   scope,
-  new FullModelOutputLogWriter({
+  scopeBrowserWorkspaceDebugWriter(new FullModelOutputLogWriter({
     ...buildIdentity,
     scope,
     outputRoot: stageModelOutputLogRoot
-  })
+  }), (fallback) => browserWorkspaceDebugRoot(`stage-${scope}`, fallback))
 ]));
-const animationPromptCapture = new AnimationPromptCapture({
+const animationPromptCapture = scopeBrowserWorkspacePromptCapture(new AnimationPromptCapture({
   outputRoot: process.env.ANIMATION_PROMPT_CAPTURE_DIR || "",
   modelOutputLogWriter: animationModelOutputLogWriter
-});
+}), (fallback) => browserWorkspaceDebugRoot("animation-prompts", fallback));
 if (animationPromptCapture.active) {
   globalThis.fetch = animationPromptCapture.wrapFetch(globalThis.fetch);
 }
@@ -165,6 +171,7 @@ const productionStateStore = new ProductionStateStore({
   rootDir: config.workflowRuntime.productionStateDirectory,
   coordinator: productionRunCoordinator
 });
+const handleProductionPackageDownload = createProductionPackageDownloadHandler({ productionStore: productionStateStore });
 const durableTaskStore = new DurableTaskStore({
   rootDir: config.workflowRuntime.productionStateDirectory
 });
@@ -213,6 +220,36 @@ const castOrchestration = new CastOrchestrationService({
   storyProvider: workflow.storyClient
 });
 const publicDir = path.join(root, "public");
+const browserWorkspaceRoot = `${config.workflowRuntime.productionStateDirectory}-browser-workspaces`;
+const browserWorkspaceCleanup = new BrowserWorkspaceCleanup({
+  productionStore: productionStateStore,
+  taskManager: durableTaskManager,
+  coordinator: productionRunCoordinator,
+  publicDir,
+  cleanupRoot: `${browserWorkspaceRoot}-cleanup`,
+  outputLogRoots: [fullModelOutputLogWriter.outputRoot, animationModelOutputLogWriter.outputRoot,
+    ...[...stageModelOutputLogWriters.values()].map((writer) => writer.outputRoot)].filter(Boolean)
+});
+const browserWorkspaceStore = new BrowserWorkspaceStore({
+  rootDir: browserWorkspaceRoot,
+  cleanupRun: (run) => browserWorkspaceCleanup.cleanup(run)
+});
+const handleBrowserWorkspace = createBrowserWorkspaceHandler({ store: browserWorkspaceStore });
+
+async function browserWorkspaceDebugRoot(kind, fallback) {
+  const context = currentDurableTaskContext();
+  if (!context) return fallback;
+  try {
+    const task = await context.getTask();
+    const run = await productionStateStore.loadRun({ projectId: task.projectId, runId: task.runId, includeContent: false });
+    return run.metadata?.browserWorkspaceId
+      ? path.join(productionStateStore.runDirectory(run.projectId, run.runId), "debug", kind)
+      : fallback;
+  } catch {
+    // A late observer after deletion must never fall back to an unowned log.
+    return null;
+  }
+}
 
 async function fullStoryModelOutputTrace(request, body = {}) {
   if (!fullModelOutputLogWriter.enabled) return null;
@@ -392,7 +429,8 @@ const routes = {
       ...(productionMedia ? {
         outputRoot: productionMedia.videoOutputRoot,
         publicBasePath: productionMedia.videoPublicBasePath,
-        filenamePrefix: productionMedia.filenamePrefix
+        filenamePrefix: productionMedia.filenamePrefix,
+        ...(productionMedia.workspaceMediaLifetime || {})
       } : {}),
       trustedPreviousShotReference,
       assertProductionContextCurrent: async () => {
@@ -482,7 +520,7 @@ const DIRECTOR_PIPELINE_STAGES = Object.freeze([
     taskKind: "variants",
     artifactId: "themeVariants",
     artifactType: "themeVariants",
-    dependencyIds: ["creativeBrief", "visualGuardrails"],
+    dependencyIds: ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails"],
     route: "/api/variants",
     buildInput: (raw, artifacts) => ({
       referenceAnalysis: artifacts.referenceAnalysis,
@@ -1583,7 +1621,7 @@ function pipelineMediaInput(raw = {}) {
 function assertPipelineMediaAvailable(stage, raw) {
   if (!["analysis", "reconstruction", "visualGuardrails"].includes(stage.key)) return;
   if (Array.isArray(raw.frames) && raw.frames.length >= 3) return;
-  throw new ProductionStateError("继续该阶段需要重新上传同一源视频（服务重启后大型媒体不会持久化）。", {
+  throw new ProductionStateError("继续该阶段需要当前参考视频素材，请刷新页面恢复视频，或重新上传同一原文件。", {
     code: "TASK_SOURCE_MEDIA_REQUIRED",
     httpStatus: 409,
     details: [{ sourceVideoDigest: String(raw.sourceVideoDigest || "") }]
@@ -1855,6 +1893,8 @@ function taskTerminalError(task) {
 const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+    if (await handleBrowserWorkspace(request, response, url)) return;
+    if (await handleProductionPackageDownload(request, response, url)) return;
     if (request.method === "GET" && url.pathname === "/api/health") {
       const [providerHealth, stageHealth, imageProvider] = await Promise.all([
         healthByProvider(clients, config),
@@ -2035,7 +2075,10 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "GET" || request.method === "HEAD") return serveStatic(url.pathname, response, request.method === "HEAD");
     return json(response, 404, { ok: false, error: "接口不存在" });
   } catch (error) {
-    const serialized = serializeServerError(error, { attemptStore });
+    const publicError = error instanceof BrowserWorkspaceError
+      ? new ProductionStateError(error.message, { code: error.code, httpStatus: error.httpStatus })
+      : error;
+    const serialized = serializeServerError(publicError, { attemptStore });
     if (serialized.log) console.error(serialized.log);
     // 失败前已经花掉的 token 照样如实回报，挂在信封上不进 body 的任何业务字段。
     const usage = readModelUsageFromError(error);
@@ -2046,6 +2089,40 @@ const server = http.createServer(async (request, response) => {
 server.requestTimeout = config.serverRequestTimeoutMs;
 
 await durableTaskManager.reconcileInterruptedTasks();
+// Startup only: requests cannot be between create/import and attach while we
+// remove owned Runs orphaned by a previous process exit at that boundary.
+try {
+  await browserWorkspaceCleanup.reconcileOrphanedRuns({
+    hasWorkspaceRunReference: async ({ projectId, runId, workspaceId }) => {
+      let session;
+      try { session = await browserWorkspaceStore.read(workspaceId); }
+      catch (error) {
+        if (error.code === "BROWSER_WORKSPACE_NOT_FOUND") return false;
+        throw error;
+      }
+      return [session.run, ...session.pendingCleanup.map((item) => item.run)]
+        .some((run) => run?.projectId === projectId && run?.runId === runId);
+    }
+  });
+} catch {
+  console.warn("部分页面孤立数据暂未清理完成，下次启动将重试。");
+}
+async function sweepBrowserWorkspaces() {
+  for (const sweep of [() => browserWorkspaceStore.sweepExpired(), () => browserWorkspaceCleanup.sweepPending()]) {
+    try { await sweep(); }
+    catch { console.warn("页面工作数据暂未清理完成，将自动重试。"); }
+  }
+}
+await sweepBrowserWorkspaces();
+let browserWorkspaceSweepRunning = false;
+const browserWorkspaceSweep = setInterval(async () => {
+  if (browserWorkspaceSweepRunning) return;
+  browserWorkspaceSweepRunning = true;
+  try { await sweepBrowserWorkspaces(); }
+  finally { browserWorkspaceSweepRunning = false; }
+}, 5_000);
+browserWorkspaceSweep.unref();
+server.on("close", () => clearInterval(browserWorkspaceSweep));
 
 server.listen(config.port, () => {
   console.log(`AI 短视频导演：http://localhost:${config.port}`);
@@ -2336,16 +2413,33 @@ function taskRequestBodyLimit(kind) {
 
 async function handleProductionStateRequest(pathname, body = {}) {
   if (pathname === "/api/production/run/start") {
-    return productionStateStore.createRun({
+    const workspace = body.workspaceId
+      ? await browserWorkspaceStore.inspect(body.workspaceId, {
+        expectedGeneration: requiredWorkspaceGeneration(body.workspaceGeneration),
+        pageId: requiredWorkspacePageId(body.workspacePageId)
+      })
+      : null;
+    if (workspace && (!workspace.source || workspace.source.digest !== body.metadata?.sourceVideoDigest)) {
+      throw new ProductionStateError("当前参考视频尚未保存或已经更换，请重新选择视频。", {
+        code: "BROWSER_WORKSPACE_SOURCE_MISMATCH", httpStatus: 409
+      });
+    }
+    const run = await productionStateStore.createRun({
       projectId: body.projectId,
       metadata: {
-        sourceVideo: plainObject(body.metadata?.sourceVideo),
-        sourceVideoDigest: String(body.metadata?.sourceVideoDigest || "").trim().toLowerCase(),
+        sourceVideo: {
+          ...plainObject(body.metadata?.sourceVideo),
+          ...(workspace?.source || {})
+        },
+        sourceVideoDigest: workspace?.source?.digest || String(body.metadata?.sourceVideoDigest || "").trim().toLowerCase(),
         creatorProfile: plainObject(body.metadata?.creatorProfile),
         transcript: String(body.metadata?.transcript || ""),
+        ...(workspace ? { browserWorkspaceId: workspace.id } : {}),
         startedBy: "browser-workflow"
       }
     });
+    if (workspace) await attachBrowserWorkspaceRun(workspace, run, body.workspacePageId);
+    return run;
   }
   if (pathname === "/api/production/run/load") {
     return productionStateStore.loadRun({
@@ -2368,12 +2462,65 @@ async function handleProductionStateRequest(pathname, body = {}) {
     });
   }
   if (pathname === "/api/production/package/import") {
-    return productionStateStore.importPackage(body.package);
+    let workspace = body.workspaceId
+      ? await browserWorkspaceStore.inspect(body.workspaceId, {
+        expectedGeneration: requiredWorkspaceGeneration(body.workspaceGeneration),
+        pageId: requiredWorkspacePageId(body.workspacePageId)
+      })
+      : null;
+    if (workspace) {
+      // Reject invalid packages before clearing any existing work. A package
+      // does not contain the source bytes, so never pair it with another video.
+      await productionStateStore.validatePackage(body.package);
+      workspace = await browserWorkspaceStore.resetSource(workspace.id, {
+        expectedGeneration: workspace.generation, pageId: body.workspacePageId
+      });
+    }
+    let createdImportRun = null;
+    let imported;
+    try {
+      imported = await productionStateStore.importPackage(body.package, {
+        browserWorkspaceId: workspace?.id,
+        onRunCreated: (run) => { createdImportRun = run; }
+      });
+    } catch (error) {
+      if (workspace && createdImportRun) {
+        await browserWorkspaceCleanup.cleanup({
+          projectId: createdImportRun.projectId, runId: createdImportRun.runId, workspaceId: workspace.id
+        });
+      }
+      throw error;
+    }
+    if (workspace) {
+      const run = imported.production;
+      await attachBrowserWorkspaceRun(workspace, run, body.workspacePageId);
+      imported.workspace = await browserWorkspaceStore.inspect(workspace.id, {
+        expectedGeneration: workspace.generation, pageId: body.workspacePageId
+      });
+    }
+    return imported;
   }
   throw new ProductionStateError("生产状态接口不存在", {
     code: "PRODUCTION_ROUTE_NOT_FOUND",
     httpStatus: 404
   });
+}
+
+async function attachBrowserWorkspaceRun(workspace, run, pageId) {
+  try {
+    await browserWorkspaceStore.attachRun(workspace.id, {
+      projectId: run.projectId,
+      runId: run.runId,
+      expectedGeneration: workspace.generation,
+      pageId,
+      replaceExisting: true
+    });
+  } catch (error) {
+    // A file switch while create/import was pending must not leave an orphan
+    // Run or let its response attach to the new video's page.
+    await browserWorkspaceCleanup.cleanup({ projectId: run.projectId, runId: run.runId, workspaceId: workspace.id });
+    throw error;
+  }
 }
 
 async function resolveProductionMediaContext(body = {}, { required = false } = {}) {
@@ -2424,13 +2571,30 @@ async function resolveProductionMediaContext(body = {}, { required = false } = {
     currentEntry?.content?.productionStrategy?.targetAspectRatio,
     "当前 Animation Plan productionStrategy.targetAspectRatio"
   );
+  const videoOutputRoot = path.join(publicDir, "generated-videos", ...namespaceSegments);
+  let workspaceMediaLifetime = null;
+  if (run.metadata?.browserWorkspaceId) {
+    // The worker may outlive this Node process. Its local lifetime file guards
+    // final writes; create the output directory while the Run is still locked.
+    await productionRunCoordinator.withRunLock(projectId, runId, async () => {
+      await productionStateStore.readManifest(projectId, runId);
+      await fs.mkdir(videoOutputRoot, { recursive: true });
+    });
+    workspaceMediaLifetime = {
+      workRoot: path.join(productionStateStore.runDirectory(projectId, runId), "media-work"),
+      lifetimeFile: productionStateStore.manifestPath(projectId, runId)
+    };
+  }
   return {
+    projectId,
+    runId,
     planArtifactId,
     planEntry: currentEntry,
     latestArtifacts: run.latestArtifacts || {},
     imageOutputRoot: path.join(publicDir, "generated-images", ...namespaceSegments),
     imagePublicBasePath: `/generated-images/${publicNamespace}`,
-    videoOutputRoot: path.join(publicDir, "generated-videos", ...namespaceSegments),
+    videoOutputRoot,
+    workspaceMediaLifetime,
     videoPublicBasePath: `/generated-videos/${publicNamespace}`,
     filenamePrefix: `${safeIdentifier(planRevision, "planRevision")}-${planDigest.slice(0, 12)}`,
     planAspectRatio
@@ -2874,7 +3038,6 @@ function clampFrameImageCount(value) {
 
 async function persistGeneratedImage(event, characterReference = {}, productionMedia = null) {
   const outputRoot = productionMedia?.imageOutputRoot || path.join(publicDir, "generated-images");
-  await fs.mkdir(outputRoot, { recursive: true });
   const stamp = new Date().toISOString().replace(/[-:.]/gu, "").replace(/Z$/u, "");
   const name = safeSegment(characterReference.characterName || "character");
   const index = Number(event.image_index) || 0;
@@ -2882,15 +3045,28 @@ async function persistGeneratedImage(event, characterReference = {}, productionM
   const prefix = productionMedia?.filenamePrefix ? `${productionMedia.filenamePrefix}-` : "";
   const filename = `${prefix}${name}-reference-${stamp}-${index + 1}${extension}`;
   const file = path.join(outputRoot, filename);
+  let bytes;
   if (event.b64_json) {
-    await fs.writeFile(file, Buffer.from(stripDataUrlPrefix(event.b64_json), "base64"));
+    bytes = Buffer.from(stripDataUrlPrefix(event.b64_json), "base64");
   } else if (event.url) {
     const imageResponse = await fetch(event.url, { signal: AbortSignal.timeout(60_000) });
     if (!imageResponse.ok) throw new JimengImageProviderError(`下载即梦图片失败（${imageResponse.status}）`);
-    await fs.writeFile(file, Buffer.from(await imageResponse.arrayBuffer()));
+    bytes = Buffer.from(await imageResponse.arrayBuffer());
   } else {
     throw new JimengImageProviderError("即梦流式事件没有返回图片数据");
   }
+  const write = async () => {
+    await fs.mkdir(outputRoot, { recursive: true });
+    await fs.writeFile(file, bytes);
+  };
+  if (productionMedia) {
+    // Downloading is outside the lock. A page close may remove the Run while
+    // the provider is returning an image; it must not recreate deleted files.
+    await productionRunCoordinator.withRunLock(productionMedia.projectId, productionMedia.runId, async () => {
+      await productionStateStore.readManifest(productionMedia.projectId, productionMedia.runId);
+      await write();
+    });
+  } else await write();
   return {
     filename,
     url: `${productionMedia?.imagePublicBasePath || "/generated-images"}/${filename}`,

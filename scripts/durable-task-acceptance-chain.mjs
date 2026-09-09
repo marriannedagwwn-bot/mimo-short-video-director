@@ -78,7 +78,7 @@ if (mode === "durable") {
     endpoint: "/api/variants",
     artifactId: "themeVariants",
     artifactType: "themeVariants",
-    dependencyIds: ["creativeBrief", "visualGuardrails"],
+    dependencyIds: ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails"],
     input: {
       referenceAnalysis: artifacts.referenceAnalysis,
       sourceScriptReconstruction: artifacts.sourceScriptReconstruction,

@@ -10,6 +10,7 @@ export const MODEL_OUTPUT_LOG_SCOPES = Object.freeze({
   RECONSTRUCTION: "reconstruction",
   BRIEF: "brief",
   VARIANTS: "variants",
+  VARIANT_SOURCE_BASELINE: "variantSourceBaseline",
   VISUAL_GUARDRAILS: "visualGuardrails",
   CHARACTER_REFERENCE: "characterReference",
   // 取值必须逐字等于 stage 名：stageModelOutputLogWriters 是按 scope 建 Map、

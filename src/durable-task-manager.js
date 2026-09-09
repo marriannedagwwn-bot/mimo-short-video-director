@@ -819,22 +819,32 @@ export class DurableTaskManager {
     if (DURABLE_TASK_TERMINAL_STATUSES.includes(task.status)) {
       return { task, compatibilityResult: this.outcomes.get(taskId) };
     }
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const key = safeIdentifier(taskId, "taskId");
       const callbacks = this.waiters.get(key) || [];
       let settled = false;
-      callbacks.push(async () => {
+      const completeWaiter = async () => {
         if (settled) return;
         settled = true;
-        resolve({
-          task: await this.taskStore.getTask({ projectId, runId, taskId }),
-          compatibilityResult: this.outcomes.get(taskId)
-        });
-      });
+        try {
+          resolve({
+            task: await this.taskStore.getTask({ projectId, runId, taskId }),
+            compatibilityResult: this.outcomes.get(taskId)
+          });
+        } catch (error) { reject(error); }
+      };
+      callbacks.push(completeWaiter);
       this.waiters.set(key, callbacks);
       void this.taskStore.getTask({ projectId, runId, taskId }).then((latest) => {
         if (DURABLE_TASK_TERMINAL_STATUSES.includes(latest.status)) this.notifyWaiters(key);
-      }).catch(() => {});
+      }).catch((error) => {
+        if (settled) return;
+        settled = true;
+        const remaining = (this.waiters.get(key) || []).filter((callback) => callback !== completeWaiter);
+        if (remaining.length) this.waiters.set(key, remaining);
+        else this.waiters.delete(key);
+        reject(error);
+      });
     });
   }
 
@@ -884,10 +894,10 @@ export class DurableTaskManager {
     this.watchdogs.delete(taskId);
   }
 
-  notifyWaiters(taskId) {
+  async notifyWaiters(taskId) {
     const callbacks = this.waiters.get(taskId) || [];
     this.waiters.delete(taskId);
-    for (const callback of callbacks) void callback().catch((error) => this.reportBackgroundError(error));
+    await Promise.all(callbacks.map((callback) => callback().catch((error) => this.reportBackgroundError(error))));
   }
 
   reportBackgroundError(error) {

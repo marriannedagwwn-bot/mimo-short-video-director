@@ -31,6 +31,47 @@ async function commit(store, run, input) {
   });
 }
 
+test("workspace import records its owner before any Artifact and retains that identity after a partial import failure", async () => {
+  await withStore(async ({ store, rootDir }) => {
+    const run = await store.createRun({ projectId: "project-import-source" });
+    const selectedVariant = { id: "V1", title: "source" };
+    const fullStory = { selectedVariantId: "V1", sceneScript: [] };
+    const variant = await commit(store, run, { artifactId: "variant:V1", artifactType: "selectedVariant", content: selectedVariant });
+    await commit(store, run, { artifactId: "fullStory:V1", artifactType: "fullStory", content: fullStory, dependencies: [lineageRef(variant.lineage)] });
+    const sealed = await store.sealPackage({ ...run, payload: { packageType: "story-production-test-package", packageVersion: "3.0", selectedVariant, fullStory } });
+    const browserWorkspaceId = "33333333-3333-4333-8333-333333333333";
+    let callbackRun = null;
+    const successful = await store.importPackage(sealed, {
+      browserWorkspaceId,
+      onRunCreated: async (created) => {
+        callbackRun = created;
+        const beforeCommit = await store.readManifest(created.projectId, created.runId);
+        assert.equal(beforeCommit.metadata.browserWorkspaceId, browserWorkspaceId);
+        assert.deepEqual(beforeCommit.artifacts, []);
+      }
+    });
+    assert.equal(callbackRun.runId, successful.production.runId);
+    assert.equal(successful.production.metadata.browserWorkspaceId, browserWorkspaceId);
+    await assert.rejects(store.importPackage(sealed, { browserWorkspaceId: ".." }), (error) => error.code === "BROWSER_WORKSPACE_ID_INVALID");
+
+    const originalCommit = store.commitArtifact.bind(store);
+    let failedRun;
+    store.commitArtifact = async (input) => {
+      if (input.artifactType === "fullStory") {
+        failedRun = { projectId: input.projectId, runId: input.runId };
+        throw Object.assign(new Error("simulated import disk failure"), { code: "EIO" });
+      }
+      return originalCommit(input);
+    };
+    await assert.rejects(store.importPackage(sealed, { browserWorkspaceId }), (error) => error.code === "EIO");
+    const reopened = new ProductionStateStore({ rootDir });
+    const partial = await reopened.loadRun(failedRun);
+    assert.equal(partial.metadata.browserWorkspaceId, browserWorkspaceId);
+    assert.deepEqual(partial.latestArtifacts["variant:V1"].content, selectedVariant);
+    assert.equal(partial.latestArtifacts["fullStory:V1"], undefined);
+  });
+});
+
 test("persistent run checkpoints artifacts and restores them after a new store instance", async () => {
   await withStore(async ({ store, rootDir }) => {
     const run = await store.createRun({

@@ -71,6 +71,11 @@ import {
   verifyReferenceAnalysis
 } from "./reconstruction-grounding.js";
 import { isDeepStrictEqual } from "node:util";
+import {
+  createVariantSourceBaseline,
+  VARIANT_SOURCE_BASELINE_STAGE,
+  VARIANT_SOURCE_BASELINE_SYSTEM_PROMPT
+} from "./variant-source-baseline.js";
 
 const DEFAULT_ANIMATION_BATCH_SCENE_COUNT = 2;
 
@@ -663,32 +668,60 @@ export class WorkflowService {
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
     const visualGuardrails = this.assertGlobalCharacterBoundary(input);
-    const validatedInput = { ...input, visualGuardrails };
+    const validatedInput = structuredClone({ ...input, visualGuardrails });
     // transformationProof.changed*.source 声称的原片事实要回上游核对，因此把这两份
     // 一并交给校验器。**刻意不含 creativeBrief**：2026-09-06 实测正是简报自己先写错
     // （它的 mappingLogic 抄了提示词举例里的「快递员身份」），拿它当核对基准
     // 等于给虚构盖章。上游只有这两份是原片事实的权威来源。
     const variantsUpstream = (input.referenceAnalysis && input.sourceScriptReconstruction)
       ? {
-        referenceAnalysis: input.referenceAnalysis,
-        sourceScriptReconstruction: input.sourceScriptReconstruction
+        referenceAnalysis: validatedInput.referenceAnalysis,
+        sourceScriptReconstruction: validatedInput.sourceScriptReconstruction
       }
       : null;
+    // 原片提问与新角色/新剧情隔离。source 由私有冻结目录里的完整原文签发，
+    // 候选模型只写 replacement；仍只返回并提交一份 themeVariants。
+    const sourceBaseline = variantsUpstream ? createVariantSourceBaseline(variantsUpstream) : null;
+    const finalize = (result) => ensureThemeVariantsMatchProfile(
+      ensureOutputContract(deriveStoryCandidateProjections(
+        sourceBaseline ? sourceBaseline.apply(result) : result
+      ), "themeVariants"),
+      validatedInput.creatorProfile, validatedInput.creativeBrief, visualGuardrails, variantsUpstream
+    );
     if (!this.hasLiveClient) {
-      return ensureThemeVariantsMatchProfile(
-        ensureOutputContract(deriveStoryCandidateProjections(mockVariants(validatedInput)), "themeVariants"),
-        profile, input.creativeBrief, visualGuardrails, variantsUpstream
-      );
+      sourceBaseline?.selectDemo();
+      return finalize(mockVariants(validatedInput));
     }
-    const prompt = variantsPrompt(validatedInput);
-    return this.generateStageJson("variants", validatedInput, {
-      prompt,
-      // keyChoice/climax/emotionalPayoff 由服务端按模型给出的拍号派生：先派生再校验，
-      // 使 ensureOutputContract 校验的是派生后的对象。模型回显的旧值一律被覆盖。
-      validate: (result) => ensureThemeVariantsMatchProfile(
-        ensureOutputContract(deriveStoryCandidateProjections(result), "themeVariants"),
-        profile, input.creativeBrief, visualGuardrails, variantsUpstream
-      )
+    if (!sourceBaseline) {
+      // 缺少两份原片上游的旧调用点保持原有单次生成契约。
+      return this.generateStageJson("variants", validatedInput, {
+        prompt: variantsPrompt(validatedInput), validate: finalize
+      });
+    }
+    // 两次调用共享创建时的 variants provider/model；不新建模型设置、Task 或重试。
+    const settings = this.resolveStage("variants", validatedInput);
+    this.assertStageClient(settings, stageLabel("variants"));
+    const requestSettings = {
+      client: settings.client,
+      model: settings.model,
+      provider: settings.provider || "",
+      maxCompletionTokens: settings.maxCompletionTokens,
+      requestTimeoutMs: settings.requestTimeoutMs
+    };
+    await this.generateValidatedJson({
+      ...requestSettings,
+      stage: VARIANT_SOURCE_BASELINE_STAGE,
+      systemPrompt: VARIANT_SOURCE_BASELINE_SYSTEM_PROMPT,
+      prompt: sourceBaseline.prompt(),
+      modelOutputLogWriter: this.stageModelOutputLogWriters?.get(VARIANT_SOURCE_BASELINE_STAGE) || null,
+      validate: (response) => sourceBaseline.acceptSelections(response)
+    });
+    return this.generateValidatedJson({
+      ...requestSettings,
+      stage: "variants",
+      prompt: variantsPrompt(validatedInput, { deriveSource: true }),
+      modelOutputLogWriter: this.stageModelOutputLogWriters?.get("variants") || null,
+      validate: finalize
     });
   }
 

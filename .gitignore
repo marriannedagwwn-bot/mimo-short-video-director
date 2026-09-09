@@ -8,6 +8,8 @@ public/generated-images/
 public/generated-videos/
 runtime-captures/
 runtime/production-runs/
+runtime/production-runs-browser-workspaces/
+runtime/production-runs-browser-workspaces-cleanup/
 runtime/*.log
 frames/
 

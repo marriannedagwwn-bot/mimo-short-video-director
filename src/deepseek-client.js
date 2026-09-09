@@ -129,11 +129,11 @@ export class DeepSeekClient {
       signal: AbortSignal.timeout(effectiveTimeoutMs)
     });
     const raw = await response.text();
-    await afterDurableProviderCall("model_provider_response");
     const headerRequestId = response.headers.get("x-request-id")
       || response.headers.get("request-id")
       || "";
     if (!response.ok) {
+      await afterDurableProviderCall("model_provider_response");
       throw new ModelResponseError(
         `DeepSeek 请求失败（${response.status}）`,
         raw,
@@ -150,6 +150,7 @@ export class DeepSeekClient {
     try {
       envelope = JSON.parse(raw);
     } catch {
+      await afterDurableProviderCall("model_provider_response");
       throw new ModelResponseError(
         "DeepSeek 返回了无法解析的响应包",
         raw,
@@ -161,14 +162,15 @@ export class DeepSeekClient {
         }
       );
     }
+    const usage = envelope?.usage && typeof envelope.usage === "object"
+      ? envelope.usage
+      : null;
+    // 已完成响应的用量先记账；随后冻结复检失败也不能抹掉已发生的消耗。
+    recordModelUsage({ provider: "DeepSeek", model: body.model, usage });
+    await afterDurableProviderCall("model_provider_response");
     const choice = envelope.choices?.[0];
     const content = choice?.message?.content;
     const requestId = headerRequestId || String(envelope.id || "");
-    const usage = envelope.usage && typeof envelope.usage === "object"
-      ? envelope.usage
-      : null;
-    // 记入当前请求的 token 记账作用域；作用域外是 no-op，异常内部吞掉。
-    recordModelUsage({ provider: "DeepSeek", model: body.model, usage });
     const finishReason = String(choice?.finish_reason || "");
     if (typeof content !== "string") {
       throw new ModelResponseError(

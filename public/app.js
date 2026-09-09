@@ -1,11 +1,15 @@
 import { syncShotCharacterReference } from "./character-reference-sync.js";
 import { formatStageUsageSuffix, mergeStageUsage } from "./token-usage-format.js";
 import { storyPackageFilename } from "./export-filename.js";
+import { downloadProductionPackage } from "./production-package-download.js";
 import { candidateReviewHeadline, storyReviewHeadline, storyReviewMetrics } from "./story-review-metrics.js";
 import {
   createDirectorArtifactSynchronizer,
   formatDirectorCompletionStatus
 } from "./director-pipeline-ui.js";
+import {
+  isActiveTask, latestTaskForTarget, rememberTaskSnapshot, taskStatusView, shotVideoBatchStatusText
+} from "./task-status-ui.js";
 import { compileShotNegativePrompt } from "./negative-prompts.js";
 import { buildShotFrameImagePrompt, compileShotFrameNegativePrompt } from "./shot-frame-prompt.js";
 import { buildCharacterReferenceImagePrompt } from "./character-reference-prompt.js";
@@ -40,6 +44,9 @@ import {
   storyOutlineTotalSeconds
 } from "./story-duration.js";
 import { CHARACTER_EXPRESSION_RULES_STORAGE_KEY } from "./character-expression-rules.js";
+import {
+  createBrowserWorkspaceClient, creationPreferences, CREATION_PREFERENCES_STORAGE_KEY
+} from "./browser-workspace-client.js";
 import { buildShotFrameMultiImagePrompt } from "./shot-frame-multi-image-prompt.js";
 import {
   createApiRequestError,
@@ -110,6 +117,7 @@ const state = {
   shotFrameResults: {},
   characterReferenceStatuses: {},
   characterAudioStatuses: {},
+  taskSnapshots: {},
   production: emptyProductionState(),
   characterImageGeneration: {
     open: false,
@@ -172,6 +180,23 @@ const state = {
   storyRunning: false,
   animationRunning: false
 };
+
+const emptyMediaDialogs = Object.fromEntries(
+  ["characterImageGeneration", "shotFrameImageGeneration", "shotVideoGeneration"].map((key) => [key, structuredClone(state[key])])
+);
+const browserWorkspace = createBrowserWorkspaceClient({
+  storage: sessionStorage,
+  fetch: (...args) => fetch(...args),
+  sendBeacon: (...args) => navigator.sendBeacon(...args)
+});
+let sourceLoading = true;
+
+function assertWorkspaceCurrent(epoch) {
+  if (browserWorkspace.isCurrent(epoch)) return;
+  const error = new Error("参考视频已切换，已忽略旧页面数据的迟到响应。");
+  error.code = "BROWSER_WORKSPACE_STALE";
+  throw error;
+}
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
@@ -320,14 +345,23 @@ const MODEL_OPTION_CATALOG = {
 init();
 
 async function init() {
+  // Historical unscoped Runs are never silently adopted or deleted by this tab.
+  localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
+  localStorage.removeItem("directorModelOverrides");
   restoreProfile();
   restoreCharacterExpressionRules();
+  restoreCreationPreferences();
   elements.characterExpressionRules.addEventListener("input", saveCharacterExpressionRules);
   bindEvents();
   validateReady();
   // Run/Task 恢复不依赖供应商健康检查。图片或视频 provider 的 /models
   // 即使很慢，也不能阻塞刷新后的 Durable Task 重新接管。
-  const restorePromise = restoreActiveProductionRun().catch(() => false);
+  const restorePromise = restoreBrowserWorkspace();
+  window.addEventListener("pagehide", () => browserWorkspace.close());
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) void resumeBrowserWorkspace();
+  });
+  window.setInterval(() => { void touchBrowserWorkspace(); }, 20_000);
   try {
     const health = await fetch("/api/health").then((response) => response.json());
     state.mode = health.mode;
@@ -359,7 +393,11 @@ async function init() {
 }
 
 function bindEvents() {
-  elements.input.addEventListener("change", (event) => event.target.files[0] && handleFile(event.target.files[0]));
+  elements.input.addEventListener("change", (event) => {
+    const file = event.target.files[0];
+    event.target.value = "";
+    if (file) void handleFile(file);
+  });
   ["dragenter", "dragover"].forEach((name) => elements.dropzone.addEventListener(name, (event) => { event.preventDefault(); elements.dropzone.classList.add("dragging"); }));
   ["dragleave", "drop"].forEach((name) => elements.dropzone.addEventListener(name, (event) => { event.preventDefault(); elements.dropzone.classList.remove("dragging"); }));
   elements.dropzone.addEventListener("drop", (event) => event.dataTransfer.files[0] && handleFile(event.dataTransfer.files[0]));
@@ -386,7 +424,9 @@ function bindEvents() {
   elements.animationAspectRatio.addEventListener("change", () => handleDefaultAspectRatioChange(elements.animationAspectRatio.value));
   elements.storyDurationTarget.addEventListener("change", () => {
     state.storyDurationTarget = elements.storyDurationTarget.value;
+    saveCreationPreferences();
   });
+  elements.variantCount.addEventListener("change", saveCreationPreferences);
   renderStoryDurationOptions();
   elements.exportStoryPackage.addEventListener("click", exportCurrentStoryPackage);
   elements.startShotVideoBatch.addEventListener("click", startShotVideoBatch);
@@ -570,27 +610,152 @@ function bindEvents() {
   });
 }
 
-async function handleFile(file) {
-  if (!file.type.startsWith("video/")) return showError("请选择视频文件。支持 MP4、MOV、WebM 等浏览器可播放格式。");
-  if (state.characterBoundaryProfile || state.production.runId) {
-    const active = await activeProductionTasks();
-    const resumableInterruptedRun = Boolean(
-      state.production.runId
-      && !state.output.themeVariants
-      && !active.length
-    );
-    if (!resumableInterruptedRun) {
-      const invalidated = await invalidateGlobalCharacterBoundary("参考视频已替换；旧的生产 Run 与全局角色边界已失效，请重新运行工作流。");
-      if (!invalidated) return;
-    } else {
-      showError("已保留中断的 Run；点击“启动 AI 导演”时会校验原始文件 SHA-256，并从首个未完成阶段继续。");
+async function resumeBrowserWorkspace() {
+  try {
+    if (await browserWorkspace.resume()) {
+      clearVideoWorkspaceUi();
+      sourceLoading = true;
+      await restoreBrowserWorkspace();
+    }
+  } catch (error) {
+    showError(error.message || "页面会话暂时无法重新连接，请刷新重试。", "notice");
+  }
+}
+
+async function touchBrowserWorkspace() {
+  try {
+    if (await browserWorkspace.touch()) {
+      clearVideoWorkspaceUi();
+      sourceLoading = false;
+      validateReady();
+      showError("上次页面会话已结束，视频与生成结果已清理；创作宇宙设置已保留。", "notice");
+    }
+  } catch { /* A temporary outage does not discard this tab's workspace identity. */ }
+}
+
+async function restoreBrowserWorkspace() {
+  const epoch = browserWorkspace.epoch;
+  try {
+    const workspace = await browserWorkspace.start();
+    assertWorkspaceCurrent(epoch);
+    if (workspace.source) {
+      const source = workspace.source;
+      const response = await fetch(source.url, { cache: "no-store" });
+      if (!response.ok) throw new Error("保存的原视频无法读取，请重新选择视频。");
+      const file = new File([await response.blob()], source.name, {
+        type: source.type, lastModified: source.lastModified
+      });
+      if (await sourceFileSha256(file) !== source.digest) throw new Error("保存的原视频校验失败，请重新选择视频。");
+      assertWorkspaceCurrent(epoch);
+      await loadSourceVideo(file, epoch, source.url);
+    }
+    assertWorkspaceCurrent(epoch);
+    if (workspace.run) {
+      await restoreActiveProductionRun(workspace.run, epoch);
+      assertWorkspaceCurrent(epoch);
+      if (!workspace.source) showError("已恢复导入包的生成结果，但该包未包含原视频。重新选择视频会清除这些结果。", "notice");
+    }
+  } catch (error) {
+    if (browserWorkspace.isCurrent(epoch)) showError(error.message || "页面数据暂时无法恢复，请稍后刷新重试。", "notice");
+  } finally {
+    if (browserWorkspace.isCurrent(epoch)) {
+      sourceLoading = false;
+      validateReady();
     }
   }
+}
+
+function clearVideoWorkspaceUi({ keepSource = false } = {}) {
+  resetDirectorClientState();
+  if (!keepSource) {
+    state.file = null;
+    state.videoDataUrl = null;
+    state.frames = [];
+    state.metadata = null;
+  }
+  state.backgroundMusicDrafts = {};
+  state.running = false;
+  state.storyRunning = false;
+  state.animationRunning = false;
+  state.variantsRegenerating = false;
+  state.animationPromptRewriting = false;
+  if (!keepSource) {
+    if (state.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(state.previewUrl);
+    state.previewUrl = null;
+    elements.preview.pause();
+    elements.preview.removeAttribute("src");
+    elements.preview.load();
+    elements.transcript.value = "";
+    elements.frames.innerHTML = "";
+    elements.frameStatus.textContent = "等待抽帧";
+    elements.fileName.textContent = "";
+    elements.fileMeta.textContent = "";
+    elements.dropzone.classList.remove("hidden");
+    elements.videoInfo.classList.add("hidden");
+  }
+  for (const element of [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants,
+    elements.fullStory, elements.animationPlan, elements.selectedVariantSummary, elements.characterImageResults,
+    elements.shotFrameImageResults, elements.shotVideoResults, elements.shotVideoBatchItems]) {
+    element.innerHTML = "";
+  }
+  for (const element of [elements.pipelineUsage, elements.storyStatus, elements.animationStatus, elements.storyPackageStatus,
+    elements.characterImageStatus, elements.shotFrameImageStatus, elements.shotVideoStatus]) element.textContent = "";
+  for (const key of Object.keys(emptyMediaDialogs)) state[key] = structuredClone(emptyMediaDialogs[key]);
+  for (const element of [elements.characterImageModal, elements.shotFrameImageModal, elements.shotVideoModal,
+    elements.generatedImagePreview, elements.shotVideoBatchPanel, elements.releaseActiveTasks, elements.export,
+    elements.resultStack]) element.classList.add("hidden");
+  elements.generatedImagePreviewImage.removeAttribute("src");
+  elements.characterImagePreview.removeAttribute("src");
+  elements.characterImageInput.value = "";
+  elements.characterImagePromptPreview.value = "";
+  elements.shotFrameImagePromptPreview.value = "";
+  elements.shotVideoPromptPreview.value = "";
+  elements.saveModelSettings.disabled = false;
+  elements.resetModelSettings.disabled = false;
+  setCharacterImageRunning(false);
+  setShotFrameImageGeneratorRunning(false);
+  setShotVideoGeneratorRunning(false);
+  document.body.classList.remove("modal-open");
+  elements.empty.classList.remove("hidden");
+  setRunning(false);
+  setStoryRunning(false);
+  setAnimationRunning(false);
+  resetPipeline();
+  renderStoryDurationOptions();
+  history.replaceState({}, "", window.location.pathname);
+  renderRoute();
+}
+
+async function handleFile(file) {
+  if (!file.type.startsWith("video/")) return showError("请选择视频文件。支持 MP4、MOV、WebM 等浏览器可播放格式。");
+  const epoch = browserWorkspace.beginChange();
+  sourceLoading = true;
+  clearVideoWorkspaceUi();
+  showError("");
+  elements.run.disabled = true;
+  elements.uploadHint.textContent = "正在清理上一段视频并保存新视频…";
+  try {
+    const workspace = await browserWorkspace.replaceSource(file, epoch);
+    if (!workspace) return;
+    assertWorkspaceCurrent(epoch);
+    await loadSourceVideo(file, epoch, workspace.source.url);
+  } catch (error) {
+    if (browserWorkspace.isCurrent(epoch)) showError(error.message || "视频保存失败，请重新选择视频。");
+  } finally {
+    if (browserWorkspace.isCurrent(epoch)) {
+      sourceLoading = false;
+      elements.uploadHint.textContent = "或点击选择文件 · MP4 / MOV / WebM";
+      validateReady();
+    }
+  }
+}
+
+async function loadSourceVideo(file, epoch, sourceUrl) {
+  assertWorkspaceCurrent(epoch);
   const media = analysisMediaSettings();
   if (state.mode !== "demo" && media.mediaMode === "video" && file.size > media.nativeVideoMaxBytes) {
-    return showError(`当前强制使用原生视频，文件不能超过 ${formatBytes(media.nativeVideoMaxBytes)}。请压缩视频或改用 auto 模式。`);
+    throw new Error(`当前强制使用原生视频，文件不能超过 ${formatBytes(media.nativeVideoMaxBytes)}。请压缩视频或改用 auto 模式。`);
   }
-  showError("");
   state.file = file;
   state.frames = [];
   state.videoDataUrl = null;
@@ -598,9 +763,9 @@ async function handleFile(file) {
   elements.videoInfo.classList.remove("hidden");
   elements.fileName.textContent = file.name;
   elements.fileMeta.textContent = `${formatBytes(file.size)} · 正在读取视频`;
-  if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
-  state.previewUrl = URL.createObjectURL(file);
-  elements.preview.src = state.previewUrl;
+  if (state.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(state.previewUrl);
+  state.previewUrl = sourceUrl;
+  elements.preview.src = sourceUrl;
   elements.frames.innerHTML = skeletonFrames(10);
   elements.frameStatus.textContent = "正在抽取关键帧…";
   elements.run.disabled = true;
@@ -612,6 +777,7 @@ async function handleFile(file) {
       sampleVideo(file, 10),
       shouldReadNativeVideo ? readFileAsDataUrl(file) : Promise.resolve(null)
     ]);
+    assertWorkspaceCurrent(epoch);
     state.frames = sampled.frames;
     state.videoDataUrl = videoDataUrl;
     state.metadata = sampled.metadata;
@@ -625,11 +791,11 @@ async function handleFile(file) {
         : "关键帧模式";
     elements.frameStatus.textContent = `已抽取 ${sampled.frames.length} 帧 · ${mediaNote}`;
   } catch (error) {
+    assertWorkspaceCurrent(epoch);
     state.file = null;
     elements.frameStatus.textContent = "抽帧失败";
-    showError(`无法读取视频：${error.message}`);
+    throw new Error(`无法读取视频：${error.message}`);
   }
-  validateReady();
 }
 
 async function sampleVideo(file, count) {
@@ -697,7 +863,8 @@ async function urlToDataUrl(url) {
 }
 
 async function runWorkflow() {
-  if (state.running) return;
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (state.running || sourceLoading || !browserWorkspace.workspace) return;
   const creatorProfile = profile();
   if (!creatorProfile.fixedCharacter || !creatorProfile.vertical) return showError("请填写固定角色和垂直赛道。 ");
   state.running = true;
@@ -741,11 +908,21 @@ async function runWorkflow() {
         .forEach((element) => { element.innerHTML = ""; element.classList.add("hidden"); });
       if (continuingInterruptedRun) renderRestoredDirectorArtifacts();
       const media = analysisMediaSettings();
+      if (!state.videoDataUrl && state.file && state.mode !== "demo" && media.mediaMode !== "frames"
+        && state.file.size <= media.nativeVideoMaxBytes) {
+        const videoDataUrl = await readFileAsDataUrl(state.file);
+        assertWorkspaceCurrent(workspaceEpoch);
+        state.videoDataUrl = videoDataUrl;
+      }
+      if (state.mode !== "demo" && media.mediaMode === "video" && state.file?.size > media.nativeVideoMaxBytes) {
+        throw new Error(`当前强制使用原生视频，文件不能超过 ${formatBytes(media.nativeVideoMaxBytes)}。`);
+      }
       const canSendNativeVideo = Boolean(state.videoDataUrl)
         && state.mode !== "demo"
         && media.mediaMode !== "frames"
         && state.file?.size <= media.nativeVideoMaxBytes;
       const sourceVideoDigest = await sourceFileSha256(state.file);
+      assertWorkspaceCurrent(workspaceEpoch);
       const shared = withModelOverrides({
         frames: state.frames,
         ...(canSendNativeVideo ? { video: { dataUrl: state.videoDataUrl, mimeType: state.file.type, size: state.file.size } } : {}),
@@ -757,6 +934,7 @@ async function runWorkflow() {
       });
       if (!continuingInterruptedRun) {
         const productionRun = await api("/api/production/run/start", {
+          ...browserWorkspace.reference(),
           metadata: {
             sourceVideo: state.metadata,
             sourceVideoDigest,
@@ -767,13 +945,15 @@ async function runWorkflow() {
         state.production = productionStateFromRun(productionRun);
         persistActiveProductionRun();
       }
-      const created = await createDurableTask("directorPipeline", shared);
+      assertWorkspaceCurrent(workspaceEpoch);
+    const created = await createDurableTask("directorPipeline", shared);
       task = created.task;
     }
     elements.releaseActiveTasks.classList.remove("hidden");
     const completedTask = await waitForDurableTask(task, updateDirectorTaskProgress);
     recordStageUsage(completedTask.usage);
     await directorArtifactSynchronizer.sync(completedTask);
+    assertWorkspaceCurrent(workspaceEpoch);
     elements.pipelineUsage.textContent = formatDirectorCompletionStatus(
       completedTask,
       formatStageUsageSuffix(completedTask.usage)
@@ -782,6 +962,7 @@ async function runWorkflow() {
     elements.export.classList.remove("hidden");
     elements.variants.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (isTaskCapacityError(error)) {
       elements.pipelineUsage.textContent = taskCapacityMessage(error);
       elements.pipelineUsage.className = "story-status warn";
@@ -796,6 +977,7 @@ async function runWorkflow() {
     elements.pipelineUsage.className = "story-status error";
     showError(error.message || "工作流执行失败");
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     state.running = false;
     setRunning(false);
     validateReady();
@@ -857,24 +1039,34 @@ async function createDurableTask(kind, input) {
 }
 
 async function readDurableTask(taskId) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const query = new URLSearchParams({
     projectId: state.production.projectId,
     runId: state.production.runId
   });
   const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}?${query}`);
   const data = await response.json().catch(() => ({}));
+  assertWorkspaceCurrent(workspaceEpoch);
   if (!response.ok || !data.ok) throw createApiRequestError(data, response.status, `任务查询失败（${response.status}）`);
   return data.task || data.result;
 }
 
 async function waitForDurableTask(initialTask, onProgress = null) {
+  const workspaceEpoch = browserWorkspace.epoch;
   let task = initialTask;
   while (["queued", "running"].includes(task.status)) {
+    assertWorkspaceCurrent(workspaceEpoch);
+    updateTaskSnapshot(task);
     if (onProgress) await onProgress(task);
     await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    assertWorkspaceCurrent(workspaceEpoch);
     task = await readDurableTask(task.taskId);
+    assertWorkspaceCurrent(workspaceEpoch);
   }
+  assertWorkspaceCurrent(workspaceEpoch);
+  updateTaskSnapshot(task);
   if (onProgress) await onProgress(task);
+  assertWorkspaceCurrent(workspaceEpoch);
   if (task.status !== "completed") {
     const error = new Error(task.error?.message || `任务以 ${task.status} 结束`);
     error.code = task.error?.code || `TASK_${String(task.status || "failed").toUpperCase()}`;
@@ -887,6 +1079,7 @@ async function waitForDurableTask(initialTask, onProgress = null) {
 }
 
 async function activeProductionTasks() {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (!state.production.projectId || !state.production.runId) return [];
   const query = new URLSearchParams({
     projectId: state.production.projectId,
@@ -895,6 +1088,7 @@ async function activeProductionTasks() {
   });
   const response = await fetch(`/api/tasks?${query}`);
   const data = await response.json().catch(() => ({}));
+  assertWorkspaceCurrent(workspaceEpoch);
   if (!response.ok || !data.ok) {
     throw createApiRequestError(data, response.status, `任务列表读取失败（${response.status}）`);
   }
@@ -925,7 +1119,9 @@ async function abandonProductionTasks(tasks) {
 }
 
 async function refreshReleaseActiveTasksButton() {
+  const workspaceEpoch = browserWorkspace.epoch;
   const active = await activeProductionTasks().catch(() => []);
+  if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
   elements.releaseActiveTasks.classList.toggle("hidden", !active.length);
 }
 
@@ -936,28 +1132,22 @@ async function forceReleaseActiveTasks() {
     return;
   }
   const confirmed = window.confirm(
-    "确认放弃当前 Run 的全部 active Task，并让下一次“启动 AI 导演”创建新 Run？\n\n"
-    + "这不会取消已经提交给供应商的远端任务，仍可能产生费用；迟到结果将失去 Artifact 提交权。"
+    "确认放弃当前 Run 的全部 active Task，并清理本次生成结果？\n\n"
+    + "当前原视频会保留。已提交给供应商的远端任务可能仍会执行并产生费用。"
   );
   if (!confirmed) return;
-  const released = await abandonProductionTasks(active);
-  resetDirectorClientState();
-  resetPipeline();
-  elements.releaseActiveTasks.classList.add("hidden");
-  state.running = false;
-  state.storyRunning = false;
-  state.animationRunning = false;
-  setRunning(false);
-  setStoryRunning(false);
-  setAnimationRunning(false);
-  const abandonedCount = released.filter((task) => task.status === "abandoned").length;
-  showError(
-    abandonedCount
-      ? `已将 ${abandonedCount} 个旧任务标记 abandoned；下一次启动将创建新的 Run。远端调用仍可能产生费用。`
-      : "任务已在确认期间结束；下一次启动将创建新的 Run。",
-    "notice"
-  );
+  const epoch = browserWorkspace.beginChange();
+  sourceLoading = true;
   validateReady();
+  try {
+    if (!await browserWorkspace.resetRun(epoch)) return;
+    clearVideoWorkspaceUi({ keepSource: true });
+    showError("已清理本次生成结果；可以用当前视频重新启动。已提交给供应商的远端调用仍可能产生费用。", "notice");
+  } catch (error) {
+    if (browserWorkspace.isCurrent(epoch)) showError(error.message || "旧任务和结果尚未清理成功，请重试。");
+  } finally {
+    if (browserWorkspace.isCurrent(epoch)) { sourceLoading = false; validateReady(); }
+  }
 }
 
 async function reloadActiveProductionRun(expectedProduction = state.production) {
@@ -981,6 +1171,13 @@ async function reloadActiveProductionRun(expectedProduction = state.production) 
 }
 
 async function updateDirectorTaskProgress(task) {
+  // Loading newly committed Artifacts re-renders the stage list. Apply the
+  // task snapshot afterwards so that render cannot reset the active stage.
+  await directorArtifactSynchronizer.sync(task);
+  renderDirectorTaskStatus(task);
+}
+
+function renderDirectorTaskStatus(task) {
   const artifactToStage = {
     referenceAnalysis: "analysis",
     sourceScriptReconstruction: "script",
@@ -999,11 +1196,17 @@ async function updateDirectorTaskProgress(task) {
     .map((item) => `${item.provider || ""} ${modelName(item.model || "")}`.trim())
     .filter(Boolean)
     .join(" / ");
-  elements.pipelineUsage.textContent = task.status === "queued"
+  elements.pipelineUsage.textContent = task.status === "completed"
+    ? formatDirectorCompletionStatus(task, formatStageUsageSuffix(task.usage))
+    : !isActiveTask(task)
+      ? taskStatusView(task).message
+      : task.status === "queued"
     ? `AI 导演任务排队中${model ? ` · ${model}` : ""}`
     : `AI 导演执行中 ${completedCount}/5${model ? ` · ${model}` : ""}`;
-  elements.pipelineUsage.className = "story-status active";
-  await directorArtifactSynchronizer.sync(task);
+  elements.pipelineUsage.className = `story-status ${taskStatusView(task).tone}`;
+  if (!isActiveTask(task) && task.status !== "completed" && artifactToStage[currentArtifact]) {
+    setStage(artifactToStage[currentArtifact], "error");
+  }
 }
 
 function renderRestoredDirectorArtifacts({ fromStage = 0, toStage = 5 } = {}) {
@@ -1054,6 +1257,7 @@ function resetDirectorClientState() {
   state.characterReferenceStatuses = {};
   state.characterAudioStatuses = {};
   state.productionTasks = {};
+  state.taskSnapshots = {};
   state.production = emptyProductionState();
   localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
   state.selectedVariantId = null;
@@ -1206,6 +1410,7 @@ function failedStageUsageSuffix() {
 }
 
 async function api(path, body, { productionToken = null } = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const response = await fetch(path, {
     method: "POST",
     headers: {
@@ -1215,6 +1420,7 @@ async function api(path, body, { productionToken = null } = {}) {
     body: JSON.stringify(withModelOverrides(body))
   });
   const data = await response.json().catch(() => ({}));
+  assertWorkspaceCurrent(workspaceEpoch);
   // 先记账再判成败：失败响应上的 usage 是失败前真实花掉的钱，抛错前必须收进合计。
   recordStageUsage(data.usage);
   if (!response.ok || !data.ok) {
@@ -1224,7 +1430,9 @@ async function api(path, body, { productionToken = null } = {}) {
 }
 
 async function streamJsonEvents(path, body, onEvent) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const response = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(withModelOverrides(body)) });
+  assertWorkspaceCurrent(workspaceEpoch);
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     throw createApiRequestError(data, response.status, `请求失败（${response.status}）`);
@@ -1235,6 +1443,7 @@ async function streamJsonEvents(path, body, onEvent) {
   let buffer = "";
   while (true) {
     const { done, value } = await reader.read();
+    assertWorkspaceCurrent(workspaceEpoch);
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const blocks = buffer.split(/\r?\n\r?\n/u);
@@ -1474,6 +1683,7 @@ function renderVariants(data) {
 // 候选对照评审：手动触发，只出报告。不改候选、不签发 Artifact、不改变候选数量、
 // 不 stale 任何东西、不阻断后续阶段。报告不落盘，刷新页面即失。
 async function runStoryCandidateReview(themeVariants, button) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const body = elements.variants.querySelector("[data-candidate-review-body]");
   if (!body || button.disabled) return;
   if (!state.output.sourceScriptReconstruction) {
@@ -1492,9 +1702,11 @@ async function runStoryCandidateReview(themeVariants, button) {
     });
     body.innerHTML = renderStoryCandidateReview(review, themeVariants);
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     // 覆盖率核验拦下的漏检要完整显示：用户需要看到是哪个候选没被评到。
     body.innerHTML = `<p class="story-review-status error">${escape(error?.message || "候选体检失败")}</p>`;
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     button.disabled = false;
     button.textContent = original;
   }
@@ -1557,6 +1769,7 @@ function renderStoryCandidateReview(review, themeVariants) {
 // variant / fullStory / animationPlan / 镜头媒体——这是 P0 的状态隔离要求，
 // 不是可选项。所以下游已经有产出时必须先明确征求同意，拒绝就什么都不动。
 async function regenerateThemeVariants() {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (state.variantsRegenerating) return;
   if (!state.output.creativeBrief || !state.output.visualGuardrails) {
     showError("上游创意简报或角色边界尚未生成，无法重新生成主题变体。");
@@ -1599,7 +1812,7 @@ async function regenerateThemeVariants() {
       },
       artifactId: "themeVariants",
       artifactType: "themeVariants",
-      dependencyIds: ["creativeBrief", "visualGuardrails"]
+      dependencyIds: ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails"]
     });
     state.output.themeVariants = themeVariants;
     // 旧的选中项已经不存在了，别让它继续指向一个已作废的 variant。
@@ -1610,6 +1823,7 @@ async function regenerateThemeVariants() {
     elements.pipelineUsage.textContent = usage ? `主题变体已换一批${formatStageUsageSuffix(usage)}` : "";
     elements.pipelineUsage.className = "story-status ready";
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setStage("variants", isTaskCapacityError(error) ? "" : "error");
     const suffix = failedStageUsageSuffix();
     elements.pipelineUsage.textContent = isTaskCapacityError(error)
@@ -1621,6 +1835,7 @@ async function regenerateThemeVariants() {
       isTaskCapacityError(error) ? "notice" : "error"
     );
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     state.variantsRegenerating = false;
     renderVariants(state.output.themeVariants);
   }
@@ -1732,6 +1947,7 @@ function renderStoryPage({ autoGenerate = false } = {}) {
     }
   }
   elements.storyGenerate.disabled = !variant || state.storyRunning;
+  syncStoryTaskStatus({ includeTerminal: true });
   updateStoryExportActions();
 }
 
@@ -1766,6 +1982,7 @@ function renderStoryDurationOptions() {
 }
 
 async function generateFullStory({ force = false } = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (state.storyRunning) return;
   const variant = selectedVariant();
   if (!variant) return setStoryStatus("请先选择一个可拍摄主题变体。", "error");
@@ -1819,11 +2036,13 @@ async function generateFullStory({ force = false } = {}) {
     updateStoryExportActions();
     elements.export.classList.remove("hidden");
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setStoryStatus(
       isTaskCapacityError(error) ? taskCapacityMessage(error) : `${error.message || "完整剧情生成失败"}${failedStageUsageSuffix()}`,
       isTaskCapacityError(error) ? "warn" : "error"
     );
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     endStageUsage();
     state.storyRunning = false;
     setStoryRunning(false);
@@ -1879,6 +2098,7 @@ function renderFullStory(data) {
 
 // 剧情体检：手动触发，只出报告。不改剧情、不签发 Artifact、不阻断后续阶段。
 async function runStoryQualityReview(fullStory, button) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const body = elements.fullStory.querySelector("[data-story-review-body]");
   if (!body || button.disabled) return;
   button.disabled = true;
@@ -1889,9 +2109,11 @@ async function runStoryQualityReview(fullStory, button) {
     const review = await api("/api/story-quality-review", { fullStory });
     body.innerHTML = renderStoryQualityReview(review);
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     // 评审失败要把原因完整显示出来——它常常是覆盖率核验拦下的漏检，用户需要看到是哪一条。
     body.innerHTML = `<p class="story-review-status error">${escape(error?.message || "体检失败")}</p>`;
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     button.disabled = false;
     button.textContent = original;
   }
@@ -2022,6 +2244,7 @@ function renderStoryQualityReview(review) {
 }
 
 async function generateAnimationPlan({ force = false } = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (state.animationRunning) return;
   const variant = selectedVariant();
   if (!variant) return setAnimationStatus("请先选择一个主题变体。", "error");
@@ -2032,6 +2255,7 @@ async function generateAnimationPlan({ force = false } = {}) {
   try {
     videoPromptTarget = videoPromptTargetForSetting(shotVideoSetting());
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     return setAnimationStatus(`${error.message} 请先在模型设置中选择 Seedance 2.0 或 MiniMax H3。`, "error");
   }
   if (!force && state.animationPlans[variant.id]) {
@@ -2095,6 +2319,7 @@ async function generateAnimationPlan({ force = false } = {}) {
     updateStoryExportActions();
     elements.export.classList.remove("hidden");
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setAnimationStatus(
       isTaskCapacityError(error) ? taskCapacityMessage(error) : `${error.message || "动画生产包生成失败"}${failedStageUsageSuffix()}`,
       isTaskCapacityError(error) ? "warn" : "error"
@@ -2105,6 +2330,7 @@ async function generateAnimationPlan({ force = false } = {}) {
       reveal(elements.animationPlan);
     }
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     endStageUsage();
     state.animationRunning = false;
     setAnimationRunning(false);
@@ -2202,6 +2428,7 @@ function selectedAnimationAspectRatio(variantId = selectedVariant()?.id) {
 // 不因为这里拨一下就重签 revision 或 stale 媒体。切换已有 Plan 的入口仍在 Plan 卡片内。
 function handleDefaultAspectRatioChange(value) {
   state.animationAspectRatioDefault = normalizeAnimationPlanAspectRatio(value);
+  saveCreationPreferences();
   syncAnimationAspectRatioControls();
 }
 
@@ -2245,6 +2472,15 @@ function hasPlannedEndpoints(shot = {}) {
 }
 
 function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
+  // A Run reload replaces media maps with current Artifacts. Restore task
+  // overlays before rendering so in-flight/failed cards do not look idle.
+  const mediaTargets = new Set(Object.values(state.taskSnapshots)
+    .filter((task) => ["shotVideo", "shotFrameImage"].includes(task.kind))
+    .flatMap((task) => task.targetArtifactIds || []));
+  for (const artifactId of mediaTargets) {
+    const task = taskForUi({ kinds: ["shotVideo", "shotFrameImage"], artifactId });
+    if (task) applyTaskMediaStatus(task);
+  }
   const strategy = data.productionStrategy || {};
   const visual = data.visualBible || {};
   const directShotPlan = data.promptSchemaVersion === "3.0";
@@ -2322,11 +2558,13 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
   reveal(elements.animationPlan);
   const reviewButton = elements.animationPlan.querySelector("[data-plan-review]");
   if (reviewButton) reviewButton.addEventListener("click", () => runAnimationPlanReview(data, reviewButton));
+  syncStoryTaskStatus();
 }
 
 // 分镜终审：手动触发，只出报告。不改 Plan、不签发 Artifact、不进 lineage、刷新即失。
 // 评审必须同时把剧情送过去——没有对照物就发现不了「剧情写了、镜头没拍」。
 async function runAnimationPlanReview(animationPlan, button) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const body = elements.animationPlan.querySelector("[data-plan-review-body]");
   const fullStory = state.output.fullStory;
   if (!body || button.disabled) return;
@@ -2344,8 +2582,10 @@ async function runAnimationPlanReview(animationPlan, button) {
     body.innerHTML = renderAnimationPlanReview(review) + renderRevisionLauncher(review);
     bindAnimationPlanRevision(body, animationPlan, review);
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     body.innerHTML = `<p class="story-review-status error">${escape(error?.message || "终审失败")}</p>`;
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     button.disabled = false;
     button.textContent = original;
   }
@@ -2443,6 +2683,7 @@ function bindAnimationPlanRevision(body, animationPlan, review) {
 // 定向修订：只改终审点名的镜头。**返回后不写回 Plan**——先预览，用户确认才签发。
 // 这样把「作废该变体全部已生成媒体」的重代价推迟到确认那一刻。
 async function runAnimationPlanRevision(animationPlan, review, button) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const host = elements.animationPlan.querySelector("[data-plan-revision-body]");
   if (!host || button.disabled) return;
   const variant = selectedVariant();
@@ -2469,8 +2710,10 @@ async function runAnimationPlanRevision(animationPlan, review, button) {
       });
     }
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     host.innerHTML = `<p class="story-review-status error">${escape(error?.message || "修订失败")}</p>`;
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     button.disabled = false;
     button.textContent = original;
   }
@@ -2478,6 +2721,7 @@ async function runAnimationPlanRevision(animationPlan, review, button) {
 
 // 采纳：这才是唯一签发新 Plan revision 的地方。
 async function adoptAnimationPlanRevision(variantId, button) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const entry = animationPlanRevisions.get(variantId);
   if (!entry || button.disabled) return;
   const variant = selectedVariant();
@@ -2498,6 +2742,7 @@ async function adoptAnimationPlanRevision(variantId, button) {
   button.textContent = "签发中…";
   setAnimationStatus("正在签发修订后的 Plan revision…", "active");
   try {
+    assertWorkspaceCurrent(workspaceEpoch);
     await commitProductionArtifact({
       artifactId: animationPlanArtifactId(variant.id),
       artifactType: "animationPlan",
@@ -2517,6 +2762,7 @@ async function adoptAnimationPlanRevision(variantId, button) {
     );
     updateStoryExportActions();
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setAnimationStatus(error.message || "修订签发失败；原 Animation Plan 保持不变。", "error");
     button.disabled = false;
     button.textContent = original;
@@ -2863,13 +3109,15 @@ function renderShotNegativePromptEntry(entry = {}) {
 }
 
 function renderCharacterReferencePrompts(items = []) {
+  const refineTask = taskForUi({ kinds: ["characterReferenceRefine"], artifactId: `animationPlan:${state.selectedVariantId}` });
+  const refineView = isActiveTask(refineTask) ? taskUiView(refineTask) : null;
   return `<div class="rule-list">${items.map((item, index) => {
     const key = characterReferenceStatusKey(index);
     const status = state.characterReferenceStatuses[key];
     const hasReference = Boolean(item.referenceImageAdded || item.referenceImageDataUrl);
     const audioClips = characterReferenceAudioClips(item);
     const audioStatus = state.characterAudioStatuses[characterAudioStatusKey(index)];
-    const statusText = status?.message || (hasReference ? "点击或拖入图片可更换人物参考图" : "点击或拖入人物参考图");
+    const statusText = refineView?.message || status?.message || (hasReference ? "点击或拖入图片可更换人物参考图" : "点击或拖入人物参考图");
     return `<div class="rule character-reference-card${hasReference ? " has-reference-image" : ""}" data-character-reference-card="${escape(index)}">
       <div class="reference-card-top">
         <strong>${escape(item.characterName)}<br><small>${escape(item.storyRole)}</small></strong>
@@ -2885,7 +3133,7 @@ function renderCharacterReferencePrompts(items = []) {
         <p>${escape(item.appearancePrompt)}<br><b>一致性标签：</b>${escape((item.consistencyTags || []).join(" / "))}<br><b>禁止变化：</b>${escape((item.forbiddenChanges || []).join(" / "))}${item.referenceImageNotes ? `<br><b>参考图吸收：</b>${escape(item.referenceImageNotes)}` : ""}</p>
         <div class="character-reference-actions">
           <input class="hidden" type="file" accept="image/*" data-character-reference-input="${escape(index)}">
-          <button class="character-reference-status ${escape(status?.status || "idle")}" type="button" data-character-reference-upload="${escape(index)}">${escape(statusText)}</button>
+          <button class="character-reference-status ${escape(refineView ? "running" : status?.status || "idle")}" type="button" data-character-reference-upload="${escape(index)}"${refineView ? " disabled" : ""}>${escape(statusText)}</button>
         </div>
         ${renderCharacterReferenceAudioClips(audioClips, index)}
       </div>
@@ -2916,6 +3164,7 @@ function openCharacterAudioInput(indexValue) {
 }
 
 async function addCharacterReferenceAudioFiles(indexValue, files) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const index = Number(indexValue);
   const variant = selectedVariant();
   const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
@@ -2955,6 +3204,7 @@ async function addCharacterReferenceAudioFiles(indexValue, files) {
     if (issue) throw new Error(issue);
     const updatedPlan = structuredClone(plan);
     updatedPlan.characterReferencePrompts[index].referenceAudioClips = clips;
+    assertWorkspaceCurrent(workspaceEpoch);
     await commitProductionArtifact({
       artifactId: animationPlanArtifactId(variant.id),
       artifactType: "animationPlan",
@@ -2984,6 +3234,7 @@ async function addCharacterReferenceAudioFiles(indexValue, files) {
     );
     updateStoryExportActions();
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     state.characterAudioStatuses[key] = { status: "error", message: error.message || "参考声音保存失败" };
     renderAnimationPlan(plan);
     setAnimationStatus(error.message || "参考声音保存失败。", "error");
@@ -2991,6 +3242,7 @@ async function addCharacterReferenceAudioFiles(indexValue, files) {
 }
 
 async function removeCharacterReferenceAudio(indexValue, clipId) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const index = Number(indexValue);
   const variant = selectedVariant();
   const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
@@ -3007,6 +3259,7 @@ async function removeCharacterReferenceAudio(indexValue, clipId) {
     const updatedPlan = structuredClone(plan);
     if (clips.length) updatedPlan.characterReferencePrompts[index].referenceAudioClips = clips;
     else delete updatedPlan.characterReferencePrompts[index].referenceAudioClips;
+    assertWorkspaceCurrent(workspaceEpoch);
     await commitProductionArtifact({
       artifactId: animationPlanArtifactId(variant.id),
       artifactType: "animationPlan",
@@ -3023,6 +3276,7 @@ async function removeCharacterReferenceAudio(indexValue, clipId) {
     setAnimationStatus(`${item.characterName || "角色"} 的参考声音已更新。`, "ready");
     updateStoryExportActions();
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     state.characterAudioStatuses[key] = { status: "error", message: error.message || "参考声音删除失败" };
     renderAnimationPlan(plan);
     setAnimationStatus(error.message || "参考声音删除失败。", "error");
@@ -3061,12 +3315,13 @@ function renderShotFramePromptCard(shotId, frameKind, label, prompt) {
 
 function renderShotFrameStatusBadge(shotId, frameKind) {
   const status = shotFrameStatus(shotId, frameKind);
+  const task = taskForUi({ kinds: ["shotFrameImage"], artifactId: `shotFrame:${state.selectedVariantId}:${shotId}:${frameKind}` });
   const label = status === "ready"
     ? "已添加参考图"
     : status === "pending"
       ? "待选择"
       : status === "running"
-        ? "生成中"
+        ? task?.status === "queued" ? "排队中" : "生成中"
         : status === "error"
           ? "生成失败"
           : status === "stale"
@@ -3119,6 +3374,7 @@ function hasImageTransfer(event) {
 }
 
 async function refineCharacterReferenceWithImage(indexValue, file) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const index = Number(indexValue);
   const variant = selectedVariant();
   const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
@@ -3136,6 +3392,7 @@ async function refineCharacterReferenceWithImage(indexValue, file) {
   try {
     const imageDataUrl = await readFileAsDataUrl(file);
     const { referenceImageDataUrl: _referenceImageDataUrl, ...safeCharacterReference } = item;
+    assertWorkspaceCurrent(workspaceEpoch);
     const created = await createDurableTask("characterReferenceRefine", withModelOverrides({
       variantId: variant.id,
       roleIndex: index,
@@ -3172,6 +3429,7 @@ async function refineCharacterReferenceWithImage(indexValue, file) {
     setAnimationStatus(`${updated.characterName || "角色"} 已添加人物参考图，并由服务端同步镜头提示词。`, refineNotice ? "warn" : "ready");
     updateStoryExportActions();
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (String(selectedVariant()?.id || "") === String(variant.id)) {
       state.characterReferenceStatuses[key] = {
         status: isTaskCapacityError(error) ? "warn" : "error",
@@ -3200,6 +3458,9 @@ function openCharacterImageGenerator() {
   state.characterImageGeneration.selectedIndex = Math.min(state.characterImageGeneration.selectedIndex || 0, items.length - 1);
   state.characterImageGeneration.count = Number(elements.characterImageCount.value) || 1;
   const resultTarget = `${variant.id}:${state.characterImageGeneration.selectedIndex}`;
+  const matchingTask = taskForUi({ kinds: ["characterReferenceImages"], artifactId: `characterImages:${resultTarget}` });
+  state.characterImageGeneration.running = isActiveTask(matchingTask)
+    || (state.characterImageGeneration.running && state.characterImageGeneration.resultsTarget === resultTarget);
   if (!state.characterImageGeneration.running && state.characterImageGeneration.resultsTarget !== resultTarget) {
     state.characterImageGeneration.results = [];
     state.characterImageGeneration.boundaryWarning = "";
@@ -3221,6 +3482,8 @@ function openCharacterImageGenerator() {
         : state.imageProviderConfigured ? "" : "error"
   );
   renderCharacterImagePromptPreview();
+  setCharacterImageRunning(state.characterImageGeneration.running);
+  syncCharacterImageTaskStatus({ includeTerminal: true });
   elements.characterImageModal.classList.remove("hidden");
   elements.characterImageModal.setAttribute("aria-hidden", "false");
 }
@@ -3233,10 +3496,12 @@ function closeCharacterImageGenerator() {
 }
 
 async function setCharacterImageReferenceFile(file) {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (!file.type.startsWith("image/")) return setCharacterImageStatus("请选择图片文件。", "error");
   if (file.size > 30 * 1024 * 1024) return setCharacterImageStatus(`参考图片不能超过 ${formatBytes(30 * 1024 * 1024)}。`, "error");
   try {
     const dataUrl = await readFileAsDataUrl(file);
+    assertWorkspaceCurrent(workspaceEpoch);
     state.characterImageGeneration.referenceImageDataUrl = dataUrl;
     state.characterImageGeneration.referenceImageName = file.name;
     elements.characterImagePreview.src = dataUrl;
@@ -3245,6 +3510,7 @@ async function setCharacterImageReferenceFile(file) {
     elements.characterImageDropHint.textContent = "已载入参考图。生成时会参考它，但会移除无关背景。";
     setCharacterImageStatus("参考图片已载入。", "ready");
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setCharacterImageStatus(error.message || "参考图片读取失败。", "error");
   }
 }
@@ -3261,6 +3527,7 @@ function renderCharacterImagePromptPreview() {
 }
 
 async function generateCharacterReferenceImages() {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (state.characterImageGeneration.running) return;
   const item = currentCharacterImageReference();
   if (!item) return setCharacterImageStatus("请选择要生成参考图的角色。", "error");
@@ -3282,6 +3549,7 @@ async function generateCharacterReferenceImages() {
   setCharacterImageRunning(true);
   setCharacterImageStatus(`正在用 ${state.imageProvider} ${modelName(state.imageModel)} 生成 ${count} 张参考图…`, "active");
   try {
+    assertWorkspaceCurrent(workspaceEpoch);
     const created = await createDurableTask("characterReferenceImages", withModelOverrides({
       variantId: variant.id,
       roleIndex,
@@ -3313,6 +3581,7 @@ async function generateCharacterReferenceImages() {
       readyCount ? (finalWarning ? "warn" : "ready") : "error"
     );
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (error.code === "STALE_MEDIA_RESULT") {
       state.characterImageGeneration.results = [];
       renderCharacterImageResults();
@@ -3322,25 +3591,31 @@ async function generateCharacterReferenceImages() {
       isTaskCapacityError(error) ? "warn" : "error"
     );
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     state.characterImageGeneration.running = false;
     setCharacterImageRunning(false);
   }
 }
 
 function applyCharacterImageTaskProgress(task) {
+  const target = durableTaskTargetContext(task);
+  if (target.variantId && target.variantId !== state.selectedVariantId) return;
+  if (state.characterImageGeneration.open && target.roleIndex !== Number(elements.characterImageRole.value)) return;
   const expectedCount = Number(task.progress?.expectedCount) || state.characterImageGeneration.count || 1;
-  const next = Array.from({ length: expectedCount }, (_, imageIndex) => ({ status: "loading", imageIndex }));
+  state.characterImageGeneration.count = expectedCount;
+  const next = Array.from({ length: expectedCount }, (_, imageIndex) => ({
+    status: isActiveTask(task) ? "loading" : "error", imageIndex,
+    ...(!isActiveTask(task) ? { error: task.error?.message || "任务已结束，未返回该图片。" } : {})
+  }));
   for (const result of task.progress?.results || []) {
     const index = Number(result.imageIndex) || 0;
     next[index] = result.status === "error" ? { ...result, status: "error" } : { ...result, status: "ready" };
   }
   state.characterImageGeneration.results = next;
   renderCharacterImageResults();
-  const readyCount = Number(task.progress?.readyCount) || 0;
-  setCharacterImageStatus(
-    task.status === "queued" ? "角色参考图任务正在排队…" : `已返回 ${readyCount}/${expectedCount} 张参考图。`,
-    "active"
-  );
+  const view = taskUiView(task);
+  setCharacterImageStatus(view.message, view.tone);
+  syncCharacterImageTaskStatus();
 }
 
 function handleCharacterImageStreamEvent(event) {
@@ -3425,6 +3700,7 @@ function closeGeneratedImagePreview() {
 }
 
 async function useGeneratedCharacterReference(resultIndexValue) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const result = state.characterImageGeneration.results[Number(resultIndexValue)];
   const roleIndex = Number(elements.characterImageRole.value);
   const variant = selectedVariant();
@@ -3449,6 +3725,7 @@ async function useGeneratedCharacterReference(resultIndexValue) {
     };
     updatedPlan.characterReferencePrompts[roleIndex] = updated;
     const syncedShots = syncShotCharacterReference(updatedPlan, previousInPlan, updated);
+    assertWorkspaceCurrent(workspaceEpoch);
     await commitProductionArtifact({
       artifactId: planArtifactId,
       artifactType: "animationPlan",
@@ -3470,8 +3747,10 @@ async function useGeneratedCharacterReference(resultIndexValue) {
     setCharacterImageStatus("已设为人物参考图。", "ready");
     updateStoryExportActions();
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setCharacterImageStatus(error.message || "写入人物参考图失败。", "error");
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     finishArtifactRequest(state.production, planToken);
   }
 }
@@ -3645,7 +3924,6 @@ async function openShotFrameImageGenerator(shotId, frameKindValue = "start") {
   }
   const frameKind = frameKindValue === "end" ? "end" : "start";
   state.shotFrameImageGeneration.open = true;
-  state.shotFrameImageGeneration.running = false;
   state.shotFrameImageGeneration.shotId = String(shotId);
   state.shotFrameImageGeneration.frameKind = frameKind;
   state.shotFrameImageGeneration.frameReferenceMode = "";
@@ -3656,12 +3934,13 @@ async function openShotFrameImageGenerator(shotId, frameKindValue = "start") {
   elements.shotFrameImageModal.setAttribute("aria-hidden", "false");
   setShotFrameImageStatus("正在整理端点状态与参考图…", "active");
   if (!await updateShotFrameImageGeneratorPreview({ resetMode: true })) return;
-  setShotFrameImageGeneratorRunning(false);
+  if (!syncShotFrameTaskStatus({ includeTerminal: true })) setShotFrameImageGeneratorRunning(false);
   renderShotFrameImageResults();
   elements.shotFrameImagePromptPreview.focus();
 }
 
 async function updateShotFrameImageGeneratorPreview(options = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (!state.shotFrameImageGeneration.open) return true;
   const revision = ++state.shotFrameImageGeneration.previewRevision;
   elements.confirmGenerateShotFrameImage.disabled = true;
@@ -3679,6 +3958,10 @@ async function updateShotFrameImageGeneratorPreview(options = {}) {
   elements.shotFrameImageModalTitle.textContent = `生成${label}镜头`;
   elements.confirmGenerateShotFrameImageLabel.textContent = `生成${label}`;
   elements.shotFrameImageMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${formatShotDurationSeconds(shot)} · 参考顺序由统一清单锁定`;
+  if (syncShotFrameTaskStatus()) {
+    renderShotFrameImageResults();
+    return true;
+  }
   elements.shotFrameReferenceModeField.classList.toggle("hidden", frameKind !== "end" || !structuredEndpointShot);
   elements.shotFrameReferenceModeHint.classList.toggle("hidden", frameKind !== "end" || !structuredEndpointShot);
   let frameReferenceMode = "";
@@ -3704,14 +3987,15 @@ async function updateShotFrameImageGeneratorPreview(options = {}) {
   try {
     referenceContext = await buildShotFrameReferenceContext({ shot, plan, frameKind, frameReferenceMode });
   } catch (error) {
-    if (revision !== state.shotFrameImageGeneration.previewRevision) return false;
+    if (!browserWorkspace.isCurrent(workspaceEpoch) || revision !== state.shotFrameImageGeneration.previewRevision) return false;
     elements.confirmGenerateShotFrameImage.disabled = true;
     elements.shotFrameImagePromptPreview.value = "";
     elements.shotFrameReferenceList.innerHTML = "<p>当前策略需要先选择首帧视觉参考；系统不会自动改成 independent。</p>";
     setShotFrameImageStatus(error.message || "参考图读取失败。", "error");
     return false;
   }
-  if (revision !== state.shotFrameImageGeneration.previewRevision) return false;
+  if (!browserWorkspace.isCurrent(workspaceEpoch) || revision !== state.shotFrameImageGeneration.previewRevision) return false;
+  if (syncShotFrameTaskStatus()) return true;
   const { characterReferences, sceneReference, manifest, startFrameDataUrl } = referenceContext;
   state.shotFrameImageGeneration.referenceManifest = manifest;
   elements.shotFrameReferenceList.innerHTML = renderShotFrameReferenceUploadList(manifest, {
@@ -3870,6 +4154,8 @@ function closeShotFrameImageGenerator() {
 }
 
 async function confirmGenerateShotFrameImage() {
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (syncShotFrameTaskStatus() && state.shotFrameImageGeneration.running) return;
   if (state.shotFrameImageGeneration.running) return;
   const shotId = state.shotFrameImageGeneration.shotId;
   const frameKind = elements.shotFrameImageKind.value === "end" ? "end" : "start";
@@ -3906,6 +4192,7 @@ async function confirmGenerateShotFrameImage() {
     const promptHash = frameKind === "end" && frameReferenceMode
       ? await computePromptHash(buildShotFrameMultiImagePrompt(prompt, count))
       : "";
+    assertWorkspaceCurrent(workspaceEpoch);
     setShotFrameImageGeneratorRunning(true);
     setShotFrameImageStatus(`正在用即梦生成${frameKind === "end" ? "尾帧" : "首帧"}图片…`, "active");
     state.shotFrameImageGeneration.count = count;
@@ -3917,15 +4204,18 @@ async function confirmGenerateShotFrameImage() {
       dependencyHash,
       promptHash
     });
+    assertWorkspaceCurrent(workspaceEpoch);
     const actualCount = state.shotFrameResults[shotFrameKey(shotId, frameKind)]?.result?.images?.length || count;
     setShotFrameImageStatus(`已生成 ${actualCount} 张${frameKind === "end" ? "尾帧" : "首帧"}候选图，请选择一张添加到镜头。`, "ready");
     setShotFrameImageGeneratorRunning(false);
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setShotFrameImageStatus(
       isTaskCapacityError(error) ? taskCapacityMessage(error) : error.message || "镜头帧图片生成失败",
       isTaskCapacityError(error) ? "warn" : "error"
     );
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (state.shotFrameImageGeneration.running) setShotFrameImageGeneratorRunning(false);
   }
 }
@@ -3952,6 +4242,9 @@ function setShotFrameImageGeneratorRunning(running) {
     }));
   }
   elements.closeShotFrameImageModal.disabled = running;
+  elements.confirmGenerateShotFrameImage.classList.toggle("running", running);
+  elements.confirmGenerateShotFrameImageLabel.textContent = running
+    ? "镜头帧图片生成中…" : `生成${state.shotFrameImageGeneration.frameKind === "end" ? "尾帧" : "首帧"}`;
 }
 
 function setShotFrameImageStatus(message, tone = "") {
@@ -4018,7 +4311,6 @@ function renderShotFrameReferenceUploadList(manifest = {}, options = {}) {
 
 async function openShotVideoGenerator(shotId) {
   state.shotVideoGeneration.open = true;
-  state.shotVideoGeneration.running = false;
   state.shotVideoGeneration.shotId = String(shotId);
   state.shotVideoGeneration.count = Number(elements.shotVideoCount.value) || 1;
   state.shotVideoGeneration.referenceAssets = [];
@@ -4030,7 +4322,7 @@ async function openShotVideoGenerator(shotId) {
   elements.shotVideoIncludePreviousShotFrames.checked = state.shotVideoGeneration.includePreviousShotFrames;
   elements.shotVideoIncludeEndpointFrames.checked = state.shotVideoGeneration.includeEndpointFrames;
   elements.shotVideoIncludeCharacterReferences.checked = state.shotVideoGeneration.includeCharacterReferences;
-  setShotVideoGeneratorRunning(false);
+  if (!syncShotVideoTaskStatus()) setShotVideoGeneratorRunning(false);
   elements.shotVideoModal.classList.remove("hidden");
   elements.shotVideoModal.setAttribute("aria-hidden", "false");
   setShotVideoStatus("正在校验视频参考素材…", "active");
@@ -4040,6 +4332,7 @@ async function openShotVideoGenerator(shotId) {
 }
 
 async function updateShotVideoGeneratorPreview(options = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (!state.shotVideoGeneration.open) return true;
   const validationRevision = ++state.shotVideoGeneration.validationRevision;
   const shotId = state.shotVideoGeneration.shotId;
@@ -4078,11 +4371,14 @@ async function updateShotVideoGeneratorPreview(options = {}) {
       plan.productionStrategy?.videoPromptProfile
     );
   }
+  if (syncShotVideoTaskStatus()) return true;
   const validation = await evaluateShotVideoReferences(shotId);
-  if (validationRevision !== state.shotVideoGeneration.validationRevision || validation.cancelled) return false;
+  if (!browserWorkspace.isCurrent(workspaceEpoch) || validationRevision !== state.shotVideoGeneration.validationRevision || validation.cancelled) return false;
+  if (syncShotVideoTaskStatus()) return true;
   elements.shotVideoReferenceList.innerHTML = renderShotVideoReferenceList(shotId);
   setShotVideoStatus(validation.message, validation.ok ? (validation.status === "prompt_changed" ? "active" : "") : "error");
-  elements.confirmGenerateShotVideo.disabled = !validation.ok;
+  syncShotVideoTaskStatus({ includeTerminal: true });
+  elements.confirmGenerateShotVideo.disabled = !validation.ok || state.shotVideoGeneration.running;
   return true;
 }
 
@@ -4122,6 +4418,7 @@ async function evaluateAllReferenceAssets(shotId) {
 }
 
 async function evaluateShotVideoEndpoints(shotId) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const context = shotFrameContext(shotId);
   if (!context) return { ok: false, message: "没有找到对应镜头。" };
   if (!hasPlannedEndpoints(context.shot)) {
@@ -4143,7 +4440,7 @@ async function evaluateShotVideoEndpoints(shotId) {
   const dependencyHash = endCandidate?.dependencyHash || endStateItem.result?.dependencyHash || "";
   const frameReferenceMode = endCandidate?.frameReferenceMode || endStateItem.result?.frameReferenceMode || "";
   const endpointIdentity = currentVideoEndpointIdentity(shotId);
-  const endpointsUnchanged = () => currentVideoEndpointIdentity(shotId) === endpointIdentity;
+  const endpointsUnchanged = () => browserWorkspace.isCurrent(workspaceEpoch) && currentVideoEndpointIdentity(shotId) === endpointIdentity;
   if (!dependencyHash || !["inherit", "transition", "independent"].includes(frameReferenceMode)) {
     endStateItem.status = "legacy_unverified";
     endStateItem.message = "旧尾帧没有硬依赖校验信息；可以预览，但生成新视频前必须重新生成尾帧。";
@@ -4234,6 +4531,8 @@ function closeShotVideoGenerator() {
 }
 
 async function confirmGenerateShotVideo() {
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (syncShotVideoTaskStatus() && state.shotVideoGeneration.running) return;
   if (state.shotVideoGeneration.running) return;
   const prompt = elements.shotVideoPromptPreview.value.trim();
   if (!prompt) return setShotVideoStatus("视频提示词不能为空。", "error");
@@ -4242,6 +4541,7 @@ async function confirmGenerateShotVideo() {
   if (!context) return setShotVideoStatus("没有找到对应镜头。", "error");
   const promptOverride = runtimePromptOverride(prompt);
   const validation = await evaluateShotVideoReferences(shotId);
+  if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
   if (!validation.ok) return setShotVideoStatus(validation.message, "error");
   const count = Math.max(1, Math.min(4, Number(elements.shotVideoCount.value) || 1));
   state.shotVideoGeneration.count = count;
@@ -4249,14 +4549,17 @@ async function confirmGenerateShotVideo() {
   setShotVideoStatus(`${shotVideoProviderLabel()} 正在生成 ${count} 条视频候选…`, "active");
   try {
     await generateShotVideo(shotId, promptOverride, { count, throwOnError: true });
+    assertWorkspaceCurrent(workspaceEpoch);
     const actualCount = shotVideoStateItem(shotId)?.result?.videos?.length || count;
     setShotVideoStatus(`已生成 ${actualCount} 条视频候选，可选择一条设为当前镜头视频。`, "ready");
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setShotVideoStatus(
       isTaskCapacityError(error) ? taskCapacityMessage(error) : error.message || "镜头视频生成失败",
       isTaskCapacityError(error) ? "warn" : "error"
     );
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (state.shotVideoGeneration.running) setShotVideoGeneratorRunning(false);
   }
 }
@@ -4399,6 +4702,7 @@ function validateAllReferenceAssetDescriptors(assets) {
 }
 
 async function addShotVideoReferenceFiles(files) {
+  const workspaceEpoch = browserWorkspace.epoch;
   try {
     const added = [];
     for (const file of files) {
@@ -4415,12 +4719,14 @@ async function addShotVideoReferenceFiles(files) {
         source: "upload"
       });
     }
+    assertWorkspaceCurrent(workspaceEpoch);
     const candidateAssets = [...state.shotVideoGeneration.referenceAssets, ...added];
     const issue = validateAllReferenceAssetDescriptors(candidateAssets);
     if (issue && !/至少需要一张图片或一段视频/u.test(issue)) throw new Error(issue);
     state.shotVideoGeneration.referenceAssets = candidateAssets;
     await updateShotVideoGeneratorPreview({ preservePrompt: true });
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setShotVideoStatus(error.message || "无法添加全能参考素材。", "error");
   }
 }
@@ -4545,6 +4851,7 @@ function buildShotVideoPromptPreview(shot = {}, promptSchemaVersion = "", videoP
 }
 
 async function startShotVideoBatch() {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (state.shotVideoBatch.taskId) return;
   const variant = selectedVariant();
   const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : null;
@@ -4577,6 +4884,7 @@ async function startShotVideoBatch() {
       }
     });
     updateStoryExportActions();
+    assertWorkspaceCurrent(workspaceEpoch);
     const created = await createDurableTask("shotVideoBatch", withModelOverrides({
       variantId: variant.id,
       selectedVariantId: variant.id,
@@ -4588,6 +4896,7 @@ async function startShotVideoBatch() {
     state.shotVideoBatch.taskId = created.task.taskId;
     await monitorShotVideoBatch(created.task);
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     state.shotVideoBatch.taskId = "";
     state.shotVideoBatch.status = "failed";
     renderShotVideoBatchProgress({
@@ -4601,6 +4910,7 @@ async function startShotVideoBatch() {
 }
 
 async function monitorShotVideoBatch(initialTask, { restored = false } = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
   state.shotVideoBatch.taskId = initialTask.taskId;
   state.shotVideoBatch.status = initialTask.status;
   if (restored) state.shotVideoBatch.lastRenderedCompletedShots = -1;
@@ -4626,6 +4936,7 @@ async function monitorShotVideoBatch(initialTask, { restored = false } = {}) {
       failedShots ? "warn" : "ready"
     );
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     const task = error.task || initialTask;
     renderShotVideoBatchProgress(task);
     if (task.status === "cancelled" || error.code === "SHOT_VIDEO_BATCH_TERMINATED") {
@@ -4636,13 +4947,21 @@ async function monitorShotVideoBatch(initialTask, { restored = false } = {}) {
       setAnimationStatus(error.message || "批量视频生成中断", "error");
     }
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     state.shotVideoBatch.taskId = "";
+    if (state.shotVideoGeneration.open && initialTask.targetArtifactIds?.includes(
+      `shotVideo:${state.selectedVariantId}:${state.shotVideoGeneration.shotId}`
+    )) {
+      setShotVideoGeneratorRunning(false);
+      await updateShotVideoGeneratorPreview({ preservePrompt: true });
+    }
     updateStoryExportActions();
     void refreshReleaseActiveTasksButton();
   }
 }
 
 function renderShotVideoBatchProgress(task = {}) {
+  if (task.taskId) rememberTaskSnapshot(state.taskSnapshots, task);
   const progress = task.progress || {};
   const items = Array.isArray(progress.items) ? progress.items : [];
   const batchSetting = task.modelSnapshot?.shotVideo;
@@ -4671,22 +4990,11 @@ function renderShotVideoBatchProgress(task = {}) {
   elements.pauseShotVideoBatch.innerHTML = paused
     ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z"/></svg>'
     : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg>';
-}
-
-function shotVideoBatchStatusText(task, progress) {
-  if (task.status === "cancelled") return "已终止，完成片段已保留";
-  if (task.status === "failed") return task.error?.message || "批量任务失败";
-  if (task.status === "completed") {
-    const failed = Number(progress.failedShots) || 0;
-    return failed ? `已完成，${failed} 个镜头失败` : "全部镜头已完成";
-  }
-  if (progress.controlState === "paused") return "已暂停，将在当前片段完成后停止提交";
-  if (task.status === "queued") return "等待服务器媒体队列";
-  if (progress.currentShotId) return `正在生成 ${progress.currentShotId}`;
-  return "准备下一镜";
+  syncShotVideoTaskStatus();
 }
 
 async function toggleShotVideoBatchPause() {
+  const workspaceEpoch = browserWorkspace.epoch;
   const taskId = state.shotVideoBatch.taskId;
   if (!taskId || taskId === "creating") return;
   const action = state.shotVideoBatch.controlState === "paused" ? "resume" : "pause";
@@ -4694,11 +5002,13 @@ async function toggleShotVideoBatchPause() {
     const task = await controlDurableTask(taskId, action);
     renderShotVideoBatchProgress(task);
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setAnimationStatus(error.message || "批量任务控制失败", "error");
   }
 }
 
 async function terminateShotVideoBatch() {
+  const workspaceEpoch = browserWorkspace.epoch;
   const taskId = state.shotVideoBatch.taskId;
   if (!taskId || taskId === "creating") return;
   const confirmed = window.confirm(
@@ -4709,6 +5019,7 @@ async function terminateShotVideoBatch() {
     const task = await controlDurableTask(taskId, "terminate");
     renderShotVideoBatchProgress(task);
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setAnimationStatus(error.message || "终止批量任务失败", "error");
   }
 }
@@ -4722,6 +5033,7 @@ function controlDurableTask(taskId, action) {
 }
 
 async function generateShotVideo(shotId, promptOverride = "", options = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const variant = selectedVariant();
   const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
   const shot = (plan?.shotPlan || []).find((item) => String(item.shotId) === String(shotId));
@@ -4755,6 +5067,7 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
         frameCandidateDataUrl(endFrame)
       ]);
     }
+    assertWorkspaceCurrent(workspaceEpoch);
     const created = await createDurableTask("shotVideo", withModelOverrides({
       ...globalCharacterBoundaryContext(),
       variantId: variant.id,
@@ -4791,6 +5104,7 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
     setShotVideoStateItem(shotId, readyResult, variant.id);
     setAnimationStatus(`${shotId} 镜头视频已生成 ${readyResult.result?.videos?.length || count} 条候选。`, "ready");
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (!["STALE_ASYNC_RESULT", "STALE_MEDIA_RESULT"].includes(error.code)) {
       setShotVideoStateItem(shotId, {
         status: isTaskCapacityError(error) ? "capacity" : "error",
@@ -4871,6 +5185,7 @@ function renderShotVideoModalResults() {
 }
 
 async function selectShotVideoCandidate(shotId, candidateIndexValue) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const stateItem = shotVideoStateItem(shotId);
   const videos = stateItem?.result?.videos || [];
   const selectedIndex = Number(candidateIndexValue);
@@ -4886,6 +5201,7 @@ async function selectShotVideoCandidate(shotId, candidateIndexValue) {
     updatedStateItem.result.selectedIndex = selectedIndex;
     updatedStateItem.result.outputUrl = videos[selectedIndex].outputUrl || videos[selectedIndex].url || "";
     updatedStateItem.result.outputPath = videos[selectedIndex].outputPath || "";
+    assertWorkspaceCurrent(workspaceEpoch);
     await commitProductionArtifact({
       artifactId: mediaArtifactId,
       artifactType: "shotVideo",
@@ -4900,11 +5216,13 @@ async function selectShotVideoCandidate(shotId, candidateIndexValue) {
     setShotVideoStatus(`已将第 ${selectedIndex + 1} 条设为当前镜头视频。`, "ready");
     setAnimationStatus(`${shotId} 已切换为第 ${selectedIndex + 1} 条视频候选。`, "ready");
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setShotVideoStatus(error.message || "切换镜头视频失败。", "error");
   }
 }
 
 async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "", options = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const frameKind = frameKindValue === "end" ? "end" : "start";
   const variant = selectedVariant();
   const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
@@ -4956,6 +5274,7 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
     delete frameShot.negativePromptEntries;
     delete frameShot.compiledNegativePrompt;
     frameShot.negativePrompts = { image: negativePromptApplication.negativePromptEntries };
+    assertWorkspaceCurrent(workspaceEpoch);
     const created = await createDurableTask("shotFrameImage", withModelOverrides({
       ...globalCharacterBoundaryContext(),
       variantId: variant.id,
@@ -4992,6 +5311,7 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
       setAnimationStatus(`${shotId} ${frameKind === "end" ? "尾帧" : "首帧"}镜头已生成 ${readyResult.result?.images?.length || count} 张候选图，等待选择。`, "ready");
     }
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (!["STALE_ASYNC_RESULT", "STALE_MEDIA_RESULT"].includes(error.code)) {
       state.shotFrameResults[key] = {
         status: isTaskCapacityError(error) ? "capacity" : "error",
@@ -5098,7 +5418,7 @@ function renderOneShotFramePreview(shotId, frameKind, stateItem) {
 function renderShotVideoResult(shotId) {
   const stateItem = shotVideoStateItem(shotId);
   if (!stateItem) return `<p>选择首尾帧模式或全能参考模式，即可用 ${escape(shotVideoProviderLabel())} 生成该镜头视频。</p>`;
-  if (stateItem.status === "running") return `<p class="active">生成中：正在生成 ${escape(stateItem.expectedCount || 1)} 条视频候选…</p>`;
+  if (stateItem.status === "running") return `<p class="active">${escape(stateItem.message || `正在生成 ${stateItem.expectedCount || 1} 条视频候选…`)}</p>`;
   if (stateItem.status === "capacity") return `<p class="capacity">${escape(stateItem.message || "服务器任务队列已满，请稍后重试。")}</p>`;
   if (stateItem.status === "error") return `<p class="error">${escape(stateItem.message)}</p>`;
   const startFrameUrl = stateItem.result?.startFrameUrl || "";
@@ -5164,6 +5484,147 @@ function setStoryStatus(message, tone = "") {
 function setAnimationStatus(message, tone = "") {
   elements.animationStatus.textContent = message;
   elements.animationStatus.className = `story-status ${tone}`;
+}
+
+function updateTaskSnapshot(task, { render = true } = {}) {
+  if (task?.projectId !== state.production.projectId || task?.runId !== state.production.runId) return;
+  if (!rememberTaskSnapshot(state.taskSnapshots, task)) return;
+  applyTaskMediaStatus(task, { render });
+  if (render) {
+    syncDirectorTaskStatus();
+    syncStoryTaskStatus();
+    syncCharacterImageTaskStatus();
+    syncShotFrameTaskStatus();
+    syncShotVideoTaskStatus();
+  }
+}
+
+function applyTaskMediaStatus(task, { render = false } = {}) {
+  const target = durableTaskTargetContext(task);
+  if (["shotVideo", "shotFrameImage"].includes(task.kind) && task.status !== "completed") {
+    if (taskForUi({ kinds: [task.kind], artifactId: target.artifactId })?.taskId !== task.taskId) return;
+    const view = taskStatusView(task);
+    const item = { status: view.busy ? "running" : "error", message: view.message };
+    if (task.kind === "shotVideo") {
+      setShotVideoStateItem(target.shotId, item, target.variantId);
+      if (render && target.variantId === state.selectedVariantId) updateShotVideoResult(target.shotId);
+    } else {
+      state.shotFrameResults[shotFrameKey(target.shotId, target.frameKind, target.variantId)] = { ...item, frameKind: target.frameKind };
+      if (render && target.variantId === state.selectedVariantId) updateShotFrameResult(target.shotId);
+    }
+  }
+}
+
+function taskForUi(options) {
+  const task = latestTaskForTarget(state.taskSnapshots, options);
+  // A completed task for an older Artifact revision must not label a new Plan
+  // or a different set of media as completed.
+  if (!task || isActiveTask(task)) return task;
+  if (task.status === "completed") return taskResultIsCurrent(state.production, task) ? task : null;
+  // Failures from a superseded Plan/Story are history, not the current target's
+  // status. This only selects a UI snapshot; frozen task refs stay untouched.
+  if ((task.frozenDependencies || []).some((ref) => {
+    const current = state.production.artifacts[ref.artifactId];
+    return !current || current.status !== "current" || current.revision !== ref.revision || current.contentDigest !== ref.contentDigest;
+  })) return null;
+  if (Object.entries(task.targetExpectedRevisions || {}).some(([artifactId, revision]) =>
+    (state.production.artifacts[artifactId]?.revision || null) !== revision)) return null;
+  return task;
+}
+
+function taskUiView(task) {
+  const modelLabel = [...new Set(Object.values(task.modelSnapshot || {})
+    .map((item) => modelDisplayLabel(item.provider, item.model)).filter(Boolean))].join(" / ");
+  const view = taskStatusView(task, { modelLabel });
+  if (!view.busy) view.message += formatStageUsageSuffix(task.usage);
+  return view;
+}
+
+function activeTaskForKinds(kinds) {
+  return latestTaskForTarget(Object.fromEntries(Object.entries(state.taskSnapshots)
+    .filter(([, task]) => isActiveTask(task))), { kinds });
+}
+
+function syncStoryTaskStatus({ includeTerminal = false } = {}) {
+  const variant = selectedVariant();
+  if (!variant) return;
+  const apply = (kinds, artifactId, localRunning, setRunning, setStatus, button, label) => {
+    const active = activeTaskForKinds(kinds);
+    const task = active || taskForUi({ kinds, artifactId });
+    const busy = Boolean(active) || localRunning;
+    setRunning(busy);
+    if (active || (includeTerminal && task && !localRunning)) {
+      const view = taskUiView(task);
+      const target = durableTaskTargetContext(task);
+      const prefix = target.variantId && target.variantId !== variant.id ? `${target.variantId} · ` : "";
+      setStatus(`${prefix}${view.message}`, view.tone);
+      if (view.busy) button.textContent = `${prefix}${view.buttonLabel}`;
+    } else if (localRunning) {
+      setStatus(`正在生成${label}…`, "active");
+    }
+  };
+  apply(["fullStory"], `fullStory:${variant.id}`, state.storyRunning,
+    setStoryRunning, setStoryStatus, elements.storyGenerate.querySelector("span"), "完整剧情");
+  apply(["animationPlan", "animationPromptRewrite", "characterReferenceRefine"], `animationPlan:${variant.id}`, state.animationRunning,
+    setAnimationRunning, setAnimationStatus, elements.animationGenerate, "动画生产包");
+}
+
+function syncCharacterImageTaskStatus({ includeTerminal = false } = {}) {
+  if (!state.characterImageGeneration.open) return false;
+  const variant = selectedVariant();
+  const index = Number(elements.characterImageRole.value) || 0;
+  const task = taskForUi({ kinds: ["characterReferenceImages"], artifactId: `characterImages:${variant?.id}:${index}` });
+  if (!task || (!isActiveTask(task) && !includeTerminal)) return false;
+  const view = taskUiView(task);
+  state.characterImageGeneration.running = view.busy;
+  if (Number(task.progress?.expectedCount) > 0) {
+    state.characterImageGeneration.count = Number(task.progress.expectedCount);
+    elements.characterImageCount.value = String(task.progress.expectedCount);
+  }
+  setCharacterImageRunning(view.busy);
+  setCharacterImageStatus(view.message, view.tone);
+  if (view.busy) elements.generateCharacterImages.querySelector("span").textContent = view.buttonLabel;
+  return true;
+}
+
+function syncShotFrameTaskStatus({ includeTerminal = false } = {}) {
+  if (!state.shotFrameImageGeneration.open) return false;
+  const { shotId, frameKind } = state.shotFrameImageGeneration;
+  const task = taskForUi({ kinds: ["shotFrameImage"], artifactId: `shotFrame:${state.selectedVariantId}:${shotId}:${frameKind}` });
+  if (!task || (!isActiveTask(task) && !includeTerminal)) return false;
+  const view = taskUiView(task);
+  setShotFrameImageGeneratorRunning(view.busy);
+  setShotFrameImageStatus(view.message, view.tone);
+  if (view.busy) elements.confirmGenerateShotFrameImageLabel.textContent = view.buttonLabel;
+  return true;
+}
+
+function syncShotVideoTaskStatus({ includeTerminal = false } = {}) {
+  if (!state.shotVideoGeneration.open) return false;
+  const artifactId = `shotVideo:${state.selectedVariantId}:${state.shotVideoGeneration.shotId}`;
+  const batch = taskForUi({ kinds: ["shotVideoBatch"], artifactId });
+  const single = taskForUi({ kinds: ["shotVideo"], artifactId });
+  const task = isActiveTask(batch) ? batch : isActiveTask(single) ? single
+    : latestTaskForTarget(Object.fromEntries([single, batch].filter(Boolean).map((item) => [item.taskId, item])));
+  if (!task || (!isActiveTask(task) && !includeTerminal)) return false;
+  const view = taskUiView(task);
+  setShotVideoGeneratorRunning(view.busy);
+  setShotVideoStatus(task.kind === "shotVideoBatch"
+    ? `该镜头属于批量任务：${shotVideoBatchStatusText(task)}` : view.message, view.tone);
+  if (view.busy) elements.confirmGenerateShotVideo.querySelector("span").textContent = view.buttonLabel;
+  return true;
+}
+
+function syncDirectorTaskStatus() {
+  const pipeline = latestTaskForTarget(state.taskSnapshots, { kinds: ["directorPipeline"], rootOnly: true });
+  if (pipeline) renderDirectorTaskStatus(pipeline);
+  const variants = latestTaskForTarget(state.taskSnapshots, { kinds: ["variants"], rootOnly: true });
+  if (variants && (!pipeline || variants.createdAt > pipeline.createdAt)) {
+    const view = taskUiView(variants);
+    setStage("variants", view.busy ? "active" : variants.status === "completed" ? "done" : "error");
+    elements.pipelineUsage.textContent = view.message;
+    elements.pipelineUsage.className = `story-status ${view.tone}`;
+  }
 }
 function storyModelLabel() { return modelDisplayLabel(state.storyProvider, state.storyModel); }
 function animationModelLabel() { return modelDisplayLabel(state.animationProvider, state.animationModel); }
@@ -5259,7 +5720,7 @@ async function saveModelSettings() {
     }
   }
   state.modelOverrides = next;
-  localStorage.setItem("directorModelOverrides", JSON.stringify(next));
+  sessionStorage.setItem("directorModelOverrides", JSON.stringify(next));
   applyEffectiveModelState();
   renderModelSettings();
   updateModelStateLabel();
@@ -5270,7 +5731,7 @@ async function saveModelSettings() {
 }
 async function resetModelSettings() {
   state.modelOverrides = {};
-  localStorage.removeItem("directorModelOverrides");
+  sessionStorage.removeItem("directorModelOverrides");
   applyEffectiveModelState();
   renderModelSettings();
   updateModelStateLabel();
@@ -5311,6 +5772,7 @@ async function offerVideoPromptRewriteForCurrentPlan() {
 }
 
 async function rewriteCurrentAnimationVideoPrompts(videoPromptTarget) {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (state.animationPromptRewriting) return;
   const variant = selectedVariant();
   const plan = variant ? state.animationPlans[variant.id] || null : null;
@@ -5326,6 +5788,7 @@ async function rewriteCurrentAnimationVideoPrompts(videoPromptTarget) {
     productionContext = currentPlanProductionContext(variant.id);
     dependencyRefs = currentPlanDependencyRefs(variant.id);
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setModelSettingsStatus(error.message || "当前 Animation Plan lineage 已失效。", "error");
     return;
   }
@@ -5373,10 +5836,12 @@ async function rewriteCurrentAnimationVideoPrompts(videoPromptTarget) {
     setAnimationStatus("视频提示词已更新并签发新 Plan revision；旧 Plan 媒体已标记 stale。", "ready");
     updateStoryExportActions();
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     renderAnimationPlan(plan);
     setModelSettingsStatus(error.message || "视频提示词重写失败。", "error");
     setAnimationStatus("提示词重写失败；原 Animation Plan 保持不变。", "error");
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     state.animationPromptRewriting = false;
     elements.saveModelSettings.disabled = false;
     elements.resetModelSettings.disabled = false;
@@ -5389,7 +5854,7 @@ function setModelSettingsStatus(message, tone = "") {
 }
 function readModelOverrides() {
   try {
-    const value = JSON.parse(localStorage.getItem("directorModelOverrides") || "{}");
+    const value = JSON.parse(sessionStorage.getItem("directorModelOverrides") || "{}");
     return value && typeof value === "object" && !Array.isArray(value) ? sanitizeStoredModelOverrides(value) : {};
   } catch {
     return {};
@@ -5565,6 +6030,7 @@ function persistedTaskModelLabel(artifactId, stage, fallback = "") {
 }
 function modelName(model) { return String(model || "").split("/").pop(); }
 function validateReady() {
+  if (sourceLoading || !browserWorkspace.workspace) { elements.run.disabled = true; return; }
   if (state.running) return;
   const resumableWithoutMedia = Boolean(
     state.production.runId
@@ -5584,13 +6050,14 @@ function showError(message, tone = "error") {
 function profile() { return { fixedCharacter: elements.fixedCharacter.value.trim(), vertical: elements.vertical.value.trim(), constraints: elements.constraints.value.trim() }; }
 async function handleProfileInput() {
   const currentProfile = profile();
+  // Keep the user's settings even if they close the page during server cleanup.
+  saveProfile();
   if (
     state.production.runId
     && (!state.characterBoundaryProfile || JSON.stringify(currentProfile) !== JSON.stringify(state.characterBoundaryProfile))
   ) {
     await invalidateGlobalCharacterBoundary();
   }
-  saveProfile();
   validateReady();
 }
 async function invalidateGlobalCharacterBoundary(message = "固定角色或创作设定已修改；旧的全局角色边界已失效，请重新运行工作流。") {
@@ -5604,26 +6071,23 @@ async function invalidateGlobalCharacterBoundary(message = "固定角色或创�
       showError("已保留当前 Run 和任务；未清除服务端状态。");
       return false;
     }
-    await abandonProductionTasks(active);
   }
-  abandonActiveProductionRun();
-  state.characterBoundaryProfile = null;
-  state.output = {};
-  state.selectedVariantId = null;
-  state.fullStories = {};
-  state.animationPlans = {};
-  state.animationPlanMetadata = {};
-  state.animationAspectRatioDrafts = {};
-  state.shotFrameResults = {};
-  state.shotVideoResults = {};
-  [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants].forEach((element) => {
-    element.innerHTML = "";
-    element.classList.add("hidden");
-  });
-  elements.export.classList.add("hidden");
-  showError(message);
-  return true;
+  const epoch = browserWorkspace.beginChange();
+  sourceLoading = true;
+  validateReady();
+  try {
+    if (!await browserWorkspace.resetRun(epoch)) return false;
+    clearVideoWorkspaceUi({ keepSource: true });
+    showError(message);
+    return true;
+  } catch (error) {
+    if (browserWorkspace.isCurrent(epoch)) showError(error.message || "旧生产结果尚未清理成功，请重试。");
+    return false;
+  } finally {
+    if (browserWorkspace.isCurrent(epoch)) { sourceLoading = false; validateReady(); }
+  }
 }
+
 function globalCharacterBoundaryContext() {
   return {
     creatorProfile: profile(),
@@ -5650,27 +6114,29 @@ function restoreCharacterExpressionRules() {
 }
 function restoreProfile() { try { const data = JSON.parse(localStorage.getItem("directorProfile")); if (data) { elements.fixedCharacter.value = data.fixedCharacter || ""; elements.vertical.value = data.vertical || ""; elements.constraints.value = data.constraints || ""; } } catch {} }
 
+function saveCreationPreferences() {
+  localStorage.setItem(CREATION_PREFERENCES_STORAGE_KEY, JSON.stringify(creationPreferences({
+    variantCount: elements.variantCount.value,
+    animationAspectRatioDefault: state.animationAspectRatioDefault,
+    storyDurationTarget: state.storyDurationTarget
+  })));
+}
+
+function restoreCreationPreferences() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(CREATION_PREFERENCES_STORAGE_KEY) || "{}"); } catch {}
+  const preferences = creationPreferences(saved || {});
+  elements.variantCount.value = preferences.variantCount;
+  state.animationAspectRatioDefault = preferences.animationAspectRatioDefault;
+  state.storyDurationTarget = preferences.storyDurationTarget;
+  syncAnimationAspectRatioControls();
+}
+
 function persistActiveProductionRun() {
-  if (!state.production.projectId || !state.production.runId) return;
-  localStorage.setItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY, JSON.stringify({
-    projectId: state.production.projectId,
-    runId: state.production.runId
-  }));
+  browserWorkspace.rememberRun(state.production);
 }
 
-function abandonActiveProductionRun() {
-  state.production = emptyProductionState();
-  localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
-}
-
-async function restoreActiveProductionRun() {
-  let active;
-  try {
-    active = JSON.parse(localStorage.getItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY) || "null");
-  } catch {
-    localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
-    return false;
-  }
+async function restoreActiveProductionRun(active, workspaceEpoch = browserWorkspace.epoch) {
   if (!active?.projectId || !active?.runId) return false;
   try {
     const taskQuery = new URLSearchParams({ projectId: active.projectId, runId: active.runId });
@@ -5688,12 +6154,15 @@ async function restoreActiveProductionRun() {
         return payload;
       })
     ]);
+    assertWorkspaceCurrent(workspaceEpoch);
     state.production = productionStateFromRun(run);
+    const allTasks = Array.isArray(taskPayload.tasks) ? taskPayload.tasks : [];
+    state.taskSnapshots = {};
+    for (const task of allTasks) rememberTaskSnapshot(state.taskSnapshots, task);
     restoreRunMetadata(run.metadata || {});
     restoreRunArtifacts(run.latestArtifacts || {});
     persistActiveProductionRun();
     renderRestoredDirectorArtifacts();
-    const allTasks = Array.isArray(taskPayload.tasks) ? taskPayload.tasks : [];
     state.productionTasks = {};
     for (const task of [...allTasks].reverse()) {
       for (const artifactId of task.targetArtifactIds || []) state.productionTasks[artifactId] = task;
@@ -5731,28 +6200,33 @@ async function restoreActiveProductionRun() {
     }
     return true;
   } catch (error) {
-    // 暂时的服务不可用不能删除唯一的 attach 指针；明确放弃只走用户确认路径。
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return false;
+    // 暂时的服务不可用不能删除当前页面的 workspace 指针。
     showError(error?.message || "暂时无法恢复上次生产 Run，请稍后刷新重试。", "notice");
     return false;
   }
 }
 
 async function attachRestoredDirectorPipeline(task) {
+  const workspaceEpoch = browserWorkspace.epoch;
   try {
     const completed = await waitForDurableTask(task, updateDirectorTaskProgress);
     await directorArtifactSynchronizer.sync(completed);
+    assertWorkspaceCurrent(workspaceEpoch);
     elements.pipelineUsage.textContent = formatDirectorCompletionStatus(
       completed,
       formatStageUsageSuffix(completed.usage)
     );
     elements.pipelineUsage.className = "story-status ready";
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     elements.pipelineUsage.textContent = error.task?.usage
       ? `AI 导演阶段中断${formatStageUsageSuffix(error.task.usage, { label: "中断前已消耗" })}`
       : (error.message || "AI 导演阶段中断");
     elements.pipelineUsage.className = "story-status error";
     showError(error.message || "AI 导演任务未能继续");
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     state.running = false;
     setRunning(false);
     validateReady();
@@ -5774,12 +6248,10 @@ function markRestoredTaskRunning(task) {
     elements.pipelineUsage.className = "story-status active";
   } else if (task.kind === "fullStory") {
     state.storyRunning = true;
-    setStoryRunning(true);
-    setStoryStatus(`正在重新接管完整剧情任务${model ? ` · ${model}` : ""}…`, "active");
+    syncStoryTaskStatus();
   } else if (["animationPlan", "animationPromptRewrite", "characterReferenceRefine"].includes(task.kind)) {
     state.animationRunning = true;
-    setAnimationRunning(true);
-    setAnimationStatus(`正在重新接管 ${task.kind}${model ? ` · ${model}` : ""}…`, "active");
+    syncStoryTaskStatus();
   } else if (task.kind === "shotVideoBatch") {
     state.shotVideoBatch.taskId = task.taskId;
     renderShotVideoBatchProgress(task);
@@ -5795,6 +6267,7 @@ function markRestoredTaskRunning(task) {
     adoptCharacterImageTaskTarget(task);
     state.characterImageGeneration.running = true;
     applyCharacterImageTaskProgress(task);
+    setCharacterImageRunning(true);
   }
 }
 
@@ -5810,6 +6283,7 @@ function adoptCharacterImageTaskTarget(task) {
 }
 
 async function attachRestoredStandaloneTask(task) {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (task.kind === "shotVideoBatch") {
     await monitorShotVideoBatch(task, { restored: true });
     return;
@@ -5847,6 +6321,7 @@ async function attachRestoredStandaloneTask(task) {
       setAnimationStatus("镜头媒体任务已完成。", "ready");
     }
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     const target = durableTaskTargetContext(task);
     if (task.kind === "variants") {
       setStage("variants", "error");
@@ -5877,6 +6352,7 @@ async function attachRestoredStandaloneTask(task) {
       setAnimationStatus(error.message || "镜头帧任务中断", "error");
     }
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (task.kind === "variants") {
       state.variantsRegenerating = false;
       if (state.output.themeVariants) renderVariants(state.output.themeVariants);
@@ -5892,6 +6368,22 @@ async function attachRestoredStandaloneTask(task) {
     if (task.kind === "characterReferenceImages") {
       state.characterImageGeneration.running = false;
       setCharacterImageRunning(false);
+      syncCharacterImageTaskStatus({ includeTerminal: true });
+    }
+    if (task.kind === "shotVideo") {
+      renderShotVideoModalResults();
+      if (state.shotVideoGeneration.open) {
+        setShotVideoGeneratorRunning(false);
+        await updateShotVideoGeneratorPreview({ preservePrompt: true });
+      }
+    }
+    if (task.kind === "shotFrameImage") {
+      renderShotFrameImageResults();
+      if (state.shotFrameImageGeneration.open) {
+        setShotFrameImageGeneratorRunning(false);
+        await updateShotFrameImageGeneratorPreview();
+      }
+      syncShotFrameTaskStatus({ includeTerminal: true });
     }
     void refreshReleaseActiveTasksButton();
   }
@@ -5987,6 +6479,7 @@ function renderCurrentMainOutputs() {
     elements.resultStack.classList.add("hidden");
     elements.export.classList.add("hidden");
   }
+  syncDirectorTaskStatus();
 }
 function selectedVariant() { return (state.output.themeVariants?.variants || []).find((variant) => String(variant.id) === String(state.selectedVariantId)); }
 function currentFullStory() {
@@ -6065,23 +6558,30 @@ function exportJson() {
 }
 
 async function exportCurrentStoryPackage() {
+  const workspaceEpoch = browserWorkspace.epoch;
   const pack = selectedStoryPackage();
   if (!pack?.fullStory) return setStoryStatus("请先生成完整剧情，再导出当前生产包。", "error");
   try {
     const sealed = await sealProductionPackage(pack);
-    downloadJson(sealed, storyPackageFilename(sealed));
+    downloadProductionPackage(sealed, { onError: (message) => {
+      if (browserWorkspace.isCurrent(workspaceEpoch)) setStoryPackageStatus(message, "error");
+    } });
+    setStoryPackageStatus(`已发起下载：${storyPackageFilename(sealed)}`, "ready");
   } catch (error) {
     setStoryStatus(error.message || "生产包签发失败。", "error");
   }
 }
 
 async function exportStoryTestPackage() {
+  const workspaceEpoch = browserWorkspace.epoch;
   const pack = selectedStoryPackage();
   if (!pack?.fullStory) return setStoryPackageStatus("请先生成或导入完整剧情，再导出测试包。", "error");
   try {
     const sealed = await sealProductionPackage(pack);
-    downloadJson(sealed, storyPackageFilename(sealed, { testPackage: true }));
-    setStoryPackageStatus(`已导出签名的 ${sealed.animationPlan ? "完整剧情 + 动画生产包" : "完整剧情"} 测试包。`, "ready");
+    downloadProductionPackage(sealed, { testPackage: true, onError: (message) => {
+      if (browserWorkspace.isCurrent(workspaceEpoch)) setStoryPackageStatus(message, "error");
+    } });
+    setStoryPackageStatus(`已发起下载：${storyPackageFilename(sealed, { testPackage: true })}`, "ready");
   } catch (error) {
     setStoryPackageStatus(error.message || "测试包签发失败。", "error");
   }
@@ -6097,13 +6597,24 @@ function sealProductionPackage(payload) {
 }
 
 async function importStoryTestPackage(file) {
+  let workspaceEpoch = browserWorkspace.epoch;
   try {
     setStoryPackageStatus("正在导入测试包…", "");
     const payload = JSON.parse(await file.text());
-    const imported = await api("/api/production/package/import", { package: payload });
+    assertWorkspaceCurrent(workspaceEpoch);
+    const imported = await browserWorkspace.importPackage(payload, workspaceEpoch);
+    if (!imported) return;
+    assertWorkspaceCurrent(workspaceEpoch);
+    // Only a valid import replaces the active UI lifetime. A rejected package
+    // must leave the existing pipeline's progress observers attached.
+    workspaceEpoch = browserWorkspace.beginChange();
+    clearVideoWorkspaceUi();
+    sourceLoading = false;
     const restored = restoreStoryPackage(imported.payload, imported.production);
+    showError("导入包未包含原视频；已清理此前上传的视频。重新选择视频会清除当前导入结果。", "notice");
     setStoryPackageStatus(`已校验并隔离导入 ${restored.id}：${restored.hasStory ? "完整剧情" : "未含完整剧情"}${restored.hasAnimation ? " + 动画生产包" : ""}；旧媒体未混入。`, "ready");
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setStoryPackageStatus(error.message || "测试包导入失败", "error");
   }
 }
@@ -6127,7 +6638,7 @@ function restoreStoryPackage(payload, production) {
   if (payload.modelInfo) {
     if (payload.modelInfo.overrides && typeof payload.modelInfo.overrides === "object") {
       state.modelOverrides = sanitizeStoredModelOverrides(payload.modelInfo.overrides);
-      localStorage.setItem("directorModelOverrides", JSON.stringify(state.modelOverrides));
+      sessionStorage.setItem("directorModelOverrides", JSON.stringify(state.modelOverrides));
     } else {
       state.storyProvider = payload.modelInfo.storyProvider || state.storyProvider;
       state.storyModel = payload.modelInfo.storyModel || state.storyModel;
@@ -6253,15 +6764,6 @@ async function copyAnimationProductionPack() {
   } catch {
     setAnimationStatus("浏览器拒绝访问剪贴板，请使用“导出当前生产包 JSON”。", "error");
   }
-}
-
-function downloadJson(payload, filename) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
 }
 
 function formatAnimationPackMarkdown(pack) {

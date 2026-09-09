@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { assertWorkspaceMediaLifetime, requireWorkspaceMediaDirectory } from "../src/workspace-media-lifetime.js";
 import {
   inferShotVideoProvider,
   isNonDomesticKlingApiEndpoint,
@@ -92,6 +93,7 @@ function describeWorkerFailure(error) {
 }
 
 export async function executeGenericHttpWorker(options = {}) {
+  await assertWorkspaceMediaLifetime(options.lifetimeFile);
   const request = typeof options.request === "string"
     ? JSON.parse(await fs.readFile(options.request, "utf8"))
     : options.request;
@@ -99,7 +101,7 @@ export async function executeGenericHttpWorker(options = {}) {
   if (!options.output) throw new Error("worker output 不能为空");
   const config = await loadConfig(options.config || process.env.VIDEO_HTTP_CONFIG || "");
   const result = await executeRequest(request, options, mergeEnvConfig(config, request));
-  await writeReceipt(options.receipt, result);
+  await writeReceipt(options.receipt, result, options.lifetimeFile);
   return result;
 }
 
@@ -132,9 +134,10 @@ async function executeRequest(request, options, config) {
     assertMiniMaxH3RequestBodySize(body, config);
   }
   const startedAt = Date.now();
+  await assertWorkspaceMediaLifetime(options.lifetimeFile);
   const first = await postJson(endpoint, body, config);
   const resolved = await resolveProviderResult(first, context.request, { ...config, resolvedEndpoint: endpoint });
-  await writeOutput(resolved, options.output, config);
+  await writeOutput(resolved, options.output, config, options.lifetimeFile);
   const miniMaxH3Video = isMiniMaxH3VideoGeneration(context.request.capability, config);
   const promptReceipt = buildMiniMaxH3ProviderPromptReceipt(context.request, body, config);
   return {
@@ -1004,10 +1007,11 @@ function firstArtifactDataUrl(artifact = {}) {
   return artifact.dataUrl || artifact.data_url || "";
 }
 
-async function writeOutput(result, outputPath, config) {
-  await fs.mkdir(path.dirname(path.resolve(outputPath)), { recursive: true });
+async function writeOutput(result, outputPath, config, lifetimeFile) {
+  if (lifetimeFile) await requireWorkspaceMediaDirectory(path.dirname(path.resolve(outputPath)), lifetimeFile);
+  else await fs.mkdir(path.dirname(path.resolve(outputPath)), { recursive: true });
   if (result.kind === "url") {
-    await downloadToFile(result.url, outputPath, config);
+    await downloadToFile(result.url, outputPath, config, lifetimeFile);
   } else if (result.kind === "data_url") {
     const [, payload = ""] = result.dataUrl.split(",", 2);
     await fs.writeFile(outputPath, Buffer.from(payload, "base64"));
@@ -1165,7 +1169,7 @@ async function withRequestContext(label, run) {
   }
 }
 
-async function downloadToFile(url, outputPath, config) {
+async function downloadToFile(url, outputPath, config, lifetimeFile) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number(config.timeoutMs || 120000));
   try {
@@ -1175,6 +1179,9 @@ async function downloadToFile(url, outputPath, config) {
     );
     const buffer = Buffer.from(await response.arrayBuffer());
     if (!response.ok) throw new Error(`下载产物失败 HTTP ${response.status}: ${buffer.toString("utf8").slice(0, 1000)}`);
+    // The original Node parent may already be gone. Do not create directories:
+    // cleanup can remove the Run while this independent worker downloads bytes.
+    await assertWorkspaceMediaLifetime(lifetimeFile);
     await fs.writeFile(outputPath, buffer);
   } finally {
     clearTimeout(timer);
@@ -1186,9 +1193,10 @@ function downloadHeadersFor(config) {
   return { ...(config.downloadHeaders || {}) };
 }
 
-async function writeReceipt(receiptPath, result) {
+async function writeReceipt(receiptPath, result, lifetimeFile) {
   if (!receiptPath) return;
-  await fs.mkdir(path.dirname(path.resolve(receiptPath)), { recursive: true });
+  if (lifetimeFile) await requireWorkspaceMediaDirectory(path.dirname(path.resolve(receiptPath)), lifetimeFile);
+  else await fs.mkdir(path.dirname(path.resolve(receiptPath)), { recursive: true });
   await fs.writeFile(receiptPath, `${JSON.stringify(result, null, 2)}\n`);
 }
 
@@ -1514,6 +1522,8 @@ function parseArgs(args) {
     else if (arg.startsWith("--receipt=")) parsed.receipt = arg.slice("--receipt=".length);
     else if (arg === "--root") parsed.root = requireValue(args, ++index, arg);
     else if (arg.startsWith("--root=")) parsed.root = arg.slice("--root=".length);
+    else if (arg === "--lifetime-file") parsed.lifetimeFile = requireValue(args, ++index, arg);
+    else if (arg.startsWith("--lifetime-file=")) parsed.lifetimeFile = arg.slice("--lifetime-file=".length);
     else if (arg === "--config") parsed.config = requireValue(args, ++index, arg);
     else if (arg.startsWith("--config=")) parsed.config = arg.slice("--config=".length);
     else throw new Error(`未知参数：${arg}`);

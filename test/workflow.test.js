@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { sseChunks, sseResponse } from "./helpers/sse-response.js";
+import { variantSourceResponse } from "./helpers/variant-source-response.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -365,6 +366,8 @@ test("Visual Guardrails 只推断一次并签发全局边界，用户改设定�
       },
       async generateJson(args) {
         variantCalls += 1;
+        const sourceResponse = variantSourceResponse(args.prompt);
+        if (sourceResponse) return sourceResponse;
         capturedVariantPrompt = args.prompt;
         return mockVariants({ ...input, creatorProfile, count: 1 });
       }
@@ -400,7 +403,7 @@ test("Visual Guardrails 只推断一次并签发全局边界，用户改设定�
   const variants = await workflow.createVariants({ ...stageContext, visualGuardrails, count: 1 });
   assert.equal(variants.variants.length, 1);
   assert.match(capturedVariantPrompt, /"canonicalName":"狼尾"/u);
-  assert.equal(variantCalls, 1);
+  assert.equal(variantCalls, 2);
 
   await assert.rejects(
     () => workflow.createVariants({
@@ -411,7 +414,7 @@ test("Visual Guardrails 只推断一次并签发全局边界，用户改设定�
     }),
     /全局角色边界与当前用户设定.*不匹配/u
   );
-  assert.equal(variantCalls, 1);
+  assert.equal(variantCalls, 2);
 });
 
 test("Visual Guardrails 拒绝模型伪造服务端签发字段且不整包重生", async () => {
@@ -3494,7 +3497,9 @@ test("creativeBrief 拒绝 protectedExpressions 的错误字段名", () => {
 test("主题变体必须锁定用户指定固定角色，不能另起主角名", async () => {
   const workflow = new WorkflowService({
     client: {
-      async generateJson() {
+      async generateJson({ prompt }) {
+        const sourceResponse = variantSourceResponse(prompt);
+        if (sourceResponse) return sourceResponse;
         return { variants: [{
           id: "V1",
           title: "磁带里的歌声",
@@ -3560,7 +3565,9 @@ test("主题变体允许按剧情复用原片角色组合，但不覆盖固定�
   });
   const workflow = new WorkflowService({
     client: {
-      async generateJson() {
+      async generateJson({ prompt }) {
+        const sourceResponse = variantSourceResponse(prompt);
+        if (sourceResponse) return sourceResponse;
         return { variants: [{
           id: "V1",
           title: "雾中画境",
@@ -3634,7 +3641,9 @@ test("主题变体允许按剧情复用 mustChange 来源道具", async () => {
   );
   const workflow = new WorkflowService({
     client: {
-      async generateJson() {
+      async generateJson({ prompt }) {
+        const sourceResponse = variantSourceResponse(prompt);
+        if (sourceResponse) return sourceResponse;
         return { variants: [{
           id: "V1",
           title: "灯下通知",

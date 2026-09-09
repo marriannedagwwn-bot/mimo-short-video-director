@@ -34,6 +34,8 @@ AI 短视频生产工作流系统。
 
 # 1. 当前架构事实（必须遵守）
 
+**浏览器工作区生命周期（2026-09-09）**：新的浏览器 Run 必须绑定服务端 `metadata.browserWorkspaceId`。原视频副本在私有 BrowserWorkspaceStore 持久化，Run metadata 记录其 URL 和 SHA-256；Task Store 仍不保存视频、Prompt 或完整请求体。同一标签页刷新/服务重启恢复副本并重新抽帧，不自动重调 provider；更换视频必须先清旧 Run/媒体/应用源副本。pagehide 或页面生命周期连接断开有 60 秒刷新宽限期，5 秒 sweep 清理；后台页连接仍在时不因心跳节流过期，无连接也无关闭通知时最后心跳起 2 分钟兜底，停服期间下次启动补清。sessionStorage 保存 workspace ID，每文档 pageId 与 source generation 分别阻止旧关闭通知和旧输入回写；不再恢复旧 localStorage Run 指针。长期保存仅创作宇宙七项设置（角色、赛道、限制、表情、候选数量、画幅、时长），模型覆盖只存 sessionStorage。表情和三个生成偏好不得并入 creatorProfile。清理须核对页面归属，scheduler → Run 锁撤销任务后删源副本、Run、其命名空间媒体及 Run 内 Debug；迟到 Runner/worker 不得重建已清数据。已有无页面归属历史 Run、用户原文件、主动导出文件、签名密钥不能由此清理。详见 `docs/production-lineage-state.md` 的浏览器工作区生命周期。
+
 ## 当前主流程
 
 当前运行流程：
@@ -149,6 +151,10 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：�
 ---
 
 ## 候选阶段的原片事实溯源与对照评审（2026-09-06）
+
+**原片来源独立选取与服务端派生（2026-09-09，替代新候选路径中让模型自由写 source 的规则）**：两份原片上游齐全时，`createVariants` 先建立私有冻结目录，使用创建时的 variants provider/model 独立选择人物、事件、对白、画面四维的 evidenceId，再调用同一模型创作候选。选源输入不含 creatorProfile、Brief、Guardrails、候选、replacement 或旧 source；目录仅投影原片事实白名单，不带签章或媒体。所有 ID 必须已知、非空且不重复，不设置固定 4 条上限。对白引用附带同场 visibleActions 与 shotDesign 的画面原文；不同场次的同文不能按文本去重，必须按 evidenceId 保留。道具不由模型选择，直接取全部冻结 `scenes[].keyProps` 精确文本去重；合法空数组签发「原片没有可引用的场次道具清单记录」，仅声明清单空，禁止扩大成原片没有物件；缺键、非法类型与空白条目仍失败。
+
+候选模型只输出五个 `replacement`，服务端从选择结果复制完整原文，覆盖已有五对字段的 `source` 后再跑完整 schema、派生与 profile 校验。不能补齐缺维度、修改 replacement 或掩盖额外字段。所有候选共享本次原片基线；不得从新角色或新剧情反推原片问题。私有目录及选源结果不进入 Task Store 或新 Artifact，只在本次调用内使用；一个 variants Task 两次顺序调用、一次提交，直接冻结 Analysis、Reconstruction、Brief、Guardrails 四份依赖，现有用量与 watchdog 覆盖两次调用，不自动重试。选源单独记录 `variantSourceBaseline` 模型输出日志。Demo 从真实 mock 上游确定性选取，不调用模型；缺两份上游的旧调用点及已签发候选保持旧来源兼容校验。Full Story 的新片事实只承接候选正文与 replacement，source 不构成新增人物、事件、道具、对白或字幕卡的要求。选源不能解决原片上游转写含混、外观缺失或事实冲突，不能把引用合法宣称为原片逐动作/逐字音频验证通过。
 
 `variantsPrompt` 现在按允许清单投影原片人物名称/特征、观察事实、场次动作/对白/道具，供机制对照和 `transformationProof.source` 引用；不带签章、摄影说明或媒体。此前上游已进入 workflow 与 validator，却没有进入实际候选提示词。Brief 正向投影去掉可能携带获奖/转赠链的 `emotionStructure.function`，`dramaticValue` 单列为来源价值解释，不是每个新片的必备事件；情绪曲线也不作为逐拍模板。候选阶段的角色规则投影将 `stageInstructions` 输出为空对象，隔离上游模型在阶段建议里写入的帮助、奖励、转赠模板；其余阶段仍消费原值，签发的角色事实及原 Artifact 均不改变。不对值做关键词分类。
 
