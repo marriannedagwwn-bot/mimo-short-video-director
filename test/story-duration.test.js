@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -123,4 +124,50 @@ test("候选合计跳过非有限秒数而不是抛错", () => {
   ]), 18);
   assert.equal(storyOutlineTotalSeconds(null), 0);
   assert.equal(storyOutlineTotalSeconds([]), 0);
+});
+
+// 时长目标从浏览器走到 variantsPrompt 要经过三处**显式构造**，§2.10 写着「三处缺一不可」。
+// 2026-09-09 实测漏的正是第一处：一键 AI 导演送进 directorPipeline 的 shared 里没有这个键，
+// 而 server.js 的白名单读的是 raw.targetDurationSeconds，于是 variantsPrompt 取不到目标、
+// durationRule 整段省略——静默降级，现象是「换一批有效、一键跑无效」。
+//
+// 六份真实导出包里，五个走一键路径的 run 候选合计 20/20 落在窗口外（原片 33 秒的写成 56-60 秒、
+// 原片 122 秒的写成 60-90 秒），唯一走「换一批」的那份 4/4 在窗口内、且精确贴着窗口下界。
+//
+// 三处都是对象字面量，漏掉任何一处都不会有运行时错误，只能由测试守着。
+function functionBody(source, name) {
+  const lines = source.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.startsWith(`async function ${name}(`)
+    || line.startsWith(`function ${name}(`));
+  assert.ok(start >= 0, `没有找到 ${name}`);
+  const end = lines.findIndex((line, index) => index > start && line === "}");
+  assert.ok(end > start, `${name} 没有闭合`);
+  return lines.slice(start, end + 1).join("\n");
+}
+
+test("时长目标的三处显式构造一处都不能漏", () => {
+  const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  const server = fs.readFileSync(new URL("../server.js", import.meta.url), "utf8");
+  const carriesTarget = /targetDurationSeconds: resolveStoryDurationTarget\(state\.storyDurationTarget/u;
+
+  // ① 一键 AI 导演：整条管线只有这一个 shared 输入，候选阶段的目标只能从这里进来。
+  const pipeline = functionBody(app, "runWorkflow");
+  assert.match(pipeline, /createDurableTask\("directorPipeline", shared\)/u);
+  assert.match(pipeline, carriesTarget, "directorPipeline 的 shared 必须带上 targetDurationSeconds");
+
+  // ② 换一批：直调 /api/variants。
+  assert.match(
+    functionBody(app, "regenerateThemeVariants"),
+    carriesTarget,
+    "换一批必须带上 targetDurationSeconds"
+  );
+
+  // ③ Durable 白名单：显式构造，漏掉会让任务队列路径静默丢字段。
+  const variantsStageAt = server.indexOf('key: "variants"');
+  const forwardsAt = server.indexOf("targetDurationSeconds: raw.targetDurationSeconds");
+  assert.ok(variantsStageAt >= 0, "没有找到 variants 阶段定义");
+  assert.ok(
+    forwardsAt > variantsStageAt,
+    "variants 阶段的 buildInput 白名单必须转发 targetDurationSeconds"
+  );
 });

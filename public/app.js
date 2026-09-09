@@ -932,6 +932,21 @@ async function runWorkflow() {
         transcript: elements.transcript.value.trim(),
         creatorProfile,
         count: Number(elements.variantCount.value),
+        // 候选阶段的时长目标必须从这里就带上。§2.10 写着「浏览器请求体、server.js 入口校验、
+        // Durable buildInput 白名单三处缺一不可」，而实际漏的正是这一处：白名单读的是
+        // raw.targetDurationSeconds，一键 AI 导演送进 directorPipeline 的 shared 里却没有这个键，
+        // 于是 variantsPrompt 取不到目标、durationRule 整段省略——**静默降级**。只有手动点
+        //「换一批」那条路送到了，所以现象是「换一批有效、一键跑无效」。
+        //
+        // 实测代价（2026-09-09 六份真实导出包）：五个带 lineage 的 run 全部生成于 09-05 修复之后，
+        // 候选 estimatedSeconds 合计 20/20 落在窗口外——原片 33 秒的写成 56-60 秒、原片 122 秒的
+        // 写成 60-90 秒；唯一 4/4 落在窗口内的那份，四个候选精确等于窗口下界。而下游 Full Story
+        // 6/6 命中 Math.round(原片时长)，于是候选估的 60 秒要么被压进 33 秒、要么被摊到 122 秒，
+        // 正是 docs/待解决项.md 第 1 条「单场动作过载」的上游。
+        targetDurationSeconds: resolveStoryDurationTarget(state.storyDurationTarget, {
+          metadata: state.metadata,
+          sourceScriptReconstruction: state.output.sourceScriptReconstruction
+        }),
         sourceVideoDigest
       });
       if (!continuingInterruptedRun) {
