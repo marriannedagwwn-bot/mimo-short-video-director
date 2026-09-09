@@ -22,6 +22,14 @@ Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主�
 
 **Durable Task v1（2026-09-01）**：浏览器只创建、轮询和重新 attach；服务端 Runner 执行 provider 调用、校验与 Artifact commit。AI 导演是一个 `directorPipeline` 父任务和 Analyze、Reconstruct、Brief、Visual Guardrails、Variants 五个顺序子任务，父任务创建时原子 claim 五个目标。Task Store 是每个 Run 私有的 `tasks/index.json`，只保存执行状态、冻结 lineage、创建时 provider/model、progress、usage、结果 refs 与脱敏错误；Prompt、Data URL、Base64 和完整请求体禁止落盘，ProductionStateStore 的 current Artifact 仍是唯一业务事实。
 
+**浏览器工作区生命周期（2026-09-09）**：新的浏览器 Run 必须绑定服务端 `metadata.browserWorkspaceId`。源视频副本存在私有 BrowserWorkspaceStore，Run metadata 只记 URL 与 SHA-256；**Task Store 仍不保存视频、Prompt 或完整请求体**，这条与 Durable Task v1 逐字同规格。同一标签页刷新或服务重启会恢复副本并重新抽帧，**不自动重调 provider**；换视频前必须先清旧 Run、媒体与源副本。
+
+过期判定分三档，不要合并：连接断开有 60 秒宽限（5 秒 sweep）；后台页只要连接还在就**不因心跳节流判过期**；既无连接又无关闭通知时从最后一次心跳起 2 分钟兜底，停服期间的漏清在下次启动补。
+
+存储位置是硬约束：workspace ID 与模型覆盖只进 `sessionStorage`；**长期只存创作宇宙七项设置**（角色、赛道、限制、表情、候选数量、画幅、时长）；旧的 `localStorage` Run 指针不再恢复。**表情与三个生成偏好不得并入 `creatorProfile`**——理由见 §2.5：`creatorProfile` 恰好三个字段且整体进 `sourceDigest`，并进去会让改一个下拉就作废全局角色边界。
+
+清理必须核对页面归属，顺序是 scheduler → Run 锁撤销任务 → 删源副本、Run、其命名空间媒体与 Run 内 Debug；迟到的 Runner/worker **不得重建已清数据**。**四类东西永远不由它清**：无页面归属的历史 Run、用户原文件、主动导出文件、签名密钥。详见 `docs/production-lineage-state.md`。
+
 状态固定为 `queued | running | completed | failed | conflicted | interrupted | abandoned`。冻结后绝不自动换成新 current；每次 provider 调用前后及锁内 commit 都复验 revision/digest。相同 active operation 复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`；只有相同 requestId、digest 与 dependencies 的重复 finalize 可复用 revision。任务没有总墙钟 deadline：provider watchdog 使用自身 timeout 加 120 秒，本地阶段使用 300 秒无进展窗口并随进度续期，超时为 `failed/TASK_STALLED`。`abandoned` 与 `interrupted` 都不表示远端取消，供应商调用可能已经计费。
 
 per-Run Coordinator 是不可重入 FIFO 锁。持锁路径只能调用 `commitArtifactUnlocked`、`recordStageUnlocked`、`loadRunUnlocked` 和 Task Store unlocked 方法；禁止从锁内调用对应公开方法，也禁止在临界区执行 provider、网络、FFmpeg 或模型校验。lineage snapshot、Task GET 与 atomic manifest load 均为锁外读。
@@ -31,6 +39,12 @@ per-Run Coordinator 是不可重入 FIFO 锁。持锁路径只能调用 `commitA
 Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通过递归 strict Schema，且只新增 `keyChoice/climax/emotionalPayoff/novelty/visualPotential` 五个候选级字段。本地校验不使用题材关键词或主观语义打分。选中候选以 current `variant:<id>` Artifact 的精确 revision/digest 绑定 Full Story，服务端在模型调用前后复验；`candidateBinding` 不进入 Prompt 或 Legacy Full Story wire shape。状态恢复只认 current Story/Plan 或明确 `variant:<id>` 记录，仅有 Theme Variants 时必须保持未选中，禁止默认 V1。当前没有 Story Selection/Blueprint/Script Doctor/Targeted Rewrite/Production Package 4.0；Phase 2 只预留「已签发 Candidate 内容 + 精确 lineage reference」接缝。
 
 **可选叙事构件（2026-08-28）**：`characterSetup.careRecipient`、`characterSetup.helper`、`emotionalMedium`、`endingRitual` 以及 Full Story 的 `characterBible.careRecipient` 全部从 required 降级为**可选键**。它们曾强制每个候选长成「主角＋被关爱对象＋帮助者＋情感信物＋仪式结尾」，与 Prompt 要求的候选间根本差异直接矛盾。写了就仍必须合规（非空字符串；`careRecipient` 对象五个子字段齐全），不需要就整个键省略，**禁止输出空字符串或占位文本**。`characterSetup.protagonist`、`characterBible.protagonist` 与 `characterBible.helpers`（可为 `[]`）仍必填，固定角色锁定不受影响。
+
+**角色与道具边界（2026-09-09）**：`characterSetup.careRecipient/helper` 与 Full Story `characterBible` **只登记角色**——人物、动物，或候选正文已明确设定的拟人角色；不要求它会说话或主动发起行动。**普通植物、物件被照料、保护或承载情感不构成角色身份**：候选照常写它的动作与用途，Full Story 把它放进 `keyProps`、`visibleAction` 与必要摄影说明，**不进角色表、不进 `characters`**。
+
+起因是《迷路的蒲公英》：候选没写 `careRecipient`，Full Story 却把蒲公英同时当道具和被照料角色，连续触发角色出镜名单冲突。因此候选未登记 `careRecipient` 时，本次 `fullStoryPrompt` **不再展示那五字段模板**，并在开头写明角色表只输出 `protagonist/helpers`（`src/prompts.js` 的 `hasCareRecipient` 分支）；正文里其它跨场角色仍须登记进 `helpers`。
+
+两个方向都禁止：不得为了填满角色字段**新增拟人行为**，也不得因为没有 `careRecipient` 就**删掉照料植物或物件的剧情**。旧候选的功能标签不能把普通物件升级成角色。**分类只靠提示词约束**——不新增物种词表、不自动删字段、不失败重写；既有 Scene Contract、Schema、签发语义与旧 Artifact 逐字不变。
 
 **两条叙事路径（2026-09-02）**：候选新增必填枚举 `narrativeMode`，取值 `dramatic` | `slice_of_life`。契约此前把戏剧结构写成无条件硬要求（施动性至少 3 拍是发起者、末拍必须有可引用的承诺、必须设计被拖住的问句、质感 Beat 仍须改变状态），而**参考片基本不靠戏剧结构留人**：逐支拆解 debug 里留存的四支重构记录，《打枣》的转折是「戴锅防砸」这种解决眼前小麻烦，《帮奶奶捐旧衣服》的转折是别人给的小红花，《晨练》是别人来救，《好朋友为你遮风挡雨》的主角**从第 3 场起一直睡到片尾**——几乎没有一个转折来自主角的主动决定。第一条约束就把后者判成不合格。我们建了一台制造戏剧结构的机器，而用户参考的片子不靠戏剧结构；观众感到的「刻意」正是这套约束在起作用。一个反证支持该判断：用户两次独立选片都选了结尾「生活多了一点东西」的候选（村民挂起秋千、奶奶把画贴冰箱上），而不是任务完成型的。
 
@@ -210,7 +224,21 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
 
 **① 简报举例去污染**：`mappingLogic` 举例不再含任何参考片具体名词，仍需保留的「企鹅快递员」加上 §2.10 同款标注「来自另一部参考片，只示范判据，不要照抄内容」。**没有确定性兜底**，兜底在 ②。
 
-**② 候选 `transformationProof` 改 `{source, replacement}` 结构对 + 确定性溯源校验**。分开两个槽位是全部要点——混在一个字符串里时程序无法知道哪一半在描述原片。`source` 只有两种合法取值：能在上游找到依据的原片事实（复用简报那套 `citationCoverage`，LCS 覆盖率 0.75，**允许转述**），或精确等于 sentinel `原片没有`（`VARIANT_SOURCE_ABSENT_SENTINEL`，**完全相等**判定）。
+**原片来源独立选取与服务端派生（2026-09-09，取代下面 ② 里「模型自由写 `source`」那半条）**：两份原片上游齐全时，`createVariants`（`src/workflow.js:664`）先用 `createVariantSourceBaseline` 建一份**本次调用私有的冻结证据目录**，用创建时的 variants provider/model 独立选出人物、事件、对白、画面四维的 evidenceId，再用同一模型创作候选。**一个 variants Task 因此是两次顺序调用、一次提交**，四份依赖在开头一起冻结，现有用量与 watchdog 覆盖两次调用，**不自动重试**。
+
+隔离是这套机制的全部要点：选源输入**不含** `creatorProfile`、Brief、Guardrails、候选、`replacement` 或旧 `source`——**不得从新角色或新剧情反推原片有什么**。目录只投影原片事实白名单，不带签章与媒体。ID 必须已知、非空、不重复，**没有固定 4 条上限**；对白引用附带同场 `visibleActions` 与 `shotDesign` 原文，**不同场次的同一句话不能按文本去重**（同样的词在不同场次说话人可能不同），只按 evidenceId 去重。
+
+道具**不由模型选**：直接取全部冻结 `scenes[].keyProps` 精确文本去重；合法空数组签发「原片没有可引用的场次道具清单记录」，**只声明清单为空，禁止扩大成「原片没有物件」**；缺键、类型非法与空白条目仍然硬失败。
+
+候选模型只输出五个 `replacement`，服务端 `apply()` 从选择结果**复制完整原文覆盖五对字段的 `source`**，然后才跑 schema、派生与 profile 校验。它不补齐缺失维度、不修改 `replacement`、不掩盖多余字段。**全批候选共用同一份原片基线。**私有目录与选源结果**不进 Task Store、不进 Artifact**，只在本次调用内存在；选源单独记 `variantSourceBaseline` 模型输出日志。Demo 从真实 mock 上游确定性选取，不调模型；缺两份上游的旧调用点与已签发候选走旧来源兼容校验。
+
+**它解决不了的事要说清楚**：选源不能修复原片上游转写含混、外观缺失或事实冲突，也**不能把「引用合法」宣称成「原片逐动作 / 逐字音频已验证」**。Full Story 的新片事实只承接候选正文与 `replacement`，`source` 不构成新增人物、事件、道具、对白或字幕卡的要求。
+
+**`variantsPrompt` 的上游投影（2026-09-09）**：候选提示词现在按允许清单投影原片人物名称/特征、观察事实、场次动作/对白/道具，供机制对照与 `source` 引用，不带签章、摄影说明或媒体。**此前这些上游已经进了 workflow 与 validator，却从没进过实际候选提示词**——校验器在核对模型根本没看过的东西。
+
+同时收紧三处投影：Brief 正向投影去掉可能携带「获奖 → 转赠」链的 `emotionStructure.function`；`dramaticValue` 单列为来源价值解释，**不是每个新片的必备事件**，情绪曲线也不作逐拍模板；角色规则投影把 `stageInstructions` 输出为**空对象**，隔离上游模型写在阶段建议里的帮助/奖励/转赠模板。其余阶段仍消费原值，签发的角色事实与旧 Artifact 不变。**不对值做关键词分类。**
+
+**② 候选 `transformationProof` 改 `{source, replacement}` 结构对 + 确定性溯源校验**（**`source` 的写法已被上面 2026-09-09 那条取代：它现在由服务端从冻结目录签发，模型只写 `replacement`，缺席 sentinel 在主路径上已不可达；两个槽位分开的理由与校验器本身仍然成立**）。分开两个槽位是全部要点——混在一个字符串里时程序无法知道哪一半在描述原片。`source` 只有两种合法取值：能在上游找到依据的原片事实（复用简报那套 `citationCoverage`，LCS 覆盖率 0.75，**允许转述**），或精确等于 sentinel `原片没有`（`VARIANT_SOURCE_ABSENT_SENTINEL`，**完全相等**判定）。
 
 留这个出口是闸门能成立的前提：schema 要求非空，没有出口就是在逼模型编造。**判定是前缀，不是完全相等**——第一版要求精确四个字，当天实测 **20/20 全部失败**：四个候选五个字段无一例外把它当成句子开头补完（「原片没有明确任务」「原片没有人类角色对白」）。`原片没有` 天然读作一句话的开头，要求它戛然而止是让措辞对抗书写本能。放宽的代价是带内容的否定句免检，但**否定句不制造改写基线**——它没有声称原片有过任何可供承接的东西，最坏只是这一格信息量为零；正向声称仍逐条核对，拦截能力不变。
 
