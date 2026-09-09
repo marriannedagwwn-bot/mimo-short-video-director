@@ -1026,7 +1026,7 @@ export function mockStoryCandidateReview(candidates) {
   const list = Array.isArray(candidates) ? candidates : [];
   return {
     schemaVersion: "story-candidate-review/1.0",
-    candidateChecks: list.map((candidate) => {
+    candidateChecks: list.map((candidate, index) => {
       const beats = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline.length : 0;
       return {
         candidateId: String(candidate?.id || ""),
@@ -1044,7 +1044,13 @@ export function mockStoryCandidateReview(candidates) {
           beatIndexes: beats ? [1] : [],
           verdict: "depicted"
         }],
-        verdict: "pass",
+        // 两个分支都必须走到：只写空数组会让 mock 通过而 live 失败——
+        // 分镜终审正是因为镜头级 issues 全写 [] 而没暴露元素类型误读（AGENTS.md §2.14）。
+        // 第一个候选带一条自洽问题，因此它的 verdict 不能是 pass（同一条确定性闸门）。
+        coherenceChecks: index === 0 && beats
+          ? [{ kind: "other", beatIndexes: [1], problem: "demo 模式不调用模型，这条只用于走通非空分支。" }]
+          : [],
+        verdict: index === 0 && beats ? "revise" : "pass",
         why: "demo 模式不调用模型，本判定不构成任何质量结论。",
         keepThis: "demo 模式未作判断。"
       };

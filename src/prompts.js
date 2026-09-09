@@ -1115,7 +1115,21 @@ phase、emotion 是作者的标签，可以参考，**不能当证据**。
   - whereInCandidate：候选用哪个**不同的**具体动作实现相近价值
   - beatIndexes：对应候选的哪几拍（写拍号整数，必须真实存在）
   - verdict：depicted（确实用新动作兑现了）/ partially_depicted（沾边但不足）/ not_depicted（只换了外形，机制没过来）
-- verdict：pass（可以直接展开）/ revise（值得发展但要先改一处）/ drop（核心机制缺失，局部改不动）
+- coherenceChecks：**动作链自己能不能合上**。这一项与「机制有没有迁移」是两个独立问题——
+  一个候选可以完美复现原片机制，同时自己前后打架。逐条写，每条给拍号；确实没有就写空数组。
+  只认 action 与 keyDialogueDirections 里**都已经写出来**的事实，判据是「这两件事合不到一起」，
+  **不是**「这个选择我不喜欢」或「换个写法更好」——后者属于 why，不属于这里。
+  kind 取五个值之一：
+  - contradiction：同一候选的两处描述互相否定（两拍之间，或某拍与它的对白之间）
+  - tool_misuse：角色手上已经有能解决眼前问题的东西，却去用一个明显更差的替代物；或某个道具被用在它做不到的事情上
+  - purpose_nullified：任务的目的被链条里另一件事当场抵消，做完与没做在画面上没有区别
+  - space_or_time：前面交代够不到、走不到或来不及，后面用一个更弱的办法却成了，中间没有新增条件
+  - other：确实是「两个都写出来的画面事实合不到一起」，但不属于上面四类
+  problem 必须点名冲突的两端各是什么，不能只写「逻辑不通」。
+- verdict：pass（可以直接展开）/ revise（值得发展但要先改一处）/ drop（核心机制缺失，局部改不动）。
+  **只要 coherenceChecks 非空就不能判 pass**——pass 的意思是可以直接展开，而动作链还合不上的候选不能直接展开。
+  报出自洽问题不是在否定这个候选：revise 是完全正常的结论，drop 仍然只留给机制本身就没迁移过来的情况。
+  也不要为了让 verdict 好看而漏报或删掉真实存在的自洽问题。
 - why：一句话，必须点到**具体动作**，不能只说「情绪不够」
 - keepThis：这个候选已经成立、修改时不能丢掉的那一处（即使 verdict 是 drop 也要写）
 
@@ -1144,6 +1158,7 @@ phase、emotion 是作者的标签，可以参考，**不能当证据**。
  "candidateChecks":[{"candidateId":"","title":"",
    "coreInteraction":{"setback":"","intervention":"","response":"","visibleChange":""},
    "mechanismChecks":[{"sourceMechanism":"","whereInSource":"","whereInCandidate":"","beatIndexes":[1],"verdict":""}],
+   "coherenceChecks":[{"kind":"contradiction","beatIndexes":[2,4],"problem":""}],
    "verdict":"","why":"","keepThis":""}],
  "recommendedOrder":[],
  "summary":""}

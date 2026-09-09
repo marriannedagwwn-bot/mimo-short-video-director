@@ -2926,16 +2926,44 @@ export function ensureStoryCandidateReviewCoversCandidates(review, candidates) {
       );
     }
     const beatCount = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline.length : 0;
-    (Array.isArray(check.mechanismChecks) ? check.mechanismChecks : []).forEach((mechanism, order) => {
-      (Array.isArray(mechanism?.beatIndexes) ? mechanism.beatIndexes : []).forEach((beat, position) => {
-        if (Number.isInteger(beat) && beat >= 1 && beat <= beatCount) return;
-        push(
-          "CANDIDATE_REVIEW_UNKNOWN_BEAT",
-          `/candidateChecks/${index}/mechanismChecks/${order}/beatIndexes/${position}`,
-          `引用了候选「${candidateId}」里不存在的拍号 ${beat}；该候选只有 ${beatCount} 拍`
-        );
+    // 拍号合法性判定只有一份，mechanismChecks 与 coherenceChecks 共用：
+    // 两边各写一次必然漂移，而它们引用的是同一个候选的同一组拍。
+    const checkBeats = (rows, arrayName) => {
+      (Array.isArray(rows) ? rows : []).forEach((row, order) => {
+        (Array.isArray(row?.beatIndexes) ? row.beatIndexes : []).forEach((beat, position) => {
+          if (Number.isInteger(beat) && beat >= 1 && beat <= beatCount) return;
+          push(
+            "CANDIDATE_REVIEW_UNKNOWN_BEAT",
+            `/candidateChecks/${index}/${arrayName}/${order}/beatIndexes/${position}`,
+            `引用了候选「${candidateId}」里不存在的拍号 ${beat}；该候选只有 ${beatCount} 拍`
+          );
+        });
       });
-    });
+    };
+    checkBeats(check.mechanismChecks, "mechanismChecks");
+    checkBeats(check.coherenceChecks, "coherenceChecks");
+
+    // 因果自洽与 verdict 的交叉闸门。**判定是纯算术加枚举比较，不含语义判断**：
+    // 只数 coherenceChecks 的长度，不裁决那条自洽问题成不成立。
+    //
+    // 依据是 2026-09-09 的首次真实回放（阶段 0）。评审把一个候选判成 pass 并排在第 2，
+    // 而该候选动作链里有三处已核实的矛盾：对白说「顺路」而同一拍写「反方向」；
+    // 角色怀里已经抱着能解决问题的道具，却另找一个更差的替代物去保护它；
+    // 任务目的在最后一拍被另一条线当场抵消。评审的 coreInteraction 甚至把其中一条
+    // **原样抄了下来**当成功案例——它读对了动作，只是从没被要求检查动作之间合不合得上。
+    //
+    // 根因是 verdict 声称的比评审实际检查的多：pass 的定义是「可以直接展开」，
+    // 而评审只审「机制有没有迁移过来」。这条闸门让 pass 重新对得起它的定义。
+    // 报出自洽问题**不等于**否定候选：revise 是正常结论，drop 仍留给机制本身缺失的情况。
+    const coherence = Array.isArray(check.coherenceChecks) ? check.coherenceChecks : [];
+    if (coherence.length && String(check.verdict || "") === "pass") {
+      push(
+        "STORY_CANDIDATE_REVIEW_PASS_WITH_COHERENCE_BREAK",
+        `/candidateChecks/${index}/verdict`,
+        `候选「${candidateId}」报出了 ${coherence.length} 处因果自洽问题，就不能判 pass`
+        + "（pass 的定义是「可以直接展开」）；改判 revise 或 drop，或者删掉那几条不成立的自洽问题"
+      );
+    }
   });
 
   const ids = list.map((candidate) => String(candidate?.id || "").trim()).filter(Boolean);

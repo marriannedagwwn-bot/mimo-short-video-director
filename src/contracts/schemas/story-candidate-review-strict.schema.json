@@ -60,6 +60,20 @@
         "verdict": { "$ref": "#/$defs/verdict" }
       }
     },
+    "coherenceCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "beatIndexes", "problem"],
+      "properties": {
+        "kind": { "enum": ["contradiction", "tool_misuse", "purpose_nullified", "space_or_time", "other"] },
+        "beatIndexes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "problem": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
     "candidateCheck": {
       "type": "object",
       "additionalProperties": false,
@@ -68,6 +82,7 @@
         "title",
         "coreInteraction",
         "mechanismChecks",
+        "coherenceChecks",
         "verdict",
         "why",
         "keepThis"
@@ -80,6 +95,10 @@
           "type": "array",
           "minItems": 1,
           "items": { "$ref": "#/$defs/mechanismCheck" }
+        },
+        "coherenceChecks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/coherenceCheck" }
         },
         "verdict": { "$ref": "#/$defs/candidateVerdict" },
         "why": { "$ref": "#/$defs/nonEmptyString" },

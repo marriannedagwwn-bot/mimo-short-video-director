@@ -189,3 +189,88 @@ test("提示词带上原片动作稿——没有对照物就发现不了迁移�
   const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
   assert.match(prompt, /咕嘎递出棒棒糖/u);
 });
+
+// 因果自洽检查（2026-09-09，来自阶段 0 的首次真实回放）。
+//
+// 那次回放里评审把一个候选判成 pass 并排在第 2，而它的动作链有三处已核实的矛盾：
+// 对白说「顺路」而同一拍写「反方向」；角色怀里已经抱着能解决问题的道具，却另找一个
+// 更差的替代物去保护它；任务目的在最后一拍被另一条线当场抵消。评审的 coreInteraction
+// 甚至把其中一条原样抄下来当成功案例——它读对了动作，只是从没被要求检查动作之间合不合得上。
+//
+// 闸门只数数组长度、只比枚举值，不裁决那条自洽问题成不成立。
+test("报出因果自洽问题的候选不能再判 pass", () => {
+  const review = baseReview();
+  const check = review.candidateChecks[1];
+  check.coherenceChecks = [
+    { kind: "contradiction", beatIndexes: [1, 2], problem: "第 1 拍说没带伞，第 2 拍却已经撑着伞。" }
+  ];
+  check.verdict = "pass";
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      assert.ok(error.details.some((d) => d.code === "STORY_CANDIDATE_REVIEW_PASS_WITH_COHERENCE_BREAK"));
+      assert.match(error.message, /不能判 pass/u);
+      return true;
+    }
+  );
+});
+
+test("同样的自洽问题改判 revise 就通过——闸门管的是 verdict，不是要不要报", () => {
+  const review = baseReview();
+  const check = review.candidateChecks[1];
+  check.coherenceChecks = [
+    { kind: "purpose_nullified", beatIndexes: [2], problem: "任务目的在同一拍被另一条线抵消。" }
+  ];
+  check.verdict = "revise";
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  ));
+});
+
+test("空的 coherenceChecks 是合法结论，不妨碍 pass", () => {
+  const review = baseReview();
+  review.candidateChecks.forEach((check) => { check.coherenceChecks = []; check.verdict = "pass"; });
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  ));
+});
+
+// 拍号合法性判定只有一份，两个数组共用；路径必须指向真正出错的那个数组。
+test("coherenceChecks 引用不存在的拍号，与 mechanismChecks 走同一条判定", () => {
+  const review = baseReview();
+  const check = review.candidateChecks[1];
+  check.coherenceChecks = [{ kind: "space_or_time", beatIndexes: [9], problem: "越界拍号。" }];
+  check.verdict = "revise";
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      const hit = error.details.find((d) => d.code === "CANDIDATE_REVIEW_UNKNOWN_BEAT");
+      assert.ok(hit, "应报 CANDIDATE_REVIEW_UNKNOWN_BEAT");
+      assert.equal(hit.path, "/candidateChecks/1/coherenceChecks/0/beatIndexes/0");
+      return true;
+    }
+  );
+});
+
+// mock 必须把非空与空两个分支都走到，否则会重演「mock 通过而 live 失败」。
+test("mock 同时产出非空与空的 coherenceChecks，且自己遵守 pass 闸门", () => {
+  const review = baseReview();
+  const nonEmpty = review.candidateChecks.filter((check) => check.coherenceChecks.length);
+  const empty = review.candidateChecks.filter((check) => !check.coherenceChecks.length);
+  assert.ok(nonEmpty.length, "至少要有一个候选带非空 coherenceChecks");
+  assert.ok(empty.length, "至少要有一个候选带空 coherenceChecks");
+  for (const check of nonEmpty) assert.notEqual(check.verdict, "pass");
+});
+
+// 提示词是模板字面量，正文里出现反引号会当场把它截断（AGENTS.md 2.14 记过这个坑）。
+test("评审提示词正文不含反引号，且给出非空的 coherenceChecks 示例", () => {
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.doesNotMatch(prompt, /`/u);
+  assert.match(prompt, /coherenceChecks/u);
+  // 只给空数组会让模型猜错元素类型——分镜终审正是这样栽过一次。
+  assert.match(prompt, /"coherenceChecks":\[\{"kind":/u);
+});
