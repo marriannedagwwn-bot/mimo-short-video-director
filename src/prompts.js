@@ -643,8 +643,9 @@ creativeBrief 抽象保真投影（这是唯一可以作为候选正向要求的
 - 完播悬念（**仅 dramatic 适用**）：该路径的方案必须自己设计至少一个“被刻意拖住不答的具体问句”，并在 storyOutline 对应 beat 的 dramaticFunction 里写明它在第几拍抛出、第几拍兑现；抛出与兑现之间至少间隔 2 个 beat。该问句必须是观众看完第 1 拍后会主动想问的具体问题，不能是“接下来会怎样”“他们能成功吗”这类通用悬念。oneLineHook 可以点出这个问题，但绝不能在同一句里给出答案；答案也不得提前写进 logline 或 characterSetup。如果上方提供了原片完播问句形态参考，只能学它的提问方式，不得复用它的提问对象、答案或兑现事件。
 
 可选叙事构件（这四个字段是可选的，绝不是每个候选的必填位）：
-- 四个可选字段及其**准确位置**：careRecipient 与 helper 在 characterSetup 对象**内**；emotionalMedium 与 endingRitual 在候选**顶层**，与 newTask、environmentPressure 平级，**不在 characterSetup 内**。类型都是非空字符串。characterSetup 对象内除 protagonist、careRecipient、helper 外不得出现任何其他键，放错位置会直接判失败。只有当本候选的因果链真的需要“一个被照料的对象”“一个提供帮助的外部角色”“一件承载情绪的媒介物”“一个生活化收尾仪式”时才写它；不需要就整个键省略，不要输出空字符串，也不要为了填满结构编造一个不参与因果的角色或物件。
+- 四个可选字段及其**准确位置**：careRecipient 与 helper 在 characterSetup 对象**内**；emotionalMedium 与 endingRitual 在候选**顶层**，与 newTask、environmentPressure 平级，**不在 characterSetup 内**。类型都是非空字符串。characterSetup 对象内除 protagonist、careRecipient、helper 外不得出现任何其他键，放错位置会直接判失败。只有当本候选的因果链真的需要“一个被照料的角色”“一个提供帮助的外部角色”“一件承载情绪的媒介物”“一个生活化收尾仪式”时才写它；不需要就整个键省略，不要输出空字符串，也不要为了填满结构编造一个不参与因果的角色或物件。
 - 省略它们不降低候选质量，也不算结构缺陷。主角的欲望可以指向自己、指向一个不知情的对象，或指向一件事而不是一个人；阻力可以来自主角自己的判断失误、能力上限或过去，不必来自天气或外部好心人；结局可以是关系没有修复、信息刚刚被理解，或主角作出一个改变后续行为的决定，不必是一场仪式。
+- characterSetup.careRecipient 与 helper 只登记角色：人物、动物，或本候选剧情已明确具有自主行为与互动的拟人角色。普通植物、物件即使被照料、保护、搬运或承载情感，也不因此成为角色；它们的动作与用途写在 storyOutline，需要承担情感媒介功能时才写 emotionalMedium。不得为了填写角色字段新加拟人行为，也不得因为没有 careRecipient 而删掉照料植物或物件的剧情。
 - ${count} 个候选里最多 2 个可以同时写出 careRecipient 与 helper。如果全组每个候选都写满这四个字段，说明它们共用同一套人物功能配置，必须先重写其中至少两个候选的因果引擎再输出。
 - 这条放开不改变固定角色边界：protagonist 仍然必填，仍然必须锁定上方固定角色。
 
@@ -1231,6 +1232,13 @@ ${JSON_ONLY}`;
 
 export function fullStoryPrompt(input) {
   const variant = input.variant || {};
+  // 候选未登记这个可选构件时，不再向展开模型展示其完整填写模板。
+  // 这里只选择本次生成说明，不解析物种，也不修改候选或模型返回值。
+  const hasCareRecipient = typeof variant.characterSetup?.careRecipient === "string"
+    && Boolean(variant.characterSetup.careRecipient.trim());
+  const careRecipientContract = hasCareRecipient
+    ? `当前 Variant 登记的 careRecipient 是 ${JSON.stringify(variant.characterSetup.careRecipient)}。只有它在候选正文中确实是被照料的角色时才输出 characterBible.careRecipient，五个子字段必须齐全，形状是 "careRecipient":{"nameOrLabel":"", "identity":"", "explicitNeed":"", "implicitNeed":"", "relationshipToProtagonist":""}，放在 characterBible 内、protagonist 与 helpers 之间。若它只是普通植物或物件，则保留剧情与道具事实，整个省略 careRecipient。`
+    : "当前 Variant 的 characterSetup 没有 careRecipient：本次 characterBible 只输出 protagonist 和 helpers，禁止新增 careRecipient 键。不存在时整个键省略，不要输出空对象或占位文本。候选正文已有的其他跨场角色登记到 helpers，照料植物或物件的动作保留在剧情与道具字段。";
   const sourceDialogueText = sourceDialogueStyleText(input.referenceAnalysis, input.sourceScriptReconstruction);
   const sourceTexture = sourceTextureText(input.referenceAnalysis);
   const sourceSpatial = sourceSpatialText(input.sourceScriptReconstruction);
@@ -1254,6 +1262,8 @@ export function fullStoryPrompt(input) {
 
 你现在进入 AI 导演的“完整剧情”阶段。上游已经完成 referenceAnalysis、sourceScriptReconstruction、creativeBrief 和一个被用户选中的可拍摄主题变体。请只围绕被选中的主题变体扩写完整剧情，不要重新发散成新选题。
 
+本次角色表的可写范围：${careRecipientContract}
+
 使用目标模型：${input.targetProvider || "MiMo"} ${input.targetModel || "mimo-v2.5-pro"}。任务目标是生成可直接进入拍摄筹备的完整剧情，而不是视频大纲。
 
 固定角色：${input.creatorProfile?.fixedCharacter || "未指定"}
@@ -1275,7 +1285,9 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - 承接范围只有一个来源：当前选中 Variant 实际写出的内容。transformationProof.*.source 仅为原片对照，不能向本片增加人物、道具、对白、事件或字幕卡；本片事实由候选正文及 replacement 表达，正文 storyOutline 是候选剧情事实的权威。原片记录为空也不要求删除本片已选用的内容。Variant 已选用的人物、任务细节、道具、媒介、结尾方式和对白方向必须忠实承接；本阶段只负责扩写，不得为了“与原片不同”再次替换 Variant 已确定的内容。
 - **但 storyOutline 里的 estimatedSeconds 不属于必须承接的剧情内容，它只是候选阶段的粗略估计。** 冲突时以本阶段上方给出的时长目标为准：sceneScript 各场 timeRange 的跨度之和服从时长目标，不服从 estimatedSeconds 的合计。允许按比例压缩或放大每一拍的长度，但**不得因此增删、合并、拆分或改写任何剧情动作**——变的只有每段占多少秒。实测反面例子：候选六拍的 estimatedSeconds 合计 95 秒，而本阶段目标是 65 秒，模型把六个数字逐位照抄进 timeRange，成片直接变成 95 秒、镜头数按 15 秒上限翻倍。照抄那六个数字是错的。
 - 送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾这七项，是 creativeBrief 用来记录“原片有没有某类通用构件”的分类，不是本片的必备构件，也不是承接清单。当前 Variant 没有使用其中某一项时，本阶段不得把它补回来：Variant 没写 careRecipient 就不得新增一个被照料对象，没写 helper 就不得新增一个提供帮助的外部角色，没写 emotionalMedium 就不得为故事发明一件信物，没写 endingRitual 就不得给它加一场仪式化收尾。
-- 对应地，characterBible.careRecipient 是可选键：只有当前 Variant 确实存在一个被照料对象时才输出它，并且五个子字段必须齐全；不存在时整个键省略，不要输出空对象或占位文本。需要输出时它的形状是 "careRecipient":{"nameOrLabel":"", "identity":"", "explicitNeed":"", "implicitNeed":"", "relationshipToProtagonist":""}，放在 characterBible 内、protagonist 与 helpers 之间。characterBible.helpers 没有帮助者时输出空数组 []，不得为了填满结构编造一个不参与因果的帮助者。
+- 对应地，characterBible.careRecipient 是可选键，本次是否允许写入以开头的“本次角色表的可写范围”为准。characterBible.helpers 没有帮助者时输出空数组 []，不得为了填满结构编造一个不参与因果的帮助者。
+- **先区分角色与道具，再填角色表。** characterBible（含 careRecipient、helpers）只登记人物、动物，或当前 Variant 已明确具有自主行为与互动的拟人角色；不要求角色必须会说话或是行动发起者。普通植物、物件即使被浇水、保护、搬运、修补或承载情感，也不因此成为角色：保留其全部剧情动作与可见细节，写入 keyProps 和 visibleAction，需要的摄影说明照写 shotAndSound，不写进 characterBible 或 characters。仅有“帮它”“关怀生命”一类叙事措辞不构成拟人角色设定，不得为通过校验添加五官、对白或自主行为。若旧候选把普通植物或物件称为 careRecipient，仍按正文实际行为保留为道具，不把这个功能标签升级成角色。
+- characterBible 中的每个名字都会成为角色出镜校验的标准名称；已经登记的角色只要实际出镜，就必须以精确名称写入同场 characters。不能靠删除动作中的名称或把道具塞进 characters 消除分类冲突。
 - creativeBrief、protectedExpressions、controlledRewriteVariables 与 sourceSimilarityRules 中的原片道具组合、拟声词和角色组合允许出现在任意剧情、角色、对白、声音或拍摄字段；它们不再作为 Full Story 的内容禁词。
 - 允许不等于必须使用：不得因为来源上下文列出了这些表达，就机械把它们补进 visibleAction、dialogue、shotAndSound、keyProps 或其他正向字段。只能按当前 Variant 的剧情需要自然采用。
 - **参考片的片尾署名字幕卡是来源表达，不是必须复用的构件。** 上方 referenceAnalysis / sourceScriptReconstruction 里若记录了原片的黑屏文字卡（例如「黑屏显示文字『⋯⋯继续加油~ 某某！』」），那是对原片的观察记录，不是本片的收尾方案：**不要为本片补一张「黑屏白字 + 主角名」的收尾卡，用最后一场的画面收尾。** 实测反面例子：选中候选的末拍本来就是一个画面结尾（她回头望了一眼对面楼顶，头顶的光环在暮色中发光），模型却另加了一场 S6 黑屏卡写「⋯⋯继续加油~ 小白子！」——这既不在候选里，也让主角名落进了可见事实字段，当场判失败。**sceneScript 凑不满 6 场时，正确做法是把某一拍展开成两场戏，加一张文字卡不算一场戏。**
@@ -1284,7 +1296,7 @@ sourceScriptReconstruction 摘要：${JSON.stringify(input.sourceScriptReconstru
 - 生活细节：至少 2 场的 visibleAction 要包含一个**与主线任务无关或只有半相关**的生活动作或环境道具。（下面这个例子来自另一部参考片，只用来说明什么叫「与主线无关」，不要照抄它的内容）例：趴在木桌旁听收音机、老人摇着蒲扇站在门口目送——听收音机和摇蒲扇都不是"收枣"这个任务的一部分，但正是它们让院子像一个真实存在的地方，而不是一个任务演示台。这些细节只占一两句，不得挤掉主线动作。
 - 萌点必须是**动作**，不是形容，而且必须**由固定主角本人完成**——把萌点安排给配角或宠物不算数。至少一处萌点要是幅度大到一眼能看见的身体动作。反例：「她做了个可爱的动作」「表情很萌」——形容词不可拍。**皱眉、歪头、眨眼、抿嘴这类微表情不算萌点**，幅度太小；**宠物舔爪子、打呼噜同样不算**，那是环境细节不是主角的萌点。
 - 萌点还必须**同时承担剧情功能**，不能是贴上去的可爱装饰。判断标准用下面这个例子说明（同样来自另一部参考片，只示范判据，不要照抄内容）——铁锅头盔：①前因——爷爷刚提醒过会被枣砸到；②环境——乡村院落本来就有小铁锅；③人物——她会用笨拙又机灵的办法解决问题；④声音——枣噼里啪啦砸在锅上；⑤视觉——锅柄向后伸出，轮廓瞬间变滑稽；⑥后续——戴着锅继续把枣捡完。六条同时成立，所以它不是单纯的可爱动作，而是一个有因果功能的桥段。自查：把这个萌点删掉，剧情会不会缺一块？不会缺，就说明它只是装饰，重写一个。
-- **在两场或更多场次里出镜的角色，必须登记进 characterBible。** 主角写 protagonist，被照料对象写 careRecipient，其余一律写进 helpers[]——固定搭档（宠物、伙伴）尤其容易漏，它常常全片都在画面里却没有登记。这条有确定性校验，漏登记会直接判失败。只出镜一场的临时配角（路过的邻居、放学的孩子们）不需要登记，不要为他们硬凑 helpingAction。登记不是形式：visibleAction 的可见角色扫描只认 characterBible 里的名字，没登记的角色对它完全隐形。
+- **在两场或更多场次里出镜的角色，必须登记进 characterBible。** 主角写 protagonist，被照料的角色写 careRecipient，其余角色一律写进 helpers[]——固定搭档（宠物、伙伴）尤其容易漏，它常常全片都在画面里却没有登记。这条有确定性校验，漏登记会直接判失败。只出镜一场的临时配角（路过的邻居、放学的孩子们）不需要登记，不要为他们硬凑 helpingAction。登记不是形式：visibleAction 的可见角色扫描只认 characterBible 里的名字，没登记的角色对它完全隐形。
 - 动作幅度自查：写完每场问一句——这个动作放进一个四秒镜头里，不看脸、只看身体轮廓，观众能认出她在做什么吗？认不出来就说明幅度不够，换一个更大的动作。整片如果所有动作都发生在一张桌子前、都靠表情传递，那么无论故事多好，成片都会是静止的。
 - 对白不得复述同场 visibleAction 里观众已经能直接看见的信息。**写完每一句台词后，逐句做这个自查：把这句话遮住，只看同场 visibleAction，观众会不会漏掉任何信息？不会漏，就说明这句在复述画面，必须删掉或改写成只有台词能做到的事。** 实测反面例子：visibleAction 已经写了「她站起身，从衣柜里拿出厚外套和手电筒」，台词却写「穿上厚外套，带上手电筒」——画面演完的事被念了第二遍。正确做法是把这句换成关系表达，例如摸摸头说一句「你呀你，真拿你没办法」：同样让观众知道她答应了，但传递的是宠溺，而外套和手电筒交给画面。
 - 让对白承担画面单独做不到的事：人物性格、情绪、潜台词、关系变化、误会、选择、对已发生动作的反应，或观众还不知道的信息。
