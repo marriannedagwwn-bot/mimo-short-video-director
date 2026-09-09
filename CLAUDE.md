@@ -77,6 +77,7 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
 | Lineage / Run / Stage / Artifact 状态 | `docs/production-lineage-state.md` |
 | Benchmark 后续改造 | `docs/GitHub-Benchmark-后续改造待办.md`（见下方"待办勾选"） |
 | Debug 落盘语义 | `debug/README.md` |
+| **终审 / 修订 / 镜头过载相关的任何改动** | `docs/待解决项.md`——里面登记了已确认存在但尚未决定怎么改的问题，**尤其是每条下面「已经排除的做法」**。那些是实测走死过的路，重走一遍会重复付出真实调用的代价 |
 
 ---
 
@@ -322,6 +323,14 @@ A07 正是外部评审指出手部逻辑仍然错误的那一镜（`characterAct
 
 只支持 direct_shot Plan。旧 v2 首尾帧 Plan 的字段完全不同，走这条路径明确失败，不得静默按 direct_shot 处理。
 
+**终审的 `ReviewContractError` 必须转成 `OutputContractError`（2026-09-07）。** 它不在
+`classifyAttemptError` 的分支表里，原样上抛会落进「internal / retryable: false」兜底——
+三张覆盖表数量对不上、引用了不存在的镜头号这类**模型内容错误**会变成一句 HTTP 500
+「服务器内部错误」，用户完全看不出模型错在哪。修订路径早有同款转换器
+（`reviewContractAsOutputContract`，现由两条路共用），终审此前没接上。
+**注意终审这条路没有重试**：它走 `generateValidatedJson`，只发一次、对已解析候选 fail closed，
+所以转换买到的是正确归属与能送到用户手里的结构化诊断，**不是多一次机会**。
+
 #### 先预览，确认后才签发（已定的范围决定）
 
 修订返回后**不自动写回 Plan**：先并排展示原文与修订版、台账与 `changeSummary`，用户点「采纳」才签发新
@@ -382,6 +391,7 @@ Plan revision 与新 media namespace 并递归 stale 该变体已生成的全部
 - **流不完整必须失败，绝不返回半截内容。** 读到流结束但既没有 `[DONE]` 也没有任何 `finish_reason` 时抛 `MODEL_STREAM_INCOMPLETE`。返回半截内容会让残缺 JSON 被下游报成「JSON 格式错误」，把传输问题伪装成模型输出问题。
 - 该错误码在 `classifyAttemptError` 里**必须单独分类**为 `category: "transport"` + `retryable: true`。不单独分类会落到 `ModelResponseError` 的兜底分支（`status=0` → `protocol` 且 `retryable: false`），把可重试的网络中断变成不可重试的协议错误。
 - **禁止非流式自动回退。** 流式失败就如实报错——自动降级是第五节第 4 条的「失败时返回默认值」。
+- **`terminated` 的包装判据是「收到过任何数据块」，不是「收到过正文」（2026-09-07）。** 连接中途被切断时 `qwen-client` 把它包装成可重试的 `MODEL_STREAM_ABORTED`，判据原为 `partialContentLength > 0`。但下一条明写 `reasoning_content` 单独收集、不算正文，而 qwen3.8-max 实测 **82% 的 completion token 是推理**（`reasoning_tokens` 23449 / `completion_tokens` 28466）——推理期断线时正文长度仍是 0，裸 `TypeError` 漏出包装、一路冒到 HTTP 层变成**不可重试的 500**。实测两次分镜终审失败（158 秒、649 秒）都是这个形状：流一直活着、模型一直在推理，只是还没吐正文。判据改为 `partialChunks > 0`，`classifyAttemptError` 逐字未改。**只改包装条件，不改「流不完整必须失败」的结论。** 只覆盖 `qwen-client`，另外两家仍是非流式。
 - `delta.reasoning_content` 单独收集，**绝不混进正文**；`usage` 只在最后一个数据块里返回，缺 `stream_options` 就拿不到 token 记账。
 - 解码必须用 `TextDecoder` 的 `{ stream: true }`：一个汉字的 UTF-8 字节可能被拆到两个数据块，对每块单独解码会产生乱码。
 - 返回形状与非流式**逐字一致**的 7 个字段：`content` / `finishReason` / `requestId` / `usage` / `providerName` / `model` / `raw`。`providerName` 被 `model-call-coordinator` 与 `workflow` 用于错误归属，`model` 用于用量记账，漏掉会静默降级到回退值。
@@ -445,6 +455,8 @@ DeepSeek 模型 ID 只登记 `deepseek-v4-flash`（页面首选）与 `deepseek-
 **原片空间与对白密度投影（2026-09-01）**：`fullStoryPrompt` 从 `sourceScriptReconstruction` **现算**原片的地点数、时长、每 10 秒地点密度与带对白场次比例，作为本片的靠拢目标，**不写死任何数值**——换参考片自动跟着变。起因是实测过冲：要求 `visualPotential` 写主角身体动作后，模型给每个动作配了一个新地点，44 秒六场六个地点（1.36/10 秒），而原片《打枣》44 秒只用两个地点（0.45），六场大动作全在同一个院子里完成。提示词明确「换的是动作和机位，不是地点」。对白同理：原片 6/6 场带对白，密度不低，短在**每句都不承担剧情推进**——因此不要靠减少对白显得克制。提示词里写死的举例（铁锅头盔、听收音机）已标注「来自另一部参考片，只示范判据，不要照抄内容」。
 
 **生活质感硬约束（2026-08-29）**：至少 2 场的 `visibleAction` 要包含一个**与主线任务无关或只有半相关**的生活动作或环境道具；至少一处萌点必须是**幅度大到一眼能看见的身体动作**，且**必须由固定主角本人完成**并**同时承担剧情功能**。**皱眉、歪头、眨眼这类微表情不算，宠物舔爪子、打呼噜同样不算**——前者幅度太小，后者是环境细节不是主角萌点。功能性判据看原片的铁锅头盔：前因（刚被提醒会被砸）、环境（院子里本来就有锅）、人物（她会用笨办法）、声音（枣砸锅上）、视觉（轮廓变滑稽）、后续（戴着继续捡枣）六条同时成立。自查：删掉这个萌点剧情会不会缺一块。候选阶段同步收紧 `visualPotential`——**至少一条必须是固定主角本人的身体动作**，三条全写质感、痕迹、光影、并置这类画面状态即不合格。依据是实测：一份 `visualPotential` 全是静物的候选，展开后六场全是桌前微表情，Full Story 再加约束也救不回来；模型还会把萌点要求满足在宠物身上绕开。自查方法：这个动作放进四秒镜头、不看脸只看身体轮廓，观众能否认出在做什么。原片质感来源（`retentionDrivers` 的观看动力与兑现、`observedFacts` 里 `visible_object` 的环境道具、`shotRhythm.shotPatterns` 的景别构成）提成具名投影，与对白风格投影同规格——数据一直在 `referenceAnalysis` 里，此前只埋在整份 JSON 中、无任何指令让模型对齐。依据是实测对照：原片萌点是「把铁锅扣头上当头盔」这类大动作、氛围来自「趴桌听收音机」这类与主线无关的细节，而生成的一份六场全是桌前微表情。**这些是 Prompt 生成约束，没有确定性校验兜底**——判断动作够不够萌、细节算不算生活化需要语义判断。
+
+**注意这一节只约束动作的「类型」，不约束单场动作的「数量」，而后者已被实测证明是个真问题。** 镜头骨架由 `deriveDirectShotSkeleton()` 从场次 `timeRange` 确定性派生，所以**一场戏写多满，下游镜头就有多挤，而定向修订在架构上救不了它**——它只能改 7 个可写字段，动不了时长、也不能拆场。实测：某片 S3（12 秒）的 `visibleAction` 塞了约 14 个动作，终审判它「动作链过长」却又给它派了 7 个新增，修订两次都腾不出位置，fail closed。详见 `docs/待解决项.md` 第 1 条，**那里也记着已经走死的几条路**。
 
 对白质量硬约束：**禁止复述同场 `visibleAction` 里观众已经能直接看见的信息**（自查方法：遮住这句台词只看 `visibleAction`，观众不会漏掉任何信息就说明它在复述），禁止用旁白式台词直接播报人物内心，**禁止任何角色把本片主题、意义或感悟说出来**（结尾最易犯，总结型台词一律删掉让画面收尾）。**对白信息密度必须对齐 `referenceAnalysis.dialogueStyle`**——该字段过去只埋在整份 JSON 里、提示词从未提及，实测后果是原片密度为「低」（台词只承担关系、末场无对白）而成片让配角用三句台词分别扛起冲突、转折与主题；现已提成具名投影并要求对齐。能靠表情、动作、停顿、眼神和道具互动表达的内容优先不写成台词；宁可一场戏没有对白，也不要用台词解说画面。`dialogueStyleGuide.forbiddenDialoguePatterns` 必须至少列出「复述画面已有信息」「台词直接播报内心」「角色说出本片主题或感悟」三条。这些是 Prompt 生成约束，**没有确定性校验兜底**——判断一句台词是否在复述画面需要语义判断，写死词表会误伤合法的反应性台词。
 

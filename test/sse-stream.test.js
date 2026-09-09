@@ -232,3 +232,41 @@ test("连接被对端切断时保留已收到的内容，并归类为可重试�
     }
   );
 });
+
+// 2026-09-07：包装条件原先是「已收到正文长度 > 0」，而 reasoning_content 按 §2.7
+// 契约单独收集、不算正文。qwen3.8-max 实测 82% 的 completion token 是推理
+// （reasoning_tokens 23449 / completion_tokens 28466），所以推理期断线时正文长度
+// 仍是 0，裸 TypeError: terminated 一路冒到 HTTP 层，成了不可重试的 500。
+// 实测两次终审失败（158 秒、649 秒）都是这个形状：流一直活着、模型一直在推理。
+// 判据改成「收到过任何数据块」——中途被对端切断就是传输故障，与吐了多少正文无关。
+test("推理期断线（有数据块、无正文）同样归类为可重试的传输失败", async (t) => {
+  const { QwenClient } = await import("../src/qwen-client.js");
+  const { classifyAttemptError } = await import("../src/model-call-coordinator.js");
+  const http = await import("node:http");
+
+  const server = http.createServer((request, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    // 只有 reasoning_content，没有任何 content——模型还在推理就被切断。
+    response.write(`data: {"id":"r1","choices":[{"delta":{"reasoning_content":"正在推理"}}]}\n\n`);
+    response.write(`data: {"id":"r1","choices":[{"delta":{"reasoning_content":"还在推理"}}]}\n\n`);
+    setTimeout(() => response.destroy(), 30);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const { port } = server.address();
+
+  await assert.rejects(
+    () => new QwenClient({
+      baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "", model: "kimi-k3", maxCompletionTokens: 1000
+    }).requestCompletion({ prompt: "hi", model: "kimi-k3" }),
+    (error) => {
+      assert.equal(error.code, "MODEL_STREAM_ABORTED");
+      // 消息仍要能区分「刚开始就断」与「快写完才断」，正文 0 字时靠数据块数说话。
+      assert.match(error.message, /0 字正文（2 个数据块）后中断/u);
+      const classified = classifyAttemptError(error);
+      assert.equal(classified.category, "transport");
+      assert.equal(classified.retryable, true);
+      return true;
+    }
+  );
+});

@@ -266,6 +266,7 @@ Animation Plan 之后的两段式验收，与剧情体检同规格：**只出报
 - 该错误码在 `classifyAttemptError` 里**必须单独分类**为 `category: "transport"` + `retryable: true`。不单独分类会落到 `ModelResponseError` 的兜底分支（`status=0` → `protocol` 且 `retryable: false`），把可重试的网络中断变成不可重试的协议错误。
 - **禁止非流式自动回退。** 流式失败就如实报错——自动降级是第五节第 4 条的「失败时返回默认值」。
 - `delta.reasoning_content` 单独收集，**绝不混进正文**；`usage` 只在最后一个数据块里返回，缺 `stream_options` 就拿不到 token 记账。
+- **`terminated` 的包装判据是「收到过任何数据块」，不是「收到过正文」（2026-09-07）。** 连接中途被对端切断时 qwen-client 把它包装成 `MODEL_STREAM_ABORTED`；判据原为 `partialContentLength > 0`，而上一条明写 `reasoning_content` 不算正文——qwen3.8-max 实测 **82% 的 completion token 是推理**（`reasoning_tokens` 23449 / `completion_tokens` 28466），于是推理期断线时正文长度仍是 0，裸 `TypeError` 漏出包装、一路冒到 HTTP 层变成不可重试的 500。实测两次终审失败（158 秒、649 秒）都是这个形状：流一直活着、模型一直在推理。判据改为 `partialChunks > 0`；分类器逐字未改。**只改包装条件，不改「流不完整必须失败」的结论**，半截内容仍绝不当结果返回。
 - 解码必须用 `TextDecoder` 的 `{ stream: true }`：一个汉字的 UTF-8 字节可能被拆到两个数据块，对每块单独解码会产生乱码。
 - 返回形状与非流式**逐字一致**的 7 个字段：`content` / `finishReason` / `requestId` / `usage` / `providerName` / `model` / `raw`。`providerName` 被 `model-call-coordinator` 与 `workflow` 用于错误归属，`model` 用于用量记账，漏掉会静默降级到回退值。
 - 测试 mock 必须发 SSE，判定只有一份在 `test/helpers/sse-response.js`。三个 client 共用同一个 baseUrl 的 mock 按请求自报的 `stream` 决定响应格式，与真实服务器一致。

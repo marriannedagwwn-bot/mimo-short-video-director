@@ -236,7 +236,14 @@ export class QwenClient {
       // error.partialRaw 上。把规模带进错误消息，让日志能区分「刚开始就断」与
       // 「快写完才断」——前者重试即可，后者说明该换策略（拆分请求或换模型）。
       // 正文本身不进消息，只进 detail，避免把半截 JSON 混进人类可读的错误里。
-      if (typeof error?.partialContentLength === "number" && error.partialContentLength > 0) {
+      //
+      // 判据是**收到过任何数据块**，不是「收到过正文」。reasoning_content 按 §2.7
+      // 单独收集、不算正文，而 qwen3.8-max 实测 82% 的 completion token 是推理，
+      // 所以推理期断线时正文长度仍是 0——旧判据让它漏出包装，裸 TypeError 一路
+      // 冒到 HTTP 层变成不可重试的 500。实测两次终审失败（158 秒、649 秒）都是
+      // 这个形状：流一直活着、模型一直在推理，只是还没吐正文。
+      // 中途被对端切断就是传输故障，与已经吐了多少正文无关。
+      if (typeof error?.partialChunks === "number" && error.partialChunks > 0) {
         const kept = String(error.partialRaw || "");
         throw new ModelResponseError(
           `${providerName} 流式传输在收到 ${error.partialContentLength} 字正文（${error.partialChunks} 个数据块）后中断：${error.message}`,

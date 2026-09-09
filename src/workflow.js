@@ -462,10 +462,20 @@ export class WorkflowService {
     // 被评审的两份必须先各自合法，否则报告没有意义。
     ensureOutputContract(animationPlan, "animationPlan");
     ensureOutputContract(fullStory, "fullStory");
-    const validate = (result) => ensureReviewReportContract(
-      ensureOutputContract(result, "animationPlanReview"),
-      animationPlan
-    );
+    // ReviewContractError 必须转成 OutputContractError。它不在 classifyAttemptError 的
+    // 分支表里，原样上抛会落进「internal / retryable: false」兜底：三张覆盖表数量对不上、
+    // 引用了不存在的镜头号这类**模型内容错误**，会变成一句 HTTP 500「服务器内部错误」，
+    // 用户完全看不出模型错在哪。实测 2026-09-07：净预算诊断被这样吞掉过一次。
+    // 修订路径早有同款转换器，终审这条路此前没接上。
+    const validate = (result) => {
+      const report = ensureOutputContract(result, "animationPlanReview");
+      try {
+        return ensureReviewReportContract(report, animationPlan);
+      } catch (error) {
+        if (!(error instanceof ReviewContractError)) throw error;
+        throw reviewContractAsOutputContract(error);
+      }
+    };
     if (!this.hasLiveClient) return validate(mockAnimationPlanReview(animationPlan));
     const settings = this.resolveStage("animationPlanReview", input);
     this.assertStageClient(settings, "分镜终审");
@@ -612,7 +622,7 @@ export class WorkflowService {
           // 「internal / retryable: false」的兜底，让本该重试的内容错误无法重试。
           // 转成 OutputContractError 才能被判为可重试的 output-contract，
           // 并把结构化 details 带进 diagnostics 供重试提示词使用。
-          throw revisionContractAsOutputContract(error);
+          throw reviewContractAsOutputContract(error);
         }
       }
     });
@@ -2879,7 +2889,11 @@ function resolveBlockedShotIds(details, candidate, shotIds) {
 // ReviewContractError 不在 classifyAttemptError 的分支表里，会落到
 // 「internal / retryable: false」的兜底，把本该重试一次的内容错误变成不可重试。
 // 转成 OutputContractError 后被判为 output-contract、retryable，details 进 diagnostics。
-function revisionContractAsOutputContract(error) {
+//
+// 两条路径共用：修订（validate 里合并后复验，走 coordinator，转换同时恢复了重试能力）
+// 与终审（validate 里覆盖率复验，走 generateValidatedJson，**只发一次、fail closed**，
+// 转换买到的是正确归属与能送到用户手里的结构化诊断，不是多一次机会）。
+function reviewContractAsOutputContract(error) {
   const wrapped = new OutputContractError(error.message, error.details);
   wrapped.code = error.code;
   return wrapped;
