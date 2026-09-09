@@ -30,7 +30,7 @@ class Element {
   addEventListener() {} setAttribute() {} focus() {} scrollIntoView() {}
 }
 
-export async function loadAppUi({ story = false, plan = false } = {}) {
+export async function loadAppUi({ story = false, plan = false, createElement } = {}) {
   let source = await readFile(new URL("../../public/app.js", import.meta.url), "utf8");
   const bindings = {};
   for (const match of source.matchAll(/import\s*\{([^}]+)\}\s*from\s*"([^"]+)";/g)) {
@@ -42,7 +42,7 @@ export async function loadAppUi({ story = false, plan = false } = {}) {
   const document = { querySelector(selector) {
     if (!nodes.has(selector)) nodes.set(selector, new Element());
     return nodes.get(selector);
-  }, querySelectorAll: () => [], addEventListener() {} };
+  }, querySelectorAll: () => [], addEventListener() {}, createElement };
   const storage = { getItem: () => null, setItem() {}, removeItem() {} };
   const context = vm.createContext({ ...bindings, document, window: { scrollTo() {}, CSS: { escape: (s) => s } },
     location: { pathname: "/story/V2", origin: "http://localhost" }, sessionStorage: storage, localStorage: storage,
@@ -53,7 +53,7 @@ export async function loadAppUi({ story = false, plan = false } = {}) {
     syncStoryTaskStatus, syncCharacterImageTaskStatus, syncShotVideoTaskStatus, syncShotFrameTaskStatus,
     openCharacterImageGenerator, openShotVideoGenerator, openShotFrameImageGenerator,
     updateShotVideoGeneratorPreview, applyCharacterImageTaskProgress, renderShotVideoBatchProgress,
-    shotVideoStateItem, shotFrameKey, syncDirectorTaskStatus };`, context);
+    shotVideoStateItem, shotFrameKey, syncDirectorTaskStatus, loadSourceVideo, browserWorkspace };`, context);
   const app = context.app;
   const fixture = uiFixture({ story, plan });
   Object.assign(app.state, { selectedVariantId: "V2", output: { themeVariants: fixture.themeVariants },

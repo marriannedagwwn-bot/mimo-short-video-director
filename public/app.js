@@ -647,7 +647,7 @@ async function restoreBrowserWorkspace() {
       });
       if (await sourceFileSha256(file) !== source.digest) throw new Error("保存的原视频校验失败，请重新选择视频。");
       assertWorkspaceCurrent(epoch);
-      await loadSourceVideo(file, epoch, source.url);
+      await loadSourceVideo(file, epoch);
     }
     assertWorkspaceCurrent(epoch);
     if (workspace.run) {
@@ -738,7 +738,7 @@ async function handleFile(file) {
     const workspace = await browserWorkspace.replaceSource(file, epoch);
     if (!workspace) return;
     assertWorkspaceCurrent(epoch);
-    await loadSourceVideo(file, epoch, workspace.source.url);
+    await loadSourceVideo(file, epoch);
   } catch (error) {
     if (browserWorkspace.isCurrent(epoch)) showError(error.message || "视频保存失败，请重新选择视频。");
   } finally {
@@ -750,7 +750,7 @@ async function handleFile(file) {
   }
 }
 
-async function loadSourceVideo(file, epoch, sourceUrl) {
+async function loadSourceVideo(file, epoch) {
   assertWorkspaceCurrent(epoch);
   const media = analysisMediaSettings();
   if (state.mode !== "demo" && media.mediaMode === "video" && file.size > media.nativeVideoMaxBytes) {
@@ -764,8 +764,10 @@ async function loadSourceVideo(file, epoch, sourceUrl) {
   elements.fileName.textContent = file.name;
   elements.fileMeta.textContent = `${formatBytes(file.size)} · 正在读取视频`;
   if (state.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(state.previewUrl);
-  state.previewUrl = sourceUrl;
-  elements.preview.src = sourceUrl;
+  // The persisted source endpoint stays the same across replacements. Bind the
+  // player to this exact File, as sampling does, so it cannot reuse old media.
+  state.previewUrl = URL.createObjectURL(file);
+  elements.preview.src = state.previewUrl;
   elements.frames.innerHTML = skeletonFrames(10);
   elements.frameStatus.textContent = "正在抽取关键帧…";
   elements.run.disabled = true;
