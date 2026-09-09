@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mockVariants } from "../src/mock.js";
-import { briefPrompt, variantsPrompt } from "../src/prompts.js";
+import { briefPrompt, fullStoryPrompt, variantsPrompt } from "../src/prompts.js";
 import { ensureOutputContract, ensureThemeVariantsMatchProfile } from "../src/validation.js";
 
 const creatorProfile = Object.freeze({
@@ -311,4 +311,65 @@ test("mock 候选的 estimatedSeconds 跟随目标，不传时保持历史值", 
   const short = mockVariants({ ...base, targetDurationSeconds: 20 }).variants[0].storyOutline;
   assert.ok(short.every((beat) => beat.estimatedSeconds >= 1));
   assert.equal(short.reduce((sum, beat) => sum + beat.estimatedSeconds, 0), 20);
+});
+
+test("候选取得原片动作与对白证据，来源机制不再混入正向保真投影", () => {
+  const input = {
+    count: 4, creatorProfile,
+    creativeBrief: {
+      emotionStructure: [{ stage: "收尾", function: "SOURCE_REWARD_TRANSFER", targetEmotion: "温暖", intensity: 80 }],
+      reusableHighValueBeats: [{ dramaticValue: "SOURCE_VALUE_REFERENCE", mustRetain: "DO_NOT_PROJECT_MUST_RETAIN" }]
+    },
+    referenceAnalysis: {
+      characters: [{ nameOrLabel: "原片人物", traits: ["SOURCE_COSTUME"] }],
+      observedFacts: [{ factType: "visible_action", observation: "SOURCE_OBSERVED_ACTION" }],
+      groundingSeal: { signature: "DO_NOT_PROJECT_ANALYSIS_SEAL" }
+    },
+    sourceScriptReconstruction: {
+      scenes: [{
+        sceneId: "S1", timeRange: "00:00-00:10", characters: ["原片人物"],
+        visibleActions: ["SOURCE_BODY_ACTION"], dialogueGist: "SOURCE_SPOKEN_RESPONSE", keyProps: ["SOURCE_PROP"],
+        dramaticFunction: "DO_NOT_PROJECT_SCENE_INTERPRETATION", shotDesign: [{ camera: "DO_NOT_PROJECT_CAMERA" }]
+      }],
+      groundingSeal: { signature: "DO_NOT_PROJECT_RECONSTRUCTION_SEAL" }
+    },
+    visualGuardrails: {}
+  };
+  const before = structuredClone(input);
+  const prompt = variantsPrompt(input);
+  const projectionLine = prompt.split("\n").find((line) => line.startsWith("creativeBrief 抽象保真投影"));
+  const projection = JSON.parse(projectionLine.slice(projectionLine.indexOf("：") + 1));
+  assert.deepEqual(projection.emotionStructure, [{ stage: "收尾", targetEmotion: "温暖", intensity: 80 }]);
+  assert.equal(projection.reusableDramaticValues, undefined);
+  for (const fact of ["SOURCE_COSTUME", "SOURCE_OBSERVED_ACTION", "SOURCE_BODY_ACTION", "SOURCE_SPOKEN_RESPONSE", "SOURCE_PROP"]) {
+    assert.ok(prompt.includes(fact), `${fact} 必须实际进入模型提示词`);
+  }
+  assert.match(prompt, /原片价值解释（只供提炼，不是本片事件要求）：.*SOURCE_VALUE_REFERENCE/u);
+  assert.doesNotMatch(prompt, /SOURCE_REWARD_TRANSFER|DO_NOT_PROJECT_/u);
+  assert.deepEqual(input, before, "只改变提示词投影，不改原片或 Brief Artifact");
+});
+
+test("角色边界投影不夹带上游阶段的剧情指令，角色事实和对白规则仍逐字保留", () => {
+  const visualGuardrails = {
+    fixedCharacterBoundary: { characterName: "小白子", requiredTraits: [{ canonicalName: "KEEP_SIGNED_IDENTITY" }] },
+    allowedPositiveTraits: ["KEEP_POSITIVE_TRAIT"], positivePromptBoundary: ["KEEP_CHARACTER_BOUNDARY"],
+    dialogueRules: [{ rule: "KEEP_USER_SPEECH_RULE" }],
+    stageInstructions: {
+      themeVariants: "DO_NOT_FORWARD_TASK_REWARD_TRANSFER",
+      fullStory: "DO_NOT_FORWARD_DOWNSTREAM_STORY_TEMPLATE",
+      animationPlan: "DO_NOT_FORWARD_CAMERA_INSTRUCTIONS"
+    }
+  };
+  const before = structuredClone(visualGuardrails);
+  const prompt = variantsPrompt({ count:4, creatorProfile, creativeBrief:{}, visualGuardrails });
+  for (const value of ["KEEP_SIGNED_IDENTITY", "KEEP_POSITIVE_TRAIT", "KEEP_CHARACTER_BOUNDARY", "KEEP_USER_SPEECH_RULE"]) {
+    assert.ok(prompt.includes(value), value);
+  }
+  assert.doesNotMatch(prompt, /DO_NOT_FORWARD_/u);
+  const boundaryLine = prompt.split("\n").find((line) => line.startsWith("固定角色正向边界与用户台词规则："));
+  const projection = JSON.parse(boundaryLine.slice("固定角色正向边界与用户台词规则：".length));
+  assert.deepEqual(projection.stageInstructions, {});
+  assert.deepEqual(visualGuardrails, before, "不能改写已签发的角色边界 Artifact");
+  const downstream = fullStoryPrompt({ creatorProfile, creativeBrief:{}, visualGuardrails });
+  assert.ok(downstream.includes("DO_NOT_FORWARD_DOWNSTREAM_STORY_TEMPLATE"), "该输入隔离只作用于候选阶段");
 });

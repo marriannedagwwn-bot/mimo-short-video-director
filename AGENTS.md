@@ -150,6 +150,8 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：�
 
 ## 候选阶段的原片事实溯源与对照评审（2026-09-06）
 
+`variantsPrompt` 现在按允许清单投影原片人物名称/特征、观察事实、场次动作/对白/道具，供机制对照和 `transformationProof.source` 引用；不带签章、摄影说明或媒体。此前上游已进入 workflow 与 validator，却没有进入实际候选提示词。Brief 正向投影去掉可能携带获奖/转赠链的 `emotionStructure.function`，`dramaticValue` 单列为来源价值解释，不是每个新片的必备事件；情绪曲线也不作为逐拍模板。候选阶段的角色规则投影将 `stageInstructions` 输出为空对象，隔离上游模型在阶段建议里写入的帮助、奖励、转赠模板；其余阶段仍消费原值，签发的角色事实及原 Artifact 均不改变。不对值做关键词分类。
+
 同一天落地的四件事，起因是一次实测：19:04 那一轮**四个候选全部**把原片写成「企鹅快递员 / 快递送达」，而上游 `referenceAnalysis` 与 `sourceScriptReconstruction` 里「快递」出现 **0 次**（「穿着企鹅连体衣、背着绿色小包的小角色」是真的，快递员是补出来的职业）。同一份 `creativeBrief` 的 `allowedNarrativeComponents[0]` 还明写着「原片中咕嘎只是偶遇并递出棒棒糖，没有明确的送达任务或目的地」——**存在性判定写对了，别的字段照样编**。V1 更照着这个虚构把整条结构建成「主动承担送达任务」，一个不存在的原片结构成了改写基线。
 
 污染链三段，全部实测复现：①`briefPrompt` 教 `mappingLogic` 怎么写时，举例正文里写死了「不继承原片企鹅服、**快递员身份**和视觉外壳」，当天简报输出「不继承原片企鹅连体衣、快递员身份和视觉外壳」——只换了两个词，是在抄举例；②防这件事的规则**已经存在**且反面例子一模一样，但它写在 `fullStoryPrompt` 里，而 `transformationProof` 是候选阶段先产出的，`variantsPrompt` 收不到；③`transformationProof` 与 `mappingLogic` 全项目零校验器。规则、依据、测试都有，只是装错了阶段。
