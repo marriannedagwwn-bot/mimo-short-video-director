@@ -63,7 +63,7 @@ const outputContracts = {
   animationPlan: ["selectedVariantId", "title", "productionStrategy", "visualBible", "characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "editPlan", "generationChecklist", "modelAgnosticNotes", "continuityAndSafetyCheck", "uncertainties"],
   storyQualityReview: ["schemaVersion", "selectedVariantId", "retentionChecks", "sceneFunctionChecks", "issues", "summary"],
   animationPlanReview: ["schemaVersion", "overallScore", "dominantDefect", "strengths", "dimensions", "shotEvaluations", "propTracking", "sceneCheck", "issues", "otherFindings", "upgradePath", "revisionBrief"],
-  storyCandidateReview: ["schemaVersion", "candidateChecks", "recommendedOrder", "summary"]
+  storyCandidateReview: ["schemaVersion", "sourceMechanisms", "candidateChecks", "recommendedOrder", "summary"]
 };
 
 const animationFoundationFields = outputContracts.animationPlan.filter((field) => field !== "shotPlan");
@@ -2899,6 +2899,31 @@ export function ensureStoryCandidateReviewCoversCandidates(review, candidates) {
   const details = [];
   const push = (code, path, reason) => details.push({ code, path, reason });
 
+  // 原片机制清单是**全批共享的一份**，先于候选产出，候选只能按 id 引用它。
+  //
+  // 依据是 2026-09-09 跨四个包的真实回放：只有一个包的评审把原片机制收敛成 3 条，
+  // 另外三个各提炼 8-9 条——**每条都是照着那个候选本身写的**，于是 6/8 判 depicted。
+  // 从候选反推原片机制、再判定它已兑现，是循环论证；而当机制真正收敛时（那一个包），
+  // 四个候选全部被判未迁移，与一份外部评审对同一批候选的结论一致。
+  //
+  // 招式与 variant-source-baseline 的证据目录同规格：共享权威清单 + 按 id 引用。
+  // 判定是**纯集合成员比较，零语义**——4 个候选写不出 8 条机制在构造上就不可能了。
+  const mechanisms = Array.isArray(review.sourceMechanisms) ? review.sourceMechanisms : [];
+  const mechanismIds = new Set();
+  mechanisms.forEach((entry, index) => {
+    const id = String(entry?.id || "").trim();
+    if (!id) return;
+    if (mechanismIds.has(id)) {
+      push(
+        "CANDIDATE_REVIEW_DUPLICATE_MECHANISM",
+        `/sourceMechanisms/${index}/id`,
+        `机制 id「${id}」重复；每条机制必须有唯一 id 供候选引用`
+      );
+      return;
+    }
+    mechanismIds.add(id);
+  });
+
   if (checks.length !== list.length) {
     push(
       "CANDIDATE_REVIEW_COVERAGE_INCOMPLETE",
@@ -2940,6 +2965,15 @@ export function ensureStoryCandidateReviewCoversCandidates(review, candidates) {
         });
       });
     };
+    (Array.isArray(check.mechanismChecks) ? check.mechanismChecks : []).forEach((mechanism, order) => {
+      const id = String(mechanism?.sourceMechanismId || "").trim();
+      if (mechanismIds.has(id)) return;
+      push(
+        "CANDIDATE_REVIEW_UNKNOWN_MECHANISM",
+        `/candidateChecks/${index}/mechanismChecks/${order}/sourceMechanismId`,
+        `引用了不存在的机制 id「${id || "（空）"}」；只能引用顶层 sourceMechanisms 里已列出的 ${mechanismIds.size} 条`
+      );
+    });
     checkBeats(check.mechanismChecks, "mechanismChecks");
     checkBeats(check.coherenceChecks, "coherenceChecks");
 

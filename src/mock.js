@@ -1026,6 +1026,12 @@ export function mockStoryCandidateReview(candidates) {
   const list = Array.isArray(candidates) ? candidates : [];
   return {
     schemaVersion: "story-candidate-review/1.0",
+    // 全批共享的原片机制清单，先于候选产出；下面每个候选只能按 id 引用它。
+    // 至少两条：schema 的 minItems 就是 2。
+    sourceMechanisms: [
+      { id: "M1", mechanism: "demo 模式未提炼原片机制。", whereInSource: "demo 模式未定位原片动作。" },
+      { id: "M2", mechanism: "demo 模式未提炼第二条原片机制。", whereInSource: "demo 模式未定位原片动作。" }
+    ],
     candidateChecks: list.map((candidate, index) => {
       const beats = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline.length : 0;
       return {
@@ -1038,8 +1044,7 @@ export function mockStoryCandidateReview(candidates) {
           visibleChange: "demo 模式不调用模型，未做实际核对。"
         },
         mechanismChecks: [{
-          sourceMechanism: "demo 模式未提炼原片机制。",
-          whereInSource: "demo 模式未定位原片动作。",
+          sourceMechanismId: "M1",
           whereInCandidate: "demo 模式未定位候选动作。",
           beatIndexes: beats ? [1] : [],
           verdict: "depicted"

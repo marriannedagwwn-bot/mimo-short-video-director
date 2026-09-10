@@ -625,7 +625,7 @@ creativeBrief 抽象保真投影（这是唯一可以作为候选正向要求的
 - 必须逐字服从已签发的全局角色边界；不得重新解释固定角色、重新推断身体结构或改变 requiredTraits。
 - 角色动作只能使用 fixedCharacterBoundary.requiredTraits/allowedTraits 已签发的身体事实；猫耳、猫娘称谓或猫系拟声词不自动授权猫爪、猫尾、超常嗅觉、超常听觉或其他能力。未签发特殊肢体时使用“手、脚、身体”等中性动作；配角或固定搭档的尾巴、爪子和能力不得转写给固定主角。
 - sourceSimilarityRules 只保留来源证据与“实际使用原片视觉参考时”的参考泄漏职责，不是 Variant 正向内容黑名单；dialogueRules 仍只约束已签发角色的对白边界。
-- 输入的 creativeBrief 可能来自旧版本并把具体送达、奖励、转赠、聚餐或原片顺序误写进 mustRetain、samePlotDriver、sameBeatValue 或 creativeDistancePolicy。遇到这种情况，只提取对应 dramaticValue、角色关系价值和情绪兑现强度；具体人物、动作、道具、奖励与顺序一律视为来源实例和 adaptable surface，除非 creatorProfile 明确要求，否则不得当成每个候选都要复现的命令。
+- 上面来自 creativeBrief 的内容里可能带着具体的送达、奖励、转赠、聚餐或原片顺序。它们是**原片实例，不是本片命令**：只提取其中的角色关系价值与情绪兑现强度，具体人物、动作、道具、奖励与顺序一律视为 adaptable surface；除非 creatorProfile 明确要求，否则不得当成每个候选都要复现的事件。（mustRetain、samePlotDriver、sameBeatValue、creativeDistancePolicy 这几个字段**不会下发到本阶段**，不要去找它们。）
 
 两条叙事路径（每个候选必须用 narrativeMode 声明走哪一条）：
 - **dramatic（剧情型）**：主角有明确目标、遇到障碍、在压力下作出关键选择，高潮是她亲自完成的决定性动作。这是常规短视频剧作结构。
@@ -1096,9 +1096,21 @@ phase、emotion 是作者的标签，可以参考，**不能当证据**。
 本阶段的目标不是评「像不像原片题材」，而是：**在不照搬具体表达的前提下，
 这个候选有没有把原片真正起作用的机制迁移过来。**
 
-## 你要产出三块内容
+## 你要产出四块内容
 
-### 一、candidateChecks —— 逐个候选核对，一个都不能少
+### 一、sourceMechanisms —— 先只读原片，写 2–4 条
+
+**在看任何候选之前先做这一步。** 只依据上面的原片动作稿，写出这部原片真正起作用的 2–4 条机制。每条：
+
+- id：M1、M2……后面逐个候选核对时按这个 id 引用
+- mechanism：这条机制是什么，用你自己的话概括它**起的作用**，不是复述场次
+- whereInSource：它在原片的哪个具体动作与位置上兑现
+
+**这份清单全批候选共用，服务端会核对每个引用都在清单里。**
+最常见的错误是照着某个候选倒推出一条「原片机制」、再判它已兑现——那是循环论证，
+无论候选写了什么都会通过。自检方法：**把全部候选删掉，你写的这几条应该一字不变。**
+
+### 二、candidateChecks —— 逐个候选核对，一个都不能少
 
 必须按上面候选的**原始顺序**给出**恰好 ${list.length} 项**。每项：
 
@@ -1109,9 +1121,8 @@ phase、emotion 是作者的标签，可以参考，**不能当证据**。
   - response：对方因此做了什么可见的回应
   - visibleChange：结尾哪个动作证明前后真的不一样了
   其中任何一段在动作链里找不到对应，就照实写「动作链里没有」——这正是要暴露的东西。
-- mechanismChecks：2–3 条。先从**原片动作稿**里挑出这个候选试图迁移的机制，然后核对：
-  - sourceMechanism：原片这个机制是什么（用你自己的话概括作用，不是抄场次）
-  - whereInSource：它在原片的哪个具体动作与位置上兑现
+- mechanismChecks：2–3 条。每条从**第一块的清单**里挑一条来核对，不要在这里另写机制：
+  - sourceMechanismId：引用第一块里的 id，只能用已列出的
   - whereInCandidate：候选用哪个**不同的**具体动作实现相近价值
   - beatIndexes：对应候选的哪几拍（写拍号整数，必须真实存在）
   - verdict：depicted（确实用新动作兑现了）/ partially_depicted（沾边但不足）/ not_depicted（只换了外形，机制没过来）
@@ -1141,12 +1152,12 @@ phase、emotion 是作者的标签，可以参考，**不能当证据**。
   用戏剧结构的标准去要求它是错的。
 - 候选自己写的 failureSignals 是它给自己设的证伪条件；如果动作链正好长成那个样子，直接判 not_depicted。
 
-### 二、recommendedOrder —— 推荐开发顺序
+### 三、recommendedOrder —— 推荐开发顺序
 
 全部 ${list.length} 个候选 id 的一个排列，最值得先做的排最前。
 不强制凑数量：全部判 revise 甚至 drop 都是合法结论。
 
-### 三、summary
+### 四、summary
 
 一句话：这一批里最值得先发展的是哪个、最该先改的是哪一处具体动作。
 
@@ -1155,9 +1166,10 @@ phase、emotion 是作者的标签，可以参考，**不能当证据**。
 ## 输出
 
 {"schemaVersion":"story-candidate-review/1.0",
+ "sourceMechanisms":[{"id":"M1","mechanism":"","whereInSource":""}],
  "candidateChecks":[{"candidateId":"","title":"",
    "coreInteraction":{"setback":"","intervention":"","response":"","visibleChange":""},
-   "mechanismChecks":[{"sourceMechanism":"","whereInSource":"","whereInCandidate":"","beatIndexes":[1],"verdict":""}],
+   "mechanismChecks":[{"sourceMechanismId":"M1","whereInCandidate":"","beatIndexes":[1],"verdict":""}],
    "coherenceChecks":[{"kind":"contradiction","beatIndexes":[2,4],"problem":""}],
    "verdict":"","why":"","keepThis":""}],
  "recommendedOrder":[],

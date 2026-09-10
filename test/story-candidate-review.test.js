@@ -274,3 +274,74 @@ test("评审提示词正文不含反引号，且给出非空的 coherenceChecks 
   // 只给空数组会让模型猜错元素类型——分镜终审正是这样栽过一次。
   assert.match(prompt, /"coherenceChecks":\[\{"kind":/u);
 });
+
+// 原片机制清单改为**全批共享一份、候选按 id 引用**（2026-09-09）。
+//
+// 依据是跨四个包的真实回放：只有一个包的评审把原片机制收敛成 3 条，另外三个各提炼 8-9 条，
+// 每条都是照着那个候选本身写的，于是 6/8 判 depicted——从候选反推原片机制再判它已兑现，
+// 是循环论证。而机制真正收敛的那个包，四个候选全部被判未迁移，与一份外部评审结论一致。
+//
+// 招式与 variant-source-baseline 的证据目录同规格；判定是纯集合成员比较，零语义。
+test("候选只能引用清单里已有的机制 id", () => {
+  const review = baseReview();
+  review.candidateChecks[0].mechanismChecks[0].sourceMechanismId = "M9";
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      const hit = error.details.find((d) => d.code === "CANDIDATE_REVIEW_UNKNOWN_MECHANISM");
+      assert.ok(hit, "应报 CANDIDATE_REVIEW_UNKNOWN_MECHANISM");
+      assert.equal(hit.path, "/candidateChecks/0/mechanismChecks/0/sourceMechanismId");
+      return true;
+    }
+  );
+});
+
+test("机制 id 重复会被拒——重复的 id 让引用不再唯一", () => {
+  const review = baseReview();
+  review.sourceMechanisms[1].id = review.sourceMechanisms[0].id;
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      assert.ok(error.details.some((d) => d.code === "CANDIDATE_REVIEW_DUPLICATE_MECHANISM"));
+      return true;
+    }
+  );
+});
+
+// 构造上的保证：清单最多 4 条，所以 4 个候选写不出 8 条互不相同的「原片机制」。
+test("schema 把机制清单限制在 2-4 条", () => {
+  const review = baseReview();
+  review.sourceMechanisms = [review.sourceMechanisms[0]];
+  assert.throws(() => ensureOutputContract(review, "storyCandidateReview"), /storyCandidateReview/u);
+
+  const tooMany = baseReview();
+  tooMany.sourceMechanisms = Array.from({ length: 5 }, (_, i) => ({
+    id: `M${i + 1}`, mechanism: "机制", whereInSource: "位置"
+  }));
+  assert.throws(() => ensureOutputContract(tooMany, "storyCandidateReview"), /storyCandidateReview/u);
+});
+
+test("mock 的机制清单与它自己的引用是自洽的", () => {
+  const review = baseReview();
+  const ids = new Set(review.sourceMechanisms.map((entry) => entry.id));
+  assert.ok(ids.size >= 2);
+  for (const check of review.candidateChecks) {
+    for (const mechanism of check.mechanismChecks) {
+      assert.ok(ids.has(mechanism.sourceMechanismId), "mock 引用了清单外的 id");
+    }
+  }
+});
+
+// 提示词必须把「先读原片、再看候选」的顺序写死，否则循环论证会从措辞里回来。
+test("评审提示词要求先产出机制清单，并给出自检方法", () => {
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.match(prompt, /在看任何候选之前先做这一步/u);
+  assert.match(prompt, /把全部候选删掉，你写的这几条应该一字不变/u);
+  assert.match(prompt, /sourceMechanismId/u);
+  // 旧口径「这个候选试图迁移的机制」正是循环论证的诱因，不得留在提示词里。
+  assert.doesNotMatch(prompt, /这个候选试图迁移的机制/u);
+});
