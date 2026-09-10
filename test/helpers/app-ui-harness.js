@@ -13,8 +13,10 @@ export function uiFixture({ story = true, plan = true } = {}) {
 // The app's real render/restore functions run against a small DOM boundary.
 // No production function is replaced; browser validation covers the real DOM.
 class Element {
+  constructor(tagName = "div") { this.tagName = tagName.toUpperCase(); }
   className = ""; textContent = ""; innerHTML = ""; value = ""; disabled = false;
   options = []; dataset = {}; children = new Map(); style = {}; attributes = new Map();
+  childNodes = [];
   classList = {
     contains: (name) => this.className.split(" ").includes(name),
     add: (...names) => { this.className = [...new Set([...this.className.split(" "), ...names])].filter(Boolean).join(" "); },
@@ -30,12 +32,18 @@ class Element {
   addEventListener() {}
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
+  removeAttribute(name) { this.attributes.delete(name); }
+  get lastElementChild() { return this.querySelector("span"); }
+  append(...nodes) { this.childNodes.push(...nodes); }
+  submit() { this.submitted = true; }
+  remove() { this.removed = true; }
+  pause() {} load() {}
   focus() {} scrollIntoView() {}
 }
 
 export async function loadAppUi({ story = false, plan = false, createElement,
   fetch = async () => { throw new Error("Unexpected network request in UI regression"); },
-  windowSetTimeout = setTimeout } = {}) {
+  windowSetTimeout = setTimeout, confirm = () => false } = {}) {
   let source = await readFile(new URL("../../public/app.js", import.meta.url), "utf8");
   const bindings = {};
   for (const match of source.matchAll(/import\s*\{([^}]+)\}\s*from\s*"([^"]+)";/g)) {
@@ -47,10 +55,15 @@ export async function loadAppUi({ story = false, plan = false, createElement,
   const document = { querySelector(selector) {
     if (!nodes.has(selector)) nodes.set(selector, new Element());
     return nodes.get(selector);
-  }, querySelectorAll: () => [], addEventListener() {}, createElement };
+  }, querySelectorAll: () => [], addEventListener() {}, body: new Element("body"),
+  createElement: createElement || ((tag) => new Element(tag)) };
   const storage = { getItem: () => null, setItem() {}, removeItem() {} };
-  const context = vm.createContext({ ...bindings, document, window: { scrollTo() {}, setTimeout: windowSetTimeout, CSS: { escape: (s) => s } },
-    location: { pathname: "/story/V2", origin: "http://localhost" }, sessionStorage: storage, localStorage: storage,
+  const location = { pathname: "/story/V2", origin: "http://localhost" };
+  const history = { pushState(_state, _title, path) { location.pathname = path; },
+    replaceState(_state, _title, path) { location.pathname = path; } };
+  const context = vm.createContext({ ...bindings, document,
+    window: { scrollTo() {}, setTimeout: windowSetTimeout, CSS: { escape: (s) => s }, location, confirm },
+    location, history, sessionStorage: storage, localStorage: storage,
     navigator: {}, structuredClone, crypto, URL, URLSearchParams, Blob, File, console,
     fetch, setTimeout, clearTimeout });
   vm.runInContext(`${source}\nglobalThis.app = { state, elements, renderRoute, renderStoryPage, renderAnimationPlan,
@@ -62,13 +75,16 @@ export async function loadAppUi({ story = false, plan = false, createElement,
     renderDirectorControls, renderDirectorTaskStatus, renderDirectorTaskError, controlDirectorPipeline,
     renderFullStoryControls, selectedFullStoryTask, controlFullStory, generateFullStory, renderFullStoryTaskError,
     setStoryRunning, setStoryStatus, attachRestoredStandaloneTask, reloadActiveProductionRun,
+    openModelSettings, closeModelSettings, saveModelSettings, resetModelSettings, setModelSettingsStatus,
+    renderMainPage, navigateToStory, backToMainResults, regenerateThemeVariants, setStoryPackageStatus,
+    importStoryTestPackage, exportStoryTestPackage, exportCurrentStoryPackage, restoreStoryPackage,
     setRunning, resetDirectorClientState, restoreActiveProductionRun, directorArtifactSynchronizer };`, context);
   const app = context.app;
   const fixture = uiFixture({ story, plan });
   Object.assign(app.state, { selectedVariantId: "V2", output: { themeVariants: fixture.themeVariants },
     fullStories: story ? { V2: fixture.fullStory } : {}, animationPlans: plan ? { V2: fixture.animationPlan } : {} });
   Object.assign(app.state.production, { projectId: "project", runId: "run" });
-  return { ...app, document, fixture };
+  return { ...app, document, fixture, location };
 }
 
 export function uiTask(kind, status = "running", overrides = {}) {

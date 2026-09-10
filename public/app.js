@@ -197,6 +197,9 @@ const browserWorkspace = createBrowserWorkspaceClient({
   sendBeacon: (...args) => navigator.sendBeacon(...args)
 });
 let sourceLoading = true;
+const STORY_PACKAGE_HELP = "可导入/导出完整剧情与动画镜头生产包，避免重复请求模型。";
+let storyPackageFeedbackRevision = 0;
+let storyPackageFeedbackContext = "";
 
 function assertWorkspaceCurrent(epoch) {
   if (browserWorkspace.isCurrent(epoch)) return;
@@ -716,7 +719,7 @@ function clearVideoWorkspaceUi({ keepSource = false } = {}) {
     elements.shotFrameImageResults, elements.shotVideoResults, elements.shotVideoBatchItems]) {
     element.innerHTML = "";
   }
-  for (const element of [elements.storyStatus, elements.animationStatus, elements.storyPackageStatus,
+  for (const element of [elements.storyStatus, elements.animationStatus,
     elements.characterImageStatus, elements.shotFrameImageStatus, elements.shotVideoStatus]) element.textContent = "";
   for (const key of Object.keys(emptyMediaDialogs)) state[key] = structuredClone(emptyMediaDialogs[key]);
   for (const element of [elements.characterImageModal, elements.shotFrameImageModal, elements.shotVideoModal,
@@ -1295,6 +1298,7 @@ function resetDirectorClientState() {
   state.storyTaskStatusVisible = false;
   localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
   state.selectedVariantId = null;
+  resetStoryPackageStatus();
 }
 
 async function sourceFileSha256(file) {
@@ -1822,6 +1826,7 @@ async function regenerateThemeVariants() {
     if (!confirmed) return;
   }
 
+  resetStoryPackageStatus();
   state.variantsRegenerating = true;
   renderVariants(state.output.themeVariants);
   setStage("variants", "active");
@@ -1933,11 +1938,13 @@ function renderRoute() {
 }
 
 function renderMainPage() {
+  resetStoryPackageStatus();
   elements.storyPage.classList.add("hidden");
   elements.mainPage.classList.remove("hidden");
 }
 
 function renderStoryPage({ autoGenerate = false } = {}) {
+  syncStoryPackageStatusContext();
   elements.mainPage.classList.add("hidden");
   elements.storyPage.classList.remove("hidden");
   window.scrollTo({ top: 0, behavior: "instant" });
@@ -5801,6 +5808,7 @@ function shotVideoResultLabel(video = {}, result = {}) {
   return model ? `${shotVideoProviderLabel(provider)} ${modelName(model)}` : shotVideoProviderLabel(provider);
 }
 function openModelSettings() {
+  if (!state.animationPromptRewriting) setModelSettingsStatus("");
   renderModelSettings();
   elements.modelSettingsModal.classList.remove("hidden");
   elements.modelSettingsModal.setAttribute("aria-hidden", "false");
@@ -6690,32 +6698,28 @@ function exportJson() {
 }
 
 async function exportCurrentStoryPackage() {
-  const workspaceEpoch = browserWorkspace.epoch;
+  const reportStatus = createStoryPackageStatusReporter();
   const pack = selectedStoryPackage();
   if (!pack?.fullStory) return setStoryStatus("请先生成完整剧情，再导出当前生产包。", "error");
   try {
     const sealed = await sealProductionPackage(pack);
-    downloadProductionPackage(sealed, { onError: (message) => {
-      if (browserWorkspace.isCurrent(workspaceEpoch)) setStoryPackageStatus(message, "error");
-    } });
-    setStoryPackageStatus(`已发起下载：${storyPackageFilename(sealed)}`, "ready");
+    downloadProductionPackage(sealed, { onError: (message) => reportStatus(message, "error") });
+    reportStatus(`已发起下载：${storyPackageFilename(sealed)}`, "ready");
   } catch (error) {
-    setStoryStatus(error.message || "生产包签发失败。", "error");
+    reportStatus(error.message || "生产包签发失败。", "error");
   }
 }
 
 async function exportStoryTestPackage() {
-  const workspaceEpoch = browserWorkspace.epoch;
+  const reportStatus = createStoryPackageStatusReporter();
   const pack = selectedStoryPackage();
-  if (!pack?.fullStory) return setStoryPackageStatus("请先生成或导入完整剧情，再导出测试包。", "error");
+  if (!pack?.fullStory) return reportStatus("请先生成或导入完整剧情，再导出测试包。", "error");
   try {
     const sealed = await sealProductionPackage(pack);
-    downloadProductionPackage(sealed, { testPackage: true, onError: (message) => {
-      if (browserWorkspace.isCurrent(workspaceEpoch)) setStoryPackageStatus(message, "error");
-    } });
-    setStoryPackageStatus(`已发起下载：${storyPackageFilename(sealed, { testPackage: true })}`, "ready");
+    downloadProductionPackage(sealed, { testPackage: true, onError: (message) => reportStatus(message, "error") });
+    reportStatus(`已发起下载：${storyPackageFilename(sealed, { testPackage: true })}`, "ready");
   } catch (error) {
-    setStoryPackageStatus(error.message || "测试包签发失败。", "error");
+    reportStatus(error.message || "测试包签发失败。", "error");
   }
 }
 
@@ -6730,8 +6734,9 @@ function sealProductionPackage(payload) {
 
 async function importStoryTestPackage(file) {
   let workspaceEpoch = browserWorkspace.epoch;
+  let reportStatus = createStoryPackageStatusReporter();
   try {
-    setStoryPackageStatus("正在导入测试包…", "");
+    reportStatus("正在导入测试包…", "");
     const payload = JSON.parse(await file.text());
     assertWorkspaceCurrent(workspaceEpoch);
     const imported = await browserWorkspace.importPackage(payload, workspaceEpoch);
@@ -6742,12 +6747,19 @@ async function importStoryTestPackage(file) {
     workspaceEpoch = browserWorkspace.beginChange();
     clearVideoWorkspaceUi();
     sourceLoading = false;
-    const restored = restoreStoryPackage(imported.payload, imported.production);
+    let restored;
+    try {
+      restored = restoreStoryPackage(imported.payload, imported.production);
+    } finally {
+      // This accepted import synchronously establishes a new Run and page.
+      // Its feedback belongs there, including a local restore error.
+      reportStatus = createStoryPackageStatusReporter();
+    }
     showError("导入包未包含原视频；已清理此前上传的视频。重新选择视频会清除当前导入结果。", "notice");
-    setStoryPackageStatus(`已校验并隔离导入 ${restored.id}：${restored.hasStory ? "完整剧情" : "未含完整剧情"}${restored.hasAnimation ? " + 动画生产包" : ""}；旧媒体未混入。`, "ready");
+    reportStatus(`已校验并隔离导入 ${restored.id}：${restored.hasStory ? "完整剧情" : "未含完整剧情"}${restored.hasAnimation ? " + 动画生产包" : ""}；旧媒体未混入。`, "ready");
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
-    setStoryPackageStatus(error.message || "测试包导入失败", "error");
+    reportStatus(error.message || "测试包导入失败", "error");
   }
 }
 
@@ -6884,6 +6896,35 @@ function mergeImportedThemeVariants(themeVariants, variant) {
 function setStoryPackageStatus(message, tone = "") {
   elements.storyPackageStatus.textContent = message;
   elements.storyPackageStatus.className = tone;
+}
+
+function storyPackageContext() {
+  return JSON.stringify([state.production.projectId, state.production.runId, state.selectedVariantId]);
+}
+
+function resetStoryPackageStatus() {
+  storyPackageFeedbackRevision += 1;
+  storyPackageFeedbackContext = storyPackageContext();
+  setStoryPackageStatus(STORY_PACKAGE_HELP);
+}
+
+function syncStoryPackageStatusContext() {
+  if (storyPackageFeedbackContext !== storyPackageContext()) resetStoryPackageStatus();
+}
+
+function createStoryPackageStatusReporter() {
+  syncStoryPackageStatusContext();
+  const revision = ++storyPackageFeedbackRevision;
+  const context = storyPackageFeedbackContext;
+  const workspaceEpoch = browserWorkspace.epoch;
+  // A download may finish after navigation. Keep the download, but do not
+  // carry its transient acknowledgement or error into a different page.
+  return (message, tone = "") => {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)
+      || revision !== storyPackageFeedbackRevision
+      || context !== storyPackageContext()) return;
+    setStoryPackageStatus(message, tone);
+  };
 }
 
 async function copyAnimationProductionPack() {
