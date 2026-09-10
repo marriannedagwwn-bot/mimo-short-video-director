@@ -221,10 +221,10 @@ function scaleOutlineSeconds(storyOutline, targetDurationSeconds) {
 function mockCandidateProjection(fixed, seed, targetDurationSeconds) {
   const storyOutline = scaleOutlineSeconds([
     { beat: 1, phase: "任务出现", action: `${fixed}发现任务物出问题，并确认最后期限。`, emotion: "紧迫", dramaticFunction: seed.shape[0], estimatedSeconds: 4 },
-    { beat: 2, phase: "承担代价", action: `${fixed}选择付出额外成本保护任务与关系，而不是按最省事的方式放弃。`, emotion: "担心", dramaticFunction: seed.shape[1], clicheToAvoid: "不是主角一路硬扛到底，而是她为了保住关系主动多付一份成本", estimatedSeconds: 12 },
+    { beat: 2, phase: "承担代价", action: `${fixed}选择付出额外成本保护任务与关系，而不是按最省事的方式放弃。`, emotion: "担心", dramaticFunction: seed.shape[1], estimatedSeconds: 12 },
     { beat: 3, phase: "条件改变", action: `${fixed}让${seed.helper}看见真实困境，并接受一项不替自己完成任务的具体帮助。`, emotion: "温暖", dramaticFunction: seed.shape[2], estimatedSeconds: 10 },
     { beat: 4, phase: "亲手解决", action: `${fixed}在${seed.pressure}造成的最后阻碍中亲手完成${seed.task}的决定性动作。`, emotion: "紧张", dramaticFunction: seed.shape[3], estimatedSeconds: 10 },
-    { beat: 5, phase: "关系兑现", action: `${seed.ending}，此前没有说出口的关心转化为双方都能确认的关系变化。`, emotion: "释然", dramaticFunction: "以可见状态变化完成情绪兑现", clicheToAvoid: "结尾回收前面已经出现过的东西，不是另外拿出一件新礼物", estimatedSeconds: 8 }
+    { beat: 5, phase: "关系兑现", action: `${seed.ending}，此前没有说出口的关心转化为双方都能确认的关系变化。`, emotion: "释然", dramaticFunction: "以可见状态变化完成情绪兑现", estimatedSeconds: 8 }
   ], targetDurationSeconds);
   return {
     keyChoiceBeat: 2,

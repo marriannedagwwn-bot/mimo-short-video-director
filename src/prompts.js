@@ -707,10 +707,6 @@ Story Candidate 关键字段（本阶段所有字段都只写候选级摘要，�
 - 输出前在内部对四个候选各计算三个布尔值：A=主角完成帮助、送达或类似服务任务；B=外部角色因此给予奖励、荣誉或可转移利益；C=该利益随后被赠予、分享给、共同用于或带回奶奶/重要关系人。A、B、C 同时为真的候选总数必须 ≤1，且若存在只能是 V1；若 V2–V${count} 任一行三项全真，必须先重写该候选的因果引擎再输出。该布尔矩阵只用于内部自检，不得出现在 JSON 中，也不按老人、雨、礼物等词面判定。
 - highValueBeatMapping 恰好使用 2 个完整对象，不要求把来源每个 Beat 都映射一次。每个对象的键固定且只有四个：briefBeat、newExpression、retainedValue、failureSignal。**绝不能把 newExpression 写成 action**——action 是 storyOutline 里的键名，不是这里的键名；这里要的是「从某个 action 里抄来的那段原文」，但键名仍然叫 newExpression。每个 newExpression 必须逐字复制本候选 storyOutline 某个 action 中的一段连续原文，不得改写，不得添加 storyOutline 之外的奖励、转赠、聚餐、角色、物品或事件。keyDialogueDirections 使用 2–3 个非空纯字符串，只写“角色：台词方向”，绝不能输出 {character,direction} 对象。
 - **failureSignal 写「什么情况代表这条机制没有迁移成功」**，也就是这条保留价值的证伪条件：如果本候选出现了它描述的样子，就说明只学到了外形。必须落到可见动作或可听内容上，例如“结尾只靠夕阳、拥抱或台词宣布温暖，主角对同一件事的态度没有任何可见变化”。“温暖”“治愈”“关系改变”“重获希望”这类词**单独出现不构成判据**——它们描述结果，不描述观众能看到什么。retainedValue 说这条机制成功时是什么样，failureSignal 说它失败时是什么样，两者不得互相复述。
-- **storyOutline[].clicheToAvoid 写「这一拍最容易被写成的那个错误版本」**，与 failureSignal 同族：那条说机制没迁移成功会长成什么样，这条说**这一拍写砸了会长成什么样**。形式写成「不是 X，而是 Y」——先点出最顺手的那个陈词滥调，再说这一拍实际要干什么。
-- **它只写给真正有滑坡风险的拍，其余整个键省略**，不要每拍都写——写不出真实风险时省略，比编一句占位强（留空字符串也会被当成没写，不会因此失败）。**每个候选至少要有 2 拍写**（storyOutline 少于 5 拍时至少 1 拍）。
-- **每一条都要针对那一拍自己的风险，不得跨拍复述同一句**，也不得把同拍的 dramaticFunction 换个说法否定一遍——那两种写法服务端都会直接判失败。
-- 判据示例（**形状示范，具体内容一律换成本候选自己的**）：一拍的功能是让搭档从旁观变成参与，最顺手的错误版本就是「主角做完之后顺便邀请对方」，那就写成「不是事后的顺便邀请，那个位置从一开始就是留给它的」。再如结尾拍最容易另加一件与前文无关的温情物件，就写明「结尾回收前面已经出现过的东西，不是另外拿出一件新礼物」。
 ${deriveSource ? `- transformationProof 的五个 changed* 仍分别记录人物、任务、细节/道具、对白和视听表达的改编。每项只输出 {"replacement":"本片改成什么"}，必须保留全部五项；replacement 只能承接当前候选正文已写出的内容。
 - **不要输出 source。** 原片来源已由独立的原片证据步骤选定，服务端会复制完整原文填回 source，所有候选共用同一份原片基线。你不能改写、补写或声明原片没有某物；回显 source 也会被服务端覆盖。
 - source 是原片对照，replacement 是本片改编；原片人物、对白、道具和事件不因此成为本片的必备内容。原片对白记录可能包含字幕或发声描述，不能自动当作本片的人声台词。` : VARIANT_TRANSFORMATION_PROOF_SHAPE_RULE}
@@ -724,7 +720,7 @@ ${deriveSource ? `- transformationProof 的五个 changed* 仍分别记录人物
     "characterSetup":{"protagonist":""},
     "newTask":"", "environmentPressure":"",
     "narrativeMode":"dramatic", "keyChoiceBeat":2, "climaxBeat":5, "novelty":"", "visualPotential":"",
-    "storyOutline":[{"beat":1, "phase":"", "action":"", "emotion":"", "dramaticFunction":"", "clicheToAvoid":"", "estimatedSeconds":0}],
+    "storyOutline":[{"beat":1, "phase":"", "action":"", "emotion":"", "dramaticFunction":"", "estimatedSeconds":0}],
     "highValueBeatMapping":[{"briefBeat":"", "newExpression":"", "retainedValue":"", "failureSignal":""}],
     "keyDialogueDirections":[],
     "transformationProof":${deriveSource ? '{"changedCharacters":{"replacement":""}, "changedTask":{"replacement":""}, "changedDetailsAndProps":{"replacement":""}, "changedDialogue":{"replacement":""}, "changedVisualExpression":{"replacement":""}}' : '{"changedCharacters":{"source":"", "replacement":""}, "changedTask":{"source":"", "replacement":""}, "changedDetailsAndProps":{"source":"", "replacement":""}, "changedDialogue":{"source":"", "replacement":""}, "changedVisualExpression":{"source":"", "replacement":""}}'},
@@ -1085,11 +1081,6 @@ export function buildStoryCandidateReviewProjection(candidate) {
       estimatedSeconds: beat?.estimatedSeconds
     })),
     keyDialogueDirections: Array.isArray(candidate?.keyDialogueDirections) ? candidate.keyDialogueDirections : [],
-    // clicheToAvoid 与 failureSignal 同族，按同一条理由**要送**：它是候选给自己设的陷阱声明，
-    // 不是自我表扬。评审看得见陷阱、看不见答案，这条不对称是有意的。
-    clicheToAvoid: (Array.isArray(candidate?.storyOutline) ? candidate.storyOutline : [])
-      .map((beat) => String(beat?.clicheToAvoid || ""))
-      .filter(Boolean),
     failureSignals: (Array.isArray(candidate?.highValueBeatMapping) ? candidate.highValueBeatMapping : [])
       .map((entry) => String(entry?.failureSignal || ""))
       .filter(Boolean)
