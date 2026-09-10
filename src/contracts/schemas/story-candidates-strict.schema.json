@@ -88,6 +88,7 @@
               "action": { "$ref": "#/$defs/nonEmptyString" },
               "emotion": { "$ref": "#/$defs/nonEmptyString" },
               "dramaticFunction": { "$ref": "#/$defs/nonEmptyString" },
+              "clicheToAvoid": { "type": "string" },
               "estimatedSeconds": { "type": "number" }
             }
           }

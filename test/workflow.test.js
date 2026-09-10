@@ -3588,10 +3588,10 @@ test("主题变体允许按剧情复用原片角色组合，但不覆盖固定�
           visualPotential: "大雾、背包中的画与抵达后摆正画作形成清晰状态变化。",
           storyOutline: [
             { beat: 1, phase: "任务", action: "小白子整理背包，跟着企鹅服志愿者老张出发。", emotion: "期待", dramaticFunction: "建立任务", estimatedSeconds: 6 },
-            { beat: 2, phase: "抉择", action: "小白子选择接受志愿者指路，但坚持亲自把画送到小月手中。", emotion: "犹豫", dramaticFunction: "主角亲自作出关键选择", estimatedSeconds: 8 },
+            { beat: 2, phase: "抉择", action: "小白子选择接受志愿者指路，但坚持亲自把画送到小月手中。", emotion: "犹豫", dramaticFunction: "主角亲自作出关键选择", clicheToAvoid: "不是主角一路独自硬扛，而是她收下帮助却仍然亲手完成最后一步", estimatedSeconds: 8 },
             { beat: 3, phase: "后果", action: "小白子把画收进背包内层，按老张指的近路继续走。", emotion: "紧张", dramaticFunction: "选择造成的直接后果，使高潮成为可能", estimatedSeconds: 8 },
             { beat: 4, phase: "高潮", action: "小白子穿过最后一段浓雾，把完好的画亲手交给小月。", emotion: "紧张", dramaticFunction: "主角亲手完成决定性动作并产生可见结果", estimatedSeconds: 8 },
-            { beat: 5, phase: "兑现", action: "小月确认自己的画被认真对待，小白子也接受同行者的善意。", emotion: "释然", dramaticFunction: "把积累的关系与情绪转化为可见状态变化", estimatedSeconds: 6 }
+            { beat: 5, phase: "兑现", action: "小月确认自己的画被认真对待，小白子也接受同行者的善意。", emotion: "释然", dramaticFunction: "把积累的关系与情绪转化为可见状态变化", clicheToAvoid: "结尾回收前面已经出现过的东西，不是另外拿出一件新礼物", estimatedSeconds: 6 }
           ],
           highValueBeatMapping: [],
           keyDialogueDirections: [],
@@ -3664,10 +3664,10 @@ test("主题变体允许按剧情复用 mustChange 来源道具", async () => {
           visualPotential: "大雾、通知书封套与孔明灯升起形成连续可见动作。",
           storyOutline: [
             { beat: 1, phase: "任务", action: "小白子抱着录取通知书出发。", emotion: "期待", dramaticFunction: "建立任务", estimatedSeconds: 6 },
-            { beat: 2, phase: "抉择", action: "小白子选择在大雾中继续亲自送达录取通知书。", emotion: "犹豫", dramaticFunction: "主角亲自作出关键选择", estimatedSeconds: 8 },
+            { beat: 2, phase: "抉择", action: "小白子选择在大雾中继续亲自送达录取通知书。", emotion: "犹豫", dramaticFunction: "主角亲自作出关键选择", clicheToAvoid: "不是主角一路独自硬扛，而是她收下帮助却仍然亲手完成最后一步", estimatedSeconds: 8 },
             { beat: 3, phase: "后果", action: "小白子把通知书塞进外套护住，凭记忆认路前行。", emotion: "紧张", dramaticFunction: "选择造成的直接后果，使高潮成为可能", estimatedSeconds: 8 },
             { beat: 4, phase: "高潮", action: "小白子赶在天黑前把录取通知书交到邻居手中。", emotion: "紧张", dramaticFunction: "主角亲手完成决定性动作并产生可见结果", estimatedSeconds: 8 },
-            { beat: 5, phase: "兑现", action: "邻居收到通知书后与小白子确认共同庆祝的约定。", emotion: "释然", dramaticFunction: "把积累的关系与情绪转化为可见状态变化", estimatedSeconds: 6 }
+            { beat: 5, phase: "兑现", action: "邻居收到通知书后与小白子确认共同庆祝的约定。", emotion: "释然", dramaticFunction: "把积累的关系与情绪转化为可见状态变化", clicheToAvoid: "结尾回收前面已经出现过的约定，不是另外安排一场新活动", estimatedSeconds: 6 }
           ],
           highValueBeatMapping: [],
           keyDialogueDirections: [],

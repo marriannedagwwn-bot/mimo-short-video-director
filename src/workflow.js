@@ -47,7 +47,7 @@ import { randomUUID } from "node:crypto";
 import { ModelCallCoordinator, classifyAttemptError } from "./model-call-coordinator.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanDirectShotContract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanDirectShotContract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, validateVariantClicheClauses, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
   deriveStoryCandidateProjections,
   deriveFullStoryTargetDuration,
   ensureStoryCandidateReviewCoversCandidates,
@@ -702,12 +702,21 @@ export class WorkflowService {
     // 原片提问与新角色/新剧情隔离。source 由私有冻结目录里的完整原文签发，
     // 候选模型只写 replacement；仍只返回并提交一份 themeVariants。
     const sourceBaseline = variantsUpstream ? createVariantSourceBaseline(variantsUpstream) : null;
-    const finalize = (result) => ensureThemeVariantsMatchProfile(
-      ensureOutputContract(deriveStoryCandidateProjections(
+    const finalize = (result) => {
+      const candidates = ensureOutputContract(deriveStoryCandidateProjections(
         sourceBaseline ? sourceBaseline.apply(result) : result
-      ), "themeVariants"),
-      validatedInput.creatorProfile, validatedInput.creativeBrief, visualGuardrails, variantsUpstream
-    );
+      ), "themeVariants");
+      // 每拍的「最容易被写成的那个错误版本」只在**这里**校验，不进 ensureThemeVariantsMatchProfile。
+      // 那个函数是共享的：validateBoundCandidate（server.js:301）在用户选中候选、生成 Full Story 时
+      // 也调用它，加进去会让**所有已签发的旧候选在展开剧情时当场失败**。
+      // 第一版挂在它的 if (upstream) 分支上，实测直接打挂 10 条既有测试——upstream 在那些用例里
+      // 表示「要做溯源核对」，不表示「这是一次新生成」，两件事不能共用一个开关。
+      validateVariantClicheClauses(candidates.variants);
+      return ensureThemeVariantsMatchProfile(
+        candidates,
+        validatedInput.creatorProfile, validatedInput.creativeBrief, visualGuardrails, variantsUpstream
+      );
+    };
     if (!this.hasLiveClient) {
       sourceBaseline?.selectDemo();
       return finalize(mockVariants(validatedInput));
