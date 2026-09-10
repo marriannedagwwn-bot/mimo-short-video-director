@@ -132,6 +132,77 @@ test("active cleanup cancels queued work, prevents late commits, and sweeps late
   assert.equal(f.taskManager.taskLocations.has(running.task.taskId), false);
 });
 
+for (const entry of ["cleanup", "sweepPending"]) for (const initialState of ["running", "paused"]) {
+  test(`${entry} stops a ${initialState} director outside cleanup locks and returns its workflow slot`, async (t) => {
+    const f = await fixture(t);
+    let context;
+    let attempts = 0;
+    const created = await f.taskManager.createTask({
+      projectId: f.ids.projectId, runId: f.ids.runId, kind: "directorPipeline",
+      targetArtifactIds: ["referenceAnalysis"], input: {},
+      execute: async (_input, current) => {
+        context = current;
+        attempts += 1;
+        await new Promise((_, reject) => current.signal.addEventListener("abort", () => reject(current.signal.reason), { once: true }));
+        assert.fail("aborted director must never continue its old attempt");
+      }
+    });
+    const taskId = created.task.taskId;
+    const realStop = f.taskManager.stopDirectorRuntime.bind(f.taskManager);
+    t.after(async () => {
+      realStop(taskId, new Error("test cleanup"));
+      await until(() => !f.taskManager.runtimes.has(taskId));
+    });
+    await until(() => Boolean(context));
+    if (initialState === "paused") {
+      await f.taskManager.controlTask({ ...f.ids, taskId, action: "pause" });
+      await until(() => f.taskManager.runtimes.get(taskId)?.controlState === "paused");
+    }
+    assert.equal(f.taskManager.pools.workflow.running, 1);
+    const nextRun = await f.productionStore.createRun({ projectId: "project-next" });
+    let nextStarted = false;
+    const next = await f.taskManager.createTask({
+      ...nextRun, kind: "analysis", targetArtifactIds: ["referenceAnalysis"], input: {},
+      execute: async () => { nextStarted = true; return {}; }
+    });
+    assert.equal(next.task.status, "queued");
+
+    let inCleanupLock = false;
+    const realLocks = f.cleanup.withLocks.bind(f.cleanup);
+    f.cleanup.withLocks = (ids, operation) => realLocks(ids, async () => {
+      inCleanupLock = true;
+      try { return await operation(); } finally { inCleanupLock = false; }
+    });
+    const stopped = [];
+    f.taskManager.stopDirectorRuntime = (id, reason) => {
+      assert.equal(inCleanupLock, false, "abort and resumeGate callbacks must run after both cleanup locks are released");
+      assert.equal(f.taskManager.runtimes.get(id)?.active, false, "ownership must be revoked before waking the parked runner");
+      stopped.push({ id, reason });
+      realStop(id, reason);
+    };
+    if (entry === "sweepPending") await f.cleanup.writeMarker(f.ids);
+    const result = entry === "cleanup" ? await f.cleanup.cleanup(f.ids) : (await f.cleanup.sweepPending())[0];
+    assert.deepEqual(result, { deleted: true, pending: true });
+    assert.equal(stopped.length, 1);
+    assert.equal(stopped[0].id, taskId);
+    assert.equal(stopped[0].reason.code, "BROWSER_WORKSPACE_CLOSED");
+    assert.equal(context.signal.aborted, true);
+    if (initialState === "running") assert.equal(context.signal.reason.code, "BROWSER_WORKSPACE_CLOSED");
+    await until(() => !f.taskManager.runtimes.has(taskId) && nextStarted && f.taskManager.pools.workflow.running === 0);
+    assert.equal(attempts, 1);
+    assert.equal(f.taskManager.runtimes.size, 0);
+    await assert.rejects(context.commitArtifact({
+      artifactId: "referenceAnalysis", artifactType: "referenceAnalysis", content: { late: true }
+    }));
+    await absent(f.productionStore.runDirectory(f.ids.projectId, f.ids.runId));
+    assert.equal((await fs.readdir(f.cleanupRoot)).length, 1);
+    await f.cleanup.sweepPending();
+    assert.deepEqual(await fs.readdir(f.cleanupRoot), []);
+    assert.equal(f.taskManager.taskLocations.has(taskId), false);
+    assert.equal((await f.taskManager.taskStore.getTask({ ...nextRun, taskId: next.task.taskId })).status, "completed");
+  });
+}
+
 test("a restarted cleaner replays an ID-only marker and removes output written after the original deletion", async (t) => {
   const f = await fixture(t);
   // Represent an in-flight Runner whose old process will no longer exist after

@@ -141,6 +141,11 @@ export class DurableTaskManager {
         inputBytes: requestBytes,
         poolName,
         ownerTaskId: taskId,
+        ...(definition.kind === "directorPipeline" ? {
+          controlState: "running",
+          controller: new AbortController(),
+          finished: deferred()
+        } : {}),
         active: true
       });
       pool.queue.push(taskId);
@@ -206,22 +211,42 @@ export class DurableTaskManager {
     try {
       const started = await this.startTask(taskId);
       if (!started) return;
-      const context = this.taskContext(taskId, runtime.ownerTaskId);
-      const outcome = await runtime.definition.execute(runtime.input, context);
-      this.outcomes.set(taskId, outcome?.compatibilityResult);
-      await this.completeTask(taskId, outcome || {});
+      for (;;) {
+        try {
+          this.assertExecutionAllowed(taskId);
+          const context = this.taskContext(taskId, runtime.ownerTaskId);
+          const outcome = await runtime.definition.execute(runtime.input, context);
+          this.assertExecutionAllowed(taskId);
+          this.outcomes.set(taskId, outcome?.compatibilityResult);
+          await this.completeTask(taskId, outcome || {});
+          break;
+        } catch (error) {
+          if (runtime.active && ["pausing", "paused"].includes(runtime.controlState)) {
+            await this.parkDirectorTask(taskId, runtime);
+            continue;
+          }
+          throw error;
+        }
+      }
     } catch (error) {
-      await this.failFromError(taskId, error);
+      if (runtime.controlState === "terminating") {
+        const task = await this.getTaskById(taskId);
+        await this.finishControlledTask({ ...task, status: "cancelled", reason: directorControlError("terminate") });
+      } else {
+        await this.failFromError(taskId, error);
+      }
     } finally {
       runtime.active = false;
       this.runtimes.delete(taskId);
       this.clearWatchdog(taskId);
       this.notifyWaiters(taskId);
+      runtime.finished?.resolve();
     }
   }
 
   async runChildTask(parentTaskId, definition = {}) {
     const parentId = safeIdentifier(parentTaskId, "parentTaskId");
+    this.assertExecutionAllowed(parentId);
     const parent = await this.getTaskById(parentId);
     if (!DURABLE_TASK_ACTIVE_STATUSES.includes(parent.status)) {
       throw taskOwnershipError(parentId);
@@ -231,6 +256,7 @@ export class DurableTaskManager {
       const index = await this.taskStore.readIndex(parent.projectId, parent.runId);
       const parentInternal = this.taskStore.getTaskUnlocked(index, parentId);
       if (!DURABLE_TASK_ACTIVE_STATUSES.includes(parentInternal.status)) throw taskOwnershipError(parentId);
+      this.assertExecutionAllowed(parentId);
       const prepared = await this.prepareDefinition(definition, manifest);
       const operationKey = contentDigest({
         parentTaskId: parentId,
@@ -274,7 +300,8 @@ export class DurableTaskManager {
       input: created.prepared.input,
       inputBytes: 0,
       poolName: parent.pool,
-      ownerTaskId: parent.ownerTaskId || parentId,
+      ownerTaskId: created.task.ownerTaskId,
+      signal: this.runtimes.get(created.task.ownerTaskId)?.controller?.signal,
       active: true
     };
     this.runtimes.set(childId, childRuntime);
@@ -300,7 +327,11 @@ export class DurableTaskManager {
   }
 
   taskContext(taskId, ownerTaskId, parentTaskId = null) {
+    const runtime = this.runtimes.get(taskId);
+    const signal = runtime?.signal || runtime?.controller?.signal;
     const touch = async (options) => {
+      signal?.throwIfAborted();
+      this.assertExecutionAllowed(taskId);
       const result = await this.touchTask(taskId, options);
       if (parentTaskId) {
         try {
@@ -317,15 +348,26 @@ export class DurableTaskManager {
     return Object.freeze({
       taskId,
       ownerTaskId,
+      signal,
+      captureUsage: (usage) => { if (runtime?.active) runtime.usageSnapshot = structuredClone(usage); },
       updatePhase: (phase, options) => touch({ phase, ...options }),
       heartbeat: (progress, options) => touch({ progress, ...options }),
       updateUsage: (usage) => this.updateTaskUsage(taskId, usage),
+      providerRequestStarted: () => {
+        signal?.throwIfAborted();
+        this.assertExecutionAllowed(taskId);
+        if (signal) runtime.providerCalls = (runtime.providerCalls || 0) + 1;
+      },
       beforeProviderCall: async (phase, timeoutMs) => {
+        signal?.throwIfAborted();
         await this.assertFrozenContextCurrent(taskId);
-        return touch({
+        const result = await touch({
           phase,
           stallMs: Math.max(this.localStallMs, boundedMs(timeoutMs, this.localStallMs) + this.providerGraceMs)
         });
+        signal?.throwIfAborted();
+        this.assertExecutionAllowed(taskId);
+        return result;
       },
       afterProviderCall: async (phase, progress) => {
         await this.assertFrozenContextCurrent(taskId);
@@ -378,6 +420,7 @@ export class DurableTaskManager {
     const due = new Date(Date.parse(now) + Math.max(1, Number(stallMs) || this.localStallMs)).toISOString();
     const applied = await this.updateTaskAtomic(task.projectId, task.runId, taskId, (index, current) => {
       if (!DURABLE_TASK_ACTIVE_STATUSES.includes(current.status)) return false;
+      this.assertExecutionAllowed(taskId);
       this.taskStore.updateTaskUnlocked(index, taskId, {
         ...(phase !== undefined ? { phase } : {}),
         ...(progress !== undefined ? { progress: mergeProgress(current.progress, progress) } : {}),
@@ -392,10 +435,12 @@ export class DurableTaskManager {
   }
 
   async updateTaskUsage(taskId, usage) {
+    const runtime = this.runtimes.get(taskId);
+    if (runtime?.active) runtime.usageSnapshot = structuredClone(usage);
     const task = await this.getTaskById(taskId);
     const applied = await this.updateTaskAtomic(task.projectId, task.runId, taskId, (index, current) => {
       if (!DURABLE_TASK_ACTIVE_STATUSES.includes(current.status)) return false;
-      this.taskStore.updateTaskUnlocked(index, taskId, { usage }, { activeOnly: true });
+      this.taskStore.updateTaskUnlocked(index, taskId, { usage: this.taskUsage(current, usage) }, { activeOnly: true });
       return true;
     });
     if (!applied) throw taskOwnershipError(taskId);
@@ -414,6 +459,7 @@ export class DurableTaskManager {
   }
 
   async assertFrozenContextCurrent(taskId) {
+    this.assertExecutionAllowed(taskId);
     const task = await this.getTaskById(taskId);
     if (!DURABLE_TASK_ACTIVE_STATUSES.includes(task.status)) throw taskOwnershipError(taskId);
     const ids = [...task.targetArtifactIds, ...task.frozenDependencies.map((item) => item.artifactId)];
@@ -477,6 +523,7 @@ export class DurableTaskManager {
       const index = await this.taskStore.readIndex(task.projectId, task.runId);
       const currentTask = this.taskStore.getTaskUnlocked(index, taskId);
       if (!DURABLE_TASK_ACTIVE_STATUSES.includes(currentTask.status)) throw taskOwnershipError(taskId);
+      this.assertExecutionAllowed(taskId);
       this.taskStore.assertTargetWritableUnlocked(index, { artifactId, ownerTaskId });
       assertFrozenInManifest(manifest, currentTask, { targetArtifactId: artifactId });
       const committed = await this.productionStore.commitArtifactUnlocked(manifest, {
@@ -500,6 +547,7 @@ export class DurableTaskManager {
     const now = this.timestamp();
     return this.updateTaskAtomic(task.projectId, task.runId, taskId, (index, current) => {
       if (!DURABLE_TASK_ACTIVE_STATUSES.includes(current.status)) return false;
+      this.assertExecutionAllowed(taskId);
       const refs = mergeResultRefs(current.resultArtifactRefs, outcome.resultArtifactRefs || []);
       this.taskStore.updateTaskUnlocked(index, taskId, {
         status: "completed",
@@ -508,7 +556,9 @@ export class DurableTaskManager {
         lastProgressAt: now,
         watchdogDueAt: null,
         resultArtifactRefs: refs,
-        usage: outcome.usage ?? current.usage,
+        usage: current.kind === "directorPipeline"
+          ? aggregateChildUsage(index, current) || this.taskUsage(current, outcome.usage)
+          : this.taskUsage(current, outcome.usage),
         notices: outcome.notices ?? current.notices,
         progress: outcome.progress === undefined
           ? current.progress
@@ -530,7 +580,9 @@ export class DurableTaskManager {
       "ARTIFACT_REVISION_CONFLICT",
       "ARTIFACT_DEPENDENCY_STALE"
     ].includes(error?.code);
-    const status = conflicted ? "conflicted" : "failed";
+    const status = error?.code === "DIRECTOR_STAGE_PAUSED" ? "interrupted"
+      : error?.code === "DIRECTOR_RUN_TERMINATED" ? "cancelled"
+        : conflicted ? "conflicted" : "failed";
     return this.finishWithStatus(taskId, status, error, { releaseClaims });
   }
 
@@ -542,6 +594,8 @@ export class DurableTaskManager {
       const index = await this.taskStore.readIndex(task.projectId, task.runId);
       const current = this.taskStore.getTaskUnlocked(index, taskId);
       if (!DURABLE_TASK_ACTIVE_STATUSES.includes(current.status)) return false;
+      const rootRuntime = this.runtimes.get(current.ownerTaskId);
+      if (error?.code === "TASK_STALLED" && rootRuntime?.controlState && rootRuntime.controlState !== "running") return false;
       this.taskStore.updateTaskUnlocked(index, taskId, {
         status,
         phase: status,
@@ -551,7 +605,7 @@ export class DurableTaskManager {
         error,
         // 父任务的 error usage 只对应刚失败的那个子调用；一旦已有子任务，
         // Task Store 中的逐子任务汇总才是这次父任务的完整计费口径。
-        usage: aggregateChildUsage(index, current) || readModelUsageFromError(error) || current.usage
+        usage: aggregateChildUsage(index, current) || this.taskUsage(current, readModelUsageFromError(error))
       }, { activeOnly: true });
       this.taskStore.appendEventUnlocked(index, { type: `task.${status}`, taskId, createdAt: now });
       if (current.targetArtifactIds.length === 1) {
@@ -576,7 +630,7 @@ export class DurableTaskManager {
             lastProgressAt: now,
             watchdogDueAt: null,
             error,
-            usage: readModelUsageFromError(error) || child.usage
+            usage: this.taskUsage(child, readModelUsageFromError(error))
           }, { activeOnly: true });
           this.taskStore.appendEventUnlocked(index, { type: `task.${status}`, taskId: childId, createdAt: now });
           if (child.targetArtifactIds.length === 1) {
@@ -593,10 +647,17 @@ export class DurableTaskManager {
         }
         this.taskStore.releaseClaimsUnlocked(index, current.ownerTaskId);
       }
+      if (current.childTaskIds?.length) {
+        this.taskStore.updateTaskUnlocked(index, taskId, {
+          usage: aggregateChildUsage(index, current) || current.usage
+        });
+      }
       await this.taskStore.writeIndexUnlocked(index);
       return true;
     });
+    if (!applied) return false;
     this.clearWatchdog(taskId);
+    if (applied && !task.parentTaskId) this.stopDirectorRuntime(taskId, error);
     this.notifyWaiters(taskId);
     for (const childId of task.childTaskIds || []) {
       this.clearWatchdog(childId);
@@ -619,19 +680,144 @@ export class DurableTaskManager {
     });
   }
 
+  assertExecutionAllowed(taskId) {
+    const runtime = this.runtimes.get(taskId);
+    if (!runtime) return;
+    runtime.signal?.throwIfAborted();
+    const root = this.runtimes.get(runtime.ownerTaskId);
+    root?.controller?.signal.throwIfAborted();
+    if (root?.controlState === "terminating") throw directorControlError("terminate");
+    if (["pausing", "paused"].includes(root?.controlState)) throw directorControlError("pause");
+    if (!runtime.active) throw taskOwnershipError(taskId);
+  }
+
+  taskUsage(task, fallback = null) {
+    const runtime = this.runtimes.get(task.taskId);
+    const known = runtime?.usageSnapshot || fallback || task.usage;
+    const dispatched = runtime?.providerCalls || 0;
+    if (!dispatched) return known;
+    const reportedCalls = Number(known?.reportedCalls ?? known?.calls) || 0;
+    const calls = Math.max(dispatched, reportedCalls);
+    const unreportedCalls = calls - reportedCalls;
+    return {
+      ...(known || { promptTokens: 0, completionTokens: 0, totalTokens: 0, byModel: [] }),
+      calls,
+      reportedCalls,
+      unreportedCalls,
+      usageComplete: unreportedCalls === 0,
+      costCny: unreportedCalls ? null : known?.costCny ?? null,
+      costKnown: !unreportedCalls && Boolean(known?.costKnown)
+    };
+  }
+
+  stopDirectorRuntime(taskId, reason) {
+    const runtime = this.runtimes.get(taskId);
+    if (!runtime?.controller) return;
+    runtime.controller.abort(reason instanceof Error ? reason : Object.assign(new Error(reason?.message || "任务已结束"), reason));
+    runtime.resumeGate?.resolve();
+  }
+
+  async parkDirectorTask(taskId, runtime) {
+    const task = await this.getTaskById(taskId);
+    await this.updateTaskAtomic(task.projectId, task.runId, taskId, (index, current) => {
+      if (!DURABLE_TASK_ACTIVE_STATUSES.includes(current.status)) {
+        runtime.active = false;
+        return false;
+      }
+      if (!runtime.active) return false;
+      if (runtime.controlState !== "pausing") return false;
+      runtime.controlState = "paused";
+      this.taskStore.updateTaskUnlocked(index, taskId, {
+        phase: "paused",
+        progress: mergeProgress(current.progress, { controlState: "paused" }),
+        usage: aggregateChildUsage(index, current) || this.taskUsage(current),
+        watchdogDueAt: null,
+        lastProgressAt: this.timestamp()
+      }, { activeOnly: true });
+      return true;
+    });
+    this.clearWatchdog(taskId);
+    if (runtime.controlState === "paused" && runtime.active) await runtime.resumeGate.promise;
+  }
+
+  async controlDirectorTask(task, action) {
+    if (!["pause", "resume", "terminate"].includes(action)) {
+      throw new ProductionStateError("任务控制 action 只允许 pause、resume 或 terminate", {
+        code: "TASK_CONTROL_ACTION_INVALID", httpStatus: 400
+      });
+    }
+    const runtime = this.runtimes.get(task.taskId);
+    if (!runtime?.active || !runtime.controller) {
+      throw new ProductionStateError("当前进程没有该任务的执行上下文，请刷新任务状态", {
+        code: "TASK_CONTROL_CONTEXT_MISSING", httpStatus: 409
+      });
+    }
+    let applied = false;
+    let controllerToAbort;
+    let gateToResolve;
+    let resumeRunningTask = false;
+    await this.updateTaskAtomic(task.projectId, task.runId, task.taskId, (index, current) => {
+      if (!DURABLE_TASK_ACTIVE_STATUSES.includes(current.status) || runtime.controlState === "terminating") return false;
+      if (action === "resume" && runtime.controlState === "pausing") {
+        throw new ProductionStateError("当前请求正在中断，请在暂停完成后继续", {
+          code: "TASK_CONTROL_PAUSE_PENDING", httpStatus: 409
+        });
+      }
+      if ((action === "pause" && runtime.controlState !== "running")
+        || (action === "resume" && runtime.controlState === "running")) return false;
+      const controlState = action === "pause" ? (current.status === "queued" ? "paused" : "pausing")
+        : action === "resume" ? "running" : "terminating";
+      // The next control request may replace these before this request leaves
+      // the lock. Act on the exact attempt/gate selected by this transition.
+      controllerToAbort = runtime.controller;
+      gateToResolve = runtime.resumeGate;
+      resumeRunningTask = current.status === "running";
+      runtime.controlState = controlState;
+      if (action === "pause") runtime.resumeGate = deferred();
+      if (action === "resume") runtime.controller = new AbortController();
+      this.taskStore.updateTaskUnlocked(index, task.taskId, {
+        phase: controlState,
+        progress: mergeProgress(current.progress, { controlState, controlUpdatedAt: this.timestamp() }),
+        ...(action === "resume" ? {} : { watchdogDueAt: null }),
+        lastProgressAt: this.timestamp()
+      }, { activeOnly: true });
+      this.taskStore.appendEventUnlocked(index, { type: `task.control.${action}`, taskId: task.taskId, createdAt: this.timestamp() });
+      applied = true;
+      return true;
+    });
+    if (applied && action === "resume") {
+      if (resumeRunningTask) this.armWatchdog(task.taskId, new Date(Date.now() + this.localStallMs).toISOString());
+      gateToResolve?.resolve();
+    } else if (applied) {
+      this.clearWatchdog(task.taskId);
+      controllerToAbort.abort(directorControlError(action));
+      const latest = await this.getTaskById(task.taskId);
+      for (const childId of latest.childTaskIds || []) this.clearWatchdog(childId);
+      if (action === "terminate") {
+        gateToResolve?.resolve();
+        // Give body/SSE cancellation a bounded opportunity to capture reported usage.
+        // No coordinator or scheduler lock is held while the request unwinds.
+        if (latest.status === "running") await settleWithin(runtime.finished.promise, 1_500);
+        await this.finishControlledTask({ ...task, status: "cancelled", reason: directorControlError(action) });
+      }
+    }
+    return this.getTaskById(task.taskId);
+  }
+
   async controlTask({ projectId, runId, taskId, action } = {}) {
     const safeProjectId = safeIdentifier(projectId, "projectId");
     const safeRunId = safeIdentifier(runId, "runId");
     const safeTaskId = safeIdentifier(taskId, "taskId");
     const task = await this.taskStore.getTask({ projectId: safeProjectId, runId: safeRunId, taskId: safeTaskId });
     if (DURABLE_TASK_TERMINAL_STATUSES.includes(task.status)) return task;
-    if (task.kind !== "shotVideoBatch" || task.parentTaskId) {
-      throw new ProductionStateError("只有镜头视频批量任务支持暂停、继续和终止", {
+    if (!["shotVideoBatch", "directorPipeline"].includes(task.kind) || task.parentTaskId) {
+      throw new ProductionStateError("只有 AI 导演和镜头视频批量任务支持暂停、继续和终止", {
         code: "TASK_CONTROL_UNSUPPORTED",
         httpStatus: 409
       });
     }
     const normalizedAction = String(action || "").trim().toLowerCase();
+    if (task.kind === "directorPipeline") return this.controlDirectorTask(task, normalizedAction);
     if (normalizedAction === "terminate") {
       return this.finishControlledTask({
         projectId: safeProjectId,
@@ -684,7 +870,8 @@ export class DurableTaskManager {
       const index = await this.taskStore.readIndex(safeProjectId, safeRunId);
       const requested = this.taskStore.getTaskUnlocked(index, safeTaskId);
       const root = index.tasks[requested.ownerTaskId] || requested;
-      const ids = [root.taskId, ...(root.childTaskIds || [])];
+      // Capture children first so the parent includes their latest reported usage.
+      const ids = [...(root.childTaskIds || []), root.taskId];
       const now = this.timestamp();
       for (const id of ids) {
         const current = index.tasks[id];
@@ -696,7 +883,7 @@ export class DurableTaskManager {
           lastProgressAt: now,
           watchdogDueAt: null,
           error: reason,
-          usage: id === root.taskId ? aggregateChildUsage(index, root) || current.usage : current.usage
+          usage: id === root.taskId ? aggregateChildUsage(index, root) || this.taskUsage(current) : this.taskUsage(current)
         }, { activeOnly: true });
         this.taskStore.appendEventUnlocked(index, { type: `task.${status}`, taskId: id, createdAt: now });
         if (current.targetArtifactIds.length === 1) {
@@ -715,6 +902,7 @@ export class DurableTaskManager {
       await this.taskStore.writeIndexUnlocked(index);
       return ids;
     });
+    for (const id of abandonedIds) this.stopDirectorRuntime(id, reason);
     await this.withSchedulerLock(async () => {
       for (const id of abandonedIds) {
         const runtime = this.runtimes.get(id);
@@ -722,6 +910,8 @@ export class DurableTaskManager {
         if (runtime?.active && pool?.queue.includes(id)) {
           pool.queue = pool.queue.filter((queuedId) => queuedId !== id);
           this.queuedBytes = Math.max(0, this.queuedBytes - runtime.inputBytes);
+          this.runtimes.delete(id);
+          runtime.finished?.resolve();
         }
         if (runtime) runtime.active = false;
         this.clearWatchdog(id);
@@ -876,8 +1066,12 @@ export class DurableTaskManager {
 
   armWatchdog(taskId, dueAt) {
     this.clearWatchdog(taskId);
+    const runtime = this.runtimes.get(taskId);
+    const root = this.runtimes.get(runtime?.ownerTaskId);
+    if (root?.controlState && root.controlState !== "running") return;
     const delay = Math.max(1, Date.parse(dueAt) - Date.now());
     const timer = setTimeout(() => {
+      if (this.watchdogs.get(taskId) !== timer) return;
       void this.finishWithStatus(taskId, "failed", {
         code: "TASK_STALLED",
         category: "timeout",
@@ -1104,8 +1298,13 @@ function aggregateChildUsage(index, task) {
   let totalTokens = 0;
   let costCny = 0;
   let costKnown = true;
+  const hasCompleteness = usages.some((usage) => usage.reportedCalls !== undefined);
+  let reportedCalls = 0;
+  let unreportedCalls = 0;
   for (const usage of usages) {
     calls += Number(usage.calls) || 0;
+    reportedCalls += Number(usage.reportedCalls ?? usage.calls) || 0;
+    unreportedCalls += Number(usage.unreportedCalls) || 0;
     promptTokens += Number(usage.promptTokens) || 0;
     completionTokens += Number(usage.completionTokens) || 0;
     totalTokens += Number(usage.totalTokens) || 0;
@@ -1133,6 +1332,7 @@ function aggregateChildUsage(index, task) {
   }
   return {
     calls,
+    ...(hasCompleteness ? { reportedCalls, unreportedCalls, usageComplete: unreportedCalls === 0 } : {}),
     promptTokens,
     completionTokens,
     totalTokens,
@@ -1143,4 +1343,26 @@ function aggregateChildUsage(index, task) {
       costCny: item.costCny === null ? null : Math.round(item.costCny * 100) / 100
     }))
   };
+}
+
+function directorControlError(action) {
+  return Object.assign(new Error(action === "pause"
+    ? "AI 导演已暂停；当前请求已中断，继续将重新执行未完成阶段，可能再次计费。"
+    : "AI 导演已终止；当前连接已中断，供应商可能已产生费用，未返回的用量仍未知。"), {
+    code: action === "pause" ? "DIRECTOR_STAGE_PAUSED" : "DIRECTOR_RUN_TERMINATED",
+    category: "control-plane"
+  });
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function settleWithin(promise, timeoutMs) {
+  let timer;
+  try {
+    await Promise.race([promise, new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); })]);
+  } finally { clearTimeout(timer); }
 }

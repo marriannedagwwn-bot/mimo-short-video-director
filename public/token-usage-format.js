@@ -16,10 +16,16 @@ export function mergeStageUsage(entries = []) {
   let promptTokens = 0;
   let completionTokens = 0;
   let totalTokens = 0;
+  let reportedCalls = 0;
+  let unreportedCalls = 0;
+  let usageComplete = true;
   let costCny = 0;
   let costKnown = true;
   for (const item of list) {
     calls += Number(item.calls) || 0;
+    reportedCalls += Number(item.reportedCalls ?? item.calls) || 0;
+    unreportedCalls += Number(item.unreportedCalls) || 0;
+    if (item.usageComplete === false || Number(item.unreportedCalls) > 0) usageComplete = false;
     promptTokens += Number(item.promptTokens) || 0;
     completionTokens += Number(item.completionTokens) || 0;
     totalTokens += Number(item.totalTokens) || 0;
@@ -34,8 +40,11 @@ export function mergeStageUsage(entries = []) {
     promptTokens,
     completionTokens,
     totalTokens,
-    costCny: costKnown ? Math.round(costCny * 100) / 100 : null,
-    costKnown
+    reportedCalls,
+    unreportedCalls,
+    usageComplete,
+    costCny: costKnown && usageComplete ? Math.round(costCny * 100) / 100 : null,
+    costKnown: costKnown && usageComplete
   };
 }
 
@@ -62,9 +71,15 @@ export function formatCostCny(value) {
 export function formatStageUsageSuffix(usage, { label = "本次消耗" } = {}) {
   if (!usage || typeof usage !== "object") return "";
   const totalTokens = Number(usage.totalTokens);
-  if (!Number.isFinite(totalTokens) || totalTokens <= 0) return "";
-  const parts = [`${label} ${formatTokens(totalTokens)} tokens`];
-  if (usage.costKnown) {
+  const unreportedCalls = Math.max(0, Math.floor(Number(usage.unreportedCalls) || 0));
+  const incomplete = usage.usageComplete === false || unreportedCalls > 0;
+  const parts = [];
+  if (Number.isFinite(totalTokens) && totalTokens > 0) {
+    parts.push(`${incomplete ? "已确认消耗" : label} ${formatTokens(totalTokens)} tokens`);
+  }
+  if (incomplete) parts.push(unreportedCalls ? `${unreportedCalls} 次请求未返回用量` : "部分请求未返回用量");
+  if (!parts.length) return "";
+  if (usage.costKnown && !incomplete) {
     const cost = formatCostCny(usage.costCny);
     if (cost) parts.push(`约 ${cost}`);
   }

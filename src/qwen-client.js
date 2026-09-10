@@ -1,7 +1,7 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
 import { ModelResponseError, parseModelJson, parseStrictModelJson } from "./mimo-client.js";
 import { recordModelUsage } from "./token-usage.js";
-import { afterDurableProviderCall, beforeDurableProviderCall, durableTaskHeartbeat } from "./durable-task-context.js";
+import { afterDurableProviderCall, beforeDurableProviderCall, durableTaskHeartbeat, durableProviderAbortSignal, throwIfDurableTaskAborted } from "./durable-task-context.js";
 import { SseStreamIncompleteError, readSseCompletion } from "./sse-stream.js";
 
 export class QwenClient {
@@ -195,14 +195,20 @@ export class QwenClient {
         ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {})
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(effectiveTimeoutMs)
+      signal: durableProviderAbortSignal(effectiveTimeoutMs)
+    }).catch((error) => {
+      throwIfDurableTaskAborted();
+      throw error;
     });
     const headerRequestId = response.headers.get("x-request-id")
       || response.headers.get("request-id")
       || "";
     // 错误响应体是普通 JSON 而不是 SSE，所以这一分支必须留在读流之前。
     if (!response.ok) {
-      const errorBody = await response.text();
+      const errorBody = await response.text().catch((error) => {
+        throwIfDurableTaskAborted();
+        throw error;
+      });
       await afterDurableProviderCall("model_provider_response");
       throw new ModelResponseError(
         `${providerName} 请求失败（${response.status}）`,
@@ -231,6 +237,10 @@ export class QwenClient {
     try {
       stream = await readSseCompletion(response.body, { onProgress });
     } catch (error) {
+      // Only account structured usage actually received before disconnection.
+      // The success path below cannot also run after this catch throws.
+      recordModelUsage({ provider: providerName, model: body.model, usage: error?.partialUsage });
+      throwIfDurableTaskAborted();
       await afterDurableProviderCall("model_provider_response");
       // 连接被对端切断（undici 的 TypeError: terminated）时，已收到的内容挂在
       // error.partialRaw 上。把规模带进错误消息，让日志能区分「刚开始就断」与

@@ -64,6 +64,129 @@ test("没有模型调用的请求不返回 usage", async () => {
   assert.equal(usage, null);
 });
 
+test("onUsage 同步收到当前作用域累计快照，形状和最终 usage 一致", async () => {
+  const snapshots = [];
+  const { result, usage } = await runWithUsageAccounting(async () => {
+    recordModelUsage({ provider: "Qwen", model: "qwen3.7-max", usage: { prompt_tokens: 1000, completion_tokens: 200 } });
+    assert.equal(snapshots.length, 1);
+    assert.equal(snapshots[0].totalTokens, 1200);
+    recordModelUsage({ provider: "Qwen", model: "qwen3.7-max", usage: { prompt_tokens: 500, completion_tokens: 100 } });
+    assert.equal(snapshots.length, 2);
+    assert.equal(snapshots[1].totalTokens, 1800);
+    return "done";
+  }, { prices: PRICES, onUsage: (summary) => snapshots.push(summary) });
+
+  assert.equal(result, "done");
+  assert.deepEqual(snapshots[1], usage);
+  assert.equal(usage.costCny, 0.01);
+  assert.equal(snapshots[0].calls, 1);
+  assert.equal(snapshots[0].byModel[0].totalTokens, 1200);
+});
+
+test("onUsage 修改快照不会污染后续累计或最终记账", async () => {
+  const observedTotals = [];
+  const observerReceivers = [];
+  const { usage } = await runWithUsageAccounting(async () => {
+    recordModelUsage({ provider: "Qwen", model: "qwen3.7-max", usage: { total_tokens: 10 } });
+    recordModelUsage({ provider: "Qwen", model: "qwen3.7-max", usage: { total_tokens: 20 } });
+  }, { prices: PRICES, onUsage(summary) {
+    observerReceivers.push(this);
+    observedTotals.push(summary.totalTokens);
+    summary.totalTokens = 999;
+    summary.byModel[0].totalTokens = 999;
+    summary.byModel[0].model = "changed";
+    summary.byModel.push({ model: "injected", totalTokens: 999 });
+  } });
+
+  assert.deepEqual(observedTotals, [10, 30]);
+  assert.deepEqual(observerReceivers, [undefined, undefined]);
+  assert.equal(usage.totalTokens, 30);
+  assert.equal(usage.byModel.length, 1);
+  assert.equal(usage.byModel[0].totalTokens, 30);
+  assert.equal(usage.byModel[0].model, "qwen3.7-max");
+});
+
+test("并发及嵌套作用域的 onUsage 只收到各自的记账", async () => {
+  const aReady = Promise.withResolvers();
+  const bReady = Promise.withResolvers();
+  const observedA = [];
+  const observedB = [];
+  const observedChild = [];
+  const [a, b] = await Promise.all([
+    runWithUsageAccounting(async () => {
+      recordModelUsage({ model: "a", usage: { total_tokens: 10 } });
+      aReady.resolve();
+      await bReady.promise;
+      const child = await runWithUsageAccounting(async () => {
+        recordModelUsage({ model: "child", usage: { total_tokens: 1000 } });
+      }, { onUsage: (summary) => observedChild.push(summary.totalTokens) });
+      assert.equal(child.usage.totalTokens, 1000);
+      recordModelUsage({ model: "a", usage: { total_tokens: 20 } });
+    }, { onUsage: (summary) => observedA.push(summary.totalTokens) }),
+    runWithUsageAccounting(async () => {
+      await aReady.promise;
+      recordModelUsage({ model: "b", usage: { total_tokens: 100 } });
+      bReady.resolve();
+      await Promise.resolve();
+      recordModelUsage({ model: "b", usage: { total_tokens: 200 } });
+    }, { onUsage: (summary) => observedB.push(summary.totalTokens) })
+  ]);
+
+  assert.deepEqual(observedA, [10, 30]);
+  assert.deepEqual(observedB, [100, 300]);
+  assert.deepEqual(observedChild, [1000]);
+  assert.equal(a.usage.totalTokens, 30);
+  assert.equal(b.usage.totalTokens, 300);
+});
+
+test("onUsage 同步抛错和异步拒绝都不改变业务返回或累计", async () => {
+  let notifications = 0;
+  const { result, usage } = await runWithUsageAccounting(async () => {
+    recordModelUsage({ usage: { total_tokens: 10 } });
+    recordModelUsage({ usage: { total_tokens: 20 } });
+    return "still fine";
+  }, { onUsage() {
+    notifications += 1;
+    if (notifications === 1) throw new Error("observer sync failure");
+    return Promise.reject(new Error("observer async failure"));
+  } });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(notifications, 2);
+  assert.equal(result, "still fine");
+  assert.equal(usage.totalTokens, 30);
+});
+
+test("onUsage 不等待异步观察，终止错误仍携带已确认的 usage", async () => {
+  const pendingObserver = Promise.withResolvers();
+  const original = new DOMException("用户终止", "AbortError");
+  let observed;
+  const error = await runWithUsageAccounting(async () => {
+    recordModelUsage({ usage: { total_tokens: 10 } });
+    throw original;
+  }, { onUsage(summary) {
+    observed = summary;
+    return pendingObserver.promise;
+  } }).then(() => null, (caught) => caught);
+
+  pendingObserver.resolve();
+  assert.equal(error, original);
+  assert.equal(observed.totalTokens, 10);
+  assert.deepEqual(readModelUsageFromError(error), observed);
+  assert.equal(Object.keys(error).includes("usage"), false);
+});
+
+test("缺失或无效 usage 不触发 onUsage，也不伪造零消耗", async () => {
+  const snapshots = [];
+  const { usage } = await runWithUsageAccounting(async () => {
+    recordModelUsage({ usage: null });
+    recordModelUsage({ usage: { unknown: 10 } });
+  }, { onUsage: (summary) => snapshots.push(summary) });
+
+  assert.deepEqual(snapshots, []);
+  assert.equal(usage, null);
+});
+
 test("并发的两个记账作用域互不串账", async () => {
   const scope = (model, tokens) => runWithUsageAccounting(async () => {
     await new Promise((resolve) => { setTimeout(resolve, 5); });

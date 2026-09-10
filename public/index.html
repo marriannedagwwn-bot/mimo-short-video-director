@@ -124,10 +124,19 @@
           <span>导演约束</span>
           <p>人物、任务、道具、对白和视听表达重做；母题、结构功能和情绪价值不被误杀。</p>
         </div>
-        <button class="primary-button" id="runWorkflow" type="button" disabled>
-          <span>启动 AI 导演</span>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
-        </button>
+        <div class="director-controls" id="directorControls" role="group" aria-label="AI 导演运行控制">
+          <button class="primary-button" id="runWorkflow" type="button" disabled>
+            <span aria-live="polite">启动 AI 导演</span>
+            <svg id="directorStartArrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+          </button>
+          <button class="director-icon-button hidden" id="terminateDirector" type="button" aria-label="终止本次 AI 导演" title="终止本次 AI 导演" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          </button>
+          <button class="director-icon-button hidden" id="pauseDirector" type="button" aria-label="暂停当前阶段" title="暂停当前阶段" aria-describedby="directorControlHint" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg>
+          </button>
+        </div>
+        <p class="director-control-hint hidden" id="directorControlHint">暂停会断开当前请求；继续会重新执行当前阶段，可能再次计费。</p>
         <button class="outline-button hidden" id="releaseActiveTasks" type="button">放弃旧任务并开始新 Run</button>
         <p class="error-message" id="errorMessage" role="alert"></p>
       </aside>
@@ -137,7 +146,7 @@
       <div class="pipeline-head">
         <div><p class="eyebrow">DIRECTOR PIPELINE</p><h2>从原片证据到新故事</h2></div>
         <div class="pipeline-head-meta">
-          <p class="story-status" id="pipelineUsage"></p>
+          <p class="story-status" id="pipelineUsage" role="status" aria-live="polite"></p>
           <button class="outline-button hidden" id="exportButton" type="button">导出完整 JSON</button>
         </div>
       </div>

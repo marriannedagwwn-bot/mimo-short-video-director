@@ -109,3 +109,15 @@ test("director completion status distinguishes reused stages from paid model cal
     "AI 导演阶段完成 · 复用 3 个已有阶段 · 本次实际调用 2 次模型 · 本次消耗 58,854 tokens · 约 ¥0.66"
   );
 });
+
+test("server reusedStages remains authoritative after multiple attempts of one stage", () => {
+  const resumed = directorTask(5, {
+    progress: { completedStages: 5, totalStages: 5, reusedStages: 2 },
+    childTaskIds: ["first", "paused", "retried", "fourth", "fifth", "sixth"],
+    usage: { calls: 6 }
+  });
+  assert.match(formatDirectorCompletionStatus(resumed), /复用 2 个已有阶段.*实际调用 6 次模型/);
+  resumed.progress.reusedStages = 0;
+  resumed.childTaskIds = ["only-one"];
+  assert.doesNotMatch(formatDirectorCompletionStatus(resumed), /复用/);
+});

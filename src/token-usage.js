@@ -64,6 +64,15 @@ export function recordModelUsage({ provider = "", model = "", usage = null } = {
       model: String(model || "").trim(),
       ...normalized
     });
+    const onUsage = store.onUsage;
+    if (typeof onUsage === "function") {
+      // 每次重新汇总产生独立快照；观察者无法通过改写它污染底层 calls。
+      const summary = summarizeStore(store, store.prices);
+      if (summary) {
+        // 同步交出当前用量，不等待旁路异步工作，也不让拒绝变成未处理异常。
+        Promise.resolve(onUsage(summary)).catch(warnOnce);
+      }
+    }
   } catch (error) {
     warnOnce(error);
   }
@@ -183,9 +192,10 @@ export function readModelUsageFromError(error) {
  * fn 抛错时错误原样向上抛——记账不改变任何失败语义；
  * 但失败前已经花掉的 token 是真实费用，会挂到错误上一并报出来，
  * 不能让用户以为一次失败的生成是免费的。
+ * onUsage 可同步取得每次入账后的累计快照；观察失败不改变生成或记账结论。
  */
-export async function runWithUsageAccounting(fn, { prices = new Map() } = {}) {
-  const store = { calls: [] };
+export async function runWithUsageAccounting(fn, { prices = new Map(), onUsage = null } = {}) {
+  const store = { calls: [], prices, onUsage };
   return storage.run(store, async () => {
     let result;
     try {

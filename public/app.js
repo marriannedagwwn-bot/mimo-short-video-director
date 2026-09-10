@@ -5,7 +5,8 @@ import { downloadProductionPackage } from "./production-package-download.js";
 import { candidateReviewHeadline, storyReviewHeadline, storyReviewMetrics } from "./story-review-metrics.js";
 import {
   createDirectorArtifactSynchronizer,
-  formatDirectorCompletionStatus
+  directorControlView,
+  directorTaskView
 } from "./director-pipeline-ui.js";
 import {
   isActiveTask, latestTaskForTarget, rememberTaskSnapshot, taskStatusView, shotVideoBatchStatusText
@@ -118,6 +119,8 @@ const state = {
   characterReferenceStatuses: {},
   characterAudioStatuses: {},
   taskSnapshots: {},
+  directorTaskId: "",
+  directorControlRequest: null,
   production: emptyProductionState(),
   characterImageGeneration: {
     open: false,
@@ -205,6 +208,8 @@ const elements = {
   frames: $("#frames"), frameStatus: $("#frameStatus"), replace: $("#replaceVideo"), transcript: $("#transcript"),
   fixedCharacter: $("#fixedCharacter"), vertical: $("#vertical"), constraints: $("#constraints"), characterExpressionRules: $("#characterExpressionRules"), variantCount: $("#variantCount"),
   run: $("#runWorkflow"), releaseActiveTasks: $("#releaseActiveTasks"), error: $("#errorMessage"), modelState: $("#modelState"),
+  directorControls: $("#directorControls"), directorStartArrow: $("#directorStartArrow"),
+  terminateDirector: $("#terminateDirector"), pauseDirector: $("#pauseDirector"), directorControlHint: $("#directorControlHint"),
   pipelineUsage: $("#pipelineUsage"),
   openModelSettings: $("#openModelSettings"), modelSettingsModal: $("#modelSettingsModal"), closeModelSettings: $("#closeModelSettings"),
   modelStageList: $("#modelStageList"), resetModelSettings: $("#resetModelSettings"), saveModelSettings: $("#saveModelSettings"),
@@ -403,6 +408,11 @@ function bindEvents() {
   elements.dropzone.addEventListener("drop", (event) => event.dataTransfer.files[0] && handleFile(event.dataTransfer.files[0]));
   elements.replace.addEventListener("click", () => elements.input.click());
   elements.run.addEventListener("click", runWorkflow);
+  elements.terminateDirector.addEventListener("click", () => controlDirectorPipeline("terminate"));
+  elements.pauseDirector.addEventListener("click", () => {
+    const task = state.taskSnapshots[state.directorTaskId];
+    void controlDirectorPipeline(directorControlView(task).pauseAction);
+  });
   elements.releaseActiveTasks.addEventListener("click", forceReleaseActiveTasks);
   elements.export.addEventListener("click", exportJson);
   elements.openModelSettings.addEventListener("click", openModelSettings);
@@ -870,6 +880,8 @@ async function runWorkflow() {
   const creatorProfile = profile();
   if (!creatorProfile.fixedCharacter || !creatorProfile.vertical) return showError("请填写固定角色和垂直赛道。 ");
   state.running = true;
+  state.directorTaskId = "";
+  state.directorControlRequest = null;
   elements.pipelineUsage.textContent = "";
   showError("");
   setRunning(true);
@@ -948,7 +960,7 @@ async function runWorkflow() {
         persistActiveProductionRun();
       }
       assertWorkspaceCurrent(workspaceEpoch);
-    const created = await createDurableTask("directorPipeline", shared);
+      const created = await createDurableTask("directorPipeline", shared);
       task = created.task;
     }
     elements.releaseActiveTasks.classList.remove("hidden");
@@ -956,11 +968,7 @@ async function runWorkflow() {
     recordStageUsage(completedTask.usage);
     await directorArtifactSynchronizer.sync(completedTask);
     assertWorkspaceCurrent(workspaceEpoch);
-    elements.pipelineUsage.textContent = formatDirectorCompletionStatus(
-      completedTask,
-      formatStageUsageSuffix(completedTask.usage)
-    );
-    elements.pipelineUsage.className = "story-status ready";
+    renderDirectorTaskStatus(completedTask);
     elements.export.classList.remove("hidden");
     elements.variants.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
@@ -971,13 +979,7 @@ async function runWorkflow() {
       showError(taskCapacityMessage(error), "notice");
       return;
     }
-    const active = document.querySelector(".pipeline li.active");
-    if (active) setStage(active.dataset.stage, "error");
-    elements.pipelineUsage.textContent = error.task?.usage
-      ? `AI 导演阶段失败${formatStageUsageSuffix(error.task.usage, { label: "失败前已消耗" })}`
-      : "AI 导演阶段失败";
-    elements.pipelineUsage.className = "story-status error";
-    showError(error.message || "工作流执行失败");
+    renderDirectorTaskError(error, "工作流执行失败");
   } finally {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     state.running = false;
@@ -1180,6 +1182,10 @@ async function updateDirectorTaskProgress(task) {
 }
 
 function renderDirectorTaskStatus(task) {
+  // A control response may be newer than the poll which is still synchronizing
+  // completed Artifacts. Always render the accepted snapshot for this task.
+  task = state.taskSnapshots[task.taskId] || task;
+  state.directorTaskId = task.taskId;
   const artifactToStage = {
     referenceAnalysis: "analysis",
     sourceScriptReconstruction: "script",
@@ -1191,23 +1197,79 @@ function renderDirectorTaskStatus(task) {
   const completedCount = Number(task.progress?.completedStages) || 0;
   const order = ["analysis", "script", "brief", "guardrails", "variants"];
   order.forEach((stage, index) => setStage(stage, index < completedCount ? "done" : ""));
-  if (["queued", "running"].includes(task.status) && artifactToStage[currentArtifact]) {
-    setStage(artifactToStage[currentArtifact], "active");
-  }
   const model = Object.values(task.modelSnapshot || {})
     .map((item) => `${item.provider || ""} ${modelName(item.model || "")}`.trim())
     .filter(Boolean)
     .join(" / ");
-  elements.pipelineUsage.textContent = task.status === "completed"
-    ? formatDirectorCompletionStatus(task, formatStageUsageSuffix(task.usage))
-    : !isActiveTask(task)
-      ? taskStatusView(task).message
-      : task.status === "queued"
-    ? `AI 导演任务排队中${model ? ` · ${model}` : ""}`
-    : `AI 导演执行中 ${completedCount}/5${model ? ` · ${model}` : ""}`;
-  elements.pipelineUsage.className = `story-status ${taskStatusView(task).tone}`;
-  if (!isActiveTask(task) && task.status !== "completed" && artifactToStage[currentArtifact]) {
-    setStage(artifactToStage[currentArtifact], "error");
+  const view = directorTaskView(task, { modelLabel: model });
+  elements.pipelineUsage.textContent = view.message;
+  elements.pipelineUsage.className = `story-status ${view.tone}`;
+  // currentStage can still refer to the stage just committed at a boundary.
+  // A pause/stop must not erase its completed presentation.
+  if (artifactToStage[currentArtifact] && order.indexOf(artifactToStage[currentArtifact]) >= completedCount) {
+    setStage(artifactToStage[currentArtifact], view.stageStatus);
+  }
+  renderDirectorControls(task);
+}
+
+function renderDirectorTaskError(error, fallback) {
+  if (error.task) {
+    renderDirectorTaskStatus(error.task);
+    showError(error.task.status === "cancelled" ? "" : error.message || fallback,
+      ["interrupted", "conflicted", "abandoned"].includes(error.task.status) ? "notice" : "error");
+    return;
+  }
+  const active = document.querySelector(".pipeline li.active");
+  if (active?.dataset.stage) setStage(active.dataset.stage, "error");
+  elements.pipelineUsage.textContent = fallback;
+  elements.pipelineUsage.className = "story-status error";
+  showError(error.message || fallback);
+}
+
+function renderDirectorControls(task = state.taskSnapshots[state.directorTaskId]) {
+  const view = directorControlView(task, {
+    starting: state.running && !task,
+    pendingAction: state.directorControlRequest?.action || ""
+  });
+  elements.directorControls.classList.toggle("active", view.visible);
+  elements.run.classList.toggle("running", view.visible);
+  elements.run.querySelector("span").textContent = view.label;
+  elements.directorStartArrow.classList.toggle("hidden", view.visible);
+  elements.directorControlHint.classList.toggle("hidden", !view.visible);
+  elements.run.disabled = state.running || isActiveTask(task);
+  if (!elements.run.disabled) validateReady();
+  for (const button of [elements.terminateDirector, elements.pauseDirector]) button.classList.toggle("hidden", !view.visible);
+  elements.terminateDirector.disabled = view.stopDisabled;
+  elements.pauseDirector.disabled = view.pauseDisabled;
+  elements.pauseDirector.setAttribute("aria-label", view.pauseLabel);
+  elements.pauseDirector.setAttribute("title", view.pauseLabel);
+  elements.pauseDirector.innerHTML = view.paused
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg>';
+}
+
+async function controlDirectorPipeline(action) {
+  const task = state.taskSnapshots[state.directorTaskId];
+  if (!task || state.directorControlRequest) return;
+  const view = directorControlView(task);
+  if (action === "terminate" ? view.stopDisabled : view.pauseDisabled || action !== view.pauseAction) return;
+  const request = { taskId: task.taskId, action, epoch: browserWorkspace.epoch };
+  state.directorControlRequest = request;
+  renderDirectorControls(task);
+  showError("");
+  try {
+    const updated = await controlDurableTask(task.taskId, action);
+    if (!browserWorkspace.isCurrent(request.epoch) || state.directorTaskId !== request.taskId) return;
+    updateTaskSnapshot(updated);
+    await updateDirectorTaskProgress(updated);
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(request.epoch) || state.directorTaskId !== request.taskId) return;
+    showError(error.message || "AI 导演控制失败，请重试。");
+  } finally {
+    if (state.directorControlRequest === request) {
+      state.directorControlRequest = null;
+      renderDirectorControls();
+    }
   }
 }
 
@@ -1260,6 +1322,8 @@ function resetDirectorClientState() {
   state.characterAudioStatuses = {};
   state.productionTasks = {};
   state.taskSnapshots = {};
+  state.directorTaskId = "";
+  state.directorControlRequest = null;
   state.production = emptyProductionState();
   localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
   state.selectedVariantId = null;
@@ -5455,10 +5519,13 @@ function reveal(element) { element.classList.remove("hidden"); }
 function setStage(stage, status) {
   const element = document.querySelector(`[data-stage="${stage}"]`);
   element.className = status;
-  element.querySelector("b").textContent = ({ active: "生成中", done: "完成", error: "失败" })[status] || "等待";
+  element.querySelector("b").textContent = ({ active: "生成中", done: "完成", error: "失败", paused: "已暂停", stopped: "已停止" })[status] || "等待";
 }
 function resetPipeline() { document.querySelectorAll(".pipeline li").forEach((item) => { item.className = ""; item.querySelector("b").textContent = "等待"; }); }
-function setRunning(running) { elements.run.classList.toggle("running", running); elements.run.querySelector("span").textContent = running ? "AI 导演工作中…" : "启动 AI 导演"; elements.run.disabled = running; }
+function setRunning(running) {
+  state.running = running;
+  renderDirectorControls();
+}
 function setStoryRunning(running) {
   elements.storyGenerate.classList.toggle("running", running);
   elements.storyGenerate.querySelector("span").textContent = running ? "完整剧情生成中…" : `用 ${storyModelLabel()} 生成完整剧情`;
@@ -6200,6 +6267,7 @@ async function restoreActiveProductionRun(active, workspaceEpoch = browserWorksp
       markRestoredTaskRunning(task);
       void attachRestoredStandaloneTask(task);
     }
+    syncDirectorTaskStatus();
     return true;
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return false;
@@ -6215,18 +6283,10 @@ async function attachRestoredDirectorPipeline(task) {
     const completed = await waitForDurableTask(task, updateDirectorTaskProgress);
     await directorArtifactSynchronizer.sync(completed);
     assertWorkspaceCurrent(workspaceEpoch);
-    elements.pipelineUsage.textContent = formatDirectorCompletionStatus(
-      completed,
-      formatStageUsageSuffix(completed.usage)
-    );
-    elements.pipelineUsage.className = "story-status ready";
+    renderDirectorTaskStatus(completed);
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
-    elements.pipelineUsage.textContent = error.task?.usage
-      ? `AI 导演阶段中断${formatStageUsageSuffix(error.task.usage, { label: "中断前已消耗" })}`
-      : (error.message || "AI 导演阶段中断");
-    elements.pipelineUsage.className = "story-status error";
-    showError(error.message || "AI 导演任务未能继续");
+    renderDirectorTaskError(error, "AI 导演任务未能继续");
   } finally {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     state.running = false;

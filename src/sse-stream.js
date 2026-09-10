@@ -14,7 +14,7 @@
 const DEFAULT_MAX_RAW_CHARS = 200_000;
 
 export class SseStreamIncompleteError extends Error {
-  constructor(message, { raw = "", partialContent = "", partialLength = 0 } = {}) {
+  constructor(message, { raw = "", partialContent = "", partialLength = 0, partialUsage = null } = {}) {
     super(message);
     this.name = "SseStreamIncompleteError";
     this.code = "MODEL_STREAM_INCOMPLETE";
@@ -22,6 +22,7 @@ export class SseStreamIncompleteError extends Error {
     // 只带长度不带正文：半截内容绝不能被当成可用结果传下去，留长度是为了诊断
     // 「断在哪里」。调用方需要正文时自己从 raw 里取。
     this.partialLength = partialLength || partialContent.length;
+    this.partialUsage = partialUsage;
   }
 }
 
@@ -122,6 +123,7 @@ export async function readSseCompletion(body, { maxRawChars = DEFAULT_MAX_RAW_CH
       error.partialRaw = truncateRaw(raw, maxRawChars);
       error.partialContentLength = content.length;
       error.partialChunks = chunks;
+      error.partialUsage = usage;
     }
     return error;
   };
@@ -159,7 +161,7 @@ export async function readSseCompletion(body, { maxRawChars = DEFAULT_MAX_RAW_CH
   if (!sawDone && !finishReason) {
     throw new SseStreamIncompleteError(
       `流式响应在收到结束标志前中断（已接收 ${content.length} 字，${chunks} 个数据块）`,
-      { raw: keptRaw, partialLength: content.length }
+      { raw: keptRaw, partialLength: content.length, partialUsage: usage }
     );
   }
 

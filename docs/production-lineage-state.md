@@ -120,6 +120,20 @@ Run Coordinator 是显式不可重入的 FIFO 锁。持锁代码只能使用 `co
 
 调度器分为 workflow/text（2 running、8 queued）和 media（4 running、8 queued），queued 请求体总预算默认 140MB。超出限制返回 `TASK_CAPACITY_EXCEEDED`，不创建失败 Task。任务没有总墙钟 deadline：provider 调用前把 watchdog 设置为 provider 自身 timeout/poll timeout 加 120 秒，本地校验、合并和 commit 使用 300 秒无进展窗口；每次 provider 返回、流事件和阶段进展都会续期。watchdog 触发后 Task 变为 `failed/TASK_STALLED` 并释放目标，错误明确提示远端调用可能已经提交并计费。
 
+AI 导演根任务使用 `POST /api/tasks/:taskId/control`（请求体 `projectId/runId/action`）执行暂停、继续和终止。控制状态保存在 `progress.controlState`，不是新的 Task status：
+
+| 操作 | 父任务状态 | 当前请求与后续执行 |
+| --- | --- | --- |
+| pause | running + pausing → paused；queued 可直接 paused | 先阻止新调用/commit，再中断当前 HTTP/SSE；子尝试 interrupted，不自动重试 |
+| resume | 原父任务 running；尚排队的保持 queued | 使用新的 AbortController 与子 taskId/requestId，重新执行首个未完成阶段 |
+| terminate | terminating → cancelled | 中断连接，禁止迟到 commit，释放 claims，保留 Run 与已完成 Artifact |
+
+暂停期间五个写目标继续被原父任务 claim，创建时输入和 provider/model 仍冻结在当前 Node 内存中。已运行的父任务暂停时保留一个 workflow 槽位；未派发的 queued 任务不会因暂停/继续被提前启动 watchdog。继续时依次复用 current 阶段，revision、digest 与内容不变。当前阶段可能包含不止一次文本调用（例如候选选源与正文）；暂停后重新执行的是整个未完成阶段，可能再次计费。浏览器刷新重新 attach 并显示 paused，不隐式继续；Node 重启不能恢复内存上下文，仍按 v1 reconciliation 变为 interrupted 或已提交结果对应的 completed。
+
+Qwen、MiMo、DeepSeek 使用任务 AbortSignal 与原 provider timeout 的组合；取消覆盖等待响应头和读取响应体。控制先在 Run 锁内改变门禁，再在锁外 abort/唤醒；controller 和 resume gate 必须绑定该次转移，连续控制不能唤醒错误 gate。commit 保留 active owner、冻结依赖与 revision 复核。暂停无 watchdog；终止、强制释放和页面清理均需唤醒暂停 Runner，以便释放当前进程的槽位。HTTP 连接关闭不证明供应商已停止计算，也不提供远端请求续传或自动恢复。
+
+每个子尝试只记录实际收到的结构化 usage；SSE 断流前已经收到的 usage 仍计账，未收到的不根据字符数估算。fetch 派发点记录 `calls`，guard 后但 fetch 前取消不算已派发。`reportedCalls`、`unreportedCalls` 和 `usageComplete` 区分已知/未知；存在未知时 `costCny=null/costKnown=false`，页面显示已确认 token 和“次请求未返回用量”。父任务按全部子尝试汇总（包括暂停产生的 interrupted 子任务），成功继续不会覆盖此前用量，也不会重复累计同一条回报。
+
 `shotVideoBatch` 是当前进程内的 Plan 级顺序父任务。创建时一次 claim 当前 Variant 的全部 `shotVideo:<variantId>:<shotId>` 目标，冻结 current Animation Plan lineage、启动时的镜头视频 provider/model 和全能参考配置；每镜复用既有 `shotVideo` Runner 独立提交 Artifact，父任务只持久化调度进度和脱敏结果引用，不复制 Prompt 或媒体正文。已存在且 current 的镜头视频标为 `reused`，其余镜头在创建时先逐镜预检参考素材上限（角色参考图与上一镜抽帧共用 9 图上限、每镜语音 ≤3 段且总时长 ≤15 秒），任一镜超限即拒绝创建并一次列全，不产生供应商调用；通过预检后按 Plan 顺序生成，运行期单镜参考素材问题只失败该镜、不中止整批；每个子任务完成后立即刷新父任务 progress，因此浏览器刷新后可从 `tasks/index.json` 重新 attach，并从 current Artifact 恢复已完成视频。
 
 批量控制只允许 `pause | resume | terminate`。暂停保持父任务 `running` 和全部 claims，只在镜头边界阻止下一次 provider 提交；正在轮询或下载的当前镜头不会被强停。终止把父子任务标为 `cancelled`、释放 claims 并禁止迟到结果 commit，但已经提交给供应商的请求可能继续运行和计费。它不是跨进程 batch queue：Node 重启后仍按 Durable Task v1 规则变为 `interrupted`，不会从远端 task id 接管或自动续跑。

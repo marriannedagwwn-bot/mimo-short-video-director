@@ -3,6 +3,7 @@ import { AttemptStore } from "./attempt-store.js";
 import { ModelResponseError, parseSingleJsonObject } from "./mimo-client.js";
 import { ModelPipelineError } from "./model-errors.js";
 import { OutputContractError } from "./validation.js";
+import { throwIfDurableTaskAborted } from "./durable-task-context.js";
 
 const DEFAULT_FULL_STORY_PROVIDER_CALLS = 2;
 
@@ -101,6 +102,7 @@ export class ModelCallCoordinator {
         });
         return value;
       } catch (error) {
+        throwIfDurableTaskAborted();
         const issue = classifyAttemptError(error);
         const attempt = this.recordAttempt({
           operationId,

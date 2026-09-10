@@ -599,18 +599,21 @@ function directorPipelineTaskDefinition({ projectId, runId, input }) {
         inputDigest,
         targetArtifactIds: DIRECTOR_PIPELINE_STAGES.map((stage) => stage.artifactId),
         modelSnapshot: modelSnapshotFor(input, DIRECTOR_PIPELINE_STAGES.map((stage) => stage.key)),
-        progress: { completedStages: 0, totalStages: DIRECTOR_PIPELINE_STAGES.length }
+        progress: { completedStages: 0, totalStages: DIRECTOR_PIPELINE_STAGES.length, controlState: "running" }
       };
     },
     execute: async (raw, context) => {
       const completed = [];
       const usages = [];
+      let reusedStages = 0;
       for (const stage of DIRECTOR_PIPELINE_STAGES) {
         const snapshot = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
         const existing = snapshot.latestArtifacts?.[stage.artifactId];
         if (existing?.lineage?.status === "current") {
           completed.push(lineageRef(existing.lineage));
+          reusedStages += 1;
           await context.heartbeat({
+            reusedStages,
             completedStages: completed.length,
             totalStages: DIRECTOR_PIPELINE_STAGES.length,
             currentStage: stage.artifactId,
@@ -637,7 +640,7 @@ function directorPipelineTaskDefinition({ projectId, runId, input }) {
       return {
         resultArtifactRefs: completed,
         usage: mergeTaskUsages(usages),
-        progress: { completedStages: DIRECTOR_PIPELINE_STAGES.length, totalStages: DIRECTOR_PIPELINE_STAGES.length },
+        progress: { completedStages: DIRECTOR_PIPELINE_STAGES.length, totalStages: DIRECTOR_PIPELINE_STAGES.length, reusedStages },
         compatibilityResult: Object.fromEntries(DIRECTOR_PIPELINE_STAGES.map((stage) => [
           stage.artifactId,
           run.latestArtifacts?.[stage.artifactId]?.content
@@ -1587,7 +1590,7 @@ async function executeArtifactRouteTask({
   });
   const { result, usage } = await runWithUsageAccounting(
     () => runWithDurableTaskContext(context, () => invoke(trustedInput, { headers })),
-    { prices: config.modelPrices }
+    { prices: config.modelPrices, onUsage: context.captureUsage }
   );
   if (usage) await context.updateUsage(usage);
   await context.assertFrozenContextCurrent();

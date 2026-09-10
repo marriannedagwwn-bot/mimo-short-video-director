@@ -61,6 +61,33 @@ test("末块 usage、finish_reason 与 id 都被提取", async () => {
   assert.deepEqual(result.usage, { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 });
 });
 
+test("读取异常保留已收到的结构化 usage，没有收到时不得推测", async () => {
+  for (const usage of [null, { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 }]) {
+    const failure = new Error("fixture connection interrupted");
+    const body = {
+      async *[Symbol.asyncIterator]() {
+        yield encoder.encode(`data: ${JSON.stringify({ choices: [], ...(usage ? { usage } : {}) })}\n\n`);
+        throw failure;
+      }
+    };
+    await assert.rejects(() => readSseCompletion(body), (error) => {
+      assert.equal(error, failure);
+      assert.deepEqual(error.partialUsage, usage);
+      return true;
+    });
+  }
+});
+
+test("没有结束标志的 EOF 仍失败，同时携带已收到的 usage", async () => {
+  const usage = { total_tokens: 7 };
+  const text = `data: ${JSON.stringify({ choices: [], usage })}\n\n`;
+  await assert.rejects(() => readSseCompletion(streamOfText(text)), (error) => {
+    assert.ok(error instanceof SseStreamIncompleteError);
+    assert.deepEqual(error.partialUsage, usage);
+    return true;
+  });
+});
+
 test("SSE 注释行、event 行与空行被忽略", async () => {
   const text = `: keep-alive\n\nevent: message\n`
     + `data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`

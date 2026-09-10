@@ -14,7 +14,7 @@ export function uiFixture({ story = true, plan = true } = {}) {
 // No production function is replaced; browser validation covers the real DOM.
 class Element {
   className = ""; textContent = ""; innerHTML = ""; value = ""; disabled = false;
-  options = []; dataset = {}; children = new Map(); style = {};
+  options = []; dataset = {}; children = new Map(); style = {}; attributes = new Map();
   classList = {
     contains: (name) => this.className.split(" ").includes(name),
     add: (...names) => { this.className = [...new Set([...this.className.split(" "), ...names])].filter(Boolean).join(" "); },
@@ -27,10 +27,15 @@ class Element {
     return this.children.get(selector);
   }
   querySelectorAll() { return []; }
-  addEventListener() {} setAttribute() {} focus() {} scrollIntoView() {}
+  addEventListener() {}
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
+  focus() {} scrollIntoView() {}
 }
 
-export async function loadAppUi({ story = false, plan = false, createElement } = {}) {
+export async function loadAppUi({ story = false, plan = false, createElement,
+  fetch = async () => { throw new Error("Unexpected network request in UI regression"); },
+  windowSetTimeout = setTimeout } = {}) {
   let source = await readFile(new URL("../../public/app.js", import.meta.url), "utf8");
   const bindings = {};
   for (const match of source.matchAll(/import\s*\{([^}]+)\}\s*from\s*"([^"]+)";/g)) {
@@ -44,16 +49,18 @@ export async function loadAppUi({ story = false, plan = false, createElement } =
     return nodes.get(selector);
   }, querySelectorAll: () => [], addEventListener() {}, createElement };
   const storage = { getItem: () => null, setItem() {}, removeItem() {} };
-  const context = vm.createContext({ ...bindings, document, window: { scrollTo() {}, CSS: { escape: (s) => s } },
+  const context = vm.createContext({ ...bindings, document, window: { scrollTo() {}, setTimeout: windowSetTimeout, CSS: { escape: (s) => s } },
     location: { pathname: "/story/V2", origin: "http://localhost" }, sessionStorage: storage, localStorage: storage,
     navigator: {}, structuredClone, crypto, URL, URLSearchParams, Blob, File, console,
-    fetch: async () => { throw new Error("Unexpected network request in UI regression"); }, setTimeout, clearTimeout });
+    fetch, setTimeout, clearTimeout });
   vm.runInContext(`${source}\nglobalThis.app = { state, elements, renderRoute, renderStoryPage, renderAnimationPlan,
     renderCurrentMainOutputs, restoreRunArtifacts, markRestoredTaskRunning, updateTaskSnapshot,
     syncStoryTaskStatus, syncCharacterImageTaskStatus, syncShotVideoTaskStatus, syncShotFrameTaskStatus,
     openCharacterImageGenerator, openShotVideoGenerator, openShotFrameImageGenerator,
     updateShotVideoGeneratorPreview, applyCharacterImageTaskProgress, renderShotVideoBatchProgress,
-    shotVideoStateItem, shotFrameKey, syncDirectorTaskStatus, loadSourceVideo, browserWorkspace };`, context);
+    shotVideoStateItem, shotFrameKey, syncDirectorTaskStatus, loadSourceVideo, browserWorkspace,
+    renderDirectorControls, renderDirectorTaskStatus, renderDirectorTaskError, controlDirectorPipeline,
+    setRunning, resetDirectorClientState, restoreActiveProductionRun, directorArtifactSynchronizer };`, context);
   const app = context.app;
   const fixture = uiFixture({ story, plan });
   Object.assign(app.state, { selectedVariantId: "V2", output: { themeVariants: fixture.themeVariants },

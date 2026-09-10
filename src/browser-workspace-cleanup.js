@@ -26,14 +26,14 @@ export class BrowserWorkspaceCleanup {
 
   async cleanup(input = {}) {
     const ids = cleanupIds(input);
-    return this.withLocks(ids, async () => {
+    return this.withCleanupLocks(ids, async (directorRoots) => {
       const manifest = await this.readManifestIfPresent(ids);
       const existing = await this.readMarkerIfPresent(ids);
       if (manifest) this.assertOwner(manifest, ids);
       else if (existing) this.assertMarkerOwner(existing, ids);
       else return { deleted: true, pending: false, missing: true };
       await this.writeMarker(ids);
-      return this.cleanupUnlocked(ids, manifest);
+      return this.cleanupUnlocked(ids, manifest, directorRoots);
     });
   }
 
@@ -58,11 +58,11 @@ export class BrowserWorkspaceCleanup {
         if (marker.type !== MARKER_VERSION || path.basename(this.markerPath(ids)) !== entry.name) {
           throw cleanupError("页面清理记录无效", "BROWSER_WORKSPACE_CLEANUP_MARKER_INVALID");
         }
-        results.push(await this.withLocks(ids, async () => {
+        results.push(await this.withCleanupLocks(ids, async (directorRoots) => {
           if (!await this.readMarkerIfPresent(ids)) return { deleted: true, pending: false };
           const manifest = await this.readManifestIfPresent(ids);
           if (manifest) this.assertOwner(manifest, ids);
-          return this.cleanupUnlocked(ids, manifest);
+          return this.cleanupUnlocked(ids, manifest, directorRoots);
         }));
       } catch (error) { errors.push(error); }
     }
@@ -114,7 +114,25 @@ export class BrowserWorkspaceCleanup {
     return this.taskManager.withSchedulerLock(() => this.coordinator.withRunLock(ids.projectId, ids.runId, operation));
   }
 
-  async cleanupUnlocked(ids, manifest) {
+  async withCleanupLocks(ids, operation) {
+    const directorRoots = new Set();
+    try {
+      return await this.withLocks(ids, () => operation(directorRoots));
+    } finally {
+      // Revocation and deletion happen above. Abort listeners and paused
+      // resume gates may execute provider/runner code, so wake them only after
+      // the scheduler and Run locks have both been released. Even a failed
+      // file deletion must not leave an already-revoked director parked.
+      for (const taskId of directorRoots) {
+        this.taskManager.stopDirectorRuntime(taskId, {
+          code: "BROWSER_WORKSPACE_CLOSED", category: "control-plane",
+          message: "页面工作区已清空，AI 导演请求已停止。"
+        });
+      }
+    }
+  }
+
+  async cleanupUnlocked(ids, manifest, directorRoots) {
     const manager = this.taskManager;
     const index = manifest ? await manager.taskStore.readIndex(ids.projectId, ids.runId) : null;
     const taskIds = new Set(Object.keys(index?.tasks || {}));
@@ -140,6 +158,9 @@ export class BrowserWorkspaceCleanup {
     for (const taskId of taskIds) {
       const runtime = manager.runtimes.get(taskId);
       if (runtime) runtime.active = false;
+      if (runtime?.controller && runtime.definition.kind === "directorPipeline" && runtime.ownerTaskId === taskId) {
+        directorRoots.add(taskId);
+      }
       let queued = false;
       for (const pool of Object.values(manager.pools)) {
         if (!pool.queue.includes(taskId)) continue;

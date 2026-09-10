@@ -1,6 +1,6 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
 import { recordModelUsage } from "./token-usage.js";
-import { afterDurableProviderCall, beforeDurableProviderCall } from "./durable-task-context.js";
+import { afterDurableProviderCall, beforeDurableProviderCall, durableProviderAbortSignal, throwIfDurableTaskAborted } from "./durable-task-context.js";
 
 export class ModelResponseError extends Error {
   constructor(message, raw = "", status = 0, metadata = {}) {
@@ -195,9 +195,15 @@ export class MimoClient {
         ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {})
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(effectiveTimeoutMs)
+      signal: durableProviderAbortSignal(effectiveTimeoutMs)
+    }).catch((error) => {
+      throwIfDurableTaskAborted();
+      throw error;
     });
-    const raw = await response.text();
+    const raw = await response.text().catch((error) => {
+      throwIfDurableTaskAborted();
+      throw error;
+    });
     const headerRequestId = response.headers.get("x-request-id")
       || response.headers.get("request-id")
       || "";

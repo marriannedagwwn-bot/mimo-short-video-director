@@ -1261,3 +1261,352 @@ test("startup reconciliation completes all five children and their pipeline pare
     assert.deepEqual(index.claims, {});
   });
 });
+
+function signalWait(signal) {
+  signal.throwIfAborted();
+  return new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+}
+
+const directorKnownUsage = {
+  calls: 1, promptTokens: 10, completionTokens: 5, totalTokens: 15,
+  costCny: 0.01, costKnown: true,
+  byModel: [{ provider: "Fixture", model: "fixture", calls: 1, promptTokens: 10, completionTokens: 5, totalTokens: 15, costCny: 0.01 }]
+};
+
+test("director pause closes the attempt, retains claims and completed stages, and resume redoes only the interrupted stage", async () => {
+  await withManager(async ({ productionStore, taskStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-director-controls" });
+    const targets = ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief"];
+    const attempts = Object.fromEntries(targets.map((id) => [id, 0]));
+    const signals = [];
+    const created = await manager.createTask({
+      ...run, kind: "directorPipeline", targetArtifactIds: targets,
+      execute: async (_input, root) => {
+        for (const artifactId of targets) {
+          const snapshot = await productionStore.loadRun({ ...run, includeContent: false });
+          if (snapshot.latestArtifacts[artifactId]?.lineage.status === "current") continue;
+          await root.runChild({ kind: artifactId, targetArtifactIds: [artifactId], execute: async (_data, context) => {
+            await context.beforeProviderCall("provider", 10_000);
+            context.providerRequestStarted();
+            const attempt = ++attempts[artifactId];
+            signals.push(context.signal);
+            if (artifactId === targets[1] && attempt <= 2) {
+              try { await signalWait(context.signal); } finally {
+                // Second interrupted response has delivered a real usage report.
+                if (attempt === 2) context.captureUsage(directorKnownUsage);
+              }
+            }
+            context.captureUsage(directorKnownUsage);
+            await context.afterProviderCall("validation");
+            await context.commitArtifact({ artifactId, artifactType: artifactId, content: { attempt } });
+            return { usage: directorKnownUsage };
+          } });
+        }
+      }
+    });
+    const control = (action) => manager.controlTask({ ...run, taskId: created.task.taskId, action });
+    await waitUntil(() => attempts[targets[1]], (value) => value === 1);
+    const originalRevision = (await productionStore.loadRun({ ...run, includeContent: false })).latestArtifacts[targets[0]].lineage.revision;
+    await control("pause");
+    let paused = await waitUntil(() => manager.getTaskById(created.task.taskId), (task) => task.progress.controlState === "paused");
+    assert.equal(paused.status, "running");
+    assert.equal(signals[1].aborted, true);
+    assert.equal(paused.usage.calls, 2);
+    assert.equal(paused.usage.unreportedCalls, 1);
+    assert.equal(paused.usage.totalTokens, 15);
+    assert.equal(paused.usage.costCny, null);
+    assert.equal(manager.watchdogs.has(created.task.taskId), false);
+    await control("pause");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(attempts[targets[1]], 1, "pause never automatically reissues a provider request");
+    const index = await taskStore.readIndex(run.projectId, run.runId);
+    assert.ok(targets.every((id) => index.claims[id] === created.task.taskId));
+    await assert.rejects(productionStore.commitArtifact({ ...run, artifactId: targets[0], artifactType: targets[0], content: { changed: true } }), (error) => error.code === "TASK_TARGET_BUSY");
+    await control("resume");
+    await waitUntil(() => attempts[targets[1]], (value) => value === 2);
+    await control("pause");
+    paused = await waitUntil(() => manager.getTaskById(created.task.taskId), (task) => task.progress.controlState === "paused");
+    assert.equal(paused.usage.calls, 3);
+    assert.equal(paused.usage.totalTokens, 30);
+    assert.equal(paused.usage.unreportedCalls, 1);
+    await control("resume");
+    const result = await manager.waitForTask({ ...run, taskId: created.task.taskId });
+    assert.equal(result.task.status, "completed");
+    assert.deepEqual(Object.values(attempts), [1, 3, 1]);
+    assert.equal(result.task.usage.calls, 5);
+    assert.equal(result.task.usage.reportedCalls, 4);
+    assert.equal(result.task.usage.unreportedCalls, 1);
+    assert.equal(result.task.usage.usageComplete, false);
+    assert.equal(result.task.usage.totalTokens, 60);
+    assert.equal((await productionStore.loadRun({ ...run, includeContent: false })).latestArtifacts[targets[0]].lineage.revision, originalRevision);
+    const children = (await taskStore.listTasks(run)).filter((task) => task.parentTaskId);
+    assert.equal(new Set(children.map((task) => task.requestId)).size, 5);
+    assert.equal(children.filter((task) => task.status === "interrupted").length, 2);
+  }, { localStallMs: 50 });
+});
+
+test("director termination aborts current request, records unknown usage, releases all claims and preserves committed content", async () => {
+  await withManager(async ({ productionStore, taskStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-director-stop" });
+    let contextSeen;
+    const created = await manager.createTask({
+      ...run, kind: "directorPipeline", targetArtifactIds: ["referenceAnalysis", "creativeBrief"],
+      execute: async (_input, root) => {
+        await root.commitArtifact({ artifactId: "referenceAnalysis", artifactType: "referenceAnalysis", content: { retained: true } });
+        await root.runChild({ kind: "creativeBrief", targetArtifactIds: ["creativeBrief"], execute: async (_data, context) => {
+          await context.beforeProviderCall("provider", 10_000);
+          context.providerRequestStarted();
+          contextSeen = context;
+          await signalWait(context.signal);
+        } });
+      }
+    });
+    await waitUntil(() => contextSeen, Boolean);
+    const cancelled = await manager.controlTask({ ...run, taskId: created.task.taskId, action: "terminate" });
+    assert.equal(cancelled.status, "cancelled");
+    assert.equal(contextSeen.signal.aborted, true);
+    assert.equal(cancelled.usage.calls, 1);
+    assert.equal(cancelled.usage.unreportedCalls, 1);
+    assert.equal(cancelled.usage.usageComplete, false);
+    assert.equal(cancelled.usage.costCny, null);
+    await assert.rejects(contextSeen.commitArtifact({ artifactId: "creativeBrief", artifactType: "creativeBrief", content: {} }), (error) => ["TASK_OWNERSHIP_LOST", "DIRECTOR_RUN_TERMINATED"].includes(error.code));
+    const loaded = await productionStore.loadRun({ ...run, includeContent: true });
+    assert.equal(loaded.latestArtifacts.referenceAnalysis.content.retained, true);
+    assert.equal(loaded.latestArtifacts.creativeBrief, undefined);
+    assert.deepEqual((await taskStore.readIndex(run.projectId, run.runId)).claims, {});
+    assert.equal((await manager.controlTask({ ...run, taskId: created.task.taskId, action: "terminate" })).status, "cancelled");
+  });
+});
+
+test("director pause after response blocks a late commit and retains received usage", async () => {
+  await withManager(async ({ productionStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-director-before-commit" });
+    let release;
+    let reached = false;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const created = await manager.createTask({ ...run, kind: "directorPipeline", targetArtifactIds: ["creativeBrief"], execute: async (_input, root) => {
+      await root.runChild({ kind: "creativeBrief", targetArtifactIds: ["creativeBrief"], execute: async (_data, context) => {
+        await context.beforeProviderCall("provider", 10_000);
+        context.providerRequestStarted();
+        context.captureUsage(directorKnownUsage);
+        await context.afterProviderCall("validation");
+        reached = true;
+        await gate;
+        await context.commitArtifact({ artifactId: "creativeBrief", artifactType: "creativeBrief", content: {} });
+      } });
+    } });
+    await waitUntil(() => reached, Boolean);
+    await manager.controlTask({ ...run, taskId: created.task.taskId, action: "pause" });
+    await assert.rejects(manager.controlTask({ ...run, taskId: created.task.taskId, action: "resume" }), (error) => error.code === "TASK_CONTROL_PAUSE_PENDING");
+    release();
+    const paused = await waitUntil(() => manager.getTaskById(created.task.taskId), (task) => task.progress.controlState === "paused");
+    assert.equal(paused.usage.totalTokens, 15);
+    assert.equal(paused.usage.unreportedCalls, 0);
+    assert.equal((await productionStore.loadRun({ ...run, includeContent: false })).latestArtifacts.creativeBrief, undefined);
+    await manager.controlTask({ ...run, taskId: created.task.taskId, action: "terminate" });
+    await waitUntil(() => manager.runtimes.size, (size) => size === 0);
+    await waitUntil(() => manager.pools.workflow.running, (count) => count === 0);
+  });
+});
+
+test("forced release of a parked director wakes its runner and frees its pool slot", async () => {
+  await withManager(async ({ productionStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-director-release" });
+    let reached = false;
+    const created = await manager.createTask({ ...run, kind: "directorPipeline", targetArtifactIds: ["creativeBrief"], execute: async (_input, context) => {
+      await context.beforeProviderCall("provider", 10_000);
+      context.providerRequestStarted();
+      reached = true;
+      await signalWait(context.signal);
+    } });
+    await waitUntil(() => reached, Boolean);
+    await manager.controlTask({ ...run, taskId: created.task.taskId, action: "pause" });
+    await waitUntil(() => manager.getTaskById(created.task.taskId), (task) => task.progress.controlState === "paused");
+    assert.equal((await manager.releaseTask({ ...run, taskId: created.task.taskId })).status, "abandoned");
+    await waitUntil(() => manager.pools.workflow.running, (count) => count === 0);
+    assert.equal(manager.runtimes.size, 0);
+    assert.equal(manager.watchdogs.size, 0);
+  });
+});
+
+test("queued director can pause, resume, and terminate without waiting for an occupied workflow slot", async () => {
+  await withManager(async ({ productionStore, manager }) => {
+    const firstRun = await productionStore.createRun({ projectId: "project-director-queue-first" });
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const first = await manager.createTask({ ...firstRun, kind: "fixture", targetArtifactIds: ["creativeBrief"], execute: async () => gate });
+    await waitUntil(() => manager.getTaskById(first.task.taskId), (task) => task.status === "running");
+    const secondRun = await productionStore.createRun({ projectId: "project-director-queue-second" });
+    let calls = 0;
+    const second = await manager.createTask({ ...secondRun, kind: "directorPipeline", targetArtifactIds: ["creativeBrief"], execute: async () => { calls += 1; } });
+    const control = (action) => manager.controlTask({ ...secondRun, taskId: second.task.taskId, action });
+    assert.equal((await control("pause")).progress.controlState, "paused");
+    assert.equal((await control("resume")).progress.controlState, "running");
+    assert.equal((await control("pause")).progress.controlState, "paused");
+    assert.equal((await control("terminate")).status, "cancelled");
+    assert.equal(calls, 0);
+    assert.equal(manager.runtimes.has(second.task.taskId), false);
+    assert.equal(manager.queuedBytes, 0);
+    release();
+    await manager.waitForTask({ ...firstRun, taskId: first.task.taskId });
+  }, { pools: { workflow: { limit: 1, queueLimit: 8 } } });
+});
+
+test("director watchdog closes the active child and totals received and unknown usage before ending the parent", async () => {
+  await withManager(async ({ productionStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-director-stall-usage" });
+    let signal;
+    let reached = false;
+    const created = await manager.createTask({ ...run, kind: "directorPipeline", targetArtifactIds: ["creativeBrief"], execute: async (_input, root) => {
+      await root.runChild({ kind: "creativeBrief", targetArtifactIds: ["creativeBrief"], execute: async (_data, context) => {
+        await context.beforeProviderCall("first_provider", 10_000);
+        context.providerRequestStarted();
+        context.captureUsage(directorKnownUsage);
+        await context.beforeProviderCall("second_provider", 10_000);
+        context.providerRequestStarted();
+        signal = context.signal;
+        reached = true;
+        await signalWait(signal);
+      } });
+    } });
+    await waitUntil(() => reached, Boolean);
+    await manager.finishWithStatus(created.task.taskId, "failed", { code: "TASK_STALLED", message: "fixture watchdog" });
+    const task = await manager.getTaskById(created.task.taskId);
+    assert.equal(signal.aborted, true);
+    assert.equal(task.usage.calls, 2);
+    assert.equal(task.usage.totalTokens, 15);
+    assert.equal(task.usage.unreportedCalls, 1);
+    await waitUntil(() => manager.pools.workflow.running, (count) => count === 0);
+  });
+});
+
+test("reconciliation marks a paused director interrupted and never dispatches its captured input", async () => {
+  await withManager(async ({ productionStore, taskStore, coordinator, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-director-paused-restart" });
+    let calls = 0;
+    const created = await manager.createTask({ ...run, kind: "directorPipeline", targetArtifactIds: ["creativeBrief"], execute: async (_input, context) => {
+      await context.beforeProviderCall("provider", 10_000);
+      context.providerRequestStarted();
+      calls += 1;
+      await signalWait(context.signal);
+    } });
+    await waitUntil(() => calls, (value) => value === 1);
+    await manager.controlTask({ ...run, taskId: created.task.taskId, action: "pause" });
+    await waitUntil(() => manager.getTaskById(created.task.taskId), (task) => task.progress.controlState === "paused");
+    const restarted = new DurableTaskManager({ productionStore, taskStore, coordinator });
+    await restarted.reconcileInterruptedTasks();
+    assert.equal((await restarted.getTaskById(created.task.taskId)).status, "interrupted");
+    assert.equal(calls, 1);
+    assert.equal(restarted.runtimes.size, 0);
+    assert.deepEqual((await taskStore.readIndex(run.projectId, run.runId)).claims, {});
+    // The old process would no longer exist after a real restart.
+    manager.stopDirectorRuntime(created.task.taskId, { code: "PROCESS_EXIT", message: "fixture cleanup" });
+    await waitUntil(() => manager.pools.workflow.running, (count) => count === 0);
+  });
+});
+
+test("rapid resume then pause and terminate releases the original parked gate without dispatching a new request", async (t) => {
+  await withManager(async ({ productionStore, taskStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-director-control-race" });
+    let providerCalls = 0;
+    const created = await manager.createTask({
+      ...run, kind: "directorPipeline", targetArtifactIds: ["creativeBrief"],
+      execute: async (_input, root) => root.runChild({
+        kind: "creativeBrief", targetArtifactIds: ["creativeBrief"],
+        execute: async (_data, context) => {
+          await context.beforeProviderCall("provider", 10_000);
+          context.providerRequestStarted();
+          providerCalls += 1;
+          await signalWait(context.signal);
+        }
+      })
+    });
+    const control = (action) => manager.controlTask({ ...run, taskId: created.task.taskId, action });
+    await waitUntil(() => providerCalls, (count) => count === 1);
+    await control("pause");
+    await waitUntil(() => manager.getTaskById(created.task.taskId), (task) => task.progress.controlState === "paused");
+    const runtime = manager.runtimes.get(created.task.taskId);
+    const originalGate = runtime.resumeGate;
+    const resumePersisted = Promise.withResolvers();
+    const releaseResume = Promise.withResolvers();
+    const updateTaskAtomic = manager.updateTaskAtomic.bind(manager);
+    let holdResume = true;
+    t.mock.method(manager, "updateTaskAtomic", async (...args) => {
+      const result = await updateTaskAtomic(...args);
+      // The resume transition is persisted and its Run lock released, but its
+      // continuation has not resolved the gate. Let the next pause run here.
+      if (holdResume && runtime.controlState === "running") {
+        holdResume = false;
+        resumePersisted.resolve();
+        await releaseResume.promise;
+      }
+      return result;
+    });
+    try {
+      const resuming = control("resume");
+      await within(() => resumePersisted.promise);
+      await control("pause");
+      assert.notEqual(runtime.resumeGate, originalGate);
+      assert.equal(providerCalls, 1);
+      releaseResume.resolve();
+      await resuming;
+      await within(() => originalGate.promise);
+      const pausedAgain = await waitUntil(() => manager.getTaskById(created.task.taskId), (task) => task.progress.controlState === "paused");
+      assert.equal(pausedAgain.status, "running", "the new pause must not terminalize the parent");
+      assert.equal(providerCalls, 1, "resume superseded by pause must not reissue the stage");
+      const cancelled = await control("terminate");
+      assert.equal(cancelled.status, "cancelled");
+      await waitUntil(() => manager.pools.workflow.running, (count) => count === 0);
+      assert.equal(manager.runtimes.size, 0);
+      assert.equal(manager.watchdogs.size, 0);
+      assert.equal(providerCalls, 1);
+      assert.deepEqual((await taskStore.readIndex(run.projectId, run.runId)).claims, {});
+      assert.equal((await taskStore.listTasks(run)).filter((task) => task.parentTaskId).length, 1);
+    } finally {
+      releaseResume.resolve();
+      originalGate.resolve();
+      runtime.resumeGate?.resolve();
+      await control("terminate");
+      await waitUntil(() => manager.pools.workflow.running, (count) => count === 0);
+    }
+  });
+});
+
+test("an ignored stale watchdog leaves a paused director waiter pending until a real terminal transition", async () => {
+  await withManager(async ({ productionStore, taskStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-director-stale-watchdog" });
+    let providerCalls = 0;
+    const created = await manager.createTask({
+      ...run, kind: "directorPipeline", targetArtifactIds: ["creativeBrief"],
+      execute: async (_input, context) => {
+        await context.beforeProviderCall("provider", 10_000);
+        context.providerRequestStarted();
+        providerCalls += 1;
+        await signalWait(context.signal);
+      }
+    });
+    const args = { ...run, taskId: created.task.taskId };
+    await waitUntil(() => providerCalls, (count) => count === 1);
+    let waiterOutcome;
+    const waiting = manager.waitForTask(args).then((outcome) => {
+      waiterOutcome = outcome;
+      return outcome;
+    });
+    await waitUntil(() => manager.waiters.get(args.taskId)?.length, (count) => count === 1);
+    try {
+      await manager.controlTask({ ...args, action: "pause" });
+      await waitUntil(() => manager.getTaskById(args.taskId), (task) => task.progress.controlState === "paused");
+      const applied = await manager.finishWithStatus(args.taskId, "failed", { code: "TASK_STALLED", message: "watchdog dispatched before pause" });
+      assert.equal(applied, false);
+      assert.equal((await manager.getTaskById(args.taskId)).status, "running");
+      assert.equal(manager.waiters.get(args.taskId)?.length, 1, "an ignored watchdog must not remove or notify the waiter");
+      assert.equal(waiterOutcome, undefined);
+      assert.equal((await taskStore.readIndex(run.projectId, run.runId)).claims.creativeBrief, args.taskId);
+      assert.equal(providerCalls, 1);
+    } finally {
+      await manager.controlTask({ ...args, action: "terminate" });
+    }
+    assert.equal((await within(() => waiting)).task.status, "cancelled");
+    await waitUntil(() => manager.pools.workflow.running, (count) => count === 0);
+  });
+});

@@ -119,6 +119,17 @@ h1 em { color: var(--accent); font-style: normal; }
 .primary-button:not(:disabled):hover { background: var(--accent); transform: translateY(-1px); }
 .primary-button:disabled { opacity: .36; cursor: not-allowed; }
 .primary-button.running svg { animation: nudge .9s infinite; }
+.director-controls { display: flex; align-items: center; gap: 2px; margin-top: 22px; border-radius: 13px; }
+.director-controls > .primary-button { flex: 1; min-width: 0; margin-top: 0; }
+.director-controls.active { padding-right: 6px; background: var(--ink); }
+.director-controls.active > .primary-button:disabled { opacity: 1; cursor: default; }
+.director-controls.active > .primary-button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.director-icon-button { flex: 0 0 44px; width: 44px; height: 44px; display: grid; place-items: center; padding: 12px; border: 0; border-radius: 9px; background: transparent; color: #fff; cursor: pointer; }
+.director-icon-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.director-icon-button:not(:disabled):hover { background: rgba(255,255,255,.16); }
+.director-icon-button:disabled { opacity: .4; cursor: not-allowed; }
+.director-controls button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.director-control-hint { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .profile-card > #releaseActiveTasks { width: 100%; margin-top: 9px; }
 @keyframes nudge { 50% { transform: translateX(4px); } }
 .error-message { min-height: 18px; margin: 10px 0 0; color: #b42318; font-size: 11px; line-height: 1.5; }
@@ -132,6 +143,7 @@ h1 em { color: var(--accent); font-style: normal; }
 .pipeline-head-meta { display: flex; align-items: center; gap: 14px; }
 .pipeline-head-meta .story-status { margin: 0; min-height: 0; text-align: right; }
 .pipeline-head h2 { margin: 0; font-family: Georgia, "Songti SC", serif; font-weight: 500; font-size: 36px; }
+.pipeline li.paused > b, .pipeline li.stopped > b { color: #b54708; }
 .outline-button { padding: 10px 15px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.4); cursor: pointer; font-size: 12px; }
 .outline-button:hover { border-color: var(--accent); color: var(--accent); }
 .pipeline { margin: 0 0 24px; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); list-style: none; border: 1px solid var(--line); border-radius: 15px; overflow: hidden; background: rgba(255,255,255,.38); }
