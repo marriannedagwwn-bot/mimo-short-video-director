@@ -56,20 +56,24 @@
           <span class="step-number">01</span>
           <div><p class="label">REFERENCE</p><h2>上传参考视频</h2></div>
         </div>
-        <label class="dropzone" id="dropzone" for="videoInput">
-          <input id="videoInput" type="file" accept="video/*" hidden>
-          <span class="upload-icon">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
-          </span>
-          <strong id="uploadTitle">把视频拖到这里</strong>
-          <span id="uploadHint">或点击选择文件 · MP4 / MOV / WebM</span>
-        </label>
-        <div class="video-info hidden" id="videoInfo">
-          <video id="videoPreview" controls playsinline></video>
+        <div class="source-media">
+          <label class="dropzone" id="dropzone" for="videoInput">
+            <input id="videoInput" type="file" accept="video/*" hidden>
+            <span class="upload-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+            </span>
+            <strong id="uploadTitle">把视频拖到这里</strong>
+            <span id="uploadHint">或点击选择文件 · MP4 / MOV / WebM</span>
+          </label>
+          <div class="video-info hidden" id="videoInfo">
+            <video id="videoPreview" controls playsinline></video>
+          </div>
           <div class="file-meta">
             <div><strong id="fileName"></strong><span id="fileMeta"></span></div>
             <button class="text-button" id="replaceVideo" type="button">更换</button>
           </div>
+        </div>
+        <div class="timeline-sampling">
           <div class="frame-head"><span>时间轴采样</span><small id="frameStatus">等待抽帧</small></div>
           <div class="frames" id="frames"></div>
         </div>

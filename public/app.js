@@ -364,6 +364,7 @@ async function init() {
   restoreProfile();
   restoreCharacterExpressionRules();
   restoreCreationPreferences();
+  elements.frames.innerHTML = skeletonFrames(10);
   elements.characterExpressionRules.addEventListener("input", saveCharacterExpressionRules);
   bindEvents();
   validateReady();
@@ -707,7 +708,7 @@ function clearVideoWorkspaceUi({ keepSource = false } = {}) {
     elements.preview.removeAttribute("src");
     elements.preview.load();
     elements.transcript.value = "";
-    elements.frames.innerHTML = "";
+    elements.frames.innerHTML = skeletonFrames(10);
     elements.frameStatus.textContent = "等待抽帧";
     elements.fileName.textContent = "";
     elements.fileMeta.textContent = "";

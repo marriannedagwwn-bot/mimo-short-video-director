@@ -57,7 +57,7 @@ h1 em { color: var(--accent); font-style: normal; }
 .section-head h2 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: 24px; font-weight: 500; }
 .step-number { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 12px; background: var(--ink); color: #fff; font-size: 11px; }
 
-.dropzone { min-height: 260px; border: 1.5px dashed rgba(29,27,24,.28); border-radius: 17px; display: flex; flex-direction: column; justify-content: center; align-items: center; cursor: pointer; background: linear-gradient(145deg, rgba(255,255,255,.38), rgba(240,90,42,.035)); transition: .25s ease; }
+.dropzone { width: 100%; aspect-ratio: 16/9; max-height: 380px; flex-shrink: 0; border: 1.5px dashed rgba(29,27,24,.28); border-radius: 17px; display: flex; flex-direction: column; justify-content: center; align-items: center; cursor: pointer; background: linear-gradient(145deg, rgba(255,255,255,.38), rgba(240,90,42,.035)); transition: .25s ease; }
 .dropzone:hover, .dropzone.dragging { border-color: var(--accent); background: var(--accent-soft); transform: translateY(-2px); }
 .upload-icon { width: 54px; height: 54px; margin-bottom: 17px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: #fff; }
 .upload-icon svg { width: 24px; fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
@@ -65,6 +65,9 @@ h1 em { color: var(--accent); font-style: normal; }
 .dropzone > span:last-child { margin-top: 8px; color: var(--muted); font-size: 12px; }
 
 .video-info { margin-top: 18px; }
+.source-media .video-info { margin-top: 0; }
+.source-media:has(.dropzone:not(.hidden)) .file-meta .text-button { visibility: hidden; }
+.source-media .file-meta strong:empty::before, .source-media .file-meta span:empty::before { content: "\00a0"; }
 .video-info video { width: 100%; max-height: 380px; display: block; border-radius: 16px; background: #171614; }
 .file-meta { display: flex; justify-content: space-between; gap: 14px; padding: 13px 3px 17px; border-bottom: 1px solid var(--line); }
 .file-meta strong, .file-meta span { display: block; }
@@ -73,8 +76,10 @@ h1 em { color: var(--accent); font-style: normal; }
 .text-button { border: 0; background: transparent; color: var(--accent); cursor: pointer; font-size: 12px; }
 .frame-head { display: flex; justify-content: space-between; margin: 17px 0 10px; font-size: 12px; font-weight: 650; }
 .frame-head small { color: var(--muted); font-weight: 400; }
+.timeline-sampling .frame-head { margin-top: 0; }
 .frames { display: grid; grid-template-columns: repeat(5, 1fr); gap: 7px; }
-.frame { position: relative; aspect-ratio: 16/10; border-radius: 8px; overflow: hidden; background: #d7d2c8; }
+.frame { position: relative; aspect-ratio: 16/10.2; border-radius: 8px; overflow: hidden; background: #d7d2c8; }
+.frame:empty { background: transparent; border: 1.5px dashed rgba(29,27,24,.28); }
 .frame img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .frame span { position: absolute; right: 4px; bottom: 4px; padding: 2px 5px; border-radius: 4px; color: #fff; background: rgba(0,0,0,.72); font-size: 8px; }
 
@@ -103,9 +108,9 @@ h1 em { color: var(--accent); font-style: normal; }
 .field textarea::placeholder, .field input::placeholder { color: #aaa59c; }
 .transcript-field { margin-top: 22px; }
 .upload-card { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
-.upload-card > .section-head, .upload-card > .video-info, .upload-card > .transcript-field { margin: 0; }
-.upload-card > .transcript-field { display: flex; flex-direction: column; }
-.upload-card > .transcript-field textarea { flex: 1; min-height: 140px; line-height: 1.65; }
+.upload-card > .section-head, .upload-card > .transcript-field { margin: 0; }
+.upload-card > .transcript-field { display: flex; flex-direction: column; margin-top: auto; }
+.upload-card > .transcript-field textarea { flex: none; min-height: 140px; line-height: 1.65; }
 .upload-card .file-meta > div { min-width: 0; }
 .upload-card .file-meta .text-button { flex-shrink: 0; }
 .upload-card .frame-head, .upload-card .transcript-field > span { flex-wrap: wrap; gap: 6px 12px; }
@@ -510,9 +515,6 @@ h1 em { color: var(--accent); font-style: normal; }
 .hidden { display: none !important; }
 footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex; justify-content: space-between; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; letter-spacing: .08em; }
 
-@media (min-width: 901px) {
-  .upload-card > .dropzone, .upload-card > .video-info:not(.hidden) + .transcript-field { flex: 1; }
-}
 @media (max-width: 900px) {
   .topbar { gap: 16px; }
   .topbar-actions { flex-shrink: 1; }
@@ -541,8 +543,6 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
   .model-settings-actions { flex-direction: column; }
   .model-settings-actions .primary-button { width: 100%; }
   .modal-grid { grid-template-columns: 1fr; }
-  .dropzone { min-height: 210px; }
-  .frames { grid-template-columns: repeat(3, 1fr); }
   .pipeline-section { padding-top: 68px; }
   .pipeline-head { align-items: start; flex-direction: column; }
   .pipeline-head h2 { font-size: 29px; }
