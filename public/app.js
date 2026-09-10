@@ -1743,23 +1743,68 @@ async function runStoryCandidateReview(themeVariants, button) {
 
 const CANDIDATE_VERDICT_LABEL = { pass: "可展开", revise: "需修改", drop: "建议淘汰" };
 
+// 因果自洽问题的五种形状，与 schema 的 kind 枚举逐字一一对应。
+// 枚举值本身是英文标识，直接显示等于让人对着 purpose_nullified 猜它指什么。
+const COHERENCE_KIND_LABEL = {
+  contradiction: "前后互相否定",
+  tool_misuse: "手上已有更好的办法",
+  purpose_nullified: "目的被当场抵消",
+  space_or_time: "空间或时间说不通",
+  other: "其它"
+};
+
 // 评审结论与候选**自己的说辞**并排显示。
 // 模型看不到右边那一栏（服务端按允许清单剥掉了），你看得见——差在哪一眼就知道。
 function renderStoryCandidateReview(review, themeVariants) {
   const byId = new Map((themeVariants?.variants || []).map((variant) => [String(variant.id), variant]));
   const headline = candidateReviewHeadline(review);
+  // 原片机制是**全批共享的一份清单**，候选只按 id 引用（§2.12b ⑥）。
+  // 不把清单显示出来，下面每条 mechanismCheck 就只剩一个孤零零的 id，
+  // 而「这批候选到底在对照原片的哪几条机制」正是这份报告最该先说清的事。
+  const mechanismById = new Map((review.sourceMechanisms || []).map((entry) => [String(entry.id), entry]));
+  const sourceMechanisms = (review.sourceMechanisms || []).length ? `
+    <div class="candidate-review-mechanisms">
+      <b>原片机制清单（全部候选共用这一份，最多 4 条）</b>
+      ${(review.sourceMechanisms || []).map((entry) => `
+        <div class="review-check">
+          <div class="review-check-head">
+            <span class="scene-id">${escape(entry.id)}</span>
+            <b>${escape(entry.mechanism)}</b>
+          </div>
+          <p><b>原片在哪兑现：</b>${escape(entry.whereInSource)}</p>
+        </div>`).join("")}
+    </div>` : "";
   const cards = (review.candidateChecks || []).map((check) => {
     const candidate = byId.get(String(check.candidateId));
     const interaction = check.coreInteraction || {};
-    const mechanisms = (check.mechanismChecks || []).map((entry) => `
+    const mechanisms = (check.mechanismChecks || []).map((entry) => {
+      // 校验器已保证这个 id 在清单里（CANDIDATE_REVIEW_UNKNOWN_MECHANISM），
+      // 取不到时仍只显示 id，不编一句解释。
+      const source = mechanismById.get(String(entry.sourceMechanismId));
+      return `
       <div class="review-check">
         <div class="review-check-head">
-          <span class="scene-id">${escape(entry.sourceMechanism)}</span>
+          <span class="scene-id">${escape(entry.sourceMechanismId)}</span>
+          ${source ? `<b>${escape(source.mechanism)}</b>` : ""}
           <span class="review-verdict verdict-${escape(entry.verdict)}">${escape(REVIEW_VERDICT_LABEL[entry.verdict] || entry.verdict)}</span>
         </div>
-        <p><b>原片在哪兑现：</b>${escape(entry.whereInSource)}</p>
         <p><b>本候选在哪兑现：</b>${escape(entry.whereInCandidate)}${(entry.beatIndexes || []).length ? `（第 ${escape((entry.beatIndexes || []).join("、"))} 拍）` : ""}</p>
-      </div>`).join("");
+      </div>`;
+    }).join("");
+    // 因果自洽检查是这份报告里唯一「呈现 vs 呈现」的一档（§2.12b ⑤），
+    // 它的全部意义就是把动作链里的断裂摆出来给人看——不渲染等于这一档没做。
+    const coherence = (check.coherenceChecks || []).length ? `
+      <div class="candidate-review-coherence">
+        <b>因果自洽问题（${(check.coherenceChecks || []).length} 处）</b>
+        ${(check.coherenceChecks || []).map((entry) => `
+          <div class="review-check">
+            <div class="review-check-head">
+              <span class="review-verdict verdict-not_depicted">${escape(COHERENCE_KIND_LABEL[entry.kind] || entry.kind)}</span>
+              <span class="scene-id">第 ${escape((entry.beatIndexes || []).join("、"))} 拍</span>
+            </div>
+            <p>${escape(entry.problem)}</p>
+          </div>`).join("")}
+      </div>` : "";
     const claims = candidate ? `
       <div class="candidate-review-claim">
         <b>候选自己的说辞（评审看不到这一栏）</b>
@@ -1780,6 +1825,7 @@ function renderStoryCandidateReview(review, themeVariants) {
           ${cell("对方回应", interaction.response)}${cell("可见前后变化", interaction.visibleChange)}
         </div>
         ${mechanisms}
+        ${coherence}
         <p class="review-keep"><b>别改掉：</b>${escape(check.keepThis)}</p>
         ${claims}
       </details>`;
@@ -1787,6 +1833,7 @@ function renderStoryCandidateReview(review, themeVariants) {
   return `
     <p class="story-review-status">${escape(headline)}</p>
     <p class="story-review-status">推荐开发顺序：${escape((review.recommendedOrder || []).join(" → "))}</p>
+    ${sourceMechanisms}
     ${cards}
     <p class="story-review-summary">${escape(review.summary)}</p>`;
 }

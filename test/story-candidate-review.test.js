@@ -399,3 +399,91 @@ test("合法候选不受错误归属改动影响", async () => {
   });
   assert.equal(review.candidateChecks.length, complete.variants.length);
 });
+
+// ---------------------------------------------------------------------------
+// 浏览器侧。契约改了五个面，前四个（生产者/校验器/Prompt/测试）当天就动了，
+// **消费者是漏掉的那一个**：`sourceMechanism` / `whereInSource` 改名移位之后，
+// 渲染函数还在读旧键，而 escape(undefined) 返回空串——页面上是**静默空白**，
+// 不是报错。顶层 sourceMechanisms 与逐候选 coherenceChecks 更是从来没渲染过。
+// 这几条断言就是为了让「删掉渲染」重新变成一次响亮的失败。
+import fs from "node:fs";
+
+const APP_JS = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+
+test("浏览器读的是 sourceMechanismId，旧的两个键名不能再出现", () => {
+  assert.match(APP_JS, /entry\.sourceMechanismId/u);
+  // 光秃秃的 entry.sourceMechanism 读到的一律是 undefined，escape 之后是空串——
+  // 页面上是静默空白，不是报错。所以这个前缀后面必须永远紧跟 Id。
+  const bareOldKey = APP_JS.split("entry.sourceMechanism").slice(1)
+    .filter((rest) => !rest.startsWith("Id"));
+  assert.deepEqual(bareOldKey, [], "entry.sourceMechanism 仍被当成字段读，那个键已经不存在了");
+  // whereInSource 现在只挂在顶层清单上，逐条 mechanismCheck 里已经没有这个字段。
+  const perCheck = APP_JS.slice(APP_JS.indexOf("const mechanisms ="), APP_JS.indexOf("const coherence ="));
+  assert.ok(perCheck.length > 0);
+  assert.ok(!perCheck.includes("whereInSource"), "逐条引用里不该再读 whereInSource");
+});
+
+test("顶层机制清单被渲染出来，否则每条引用只剩一个孤零零的 id", () => {
+  assert.match(APP_JS, /review\.sourceMechanisms/u);
+  assert.match(APP_JS, /candidate-review-mechanisms/u);
+  // 清单里的三个字段都要显示，缺 whereInSource 就无从判断这条机制读得对不对。
+  assert.match(APP_JS, /escape\(entry\.mechanism\)/u);
+  assert.match(APP_JS, /escape\(entry\.whereInSource\)/u);
+});
+
+test("因果自洽问题被渲染出来——这一档的全部意义就是把断裂摆出来看", () => {
+  assert.match(APP_JS, /check\.coherenceChecks/u);
+  assert.match(APP_JS, /candidate-review-coherence/u);
+  assert.match(APP_JS, /escape\(entry\.problem\)/u);
+  // kind 是英文枚举，直接显示等于让人对着 purpose_nullified 猜。
+  assert.match(APP_JS, /COHERENCE_KIND_LABEL/u);
+});
+
+test("kind 的五个枚举值在浏览器侧都有中文标签，与 schema 逐字对齐", () => {
+  const schema = JSON.parse(fs.readFileSync(
+    new URL("../src/contracts/schemas/story-candidate-review-strict.schema.json", import.meta.url), "utf8"
+  ));
+  const kinds = schema.$defs.coherenceCheck.properties.kind.enum;
+  assert.equal(kinds.length, 5);
+  const start = APP_JS.indexOf("const COHERENCE_KIND_LABEL");
+  assert.ok(start >= 0);
+  const labels = APP_JS.slice(start, APP_JS.indexOf("};", start));
+  for (const kind of kinds) {
+    assert.ok(labels.includes(`${kind}:`), `kind ${kind} 缺中文标签`);
+  }
+  // 反过来也要成立：标签表里不许有 schema 没定义的取值，否则是照着想象写的。
+  const declared = labels.split("\n").slice(1).map((line) => line.trim().split(":")[0]).filter(Boolean);
+  assert.deepEqual(new Set(declared), new Set(kinds));
+});
+
+// 可比对数字与 §2.13 同规格：**从逐条判定里数出来，不问模型要总分。**
+// 因果断裂条数是这次新增契约里唯一一个可以直接数的量，漏掉它等于新增的那一档
+// 在顶部摘要里完全不存在。
+test("摘要数出因果断裂的条数与涉及的候选数", async () => {
+  const { candidateReviewMetrics, candidateReviewHeadline } =
+    await import("../public/story-review-metrics.js");
+  const review = {
+    candidateChecks: [
+      {
+        verdict: "revise",
+        mechanismChecks: [{ verdict: "not_depicted" }, { verdict: "depicted" }],
+        coherenceChecks: [{ kind: "tool_misuse" }, { kind: "space_or_time" }]
+      },
+      { verdict: "pass", mechanismChecks: [{ verdict: "depicted" }], coherenceChecks: [] }
+    ]
+  };
+  const metrics = candidateReviewMetrics(review);
+  assert.equal(metrics.coherenceBreaks, 2);
+  assert.equal(metrics.candidatesWithCoherenceBreak, 1);
+  assert.match(candidateReviewHeadline(review), /因果断裂 2 处（1 个候选）/u);
+});
+
+// 旧报告根本没有这个键。数出来是 0，但那是「这一档还不存在」，不是「查过了没问题」——
+// 所以摘要里那一段整段不显示，而不是显示一个会被读成体检结论的 0。
+test("旧报告不带 coherenceChecks 时数出 0，且摘要里不出现这一段", async () => {
+  const { candidateReviewMetrics, candidateReviewHeadline } =
+    await import("../public/story-review-metrics.js");
+  const legacy = { candidateChecks: [{ verdict: "pass", mechanismChecks: [{ verdict: "depicted" }] }] };
+  assert.equal(candidateReviewMetrics(legacy).coherenceBreaks, 0);
+  assert.doesNotMatch(candidateReviewHeadline(legacy), /因果断裂/u);
+});

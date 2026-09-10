@@ -560,9 +560,17 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
 .review-issue.severity-BLOCKER { border-color: rgba(180, 35, 24, .3); }
 
 /* 候选对照评审。复用剧情体检的 .story-review / .review-check / .review-verdict 等既有样式，
-   这里只补两处：逐候选的折叠卡，以及并排显示的「候选自己的说辞」。
-   后者刻意画成灰底次要块——它是被评审刻意屏蔽掉的那一栏，放在这里供人对照，
-   不是判定依据。 */
+   这里只补四处：置顶的原片机制清单、逐候选的折叠卡、因果自洽问题块，
+   以及并排显示的「候选自己的说辞」。
+   最后一个刻意画成灰底次要块——它是被评审刻意屏蔽掉的那一栏，放在这里供人对照，
+   不是判定依据。机制清单反过来置顶且带底色：它是全批共用的一份权威清单，
+   下面每条 mechanismCheck 的 id 都指回它。 */
+.candidate-review-mechanisms { margin-top: 10px; padding: 11px 13px; border-radius: 10px;
+  background: #f6f2ea; border: 1px solid var(--line); font-size: 10px; line-height: 1.7; }
+.candidate-review-mechanisms .review-check { background: #fff; }
+.candidate-review-coherence { margin-top: 10px; padding: 9px 11px; border-radius: 8px;
+  background: rgba(180, 35, 24, .06); border: 1px solid rgba(180, 35, 24, .25); }
+.candidate-review-coherence .review-check { border-color: rgba(180, 35, 24, .2); }
 .candidate-review-card { margin-top: 10px; padding: 11px 13px; border-radius: 10px;
   background: #fff; border: 1px solid var(--line); font-size: 10px; line-height: 1.7; }
 .candidate-review-card > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; }

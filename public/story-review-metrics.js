@@ -74,12 +74,17 @@ export function candidateReviewMetrics(review) {
   if (!review || typeof review !== "object") return null;
   const checks = list(review.candidateChecks);
   const mechanisms = checks.flatMap((check) => list(check.mechanismChecks));
+  // 因果自洽问题的条数与上面同规格，也是纯计数。旧报告没有这个键，
+  // list() 给空数组，于是旧报告数出来恒为 0——不是「没查出问题」，是那一档还不存在。
+  const coherence = checks.flatMap((check) => list(check.coherenceChecks));
   const verdictCount = (value) => checks.filter((check) => check.verdict === value).length;
   return {
     candidates: checks.length,
     mechanismsChecked: mechanisms.length,
     mechanismsUnmet: mechanisms.filter((entry) => UNMET.has(entry.verdict)).length,
     notDepicted: mechanisms.filter((entry) => entry.verdict === "not_depicted").length,
+    coherenceBreaks: coherence.length,
+    candidatesWithCoherenceBreak: checks.filter((check) => list(check.coherenceChecks).length).length,
     pass: verdictCount("pass"),
     revise: verdictCount("revise"),
     drop: verdictCount("drop")
@@ -92,6 +97,7 @@ export function candidateReviewHeadline(review) {
   if (!m) return "";
   const parts = [];
   if (m.mechanismsChecked) parts.push(`机制未迁移 ${m.mechanismsUnmet}/${m.mechanismsChecked}`);
+  if (m.coherenceBreaks) parts.push(`因果断裂 ${m.coherenceBreaks} 处（${m.candidatesWithCoherenceBreak} 个候选）`);
   const verdicts = [];
   if (m.pass) verdicts.push(`${m.pass} 可展开`);
   if (m.revise) verdicts.push(`${m.revise} 需修改`);
