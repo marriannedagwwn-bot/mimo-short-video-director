@@ -379,6 +379,7 @@ export function ensureOutputContract(value, contract) {
   if (wrongArrays.length) throw new OutputContractError(`${contract} 字段类型无效：${wrongArrays.join("、")} 必须是数组`);
   if (contract === "sourceScriptReconstruction") validateSourceScriptReconstructionContract(value);
   if (contract === "creativeBrief") {
+    validateStoryEngine(value.storyEngine);
     validateNarrativeComponents(value.allowedNarrativeComponents);
     validateProtectedExpressions(value.protectedExpressions);
   }
@@ -3828,6 +3829,75 @@ const protagonistSurfaceTerms = [...sourceSurfaceIdentityTerms];
 const protectedTermStopWords = new Set([
   "台词", "视觉元素", "特定动作", "禁止", "直接使用", "高度相似", "表述", "形象", "服装", "动作", "约定", "一只", "动物"
 ]);
+
+/**
+ * storyEngine 五个子字段的形状校验。
+ *
+ * 依据：briefPrompt 正文里 storyEngine 与它的五个子字段此前**各出现恰好 1 次**——就是输出
+ * 模板那个空槽位，没有定义、没有规则、没有举例、零校验器。它是整份简报里唯一一个子字段
+ * 全无定义的子对象（nonNegotiableExperience、reusableHighValueBeats、allowedNarrativeComponents 都有）。
+ *
+ * 实测后果：三个真实导出包里 turningMechanism 一份是真机制、一份可用、一份写成了剧情概括
+ * （「主角主动采取防护措施继续参与活动，展现机灵与懂事」）。**那不是模型写错**——「转折机制」
+ * 最自然的读法就是剧情转折点，而没人告诉过它这个字段要写的是关系/理解的改变。
+ *
+ * 因此 turningMechanism 改成 {before, after} 两个槽位：混在一个字符串里时程序无法知道哪一半
+ * 描述哪一端，这与 transformationProof 的 {source, replacement} 是同一个招式。
+ *
+ * **闸门只抓退化，不保证判对。** before !== after 能抓住「两边写同一句话」这种同义重复，
+ * 但**无法**判断写出来的转变是不是真的发生在关系上——那需要语义判断，没有确定性兜底。
+ * 「恰好两个键」同样重要：它挡住模型顺手补第三个键把定义稀释掉。
+ *
+ * 只在生成路径生效：ensureOutputContract(_, "creativeBrief") 全项目只在 createBrief 里调用，
+ * 下游 variants / visualGuardrails / fullStory 都是裸 requireObject。所以 turningMechanism
+ * 仍是字符串的旧简报不会被它拒绝，照常加载——与已下线方言「所有调用点都是生成路径」同型。
+ */
+const STORY_ENGINE_TEXT_FIELDS = Object.freeze(["desire", "obstacle", "escalation", "payoff"]);
+const STORY_ENGINE_TURNING_KEYS = Object.freeze(["before", "after"]);
+
+function validateStoryEngine(storyEngine) {
+  const details = [];
+  const push = (code, path, reason) => details.push({ code, path, reason });
+  if (!storyEngine || typeof storyEngine !== "object" || Array.isArray(storyEngine)) {
+    throw new OutputContractError(
+      "creativeBrief.storyEngine 必须是对象",
+      [{ code: "CREATIVE_BRIEF_STORY_ENGINE_INVALID", path: "/storyEngine", reason: "必须是对象" }]
+    );
+  }
+  for (const field of STORY_ENGINE_TEXT_FIELDS) {
+    if (typeof storyEngine[field] === "string" && storyEngine[field].trim()) continue;
+    push("CREATIVE_BRIEF_STORY_ENGINE_FIELD_EMPTY", `/storyEngine/${field}`, `${field} 必须是非空字符串`);
+  }
+  const turning = storyEngine.turningMechanism;
+  if (!turning || typeof turning !== "object" || Array.isArray(turning)
+    || Object.keys(turning).length !== STORY_ENGINE_TURNING_KEYS.length
+    || !STORY_ENGINE_TURNING_KEYS.every((key) => Object.hasOwn(turning, key))) {
+    push(
+      "CREATIVE_BRIEF_STORY_ENGINE_TURNING_SHAPE_INVALID",
+      "/storyEngine/turningMechanism",
+      "必须是恰好含 before 与 after 两个键的对象；它写的是观众对人物关系的理解怎样改变，不是剧情转折点"
+    );
+  } else {
+    for (const key of STORY_ENGINE_TURNING_KEYS) {
+      if (typeof turning[key] === "string" && turning[key].trim()) continue;
+      push("CREATIVE_BRIEF_STORY_ENGINE_TURNING_FIELD_EMPTY", `/storyEngine/turningMechanism/${key}`, `${key} 必须是非空字符串`);
+    }
+    const before = normalizeStoryReviewEcho(turning.before);
+    const after = normalizeStoryReviewEcho(turning.after);
+    if (before && after && before === after) {
+      push(
+        "CREATIVE_BRIEF_STORY_ENGINE_TURNING_NOT_SHIFTED",
+        "/storyEngine/turningMechanism",
+        "before 与 after 去掉空白与标点后完全相同；两端必须是对同一组人物关系的两种不同理解"
+      );
+    }
+  }
+  if (!details.length) return;
+  throw new OutputContractError(
+    `creativeBrief.storyEngine 不合契约：${details.map((d) => `${d.path} ${d.reason}`).join("；")}`,
+    details
+  );
+}
 
 function validateNarrativeComponents(components) {
   const required = CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS;

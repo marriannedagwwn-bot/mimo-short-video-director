@@ -99,7 +99,7 @@ export function mockBrief(input) {
     contentType: "任务驱动的关系情绪短故事",
     targetAudience: input.referenceAnalysis?.targetAudience?.primary || "泛生活情感受众",
     coreEmotion: "从担心到被普通人的善意与克制关心打动",
-    storyEngine: { desire: "主角必须完成一项指向重要关系人的具体任务", obstacle: "时间、天气或空间让简单任务变得困难", escalation: "任务成本持续增加并暴露主角的在意", turningMechanism: "帮助者通过观察行动而非听取解释介入", payoff: "显性任务完成，同时回应被关爱对象未说出口的需要" },
+    storyEngine: { desire: "主角必须完成一项指向重要关系人的具体任务", obstacle: "时间、天气或空间让简单任务变得困难", escalation: "任务成本持续增加并暴露主角的在意", turningMechanism: { before: "观众以为这只是一方单向地替另一方跑腿", after: "观众看出两人一直在互相照应，只是方式不同" }, payoff: "显性任务完成，同时回应被关爱对象未说出口的需要" },
     emotionStructure: [
       { stage: "任务钩子", function: "建立结果问题", targetEmotion: "好奇", intensity: 45 },
       { stage: "成本升级", function: "证明关系重量", targetEmotion: "担心", intensity: 72 },

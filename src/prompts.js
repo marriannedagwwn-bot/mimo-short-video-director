@@ -407,7 +407,8 @@ sourceScriptReconstruction：${JSON.stringify(input.sourceScriptReconstruction)}
 输出 creativeBrief，严格使用以下结构：
 {
   "contentType":"", "targetAudience":"", "coreEmotion":"",
-  "storyEngine":{"desire":"", "obstacle":"", "escalation":"", "turningMechanism":"", "payoff":""},
+  "storyEngine":{"desire":"", "obstacle":"", "escalation":"",
+                 "turningMechanism":{"before":"", "after":""}, "payoff":""},
   "emotionStructure":[{"stage":"", "function":"", "targetEmotion":"", "intensity":0}],
   "roleAndOccupationMapping":[{"sourceFunction":"", "newRole":"", "newOccupationOrIdentity":"", "mappingLogic":""}],
   "reusableHighValueBeats":[{"beat":"", "dramaticValue":"", "mustRetain":"", "adaptableSurface":[], "sourceSceneRefs":[]}],
@@ -418,6 +419,22 @@ sourceScriptReconstruction：${JSON.stringify(input.sourceScriptReconstruction)}
   "nonNegotiableExperience":{"samePositioning":"", "sameAudience":"", "sameEmotion":"", "samePlotDriver":"", "sameBeatValue":""},
   "creativeDistancePolicy":""
 }
+
+storyEngine 描述的是**原片**的驱动结构，不是对新片的要求。五个键各写一句：
+- desire：原片主角想要的**可观察目标**——他要拿到、做到或到达什么；不是「想被认可」「想被陪伴」这类情绪状态。
+- obstacle：挡在这个目标前面的具体阻力。
+- escalation：代价或压力沿着什么方向升高。
+- turningMechanism：**观众对人物关系的理解在片中怎样改变**，写成 before / after 两个槽位，见下。
+- payoff：这个改变最后落在**哪个可见动作**上——观众看见什么，就知道它兑现了。
+
+turningMechanism 是这五个里最容易写错的一个，两端都要写足：
+- before：**前半段观众以为这是一段什么关系。**
+- after：**看完之后重新理解成什么。**
+- **它不是剧情转折点**，不是「主角做了什么」，也不是「问题是怎么解决的」。写成「主角想出办法继续完成任务」「主角采取措施解决了眼前困难」这类句子就是写错了——那是情节，不是理解的改变。
+- 两端必须是**对同一组人物关系的两种理解**。不能写成「任务没完成 → 任务完成了」，也不能写成「情绪低落 → 情绪变好」：那两个都不是关系。
+- 自检：遮住 after，只看前半段，观众会怎么描述这两个人的关系；再遮住 before，看完全片重新描述一次。两句话必须不同，而且**不同的地方要落在关系上**。
+- **转变不必是反转。** 哪怕只是从「看起来是一方在单方面忍让」变成「两个人都在迁就对方」这种小幅度的重新理解，也算数。但两端必须真的不一样——把同一句话换个说法写两遍会被直接判失败。
+- 原片的关系确实几乎没有变化时，写出观众前后各自看重的**不同侧面**，不要为了凑一个转折编造原片没有的事。
 
 强保真字段必须停留在抽象剧作层，不能把原片事件链升级成新片的必保剧情：
 - reusableHighValueBeats[].beat 可以简述来源桥段；dramaticValue 说明它为何有效；mustRetain 只能写不可替代的剧作价值，例如它改变了什么关系、情绪、信息或后续选择条件。必须保留角色关系价值和情绪兑现强度，但不得要求复刻原片的具体任务、人物、奖励、道具、动作、结尾或事件顺序。

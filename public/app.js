@@ -1553,12 +1553,24 @@ function renderScript(data) {
   reveal(elements.script);
 }
 
+// turningMechanism 2026-09-10 由字符串改成 {before, after}：它写的是**观众对人物关系的理解
+// 怎样改变**，混在一个字符串里时读不出哪一半描述哪一端。
+//
+// 两种形状都要能显示——新校验只在 createBrief 的生成路径跑，下游对 creativeBrief 只做裸
+// requireObject，所以已签发的旧简报（字符串）照常加载，页面不能把它显示成空白。
+function storyEngineShift(storyEngine) {
+  const turning = storyEngine?.turningMechanism;
+  if (typeof turning === "string") return turning;
+  if (!turning || typeof turning !== "object") return "";
+  return [turning.before, turning.after].filter(Boolean).join(" → ");
+}
+
 function renderBrief(data) {
   elements.brief.innerHTML = `${resultHeader("CREATIVE BRIEF", "AI 导演创意简报")}
     <div class="summary-strip">${escape(data.creativeDistancePolicy)}</div>
     <div class="data-grid">
       ${cell("内容类型", data.contentType)}${cell("核心情绪", data.coreEmotion)}${cell("目标观众", data.targetAudience)}
-      ${cell("人物欲望", data.storyEngine?.desire)}${cell("主要障碍", data.storyEngine?.obstacle)}${cell("情绪兑现", data.storyEngine?.payoff)}
+      ${cell("人物欲望", data.storyEngine?.desire)}${cell("主要障碍", data.storyEngine?.obstacle)}${cell("情绪兑现", data.storyEngine?.payoff)}${cell("理解转变", storyEngineShift(data.storyEngine))}
     </div>
     ${block("可复用高价值桥段", `<div class="beat-list">${(data.reusableHighValueBeats || []).map((item) => `<div class="beat"><strong>${escape(item.beat)}</strong><p>${escape(item.dramaticValue)}<br><b>必须保留：</b>${escape(item.mustRetain)}</p></div>`).join("")}</div>`)}
     ${block("允许继续使用的叙事构件", `<div class="allow-grid">${(data.allowedNarrativeComponents || []).map((item) => `<div class="allow-item"><strong>✓ ${escape(item.component)}</strong><p>${escape(item.howToReuseSafely)}</p></div>`).join("")}</div>`)}
