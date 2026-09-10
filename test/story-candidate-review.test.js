@@ -393,11 +393,11 @@ test("合法候选不受错误归属改动影响", async () => {
     }))
   });
   const workflow = new WorkflowService({ clients: {}, stageDefaults: null });
-  const review = await workflow.createStoryCandidateReview({
+  const result = await workflow.createStoryCandidateReview({
     themeVariants: complete,
     sourceScriptReconstruction: RECONSTRUCTION
   });
-  assert.equal(review.candidateChecks.length, complete.variants.length);
+  assert.equal(result.review.candidateChecks.length, complete.variants.length);
 });
 
 // ---------------------------------------------------------------------------
@@ -544,16 +544,16 @@ function reviewMissingOrder() {
 
 test("第一次被确定性闸门拦下时重做一次，第二次通过就正常返回", async () => {
   const { workflow, prompts } = liveReviewWorkflow([reviewMissingOrder(), baseReview()]);
-  const review = await workflow.createStoryCandidateReview(REVIEW_INPUT);
+  const result = await workflow.createStoryCandidateReview(REVIEW_INPUT);
 
   assert.equal(prompts.length, 2);
-  assert.equal(review.candidateChecks.length, COMPLETE.variants.length);
+  assert.equal(result.review.candidateChecks.length, COMPLETE.variants.length);
   // 拦过一次就必须说出来，不能让用户以为模型一次就写对了。
-  assert.equal(review.metadata.storyCandidateReview.providerCalls, 2);
-  assert.equal(review.metadata.storyCandidateReview.rejections.length, 1);
-  assert.equal(review.metadata.storyCandidateReview.rejections[0].attempt, 1);
+  assert.equal(result.metadata.storyCandidateReview.providerCalls, 2);
+  assert.equal(result.metadata.storyCandidateReview.rejections.length, 1);
+  assert.equal(result.metadata.storyCandidateReview.rejections[0].attempt, 1);
   assert.equal(
-    review.metadata.storyCandidateReview.rejections[0].details[0].code,
+    result.metadata.storyCandidateReview.rejections[0].details[0].code,
     "CANDIDATE_REVIEW_ORDER_NOT_PERMUTATION"
   );
 });
@@ -574,11 +574,11 @@ test("重试提示词把校验器数出来的原话交回去，不另写一套�
 
 test("一次就成时不产生任何重试痕迹", async () => {
   const { workflow, prompts } = liveReviewWorkflow([baseReview()]);
-  const review = await workflow.createStoryCandidateReview(REVIEW_INPUT);
+  const result = await workflow.createStoryCandidateReview(REVIEW_INPUT);
 
   assert.equal(prompts.length, 1);
-  assert.equal(review.metadata.storyCandidateReview.providerCalls, 1);
-  assert.deepEqual(review.metadata.storyCandidateReview.rejections, []);
+  assert.equal(result.metadata.storyCandidateReview.providerCalls, 1);
+  assert.deepEqual(result.metadata.storyCandidateReview.rejections, []);
 });
 
 // 契约写着「两次诊断如实报出」而实现只报第二次，是定向修订那边已登记的一处不符。
@@ -624,8 +624,8 @@ test("侧车写入失败不改变评审的成败", async () => {
       async recordAttempt() { throw new Error("磁盘满了"); }
     }]])
   );
-  const review = await workflow.createStoryCandidateReview(REVIEW_INPUT);
-  assert.equal(review.candidateChecks.length, COMPLETE.variants.length);
+  const result = await workflow.createStoryCandidateReview(REVIEW_INPUT);
+  assert.equal(result.review.candidateChecks.length, COMPLETE.variants.length);
 });
 
 test("重试正文不含反引号——模板字面量会被当场截断", () => {
@@ -644,15 +644,27 @@ test("没有结构化诊断时退回原提示词——只说你错了不说错�
 
 test("demo 路径也带 metadata，形状与 live 一致", async () => {
   const workflow = new WorkflowService({ clients: {}, stageDefaults: null });
-  const review = await workflow.createStoryCandidateReview(REVIEW_INPUT);
-  assert.equal(review.metadata.storyCandidateReview.provider, "demo");
-  assert.deepEqual(review.metadata.storyCandidateReview.rejections, []);
+  const result = await workflow.createStoryCandidateReview(REVIEW_INPUT);
+  assert.equal(result.metadata.storyCandidateReview.provider, "demo");
+  assert.deepEqual(result.metadata.storyCandidateReview.rejections, []);
 });
 
-test("浏览器把「拦过一次」显示出来，旧报告没有 metadata 时整段不显示", () => {
-  assert.match(APP_JS, /review\.metadata\?\.storyCandidateReview/u);
+test("浏览器把「拦过一次」显示出来，没有 metadata 时整段不显示", () => {
+  assert.match(APP_JS, /metadata\?\.storyCandidateReview/u);
   assert.match(APP_JS, /call\.providerCalls > 1/u);
   // 诊断原文要显示出来，只说「重试过」而不说被什么拦下等于没说。
   assert.match(APP_JS, /rejectionReasons/u);
   assert.match(APP_JS, /detail\?\.reason/u);
+});
+
+// metadata 是外挂的一层，不在 review 对象里：review 的 schema 是
+// additionalProperties: false，混进去这份报告就送不回服务端，而定向修订要拿它当输入。
+test("评审响应把 review 与 metadata 分开，报告本身仍能通过自己的契约", async () => {
+  const { workflow } = liveReviewWorkflow([baseReview()]);
+  const result = await workflow.createStoryCandidateReview(REVIEW_INPUT);
+  assert.ok(result.review && result.metadata);
+  assert.equal(result.review.metadata, undefined, "metadata 不得混进 review 对象");
+  assert.doesNotThrow(() => ensureOutputContract(result.review, "storyCandidateReview"));
+  // 浏览器必须按两层读，不能再把整个响应当 review 传给渲染函数。
+  assert.match(APP_JS, /renderStoryCandidateReview\(result\.review, themeVariants, result\.metadata\)/u);
 });

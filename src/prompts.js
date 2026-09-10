@@ -1236,6 +1236,169 @@ ${list.join("\n")}
 ${JSON_ONLY}`;
 }
 
+/**
+ * 送进定向修订的投影。**只送目标命题这一个**，不送同批其余命题、不送原片、不送评审的
+ * verdict 与推荐顺序。
+ *
+ * 理由与分镜修订「只带分镜、不带 fullStory」同源：问题已由评审定位到具体拍号，
+ * 再给它别的对照物只会让模型顺手重编故事。
+ *
+ * 与评审投影的一处**刻意不同**：这里要送 `dramaticFunction`。评审那边剥掉它是因为它是
+ * 作者贴的意图标签、不是证据；而修订必须在保持每拍剧作功能不变的前提下改动作，
+ * 看不到它就无从下手。自我评价字段（novelty / visualPotential / experienceFidelity /
+ * transformationProof / originalityRiskCheck / highValueBeatMapping）照样全部剥掉——
+ * 送进去等于请模型来证明自己本来就是对的。
+ */
+export function buildStoryCandidateRevisionProjection(candidate) {
+  const outline = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline : [];
+  return {
+    id: String(candidate?.id || ""),
+    title: String(candidate?.title || ""),
+    logline: String(candidate?.logline || ""),
+    narrativeMode: String(candidate?.narrativeMode || ""),
+    characterSetup: candidate?.characterSetup,
+    newTask: String(candidate?.newTask || ""),
+    environmentPressure: String(candidate?.environmentPressure || ""),
+    keyChoiceBeat: candidate?.keyChoiceBeat,
+    climaxBeat: candidate?.climaxBeat,
+    keyDialogueDirections: Array.isArray(candidate?.keyDialogueDirections)
+      ? candidate.keyDialogueDirections.map((entry) => String(entry || ""))
+      : [],
+    storyOutline: outline.map((beat) => ({
+      beat: beat?.beat,
+      phase: String(beat?.phase || ""),
+      action: String(beat?.action || ""),
+      emotion: String(beat?.emotion || ""),
+      dramaticFunction: String(beat?.dramaticFunction || ""),
+      estimatedSeconds: beat?.estimatedSeconds
+    }))
+  };
+}
+
+const COHERENCE_KIND_TEXT = {
+  contradiction: "同一个命题里两处描述互相否定",
+  tool_misuse: "角色手上已经有能解决问题的东西，却用了更差的替代物",
+  purpose_nullified: "任务目的被链条里另一件事当场抵消",
+  space_or_time: "前面说够不到或来不及，后面用更弱的办法却成了",
+  other: "其它"
+};
+
+/**
+ * 命题定向修订。**只出候选，不签发任何东西**——采纳发生在用户点按钮的那一刻。
+ *
+ * 驱动信号是 `coherenceChecks` 而不是 `verdict`，依据是 2026-09-10 的实测：同一份命题
+ * 三次回放，`verdict` 与 `recommendedOrder` 每次都不同，而因果断裂稳定复现且锚到拍号。
+ */
+export function storyCandidateRevisionPrompt({
+  candidate,
+  coherenceBreaks = [],
+  targetDurationSeconds = null
+} = {}) {
+  const projection = buildStoryCandidateRevisionProjection(candidate);
+  const beats = projection.storyOutline.length;
+  const window = storyDurationWindow(targetDurationSeconds);
+  const durationRule = window
+    ? `\n- 本片目标时长约 ${Math.round(Number(targetDurationSeconds))} 秒：改完之后各拍 estimatedSeconds 的合计仍要落在 ${window.min}-${window.max} 秒内。这个合计会直接决定成片长度。`
+    : "";
+  const breaks = coherenceBreaks.map((entry, index) => {
+    const kind = COHERENCE_KIND_TEXT[entry?.kind] || String(entry?.kind || "");
+    const at = Array.isArray(entry?.beatIndexes) ? entry.beatIndexes.join("、") : "";
+    return `${index + 1}. 【${kind}】第 ${at} 拍：${String(entry?.problem || "")}`;
+  }).join("\n");
+
+  return `${SYSTEM_PROMPT}
+
+一份对照评审在下面这个命题里查出了因果不自洽。你的任务是**只把这些问题改掉**，别的一律不动。
+
+## 要修的问题（这是本次唯一的修订依据）
+
+${breaks || "（评审没有报出因果问题。这种情况不要修订，把 revisedBeats 写成空数组并在 changeSummary 里说明。）"}
+
+## 命题原文
+
+${JSON.stringify(projection)}
+
+## 你能改什么
+
+**能改的只有这些**：
+- 每一拍的 action（动作）、emotion（情绪）、estimatedSeconds（这一拍多长）
+- newTask（这个故事的任务是什么）
+- environmentPressure（环境压力）
+- logline（一句话概括）
+- keyDialogueDirections（对白方向）
+
+**一个字都不能碰的**：id、title、oneLineHook、narrativeMode、characterSetup、
+keyChoiceBeat、climaxBeat，以及每一拍的 beat、phase、dramaticFunction。
+这些字段**不要出现在你的输出里**，写了会被直接拒绝。
+
+**拍数固定 ${beats} 拍，不许增删。** 你只能覆盖已有的拍，用 beat 号定位。
+
+## 三条铁律
+
+1. **只列你真正改了的拍。** 没改的拍不要写进 revisedBeats——把原文抄一遍既没有意义，
+   也容易在抄的过程中把措辞改掉。
+2. **保持每一拍的 dramaticFunction 真的成立。** 你看得到它但不能改它：如果第 3 拍的功能是
+   「高潮」，改完之后它仍然必须是这个故事的高潮。修因果不是重写故事。
+3. **执行者不许反转。** 「甲替乙做某事」改完还得是甲替乙，不能为了句子顺就写成乙替甲。
+
+## 怎么算改对了
+
+逐条对着上面的问题看：那条因果断裂在改完之后**还成不成立**。
+- 如果根在动作链，就改那几拍的 action。
+- 如果根在任务设定本身（比如「任务目的在后面被抵消」「任务目标和实际做的事不是一回事」），
+  就改 newTask 或 environmentPressure，让整条链重新讲得通。
+- **不要靠加戏解决问题。** 能靠改写一个动作解掉的，就不要再添一个新动作、新道具、新角色。
+  这条命题下游会被拆成镜头，动作链越满，每个镜头越挤。${durationRule}
+
+改不动的情况要说出来：如果某条问题的根在你不能改的字段上（比如 title 或 dramaticFunction），
+就在 changeSummary 里写明「第 N 条改不了，根在 XXX」，**不要假装改了**。
+
+## 输出
+
+changeSummary 写：改了哪几拍、改成什么、为什么这样那条断裂就不成立了。
+
+{"schemaVersion":"story-candidate-revision/1.0",
+ "candidateId":"${projection.id}",
+ "revisedBeats":[{"beat":1,"action":"","emotion":"","estimatedSeconds":10}],
+ "newTask":"",
+ "environmentPressure":"",
+ "logline":"",
+ "keyDialogueDirections":[],
+ "changeSummary":""}
+
+revisedBeats 里每一项**只写你改了的那几个键**，没改的键整个省略。
+newTask / environmentPressure / logline / keyDialogueDirections 同理：没改就整个省略这个键。
+${JSON_ONLY}`;
+}
+
+/** 被确定性闸门拦下之后的重试正文。与评审那条同规格：原文逐字保留，只在末尾追加诊断。 */
+export function storyCandidateRevisionRetryPrompt({ originalPrompt = "", details = [] } = {}) {
+  const list = (Array.isArray(details) ? details : [])
+    .map((detail) => {
+      const path = String(detail?.path || "").trim();
+      const reason = String(detail?.reason || detail?.message || "").trim();
+      const code = String(detail?.code || "").trim();
+      if (!reason) return "";
+      return `- ${path ? `${path} ` : ""}${reason}${code ? `（${code}）` : ""}`;
+    })
+    .filter(Boolean);
+  if (!list.length) return String(originalPrompt || "");
+
+  return `${originalPrompt}
+
+---
+
+## 上一次的输出被确定性校验拦下了
+
+这些不是主观意见，是程序数出来的。逐条如下：
+
+${list.join("\n")}
+
+请重新输出一份修订，规则一个字都没变，上面这几条必须满足。
+不要解释上一次为什么错，直接输出新的 JSON。
+${JSON_ONLY}`;
+}
+
 export function storyQualityReviewPrompt(fullStory) {
   const scenes = Array.isArray(fullStory?.sceneScript) ? fullStory.sceneScript : [];
   const retention = Array.isArray(fullStory?.retentionPlan) ? fullStory.retentionPlan : [];

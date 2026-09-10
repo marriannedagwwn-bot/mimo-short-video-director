@@ -1167,3 +1167,27 @@ export function mockAnimationPlanRevision(animationPlan, report, targetShotIds =
     }))
   };
 }
+
+// demo 模式的命题定向修订。**只做一处最小、可预测的改动，不伪造创作内容。**
+//
+// 与 mockAnimationPlanRevision 的一处不同：那边可以逐字回显，因为它的台账写 0/0 就合规；
+// 这边有一条 CANDIDATE_REVISION_NO_CHANGE 闸门——逐字回显会被自己的校验器拒绝，
+// 于是 demo 就走不到合并与复验，等于 mock 根本没有覆盖到 live 的那条路。
+//
+// 所以 demo 在第一拍的 action 末尾追加一句写明这是 demo 的句子：改动真实存在（闸门放行），
+// 内容却不冒充创作（谁都看得出这不是模型写的），而且**只动一个可写字段**，
+// 合并之后除了那一处逐字节不变，与 live 走完全相同的派生与校验链。
+export function mockStoryCandidateRevision(candidate, coherenceBreaks = []) {
+  const outline = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline : [];
+  const first = outline[0] || null;
+  return {
+    schemaVersion: "story-candidate-revision/1.0",
+    candidateId: String(candidate?.id || ""),
+    revisedBeats: first
+      ? [{ beat: first.beat, action: `${String(first.action || "")}（demo 模式未调用模型，此处仅作占位改动）` }]
+      : [],
+    changeSummary: coherenceBreaks.length
+      ? `demo 模式不调用模型，未实际处理这 ${coherenceBreaks.length} 条因果问题。`
+      : "demo 模式不调用模型，评审也没有报出因果问题。"
+  };
+}

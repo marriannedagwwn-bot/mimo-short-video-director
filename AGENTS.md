@@ -350,6 +350,45 @@ Prompt、测试当天都动了，`public/app.js` 的 `renderStoryCandidateReview
 「2 revise / 2 drop」，因果断裂 2→3 处，`recommendedOrder` 三次都不一样）——「包与包之间很不齐」
 现在还要加上**同一个包内部也不稳**。
 
+**⑧ 命题定向修订 `storyCandidateRevision`（2026-09-10）**（`POST /api/story-candidate-revision`）。
+评审只出报告、不改命题，这一档才是唯一会改动命题正文的地方——但它同样**只出候选、不签发任何东西**：
+不写回 `themeVariants`、不进 lineage、不 stale。签发只发生在用户点「采纳」的那一刻。
+
+**驱动信号是 `coherenceChecks`，不是 `verdict`**：上一段那组数字就是依据——`verdict` 与
+`recommendedOrder` 在同一份输入上三次三样，而因果断裂稳定复现、锚到拍号、具体可执行。
+浏览器的修订按钮只在该命题确实被报出断裂时出现。**一次只修一个命题。**
+
+可写范围分三档（`src/story-candidate-revision.js` 各有一份常量）：**可写**是
+`storyOutline[].action` / `emotion` / `estimatedSeconds`、`keyDialogueDirections`、`newTask`、
+`environmentPressure`、`logline`；**派生或签发、出现即拒**是 `keyChoice` / `climax` /
+`emotionalPayoff` 与 `transformationProof`；**冻结**是 `id` / `title` / `oneLineHook` /
+`verticalFit` / `narrativeMode` / `characterSetup` / 两个拍号、每拍的 `beat` / `phase` /
+`dramaticFunction`，以及全部自我评价字段。
+
+`newTask` / `environmentPressure` 可写的依据是实测：一轮评审报出的三条断裂里**两条的根在任务设定**，
+只改动作链改不掉。`dramaticFunction` 冻结的理由不同——它是 `storyCandidateStructureSignature`
+的输入，让模型改它等于让它动 `validateVariantStructuralDivergence`。`title` 冻结是刻意的：
+让人始终能在卡片上认出是同一个命题，也守住「修订」与「换一批」的界限。
+
+**只覆盖、不增删**：模型按 `beat` 号定位、只列真正改了的拍，拍集合因此由构造保持不变。
+闸门全是形状与字符串比较，另加一条 `CANDIDATE_REVISION_NO_CHANGE`——交回一份与原文逐字相同的
+修订不是格式错误，是没干活。
+
+**服务端独占合并，并从头复验。** `assertOnlyCandidateRevisionFieldsChanged` 跑在重新派生**之前**
+（那一刻三个投影还是原值，正好证明模型没绕过「派生字段不可写」），之后
+`deriveStoryCandidateProjections` 才按新 action 重新派生，再走完整校验链。**不传 upstream**
+（`source` 逐字未变），**固定角色边界照常验签并复验**。提示词只带目标命题这一个，不带同批其余
+命题、不带原片、不带 verdict；唯一与评审投影相反的是 **`dramaticFunction` 要送**——不能改但必须
+看得到。走 coordinator、`maxProviderCalls: 2`、禁止第三次。
+
+**采纳的代价是整批的**：`themeVariants` 是一份 Artifact，签发新版本会递归 stale 这一批全部命题的
+下游，哪怕别的命题一个字没改。浏览器采纳前照「换一批」的规格征求同意，文案写明这一点。
+**修订最省的用法是在选中命题之前**，那时代价为零。
+
+**三条没有确定性兜底的**：执行者反转；一换一但复杂度暴涨（**本版刻意不设动作数量台账**，
+命题阶段没有对应实测，凭推断加闸门违反「不得顺手扩大范围」，改为并排展示并数出动作链字数）；
+以及 `dramaticFunction` 名义还在、实际已不成立（它是冻结字段、逐字未变，闸门查不出功能还在不在）。
+
 
 **不打总分**（§剧情体检已实测总分没有分辨力）。`verdict` 的 `drop` **只是报告里的一句话**：不删候选、不重新生成、不触发任何 stale，分布校验（`STORY_CANDIDATE_NARRATIVE_MODE_MIX`）不受影响，淘汰与否由用户决定。评审默认沿用 `variants` 阶段的 provider，也就是写这些候选的那个模型，**自己批自己会偏松是已知偏差**，如实记录、不靠静默换家掩盖；它是纯文本阶段，可按阶段 override 换任意一家。
 

@@ -282,6 +282,7 @@ const MODEL_STAGE_DEFS = [
   { key: "visualGuardrails", label: "视觉规则", hint: "角色边界、原片来源记录、台词规则", capability: "视觉模型", capabilityKind: "vision" },
   { key: "variants", label: "主题变体", hint: "新故事方向", capability: "文本模型", capabilityKind: "text" },
   { key: "storyCandidateReview", label: "候选对照评审", hint: "横向比对候选动作链，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
+  { key: "storyCandidateRevision", label: "命题定向修订", hint: "按评审报出的因果断裂只改一个命题，只出修订稿", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "fullStory", label: "完整剧情", hint: "可拍分场剧本", capability: "文本模型", capabilityKind: "text" },
   // 四个验收阶段。服务端从一开始就在 modelStages / stageHealth 里上报它们，
   // 只是这张表漏了登记，于是面板选不到、sanitizedModelOverrides 也会把覆盖过滤掉——
@@ -1724,12 +1725,21 @@ async function runStoryCandidateReview(themeVariants, button) {
   button.textContent = "体检中…";
   body.innerHTML = `<p class="story-review-status">正在逐个候选核对动作链与原片机制，通常十几秒…</p>`;
   try {
-    const review = await api("/api/story-candidate-review", {
+    // 响应是 { review, metadata } 两层：metadata 是服务端的调用记录，**不属于**
+    // 模型输出契约（schema 是 additionalProperties: false），混进去会让这份报告
+    // 送不回服务端——而命题定向修订要拿它当输入。
+    const result = await api("/api/story-candidate-review", {
       themeVariants,
       sourceScriptReconstruction: state.output.sourceScriptReconstruction,
       visualGuardrails: state.output.visualGuardrails
     });
-    body.innerHTML = renderStoryCandidateReview(review, themeVariants);
+    // 报告连同它评的那一份 themeVariants 一起留在内存里，给定向修订当输入。
+    // 与评审本身同规格：只在页面上活着，刷新即失，不进 Artifact、不进 lineage。
+    // 连 themeVariants 一起存是为了在修订时复核报告评的还是不是当前这一批。
+    lastCandidateReview = { review: result.review, themeVariants };
+    storyCandidateRevisions.clear();
+    body.innerHTML = renderStoryCandidateReview(result.review, themeVariants, result.metadata);
+    bindCandidateReviewActions(body);
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     // 覆盖率核验拦下的漏检要完整显示：用户需要看到是哪个候选没被评到。
@@ -1740,6 +1750,31 @@ async function runStoryCandidateReview(themeVariants, button) {
     button.textContent = original;
   }
 }
+
+// 最近一次评审报告，连同它评的那一份 themeVariants。定向修订拿它当输入，
+// 并在发请求前复核这一批命题有没有换过。刷新即失，与评审同规格。
+let lastCandidateReview = null;
+
+// 修订按钮只在这个命题**确实被报出因果断裂**时出现。
+//
+// 驱动信号刻意不是 verdict：2026-09-10 实测同一份命题三次回放，verdict 与
+// recommendedOrder 每次都不同（2 pass/2 revise → 2 revise/2 drop → 2 revise/2 drop），
+// 而因果断裂稳定复现、锚到拍号、具体可执行。拿不稳的信号当修订入口只会让人白花钱。
+function reviseAction(check) {
+  const breaks = Array.isArray(check?.coherenceChecks) ? check.coherenceChecks : [];
+  if (!breaks.length) return "";
+  return `
+    <div class="candidate-revision-action">
+      <button type="button" class="outline-button" data-revise-candidate="${escape(check.candidateId)}">
+        按评审意见修订这 ${breaks.length} 处
+      </button>
+      <span class="muted-note">只出修订稿供对照，**不会**改动当前命题；采纳与否由你决定。</span>
+    </div>`;
+}
+
+// 定向修订结果按命题 id 隔离，与分镜修订同规格：只在页面上活着，
+// 真正签发只发生在用户点「采纳」的那一刻。
+const storyCandidateRevisions = new Map();
 
 const CANDIDATE_VERDICT_LABEL = { pass: "可展开", revise: "需修改", drop: "建议淘汰" };
 
@@ -1755,13 +1790,14 @@ const COHERENCE_KIND_LABEL = {
 
 // 评审结论与候选**自己的说辞**并排显示。
 // 模型看不到右边那一栏（服务端按允许清单剥掉了），你看得见——差在哪一眼就知道。
-function renderStoryCandidateReview(review, themeVariants) {
+function renderStoryCandidateReview(review, themeVariants, metadata = null) {
   const byId = new Map((themeVariants?.variants || []).map((variant) => [String(variant.id), variant]));
   const headline = candidateReviewHeadline(review);
   // 服务端拦过一次就必须说出来，不能让用户以为模型一次就写对了。
   // 这一档现在允许「第一次做错」：被确定性闸门拦下时带诊断重做一次，预算封在 2 次。
-  // 旧报告没有 metadata（那时这条路只发一次），整段不显示。
-  const call = review.metadata?.storyCandidateReview || null;
+  // metadata 是**外挂的一层**，不在 review 对象里——review 的 schema 是
+  // additionalProperties: false，混进去它就送不回服务端，而定向修订要拿它当输入。
+  const call = metadata?.storyCandidateReview || null;
   const rejectionReasons = (call?.rejections || [])
     .flatMap((rejection) => (rejection?.details || []))
     .map((detail) => String(detail?.reason || detail?.message || "").trim())
@@ -1838,6 +1874,8 @@ function renderStoryCandidateReview(review, themeVariants) {
         ${coherence}
         <p class="review-keep"><b>别改掉：</b>${escape(check.keepThis)}</p>
         ${claims}
+        ${reviseAction(check)}
+        <div class="candidate-revision-slot" data-revision-slot="${escape(check.candidateId)}"></div>
       </details>`;
   }).join("");
   return `
@@ -1847,6 +1885,188 @@ function renderStoryCandidateReview(review, themeVariants) {
     ${sourceMechanisms}
     ${cards}
     <p class="story-review-summary">${escape(review.summary)}</p>`;
+}
+
+// 评审面板是整块 innerHTML 渲染的，按钮只能在渲染之后绑。
+function bindCandidateReviewActions(root) {
+  for (const button of root.querySelectorAll("[data-revise-candidate]")) {
+    button.addEventListener("click", () => requestStoryCandidateRevision(button.dataset.reviseCandidate, button));
+  }
+}
+
+// 定向修订：按评审报出的因果断裂只改这一个命题。**返回结果不写回任何东西**——
+// 与分镜修订同规格，签发只发生在用户点「采纳」的那一刻。
+async function requestStoryCandidateRevision(candidateId, button) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (!candidateId || button.disabled) return;
+  const entry = lastCandidateReview;
+  if (!entry) {
+    showError("评审报告已失效，请重新体检后再修订。");
+    return;
+  }
+  // 报告是针对**当时那一批命题**算出来的。中途换过一批就必须重新体检，
+  // 不能把基于旧内容的修订意见套到新命题上。
+  if (JSON.stringify(state.output.themeVariants) !== JSON.stringify(entry.themeVariants)) {
+    lastCandidateReview = null;
+    showError("主题命题在体检之后已经换过一批，这份评审报告已作废，请重新体检。");
+    return;
+  }
+  const slot = document.querySelector(`[data-revision-slot="${CSS.escape(candidateId)}"]`);
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "修订中…";
+  if (slot) slot.innerHTML = `<p class="story-review-status">正在按评审意见改这一个命题，通常一两分钟…</p>`;
+  try {
+    const result = await api("/api/story-candidate-revision", {
+      themeVariants: entry.themeVariants,
+      review: entry.review,
+      candidateId,
+      creatorProfile: profile(),
+      // 边界验签比对整份上游的 sourceDigest，这几份必须一起送；
+      // 它们只用于验签与合并后的复验，**不进修订提示词**。
+      visualGuardrails: state.output.visualGuardrails,
+      creativeBrief: state.output.creativeBrief,
+      referenceAnalysis: state.output.referenceAnalysis,
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+      targetDurationSeconds: resolveStoryDurationTarget(state.storyDurationTarget, {
+        metadata: state.metadata,
+        sourceScriptReconstruction: state.output.sourceScriptReconstruction
+      })
+    });
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    storyCandidateRevisions.set(String(candidateId), {
+      ...result,
+      sourceThemeVariants: entry.themeVariants
+    });
+    if (slot) {
+      slot.innerHTML = renderStoryCandidateRevision(candidateId, storyCandidateRevisions.get(String(candidateId)));
+      const adopt = slot.querySelector("[data-adopt-candidate-revision]");
+      if (adopt) adopt.addEventListener("click", () => adoptStoryCandidateRevision(candidateId, adopt));
+    }
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    if (slot) slot.innerHTML = `<p class="story-review-status error">${escape(error?.message || "定向修订失败")}</p>`;
+  } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+// 原文与修订版并排。执行者反转、以及「一换一但复杂度暴涨」都没有确定性兜底，
+// 只能靠人在这里看，所以界面上明写这一句。
+function renderStoryCandidateRevision(candidateId, entry) {
+  // entry 是服务端响应展开后再加一个 sourceThemeVariants：
+  // { candidateId, revision, themeVariants（已合并）, metadata, sourceThemeVariants（原始） }。
+  const before = (entry?.sourceThemeVariants?.variants || []).find((v) => String(v.id) === String(candidateId));
+  const after = (entry?.themeVariants?.variants || []).find((v) => String(v.id) === String(candidateId));
+  if (!before || !after) return `<p class="story-review-status error">修订结果里找不到命题 ${escape(candidateId)}。</p>`;
+  const revision = entry?.revision || {};
+  const call = entry?.metadata?.storyCandidateRevision || null;
+
+  const fieldRow = (label, a, b) => (String(a || "") === String(b || "") ? "" : `
+    <div class="revision-diff">
+      <b>${escape(label)}</b>
+      <p class="revision-before">${escape(a || "—")}</p>
+      <p class="revision-after">${escape(b || "—")}</p>
+    </div>`);
+
+  const beats = (before.storyOutline || []).map((beat, index) => {
+    const next = (after.storyOutline || [])[index] || {};
+    const same = String(beat.action || "") === String(next.action || "");
+    return `
+      <div class="revision-diff ${same ? "revision-unchanged" : ""}">
+        <b>第 ${escape(beat.beat)} 拍 · ${escape(beat.dramaticFunction)} · ${escape(beat.estimatedSeconds)}${
+  Number(beat.estimatedSeconds) === Number(next.estimatedSeconds) ? "" : ` → ${escape(next.estimatedSeconds)}`} 秒</b>
+        ${same
+    ? `<p class="revision-same">${escape(beat.action)}</p>`
+    : `<p class="revision-before">${escape(beat.action)}</p><p class="revision-after">${escape(next.action)}</p>`}
+      </div>`;
+  }).join("");
+
+  const totalBefore = (before.storyOutline || []).reduce((sum, b) => sum + Number(b.estimatedSeconds || 0), 0);
+  const totalAfter = (after.storyOutline || []).reduce((sum, b) => sum + Number(b.estimatedSeconds || 0), 0);
+  const charsBefore = (before.storyOutline || []).reduce((sum, b) => sum + String(b.action || "").length, 0);
+  const charsAfter = (after.storyOutline || []).reduce((sum, b) => sum + String(b.action || "").length, 0);
+
+  return `
+    <div class="candidate-revision">
+      <p class="story-review-status">修订稿（还没有生效）${call && call.providerCalls > 1
+    ? ` · 第 ${escape(call.providerCalls)} 次调用的结果，第一次被确定性校验拦下` : ""}</p>
+      <p class="review-why">${escape(revision.changeSummary || "")}</p>
+      ${fieldRow("任务", before.newTask, after.newTask)}
+      ${fieldRow("环境压力", before.environmentPressure, after.environmentPressure)}
+      ${fieldRow("一句话概括", before.logline, after.logline)}
+      ${beats}
+      <p class="muted-note">
+        合计时长 ${escape(totalBefore)} → ${escape(totalAfter)} 秒 ·
+        动作链字数 ${escape(charsBefore)} → ${escape(charsAfter)}
+        ${charsAfter > charsBefore * 1.2 ? "（明显变长了，多半是在靠加戏解决问题——下游镜头会更挤）" : ""}
+      </p>
+      <p class="muted-note warn">
+        自己看两件事，程序判不了：①执行者有没有被调换（「甲替乙做某事」不能变成乙替甲）；
+        ②有没有一换一但复杂度暴涨。
+      </p>
+      <div class="candidate-revision-action">
+        <button type="button" class="outline-button" data-adopt-candidate-revision>采纳并签发新的命题版本</button>
+        <span class="muted-note warn">
+          采纳会签发新的 themeVariants 版本。**这一批全部命题**的下游（完整剧情、镜头计划、
+          已生成的图片与视频）都会失效——即使别的命题一个字没改，因为它们同属一份 Artifact。
+          还没选中命题、还没往下做时采纳，代价为零。
+        </span>
+      </div>
+    </div>`;
+}
+
+// 采纳：这才是唯一签发新 themeVariants 版本的地方。
+async function adoptStoryCandidateRevision(candidateId, button) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const entry = storyCandidateRevisions.get(String(candidateId));
+  if (!entry || button.disabled) return;
+  // 修订是针对**当时那一批命题**算出来的，中途换过就必须作废。
+  if (JSON.stringify(state.output.themeVariants) !== JSON.stringify(entry.sourceThemeVariants)) {
+    storyCandidateRevisions.delete(String(candidateId));
+    showError("主题命题在修订期间已经变化，这次修订结果已作废，请重新体检并修订。");
+    return;
+  }
+  const downstream = [
+    ...Object.keys(state.fullStories || {}).map((variantId) => `${variantId} 的完整剧情`),
+    ...Object.keys(state.animationPlans || {}).map((variantId) => `${variantId} 的镜头计划`)
+  ];
+  if (downstream.length) {
+    const confirmed = window.confirm(
+      `采纳会签发新的主题命题版本。已生成的下游内容会全部失效——**包括没有被修订的那些命题**，`
+      + "因为整批命题是同一份 Artifact：\n"
+      + `${downstream.join("、")}，以及它们下面已生成的镜头媒体。\n\n是否继续？`
+    );
+    if (!confirmed) return;
+  }
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "签发中…";
+  try {
+    assertWorkspaceCurrent(workspaceEpoch);
+    const nextThemeVariants = entry.result?.themeVariants || entry.themeVariants;
+    await commitProductionArtifact({
+      artifactId: "themeVariants",
+      artifactType: "themeVariants",
+      content: nextThemeVariants,
+      dependencyRefs: productionDependencies([
+        "referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails"
+      ])
+    });
+    state.output.themeVariants = nextThemeVariants;
+    // 命题内容变了，之前基于旧内容的评审报告与其余修订稿一并作废。
+    lastCandidateReview = null;
+    storyCandidateRevisions.clear();
+    renderVariants(nextThemeVariants);
+    showError(`命题 ${candidateId} 的修订已采纳，已签发新的主题命题版本。`, "notice");
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    showError(error.message || "修订签发失败；原命题保持不变。");
+    button.disabled = false;
+    button.textContent = original;
+  }
 }
 
 // 换一批：用同一份已签发的上游证据（referenceAnalysis / sourceScriptReconstruction /

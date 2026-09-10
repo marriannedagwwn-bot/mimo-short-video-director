@@ -16,6 +16,7 @@ export const MODEL_OUTPUT_LOG_SCOPES = Object.freeze({
   // 取值必须逐字等于 stage 名：stageModelOutputLogWriters 是按 scope 建 Map、
   // 按 stage 查（workflow.js 的 generateStageJson），两者对不上就静默不写。
   STORY_CANDIDATE_REVIEW: "storyCandidateReview",
+  STORY_CANDIDATE_REVISION: "storyCandidateRevision",
   STORY_QUALITY_REVIEW: "storyQualityReview",
   ANIMATION_PLAN_REVIEW: "animationPlanReview",
   ANIMATION_PLAN_REVISION: "animationPlanRevision"

@@ -433,6 +433,64 @@ Prompt、测试当天都动了，`public/app.js` 的 `renderStoryCandidateReview
 因果断裂 2→3 处，`recommendedOrder` 三次都不一样）。⑤ 里记的「包与包之间很不齐」现在还要加上
 **同一个包内部也不稳**，更强化那条结论：`verdict` 与 `recommendedOrder` 不得当成自动选择依据。
 
+**⑧ 命题定向修订 `storyCandidateRevision`（2026-09-10）**（`POST /api/story-candidate-revision`）。
+评审只出报告、不改命题，这一档才是唯一会改动命题正文的地方——但它同样**只出候选，不签发任何
+东西**：不写回 `themeVariants`、不进 lineage、不 stale。签发只发生在用户点「采纳」的那一刻。
+
+**驱动信号是 `coherenceChecks`，不是 `verdict`。** 依据就是上一段那组数字：`verdict` 与
+`recommendedOrder` 在同一份输入上三次三样，而因果断裂稳定复现、锚到拍号、具体可执行。
+拿不稳的信号当修订入口只会让人白花钱。浏览器的修订按钮因此只在该命题**确实被报出断裂**时出现。
+**一次只修一个命题**：最终只有一个会被展开成 Full Story，一次一个的输出短、失败率低、对照也清楚。
+
+可写范围分三档，`src/story-candidate-revision.js` 里各有一份常量：
+
+| | 字段 |
+| --- | --- |
+| **可写** | `storyOutline[].action` / `emotion` / `estimatedSeconds`、`keyDialogueDirections`、`newTask`、`environmentPressure`、`logline` |
+| **派生或签发，出现即拒** | `keyChoice` / `climax` / `emotionalPayoff`、`transformationProof` |
+| **冻结，逐字保留** | `id` / `title` / `oneLineHook` / `verticalFit` / `narrativeMode` / `characterSetup` / `keyChoiceBeat` / `climaxBeat`、每拍的 `beat` / `phase` / `dramaticFunction`、全部自我评价字段 |
+
+`newTask` / `environmentPressure` 可写的依据是实测：一轮评审报出的三条断裂里**两条的根在任务设定**
+（「寻找主人的目的被当场抵消」「任务目标是修好秋千而非做新秋千」），只改动作链改不掉。
+`dramaticFunction` 冻结的理由不同——它是 `storyCandidateStructureSignature` 的输入，
+让模型改它等于让它动 `validateVariantStructuralDivergence` 这个现有闸门。
+`title` 冻结是刻意的：让人始终能在卡片上认出是同一个命题，也守住「修订」与「换一批」的界限。
+
+**只覆盖、不增删**：模型按 `beat` 号定位，**只列真正改了的拍**（抄原文既没意义，也容易在抄的
+过程中把措辞改掉——那正是 §2.4 记过的失败形状）。拍集合因此由构造保持不变，
+`keyChoiceBeat` / `climaxBeat` 永远指得对。
+
+四条闸门全是形状与字符串比较：`CANDIDATE_REVISION_SEALED_FIELD_PRESENT` /
+`..._FROZEN_FIELD_PRESENT` / `..._OUT_OF_SCOPE` / `..._UNKNOWN_BEAT` / `..._DUPLICATE_BEAT` /
+`..._BEAT_EMPTY` / `..._SUMMARY_MISSING`，外加一条 `CANDIDATE_REVISION_NO_CHANGE`——模型可以
+合规地交回一份与原文逐字相同的修订，那不是格式错误，是没干活。
+
+**服务端独占合并，并从头复验。** 顺序不能换：`assertOnlyCandidateRevisionFieldsChanged` 跑在
+重新派生**之前**（那一刻三个投影还是原值，正好证明模型没绕过「派生字段不可写」），之后
+`deriveStoryCandidateProjections` 才按新 action 重新派生，再走
+`ensureOutputContract` + `ensureThemeVariantsMatchProfile`。**不传 upstream**——`source` 逐字未变，
+重跑溯源核对是浪费；**固定角色边界照常验签并复验**，改动作链正是可能混进禁止特征的地方。
+提示词只带**目标命题这一个**，不带同批其余命题、不带原片、不带评审的 verdict
+（与「修订只带分镜、不带 fullStory」同源）。唯一与评审投影相反的一处：**`dramaticFunction` 要送**
+——不能改但必须看得到，否则无从判断改完还成不成立。
+
+**允许第一次做错**：走 coordinator，`maxProviderCalls: 2`，禁止第三次；两次都被拦时两次诊断都在。
+
+**采纳的代价是整批的。** `themeVariants` 是**一份** Artifact，`variant:<id>` 依赖它，Full Story
+再依赖 `variant:<id>`。所以签发新版本会**递归 stale 这一批全部命题的下游**，哪怕别的命题一个字
+没改——digest 级联的必然结果，本版不改这个架构。浏览器采纳前照「换一批」的规格列出全部会失效的
+下游并明确征求同意，文案写明「包括没有被修订的那些命题」。**推论：修订最省的用法是在选中命题
+之前**，那时没有下游，代价为零。
+
+**三条没有确定性兜底的，都要靠人在预览时看：**
+1. **执行者反转**（§2.14 记过的形状：「甲替乙做某事」被写成乙替甲）。
+2. **一换一但复杂度暴涨**：本版**刻意不设动作数量台账**——§2.14 那套净预算是三次提示词加码失败
+   之后才引入的，命题阶段没有对应实测，凭推断加闸门违反「不得顺手扩大范围」。改为并排展示
+   原文与修订稿并数出动作链字数，先积累数据。**这是已知缺口**，因为 `docs/待解决项.md` 第 1 条
+   （单场动作过载）的上游正是命题的动作密度。
+3. **`dramaticFunction` 名义还在、实际已不成立**：提示词写了「保持每一拍的 dramaticFunction 真的
+   成立」，但它是冻结字段、逐字未变，闸门查不出改完之后那个功能还在不在。
+
 
 ### 2.13 剧情体检（storyQualityReview v1，2026-09-04）
 

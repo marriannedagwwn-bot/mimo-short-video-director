@@ -186,6 +186,22 @@ Prompt 中关于施动性、因果、人物质感、悬念、承诺和连贯性�
 
 依据是 2026-09-10 的真实回放：同一个模型、两份合法候选，一份一次写全 `recommendedOrder`，另一份只写了 1 个 id 被判失败，整份两千字报告连同 ¥0.27 一起丢弃，而模型自己不知道漏了什么。**它救不了语义错误**——机制清单读错原片、自洽问题判错都不产生诊断，也就不触发重试；它只把这一类「漏抄几个 id」的失败从 502 变成重做一次，不提高判断质量，更不改变候选本身。其余八个走 `generateValidatedJson` 的阶段逐字不受影响。
 
+评审响应是 `{ review, metadata }` **两层**：`metadata` 记 provider / model / 实际调用次数 / 每一次被拦的诊断，**不混进 `review` 对象**——`storyCandidateReview` 的 schema 是 `additionalProperties: false`，混进去这份报告就送不回服务端，而下面的定向修订正要拿它当输入。
+
+#### 命题定向修订（storyCandidateRevision，2026-09-10）
+
+`POST /api/story-candidate-revision`。对照评审只出报告、不改命题，这一档才是唯一会改动命题正文的地方——但它同样**只出候选、不签发任何东西**：不写回 `themeVariants`、不进 lineage、不 stale。签发只发生在用户在浏览器点「采纳」的那一刻。
+
+**驱动信号是 `coherenceChecks`，不是 `verdict`。** 依据是同一份命题三次回放的实测：`verdict` 与 `recommendedOrder` 每次都不同（2 pass/2 revise → 2 revise/2 drop → 2 revise/2 drop），而因果断裂稳定复现、锚到拍号、具体可执行。**一次只修一个命题**：最终只有一个会被展开成 Full Story。
+
+可写范围分三档。**可写**：`storyOutline[].action` / `emotion` / `estimatedSeconds`、`keyDialogueDirections`、`newTask`、`environmentPressure`、`logline`。**派生或签发、出现即拒**：`keyChoice` / `climax` / `emotionalPayoff`（服务端从 action 与拍号派生）、`transformationProof`（`source` 由冻结证据目录签发）。**冻结**：`id` / `title` / `oneLineHook` / `verticalFit` / `narrativeMode` / `characterSetup` / `keyChoiceBeat` / `climaxBeat`、每拍的 `beat` / `phase` / `dramaticFunction`，以及全部自我评价字段。`newTask` / `environmentPressure` 可写是因为实测三条断裂里两条的根在任务设定；`dramaticFunction` 冻结是因为它是结构分化签名的输入；`title` 冻结是为了让人始终能认出是同一个命题。
+
+模型按 `beat` 号**只覆盖、不增删**，且只列真正改了的拍——拍集合因此由构造保持不变，两个拍号永远指得对。服务端在克隆上合并，先证明可写范围之外逐字节不变（此时三个投影还是原值，正好证明模型没绕过派生字段不可写），再重新派生并跑完整的 `ensureOutputContract` + `ensureThemeVariantsMatchProfile`。**不传 upstream**（`source` 逐字未变），**固定角色边界照常验签并复验**。提示词只带目标命题这一个，不带同批其余命题、不带原片、不带 verdict；唯一与评审投影相反的是 `dramaticFunction` 要送——不能改但必须看得到。走 coordinator、预算 2 次、禁止第三次。
+
+**采纳的代价是整批的**：`themeVariants` 是一份 Artifact，签发新版本会递归 stale 这一批全部命题的下游，哪怕别的命题一个字没改。浏览器采纳前列出全部会失效的下游并明确征求同意。修订最省的用法是在选中命题之前。
+
+**三条没有确定性兜底**：执行者反转；一换一但复杂度暴涨（本版刻意不设动作数量台账，改为并排展示并数出动作链字数）；以及 `dramaticFunction` 名义还在、实际已不成立。
+
 ### 阶段六：fullStory
 
 用户选择一个 `themeVariants.variants[]` 后，进入独立完整剧情页。该阶段不重新发散主题，只围绕被选中的主题变体扩写，输出：

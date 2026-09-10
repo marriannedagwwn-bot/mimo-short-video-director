@@ -611,3 +611,16 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
 .revision-field p { margin: 3px 0 0; }
 .revision-before { color: var(--muted); text-decoration: line-through; }
 .revision-after { color: var(--ink); }
+
+/* 命题定向修订。原文与修订稿并排，没改的拍压成灰色——一眼能看出动了哪几拍，
+   以及动作链是不是被塞得更满了（那是下游镜头过载的上游）。 */
+.candidate-revision { margin-top: 10px; padding: 11px 13px; border-radius: 10px;
+  background: #fff; border: 1px solid var(--line); font-size: 10px; line-height: 1.7; }
+.candidate-revision-action { margin-top: 10px; display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.candidate-revision-action .muted-note { flex: 1 1 240px; }
+.revision-diff { margin-top: 8px; }
+.revision-diff p { margin: 3px 0 0; }
+.revision-diff.revision-unchanged { opacity: .55; }
+.revision-same { color: var(--muted); }
+.muted-note { color: var(--muted); font-size: 10px; line-height: 1.7; }
+.muted-note.warn { color: #b54708; }
