@@ -105,9 +105,13 @@ test("director artifact re-render retains the active stage and standalone varian
   app.updateTaskSnapshot(uiTask("directorPipeline", "running", { progress: { currentStage: "themeVariants", completedStages: 4 } }));
   app.renderCurrentMainOutputs();
   assert.equal(app.document.querySelector('[data-stage="variants"]').className, "active");
-  assert.match(app.elements.pipelineUsage.textContent, /执行中 4\/5/);
-  app.updateTaskSnapshot(uiTask("variants", "queued", { createdAt: "2026-09-09T02:00:00Z" }));
-  assert.match(app.elements.pipelineUsage.textContent, /主题变体任务正在排队/);
+  const director = app.state.taskSnapshots[app.state.directorTaskId];
+  assert.equal(director.status, "running");
+  assert.equal(director.progress.completedStages, 4);
+  const variants = uiTask("variants", "queued", { createdAt: "2026-09-09T02:00:00Z" });
+  app.updateTaskSnapshot(variants);
+  assert.equal(app.state.taskSnapshots[variants.taskId].status, "queued");
+  assert.equal(app.document.querySelector('[data-stage="variants"]').className, "active");
 });
 
 test("out-of-order polling never revives a terminal task; selection is exact and newest", () => {

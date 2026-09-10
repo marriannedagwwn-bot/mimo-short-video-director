@@ -23,6 +23,7 @@ test("director controls are sibling buttons with accessible names and restart di
   assert.match(group, /aria-label="终止本次 AI 导演"/);
   assert.match(group, /aria-label="暂停当前阶段"/);
   assert.match(html, /继续会重新执行当前阶段，可能再次计费/);
+  assert.doesNotMatch(html, /id="(?:pipelineUsage|releaseActiveTasks)"/);
 });
 
 test("creation and settling transitions do not allow premature or duplicate control requests", () => {
@@ -43,6 +44,8 @@ test("a restored pause and repeat output rendering keep resume accessible and co
   app.setRunning(true);
   app.updateTaskSnapshot(task("paused", { usage }));
   app.renderCurrentMainOutputs();
+  assert.equal(Object.hasOwn(app.elements, "pipelineUsage"), false);
+  assert.equal(Object.hasOwn(app.elements, "releaseActiveTasks"), false);
   assert.equal(app.elements.run.disabled, true);
   assert.equal(app.elements.pauseDirector.disabled, false);
   assert.equal(app.elements.pauseDirector.getAttribute("aria-label"), "继续当前阶段");
@@ -50,7 +53,9 @@ test("a restored pause and repeat output rendering keep resume accessible and co
   assert.equal(app.elements.directorStartArrow.classList.contains("hidden"), true);
   assert.equal(app.document.querySelector('[data-stage="analysis"]').className, "done");
   assert.equal(app.document.querySelector('[data-stage="brief"]').className, "paused");
-  assert.match(app.elements.pipelineUsage.textContent, /已暂停.*已确认消耗 1,234 tokens.*1 次请求未返回用量/);
+  const paused = app.state.taskSnapshots[app.state.directorTaskId];
+  assert.equal(paused.progress.controlState, "paused");
+  assert.deepEqual(paused.usage, usage);
 });
 
 test("pause keeps a stage which just committed marked completed", async () => {
@@ -106,13 +111,18 @@ test("resume and terminate use the same task; cancellation retains Run content a
   assert.equal(app.state.production.runId, "run");
   assert.equal(app.state.output, output);
   assert.equal(app.elements.terminateDirector.classList.contains("hidden"), true);
-  assert.equal(app.elements.pipelineUsage.className, "story-status warn");
-  assert.match(app.elements.pipelineUsage.textContent, /已终止.*已确认消耗 1,234 tokens.*1 次请求未返回用量/);
   const cancelled = app.state.taskSnapshots[app.state.directorTaskId];
+  assert.equal(cancelled.status, "cancelled");
+  assert.deepEqual(cancelled.usage, usage);
+  assert.equal(app.document.querySelector('[data-stage="brief"]').className, "stopped");
+  assert.equal(app.document.querySelector('[data-stage="analysis"]').className, "done");
+  assert.equal(app.document.querySelector('[data-stage="script"]').className, "done");
   app.renderDirectorTaskError({ task: cancelled, message: "cancelled" }, "失败");
   assert.equal(app.elements.error.textContent, "");
   app.renderCurrentMainOutputs();
-  assert.match(app.elements.pipelineUsage.textContent, /已终止.*1,234 tokens/);
+  assert.equal(app.state.taskSnapshots[app.state.directorTaskId].status, "cancelled");
+  assert.deepEqual(app.state.taskSnapshots[app.state.directorTaskId].usage, usage);
+  assert.equal(app.document.querySelector('[data-stage="brief"]').className, "stopped");
 });
 
 test("control failure unlocks retry without falsely switching paused state", async () => {
@@ -154,9 +164,10 @@ for (const status of ["completed", "failed", "interrupted", "cancelled"]) {
     } });
     assert.equal(await app.restoreActiveProductionRun({ projectId: "project", runId: "run" }), true);
     assert.equal(urls.length, 2);
-    assert.match(app.elements.pipelineUsage.textContent, /已确认消耗 1,234 tokens.*1 次请求未返回用量/);
+    const snapshot = app.state.taskSnapshots[app.state.directorTaskId];
+    assert.equal(snapshot.status, status);
+    assert.deepEqual(snapshot.usage, usage);
     assert.equal(app.elements.directorControls.classList.contains("active"), false);
-    if (status === "cancelled") assert.doesNotMatch(app.elements.pipelineUsage.textContent, /失败/);
   });
 }
 

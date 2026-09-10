@@ -207,10 +207,9 @@ const elements = {
   videoInfo: $("#videoInfo"), preview: $("#videoPreview"), fileName: $("#fileName"), fileMeta: $("#fileMeta"),
   frames: $("#frames"), frameStatus: $("#frameStatus"), replace: $("#replaceVideo"), transcript: $("#transcript"),
   fixedCharacter: $("#fixedCharacter"), vertical: $("#vertical"), constraints: $("#constraints"), characterExpressionRules: $("#characterExpressionRules"), variantCount: $("#variantCount"),
-  run: $("#runWorkflow"), releaseActiveTasks: $("#releaseActiveTasks"), error: $("#errorMessage"), modelState: $("#modelState"),
+  run: $("#runWorkflow"), error: $("#errorMessage"), modelState: $("#modelState"),
   directorControls: $("#directorControls"), directorStartArrow: $("#directorStartArrow"),
   terminateDirector: $("#terminateDirector"), pauseDirector: $("#pauseDirector"), directorControlHint: $("#directorControlHint"),
-  pipelineUsage: $("#pipelineUsage"),
   openModelSettings: $("#openModelSettings"), modelSettingsModal: $("#modelSettingsModal"), closeModelSettings: $("#closeModelSettings"),
   modelStageList: $("#modelStageList"), resetModelSettings: $("#resetModelSettings"), saveModelSettings: $("#saveModelSettings"),
   modelSettingsStatus: $("#modelSettingsStatus"),
@@ -413,7 +412,6 @@ function bindEvents() {
     const task = state.taskSnapshots[state.directorTaskId];
     void controlDirectorPipeline(directorControlView(task).pauseAction);
   });
-  elements.releaseActiveTasks.addEventListener("click", forceReleaseActiveTasks);
   elements.export.addEventListener("click", exportJson);
   elements.openModelSettings.addEventListener("click", openModelSettings);
   elements.closeModelSettings.addEventListener("click", closeModelSettings);
@@ -708,11 +706,11 @@ function clearVideoWorkspaceUi({ keepSource = false } = {}) {
     elements.shotFrameImageResults, elements.shotVideoResults, elements.shotVideoBatchItems]) {
     element.innerHTML = "";
   }
-  for (const element of [elements.pipelineUsage, elements.storyStatus, elements.animationStatus, elements.storyPackageStatus,
+  for (const element of [elements.storyStatus, elements.animationStatus, elements.storyPackageStatus,
     elements.characterImageStatus, elements.shotFrameImageStatus, elements.shotVideoStatus]) element.textContent = "";
   for (const key of Object.keys(emptyMediaDialogs)) state[key] = structuredClone(emptyMediaDialogs[key]);
   for (const element of [elements.characterImageModal, elements.shotFrameImageModal, elements.shotVideoModal,
-    elements.generatedImagePreview, elements.shotVideoBatchPanel, elements.releaseActiveTasks, elements.export,
+    elements.generatedImagePreview, elements.shotVideoBatchPanel, elements.export,
     elements.resultStack]) element.classList.add("hidden");
   elements.generatedImagePreviewImage.removeAttribute("src");
   elements.characterImagePreview.removeAttribute("src");
@@ -882,7 +880,6 @@ async function runWorkflow() {
   state.running = true;
   state.directorTaskId = "";
   state.directorControlRequest = null;
-  elements.pipelineUsage.textContent = "";
   showError("");
   setRunning(true);
   elements.empty.classList.add("hidden");
@@ -963,7 +960,6 @@ async function runWorkflow() {
       const created = await createDurableTask("directorPipeline", shared);
       task = created.task;
     }
-    elements.releaseActiveTasks.classList.remove("hidden");
     const completedTask = await waitForDurableTask(task, updateDirectorTaskProgress);
     recordStageUsage(completedTask.usage);
     await directorArtifactSynchronizer.sync(completedTask);
@@ -974,8 +970,6 @@ async function runWorkflow() {
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (isTaskCapacityError(error)) {
-      elements.pipelineUsage.textContent = taskCapacityMessage(error);
-      elements.pipelineUsage.className = "story-status warn";
       showError(taskCapacityMessage(error), "notice");
       return;
     }
@@ -985,7 +979,6 @@ async function runWorkflow() {
     state.running = false;
     setRunning(false);
     validateReady();
-    void refreshReleaseActiveTasksButton();
   }
 }
 
@@ -1122,38 +1115,6 @@ async function abandonProductionTasks(tasks) {
   return released;
 }
 
-async function refreshReleaseActiveTasksButton() {
-  const workspaceEpoch = browserWorkspace.epoch;
-  const active = await activeProductionTasks().catch(() => []);
-  if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
-  elements.releaseActiveTasks.classList.toggle("hidden", !active.length);
-}
-
-async function forceReleaseActiveTasks() {
-  const active = await activeProductionTasks();
-  if (!active.length) {
-    elements.releaseActiveTasks.classList.add("hidden");
-    return;
-  }
-  const confirmed = window.confirm(
-    "确认放弃当前 Run 的全部 active Task，并清理本次生成结果？\n\n"
-    + "当前原视频会保留。已提交给供应商的远端任务可能仍会执行并产生费用。"
-  );
-  if (!confirmed) return;
-  const epoch = browserWorkspace.beginChange();
-  sourceLoading = true;
-  validateReady();
-  try {
-    if (!await browserWorkspace.resetRun(epoch)) return;
-    clearVideoWorkspaceUi({ keepSource: true });
-    showError("已清理本次生成结果；可以用当前视频重新启动。已提交给供应商的远端调用仍可能产生费用。", "notice");
-  } catch (error) {
-    if (browserWorkspace.isCurrent(epoch)) showError(error.message || "旧任务和结果尚未清理成功，请重试。");
-  } finally {
-    if (browserWorkspace.isCurrent(epoch)) { sourceLoading = false; validateReady(); }
-  }
-}
-
 async function reloadActiveProductionRun(expectedProduction = state.production) {
   const projectId = String(expectedProduction?.projectId || "");
   const runId = String(expectedProduction?.runId || "");
@@ -1197,13 +1158,7 @@ function renderDirectorTaskStatus(task) {
   const completedCount = Number(task.progress?.completedStages) || 0;
   const order = ["analysis", "script", "brief", "guardrails", "variants"];
   order.forEach((stage, index) => setStage(stage, index < completedCount ? "done" : ""));
-  const model = Object.values(task.modelSnapshot || {})
-    .map((item) => `${item.provider || ""} ${modelName(item.model || "")}`.trim())
-    .filter(Boolean)
-    .join(" / ");
-  const view = directorTaskView(task, { modelLabel: model });
-  elements.pipelineUsage.textContent = view.message;
-  elements.pipelineUsage.className = `story-status ${view.tone}`;
+  const view = directorTaskView(task);
   // currentStage can still refer to the stage just committed at a boundary.
   // A pause/stop must not erase its completed presentation.
   if (artifactToStage[currentArtifact] && order.indexOf(artifactToStage[currentArtifact]) >= completedCount) {
@@ -1221,8 +1176,6 @@ function renderDirectorTaskError(error, fallback) {
   }
   const active = document.querySelector(".pipeline li.active");
   if (active?.dataset.stage) setStage(active.dataset.stage, "error");
-  elements.pipelineUsage.textContent = fallback;
-  elements.pipelineUsage.className = "story-status error";
   showError(error.message || fallback);
 }
 
@@ -1885,17 +1838,11 @@ async function regenerateThemeVariants() {
     state.selectedVariantId = null;
     state.backgroundMusicDrafts = {};
     setStage("variants", "done");
-    const usage = endStageUsage();
-    elements.pipelineUsage.textContent = usage ? `主题变体已换一批${formatStageUsageSuffix(usage)}` : "";
-    elements.pipelineUsage.className = "story-status ready";
+    endStageUsage();
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setStage("variants", isTaskCapacityError(error) ? "" : "error");
-    const suffix = failedStageUsageSuffix();
-    elements.pipelineUsage.textContent = isTaskCapacityError(error)
-      ? taskCapacityMessage(error)
-      : suffix ? `换一批失败${suffix}` : "";
-    elements.pipelineUsage.className = `story-status ${isTaskCapacityError(error) ? "warn" : "error"}`;
+    failedStageUsageSuffix();
     showError(
       isTaskCapacityError(error) ? taskCapacityMessage(error) : error.message || "重新生成主题变体失败",
       isTaskCapacityError(error) ? "notice" : "error"
@@ -5022,7 +4969,6 @@ async function monitorShotVideoBatch(initialTask, { restored = false } = {}) {
       await updateShotVideoGeneratorPreview({ preservePrompt: true });
     }
     updateStoryExportActions();
-    void refreshReleaseActiveTasksButton();
   }
 }
 
@@ -5691,8 +5637,6 @@ function syncDirectorTaskStatus() {
   if (variants && (!pipeline || variants.createdAt > pipeline.createdAt)) {
     const view = taskUiView(variants);
     setStage("variants", view.busy ? "active" : variants.status === "completed" ? "done" : "error");
-    elements.pipelineUsage.textContent = view.message;
-    elements.pipelineUsage.className = `story-status ${view.tone}`;
   }
 }
 function storyModelLabel() { return modelDisplayLabel(state.storyProvider, state.storyModel); }
@@ -6254,7 +6198,6 @@ async function restoreActiveProductionRun(active, workspaceEpoch = browserWorksp
         setCharacterImageStatus("已恢复上次生成的角色参考图，可继续预览或设为人物参考图。", "ready");
       }
     }
-    elements.releaseActiveTasks.classList.toggle("hidden", !activeTasks.length);
     const pipeline = activeTasks.find((task) => task.kind === "directorPipeline");
     if (pipeline) {
       state.running = true;
@@ -6292,22 +6235,15 @@ async function attachRestoredDirectorPipeline(task) {
     state.running = false;
     setRunning(false);
     validateReady();
-    void refreshReleaseActiveTasksButton();
   }
 }
 
 function markRestoredTaskRunning(task) {
   const target = durableTaskTargetContext(task);
-  const model = Object.values(task.modelSnapshot || {})
-    .map((item) => modelDisplayLabel(item.provider, item.model))
-    .filter(Boolean)
-    .join(" / ");
   if (task.kind === "variants") {
     state.variantsRegenerating = true;
     if (state.output.themeVariants) renderVariants(state.output.themeVariants);
     setStage("variants", "active");
-    elements.pipelineUsage.textContent = `正在重新接管主题变体任务${model ? ` · ${model}` : ""}…`;
-    elements.pipelineUsage.className = "story-status active";
   } else if (task.kind === "fullStory") {
     state.storyRunning = true;
     syncStoryTaskStatus();
@@ -6360,8 +6296,6 @@ async function attachRestoredStandaloneTask(task) {
     const artifactId = completed.targetArtifactIds?.[0] || "";
     if (completed.kind === "variants") {
       setStage("variants", "done");
-      elements.pipelineUsage.textContent = `主题变体任务已完成${formatStageUsageSuffix(completed.usage)}`;
-      elements.pipelineUsage.className = "story-status ready";
     } else if (completed.kind === "fullStory") {
       const variantId = artifactId.slice("fullStory:".length);
       const story = state.fullStories[variantId];
@@ -6387,8 +6321,6 @@ async function attachRestoredStandaloneTask(task) {
     const target = durableTaskTargetContext(task);
     if (task.kind === "variants") {
       setStage("variants", "error");
-      elements.pipelineUsage.textContent = error.message || "主题变体任务中断";
-      elements.pipelineUsage.className = "story-status error";
       showError(error.message || "主题变体任务中断");
     } else if (task.kind === "fullStory") setStoryStatus(error.message || "完整剧情任务中断", "error");
     else if (["animationPlan", "animationPromptRewrite", "characterReferenceRefine"].includes(task.kind)) {
@@ -6447,7 +6379,6 @@ async function attachRestoredStandaloneTask(task) {
       }
       syncShotFrameTaskStatus({ includeTerminal: true });
     }
-    void refreshReleaseActiveTasksButton();
   }
 }
 
