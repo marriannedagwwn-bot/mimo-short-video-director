@@ -27,7 +27,22 @@ export function serializeServerError(error, {
       origin: error.origin,
       retryable: error.retryable,
       details: error.diagnostics,
-      attempts: error.attempts
+      attempts: error.attempts,
+      // 供应商原文此前在这条分支上被整个吞掉：下面的 ModelResponseError 分支
+      // 带 providerError，这条不带，而 coordinator 抛的正是 ModelPipelineError——
+      // 于是**凡是走 coordinator 的阶段**（定向修订、Full Story、Animation Plan、
+      // 候选对照评审）供应商自己的那句话一律看不到。
+      //
+      // 实际代价：2026-09-07 一次重试被 HTTP 400 拒绝，350 字节的错误原文躺在内存
+      // AttemptStore 里（attempts[].rawOutputRef 指着它），而响应里 details 是空数组、
+      // 没有 providerError，根本判断不出 400 的原因，调查就此中断。这与 §5.1
+      // 「原文必须真的显示出来」是同一条规则。
+      //
+      // **纯增字段**：上面七个逐字不变。原始错误由 coordinator 以 cause 传下来
+      // （ModelPipelineError 用 super(message, {cause}) 保留），所以这里不重新记
+      // attempt——原文已经在 error.attempts 的 rawOutput 里，再记一条是重复。
+      // 匹配不到码表就是 null，调用方回退原文。
+      providerError: pipelineProviderError(error)
     });
   }
 
@@ -289,6 +304,24 @@ function observabilityBody({
     attempts: Array.isArray(attempts) ? attempts : [],
     ...extra
   };
+}
+
+/**
+ * 从 ModelPipelineError 的 cause 里取供应商原文并查码表。
+ *
+ * coordinator 把最后一次失败的原始错误作为 cause 传上来，所以只有当它确实是
+ * ModelResponseError（带 raw 与 status）时才有原文可查。传输中断、budget 耗尽
+ * 这类没有供应商响应体的失败一律返回 null，调用方回退原文——**编一句「可能是
+ * 网络问题」比不解释更糟**（§5.1）。
+ */
+function pipelineProviderError(error) {
+  const cause = error?.cause;
+  if (!(cause instanceof ModelResponseError)) return null;
+  return describeProviderError({
+    provider: cause.provider || cause.metadata?.provider,
+    httpStatus: cause.status,
+    payload: cause.raw
+  });
 }
 
 function providerRawAttempt(error, store, {
