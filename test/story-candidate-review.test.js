@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ensureOutputContract, ensureStoryCandidateReviewCoversCandidates } from "../src/validation.js";
+import { InputError, OutputContractError, deriveStoryCandidateProjections, ensureOutputContract, ensureStoryCandidateReviewCoversCandidates } from "../src/validation.js";
 import { buildStoryCandidateReviewProjection, storyCandidateReviewPrompt } from "../src/prompts.js";
 import { mockStoryCandidateReview } from "../src/mock.js";
+import { WorkflowService } from "../src/workflow.js";
 
 const CANDIDATES = [
   {
@@ -344,4 +345,57 @@ test("评审提示词要求先产出机制清单，并给出自检方法", () =>
   assert.match(prompt, /sourceMechanismId/u);
   // 旧口径「这个候选试图迁移的机制」正是循环论证的诱因，不得留在提示词里。
   assert.doesNotMatch(prompt, /这个候选试图迁移的机制/u);
+});
+
+// 旧 Artifact 走评审时的错误归属（2026-09-10）。
+//
+// 实测：拿一份 2026-09-06 之前导出的生产包来评审，返回 **HTTP 502**
+// 「模型输出未通过校验：…/highValueBeatMapping/0/failureSignal 缺少必要字段」。
+// 两处都不对——那份 themeVariants 是**请求输入**不是模型输出，而且客户端传错该是 4xx。
+// failureSignal 与 transformationProof 的 {source, replacement} 都是那之后才加的必填字段，
+// 所以在那之前导出的候选**一律评审不了**，而评审恰恰是最该能读历史数据的那个阶段。
+//
+// 校验本身不放宽：缺字段的旧候选仍然被拒，只是拒得诚实（400 + 逐条诊断）。
+test("旧候选走评审报 InputError 而不是模型输出错误", async () => {
+  const legacy = structuredClone(CANDIDATES).map((candidate) => ({
+    ...candidate,
+    highValueBeatMapping: candidate.highValueBeatMapping.map(({ failureSignal, ...rest }) => rest)
+  }));
+  const workflow = new WorkflowService({ clients: {}, stageDefaults: null });
+  await assert.rejects(
+    () => workflow.createStoryCandidateReview({
+      themeVariants: { variants: legacy },
+      sourceScriptReconstruction: RECONSTRUCTION
+    }),
+    (error) => {
+      assert.ok(error instanceof InputError, `应是 InputError，实际 ${error.constructor.name}`);
+      assert.ok(!(error instanceof OutputContractError), "不得再是 OutputContractError");
+      assert.match(error.message, /themeVariants 不是一批合法候选/u);
+      // 校验器数出来的逐条诊断必须带过去，否则用户看不出缺哪个字段。
+      assert.match(error.message, /failureSignal/u);
+      return true;
+    }
+  );
+});
+
+// 合法候选照常通过，不因为多了一层 try/catch 就改变成功路径。
+//
+// 本文件的 CANDIDATES 夹具**不是**完整合法候选（缺 verticalFit 与两个拍号）——其余测试都直接调
+// 覆盖率校验器，从不过 strict schema。这里要走整个端点，所以先补齐必填键、再让服务端派生
+// keyChoice / climax / emotionalPayoff（与 createVariants 同一条派生路径）。
+test("合法候选不受错误归属改动影响", async () => {
+  const complete = deriveStoryCandidateProjections({
+    variants: CANDIDATES.map((candidate) => ({
+      ...candidate,
+      verticalFit: "治愈日常",
+      keyChoiceBeat: 1,
+      climaxBeat: candidate.storyOutline.length
+    }))
+  });
+  const workflow = new WorkflowService({ clients: {}, stageDefaults: null });
+  const review = await workflow.createStoryCandidateReview({
+    themeVariants: complete,
+    sourceScriptReconstruction: RECONSTRUCTION
+  });
+  assert.equal(review.candidateChecks.length, complete.variants.length);
 });

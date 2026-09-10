@@ -422,8 +422,28 @@ export class WorkflowService {
   async createStoryCandidateReview(input) {
     requireObject(input, "请求");
     const themeVariants = requireObject(input.themeVariants, "themeVariants");
-    // 评审对象必须先是一批合法候选，否则报告没有意义。
-    ensureOutputContract(themeVariants, "themeVariants");
+    // 评审对象必须先是一批合法候选，否则报告没有意义。**这个校验本身是对的**，
+    // 错的是它抛出的类型：themeVariants 是**请求输入**，不是本阶段的模型输出，而
+    // OutputContractError 的语义就是「模型输出不合契约」——原样上抛会变成 HTTP 502
+    // 加一句「模型输出未通过校验」，让用户去查模型、查供应商，而实际错在自己传的包。
+    //
+    // 实测：拿一份 2026-09-06 之前导出的生产包来评审，返回 502
+    // 「模型输出未通过校验：…/highValueBeatMapping/0/failureSignal 缺少必要字段」——
+    // failureSignal 与 transformationProof 的 {source, replacement} 都是那之后才加的必填字段。
+    // 代价是**在那之前导出的候选一律评审不了**，而评审恰恰是只出报告、不进 lineage、
+    // 不改任何东西的阶段，它最应该能读历史数据。
+    //
+    // 转成 InputError 才是如实的归属：错在客户端，400，并带上校验器给出的逐条诊断。
+    // 与 createAnimationPlanRevision 的 report 分支同规格（那里的 report 同样是请求输入）。
+    // **只改归属与状态码，不放宽校验**：缺新字段的旧候选仍然被拒，只是拒得诚实。
+    try {
+      ensureOutputContract(themeVariants, "themeVariants");
+    } catch (error) {
+      if (!(error instanceof OutputContractError)) throw error;
+      const inputError = new InputError(`themeVariants 不是一批合法候选：${error.message}`);
+      inputError.details = error.details;
+      throw inputError;
+    }
     const sourceScriptReconstruction = requireObject(
       input.sourceScriptReconstruction,
       "sourceScriptReconstruction"
