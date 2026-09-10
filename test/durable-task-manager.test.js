@@ -1610,3 +1610,398 @@ test("an ignored stale watchdog leaves a paused director waiter pending until a 
     await waitUntil(() => manager.pools.workflow.running, (count) => count === 0);
   });
 });
+
+function fullStoryUsage(calls = 1) {
+  return {
+    calls, promptTokens: calls * 10, completionTokens: calls * 5, totalTokens: calls * 15,
+    costCny: calls * 0.01, costKnown: true,
+    byModel: [{ provider: "Fixture", model: "story-frozen", calls, promptTokens: calls * 10, completionTokens: calls * 5, totalTokens: calls * 15, costCny: calls * 0.01 }]
+  };
+}
+
+let storySeedRequest = 0;
+async function seedStoryControlArtifact(productionStore, run, input) {
+  const current = await productionStore.loadRun({ ...run, includeContent: false });
+  const lineage = current.latestArtifacts[input.artifactId]?.lineage;
+  return productionStore.commitArtifact({
+    ...run,
+    ...input,
+    requestId: `request-story-fixture-${++storySeedRequest}`,
+    expectedCurrentRevision: lineage?.status === "current" ? lineage.revision : null,
+    dependencies: input.dependencies || []
+  });
+}
+
+test("Full Story resume uses a new request for the same root and frozen input, totaling primary and interrupted postpass usage", async () => {
+  await withManager(async ({ productionStore, taskStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-story-controls" });
+    const dependency = await seedStoryControlArtifact(productionStore, run, { artifactId: "creativeBrief", artifactType: "creativeBrief", content: { premise: "frozen" } });
+    const contexts = [];
+    const requestIds = [];
+    const secondReady = Promise.withResolvers();
+    const finishSecond = Promise.withResolvers();
+    let prepared = 0;
+    const created = await manager.createTask({
+      ...run, kind: "fullStory", targetArtifactIds: ["fullStory:V1"], dependencyIds: ["creativeBrief"],
+      modelSnapshot: { provider: "Fixture", model: "story-frozen" },
+      prepare: () => { prepared += 1; return { input: { promptSource: "private frozen input" } }; },
+      execute: async (input, context) => {
+        assert.deepEqual(input, { promptSource: "private frozen input" });
+        contexts.push(context);
+        requestIds.push((await context.getTask()).requestId);
+        await context.beforeProviderCall("primary", 10_000);
+        context.providerRequestStarted();
+        context.captureUsage(fullStoryUsage(1));
+        await context.afterProviderCall("primary_done");
+        await context.beforeProviderCall("postpass", 10_000);
+        context.providerRequestStarted();
+        if (contexts.length === 1) await signalWait(context.signal);
+        secondReady.resolve();
+        await finishSecond.promise;
+        context.captureUsage(fullStoryUsage(2));
+        await context.afterProviderCall("validated");
+        await context.commitArtifact({ artifactId: "fullStory:V1", artifactType: "fullStory", content: { story: "finished" } });
+        return { usage: fullStoryUsage(2) };
+      }
+    });
+    const args = { ...run, taskId: created.task.taskId };
+    try {
+      await waitUntil(() => manager.runtimes.get(args.taskId)?.providerCalls, (calls) => calls === 2);
+      await manager.controlTask({ ...args, action: "pause" });
+      let paused = await waitUntil(() => manager.getTaskById(args.taskId), (task) => task.progress.controlState === "paused");
+      assert.equal(paused.status, "running");
+      assert.equal(paused.usage.calls, 2);
+      assert.equal(paused.usage.reportedCalls, 1);
+      assert.equal(paused.usage.unreportedCalls, 1);
+      assert.equal(paused.usage.totalTokens, 15);
+      assert.equal(paused.usage.costCny, null);
+      assert.equal(contexts[0].signal.reason.code, "FULL_STORY_PAUSED");
+      assert.equal(manager.watchdogs.has(args.taskId), false);
+      assert.equal((await taskStore.readIndex(run.projectId, run.runId)).claims["fullStory:V1"], args.taskId);
+      assert.equal((await productionStore.loadRun({ ...run, includeContent: false })).stages["fullStory:V1"].status, "interrupted");
+      await manager.controlTask({ ...args, action: "pause" });
+      assert.equal(contexts.length, 1);
+      await manager.controlTask({ ...args, action: "resume" });
+      await within(() => secondReady.promise);
+      assert.equal(prepared, 1, "continuing must not rebuild input against current artifacts");
+      assert.notEqual(requestIds[0], requestIds[1]);
+      const continuing = await manager.getTaskById(args.taskId);
+      assert.equal(continuing.taskId, created.task.taskId);
+      assert.equal(continuing.progress.attempt, 2);
+      assert.equal(continuing.requestId, requestIds[1]);
+      assert.equal(continuing.frozenDependencies[0].contentDigest, dependency.lineage.contentDigest);
+      assert.deepEqual(continuing.modelSnapshot, { provider: "Fixture", model: "story-frozen" });
+      contexts[0].captureUsage(fullStoryUsage(99));
+      await assert.rejects(contexts[0].updateUsage(fullStoryUsage(99)), { code: "FULL_STORY_PAUSED" });
+      await assert.rejects(contexts[0].commitArtifact({ artifactId: "fullStory:V1", artifactType: "fullStory", content: { late: true } }), { code: "FULL_STORY_PAUSED" });
+      finishSecond.resolve();
+      const result = await manager.waitForTask(args);
+      assert.equal(result.task.status, "completed");
+      assert.equal(result.task.usage.calls, 4);
+      assert.equal(result.task.usage.reportedCalls, 3);
+      assert.equal(result.task.usage.unreportedCalls, 1);
+      assert.equal(result.task.usage.usageComplete, false);
+      assert.equal(result.task.usage.totalTokens, 45);
+      assert.equal(result.task.usage.byModel[0].calls, 3);
+      const manifest = await productionStore.readManifest(run.projectId, run.runId);
+      assert.equal(manifest.artifacts.find((artifact) => artifact.artifactId === "fullStory:V1").requestId, requestIds[1]);
+      assert.deepEqual((await taskStore.readIndex(run.projectId, run.runId)).claims, {});
+      assert.equal((await taskStore.listTasks(run)).length, 1, "attempts retain the same durable root");
+      assert.doesNotMatch(await fs.readFile(taskStore.indexPath(run.projectId, run.runId), "utf8"), /private frozen input/);
+    } finally {
+      finishSecond.resolve();
+      await manager.controlTask({ ...args, action: "terminate" });
+      await waitUntil(() => manager.pools.workflow.running, (count) => count === 0);
+    }
+  });
+});
+
+test("Full Story repeated pauses accumulate each attempt once and keep unknown calls distinct", async () => {
+  await withManager(async ({ productionStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-story-repeat-pauses" });
+    let attempts = 0;
+    const created = await manager.createTask({ ...run, kind: "fullStory", targetArtifactIds: ["fullStory:V1"], execute: async (_input, context) => {
+      await context.beforeProviderCall("provider", 10_000);
+      context.providerRequestStarted();
+      attempts += 1;
+      if (attempts === 2) context.captureUsage(fullStoryUsage());
+      await signalWait(context.signal);
+    } });
+    const args = { ...run, taskId: created.task.taskId };
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      await waitUntil(() => attempts, (count) => count === attempt);
+      await manager.controlTask({ ...args, action: "pause" });
+      const paused = await waitUntil(() => manager.getTaskById(args.taskId), (task) => task.progress.controlState === "paused");
+      assert.equal(paused.usage.calls, attempt);
+      assert.equal(paused.usage.reportedCalls, attempt >= 2 ? 1 : 0);
+      assert.equal(paused.usage.unreportedCalls, attempt >= 2 ? attempt - 1 : 1);
+      if (attempt < 3) await manager.controlTask({ ...args, action: "resume" });
+    }
+    const result = await manager.controlTask({ ...args, action: "terminate" });
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.usage.calls, 3);
+    assert.equal(result.usage.totalTokens, 15);
+    assert.equal(result.usage.unreportedCalls, 2);
+    await waitUntil(() => manager.pools.workflow.running, (count) => count === 0);
+  });
+});
+
+test("Full Story pause before commit blocks the old result and resume replaces only at a new successful commit", async () => {
+  await withManager(async ({ productionStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-story-before-commit" });
+    const oldStory = await seedStoryControlArtifact(productionStore, run, { artifactId: "fullStory:V1", artifactType: "fullStory", content: { original: true } });
+    const oldPlan = await seedStoryControlArtifact(productionStore, run, { artifactId: "animationPlan:V1", artifactType: "animationPlan", dependencies: [oldStory.lineage], content: { originalPlan: true }, createMediaNamespace: true });
+    const ready = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    let attempts = 0;
+    const created = await manager.createTask({ ...run, kind: "fullStory", targetArtifactIds: ["fullStory:V1"], execute: async (_input, context) => {
+      attempts += 1;
+      await context.beforeProviderCall("provider", 10_000);
+      context.providerRequestStarted();
+      context.captureUsage(fullStoryUsage());
+      if (attempts === 1) { ready.resolve(); await release.promise; }
+      await context.commitArtifact({ artifactId: "fullStory:V1", artifactType: "fullStory", content: { attempt: attempts } });
+      return { usage: fullStoryUsage() };
+    } });
+    const args = { ...run, taskId: created.task.taskId };
+    await within(() => ready.promise);
+    await manager.controlTask({ ...args, action: "pause" });
+    await assert.rejects(manager.controlTask({ ...args, action: "resume" }), { code: "TASK_CONTROL_PAUSE_PENDING" });
+    release.resolve();
+    const paused = await waitUntil(() => manager.getTaskById(args.taskId), (task) => task.progress.controlState === "paused");
+    assert.equal(paused.targetExpectedRevisions["fullStory:V1"], oldStory.lineage.revision);
+    let loaded = await productionStore.loadRun({ ...run, includeContent: true });
+    assert.deepEqual(loaded.latestArtifacts["fullStory:V1"].content, { original: true });
+    assert.equal(loaded.latestArtifacts["animationPlan:V1"].lineage.status, "current");
+    assert.equal(loaded.latestArtifacts["animationPlan:V1"].lineage.mediaNamespace, oldPlan.lineage.mediaNamespace);
+    await manager.controlTask({ ...args, action: "resume" });
+    const result = await manager.waitForTask(args);
+    assert.equal(result.task.status, "completed");
+    assert.equal(result.task.usage.calls, 2);
+    assert.equal(result.task.usage.totalTokens, 30);
+    loaded = await productionStore.loadRun({ ...run, includeContent: true });
+    assert.deepEqual(loaded.latestArtifacts["fullStory:V1"].content, { attempt: 2 });
+    assert.equal(loaded.latestArtifacts["animationPlan:V1"].lineage.status, "stale");
+  });
+});
+
+test("Full Story control after commit is a no-op even if an upstream change already made the result stale", async () => {
+  await withManager(async ({ productionStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-story-after-commit" });
+    await seedStoryControlArtifact(productionStore, run, { artifactId: "creativeBrief", artifactType: "creativeBrief", content: { version: 1 } });
+    const committed = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    let calls = 0;
+    let signal;
+    const created = await manager.createTask({ ...run, kind: "fullStory", targetArtifactIds: ["fullStory:V1"], dependencyIds: ["creativeBrief"], execute: async (_input, context) => {
+      calls += 1;
+      signal = context.signal;
+      await context.commitArtifact({ artifactId: "fullStory:V1", artifactType: "fullStory", content: { completed: true } });
+      committed.resolve();
+      await release.promise;
+      return {};
+    } });
+    const args = { ...run, taskId: created.task.taskId };
+    try {
+      await within(() => committed.promise);
+      const beforeChange = await manager.controlTask({ ...args, action: "pause" });
+      assert.equal(beforeChange.progress.controlState, "running");
+      await seedStoryControlArtifact(productionStore, run, { artifactId: "creativeBrief", artifactType: "creativeBrief", content: { version: 2 } });
+      assert.equal((await productionStore.loadRun({ ...run, includeContent: false })).latestArtifacts["fullStory:V1"].lineage.status, "stale");
+      for (const action of ["pause", "resume", "terminate"]) {
+        const task = await manager.controlTask({ ...args, action });
+        assert.equal(task.progress.controlState, "running");
+      }
+      assert.equal(signal.aborted, false);
+      release.resolve();
+      assert.equal((await manager.waitForTask(args)).task.status, "completed");
+      assert.equal(calls, 1);
+    } finally { release.resolve(); }
+  });
+});
+
+test("a Candidate dependency change while Full Story is paused conflicts before another provider call", async () => {
+  await withManager(async ({ productionStore, taskStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-story-paused-conflict" });
+    await seedStoryControlArtifact(productionStore, run, { artifactId: "variant:V1", artifactType: "variant", content: { id: "V1", version: 1 } });
+    let calls = 0;
+    const created = await manager.createTask({ ...run, kind: "fullStory", targetArtifactIds: ["fullStory:V1"], dependencyIds: ["variant:V1"], execute: async (_input, context) => {
+      await context.beforeProviderCall("provider", 10_000);
+      context.providerRequestStarted();
+      calls += 1;
+      await signalWait(context.signal);
+    } });
+    const args = { ...run, taskId: created.task.taskId };
+    await waitUntil(() => calls, (count) => count === 1);
+    await manager.controlTask({ ...args, action: "pause" });
+    await waitUntil(() => manager.getTaskById(args.taskId), (task) => task.progress.controlState === "paused");
+    await seedStoryControlArtifact(productionStore, run, { artifactId: "variant:V1", artifactType: "variant", content: { id: "V1", version: 2 } });
+    await manager.controlTask({ ...args, action: "resume" });
+    const result = await manager.waitForTask(args);
+    assert.equal(result.task.status, "conflicted");
+    assert.equal(result.task.error.code, "TASK_FROZEN_CONTEXT_CONFLICT");
+    assert.equal(calls, 1);
+    assert.equal(result.task.usage.calls, 1);
+    assert.equal(result.task.usage.unreportedCalls, 1);
+    assert.deepEqual((await taskStore.readIndex(run.projectId, run.runId)).claims, {});
+  });
+});
+
+test("terminating Full Story retains current Story, Plan and media while blocking a late commit", async () => {
+  await withManager(async ({ productionStore, taskStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-story-terminate" });
+    const story = await seedStoryControlArtifact(productionStore, run, { artifactId: "fullStory:V1", artifactType: "fullStory", content: { retained: true } });
+    const plan = await seedStoryControlArtifact(productionStore, run, { artifactId: "animationPlan:V1", artifactType: "animationPlan", dependencies: [story.lineage], content: { retained: true }, createMediaNamespace: true });
+    await seedStoryControlArtifact(productionStore, run, { artifactId: "shotVideo:V1:A01", artifactType: "shotVideo", dependencies: [plan.lineage], content: { retained: true } });
+    let contextSeen;
+    const created = await manager.createTask({ ...run, kind: "fullStory", targetArtifactIds: ["fullStory:V1"], execute: async (_input, context) => {
+      await context.beforeProviderCall("provider", 10_000);
+      context.providerRequestStarted();
+      contextSeen = context;
+      await signalWait(context.signal);
+    } });
+    const args = { ...run, taskId: created.task.taskId };
+    await waitUntil(() => contextSeen, Boolean);
+    const cancelled = await manager.controlTask({ ...args, action: "terminate" });
+    assert.equal(cancelled.status, "cancelled");
+    assert.equal(cancelled.error.code, "FULL_STORY_TERMINATED");
+    assert.equal(cancelled.usage.calls, 1);
+    assert.equal(cancelled.usage.unreportedCalls, 1);
+    await assert.rejects(contextSeen.commitArtifact({ artifactId: "fullStory:V1", artifactType: "fullStory", content: { late: true } }), { code: "FULL_STORY_TERMINATED" });
+    const loaded = await productionStore.loadRun({ ...run, includeContent: true });
+    for (const artifactId of ["fullStory:V1", "animationPlan:V1", "shotVideo:V1:A01"]) {
+      assert.equal(loaded.latestArtifacts[artifactId].lineage.status, "current");
+      assert.equal(loaded.latestArtifacts[artifactId].content.retained, true);
+    }
+    assert.equal(loaded.latestArtifacts["animationPlan:V1"].lineage.mediaNamespace, plan.lineage.mediaNamespace);
+    assert.deepEqual((await taskStore.readIndex(run.projectId, run.runId)).claims, {});
+    assert.equal((await manager.controlTask({ ...args, action: "terminate" })).status, "cancelled");
+    await waitUntil(() => manager.pools.workflow.running, (count) => count === 0);
+  });
+});
+
+test("queued Full Story can pause, resume and terminate without provider work or a premature watchdog", async () => {
+  await withManager(async ({ productionStore, manager }) => {
+    const firstRun = await productionStore.createRun({ projectId: "project-story-queue-first" });
+    const release = Promise.withResolvers();
+    const first = await manager.createTask({ ...firstRun, kind: "fixture", targetArtifactIds: ["creativeBrief"], execute: () => release.promise });
+    await waitUntil(() => manager.getTaskById(first.task.taskId), (task) => task.status === "running");
+    const run = await productionStore.createRun({ projectId: "project-story-queue" });
+    let calls = 0;
+    const created = await manager.createTask({ ...run, kind: "fullStory", targetArtifactIds: ["fullStory:V1"], input: { queued: true }, execute: async () => { calls += 1; } });
+    const args = { ...run, taskId: created.task.taskId };
+    const paused = await manager.controlTask({ ...args, action: "pause" });
+    assert.equal(paused.status, "queued");
+    assert.equal(paused.progress.controlState, "paused");
+    const resumed = await manager.controlTask({ ...args, action: "resume" });
+    assert.equal(resumed.requestId, created.task.requestId);
+    assert.equal(manager.watchdogs.has(args.taskId), false);
+    await manager.controlTask({ ...args, action: "pause" });
+    assert.equal((await manager.controlTask({ ...args, action: "terminate" })).status, "cancelled");
+    assert.equal(calls, 0);
+    assert.equal(manager.queuedBytes, 0);
+    assert.equal(manager.runtimes.has(args.taskId), false);
+    release.resolve();
+    await manager.waitForTask({ ...firstRun, taskId: first.task.taskId });
+  }, { pools: { workflow: { limit: 1, queueLimit: 8 } } });
+});
+
+test("restart interrupts a paused Full Story and keeps its cumulative usage without resubmitting", async () => {
+  await withManager(async ({ productionStore, taskStore, coordinator, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-story-paused-restart" });
+    let calls = 0;
+    const created = await manager.createTask({ ...run, kind: "fullStory", targetArtifactIds: ["fullStory:V1"], execute: async (_input, context) => {
+      await context.beforeProviderCall("provider", 10_000);
+      context.providerRequestStarted();
+      calls += 1;
+      if (calls === 2) context.captureUsage(fullStoryUsage());
+      await signalWait(context.signal);
+    } });
+    const args = { ...run, taskId: created.task.taskId };
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      await waitUntil(() => calls, (count) => count === attempt);
+      await manager.controlTask({ ...args, action: "pause" });
+      await waitUntil(() => manager.getTaskById(args.taskId), (task) => task.progress.controlState === "paused");
+      if (attempt === 1) await manager.controlTask({ ...args, action: "resume" });
+    }
+    const restarted = new DurableTaskManager({ productionStore, taskStore, coordinator });
+    await restarted.reconcileInterruptedTasks();
+    const interrupted = await restarted.getTaskById(args.taskId);
+    assert.equal(interrupted.status, "interrupted");
+    assert.equal(interrupted.usage.calls, 2);
+    assert.equal(interrupted.usage.totalTokens, 15);
+    assert.equal(interrupted.usage.unreportedCalls, 1);
+    assert.equal(restarted.runtimes.size, 0);
+    assert.equal(calls, 2);
+    assert.deepEqual((await taskStore.readIndex(run.projectId, run.runId)).claims, {});
+    manager.stopDirectorRuntime(args.taskId, { code: "PROCESS_EXIT", message: "fixture process exit" });
+    await waitUntil(() => manager.pools.workflow.running, (count) => count === 0);
+  });
+});
+
+test("release of a paused Full Story wakes its gate and keeps accumulated usage", async () => {
+  await withManager(async ({ productionStore, taskStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-story-paused-release" });
+    let started = false;
+    const created = await manager.createTask({ ...run, kind: "fullStory", targetArtifactIds: ["fullStory:V1"], execute: async (_input, context) => {
+      await context.beforeProviderCall("provider", 10_000);
+      context.providerRequestStarted();
+      started = true;
+      await signalWait(context.signal);
+    } });
+    const args = { ...run, taskId: created.task.taskId };
+    await waitUntil(() => started, Boolean);
+    await manager.controlTask({ ...args, action: "pause" });
+    await waitUntil(() => manager.getTaskById(args.taskId), (task) => task.progress.controlState === "paused");
+    assert.equal((await manager.releaseTask(args)).status, "abandoned");
+    await waitUntil(() => manager.pools.workflow.running, (count) => count === 0);
+    assert.equal(manager.runtimes.size, 0);
+    assert.equal(manager.watchdogs.size, 0);
+    assert.equal((await manager.getTaskById(args.taskId)).usage.unreportedCalls, 1);
+    assert.deepEqual((await taskStore.readIndex(run.projectId, run.runId)).claims, {});
+  });
+});
+
+test("a queued heartbeat from an old Full Story attempt cannot mutate its resumed progress or watchdog", async (t) => {
+  await withManager(async ({ productionStore, manager }) => {
+    const run = await productionStore.createRun({ projectId: "project-story-old-heartbeat" });
+    const contexts = [];
+    const created = await manager.createTask({ ...run, kind: "fullStory", targetArtifactIds: ["fullStory:V1"], execute: async (_input, context) => {
+      contexts.push(context);
+      await context.beforeProviderCall("provider", 10_000);
+      context.providerRequestStarted();
+      await context.heartbeat({ currentAttempt: contexts.length });
+      await signalWait(context.signal);
+    } });
+    const args = { ...run, taskId: created.task.taskId };
+    await waitUntil(() => manager.runtimes.get(args.taskId)?.providerCalls, (calls) => calls === 1);
+    const queued = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const touchTask = manager.touchTask.bind(manager);
+    t.mock.method(manager, "touchTask", async (taskId, options, ...rest) => {
+      if (options?.progress?.fromOldAttempt) { queued.resolve(); await release.promise; }
+      return touchTask(taskId, options, ...rest);
+    });
+    const staleHeartbeat = contexts[0].heartbeat({ fromOldAttempt: true });
+    const rejected = assert.rejects(staleHeartbeat, { code: "FULL_STORY_PAUSED" });
+    try {
+      await within(() => queued.promise);
+      await manager.controlTask({ ...args, action: "pause" });
+      await waitUntil(() => manager.getTaskById(args.taskId), (task) => task.progress.controlState === "paused");
+      await manager.controlTask({ ...args, action: "resume" });
+      const resumed = await waitUntil(() => manager.getTaskById(args.taskId), (task) => task.progress.currentAttempt === 2);
+      const watchdog = manager.watchdogs.get(args.taskId);
+      release.resolve();
+      await rejected;
+      const after = await manager.getTaskById(args.taskId);
+      assert.deepEqual(after.progress, resumed.progress);
+      assert.equal(after.watchdogDueAt, resumed.watchdogDueAt);
+      assert.equal(manager.watchdogs.get(args.taskId), watchdog);
+      assert.equal(contexts.length, 2);
+    } finally {
+      release.resolve();
+      await manager.controlTask({ ...args, action: "terminate" });
+      await waitUntil(() => manager.pools.workflow.running, (count) => count === 0);
+    }
+  });
+});

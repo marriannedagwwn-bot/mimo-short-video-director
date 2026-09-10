@@ -173,6 +173,7 @@ export class DurableTaskStore {
       return { task, applied: false };
     }
     if (patch.status !== undefined) task.status = normalizeTaskStatus(patch.status);
+    if (patch.requestId !== undefined) task.requestId = safeIdentifier(patch.requestId, "requestId");
     if (patch.phase !== undefined) task.phase = safePhase(patch.phase);
     if (patch.progress !== undefined) task.progress = sanitizeTaskValue(patch.progress, 0);
     if (patch.usage !== undefined) task.usage = sanitizeTaskUsage(patch.usage);

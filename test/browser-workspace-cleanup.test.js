@@ -132,19 +132,22 @@ test("active cleanup cancels queued work, prevents late commits, and sweeps late
   assert.equal(f.taskManager.taskLocations.has(running.task.taskId), false);
 });
 
-for (const entry of ["cleanup", "sweepPending"]) for (const initialState of ["running", "paused"]) {
-  test(`${entry} stops a ${initialState} director outside cleanup locks and returns its workflow slot`, async (t) => {
+for (const kind of ["directorPipeline", "fullStory"]) for (const entry of ["cleanup", "sweepPending"]) for (const initialState of ["running", "paused"]) {
+  const label = kind === "directorPipeline" ? "director" : "Full Story";
+  test(`${entry} stops a ${initialState} ${label} outside cleanup locks and returns its workflow slot`, async (t) => {
     const f = await fixture(t);
+    const artifactId = kind === "fullStory" ? "fullStory:V1" : "referenceAnalysis";
+    const artifactType = kind === "fullStory" ? "fullStory" : "referenceAnalysis";
     let context;
     let attempts = 0;
     const created = await f.taskManager.createTask({
-      projectId: f.ids.projectId, runId: f.ids.runId, kind: "directorPipeline",
-      targetArtifactIds: ["referenceAnalysis"], input: {},
+      projectId: f.ids.projectId, runId: f.ids.runId, kind,
+      targetArtifactIds: [artifactId], input: {},
       execute: async (_input, current) => {
         context = current;
         attempts += 1;
         await new Promise((_, reject) => current.signal.addEventListener("abort", () => reject(current.signal.reason), { once: true }));
-        assert.fail("aborted director must never continue its old attempt");
+        assert.fail("aborted task must never continue its old attempt");
       }
     });
     const taskId = created.task.taskId;
@@ -192,7 +195,7 @@ for (const entry of ["cleanup", "sweepPending"]) for (const initialState of ["ru
     assert.equal(attempts, 1);
     assert.equal(f.taskManager.runtimes.size, 0);
     await assert.rejects(context.commitArtifact({
-      artifactId: "referenceAnalysis", artifactType: "referenceAnalysis", content: { late: true }
+      artifactId, artifactType, content: { late: true }
     }));
     await absent(f.productionStore.runDirectory(f.ids.projectId, f.ids.runId));
     assert.equal((await fs.readdir(f.cleanupRoot)).length, 1);

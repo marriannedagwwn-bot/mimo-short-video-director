@@ -60,6 +60,8 @@ export async function loadAppUi({ story = false, plan = false, createElement,
     updateShotVideoGeneratorPreview, applyCharacterImageTaskProgress, renderShotVideoBatchProgress,
     shotVideoStateItem, shotFrameKey, syncDirectorTaskStatus, loadSourceVideo, browserWorkspace,
     renderDirectorControls, renderDirectorTaskStatus, renderDirectorTaskError, controlDirectorPipeline,
+    renderFullStoryControls, selectedFullStoryTask, controlFullStory, generateFullStory, renderFullStoryTaskError,
+    setStoryRunning, setStoryStatus, attachRestoredStandaloneTask, reloadActiveProductionRun,
     setRunning, resetDirectorClientState, restoreActiveProductionRun, directorArtifactSynchronizer };`, context);
   const app = context.app;
   const fixture = uiFixture({ story, plan });

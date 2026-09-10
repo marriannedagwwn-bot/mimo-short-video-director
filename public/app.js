@@ -8,6 +8,7 @@ import {
   directorControlView,
   directorTaskView
 } from "./director-pipeline-ui.js";
+import { fullStoryControlView, fullStoryTaskView } from "./full-story-control-ui.js";
 import {
   isActiveTask, latestTaskForTarget, rememberTaskSnapshot, taskStatusView, shotVideoBatchStatusText
 } from "./task-status-ui.js";
@@ -121,6 +122,9 @@ const state = {
   taskSnapshots: {},
   directorTaskId: "",
   directorControlRequest: null,
+  storyGenerationRequest: null,
+  storyControlRequests: {},
+  storyTaskStatusVisible: false,
   production: emptyProductionState(),
   characterImageGeneration: {
     open: false,
@@ -218,6 +222,8 @@ const elements = {
   mainPage: $("#top"), storyPage: $("#storyPage"), storyModelName: $("#storyModelName"),
   selectedVariantSummary: $("#selectedVariantSummary"), storyStatus: $("#storyStatus"),
   storyGenerate: $("#generateFullStory"), fullStory: $("#fullStoryResult"), backToResults: $("#backToResults"),
+  fullStoryControls: $("#fullStoryControls"), fullStoryStartArrow: $("#fullStoryStartArrow"),
+  terminateFullStory: $("#terminateFullStory"), pauseFullStory: $("#pauseFullStory"), fullStoryControlHint: $("#fullStoryControlHint"),
   animationGenerate: $("#generateAnimationPlan"), animationStatus: $("#animationStatus"), animationPlan: $("#animationPlanResult"),
   animationAspectRatio: $("#animationAspectRatio"),
   storyDurationTarget: $("#storyDurationTarget"),
@@ -428,6 +434,10 @@ function bindEvents() {
   });
   elements.backToResults.addEventListener("click", backToMainResults);
   elements.storyGenerate.addEventListener("click", () => generateFullStory({ force: true }));
+  elements.terminateFullStory.addEventListener("click", () => controlFullStory("terminate"));
+  elements.pauseFullStory.addEventListener("click", () => {
+    void controlFullStory(fullStoryControlView(selectedFullStoryTask()).pauseAction);
+  });
   elements.animationGenerate.addEventListener("click", () => generateAnimationPlan({ force: true }));
   elements.animationAspectRatio.addEventListener("change", () => handleDefaultAspectRatioChange(elements.animationAspectRatio.value));
   elements.storyDurationTarget.addEventListener("change", () => {
@@ -990,7 +1000,8 @@ async function requestProductionArtifact({
   dependencyIds: _dependencyIds = [],
   dependencyRefs: _dependencyRefs = null,
   createMediaNamespace: _createMediaNamespace = false,
-  contentForArtifact: _contentForArtifact = (value) => value
+  contentForArtifact: _contentForArtifact = (value) => value,
+  onTaskCreated = null
 }) {
   assertActiveProductionRun();
   const kind = durableTaskKindForEndpoint(endpoint);
@@ -1002,11 +1013,12 @@ async function requestProductionArtifact({
       : {})
   });
   const created = await createDurableTask(kind, input);
+  if (onTaskCreated) onTaskCreated(created.task);
   const task = await waitForDurableTask(created.task);
   state.productionTasks ||= {};
   state.productionTasks[artifactId] = task;
   recordStageUsage(task.usage);
-  const run = await reloadActiveProductionRun();
+  const run = await reloadActiveProductionRun(state.production, { preserveSelectedVariant: kind === "fullStory" });
   const entry = run.latestArtifacts?.[artifactId];
   if (!entry?.lineage || entry.lineage.status !== "current") {
     throw new Error(`任务完成后没有找到 current Artifact：${artifactId}`);
@@ -1115,7 +1127,7 @@ async function abandonProductionTasks(tasks) {
   return released;
 }
 
-async function reloadActiveProductionRun(expectedProduction = state.production) {
+async function reloadActiveProductionRun(expectedProduction = state.production, { preserveSelectedVariant = false } = {}) {
   const projectId = String(expectedProduction?.projectId || "");
   const runId = String(expectedProduction?.runId || "");
   if (!projectId || !runId) throw new Error("当前没有可重新加载的 Production Run");
@@ -1130,7 +1142,7 @@ async function reloadActiveProductionRun(expectedProduction = state.production) 
     throw error;
   }
   state.production = productionStateFromRun(run);
-  restoreRunArtifacts(run.latestArtifacts || {});
+  restoreRunArtifacts(run.latestArtifacts || {}, { selectedVariantId: preserveSelectedVariant ? state.selectedVariantId : null });
   persistActiveProductionRun();
   return run;
 }
@@ -1278,6 +1290,9 @@ function resetDirectorClientState() {
   state.directorTaskId = "";
   state.directorControlRequest = null;
   state.production = emptyProductionState();
+  state.storyGenerationRequest = null;
+  state.storyControlRequests = {};
+  state.storyTaskStatusVisible = false;
   localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
   state.selectedVariantId = null;
 }
@@ -1996,19 +2011,22 @@ function renderStoryDurationOptions() {
 
 async function generateFullStory({ force = false } = {}) {
   const workspaceEpoch = browserWorkspace.epoch;
-  if (state.storyRunning) return;
+  if (state.storyRunning || activeTaskForKinds(["fullStory"], { rootOnly: true })) return;
   const variant = selectedVariant();
   if (!variant) return setStoryStatus("请先选择一个可拍摄主题变体。", "error");
   if (!force && state.fullStories[variant.id]) {
     renderFullStory(state.fullStories[variant.id]);
     return;
   }
+  const request = { variantId: variant.id, epoch: workspaceEpoch, taskId: "" };
+  state.storyGenerationRequest = request;
   state.storyRunning = true;
   setStoryRunning(true);
   beginStageUsage();
   setStoryStatus(`正在调用 ${storyModelLabel()} 生成完整剧情…`, "active");
   try {
     const candidateLineage = await ensureSelectedVariantArtifact(variant);
+    assertWorkspaceCurrent(workspaceEpoch);
     const fullStory = await requestProductionArtifact({
       endpoint: "/api/full-story",
       requestBody: {
@@ -2029,6 +2047,10 @@ async function generateFullStory({ force = false } = {}) {
       },
       artifactId: `fullStory:${variant.id}`,
       artifactType: "fullStory",
+      onTaskCreated(task) {
+        assertWorkspaceCurrent(workspaceEpoch);
+        if (state.storyGenerationRequest === request) request.taskId = task.taskId;
+      },
       dependencyIds: [
         "referenceAnalysis",
         "sourceScriptReconstruction",
@@ -2050,15 +2072,16 @@ async function generateFullStory({ force = false } = {}) {
     elements.export.classList.remove("hidden");
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
-    setStoryStatus(
-      isTaskCapacityError(error) ? taskCapacityMessage(error) : `${error.message || "完整剧情生成失败"}${failedStageUsageSuffix()}`,
-      isTaskCapacityError(error) ? "warn" : "error"
-    );
+    renderFullStoryTaskError(error, "完整剧情生成失败", variant.id);
   } finally {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     endStageUsage();
-    state.storyRunning = false;
-    setStoryRunning(false);
+    if (state.storyGenerationRequest === request) {
+      state.storyGenerationRequest = null;
+      state.storyRunning = false;
+      setStoryRunning(false);
+      if (request.taskId || state.storyTaskStatusVisible) syncStoryTaskStatus({ includeTerminal: true });
+    }
   }
 }
 
@@ -5473,9 +5496,94 @@ function setRunning(running) {
   renderDirectorControls();
 }
 function setStoryRunning(running) {
-  elements.storyGenerate.classList.toggle("running", running);
-  elements.storyGenerate.querySelector("span").textContent = running ? "完整剧情生成中…" : `用 ${storyModelLabel()} 生成完整剧情`;
-  elements.storyGenerate.disabled = running || !selectedVariant();
+  renderFullStoryControls({ running });
+}
+
+function selectedFullStoryTask() {
+  const variant = selectedVariant();
+  return variant ? taskForUi({ kinds: ["fullStory"], artifactId: `fullStory:${variant.id}`, rootOnly: true }) : null;
+}
+
+function renderFullStoryControls({ running = state.storyRunning } = {}) {
+  const variant = selectedVariant();
+  const request = state.storyGenerationRequest;
+  const starting = Boolean(variant && request?.variantId === variant.id && !request.taskId);
+  const task = starting ? null : selectedFullStoryTask();
+  const active = activeTaskForKinds(["fullStory"], { rootOnly: true });
+  const view = fullStoryControlView(task, {
+    starting,
+    pendingAction: state.storyControlRequests[task?.taskId]?.action || "",
+    idleLabel: `用 ${storyModelLabel()} 生成完整剧情`
+  });
+  let label = view.label;
+  if (!view.visible && active) {
+    label = `${durableTaskTargetContext(active).variantId} · ${fullStoryControlView(active).label}`;
+  } else if (!view.visible && request && running) {
+    label = `${request.variantId} · 正在启动完整剧情…`;
+  }
+  elements.fullStoryControls.classList.toggle("active", view.visible);
+  elements.storyGenerate.classList.toggle("running", view.visible);
+  elements.storyGenerate.querySelector("span").textContent = label;
+  elements.storyGenerate.disabled = running || Boolean(active) || view.visible || !variant;
+  elements.fullStoryStartArrow.classList.toggle("hidden", view.visible);
+  elements.fullStoryControlHint.classList.toggle("hidden", !view.visible);
+  for (const button of [elements.terminateFullStory, elements.pauseFullStory]) button.classList.toggle("hidden", !view.visible);
+  elements.terminateFullStory.disabled = view.stopDisabled;
+  elements.pauseFullStory.disabled = view.pauseDisabled;
+  elements.pauseFullStory.setAttribute("aria-label", view.pauseLabel);
+  elements.pauseFullStory.setAttribute("title", view.pauseLabel);
+  elements.pauseFullStory.innerHTML = view.paused
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg>';
+}
+
+async function controlFullStory(action) {
+  const task = selectedFullStoryTask();
+  const variant = selectedVariant();
+  if (!task || !variant || state.storyControlRequests[task.taskId]
+    || (state.storyGenerationRequest?.variantId === variant.id && !state.storyGenerationRequest.taskId)) return;
+  const view = fullStoryControlView(task);
+  if (action === "terminate" ? view.stopDisabled : view.pauseDisabled || action !== view.pauseAction) return;
+  const request = { taskId: task.taskId, variantId: variant.id, action, epoch: browserWorkspace.epoch };
+  state.storyControlRequests[task.taskId] = request;
+  renderFullStoryControls();
+  try {
+    const updated = await controlDurableTask(task.taskId, action);
+    if (!browserWorkspace.isCurrent(request.epoch)) return;
+    if (updated?.taskId !== request.taskId) throw new Error("完整剧情控制返回了不同任务，请刷新后重试。");
+    // Keep the scoped server snapshot even if the user has navigated away.
+    // Only the currently selected task may update the visible status/controls.
+    updateTaskSnapshot(updated, { render: false });
+    if (state.selectedVariantId !== request.variantId || selectedFullStoryTask()?.taskId !== request.taskId) return;
+    syncStoryTaskStatus({ includeTerminal: true });
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(request.epoch) || state.selectedVariantId !== request.variantId
+      || selectedFullStoryTask()?.taskId !== request.taskId) return;
+    setStoryStatus(error.message || "完整剧情控制失败，请重试。", "error");
+  } finally {
+    if (state.storyControlRequests[request.taskId] === request) {
+      delete state.storyControlRequests[request.taskId];
+      renderFullStoryControls();
+    }
+  }
+}
+
+function renderFullStoryTaskError(error, fallback, variantId) {
+  if (state.selectedVariantId !== variantId) return;
+  if (error.task?.kind === "fullStory") {
+    const latest = latestTaskForTarget(state.taskSnapshots, {
+      kinds: ["fullStory"], artifactId: `fullStory:${variantId}`, rootOnly: true
+    });
+    if (latest && latest.taskId !== error.task.taskId) return;
+    const view = taskUiView(latest || error.task);
+    setStoryStatus(view.message, view.tone);
+    state.storyTaskStatusVisible = true;
+    return;
+  }
+  setStoryStatus(
+    isTaskCapacityError(error) ? taskCapacityMessage(error) : `${error.message || fallback}${failedStageUsageSuffix()}`,
+    isTaskCapacityError(error) ? "warn" : "error"
+  );
 }
 function setAnimationRunning(running) {
   elements.animationGenerate.classList.toggle("running", running);
@@ -5493,6 +5601,7 @@ function setAnimationRunning(running) {
   updateStoryExportActions();
 }
 function setStoryStatus(message, tone = "") {
+  state.storyTaskStatusVisible = false;
   elements.storyStatus.textContent = message;
   elements.storyStatus.className = `story-status ${tone}`;
 }
@@ -5550,17 +5659,19 @@ function taskForUi(options) {
 function taskUiView(task) {
   const modelLabel = [...new Set(Object.values(task.modelSnapshot || {})
     .map((item) => modelDisplayLabel(item.provider, item.model)).filter(Boolean))].join(" / ");
+  if (task.kind === "fullStory") return fullStoryTaskView(task, { modelLabel });
   const view = taskStatusView(task, { modelLabel });
   if (!view.busy) view.message += formatStageUsageSuffix(task.usage);
   return view;
 }
 
-function activeTaskForKinds(kinds) {
+function activeTaskForKinds(kinds, { rootOnly = false } = {}) {
   return latestTaskForTarget(Object.fromEntries(Object.entries(state.taskSnapshots)
-    .filter(([, task]) => isActiveTask(task))), { kinds });
+    .filter(([, task]) => isActiveTask(task))), { kinds, rootOnly });
 }
 
 function syncStoryTaskStatus({ includeTerminal = false } = {}) {
+  syncFullStoryTaskStatus({ includeTerminal });
   const variant = selectedVariant();
   if (!variant) return;
   const apply = (kinds, artifactId, localRunning, setRunning, setStatus, button, label) => {
@@ -5578,10 +5689,32 @@ function syncStoryTaskStatus({ includeTerminal = false } = {}) {
       setStatus(`正在生成${label}…`, "active");
     }
   };
-  apply(["fullStory"], `fullStory:${variant.id}`, state.storyRunning,
-    setStoryRunning, setStoryStatus, elements.storyGenerate.querySelector("span"), "完整剧情");
   apply(["animationPlan", "animationPromptRewrite", "characterReferenceRefine"], `animationPlan:${variant.id}`, state.animationRunning,
     setAnimationRunning, setAnimationStatus, elements.animationGenerate, "动画生产包");
+}
+
+function syncFullStoryTaskStatus({ includeTerminal = false } = {}) {
+  const variant = selectedVariant();
+  const current = selectedFullStoryTask();
+  const active = isActiveTask(current) ? current : activeTaskForKinds(["fullStory"], { rootOnly: true });
+  const request = state.storyGenerationRequest;
+  const task = active || current;
+  setStoryRunning(Boolean(active) || state.storyRunning);
+  if (!variant) return;
+  if (active || (includeTerminal && task && (!state.storyRunning || task.taskId === request?.taskId))) {
+    const view = taskUiView(task);
+    const target = durableTaskTargetContext(task);
+    const prefix = target.variantId && target.variantId !== variant.id ? `${target.variantId} · ` : "";
+    setStoryStatus(`${prefix}${view.message}`, view.tone);
+    state.storyTaskStatusVisible = true;
+  } else if (state.storyRunning && request) {
+    const prefix = request.variantId !== variant.id ? `${request.variantId} · ` : "";
+    setStoryStatus(`${prefix}正在启动完整剧情生成…`, "active");
+    state.storyTaskStatusVisible = true;
+  } else if (state.storyTaskStatusVisible) {
+    const story = state.fullStories[variant.id];
+    setStoryStatus(story ? `已生成完整剧情 · ${storyModelLabel()}` : "准备生成完整剧情。", story ? "ready" : "");
+  }
 }
 
 function syncCharacterImageTaskStatus({ includeTerminal = false } = {}) {
@@ -6015,7 +6148,7 @@ function modelStateSummary() {
   return `${modelDisplayLabel(state.analysisProvider, state.analysisModel)} 解析 · 剧情 ${modelDisplayLabel(state.storyProvider, state.storyModel)} · 动画 ${modelDisplayLabel(state.animationProvider, state.animationModel)}${compiler ? ` · 静态帧 ${compiler}` : ""}`;
 }
 function updateModelActionLabels() {
-  if (!state.storyRunning) elements.storyGenerate.querySelector("span").textContent = `用 ${storyModelLabel()} 生成完整剧情`;
+  renderFullStoryControls();
   if (!state.animationRunning) elements.animationGenerate.textContent = "生成动画镜头生产包";
   updateShotVideoProviderUi();
 }
@@ -6211,6 +6344,7 @@ async function restoreActiveProductionRun(active, workspaceEpoch = browserWorksp
       void attachRestoredStandaloneTask(task);
     }
     syncDirectorTaskStatus();
+    syncStoryTaskStatus({ includeTerminal: true });
     return true;
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return false;
@@ -6292,15 +6426,17 @@ async function attachRestoredStandaloneTask(task) {
     });
     state.productionTasks ||= {};
     for (const artifactId of completed.targetArtifactIds || []) state.productionTasks[artifactId] = completed;
-    await reloadActiveProductionRun();
+    await reloadActiveProductionRun(state.production, { preserveSelectedVariant: task.kind === "fullStory" });
     const artifactId = completed.targetArtifactIds?.[0] || "";
     if (completed.kind === "variants") {
       setStage("variants", "done");
     } else if (completed.kind === "fullStory") {
       const variantId = artifactId.slice("fullStory:".length);
       const story = state.fullStories[variantId];
-      if (story) renderFullStory(story);
-      setStoryStatus(`完整剧情任务已完成${formatStageUsageSuffix(completed.usage)}`, "ready");
+      if (variantId === state.selectedVariantId) {
+        if (story) renderFullStory(story);
+        setStoryStatus(`完整剧情任务已完成${formatStageUsageSuffix(completed.usage)}`, "ready");
+      }
     } else if (["animationPlan", "animationPromptRewrite", "characterReferenceRefine"].includes(completed.kind)) {
       const variantId = artifactId.slice("animationPlan:".length);
       const plan = state.animationPlans[variantId];
@@ -6322,7 +6458,7 @@ async function attachRestoredStandaloneTask(task) {
     if (task.kind === "variants") {
       setStage("variants", "error");
       showError(error.message || "主题变体任务中断");
-    } else if (task.kind === "fullStory") setStoryStatus(error.message || "完整剧情任务中断", "error");
+    } else if (task.kind === "fullStory") renderFullStoryTaskError(error, "完整剧情任务中断", target.variantId);
     else if (["animationPlan", "animationPromptRewrite", "characterReferenceRefine"].includes(task.kind)) {
       setAnimationStatus(error.message || "动画任务中断", "error");
     } else if (task.kind === "characterReferenceImages") {
@@ -6354,6 +6490,7 @@ async function attachRestoredStandaloneTask(task) {
     if (task.kind === "fullStory") {
       state.storyRunning = false;
       setStoryRunning(false);
+      syncStoryTaskStatus({ includeTerminal: true });
     }
     if (["animationPlan", "animationPromptRewrite", "characterReferenceRefine"].includes(task.kind)) {
       state.animationRunning = false;
@@ -6393,7 +6530,7 @@ function restoreRunMetadata(metadata = {}) {
   if (typeof metadata.transcript === "string") elements.transcript.value = metadata.transcript;
 }
 
-function restoreRunArtifacts(latestArtifacts = {}) {
+function restoreRunArtifacts(latestArtifacts = {}, { selectedVariantId = null } = {}) {
   const currentContent = (artifactId) => {
     const entry = latestArtifacts[artifactId];
     return entry?.lineage?.status === "current" ? entry.content : null;
@@ -6437,7 +6574,9 @@ function restoreRunArtifacts(latestArtifacts = {}) {
   }
   state.output.fullStories = state.fullStories;
   state.output.animationPlans = state.animationPlans;
-  state.selectedVariantId = resolveRestoredVariantId(latestArtifacts);
+  const selectionStillAvailable = selectedVariantId && state.output.themeVariants?.variants
+    .some((variant) => String(variant.id) === String(selectedVariantId));
+  state.selectedVariantId = selectionStillAvailable ? selectedVariantId : resolveRestoredVariantId(latestArtifacts);
   if (state.selectedVariantId) {
     state.output.fullStory = state.fullStories[state.selectedVariantId] || null;
     state.output.animationPlan = state.animationPlans[state.selectedVariantId] || null;

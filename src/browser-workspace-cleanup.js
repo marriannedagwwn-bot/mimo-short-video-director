@@ -26,14 +26,14 @@ export class BrowserWorkspaceCleanup {
 
   async cleanup(input = {}) {
     const ids = cleanupIds(input);
-    return this.withCleanupLocks(ids, async (directorRoots) => {
+    return this.withCleanupLocks(ids, async (controlledRoots) => {
       const manifest = await this.readManifestIfPresent(ids);
       const existing = await this.readMarkerIfPresent(ids);
       if (manifest) this.assertOwner(manifest, ids);
       else if (existing) this.assertMarkerOwner(existing, ids);
       else return { deleted: true, pending: false, missing: true };
       await this.writeMarker(ids);
-      return this.cleanupUnlocked(ids, manifest, directorRoots);
+      return this.cleanupUnlocked(ids, manifest, controlledRoots);
     });
   }
 
@@ -58,11 +58,11 @@ export class BrowserWorkspaceCleanup {
         if (marker.type !== MARKER_VERSION || path.basename(this.markerPath(ids)) !== entry.name) {
           throw cleanupError("页面清理记录无效", "BROWSER_WORKSPACE_CLEANUP_MARKER_INVALID");
         }
-        results.push(await this.withCleanupLocks(ids, async (directorRoots) => {
+        results.push(await this.withCleanupLocks(ids, async (controlledRoots) => {
           if (!await this.readMarkerIfPresent(ids)) return { deleted: true, pending: false };
           const manifest = await this.readManifestIfPresent(ids);
           if (manifest) this.assertOwner(manifest, ids);
-          return this.cleanupUnlocked(ids, manifest, directorRoots);
+          return this.cleanupUnlocked(ids, manifest, controlledRoots);
         }));
       } catch (error) { errors.push(error); }
     }
@@ -115,24 +115,24 @@ export class BrowserWorkspaceCleanup {
   }
 
   async withCleanupLocks(ids, operation) {
-    const directorRoots = new Set();
+    const controlledRoots = new Set();
     try {
-      return await this.withLocks(ids, () => operation(directorRoots));
+      return await this.withLocks(ids, () => operation(controlledRoots));
     } finally {
       // Revocation and deletion happen above. Abort listeners and paused
       // resume gates may execute provider/runner code, so wake them only after
       // the scheduler and Run locks have both been released. Even a failed
-      // file deletion must not leave an already-revoked director parked.
-      for (const taskId of directorRoots) {
+      // file deletion must not leave an already-revoked task parked.
+      for (const taskId of controlledRoots) {
         this.taskManager.stopDirectorRuntime(taskId, {
           code: "BROWSER_WORKSPACE_CLOSED", category: "control-plane",
-          message: "页面工作区已清空，AI 导演请求已停止。"
+          message: "页面工作区已清空，当前生成请求已停止。"
         });
       }
     }
   }
 
-  async cleanupUnlocked(ids, manifest, directorRoots) {
+  async cleanupUnlocked(ids, manifest, controlledRoots) {
     const manager = this.taskManager;
     const index = manifest ? await manager.taskStore.readIndex(ids.projectId, ids.runId) : null;
     const taskIds = new Set(Object.keys(index?.tasks || {}));
@@ -158,8 +158,8 @@ export class BrowserWorkspaceCleanup {
     for (const taskId of taskIds) {
       const runtime = manager.runtimes.get(taskId);
       if (runtime) runtime.active = false;
-      if (runtime?.controller && runtime.definition.kind === "directorPipeline" && runtime.ownerTaskId === taskId) {
-        directorRoots.add(taskId);
+      if (runtime?.controller && ["directorPipeline", "fullStory"].includes(runtime.definition.kind) && runtime.ownerTaskId === taskId) {
+        controlledRoots.add(taskId);
       }
       let queued = false;
       for (const pool of Object.values(manager.pools)) {

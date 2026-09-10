@@ -311,6 +311,8 @@ h1 em { color: var(--accent); font-style: normal; }
 .story-hero-card { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr); gap: 22px; align-items: stretch; }
 .story-control-card { padding: 22px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow); backdrop-filter: blur(16px); }
 .story-control-card .primary-button { margin-top: 16px; }
+.story-control-card .director-controls { margin-top: 16px; }
+.story-control-card .director-controls > .primary-button { margin-top: 0; }
 .story-package-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 18px; }
 .story-package-tools small { flex-basis: 100%; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .story-package-tools small.ready { color: var(--green); }

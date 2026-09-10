@@ -188,10 +188,19 @@
         <div class="story-control-card">
           <div id="selectedVariantSummary" class="selected-variant-summary"></div>
           <p class="story-status" id="storyStatus"></p>
-          <button class="primary-button" id="generateFullStory" type="button">
-            <span>生成完整剧情</span>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
-          </button>
+          <div class="director-controls" id="fullStoryControls" role="group" aria-label="完整剧情生成控制">
+            <button class="primary-button" id="generateFullStory" type="button">
+              <span aria-live="polite">生成完整剧情</span>
+              <svg id="fullStoryStartArrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+            </button>
+            <button class="director-icon-button hidden" id="terminateFullStory" type="button" aria-label="终止本次完整剧情生成" title="终止本次完整剧情生成" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+            </button>
+            <button class="director-icon-button hidden" id="pauseFullStory" type="button" aria-label="暂停生成完整剧情" title="暂停生成完整剧情" aria-describedby="fullStoryControlHint" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg>
+            </button>
+          </div>
+          <p class="director-control-hint hidden" id="fullStoryControlHint">暂停会断开当前请求；继续会重新生成完整剧情，可能再次计费。终止会保留已有结果。</p>
           <p class="story-status" id="animationStatus"></p>
           <button class="outline-button animation-button" id="generateAnimationPlan" type="button" disabled>生成动画镜头生产包</button>
           <div class="story-export-actions">

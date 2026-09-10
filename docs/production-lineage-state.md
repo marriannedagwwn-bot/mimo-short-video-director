@@ -130,6 +130,8 @@ AI 导演根任务使用 `POST /api/tasks/:taskId/control`（请求体 `projectI
 
 暂停期间五个写目标继续被原父任务 claim，创建时输入和 provider/model 仍冻结在当前 Node 内存中。已运行的父任务暂停时保留一个 workflow 槽位；未派发的 queued 任务不会因暂停/继续被提前启动 watchdog。继续时依次复用 current 阶段，revision、digest 与内容不变。当前阶段可能包含不止一次文本调用（例如候选选源与正文）；暂停后重新执行的是整个未完成阶段，可能再次计费。浏览器刷新重新 attach 并显示 paused，不隐式继续；Node 重启不能恢复内存上下文，仍按 v1 reconciliation 变为 interrupted 或已提交结果对应的 completed。
 
+`fullStory` 根任务也使用同一控制接口与 `progress.controlState`，保留单个 `fullStory:<variantId>` claim。暂停中断当前请求并保留原输入、模型、冻结依赖和目标 expected revision；继续保持 root taskId，用新 requestId 从初轮重新执行整个 Full Story operation，包括 Beat–Scene postpass。每次尝试的已返回 usage 与实际调用数分别收束后累计，不能用新尝试覆盖旧消耗；旧 context 的迟到更新必须被原尝试的 signal/身份拦住。暂停、终止期间旧 Story、Plan 和媒体仍保持原 current 状态，只有新 Full Story 成功提交才使其下游 stale。commit 与 control 共用 Run 锁；本次 request 已成功提交时，控制不再暂停或终止该任务，也不会重跑已提交内容。queued、watchdog、刷新、进程重启、release 与页面清理边界沿用上述规则。浏览器控制绑定当前候选的 root Full Story task，其他候选的活动任务不能被当前页按钮控制，其完成响应也不能覆盖用户新选择。
+
 Qwen、MiMo、DeepSeek 使用任务 AbortSignal 与原 provider timeout 的组合；取消覆盖等待响应头和读取响应体。控制先在 Run 锁内改变门禁，再在锁外 abort/唤醒；controller 和 resume gate 必须绑定该次转移，连续控制不能唤醒错误 gate。commit 保留 active owner、冻结依赖与 revision 复核。暂停无 watchdog；终止、强制释放和页面清理均需唤醒暂停 Runner，以便释放当前进程的槽位。HTTP 连接关闭不证明供应商已停止计算，也不提供远端请求续传或自动恢复。
 
 每个子尝试只记录实际收到的结构化 usage；SSE 断流前已经收到的 usage 仍计账，未收到的不根据字符数估算。fetch 派发点记录 `calls`，guard 后但 fetch 前取消不算已派发。`reportedCalls`、`unreportedCalls` 和 `usageComplete` 区分已知/未知；存在未知时 `costCny=null/costKnown=false`，页面显示已确认 token 和“次请求未返回用量”。父任务按全部子尝试汇总（包括暂停产生的 interrupted 子任务），成功继续不会覆盖此前用量，也不会重复累计同一条回报。

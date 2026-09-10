@@ -277,8 +277,10 @@ Node 重启仍是明确边界：Prompt、Data URL、Base64 和完整请求体不
 - `POST /api/tasks/create`：创建或复用任务，返回 `202`；
 - `GET /api/tasks?projectId=&runId=`：锁外读取该 Run 的任务 sidecar；
 - `GET /api/tasks/:taskId?projectId=&runId=`：读取单个任务；
-- `POST /api/tasks/:taskId/control`：对 `shotVideoBatch` 执行 `pause | resume | terminate`；
+- `POST /api/tasks/:taskId/control`：对 `directorPipeline`、`fullStory` 和 `shotVideoBatch` 执行 `pause | resume | terminate`；
 - `POST /api/tasks/:taskId/release`：强制释放目标并标记 `abandoned`，不承诺取消远端调用。
+
+“生成完整剧情”与“启动 AI 导演”在执行时显示相同的控制组：左侧终止，右侧暂停/继续。完整剧情暂停会断开当前模型请求；继续重新执行本次完整剧情生成，初轮和分场复核都可能再次计费。已收到的用量会跨尝试累计，未收到的明确标为未知。暂停或终止保留此前已签发结果；刷新恢复暂停状态，不自动继续。两个图标的悬停背景为 32×32px，点击区域为 44×44px。
 
 ## 单镜头视频：首尾帧 / 全能参考
 
