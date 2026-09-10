@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { InputError, OutputContractError, deriveStoryCandidateProjections, ensureOutputContract, ensureStoryCandidateReviewCoversCandidates } from "../src/validation.js";
-import { buildStoryCandidateReviewProjection, storyCandidateReviewPrompt } from "../src/prompts.js";
+import { buildStoryCandidateReviewProjection, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt } from "../src/prompts.js";
 import { mockStoryCandidateReview } from "../src/mock.js";
 import { WorkflowService } from "../src/workflow.js";
 
@@ -486,4 +486,173 @@ test("旧报告不带 coherenceChecks 时数出 0，且摘要里不出现这一�
   const legacy = { candidateChecks: [{ verdict: "pass", mechanismChecks: [{ verdict: "depicted" }] }] };
   assert.equal(candidateReviewMetrics(legacy).coherenceBreaks, 0);
   assert.doesNotMatch(candidateReviewHeadline(legacy), /因果断裂/u);
+});
+
+// ---------------------------------------------------------------------------
+// 带诊断的重试。这一档此前走 generateValidatedJson——只发一次、fail closed。
+// 2026-09-10 的真实回放量出了代价：同一个模型、两份合法候选，一份一次写全
+// recommendedOrder，另一份只写了 1 个 id，被既有闸门判失败，整份两千字报告
+// 连同 ¥0.27 一起丢弃，而模型自己不知道漏了什么。
+//
+// 以下用例全部用 mock client，不烧钱。
+
+// CANDIDATES 夹具刻意不是完整合法候选（缺 verticalFit 与两个拍号），其余用例都直接调
+// 覆盖率校验器。这里要走整个 createStoryCandidateReview，所以先补齐必填键、
+// 再让服务端派生三个投影字段（与 createVariants 同一条派生路径）。
+const COMPLETE = deriveStoryCandidateProjections({
+  variants: CANDIDATES.map((candidate) => ({
+    ...candidate,
+    verticalFit: "治愈日常",
+    keyChoiceBeat: 1,
+    climaxBeat: candidate.storyOutline.length
+  }))
+});
+const REVIEW_INPUT = { themeVariants: COMPLETE, sourceScriptReconstruction: RECONSTRUCTION };
+
+function liveReviewWorkflow(responses, stageModelOutputLogWriters = null) {
+  const prompts = [];
+  const client = {
+    async generateJson({ prompt, requestTimeoutMs, maxCompletionTokens }) {
+      prompts.push({ prompt, requestTimeoutMs, maxCompletionTokens });
+      const next = responses[prompts.length - 1];
+      if (!next) throw new Error(`第 ${prompts.length} 次调用没有预置响应——预算被超用了`);
+      if (typeof next === "function") return next(prompt);
+      return next;
+    }
+  };
+  const workflow = new WorkflowService({
+    clients: { Qwen: client },
+    stageModelOutputLogWriters,
+    stageDefaults: {
+      storyCandidateReview: {
+        provider: "Qwen",
+        model: "test-model",
+        maxCompletionTokens: 8192,
+        requestTimeoutMs: null
+      }
+    }
+  });
+  return { workflow, prompts };
+}
+
+// 与 2026-09-10 那次真实 502 同形：模型漏抄了 recommendedOrder 的其余 id。
+function reviewMissingOrder() {
+  const review = baseReview();
+  review.recommendedOrder = [review.recommendedOrder[0]];
+  return review;
+}
+
+test("第一次被确定性闸门拦下时重做一次，第二次通过就正常返回", async () => {
+  const { workflow, prompts } = liveReviewWorkflow([reviewMissingOrder(), baseReview()]);
+  const review = await workflow.createStoryCandidateReview(REVIEW_INPUT);
+
+  assert.equal(prompts.length, 2);
+  assert.equal(review.candidateChecks.length, COMPLETE.variants.length);
+  // 拦过一次就必须说出来，不能让用户以为模型一次就写对了。
+  assert.equal(review.metadata.storyCandidateReview.providerCalls, 2);
+  assert.equal(review.metadata.storyCandidateReview.rejections.length, 1);
+  assert.equal(review.metadata.storyCandidateReview.rejections[0].attempt, 1);
+  assert.equal(
+    review.metadata.storyCandidateReview.rejections[0].details[0].code,
+    "CANDIDATE_REVIEW_ORDER_NOT_PERMUTATION"
+  );
+});
+
+test("重试提示词把校验器数出来的原话交回去，不另写一套翻译", async () => {
+  const { workflow, prompts } = liveReviewWorkflow([reviewMissingOrder(), baseReview()]);
+  await workflow.createStoryCandidateReview(REVIEW_INPUT);
+
+  const retry = prompts[1].prompt;
+  // 原提示词逐字保留在前面——规则一个字都没改，改的只是「错了之后怎么办」。
+  assert.ok(retry.startsWith(prompts[0].prompt), "重试正文必须以原提示词开头");
+  assert.match(retry, /上一次的输出被确定性校验拦下了/u);
+  assert.match(retry, /CANDIDATE_REVIEW_ORDER_NOT_PERMUTATION/u);
+  assert.match(retry, /排列/u);
+  // 不把失败的那份报告发回去：提示词里已有全部候选投影与原片动作稿。
+  assert.ok(!retry.includes(JSON.stringify(reviewMissingOrder())), "不得把上一次的报告整份发回去");
+});
+
+test("一次就成时不产生任何重试痕迹", async () => {
+  const { workflow, prompts } = liveReviewWorkflow([baseReview()]);
+  const review = await workflow.createStoryCandidateReview(REVIEW_INPUT);
+
+  assert.equal(prompts.length, 1);
+  assert.equal(review.metadata.storyCandidateReview.providerCalls, 1);
+  assert.deepEqual(review.metadata.storyCandidateReview.rejections, []);
+});
+
+// 契约写着「两次诊断如实报出」而实现只报第二次，是定向修订那边已登记的一处不符。
+// 评审这一档一开始就做对。
+test("两次都被拦即 fail closed，且两次的诊断都在响应里", async () => {
+  const { workflow, prompts } = liveReviewWorkflow([reviewMissingOrder(), reviewMissingOrder()]);
+  await assert.rejects(
+    () => workflow.createStoryCandidateReview(REVIEW_INPUT),
+    (error) => {
+      assert.equal(error.name, "ModelPipelineError");
+      const attempts = error.diagnostics.map((detail) => detail.metadata?.attempt);
+      assert.deepEqual(attempts, [1, 2], "每条诊断都要标明是第几次");
+      return true;
+    }
+  );
+  // 预算封在 2 次，禁止第三次。
+  assert.equal(prompts.length, 2);
+});
+
+test("侧车观测挂在 coordinator 上，两次调用各留一条", async () => {
+  const recorded = [];
+  // 走 coordinator 就拿不到 generateValidatedJson 那条路自带的 recorder，
+  // 漏接 attemptObserver 的后果是静默不写、两次原文全部丢失。
+  const { workflow, prompts } = liveReviewWorkflow(
+    [reviewMissingOrder(), baseReview()],
+    new Map([["storyCandidateReview", {
+      enabled: true,
+      async recordAttempt(attempt) { recorded.push(attempt); }
+    }]])
+  );
+  await workflow.createStoryCandidateReview(REVIEW_INPUT);
+
+  assert.equal(recorded.length, prompts.length);
+  assert.equal(recorded.filter((row) => row.status === "failed").length, 1);
+  assert.equal(recorded.filter((row) => row.status === "succeeded").length, 1);
+});
+
+test("侧车写入失败不改变评审的成败", async () => {
+  const { workflow } = liveReviewWorkflow(
+    [baseReview()],
+    new Map([["storyCandidateReview", {
+      enabled: true,
+      async recordAttempt() { throw new Error("磁盘满了"); }
+    }]])
+  );
+  const review = await workflow.createStoryCandidateReview(REVIEW_INPUT);
+  assert.equal(review.candidateChecks.length, COMPLETE.variants.length);
+});
+
+test("重试正文不含反引号——模板字面量会被当场截断", () => {
+  const body = storyCandidateReviewRetryPrompt({
+    originalPrompt: "原文",
+    details: [{ code: "X", path: "/recommendedOrder", reason: "漏了 V2" }]
+  });
+  assert.ok(!body.includes("`"));
+  assert.match(body, /漏了 V2/u);
+});
+
+test("没有结构化诊断时退回原提示词——只说你错了不说错在哪，第二次只会重复第一次", () => {
+  assert.equal(storyCandidateReviewRetryPrompt({ originalPrompt: "原文", details: [] }), "原文");
+  assert.equal(storyCandidateReviewRetryPrompt({ originalPrompt: "原文" }), "原文");
+});
+
+test("demo 路径也带 metadata，形状与 live 一致", async () => {
+  const workflow = new WorkflowService({ clients: {}, stageDefaults: null });
+  const review = await workflow.createStoryCandidateReview(REVIEW_INPUT);
+  assert.equal(review.metadata.storyCandidateReview.provider, "demo");
+  assert.deepEqual(review.metadata.storyCandidateReview.rejections, []);
+});
+
+test("浏览器把「拦过一次」显示出来，旧报告没有 metadata 时整段不显示", () => {
+  assert.match(APP_JS, /review\.metadata\?\.storyCandidateReview/u);
+  assert.match(APP_JS, /call\.providerCalls > 1/u);
+  // 诊断原文要显示出来，只说「重试过」而不说被什么拦下等于没说。
+  assert.match(APP_JS, /rejectionReasons/u);
+  assert.match(APP_JS, /detail\?\.reason/u);
 });

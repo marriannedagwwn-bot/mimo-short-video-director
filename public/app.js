@@ -1758,6 +1758,16 @@ const COHERENCE_KIND_LABEL = {
 function renderStoryCandidateReview(review, themeVariants) {
   const byId = new Map((themeVariants?.variants || []).map((variant) => [String(variant.id), variant]));
   const headline = candidateReviewHeadline(review);
+  // 服务端拦过一次就必须说出来，不能让用户以为模型一次就写对了。
+  // 这一档现在允许「第一次做错」：被确定性闸门拦下时带诊断重做一次，预算封在 2 次。
+  // 旧报告没有 metadata（那时这条路只发一次），整段不显示。
+  const call = review.metadata?.storyCandidateReview || null;
+  const rejectionReasons = (call?.rejections || [])
+    .flatMap((rejection) => (rejection?.details || []))
+    .map((detail) => String(detail?.reason || detail?.message || "").trim())
+    .filter(Boolean);
+  const retryNote = call && call.providerCalls > 1 ? `
+    <p class="story-review-status warn">这份报告是第 ${escape(call.providerCalls)} 次调用的结果——第一次被确定性校验拦下并按诊断重做了一次${rejectionReasons.length ? `：${escape(rejectionReasons.join("；"))}` : "。"}</p>` : "";
   // 原片机制是**全批共享的一份清单**，候选只按 id 引用（§2.12b ⑥）。
   // 不把清单显示出来，下面每条 mechanismCheck 就只剩一个孤零零的 id，
   // 而「这批候选到底在对照原片的哪几条机制」正是这份报告最该先说清的事。
@@ -1833,6 +1843,7 @@ function renderStoryCandidateReview(review, themeVariants) {
   return `
     <p class="story-review-status">${escape(headline)}</p>
     <p class="story-review-status">推荐开发顺序：${escape((review.recommendedOrder || []).join(" → "))}</p>
+    ${retryNote}
     ${sourceMechanisms}
     ${cards}
     <p class="story-review-summary">${escape(review.summary)}</p>`;

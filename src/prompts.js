@@ -1194,6 +1194,48 @@ phase、emotion 是作者的标签，可以参考，**不能当证据**。
 ${JSON_ONLY}`;
 }
 
+/**
+ * 评审被确定性闸门拦下之后的重试正文。**原提示词逐字保留，只在末尾追加诊断。**
+ *
+ * 依据是 animation-plan-review 落地方案第 4 节那条结论：事前在提示词里定规矩没用
+ * （三次加码全部失败），事后拿数字打回去重做有用（两个模型都一次过）。所以这里
+ * 不改一个字的规则，只把校验器数出来的那几条原样交回去。
+ *
+ * **不把上一次的报告发回去**，两条理由：
+ * ①「第二次请求只发送 diagnostics 与修复说明」是本仓库对有界纠错的一贯纪律；
+ * ② 原提示词本来就含全部候选投影与原片动作稿，把两千字报告再塞回去是纯浪费。
+ *
+ * 诊断的 reason 已经是可执行的中文（「recommendedOrder 必须是全部 4 个候选 id 的
+ * 一个排列；漏了 V2、V3、V4」），**原样列出，不另写一套人话翻译**——翻译一次就多
+ * 一个会和校验器漂移的地方。
+ */
+export function storyCandidateReviewRetryPrompt({ originalPrompt = "", details = [] } = {}) {
+  const list = (Array.isArray(details) ? details : [])
+    .map((detail) => {
+      const path = String(detail?.path || "").trim();
+      const reason = String(detail?.reason || detail?.message || "").trim();
+      const code = String(detail?.code || "").trim();
+      if (!reason) return "";
+      return `- ${path ? `${path} ` : ""}${reason}${code ? `（${code}）` : ""}`;
+    })
+    .filter(Boolean);
+  if (!list.length) return String(originalPrompt || "");
+
+  return `${originalPrompt}
+
+---
+
+## 上一次的输出被确定性校验拦下了
+
+这些不是主观意见，是程序数出来的。逐条如下：
+
+${list.join("\n")}
+
+请**重新产出一份完整报告**，规则一个字都没变，上面这几条必须满足。
+不要解释上一次为什么错，也不要在报告里提到这次重做——直接输出新的 JSON。
+${JSON_ONLY}`;
+}
+
 export function storyQualityReviewPrompt(fullStory) {
   const scenes = Array.isArray(fullStory?.sceneScript) ? fullStory.sceneScript : [];
   const retention = Array.isArray(fullStory?.retentionPlan) ? fullStory.retentionPlan : [];

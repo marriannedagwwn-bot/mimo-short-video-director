@@ -317,7 +317,38 @@ Prompt、测试当天都动了，`public/app.js` 的 `renderStoryCandidateReview
 4 条不等于 4 条都用得上；②判 `pass` 的三个候选都没有报出自洽问题，所以
 `STORY_CANDIDATE_REVIEW_PASS_WITH_COHERENCE_BREAK` **至今仍未在 live 触发过**。
 **《捐旧衣服》第一次还撞了一次 502**——`recommendedOrder` 只写了 1 个 id，被既有闸门判失败、
-整份报告丢弃、¥0.27 白烧；那条闸门与本次改动无关，但它是这一档没有重试路径的第一份真实代价。
+整份报告丢弃、¥0.27 白烧；那条闸门与本次改动无关，但它促成了下面 ⑦。
+
+**⑦ 允许第一次做错：带诊断重试一次（2026-09-10）**。`createStoryCandidateReview` 从
+`generateStageJson` 改走 `modelCallCoordinator.runJson`，`maxProviderCalls: 2`，**禁止第三次**，
+形状与分镜定向修订逐条对齐——搬的就是那套结论：「事前在提示词里定规矩→没用（三次加码都没用）；
+事后拿数字打回去重做→有用」，以及「**修订必须设计成「允许第一次做错」**」。候选这一档此前
+只搬了前两部分（提示词定规矩、确定性闸门）。
+
+- **校验逐字不变**：改的是「错了之后怎么办」，不是「什么算错」。五条闸门一个字没动。
+- **不需要错误类型转换**：`ensureStoryCandidateReviewCoversCandidates` 抛的 `OutputContractError`
+  本来就被 `classifyAttemptError` 判为可重试，`details` 原样进 `issue.diagnostics`。
+- **重试只发诊断，不把失败的报告发回去**（`storyCandidateReviewRetryPrompt`）：原提示词逐字保留，
+  末尾追加校验器数出来的 `path / reason / code`，不另写一套人话翻译。没有结构化诊断时退回原提示词。
+- **拦过一次必须说出来**：返回值多一个 `metadata.storyCandidateReview`（`provider` / `model` /
+  `providerCalls` / `rejections`），浏览器在报告顶部以 warn 色显示。`providerCalls` 由
+  `attemptObserver` 计数，不能从「有没有被拦」反推——传输失败时供应商确实被调用了两次而没有诊断。
+- **两次都被拦时两次诊断都在响应里**（每条带 `attempt` 序号）：coordinator 抛的
+  `ModelPipelineError` 只带最后一次的 diagnostics，所以这条路径自己重建错误、合并两次，其余字段
+  逐字照抄。这正是定向修订那边已登记的一处契约与实现不符，评审这一档一开始就做对。
+- **走 coordinator 就拿不到 `generateValidatedJson` 自带的 recorder**，必须自己接 `attemptObserver`，
+  否则静默不写、两次原文全部丢失。
+- 传输失败同样吃这 2 次预算；`requestTimeoutMs` 不动。**其余八个走 `generateValidatedJson` 的阶段
+  逐字不受影响**——不能给那个函数加重试，它是共用的单次调用路径。
+
+**它救不了什么**：诊断只有那五条闸门那么宽。机制清单读错原片、自洽问题判错这类**语义**错误不产生
+任何诊断，也就不会触发重试。这条路只把「模型漏抄了几个 id、整份报告被丢弃」从 502 变成重做一次，
+**不提高报告的判断质量，更不改变候选本身**——评审始终只出报告。
+
+**重试路径在 live 至今没有真实触发过**：接上之后跑的两次都一次就成，只证明改动没有破坏正常路径，
+**不证明重试能救回来**。同一个包三次回放的结论还明显不同（`verdict` 从「2 pass / 2 revise」到
+「2 revise / 2 drop」，因果断裂 2→3 处，`recommendedOrder` 三次都不一样）——「包与包之间很不齐」
+现在还要加上**同一个包内部也不稳**。
 
 
 **不打总分**（§剧情体检已实测总分没有分辨力）。`verdict` 的 `drop` **只是报告里的一句话**：不删候选、不重新生成、不触发任何 stale，分布校验（`STORY_CANDIDATE_NARRATIVE_MODE_MIX`）不受影响，淘汰与否由用户决定。评审默认沿用 `variants` 阶段的 provider，也就是写这些候选的那个模型，**自己批自己会偏松是已知偏差**，如实记录、不靠静默换家掩盖；它是纯文本阶段，可按阶段 override 换任意一家。

@@ -1,4 +1,4 @@
-import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { compileCharacterFeatures } from "./character-feature-compiler.js";
@@ -45,6 +45,7 @@ import {
 } from "./animation-video-prompt-semantic-repair.js";
 import { randomUUID } from "node:crypto";
 import { ModelCallCoordinator, classifyAttemptError } from "./model-call-coordinator.js";
+import { ModelPipelineError } from "./model-errors.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
 import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanDirectShotContract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
@@ -453,17 +454,104 @@ export class WorkflowService {
       ensureOutputContract(result, "storyCandidateReview"),
       candidates
     );
-    if (!this.hasLiveClient) return validate(mockStoryCandidateReview(candidates));
+    if (!this.hasLiveClient) {
+      return { ...validate(mockStoryCandidateReview(candidates)), metadata: candidateReviewMetadata({ provider: "demo", model: "demo" }) };
+    }
     const settings = this.resolveStage("storyCandidateReview", input);
     this.assertStageClient(settings, "候选对照评审");
-    return this.generateStageJson("storyCandidateReview", input, {
+
+    // 这一档此前走 generateStageJson → generateValidatedJson：**只发一次、fail closed**。
+    // 2026-09-10 的真实回放量出了代价——同一个模型、两份合法候选，一份一次写全
+    // recommendedOrder，另一份只写了 1 个 id，被既有闸门判失败，整份两千字报告
+    // （机制清单、逐候选核对、因果自洽全在里面）连同 ¥0.27 一起丢弃，而模型自己
+    // 不知道漏了什么。animation-plan-review 落地方案早就写过同一句：事前定规矩没用，
+    // 事后拿数字打回去重做有用，**修订必须设计成「允许第一次做错」**。
+    //
+    // 不能给 generateValidatedJson 加重试——它是九个阶段共用的单次调用路径。
+    // 所以这一档自己走 coordinator，形状与 createAnimationPlanRevision 逐条对齐。
+    let rejections = [];
+    // 实数调用次数。不能用 rejections 推断——传输失败时它仍是空数组，
+    // 但供应商确实被调用了两次，少报就等于把花掉的钱藏起来。
+    let providerCalls = 0;
+    // 走 coordinator 就拿不到 generateValidatedJson 那条路自带的 recorder：它挂在
+    // client.generateJson 的 onCompletion 上，而 coordinator 走 requestCompletion。
+    // 漏接的后果是**静默不写**，两次调用的原文全部丢失，所以按定向修订的既有写法
+    // 自己接 attemptObserver。
+    const reviewOutputLogWriter = this.stageModelOutputLogWriters?.get("storyCandidateReview") || null;
+    const recordReviewAttempt = reviewOutputLogWriter?.enabled
+      ? (attempt) => reviewOutputLogWriter.recordAttempt(attempt)
+      : null;
+
+    const request = {
       prompt: storyCandidateReviewPrompt(
         candidates,
         sourceScriptReconstruction,
         input.visualGuardrails?.fixedCharacterBoundary || null
       ),
-      validate
-    });
+      model: settings.model,
+      maxCompletionTokens: settings.maxCompletionTokens,
+      requestTimeoutMs: settings.requestTimeoutMs
+    };
+
+    let review;
+    try {
+      review = await this.modelCallCoordinator.runJson({
+        client: settings.client,
+        request,
+        provider: settings.provider || "",
+        stage: "storyCandidateReview",
+        maxProviderCalls: 2,
+        // 计数与落盘组合在一起。落盘是 fail-open 的：writer 自己吞写入异常，
+        // 这里再兜一层意外抛出，绝不让观测改变本次评审的成败或调用预算。
+        attemptObserver: async (attempt) => {
+          providerCalls += 1;
+          if (!recordReviewAttempt) return;
+          try {
+            await recordReviewAttempt(attempt);
+          } catch {
+            // 观测失败不改变结论。
+          }
+        },
+        retryTokenLimit,
+        // 传输中断也吃这 2 次预算（实测失败率约三分之一，其中一类是几秒就断、
+        // 一个 token 都没烧）。没有诊断可打回时重发原提示词——只说「你错了」
+        // 而不说错在哪，第二次只会重复第一次。
+        retryPrompt: ({ originalPrompt }) => {
+          const last = rejections[rejections.length - 1];
+          return last?.details?.length
+            ? storyCandidateReviewRetryPrompt({ originalPrompt, details: last.details })
+            : originalPrompt;
+        },
+        // **校验逐字不变**：这次改的是「错了之后怎么办」，不是「什么算错」。
+        // OutputContractError 本来就被 classifyAttemptError 判为可重试，
+        // 且 details 原样进 issue.diagnostics，所以这里不需要任何错误类型转换。
+        validate: (candidate) => {
+          try {
+            return validate(candidate);
+          } catch (error) {
+            if (error instanceof OutputContractError) {
+              rejections.push({
+                message: error.message,
+                details: Array.isArray(error.details) ? error.details : []
+              });
+            }
+            throw error;
+          }
+        }
+      });
+    } catch (error) {
+      throw candidateReviewPipelineFailure(error, rejections);
+    }
+
+    return {
+      ...review,
+      metadata: candidateReviewMetadata({
+        provider: settings.provider || "",
+        model: settings.model || "",
+        providerCalls,
+        rejections
+      })
+    };
   }
 
   /**
@@ -2950,6 +3038,69 @@ function reviewContractAsOutputContract(error) {
   const wrapped = new OutputContractError(error.message, error.details);
   wrapped.code = error.code;
   return wrapped;
+}
+
+/**
+ * 候选对照评审的调用元数据。与定向修订的 revisionMetadata 同规格：
+ * **服务端拦过一次就必须说出来**，不能让用户以为模型一次就写对了。
+ *
+ * 与那边的一处不同：这里记的是 rejections **数组**而不是单个
+ * firstAttemptRejection。两次都被内容闸门拦下时两条都要在，否则就重演了
+ * 「契约写着把两次诊断如实报出、实现只报第二次」那个已登记的不符。
+ */
+function candidateReviewMetadata({
+  provider = "",
+  model = "",
+  providerCalls = 1,
+  rejections = []
+} = {}) {
+  const list = Array.isArray(rejections) ? rejections : [];
+  return {
+    storyCandidateReview: {
+      provider,
+      model,
+      providerCalls,
+      rejections: list.map((rejection, index) => ({
+        attempt: index + 1,
+        message: String(rejection?.message || ""),
+        details: Array.isArray(rejection?.details) ? rejection.details : []
+      }))
+    }
+  };
+}
+
+/**
+ * 两次都失败时，把**每一次**的诊断都带进最终错误。
+ *
+ * coordinator 抛出的 ModelPipelineError 只带最后一次的 issue.diagnostics，
+ * attempts[] 虽有两条却不带各自的 diagnostics——用户看到的就只有第二次那几条，
+ * 完全不知道第一次错在哪、重试有没有改善。每条诊断加一个 attempt 序号
+ * （额外字段会进 ValidationDiagnostic.metadata 并被 toJSON 带出去）。
+ *
+ * 只在这一条路径上重建错误：其余字段（category / code / origin / httpStatus /
+ * retryable / attempts / cause）逐字照抄，不改变归属与状态码。
+ *
+ * 合并结果一定是 coordinator 那份的超集，所以只要记下过任何内容诊断就用合并版。
+ * 一次内容失败 + 一次传输失败也走这条路——否则那一次的内容诊断会被最后那次
+ * 没有诊断的传输失败盖掉。完全没有内容诊断（两次都是传输失败）时原样上抛。
+ */
+function candidateReviewPipelineFailure(error, rejections = []) {
+  const list = Array.isArray(rejections) ? rejections : [];
+  const diagnostics = list.flatMap((rejection, index) => (
+    (Array.isArray(rejection?.details) ? rejection.details : [])
+      .map((detail) => ({ ...detail, attempt: index + 1 }))
+  ));
+  if (!(error instanceof ModelPipelineError) || !diagnostics.length) return error;
+  return new ModelPipelineError(error.message, {
+    category: error.category,
+    code: error.code,
+    origin: error.origin,
+    httpStatus: error.httpStatus,
+    retryable: error.retryable,
+    diagnostics,
+    attempts: error.attempts,
+    cause: error.cause
+  });
 }
 
 function revisionMetadata({

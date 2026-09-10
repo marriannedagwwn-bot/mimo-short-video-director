@@ -180,6 +180,12 @@ Prompt 中关于施动性、因果、人物质感、悬念、承诺和连贯性�
 
 浏览器把顶层清单置顶显示，逐条 `mechanismCheck` 旁显示它引用的那条机制正文，`coherenceChecks` 单独成块并把 `kind` 译成中文；顶部摘要按 §2.13 同规格**数出**因果断裂条数与涉及候选数，不问模型要总分。旧报告没有这两个键时那两段整段不显示——数出来的 0 是「这一档还不存在」，不是「查过了没问题」。
 
+**带诊断的重试（2026-09-10）**：这一档从 `generateStageJson` 改走 `modelCallCoordinator.runJson`，`maxProviderCalls: 2`，**禁止第三次**，与分镜定向修订同规格。被确定性闸门拦下时，把校验器数出来的 `path / reason / code` 追加在原提示词末尾重做一次；**不把失败的报告发回去**（第二次请求只发 diagnostics 是本仓库对有界纠错的一贯纪律，何况提示词本身已含全部候选投影与原片动作稿），没有结构化诊断时退回原提示词。**校验逐字不变**——改的是「错了之后怎么办」，不是「什么算错」。
+
+返回值多一个 `metadata.storyCandidateReview`（`provider` / `model` / `providerCalls` / `rejections`）：**服务端拦过一次就必须说出来**，浏览器在报告顶部以 warn 色显示第几次调用、第一次被什么拦下。`providerCalls` 由 `attemptObserver` 计数而非从「有没有被拦」反推——传输失败时供应商确实被调用了两次却没有诊断。两次都被拦即 fail closed，**两次的诊断都在响应里**并各带 `attempt` 序号。走 coordinator 就拿不到 `generateValidatedJson` 自带的模型输出侧车，必须自己接 `attemptObserver`，否则静默不写。
+
+依据是 2026-09-10 的真实回放：同一个模型、两份合法候选，一份一次写全 `recommendedOrder`，另一份只写了 1 个 id 被判失败，整份两千字报告连同 ¥0.27 一起丢弃，而模型自己不知道漏了什么。**它救不了语义错误**——机制清单读错原片、自洽问题判错都不产生诊断，也就不触发重试；它只把这一类「漏抄几个 id」的失败从 502 变成重做一次，不提高判断质量，更不改变候选本身。其余八个走 `generateValidatedJson` 的阶段逐字不受影响。
+
 ### 阶段六：fullStory
 
 用户选择一个 `themeVariants.variants[]` 后，进入独立完整剧情页。该阶段不重新发散主题，只围绕被选中的主题变体扩写，输出：

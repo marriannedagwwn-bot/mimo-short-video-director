@@ -386,7 +386,52 @@ Prompt、测试当天都动了，`public/app.js` 的 `renderStoryCandidateReview
 `STORY_CANDIDATE_REVIEW_PASS_WITH_COHERENCE_BREAK` **至今仍未在 live 触发过**，与 ⑤ 里记的一致。
 **《捐旧衣服》第一次还撞了一次 502**——`recommendedOrder` 只写了 1 个 id，被既有闸门判失败、
 整份报告丢弃、¥0.27 白烧。那条闸门与本次改动无关，但它是这一档没有重试路径的第一份真实代价，
-详见 `docs/待解决项.md` 第 4 条。
+促成了下面 ⑦。
+
+**⑦ 允许第一次做错：带诊断重试一次（2026-09-10）**。`createStoryCandidateReview` 从
+`generateStageJson` 改走 `modelCallCoordinator.runJson`，`maxProviderCalls: 2`，**禁止第三次**。
+形状与 §2.14 的定向修订逐条对齐，因为搬的就是那套结论：
+`docs/animation-plan-review-落地方案.md` §4 写着「事前在提示词里定规矩→没用（三次加码都没用）；
+事后拿数字打回去重做→有用（两个模型都一次过）」，以及「**修订必须设计成「允许第一次做错」**」。
+候选这一档此前只搬了前两部分（提示词定规矩、确定性闸门），第三部分没搬。
+
+- **校验逐字不变**——改的是「错了之后怎么办」，不是「什么算错」。五条闸门（覆盖率、拍号、
+  排列、机制 id 唯一与成员）一个字没动。
+- **不需要错误类型转换**：`ensureStoryCandidateReviewCoversCandidates` 抛的
+  `OutputContractError` 本来就被 `classifyAttemptError` 判为可重试，`details` 原样进
+  `issue.diagnostics`。比修订那边简单——那边得先把 `ReviewContractError` 转过来。
+- **重试只发诊断，不把失败的报告发回去**（`storyCandidateReviewRetryPrompt`）：原提示词逐字
+  保留在前面，末尾追加校验器数出来的那几条 `path / reason / code`，**不另写一套人话翻译**
+  （翻译一次就多一个会和校验器漂移的地方）。提示词本身已含全部候选投影与原片动作稿，
+  把两千字报告再塞回去是纯浪费。没有结构化诊断时退回原提示词——只说「你错了」不说错在哪，
+  第二次只会重复第一次。
+- **拦过一次必须说出来**：返回值多一个 `metadata.storyCandidateReview`
+  （`provider` / `model` / `providerCalls` / `rejections`），浏览器在报告顶部以 warn 色显示
+  「第 N 次调用的结果，第一次被什么拦下」。`providerCalls` 由 `attemptObserver` 计数，
+  **不能从「有没有被拦」反推**——传输失败时供应商确实被调用了两次而没有诊断，少报就等于
+  把花掉的钱藏起来。旧报告没有这个键，整段不显示。
+- **两次都被拦时两次诊断都在响应里**（每条带 `attempt` 序号）。coordinator 抛的
+  `ModelPipelineError` 只带最后一次的 diagnostics，所以这条路径自己重建错误、合并两次的诊断，
+  其余字段（category / code / origin / httpStatus / retryable / attempts / cause）逐字照抄。
+  这正是 `docs/待解决项.md` 第 3 条记的、定向修订那边没做到的事。
+- **走 coordinator 就拿不到 `generateValidatedJson` 那条路自带的 recorder**（它挂在
+  `client.generateJson` 的 `onCompletion` 上，coordinator 走 `requestCompletion`），
+  必须自己接 `attemptObserver`，否则**静默不写**、两次原文全部丢失。
+- 传输失败同样吃这 2 次预算。`requestTimeoutMs` 不动（全局 900000；实测该阶段 117–130 秒出字，
+  两次调用各自计时）。**其余八个走 `generateValidatedJson` 的阶段逐字不受影响**——
+  不能给那个函数加重试，它是共用的单次调用路径（`docs/待解决项.md` 第 4 条）。
+
+**它救不了什么**：诊断只有那五条闸门那么宽。机制清单读错原片、自洽问题判错这类**语义**错误
+不产生任何诊断，也就不会触发重试。这条路只把「模型漏抄了几个 id、整份报告被丢弃」这类
+失败从 502 变成重做一次，**不提高报告的判断质量，更不改变候选本身**——评审始终只出报告。
+
+**重试路径在 live 至今没有真实触发过**：接上之后跑的两次都一次就成。那两次证明的是改动没有
+破坏正常路径（报告形状正常、`metadata` 如实上报），**不证明重试能救回来**——与
+`STORY_CANDIDATE_REVIEW_PASS_WITH_COHERENCE_BREAK` 的处境一样，只有单元测试证明有效。
+
+**同一个包三次回放的结论明显不同**（`verdict` 从「2 pass / 2 revise」到「2 revise / 2 drop」，
+因果断裂 2→3 处，`recommendedOrder` 三次都不一样）。⑤ 里记的「包与包之间很不齐」现在还要加上
+**同一个包内部也不稳**，更强化那条结论：`verdict` 与 `recommendedOrder` 不得当成自动选择依据。
 
 
 ### 2.13 剧情体检（storyQualityReview v1，2026-09-04）
