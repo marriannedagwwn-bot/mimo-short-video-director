@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv, getConfig } from "./src/config.js";
+import { initializeSystemProxy } from "./src/system-proxy.js";
 import { MimoClient } from "./src/mimo-client.js";
 import { QwenClient } from "./src/qwen-client.js";
 import { DeepSeekClient } from "./src/deepseek-client.js";
@@ -92,6 +93,7 @@ import {
 import { syncShotCharacterReference } from "./public/character-reference-sync.js";
 
 loadEnv();
+const systemProxy = await initializeSystemProxy();
 const root = path.dirname(fileURLToPath(import.meta.url));
 const config = getConfig();
 const buildIdentity = resolveBuildIdentity({ workspaceRoot: root });
@@ -1928,6 +1930,7 @@ const server = http.createServer(async (request, response) => {
       return json(response, 200, {
         ok: true,
         mode: workflow.mode,
+        networkProxy: systemProxy.status(),
         model: analysisStage.model,
         analysisModel: analysisStage.model,
         storyModel: storyStage.model,
@@ -2126,6 +2129,7 @@ const browserWorkspaceSweep = setInterval(async () => {
 }, 5_000);
 browserWorkspaceSweep.unref();
 server.on("close", () => clearInterval(browserWorkspaceSweep));
+server.on("close", () => { void systemProxy.close(); });
 
 server.listen(config.port, () => {
   console.log(`AI 短视频导演：http://localhost:${config.port}`);

@@ -34,6 +34,8 @@ AI 短视频生产工作流系统。
 
 # 1. 当前架构事实（必须遵守）
 
+**本机出网代理（2026-09-10）**：macOS 服务、`bin/run-video.js` 和 `workers/generic-http-worker.mjs` 在实际请求前统一初始化 `src/system-proxy.js`。以 `scutil --proxy` 当前有效配置为权威，每 2 秒刷新；不固化地址/端口，也不让继承的大小写 HTTP(S)/ALL/NO_PROXY 覆盖系统状态。全局 fetch dispatcher 保持稳定，后续 dispatch 根据 HTTP/HTTPS 独立开关、系统例外和回环绕过选择连接器；更新不重启 Node、不重复提交、不主动中止在途请求。需要 SOCKS 的路由、PAC/自动发现、读取失败和非法启用配置明确阻断相应外部请求，禁止静默猜测或降级。非 macOS 保留环境代理。该层只改变传输路径，不改变 provider/model、Prompt、任务状态或计费语义。说明与证据见 `docs/system-proxy-follow-2026-09-10.md`。
+
 **浏览器工作区生命周期（2026-09-09）**：新的浏览器 Run 必须绑定服务端 `metadata.browserWorkspaceId`。原视频副本在私有 BrowserWorkspaceStore 持久化，Run metadata 记录其 URL 和 SHA-256；Task Store 仍不保存视频、Prompt 或完整请求体。同一标签页刷新/服务重启恢复副本并重新抽帧，不自动重调 provider；更换视频必须先清旧 Run/媒体/应用源副本。pagehide 或页面生命周期连接断开有 60 秒刷新宽限期，5 秒 sweep 清理；后台页连接仍在时不因心跳节流过期，无连接也无关闭通知时最后心跳起 2 分钟兜底，停服期间下次启动补清。sessionStorage 保存 workspace ID，每文档 pageId 与 source generation 分别阻止旧关闭通知和旧输入回写；不再恢复旧 localStorage Run 指针。长期保存仅创作宇宙七项设置（角色、赛道、限制、表情、候选数量、画幅、时长），模型覆盖只存 sessionStorage。表情和三个生成偏好不得并入 creatorProfile。清理须核对页面归属，scheduler → Run 锁撤销任务后删源副本、Run、其命名空间媒体及 Run 内 Debug；迟到 Runner/worker 不得重建已清数据。已有无页面归属历史 Run、用户原文件、主动导出文件、签名密钥不能由此清理。详见 `docs/production-lineage-state.md` 的浏览器工作区生命周期。
 
 ## 当前主流程

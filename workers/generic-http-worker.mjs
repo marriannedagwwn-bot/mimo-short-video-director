@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { initializeSystemProxy } from "../src/system-proxy.js";
 import { assertWorkspaceMediaLifetime, requireWorkspaceMediaDirectory } from "../src/workspace-media-lifetime.js";
 import {
   inferShotVideoProvider,
@@ -62,11 +63,15 @@ async function main(argv = process.argv.slice(2)) {
     return;
   }
 
+  let systemProxy;
   try {
+    systemProxy = await initializeSystemProxy();
     await executeGenericHttpWorker(options);
   } catch (error) {
     console.error(describeWorkerFailure(error));
     process.exitCode = 1;
+  } finally {
+    await systemProxy?.close();
   }
 }
 

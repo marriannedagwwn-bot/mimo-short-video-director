@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { readSystemProxyError } from "./system-proxy.js";
 import {
   ProductionStateError,
   normalizeArtifactId,
@@ -354,6 +355,10 @@ function normalizeResultRefs(value) {
 }
 
 function sanitizeTaskError(value) {
+  // Persist the safe diagnosis before Error.cause is discarded; both browser
+  // polling and legacy route reconstruction consume this compact error shape.
+  const proxyFailure = readSystemProxyError(value);
+  if (proxyFailure) return { ...proxyFailure, category: "transport", details: [] };
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   return {
     code: String(source.code || "TASK_FAILED").replace(/[^A-Za-z0-9_.:/-]+/gu, "_").slice(0, 160),

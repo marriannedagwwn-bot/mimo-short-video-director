@@ -387,7 +387,7 @@ async function init() {
     elements.modelState.lastElementChild.textContent = connected
       ? modelStateSummary()
       : health.mode !== "demo"
-        ? "模型已配置，但部分阶段不可用"
+        ? health.networkProxy?.error?.message || "模型已配置，但部分阶段不可用"
         : "演示模式 · 配置模型后启用真实分析";
     renderModelSettings();
   } catch {

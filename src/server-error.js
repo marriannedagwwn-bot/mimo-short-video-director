@@ -11,6 +11,7 @@ import { ModelPipelineError, sanitizePublicMetadata } from "./model-errors.js";
 import { describeProviderError } from "./provider-error-codes.js";
 import { ShotVideoConfigError, ShotVideoProviderError } from "./shot-video-generator.js";
 import { StaticFrameCompilerError } from "./static-frame-compiler.js";
+import { readSystemProxyError } from "./system-proxy.js";
 import { ProductionStateError } from "./production-lineage.js";
 import { InputError, OutputContractError } from "./validation.js";
 
@@ -18,6 +19,16 @@ export function serializeServerError(error, {
   attemptStore = null
 } = {}) {
   const store = attemptStore instanceof AttemptStore ? attemptStore : null;
+  const proxyFailure = readSystemProxyError(error);
+  if (proxyFailure) {
+    return response(503, observabilityBody({
+      error: proxyFailure.message,
+      category: "transport",
+      code: proxyFailure.code,
+      origin: "system",
+      retryable: false
+    }));
+  }
 
   if (error instanceof ModelPipelineError) {
     return response(error.httpStatus, {

@@ -63,7 +63,7 @@ export function runVideoUsage() {
 `;
 }
 
-export async function runVideoCommand(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
+export async function runVideoCommand(argv, { stdout = process.stdout, stderr = process.stderr, envLoaded = false } = {}) {
   try {
     const options = parseRunVideoArgs(argv);
     if (options.help) {
@@ -72,7 +72,9 @@ export async function runVideoCommand(argv, { stdout = process.stdout, stderr = 
     }
     await validateRunVideoOptions(options);
 
-    loadEnv();
+    // The executable loads .env before initializing system proxy routing. Do
+    // not reload its stale proxy variables after that initialization.
+    if (!envLoaded) loadEnv();
     const config = getConfig();
     const client = config.mimo.enabled ? new MimoClient(config.mimo) : null;
     const qwenClient = config.qwen.enabled ? new QwenClient(config.qwen) : null;
