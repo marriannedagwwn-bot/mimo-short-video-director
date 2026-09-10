@@ -61,7 +61,8 @@ flowchart LR
 
 `creativeBrief` 是后续创作的唯一结构依据，必须包含：
 
-- `storyEngine`：欲望、阻碍、升级、转折机制、回报。
+- `storyEngine`：`desire` 欲望、`obstacle` 阻碍、`escalation` 升级、`turningMechanism` 观众理解的转变、`payoff` 回报。2026-09-10 起 `turningMechanism` 是 **`{before, after}` 两个槽位**：`before` 写前半段观众以为这是一段什么关系，`after` 写看完之后重新理解成什么。它**不是剧情转折点**，不是「主角做了什么」，也不是「问题怎么解决的」——那是最自然的误读，提示词明写着点破它。两端必须是对同一组人物关系的两种理解，不能写成「任务没完成 → 任务完成了」或「情绪低落 → 情绪变好」；转变不必是反转，小幅度的重新理解也算。此前这五个子字段**一条定义都没有**，是整份简报里唯一全无说明的子对象，实测三个真实包里一份把它写成了剧情概括。
+  `validateStoryEngine` 挂在 `ensureOutputContract` 的 `creativeBrief` 分支，判定全是类型、非空与字符串比较：四个文本键非空；`turningMechanism` 必须是恰好含 before/after 两个键的对象；两端非空；归一化后 `before !== after`。**闸门只抓「两边写同一句话」这种退化，判不出写出来的转变是不是真发生在关系上。** 它**只在生成路径生效**（该函数全项目只在 `createBrief` 里调用），所以 `turningMechanism` 仍是字符串的旧简报照常加载，浏览器的「理解转变」格对新旧两种形状各有一个分支。
 - `emotionStructure`：每一阶段的剧作功能与目标情绪。
 - `roleAndOccupationMapping`：原片角色功能如何映射到固定角色和赛道身份。
 - `reusableHighValueBeats`：桥段价值、必须保留内容和可改变表面。
@@ -172,6 +173,12 @@ Prompt 中关于施动性、因果、人物质感、悬念、承诺和连贯性�
 送审投影按**允许清单**构造：只送 id、title、hook、logline、`narrativeMode`、`characterSetup`、`storyOutline` 动作链、`keyDialogueDirections` 与 `failureSignal`，剥掉 `novelty`、`visualPotential`、`experienceFidelity`、`transformationProof`、`originalityRiskCheck`、`retainedValue` 以及每拍 `dramaticFunction`——它们是生成者的自我解释与意图标签，送进去等于让解释替故事过关。`failureSignal` 是证伪条件而非成功声明，因此保留。
 
 覆盖率确定性核验：候选数量相等且 `candidateId` 逐位相同、`title` 回显必须包含原文、`beatIndexes` 必须在该候选拍数范围内、`recommendedOrder` 必须是全部候选 id 的一个排列；核验通过后用原文覆盖 `title`。不打总分；`verdict: drop` 只是报告结论，不删候选也不触发任何 stale。「判得对不对」是语义判断，没有确定性兜底。
+
+**因果自洽检查 `coherenceChecks`（2026-09-09）**：`candidateCheck` 的必填数组（空数组合法），每条写 `kind` / `beatIndexes` / `problem`。`kind` 五个取值全部来自实际观察到的失败形状：`contradiction` 同一候选两处描述互相否定、`tool_misuse` 手上已有能解决问题的东西却用更差的替代物、`purpose_nullified` 任务目的被链条里另一件事当场抵消、`space_or_time` 前面说够不到或来不及后面用更弱的办法却成了、`other`。闸门只有一条且是纯枚举比较：**`coherenceChecks` 非空就不能判 `pass`**，诊断码 `STORY_CANDIDATE_REVIEW_PASS_WITH_COHERENCE_BREAK`；它不裁决那条自洽问题成不成立。拍号合法性与 `mechanismChecks` 共用同一份 `checkBeats`。它查的是「呈现 vs 呈现」，与剧情体检的「声明 vs 呈现」不是同一件事。**命中率实测 38%（四个包 16 个候选报出 6 个），绝不是完备闸门**——已知有 3 处矛盾的那个候选只被抓到 1 处；`verdict` 与 `recommendedOrder` 在包与包之间不稳，不得当成自动选择依据。
+
+**原片机制清单 `sourceMechanisms`（2026-09-09）**：**顶层**必填数组，schema 限定 **2–4 条**，每条 `{id, mechanism, whereInSource}`；`mechanismCheck` 用 `sourceMechanismId` 按 id 引用，不再各自重写机制正文与原片位置。闸门两条，都是纯集合成员比较：id 必须唯一（`CANDIDATE_REVIEW_DUPLICATE_MECHANISM`）、每个引用必须在清单里（`CANDIDATE_REVIEW_UNKNOWN_MECHANISM`）。它修的是循环论证：旧契约下四个包里三个各自提炼出 **8–9 条**「原片机制」、每条都照着那个候选本身写，于是 6/8 判 `depicted`；上限 4 条之后「4 个候选写出 8 条互不相同的原片机制」在构造上不再可能。提示词同步改口径——先只读原片写出清单（在看任何候选之前），再逐个候选核对命中哪一条，自检方法是「把全部候选删掉，你写的这几条应该一字不变」。**「那份清单读没读对原片」仍然没有确定性兜底。**
+
+浏览器把顶层清单置顶显示，逐条 `mechanismCheck` 旁显示它引用的那条机制正文，`coherenceChecks` 单独成块并把 `kind` 译成中文；顶部摘要按 §2.13 同规格**数出**因果断裂条数与涉及候选数，不问模型要总分。旧报告没有这两个键时那两段整段不显示——数出来的 0 是「这一档还不存在」，不是「查过了没问题」。
 
 ### 阶段六：fullStory
 
