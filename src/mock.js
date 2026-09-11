@@ -1177,17 +1177,23 @@ export function mockAnimationPlanRevision(animationPlan, report, targetShotIds =
 // 所以 demo 在第一拍的 action 末尾追加一句写明这是 demo 的句子：改动真实存在（闸门放行），
 // 内容却不冒充创作（谁都看得出这不是模型写的），而且**只动一个可写字段**，
 // 合并之后除了那一处逐字节不变，与 live 走完全相同的派生与校验链。
-export function mockStoryCandidateRevision(candidate, coherenceBreaks = []) {
+export function mockStoryCandidateRevision(candidate, coherenceBreaks = [], unmigratedMechanisms = []) {
   const outline = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline : [];
   const first = outline[0] || null;
+  // 两个驱动信号都要在 changeSummary 里露面，否则 demo 只走得到一个分支，
+  // 就会重演「mock 通过而 live 失败」（§2.14 的 issues 那次）。
+  const noted = [
+    coherenceBreaks.length ? `${coherenceBreaks.length} 条因果问题` : "",
+    unmigratedMechanisms.length ? `${unmigratedMechanisms.length} 条没接住的原片机制` : ""
+  ].filter(Boolean);
   return {
     schemaVersion: "story-candidate-revision/1.0",
     candidateId: String(candidate?.id || ""),
     revisedBeats: first
       ? [{ beat: first.beat, action: `${String(first.action || "")}（demo 模式未调用模型，此处仅作占位改动）` }]
       : [],
-    changeSummary: coherenceBreaks.length
-      ? `demo 模式不调用模型，未实际处理这 ${coherenceBreaks.length} 条因果问题。`
-      : "demo 模式不调用模型，评审也没有报出因果问题。"
+    changeSummary: noted.length
+      ? `demo 模式不调用模型，未实际处理${noted.join("、")}。`
+      : "demo 模式不调用模型，评审也没有报出任何问题。"
   };
 }

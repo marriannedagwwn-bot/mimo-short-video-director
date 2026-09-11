@@ -192,7 +192,11 @@ Prompt 中关于施动性、因果、人物质感、悬念、承诺和连贯性�
 
 `POST /api/story-candidate-revision`。对照评审只出报告、不改命题，这一档才是唯一会改动命题正文的地方——但它同样**只出候选、不签发任何东西**：不写回 `themeVariants`、不进 lineage、不 stale。签发只发生在用户在浏览器点「采纳」的那一刻。
 
-**驱动信号是 `coherenceChecks`，不是 `verdict`。** 依据是同一份命题三次回放的实测：`verdict` 与 `recommendedOrder` 每次都不同（2 pass/2 revise → 2 revise/2 drop → 2 revise/2 drop），而因果断裂稳定复现、锚到拍号、具体可执行。**一次只修一个命题**：最终只有一个会被展开成 Full Story。
+**驱动信号是逐条锚定的那两类，不是 `verdict`。** 依据是同一份命题三次回放的实测：`verdict` 与 `recommendedOrder` 每次都不同（2 pass/2 revise → 2 revise/2 drop → 2 revise/2 drop），而两个信号都逐条锚定。**一次只修一个命题**：最终只有一个会被展开成 Full Story。
+
+两个信号的修法不同，提示词里分块列、各写各的修法：`coherenceChecks` 是「因果说不通」，**必须修**，基本都能靠改写解掉；`mechanismChecks` 里判 `not_depicted` / `partially_depicted` 的是「原片有、这个命题没接住的机制」，**由修订模型判断该不该接**，接就必须先从现有动作链里拿掉一个分量相当的（一换一）。机制正文由 `candidateUnmigratedMechanisms` 按 id 从顶层 `sourceMechanisms` 查回来一并送出，查不到整条丢弃。
+
+第二个信号是 2026-09-11 补的，依据是实测：V4 被判 drop 的主因是三条机制全部 `not_depicted`，评审 summary 也写着「最该先改的是补充转赠长辈的动作」，而修订当时只收到那条最轻的空间断裂，于是只把「小木箱」换成了「高脚木凳」。**接机制必须有拒绝出口**——原片有那条机制不等于这个命题必须去接，与立意冲突时模型要明确拒绝并在 `changeSummary` 写明理由，与「`verdict: drop` 只是一句话」同规格。「不要靠加戏」因此升为两类共用的铁律，宽严不同而不是二选一：两条硬约束互相矛盾时模型只会随机选一条。
 
 可写范围分三档。**可写**：`storyOutline[].action` / `emotion` / `estimatedSeconds`、`keyDialogueDirections`、`newTask`、`environmentPressure`、`logline`。**派生或签发、出现即拒**：`keyChoice` / `climax` / `emotionalPayoff`（服务端从 action 与拍号派生）、`transformationProof`（`source` 由冻结证据目录签发）。**冻结**：`id` / `title` / `oneLineHook` / `verticalFit` / `narrativeMode` / `characterSetup` / `keyChoiceBeat` / `climaxBeat`、每拍的 `beat` / `phase` / `dramaticFunction`，以及全部自我评价字段。`newTask` / `environmentPressure` 可写是因为实测三条断裂里两条的根在任务设定；`dramaticFunction` 冻结是因为它是结构分化签名的输入；`title` 冻结是为了让人始终能认出是同一个命题。
 

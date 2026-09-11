@@ -49,6 +49,7 @@ import { ModelPipelineError } from "./model-errors.js";
 import {
   assertOnlyCandidateRevisionFieldsChanged,
   candidateCoherenceBreaks,
+  candidateUnmigratedMechanisms,
   ensureStoryCandidateRevisionContract,
   findCandidate,
   mergeStoryCandidateRevision
@@ -616,6 +617,9 @@ export class WorkflowService {
     const candidate = findCandidate(themeVariants, candidateId);
     if (!candidate) throw new InputError(`themeVariants 里没有命题 ${candidateId}`);
     const coherenceBreaks = candidateCoherenceBreaks(review, candidateId);
+    // 第二个驱动信号：原片有、这个命题没接住的机制。与因果断裂并列，但修法不同——
+    // 接一条机制通常要加动作，而因果断裂明确不许加戏，两者混成一个列表模型就分不清了。
+    const unmigratedMechanisms = candidateUnmigratedMechanisms(review, candidateId);
 
     // 固定角色边界照常验签并参与复验：修订改的是动作链，那正是可能混进禁止特征的地方。
     const visualGuardrails = input.visualGuardrails ? this.assertGlobalCharacterBoundary(input) : null;
@@ -625,7 +629,7 @@ export class WorkflowService {
 
     if (!this.hasLiveClient) {
       return {
-        ...finalize(mockStoryCandidateRevision(candidate, coherenceBreaks)),
+        ...finalize(mockStoryCandidateRevision(candidate, coherenceBreaks, unmigratedMechanisms)),
         metadata: candidateRevisionMetadata({ provider: "demo", model: "demo" })
       };
     }
@@ -650,6 +654,7 @@ export class WorkflowService {
           prompt: storyCandidateRevisionPrompt({
             candidate,
             coherenceBreaks,
+            unmigratedMechanisms,
             targetDurationSeconds: input.targetDurationSeconds
           }),
           model: settings.model,

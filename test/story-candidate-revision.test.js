@@ -6,6 +6,7 @@ import { deriveStoryCandidateProjections } from "../src/validation.js";
 import {
   assertOnlyCandidateRevisionFieldsChanged,
   candidateCoherenceBreaks,
+  candidateUnmigratedMechanisms,
   ensureStoryCandidateRevisionContract,
   mergeStoryCandidateRevision
 } from "../src/story-candidate-revision.js";
@@ -392,5 +393,131 @@ test("采纳前复核这一批命题有没有换过，并把整批失效的代�
 test("mock 的修订确实是一处真实改动，否则 demo 走不到合并与复验", () => {
   const batch = themeVariants();
   const revision = mockStoryCandidateRevision(batch.variants[0], [{ kind: "other", beatIndexes: [1], problem: "x" }]);
+  assert.doesNotThrow(() => ensureStoryCandidateRevisionContract(revision, batch, "V1"));
+});
+
+// ---------------------------------------------------------------------------
+// 第二个驱动信号：原片有、这个命题没接住的机制（2026-09-11）
+//
+// 起因是实测：V4 被判 drop 的主因是三条机制全部 not_depicted，而修订当时只收到
+// 那条最轻的空间断裂，于是只把「小木箱」换成了「高脚木凳」——评审自己的 summary
+// 写着「最该先改的是补充转赠长辈的动作」，那条根本没送到修订模型面前。
+
+function reviewWithMechanisms() {
+  return {
+    schemaVersion: "story-candidate-review/1.0",
+    sourceMechanisms: [
+      { id: "M1", mechanism: "靠共同劳动建立亲密感", whereInSource: "S1 两人一起压平衣物" },
+      { id: "M2", mechanism: "外部认可被转手送给在乎的人", whereInSource: "S6 把小红花别到长辈身上" },
+      { id: "M3", mechanism: "等待时用童趣游戏填时间", whereInSource: "S4 蹲在地上玩石子" }
+    ],
+    candidateChecks: [{
+      candidateId: "V1",
+      title: "命题一",
+      coreInteraction: { setback: "a", intervention: "b", response: "c", visibleChange: "d" },
+      mechanismChecks: [
+        { sourceMechanismId: "M1", whereInCandidate: "第 1 拍一起搬东西", beatIndexes: [1], verdict: "depicted" },
+        { sourceMechanismId: "M2", whereInCandidate: "没有任何转赠动作", beatIndexes: [], verdict: "not_depicted" },
+        { sourceMechanismId: "M3", whereInCandidate: "只是站着等", beatIndexes: [3], verdict: "partially_depicted" }
+      ],
+      coherenceChecks: [],
+      verdict: "revise",
+      why: "因为",
+      keepThis: "保留这个"
+    }],
+    recommendedOrder: ["V1"],
+    summary: "总结"
+  };
+}
+
+test("只挑没接住的机制，已兑现的不进修订", () => {
+  const out = candidateUnmigratedMechanisms(reviewWithMechanisms(), "V1");
+  assert.deepEqual(out.map((entry) => entry.id), ["M2", "M3"]);
+  assert.deepEqual(out.map((entry) => entry.verdict), ["not_depicted", "partially_depicted"]);
+});
+
+// mechanismCheck 自己只有一个 id，光把 id 送过去修订模型什么也做不了。
+test("机制正文从顶层清单按 id 查回来，一并送进修订", () => {
+  const [first] = candidateUnmigratedMechanisms(reviewWithMechanisms(), "V1");
+  assert.equal(first.mechanism, "外部认可被转手送给在乎的人");
+  assert.equal(first.whereInSource, "S6 把小红花别到长辈身上");
+  assert.equal(first.whereInCandidate, "没有任何转赠动作");
+});
+
+test("清单里查不到那个 id 就整条丢弃，不编一条机制出来", () => {
+  const review = reviewWithMechanisms();
+  review.sourceMechanisms = review.sourceMechanisms.filter((entry) => entry.id !== "M2");
+  const out = candidateUnmigratedMechanisms(review, "V1");
+  assert.deepEqual(out.map((entry) => entry.id), ["M3"]);
+});
+
+test("换了一批命题的 id 就什么都取不到", () => {
+  assert.deepEqual(candidateUnmigratedMechanisms(reviewWithMechanisms(), "V9"), []);
+});
+
+// 两类问题的修法完全不同：因果断裂明确不许加戏，接机制通常就得加动作。
+// 混在一个列表里模型分不清哪条允许加，所以提示词必须分块。
+test("提示词把两类问题分块，各写各的修法", () => {
+  const prompt = storyCandidateRevisionPrompt({
+    candidate: candidate("V1", "命题一", ["动作一", "动作二", "动作三"]),
+    coherenceBreaks: [{ kind: "space_or_time", beatIndexes: [2], problem: "够不到" }],
+    unmigratedMechanisms: candidateUnmigratedMechanisms(reviewWithMechanisms(), "V1")
+  });
+  assert.match(prompt, /第一类：因果说不通（必须修）/u);
+  assert.match(prompt, /第二类：原片有、这个命题没接住的机制/u);
+  assert.match(prompt, /第一类怎么修：把链接上，不要加戏/u);
+  assert.match(prompt, /第二类怎么修：先判断该不该接，接就得腾位置/u);
+  assert.match(prompt, /外部认可被转手送给在乎的人/u);
+  assert.match(prompt, /S6 把小红花别到长辈身上/u);
+});
+
+// 评审只负责指出来，不负责替命题决定。硬塞一条与立意冲突的机制不是修订，是换了个故事。
+test("接机制有明确的拒绝出口，而且拒绝必须说理由", () => {
+  const prompt = storyCandidateRevisionPrompt({
+    candidate: candidate("V1", "命题一", ["动作一", "动作二", "动作三"]),
+    unmigratedMechanisms: candidateUnmigratedMechanisms(reviewWithMechanisms(), "V1")
+  });
+  assert.match(prompt, /不等于这个命题必须去接它/u);
+  assert.match(prompt, /和这个命题的立意冲突就别接/u);
+  assert.match(prompt, /不要假装接了，也不要沉默地跳过/u);
+  assert.match(prompt, /要接就必须腾位置/u);
+  assert.match(prompt, /哪几条你决定不接、理由是什么/u);
+});
+
+// 换个更强的道具让链条表面通了、故事一点没变——这正是 09-10 那次修订的形状。
+test("提示词点破「换个更好用的道具」只是绕过问题", () => {
+  const prompt = storyCandidateRevisionPrompt({
+    candidate: candidate("V1", "命题一", ["动作一", "动作二", "动作三"]),
+    coherenceBreaks: [{ kind: "space_or_time", beatIndexes: [2], problem: "够不到" }]
+  });
+  assert.match(prompt, /换一个更好用的道具往往只是绕过问题/u);
+  assert.match(prompt, /这件事本来就不该这么办/u);
+});
+
+test("两类都没有时提示词明说不要修订", () => {
+  const prompt = storyCandidateRevisionPrompt({
+    candidate: candidate("V1", "命题一", ["动作一", "动作二", "动作三"])
+  });
+  assert.match(prompt, /评审什么问题都没报出来/u);
+  // 查的是标题小节。铁律 4 里顺带提到两类是有意的，那是通用约束的说明。
+  assert.ok(!/## 第一类/u.test(prompt), "没有断裂时不该出现第一类的标题小节");
+  assert.ok(!/## 第二类/u.test(prompt), "没有未接机制时不该出现第二类的标题小节");
+});
+
+test("修订入口同时认因果断裂和没接住的机制", () => {
+  assert.match(APP_JS, /entry\?\.verdict === "not_depicted" \|\| entry\?\.verdict === "partially_depicted"/u);
+  assert.match(APP_JS, /条没接住的原片机制/u);
+  assert.ok(!/data-revise-candidate[\s\S]{0,200}check\.verdict/u.test(APP_JS), "入口仍不得由 verdict 决定");
+});
+
+test("mock 把两个驱动信号都写进 changeSummary，demo 才走得到两个分支", () => {
+  const batch = themeVariants();
+  const revision = mockStoryCandidateRevision(
+    batch.variants[0],
+    [{ kind: "other", beatIndexes: [1], problem: "x" }],
+    [{ id: "M2", mechanism: "转赠", whereInSource: "S6", verdict: "not_depicted", whereInCandidate: "无", beatIndexes: [] }]
+  );
+  assert.match(revision.changeSummary, /1 条因果问题/u);
+  assert.match(revision.changeSummary, /1 条没接住的原片机制/u);
   assert.doesNotThrow(() => ensureStoryCandidateRevisionContract(revision, batch, "V1"));
 });

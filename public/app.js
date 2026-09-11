@@ -1755,20 +1755,29 @@ async function runStoryCandidateReview(themeVariants, button) {
 // 并在发请求前复核这一批命题有没有换过。刷新即失，与评审同规格。
 let lastCandidateReview = null;
 
-// 修订按钮只在这个命题**确实被报出因果断裂**时出现。
+// 修订按钮在这个命题被报出**因果断裂**或**有原片机制没接住**时出现。
 //
 // 驱动信号刻意不是 verdict：2026-09-10 实测同一份命题三次回放，verdict 与
 // recommendedOrder 每次都不同（2 pass/2 revise → 2 revise/2 drop → 2 revise/2 drop），
-// 而因果断裂稳定复现、锚到拍号、具体可执行。拿不稳的信号当修订入口只会让人白花钱。
+// 而这两类都逐条锚定——断裂锚到拍号，机制锚到清单 id。拿不稳的信号当修订入口只会让人白花钱。
+//
+// 机制未迁移是 2026-09-11 补上的第二个信号。此前只看因果断裂，实测代价：V4 被判 drop 的
+// 主因是三条机制全部 not_depicted，而修订只收到那条最轻的空间断裂，于是只把「小木箱」
+// 换成了「高脚木凳」——评审自己的 summary 写着「最该先改的是补充转赠长辈的动作」，那条没送到。
 function reviseAction(check) {
   const breaks = Array.isArray(check?.coherenceChecks) ? check.coherenceChecks : [];
-  if (!breaks.length) return "";
+  const unmigrated = (Array.isArray(check?.mechanismChecks) ? check.mechanismChecks : [])
+    .filter((entry) => entry?.verdict === "not_depicted" || entry?.verdict === "partially_depicted");
+  if (!breaks.length && !unmigrated.length) return "";
+  const parts = [];
+  if (breaks.length) parts.push(`${breaks.length} 处因果问题`);
+  if (unmigrated.length) parts.push(`${unmigrated.length} 条没接住的原片机制`);
   return `
     <div class="candidate-revision-action">
       <button type="button" class="outline-button" data-revise-candidate="${escape(check.candidateId)}">
-        按评审意见修订这 ${breaks.length} 处
+        按评审意见修订（${parts.join(" + ")}）
       </button>
-      <span class="muted-note">只出修订稿供对照，**不会**改动当前命题；采纳与否由你决定。</span>
+      <span class="muted-note">只出修订稿供对照，<b>不会</b>改动当前命题；采纳与否由你决定。机制接不接由修订模型判断，它可以明确拒绝并说明理由。</span>
     </div>`;
 }
 

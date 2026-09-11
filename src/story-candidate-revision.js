@@ -287,9 +287,44 @@ export function assertOnlyCandidateRevisionFieldsChanged(before, after, candidat
   return after;
 }
 
-/** 该命题在评审报告里被报出的因果断裂。修订只由它驱动，不看 verdict。 */
+/** 该命题在评审报告里被报出的因果断裂。 */
 export function candidateCoherenceBreaks(review, candidateId) {
   const checks = Array.isArray(review?.candidateChecks) ? review.candidateChecks : [];
   const entry = checks.find((check) => String(check?.candidateId || "") === String(candidateId || ""));
   return Array.isArray(entry?.coherenceChecks) ? entry.coherenceChecks : [];
+}
+
+/**
+ * 该命题没有迁移过来的原片机制（`not_depicted` 与 `partially_depicted`）。
+ *
+ * 与因果断裂并列成为修订的第二个驱动信号，依据是 2026-09-10 的实测：V4 被判 drop 的主因是
+ * 三条机制全部 `not_depicted`，评审自己的 summary 也写着「最该先改的是补充转赠长辈的动作」，
+ * 而修订当时只收到那一条最轻的空间断裂，于是只把「小木箱」换成了「高脚木凳」。
+ *
+ * **只有逐条的 `mechanismCheck` 够格当驱动信号，整体 `verdict` 不够。** 同一份输入三次回放
+ * `verdict` 三次不同，而 `mechanismCheck` 逐条锚定到清单 id 与拍号，与 `coherenceChecks` 同规格。
+ *
+ * 机制正文在顶层 `sourceMechanisms` 里，逐条按 id 查回来——`mechanismCheck` 自己只有一个 id，
+ * 光把 id 送给修订模型它什么也做不了。查不到就整条丢弃（评审的闸门保证查得到，
+ * 这里是防御性的，不编造一条机制）。
+ */
+export function candidateUnmigratedMechanisms(review, candidateId) {
+  const checks = Array.isArray(review?.candidateChecks) ? review.candidateChecks : [];
+  const entry = checks.find((check) => String(check?.candidateId || "") === String(candidateId || ""));
+  const mechanisms = Array.isArray(review?.sourceMechanisms) ? review.sourceMechanisms : [];
+  return (Array.isArray(entry?.mechanismChecks) ? entry.mechanismChecks : [])
+    .filter((check) => check?.verdict === "not_depicted" || check?.verdict === "partially_depicted")
+    .map((check) => {
+      const source = mechanisms.find((item) => String(item?.id || "") === String(check?.sourceMechanismId || ""));
+      if (!source) return null;
+      return {
+        id: String(source.id || ""),
+        mechanism: String(source.mechanism || ""),
+        whereInSource: String(source.whereInSource || ""),
+        verdict: check.verdict,
+        whereInCandidate: String(check?.whereInCandidate || ""),
+        beatIndexes: Array.isArray(check?.beatIndexes) ? check.beatIndexes : []
+      };
+    })
+    .filter(Boolean);
 }

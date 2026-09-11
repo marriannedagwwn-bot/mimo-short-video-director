@@ -1292,6 +1292,7 @@ const COHERENCE_KIND_TEXT = {
 export function storyCandidateRevisionPrompt({
   candidate,
   coherenceBreaks = [],
+  unmigratedMechanisms = [],
   targetDurationSeconds = null
 } = {}) {
   const projection = buildStoryCandidateRevisionProjection(candidate);
@@ -1305,14 +1306,67 @@ export function storyCandidateRevisionPrompt({
     const at = Array.isArray(entry?.beatIndexes) ? entry.beatIndexes.join("、") : "";
     return `${index + 1}. 【${kind}】第 ${at} 拍：${String(entry?.problem || "")}`;
   }).join("\n");
+  // 两类问题分开列：修法不同，混在一起模型分不清哪条允许加戏。
+  const mechanisms = unmigratedMechanisms.map((entry, index) => {
+    const degree = entry?.verdict === "not_depicted" ? "画面里完全没有" : "只沾到一点边";
+    const at = Array.isArray(entry?.beatIndexes) && entry.beatIndexes.length
+      ? `，评审看的是第 ${entry.beatIndexes.join("、")} 拍`
+      : "";
+    return `${index + 1}. 【${degree}】${String(entry?.mechanism || "")}
+   原片在哪兑现：${String(entry?.whereInSource || "")}
+   本命题现在的情况：${String(entry?.whereInCandidate || "")}${at}`;
+  }).join("\n");
+
+  const breakSection = breaks
+    ? `## 第一类：因果说不通（必须修）
+
+${breaks}`
+    : "";
+  const mechanismSection = mechanisms
+    ? `## 第二类：原片有、这个命题没接住的机制（**你来判断该不该接**）
+
+${mechanisms}`
+    : "";
+
+  // 修法小节跟着问题走：没有那一类问题就整段不出现。有修法没问题只会让模型去找活干。
+  const breakHowTo = breaks
+    ? `## 第一类怎么修：把链接上，不要加戏
+
+逐条对着看：那条因果断裂在改完之后**还成不成立**。
+- 如果根在动作链，就改那几拍的 action。
+- 如果根在任务设定本身（比如「任务目的在后面被抵消」「任务目标和实际做的事不是一回事」），
+  就改 newTask 或 environmentPressure，让整条链重新讲得通。
+- 这一类**基本都能靠改写解掉**，不要添新动作、新道具、新角色（铁律 4）。
+
+还要注意：**换一个更好用的道具往往只是绕过问题，不是解决问题。** 如果评审说的是
+「用这个办法办不成这件事」，把道具换成一个更强的版本，链条表面通了，故事一点没变。
+先问一句：这条链讲不通，是因为工具不趁手，还是因为**这件事本来就不该这么办**。
+
+`
+    : "";
+  const mechanismHowTo = mechanisms
+    ? `## 第二类怎么修：先判断该不该接，接就得腾位置
+
+原片那条机制没被接住，**不等于这个命题必须去接它**。评审只负责指出来，不负责替你决定。
+逐条问自己：把这条机制装进来，这个命题会变好，还是会变成另一个命题？
+
+- **和这个命题的立意冲突就别接。** 比如一个刻意写成「不靠外部奖励、自己满足」的故事，
+  硬塞一个「获得表扬再转赠」的机制，那不是修订，是换了个故事。这种情况**明确拒绝**：
+  在 changeSummary 里写「第 N 条不接，因为……」，**不要假装接了，也不要沉默地跳过**。
+- **要接就必须腾位置。** 接一条机制通常意味着加动作，而这条命题下游要拆成镜头。
+  所以**先从现有动作链里拿掉一个分量相当的**，再把新的放进去——一换一，不是往上堆。
+  拿不掉就说明这个命题装不下，回到上一条：明确拒绝。
+- 接的时候要接**机制**，不是接**原片那个具体场面**。原片用小红花，你不必也用一朵花；
+  要迁移的是「外部给的认可被转手送给了在乎的人」这件事本身。
+
+`
+    : "";
 
   return `${SYSTEM_PROMPT}
 
-一份对照评审在下面这个命题里查出了因果不自洽。你的任务是**只把这些问题改掉**，别的一律不动。
+一份对照评审在下面这个命题里查出了两类问题。两类的修法**完全不同**，不要混着处理。
 
-## 要修的问题（这是本次唯一的修订依据）
-
-${breaks || "（评审没有报出因果问题。这种情况不要修订，把 revisedBeats 写成空数组并在 changeSummary 里说明。）"}
+${[breakSection, mechanismSection].filter(Boolean).join("\n\n") || "（评审什么问题都没报出来。这种情况不要修订，把 revisedBeats 写成空数组并在 changeSummary 里说明。）"}
 
 ## 命题原文
 
@@ -1333,29 +1387,24 @@ keyChoiceBeat、climaxBeat，以及每一拍的 beat、phase、dramaticFunction�
 
 **拍数固定 ${beats} 拍，不许增删。** 你只能覆盖已有的拍，用 beat 号定位。
 
-## 三条铁律
+## 四条铁律
 
 1. **只列你真正改了的拍。** 没改的拍不要写进 revisedBeats——把原文抄一遍既没有意义，
    也容易在抄的过程中把措辞改掉。
 2. **保持每一拍的 dramaticFunction 真的成立。** 你看得到它但不能改它：如果第 3 拍的功能是
    「高潮」，改完之后它仍然必须是这个故事的高潮。修因果不是重写故事。
 3. **执行者不许反转。** 「甲替乙做某事」改完还得是甲替乙，不能为了句子顺就写成乙替甲。
+4. **不要靠加戏解决问题。** 这条命题下游会被拆成镜头，动作链越满，每个镜头越挤。
+   下面两类问题都受这一条约束，只是宽严不同：第一类能靠改写一个动作解掉的就不要添东西；
+   第二类确实要添的时候，**先拿掉一个分量相当的**，一换一，不是往上堆。
 
-## 怎么算改对了
-
-逐条对着上面的问题看：那条因果断裂在改完之后**还成不成立**。
-- 如果根在动作链，就改那几拍的 action。
-- 如果根在任务设定本身（比如「任务目的在后面被抵消」「任务目标和实际做的事不是一回事」），
-  就改 newTask 或 environmentPressure，让整条链重新讲得通。
-- **不要靠加戏解决问题。** 能靠改写一个动作解掉的，就不要再添一个新动作、新道具、新角色。
-  这条命题下游会被拆成镜头，动作链越满，每个镜头越挤。${durationRule}
-
-改不动的情况要说出来：如果某条问题的根在你不能改的字段上（比如 title 或 dramaticFunction），
-就在 changeSummary 里写明「第 N 条改不了，根在 XXX」，**不要假装改了**。
+${breakHowTo}${mechanismHowTo}改不动的情况要说出来：如果某条问题的根在你不能改的字段上（比如 title 或
+dramaticFunction），就在 changeSummary 里写明「第 N 条改不了，根在 XXX」，**不要假装改了**。${durationRule}
 
 ## 输出
 
-changeSummary 写：改了哪几拍、改成什么、为什么这样那条断裂就不成立了。
+changeSummary 要写全三件事：①改了哪几拍、改成什么、为什么那条问题就不成立了；
+②第二类里**哪几条你决定不接、理由是什么**；③接了的那条，你从哪儿腾出的位置。
 
 {"schemaVersion":"story-candidate-revision/1.0",
  "candidateId":"${projection.id}",
