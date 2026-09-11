@@ -322,7 +322,17 @@ export function candidateUnmigratedMechanisms(review, candidateId) {
         mechanism: String(source.mechanism || ""),
         whereInSource: String(source.whereInSource || ""),
         verdict: check.verdict,
-        whereInCandidate: String(check?.whereInCandidate || ""),
+        // 2026-09-12：证据拆成前因与动作两格之后，这里必须跟着改读——
+        // 不改的话 String(undefined || "") 得到空串，修订模型收到的是
+        // 「本命题现在的情况：」后面什么都没有，**是静默空白不是报错**
+        // （上一次改这份契约漏掉的正是消费者面，形状一模一样）。
+        //
+        // 旧键留一个回退：评审报告不落盘、只活在页面上，而页面不会因为服务端
+        // 重启而刷新——旧代码渲染出的报告可以原样 POST 到新服务端。
+        actionEvidence: String(check?.actionEvidence || check?.whereInCandidate || ""),
+        // 前因单独送。requiresCause 的机制被判 partially_depicted，十有八九
+        // 就是因为前因没写——只送动作证据等于把「差在哪」这一半藏起来。
+        causeEvidence: String(check?.causeEvidence || ""),
         beatIndexes: Array.isArray(check?.beatIndexes) ? check.beatIndexes : []
       };
     })

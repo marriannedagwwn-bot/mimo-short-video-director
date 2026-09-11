@@ -62,19 +62,42 @@ function themeVariants() {
   });
 }
 
+// 骨架对照：修订这条路径不消费它，但评审报告要能通过自己的契约，所以夹具得带全。
+// 分数刻意远低于换皮线——这里测的是修订，不该顺带触发评审的换皮闸门。
+const scaffold = () => ({
+  eventChain: [
+    { sourceEvent: "原片第一件事", candidateEvent: "本命题另做一件事", beatIndexes: [1], linkage: "different" },
+    { sourceEvent: "原片第二件事", candidateEvent: "候选里没有对应事件", beatIndexes: [], linkage: "absent" }
+  ],
+  taskType: "different",
+  midSection: "different",
+  rewardSource: "not_applicable",
+  rewardHandling: "not_applicable",
+  endingShape: "different",
+  score: 10,
+  why: "两条链的接法不同"
+});
+
 const REVIEW = {
   schemaVersion: "story-candidate-review/1.0",
   sourceMechanisms: [
-    { id: "M1", mechanism: "机制一", whereInSource: "S1" },
-    { id: "M2", mechanism: "机制二", whereInSource: "S2" }
+    { id: "M1", mechanism: "机制一", whereInSource: "S1", requiresCause: true },
+    { id: "M2", mechanism: "机制二", whereInSource: "S2", requiresCause: false }
   ],
   candidateChecks: [
     {
       candidateId: "V1",
       title: "第一个",
       coreInteraction: { setback: "a", intervention: "b", response: "c", visibleChange: "d" },
-      mechanismChecks: [{ sourceMechanismId: "M1", whereInCandidate: "第 1 拍", beatIndexes: [1], verdict: "depicted" }],
+      mechanismChecks: [{
+        sourceMechanismId: "M1",
+        causeEvidence: "第 1 拍写了它怎么成为她在意的",
+        actionEvidence: "第 1 拍",
+        beatIndexes: [1],
+        verdict: "depicted"
+      }],
       coherenceChecks: [{ kind: "purpose_nullified", beatIndexes: [2, 3], problem: "任务目的在第 3 拍被抵消" }],
+      sourceScaffoldOverlap: scaffold(),
       verdict: "revise",
       why: "因果不自洽",
       keepThis: "陪伴的调子"
@@ -83,8 +106,15 @@ const REVIEW = {
       candidateId: "V2",
       title: "第二个",
       coreInteraction: { setback: "a", intervention: "b", response: "c", visibleChange: "d" },
-      mechanismChecks: [{ sourceMechanismId: "M2", whereInCandidate: "第 2 拍", beatIndexes: [2], verdict: "depicted" }],
+      mechanismChecks: [{
+        sourceMechanismId: "M2",
+        causeEvidence: "",
+        actionEvidence: "第 2 拍",
+        beatIndexes: [2],
+        verdict: "depicted"
+      }],
       coherenceChecks: [],
+      sourceScaffoldOverlap: scaffold(),
       verdict: "pass",
       why: "没问题",
       keepThis: "结尾"
@@ -416,9 +446,28 @@ function reviewWithMechanisms() {
       title: "命题一",
       coreInteraction: { setback: "a", intervention: "b", response: "c", visibleChange: "d" },
       mechanismChecks: [
-        { sourceMechanismId: "M1", whereInCandidate: "第 1 拍一起搬东西", beatIndexes: [1], verdict: "depicted" },
-        { sourceMechanismId: "M2", whereInCandidate: "没有任何转赠动作", beatIndexes: [], verdict: "not_depicted" },
-        { sourceMechanismId: "M3", whereInCandidate: "只是站着等", beatIndexes: [3], verdict: "partially_depicted" }
+        {
+          sourceMechanismId: "M1",
+          causeEvidence: "第 1 拍写了两人此前一起做过的事",
+          actionEvidence: "第 1 拍一起搬东西",
+          beatIndexes: [1],
+          verdict: "depicted"
+        },
+        {
+          sourceMechanismId: "M2",
+          causeEvidence: "",
+          actionEvidence: "没有任何转赠动作",
+          beatIndexes: [],
+          verdict: "not_depicted"
+        },
+        {
+          // 前因写了、动作只沾边：这一条正是修订最需要看到两格证据的形状。
+          sourceMechanismId: "M3",
+          causeEvidence: "第 2 拍写了她为什么在意那段等待",
+          actionEvidence: "只是站着等",
+          beatIndexes: [3],
+          verdict: "partially_depicted"
+        }
       ],
       coherenceChecks: [],
       verdict: "revise",
@@ -441,7 +490,36 @@ test("机制正文从顶层清单按 id 查回来，一并送进修订", () => {
   const [first] = candidateUnmigratedMechanisms(reviewWithMechanisms(), "V1");
   assert.equal(first.mechanism, "外部认可被转手送给在乎的人");
   assert.equal(first.whereInSource, "S6 把小红花别到长辈身上");
-  assert.equal(first.whereInCandidate, "没有任何转赠动作");
+  assert.equal(first.actionEvidence, "没有任何转赠动作");
+});
+
+// 证据拆成两格之后（2026-09-12），修订必须**两格都收到**：一条机制被判「只沾到一点边」
+// 十有八九就是因为前因没写，只送动作证据等于把「差在哪」那一半藏起来。
+test("前因证据一并送进修订，不是只送动作那一格", () => {
+  const out = candidateUnmigratedMechanisms(reviewWithMechanisms(), "V1");
+  const partial = out.find((entry) => entry.id === "M3");
+  assert.equal(partial.causeEvidence, "第 2 拍写了她为什么在意那段等待");
+  assert.equal(partial.actionEvidence, "只是站着等");
+  assert.match(
+    storyCandidateRevisionPrompt({
+      candidate: themeVariants().variants[0],
+      unmigratedMechanisms: out
+    }),
+    /评审找到的前因：第 2 拍写了她为什么在意那段等待/u
+  );
+});
+
+// 评审报告不落盘、只活在页面上，而页面不会因为服务端重启而刷新：旧代码渲染出的报告
+// 可以原样 POST 到新服务端。旧键读不到时是 String(undefined || "") → 空串，
+// **页面与提示词上都是静默空白，不是报错**，所以这条回退要有测试守着。
+test("旧报告的 whereInCandidate 仍能读出来，不会静默变成空白", () => {
+  const legacy = reviewWithMechanisms();
+  legacy.candidateChecks[0].mechanismChecks = legacy.candidateChecks[0].mechanismChecks.map(
+    ({ causeEvidence, actionEvidence, ...rest }) => ({ ...rest, whereInCandidate: actionEvidence })
+  );
+  const [first] = candidateUnmigratedMechanisms(legacy, "V1");
+  assert.equal(first.actionEvidence, "没有任何转赠动作");
+  assert.equal(first.causeEvidence, "");
 });
 
 test("清单里查不到那个 id 就整条丢弃，不编一条机制出来", () => {
@@ -515,7 +593,7 @@ test("mock 把两个驱动信号都写进 changeSummary，demo 才走得到两�
   const revision = mockStoryCandidateRevision(
     batch.variants[0],
     [{ kind: "other", beatIndexes: [1], problem: "x" }],
-    [{ id: "M2", mechanism: "转赠", whereInSource: "S6", verdict: "not_depicted", whereInCandidate: "无", beatIndexes: [] }]
+    [{ id: "M2", mechanism: "转赠", whereInSource: "S6", verdict: "not_depicted", causeEvidence: "", actionEvidence: "无", beatIndexes: [] }]
   );
   assert.match(revision.changeSummary, /1 条因果问题/u);
   assert.match(revision.changeSummary, /1 条没接住的原片机制/u);

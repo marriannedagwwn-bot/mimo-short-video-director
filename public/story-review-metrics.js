@@ -12,6 +12,20 @@
 
 const UNMET = new Set(["not_depicted", "partially_depicted"]);
 
+/**
+ * 换皮线：`sourceScaffoldOverlap.score` 到这个数就不许再判 pass。
+ *
+ * **判定只有一份**——`src/validation.js` 的确定性闸门与下面数出来的
+ * `scaffoldCopies` 都从这里取值。两边各写一个 70，迟早会漂成
+ * 「页面说没越线、服务端说越线了」。同规格的先例是 public/all-reference-limits.js
+ * 与 public/story-duration.js（窗口比例只有一份，两处提示词共用）。
+ *
+ * 数字本身来自 2026-09-11 单次盲测的分布：已知换皮的四个候选全部 95，
+ * 正常的四个落在 10–50。**不是实证过的最优值**，真实回放攒够了再调，
+ * 且不得为了让某个候选通过而下调。
+ */
+export const SOURCE_SCAFFOLD_COPY_SCORE = 70;
+
 function list(value) {
   return Array.isArray(value) ? value.filter((item) => item && typeof item === "object") : [];
 }
@@ -78,6 +92,12 @@ export function candidateReviewMetrics(review) {
   // list() 给空数组，于是旧报告数出来恒为 0——不是「没查出问题」，是那一档还不存在。
   const coherence = checks.flatMap((check) => list(check.coherenceChecks));
   const verdictCount = (value) => checks.filter((check) => check.verdict === value).length;
+  // 骨架重合分是模型给的一个整数，这里只**数有几个越线**，不搬用它的绝对值排序：
+  // 盲测只验证过它能把差距极大的两组分开（8/8），没验证过它能比较两个都不换皮的候选。
+  // scored 是有这一档的候选数；旧报告一个都没有，所以摘要里整段不显示。
+  const scaffold = checks
+    .map((check) => check.sourceScaffoldOverlap?.score)
+    .filter((score) => Number.isInteger(score));
   return {
     candidates: checks.length,
     mechanismsChecked: mechanisms.length,
@@ -85,6 +105,8 @@ export function candidateReviewMetrics(review) {
     notDepicted: mechanisms.filter((entry) => entry.verdict === "not_depicted").length,
     coherenceBreaks: coherence.length,
     candidatesWithCoherenceBreak: checks.filter((check) => list(check.coherenceChecks).length).length,
+    scaffoldScored: scaffold.length,
+    scaffoldCopies: scaffold.filter((score) => score >= SOURCE_SCAFFOLD_COPY_SCORE).length,
     pass: verdictCount("pass"),
     revise: verdictCount("revise"),
     drop: verdictCount("drop")
@@ -98,6 +120,9 @@ export function candidateReviewHeadline(review) {
   const parts = [];
   if (m.mechanismsChecked) parts.push(`机制未迁移 ${m.mechanismsUnmet}/${m.mechanismsChecked}`);
   if (m.coherenceBreaks) parts.push(`因果断裂 ${m.coherenceBreaks} 处（${m.candidatesWithCoherenceBreak} 个候选）`);
+  // 旧报告没有这一档，scaffoldScored 是 0，整段不显示——显示一个 0 会被读成
+  // 「查过了，没有换皮」，而实际是「这一档还不存在」。与 coherenceBreaks 同规格。
+  if (m.scaffoldScored) parts.push(`疑似换皮 ${m.scaffoldCopies}/${m.scaffoldScored}`);
   const verdicts = [];
   if (m.pass) verdicts.push(`${m.pass} 可展开`);
   if (m.revise) verdicts.push(`${m.revise} 需修改`);

@@ -571,6 +571,12 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
 .candidate-review-coherence { margin-top: 10px; padding: 9px 11px; border-radius: 8px;
   background: rgba(180, 35, 24, .06); border: 1px solid rgba(180, 35, 24, .25); }
 .candidate-review-coherence .review-check { border-color: rgba(180, 35, 24, .2); }
+/* 骨架对照：候选**各自**与原片的事件链比。画成中性块而不是红块——
+   高分才是坏消息，而分数在块首自己说了，底色不该替它下判断。 */
+.candidate-review-scaffold { margin-top: 10px; padding: 9px 11px; border-radius: 8px;
+  background: #f4f6f8; border: 1px solid var(--line); }
+.candidate-review-scaffold .review-check { background: #fff; }
+.candidate-review-scaffold p { margin: 3px 0 0; }
 .candidate-review-card { margin-top: 10px; padding: 11px 13px; border-radius: 10px;
   background: #fff; border: 1px solid var(--line); font-size: 10px; line-height: 1.7; }
 .candidate-review-card > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; }

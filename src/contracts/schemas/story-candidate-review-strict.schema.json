@@ -55,20 +55,22 @@
     "sourceMechanism": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "mechanism", "whereInSource"],
+      "required": ["id", "mechanism", "whereInSource", "requiresCause"],
       "properties": {
         "id": { "$ref": "#/$defs/nonEmptyString" },
         "mechanism": { "$ref": "#/$defs/nonEmptyString" },
-        "whereInSource": { "$ref": "#/$defs/nonEmptyString" }
+        "whereInSource": { "$ref": "#/$defs/nonEmptyString" },
+        "requiresCause": { "type": "boolean" }
       }
     },
     "mechanismCheck": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sourceMechanismId", "whereInCandidate", "beatIndexes", "verdict"],
+      "required": ["sourceMechanismId", "causeEvidence", "actionEvidence", "beatIndexes", "verdict"],
       "properties": {
         "sourceMechanismId": { "$ref": "#/$defs/nonEmptyString" },
-        "whereInCandidate": { "$ref": "#/$defs/nonEmptyString" },
+        "causeEvidence": { "type": "string" },
+        "actionEvidence": { "$ref": "#/$defs/nonEmptyString" },
         "beatIndexes": {
           "type": "array",
           "items": { "type": "integer", "minimum": 1 }
@@ -90,6 +92,55 @@
         "problem": { "$ref": "#/$defs/nonEmptyString" }
       }
     },
+    "scaffoldLinkage": {
+      "enum": ["same", "reordered", "different", "absent"]
+    },
+    "scaffoldDimension": {
+      "enum": ["same", "partial", "different", "not_applicable"]
+    },
+    "scaffoldEventLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceEvent", "candidateEvent", "beatIndexes", "linkage"],
+      "properties": {
+        "sourceEvent": { "$ref": "#/$defs/nonEmptyString" },
+        "candidateEvent": { "type": "string" },
+        "beatIndexes": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "linkage": { "$ref": "#/$defs/scaffoldLinkage" }
+      }
+    },
+    "sourceScaffoldOverlap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eventChain",
+        "taskType",
+        "midSection",
+        "rewardSource",
+        "rewardHandling",
+        "endingShape",
+        "score",
+        "why"
+      ],
+      "properties": {
+        "eventChain": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/scaffoldEventLink" }
+        },
+        "taskType": { "$ref": "#/$defs/scaffoldDimension" },
+        "midSection": { "$ref": "#/$defs/scaffoldDimension" },
+        "rewardSource": { "$ref": "#/$defs/scaffoldDimension" },
+        "rewardHandling": { "$ref": "#/$defs/scaffoldDimension" },
+        "endingShape": { "$ref": "#/$defs/scaffoldDimension" },
+        "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "why": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
     "candidateCheck": {
       "type": "object",
       "additionalProperties": false,
@@ -99,6 +150,7 @@
         "coreInteraction",
         "mechanismChecks",
         "coherenceChecks",
+        "sourceScaffoldOverlap",
         "verdict",
         "why",
         "keepThis"
@@ -116,6 +168,7 @@
           "type": "array",
           "items": { "$ref": "#/$defs/coherenceCheck" }
         },
+        "sourceScaffoldOverlap": { "$ref": "#/$defs/sourceScaffoldOverlap" },
         "verdict": { "$ref": "#/$defs/candidateVerdict" },
         "why": { "$ref": "#/$defs/nonEmptyString" },
         "keepThis": { "$ref": "#/$defs/nonEmptyString" }

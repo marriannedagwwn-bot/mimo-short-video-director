@@ -10,6 +10,9 @@ import {
 import { formatDirectShotSkeleton } from "./direct-shot-timeline.js";
 import { VIDEO_PROMPT_PROFILE_IDS } from "../public/video-prompt-profiles.js";
 import { normalizeCharacterExpressionRules } from "../public/character-expression-rules.js";
+// 换皮线只有一份：提示词、确定性闸门与浏览器摘要都从这里取。提示词里写死一个 70，
+// 就会出现「校验器按 70 拦、提示词按别的数教」这种模型无从遵守的状态。
+import { SOURCE_SCAFFOLD_COPY_SCORE } from "../public/story-review-metrics.js";
 import { storyDurationWindow } from "../public/story-duration.js";
 import fs from "node:fs";
 
@@ -1157,6 +1160,13 @@ phase、emotion 是作者的标签，可以参考，**不能当证据**。
 - id：M1、M2……后面逐个候选核对时按这个 id 引用
 - mechanism：这条机制是什么，用你自己的话概括它**起的作用**，不是复述场次
 - whereInSource：它在原片的哪个具体动作与位置上兑现
+- requiresCause：这条机制成不成立，**取决于前面有没有先铺垫过什么**吗？只写 true 或 false
+  - true —— 机制的分量在前因上：一样东西得先真正属于某人、某人得先默默做过什么、
+    先付出过代价，后面那个动作才有意义。缺了前因，同样的动作就是个空动作。
+    主动付出、转赠、牺牲、承担成本、反哺这类机制通常是 true。
+  - false —— 机制本身就是那个行为，前面不需要先铺什么。
+  - 这是**这条机制自己的属性，与任何候选无关**：全批候选对同一条机制吃同一个标准。
+    **不要为了让某个候选好判而改这个标记。**
 
 **这份清单全批候选共用，服务端会核对每个引用都在清单里。**
 最常见的错误是照着某个候选倒推出一条「原片机制」、再判它已兑现——那是循环论证，
@@ -1175,9 +1185,19 @@ phase、emotion 是作者的标签，可以参考，**不能当证据**。
   其中任何一段在动作链里找不到对应，就照实写「动作链里没有」——这正是要暴露的东西。
 - mechanismChecks：2–3 条。每条从**第一块的清单**里挑一条来核对，不要在这里另写机制：
   - sourceMechanismId：引用第一块里的 id，只能用已列出的
-  - whereInCandidate：候选用哪个**不同的**具体动作实现相近价值
+  - actionEvidence：候选用哪个**不同的**具体动作实现相近价值——哪一拍的哪个动作
+  - causeEvidence：**这条机制在清单里标了 requiresCause: true 时必须写**：
+    候选的前面**哪一拍**写出了那个前因——那样东西怎么成为他真正在意的、
+    他有没有为它花过力气、对方此前做过什么。
+    清单标了 false 的机制**留空字符串就行，不要为了填满而编一段**。
   - beatIndexes：对应候选的哪几拍（写拍号整数，必须真实存在）
   - verdict：depicted（确实用新动作兑现了）/ partially_depicted（沾边但不足）/ not_depicted（只换了外形，机制没过来）
+    **requiresCause: true 的机制，只有最后那个转移动作、前面找不到前因，最高只能判 partially_depicted。**
+
+  判断接收方符不符合这条机制指定的那种对象时，**只看故事前面有没有写出相应的付出或贡献，
+  不看这个角色被叫作什么。** 搭档、同伴、宠物、同龄人**一样可以是默默付出的那一方**；
+  反过来，一个被写成长辈或照顾者的角色，前面没写他付出过什么，也不因为身份标签就算数。
+  要点名是**哪一拍**写了，或者确实一拍都没写。**不许因为角色的身份名称直接判不符合。**
 - coherenceChecks：**动作链自己能不能合上**。这一项与「机制有没有迁移」是两个独立问题——
   一个候选可以完美复现原片机制，同时自己前后打架。逐条写，每条给拍号；确实没有就写空数组。
   只认 action 与 keyDialogueDirections 里**都已经写出来**的事实，判据是「这两件事合不到一起」，
@@ -1189,10 +1209,33 @@ phase、emotion 是作者的标签，可以参考，**不能当证据**。
   - space_or_time：前面交代够不到、走不到或来不及，后面用一个更弱的办法却成了，中间没有新增条件
   - other：确实是「两个都写出来的画面事实合不到一起」，但不属于上面四类
   problem 必须点名冲突的两端各是什么，不能只写「逻辑不通」。
+- sourceScaffoldOverlap：这个候选**自己**和原片的故事链比，重合多少。
+  **逐个候选单独跟原片比，不要拿候选之间互相比**——四个候选可以彼此完全不同，
+  却各自都在复刻原片，那是两个独立的问题，前一个不能代替后一个。
+  - eventChain：按**原片的时间顺序**挑出 3–5 件关键事件（最多 6 件），逐件写。
+    **原片确实只有一两件事就只写一两条，绝不许为了凑数编一件原片没有的事。**
+    - sourceEvent：原片这件事是什么
+    - candidateEvent：候选里对应的是哪件事；确实没有对应的就写「候选里没有对应事件」
+    - beatIndexes：它落在候选的哪几拍；没有对应事件就写空数组
+    - linkage：same（有对应事件，而且它跟前一件事的因果接法与先后顺序都一样）/
+      reordered（有对应事件，但顺序或因果接法变了）/
+      different（这个位置候选做的是另一件事，因果不同）/ absent（候选里没有这件事）
+  - 另外五个是**辅助观察**，每个取 same / partial / different / not_applicable：
+    taskType（任务性质）、midSection（中段靠什么往前推）、rewardSource（获得的东西从哪来）、
+    rewardHandling（拿到之后怎么处置）、endingShape（结尾形状）。
+    **原片或候选根本没有这一档就写 not_applicable**：生活片段型经常既没有任务也没有奖励，
+    硬填一个值只会制造假信号。
+  - score：0–100 的整数，**只看上面那条事件链**。
+    换掉全部人名、道具、地点而保留同一条因果链，分数应该很高。
+    反过来：任务同类、都在傍晚收尾、都是两个人一起做事——**这些本身都不足以判换皮**，
+    它们只是辅助观察。判据只有一条：两边是不是以近乎相同的方式串成了同一条链。
+  - why：一句话说清这个分数从哪来，点到是哪几件事、按什么顺序接起来的。
 - verdict：pass（可以直接展开）/ revise（值得发展但要先改一处）/ drop（核心机制缺失，局部改不动）。
   **只要 coherenceChecks 非空就不能判 pass**——pass 的意思是可以直接展开，而动作链还合不上的候选不能直接展开。
   报出自洽问题不是在否定这个候选：revise 是完全正常的结论，drop 仍然只留给机制本身就没迁移过来的情况。
   也不要为了让 verdict 好看而漏报或删掉真实存在的自洽问题。
+  **sourceScaffoldOverlap.score 打到 ${SOURCE_SCAFFOLD_COPY_SCORE} 或以上同样不能判 pass**：沿用同一条因果链、只换名词是换皮不是迁移。
+  如果你认为它其实不算换皮，那就回去把事件链重新核对、把分数打准，**而不是压着分数放它过**。
 - why：一句话，必须点到**具体动作**，不能只说「情绪不够」
 - keepThis：这个候选已经成立、修改时不能丢掉的那一处（即使 verdict 是 drop 也要写）
 
@@ -1218,11 +1261,15 @@ phase、emotion 是作者的标签，可以参考，**不能当证据**。
 ## 输出
 
 {"schemaVersion":"story-candidate-review/1.0",
- "sourceMechanisms":[{"id":"M1","mechanism":"","whereInSource":""}],
+ "sourceMechanisms":[{"id":"M1","mechanism":"","whereInSource":"","requiresCause":true}],
  "candidateChecks":[{"candidateId":"","title":"",
    "coreInteraction":{"setback":"","intervention":"","response":"","visibleChange":""},
-   "mechanismChecks":[{"sourceMechanismId":"M1","whereInCandidate":"","beatIndexes":[1],"verdict":""}],
+   "mechanismChecks":[{"sourceMechanismId":"M1","causeEvidence":"","actionEvidence":"","beatIndexes":[1],"verdict":""}],
    "coherenceChecks":[{"kind":"contradiction","beatIndexes":[2,4],"problem":""}],
+   "sourceScaffoldOverlap":{
+     "eventChain":[{"sourceEvent":"","candidateEvent":"","beatIndexes":[1],"linkage":"different"}],
+     "taskType":"different","midSection":"different","rewardSource":"not_applicable",
+     "rewardHandling":"not_applicable","endingShape":"partial","score":0,"why":""},
    "verdict":"","why":"","keepThis":""}],
  "recommendedOrder":[],
  "summary":""}
@@ -1347,9 +1394,13 @@ export function storyCandidateRevisionPrompt({
     const at = Array.isArray(entry?.beatIndexes) && entry.beatIndexes.length
       ? `，评审看的是第 ${entry.beatIndexes.join("、")} 拍`
       : "";
+    // 前因单独列出来。评审把一条机制判成「只沾到一点边」，常常就是因为动作有了、
+    // 前面没写它怎么成为主角在意的东西——只说「现在的情况」会把差在哪那一半藏起来。
+    const cause = String(entry?.causeEvidence || "").trim();
     return `${index + 1}. 【${degree}】${String(entry?.mechanism || "")}
    原片在哪兑现：${String(entry?.whereInSource || "")}
-   本命题现在的情况：${String(entry?.whereInCandidate || "")}${at}`;
+   本命题现在的情况：${String(entry?.actionEvidence || "")}${at}${cause ? `
+   评审找到的前因：${cause}` : ""}`;
   }).join("\n");
 
   const breakSection = breaks

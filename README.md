@@ -52,6 +52,8 @@ Phase 1.1 的真实包回放进一步明确：当前结构签名保证的是字�
 
 `POST /api/story-candidate-review` 是候选生成后的独立对照评审，与剧情体检同规格：**只出报告**，不改候选、不签发 Artifact、不进 lineage、不改变候选数量、不阻断后续，刷新页面即失。送审投影按允许清单构造，剥掉候选的全部自我评价字段（`novelty`、`retainedValue`、`experienceFidelity`、`transformationProof`、`originalityRiskCheck` 与每拍 `dramaticFunction`），只留动作链——让故事自己证明自己，而不是让解释替它过关；`failureSignal` 反而保留，它是证伪条件不是成功声明。报告不打总分，`verdict: drop` 只是结论，淘汰与否由用户决定。覆盖率由服务端确定性核验（候选数量与 id 逐位对齐、标题回显包含原文、拍号真实存在、推荐顺序是候选 id 的排列）；「判得对不对」是语义判断，没有确定性兜底。
 
+报告查三件事：原片机制有没有迁移过来（机制清单全批共享、候选按 id 引用）、候选自己的动作链合不合得上（`coherenceChecks`），以及**这个候选和原片的故事链重合多少**（`sourceScaffoldOverlap`，2026-09-12 新增）。第三项逐个候选与原片比，判据是事件链——原片的关键事件、候选里对应的事件、两者的因果接法与先后顺序是否相同；任务性质、中段、奖励来源与处置、结尾形状只是辅助观察，每项都允许 `not_applicable`（生活片常常既没有任务也没有奖励）。任务同类、都在傍晚收尾、都有双人协作，本身都不足以判换皮。确定性闸门两条：报出因果断裂不得判 `pass`，骨架重合分到线（`SOURCE_SCAFFOLD_COPY_SCORE`）同样不得判 `pass`。机制兑现的证据拆成前因与动作两格，前因只对清单标了 `requiresCause` 的机制强制——不需要前因的机制也要两条证据，只会逼模型编一段。
+
 ## 模型输出有界纠错
 
 当前主流程不再把一份已经解析、但校验失败的完整 Artifact 直接交给模型整包重写。服务端只接受稳定的结构化 diagnostics（`code + RFC 6901 JSON Pointer + reason`）；当候选完整、路径可信、目标已存在且权威事实唯一时，才签发一次局部计划。当前有两套互不混用的协议：Legacy Full Story 使用专用 `full_story_partial_repair/1.0`；`artifact_partial_repair/1.0` 编排 Animation Foundation 固定角色安全子集。第二次请求只包含错误目标的当前值、修复说明和最小权威投影，模型只能按服务端 `repairId` 返回 replacement，不能自报 path、JSON Patch 或额外操作。

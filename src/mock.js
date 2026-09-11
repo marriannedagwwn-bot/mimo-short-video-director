@@ -1035,9 +1035,21 @@ export function mockStoryCandidateReview(candidates) {
     schemaVersion: "story-candidate-review/1.0",
     // 全批共享的原片机制清单，先于候选产出；下面每个候选只能按 id 引用它。
     // 至少两条：schema 的 minItems 就是 2。
+    // requiresCause 两个分支都走到：true 的那条会启用双证据闸门，false 的那条不会。
+    // 只写一种取值会让 mock 永远只经过半条判定路径。
     sourceMechanisms: [
-      { id: "M1", mechanism: "demo 模式未提炼原片机制。", whereInSource: "demo 模式未定位原片动作。" },
-      { id: "M2", mechanism: "demo 模式未提炼第二条原片机制。", whereInSource: "demo 模式未定位原片动作。" }
+      {
+        id: "M1",
+        mechanism: "demo 模式未提炼原片机制。",
+        whereInSource: "demo 模式未定位原片动作。",
+        requiresCause: true
+      },
+      {
+        id: "M2",
+        mechanism: "demo 模式未提炼第二条原片机制。",
+        whereInSource: "demo 模式未定位原片动作。",
+        requiresCause: false
+      }
     ],
     candidateChecks: list.map((candidate, index) => {
       const beats = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline.length : 0;
@@ -1050,18 +1062,60 @@ export function mockStoryCandidateReview(candidates) {
           response: "demo 模式不调用模型，未做实际核对。",
           visibleChange: "demo 模式不调用模型，未做实际核对。"
         },
-        mechanismChecks: [{
-          sourceMechanismId: "M1",
-          whereInCandidate: "demo 模式未定位候选动作。",
-          beatIndexes: beats ? [1] : [],
-          verdict: "depicted"
-        }],
+        mechanismChecks: [
+          {
+            // 引用的是 requiresCause: true 的那条，所以判 depicted 就必须带前因证据——
+            // mock 自己也得守这条闸门，否则又是一次 mock 过而 live 挂。
+            sourceMechanismId: "M1",
+            causeEvidence: "demo 模式未定位前因。",
+            actionEvidence: "demo 模式未定位候选动作。",
+            beatIndexes: beats ? [1] : [],
+            verdict: "depicted"
+          },
+          {
+            // requiresCause: false 的那条，causeEvidence 留空是合法的正常写法。
+            sourceMechanismId: "M2",
+            causeEvidence: "",
+            actionEvidence: "demo 模式未定位候选动作。",
+            beatIndexes: beats ? [1] : [],
+            verdict: "partially_depicted"
+          }
+        ],
         // 两个分支都必须走到：只写空数组会让 mock 通过而 live 失败——
         // 分镜终审正是因为镜头级 issues 全写 [] 而没暴露元素类型误读（AGENTS.md §2.14）。
         // 第一个候选带一条自洽问题，因此它的 verdict 不能是 pass（同一条确定性闸门）。
         coherenceChecks: index === 0 && beats
           ? [{ kind: "other", beatIndexes: [1], problem: "demo 模式不调用模型，这条只用于走通非空分支。" }]
           : [],
+        // 骨架对照。形状上把有风险的几种都走到：一条有对应事件、一条 absent（空拍号 +
+        // 明写没有对应事件），辅助观察同时出现 different 与 not_applicable。
+        //
+        // **分数固定为 0，不是因为 demo 判它不换皮，而是 demo 不判。** 给一个高分会让
+        // 页面显示「疑似换皮」，那是伪造结论——mock 可以铺形状，不能替模型下判断。
+        // 换皮闸门（score >= 70 不得 pass）由单元测试覆盖，不靠 mock 触发。
+        sourceScaffoldOverlap: {
+          eventChain: [
+            {
+              sourceEvent: "demo 模式未提炼原片关键事件。",
+              candidateEvent: "demo 模式未定位候选对应事件。",
+              beatIndexes: beats ? [1] : [],
+              linkage: "different"
+            },
+            {
+              sourceEvent: "demo 模式未提炼第二件原片关键事件。",
+              candidateEvent: "候选里没有对应事件",
+              beatIndexes: [],
+              linkage: "absent"
+            }
+          ],
+          taskType: "different",
+          midSection: "different",
+          rewardSource: "not_applicable",
+          rewardHandling: "not_applicable",
+          endingShape: "different",
+          score: 0,
+          why: "demo 模式不调用模型，这个分数不构成任何相似度结论。"
+        },
         verdict: index === 0 && beats ? "revise" : "pass",
         why: "demo 模式不调用模型，本判定不构成任何质量结论。",
         keepThis: "demo 模式未作判断。"

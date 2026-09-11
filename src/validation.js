@@ -8,6 +8,9 @@ import {
 } from "./contracts/contract-validator.js";
 import { GLOBAL_CHARACTER_BOUNDARY_VERSION } from "./character-boundary.js";
 import { assertVideoPromptProfile } from "../public/video-prompt-profiles.js";
+// 换皮线只有一份，与浏览器摘要共用：两边各写一个 70 迟早漂成
+// 「页面说没越线、服务端说越线了」。同规格先例见 public/all-reference-limits.js。
+import { SOURCE_SCAFFOLD_COPY_SCORE } from "../public/story-review-metrics.js";
 
 export class InputError extends Error {
   constructor(message, details = []) {
@@ -2885,14 +2888,24 @@ export function ensureStoryQualityReviewCoversStory(review, fullStory) {
  *
  *   1. candidateChecks 与候选**数量相等且 candidateId 逐位相同**
  *   2. 回显的 title 必须**包含**候选原文（复用 storyReviewEchoCoversSource，不写第二套）
- *   3. mechanismChecks[].beatIndexes 引用的拍号必须在该候选 storyOutline 范围内
+ *   3. mechanismChecks / coherenceChecks / sourceScaffoldOverlap.eventChain 引用的拍号
+ *      必须在该候选 storyOutline 范围内（三个数组**共用同一份** checkBeats）
  *   4. recommendedOrder 必须是全部候选 id 的一个排列，不多不少不重复
+ *
+ * 另有三条 verdict 交叉闸门，同样只做计数、枚举与整数比较：
+ *   5. 引用的机制 id 必须在顶层清单里，且清单内 id 不得重复
+ *   6. 清单标了 requiresCause 的机制，判 depicted 时 causeEvidence 必须非空
+ *      （CANDIDATE_REVIEW_EVIDENCE_INCOMPLETE；**不一刀切**，标记是机制自己的属性）
+ *   7. coherenceChecks 非空、或 sourceScaffoldOverlap.score 到换皮线，都不得判 pass
+ *
+ * 形状本身（枚举合法、score 是 0–100 整数、事件链条数）**只由 schema 裁决**，
+ * 这里不重写第二份——两份形状检查迟早漂移，与 §2.14「schema 是唯一且足够的闸门」同规格。
  *
  * 核验通过后服务端用原文无条件覆盖 title——它可从候选唯一推导，
  * **回显不构成新事实**，与 direct_shot 骨架、剧情体检同规格。
  *
- * 「判得对不对」本身是语义的，**没有兜底**：这四条只保证模型逐个候选看过，
- * 不保证它看得对。这是本机制已知的边界，与剧情体检写在同一处的那条完全一样。
+ * 「判得对不对」本身是语义的，**没有兜底**：这几条只保证模型逐个候选看过、
+ * 自报的标签之间不打架，不保证它看得对。这是本机制已知的边界。
  */
 export function ensureStoryCandidateReviewCoversCandidates(review, candidates) {
   requireObject(review, "storyCandidateReview");
@@ -2912,6 +2925,13 @@ export function ensureStoryCandidateReviewCoversCandidates(review, candidates) {
   // 判定是**纯集合成员比较，零语义**——4 个候选写不出 8 条机制在构造上就不可能了。
   const mechanisms = Array.isArray(review.sourceMechanisms) ? review.sourceMechanisms : [];
   const mechanismIds = new Set();
+  // 「这条机制需不需要前因」是**机制自己的属性，不是候选的属性**，所以它声明在
+  // 共享清单上、先于候选产出，全批候选对同一条机制吃同一个标准。
+  //
+  // 放在逐候选的 mechanismCheck 里会留一个显而易见的后门：模型想让哪个候选过，
+  // 就对那个候选把标记写成 false。放在清单上，改标记就等于对四个候选同时放水。
+  // 招式与 sourceMechanisms 本身、与 variant-source-baseline 的冻结目录同规格。
+  const mechanismRequiresCause = new Map();
   mechanisms.forEach((entry, index) => {
     const id = String(entry?.id || "").trim();
     if (!id) return;
@@ -2924,6 +2944,7 @@ export function ensureStoryCandidateReviewCoversCandidates(review, candidates) {
       return;
     }
     mechanismIds.add(id);
+    mechanismRequiresCause.set(id, entry?.requiresCause === true);
   });
 
   if (checks.length !== list.length) {
@@ -2969,15 +2990,43 @@ export function ensureStoryCandidateReviewCoversCandidates(review, candidates) {
     };
     (Array.isArray(check.mechanismChecks) ? check.mechanismChecks : []).forEach((mechanism, order) => {
       const id = String(mechanism?.sourceMechanismId || "").trim();
-      if (mechanismIds.has(id)) return;
+      if (!mechanismIds.has(id)) {
+        push(
+          "CANDIDATE_REVIEW_UNKNOWN_MECHANISM",
+          `/candidateChecks/${index}/mechanismChecks/${order}/sourceMechanismId`,
+          `引用了不存在的机制 id「${id || "（空）"}」；只能引用顶层 sourceMechanisms 里已列出的 ${mechanismIds.size} 条`
+        );
+        return;
+      }
+      // 双证据闸门：**只管清单自己标了 requiresCause 的那些机制，不一刀切**。
+      //
+      // 依据是三条实测的「已兑现」证据，全部只有转移动作、没有一条指出前因：
+      // 「第 5 拍把书签别在她胸前」「第 5 拍摘下徽章别在搭档呆毛上」
+      // 「第 5 拍把书签夹进那本旧书里」。这类机制（主动付出、转赠、承担成本）
+      // 的全部分量都在前因上——那东西先真正属于她、她在意它、舍不得——
+      // 只写转移动作就等于用一个空动作换一个 depicted。
+      //
+      // 但「会不会跑」「有没有陪着」这类机制根本不需要前因，对它们也要两条证据
+      // 就是在逼模型编一段。所以判据来自清单的自报标记，闸门只做非空判定。
+      //
+      // 已知缺口：模型把 requiresCause 全写成 false 就能整体绕过，而
+      // 「前因写得对不对」更是语义判断。**都没有确定性兜底**，与 narrativeMode
+      // 那条「校验只能数自报标签」同型，只能靠真实回放与人工看。
+      if (!mechanismRequiresCause.get(id)) return;
+      if (String(mechanism?.verdict || "") !== "depicted") return;
+      if (String(mechanism?.causeEvidence || "").trim()) return;
       push(
-        "CANDIDATE_REVIEW_UNKNOWN_MECHANISM",
-        `/candidateChecks/${index}/mechanismChecks/${order}/sourceMechanismId`,
-        `引用了不存在的机制 id「${id || "（空）"}」；只能引用顶层 sourceMechanisms 里已列出的 ${mechanismIds.size} 条`
+        "CANDIDATE_REVIEW_EVIDENCE_INCOMPLETE",
+        `/candidateChecks/${index}/mechanismChecks/${order}/causeEvidence`,
+        `机制「${id}」在清单里标了需要前因，判 depicted 就必须同时给出前因证据`
+        + "（前面哪一拍写出了它怎么成为主角在意的东西、接收方此前做过什么）"
+        + "；只有一个转移动作最多只能判 partially_depicted"
       );
     });
     checkBeats(check.mechanismChecks, "mechanismChecks");
     checkBeats(check.coherenceChecks, "coherenceChecks");
+    // 事件链的拍号与另外两个数组走同一份判定，路径指向真正出错的那个数组。
+    checkBeats(check.sourceScaffoldOverlap?.eventChain, "sourceScaffoldOverlap/eventChain");
 
     // 因果自洽与 verdict 的交叉闸门。**判定是纯算术加枚举比较，不含语义判断**：
     // 只数 coherenceChecks 的长度，不裁决那条自洽问题成不成立。
@@ -2998,6 +3047,32 @@ export function ensureStoryCandidateReviewCoversCandidates(review, candidates) {
         `/candidateChecks/${index}/verdict`,
         `候选「${candidateId}」报出了 ${coherence.length} 处因果自洽问题，就不能判 pass`
         + "（pass 的定义是「可以直接展开」）；改判 revise 或 drop，或者删掉那几条不成立的自洽问题"
+      );
+    }
+
+    // 换皮闸门。与上面那条同规格：**纯算术加枚举比较，零语义**——只比一个整数，
+    // 不裁决那个分数打得对不对。
+    //
+    // **驱动条件只有骨架重合分一个，刻意不加「机制兑现率」前置条件。**
+    // 落地方案原本写的是「兑现率 ≥ 2/3 且 分数 ≥ 70」，那个组合有个当场就能看见的漏洞：
+    // 候选照搬了原片事件链，但前因没写好、兑现率反而低，于是从闸门底下走掉——
+    // 换皮程度越高越安全，方向正好反了。
+    //
+    // 同一份计划里的另一处改动还让这个漏洞必然发生：双证据标准把一组实测的
+    // 兑现率从 70.8% 压到 54.2%，已经低于 2/3。两条一起落地，闸门就永远不会触发。
+    //
+    // 阈值 70 来自单次盲测的分布（已知换皮的四个 95、正常的四个 10–50），
+    // **不是实证过的最优值**。真实回放数据够了再调，不得为了放某个候选过而下调。
+    const scaffoldScore = check.sourceScaffoldOverlap?.score;
+    if (Number.isInteger(scaffoldScore)
+      && scaffoldScore >= SOURCE_SCAFFOLD_COPY_SCORE
+      && String(check.verdict || "") === "pass") {
+      push(
+        "STORY_CANDIDATE_REVIEW_PASS_WITH_SCAFFOLD_COPY",
+        `/candidateChecks/${index}/verdict`,
+        `候选「${candidateId}」与原片的事件链重合度打到 ${scaffoldScore}（≥ ${SOURCE_SCAFFOLD_COPY_SCORE}），就不能判 pass`
+        + "：换掉名词但沿用同一条因果链是换皮，不是迁移；改判 revise 或 drop，"
+        + "或者重新核对事件链——如果只是任务同类、场景相似而因果链并不相同，那个分数本来就打高了"
       );
     }
   });

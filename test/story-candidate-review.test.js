@@ -5,6 +5,7 @@ import { InputError, OutputContractError, deriveStoryCandidateProjections, ensur
 import { buildStoryCandidateReviewProjection, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt } from "../src/prompts.js";
 import { mockStoryCandidateReview } from "../src/mock.js";
 import { WorkflowService } from "../src/workflow.js";
+import { SOURCE_SCAFFOLD_COPY_SCORE } from "../public/story-review-metrics.js";
 
 const CANDIDATES = [
   {
@@ -238,7 +239,285 @@ test("空的 coherenceChecks 是合法结论，不妨碍 pass", () => {
   ));
 });
 
-// 拍号合法性判定只有一份，两个数组共用；路径必须指向真正出错的那个数组。
+// ---------------------------------------------------------------------------
+// 双证据（2026-09-12）。实测三条被判「已兑现」的证据全是这个形状：
+// 「第 5 拍把书签别在她胸前」「第 5 拍摘下徽章别在搭档呆毛上」
+// 「第 5 拍把书签夹进那本旧书里」——只有转移动作，一条都没指出前因：
+// 那东西是不是先真正属于她、她在不在意、舍不舍得。按双证据重评，这三条
+// 全部降级为 partially_depicted，整组兑现率从 70.8% 掉到 54.2%。
+//
+// **闸门刻意不一刀切**：判据是清单自报的 requiresCause，不是「所有机制都要两条证据」。
+
+test("标了需要前因的机制，只有转移动作就不能判 depicted", () => {
+  const review = baseReview();
+  // mock 的第一条 mechanismCheck 引用 M1（requiresCause: true）。
+  review.candidateChecks[0].mechanismChecks[0].causeEvidence = "";
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      const hit = error.details.find((d) => d.code === "CANDIDATE_REVIEW_EVIDENCE_INCOMPLETE");
+      assert.ok(hit, "应报 CANDIDATE_REVIEW_EVIDENCE_INCOMPLETE");
+      assert.equal(hit.path, "/candidateChecks/0/mechanismChecks/0/causeEvidence");
+      assert.match(error.message, /最多只能判 partially_depicted/u);
+      return true;
+    }
+  );
+});
+
+test("同一条改判 partially_depicted 就通过——闸门管的是 depicted 的门槛", () => {
+  const review = baseReview();
+  review.candidateChecks[0].mechanismChecks[0].causeEvidence = "";
+  review.candidateChecks[0].mechanismChecks[0].verdict = "partially_depicted";
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  ));
+});
+
+// 这条是「不一刀切」的正面用例：会不会跑、有没有陪着这类机制根本不需要前因，
+// 对它们也要两条证据就是在逼模型编一段。
+test("没标需要前因的机制，前因留空照样可以判 depicted", () => {
+  const review = baseReview();
+  const check = review.candidateChecks[0].mechanismChecks[1];
+  assert.equal(check.sourceMechanismId, "M2");
+  assert.equal(review.sourceMechanisms[1].requiresCause, false);
+  check.causeEvidence = "";
+  check.verdict = "depicted";
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  ));
+});
+
+// requiresCause 声明在**共享清单**上而不是逐候选的 check 里：放在 check 里，
+// 模型想让哪个候选过就对那个候选写 false；放在清单上，改它等于对全批同时放水。
+test("需不需要前因是机制自己的属性，全批候选共用一份", () => {
+  const review = baseReview();
+  review.sourceMechanisms[0].requiresCause = false;
+  review.candidateChecks.forEach((check) => { check.mechanismChecks[0].causeEvidence = ""; });
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  ), "标记挂在清单上，改一次对全批生效");
+  assert.equal(
+    review.candidateChecks[0].mechanismChecks[0].requiresCause,
+    undefined,
+    "requiresCause 不得出现在逐候选的 check 里"
+  );
+});
+
+test("schema 要求清单每条都表态需不需要前因", () => {
+  const review = baseReview();
+  delete review.sourceMechanisms[0].requiresCause;
+  assert.throws(() => ensureOutputContract(review, "storyCandidateReview"), /requiresCause/u);
+});
+
+test("actionEvidence 是必填非空——没有动作证据的兑现等于没核对", () => {
+  const review = baseReview();
+  review.candidateChecks[0].mechanismChecks[0].actionEvidence = "";
+  assert.throws(() => ensureOutputContract(review, "storyCandidateReview"), /actionEvidence/u);
+});
+
+// ---------------------------------------------------------------------------
+// 骨架对照与换皮闸门（2026-09-12）。
+//
+// 评审此前只比候选**之间**的差异，从来没比过候选与原片——四个候选彼此完全不同，
+// 仍然可能各自都在复刻原片。实测：一组 12 个候选里 9 个的任务性质与原片同类，
+// 而候选之间的重复检查一条都没报出来。
+
+test("骨架重合分到线就不能判 pass，哪怕机制一条都没迁移过来", () => {
+  const review = baseReview();
+  const check = review.candidateChecks[1];
+  check.sourceScaffoldOverlap.score = SOURCE_SCAFFOLD_COPY_SCORE;
+  // 机制全部判未迁移：旧方案的「兑现率 ≥ 2/3」前置条件会让这个候选从闸门底下走掉，
+  // 而它恰恰是照搬了原片事件链、只是前因没写好的那一类。
+  check.mechanismChecks.forEach((entry) => { entry.verdict = "not_depicted"; });
+  check.verdict = "pass";
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      const hit = error.details.find((d) => d.code === "STORY_CANDIDATE_REVIEW_PASS_WITH_SCAFFOLD_COPY");
+      assert.ok(hit, "应报 STORY_CANDIDATE_REVIEW_PASS_WITH_SCAFFOLD_COPY");
+      assert.equal(hit.path, "/candidateChecks/1/verdict");
+      assert.match(error.message, /换皮/u);
+      return true;
+    }
+  );
+});
+
+test("差一分就不拦——闸门是一次整数比较，不做区间推断", () => {
+  const review = baseReview();
+  review.candidateChecks[1].sourceScaffoldOverlap.score = SOURCE_SCAFFOLD_COPY_SCORE - 1;
+  review.candidateChecks[1].verdict = "pass";
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  ));
+});
+
+test("越线的候选改判 revise 就通过——闸门管的是 verdict，不是要不要打这个分", () => {
+  const review = baseReview();
+  review.candidateChecks[1].sourceScaffoldOverlap.score = 95;
+  review.candidateChecks[1].verdict = "revise";
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  ));
+});
+
+// 换皮线只有一份：校验器与浏览器摘要从同一个常量取值。
+// 两边各写一个 70，迟早漂成「页面说没越线、服务端说越线了」。
+test("换皮线在校验器与浏览器摘要之间只有一份", async () => {
+  const metrics = await import("../public/story-review-metrics.js");
+  assert.equal(metrics.SOURCE_SCAFFOLD_COPY_SCORE, SOURCE_SCAFFOLD_COPY_SCORE);
+  const validationSource = fs.readFileSync(new URL("../src/validation.js", import.meta.url), "utf8");
+  assert.match(validationSource, /import \{ SOURCE_SCAFFOLD_COPY_SCORE \} from "\.\.\/public\/story-review-metrics\.js"/u);
+  assert.ok(
+    !/scaffoldScore >= 70|score >= 70/u.test(validationSource),
+    "闸门里不许再写一个字面量 70"
+  );
+});
+
+test("生活片段型可以整档写 not_applicable，不必硬填任务与奖励", () => {
+  const review = baseReview();
+  Object.assign(review.candidateChecks[0].sourceScaffoldOverlap, {
+    taskType: "not_applicable",
+    midSection: "not_applicable",
+    rewardSource: "not_applicable",
+    rewardHandling: "not_applicable",
+    endingShape: "not_applicable"
+  });
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  ));
+});
+
+test("五个辅助观察都认 not_applicable，schema 里一个都不能漏", () => {
+  const schema = JSON.parse(fs.readFileSync(
+    new URL("../src/contracts/schemas/story-candidate-review-strict.schema.json", import.meta.url), "utf8"
+  ));
+  const scaffold = schema.$defs.sourceScaffoldOverlap;
+  const dims = ["taskType", "midSection", "rewardSource", "rewardHandling", "endingShape"];
+  for (const dim of dims) {
+    assert.equal(scaffold.properties[dim].$ref, "#/$defs/scaffoldDimension", `${dim} 必须用同一个枚举`);
+  }
+  assert.deepEqual(
+    schema.$defs.scaffoldDimension.enum,
+    ["same", "partial", "different", "not_applicable"]
+  );
+  // 事件链才是判据，所以它必填：不许只交五个辅助观察加一个分数。
+  assert.ok(scaffold.required.includes("eventChain"));
+  assert.equal(scaffold.properties.eventChain.maxItems, 6);
+});
+
+// 下界是 1，不是 2。**这条有真实回放的代价做依据。**
+//
+// 2026-09-12 用一份只有一个动作的原片打了两次真实调用：两次的第一次尝试都写了**一条**
+// 事件链、被 minItems: 2 拒掉；重试时模型**编了一件原片没有的事**（「原片动作结束」），
+// 并为了自洽把两条链接全改成 same、分数从 20 抬到 85。
+//
+// 这与 §2.12b 的 `原片没有` sentinel 是同一条道理：**schema 要求填满而没有出口，
+// 就是在逼模型编造**，而编出来的原片事实会一路污染判定。原片有几件关键事件
+// 不可从我们这边唯一推导，本来就不该由 schema 裁决；「写 3–5 条」留在提示词里。
+test("事件链下界是 1——原片只有一件事时不许逼模型编第二件", () => {
+  const schema = JSON.parse(fs.readFileSync(
+    new URL("../src/contracts/schemas/story-candidate-review-strict.schema.json", import.meta.url), "utf8"
+  ));
+  assert.equal(schema.$defs.sourceScaffoldOverlap.properties.eventChain.minItems, 1);
+
+  const review = baseReview();
+  review.candidateChecks.forEach((check) => {
+    check.sourceScaffoldOverlap.eventChain = [check.sourceScaffoldOverlap.eventChain[0]];
+  });
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  ));
+
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.match(prompt, /绝不许为了凑数编一件原片没有的事/u);
+});
+
+test("事件链的拍号与另外两个数组走同一条判定", () => {
+  const review = baseReview();
+  review.candidateChecks[0].sourceScaffoldOverlap.eventChain[0].beatIndexes = [9];
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      const hit = error.details.find((d) => d.code === "CANDIDATE_REVIEW_UNKNOWN_BEAT");
+      assert.ok(hit, "应报 CANDIDATE_REVIEW_UNKNOWN_BEAT");
+      assert.equal(hit.path, "/candidateChecks/0/sourceScaffoldOverlap/eventChain/0/beatIndexes/0");
+      return true;
+    }
+  );
+});
+
+test("没有对应事件的那一环写空拍号，是合法形状", () => {
+  const review = baseReview();
+  const absent = review.candidateChecks[0].sourceScaffoldOverlap.eventChain
+    .find((link) => link.linkage === "absent");
+  assert.ok(absent, "mock 必须走到 absent 这个分支");
+  assert.deepEqual(absent.beatIndexes, []);
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  ));
+});
+
+// mock 必须把有风险的形状都铺到，但**不得替模型下判断**：
+// 给一个高分会让页面显示「疑似换皮」，那是伪造结论。
+test("mock 的骨架对照铺了形状但不打高分", () => {
+  const review = baseReview();
+  for (const check of review.candidateChecks) {
+    assert.equal(check.sourceScaffoldOverlap.score, 0);
+    const linkages = check.sourceScaffoldOverlap.eventChain.map((link) => link.linkage);
+    assert.ok(linkages.includes("absent"), "absent 分支要走到");
+    const dims = ["taskType", "midSection", "rewardSource", "rewardHandling", "endingShape"]
+      .map((key) => check.sourceScaffoldOverlap[key]);
+    assert.ok(dims.includes("not_applicable"), "not_applicable 分支要走到");
+  }
+});
+
+test("mock 的双证据两个分支都走到，且自己遵守闸门", () => {
+  const review = baseReview();
+  const requires = new Map(review.sourceMechanisms.map((entry) => [entry.id, entry.requiresCause]));
+  assert.deepEqual([...new Set(requires.values())].sort(), [false, true], "两种 requiresCause 都要有");
+  for (const check of review.candidateChecks) {
+    const withCause = check.mechanismChecks.filter((entry) => entry.causeEvidence);
+    const withoutCause = check.mechanismChecks.filter((entry) => !entry.causeEvidence);
+    assert.ok(withCause.length, "要有带前因的一条");
+    assert.ok(withoutCause.length, "也要有不带前因的一条");
+    for (const entry of check.mechanismChecks) {
+      if (requires.get(entry.sourceMechanismId) && entry.verdict === "depicted") {
+        assert.ok(entry.causeEvidence, "mock 自己也要守双证据闸门");
+      }
+    }
+  }
+});
+
+// 提示词侧的三条修正，都没有确定性兜底，只能用源码断言守住措辞不被顺手删掉。
+test("提示词要求按前因判接收方，不许按角色身份名称直接判错", () => {
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.match(prompt, /只看故事前面有没有写出相应的付出或贡献/u);
+  assert.match(prompt, /搭档、同伴、宠物、同龄人\*\*一样可以是默默付出的那一方\*\*/u);
+  assert.match(prompt, /不许因为角色的身份名称直接判不符合/u);
+});
+
+test("提示词写明骨架对照逐个与原片比，且辅助观察可以不适用", () => {
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.match(prompt, /逐个候选单独跟原片比，不要拿候选之间互相比/u);
+  assert.match(prompt, /not_applicable/u);
+  assert.match(prompt, /这些本身都不足以判换皮/u);
+  assert.match(prompt, /换掉全部人名、道具、地点而保留同一条因果链，分数应该很高/u);
+  // 举例一律抽象形状：不得出现任何参考片的具体名词（企鹅快递员那次事故）。
+  assert.doesNotMatch(prompt, /企鹅|快递员|小红花|旧衣服/u);
+});
+
+test("提示词把换皮线写成与闸门同一个数，不另写一套口径", () => {
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.match(prompt, new RegExp(`score 打到 ${SOURCE_SCAFFOLD_COPY_SCORE} 或以上同样不能判 pass`, "u"));
+});
+
+// 拍号合法性判定只有一份，三个数组共用；路径必须指向真正出错的那个数组。
 test("coherenceChecks 引用不存在的拍号，与 mechanismChecks 走同一条判定", () => {
   const review = baseReview();
   const check = review.candidateChecks[1];
@@ -454,6 +733,69 @@ test("kind 的五个枚举值在浏览器侧都有中文标签，与 schema 逐�
   // 反过来也要成立：标签表里不许有 schema 没定义的取值，否则是照着想象写的。
   const declared = labels.split("\n").slice(1).map((line) => line.trim().split(":")[0]).filter(Boolean);
   assert.deepEqual(new Set(declared), new Set(kinds));
+});
+
+// 2026-09-12 的消费者面。上一次改这份契约漏掉的就是这一面，而且是静默漏
+// （escape(undefined) 返回空串，页面上是空白不是报错）。同一个坑不踩第二次。
+test("浏览器读的是拆开之后的两格证据，旧的单格键不能再出现", () => {
+  assert.match(APP_JS, /escape\(entry\.actionEvidence\)/u);
+  assert.match(APP_JS, /entry\.causeEvidence/u);
+  assert.ok(!APP_JS.includes("entry.whereInCandidate"), "whereInCandidate 这个键已经不存在了");
+});
+
+test("需要前因的机制在清单上有标记，逐条引用旁才显示前因那一行", () => {
+  assert.match(APP_JS, /entry\.requiresCause === true/u);
+  assert.match(APP_JS, /需要前因/u);
+  // 标了需要前因却没写，要显示成「没有写出前因」而不是一片空白。
+  assert.match(APP_JS, /source\?\.requiresCause === true/u);
+  assert.match(APP_JS, /这条机制标了需要前因，而评审没有写出前因/u);
+});
+
+test("骨架对照整块被渲染出来：事件链、五个维度、分数与换皮提示", () => {
+  assert.match(APP_JS, /check\.sourceScaffoldOverlap/u);
+  assert.match(APP_JS, /candidate-review-scaffold/u);
+  assert.match(APP_JS, /escape\(link\.sourceEvent\)/u);
+  assert.match(APP_JS, /escape\(link\.candidateEvent\)/u);
+  assert.match(APP_JS, /SCAFFOLD_LINKAGE_LABEL/u);
+  assert.match(APP_JS, /SCAFFOLD_DIMENSION_LABEL/u);
+  assert.match(APP_JS, /SCAFFOLD_DIMENSION_TITLE/u);
+  assert.match(APP_JS, /SOURCE_SCAFFOLD_COPY_SCORE/u, "换皮线从共用常量取，不在浏览器里再写一个 70");
+  assert.match(APP_JS, /疑似换皮/u);
+});
+
+test("两个枚举在浏览器侧都有中文标签，与 schema 逐字对齐", () => {
+  const schema = JSON.parse(fs.readFileSync(
+    new URL("../src/contracts/schemas/story-candidate-review-strict.schema.json", import.meta.url), "utf8"
+  ));
+  const labelKeys = (name) => {
+    const start = APP_JS.indexOf(`const ${name}`);
+    assert.ok(start >= 0, `${name} 不存在`);
+    const body = APP_JS.slice(start, APP_JS.indexOf("};", start));
+    return new Set(body.split("\n").slice(1).map((line) => line.trim().split(":")[0]).filter(Boolean));
+  };
+  // 反过来也要成立：标签表里不许有 schema 没定义的取值，否则是照着想象写的。
+  assert.deepEqual(labelKeys("SCAFFOLD_LINKAGE_LABEL"), new Set(schema.$defs.scaffoldLinkage.enum));
+  assert.deepEqual(labelKeys("SCAFFOLD_DIMENSION_LABEL"), new Set(schema.$defs.scaffoldDimension.enum));
+});
+
+test("摘要数出越线的候选数，旧报告整段不显示", async () => {
+  const { candidateReviewMetrics, candidateReviewHeadline } =
+    await import("../public/story-review-metrics.js");
+  const review = {
+    candidateChecks: [
+      { verdict: "revise", mechanismChecks: [], coherenceChecks: [], sourceScaffoldOverlap: { score: 95 } },
+      { verdict: "pass", mechanismChecks: [], coherenceChecks: [], sourceScaffoldOverlap: { score: 10 } }
+    ]
+  };
+  const metrics = candidateReviewMetrics(review);
+  assert.equal(metrics.scaffoldScored, 2);
+  assert.equal(metrics.scaffoldCopies, 1);
+  assert.match(candidateReviewHeadline(review), /疑似换皮 1\/2/u);
+
+  // 旧报告没有这一档：数出来是 0，但那是「这一档还不存在」，不是「查过了没换皮」。
+  const legacy = { candidateChecks: [{ verdict: "pass", mechanismChecks: [{ verdict: "depicted" }] }] };
+  assert.equal(candidateReviewMetrics(legacy).scaffoldScored, 0);
+  assert.doesNotMatch(candidateReviewHeadline(legacy), /疑似换皮/u);
 });
 
 // 可比对数字与 §2.13 同规格：**从逐条判定里数出来，不问模型要总分。**

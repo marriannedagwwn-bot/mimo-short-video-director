@@ -2,7 +2,7 @@ import { syncShotCharacterReference } from "./character-reference-sync.js";
 import { formatStageUsageSuffix, mergeStageUsage } from "./token-usage-format.js";
 import { storyPackageFilename } from "./export-filename.js";
 import { downloadProductionPackage } from "./production-package-download.js";
-import { candidateReviewHeadline, storyReviewHeadline, storyReviewMetrics } from "./story-review-metrics.js";
+import { SOURCE_SCAFFOLD_COPY_SCORE, candidateReviewHeadline, storyReviewHeadline, storyReviewMetrics } from "./story-review-metrics.js";
 import {
   createDirectorArtifactSynchronizer,
   formatDirectorCompletionStatus
@@ -1820,6 +1820,33 @@ const COHERENCE_KIND_LABEL = {
   other: "其它"
 };
 
+// 事件链逐环的接法，与 schema 的 linkage 枚举逐字一一对应。
+// same 是这里唯一的坏消息：因果接法与顺序都照搬，就是换皮的形状。
+const SCAFFOLD_LINKAGE_LABEL = {
+  same: "同一条因果接法、同一顺序",
+  reordered: "有对应事件但顺序或接法变了",
+  different: "这个位置做的是另一件事",
+  absent: "候选里没有这件事"
+};
+
+// 五个辅助观察的取值。not_applicable 是 2026-09-12 补的：原片或候选根本没有
+// 任务、没有奖励时（生活片段型很常见），逼模型在 same/partial/different 里三选一
+// 只会得到一个编出来的值。
+const SCAFFOLD_DIMENSION_LABEL = {
+  same: "同类",
+  partial: "部分相同",
+  different: "不同",
+  not_applicable: "不适用"
+};
+
+const SCAFFOLD_DIMENSION_TITLE = {
+  taskType: "任务性质",
+  midSection: "中段怎么推进",
+  rewardSource: "获得的东西从哪来",
+  rewardHandling: "拿到之后怎么处置",
+  endingShape: "结尾形状"
+};
+
 // 评审结论与候选**自己的说辞**并排显示。
 // 模型看不到右边那一栏（服务端按允许清单剥掉了），你看得见——差在哪一眼就知道。
 function renderStoryCandidateReview(review, themeVariants, metadata = null) {
@@ -1848,6 +1875,7 @@ function renderStoryCandidateReview(review, themeVariants, metadata = null) {
           <div class="review-check-head">
             <span class="scene-id">${escape(entry.id)}</span>
             <b>${escape(entry.mechanism)}</b>
+            ${entry.requiresCause === true ? `<span class="review-verdict verdict-partially_depicted">需要前因</span>` : ""}
           </div>
           <p><b>原片在哪兑现：</b>${escape(entry.whereInSource)}</p>
         </div>`).join("")}
@@ -1866,9 +1894,36 @@ function renderStoryCandidateReview(review, themeVariants, metadata = null) {
           ${source ? `<b>${escape(source.mechanism)}</b>` : ""}
           <span class="review-verdict verdict-${escape(entry.verdict)}">${escape(REVIEW_VERDICT_LABEL[entry.verdict] || entry.verdict)}</span>
         </div>
-        <p><b>本候选在哪兑现：</b>${escape(entry.whereInCandidate)}${(entry.beatIndexes || []).length ? `（第 ${escape((entry.beatIndexes || []).join("、"))} 拍）` : ""}</p>
+        <p><b>本候选在哪兑现：</b>${escape(entry.actionEvidence)}${(entry.beatIndexes || []).length ? `（第 ${escape((entry.beatIndexes || []).join("、"))} 拍）` : ""}</p>
+        ${source?.requiresCause === true ? `
+        <p><b>前因：</b>${entry.causeEvidence ? escape(entry.causeEvidence) : "<span class=\"muted-note\">这条机制标了需要前因，而评审没有写出前因</span>"}</p>` : ""}
       </div>`;
     }).join("");
+    // 骨架对照（2026-09-12）。评审此前只比候选**之间**的差异，从来没比过候选与原片——
+    // 四个候选彼此完全不同，仍然可能各自都在复刻原片，那是两个独立的问题。
+    // 事件链是判据，五个维度只是辅助观察；不渲染事件链就只剩一个没有依据的分数。
+    const scaffold = check.sourceScaffoldOverlap;
+    const scaffoldBlock = scaffold ? `
+      <div class="candidate-review-scaffold">
+        <b>与原片的故事链重合：${escape(scaffold.score)} / 100${Number.isInteger(scaffold.score) && scaffold.score >= SOURCE_SCAFFOLD_COPY_SCORE ? "（疑似换皮）" : ""}</b>
+        <p class="review-why">${escape(scaffold.why)}</p>
+        ${(scaffold.eventChain || []).map((link) => `
+          <div class="review-check">
+            <div class="review-check-head">
+              <span class="review-verdict verdict-${link.linkage === "same" ? "not_depicted" : link.linkage === "reordered" ? "partially_depicted" : "depicted"}">${escape(SCAFFOLD_LINKAGE_LABEL[link.linkage] || link.linkage)}</span>
+              ${(link.beatIndexes || []).length ? `<span class="scene-id">第 ${escape((link.beatIndexes || []).join("、"))} 拍</span>` : ""}
+            </div>
+            <p><b>原片：</b>${escape(link.sourceEvent)}</p>
+            <p><b>本候选：</b>${escape(link.candidateEvent)}</p>
+          </div>`).join("")}
+        <div class="data-grid">
+          ${Object.keys(SCAFFOLD_DIMENSION_TITLE).map((key) => cell(
+            SCAFFOLD_DIMENSION_TITLE[key],
+            SCAFFOLD_DIMENSION_LABEL[scaffold[key]] || scaffold[key]
+          )).join("")}
+        </div>
+        <span class="muted-note">任务同类、结尾相似、都是两个人一起做事，本身都不足以判换皮；判据是那条因果链。</span>
+      </div>` : "";
     // 因果自洽检查是这份报告里唯一「呈现 vs 呈现」的一档（§2.12b ⑤），
     // 它的全部意义就是把动作链里的断裂摆出来给人看——不渲染等于这一档没做。
     const coherence = (check.coherenceChecks || []).length ? `
@@ -1904,6 +1959,7 @@ function renderStoryCandidateReview(review, themeVariants, metadata = null) {
         </div>
         ${mechanisms}
         ${coherence}
+        ${scaffoldBlock}
         <p class="review-keep"><b>别改掉：</b>${escape(check.keepThis)}</p>
         ${claims}
         ${reviseAction(check)}
