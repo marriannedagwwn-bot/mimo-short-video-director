@@ -8,9 +8,16 @@ import {
 } from "./contracts/contract-validator.js";
 import { GLOBAL_CHARACTER_BOUNDARY_VERSION } from "./character-boundary.js";
 import { assertVideoPromptProfile } from "../public/video-prompt-profiles.js";
-// 换皮线只有一份，与浏览器摘要共用：两边各写一个 70 迟早漂成
-// 「页面说没越线、服务端说越线了」。同规格先例见 public/all-reference-limits.js。
-import { SOURCE_SCAFFOLD_COPY_SCORE } from "../public/story-review-metrics.js";
+// 换皮线、维度权重与五档阈值只有一份，与提示词、浏览器摘要共用：
+// 各写一份迟早漂成「页面显示的权重与实际算分不一样」。
+// 同规格先例见 public/all-reference-limits.js。
+import {
+  CANDIDATE_REVIEW_DIMENSION_WEIGHTS,
+  SOURCE_SCAFFOLD_COPY_SCORE,
+  candidateEffectiveVerdict,
+  candidateOverallScore,
+  candidateTier
+} from "../public/story-review-metrics.js";
 
 export class InputError extends Error {
   constructor(message, details = []) {
@@ -66,7 +73,7 @@ const outputContracts = {
   animationPlan: ["selectedVariantId", "title", "productionStrategy", "visualBible", "characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "editPlan", "generationChecklist", "modelAgnosticNotes", "continuityAndSafetyCheck", "uncertainties"],
   storyQualityReview: ["schemaVersion", "selectedVariantId", "retentionChecks", "sceneFunctionChecks", "issues", "summary"],
   animationPlanReview: ["schemaVersion", "overallScore", "dominantDefect", "strengths", "dimensions", "shotEvaluations", "propTracking", "sceneCheck", "issues", "otherFindings", "upgradePath", "revisionBrief"],
-  storyCandidateReview: ["schemaVersion", "sourceMechanisms", "candidateChecks", "recommendedOrder", "summary"]
+  storyCandidateReview: ["schemaVersion", "sourceMechanisms", "candidateChecks", "holisticPreferenceOrder", "batchTemplateConvergence", "briefProblemsDetected", "summary"]
 };
 
 const animationFoundationFields = outputContracts.animationPlan.filter((field) => field !== "shotPlan");
@@ -376,7 +383,7 @@ export function ensureOutputContract(value, contract) {
     animationPlan: ["characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "generationChecklist", "modelAgnosticNotes", "uncertainties"],
     storyQualityReview: ["retentionChecks", "sceneFunctionChecks", "issues"],
     animationPlanReview: ["strengths", "dimensions", "shotEvaluations", "propTracking", "sceneCheck", "issues", "otherFindings", "upgradePath"],
-    storyCandidateReview: ["candidateChecks", "recommendedOrder"]
+    storyCandidateReview: ["candidateChecks", "holisticPreferenceOrder", "briefProblemsDetected"]
   }[contract] || [];
   const wrongArrays = arrayFields.filter((key) => !Array.isArray(value[key]));
   if (wrongArrays.length) throw new OutputContractError(`${contract} 字段类型无效：${wrongArrays.join("、")} 必须是数组`);
@@ -2890,7 +2897,8 @@ export function ensureStoryQualityReviewCoversStory(review, fullStory) {
  *   2. 回显的 title 必须**包含**候选原文（复用 storyReviewEchoCoversSource，不写第二套）
  *   3. mechanismChecks / coherenceChecks / sourceScaffoldOverlap.eventChain 引用的拍号
  *      必须在该候选 storyOutline 范围内（三个数组**共用同一份** checkBeats）
- *   4. recommendedOrder 必须是全部候选 id 的一个排列，不多不少不重复
+ *   4. holisticPreferenceOrder（模型的整体偏好序）必须是全部候选 id 的一个排列；
+ *      scoreOrder 由服务端按加权分派生，两者**刻意不强制一致**
  *
  * 另有三条 verdict 交叉闸门，同样只做计数、枚举与整数比较：
  *   5. 引用的机制 id 必须在顶层清单里，且清单内 id 不得重复
@@ -3028,57 +3036,28 @@ export function ensureStoryCandidateReviewCoversCandidates(review, candidates) {
     // 事件链的拍号与另外两个数组走同一份判定，路径指向真正出错的那个数组。
     checkBeats(check.sourceScaffoldOverlap?.eventChain, "sourceScaffoldOverlap/eventChain");
 
-    // 因果自洽与 verdict 的交叉闸门。**判定是纯算术加枚举比较，不含语义判断**：
-    // 只数 coherenceChecks 的长度，不裁决那条自洽问题成不成立。
+    // 因果自洽、换皮与 BLOCKER 硬伤**不再是 verdict 闸门，而是派生时的降级理由**
+    // （2026-09-12）。原来两条闸门写的是「报了因果断裂就不许判 pass」，
+    // 拦的是模型自报的 verdict；现在模型根本不写 verdict——它由分数与这三条
+    // 确定性派生，于是那类失败**由构造消除**，与 §2.14「签发字段由构造保证不可能
+    // 被改动」同规格。概念一个没丢：它们变成 verdictOverrideReasons 的取值，
+    // 在报告里照样写明「9.2 分、最高档，但因为因果断裂未清所以现在不放行」。
     //
-    // 依据是 2026-09-09 的首次真实回放（阶段 0）。评审把一个候选判成 pass 并排在第 2，
-    // 而该候选动作链里有三处已核实的矛盾：对白说「顺路」而同一拍写「反方向」；
-    // 角色怀里已经抱着能解决问题的道具，却另找一个更差的替代物去保护它；
-    // 任务目的在最后一拍被另一条线当场抵消。评审的 coreInteraction 甚至把其中一条
-    // **原样抄了下来**当成功案例——它读对了动作，只是从没被要求检查动作之间合不合得上。
-    //
-    // 根因是 verdict 声称的比评审实际检查的多：pass 的定义是「可以直接展开」，
-    // 而评审只审「机制有没有迁移过来」。这条闸门让 pass 重新对得起它的定义。
-    // 报出自洽问题**不等于**否定候选：revise 是正常结论，drop 仍留给机制本身缺失的情况。
-    const coherence = Array.isArray(check.coherenceChecks) ? check.coherenceChecks : [];
-    if (coherence.length && String(check.verdict || "") === "pass") {
-      push(
-        "STORY_CANDIDATE_REVIEW_PASS_WITH_COHERENCE_BREAK",
-        `/candidateChecks/${index}/verdict`,
-        `候选「${candidateId}」报出了 ${coherence.length} 处因果自洽问题，就不能判 pass`
-        + "（pass 的定义是「可以直接展开」）；改判 revise 或 drop，或者删掉那几条不成立的自洽问题"
-      );
-    }
-
-    // 换皮闸门。与上面那条同规格：**纯算术加枚举比较，零语义**——只比一个整数，
-    // 不裁决那个分数打得对不对。
-    //
-    // **驱动条件只有骨架重合分一个，刻意不加「机制兑现率」前置条件。**
-    // 落地方案原本写的是「兑现率 ≥ 2/3 且 分数 ≥ 70」，那个组合有个当场就能看见的漏洞：
-    // 候选照搬了原片事件链，但前因没写好、兑现率反而低，于是从闸门底下走掉——
-    // 换皮程度越高越安全，方向正好反了。
-    //
-    // 同一份计划里的另一处改动还让这个漏洞必然发生：双证据标准把一组实测的
-    // 兑现率从 70.8% 压到 54.2%，已经低于 2/3。两条一起落地，闸门就永远不会触发。
-    //
-    // 阈值 70 来自单次盲测的分布（已知换皮的四个 95、正常的四个 10–50），
-    // **不是实证过的最优值**。真实回放数据够了再调，不得为了放某个候选过而下调。
-    const scaffoldScore = check.sourceScaffoldOverlap?.score;
-    if (Number.isInteger(scaffoldScore)
-      && scaffoldScore >= SOURCE_SCAFFOLD_COPY_SCORE
-      && String(check.verdict || "") === "pass") {
-      push(
-        "STORY_CANDIDATE_REVIEW_PASS_WITH_SCAFFOLD_COPY",
-        `/candidateChecks/${index}/verdict`,
-        `候选「${candidateId}」与原片的事件链重合度打到 ${scaffoldScore}（≥ ${SOURCE_SCAFFOLD_COPY_SCORE}），就不能判 pass`
-        + "：换掉名词但沿用同一条因果链是换皮，不是迁移；改判 revise 或 drop，"
-        + "或者重新核对事件链——如果只是任务同类、场景相似而因果链并不相同，那个分数本来就打高了"
-      );
-    }
+    // 关键纪律：**降级只改 effectiveVerdict，绝不回头改 overallScore 或 tier**。
+    // 用压低质量分来实现降级，会把「这故事其实很好，但有一处不能带进 FullStory 的
+    // 问题」压成「这故事不好」，两件事从此再也分不开。
+    validateCandidateReviewDimensions(check, index, push);
+    validateCandidateReviewDefect(check, index, push);
+    validateCandidateReviewAssumptions(check, index, push);
+    validateCandidateReviewSuggestions(check, index, push);
   });
 
+  validateCandidateReviewBatchConvergence(review, list, push);
+
   const ids = list.map((candidate) => String(candidate?.id || "").trim()).filter(Boolean);
-  const order = (Array.isArray(review.recommendedOrder) ? review.recommendedOrder : [])
+  // 这条闸门管的是**模型给的那一份**（整体偏好序）。scoreOrder 由服务端从分数派生，
+  // 按构造就是一个排列，不需要也不应该再校验一遍。
+  const order = (Array.isArray(review.holisticPreferenceOrder) ? review.holisticPreferenceOrder : [])
     .map((entry) => String(entry || "").trim());
   const missing = ids.filter((id) => !order.includes(id));
   const unknown = order.filter((id) => !ids.includes(id));
@@ -3086,8 +3065,8 @@ export function ensureStoryCandidateReviewCoversCandidates(review, candidates) {
   if (missing.length || unknown.length || duplicated.length || order.length !== ids.length) {
     push(
       "CANDIDATE_REVIEW_ORDER_NOT_PERMUTATION",
-      "/recommendedOrder",
-      `recommendedOrder 必须是全部 ${ids.length} 个候选 id 的一个排列`
+      "/holisticPreferenceOrder",
+      `holisticPreferenceOrder 必须是全部 ${ids.length} 个候选 id 的一个排列`
       + `${missing.length ? `；漏了 ${missing.join("、")}` : ""}`
       + `${unknown.length ? `；出现了不存在的 ${unknown.join("、")}` : ""}`
       + `${duplicated.length ? `；重复了 ${[...new Set(duplicated)].join("、")}` : ""}`
@@ -3103,6 +3082,264 @@ export function ensureStoryCandidateReviewCoversCandidates(review, candidates) {
   checks.forEach((check, index) => {
     check.title = String(list[index]?.title || "");
   });
+  deriveCandidateReviewVerdicts(review);
+  return review;
+}
+
+/**
+ * 十一个维度的完整性判定。**纯集合与区间比较，零语义**——它不裁决分数打得对不对，
+ * 只保证每个维度都被评过一次、id 没写错、分数在 0-10 内。
+ *
+ * 判定照搬 animation-plan-review-validation.js 里同名那段的写法，权重表同样是
+ * Object.freeze 常量；差别只在这里的权重表与提示词、浏览器共用一份。
+ */
+function validateCandidateReviewDimensions(check, index, push) {
+  const expected = Object.keys(CANDIDATE_REVIEW_DIMENSION_WEIGHTS);
+  const rows = Array.isArray(check?.dimensions) ? check.dimensions : [];
+  const seen = new Set();
+  rows.forEach((row, order) => {
+    const id = String(row?.id || "");
+    if (!(id in CANDIDATE_REVIEW_DIMENSION_WEIGHTS)) {
+      push(
+        "CANDIDATE_REVIEW_DIMENSION_UNKNOWN",
+        `/candidateChecks/${index}/dimensions/${order}/id`,
+        `未知维度「${id || "（空）"}」；只能用这 ${expected.length} 个：${expected.join("、")}`
+      );
+      return;
+    }
+    if (seen.has(id)) {
+      push(
+        "CANDIDATE_REVIEW_DIMENSION_DUPLICATE",
+        `/candidateChecks/${index}/dimensions/${order}/id`,
+        `维度「${id}」重复；每个维度只评一次`
+      );
+      return;
+    }
+    seen.add(id);
+  });
+  const missing = expected.filter((id) => !seen.has(id));
+  if (missing.length) {
+    push(
+      "CANDIDATE_REVIEW_DIMENSION_MISSING",
+      `/candidateChecks/${index}/dimensions`,
+      `缺少维度：${missing.join("、")}；总分按固定权重加权，少一个就算不出来`
+    );
+  }
+}
+
+/**
+ * dominantDefect 的枚举一致性。
+ *
+ * 定死枚举是为了防漂移：同一个问题被写成 weak_hook / hook_problem / poor_hook
+ * 三种拼法之后，跨批次统计就全废了。type 复用十一个维度 id 加三个特殊值，
+ * 于是判定退化成一次集合成员比较（schema 已经管住取值，这里管两者一致）。
+ *
+ * `none` 出口是有意留的：候选确实没有主要缺陷时不该逼它硬找一个。
+ */
+function validateCandidateReviewDefect(check, index, push) {
+  const defect = check?.dominantDefect;
+  const type = String(defect?.type || "");
+  const severity = String(defect?.severity || "");
+  const isNone = type === "none";
+  const isNoneSeverity = severity === "NONE";
+  if (isNone !== isNoneSeverity) {
+    push(
+      "CANDIDATE_REVIEW_DEFECT_INCONSISTENT",
+      `/candidateChecks/${index}/dominantDefect`,
+      `type 与 severity 必须同时是「无缺陷」或同时不是；现在是 type=${type || "（空）"}、severity=${severity || "（空）"}`
+    );
+    return;
+  }
+  if (!isNone && !String(defect?.description || "").trim()) {
+    push(
+      "CANDIDATE_REVIEW_DEFECT_DESCRIPTION_EMPTY",
+      `/candidateChecks/${index}/dominantDefect/description`,
+      `判了 ${type}/${severity} 就必须写清楚缺陷是什么；只有 type=none 才允许留空`
+    );
+  }
+  // 背景设定类缺陷**封顶 MAJOR，不许判 BLOCKER**（2026-09-12）。
+  //
+  // 它说的是「候选偷偷引入了一个上游从没建立过的背景事实」，例如固定搭档的猫
+  // 为什么住在院子的纸箱里。这类问题值得报，但它**不是对已签发事实的违反**：
+  // fixedCharacter 只写明它是固定搭档，从没规定它住哪儿。而 BLOCKER 在这里有
+  // 机械后果（直接把放行决定降下来），拿它压一个推断出来的违和感，力度不对。
+  //
+  // 这是一条**政策上限，不是推导**：判定只有一次枚举比较，但「该不该封顶」
+  // 是人定的。真遇到致命的背景设定问题，仍然可以在 description 里写清楚，
+  // 并用 causalLogic 之类的类型判 BLOCKER。
+  if (type === "setting_assumption" && severity === "BLOCKER") {
+    push(
+      "CANDIDATE_REVIEW_DEFECT_SEVERITY_CAP",
+      `/candidateChecks/${index}/dominantDefect/severity`,
+      "setting_assumption 最高只能判 MAJOR：它是候选偷偷引入的背景设定，"
+      + "不是对已签发角色事实的违反；如果这个问题真的致命，"
+      + "说明它其实属于别的类型（例如 causalLogic 或角色边界冲突），换成那个类型再判 BLOCKER"
+    );
+  }
+}
+
+/**
+ * 物理机制的可信度必须写出它依赖什么（2026-09-12，来自首次真实回放）。
+ *
+ * 实测：模型把「下雨天用胶带把落叶贴在纸箱上做防水」直接判成「物理上可行，
+ * 因果逻辑成立」并给 causalLogic 8 分——而正在下雨时落叶与纸箱都是湿的、
+ * 普通胶带未必粘得牢。逼它改判「不可行」只是换一个方向的过度自信；
+ * 真正缺的那一档是**「在某些条件下成立，而候选没有交代那些条件」**。
+ *
+ * 所以闸门只做一件事：**自称 conditional / unlikely 就必须把依赖的条件与失败风险写出来**。
+ * 判定是纯非空检查——「这个机制到底成不成立」是语义判断，没有兜底。
+ */
+function validateCandidateReviewAssumptions(check, index, push) {
+  (Array.isArray(check?.physicalAssumptions) ? check.physicalAssumptions : [])
+    .forEach((row, order) => {
+      const confidence = String(row?.confidence || "");
+      if (confidence !== "conditional" && confidence !== "unlikely") return;
+      const assumptions = (Array.isArray(row?.necessaryAssumptions) ? row.necessaryAssumptions : [])
+        .filter((entry) => String(entry || "").trim());
+      if (!assumptions.length) {
+        push(
+          "CANDIDATE_REVIEW_ASSUMPTION_INCOMPLETE",
+          `/candidateChecks/${index}/physicalAssumptions/${order}/necessaryAssumptions`,
+          `判了 ${confidence} 就必须列出它依赖哪些候选没有交代的条件`
+          + "（材料干湿、摩擦力、承重、粘合强度、尺寸、位置之类）；否则这个判定没有任何可核对的内容"
+        );
+      }
+      if (!String(row?.failureRisk || "").trim()) {
+        push(
+          "CANDIDATE_REVIEW_ASSUMPTION_INCOMPLETE",
+          `/candidateChecks/${index}/physicalAssumptions/${order}/failureRisk`,
+          `判了 ${confidence} 就必须写清楚那些条件不成立时画面上会出什么问题`
+        );
+      }
+    });
+}
+
+/**
+ * 修改建议的完整性。**除 remove 外的四种 kind 都必须写 whyOnlyHere。**
+ *
+ * 只对 add 强制是不够的：模板化不只发生在新增。「把结尾替换成奶奶摸摸头」是
+ * replace，照样是模板。只要提出一个正向创作方案，就必须说明它为什么依赖
+ * 这个故事已有的角色、道具、动作或伏笔；答不上来就是 generic 风险。
+ *
+ * 闸门只查非空，**答得对不对是语义判断，没有兜底**。
+ */
+function validateCandidateReviewSuggestions(check, index, push) {
+  (Array.isArray(check?.top3RevisionSuggestions) ? check.top3RevisionSuggestions : [])
+    .forEach((row, order) => {
+      const kind = String(row?.kind || "");
+      if (kind === "remove") return;
+      if (String(row?.whyOnlyHere || "").trim()) return;
+      push(
+        "CANDIDATE_REVIEW_SUGGESTION_WHY_MISSING",
+        `/candidateChecks/${index}/top3RevisionSuggestions/${order}/whyOnlyHere`,
+        `${kind || "（空）"} 类建议必须回答「为什么这个动作只能发生在这个故事里」`
+        + "；答不出来就说明它是一条谁都能用的模板建议（只有 remove 可以留空）"
+      );
+    });
+}
+
+/** 批次模板收敛的集合一致性。converged 与名单必须同真同假，纯集合比较。 */
+function validateCandidateReviewBatchConvergence(review, list, push) {
+  const convergence = review?.batchTemplateConvergence;
+  if (!convergence || typeof convergence !== "object") return;
+  const ids = new Set(list.map((candidate) => String(candidate?.id || "").trim()).filter(Boolean));
+  const affected = Array.isArray(convergence.affectedCandidateIds) ? convergence.affectedCandidateIds : [];
+  if (convergence.converged === true) {
+    if (affected.length < 2) {
+      push(
+        "CANDIDATE_REVIEW_BATCH_CONVERGENCE_TOO_FEW",
+        "/batchTemplateConvergence/affectedCandidateIds",
+        "判定这一批共用同一套深层机制，就至少要点名两个候选——一个候选不构成收敛"
+      );
+    }
+    affected.forEach((entry, order) => {
+      const id = String(entry || "").trim();
+      if (ids.has(id)) return;
+      push(
+        "CANDIDATE_REVIEW_BATCH_CONVERGENCE_UNKNOWN",
+        `/batchTemplateConvergence/affectedCandidateIds/${order}`,
+        `点名了不存在的候选「${id || "（空）"}」`
+      );
+    });
+    if (!String(convergence.sharedMechanism || "").trim()) {
+      push(
+        "CANDIDATE_REVIEW_BATCH_CONVERGENCE_MECHANISM_EMPTY",
+        "/batchTemplateConvergence/sharedMechanism",
+        "判定收敛就必须写出它们共用的到底是哪一套机制，不能只给一个布尔值"
+      );
+    }
+    return;
+  }
+  if (affected.length) {
+    push(
+      "CANDIDATE_REVIEW_BATCH_CONVERGENCE_NOT_CONVERGED",
+      "/batchTemplateConvergence/affectedCandidateIds",
+      "converged 是 false 就不该点名任何候选；要么改成 true，要么把名单清空"
+    );
+  }
+}
+
+/**
+ * 分数 → 等级 → 放行决定的派生链。**四段全部确定性，模型回显一律覆盖。**
+ *
+ * ```
+ * 11 维分数（模型）→ overallScore → tier → scoreBasedVerdict
+ *                                        → 取最严 → effectiveVerdict + overrideReasons
+ * ```
+ *
+ * 拆成四个字段而不是一个 verdict，是因为它们回答的是四个不同的问题：
+ * 分数回答「它本身有多好」，等级回答「它属于哪一档」，硬闸门回答「有没有不能带进
+ * FullStory 的问题」，最终决定回答「现在放不放行」。挤在一起就会出现
+ * 「9.2 分必须判 pass」与「有因果断裂不许判 pass」互相打架，而这两件事同时成立。
+ *
+ * 顺带消掉「模型自己加权算错」整类失败：它根本不写这些字段。
+ */
+function deriveCandidateReviewVerdicts(review) {
+  const checks = Array.isArray(review?.candidateChecks) ? review.candidateChecks : [];
+  checks.forEach((check) => {
+    const overallScore = candidateOverallScore(check.dimensions);
+    const tier = candidateTier(overallScore);
+    const reasons = [];
+    if ((Array.isArray(check.coherenceChecks) ? check.coherenceChecks : []).length) {
+      reasons.push("coherence_break");
+    }
+    const scaffoldScore = check.sourceScaffoldOverlap?.score;
+    if (Number.isInteger(scaffoldScore) && scaffoldScore >= SOURCE_SCAFFOLD_COPY_SCORE) {
+      reasons.push("scaffold_copy");
+    }
+    if (String(check.dominantDefect?.severity || "") === "BLOCKER") {
+      reasons.push("blocker_defect");
+    }
+    check.overallScore = overallScore === null ? 0 : overallScore;
+    check.tier = tier.id;
+    check.scoreBasedVerdict = tier.verdict;
+    check.verdictOverrideReasons = reasons;
+    check.effectiveVerdict = candidateEffectiveVerdict(tier.verdict, reasons);
+  });
+
+  // **这里有两个「谁更好」的系统，刻意不合并、也不强制对齐**（2026-09-12）：
+  //
+  //   scoreOrder                —— 十一维加权分从高到低，服务端派生
+  //   holisticPreferenceOrder   —— 模型看完之后凭整体判断给的顺序
+  //
+  // 实测它们会分歧：一次回放里模型推荐先做 V1（6.83），而 V4 分更高（6.89）。
+  // 强制模型把两者写成一样只是把信息藏起来——那个分歧本身才是有价值的观察
+  // （「为什么整体上更喜欢 V1，评分表却把 V4 算高」）。
+  //
+  // **生产用 scoreOrder**：winner / runnerUp 从它派生，口径唯一、可复算。
+  // 依据是抖动数据：加权分能可靠分出最好与最差（最佳候选 3/3 排第一、sd 0.09），
+  // 中段次序不可靠——而 winner 只取第一名，正好落在它可靠的那一段。
+  const scoreOrder = checks
+    .map((check, index) => ({ id: String(check.candidateId || ""), score: Number(check.overallScore), index }))
+    // 分数相同时按原顺序，保证同一份报告每次算出来都一样。
+    .sort((a, b) => (b.score - a.score) || (a.index - b.index))
+    .map((entry) => entry.id);
+  const allDropped = checks.length > 0 && checks.every((check) => check.effectiveVerdict === "drop");
+  const verdictById = new Map(checks.map((check) => [String(check.candidateId || ""), check.effectiveVerdict]));
+  review.scoreOrder = scoreOrder;
+  review.recommendedWinner = allDropped ? "" : (scoreOrder[0] || "");
+  review.runnerUp = allDropped ? "" : (scoreOrder[1] || "");
+  review.rejectOrRegenerate = scoreOrder.filter((id) => verdictById.get(id) === "drop");
   return review;
 }
 

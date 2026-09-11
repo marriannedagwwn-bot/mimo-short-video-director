@@ -663,6 +663,202 @@ summary 也写着「最该先改的是补充将画作转赠长辈的具体动作
 没写，只送动作证据等于把「差在哪」那一半藏起来）；旧键留一个回退，因为评审报告只活在页面上，
 **而页面不会因为服务端重启而刷新**。
 
+**⑩ 升级为「选题终审编辑」：十一维评分、批次模板检查与简报冲突（2026-09-12）**。
+评审此前只回答一个很窄的问题（机制迁移、动作链自洽、骨架换皮），现在同时回答：
+**一个不了解创作背景的普通观众看完会不会继续看、能不能看懂、记不记得住角色、
+结尾的情绪回报值不值得等。** 仍然只出报告，不进 lineage、不 stale、不阻断后续。
+
+**A. 四个概念彻底分开，候选级 `verdict` 不再由模型自报。** 派生链：
+
+```
+11 维分数（模型）→ overallScore（加权）→ tier（五档）→ scoreBasedVerdict
+                                                    → 取最严 → effectiveVerdict + verdictOverrideReasons[]
+```
+
+硬闸门三条：`coherenceChecks` 非空 → `coherence_break`；
+`sourceScaffoldOverlap.score >= SOURCE_SCAFFOLD_COPY_SCORE` → `scaffold_copy`；
+`dominantDefect.severity === "BLOCKER"` → `blocker_defect`（给模型一个显式的一票否决口，
+**不必靠压分实现**）。**降级只改 `effectiveVerdict`，绝不回头改 `overallScore` 或 `tier`**——
+用压低质量分来实现降级，会把「这故事其实很好，但有一处不能带进 Full Story 的问题」
+压成「这故事不好」，两件事从此再也分不开。报告因此可以如实写成
+**9.2 分 / 最高档，但因果断裂未清 → 不放行**。
+
+**这条取代了 ⑤ 与 ⑨ 的两条 verdict 闸门。** `STORY_CANDIDATE_REVIEW_PASS_WITH_COHERENCE_BREAK`
+与 `..._PASS_WITH_SCAFFOLD_COPY` 从「拒收整份报告」变成「派生时的降级理由」：
+模型根本没有 verdict 可写错，该类失败**由构造消除**，与 §2.14「签发字段由构造保证不可能被改动」
+同规格。代价是这两个诊断码不再出现在 live——而它们本来就**从未在 live 触发过**。
+`recommendedWinner` / `runnerUp` / `rejectOrRegenerate` 同理改为服务端从
+`recommendedOrder` 与派生判定推出，杜绝「某候选判了淘汰、名单却是空的」这种自相矛盾。
+
+**B. 十一个维度与权重（合计 1.00）在 `public/story-review-metrics.js` 一份，
+提示词、校验器、浏览器共用**：`openingHook .10` / `causalLogic .10` / `protagonistAgency .08` /
+`characterSpecificity .12` / `storySpecificity .10` / `originality .10` / `progression .10` /
+`emotionalPayoff .10` / `visualMemorability .10` / `productionFeasibility .05` /
+`dialogueAndNaturalness .05`。闸门只查齐全、无未知、无重复、分数在 0–10
+（`CANDIDATE_REVIEW_DIMENSION_*`，判定照搬 `animation-plan-review-validation.js` 那段）。
+
+**这条与 §2.13 / §2.14 已写进契约的结论正面冲突，是用户在看到数据后仍然明确选择的路线。**
+那两处写死「不打总分、不设门槛」的依据是：剧情体检 13 份的综合分**全部挤在 7.8–8.3**、
+中位 8.2，而 ChatGPT 给参考片本身也才 8.4；分镜终审两个模型评同一份 Plan 总分只差 **0.06**，
+而单个维度能差 **±1.0**。**候选阶段没有自己的数据**，所以先按写定的权重落地、再用真实回放判断。
+落地后要量的东西写在 `docs/候选评审判定修正-落地方案-2026-09-12.md`：
+`overallScore` 标准差与 tier 分布、各维度各自的标准差、每维与 `recommendedOrder` 的相关性、
+winner 与 runnerUp 的平均分差、换模型重评的一致性。攒够 10–20 个四候选批次再判断；
+**在那之前不要凭感觉调权重**，如果同样挤在窄带里，这条阈值就不该继续当选题依据。
+
+**C. `dominantDefect` 定死枚举**：`type` = 十一个维度 id ∪ `brief_overconstraint` /
+`template_convergence` / `none`；`severity` ∈ `BLOCKER | MAJOR | MINOR | NONE`。
+定死是为了防漂移——同一个问题被写成 `weak_hook` / `hook_problem` / `poor_hook` 三种拼法之后，
+跨批次统计就全废了。`none` 出口是有意留的：**不逼模型为了填字段硬找毛病**。
+
+**D. `batchTemplateConvergence`（顶层）**：逐个评完之后必须把整批放在一起看，
+检查它们是不是共用同一套问题结构、解决结构、萌点结构、情绪回报结构、高潮机制或人物关系公式。
+**即使题材与道具各不相同，深层机制一致就要判 `converged: true`。** 它是**集合属性**，
+所以放顶层——逐个看，四个都可以声称自己原创；只有横着看才会发现是同一个故事换了四套布景。
+闸门是纯集合比较：判 true 就至少点名两个真实候选并写出机制，判 false 就不许点名任何候选。
+注意与候选生成阶段的 `validateVariantStructuralDivergence` 是两件事：那条比的是
+`dramaticFunction` 序列加三个派生投影的**字面签名**，这条比的是深层机制，签名不同也可能收敛。
+
+**E. `briefAlignment` 单独输出，不进质量总分。** 一个高质量候选没执行简报的某条 `mustRetain`
+时不自动扣分，先分清是「违反用户真正的硬约束」（FAIL）、「破坏受众定位或核心情绪」（WARN），
+还是「只是用了比简报更自然的剧情引擎」（PASS + 在 `suggestBriefChange` 里**建议改简报**）。
+顶层 `briefProblemsDetected` 记这一批暴露出的简报问题。**把合规算进总分就会让评审学成
+「谁最像简报谁分高」，那整个终审编辑就废了。**
+
+**F. `top3RevisionSuggestions`：REPLACE BEFORE ADD，且除 `remove` 外都必须写 `whyOnlyHere`。**
+只对 `add` 强制是不够的——模板化不只发生在新增：「把结尾替换成奶奶摸摸头」是 `replace`，
+照样是模板。只要提出正向创作方案，就必须说明它依赖这个故事已有的哪个角色、道具、动作或伏笔
+（`CANDIDATE_REVIEW_SUGGESTION_WHY_MISSING`）。**闸门只查非空，答得对不对没有兜底。**
+
+**G. 输入面新增三份，按允许清单投影**（`buildStoryCandidateReviewUpstream`）：
+`creatorProfile`（硬事实）、`creativeBrief`（`storyEngine` / `recastTest` 两侧 /
+`nonNegotiableExperience` / `reusableHighValueBeats` 四项）、`referenceAnalysis`
+（只送 `retentionDrivers` 与 `dialogueStyle`——多送会喂出「越像参考片越好」的倾向）。
+**`creativeBrief` 不是原片事实**：机制清单与骨架对照的基准仍然只有 `sourceScriptReconstruction`，
+拿简报当基准等于给 §2.12b 那类上游虚构盖章。三份都可选，缺了不阻断评审。
+候选投影另补送 `keyChoice` / `climax` / `emotionalPayoff`，措辞必须准确：
+它们**由服务端从 `storyOutline` 按拍号确定性派生**，所以保证与动作链逐字一致、不是第二版剧情；
+**但拍号是模型选的，「这一拍真的构成关键选择」仍要评审自己判断。**
+
+**`creatorTasteProfile` 全项目零命中，本版不做。** 它不能并进 `creatorProfile`（恰好三字段
+且整体进 `sourceDigest`，加字段会作废全局角色边界、要求重跑整条工作流，§2.5）；
+v1 用 `vertical + constraints` 近似承担「创作目标」。真要独立口味档案，
+正确做法是照「角色表情规则 / 剧情时长目标」那套**只进提示词、不写 Artifact、不进 digest** 单独加。
+
+**H. 输出体积与截断，这次一起处理。** 4 个候选 × 11 维 = **44 条维度证据**，
+每条写 200 字就是 8800 字起步。`storyCandidateReview` 因此在 `buildStageDefaults` 里
+**单独把 `maxCompletionTokens` 抬到 32768**（与分镜终审单独放宽 `requestTimeoutMs` 同规格，
+不碰全局默认）；提示词另给长度预算（evidence ≤80 字、suggestion ≤120 字、
+收敛证据 ≤200 字），**刻意不做 schema `maxLength`**——超一个字就 fail closed 会白烧一次调用。
+**截断走单独的重试分支**：`model-call-coordinator.js` 本来就在 `finishReason === "length"` 时抛
+`MODEL_OUTPUT_TRUNCATED`，而原来的 `retryPrompt` 只认「有没有校验诊断」，
+截断时没有诊断 → 原样重发 → 第二次照样写超。现在识别该码后要求压缩措辞、保留全部字段，
+`retryTokenLimit` 顺带把上限抬 1.5 倍。预算仍是 2 次，禁止第三次。
+
+**I. 首次真实回放暴露的三类漏判，当日补上（2026-09-12）**。
+报告在 `docs/实验数据-2026-09-12/选题终审-首次真实回放-报告.md`。
+
+- **`ownership_or_authority`**（新缺陷类型）：`causalLogic` 那一维现在必须另查一条世界规则——
+  **角色修改、拿走、赠送、销毁或长期占有一件物品时，它有没有处置权、谁明确许可过**。
+  这与物理成不成立是两回事（学校的东西拿回家、公共场所物品擅自改造、别人的东西转送第三人）。
+  **这条至今没有被一个清晰的正面案例检验过**：两次回放都没触发，而那个案例本身是边界情况
+  （候选自己写了「管理员说只能当废纸处理」，构成处置权的隐含释放）。
+- **`setting_assumption`**（新缺陷类型，**确定性封顶 MAJOR**，诊断码
+  `CANDIDATE_REVIEW_DEFECT_SEVERITY_CAP`）：问一句「这个候选是不是偷偷引入了一个上游从没
+  建立过、但会明显改变观众对角色关系理解的背景事实」。典型是把固定搭档写成平时睡院子纸箱里——
+  角色设定只说它是固定搭档，没规定它住哪儿。**封顶是政策决定不是推导**：它是候选自己加的设定，
+  不是对已签发角色事实的违反，而 BLOCKER 在这里有机械后果（直接降级）。真致命的情况仍可换成
+  别的类型判 BLOCKER。第二次回放立刻用上了（判在「奶奶突然出现在图书馆长椅上」）。
+- **`physicalAssumptions`**（新数组，可为空）：物理机制**不许「可行 / 不可行」二选一**。
+  三档 `established` / `conditional` / `unlikely`，后两档必须写出 `necessaryAssumptions`
+  （材料干湿、摩擦力、承重、粘合强度、尺寸、位置……）与 `failureRisk`，闸门只查非空
+  （`CANDIDATE_REVIEW_ASSUMPTION_INCOMPLETE`）。
+  起因是实测把「下雨天用胶带把落叶贴在纸箱上防水」判成「物理上可行」并给 causalLogic 8 分；
+  逼它改判「不可行」只是换个方向的过度自信，**真正缺的那一档是「换个条件就成立」**。
+  **这条修复明确有效**：第二次回放四条机制判得都对，V3 那条翻转过来并顺带报出一处因果断裂。
+
+**J. 跨包回放：`batchTemplateConvergence` 命中了一个带标准答案的已知正例（2026-09-12）。**
+拿「身体拟物」那一批（泥坑企鹅滑行／人形晾衣杆／飞机翅膀／螺旋桨）回放，外部评审当时
+直接写出过期望输出「角色通过把身体想象成工具或交通工具来解决日常问题，V1–V4」。
+本阶段独立写出「放弃常规工具，将主角身体或配饰夸张地拟态为某种机械/动物工具
+（企鹅/晾衣杆/飞机/螺旋桨），配合「嗷呜」拟声词来解决日常小困境」，四个候选全中，
+并多找到一条对方没提的（四个都用同一个拟声词）。**这是目前最强的一次验证**：
+为这个场景设计的字段在这个场景上独立复现了同一判断。同一次回放里四个候选全部 `drop`，
+`recommendedWinner` 派生为空字符串——「全批淘汰」那条分支第一次在 live 走到。
+
+**同一次回放暴露的两个问题，都不得当成已解决**：
+①**简报判断方向在两个包之间完全相反**——包一说「放宽『外部奖励转赠长辈』」，
+包二说「强制要求保留」，而后者与它自己抓到的收敛结论有张力（这批的病根是身体拟物模板，
+不是丢了奖励转赠），也与已确认的判断相左。**`briefAlignment` / `briefProblemsDetected`
+目前不稳，不得当成改简报的依据**，只能当线索由人判。
+②**`recommendedOrder` 与派生总分不一致**：推荐先做 V1（6.83），而 V4 分更高（6.89）。
+说明十一维加权分与模型的整体排名不是同一件事。**本版刻意不为此加闸门**——两者都由模型给，
+强行对齐只会掩盖分歧；但它是「加权分到底在测什么」的直接证据，要进那批统计数据。
+
+**K. 抖动测量：同契约、同输入，两个包各 3 次（2026-09-12，共约 ¥4.6）。**
+数据在 `docs/实验数据-2026-09-12/抖动回放/`。它回答了三个此前悬着的问题：
+
+1. **「分数收窄是这次改动造成的吗」→ 不成立，撤回该担心。** 同契约三次的批内极差本身就在
+   **1.33 / 2.06 / 1.72** 之间浮动，而旧契约那次是 2.72——差距落在噪声量级内。
+   **不要为此回头调权重或删掉物理审视。**
+2. **加权分能可靠分出「最好」与「最差」，分不出中间次序。** 有真实差异的那个包里，
+   最佳候选三次全排第一、分数 **sd 仅 0.09**（8.06–8.29），最差候选稳定垫底（sd 0.21）；
+   而中间两个 sd 0.45–0.46，三次排序各不相同。四个同模板的那个包里排序完全是噪声
+   （三次三样，`recommendedWinner` 两次为空一次有值）——这与「没有真实差异可分」一致，
+   不是判定失效。**因此 `recommendedOrder` 的第一名可用，中段次序不可用。**
+3. **`briefAlignment` 明确不可用**：同一份输入、同一个候选，三次给出互相矛盾的合规判定
+   （V1 与 V2 的 PASS/WARN 直接对调过；另一个包三次 WARN×4、WARN×4、PASS×4），
+   再加上跨包那次方向相反的改简报建议。**只能当线索给人看，不得当成任何自动依据。**
+
+**同一轮里重试路径第一次在 live 触发并成功**：一次输出把 `briefProblemsDetected[0]`
+写成对象、被 schema 拦下，带诊断重做一次即通过（该次 ¥1.31）。根因是输出模板里那个字段是
+**空数组、没有元素示例**——与 §2.14 `shotEvaluations[].issues` 栽的是同一跤，已补非空示例并加测试锁住。
+
+**改动本身的代价（现已知无法归因于改动）**：第二次回放十一维里九维极差变小、首选从
+8.70（pass）掉到 8.06（revise），且看得出具体路径（V2 的 `productionFeasibility` 9→7
+恰对应它那条被判 `conditional` 的玻璃罐机制）。抖动数据显示这些都在同契约的自然波动范围内。
+
+**L. 抖动数据到手后的三处定型（2026-09-12）。**
+
+**① 两个「谁更好」的系统拆开命名，都不删、也不强制对齐。**
+`recommendedOrder` 改名为 **`holisticPreferenceOrder`**（模型看完之后凭整体判断给的顺序，
+仍由模型产出、仍走排列校验），另加**服务端派生**的 **`scoreOrder`**（十一维加权分从高到低，
+同分时按原顺序，保证可复算）。**`recommendedWinner` / `runnerUp` / `rejectOrRegenerate`
+现在从 `scoreOrder` 派生**，不再从模型那份取。
+依据是抖动数据：加权分**能可靠分出最好与最差**（最佳候选 3/3 排第一、sd 0.09，最差稳定垫底），
+**分不出中间次序**（中段 sd 0.45–0.46，三次排序各不相同）——而 winner 只取第一名，
+正好落在它可靠的那一段。**两份顺序不一致是有价值的观察，不是要消除的错误**
+（实测一次回放里模型推荐先做 V1 6.83，而 V4 6.89 分更高）；提示词明确告诉模型
+不必与评分一致、**不要为了看起来一致而回头改分数或改顺序**，浏览器在不一致时直接点出来。
+**不必去修「中段排序不稳」**：两个水平接近的创意本来就存在审美随机性。
+
+**② `briefAlignment` 正式降级为编辑参考信息，完全隔离。**
+它继续输出 `briefAlignment` / `briefProblemsDetected` / `suggestBriefChange`，但
+**不参与分数、不参与 tier、不参与 verdict、不自动改简报、不作为定向修订的强制任务**，
+只展示给人看。依据是抖动数据：同一份输入、同一个候选三次回放，PASS / WARN 互相翻转过；
+跨包时改简报的方向甚至完全相反（一个包说放宽「外部奖励→转赠长辈」，另一个说强制保留），
+而后者与已确认的创作方向相左。提示词与页面都写明这一点，并有测试锁住
+「改 `briefAlignment` 不改变任何派生结果」。**这个模块不删，但必须隔离。**
+
+**③ `physicalAssumptions` 新增 `literalDependency`：`required` / `optional` / `make_believe`。**
+它与 `confidence` 是**两个正交的轴**——`confidence` 回答「现实里成不成立」，
+这一项回答「**故事需不需要它真的成立**」。
+起因是《罐装阳光》：把阳光装进玻璃罐在物理上当然 `unlikely`，但剧情从没要求它真成立，
+而实测该候选的 `productionFeasibility` 9→7、`causalLogic` 9→8，
+说明模型很可能把「不是现实物理」本身当成了质量问题——**那会把童真想象误杀**。
+提示词因此写死：**扣分只针对 `required` 且 confidence 不好的那些**；
+`make_believe` 的机制**不得因为现实里做不到就扣 `productionFeasibility` 或 `causalLogic`**，
+它唯一要提醒的是镜头别把它拍成实的（例如玻璃罐内部真的凭空发光），这句写进 `failureRisk`。
+**没有新增闸门**——「有没有照着这条扣分」需要语义判断，加不了确定性兜底。
+
+**已知缺口**：①分数打得准不准、模板收敛判得对不对、简报冲突成不成立、`whyOnlyHere`
+答得成不成立，**全是语义判断，没有兜底**——闸门只保证自报的数字与标签之间不打架；
+②十一维评分本身是本次最大的未验证假设（见 B）；
+③把评审拆成「盲评质量」+「简报对齐」两次调用是**明确不做**的后续选项，
+等真的观测到「看了简报之后评分被锚定」再拆，**不要靠往提示词里堆「不要被污染」来救**。
+④修订那条路径按严格 schema 校验传入的报告，所以**旧形状的报告会被 400 拒掉**
+（页面不会因服务端重启而刷新，这种情况真实存在）——重新体检一次即可，拒得是诚实的。
+
 ### 2.13 剧情体检（storyQualityReview v1，2026-09-04）
 
 Full Story 生成之后的**独立验收，只出报告**：不修改剧情、不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、**不阻断后续 Animation Plan**。与 `boundaryWarning` 同规格，纯展示；刷新页面即失（v1 有意不持久化）。手动触发，`POST /api/story-quality-review`。

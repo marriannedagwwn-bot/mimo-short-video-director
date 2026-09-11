@@ -5,7 +5,12 @@ import { InputError, OutputContractError, deriveStoryCandidateProjections, ensur
 import { buildStoryCandidateReviewProjection, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt } from "../src/prompts.js";
 import { mockStoryCandidateReview } from "../src/mock.js";
 import { WorkflowService } from "../src/workflow.js";
-import { SOURCE_SCAFFOLD_COPY_SCORE } from "../public/story-review-metrics.js";
+import {
+  CANDIDATE_REVIEW_DIMENSION_LABELS as LABELS,
+  CANDIDATE_REVIEW_DIMENSION_WEIGHTS as WEIGHTS,
+  CANDIDATE_REVIEW_SPECIAL_DEFECT_TYPES as SPECIAL_DEFECTS,
+  SOURCE_SCAFFOLD_COPY_SCORE
+} from "../public/story-review-metrics.js";
 
 const CANDIDATES = [
   {
@@ -87,7 +92,7 @@ test("mock 报告能通过与 live 完全相同的契约与覆盖率核验", () 
 test("漏评一个候选直接失败，不做任何补齐", () => {
   const review = baseReview();
   review.candidateChecks.pop();
-  review.recommendedOrder.pop();
+  review.holisticPreferenceOrder.pop();
   assert.throws(
     () => ensureStoryCandidateReviewCoversCandidates(review, CANDIDATES),
     (error) => {
@@ -138,9 +143,9 @@ test("引用了候选里不存在的拍号必须失败", () => {
   );
 });
 
-test("recommendedOrder 必须是全部候选 id 的一个排列", () => {
+test("holisticPreferenceOrder 必须是全部候选 id 的一个排列", () => {
   const review = baseReview();
-  review.recommendedOrder = ["V1", "V1"];
+  review.holisticPreferenceOrder = ["V1", "V1"];
   assert.throws(
     () => ensureStoryCandidateReviewCoversCandidates(review, CANDIDATES),
     /CANDIDATE_REVIEW_ORDER_NOT_PERMUTATION|必须是全部 2 个候选 id 的一个排列/u
@@ -174,10 +179,12 @@ test("动作链与拍号照常送进评审，否则无从判断", () => {
   assert.equal(projection.storyOutline[1].beat, 2);
 });
 
-test("提示词写明只看动作、不打总分，并给出生活流不套戏剧结构的判据", () => {
+test("提示词写明只看动作、不许自报结论，并给出生活流不套戏剧结构的判据", () => {
   const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
-  assert.match(prompt, /你收到的候选里\*\*已经没有\*\*它们的自我评价字段/u);
-  assert.match(prompt, /\*\*不要打总分。\*\*/u);
+  assert.match(prompt, /候选投影里\*\*已经没有\*\*新颖性、保留价值、体验保真、相似风险这些字段/u);
+  // 2026-09-12 起总分是**服务端按十一维加权派生**的，模型自报会被覆盖，
+  // 所以提示词要明确告诉它别写——写了也没用，只是白烧 token。
+  assert.match(prompt, /\*\*不要写 verdict、score、tier 或任何总分。\*\*/u);
   assert.match(prompt, /更换角色、道具、地点，不自动等于创意成立/u);
   assert.match(prompt, /增加失败、身体代价、误会、奖励，不自动等于质量提高/u);
   assert.match(prompt, /生活片段型（narrativeMode: slice_of_life）不强制有任务、牺牲或大反转/u);
@@ -200,43 +207,75 @@ test("提示词带上原片动作稿——没有对照物就发现不了迁移�
 // 甚至把其中一条原样抄下来当成功案例——它读对了动作，只是从没被要求检查动作之间合不合得上。
 //
 // 闸门只数数组长度、只比枚举值，不裁决那条自洽问题成不成立。
-test("报出因果自洽问题的候选不能再判 pass", () => {
-  const review = baseReview();
-  const check = review.candidateChecks[1];
-  check.coherenceChecks = [
+// 2026-09-12：因果断裂与换皮**不再是 verdict 闸门，而是派生时的降级理由**。
+// 模型根本不写 verdict 了，所以「报了断裂却判 pass」这类失败由构造消除。
+// 关键纪律：降级只改 effectiveVerdict，**绝不回头改 overallScore 或 tier**——
+// 用压低质量分实现降级，会把「这故事很好但有一处硬问题」压成「这故事不好」。
+function scoreAll(review, score) {
+  review.candidateChecks.forEach((check) => {
+    check.dimensions.forEach((dim) => { dim.score = score; });
+  });
+  return review;
+}
+
+test("报出因果自洽问题的候选不许放行，但质量分与等级一个字不改", () => {
+  const review = scoreAll(baseReview(), 9.5);
+  review.candidateChecks[1].coherenceChecks = [
     { kind: "contradiction", beatIndexes: [1, 2], problem: "第 1 拍说没带伞，第 2 拍却已经撑着伞。" }
   ];
-  check.verdict = "pass";
-  assert.throws(
-    () => ensureStoryCandidateReviewCoversCandidates(
-      ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
-    ),
-    (error) => {
-      assert.ok(error.details.some((d) => d.code === "STORY_CANDIDATE_REVIEW_PASS_WITH_COHERENCE_BREAK"));
-      assert.match(error.message, /不能判 pass/u);
-      return true;
-    }
+  const out = ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
   );
+  const broken = out.candidateChecks[1];
+  assert.equal(broken.overallScore, 9.5, "质量分不因闸门改变");
+  assert.equal(broken.tier, "ready", "等级不因闸门改变");
+  assert.equal(broken.scoreBasedVerdict, "pass", "按分数本可直接展开");
+  assert.equal(broken.effectiveVerdict, "revise", "但现在不许放行");
+  assert.deepEqual(broken.verdictOverrideReasons, ["coherence_break"]);
+  // 没有断裂的那个照常放行，证明降级只作用于命中的候选。
+  assert.equal(out.candidateChecks[0].effectiveVerdict, "revise");
 });
 
-test("同样的自洽问题改判 revise 就通过——闸门管的是 verdict，不是要不要报", () => {
-  const review = baseReview();
-  const check = review.candidateChecks[1];
-  check.coherenceChecks = [
-    { kind: "purpose_nullified", beatIndexes: [2], problem: "任务目的在同一拍被另一条线抵消。" }
+test("没有任何断裂时，高分候选直接放行", () => {
+  const review = scoreAll(baseReview(), 9.2);
+  review.candidateChecks.forEach((check) => { check.coherenceChecks = []; });
+  const out = ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  );
+  for (const check of out.candidateChecks) {
+    assert.equal(check.tier, "ready");
+    assert.equal(check.effectiveVerdict, "pass");
+    assert.deepEqual(check.verdictOverrideReasons, []);
+  }
+});
+
+test("BLOCKER 级缺陷是第三条硬闸门——给模型一个不必压分的一票否决", () => {
+  const review = scoreAll(baseReview(), 9.8);
+  review.candidateChecks.forEach((check) => { check.coherenceChecks = []; });
+  review.candidateChecks[0].dominantDefect = {
+    type: "causalLogic",
+    severity: "BLOCKER",
+    description: "高潮完全靠巧合。"
+  };
+  const out = ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  );
+  assert.equal(out.candidateChecks[0].overallScore, 9.8);
+  assert.equal(out.candidateChecks[0].effectiveVerdict, "revise");
+  assert.deepEqual(out.candidateChecks[0].verdictOverrideReasons, ["blocker_defect"]);
+  assert.equal(out.candidateChecks[1].effectiveVerdict, "pass");
+});
+
+test("低分候选本来就是 drop，硬闸门不会把它抬回来", () => {
+  const review = scoreAll(baseReview(), 4);
+  review.candidateChecks[0].coherenceChecks = [
+    { kind: "other", beatIndexes: [1], problem: "占位。" }
   ];
-  check.verdict = "revise";
-  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+  const out = ensureStoryCandidateReviewCoversCandidates(
     ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
-  ));
-});
-
-test("空的 coherenceChecks 是合法结论，不妨碍 pass", () => {
-  const review = baseReview();
-  review.candidateChecks.forEach((check) => { check.coherenceChecks = []; check.verdict = "pass"; });
-  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
-    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
-  ));
+  );
+  assert.equal(out.candidateChecks[0].tier, "reject_or_regenerate");
+  assert.equal(out.candidateChecks[0].effectiveVerdict, "drop");
 });
 
 // ---------------------------------------------------------------------------
@@ -324,44 +363,46 @@ test("actionEvidence 是必填非空——没有动作证据的兑现等于没�
 // 仍然可能各自都在复刻原片。实测：一组 12 个候选里 9 个的任务性质与原片同类，
 // 而候选之间的重复检查一条都没报出来。
 
-test("骨架重合分到线就不能判 pass，哪怕机制一条都没迁移过来", () => {
-  const review = baseReview();
+test("骨架重合分到线就不许放行，哪怕它是满分候选", () => {
+  const review = scoreAll(baseReview(), 9.6);
+  review.candidateChecks.forEach((check) => { check.coherenceChecks = []; });
   const check = review.candidateChecks[1];
   check.sourceScaffoldOverlap.score = SOURCE_SCAFFOLD_COPY_SCORE;
   // 机制全部判未迁移：旧方案的「兑现率 ≥ 2/3」前置条件会让这个候选从闸门底下走掉，
   // 而它恰恰是照搬了原片事件链、只是前因没写好的那一类。
   check.mechanismChecks.forEach((entry) => { entry.verdict = "not_depicted"; });
-  check.verdict = "pass";
-  assert.throws(
-    () => ensureStoryCandidateReviewCoversCandidates(
-      ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
-    ),
-    (error) => {
-      const hit = error.details.find((d) => d.code === "STORY_CANDIDATE_REVIEW_PASS_WITH_SCAFFOLD_COPY");
-      assert.ok(hit, "应报 STORY_CANDIDATE_REVIEW_PASS_WITH_SCAFFOLD_COPY");
-      assert.equal(hit.path, "/candidateChecks/1/verdict");
-      assert.match(error.message, /换皮/u);
-      return true;
-    }
+  const out = ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
   );
+  assert.equal(out.candidateChecks[1].tier, "ready");
+  assert.equal(out.candidateChecks[1].effectiveVerdict, "revise");
+  assert.deepEqual(out.candidateChecks[1].verdictOverrideReasons, ["scaffold_copy"]);
 });
 
-test("差一分就不拦——闸门是一次整数比较，不做区间推断", () => {
-  const review = baseReview();
+test("差一分就不降级——判定是一次整数比较，不做区间推断", () => {
+  const review = scoreAll(baseReview(), 9.6);
+  review.candidateChecks.forEach((check) => { check.coherenceChecks = []; });
   review.candidateChecks[1].sourceScaffoldOverlap.score = SOURCE_SCAFFOLD_COPY_SCORE - 1;
-  review.candidateChecks[1].verdict = "pass";
-  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+  const out = ensureStoryCandidateReviewCoversCandidates(
     ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
-  ));
+  );
+  assert.deepEqual(out.candidateChecks[1].verdictOverrideReasons, []);
+  assert.equal(out.candidateChecks[1].effectiveVerdict, "pass");
 });
 
-test("越线的候选改判 revise 就通过——闸门管的是 verdict，不是要不要打这个分", () => {
-  const review = baseReview();
-  review.candidateChecks[1].sourceScaffoldOverlap.score = 95;
-  review.candidateChecks[1].verdict = "revise";
-  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+test("三条硬闸门同时命中时全部如实列出，不只报第一条", () => {
+  const review = scoreAll(baseReview(), 9.9);
+  const check = review.candidateChecks[1];
+  check.coherenceChecks = [{ kind: "other", beatIndexes: [1], problem: "占位。" }];
+  check.sourceScaffoldOverlap.score = 95;
+  check.dominantDefect = { type: "originality", severity: "BLOCKER", description: "换皮。" };
+  const out = ensureStoryCandidateReviewCoversCandidates(
     ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
-  ));
+  );
+  assert.deepEqual(
+    out.candidateChecks[1].verdictOverrideReasons,
+    ["coherence_break", "scaffold_copy", "blocker_defect"]
+  );
 });
 
 // 换皮线只有一份：校验器与浏览器摘要从同一个常量取值。
@@ -370,7 +411,7 @@ test("换皮线在校验器与浏览器摘要之间只有一份", async () => {
   const metrics = await import("../public/story-review-metrics.js");
   assert.equal(metrics.SOURCE_SCAFFOLD_COPY_SCORE, SOURCE_SCAFFOLD_COPY_SCORE);
   const validationSource = fs.readFileSync(new URL("../src/validation.js", import.meta.url), "utf8");
-  assert.match(validationSource, /import \{ SOURCE_SCAFFOLD_COPY_SCORE \} from "\.\.\/public\/story-review-metrics\.js"/u);
+  assert.match(validationSource, /SOURCE_SCAFFOLD_COPY_SCORE[\s\S]{0,200}from "\.\.\/public\/story-review-metrics\.js"/u);
   assert.ok(
     !/scaffoldScore >= 70|score >= 70/u.test(validationSource),
     "闸门里不许再写一个字面量 70"
@@ -514,7 +555,9 @@ test("提示词写明骨架对照逐个与原片比，且辅助观察可以不�
 
 test("提示词把换皮线写成与闸门同一个数，不另写一套口径", () => {
   const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
-  assert.match(prompt, new RegExp(`score 打到 ${SOURCE_SCAFFOLD_COPY_SCORE} 或以上同样不能判 pass`, "u"));
+  assert.match(prompt, new RegExp(`分数打到 ${SOURCE_SCAFFOLD_COPY_SCORE} 或以上，服务端会据此拦下晋级`, "u"));
+  // 两个方向的提醒都要在：压分放行与因为题材相似往高打，都是把这个分数当工具用。
+  assert.match(prompt, /既不要为了让某个候选过关而压分，也不要因为题材相似就往高打/u);
 });
 
 // 拍号合法性判定只有一份，三个数组共用；路径必须指向真正出错的那个数组。
@@ -522,7 +565,6 @@ test("coherenceChecks 引用不存在的拍号，与 mechanismChecks 走同一�
   const review = baseReview();
   const check = review.candidateChecks[1];
   check.coherenceChecks = [{ kind: "space_or_time", beatIndexes: [9], problem: "越界拍号。" }];
-  check.verdict = "revise";
   assert.throws(
     () => ensureStoryCandidateReviewCoversCandidates(
       ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
@@ -778,6 +820,57 @@ test("两个枚举在浏览器侧都有中文标签，与 schema 逐字对齐", 
   assert.deepEqual(labelKeys("SCAFFOLD_DIMENSION_LABEL"), new Set(schema.$defs.scaffoldDimension.enum));
 });
 
+// 选题终审这一档的消费者面（2026-09-12）。同一个坑这是第三次防：
+// 契约改了而渲染没跟上，页面是静默空白不是报错。
+test("浏览器读派生出来的 effectiveVerdict，分数与放行决定分开显示", () => {
+  assert.match(APP_JS, /check\.effectiveVerdict \|\| check\.verdict/u, "新字段优先、旧报告回退");
+  assert.match(APP_JS, /candidate-review-score/u);
+  assert.match(APP_JS, /check\.overallScore/u);
+  assert.match(APP_JS, /CANDIDATE_TIER_LABEL/u);
+  // 降级理由必须显示出来，并写明质量分不因此改变——这正是拆成四个概念的意义。
+  assert.match(APP_JS, /verdictOverrideReasons/u);
+  assert.match(APP_JS, /CANDIDATE_REVIEW_OVERRIDE_LABELS/u);
+  assert.match(APP_JS, /质量分与等级不因此改变/u);
+});
+
+test("十一个维度、主要缺陷、简报合规与三条建议都被渲染出来", () => {
+  assert.match(APP_JS, /CANDIDATE_REVIEW_DIMENSION_LABELS/u);
+  assert.match(APP_JS, /check\.dimensions/u);
+  assert.match(APP_JS, /check\.dominantDefect/u);
+  assert.match(APP_JS, /DEFECT_SEVERITY_LABEL/u);
+  assert.match(APP_JS, /check\.briefAlignment/u);
+  assert.match(APP_JS, /BRIEF_ALIGNMENT_LABEL/u);
+  assert.match(APP_JS, /check\.top3RevisionSuggestions/u);
+  assert.match(APP_JS, /SUGGESTION_KIND_LABEL/u);
+  assert.match(APP_JS, /whyOnlyHere/u);
+});
+
+test("批次收敛与简报问题置顶显示——它们是集合属性，不属于任何单个候选", () => {
+  assert.match(APP_JS, /review\.batchTemplateConvergence/u);
+  assert.match(APP_JS, /candidate-review-convergence/u);
+  assert.match(APP_JS, /review\.briefProblemsDetected/u);
+  assert.match(APP_JS, /review\.recommendedWinner/u);
+});
+
+test("浏览器把三份上游一起送上去，缺一份就少一节判断依据", () => {
+  const body = APP_JS.slice(
+    APP_JS.indexOf('api("/api/story-candidate-review"'),
+    APP_JS.indexOf('api("/api/story-candidate-review"') + 900
+  );
+  assert.match(body, /creatorProfile: profile\(\)/u);
+  assert.match(body, /creativeBrief: state\.output\.creativeBrief/u);
+  assert.match(body, /referenceAnalysis: state\.output\.referenceAnalysis/u);
+});
+
+test("维度标签与权重表逐字对齐，两边都不许各写一份", () => {
+  assert.deepEqual(
+    new Set(Object.keys(WEIGHTS)),
+    new Set(Object.keys(LABELS)),
+    "标签表与权重表必须覆盖同一组维度"
+  );
+  assert.match(APP_JS, /CANDIDATE_REVIEW_TIERS/u, "五档标签从共用常量取，浏览器不另写一份");
+});
+
 test("摘要数出越线的候选数，旧报告整段不显示", async () => {
   const { candidateReviewMetrics, candidateReviewHeadline } =
     await import("../public/story-review-metrics.js");
@@ -796,6 +889,620 @@ test("摘要数出越线的候选数，旧报告整段不显示", async () => {
   const legacy = { candidateChecks: [{ verdict: "pass", mechanismChecks: [{ verdict: "depicted" }] }] };
   assert.equal(candidateReviewMetrics(legacy).scaffoldScored, 0);
   assert.doesNotMatch(candidateReviewHeadline(legacy), /疑似换皮/u);
+});
+
+// ---------------------------------------------------------------------------
+// 选题终审：十一维评分、四条新闸门与派生链（2026-09-12）。
+
+test("十一个维度必须齐全，缺一个就算不出总分", () => {
+  const review = scoreAll(baseReview(), 8);
+  review.candidateChecks[0].dimensions.pop();
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      const hit = error.details.find((d) => d.code === "CANDIDATE_REVIEW_DIMENSION_MISSING");
+      assert.ok(hit, "应报 CANDIDATE_REVIEW_DIMENSION_MISSING");
+      assert.equal(hit.path, "/candidateChecks/0/dimensions");
+      return true;
+    }
+  );
+});
+
+test("未知维度与重复维度都被抓住", () => {
+  const unknown = scoreAll(baseReview(), 8);
+  unknown.candidateChecks[0].dimensions[0].id = "vibes";
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(unknown, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      assert.ok(error.details.some((d) => d.code === "CANDIDATE_REVIEW_DIMENSION_UNKNOWN"));
+      return true;
+    }
+  );
+
+  const duplicated = scoreAll(baseReview(), 8);
+  duplicated.candidateChecks[0].dimensions[1].id = duplicated.candidateChecks[0].dimensions[0].id;
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(duplicated, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      assert.ok(error.details.some((d) => d.code === "CANDIDATE_REVIEW_DIMENSION_DUPLICATE"));
+      return true;
+    }
+  );
+});
+
+// 加权总分由服务端算：模型自己算错、或干脆不算，都不影响结果。
+test("总分是按权重表算出来的，与模型无关", async () => {
+  const { CANDIDATE_REVIEW_DIMENSION_WEIGHTS, candidateOverallScore } =
+    await import("../public/story-review-metrics.js");
+  const weights = Object.values(CANDIDATE_REVIEW_DIMENSION_WEIGHTS);
+  assert.equal(Math.round(weights.reduce((sum, w) => sum + w, 0) * 100) / 100, 1, "权重合计必须是 1.00");
+
+  const review = scoreAll(baseReview(), 8);
+  // 把权重最高的那一维（角色专属性 12%）单独拉到 10，总分应当只涨 0.24。
+  const top = review.candidateChecks[0].dimensions.find((dim) => dim.id === "characterSpecificity");
+  top.score = 10;
+  const out = ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  );
+  assert.equal(out.candidateChecks[0].overallScore, 8.24);
+  assert.equal(candidateOverallScore(review.candidateChecks[0].dimensions), 8.24);
+});
+
+test("五档等级按分数派生，边界值属于上面那一档", async () => {
+  const { candidateTier } = await import("../public/story-review-metrics.js");
+  assert.equal(candidateTier(9.0).id, "ready");
+  assert.equal(candidateTier(8.99).id, "minor_fix");
+  assert.equal(candidateTier(8.5).id, "minor_fix");
+  assert.equal(candidateTier(8.49).id, "needs_revision");
+  assert.equal(candidateTier(8.0).id, "needs_revision");
+  assert.equal(candidateTier(7.99).id, "major_rework");
+  assert.equal(candidateTier(7.0).id, "major_rework");
+  assert.equal(candidateTier(6.99).id, "reject_or_regenerate");
+});
+
+test("模型自报的派生字段一律被覆盖，不构成新事实", () => {
+  const review = scoreAll(baseReview(), 9.4);
+  review.candidateChecks.forEach((check) => {
+    check.coherenceChecks = [];
+    check.overallScore = 2;
+    check.tier = "reject_or_regenerate";
+    check.scoreBasedVerdict = "drop";
+    check.effectiveVerdict = "drop";
+    check.verdictOverrideReasons = ["blocker_defect"];
+  });
+  review.recommendedWinner = "V2";
+  review.rejectOrRegenerate = ["V1", "V2"];
+  const out = ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  );
+  assert.equal(out.candidateChecks[0].overallScore, 9.4);
+  assert.equal(out.candidateChecks[0].tier, "ready");
+  assert.equal(out.candidateChecks[0].effectiveVerdict, "pass");
+  assert.deepEqual(out.candidateChecks[0].verdictOverrideReasons, []);
+  // winner / 淘汰名单同样是派生的：模型写的那份被整体覆盖。
+  assert.equal(out.recommendedWinner, out.holisticPreferenceOrder[0]);
+  assert.deepEqual(out.rejectOrRegenerate, []);
+});
+
+// 这正是外部评审点出的漏洞：模型判了淘汰，名单却是空的，schema 照样能过。
+test("淘汰名单与最终判定严格一致，全批被淘汰时首选为空", () => {
+  const review = scoreAll(baseReview(), 5);
+  const out = ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  );
+  assert.deepEqual(
+    out.rejectOrRegenerate,
+    out.candidateChecks.filter((check) => check.effectiveVerdict === "drop").map((check) => check.candidateId)
+  );
+  assert.equal(out.recommendedWinner, "", "全批都该淘汰时不硬推一个首选");
+  assert.equal(out.runnerUp, "");
+});
+
+// 2026-09-12：现在有**两个**「谁更好」的系统，刻意不合并也不强制对齐——
+// scoreOrder（十一维加权分派生）与 holisticPreferenceOrder（模型的整体判断）。
+// 实测它们会分歧：一次回放里模型推荐先做 V1（6.83），而 V4 分更高（6.89）。
+// **生产用 scoreOrder**：抖动数据显示加权分能可靠分出最好与最差（最佳候选 3/3 排第一、
+// sd 0.09），中段不可靠——而 winner 只取第一名，正好落在可靠的那一段。
+test("首选与次选跟着分数走，不跟模型的整体偏好走", () => {
+  const review = scoreAll(baseReview(), 7.5);
+  review.candidateChecks.forEach((check) => { check.coherenceChecks = []; });
+  // 让 V2 的分明确更高，同时让模型的偏好序反过来把 V1 排在前面。
+  review.candidateChecks[1].dimensions.forEach((dim) => { dim.score = 9; });
+  review.holisticPreferenceOrder = ["V1", "V2"];
+  const out = ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  );
+  assert.deepEqual(out.scoreOrder, ["V2", "V1"], "scoreOrder 按分数从高到低");
+  assert.equal(out.recommendedWinner, "V2", "首选取分数最高的那个");
+  assert.equal(out.runnerUp, "V1");
+  // 模型那一份原样保留——分歧本身是有价值的观察，不许为了一致而抹掉。
+  assert.deepEqual(out.holisticPreferenceOrder, ["V1", "V2"]);
+});
+
+test("分数相同时 scoreOrder 稳定按原顺序，不随机", () => {
+  const review = scoreAll(baseReview(), 8.6);
+  review.candidateChecks.forEach((check) => { check.coherenceChecks = []; });
+  const first = ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  ).scoreOrder;
+  const again = ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(scoreAll(baseReview(), 8.6), "storyCandidateReview"), CANDIDATES
+  ).scoreOrder;
+  assert.deepEqual(first, ["V1", "V2"]);
+  assert.deepEqual(first, again, "同一份报告重算多少次都一样");
+});
+
+test("dominantDefect 的 type 与 severity 必须同真同假", () => {
+  const review = scoreAll(baseReview(), 8);
+  review.candidateChecks[0].dominantDefect = { type: "none", severity: "MAJOR", description: "" };
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      assert.ok(error.details.some((d) => d.code === "CANDIDATE_REVIEW_DEFECT_INCONSISTENT"));
+      return true;
+    }
+  );
+
+  const empty = scoreAll(baseReview(), 8);
+  empty.candidateChecks[0].dominantDefect = { type: "openingHook", severity: "MAJOR", description: "  " };
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(empty, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      assert.ok(error.details.some((d) => d.code === "CANDIDATE_REVIEW_DEFECT_DESCRIPTION_EMPTY"));
+      return true;
+    }
+  );
+});
+
+// 定死枚举是为了防漂移：weak_hook / hook_problem / poor_hook 混用会让统计全废。
+// schema 是 JSON、没法 import 常量，所以两边只能靠这条测试对齐。
+test("缺陷类型只认十一个维度 id 加特殊值，schema 与常量逐字一致", () => {
+  const schema = JSON.parse(fs.readFileSync(
+    new URL("../src/contracts/schemas/story-candidate-review-strict.schema.json", import.meta.url), "utf8"
+  ));
+  assert.deepEqual(schema.$defs.defectType.enum, [...Object.keys(WEIGHTS), ...SPECIAL_DEFECTS]);
+  assert.deepEqual(schema.$defs.defectSeverity.enum, ["BLOCKER", "MAJOR", "MINOR", "NONE"]);
+  // 2026-09-12 首次真实回放后补的两类，必须在枚举里。
+  assert.ok(SPECIAL_DEFECTS.includes("ownership_or_authority"));
+  assert.ok(SPECIAL_DEFECTS.includes("setting_assumption"));
+
+  const review = scoreAll(baseReview(), 8);
+  review.candidateChecks[0].dominantDefect.type = "weak_hook";
+  assert.throws(() => ensureOutputContract(review, "storyCandidateReview"), /dominantDefect/u);
+});
+
+// 所有权问题是**独立的世界规则问题**，不是物理错误：首次真实回放里
+// 「图书馆的旧绘本被送给奶奶」整份报告零命中，而它是那个候选的首要问题。
+test("所有权类缺陷可以判到 BLOCKER，并按 causalLogic 那条规则被要求检查", () => {
+  const review = scoreAll(baseReview(), 9.5);
+  review.candidateChecks.forEach((check) => { check.coherenceChecks = []; });
+  review.candidateChecks[0].dominantDefect = {
+    type: "ownership_or_authority",
+    severity: "BLOCKER",
+    description: "那本绘本是图书馆的，没有任何人许可她把它送人。"
+  };
+  const out = ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  );
+  assert.deepEqual(out.candidateChecks[0].verdictOverrideReasons, ["blocker_defect"]);
+  assert.equal(out.candidateChecks[0].tier, "ready", "质量分与等级不因缺陷改变");
+  assert.equal(out.candidateChecks[0].effectiveVerdict, "revise");
+
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.match(prompt, /角色修改、拿走、赠送、销毁或长期占有一件物品时/u);
+  assert.match(prompt, /ownership_or_authority/u);
+});
+
+// 背景设定类**封顶 MAJOR**：它是候选自己加的设定，不是对已签发角色事实的违反。
+// 固定角色只写了「芙芙猫是固定搭档」，从没规定它住哪儿。
+test("setting_assumption 不许判 BLOCKER，判 MAJOR 照常通过", () => {
+  const blocked = scoreAll(baseReview(), 8);
+  blocked.candidateChecks[0].dominantDefect = {
+    type: "setting_assumption",
+    severity: "BLOCKER",
+    description: "把固定搭档写成平时睡在院子的纸箱里。"
+  };
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(blocked, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      const hit = error.details.find((d) => d.code === "CANDIDATE_REVIEW_DEFECT_SEVERITY_CAP");
+      assert.ok(hit, "应报 CANDIDATE_REVIEW_DEFECT_SEVERITY_CAP");
+      assert.equal(hit.path, "/candidateChecks/0/dominantDefect/severity");
+      return true;
+    }
+  );
+
+  const ok = scoreAll(baseReview(), 8);
+  ok.candidateChecks[0].dominantDefect = {
+    type: "setting_assumption",
+    severity: "MAJOR",
+    description: "把固定搭档写成平时睡在院子的纸箱里。"
+  };
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(ok, "storyCandidateReview"), CANDIDATES
+  ));
+
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.match(prompt, /偷偷引入了一个上游从没建立过、但会明显改变/u);
+  assert.match(prompt, /\*\*它最高只能判 MAJOR\*\*/u);
+});
+
+// 物理机制**不是二选一**：真正缺的那一档是「在某些条件下成立，而候选没交代那些条件」。
+// 起因是回放里「下雨天用胶带把落叶贴在纸箱上做防水」被判成「物理上可行」并给了 8 分。
+test("自称依赖条件就必须写出依赖什么、以及不成立时会怎样", () => {
+  for (const confidence of ["conditional", "unlikely"]) {
+    const review = scoreAll(baseReview(), 8);
+    review.candidateChecks[0].physicalAssumptions = [
+      { mechanism: "用胶带把落叶贴在纸箱上防水", confidence, literalDependency: "required", necessaryAssumptions: [], failureRisk: "" }
+    ];
+    assert.throws(
+      () => ensureStoryCandidateReviewCoversCandidates(
+        ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+      ),
+      (error) => {
+        const hits = error.details.filter((d) => d.code === "CANDIDATE_REVIEW_ASSUMPTION_INCOMPLETE");
+        assert.equal(hits.length, 2, `${confidence} 应当同时要求条件与失败风险`);
+        return true;
+      }
+    );
+  }
+
+  const complete = scoreAll(baseReview(), 8);
+  complete.candidateChecks[0].physicalAssumptions = [{
+    mechanism: "用胶带把落叶贴在纸箱上防水",
+    confidence: "conditional",
+    literalDependency: "required",
+    necessaryAssumptions: ["叶片与纸箱表面是干的", "胶带适合潮湿表面"],
+    failureRisk: "正在下雨时胶带粘不住，树叶会滑落，纸箱照样湿。",
+    beatIndexes: [2]
+  }];
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(complete, "storyCandidateReview"), CANDIDATES
+  ));
+});
+
+test("明确成立那一档不必列条件，空数组也是合法结论", () => {
+  const review = scoreAll(baseReview(), 8);
+  review.candidateChecks[0].physicalAssumptions = [
+    { mechanism: "把面团捏成猫的形状", confidence: "established", literalDependency: "optional", necessaryAssumptions: [], failureRisk: "" }
+  ];
+  review.candidateChecks[1].physicalAssumptions = [];
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  ));
+});
+
+// literalDependency 与 confidence 是**两个正交的轴**（2026-09-12 第三轮回放后补）。
+// 起因：《罐装阳光》把阳光装进玻璃罐在物理上当然 unlikely，但剧情从没要求它真的成立；
+// 而实测该候选的 productionFeasibility 9→7、causalLogic 9→8，说明模型很可能把
+// 「不是现实物理」本身当成了质量问题——那会把童真想象误杀。
+test("想象类机制可以同时是物理立不住与剧情不依赖它", () => {
+  const review = scoreAll(baseReview(), 8);
+  review.candidateChecks[0].physicalAssumptions = [{
+    mechanism: "把阳光装进玻璃罐并盖上盖子",
+    confidence: "unlikely",
+    literalDependency: "make_believe",
+    necessaryAssumptions: ["光是光学现象，盖上盖子内部只会变暗"],
+    failureRisk: "如果镜头真把罐子内部拍成凭空发光，就破坏了物理常识。",
+    beatIndexes: [2]
+  }];
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  ), "两个轴互相独立，这个组合完全合法");
+});
+
+test("三档 literalDependency 的中文标签与 schema 枚举逐字对齐", async () => {
+  const { CANDIDATE_REVIEW_LITERAL_DEPENDENCY_LABELS } = await import("../public/story-review-metrics.js");
+  const schema = JSON.parse(fs.readFileSync(
+    new URL("../src/contracts/schemas/story-candidate-review-strict.schema.json", import.meta.url), "utf8"
+  ));
+  assert.deepEqual(
+    new Set(Object.keys(CANDIDATE_REVIEW_LITERAL_DEPENDENCY_LABELS)),
+    new Set(schema.$defs.physicalAssumption.properties.literalDependency.enum)
+  );
+});
+
+test("提示词把两个轴分开，并禁止拿想象类机制扣制作分", () => {
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.match(prompt, /confidence —— 现实里这事成不成立/u);
+  assert.match(prompt, /literalDependency —— 故事需不需要它真的成立/u);
+  assert.match(prompt, /\*\*这两个轴是分开的，不许混。\*\*/u);
+  assert.match(prompt, /不得因为现实里做不到就扣 productionFeasibility 或 causalLogic/u);
+  assert.match(prompt, /扣分只针对/u);
+});
+
+// briefAlignment 正式降级为编辑参考信息（2026-09-12）。依据是抖动数据：
+// 同一份输入、同一个候选三次回放，PASS / WARN 互相翻转过；跨包时改简报的方向甚至相反。
+test("简报判定不参与分数、等级与放行决定", () => {
+  const base = scoreAll(baseReview(), 8.6);
+  base.candidateChecks.forEach((check) => { check.coherenceChecks = []; });
+  const pass = ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(structuredClone(base), "storyCandidateReview"), CANDIDATES
+  );
+
+  const failed = structuredClone(base);
+  failed.candidateChecks.forEach((check) => {
+    check.briefAlignment = { status: "FAIL", conflict: "完全违反简报", suggestBriefChange: "" };
+  });
+  const out = ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(failed, "storyCandidateReview"), CANDIDATES
+  );
+
+  for (let i = 0; i < out.candidateChecks.length; i += 1) {
+    assert.equal(out.candidateChecks[i].overallScore, pass.candidateChecks[i].overallScore);
+    assert.equal(out.candidateChecks[i].tier, pass.candidateChecks[i].tier);
+    assert.equal(out.candidateChecks[i].effectiveVerdict, pass.candidateChecks[i].effectiveVerdict);
+    assert.deepEqual(out.candidateChecks[i].verdictOverrideReasons, []);
+  }
+  assert.equal(out.recommendedWinner, pass.recommendedWinner);
+});
+
+test("提示词与页面都写明简报这一档只是线索", () => {
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.match(prompt, /编辑参考信息，不参与任何判定/u);
+  assert.match(prompt, /不进分数、不进等级、不进放行决定、不会自动去改简报/u);
+  assert.match(APP_JS, /不参与分数、等级与放行决定/u);
+});
+
+test("浏览器并排显示两份排序，并在不一致时点出来", () => {
+  assert.match(APP_JS, /review\.scoreOrder/u);
+  assert.match(APP_JS, /review\.holisticPreferenceOrder/u);
+  assert.match(APP_JS, /与评分排序不一致/u);
+  assert.match(APP_JS, /CANDIDATE_REVIEW_LITERAL_DEPENDENCY_LABELS/u);
+});
+
+test("提示词把三档写清楚，并禁止因为温馨就无条件判成立", () => {
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.match(prompt, /这一档刻意不是「可行 \/ 不可行」二选一/u);
+  assert.match(prompt, /在某些条件下成立，而候选没有交代那些条件/u);
+  assert.match(prompt, /不得因为某个机制看起来很温馨，就无条件判成 established/u);
+  assert.match(prompt, /材料干湿、摩擦力、承重、粘合强度/u);
+});
+
+test("mock 的物理机制两个分支都走到，且自己守闸门", () => {
+  const review = baseReview();
+  const withAssumption = review.candidateChecks.filter((check) => check.physicalAssumptions.length);
+  const without = review.candidateChecks.filter((check) => !check.physicalAssumptions.length);
+  assert.ok(withAssumption.length, "至少一个候选要带非空 physicalAssumptions");
+  assert.ok(without.length, "空数组分支也要走到");
+  for (const check of withAssumption) {
+    for (const row of check.physicalAssumptions) {
+      if (row.confidence === "established") continue;
+      assert.ok(row.necessaryAssumptions.length, "mock 自己也要守闸门");
+      assert.ok(row.failureRisk);
+    }
+  }
+});
+
+test("浏览器渲染物理机制与缺陷类型的中文标签", () => {
+  assert.match(APP_JS, /check\.physicalAssumptions/u);
+  assert.match(APP_JS, /candidate-review-assumptions/u);
+  assert.match(APP_JS, /CANDIDATE_REVIEW_CONFIDENCE_LABELS/u);
+  assert.match(APP_JS, /necessaryAssumptions/u);
+  assert.match(APP_JS, /failureRisk/u);
+  // 让人对着 ownership_or_authority 猜，是这套报告最容易犯的可读性错误。
+  assert.match(APP_JS, /CANDIDATE_REVIEW_SPECIAL_DEFECT_LABELS/u);
+});
+
+test("三档 confidence 的中文标签与 schema 枚举逐字对齐", async () => {
+  const { CANDIDATE_REVIEW_CONFIDENCE_LABELS } = await import("../public/story-review-metrics.js");
+  const schema = JSON.parse(fs.readFileSync(
+    new URL("../src/contracts/schemas/story-candidate-review-strict.schema.json", import.meta.url), "utf8"
+  ));
+  assert.deepEqual(
+    new Set(Object.keys(CANDIDATE_REVIEW_CONFIDENCE_LABELS)),
+    new Set(schema.$defs.physicalAssumption.properties.confidence.enum)
+  );
+});
+
+// 模板化不只发生在新增：「把结尾替换成奶奶摸摸头」是 replace，照样是模板。
+test("除 remove 外的建议都必须回答为什么只能发生在这个故事里", () => {
+  for (const kind of ["strengthen", "replace", "recycle", "add"]) {
+    const review = scoreAll(baseReview(), 8);
+    review.candidateChecks[0].top3RevisionSuggestions = [
+      { kind, suggestion: "把结尾换成摸头。", replacesOrStrengthens: "原结尾", whyOnlyHere: "" }
+    ];
+    assert.throws(
+      () => ensureStoryCandidateReviewCoversCandidates(
+        ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+      ),
+      (error) => {
+        const hit = error.details.find((d) => d.code === "CANDIDATE_REVIEW_SUGGESTION_WHY_MISSING");
+        assert.ok(hit, `${kind} 应该被要求写 whyOnlyHere`);
+        return true;
+      }
+    );
+  }
+
+  const removal = scoreAll(baseReview(), 8);
+  removal.candidateChecks[0].top3RevisionSuggestions = [
+    { kind: "remove", suggestion: "删掉重复的第二次强调。", replacesOrStrengthens: "第 2 拍", whyOnlyHere: "" }
+  ];
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(removal, "storyCandidateReview"), CANDIDATES
+  ));
+});
+
+test("最多三条建议，第四条由 schema 拒掉", () => {
+  const review = scoreAll(baseReview(), 8);
+  review.candidateChecks[0].top3RevisionSuggestions = Array.from({ length: 4 }, () => ({
+    kind: "remove", suggestion: "占位", replacesOrStrengthens: "", whyOnlyHere: ""
+  }));
+  assert.throws(() => ensureOutputContract(review, "storyCandidateReview"), /top3RevisionSuggestions/u);
+});
+
+// 批次模板收敛是集合属性：逐个看四个都可以声称自己原创，只有横着看才发现是同一套机制。
+test("判定批次收敛就必须点名至少两个真实候选并写出机制", () => {
+  const tooFew = scoreAll(baseReview(), 8);
+  tooFew.batchTemplateConvergence = {
+    converged: true, sharedMechanism: "身体拟物化搞怪解决问题", affectedCandidateIds: ["V1"], evidence: ""
+  };
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(tooFew, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      assert.ok(error.details.some((d) => d.code === "CANDIDATE_REVIEW_BATCH_CONVERGENCE_TOO_FEW"));
+      return true;
+    }
+  );
+
+  const unknown = scoreAll(baseReview(), 8);
+  unknown.batchTemplateConvergence = {
+    converged: true, sharedMechanism: "同一套机制", affectedCandidateIds: ["V1", "V9"], evidence: ""
+  };
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(unknown, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      assert.ok(error.details.some((d) => d.code === "CANDIDATE_REVIEW_BATCH_CONVERGENCE_UNKNOWN"));
+      return true;
+    }
+  );
+
+  const noMechanism = scoreAll(baseReview(), 8);
+  noMechanism.batchTemplateConvergence = {
+    converged: true, sharedMechanism: "  ", affectedCandidateIds: ["V1", "V2"], evidence: ""
+  };
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(noMechanism, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      assert.ok(error.details.some((d) => d.code === "CANDIDATE_REVIEW_BATCH_CONVERGENCE_MECHANISM_EMPTY"));
+      return true;
+    }
+  );
+});
+
+test("说不收敛就不许点名任何候选", () => {
+  const review = scoreAll(baseReview(), 8);
+  review.batchTemplateConvergence = {
+    converged: false, sharedMechanism: "", affectedCandidateIds: ["V1", "V2"], evidence: ""
+  };
+  assert.throws(
+    () => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+    ),
+    (error) => {
+      assert.ok(error.details.some((d) => d.code === "CANDIDATE_REVIEW_BATCH_CONVERGENCE_NOT_CONVERGED"));
+      return true;
+    }
+  );
+});
+
+test("合法的收敛判定照常通过", () => {
+  const review = scoreAll(baseReview(), 8);
+  review.batchTemplateConvergence = {
+    converged: true,
+    sharedMechanism: "普通问题 → 角色身体变成工具 → 意外解决",
+    affectedCandidateIds: ["V1", "V2"],
+    evidence: "两条动作链在第 2 拍都靠身体拟物化解决问题。"
+  };
+  assert.doesNotThrow(() => ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(review, "storyCandidateReview"), CANDIDATES
+  ));
+});
+
+// ---------------------------------------------------------------------------
+// 上游投影与提示词。
+
+test("上游按允许清单投影，简报只送四项", async () => {
+  const { buildStoryCandidateReviewUpstream } = await import("../src/prompts.js");
+  const upstream = buildStoryCandidateReviewUpstream({
+    creatorProfile: { fixedCharacter: "小白子", vertical: "治愈", constraints: "无", 多余字段: "不该出现" },
+    creativeBrief: {
+      storyEngine: { desire: "想要" },
+      recastTest: { recastAs: "换个角色", collapses: ["甲"], survives: ["乙"] },
+      nonNegotiableExperience: { samePlotDriver: "一件小事" },
+      reusableHighValueBeats: [{ beat: "拍", dramaticValue: "值", mustRetain: true, 多余: "x" }],
+      protectedExpressions: [{ sourceExpression: "不该出现的原片表达" }]
+    },
+    referenceAnalysis: { retentionDrivers: ["驱动"], dialogueStyle: "低", observedFacts: ["不该出现"] }
+  });
+  const serialized = JSON.stringify(upstream);
+  assert.doesNotMatch(serialized, /多余字段|多余|不该出现/u, "允许清单之外的字段一律不得泄漏");
+  // recastTest 两侧都送：评审不生成故事，survives 恰恰告诉它哪些东西谁来演都一样。
+  assert.deepEqual(upstream.creativeBrief.recastTest.survives, ["乙"]);
+  assert.equal(upstream.referenceAnalysis.dialogueStyle, "低");
+  assert.equal(upstream.creatorProfile.fixedCharacter, "小白子");
+});
+
+test("提示词写明四份材料各自的身份，且简报不是原片事实", () => {
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION, null, {
+    creativeBrief: { storyEngine: { desire: "想要" } }
+  });
+  assert.match(prompt, /\*\*creativeBrief 不是原片事实。\*\*/u);
+  assert.match(prompt, /\*\*绝不因为某个候选更像参考片就给它加分。\*\*/u);
+  assert.match(prompt, /上游创作假设，可以质疑/u);
+  // 判断顺序是这套设计的核心：先角色与创作者，最后才是简报。
+  assert.match(prompt, /最后才看它符不符合上游简报/u);
+});
+
+test("三份上游都没有时整段不出现，评审照常可用", () => {
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.doesNotMatch(prompt, /上游材料（身份见下面第一节/u);
+  assert.match(prompt, /dimensions/u);
+});
+
+// 2026-09-12 live 实测：第一次输出把 briefProblemsDetected[0] 写成了对象、被 schema 拦下，
+// 带诊断重做一次才过（花了 ¥1.31）。根因是输出模板里它是**空数组、没有元素示例**——
+// 与 §2.14 分镜终审 shotEvaluations[].issues 栽的是同一跤：同一份报告里到处是对象数组，
+// 模型就按对象填。字符串数组必须给非空示例。
+test("字符串数组在输出模板里要给非空示例，不能只给空数组", () => {
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.doesNotMatch(prompt, /"briefProblemsDetected":\[\]/u, "空数组会让模型猜错元素类型");
+  assert.match(prompt, /"briefProblemsDetected":\["/u);
+  assert.match(prompt, /每一条都是一句话（字符串），不是对象/u);
+});
+
+test("提示词按共用常量列出十一个维度与权重，不另写一份数字", () => {
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  for (const [id, weight] of Object.entries(WEIGHTS)) {
+    assert.ok(prompt.includes(id), `提示词缺维度 ${id}`);
+    assert.ok(prompt.includes(`${Math.round(weight * 100)}%`), `提示词缺 ${id} 的权重`);
+  }
+  // 派生字段不许出现在输出模板里——模型写了也会被覆盖。
+  assert.doesNotMatch(prompt, /"overallScore"/u);
+  assert.doesNotMatch(prompt, /"effectiveVerdict"/u);
+});
+
+test("keyChoice 三件套送进评审，但措辞不得把它说成可信的判断事实", () => {
+  const projection = buildStoryCandidateReviewProjection({
+    ...CANDIDATES[0], keyChoice: "关键选择原文", climax: "高潮原文", emotionalPayoff: "结尾原文"
+  });
+  assert.equal(projection.keyChoice, "关键选择原文");
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.match(prompt, /但那个拍号是作者选的/u);
+});
+
+// 截断与「被校验拦下」是两种失败，重试话术必须不同：
+// 截断时没有任何诊断可打回，原样重发只会让它第二次照样写超。
+test("截断走单独的重试分支，要求压缩而不是重复原样", () => {
+  const body = storyCandidateReviewRetryPrompt({ originalPrompt: "原文", truncated: true });
+  assert.ok(body.startsWith("原文"));
+  assert.match(body, /因为太长被截断/u);
+  assert.match(body, /字段一个都不要少/u);
+  assert.doesNotMatch(body, /上一次的输出被确定性校验拦下了/u);
+});
+
+test("工作流按错误码分流两种重试，不混成一种", () => {
+  const workflowSource = fs.readFileSync(new URL("../src/workflow.js", import.meta.url), "utf8");
+  assert.match(workflowSource, /MODEL_OUTPUT_TRUNCATED/u);
+  assert.match(workflowSource, /storyCandidateReviewRetryPrompt\(\{ originalPrompt, truncated: true \}\)/u);
 });
 
 // 可比对数字与 §2.13 同规格：**从逐条判定里数出来，不问模型要总分。**
@@ -880,7 +1587,7 @@ function liveReviewWorkflow(responses, stageModelOutputLogWriters = null) {
 // 与 2026-09-10 那次真实 502 同形：模型漏抄了 recommendedOrder 的其余 id。
 function reviewMissingOrder() {
   const review = baseReview();
-  review.recommendedOrder = [review.recommendedOrder[0]];
+  review.holisticPreferenceOrder = [review.holisticPreferenceOrder[0]];
   return review;
 }
 

@@ -10,9 +10,14 @@ import {
 import { formatDirectShotSkeleton } from "./direct-shot-timeline.js";
 import { VIDEO_PROMPT_PROFILE_IDS } from "../public/video-prompt-profiles.js";
 import { normalizeCharacterExpressionRules } from "../public/character-expression-rules.js";
-// 换皮线只有一份：提示词、确定性闸门与浏览器摘要都从这里取。提示词里写死一个 70，
-// 就会出现「校验器按 70 拦、提示词按别的数教」这种模型无从遵守的状态。
-import { SOURCE_SCAFFOLD_COPY_SCORE } from "../public/story-review-metrics.js";
+// 换皮线与维度权重只有一份：提示词、确定性闸门与浏览器摘要都从这里取。
+// 提示词里写死一个 70 或一份权重，就会出现「校验器按这套算、提示词按另一套教」
+// 这种模型无从遵守的状态。
+import {
+  CANDIDATE_REVIEW_DIMENSION_WEIGHTS,
+  CANDIDATE_REVIEW_SPECIAL_DEFECT_TYPES,
+  SOURCE_SCAFFOLD_COPY_SCORE
+} from "../public/story-review-metrics.js";
 import { storyDurationWindow } from "../public/story-duration.js";
 import fs from "node:fs";
 
@@ -1119,39 +1124,157 @@ export function buildStoryCandidateReviewProjection(candidate) {
       estimatedSeconds: beat?.estimatedSeconds
     })),
     keyDialogueDirections: Array.isArray(candidate?.keyDialogueDirections) ? candidate.keyDialogueDirections : [],
+    // 这三句是服务端从 storyOutline 按模型给的拍号**确定性派生**的投影
+    // （§2.12b：模型只输出 keyChoiceBeat / climaxBeat 两个整数，字符串由服务端签发）。
+    // 所以它们保证与动作链逐字一致、不会是第二版剧情——
+    // **但拍号是模型选的，「这一拍真的构成关键选择」仍然要评审自己判断。**
+    // 提示词里必须按这个准确说法写，不能说成「可信的服务端事实」。
+    keyChoice: String(candidate?.keyChoice || ""),
+    climax: String(candidate?.climax || ""),
+    emotionalPayoff: String(candidate?.emotionalPayoff || ""),
     failureSignals: (Array.isArray(candidate?.highValueBeatMapping) ? candidate.highValueBeatMapping : [])
       .map((entry) => String(entry?.failureSignal || ""))
       .filter(Boolean)
   };
 }
 
-export function storyCandidateReviewPrompt(candidates, sourceScriptReconstruction, fixedCharacterBoundary = null) {
+/**
+ * 送进评审的上游投影。**按允许清单构造，不整份 JSON.stringify。**
+ *
+ * 三份材料在评审眼里的身份完全不同，提示词里会逐条说明：
+ * creatorProfile 是硬事实、creativeBrief 是**可以质疑的创作假设**、
+ * referenceAnalysis 只用来理解参考片为什么有效（不得因为更像参考片就加分）。
+ *
+ * creativeBrief 只投影四项，且**绝不因此成为原片事实基准**——
+ * §2.12b 的「企鹅快递员」事故正是简报先编、下游照抄，
+ * 机制清单与骨架对照的事实来源仍然只有 sourceScriptReconstruction。
+ *
+ * referenceAnalysis 刻意只送两项：它的用途是「理解参考片为什么留得住人」，
+ * 送多了会喂出「越像参考片越好」的倾向，而那正是本阶段要防的。
+ */
+export function buildStoryCandidateReviewUpstream({
+  creatorProfile = null,
+  creativeBrief = null,
+  referenceAnalysis = null
+} = {}) {
+  const upstream = {};
+  if (creatorProfile && typeof creatorProfile === "object") {
+    upstream.creatorProfile = {
+      fixedCharacter: String(creatorProfile.fixedCharacter || ""),
+      vertical: String(creatorProfile.vertical || ""),
+      constraints: String(creatorProfile.constraints || "")
+    };
+  }
+  if (creativeBrief && typeof creativeBrief === "object") {
+    upstream.creativeBrief = {
+      storyEngine: creativeBrief.storyEngine || null,
+      // recastTest 两侧都送。候选**生成**阶段只送 collapses 是怕 survives 变成
+      // 可照抄的事件清单；评审不生成故事，没有这个风险，而 survives 恰恰告诉它
+      // 「哪些东西换谁来演都一样」——正是判断角色专属性要用的。
+      recastTest: creativeBrief.recastTest || null,
+      nonNegotiableExperience: creativeBrief.nonNegotiableExperience || null,
+      reusableHighValueBeats: (Array.isArray(creativeBrief.reusableHighValueBeats)
+        ? creativeBrief.reusableHighValueBeats
+        : []).map((entry) => ({
+        beat: String(entry?.beat || ""),
+        dramaticValue: String(entry?.dramaticValue || ""),
+        mustRetain: entry?.mustRetain
+      }))
+    };
+  }
+  if (referenceAnalysis && typeof referenceAnalysis === "object") {
+    upstream.referenceAnalysis = {
+      retentionDrivers: Array.isArray(referenceAnalysis.retentionDrivers)
+        ? referenceAnalysis.retentionDrivers
+        : [],
+      dialogueStyle: referenceAnalysis.dialogueStyle ?? null
+    };
+  }
+  return upstream;
+}
+
+export function storyCandidateReviewPrompt(
+  candidates,
+  sourceScriptReconstruction,
+  fixedCharacterBoundary = null,
+  { creatorProfile = null, creativeBrief = null, referenceAnalysis = null } = {}
+) {
   const list = Array.isArray(candidates) ? candidates : [];
   const projections = list.map((candidate) => buildStoryCandidateReviewProjection(candidate));
   const boundaryText = fixedCharacterBoundary
     ? `\n固定角色边界（不得建议改变角色身份或外观）：${JSON.stringify(fixedCharacterBoundary)}`
     : "";
-  return `你不是这些候选的作者，你是短视频选题评审。
+  // 上游三份按允许清单投影后才进提示词；一份都没有时整段不出现，
+  // 提示词里那几条「怎么用它们」的说明照旧——它们描述的是身份优先级，不是必须存在。
+  const upstream = buildStoryCandidateReviewUpstream({ creatorProfile, creativeBrief, referenceAnalysis });
+  const upstreamText = Object.keys(upstream).length
+    ? `\n上游材料（身份见下面第一节，**不是原片事实**）：${JSON.stringify(upstream)}`
+    : "";
+  // 权重、维度顺序与缺陷枚举都从共用常量取，**提示词里不写第二份数字**：
+  // 页面显示的权重与实际算分不一样，是这类改动最容易出的错。
+  const dimensionWeightText = Object.fromEntries(
+    Object.entries(CANDIDATE_REVIEW_DIMENSION_WEIGHTS)
+      .map(([id, weight]) => [id, `${Math.round(weight * 100)}%`])
+  );
+  const dimensionTemplate = Object.keys(CANDIDATE_REVIEW_DIMENSION_WEIGHTS)
+    .map((id) => `{"id":"${id}","score":0,"evidence":"","evidenceRefs":[]}`)
+    .join(",");
+  // 枚举取值只有一份来源：十一个维度 id 加特殊值常量。schema 的 defectType
+  // 必须与它逐字相等（JSON Schema 没法 import，由测试锁住两边）。
+  const defectTypeList = [
+    ...Object.keys(CANDIDATE_REVIEW_DIMENSION_WEIGHTS),
+    ...CANDIDATE_REVIEW_SPECIAL_DEFECT_TYPES
+  ].join(" / ")
+    + "。其中 ownership_or_authority = 角色对那件东西没有处置权、也没人许可过；"
+    + "setting_assumption = 候选偷偷引入了上游从没建立过的背景设定（最高 MAJOR）；"
+    + "brief_overconstraint = 简报约束过死导致的缺陷；template_convergence = 与同批其它候选同一套机制；"
+    + "none = 没有主要缺陷";
+  return `你是短视频动画的**选题终审编辑**，不是这些候选的作者。
 
-原片动作稿（唯一的原作事实来源）：${JSON.stringify(sourceScriptReconstruction)}
+你的任务是评审这一组候选，判断哪些真正值得进入 Full Story 阶段。
+**你的最高目标不是检查它合不合 Schema，也不是检查它有没有机械满足创意简报**，而是判断：
 
-候选（共 ${list.length} 个）：${JSON.stringify(projections)}${boundaryText}
+一个不了解创作背景的普通观众，看完这个故事之后，会不会愿意继续看、能不能看懂、
+记不记得住这个角色，以及结尾拿到的情绪回报值不值得等这一趟。
 
-## 一条压倒一切的纪律：只看动作，不看解释
+原片动作稿（**唯一的原作事实来源**）：${JSON.stringify(sourceScriptReconstruction)}
 
-你收到的候选里**已经没有**它们的自我评价字段（新颖性、保留价值、体验保真、相似风险）。
-这是故意的：那些是作者对自己作品的判断，不是证据。你只能依据两处作判断——
-- storyOutline[].action —— 观众看得见的动作
-- keyDialogueDirections —— 观众听得见的方向
+候选（共 ${list.length} 个）：${JSON.stringify(projections)}${upstreamText}${boundaryText}
 
-phase、emotion 是作者的标签，可以参考，**不能当证据**。
-「温暖」「治愈」「关系改变」「重获希望」这类词单独出现同样不构成证据：
+## 一、先分清楚手里这几份材料各是什么
+
+- **硬事实，不得违反**：creatorProfile、固定角色边界。角色是谁、长什么样、能做什么，由它们说了算。
+- **创作目标的近似**：creatorProfile 的 vertical 与 constraints。它们不是完整的创作者口味档案，
+  只是目前能拿到的最接近的东西，用来判断什么样的故事更像创作者真正想做的。
+- **参考价值**：原片动作稿与 referenceAnalysis。它们只用来**理解参考片为什么留得住人**。
+  **绝不因为某个候选更像参考片就给它加分。**
+- **上游创作假设，可以质疑**：creativeBrief。它是上一阶段的判断，不是真理。
+  如果它的 mustRetain / nonNegotiable 让故事变得模板化、不自然或更难看，
+  你**必须**把冲突写出来，**不得为了「合规」给一个不好看的故事打高分**。
+- **真正的评价对象**：候选里实际发生的故事。
+
+**creativeBrief 不是原片事实。** 判断「原片有什么机制」「候选和原片的事件链像不像」时，
+基准只有原片动作稿一份——拿简报当基准等于给上游可能的虚构盖章。
+
+## 二、不要相信候选的自我评价
+
+候选投影里**已经没有**新颖性、保留价值、体验保真、相似风险这些字段。
+这是故意的：那些是作者对自己作品的判断，不是证据。
+
+keyChoice / climax / emotionalPayoff 这三句是服务端从动作链按拍号确定性摘出来的，
+所以它们保证与 storyOutline 逐字一致、不会是另一版剧情；
+**但那个拍号是作者选的**——「这一拍真的构成关键选择」「这一拍真的是高潮」仍然要你自己判断。
+
+phase、emotion 同样是作者贴的标签，可以参考，**不能当证据**。
+「温暖」「治愈」「关系改变」「重获希望」这类词单独出现也不构成证据：
 它们描述结果，不描述观众看到了什么。
 
-本阶段的目标不是评「像不像原片题材」，而是：**在不照搬具体表达的前提下，
-这个候选有没有把原片真正起作用的机制迁移过来。**
+你的判断顺序是固定的：
+**先确认角色与创作者真正想要什么 → 再看故事实际发生了什么 → 再判断它自己成不成立
+→ 再把 ${list.length} 个放在一起看是不是同一个模板 → 最后才看它符不符合上游简报。**
+反过来先读简报、再数候选满足了几条，是这类工作流最容易掉进去的坑。
 
-## 你要产出四块内容
+## 你要产出的内容
 
 ### 一、sourceMechanisms —— 先只读原片，写 2–4 条
 
@@ -1230,14 +1353,25 @@ phase、emotion 是作者的标签，可以参考，**不能当证据**。
     反过来：任务同类、都在傍晚收尾、都是两个人一起做事——**这些本身都不足以判换皮**，
     它们只是辅助观察。判据只有一条：两边是不是以近乎相同的方式串成了同一条链。
   - why：一句话说清这个分数从哪来，点到是哪几件事、按什么顺序接起来的。
-- verdict：pass（可以直接展开）/ revise（值得发展但要先改一处）/ drop（核心机制缺失，局部改不动）。
-  **只要 coherenceChecks 非空就不能判 pass**——pass 的意思是可以直接展开，而动作链还合不上的候选不能直接展开。
-  报出自洽问题不是在否定这个候选：revise 是完全正常的结论，drop 仍然只留给机制本身就没迁移过来的情况。
-  也不要为了让 verdict 好看而漏报或删掉真实存在的自洽问题。
-  **sourceScaffoldOverlap.score 打到 ${SOURCE_SCAFFOLD_COPY_SCORE} 或以上同样不能判 pass**：沿用同一条因果链、只换名词是换皮不是迁移。
-  如果你认为它其实不算换皮，那就回去把事件链重新核对、把分数打准，**而不是压着分数放它过**。
+  **分数打到 ${SOURCE_SCAFFOLD_COPY_SCORE} 或以上，服务端会据此拦下晋级，质量分打得再高也一样**——
+  沿用同一条因果链、只换名词是换皮不是迁移。所以请把这个分数打准：
+  **既不要为了让某个候选过关而压分，也不要因为题材相似就往高打。**
+- dimensions：**十一个维度逐个打分**，见下面第三块。
+- physicalAssumptions：候选依赖的物理机制成不成立，见下面第四块（没有就给空数组）。
+- strongestReason：这个候选最强的那一处，一句话，必须点到具体动作。
+- dominantDefect：最主要的那一个缺陷，只写一个。
+  - type 只能取：${defectTypeList}
+  - severity 取 BLOCKER / MAJOR / MINOR / NONE。
+    **BLOCKER 表示「这个问题不解决就不能带进 Full Story」**，服务端会据此拦下晋级。
+  - 候选确实没有主要缺陷时，写 type: none、severity: NONE、description 留空。
+    **不要为了填满这个字段硬找毛病。**
+- briefAlignment：见下面第五块。
+- top3RevisionSuggestions：**最多三条**，见下面第六块。
 - why：一句话，必须点到**具体动作**，不能只说「情绪不够」
-- keepThis：这个候选已经成立、修改时不能丢掉的那一处（即使 verdict 是 drop 也要写）
+- keepThis：这个候选已经成立、修改时不能丢掉的那一处（即使你认为它该淘汰也要写）
+
+**不要写 verdict、score、tier 或任何总分。** 放不放行由服务端按你打的十一个分数
+与硬闸门确定性算出来，你写了也会被覆盖。你的工作是把**每一维的判断与证据**给准。
 
 判断时守住这几条：
 - **更换角色、道具、地点，不自动等于创意成立。** 换皮不算迁移。
@@ -1247,16 +1381,155 @@ phase、emotion 是作者的标签，可以参考，**不能当证据**。
   用戏剧结构的标准去要求它是错的。
 - 候选自己写的 failureSignals 是它给自己设的证伪条件；如果动作链正好长成那个样子，直接判 not_depicted。
 
-### 三、recommendedOrder —— 推荐开发顺序
+### 三、dimensions —— 十一个维度，每个候选都要打满
 
-全部 ${list.length} 个候选 id 的一个排列，最值得先做的排最前。
-不强制凑数量：全部判 revise 甚至 drop 都是合法结论。
+每条写 id、score（0–10，可带一位小数）、evidence（**一句话，不超过 80 字**），
+可选 evidenceRefs（**最多 2 条**，形如 storyOutline[2]，指明证据在哪一拍）。
+十一个都必须出现，一个不能少、不能重复、不能改名。
 
-### 四、summary
+1. **openingHook（${dimensionWeightText.openingHook}）**：前 3–8 秒**实际发生的事件**能不能给出继续看下去的理由？
+   Hook 必须来自画面上真的发生的事，**不是标题或 oneLineHook 的文案**。
+2. **causalLogic（${dimensionWeightText.causalLogic}）**：角色为什么做这件事、障碍为什么存在、
+   这个选择为什么会导致这个结果？高潮是靠角色的行为，还是靠运气与作者安排？
+   **另外必查一条世界规则：角色修改、拿走、赠送、销毁或长期占有一件物品时，
+   它到底有没有这件物品的处置权，或者有没有谁明确许可过。**
+   这与物理成不成立是两回事——学校的东西拿回家、公共场所的物品擅自改造、
+   别人的东西转送给第三个人，都属于这一类。命中就在 dominantDefect 里用
+   ownership_or_authority，并在 description 里写明**东西是谁的、谁许可过**。
+3. **protagonistAgency（${dimensionWeightText.protagonistAgency}）**：关键结果是不是来自主角的决定？
+   自检：**如果主角什么都不做，这个故事是不是照样会自动发生？**
+4. **characterSpecificity（${dimensionWeightText.characterSpecificity}）**：为什么这个故事适合当前这个固定角色？
+   换成一个普通角色来演，魅力会损失多少？**尤其检查萌点是来自角色本来的性格，
+   还是编剧为了「可爱」强迫她做一个怪动作。**
+   **再问一句：这个候选是不是偷偷引入了一个上游从没建立过、但会明显改变
+   观众对角色关系理解的背景事实？** 例如把固定搭档写成平时睡在院子的纸箱里——
+   角色设定只说了它是固定搭档，没说过它住哪儿，这条设定是候选自己加的。
+   命中就用 dominantDefect 类型 setting_assumption。
+   **它最高只能判 MAJOR**：这是候选自己加的设定，不是对已签发角色事实的违反，
+   与「违反固定角色边界」要分开——后者属于别的类型。
+5. **storySpecificity（${dimensionWeightText.storySpecificity}）**：这个故事有没有自己专属的母题、动作、道具、
+   声音或视觉机制？自检：**这个记忆点能不能原封不动搬到另外二十个治愈故事里？** 能，就是专属性低。
+6. **originality（${dimensionWeightText.originality}）**：评的是**深层剧作机制**，不是题材不同。
+   四个题材完全不同的故事，如果都是「遇到普通问题 → 角色身体变成某种工具 → 意外解决」，
+   那是同一个模板。
+7. **progression（${dimensionWeightText.progression}）**：dramatic 型看目标→障碍→尝试→升级→选择→结果；
+   slice_of_life 型**不要求大冲突**，看感知、互动、关系、环境或情绪有没有持续变化。
+   **换一个动作继续做同一件事不算推进。**
+8. **emotionalPayoff（${dimensionWeightText.emotionalPayoff}）**：结尾有没有兑现前面建立起来的东西？
+   优先认：动作呼应、道具回收、状态变化、关系变化、声音回响、空间变化、角色的自然反应。
+   **不要默认要求摸头、牵手、拥抱、哭、眼眶泛红、蹭脸、夸「真懂事」或送奖励**——
+   这些只有在故事本身需要时才成立，为了煽情硬加反而扣分。
+9. **visualMemorability（${dimensionWeightText.visualMemorability}）**：至少有没有一个观众看完能回忆出来的**具体画面**？
+   「夕阳很美」「画风治愈」本身不算记忆点。
+10. **productionFeasibility（${dimensionWeightText.productionFeasibility}）**：不进镜头工程细节，只看角色数量、地点数量、
+    复杂物理动作、大段精确文字、高难度连续手部动作、难保持一致性的物件。
+    **但不要因为稍微难做就否定一个真正高价值的创意。**
+    物理机制的可信度按下面第四块单独写，不要在这一维里下「可行 / 不可行」的结论。
+11. **dialogueAndNaturalness（${dimensionWeightText.dialogueAndNaturalness}）**：对白像不像这个角色会说的话？
+    是不是承担了过多解释剧情的功能？结尾是故事自然走到那里，还是为了升华硬加一段温情动作？
+
+### 四、physicalAssumptions —— 物理机制成不成立，不要二选一
+
+候选里每一条**观众会当真的物理机制**（把某样东西做成工具、防水、承重、固定、加热、
+粘合、搭建），最多挑 4 条写。**不要把生活常识动作也写进来**（走路、开门、抱起一只猫），
+确实没有值得一提的机制就给空数组。
+
+每条写 mechanism（这个机制是什么）、beatIndexes，以及**两个互相独立的判断**：
+
+**confidence —— 现实里这事成不成立**
+
+- **established** —— 按候选已经写出来的内容就明确成立。
+- **conditional** —— **在某些条件下成立，而候选没有交代那些条件**。
+  必须在 necessaryAssumptions 里列出它依赖什么（材料干湿、摩擦力、承重、粘合强度、
+  尺寸、位置……最多 4 条），并在 failureRisk 里写清楚那些条件不成立时画面上会出什么问题。
+- **unlikely** —— 按常识多半立不住。同样要写 necessaryAssumptions 与 failureRisk。
+
+**literalDependency —— 故事需不需要它真的成立**
+
+- **required** —— 剧情结果必须依赖这个机制真的工作。例：湿胶带必须真的粘住树叶才挡得住雨。
+- **optional** —— 成立更好，不成立剧情也走得通。
+- **make_believe** —— **角色自己相信或假装它成立，真实剧情并不依赖它。**
+  例：把阳光「装进」玻璃罐——观众和角色都知道那是想象，故事从没要求阳光真被封住。
+
+**这两个轴是分开的，不许混。** 一个机制完全可以同时是
+「confidence: unlikely」+「literalDependency: make_believe」——那不是缺陷，那是童趣。
+
+**扣分只针对 「required」 且 confidence 不好的那些。**
+「make_believe」 的机制**不得因为现实里做不到就扣 productionFeasibility 或 causalLogic**；
+它唯一要提醒的是镜头别把它拍成实的（例如玻璃罐内部真的凭空发光），把这句写进 failureRisk。
+
+**这一档刻意不是「可行 / 不可行」二选一。** 大多数看起来可爱的土办法都属于 conditional：
+换个条件就成立，换个条件就不成立。把依赖的条件写出来，比拍板下结论有用得多——
+下游可以据此在正文里补一句交代，而不是推翻整个创意。
+**不得因为某个机制看起来很温馨，就无条件判成 established。**
+
+### 五、batchTemplateConvergence —— 把 ${list.length} 个放在一起看
+
+**逐个评完之后必须再做这一步。** 检查它们是不是共用：相同的问题结构、相同的解决结构、
+相同的萌点结构、相同的情绪回报结构、相同的高潮机制、相同的人物关系公式。
+
+**即使题材与道具各不相同，只要深层机制高度一致，就要判 converged: true**，
+写出 sharedMechanism（它们共用的到底是哪一套机制）、affectedCandidateIds（至少两个）与 evidence
+（**不超过 200 字**）。不收敛就写 converged: false、名单留空。
+
+**不要拿每个候选自己写的相似风险当答案**——单个看，四个都可以声称自己原创；
+只有横着看才会发现它们其实是同一个故事换了四套布景。
+
+### 六、briefAlignment —— 编辑参考信息，不参与任何判定
+
+逐个候选写 status / conflict / suggestBriefChange。
+
+**这一档是给人看的线索，不进分数、不进等级、不进放行决定、不会自动去改简报。**
+实测同一份输入三次回放，同一个候选的 PASS / WARN 会互相翻转，跨包时给出的改简报方向
+甚至完全相反。所以**照实写你这一次的判断就好，不要试图迎合任何方向**，
+也不要因为它去调整上面的十一维分数。
+
+一个高质量候选没有严格执行简报的某条 mustRetain 时，**不要自动扣分**。先分清是哪一种：
+
+- A. 它违反了创作者真正的硬约束（角色身份、外观、明确禁止的东西）→ status: FAIL。
+- B. 它破坏了目标受众、定位或核心情绪 → status: WARN。
+- C. 它只是**用了一个比简报更自然的剧情引擎** → status: PASS，
+  并在 suggestBriefChange 里**建议修改简报**，而不是逼这个候选改回模板。
+
+顶层 briefProblemsDetected 写这一批暴露出的简报问题，**每一条都是一句话（字符串），不是对象**
+（没有就给空数组）。
+典型形状是：简报把「获得外部奖励 → 转赠长辈」这类具体桥段写成了不可协商体验，
+而这一批里最好的候选恰恰没有执行它——那说明该改的是简报。
+
+### 七、top3RevisionSuggestions —— 最多三条，先换再加
+
+**REPLACE BEFORE ADD。** 优先级依次是：强化已有动作 > 替换弱动作 > 删除冗余 > 回收已有伏笔。
+**除非某个功能完全缺失，否则不要净新增一个新的「治愈动作」。**
+
+每条写：
+- kind：strengthen / replace / remove / recycle / add
+- suggestion：具体怎么改，**不超过 120 字**
+- replacesOrStrengthens：它替换或强化的是原来的哪一处
+- whyOnlyHere：**为什么这个动作只能发生在这个故事里**——它依赖这个故事已有的哪个角色、
+  道具、动作或伏笔。**除 remove 外的四种都必须写。** 答不出来，这条建议就是一条
+  谁都能用的模板建议，不要提。
+
+### 八、holisticPreferenceOrder —— 你自己的整体偏好序
+
+全部 ${list.length} 个候选 id 的一个排列，你最想先做的排最前。
+不强制凑数量：全部都需要修改甚至全部建议淘汰，都是合法结论。
+
+**这一份是「你看完之后凭整体判断更想做哪个」，不必与十一维加权分算出来的顺序一致。**
+服务端会另外按加权分派生一份 scoreOrder，并用它派生最终推荐与次选——你不用写那份。
+两者不一致是**有价值的信息**（说明整体观感与分项打分在这一批上看法不同），
+所以**不要为了让它们看起来一致而回头改分数或改这个顺序**。
+
+### 九、summary
 
 一句话：这一批里最值得先发展的是哪个、最该先改的是哪一处具体动作。
 
-**不要打总分。** 也不要建议新增角色或改变固定角色身份。
+不要建议新增角色或改变固定角色身份。
+
+## 关于长度
+
+这份报告有 ${list.length} 个候选 × 11 个维度，很容易写超导致输出被截断、整份作废。
+**每条 evidence 一句话即可（≤80 字），不要复述剧情**；suggestion ≤120 字；
+batchTemplateConvergence.evidence ≤200 字。判断的准确性比措辞的丰满重要得多。
 
 ## 输出
 
@@ -1270,8 +1543,16 @@ phase、emotion 是作者的标签，可以参考，**不能当证据**。
      "eventChain":[{"sourceEvent":"","candidateEvent":"","beatIndexes":[1],"linkage":"different"}],
      "taskType":"different","midSection":"different","rewardSource":"not_applicable",
      "rewardHandling":"not_applicable","endingShape":"partial","score":0,"why":""},
-   "verdict":"","why":"","keepThis":""}],
- "recommendedOrder":[],
+   "dimensions":[${dimensionTemplate}],
+   "physicalAssumptions":[{"mechanism":"","confidence":"conditional","literalDependency":"required","necessaryAssumptions":[""],"failureRisk":"","beatIndexes":[1]}],
+   "strongestReason":"",
+   "dominantDefect":{"type":"none","severity":"NONE","description":""},
+   "briefAlignment":{"status":"PASS","conflict":"","suggestBriefChange":""},
+   "top3RevisionSuggestions":[{"kind":"strengthen","suggestion":"","replacesOrStrengthens":"","whyOnlyHere":""}],
+   "why":"","keepThis":""}],
+ "holisticPreferenceOrder":[],
+ "batchTemplateConvergence":{"converged":false,"sharedMechanism":"","affectedCandidateIds":[],"evidence":""},
+ "briefProblemsDetected":["这里每一条都是一句话（字符串），不是对象"],
  "summary":""}
 ${JSON_ONLY}`;
 }
@@ -1287,11 +1568,26 @@ ${JSON_ONLY}`;
  * ①「第二次请求只发送 diagnostics 与修复说明」是本仓库对有界纠错的一贯纪律；
  * ② 原提示词本来就含全部候选投影与原片动作稿，把两千字报告再塞回去是纯浪费。
  *
- * 诊断的 reason 已经是可执行的中文（「recommendedOrder 必须是全部 4 个候选 id 的
+ * 诊断的 reason 已经是可执行的中文（「holisticPreferenceOrder 必须是全部 4 个候选 id 的
  * 一个排列；漏了 V2、V3、V4」），**原样列出，不另写一套人话翻译**——翻译一次就多
  * 一个会和校验器漂移的地方。
  */
-export function storyCandidateReviewRetryPrompt({ originalPrompt = "", details = [] } = {}) {
+export function storyCandidateReviewRetryPrompt({ originalPrompt = "", details = [], truncated = false } = {}) {
+  // 截断是另一种失败：没有任何校验诊断可打回，原样重发只会让它第二次照样写超。
+  // 这一档有 4 个候选 × 11 维，是全仓库最容易撞 token 上限的输出之一。
+  if (truncated) {
+    return `${originalPrompt}
+
+---
+
+## 上一次的输出因为太长被截断了
+
+上一轮的 JSON 没写完就到了 token 上限，整份报告作废。**字段一个都不要少**，
+但把篇幅压下来：每条 evidence 一句话、不超过 80 字，不要复述剧情原文；
+suggestion 不超过 120 字；evidenceRefs 最多 2 条，可以留空数组。
+判断本身不要放松，压缩的只是措辞。直接输出新的 JSON。
+${JSON_ONLY}`;
+  }
   const list = (Array.isArray(details) ? details : [])
     .map((detail) => {
       const path = String(detail?.path || "").trim();

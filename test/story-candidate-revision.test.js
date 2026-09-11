@@ -11,6 +11,7 @@ import {
   mergeStoryCandidateRevision
 } from "../src/story-candidate-revision.js";
 import { storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt } from "../src/prompts.js";
+import { CANDIDATE_REVIEW_DIMENSION_WEIGHTS as REVIEW_WEIGHTS } from "../public/story-review-metrics.js";
 import { mockStoryCandidateRevision } from "../src/mock.js";
 import { WorkflowService } from "../src/workflow.js";
 
@@ -78,6 +79,16 @@ const scaffold = () => ({
   why: "两条链的接法不同"
 });
 
+// 选题终审的评分块（2026-09-12）。修订这条路径不消费它，但它会按严格 schema
+// 校验传入的报告，所以夹具得带全。分数刻意给 8.2：落在「需定向修订」那一档，
+// 正是会走到修订的形状。
+const dimensions = () => Object.keys(REVIEW_WEIGHTS).map((id) => ({
+  id,
+  score: 8.2,
+  evidence: "夹具占位。",
+  evidenceRefs: []
+}));
+
 const REVIEW = {
   schemaVersion: "story-candidate-review/1.0",
   sourceMechanisms: [
@@ -98,7 +109,12 @@ const REVIEW = {
       }],
       coherenceChecks: [{ kind: "purpose_nullified", beatIndexes: [2, 3], problem: "任务目的在第 3 拍被抵消" }],
       sourceScaffoldOverlap: scaffold(),
-      verdict: "revise",
+      dimensions: dimensions(),
+      physicalAssumptions: [{ mechanism: "用旧木箱垫脚够到高处", confidence: "conditional", literalDependency: "required", necessaryAssumptions: ["木箱承重足够"], failureRisk: "木箱塌了就够不到。", beatIndexes: [2] }],
+      strongestReason: "夹具占位。",
+      dominantDefect: { type: "causalLogic", severity: "MAJOR", description: "任务目的被抵消。" },
+      briefAlignment: { status: "PASS", conflict: "", suggestBriefChange: "" },
+      top3RevisionSuggestions: [{ kind: "replace", suggestion: "换掉第 3 拍的解法。", replacesOrStrengthens: "第 3 拍", whyOnlyHere: "它依赖第 1 拍就带在身上的那件道具。" }],
       why: "因果不自洽",
       keepThis: "陪伴的调子"
     },
@@ -115,12 +131,19 @@ const REVIEW = {
       }],
       coherenceChecks: [],
       sourceScaffoldOverlap: scaffold(),
-      verdict: "pass",
+      dimensions: dimensions(),
+      physicalAssumptions: [],
+      strongestReason: "夹具占位。",
+      dominantDefect: { type: "none", severity: "NONE", description: "" },
+      briefAlignment: { status: "PASS", conflict: "", suggestBriefChange: "" },
+      top3RevisionSuggestions: [],
       why: "没问题",
       keepThis: "结尾"
     }
   ],
-  recommendedOrder: ["V2", "V1"],
+  holisticPreferenceOrder: ["V2", "V1"],
+  batchTemplateConvergence: { converged: false, sharedMechanism: "", affectedCandidateIds: [], evidence: "" },
+  briefProblemsDetected: [],
   summary: "先做 V2"
 };
 

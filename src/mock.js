@@ -8,6 +8,9 @@ import {
 } from "./validation.js";
 import { deriveDirectShotSkeleton } from "./direct-shot-timeline.js";
 import { resolveVideoPromptProfile } from "../public/video-prompt-profiles.js";
+// 维度清单只有一份：mock 少写一个维度就会被 CANDIDATE_REVIEW_DIMENSION_MISSING 拦下，
+// 这正是我们要的——demo 与 live 走同一条校验链。
+import { CANDIDATE_REVIEW_DIMENSION_WEIGHTS } from "../public/story-review-metrics.js";
 
 // 每条【原片有】都必须用「」引用 mockReconstruction 中真实存在的逐字原文，
 // 否则 mock 自己就违反了 allowedNarrativeComponents 的存在性判定契约。
@@ -1116,12 +1119,79 @@ export function mockStoryCandidateReview(candidates) {
           score: 0,
           why: "demo 模式不调用模型，这个分数不构成任何相似度结论。"
         },
-        verdict: index === 0 && beats ? "revise" : "pass",
+        // 十一个维度必须齐全（校验器按权重表逐个点名），分数一律 5——
+        // **不是 demo 认为它中等，是 demo 不评分**。给一个高分会让页面显示
+        // 「可直接展开」，那是伪造结论；派生链本身由单元测试覆盖，不靠 mock 触发。
+        dimensions: Object.keys(CANDIDATE_REVIEW_DIMENSION_WEIGHTS).map((id) => ({
+          id,
+          score: 5,
+          evidence: "demo 模式不调用模型，未做实际判断。",
+          evidenceRefs: []
+        })),
+        // 两个分支都走到：第一个候选给一条 conditional（必须带依赖条件与失败风险，
+        // 正是闸门管的那条路径），其余给空数组——没有值得一提的机制是合法结论。
+        physicalAssumptions: index === 0 && beats
+          ? [
+            {
+              mechanism: "demo 模式不调用模型，这条只用于走通需要条件的分支。",
+              confidence: "conditional",
+              literalDependency: "required",
+              necessaryAssumptions: ["demo 模式未列出真实条件。"],
+              failureRisk: "demo 模式未评估失败风险。",
+              beatIndexes: [1]
+            },
+            {
+              // make_believe 分支也要走到：它是「物理上立不住但剧情本来就不依赖它」
+              // 那一类，不该因为现实做不到而扣分。只写一条会让这个区分从没被经过。
+              mechanism: "demo 模式不调用模型，这条只用于走通想象类机制的分支。",
+              confidence: "unlikely",
+              literalDependency: "make_believe",
+              necessaryAssumptions: ["demo 模式未列出真实条件。"],
+              failureRisk: "demo 模式未评估失败风险。",
+              beatIndexes: [1]
+            }
+          ]
+          : [],
+        strongestReason: "demo 模式未作判断。",
+        // 两个分支都走到：第一个候选写一条真实形状的缺陷，其余走 none 出口。
+        // 只写 none 会让 mock 永远不经过「type/severity 一致性」那条闸门。
+        dominantDefect: index === 0 && beats
+          ? { type: "openingHook", severity: "MINOR", description: "demo 模式占位，不构成任何质量结论。" }
+          : { type: "none", severity: "NONE", description: "" },
+        briefAlignment: {
+          status: "PASS",
+          conflict: "",
+          suggestBriefChange: ""
+        },
+        // kind 的两个分支：remove 不要求 whyOnlyHere，strengthen 要求——
+        // 只写一种会让那条闸门在 demo 路径上从来不被经过。
+        top3RevisionSuggestions: [
+          {
+            kind: "strengthen",
+            suggestion: "demo 模式不调用模型，这条只用于走通需要理由的分支。",
+            replacesOrStrengthens: "demo 占位",
+            whyOnlyHere: "demo 模式未作判断。"
+          },
+          {
+            kind: "remove",
+            suggestion: "demo 模式不调用模型，这条只用于走通可以留空的分支。",
+            replacesOrStrengthens: "demo 占位",
+            whyOnlyHere: ""
+          }
+        ],
         why: "demo 模式不调用模型，本判定不构成任何质量结论。",
         keepThis: "demo 模式未作判断。"
       };
     }),
-    recommendedOrder: list.map((candidate) => String(candidate?.id || "")),
+    holisticPreferenceOrder: list.map((candidate) => String(candidate?.id || "")),
+    // demo 不判收敛：判 true 会在页面上显示「这一批是同一个模板」，同样是伪造结论。
+    batchTemplateConvergence: {
+      converged: false,
+      sharedMechanism: "",
+      affectedCandidateIds: [],
+      evidence: "demo 模式不调用模型，未做批次比较。"
+    },
+    briefProblemsDetected: [],
     summary: "demo 模式：未调用模型，本报告不构成任何选题判断。"
   };
 }

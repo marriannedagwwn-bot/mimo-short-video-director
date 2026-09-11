@@ -499,10 +499,18 @@ export class WorkflowService {
       : null;
 
     const request = {
+      // 三份上游都是**可选**的：缺哪一份就少一节判断依据，不阻断评审。
+      // 它们按允许清单投影（buildStoryCandidateReviewUpstream），
+      // 且**不改变原片事实基准**——机制清单与骨架对照仍然只认 sourceScriptReconstruction。
       prompt: storyCandidateReviewPrompt(
         candidates,
         sourceScriptReconstruction,
-        input.visualGuardrails?.fixedCharacterBoundary || null
+        input.visualGuardrails?.fixedCharacterBoundary || null,
+        {
+          creatorProfile: input.creatorProfile || null,
+          creativeBrief: input.creativeBrief || null,
+          referenceAnalysis: input.referenceAnalysis || null
+        }
       ),
       model: settings.model,
       maxCompletionTokens: settings.maxCompletionTokens,
@@ -532,7 +540,16 @@ export class WorkflowService {
         // 传输中断也吃这 2 次预算（实测失败率约三分之一，其中一类是几秒就断、
         // 一个 token 都没烧）。没有诊断可打回时重发原提示词——只说「你错了」
         // 而不说错在哪，第二次只会重复第一次。
-        retryPrompt: ({ originalPrompt }) => {
+        // 截断与「被校验拦下」是两种完全不同的失败，重试话术也必须不同。
+        // 报告有 4 个候选 × 11 维，写超导致 finish=length 是本阶段最可能的运行时失败；
+        // 而原来的分支只认「有没有校验诊断」，截断时没有诊断 → 原样重发 → 第二次照样写超。
+        // coordinator 已经把它归成 MODEL_OUTPUT_TRUNCATED（model-call-coordinator.js:58），
+        // 这里只需要认出来并要求压缩；token 上限由 retryTokenLimit 自动抬 1.5 倍，两者叠加。
+        retryPrompt: ({ originalPrompt, issue, error }) => {
+          const code = String(issue?.code || error?.code || "");
+          if (code === "MODEL_OUTPUT_TRUNCATED") {
+            return storyCandidateReviewRetryPrompt({ originalPrompt, truncated: true });
+          }
           const last = rejections[rejections.length - 1];
           return last?.details?.length
             ? storyCandidateReviewRetryPrompt({ originalPrompt, details: last.details })
