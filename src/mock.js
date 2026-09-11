@@ -100,6 +100,13 @@ export function mockBrief(input) {
     targetAudience: input.referenceAnalysis?.targetAudience?.primary || "泛生活情感受众",
     coreEmotion: "从担心到被普通人的善意与克制关心打动",
     storyEngine: { desire: "主角必须完成一项指向重要关系人的具体任务", obstacle: "时间、天气或空间让简单任务变得困难", escalation: "任务成本持续增加并暴露主角的在意", turningMechanism: { before: "观众以为这只是一方单向地替另一方跑腿", after: "观众看出两人一直在互相照应，只是方式不同" }, payoff: "显性任务完成，同时回应被关爱对象未说出口的需要" },
+    // 两侧都非空且不重叠——demo 必须走到与 live 同一条校验链（含 OVERLAP 那条闸门），
+    // 否则就是 §2.14 记过的「mock 通过而 live 失败」。
+    recastTest: {
+      recastAs: "把主角换成一个凡事先想周全、怕出洋相的孩子",
+      collapses: ["把手边一件不该戴在头上的东西扣在头上当防护，然后一本正经继续干活"],
+      survives: ["替重要关系人跑一趟，把东西送到"]
+    },
     emotionStructure: [
       { stage: "任务钩子", function: "建立结果问题", targetEmotion: "好奇", intensity: 45 },
       { stage: "成本升级", function: "证明关系重量", targetEmotion: "担心", intensity: 72 },

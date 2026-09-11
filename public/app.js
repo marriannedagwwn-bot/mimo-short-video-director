@@ -1566,6 +1566,28 @@ function storyEngineShift(storyEngine) {
   return [turning.before, turning.after].filter(Boolean).join(" → ");
 }
 
+// 换角测试：上面那一排格子写的是这部片子「发生了什么」，这一块写的是
+// 「为什么是这个角色做这件事才好看」。collapses 那一侧就是换个人来演就没了的东西。
+// 旧简报没有这个键——整块不显示，不留空白（与 storyEngineShift 同一条理由）。
+function recastTestBlock(recastTest) {
+  const collapses = Array.isArray(recastTest?.collapses) ? recastTest.collapses.filter(Boolean) : [];
+  const survives = Array.isArray(recastTest?.survives) ? recastTest.survives.filter(Boolean) : [];
+  if (!collapses.length && !survives.length) return "";
+  const list = (items, cls) => `<ul class="recast-list ${cls}">${items.map((item) => `<li>${escape(item)}</li>`).join("")}</ul>`;
+  return block("换个角色来演，什么会塌掉", `
+    <p class="recast-premise"><b>假设换成：</b>${escape(recastTest?.recastAs || "—")}</p>
+    <div class="recast-split">
+      <div>
+        <b>塌掉的 · 只有这个角色才给得了</b>
+        ${collapses.length ? list(collapses, "collapses") : "<p class=\"muted-note\">—</p>"}
+      </div>
+      <div>
+        <b>不塌的 · 换谁来做都一样</b>
+        ${survives.length ? list(survives, "survives") : "<p class=\"muted-note\">—</p>"}
+      </div>
+    </div>`);
+}
+
 function renderBrief(data) {
   elements.brief.innerHTML = `${resultHeader("CREATIVE BRIEF", "AI 导演创意简报")}
     <div class="summary-strip">${escape(data.creativeDistancePolicy)}</div>
@@ -1573,6 +1595,7 @@ function renderBrief(data) {
       ${cell("内容类型", data.contentType)}${cell("核心情绪", data.coreEmotion)}${cell("目标观众", data.targetAudience)}
       ${cell("人物欲望", data.storyEngine?.desire)}${cell("主要障碍", data.storyEngine?.obstacle)}${cell("情绪兑现", data.storyEngine?.payoff)}${cell("理解转变", storyEngineShift(data.storyEngine))}
     </div>
+    ${recastTestBlock(data.recastTest)}
     ${block("可复用高价值桥段", `<div class="beat-list">${(data.reusableHighValueBeats || []).map((item) => `<div class="beat"><strong>${escape(item.beat)}</strong><p>${escape(item.dramaticValue)}<br><b>必须保留：</b>${escape(item.mustRetain)}</p></div>`).join("")}</div>`)}
     ${block("允许继续使用的叙事构件", `<div class="allow-grid">${(data.allowedNarrativeComponents || []).map((item) => `<div class="allow-item"><strong>✓ ${escape(item.component)}</strong><p>${escape(item.howToReuseSafely)}</p></div>`).join("")}</div>`)}
     ${block("受控改写变量", `<div class="rule-list">${(data.controlledRewriteVariables || []).map((item) => `<div class="rule"><strong>${escape(item.variable)}${item.mustChange ? " · 必须改" : ""}</strong><p>${escape(item.reason)}<br>方向：${escape((item.allowedDirections || []).join(" / "))}</p></div>`).join("")}</div>`)}

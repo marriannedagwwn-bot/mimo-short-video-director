@@ -56,7 +56,7 @@ export function requireText(value, name, { optional = false, max = 12000 } = {})
 const outputContracts = {
   referenceAnalysis: ["contentPositioning", "targetAudience", "storySynopsis", "characters", "protagonistIdentity", "careRecipient", "dialogueStyle", "shotRhythm", "emotionCurve", "retentionDrivers", "whyWatchToEnd", "analysisConfidence", "observedFacts", "uncertainties"],
   sourceScriptReconstruction: ["scenes", "coreEventSequence", "relationshipPattern", "endingAction", "turningPoints", "uncertainties"],
-  creativeBrief: ["contentType", "targetAudience", "coreEmotion", "storyEngine", "emotionStructure", "roleAndOccupationMapping", "reusableHighValueBeats", "controlledRewriteVariables", "protectedExpressions", "minimumTransformationRules", "allowedNarrativeComponents", "nonNegotiableExperience", "creativeDistancePolicy"],
+  creativeBrief: ["contentType", "targetAudience", "coreEmotion", "storyEngine", "recastTest", "emotionStructure", "roleAndOccupationMapping", "reusableHighValueBeats", "controlledRewriteVariables", "protectedExpressions", "minimumTransformationRules", "allowedNarrativeComponents", "nonNegotiableExperience", "creativeDistancePolicy"],
   visualGuardrails: ["fixedCharacterBoundary", "allowedPositiveTraits", "positivePromptBoundary", "sourceSimilarityRules", "dialogueRules", "stageInstructions", "rationale", "uncertainties"],
   themeVariants: ["variants"],
   fullStory: ["selectedVariantId", "title", "oneLinePremise", "targetDurationSeconds", "shootingSynopsis", "characterBible", "beatSheet", "sceneScript", "keyProps", "shootingPlan", "dialogueStyleGuide", "retentionPlan", "experienceFidelity", "transformationProof", "continuityAndSafetyCheck", "uncertainties"],
@@ -380,6 +380,7 @@ export function ensureOutputContract(value, contract) {
   if (contract === "sourceScriptReconstruction") validateSourceScriptReconstructionContract(value);
   if (contract === "creativeBrief") {
     validateStoryEngine(value.storyEngine);
+    validateRecastTest(value.recastTest);
     validateNarrativeComponents(value.allowedNarrativeComponents);
     validateProtectedExpressions(value.protectedExpressions);
   }
@@ -3854,6 +3855,86 @@ const protectedTermStopWords = new Set([
  */
 const STORY_ENGINE_TEXT_FIELDS = Object.freeze(["desire", "obstacle", "escalation", "payoff"]);
 const STORY_ENGINE_TURNING_KEYS = Object.freeze(["before", "after"]);
+
+/**
+ * 「把主角换成一个性格完全不同的人，哪些部分会塌掉？」
+ *
+ * `storyEngine` 的五个键是一个**完整的事件结构模型**——问 desire 必然答「她想要什么」，
+ * 在那个框架里加定义只会拿到更精确的事件描述。两轮真实回放（3.7-max 与 3.8-max-0902）
+ * 写出的 turningMechanism 全部停在事件层与关系层，换模型也没变。
+ *
+ * 这个字段问的是另一件事：**只有这种性格的角色才会这么做的那部分是什么。**
+ * 它刻意写成一个**操作**而不是一句定义——模型得真把主角换成另一种性格、逐拍试一遍，
+ * 塌的进 collapses，不塌的进 survives。依据是这仓库的经验：结构性改动（拆槽位、
+ * 清单收敛、拍号派生）都成功了，措辞性改动（三次加码「不许净增动作」）三次全被绕过。
+ * 而 turningMechanism 加定义后实测 3/3 照抄提示词的措辞框架，正面定义救不了这个。
+ *
+ * **两个数组同时必填是全部要点。** 只要 collapses 的话模型可以把所有东西都塞进去；
+ * 要求同时列出 survives，它就必须做区分——与 transformationProof 拆成
+ * {source, replacement} 同一个招式：分开放，程序才知道哪边是哪边。
+ *
+ * 判定**全是类型、非空与集合比较，零语义**。归一化复用 normalizeStoryReviewEcho，
+ * 不另写第二份。
+ *
+ * **闸门抓不到**：collapses 里写的是品质词（「她很活泼」）而不是具体动作。
+ * 那需要语义判断，没有确定性兜底，只能靠提示词加人工看。
+ */
+function validateRecastTest(recastTest) {
+  const details = [];
+  const push = (code, path, reason) => details.push({ code, path, reason });
+  // 与 validateStoryEngine 同一个口径：字符串且去空白后非空。
+  const nonEmptyText = (value) => typeof value === "string" && Boolean(value.trim());
+  if (!recastTest || typeof recastTest !== "object" || Array.isArray(recastTest)) {
+    throw new OutputContractError(
+      "creativeBrief.recastTest 必须是对象",
+      [{ code: "CREATIVE_BRIEF_RECAST_TEST_INVALID", path: "/recastTest", reason: "必须是对象" }]
+    );
+  }
+  const keys = Object.keys(recastTest).sort();
+  const expected = ["collapses", "recastAs", "survives"];
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
+    push("CREATIVE_BRIEF_RECAST_TEST_INVALID", "/recastTest",
+      `必须恰好含 recastAs、collapses、survives 三个键，收到：${keys.join("、") || "（空）"}`);
+  }
+  if (!nonEmptyText(recastTest.recastAs)) {
+    push("CREATIVE_BRIEF_RECAST_TEST_FIELD_EMPTY", "/recastTest/recastAs",
+      "必须写明换成什么样的角色，不能留空");
+  }
+  const sides = [["collapses", "换角之后不再成立的部分"], ["survives", "换角之后照样成立的部分"]];
+  const normalized = {};
+  for (const [key, label] of sides) {
+    const list = Array.isArray(recastTest[key]) ? recastTest[key] : null;
+    if (!list || !list.length || !list.every((item) => nonEmptyText(item))) {
+      push("CREATIVE_BRIEF_RECAST_TEST_SIDE_EMPTY", `/recastTest/${key}`,
+        `${label}至少要写 1 条非空字符串`);
+      normalized[key] = [];
+      continue;
+    }
+    normalized[key] = list.map((item) => normalizeStoryReviewEcho(item));
+    const seen = new Set();
+    normalized[key].forEach((item, index) => {
+      if (seen.has(item)) {
+        push("CREATIVE_BRIEF_RECAST_TEST_DUPLICATE", `/recastTest/${key}/${index}`,
+          "同一侧内部不得重复同一条");
+      }
+      seen.add(item);
+    });
+  }
+  // 核心闸门：同一件事不能既塌又不塌。它抓的是「模型没真做这个区分，两边都写了」。
+  const survivesSet = new Set(normalized.survives || []);
+  (normalized.collapses || []).forEach((item, index) => {
+    if (survivesSet.has(item)) {
+      push("CREATIVE_BRIEF_RECAST_TEST_OVERLAP", `/recastTest/collapses/${index}`,
+        "同一条同时出现在 collapses 与 survives——换角之后它要么成立要么不成立，不能两边都算");
+    }
+  });
+  if (details.length) {
+    throw new OutputContractError(
+      `creativeBrief.recastTest 不合规：${details.map((item) => item.reason).join("；")}`,
+      details
+    );
+  }
+}
 
 function validateStoryEngine(storyEngine) {
   const details = [];
