@@ -1263,6 +1263,38 @@ test("浏览器并排显示两份排序，并在不一致时点出来", () => {
   assert.match(APP_JS, /CANDIDATE_REVIEW_LITERAL_DEPENDENCY_LABELS/u);
 });
 
+// 用到了就必须导入——**这条是 2026-09-12 一次真实事故补的**。
+//
+// `CANDIDATE_REVIEW_LITERAL_DEPENDENCY_LABELS` 在渲染函数里用了、却没加进 import：
+// 页面加载不报错（模块求值期碰不到那一行），直到用户点「对照原片体检候选」、
+// 模型跑完、开始渲染报告时才抛 ReferenceError——**两次真实调用的钱都花了，
+// 报告拿到了，却只在屏幕上留下一句 "... is not defined"**。
+//
+// 而上面那条 `assert.match(APP_JS, /CANDIDATE_REVIEW_LITERAL_DEPENDENCY_LABELS/u)`
+// **照样通过**：它只证明这个名字在文件里出现过，而出现的正是那处用法本身。
+// 源码断言检查「渲染有没有写」是够的，检查「写的东西能不能跑」是不够的。
+//
+// 所以这里改成对着模块的**真实导出清单**核对：凡是 story-review-metrics.js
+// 导出的名字，只要在 app.js 的代码位置被引用，就必须出现在那条 import 里。
+test("app.js 引用的每一个共用常量都真的导入了，不能只是出现在文件里", async () => {
+  const metrics = await import("../public/story-review-metrics.js");
+  const importBlock = APP_JS.slice(
+    APP_JS.indexOf("import {"),
+    APP_JS.indexOf('} from "./story-review-metrics.js";')
+  );
+  // 去掉注释行再找引用：诊断码常出现在注释里（例如 CANDIDATE_REVIEW_UNKNOWN_MECHANISM），
+  // 那不是标识符引用，不该被当成缺失导入。
+  const codeOnly = APP_JS
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//") && !line.trim().startsWith("*"))
+    .join("\n");
+
+  const missing = Object.keys(metrics)
+    .filter((name) => new RegExp(`\\b${name}\\b`, "u").test(codeOnly))
+    .filter((name) => !new RegExp(`\\b${name}\\b`, "u").test(importBlock));
+  assert.deepEqual(missing, [], `这些名字在 app.js 里用了却没导入：${missing.join("、")}`);
+});
+
 test("提示词把三档写清楚，并禁止因为温馨就无条件判成立", () => {
   const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
   assert.match(prompt, /这一档刻意不是「可行 \/ 不可行」二选一/u);
