@@ -465,3 +465,52 @@ test("提示词里的固定举例标注了来源，不会被当成本片内容",
   assert.match(text, /下面这个例子来自另一部参考片，只用来说明什么叫「与主线无关」，不要照抄它的内容/u);
   assert.match(text, /同样来自另一部参考片，只示范判据，不要照抄内容/u);
 });
+
+// 候选的 storyOutline[].action 对角色名没有任何约束，而本阶段的 visibleAction
+// 有裸子串扫描。两次真实回放（2026-09-12，候选 V2《罐装阳光与太阳味》）都死在
+// 同一个地方：候选拍 3 原文是「把罐子放在奶奶刚叠好的、带着阳光味道的被子上」，
+// 模型照抄进 visibleAction，撞 FULL_STORY_SCENE_VISUAL_CHARACTER_MISSING。
+// 根因是提示词自相矛盾——「必须忠实承接 Variant」与「可见字段不得出现角色名」
+// 对同一句话给出相反指令，而当时没有优先级。这里锁住那条优先级声明。
+test("承接候选正文时，字句服从可见事实字段规则", () => {
+  const text = prompt();
+  assert.match(text, /承接的是候选写出的剧情事实，不是它的字句/u);
+  assert.match(text, /storyOutline\[\]\.action 对角色名没有任何约束/u);
+  assert.match(text, /两者冲突时以可见事实字段规则为准/u);
+  assert.match(text, /把候选正文原样抄进可见事实字段会直接判失败/u);
+  // 反方向同样要挡住：不能借「措辞可以改」去删可见细节或改动候选已定的事实
+  assert.match(text, /改写只去掉名字，不得连可见细节一起删掉/u);
+  assert.match(text, /不得借「措辞可以改」去改变候选已经确定的动作、道具、地点或结果/u);
+});
+
+// 原有四条范式里没有这个形状：名字不是写在道具上（那是「贴着标签的快递盒」那条），
+// 而是用来交代这件道具是谁经手的。裸子串匹配分不出两者。
+test("可见事实字段列出第五种写法：道具的来历或经手人", () => {
+  const text = prompt();
+  assert.match(text, /不在画面里的人有五种常见写法/u);
+  assert.match(text, /用来说明道具\*\*来历或经手人\*\*的名字同样要去掉/u);
+  assert.match(text, /不写「奶奶刚叠好的被子」，写「刚叠好的蓬松被子」/u);
+  // 去掉的只有名字，可见特征必须留着——与既有「贴着手写标签的快递盒」同规格
+  assert.match(text, /刚叠好、蓬松、带着晒过的暖意这些可见特征全部保留/u);
+  assert.match(text, /写进 shootingNotes 或让 dialogue 的台词正文自己说/u);
+});
+
+// 屏蔽字段不是可选项：experienceFidelity 顶层必填，屏蔽会让必填字段无源可写。
+// 这条断言锁住「字段照常下发」，防止后来有人把它们从投影里删掉。
+test("那五个字段仍然完整下发给展开阶段，不做屏蔽", () => {
+  const brief = {
+    nonNegotiableExperience: { samePlotDriver: "BRIEF_PLOT_DRIVER_SENTINEL", sameBeatValue: "BRIEF_BEAT_VALUE_SENTINEL" },
+    reusableHighValueBeats: [{ beat: "BRIEF_BEAT_SENTINEL", dramaticValue: "价值", mustRetain: "BRIEF_MUST_RETAIN_SENTINEL" }],
+    creativeDistancePolicy: "BRIEF_DISTANCE_SENTINEL"
+  };
+  const text = fullStoryPrompt({
+    creatorProfile, creativeBrief: brief, visualGuardrails: {},
+    referenceAnalysis: {}, sourceScriptReconstruction: {}, variant: leanVariant
+  });
+  for (const sentinel of [
+    "BRIEF_PLOT_DRIVER_SENTINEL", "BRIEF_BEAT_VALUE_SENTINEL",
+    "BRIEF_BEAT_SENTINEL", "BRIEF_MUST_RETAIN_SENTINEL", "BRIEF_DISTANCE_SENTINEL"
+  ]) {
+    assert.match(text, new RegExp(sentinel, "u"));
+  }
+});
