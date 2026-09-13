@@ -9,6 +9,7 @@ import {
 import { serializeServerError } from "../src/server-error.js";
 import { ShotVideoProviderError } from "../src/shot-video-generator.js";
 import { ModelResponseError } from "../src/mimo-client.js";
+import { ModelPipelineError } from "../src/model-errors.js";
 
 // worker 把 HTTP 失败拼成 `HTTP 402 Payment Required: {json}`，
 // 文本客户端直接给原始 body。两种形状都必须能取到码。
@@ -145,4 +146,59 @@ test("文本模型错误出口按 provider 元数据查表", () => {
   // 官方把限流列为可重试，retryable 必须跟着文档走。
   assert.equal(body.retryable, true);
   assert.equal(body.error, "Qwen 请求失败（429）");
+});
+
+// ---------------------------------------------------------------------------
+// 走 coordinator 的阶段（定向修订、Full Story、Animation Plan、候选对照评审）
+// 抛的是 ModelPipelineError，而这条分支此前**不带任何供应商原文**——
+// 2026-09-07 一次重试被 400 拒绝，原文躺在 AttemptStore 里、响应里什么都没有，
+// 调查就此中断。这几条断言把那个缺口钉住。
+test("pipeline 出口从 cause 里取出供应商原文并查表", () => {
+  const cause = new ModelResponseError("Qwen 请求失败（400）", JSON.stringify({
+    error: { message: "Parameter 'temperature'=0.3 is not supported for kimi-k3 model.", code: "InvalidParameter" }
+  }), 400, { provider: "Qwen" });
+  const error = new ModelPipelineError("模型输出未通过校验", {
+    category: "output-contract",
+    code: "OUTPUT_CONTRACT_INVALID",
+    origin: "model",
+    httpStatus: 502,
+    retryable: true,
+    diagnostics: [{ code: "X", path: "/a", reason: "b" }],
+    attempts: [],
+    cause
+  });
+  const { body } = serializeServerError(error);
+  assert.ok(body.providerError, "providerError 不该是 null");
+  assert.match(body.providerError.providerMessage, /temperature/u);
+  // 纯增字段：既有七个逐字不变。
+  assert.equal(body.error, "模型输出未通过校验");
+  assert.equal(body.category, "output-contract");
+  assert.equal(body.code, "OUTPUT_CONTRACT_INVALID");
+  assert.equal(body.origin, "model");
+  assert.equal(body.retryable, true);
+  assert.equal(body.details.length, 1);
+  assert.deepEqual(body.attempts, []);
+});
+
+test("没有供应商响应体时 pipeline 出口返回 null，不编一句安慰话", () => {
+  const error = new ModelPipelineError("模型调用预算已耗尽", {
+    category: "budget",
+    code: "MODEL_CALL_BUDGET_EXHAUSTED",
+    origin: "system",
+    httpStatus: 502
+  });
+  const { body } = serializeServerError(error);
+  assert.equal(body.providerError, null);
+  assert.equal(body.code, "MODEL_CALL_BUDGET_EXHAUSTED");
+});
+
+test("cause 是普通 Error 时同样不产出解释", () => {
+  const error = new ModelPipelineError("传输中断", {
+    category: "transport",
+    code: "MODEL_STREAM_ABORTED",
+    origin: "provider",
+    httpStatus: 502,
+    cause: new TypeError("fetch failed")
+  });
+  assert.equal(serializeServerError(error).body.providerError, null);
 });

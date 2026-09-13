@@ -5,20 +5,44 @@
   "additionalProperties": false,
   "required": [
     "schemaVersion",
+    "sourceMechanisms",
     "candidateChecks",
-    "recommendedOrder",
+    "holisticPreferenceOrder",
+    "batchTemplateConvergence",
+    "briefProblemsDetected",
     "summary"
   ],
   "properties": {
     "schemaVersion": { "const": "story-candidate-review/1.0" },
+    "sourceMechanisms": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/sourceMechanism" }
+    },
     "candidateChecks": {
       "type": "array",
       "minItems": 1,
       "items": { "$ref": "#/$defs/candidateCheck" }
     },
-    "recommendedOrder": {
+    "holisticPreferenceOrder": {
       "type": "array",
       "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "scoreOrder": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "batchTemplateConvergence": { "$ref": "#/$defs/batchTemplateConvergence" },
+    "briefProblemsDetected": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "recommendedWinner": { "type": "string" },
+    "runnerUp": { "type": "string" },
+    "rejectOrRegenerate": {
+      "type": "array",
       "items": { "$ref": "#/$defs/nonEmptyString" }
     },
     "summary": { "$ref": "#/$defs/nonEmptyString" }
@@ -45,20 +69,203 @@
         "visibleChange": { "$ref": "#/$defs/nonEmptyString" }
       }
     },
+    "sourceMechanism": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "mechanism", "whereInSource", "requiresCause"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "mechanism": { "$ref": "#/$defs/nonEmptyString" },
+        "whereInSource": { "$ref": "#/$defs/nonEmptyString" },
+        "requiresCause": { "type": "boolean" }
+      }
+    },
     "mechanismCheck": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sourceMechanism", "whereInSource", "whereInCandidate", "beatIndexes", "verdict"],
+      "required": ["sourceMechanismId", "causeEvidence", "actionEvidence", "beatIndexes", "verdict"],
       "properties": {
-        "sourceMechanism": { "$ref": "#/$defs/nonEmptyString" },
-        "whereInSource": { "$ref": "#/$defs/nonEmptyString" },
-        "whereInCandidate": { "$ref": "#/$defs/nonEmptyString" },
+        "sourceMechanismId": { "$ref": "#/$defs/nonEmptyString" },
+        "causeEvidence": { "type": "string" },
+        "actionEvidence": { "$ref": "#/$defs/nonEmptyString" },
         "beatIndexes": {
           "type": "array",
           "items": { "type": "integer", "minimum": 1 }
         },
         "verdict": { "$ref": "#/$defs/verdict" }
       }
+    },
+    "coherenceCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "beatIndexes", "problem"],
+      "properties": {
+        "kind": { "enum": ["contradiction", "tool_misuse", "purpose_nullified", "space_or_time", "other"] },
+        "beatIndexes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "problem": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "scaffoldLinkage": {
+      "enum": ["same", "reordered", "different", "absent"]
+    },
+    "scaffoldDimension": {
+      "enum": ["same", "partial", "different", "not_applicable"]
+    },
+    "scaffoldEventLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceEvent", "candidateEvent", "beatIndexes", "linkage"],
+      "properties": {
+        "sourceEvent": { "$ref": "#/$defs/nonEmptyString" },
+        "candidateEvent": { "type": "string" },
+        "beatIndexes": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "linkage": { "$ref": "#/$defs/scaffoldLinkage" }
+      }
+    },
+    "sourceScaffoldOverlap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eventChain",
+        "taskType",
+        "midSection",
+        "rewardSource",
+        "rewardHandling",
+        "endingShape",
+        "score",
+        "why"
+      ],
+      "properties": {
+        "eventChain": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/scaffoldEventLink" }
+        },
+        "taskType": { "$ref": "#/$defs/scaffoldDimension" },
+        "midSection": { "$ref": "#/$defs/scaffoldDimension" },
+        "rewardSource": { "$ref": "#/$defs/scaffoldDimension" },
+        "rewardHandling": { "$ref": "#/$defs/scaffoldDimension" },
+        "endingShape": { "$ref": "#/$defs/scaffoldDimension" },
+        "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "why": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "dimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "score", "evidence"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "score": { "type": "number", "minimum": 0, "maximum": 10 },
+        "evidence": { "$ref": "#/$defs/nonEmptyString" },
+        "evidenceRefs": {
+          "type": "array",
+          "maxItems": 2,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "defectType": {
+      "enum": [
+        "openingHook",
+        "causalLogic",
+        "protagonistAgency",
+        "characterSpecificity",
+        "storySpecificity",
+        "originality",
+        "progression",
+        "emotionalPayoff",
+        "visualMemorability",
+        "productionFeasibility",
+        "dialogueAndNaturalness",
+        "ownership_or_authority",
+        "setting_assumption",
+        "brief_overconstraint",
+        "template_convergence",
+        "none"
+      ]
+    },
+    "physicalAssumption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mechanism", "confidence", "literalDependency", "necessaryAssumptions", "failureRisk"],
+      "properties": {
+        "mechanism": { "$ref": "#/$defs/nonEmptyString" },
+        "confidence": { "enum": ["established", "conditional", "unlikely"] },
+        "literalDependency": { "enum": ["required", "optional", "make_believe"] },
+        "necessaryAssumptions": {
+          "type": "array",
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "failureRisk": { "type": "string" },
+        "beatIndexes": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "defectSeverity": {
+      "enum": ["BLOCKER", "MAJOR", "MINOR", "NONE"]
+    },
+    "dominantDefect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "severity", "description"],
+      "properties": {
+        "type": { "$ref": "#/$defs/defectType" },
+        "severity": { "$ref": "#/$defs/defectSeverity" },
+        "description": { "type": "string" }
+      }
+    },
+    "briefAlignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "conflict", "suggestBriefChange"],
+      "properties": {
+        "status": { "enum": ["PASS", "WARN", "FAIL"] },
+        "conflict": { "type": "string" },
+        "suggestBriefChange": { "type": "string" }
+      }
+    },
+    "revisionSuggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "suggestion", "replacesOrStrengthens", "whyOnlyHere"],
+      "properties": {
+        "kind": { "enum": ["strengthen", "replace", "remove", "recycle", "add"] },
+        "suggestion": { "$ref": "#/$defs/nonEmptyString" },
+        "replacesOrStrengthens": { "type": "string" },
+        "whyOnlyHere": { "type": "string" }
+      }
+    },
+    "batchTemplateConvergence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["converged", "sharedMechanism", "affectedCandidateIds", "evidence"],
+      "properties": {
+        "converged": { "type": "boolean" },
+        "sharedMechanism": { "type": "string" },
+        "affectedCandidateIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "evidence": { "type": "string" }
+      }
+    },
+    "tier": {
+      "enum": ["ready", "minor_fix", "needs_revision", "major_rework", "reject_or_regenerate"]
+    },
+    "verdictOverrideReason": {
+      "enum": ["coherence_break", "scaffold_copy", "blocker_defect"]
     },
     "candidateCheck": {
       "type": "object",
@@ -68,7 +275,14 @@
         "title",
         "coreInteraction",
         "mechanismChecks",
-        "verdict",
+        "coherenceChecks",
+        "sourceScaffoldOverlap",
+        "dimensions",
+        "physicalAssumptions",
+        "strongestReason",
+        "dominantDefect",
+        "briefAlignment",
+        "top3RevisionSuggestions",
         "why",
         "keepThis"
       ],
@@ -81,7 +295,37 @@
           "minItems": 1,
           "items": { "$ref": "#/$defs/mechanismCheck" }
         },
-        "verdict": { "$ref": "#/$defs/candidateVerdict" },
+        "coherenceChecks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/coherenceCheck" }
+        },
+        "sourceScaffoldOverlap": { "$ref": "#/$defs/sourceScaffoldOverlap" },
+        "dimensions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/dimension" }
+        },
+        "physicalAssumptions": {
+          "type": "array",
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/physicalAssumption" }
+        },
+        "strongestReason": { "$ref": "#/$defs/nonEmptyString" },
+        "dominantDefect": { "$ref": "#/$defs/dominantDefect" },
+        "briefAlignment": { "$ref": "#/$defs/briefAlignment" },
+        "top3RevisionSuggestions": {
+          "type": "array",
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/revisionSuggestion" }
+        },
+        "overallScore": { "type": "number", "minimum": 0, "maximum": 10 },
+        "tier": { "$ref": "#/$defs/tier" },
+        "scoreBasedVerdict": { "$ref": "#/$defs/candidateVerdict" },
+        "effectiveVerdict": { "$ref": "#/$defs/candidateVerdict" },
+        "verdictOverrideReasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/verdictOverrideReason" }
+        },
         "why": { "$ref": "#/$defs/nonEmptyString" },
         "keepThis": { "$ref": "#/$defs/nonEmptyString" }
       }

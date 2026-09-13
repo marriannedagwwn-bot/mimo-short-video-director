@@ -46,7 +46,7 @@ test("Variants Prompt replaces the disposable beat conflict and declares only ca
       contentType: "治愈短片",
       targetAudience: "家庭观众",
       coreEmotion: "温暖",
-      storyEngine: { desire: "SENTINEL_SOURCE_STORY_ENGINE" },
+      storyEngine: { desire: "SENTINEL_SOURCE_STORY_ENGINE", turningMechanism: "SENTINEL_TURNING_MECHANISM" },
       reusableHighValueBeats: [{
         beat: "SENTINEL_SOURCE_BEAT",
         dramaticValue: "SENTINEL_ABSTRACT_DRAMATIC_VALUE",
@@ -130,10 +130,30 @@ test("Variants Prompt replaces the disposable beat conflict and declares only ca
   assert.match(prompt, /endingRitual 不得引入兑现 Beat 中没有的人物、物品或动作/u);
   assert.match(prompt, /novelty 是否来自新目标、新因果结构、新选择代价、高潮机制或关系表达/u);
   assert.match(prompt, /而不只是天气、道具、地点或 NPC 的替换/u);
-  assert.match(prompt, /输入的 creativeBrief 可能来自旧版本/u);
-  assert.match(prompt, /只提取对应 dramaticValue、角色关系价值和情绪兑现强度/u);
+  // 那条规则原文在教模型怎么处理 mustRetain / samePlotDriver / sameBeatValue /
+  // creativeDistancePolicy，而这四个字段**根本不下发**——指令悬空。现在只提实际会收到的东西，
+  // 并明确告诉模型那四个字段不在本阶段，免得它去找。
+  assert.match(prompt, /只提取其中的角色关系价值与情绪兑现强度/u);
+  assert.match(prompt, /不会下发到本阶段/u);
+  assert.match(prompt, /不要去找它们/u);
   assert.match(prompt, /creativeBrief 抽象保真投影/u);
   assert.match(prompt, /SENTINEL_ABSTRACT_DRAMATIC_VALUE/u);
+  // storyEngine 与 reusableHighValueBeats[].beat 都**不下发**。
+  //
+  // 2026-09-09 试过下发（只取 turningMechanism 一个键，外加七项 taxonomy 的存在性布尔值），
+  // 三个包 12 个候选真实回放后回退，因为它没达到目标且新增两个失败模式：
+  //   - 任务型措辞 3/12 → 6/12（翻倍，而这正是当初要打掉的「单向帮助」框架）
+  //   - 与原片动作稿的逐字照抄 0/12 → 1/12（最长连续命中 4 字 → 15 字）
+  //     其中一个包的简报明写「送达任务【原片没有】」，新候选仍写出「帮村长运送南瓜」
+  //
+  // 三条纠缠的成因当时分不开：①有的包 turningMechanism 本身就是任务框架
+  //（「主角主动采取防护措施继续参与活动」），注入它等于推模型往任务写；
+  // ②同一份提示词下方已有一条「storyEngine/beat 不进入正向投影、不能复现或补写」，
+  // 上下自相矛盾；③唯一那条照抄落在 turningMechanism 写得最具体的包上。
+  //
+  // 更上游的事实：storyEngine 五个子字段在 briefPrompt 里**一条说明都没有**、零校验器、
+  // 改动前零消费者。要再试之前先解决那个，别直接把这两条断言翻过来。
+  assert.doesNotMatch(prompt, /SENTINEL_TURNING_MECHANISM/u);
   assert.doesNotMatch(prompt, /SENTINEL_SOURCE_STORY_ENGINE/u);
   assert.doesNotMatch(prompt, /SENTINEL_SOURCE_BEAT/u);
   assert.doesNotMatch(prompt, /SENTINEL_CONCRETE_MUST_RETAIN/u);

@@ -8,6 +8,9 @@ import {
 } from "./validation.js";
 import { deriveDirectShotSkeleton } from "./direct-shot-timeline.js";
 import { resolveVideoPromptProfile } from "../public/video-prompt-profiles.js";
+// 维度清单只有一份：mock 少写一个维度就会被 CANDIDATE_REVIEW_DIMENSION_MISSING 拦下，
+// 这正是我们要的——demo 与 live 走同一条校验链。
+import { CANDIDATE_REVIEW_DIMENSION_WEIGHTS } from "../public/story-review-metrics.js";
 
 // 每条【原片有】都必须用「」引用 mockReconstruction 中真实存在的逐字原文，
 // 否则 mock 自己就违反了 allowedNarrativeComponents 的存在性判定契约。
@@ -99,7 +102,14 @@ export function mockBrief(input) {
     contentType: "任务驱动的关系情绪短故事",
     targetAudience: input.referenceAnalysis?.targetAudience?.primary || "泛生活情感受众",
     coreEmotion: "从担心到被普通人的善意与克制关心打动",
-    storyEngine: { desire: "主角必须完成一项指向重要关系人的具体任务", obstacle: "时间、天气或空间让简单任务变得困难", escalation: "任务成本持续增加并暴露主角的在意", turningMechanism: "帮助者通过观察行动而非听取解释介入", payoff: "显性任务完成，同时回应被关爱对象未说出口的需要" },
+    storyEngine: { desire: "主角必须完成一项指向重要关系人的具体任务", obstacle: "时间、天气或空间让简单任务变得困难", escalation: "任务成本持续增加并暴露主角的在意", turningMechanism: { before: "观众以为这只是一方单向地替另一方跑腿", after: "观众看出两人一直在互相照应，只是方式不同" }, payoff: "显性任务完成，同时回应被关爱对象未说出口的需要" },
+    // 两侧都非空且不重叠——demo 必须走到与 live 同一条校验链（含 OVERLAP 那条闸门），
+    // 否则就是 §2.14 记过的「mock 通过而 live 失败」。
+    recastTest: {
+      recastAs: "把主角换成一个凡事先想周全、怕出洋相的孩子",
+      collapses: ["把手边一件不该戴在头上的东西扣在头上当防护，然后一本正经继续干活"],
+      survives: ["替重要关系人跑一趟，把东西送到"]
+    },
     emotionStructure: [
       { stage: "任务钩子", function: "建立结果问题", targetEmotion: "好奇", intensity: 45 },
       { stage: "成本升级", function: "证明关系重量", targetEmotion: "担心", intensity: 72 },
@@ -1026,7 +1036,25 @@ export function mockStoryCandidateReview(candidates) {
   const list = Array.isArray(candidates) ? candidates : [];
   return {
     schemaVersion: "story-candidate-review/1.0",
-    candidateChecks: list.map((candidate) => {
+    // 全批共享的原片机制清单，先于候选产出；下面每个候选只能按 id 引用它。
+    // 至少两条：schema 的 minItems 就是 2。
+    // requiresCause 两个分支都走到：true 的那条会启用双证据闸门，false 的那条不会。
+    // 只写一种取值会让 mock 永远只经过半条判定路径。
+    sourceMechanisms: [
+      {
+        id: "M1",
+        mechanism: "demo 模式未提炼原片机制。",
+        whereInSource: "demo 模式未定位原片动作。",
+        requiresCause: true
+      },
+      {
+        id: "M2",
+        mechanism: "demo 模式未提炼第二条原片机制。",
+        whereInSource: "demo 模式未定位原片动作。",
+        requiresCause: false
+      }
+    ],
+    candidateChecks: list.map((candidate, index) => {
       const beats = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline.length : 0;
       return {
         candidateId: String(candidate?.id || ""),
@@ -1037,19 +1065,133 @@ export function mockStoryCandidateReview(candidates) {
           response: "demo 模式不调用模型，未做实际核对。",
           visibleChange: "demo 模式不调用模型，未做实际核对。"
         },
-        mechanismChecks: [{
-          sourceMechanism: "demo 模式未提炼原片机制。",
-          whereInSource: "demo 模式未定位原片动作。",
-          whereInCandidate: "demo 模式未定位候选动作。",
-          beatIndexes: beats ? [1] : [],
-          verdict: "depicted"
-        }],
-        verdict: "pass",
+        mechanismChecks: [
+          {
+            // 引用的是 requiresCause: true 的那条，所以判 depicted 就必须带前因证据——
+            // mock 自己也得守这条闸门，否则又是一次 mock 过而 live 挂。
+            sourceMechanismId: "M1",
+            causeEvidence: "demo 模式未定位前因。",
+            actionEvidence: "demo 模式未定位候选动作。",
+            beatIndexes: beats ? [1] : [],
+            verdict: "depicted"
+          },
+          {
+            // requiresCause: false 的那条，causeEvidence 留空是合法的正常写法。
+            sourceMechanismId: "M2",
+            causeEvidence: "",
+            actionEvidence: "demo 模式未定位候选动作。",
+            beatIndexes: beats ? [1] : [],
+            verdict: "partially_depicted"
+          }
+        ],
+        // 两个分支都必须走到：只写空数组会让 mock 通过而 live 失败——
+        // 分镜终审正是因为镜头级 issues 全写 [] 而没暴露元素类型误读（AGENTS.md §2.14）。
+        // 第一个候选带一条自洽问题，因此它的 verdict 不能是 pass（同一条确定性闸门）。
+        coherenceChecks: index === 0 && beats
+          ? [{ kind: "other", beatIndexes: [1], problem: "demo 模式不调用模型，这条只用于走通非空分支。" }]
+          : [],
+        // 骨架对照。形状上把有风险的几种都走到：一条有对应事件、一条 absent（空拍号 +
+        // 明写没有对应事件），辅助观察同时出现 different 与 not_applicable。
+        //
+        // **分数固定为 0，不是因为 demo 判它不换皮，而是 demo 不判。** 给一个高分会让
+        // 页面显示「疑似换皮」，那是伪造结论——mock 可以铺形状，不能替模型下判断。
+        // 换皮闸门（score >= 70 不得 pass）由单元测试覆盖，不靠 mock 触发。
+        sourceScaffoldOverlap: {
+          eventChain: [
+            {
+              sourceEvent: "demo 模式未提炼原片关键事件。",
+              candidateEvent: "demo 模式未定位候选对应事件。",
+              beatIndexes: beats ? [1] : [],
+              linkage: "different"
+            },
+            {
+              sourceEvent: "demo 模式未提炼第二件原片关键事件。",
+              candidateEvent: "候选里没有对应事件",
+              beatIndexes: [],
+              linkage: "absent"
+            }
+          ],
+          taskType: "different",
+          midSection: "different",
+          rewardSource: "not_applicable",
+          rewardHandling: "not_applicable",
+          endingShape: "different",
+          score: 0,
+          why: "demo 模式不调用模型，这个分数不构成任何相似度结论。"
+        },
+        // 十一个维度必须齐全（校验器按权重表逐个点名），分数一律 5——
+        // **不是 demo 认为它中等，是 demo 不评分**。给一个高分会让页面显示
+        // 「可直接展开」，那是伪造结论；派生链本身由单元测试覆盖，不靠 mock 触发。
+        dimensions: Object.keys(CANDIDATE_REVIEW_DIMENSION_WEIGHTS).map((id) => ({
+          id,
+          score: 5,
+          evidence: "demo 模式不调用模型，未做实际判断。",
+          evidenceRefs: []
+        })),
+        // 两个分支都走到：第一个候选给一条 conditional（必须带依赖条件与失败风险，
+        // 正是闸门管的那条路径），其余给空数组——没有值得一提的机制是合法结论。
+        physicalAssumptions: index === 0 && beats
+          ? [
+            {
+              mechanism: "demo 模式不调用模型，这条只用于走通需要条件的分支。",
+              confidence: "conditional",
+              literalDependency: "required",
+              necessaryAssumptions: ["demo 模式未列出真实条件。"],
+              failureRisk: "demo 模式未评估失败风险。",
+              beatIndexes: [1]
+            },
+            {
+              // make_believe 分支也要走到：它是「物理上立不住但剧情本来就不依赖它」
+              // 那一类，不该因为现实做不到而扣分。只写一条会让这个区分从没被经过。
+              mechanism: "demo 模式不调用模型，这条只用于走通想象类机制的分支。",
+              confidence: "unlikely",
+              literalDependency: "make_believe",
+              necessaryAssumptions: ["demo 模式未列出真实条件。"],
+              failureRisk: "demo 模式未评估失败风险。",
+              beatIndexes: [1]
+            }
+          ]
+          : [],
+        strongestReason: "demo 模式未作判断。",
+        // 两个分支都走到：第一个候选写一条真实形状的缺陷，其余走 none 出口。
+        // 只写 none 会让 mock 永远不经过「type/severity 一致性」那条闸门。
+        dominantDefect: index === 0 && beats
+          ? { type: "openingHook", severity: "MINOR", description: "demo 模式占位，不构成任何质量结论。" }
+          : { type: "none", severity: "NONE", description: "" },
+        briefAlignment: {
+          status: "PASS",
+          conflict: "",
+          suggestBriefChange: ""
+        },
+        // kind 的两个分支：remove 不要求 whyOnlyHere，strengthen 要求——
+        // 只写一种会让那条闸门在 demo 路径上从来不被经过。
+        top3RevisionSuggestions: [
+          {
+            kind: "strengthen",
+            suggestion: "demo 模式不调用模型，这条只用于走通需要理由的分支。",
+            replacesOrStrengthens: "demo 占位",
+            whyOnlyHere: "demo 模式未作判断。"
+          },
+          {
+            kind: "remove",
+            suggestion: "demo 模式不调用模型，这条只用于走通可以留空的分支。",
+            replacesOrStrengthens: "demo 占位",
+            whyOnlyHere: ""
+          }
+        ],
         why: "demo 模式不调用模型，本判定不构成任何质量结论。",
         keepThis: "demo 模式未作判断。"
       };
     }),
-    recommendedOrder: list.map((candidate) => String(candidate?.id || "")),
+    holisticPreferenceOrder: list.map((candidate) => String(candidate?.id || "")),
+    // demo 不判收敛：判 true 会在页面上显示「这一批是同一个模板」，同样是伪造结论。
+    batchTemplateConvergence: {
+      converged: false,
+      sharedMechanism: "",
+      affectedCandidateIds: [],
+      evidence: "demo 模式不调用模型，未做批次比较。"
+    },
+    briefProblemsDetected: [],
     summary: "demo 模式：未调用模型，本报告不构成任何选题判断。"
   };
 }
@@ -1154,5 +1296,35 @@ export function mockAnimationPlanRevision(animationPlan, report, targetShotIds =
       addedActions: [],
       changeSummary: "demo 模式不调用模型，本镜逐字保持原样。"
     }))
+  };
+}
+
+// demo 模式的命题定向修订。**只做一处最小、可预测的改动，不伪造创作内容。**
+//
+// 与 mockAnimationPlanRevision 的一处不同：那边可以逐字回显，因为它的台账写 0/0 就合规；
+// 这边有一条 CANDIDATE_REVISION_NO_CHANGE 闸门——逐字回显会被自己的校验器拒绝，
+// 于是 demo 就走不到合并与复验，等于 mock 根本没有覆盖到 live 的那条路。
+//
+// 所以 demo 在第一拍的 action 末尾追加一句写明这是 demo 的句子：改动真实存在（闸门放行），
+// 内容却不冒充创作（谁都看得出这不是模型写的），而且**只动一个可写字段**，
+// 合并之后除了那一处逐字节不变，与 live 走完全相同的派生与校验链。
+export function mockStoryCandidateRevision(candidate, coherenceBreaks = [], unmigratedMechanisms = []) {
+  const outline = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline : [];
+  const first = outline[0] || null;
+  // 两个驱动信号都要在 changeSummary 里露面，否则 demo 只走得到一个分支，
+  // 就会重演「mock 通过而 live 失败」（§2.14 的 issues 那次）。
+  const noted = [
+    coherenceBreaks.length ? `${coherenceBreaks.length} 条因果问题` : "",
+    unmigratedMechanisms.length ? `${unmigratedMechanisms.length} 条没接住的原片机制` : ""
+  ].filter(Boolean);
+  return {
+    schemaVersion: "story-candidate-revision/1.0",
+    candidateId: String(candidate?.id || ""),
+    revisedBeats: first
+      ? [{ beat: first.beat, action: `${String(first.action || "")}（demo 模式未调用模型，此处仅作占位改动）` }]
+      : [],
+    changeSummary: noted.length
+      ? `demo 模式不调用模型，未实际处理${noted.join("、")}。`
+      : "demo 模式不调用模型，评审也没有报出任何问题。"
   };
 }

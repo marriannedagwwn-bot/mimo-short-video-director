@@ -591,9 +591,44 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
 .review-issue.severity-BLOCKER { border-color: rgba(180, 35, 24, .3); }
 
 /* 候选对照评审。复用剧情体检的 .story-review / .review-check / .review-verdict 等既有样式，
-   这里只补两处：逐候选的折叠卡，以及并排显示的「候选自己的说辞」。
-   后者刻意画成灰底次要块——它是被评审刻意屏蔽掉的那一栏，放在这里供人对照，
-   不是判定依据。 */
+   这里只补四处：置顶的原片机制清单、逐候选的折叠卡、因果自洽问题块，
+   以及并排显示的「候选自己的说辞」。
+   最后一个刻意画成灰底次要块——它是被评审刻意屏蔽掉的那一栏，放在这里供人对照，
+   不是判定依据。机制清单反过来置顶且带底色：它是全批共用的一份权威清单，
+   下面每条 mechanismCheck 的 id 都指回它。 */
+.candidate-review-mechanisms { margin-top: 10px; padding: 11px 13px; border-radius: 10px;
+  background: #f6f2ea; border: 1px solid var(--line); font-size: 10px; line-height: 1.7; }
+.candidate-review-mechanisms .review-check { background: #fff; }
+.candidate-review-coherence { margin-top: 10px; padding: 9px 11px; border-radius: 8px;
+  background: rgba(180, 35, 24, .06); border: 1px solid rgba(180, 35, 24, .25); }
+.candidate-review-coherence .review-check { border-color: rgba(180, 35, 24, .2); }
+/* 骨架对照：候选**各自**与原片的事件链比。画成中性块而不是红块——
+   高分才是坏消息，而分数在块首自己说了，底色不该替它下判断。 */
+.candidate-review-scaffold { margin-top: 10px; padding: 9px 11px; border-radius: 8px;
+  background: #f4f6f8; border: 1px solid var(--line); }
+.candidate-review-scaffold .review-check { background: #fff; }
+.candidate-review-scaffold p { margin: 3px 0 0; }
+/* 选题终审的三块（2026-09-12）。评分块中性、简报块次要、批次收敛块示警——
+   收敛本身就是坏消息，而分数高低由数字自己说，底色不替它下判断。 */
+.candidate-review-score { margin-top: 10px; padding: 9px 11px; border-radius: 8px;
+  background: #f7f5f1; border: 1px solid var(--line); }
+.candidate-review-score > b { font-size: 13px; }
+.candidate-review-score p { margin: 4px 0 0; }
+/* 物理机制：中性块。中间那档（依赖未说明条件）才是常态，底色不该替它下判断。 */
+.candidate-review-assumptions { margin-top: 10px; padding: 9px 11px; border-radius: 8px;
+  background: #f4f6f8; border: 1px solid var(--line); }
+.candidate-review-assumptions .review-check { background: #fff; }
+.candidate-review-assumptions p { margin: 3px 0 0; }
+.candidate-review-suggestions { margin-top: 10px; padding: 9px 11px; border-radius: 8px;
+  background: #f1f5f2; border: 1px solid var(--line); }
+.candidate-review-suggestions .review-check { background: #fff; }
+.candidate-review-suggestions p { margin: 3px 0 0; }
+.candidate-review-brief { margin-top: 10px; padding: 9px 11px; border-radius: 8px;
+  background: #efebe4; color: var(--muted); }
+.candidate-review-brief p { margin: 3px 0 0; }
+.candidate-review-convergence { margin-top: 10px; padding: 11px 13px; border-radius: 10px;
+  background: rgba(180, 35, 24, .06); border: 1px solid rgba(180, 35, 24, .25); font-size: 10px; line-height: 1.7; }
+.candidate-review-convergence p { margin: 4px 0 0; }
 .candidate-review-card { margin-top: 10px; padding: 11px 13px; border-radius: 10px;
   background: #fff; border: 1px solid var(--line); font-size: 10px; line-height: 1.7; }
 .candidate-review-card > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; }
@@ -602,6 +637,7 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
 .candidate-review-claim { margin-top: 10px; padding: 9px 11px; border-radius: 8px;
   background: #efebe4; color: var(--muted); }
 .candidate-review-claim p { margin: 3px 0 0; }
+.story-review-status.warn { color: #b54708; }
 .story-review-summary { margin-top: 12px; color: var(--ink); font-size: 10px; line-height: 1.7; }
 
 /* 分镜终审报告。复用剧情体检的 .review-check / .review-severity 等既有样式，
@@ -633,3 +669,27 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
 .revision-field p { margin: 3px 0 0; }
 .revision-before { color: var(--muted); text-decoration: line-through; }
 .revision-after { color: var(--ink); }
+
+/* 命题定向修订。原文与修订稿并排，没改的拍压成灰色——一眼能看出动了哪几拍，
+   以及动作链是不是被塞得更满了（那是下游镜头过载的上游）。 */
+.candidate-revision { margin-top: 10px; padding: 11px 13px; border-radius: 10px;
+  background: #fff; border: 1px solid var(--line); font-size: 10px; line-height: 1.7; }
+.candidate-revision-action { margin-top: 10px; display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.candidate-revision-action .muted-note { flex: 1 1 240px; }
+.revision-diff { margin-top: 8px; }
+.revision-diff p { margin: 3px 0 0; }
+.revision-diff.revision-unchanged { opacity: .55; }
+.revision-same { color: var(--muted); }
+.muted-note { color: var(--muted); font-size: 10px; line-height: 1.7; }
+.muted-note.warn { color: #b54708; }
+
+/* 换角测试。两侧并排是刻意的：这个字段的全部意义就是让人一眼看见
+   「哪些是只有这个角色才给得了的」与「哪些换谁来做都一样」的区分。 */
+.recast-premise { margin: 0 0 8px; color: var(--muted); font-size: 10px; }
+.recast-split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 10px; line-height: 1.7; }
+.recast-split > div { padding: 9px 11px; border-radius: 8px; background: #fff; border: 1px solid var(--line); }
+.recast-list { margin: 5px 0 0; padding-left: 16px; }
+.recast-list li { margin-top: 3px; }
+.recast-list.collapses li { color: var(--ink); }
+.recast-list.survives li { color: var(--muted); }
+@media (max-width: 640px) { .recast-split { grid-template-columns: 1fr; } }

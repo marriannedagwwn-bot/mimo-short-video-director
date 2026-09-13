@@ -133,6 +133,7 @@ const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
   MODEL_OUTPUT_LOG_SCOPES.VISUAL_GUARDRAILS,
   MODEL_OUTPUT_LOG_SCOPES.CHARACTER_REFERENCE,
   MODEL_OUTPUT_LOG_SCOPES.STORY_CANDIDATE_REVIEW,
+  MODEL_OUTPUT_LOG_SCOPES.STORY_CANDIDATE_REVISION,
   MODEL_OUTPUT_LOG_SCOPES.STORY_QUALITY_REVIEW,
   MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVIEW,
   MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVISION
@@ -362,6 +363,9 @@ const routes = {
   // 候选对照评审：同样只出报告。送审投影里剥掉候选的自我评价字段，让动作链自己说话；
   // verdict 里的 drop 只是一句话，不删候选、不改数量、不触发任何 stale。
   "/api/story-candidate-review": (body) => workflow.createStoryCandidateReview(body),
+  // 命题定向修订：按对照评审报出的因果断裂只改被点名的那一个命题。**不签发任何东西**——
+  // 返回合并后的整批供页面预览，用户点「采纳」时才由浏览器走既有的 themeVariants 签发流程。
+  "/api/story-candidate-revision": (body) => workflow.createStoryCandidateRevision(body),
   "/api/animation-plan-review": (body) => workflow.createAnimationPlanReview(body),
   // 定向修订：按终审报告只改被点名的镜头。**不签发任何东西**——返回合并后的候选 Plan
   // 供页面预览，用户点「采纳」时才由浏览器走既有的 Plan revision 签发流程。
@@ -2171,7 +2175,18 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
     // 「AI 可执行性 8.0 / 物理可信度 8.0」，外部模型读同一份给 6.8 / 6.8）。
     // 这里如实记下这个已知偏差，不靠静默换一家掩盖：它是纯文本阶段，
     // 需要外部视角时按阶段 override 换 provider 即可。
-    storyCandidateReview: stageSetting(provider, source.variantsModel || source.model, source.variantsMaxCompletionTokens || source.maxCompletionTokens),
+    // **必须单独放宽 token 预算**（2026-09-12）：这一档现在是 4 个候选 × 11 个维度
+    // 加逐候选的建议与批次块，输出体量远超其它文本阶段。全局默认 16384 实测
+    // 在只有 2 个占位候选时就烧掉 3.4k–4.0k，真候选很容易撞上限——表现是
+    // finish=length、JSON 不完整、整份报告作废（与 §2.10 记过的截断同型代价）。
+    // 与分镜终审单独放宽 requestTimeoutMs 同规格：只动这一个阶段，不碰全局默认。
+    storyCandidateReview: stageSetting(
+      provider,
+      source.variantsModel || source.model,
+      Math.max(Number(source.variantsMaxCompletionTokens || source.maxCompletionTokens) || 0, 32768)
+    ),
+    // 命题定向修订沿用候选阶段的 provider/model，与对照评审同规格。
+    storyCandidateRevision: stageSetting(provider, source.variantsModel || source.model, source.variantsMaxCompletionTokens || source.maxCompletionTokens),
     fullStory: stageSetting(provider, source.storyModel || source.model, source.storyMaxCompletionTokens || source.maxCompletionTokens),
     animationPlan: stageSetting(provider, source.animationModel || source.storyModel || source.model, source.animationMaxCompletionTokens || source.maxCompletionTokens),
     staticFrameCompiler: stageSetting(

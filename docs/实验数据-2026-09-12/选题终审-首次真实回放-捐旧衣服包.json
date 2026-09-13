@@ -1,0 +1,951 @@
+{
+  "metadata": {
+    "storyCandidateReview": {
+      "provider": "Qwen",
+      "model": "qwen3.7-max",
+      "providerCalls": 1,
+      "rejections": []
+    }
+  },
+  "usage": {
+    "calls": 1,
+    "promptTokens": 12725,
+    "completionTokens": 12721,
+    "totalTokens": 25446,
+    "costCny": 0.61,
+    "costKnown": true,
+    "byModel": [
+      {
+        "provider": "Qwen",
+        "model": "qwen3.7-max",
+        "calls": 1,
+        "promptTokens": 12725,
+        "completionTokens": 12721,
+        "totalTokens": 25446,
+        "costCny": 0.61
+      }
+    ]
+  },
+  "review": {
+    "schemaVersion": "story-candidate-review/1.0",
+    "sourceMechanisms": [
+      {
+        "id": "M1",
+        "mechanism": "童趣化解决日常问题：用非成人化、充满想象力的身体动作或替代物处理日常事物，展现角色纯真。",
+        "whereInSource": "S1 咕嘎趴在地上用身体压平叠好的衣服，自称「咕嘎牌熨斗」。",
+        "requiresCause": false
+      },
+      {
+        "id": "M2",
+        "mechanism": "任务间隙的童真游戏：在等待或过渡环节进行简单且充满童真的游戏，调节叙事节奏。",
+        "whereInSource": "S4 咕嘎和糯糯在回收站附近空地蹲在地上玩石子游戏。",
+        "requiresCause": false
+      },
+      {
+        "id": "M3",
+        "mechanism": "外部荣誉的情感转赠：将外界给予的奖励或荣誉转赠给默默付出或关爱的长辈，完成情感反哺与闭环。",
+        "whereInSource": "S6 孩子们将志愿者阿姨奖励的小红花摘下，亲手别在奶奶的衣服上。",
+        "requiresCause": true
+      }
+    ],
+    "candidateChecks": [
+      {
+        "candidateId": "V1",
+        "title": "魔法贴纸与旧绘本",
+        "coreInteraction": {
+          "setback": "旧绘本起皱且书脊散落，面临被管理员当废纸淘汰。",
+          "intervention": "小白子用手心捂住书页试图熨平，并对着书页轻轻吹气。",
+          "response": "管理员阿姨看到后很感动，奖励了一张特制贴纸。",
+          "visibleChange": "小白子把贴纸贴在绘本封面上，送给在长椅上休息的奶奶。"
+        },
+        "mechanismChecks": [
+          {
+            "sourceMechanismId": "M1",
+            "causeEvidence": "",
+            "actionEvidence": "beat 3 小白子用手心温度捂书页并吹气试图修补。",
+            "beatIndexes": [
+              3
+            ],
+            "verdict": "depicted"
+          },
+          {
+            "sourceMechanismId": "M2",
+            "causeEvidence": "",
+            "actionEvidence": "动作链里没有明显的等待间隙游戏。",
+            "beatIndexes": [],
+            "verdict": "not_depicted"
+          },
+          {
+            "sourceMechanismId": "M3",
+            "causeEvidence": "动作链中未铺垫奶奶此前的付出或关爱，奶奶仅在 beat 5 突然出现在长椅上。",
+            "actionEvidence": "beat 5 小白子把贴纸贴在绘本上送给奶奶。",
+            "beatIndexes": [
+              5
+            ],
+            "verdict": "partially_depicted"
+          }
+        ],
+        "coherenceChecks": [
+          {
+            "kind": "tool_misuse",
+            "beatIndexes": [
+              3
+            ],
+            "problem": "书脊散落和纸张起皱无法通过「手心温度捂」和「吹气」来修补，该动作在物理上完全无效，属于工具误用。"
+          }
+        ],
+        "sourceScaffoldOverlap": {
+          "eventChain": [
+            {
+              "sourceEvent": "整理旧衣服准备捐赠",
+              "candidateEvent": "发现破损绘本面临淘汰",
+              "beatIndexes": [
+                1
+              ],
+              "linkage": "same"
+            },
+            {
+              "sourceEvent": "运送衣物到回收站",
+              "candidateEvent": "决定留下绘本自己修补",
+              "beatIndexes": [
+                2
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "等待时玩石子游戏",
+              "candidateEvent": "用手心和吹气修补绘本",
+              "beatIndexes": [
+                3
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "获得小红花奖励",
+              "candidateEvent": "获得护书小天使贴纸",
+              "beatIndexes": [
+                4
+              ],
+              "linkage": "same"
+            },
+            {
+              "sourceEvent": "将小红花转赠奶奶",
+              "candidateEvent": "将贴纸贴在绘本上送给奶奶",
+              "beatIndexes": [
+                5
+              ],
+              "linkage": "same"
+            }
+          ],
+          "taskType": "same",
+          "midSection": "different",
+          "rewardSource": "same",
+          "rewardHandling": "same",
+          "endingShape": "same",
+          "score": 75,
+          "why": "核心高潮和结局的因果链「外部奖励->转赠长辈」与原片完全一致，生硬套用模板导致物理逻辑崩坏。"
+        },
+        "dimensions": [
+          {
+            "id": "openingHook",
+            "score": 7,
+            "evidence": "旧绘本面临淘汰的危机能引起一定关注，但缺乏视觉上的直接冲击。",
+            "evidenceRefs": [
+              "storyOutline[1]"
+            ]
+          },
+          {
+            "id": "causalLogic",
+            "score": 4,
+            "evidence": "用手心温度和吹气修补散落书脊的绘本违背基本物理常识，因果链断裂。",
+            "evidenceRefs": [
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "protagonistAgency",
+            "score": 8,
+            "evidence": "小白子主动选择留下绘本并尝试修补，展现了较强的主观能动性。",
+            "evidenceRefs": [
+              "storyOutline[2]"
+            ]
+          },
+          {
+            "id": "characterSpecificity",
+            "score": 7,
+            "evidence": "护书行为符合乖巧设定，但吹气修书的动作略显刻意，不够自然。",
+            "evidenceRefs": [
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "storySpecificity",
+            "score": 6,
+            "evidence": "魔法贴纸和旧绘本是常见道具，缺乏专属本故事的独特视觉记忆点。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "originality",
+            "score": 4,
+            "evidence": "深层机制完全照搬原片的「外部奖励转赠」模板，缺乏剧作层面的创新。",
+            "evidenceRefs": [
+              "storyOutline[4]",
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "progression",
+            "score": 6,
+            "evidence": "从发现问题到解决问题再到获得奖励，推进过程平铺直叙，缺乏波折。",
+            "evidenceRefs": [
+              "storyOutline[2]",
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "emotionalPayoff",
+            "score": 5,
+            "evidence": "奶奶在结尾突然出现在长椅上，缺乏前置的情感铺垫，导致转赠动作情绪单薄。",
+            "evidenceRefs": [
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "visualMemorability",
+            "score": 6,
+            "evidence": "手心捂书页的画面有一定童趣，但整体视觉表现力不如自然光影或动态场景。",
+            "evidenceRefs": [
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "productionFeasibility",
+            "score": 8,
+            "evidence": "场景集中在图书馆，动作简单，无复杂物理交互，易于制作。",
+            "evidenceRefs": [
+              "storyOutline[1]"
+            ]
+          },
+          {
+            "id": "dialogueAndNaturalness",
+            "score": 6,
+            "evidence": "结尾承诺每周讲故事的台词略显成人化和说教，不够符合儿童自然口语。",
+            "evidenceRefs": [
+              "storyOutline[6]"
+            ]
+          }
+        ],
+        "strongestReason": "小白子紧紧抱住面临淘汰的绘本并选择自己修补的动作，展现了强烈的保护欲和善良特质。",
+        "dominantDefect": {
+          "type": "causalLogic",
+          "severity": "BLOCKER",
+          "description": "用手心温度和吹气修补书脊散落的绘本违背物理常识，导致核心解决动作不成立。"
+        },
+        "briefAlignment": {
+          "status": "PASS",
+          "conflict": "",
+          "suggestBriefChange": ""
+        },
+        "top3RevisionSuggestions": [
+          {
+            "kind": "replace",
+            "suggestion": "将「手心捂和吹气」替换为「用重物压平」或「用胶带小心粘合书脊」，保留童趣但符合物理逻辑。",
+            "replacesOrStrengthens": "beat 3 的修补动作",
+            "whyOnlyHere": "只有修复实体书的物理破损，才能让后续阿姨的认可和贴纸奖励具备合理的因果基础。"
+          },
+          {
+            "kind": "strengthen",
+            "suggestion": "在 beat 1 增加奶奶陪小白子在图书馆看书或奶奶曾给她讲过这本绘本的闪回/前置互动。",
+            "replacesOrStrengthens": "beat 5 的情感转赠铺垫",
+            "whyOnlyHere": "只有建立奶奶与这本特定绘本的情感联系，结尾将贴纸贴在书上送给奶奶才具有情感重量。"
+          },
+          {
+            "kind": "remove",
+            "suggestion": "删除 beat 6 中「以后每周都来给它讲故事」的台词，改为小白子靠在奶奶肩上一起翻看修补好的绘本。",
+            "replacesOrStrengthens": "beat 6 的对话",
+            "whyOnlyHere": "治愈系日常应通过动作和氛围传递情感，而非通过说教式的承诺台词来强行升华。"
+          }
+        ],
+        "why": "用手心温度修补书脊散落的绘本在物理上完全无效，导致核心解决动作和后续奖励失去逻辑支撑。",
+        "keepThis": "小白子紧紧抱住面临淘汰的旧绘本，选择将其留下自己修补的保护欲动作。",
+        "overallScore": 5.98,
+        "tier": "reject_or_regenerate",
+        "scoreBasedVerdict": "drop",
+        "verdictOverrideReasons": [
+          "coherence_break",
+          "scaffold_copy",
+          "blocker_defect"
+        ],
+        "effectiveVerdict": "drop"
+      },
+      {
+        "candidateId": "V2",
+        "title": "罐装阳光与太阳味",
+        "coreInteraction": {
+          "setback": "光斑随风移动，总是从手里溜走，无法直接抓住。",
+          "intervention": "把玻璃罐放在奶奶刚叠好的、带着阳光味道的被子上，让光斑自己掉进去并盖上盖子。",
+          "response": "芙芙猫好奇地凑过来看罐子。",
+          "visibleChange": "罐子放在床头，小白子和奶奶一起闻被子上太阳的味道。"
+        },
+        "mechanismChecks": [
+          {
+            "sourceMechanismId": "M1",
+            "causeEvidence": "",
+            "actionEvidence": "beat 3 小白子把罐子放在被子上，让光斑自己掉进去。",
+            "beatIndexes": [
+              3
+            ],
+            "verdict": "depicted"
+          },
+          {
+            "sourceMechanismId": "M2",
+            "causeEvidence": "",
+            "actionEvidence": "beat 2 小白子拿着玻璃罐在院子里追着树叶漏下的光斑跑。",
+            "beatIndexes": [
+              2
+            ],
+            "verdict": "depicted"
+          },
+          {
+            "sourceMechanismId": "M3",
+            "causeEvidence": "beat 1 奶奶在院子里收晒干的床单，付出了劳动并创造了阳光味。",
+            "actionEvidence": "beat 5 小白子把装满阳光的罐子放在奶奶床头，一起闻太阳味。",
+            "beatIndexes": [
+              5
+            ],
+            "verdict": "partially_depicted"
+          }
+        ],
+        "coherenceChecks": [],
+        "sourceScaffoldOverlap": {
+          "eventChain": [
+            {
+              "sourceEvent": "整理旧衣服准备捐赠",
+              "candidateEvent": "奶奶收被子，小白子帮忙递夹子",
+              "beatIndexes": [
+                1
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "运送衣物到回收站",
+              "candidateEvent": "追逐光斑并尝试用罐子捕捉",
+              "beatIndexes": [
+                2
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "等待时玩石子游戏",
+              "candidateEvent": "把罐子放在被子上等待光斑掉入",
+              "beatIndexes": [
+                3
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "获得小红花奖励",
+              "candidateEvent": "盖上盖子假装抓住了阳光",
+              "beatIndexes": [
+                4
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "将小红花转赠奶奶",
+              "candidateEvent": "和奶奶一起闻被子上太阳的味道",
+              "beatIndexes": [
+                5
+              ],
+              "linkage": "different"
+            }
+          ],
+          "taskType": "different",
+          "midSection": "different",
+          "rewardSource": "not_applicable",
+          "rewardHandling": "not_applicable",
+          "endingShape": "partial",
+          "score": 15,
+          "why": "故事完全脱离了原片的任务与外部奖励结构，转为纯粹的生活片段与感官体验分享。"
+        },
+        "dimensions": [
+          {
+            "id": "openingHook",
+            "score": 8,
+            "evidence": "夏日午后追逐光斑的画面具有强烈的视觉美感和新海诚风格的光影吸引力。",
+            "evidenceRefs": [
+              "storyOutline[2]"
+            ]
+          },
+          {
+            "id": "causalLogic",
+            "score": 9,
+            "evidence": "光斑的移动特性与儿童假装游戏的逻辑完美契合，因果自然流畅。",
+            "evidenceRefs": [
+              "storyOutline[2]",
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "protagonistAgency",
+            "score": 9,
+            "evidence": "小白子主动探索捕捉光斑的方法，展现了儿童特有的好奇心与创造力。",
+            "evidenceRefs": [
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "characterSpecificity",
+            "score": 9,
+            "evidence": "乖巧可爱的小白子与阳光、被子、猫咪的组合，完美契合日系治愈萌系的定位。",
+            "evidenceRefs": [
+              "storyOutline[1]"
+            ]
+          },
+          {
+            "id": "storySpecificity",
+            "score": 9,
+            "evidence": "「罐装阳光」与「太阳味」的感官联动是本故事独有的记忆点，无法轻易移植。",
+            "evidenceRefs": [
+              "storyOutline[4]",
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "originality",
+            "score": 8,
+            "evidence": "放弃了外部奖励模板，用感官共享替代物质转赠，在剧作机制上做出了自然创新。",
+            "evidenceRefs": [
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "progression",
+            "score": 8,
+            "evidence": "从追逐失败到改变策略再到感官共享，情绪和互动层次有清晰的递进。",
+            "evidenceRefs": [
+              "storyOutline[2]",
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "emotionalPayoff",
+            "score": 9,
+            "evidence": "结尾一起闻太阳味的动作，将视觉的光斑转化为嗅觉的温暖，情感兑现非常高级。",
+            "evidenceRefs": [
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "visualMemorability",
+            "score": 9,
+            "evidence": "阳光透过树叶照在玻璃罐和被子上的光斑画面，具有极强的视觉记忆点。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "productionFeasibility",
+            "score": 9,
+            "evidence": "场景单一，光影效果可通过后期实现，无复杂物理交互，制作难度低。",
+            "evidenceRefs": [
+              "storyOutline[1]"
+            ]
+          },
+          {
+            "id": "dialogueAndNaturalness",
+            "score": 9,
+            "evidence": "「罐子里也装了一罐阳光哦」充满童趣，符合儿童视角和口语习惯。",
+            "evidenceRefs": [
+              "storyOutline[5]"
+            ]
+          }
+        ],
+        "strongestReason": "把玻璃罐放在带着阳光味道的被子上让光斑自己掉进去的动作，将视觉与嗅觉完美融合，极具治愈感。",
+        "dominantDefect": {
+          "type": "none",
+          "severity": "NONE",
+          "description": ""
+        },
+        "briefAlignment": {
+          "status": "PASS",
+          "conflict": "",
+          "suggestBriefChange": "将「外部奖励转赠长辈」放宽为「将美好体验或劳动成果与长辈分享」，以适应生活片段型故事的自然引擎。"
+        },
+        "top3RevisionSuggestions": [
+          {
+            "kind": "strengthen",
+            "suggestion": "在 beat 4 盖上盖子后，增加小白子把罐子举起来对着阳光看的动作，强化「抓住阳光」的视觉确认。",
+            "replacesOrStrengthens": "beat 4 的捕捉动作",
+            "whyOnlyHere": "玻璃罐和光斑是本故事的核心道具，对着阳光看能最大化展现日系光影的视觉美感。"
+          },
+          {
+            "kind": "strengthen",
+            "suggestion": "在 beat 5 闻太阳味时，增加奶奶闭上眼睛深呼吸并露出微笑的微表情，强化感官共享的沉浸感。",
+            "replacesOrStrengthens": "beat 5 的情感回馈",
+            "whyOnlyHere": "嗅觉是无法直接拍出来的，必须通过角色闭眼深呼吸的面部表情来让观众「闻」到太阳味。"
+          }
+        ],
+        "why": "把罐子放在被子上捕捉光斑并最终共享太阳味的动作，将视觉与嗅觉通感结合，情感兑现极其自然高级。",
+        "keepThis": "小白子把玻璃罐放在奶奶刚叠好的被子上，让光斑自己掉进去并盖上盖子的童趣策略。",
+        "overallScore": 8.7,
+        "tier": "minor_fix",
+        "scoreBasedVerdict": "pass",
+        "verdictOverrideReasons": [],
+        "effectiveVerdict": "pass"
+      },
+      {
+        "candidateId": "V3",
+        "title": "树叶瓦片与干爽小窝",
+        "coreInteraction": {
+          "setback": "突发阵雨淋湿了芙芙猫的纸箱小窝，且找不到防水布。",
+          "intervention": "收集落叶，用胶带一片片叠着贴在纸箱上，像盖瓦片一样排好队。",
+          "response": "雨停后水滴从树叶瓦片上滑落，芙芙猫钻进去舒服地打呼噜。",
+          "visibleChange": "小白子用毛巾给猫擦毛，并承诺明天捡红叶做窗帘。"
+        },
+        "mechanismChecks": [
+          {
+            "sourceMechanismId": "M1",
+            "causeEvidence": "",
+            "actionEvidence": "beat 4 小白子用胶带把落叶叠着贴在纸箱上做防水瓦片。",
+            "beatIndexes": [
+              4
+            ],
+            "verdict": "depicted"
+          },
+          {
+            "sourceMechanismId": "M2",
+            "causeEvidence": "",
+            "actionEvidence": "动作链里没有明显的等待间隙游戏。",
+            "beatIndexes": [],
+            "verdict": "not_depicted"
+          },
+          {
+            "sourceMechanismId": "M3",
+            "causeEvidence": "芙芙猫是固定搭档，但并非长辈或照顾者，缺乏原片机制中的反哺对象。",
+            "actionEvidence": "beat 6 小白子承诺明天捡红叶给猫做窗帘。",
+            "beatIndexes": [
+              6
+            ],
+            "verdict": "not_depicted"
+          }
+        ],
+        "coherenceChecks": [],
+        "sourceScaffoldOverlap": {
+          "eventChain": [
+            {
+              "sourceEvent": "整理旧衣服准备捐赠",
+              "candidateEvent": "突发阵雨淋湿纸箱小窝",
+              "beatIndexes": [
+                1
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "运送衣物到回收站",
+              "candidateEvent": "寻找材料并决定用落叶做瓦片",
+              "beatIndexes": [
+                2,
+                3
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "等待时玩石子游戏",
+              "candidateEvent": "用胶带贴树叶制作防水层",
+              "beatIndexes": [
+                4
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "获得小红花奖励",
+              "candidateEvent": "验证纸箱干爽，猫打呼噜",
+              "beatIndexes": [
+                5
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "将小红花转赠奶奶",
+              "candidateEvent": "擦毛并承诺做窗帘",
+              "beatIndexes": [
+                6
+              ],
+              "linkage": "different"
+            }
+          ],
+          "taskType": "different",
+          "midSection": "different",
+          "rewardSource": "not_applicable",
+          "rewardHandling": "not_applicable",
+          "endingShape": "different",
+          "score": 10,
+          "why": "故事完全重构为应对突发天气的宠物照顾事件，与原片的捐赠与转赠结构无重合。"
+        },
+        "dimensions": [
+          {
+            "id": "openingHook",
+            "score": 7,
+            "evidence": "突发阵雨和猫咪小窝被淋湿能引起同情，但视觉冲击力相对常规。",
+            "evidenceRefs": [
+              "storyOutline[1]"
+            ]
+          },
+          {
+            "id": "causalLogic",
+            "score": 8,
+            "evidence": "用胶带和落叶做防水层在物理上可行，因果逻辑成立。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "protagonistAgency",
+            "score": 9,
+            "evidence": "小白子在找不到防水布时主动寻找替代方案，展现了极强的解决问题能力。",
+            "evidenceRefs": [
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "characterSpecificity",
+            "score": 7,
+            "evidence": "照顾猫咪符合乖巧设定，但「给叶子排队」的萌点略显刻意。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "storySpecificity",
+            "score": 8,
+            "evidence": "树叶瓦片是本故事独特的视觉道具，具有一定的专属记忆点。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "originality",
+            "score": 7,
+            "evidence": "应对突发天气的宠物照顾是常见题材，但树叶瓦片的解法有一定新意。",
+            "evidenceRefs": [
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "progression",
+            "score": 7,
+            "evidence": "从发现问题到解决问题再到验证，推进清晰，但缺乏情绪上的起伏。",
+            "evidenceRefs": [
+              "storyOutline[2]",
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "emotionalPayoff",
+            "score": 7,
+            "evidence": "猫咪打呼噜是不错的治愈回报，但缺乏原片中长辈互动带来的情感厚度。",
+            "evidenceRefs": [
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "visualMemorability",
+            "score": 8,
+            "evidence": "水滴从树叶瓦片上滑落的画面具有较好的视觉美感和治愈感。",
+            "evidenceRefs": [
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "productionFeasibility",
+            "score": 8,
+            "evidence": "雨景和树叶贴图需要一定特效，但整体场景简单，制作可行。",
+            "evidenceRefs": [
+              "storyOutline[1]"
+            ]
+          },
+          {
+            "id": "dialogueAndNaturalness",
+            "score": 8,
+            "evidence": "对猫咪说的话充满童趣，符合角色性格和情境。",
+            "evidenceRefs": [
+              "storyOutline[6]"
+            ]
+          }
+        ],
+        "strongestReason": "雨停后水滴从树叶瓦片上滑落、纸箱内部干爽的画面，提供了非常具体且治愈的视觉回报。",
+        "dominantDefect": {
+          "type": "emotionalPayoff",
+          "severity": "MINOR",
+          "description": "缺乏长辈或人类角色的互动，仅靠宠物猫的反馈，情感厚度和共鸣感稍弱。"
+        },
+        "briefAlignment": {
+          "status": "PASS",
+          "conflict": "",
+          "suggestBriefChange": "允许情感回馈对象扩展至固定搭档（宠物），不强制要求长辈，以适应不同生活场景。"
+        },
+        "top3RevisionSuggestions": [
+          {
+            "kind": "add",
+            "suggestion": "在 beat 1 增加奶奶在屋内喊小白子避雨的声音，或奶奶递出毛巾的动作，建立长辈在场感。",
+            "replacesOrStrengthens": "beat 1 的开场",
+            "whyOnlyHere": "引入奶奶的隐性关怀，能让结尾小白子照顾猫咪的行为成为对奶奶关爱的一种镜像传承。"
+          },
+          {
+            "kind": "strengthen",
+            "suggestion": "在 beat 4 贴树叶时，强调小白子把最漂亮的一片红叶贴在纸箱正门作为「门牌」。",
+            "replacesOrStrengthens": "beat 4 的制作细节",
+            "whyOnlyHere": "红叶作为视觉焦点，既能呼应结尾「捡最红的叶子」，又能增强纸箱小窝的童话感。"
+          }
+        ],
+        "why": "雨停后水滴从树叶瓦片上滑落的画面提供了极佳的视觉治愈感，但缺乏人类角色互动导致情感厚度稍弱。",
+        "keepThis": "小白子用胶带将落叶一片片叠着贴在纸箱上，像盖瓦片一样制作防水层的童趣解法。",
+        "overallScore": 7.56,
+        "tier": "major_rework",
+        "scoreBasedVerdict": "revise",
+        "verdictOverrideReasons": [],
+        "effectiveVerdict": "revise"
+      },
+      {
+        "candidateId": "V4",
+        "title": "猫咪馒头与热气魔法",
+        "coreInteraction": {
+          "setback": "无明显 setback，小白子获得一小块面团自己玩。",
+          "intervention": "把面团捏成芙芙猫形状，点红豆眼睛，放在蒸笼中间并对话。",
+          "response": "蒸笼打开，猫咪馒头受热膨胀变得胖乎乎。",
+          "visibleChange": "小白子把馒头掰开，一半给奶奶，一半自己吃。"
+        },
+        "mechanismChecks": [
+          {
+            "sourceMechanismId": "M1",
+            "causeEvidence": "",
+            "actionEvidence": "beat 3 小白子把面团捏成猫形状并点上红豆眼睛。",
+            "beatIndexes": [
+              3
+            ],
+            "verdict": "depicted"
+          },
+          {
+            "sourceMechanismId": "M2",
+            "causeEvidence": "",
+            "actionEvidence": "beat 2, 3 小白子玩面团并赋予其形状和对话。",
+            "beatIndexes": [
+              2,
+              3
+            ],
+            "verdict": "depicted"
+          },
+          {
+            "sourceMechanismId": "M3",
+            "causeEvidence": "beat 1 奶奶在厨房和面准备蒸馒头，付出了劳动。",
+            "actionEvidence": "beat 5 小白子把猫咪馒头掰开一半给奶奶吃。",
+            "beatIndexes": [
+              5
+            ],
+            "verdict": "partially_depicted"
+          }
+        ],
+        "coherenceChecks": [],
+        "sourceScaffoldOverlap": {
+          "eventChain": [
+            {
+              "sourceEvent": "整理旧衣服准备捐赠",
+              "candidateEvent": "奶奶和面，小白子在旁边看",
+              "beatIndexes": [
+                1
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "运送衣物到回收站",
+              "candidateEvent": "获得面团并捏成猫咪形状",
+              "beatIndexes": [
+                2,
+                3
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "等待时玩石子游戏",
+              "candidateEvent": "等待蒸笼揭开",
+              "beatIndexes": [
+                4
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "获得小红花奖励",
+              "candidateEvent": "馒头变胖乎乎的惊喜",
+              "beatIndexes": [
+                4
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "将小红花转赠奶奶",
+              "candidateEvent": "掰开馒头和奶奶分享",
+              "beatIndexes": [
+                5
+              ],
+              "linkage": "different"
+            }
+          ],
+          "taskType": "different",
+          "midSection": "different",
+          "rewardSource": "not_applicable",
+          "rewardHandling": "not_applicable",
+          "endingShape": "partial",
+          "score": 20,
+          "why": "故事为纯粹的日常厨房互动，没有外部任务与奖励结构，仅保留了分享劳动成果的结尾形状。"
+        },
+        "dimensions": [
+          {
+            "id": "openingHook",
+            "score": 7,
+            "evidence": "厨房和面的日常场景温馨，但缺乏强烈的悬念或视觉奇观吸引。",
+            "evidenceRefs": [
+              "storyOutline[1]"
+            ]
+          },
+          {
+            "id": "causalLogic",
+            "score": 9,
+            "evidence": "面团受热膨胀变胖的物理规律与猫咪形状的对比，因果自然且充满惊喜。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "protagonistAgency",
+            "score": 8,
+            "evidence": "小白子主动赋予面团形状并对话，展现了儿童的想象力。",
+            "evidenceRefs": [
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "characterSpecificity",
+            "score": 9,
+            "evidence": "捏猫咪面团并点红豆眼睛的动作，完美契合乖巧可爱且喜欢芙芙猫的角色设定。",
+            "evidenceRefs": [
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "storySpecificity",
+            "score": 8,
+            "evidence": "「热气魔法」让猫咪馒头变胖的视觉变化是本故事独有的记忆点。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "originality",
+            "score": 8,
+            "evidence": "利用面团发酵的物理特性制造惊喜，机制自然且脱离套路。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "progression",
+            "score": 7,
+            "evidence": "故事缺乏明显的障碍，主要是单向的玩耍与等待，戏剧推进感较弱。",
+            "evidenceRefs": [
+              "storyOutline[2]",
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "emotionalPayoff",
+            "score": 8,
+            "evidence": "掰开胖乎乎的馒头分享给奶奶，动作自然温馨，情感兑现良好。",
+            "evidenceRefs": [
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "visualMemorability",
+            "score": 8,
+            "evidence": "蒸笼打开热气腾腾中胖乎乎的猫咪馒头，具有极强的食欲与治愈视觉记忆。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "productionFeasibility",
+            "score": 9,
+            "evidence": "场景单一，面团膨胀可通过简单的模型替换或形变动画实现，难度低。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "dialogueAndNaturalness",
+            "score": 9,
+            "evidence": "「小猫在蒸笼里吃饱了热气呀」充满童趣，非常符合儿童视角。",
+            "evidenceRefs": [
+              "storyOutline[5]"
+            ]
+          }
+        ],
+        "strongestReason": "蒸笼打开时猫咪馒头受热膨胀变得胖乎乎的画面，利用物理特性制造了极佳的视觉惊喜与治愈感。",
+        "dominantDefect": {
+          "type": "progression",
+          "severity": "MINOR",
+          "description": "故事缺乏明显的障碍与冲突，主要是获得面团后的单向玩耍，戏剧推进感较弱。"
+        },
+        "briefAlignment": {
+          "status": "PASS",
+          "conflict": "",
+          "suggestBriefChange": "生活片段型不强制要求外部任务与奖励，日常互动与劳动成果分享即可满足情感闭环。"
+        },
+        "top3RevisionSuggestions": [
+          {
+            "kind": "strengthen",
+            "suggestion": "在 beat 3 捏面团时，增加小白子用面粉在猫咪额头上点一个「王」字或画胡须的细节。",
+            "replacesOrStrengthens": "beat 3 的制作细节",
+            "whyOnlyHere": "面粉是厨房场景特有的道具，增加画胡须的动作能进一步强化童趣和角色与面团的互动。"
+          },
+          {
+            "kind": "strengthen",
+            "suggestion": "在 beat 4 蒸笼打开时，增加奶奶在一旁笑着指出「小猫怎么变成大胖猫了」的反应。",
+            "replacesOrStrengthens": "beat 4 的见证变化",
+            "whyOnlyHere": "奶奶的互动能打破小白子单向观察的沉闷，增强祖孙共同见证惊喜的情感共鸣。"
+          }
+        ],
+        "why": "蒸笼打开时猫咪馒头受热膨胀变得胖乎乎的画面，利用物理特性制造了极佳的视觉惊喜，但缺乏明显障碍。",
+        "keepThis": "小白子把面团捏成芙芙猫形状并点上红豆眼睛，对着它说「你要乖乖长大哦」的童趣互动。",
+        "overallScore": 8.12,
+        "tier": "needs_revision",
+        "scoreBasedVerdict": "revise",
+        "verdictOverrideReasons": [],
+        "effectiveVerdict": "revise"
+      }
+    ],
+    "recommendedOrder": [
+      "V2",
+      "V4",
+      "V3",
+      "V1"
+    ],
+    "batchTemplateConvergence": {
+      "converged": false,
+      "sharedMechanism": "",
+      "affectedCandidateIds": [],
+      "evidence": "V1 生硬套用了原片的「外部奖励转赠」模板，而 V2、V3、V4 均放弃了外部任务与奖励，转为生活片段中的感官共享或劳动成果分享。四个候选在深层剧作机制上存在明显分歧，未形成高度收敛的模板化批次。"
+    },
+    "briefProblemsDetected": [
+      "简报将「获得外部奖励并转赠长辈」设为 nonNegotiable，但这仅适用于原片的「捐赠任务」结构。对于生活片段型（slice_of_life）候选，强行加入外部奖励会破坏自然感（如 V1 的物理逻辑崩坏）。建议将核心体验修改为「将美好体验、劳动成果或外部认可分享给亲密关系人」。"
+    ],
+    "summary": "最值得先发展的是 V2（罐装阳光），其感官共享机制自然且视觉记忆点强；最该先改的是 V1 中「用手心温度修补书脊」的违背物理常识的动作。",
+    "recommendedWinner": "V2",
+    "runnerUp": "V4",
+    "rejectOrRegenerate": [
+      "V1"
+    ]
+  }
+}

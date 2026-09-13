@@ -1,5 +1,5 @@
-import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
-import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
+import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { compileCharacterFeatures } from "./character-feature-compiler.js";
 import {
@@ -45,6 +45,15 @@ import {
 } from "./animation-video-prompt-semantic-repair.js";
 import { randomUUID } from "node:crypto";
 import { ModelCallCoordinator, classifyAttemptError } from "./model-call-coordinator.js";
+import { ModelPipelineError } from "./model-errors.js";
+import {
+  assertOnlyCandidateRevisionFieldsChanged,
+  candidateCoherenceBreaks,
+  candidateUnmigratedMechanisms,
+  ensureStoryCandidateRevisionContract,
+  findCandidate,
+  mergeStoryCandidateRevision
+} from "./story-candidate-revision.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
 import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanDirectShotContract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
@@ -422,8 +431,28 @@ export class WorkflowService {
   async createStoryCandidateReview(input) {
     requireObject(input, "请求");
     const themeVariants = requireObject(input.themeVariants, "themeVariants");
-    // 评审对象必须先是一批合法候选，否则报告没有意义。
-    ensureOutputContract(themeVariants, "themeVariants");
+    // 评审对象必须先是一批合法候选，否则报告没有意义。**这个校验本身是对的**，
+    // 错的是它抛出的类型：themeVariants 是**请求输入**，不是本阶段的模型输出，而
+    // OutputContractError 的语义就是「模型输出不合契约」——原样上抛会变成 HTTP 502
+    // 加一句「模型输出未通过校验」，让用户去查模型、查供应商，而实际错在自己传的包。
+    //
+    // 实测：拿一份 2026-09-06 之前导出的生产包来评审，返回 502
+    // 「模型输出未通过校验：…/highValueBeatMapping/0/failureSignal 缺少必要字段」——
+    // failureSignal 与 transformationProof 的 {source, replacement} 都是那之后才加的必填字段。
+    // 代价是**在那之前导出的候选一律评审不了**，而评审恰恰是只出报告、不进 lineage、
+    // 不改任何东西的阶段，它最应该能读历史数据。
+    //
+    // 转成 InputError 才是如实的归属：错在客户端，400，并带上校验器给出的逐条诊断。
+    // 与 createAnimationPlanRevision 的 report 分支同规格（那里的 report 同样是请求输入）。
+    // **只改归属与状态码，不放宽校验**：缺新字段的旧候选仍然被拒，只是拒得诚实。
+    try {
+      ensureOutputContract(themeVariants, "themeVariants");
+    } catch (error) {
+      if (!(error instanceof OutputContractError)) throw error;
+      const inputError = new InputError(`themeVariants 不是一批合法候选：${error.message}`);
+      inputError.details = error.details;
+      throw inputError;
+    }
     const sourceScriptReconstruction = requireObject(
       input.sourceScriptReconstruction,
       "sourceScriptReconstruction"
@@ -433,17 +462,297 @@ export class WorkflowService {
       ensureOutputContract(result, "storyCandidateReview"),
       candidates
     );
-    if (!this.hasLiveClient) return validate(mockStoryCandidateReview(candidates));
+    // metadata 是**外挂的一层**，不混进 review 对象本身。
+    // 第一版曾写成 { ...review, metadata }，理由是浏览器几乎不用改——而 storyCandidateReview
+    // 的 schema 是 additionalProperties: false，于是这份报告不再满足它自己的契约：
+    // 任何把它送回服务端的路径都会被拒，而命题定向修订正是第一条这样的路径
+    // （它要拿评审报告当输入）。调用元数据不属于模型输出契约，分开放才是对的。
+    if (!this.hasLiveClient) {
+      return {
+        review: validate(mockStoryCandidateReview(candidates)),
+        metadata: candidateReviewMetadata({ provider: "demo", model: "demo" })
+      };
+    }
     const settings = this.resolveStage("storyCandidateReview", input);
     this.assertStageClient(settings, "候选对照评审");
-    return this.generateStageJson("storyCandidateReview", input, {
+
+    // 这一档此前走 generateStageJson → generateValidatedJson：**只发一次、fail closed**。
+    // 2026-09-10 的真实回放量出了代价——同一个模型、两份合法候选，一份一次写全
+    // recommendedOrder，另一份只写了 1 个 id，被既有闸门判失败，整份两千字报告
+    // （机制清单、逐候选核对、因果自洽全在里面）连同 ¥0.27 一起丢弃，而模型自己
+    // 不知道漏了什么。animation-plan-review 落地方案早就写过同一句：事前定规矩没用，
+    // 事后拿数字打回去重做有用，**修订必须设计成「允许第一次做错」**。
+    //
+    // 不能给 generateValidatedJson 加重试——它是九个阶段共用的单次调用路径。
+    // 所以这一档自己走 coordinator，形状与 createAnimationPlanRevision 逐条对齐。
+    let rejections = [];
+    // 实数调用次数。不能用 rejections 推断——传输失败时它仍是空数组，
+    // 但供应商确实被调用了两次，少报就等于把花掉的钱藏起来。
+    let providerCalls = 0;
+    // 走 coordinator 就拿不到 generateValidatedJson 那条路自带的 recorder：它挂在
+    // client.generateJson 的 onCompletion 上，而 coordinator 走 requestCompletion。
+    // 漏接的后果是**静默不写**，两次调用的原文全部丢失，所以按定向修订的既有写法
+    // 自己接 attemptObserver。
+    const reviewOutputLogWriter = this.stageModelOutputLogWriters?.get("storyCandidateReview") || null;
+    const recordReviewAttempt = reviewOutputLogWriter?.enabled
+      ? (attempt) => reviewOutputLogWriter.recordAttempt(attempt)
+      : null;
+
+    const request = {
+      // 三份上游都是**可选**的：缺哪一份就少一节判断依据，不阻断评审。
+      // 它们按允许清单投影（buildStoryCandidateReviewUpstream），
+      // 且**不改变原片事实基准**——机制清单与骨架对照仍然只认 sourceScriptReconstruction。
       prompt: storyCandidateReviewPrompt(
         candidates,
         sourceScriptReconstruction,
-        input.visualGuardrails?.fixedCharacterBoundary || null
+        input.visualGuardrails?.fixedCharacterBoundary || null,
+        {
+          creatorProfile: input.creatorProfile || null,
+          creativeBrief: input.creativeBrief || null,
+          referenceAnalysis: input.referenceAnalysis || null
+        }
       ),
-      validate
+      model: settings.model,
+      maxCompletionTokens: settings.maxCompletionTokens,
+      requestTimeoutMs: settings.requestTimeoutMs
+    };
+
+    let review;
+    try {
+      review = await this.modelCallCoordinator.runJson({
+        client: settings.client,
+        request,
+        provider: settings.provider || "",
+        stage: "storyCandidateReview",
+        maxProviderCalls: 2,
+        // 计数与落盘组合在一起。落盘是 fail-open 的：writer 自己吞写入异常，
+        // 这里再兜一层意外抛出，绝不让观测改变本次评审的成败或调用预算。
+        attemptObserver: async (attempt) => {
+          providerCalls += 1;
+          if (!recordReviewAttempt) return;
+          try {
+            await recordReviewAttempt(attempt);
+          } catch {
+            // 观测失败不改变结论。
+          }
+        },
+        retryTokenLimit,
+        // 传输中断也吃这 2 次预算（实测失败率约三分之一，其中一类是几秒就断、
+        // 一个 token 都没烧）。没有诊断可打回时重发原提示词——只说「你错了」
+        // 而不说错在哪，第二次只会重复第一次。
+        // 截断与「被校验拦下」是两种完全不同的失败，重试话术也必须不同。
+        // 报告有 4 个候选 × 11 维，写超导致 finish=length 是本阶段最可能的运行时失败；
+        // 而原来的分支只认「有没有校验诊断」，截断时没有诊断 → 原样重发 → 第二次照样写超。
+        // coordinator 已经把它归成 MODEL_OUTPUT_TRUNCATED（model-call-coordinator.js:58），
+        // 这里只需要认出来并要求压缩；token 上限由 retryTokenLimit 自动抬 1.5 倍，两者叠加。
+        retryPrompt: ({ originalPrompt, issue, error }) => {
+          const code = String(issue?.code || error?.code || "");
+          if (code === "MODEL_OUTPUT_TRUNCATED") {
+            return storyCandidateReviewRetryPrompt({ originalPrompt, truncated: true });
+          }
+          const last = rejections[rejections.length - 1];
+          return last?.details?.length
+            ? storyCandidateReviewRetryPrompt({ originalPrompt, details: last.details })
+            : originalPrompt;
+        },
+        // **校验逐字不变**：这次改的是「错了之后怎么办」，不是「什么算错」。
+        // OutputContractError 本来就被 classifyAttemptError 判为可重试，
+        // 且 details 原样进 issue.diagnostics，所以这里不需要任何错误类型转换。
+        validate: (candidate) => {
+          try {
+            return validate(candidate);
+          } catch (error) {
+            if (error instanceof OutputContractError) {
+              rejections.push({
+                message: error.message,
+                details: Array.isArray(error.details) ? error.details : []
+              });
+            }
+            throw error;
+          }
+        }
+      });
+    } catch (error) {
+      throw candidateReviewPipelineFailure(error, rejections);
+    }
+
+    return {
+      review,
+      metadata: candidateReviewMetadata({
+        provider: settings.provider || "",
+        model: settings.model || "",
+        providerCalls,
+        rejections
+      })
+    };
+  }
+
+  /**
+   * 命题定向修订。对照评审只出报告、不改命题，这一档才是唯一会改动命题正文的地方——
+   * 但它同样**只出候选，不签发任何东西**：不写回 themeVariants、不进 lineage、不 stale。
+   * 签发只发生在用户在浏览器点「采纳」的那一刻。
+   *
+   * **驱动信号是 `coherenceChecks`，不是 `verdict`。** 依据是 2026-09-10 的实测：同一份命题
+   * 三次回放，`verdict` 与 `recommendedOrder` 每次都不同（2 pass/2 revise → 2 revise/2 drop
+   * → 2 revise/2 drop），而因果断裂稳定复现、锚到拍号、具体可执行。
+   *
+   * **一次只修一个命题**：最终只有一个会被展开成 Full Story，一次一个的输出短、失败率低、
+   * 对照预览也清楚。越权写入未授权的命题即 `CANDIDATE_REVISION_OUT_OF_SCOPE`。
+   */
+  async createStoryCandidateRevision(input) {
+    requireObject(input, "请求");
+    const themeVariants = requireObject(input.themeVariants, "themeVariants");
+    const review = requireObject(input.review, "review");
+    const candidateId = requireText(input.candidateId, "candidateId");
+
+    // themeVariants 与 review 都是**请求输入**，不是本阶段的模型输出。
+    // 原样上抛 OutputContractError 会变成 502 加一句「模型输出未通过校验」，
+    // 让用户去查模型、查供应商，而实际错在自己传的包——与评审那处同规格转成 400。
+    const asInputError = (error, label) => {
+      const contractFailure = error instanceof OutputContractError || error instanceof ReviewContractError;
+      if (!contractFailure) throw error;
+      const inputError = new InputError(`${label}：${error.message}`);
+      inputError.details = error.details;
+      throw inputError;
+    };
+    try {
+      ensureOutputContract(themeVariants, "themeVariants");
+    } catch (error) {
+      asInputError(error, "themeVariants 不是一批合法命题");
+    }
+    // 评审报告必须是**这一批命题**的报告：拿另一批的报告来修订会当场失败，
+    // 不会静默按 candidateId 对齐。
+    try {
+      ensureStoryCandidateReviewCoversCandidates(
+        ensureOutputContract(review, "storyCandidateReview"),
+        Array.isArray(themeVariants.variants) ? themeVariants.variants : []
+      );
+    } catch (error) {
+      asInputError(error, "review 不是这一批命题的合法评审报告");
+    }
+
+    const candidate = findCandidate(themeVariants, candidateId);
+    if (!candidate) throw new InputError(`themeVariants 里没有命题 ${candidateId}`);
+    const coherenceBreaks = candidateCoherenceBreaks(review, candidateId);
+    // 第二个驱动信号：原片有、这个命题没接住的机制。与因果断裂并列，但修法不同——
+    // 接一条机制通常要加动作，而因果断裂明确不许加戏，两者混成一个列表模型就分不清了。
+    const unmigratedMechanisms = candidateUnmigratedMechanisms(review, candidateId);
+
+    // 固定角色边界照常验签并参与复验：修订改的是动作链，那正是可能混进禁止特征的地方。
+    const visualGuardrails = input.visualGuardrails ? this.assertGlobalCharacterBoundary(input) : null;
+    const finalize = (revision) => this.finalizeStoryCandidateRevision({
+      revision, themeVariants, candidateId, creatorProfile: input.creatorProfile, visualGuardrails
     });
+
+    if (!this.hasLiveClient) {
+      return {
+        ...finalize(mockStoryCandidateRevision(candidate, coherenceBreaks, unmigratedMechanisms)),
+        metadata: candidateRevisionMetadata({ provider: "demo", model: "demo" })
+      };
+    }
+
+    const settings = this.resolveStage("storyCandidateRevision", input);
+    this.assertStageClient(settings, "命题定向修订");
+
+    const rejections = [];
+    // 实数调用次数。不能从 rejections 反推——传输失败时它仍是空数组，
+    // 但供应商确实被调用了两次，少报就等于把花掉的钱藏起来。
+    let providerCalls = 0;
+    const revisionOutputLogWriter = this.stageModelOutputLogWriters?.get("storyCandidateRevision") || null;
+    const recordRevisionAttempt = revisionOutputLogWriter?.enabled
+      ? (attempt) => revisionOutputLogWriter.recordAttempt(attempt)
+      : null;
+
+    let outcome;
+    try {
+      outcome = await this.modelCallCoordinator.runJson({
+        client: settings.client,
+        request: {
+          prompt: storyCandidateRevisionPrompt({
+            candidate,
+            coherenceBreaks,
+            unmigratedMechanisms,
+            targetDurationSeconds: input.targetDurationSeconds
+          }),
+          model: settings.model,
+          maxCompletionTokens: settings.maxCompletionTokens,
+          requestTimeoutMs: settings.requestTimeoutMs
+        },
+        provider: settings.provider || "",
+        stage: "storyCandidateRevision",
+        maxProviderCalls: 2,
+        attemptObserver: async (attempt) => {
+          providerCalls += 1;
+          if (!recordRevisionAttempt) return;
+          try {
+            await recordRevisionAttempt(attempt);
+          } catch {
+            // 观测失败不改变结论。
+          }
+        },
+        retryTokenLimit,
+        retryPrompt: ({ originalPrompt }) => {
+          const last = rejections[rejections.length - 1];
+          return last?.details?.length
+            ? storyCandidateRevisionRetryPrompt({ originalPrompt, details: last.details })
+            : originalPrompt;
+        },
+        validate: (result) => {
+          try {
+            return finalize(result);
+          } catch (error) {
+            const contractFailure = error instanceof ReviewContractError || error instanceof OutputContractError;
+            if (contractFailure) {
+              rejections.push({
+                message: error.message,
+                details: Array.isArray(error.details) ? error.details : []
+              });
+            }
+            // ReviewContractError 不在 classifyAttemptError 的分支里，会落到
+            // 「internal / retryable: false」的兜底，让本该重试的内容错误无法重试。
+            if (error instanceof ReviewContractError) throw reviewContractAsOutputContract(error);
+            throw error;
+          }
+        }
+      });
+    } catch (error) {
+      throw candidateReviewPipelineFailure(error, rejections);
+    }
+
+    return {
+      ...outcome,
+      metadata: candidateRevisionMetadata({
+        provider: settings.provider || "",
+        model: settings.model || "",
+        providerCalls,
+        rejections
+      })
+    };
+  }
+
+  /**
+   * 合并并从头复验。**采纳时签发的就是这份合并结果**，所以它必须在这里就通过整条生成侧
+   * 校验链，而不是等用户点了采纳、下游媒体已经作废之后才失败。
+   *
+   * 顺序不能换：`assertOnlyCandidateRevisionFieldsChanged` 必须跑在重新派生**之前**——
+   * 那一刻三个投影字段还是原值，正好可以证明模型没有绕过「派生字段不可写」。
+   * 之后 `deriveStoryCandidateProjections` 才按新的 action 重新派生它们。
+   */
+  finalizeStoryCandidateRevision({ revision, themeVariants, candidateId, creatorProfile, visualGuardrails }) {
+    ensureStoryCandidateRevisionContract(revision, themeVariants, candidateId);
+    const merged = mergeStoryCandidateRevision(themeVariants, revision);
+    assertOnlyCandidateRevisionFieldsChanged(themeVariants, merged, candidateId);
+    // 与 createVariants 的 finalize 同一条链，**只少一个 sourceBaseline.apply**：
+    // transformationProof 整个冻结、模型碰不到，所以没有 source 需要重新签发。
+    // 也不传 upstream——source 逐字未变，重跑一遍溯源核对是浪费，而且给模型看原片
+    // 会诱导它顺手重编故事去迁移机制（与「修订只带分镜、不带 fullStory」同源）。
+    const validated = ensureThemeVariantsMatchProfile(
+      ensureOutputContract(deriveStoryCandidateProjections(merged), "themeVariants"),
+      creatorProfile || {},
+      null,
+      visualGuardrails
+    );
+    return { candidateId, revision, themeVariants: validated };
   }
 
   /**
@@ -2932,6 +3241,91 @@ function reviewContractAsOutputContract(error) {
   return wrapped;
 }
 
+/** 命题定向修订的调用元数据。与下面的评审那份同形，只是换一个 scope 键。 */
+function candidateRevisionMetadata({
+  provider = "",
+  model = "",
+  providerCalls = 1,
+  rejections = []
+} = {}) {
+  const list = Array.isArray(rejections) ? rejections : [];
+  return {
+    storyCandidateRevision: {
+      provider,
+      model,
+      providerCalls,
+      rejections: list.map((rejection, index) => ({
+        attempt: index + 1,
+        message: String(rejection?.message || ""),
+        details: Array.isArray(rejection?.details) ? rejection.details : []
+      }))
+    }
+  };
+}
+
+/**
+ * 候选对照评审的调用元数据。与定向修订的 revisionMetadata 同规格：
+ * **服务端拦过一次就必须说出来**，不能让用户以为模型一次就写对了。
+ *
+ * 与那边的一处不同：这里记的是 rejections **数组**而不是单个
+ * firstAttemptRejection。两次都被内容闸门拦下时两条都要在，否则就重演了
+ * 「契约写着把两次诊断如实报出、实现只报第二次」那个已登记的不符。
+ */
+function candidateReviewMetadata({
+  provider = "",
+  model = "",
+  providerCalls = 1,
+  rejections = []
+} = {}) {
+  const list = Array.isArray(rejections) ? rejections : [];
+  return {
+    storyCandidateReview: {
+      provider,
+      model,
+      providerCalls,
+      rejections: list.map((rejection, index) => ({
+        attempt: index + 1,
+        message: String(rejection?.message || ""),
+        details: Array.isArray(rejection?.details) ? rejection.details : []
+      }))
+    }
+  };
+}
+
+/**
+ * 两次都失败时，把**每一次**的诊断都带进最终错误。
+ *
+ * coordinator 抛出的 ModelPipelineError 只带最后一次的 issue.diagnostics，
+ * attempts[] 虽有两条却不带各自的 diagnostics——用户看到的就只有第二次那几条，
+ * 完全不知道第一次错在哪、重试有没有改善。每条诊断加一个 attempt 序号
+ * （额外字段会进 ValidationDiagnostic.metadata 并被 toJSON 带出去）。
+ *
+ * 只在这一条路径上重建错误：其余字段（category / code / origin / httpStatus /
+ * retryable / attempts / cause）逐字照抄，不改变归属与状态码。
+ *
+ * 合并结果一定是 coordinator 那份的超集，所以只要记下过任何内容诊断就用合并版。
+ * 一次内容失败 + 一次传输失败也走这条路——否则那一次的内容诊断会被最后那次
+ * 没有诊断的传输失败盖掉。完全没有内容诊断（两次都是传输失败）时原样上抛。
+ */
+function candidateReviewPipelineFailure(error, rejections = []) {
+  const list = Array.isArray(rejections) ? rejections : [];
+  const diagnostics = list.flatMap((rejection, index) => (
+    (Array.isArray(rejection?.details) ? rejection.details : [])
+      .map((detail) => ({ ...detail, attempt: index + 1 }))
+  ));
+  if (!(error instanceof ModelPipelineError) || !diagnostics.length) return error;
+  return new ModelPipelineError(error.message, {
+    category: error.category,
+    code: error.code,
+    origin: error.origin,
+    httpStatus: error.httpStatus,
+    retryable: error.retryable,
+    diagnostics,
+    attempts: error.attempts,
+    cause: error.cause
+  });
+}
+
 function revisionMetadata({
   provider = "",
   model = "",
@@ -3711,6 +4105,7 @@ function stageLabel(stage) {
     staticFrameCompiler: "Static Frame Compiler",
     characterReference: "人物参考修正",
     storyCandidateReview: "候选对照评审",
+    storyCandidateRevision: "命题定向修订",
     animationPlanReview: "分镜终审",
     animationPlanRevision: "分镜修订"
   })[stage] || stage;

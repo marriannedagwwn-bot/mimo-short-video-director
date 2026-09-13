@@ -102,6 +102,10 @@ Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Art
 
 修复三处缺一不可：`targetDurationSeconds` 传进 `/api/variants`（含 `server.js` 入口的 20–180 整数校验与 Durable `buildInput` 白名单——白名单是显式构造，漏掉会让任务队列路径静默丢字段）；`variantsPrompt` 要求合计落在窗口内并说明它决定成片长度；`fullStoryPrompt` 声明冲突优先级：**`estimatedSeconds` 不属于必须逐字承接的剧情内容**，`timeRange` 服从时长目标，允许按比例调整每拍长度但不得增删、合并、拆分或改写剧情动作。窗口比例（±15%）与取整方向只有一份，在 `public/story-duration.js` 的 `storyDurationWindow()`，两处提示词与变体卡片判色共用，禁止各自再写 `0.85` / `1.15`。**不加校验器**（与 Full Story 同规格：模型不听提示词是生成质量问题）；变体卡片的合计时长徽章是纯展示，不进 Artifact、不参与派生、不 stale 任何东西；不传目标时 `variantsPrompt` 与 `mockVariants` 逐字保持历史行为。已签发的旧候选 `estimatedSeconds` 不变，只能靠优先级声明兜底，同样没有确定性兜底。
 
+**那三处实际只做了两处，2026-09-09 修好（证据来自六份真实导出包）**：白名单读的是 `raw.targetDurationSeconds`，而浏览器送进 `directorPipeline` 的 `shared` 输入里**从来没有这个键**——一键 AI 导演的候选阶段因此从未收到过时长目标，只有手动点「换一批」那条路送到了，现象是「换一批有效、一键跑无效」。`variantsPrompt` 取不到目标时 `durationRule` 整段省略，**静默降级、没有任何报错**。实测：五个带 lineage 的 run 全部生成于 09-05 之后，候选 `estimatedSeconds` 合计 **20/20 落在窗口外**（原片 33 秒的写成 56-60 秒、原片 122 秒的写成 60-90 秒）；唯一 4/4 落在窗口内的那份没有 lineage、导出形状也不同，四个候选精确等于窗口下界——像是拿到指令后贴着下界写（路径不同是推断，未核实）。修复是 `public/app.js` 的 `runWorkflow()` 补上这个键，`test/story-duration.test.js` 用源码断言锁住三处调用点，撤掉修复即失败。三处都是对象字面量，漏掉任何一处都不会有运行时错误，只能靠测试守着。
+
+**同一批数据修正了上一段的一处措辞**：那句「候选 `estimatedSeconds` 的合计**事实上决定成片长度**」描述的是 ③ 落地**之前**的行为。③ 生效后 Full Story 服从时长目标——六份包里成片跨度 **6/6 精确等于 `Math.round(原片时长)`**（65/122/44/44/65/33），候选估的 46–90 秒被整体忽略。所以合计不再决定成片长度，但它**决定同一批动作要被塞进多长的时间**：60 秒大纲压进 33 秒、或摊到 122 秒，都是同一份动作链换了密度。压缩那一侧正是 `docs/待解决项.md` 第 1 条「单场动作过载」的上游——镜头骨架由场次 `timeRange` 确定性派生，定向修订在架构上救不了它。**这仍然不构成加校验器的理由**，与下一段一致：模型不听提示词是生成质量问题。
+
 每个 Candidate 必须有一个主要承担角色性格或人物关系质感的 Beat，但它仍必须改变关系、情绪、信息或后续选择条件；删除后必须损失角色弧、关系推进、情绪积累或后续因果之一。禁止恢复「完全不推进主线、删除后故事仍完整」的旧 Prompt 规则。
 
 用户明确选择后，完整 Candidate 作为 `variant:<id>` Artifact 签发。`POST /api/full-story` 必须同时绑定该 Artifact 的精确 `artifactId/revision/contentDigest`；服务端在调用 Full Story 模型前后都必须复验 current Candidate、请求副本 digest、running target/request 和 target revision，并用落盘 Candidate 替换客户端副本。`candidateBinding` 只是请求 sidecar，不进入 Prompt、Legacy Full Story wire shape 或 Artifact。同 id 任意内容变化都必须换 digest/revision 并使旧下游 stale。
@@ -158,6 +162,86 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：�
 
 ---
 
+**`storyEngine` 五个子字段的定义与 `turningMechanism` 两槽位（2026-09-10）**：`briefPrompt` 此前对
+`storyEngine` 与它的 `desire` / `obstacle` / `escalation` / `turningMechanism` / `payoff` **一条说明都没有**——
+六个词各出现恰好 1 次，就是输出模板里那个空槽位。它是整份简报里**唯一**一个子字段全无定义的子对象
+（`nonNegotiableExperience.samePlotDriver` / `sameBeatValue`、`reusableHighValueBeats[].beat` /
+`dramaticValue` / `mustRetain` 都有定义），而且零校验器、改动前**零消费者**
+（`src/validation.js` 只在 required 键名里出现，浏览器只展示 desire/obstacle/payoff 三格）。
+
+实测后果：三个真实导出包里 `turningMechanism` 一份是真机制、一份可用、一份写成剧情概括
+（「主角主动采取防护措施继续参与活动，展现机灵与懂事」）。**那不是模型写错**——「转折机制」
+最自然的读法就是剧情转折点，没人告诉过它这个字段要写的是关系/理解的改变。质量随包而异
+不是模型不稳定，是**一个未定义字段上的猜测**。
+
+现在五个键各写定义，`turningMechanism` 改成 **`{before, after}` 两个槽位**：
+`before` 写前半段观众以为这是一段什么关系，`after` 写看完之后重新理解成什么。
+提示词**明写它不是剧情转折点**、不是「主角做了什么」——那是最自然的误读，不点破它，
+写再多正面定义都会被它盖过。两端必须是**对同一组人物关系的两种理解**，不能写成
+「任务没完成 → 任务完成了」或「情绪低落 → 情绪变好」；转变不必是反转，小幅度的重新理解也算数。
+
+`validateStoryEngine`（`src/validation.js`）挂在 `ensureOutputContract` 的 `creativeBrief` 分支，
+与 `validateNarrativeComponents` / `validateProtectedExpressions` 并列。判定**全是类型、非空与字符串
+比较，零语义**：四个文本键非空；`turningMechanism` 必须是**恰好含 before/after 两个键**的对象
+（多一个键就会把定义稀释掉）；两端非空；归一化后 `before !== after`，复用现成的
+`normalizeStoryReviewEcho`（去空白与中英文标点），**不另写第二份**。
+
+**闸门只抓退化，不保证判对。** 它能抓住「两边写同一句话」这种同义重复，**无法**判断写出来的转变
+是不是真的发生在关系上——那需要语义判断，没有确定性兜底。
+
+**只在生成路径生效。** `ensureOutputContract(_, "creativeBrief")` 全项目只在 `createBrief` 里调用两次；
+下游 variants / visualGuardrails / fullStory 都是裸 `requireObject`。所以 `turningMechanism` 仍是字符串的
+旧简报**不会被拒绝**，照常加载——与 §2.4 已下线方言「所有调用点都是生成路径」同型；
+简报卡的「理解转变」格因此写了两个分支，旧简报不会显示成空白。
+
+**真实回放（2026-09-10，从源视频重跑 analyze → reconstruct → brief）**：导出包**不能**直接回放
+`/api/brief`——`groundedStageInput` 对 `sourceScriptReconstruction` 无条件验签且没有出口
+（`WORKFLOW_SIGNATURE_POLICY` 只覆盖角色边界签名），外来包的 seal 一律 400。因此改从源视频重跑整条链
+（`打枣.mp4` 的 SHA-256 与包内 `sourceVideo.digest` 逐字节一致，确认是同一个文件）。
+三个包的结果**有好有坏**：
+
+- **反面样本修好了**：那份剧情概括变成「观众以为这是一段长辈照顾晚辈、晚辈被动接受关爱的关系」→
+  「观众重新理解为晚辈也在用自己的方式主动参与劳动、回应长辈的爱」，方向与一份外部评审对同一部
+  参考片的独立读解一致。
+- **旧值可用的那个没变差**，两端比旧值更明确。
+- **旧值最好的那个反而退了一步**：旧值精确点名了两人各自的角色（「从打扰者与被干扰者转变为模特与
+  创作者」），新值写成「单方面照顾 → 双向陪伴」，更笼统，而且补了一句「两人共同完成了一幅作品」——
+  按还原稿那个角色是**被画的对象**，画由另一人独自完成。**闸门抓不到这个**：`before !== after` 照常通过。
+
+**这批数据能支持的结论很窄**：三个包里只有一个原本是反面样本，所以它证明的是「已知的那个反面样本
+被修好了」，**不是**「定义写清楚就一定能拿到好机制」；而第三个包说明**它也可能把已经写对的换成更差的**。
+
+两条没有确定性兜底的观察：①两端都以「观众以为…／观众重新理解为…」开头，**3/3 全中**——模型在照抄
+提示词的措辞框架，内容随包不同、是真实读解，但这个开头已经成了公式；②新值可能引入与原片不符的
+断言（上面那句「共同完成」），闸门只查两端不相同，判不出哪一端说错了原片。
+
+**`recastTest`：换个角色来演，什么会塌掉（2026-09-11）**。`creativeBrief` 顶层新增必填字段，
+与 `storyEngine` 平级（不放进 `storyEngine`——那会污染它的事件结构模型）。
+
+起因：我们提炼的是「参考视频叙事的过程」，不是观众实际看到的东西。「一个小辈帮助长辈」是事件；
+观众看到的是「一个可爱的孩子发挥自己的天性、用自己的方式帮身边的人」。量化证据：候选提示词
+26,873 字里 108 条否定式约束、55 次「必须」、**0 次邀请模型用自己的判断、1 次提到「好看」**；
+两轮真实回放的 `turningMechanism`（3.7-max 与 3.8-max-0902）质感不同但**都停在事件层与关系层**。
+`storyEngine` 五个键本身就是完整的事件结构模型，在里面加力度只会拿到更精确的事件描述，换模型也不解决。
+
+**它是一个操作，不是一句定义**：`{recastAs, collapses, survives}`——先把主角换成一个性格完全不同的
+角色（`recastAs` 必须写具体性格），再逐场问「换了这个角色还成立吗」，不成立的进 `collapses`
+（只有这个角色才给得了的东西），照样成立的进 `survives`（谁来做都一样）。依据是
+`turningMechanism` 加定义后实测 3/3 照抄措辞框架；本仓库成功的改动全是结构性的，失败的全是措辞性的。
+举例**一律用反例**（品质词、谁都能做、含糊其辞），不给正例——反例不会被抄成内容。
+
+**两侧同时必填是全部要点**：只填 `collapses` 模型可以把所有东西塞进去，要求同时列 `survives`
+它就必须做区分。与 `transformationProof` 拆两个槽位同一个招式。
+
+`validateRecastTest` 挂在 `ensureOutputContract` 的 `creativeBrief` 分支。五条闸门全是类型、非空与
+集合比较、零语义：恰好三个键、`recastAs` 非空、两侧各至少 1 条非空、**两侧归一化后不得有交集**
+（核心闸门）、同侧不得重复。归一化复用 `normalizeStoryReviewEcho`。
+**闸门抓不到 `collapses` 里写品质词而不是具体动作**——没有确定性兜底。
+
+**只在生成路径生效**（与 `storyEngine` 同型，旧简报照常加载）。**候选阶段只拿到 `collapses`**：
+送它是要候选迁移同一性质的东西，不是复现原片那些动作；`survives` 留在简报侧，送下去只会变成
+又一份可照抄的事件清单。
+
 ## 候选阶段的原片事实溯源与对照评审（2026-09-06）
 
 **原片来源独立选取与服务端派生（2026-09-09，替代新候选路径中让模型自由写 source 的规则）**：两份原片上游齐全时，`createVariants` 先建立私有冻结目录，使用创建时的 variants provider/model 独立选择人物、事件、对白、画面四维的 evidenceId，再调用同一模型创作候选。选源输入不含 creatorProfile、Brief、Guardrails、候选、replacement 或旧 source；目录仅投影原片事实白名单，不带签章或媒体。所有 ID 必须已知、非空且不重复，不设置固定 4 条上限。对白引用附带同场 visibleActions 与 shotDesign 的画面原文；不同场次的同文不能按文本去重，必须按 evidenceId 保留。道具不由模型选择，直接取全部冻结 `scenes[].keyProps` 精确文本去重；合法空数组签发「原片没有可引用的场次道具清单记录」，仅声明清单空，禁止扩大成原片没有物件；缺键、非法类型与空白条目仍失败。
@@ -192,7 +276,212 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：�
 
 覆盖率由服务端确定性核验（`ensureStoryCandidateReviewCoversCandidates`）：候选数量相等且 `candidateId` 逐位相同、回显 `title` 必须**包含**原文（复用 `storyReviewEchoCoversSource`，不建第二套）、`beatIndexes` 必须在该候选 `storyOutline` 范围内、`recommendedOrder` 必须是全部候选 id 的一个排列；核验通过后服务端用原文无条件覆盖 `title`。**「判得对不对」是语义的，没有兜底**——只保证模型逐个候选看过。
 
-**不打总分**（§剧情体检已实测总分没有分辨力）。`verdict` 的 `drop` **只是报告里的一句话**：不删候选、不重新生成、不触发任何 stale，分布校验（`STORY_CANDIDATE_NARRATIVE_MODE_MIX`）不受影响，淘汰与否由用户决定。评审默认沿用 `variants` 阶段的 provider，也就是写这些候选的那个模型，**自己批自己会偏松是已知偏差**，如实记录、不靠静默换家掩盖；它是纯文本阶段，可按阶段 override 换任意一家。
+**⑤ 因果自洽检查 `coherenceChecks`（2026-09-09，来自第一次真实回放）**：`candidateCheck` 新增必填数组（空数组合法），每条写 `kind` / `beatIndexes` / `problem`。
+`kind` 五个取值都来自实际观察到的失败形状：`contradiction`（同一候选两处描述互相否定）、`tool_misuse`（角色手上已有能解决问题的东西却用更差的替代物）、
+`purpose_nullified`（任务目的被链条里另一件事当场抵消）、`space_or_time`（前面说够不到或来不及，后面用更弱的办法却成了）、`other`。
+**提示词里的举例一律是抽象形状，不含任何参考片或候选的具体名词**——§2.12b 的「企鹅快递员」事故正是举例被逐字照抄造成的。
+
+闸门只有一条，**纯算术加枚举比较**：`coherenceChecks` 非空就不能判 `pass`，诊断码 `STORY_CANDIDATE_REVIEW_PASS_WITH_COHERENCE_BREAK`。
+它不裁决那条自洽问题成不成立。拍号合法性判定与 `mechanismChecks` **共用一份** `checkBeats`。
+
+起因是 2026-09-09 用一份真实导出包做的首次回放（该阶段此前**从未真实调用过**，`docs/待解决项.md` 第 7 条）。
+评审把一个候选判成 `pass` 并排在第 2，而它的动作链有三处矛盾：对白说「顺路」而同一拍写「反方向」；
+角色怀里已抱着能解决问题的道具，却另找更差的替代物去保护它；任务目的在最后一拍被另一条线抵消。
+评审的 `coreInteraction` 还把其中一条**原样抄下来**当成功案例。根因不是模型不行，是 **`verdict` 声称的比评审实际检查的多**：
+`pass` 的定义是「可以直接展开」，而评审只审「机制有没有迁移过来」。这与 §2.13 查的不是同一件事——那边是「声明 vs 呈现」，这边是「呈现 vs 呈现」。
+
+**三条必须如实记着的局限：**
+
+1. **命中率 38%，但绝不是完备闸门。** 四个包 16 个候选里有 6 个被报出自洽问题。抓到的内容具体且锚到拍号——
+   例如「第 2 拍写够不到、第 3 拍搬木箱、第 4 拍站上去还是够不到」，以及「长辈手里已经有旧星图并能指出位置，
+   那件道具要解决的问题在第 1 拍就不成立了」。但**已知有 3 处矛盾的那个候选只被抓到 1 处**，另两处始终没抓到。
+   **不得据此宣称「自洽问题会被拦住」。**
+2. **`pass` 闸门在 live 至今没被触发过**：报出自洽问题的候选，模型本来就判了 `revise` 或 `drop`。闸门只有单元测试证明有效。
+3. **判定质量在包与包之间很不齐，目前不能当挑选依据。** 与一份外部评审对同一批候选的评分比对：一个包完全吻合
+   （`pass` 的两个正是外部评分最高的两个，`revise` 的两个正是最低的两个），一个包部分吻合，一个包**方向相反**
+   （我们唯一判 `revise` 的那个是外部评分并列最高的），还有一个包全部判 `drop`。`recommendedOrder` 同样不稳：
+   同一份输入两次回放的排序不同。**不得把 `verdict` 或 `recommendedOrder` 当成自动选择依据。**
+4. **不得为了提高命中率去加词表或反复改提示词**（§5 第 2 条与「看到错误日志就直接改提示词」）。
+   最初只跑了一个包就得出「召回率很低」的结论，而那个包恰好被判全 `drop`、模型不再继续找——
+   **单包结论在这个阶段是不可靠的**，任何比例都要跨包统计。
+
+**同一次回放还暴露了旧契约的一个更根本的问题（当时没有确定性修复，现由下面 ⑥ 结构性解决）**：回放 1（旧契约）给四个候选提炼出 **8 条各不相同**的「原片机制」，
+每条都是照着**那个候选本身**写的，于是 6/8 判 `depicted`——**从候选反推原片机制，再判定它已兑现，是循环论证**。
+改动后两次回放收敛到**同一条**具体机制并 8/8 判 `not_depicted`，与一份外部评审对同一批候选的结论一致。
+但**无法证明是这次改动修好了循环论证**，只能记录：改后 2/2 一致且与外部结论吻合。这条没有确定性兜底，判断「机制提炼得对不对」需要语义判断。
+
+**⑥ 原片机制清单改为全批共享、候选按 id 引用（2026-09-09）**：`storyCandidateReview` 新增**顶层**
+`sourceMechanisms: [{id, mechanism, whereInSource}]`（schema 限定 **2–4 条**），`mechanismCheck` 的
+`sourceMechanism` / `whereInSource` 换成 `sourceMechanismId`。闸门两条，**都是纯集合成员比较、零语义**：
+id 必须唯一（`CANDIDATE_REVIEW_DUPLICATE_MECHANISM`），每个引用必须在清单里
+（`CANDIDATE_REVIEW_UNKNOWN_MECHANISM`）。拍号合法性与 `coherenceChecks` 共用同一份 `checkBeats`。
+
+它修的是上一条末尾记的那个循环论证，而且**是结构性修复不是措辞修复**：四个包的实测里，
+只有一个包把原片机制收敛成 3 条，另外三个各提炼出 **8–9 条**、每条都照着那个候选本身写，
+于是 6/8 判 `depicted`。清单上限 4 条之后，「4 个候选写出 8 条互不相同的原片机制」在**构造上**不再可能。
+提示词同步改口径：先只读原片写出清单（「在看任何候选之前先做这一步」），再逐个候选核对它命中哪一条；
+自检方法写成「把全部候选删掉，你写的这几条应该一字不变」。旧口径「先从原片动作稿里挑出
+**这个候选试图迁移的**机制」正是诱因，已删除并由测试锁定不得回来。
+
+招式与 `variant-source-baseline` 的冻结证据目录同规格：共享权威清单 + 按 id 引用。
+评审只出报告、不进 lineage、不落盘，所以改它的契约代价极低。
+**「机制提炼得对不对」仍然没有确定性兜底**——闸门只保证全批共用一份清单，不保证那份清单读对了原片。
+
+**⑤⑥ 落地当天漏掉了「五个面」里的消费者面，而且是静默漏（2026-09-10 补）。** 生产者、校验器、
+Prompt、测试当天都动了，`public/app.js` 的 `renderStoryCandidateReview` 没动：它还在读改名前的
+`entry.sourceMechanism` 与已移到顶层的 `entry.whereInSource`，而 `escape(undefined)` 返回空串——
+**页面上是两处空白，不是报错**；`coherenceChecks` 与顶层 `sourceMechanisms` 更是压根没有渲染代码。
+一个只在页面上显示的阶段，消费者漏了就等于这两档整个没做。
+
+现在浏览器：顶层清单置顶显示（每条 id + 机制 + 原片在哪兑现），逐条 `mechanismCheck` 旁显示它引用的
+那条机制正文，`coherenceChecks` 单独成块、`kind` 五个枚举各有中文标签（枚举值本身是英文标识，直接
+显示等于让人对着 `purpose_nullified` 猜）。`candidateReviewMetrics` 同步**数出**因果断裂条数与涉及
+候选数，与剧情体检同规格、不问模型要总分；旧报告没有这个键时数出来是 0，但那是「这一档还不存在」
+不是「查过了没问题」，所以摘要里那一段整段不显示。`test/story-candidate-review.test.js` 用源码断言
+锁住这四处，撤掉渲染即失败（已实测）。
+
+**首次真实调用（2026-09-10，两个包）**：新契约此前 **0 次真实调用**，只有 mock 单元测试证明过——
+与 `docs/待解决项.md` 第 7 条是同一个形状，同一个阶段上踩了两次。补跑《打枣》与《捐旧衣服》：
+两个包**都把清单收敛到 4 条**（上限）、逐条锚到原片场次，全部引用命中清单内的 id，新加的两条闸门
+一条都没触发；因果自洽两个包都是 **2/4 个候选**，四条都锚到拍号且具体。旧契约那种「4 个候选写出
+8–9 条各不相同的原片机制」两个包都没有再出现。
+
+**同一批数据里的两条限制**：①两个包都有**没被任何候选引用**的机制（打枣的 M4 零引用），清单写满
+4 条不等于 4 条都用得上；②判 `pass` 的三个候选都没有报出自洽问题，所以
+`STORY_CANDIDATE_REVIEW_PASS_WITH_COHERENCE_BREAK` **至今仍未在 live 触发过**。
+**《捐旧衣服》第一次还撞了一次 502**——`recommendedOrder` 只写了 1 个 id，被既有闸门判失败、
+整份报告丢弃、¥0.27 白烧；那条闸门与本次改动无关，但它促成了下面 ⑦。
+
+**⑦ 允许第一次做错：带诊断重试一次（2026-09-10）**。`createStoryCandidateReview` 从
+`generateStageJson` 改走 `modelCallCoordinator.runJson`，`maxProviderCalls: 2`，**禁止第三次**，
+形状与分镜定向修订逐条对齐——搬的就是那套结论：「事前在提示词里定规矩→没用（三次加码都没用）；
+事后拿数字打回去重做→有用」，以及「**修订必须设计成「允许第一次做错」**」。候选这一档此前
+只搬了前两部分（提示词定规矩、确定性闸门）。
+
+- **校验逐字不变**：改的是「错了之后怎么办」，不是「什么算错」。五条闸门一个字没动。
+- **不需要错误类型转换**：`ensureStoryCandidateReviewCoversCandidates` 抛的 `OutputContractError`
+  本来就被 `classifyAttemptError` 判为可重试，`details` 原样进 `issue.diagnostics`。
+- **重试只发诊断，不把失败的报告发回去**（`storyCandidateReviewRetryPrompt`）：原提示词逐字保留，
+  末尾追加校验器数出来的 `path / reason / code`，不另写一套人话翻译。没有结构化诊断时退回原提示词。
+- **拦过一次必须说出来**：返回值多一个 `metadata.storyCandidateReview`（`provider` / `model` /
+  `providerCalls` / `rejections`），浏览器在报告顶部以 warn 色显示。`providerCalls` 由
+  `attemptObserver` 计数，不能从「有没有被拦」反推——传输失败时供应商确实被调用了两次而没有诊断。
+- **两次都被拦时两次诊断都在响应里**（每条带 `attempt` 序号）：coordinator 抛的
+  `ModelPipelineError` 只带最后一次的 diagnostics，所以这条路径自己重建错误、合并两次，其余字段
+  逐字照抄。这正是定向修订那边已登记的一处契约与实现不符，评审这一档一开始就做对。
+- **走 coordinator 就拿不到 `generateValidatedJson` 自带的 recorder**，必须自己接 `attemptObserver`，
+  否则静默不写、两次原文全部丢失。
+- 传输失败同样吃这 2 次预算；`requestTimeoutMs` 不动。**其余八个走 `generateValidatedJson` 的阶段
+  逐字不受影响**——不能给那个函数加重试，它是共用的单次调用路径。
+
+**它救不了什么**：诊断只有那五条闸门那么宽。机制清单读错原片、自洽问题判错这类**语义**错误不产生
+任何诊断，也就不会触发重试。这条路只把「模型漏抄了几个 id、整份报告被丢弃」从 502 变成重做一次，
+**不提高报告的判断质量，更不改变候选本身**——评审始终只出报告。
+
+**重试路径在 live 至今没有真实触发过**：接上之后跑的两次都一次就成，只证明改动没有破坏正常路径，
+**不证明重试能救回来**。同一个包三次回放的结论还明显不同（`verdict` 从「2 pass / 2 revise」到
+「2 revise / 2 drop」，因果断裂 2→3 处，`recommendedOrder` 三次都不一样）——「包与包之间很不齐」
+现在还要加上**同一个包内部也不稳**。
+
+**⑧ 命题定向修订 `storyCandidateRevision`（2026-09-10）**（`POST /api/story-candidate-revision`）。
+评审只出报告、不改命题，这一档才是唯一会改动命题正文的地方——但它同样**只出候选、不签发任何东西**：
+不写回 `themeVariants`、不进 lineage、不 stale。签发只发生在用户点「采纳」的那一刻。
+
+**驱动信号是逐条锚定的那两类，不是 `verdict`**：上一段那组数字就是依据——`verdict` 与
+`recommendedOrder` 在同一份输入上三次三样，而两个信号都逐条锚定（断裂锚到拍号，机制锚到清单 id）。
+**一次只修一个命题。**
+
+**两个信号，两套修法，不能混（第二个是 2026-09-11 补的）。** `coherenceChecks` 是「因果说不通」，
+**必须修**，基本都能靠改写解掉；`mechanismChecks` 里判 `not_depicted` / `partially_depicted` 的是
+「原片有、这个命题没接住的机制」，**由修订模型判断该不该接**。补第二个信号的依据是实测：
+V4 被判 drop 的主因是三条机制全部 `not_depicted`，评审 summary 也写着「最该先改的是补充转赠动作」，
+而修订当时只收到那条最轻的空间断裂，于是只把「小木箱」换成了「高脚木凳」——四条问题里最轻的
+那条被修了，最重的三条根本没送到。`candidateUnmigratedMechanisms` 把机制正文按 id 从顶层
+`sourceMechanisms` 查回来一并送出（`mechanismCheck` 自己只有一个 id，光送 id 模型做不了事），
+查不到就整条丢弃、不编造。
+
+**接机制必须有拒绝出口。** 原片那条机制没被接住不等于这个命题必须去接——一个刻意写成
+「不靠外部奖励、自己满足」的故事，硬塞「获得表扬再转赠」不是修订是换故事。模型逐条判断，
+拒绝时必须在 `changeSummary` 写明理由，不许假装接了或沉默跳过。与「`verdict: drop` 只是一句话」
+同规格：**评审的判断不是命令。**
+
+**与「不要靠加戏」的冲突靠提优先级解决，不是二选一。** 两条硬约束互相矛盾时模型只会随机选一条。
+现在「不要往上堆」升为**铁律 4**、两类共用，只是宽严不同：第一类连换都不用换，第二类允许换但
+**必须一换一**，拿不掉就回到拒绝。同批还补了一条：「换一个更好用的道具往往只是绕过问题」——
+09-10 那次把小木箱换成高脚木凳，链条表面通了、故事一个字没变。
+
+**修法小节跟着问题走**，没有那一类问题就整段不出现（有修法没问题会让模型去找活干）。这条是
+单元测试抓出来的。
+
+可写范围分三档（`src/story-candidate-revision.js` 各有一份常量）：**可写**是
+`storyOutline[].action` / `emotion` / `estimatedSeconds`、`keyDialogueDirections`、`newTask`、
+`environmentPressure`、`logline`；**派生或签发、出现即拒**是 `keyChoice` / `climax` /
+`emotionalPayoff` 与 `transformationProof`；**冻结**是 `id` / `title` / `oneLineHook` /
+`verticalFit` / `narrativeMode` / `characterSetup` / 两个拍号、每拍的 `beat` / `phase` /
+`dramaticFunction`，以及全部自我评价字段。
+
+`newTask` / `environmentPressure` 可写的依据是实测：一轮评审报出的三条断裂里**两条的根在任务设定**，
+只改动作链改不掉。`dramaticFunction` 冻结的理由不同——它是 `storyCandidateStructureSignature`
+的输入，让模型改它等于让它动 `validateVariantStructuralDivergence`。`title` 冻结是刻意的：
+让人始终能在卡片上认出是同一个命题，也守住「修订」与「换一批」的界限。
+
+**只覆盖、不增删**：模型按 `beat` 号定位、只列真正改了的拍，拍集合因此由构造保持不变。
+闸门全是形状与字符串比较，另加一条 `CANDIDATE_REVISION_NO_CHANGE`——交回一份与原文逐字相同的
+修订不是格式错误，是没干活。
+
+**服务端独占合并，并从头复验。** `assertOnlyCandidateRevisionFieldsChanged` 跑在重新派生**之前**
+（那一刻三个投影还是原值，正好证明模型没绕过「派生字段不可写」），之后
+`deriveStoryCandidateProjections` 才按新 action 重新派生，再走完整校验链。**不传 upstream**
+（`source` 逐字未变），**固定角色边界照常验签并复验**。提示词只带目标命题这一个，不带同批其余
+命题、不带原片、不带 verdict；唯一与评审投影相反的是 **`dramaticFunction` 要送**——不能改但必须
+看得到。走 coordinator、`maxProviderCalls: 2`、禁止第三次。
+
+**采纳的代价是整批的**：`themeVariants` 是一份 Artifact，签发新版本会递归 stale 这一批全部命题的
+下游，哪怕别的命题一个字没改。浏览器采纳前照「换一批」的规格征求同意，文案写明这一点。
+**修订最省的用法是在选中命题之前**，那时代价为零。
+
+**三条没有确定性兜底的**：执行者反转；一换一但复杂度暴涨（**本版刻意不设动作数量台账**，
+命题阶段没有对应实测，凭推断加闸门违反「不得顺手扩大范围」，改为并排展示并数出动作链字数）；
+以及 `dramaticFunction` 名义还在、实际已不成立（它是冻结字段、逐字未变，闸门查不出功能还在不在）。
+
+
+**⑨ 双证据、原片骨架对照与换皮闸门（2026-09-12）。** 三处判定修正，全部在评审阶段。
+
+**先记被证伪的四个想法（五组真实实验、约 60 次调用），不要重做**：①用 `citationCoverage`（LCS）确定性算表面相似度——六组 24 个候选跨度只有 0.049，已知是「四个同一个故事」的那组只比最低的高 0.05；LCS 量字面重合，而换皮恰好换掉全部字面只留结构，**这条路走死了**。②把 `storyEngine` 抽象成机制层——它根本不进候选提示词，观测到的差异实为改简报导致角色边界重签，**归因错误已撤回**。③Transfer Kernel（先规划机制再生成）——兑现率 80% vs 54%、与原片事件链重合 52.5 vs 40.0，而**盲评剧情质量 73.8 vs 85.6（六项全输）**：顺序反了，模型面对明确清单会找最容易证明自己做到的写法，那就是原片那个桥段。**机制迁移不得做成生成侧硬约束。**④拿掉候选提示词那 111 条否定式约束——四个候选当场塌成同一个故事，**不能删**。
+
+**A. 双证据，只对真正需要前因的机制。** `mechanismCheck` 的 `whereInCandidate` 拆成 `causeEvidence` 与 `actionEvidence`；判据挂在**共享清单**上——`sourceMechanism` 新增必填 `requiresCause`（boolean），闸门只对 `true` 的机制生效：`verdict === "depicted"` 时 `causeEvidence` 必须非空，诊断码 `CANDIDATE_REVIEW_EVIDENCE_INCOMPLETE`。依据是三条实测的「已兑现」证据全是「第 5 拍把某物别到某人身上」，只有转移动作、没有前因；按双证据重评，整组兑现率从 70.8% 掉到 54.2%。**标记不放在逐候选的 check 里**：放在那儿，模型想让哪个候选过就对它写 `false`；放在清单上，改一次等于对全批放水——与 ⑥ 同一个招式。**接收方合不合格只看故事前面写没写出相应贡献，不看角色身份名称**：搭档、同伴、宠物一样可以是默默付出的那一方，反过来写成长辈也不因身份就算数；起因是一条证据被「接收方是并肩搭档」否掉，那是按身份名称直接判错。**这一条没有兜底。**
+
+**B. `sourceScaffoldOverlap`：逐个候选与原片比，不是候选之间比。** 现有评审只比候选之间的差异，从来没比过候选与原片——四个候选彼此完全不同仍可能各自复刻原片，是两个独立问题（实测一组 12 个候选里 9 个任务性质与原片同类，候选间的重复检查一条都没报出来）。**判据是事件链**：`eventChain`（1–6 条）逐条写 `sourceEvent` → `candidateEvent` → `beatIndexes` → `linkage`（`same` / `reordered` / `different` / `absent`），问的是**因果接法与先后顺序是否相同**；`taskType` / `midSection` / `rewardSource` / `rewardHandling` / `endingShape` 降为辅助观察，**每项都允许 `not_applicable`**——那五项是照着「做任务—获奖—处理奖励」的参考片写的，无任务无奖励的生活片会被逼着乱填。任务同类、都在傍晚收尾、都有双人协作**本身都不足以判换皮**。`score` 是 0–100 整数，只看那条链。拍号与另外两个数组共用 `checkBeats`。
+
+**C. 换皮闸门只有分数一个条件，刻意没有机制兑现率前置。** `score >= 70` 且 `verdict === "pass"` 即失败，诊断码 `STORY_CANDIDATE_REVIEW_PASS_WITH_SCAFFOLD_COPY`，纯整数比较零语义。原方案的「兑现率 ≥ 2/3 且分数 ≥ 70」有个明确漏洞：候选照搬事件链但情感前因没写好、兑现率反而低，就从闸门底下走掉——**换皮越彻底越安全，方向反了**；而 A 让这个漏洞必然发生（双证据把实测兑现率压到 54.2%，已低于 2/3，两条一起落地闸门永不触发）。阈值来自单次盲测（换皮组 95、正常组 10–50，**8/8 准确分类**，三轮重复性远好于 `verdict`），**但只验证过差距极大的两组之间**，中间地带样本三次跳了 25 分——**只能当分类器，不参与 `recommendedOrder`**；**不是最优值，不得为放行某个候选而下调**。判定只有一份：`SOURCE_SCAFFOLD_COPY_SCORE` 在 `public/story-review-metrics.js`，提示词、校验器与浏览器摘要共用。纯 shape 的检查只留在 schema，校验器里不重写第二份。
+
+**事件链下界是 1，不是 2**：初版写 `minItems: 2`，落地当天用一份只有一个动作的原片打了两次真实调用，两次的第一次尝试都老实写了一条、被 schema 拒掉，重试时模型**编了一件原片没有的事**并把分数从 20 抬到 85。**要求填满而不留出口就是在逼模型编造**（与 `原片没有` sentinel 同理），原片有几件关键事件不可从我们这边唯一推导，「挑 3–5 件」只留在提示词里。那次输入是占位候选，只证明失败形状存在，不构成判定质量的结论。
+
+**已知缺口**：`requiresCause` 与骨架分都是模型自报，全写 `false` 或压分都能绕过（与 `narrativeMode` 同型）；「前因对不对」「事件链读得对不对」需要语义判断，无兜底；**换皮闸门在 live 至今未触发过**，与 `STORY_CANDIDATE_REVIEW_PASS_WITH_COHERENCE_BREAK` 同处境，**触发之前不得声称它有效**。消费者面这次一并改了（浏览器两格证据、需要前因标记、骨架对照整块、`scaffoldCopies / scaffoldScored`；旧报告整段不显示），定向修订的 `candidateUnmigratedMechanisms` 改读 `actionEvidence` 并把 `causeEvidence` 一并送进提示词，旧键留一个回退——评审报告只活在页面上，而页面不会因服务端重启而刷新。
+
+**⑩ 升级为「选题终审编辑」（2026-09-12）。** 评审此前只回答机制迁移、动作链自洽、骨架换皮三件事，现在同时回答「一个不了解创作背景的普通观众看完会不会继续看、能不能看懂、记不记得住角色、结尾的回报值不值得等」。仍然只出报告。
+
+**A. 四个概念分开，候选级 `verdict` 不再由模型自报**：`11 维分数 → overallScore（加权）→ tier（五档）→ scoreBasedVerdict → 取最严 → effectiveVerdict + verdictOverrideReasons[]`，全部服务端派生。硬闸门三条：`coherenceChecks` 非空、`sourceScaffoldOverlap.score >= SOURCE_SCAFFOLD_COPY_SCORE`、`dominantDefect.severity === BLOCKER`（给模型一个显式一票否决口，不必靠压分）。**降级只改 `effectiveVerdict`，绝不改 `overallScore` 或 `tier`**——压分实现降级会把「故事很好但有一处硬问题」压成「故事不好」。报告因此能如实写成「9.2 分 / 最高档，但因果断裂未清 → 不放行」。**这条取代了 ⑤ 与 ⑨ 的两条 verdict 闸门**：它们从「拒收报告」变成降级理由，该类失败由构造消除（模型没有 verdict 可写错），代价是两个诊断码不再出现在 live——而它们本来就从未在 live 触发过。`recommendedWinner` / `runnerUp` / `rejectOrRegenerate` 同理改为派生，杜绝「判了淘汰却不在名单里」。
+
+**B. 十一维权重（合计 1.00）在 `public/story-review-metrics.js` 一份**，提示词、校验器、浏览器共用：openingHook .10 / causalLogic .10 / protagonistAgency .08 / characterSpecificity .12 / storySpecificity .10 / originality .10 / progression .10 / emotionalPayoff .10 / visualMemorability .10 / productionFeasibility .05 / dialogueAndNaturalness .05。闸门只查齐全、无未知、无重复、0–10。**这条与剧情体检、分镜终审已写进契约的「不打总分、不设门槛」正面冲突，是用户看到数据后仍明确选择的路线**：那两处的依据是 13 份综合分全部挤在 7.8–8.3（中位 8.2，参考片 8.4）、两个模型评同一份 Plan 总分只差 0.06 而单维差 ±1.0。候选阶段没有自己的数据，所以先落地再用真实回放判断；要量的清单见 `docs/候选评审判定修正-落地方案-2026-09-12.md`，攒够 10–20 个批次前**不要凭感觉调权重**。
+
+**C–F**：`dominantDefect` 定死枚举（type = 十一个维度 id ∪ brief_overconstraint / template_convergence / none，severity = BLOCKER/MAJOR/MINOR/NONE，带 `none` 出口，不逼模型硬找毛病）；顶层 `batchTemplateConvergence` 检查整批是不是共用同一套深层机制（**集合属性**，逐个看每个都能声称原创，横着看才发现是同一个故事换四套布景；与生成阶段 `validateVariantStructuralDivergence` 的字面签名比对是两件事）；`briefAlignment` 单独输出**不进质量分**（算进去评审就会学成「谁最像简报谁分高」），冲突判 C 类时在 `suggestBriefChange` 里**建议改简报**而不是逼候选改回模板；`top3RevisionSuggestions` 遵循 REPLACE BEFORE ADD，**除 `remove` 外四种 kind 都必须写 `whyOnlyHere`**（模板化不只发生在新增：「把结尾替换成摸摸头」是 replace，照样是模板）。
+
+**G. 输入新增三份，按允许清单投影**：`creatorProfile`（硬事实）、`creativeBrief`（四项，**可以质疑的创作假设**）、`referenceAnalysis`（只送 retentionDrivers 与 dialogueStyle）。**简报不是原片事实**——机制清单与骨架对照的基准仍然只有 `sourceScriptReconstruction`。候选投影补送 `keyChoice` / `climax` / `emotionalPayoff`：它们由服务端从 `storyOutline` 按拍号确定性派生，保证与动作链逐字一致，**但拍号是模型选的，「这一拍真的是关键选择」仍要评审自己判断**。`creatorTasteProfile` 全项目零命中，本版不做（并进 `creatorProfile` 会作废全局角色边界）。
+
+**H. 输出体积**：4 候选 × 11 维 = 44 条证据，`storyCandidateReview` 因此在 `buildStageDefaults` 单独把 `maxCompletionTokens` 抬到 32768（与分镜终审单独放宽 timeout 同规格）；提示词给长度预算但**不做 schema maxLength**（超一字 fail closed 会白烧一次调用）；**截断走单独重试分支**（`MODEL_OUTPUT_TRUNCATED` 已由 coordinator 抛出，原来的 retryPrompt 只认校验诊断，截断时原样重发只会再写超）。预算仍是 2 次。
+
+**I. 首次真实回放当日补的三类漏判（2026-09-12，报告见 `docs/实验数据-2026-09-12/`）**：`ownership_or_authority`（`causalLogic` 另查一条世界规则——角色修改、拿走、赠送、销毁或长期占有一件物品时有没有处置权或谁许可过；**至今没有被清晰正面案例检验过**）；`setting_assumption`（候选偷偷引入上游从没建立过的背景事实，**确定性封顶 MAJOR**，`CANDIDATE_REVIEW_DEFECT_SEVERITY_CAP`——它是候选自己加的设定，不是对已签发角色事实的违反，而 BLOCKER 在这里有机械后果；封顶是政策决定不是推导）；`physicalAssumptions`（物理机制**不许二选一**，三档 established/conditional/unlikely，后两档必须写出依赖条件与失败风险，`CANDIDATE_REVIEW_ASSUMPTION_INCOMPLETE`）。第三条**明确有效**——实测把「下雨天用胶带贴湿落叶防水」从「物理上可行」翻转为 unlikely 并顺带报出一处因果断裂。**代价**：同一个包第二次回放总分极差从 2.72 缩到 1.33、九维极差变小、首选从 pass 掉到 revise，且能看出具体路径（V2 的 productionFeasibility 9→7 恰对应它被判 conditional 的那条机制）；**但单次对单次分不清是改动效果还是回放噪声，要分开需同一契约下重复回放取分布，不要因此回头调权重或删掉物理审视**。
+
+**J. 跨包回放命中了 `batchTemplateConvergence` 的一个带标准答案的已知正例（2026-09-12）**：「身体拟物」那一批（泥坑企鹅滑行／人形晾衣杆／飞机翅膀／螺旋桨），外部评审当时写出过期望输出「角色通过把身体想象成工具或交通工具来解决日常问题，V1–V4」，本阶段独立写出同一条机制、四个候选全中，并多找到一条对方没提的（四个都用同一个拟声词）。**目前最强的一次验证。** 同一次里四个全 `drop`，`recommendedWinner` 派生为空——「全批淘汰」分支第一次在 live 走到。**但同一次也暴露两个不得当成已解决的问题**：①简报判断方向在两个包之间**完全相反**（一个说放宽「外部奖励转赠长辈」，另一个说强制保留），后者还与它自己抓到的收敛结论有张力——**`briefAlignment` / `briefProblemsDetected` 目前不稳，不得当成改简报的依据**；②`recommendedOrder` 与派生总分**不一致**（推荐先做 6.83 分的 V1，而 V4 是 6.89），说明加权分与模型整体排名不是同一件事，**本版刻意不为此加闸门**，但要进统计。
+
+**K. 抖动测量（2026-09-12，两个包各 3 次，同契约同输入，约 ¥4.6，数据在 `docs/实验数据-2026-09-12/抖动回放/`）**：①**「分数收窄是改动造成的」不成立，已撤回**——同契约三次的批内极差本身在 1.33/2.06/1.72 浮动，旧契约那次 2.72 落在噪声内，不要为此调权重或删物理审视；②**加权分能可靠分出最好与最差，分不出中间次序**——有真实差异的包里最佳候选 3/3 排第一、sd 仅 0.09，中间两个 sd 0.45–0.46 且排序三次三样，**`recommendedOrder` 的第一名可用、中段不可用**；③**`briefAlignment` 明确不可用**——同一输入同一候选三次给出互相矛盾的合规判定（PASS/WARN 直接对调过），只能当线索给人看。同一轮里**重试路径第一次在 live 触发并成功**（`briefProblemsDetected[0]` 被写成对象 → schema 拦下 → 带诊断重做通过），根因是输出模板给的是空数组、没有元素示例，与 §2.14 `shotEvaluations[].issues` 同型，已补非空示例并加测试锁住。
+
+**L. 抖动数据到手后的三处定型（2026-09-12）**：①**两个「谁更好」的系统拆开命名，都不删也不强制对齐**——`recommendedOrder` 改名 `holisticPreferenceOrder`（模型的整体判断，仍走排列校验），另加服务端派生的 `scoreOrder`（加权分从高到低，同分按原顺序），**winner / runnerUp / rejectOrRegenerate 改从 `scoreOrder` 派生**；依据是加权分能可靠分出最好与最差（最佳 3/3 排第一、sd 0.09）而分不出中段（sd 0.45–0.46），winner 只取第一名正好落在可靠段。两份不一致**是有价值的观察不是错误**，提示词明说不必一致、不得为此回头改分数，页面在不一致时点出来；**不必去修中段不稳**——水平接近的创意本来就有审美随机性。②**`briefAlignment` 正式降级为编辑参考信息并完全隔离**：继续输出，但不参与分数/tier/verdict、不自动改简报、不作为定向修订的强制任务，有测试锁住「改它不改变任何派生结果」。③**`physicalAssumptions` 新增 `literalDependency`（required / optional / make_believe）**，与 `confidence` 是两个正交轴（前者问「故事需不需要它真成立」，后者问「现实里成不成立」）；**扣分只针对 `required` 且 confidence 不好的**，`make_believe` 不得因现实做不到而扣 `productionFeasibility` / `causalLogic`，只提醒镜头别拍成实的。起因是《罐装阳光》被判 conditional 后 productionFeasibility 9→7，说明模型把「不是现实物理」当成了质量问题，会误杀童真想象。**③ 没有新增闸门**——是否照此扣分需要语义判断。
+
+**已知缺口**：分数准不准、收敛判得对不对、简报冲突成不成立、`whyOnlyHere` 答得成不成立全是语义判断，**没有兜底**；十一维评分本身是最大的未验证假设；拆成「盲评 + 简报对齐」两次调用是明确不做的后续选项；修订路径按严格 schema 校验传入报告，**旧形状报告会被 400 拒掉**（重新体检即可）。
+
+**不打总分**（§剧情体检已实测总分没有分辨力；**候选对照评审自 2026-09-12 起是明确的例外，理由与代价见上面 ⑩B**）。`verdict` 的 `drop` **只是报告里的一句话**：不删候选、不重新生成、不触发任何 stale，分布校验（`STORY_CANDIDATE_NARRATIVE_MODE_MIX`）不受影响，淘汰与否由用户决定。评审默认沿用 `variants` 阶段的 provider，也就是写这些候选的那个模型，**自己批自己会偏松是已知偏差**，如实记录、不靠静默换家掩盖；它是纯文本阶段，可按阶段 override 换任意一家。
 
 ---
 
@@ -646,11 +935,20 @@ Full Story 输出必须满足：
 - 画外声音不带主体：「屋外传来喊白子回家的声音」「屋外传来一个苍老女声的呼喊」。
 - 道具上的名字只写可见特征：「贴着手写标签的快递盒」。
 - 地点的归属称呼也不得进入 `location`：不写「李奶奶家门口」或「奶奶家的客厅」，只写通用空间名称「门口」或「客厅」；归属关系确有剧情意义时放进 `beatSheet`、`characterBible` 或 `shootingNotes`。
+- **用来说明道具来历或经手人的名字同样要去掉（2026-09-12）**：不写「奶奶刚叠好的被子」，写「刚叠好的蓬松被子」。它与上面「道具上的名字」是两个形状——名字并不写在道具上，而是在交代这件东西是谁弄的——但扫描是裸子串匹配，两者没有区别。可见特征（刚叠好、蓬松、晒过的暖意）全部保留，经手人写进 `shootingNotes` 或让 `dialogue[].line` 自己说。
 - **屏幕上出现的文字里的角色名同样要去掉（2026-09-06）**：片尾卡、字幕、招牌、门牌、快递单都算。不写「黑屏浮现白色文字『继续加油~ 小白子！』」，写「黑屏浮现一行白色发光文字」；卡面原话按上一条的既有路由写进 `shootingNotes`。**两个可见事实字段都适用**——把引文从 `visibleAction` 挪到 `shotAndSound` 不会通过，实测模型连续两次就是这样撞上同一条规则（2026-09-06 22:21 命中 `visibleAction`，22:26 挪走后命中 `shotAndSound`，其间它已把 `visibleAction` 改干净，说明它读懂了规则、只是没有第三个地方可去）。
 
 **去掉的只有名字，不是可见细节**——「一个快递盒」不合格，标签是视频模型该渲染的东西。名字在 `location`、`dialogue[].line`、`beatSheet`、`characterBible`、`shootingNotes` 里都可以自由出现；扫描只覆盖 `visibleAction` 与 `shotAndSound` 两个字段，`shotAndSound` 甚至不进 Animation 阶段的场次投影，因此这条规则实际不造成信息损失。
 
 **归属称呼放进 `location` 之后，不要再抄进 `visibleAction`。** 这是这条规则实测最常见的失败写法：`location` 写「奶奶家的客厅」，`visibleAction` 跟着写「小白子和芙芙猫在奶奶的客厅里玩」，而奶奶正在卧室睡觉、根本没出镜——抄过去就等于声称她在画面里，硬失败。正确写法是 `visibleAction` 只写「在客厅地毯上玩毛线球」。
+
+**候选正文的措辞不属于必须逐字承接的内容，字句服从可见事实字段规则（2026-09-12）。** `fullStoryPrompt` 原先同时写着「Variant 已选用的人物、任务细节、道具、媒介、结尾方式和对白方向必须忠实承接」和「可见事实字段不得出现不在画面里的角色名」，而**对同一句话没有定义优先级**——候选的 `storyOutline[].action` 对角色名没有任何约束（校验器只在 fullStory 这一侧），所以候选完全可以合法地写出一句照抄就会硬失败的话。现在明确：承接的是候选写出的**剧情事实**，不是它的**字句**；冲突时以可见事实字段规则为准，按上面五条范式改写。**反方向同样禁止**：不得借「措辞可以改」删掉可见细节，也不得改变候选已经确定的动作、道具、地点或结果。
+
+依据是 2026-09-12 用一份真实导出包（候选 V2《罐装阳光与太阳味》，包内 `fullStories: []`、从未展开过）做的两次基线回放：候选拍 3 原文写「把罐子放在**奶奶**刚叠好的、带着阳光味道的被子上」，两次独立调用都把它原样抄进 `sceneScript[2].visibleAction`，**都在同一场同一个名字上硬失败**（`FULL_STORY_SCENE_VISUAL_CHARACTER_MISSING`，112 秒 / 108 秒，提示词 44,680 字符，输出 `finish=stop` 未截断——模型写完了一份完整的故事，只因为一个定语里的名字被整份丢弃）。而这一类失败**不会重试**：`createFullStory` 的 `shouldRetry` 只覆盖「没解析出对象」与 protagonist 姓名局部纠错，已解析但违反契约的候选一律 fail closed。
+
+规模已测量：`debug/full-story-model-outputs` 里 25 份有原文的 primary 尝试中，**9 次因契约失败，全部集中在角色登记这一对**（`FULL_STORY_SCENE_VISUAL_CHARACTER_MISSING` 6、`FULL_STORY_SCENE_CHARACTER_NOT_REGISTERED` 3）；该阶段整体 20/53 = 37.7% 失败，契约与传输大致各半。另外用今天的校验器回放当时**成功**的 17 条，有 4 条会被拒（全是 `NOT_REGISTERED`）——那是 08-31 规则变严的结果，不是回归；当时失败的 8 条今天 8/8 完整复现。**校验器逐字未改**，这次改的只是「提示词有没有自相矛盾」。`test/full-story-prompt-narrative-scope.test.js` 用源码断言锁住优先级声明与第五条范式，撤掉即失败。
+
+**修复后同一份固定输入回放两次，2/2 通过**（104.5 / 104.7 秒，提示词 45,201 字符，各 2 次 provider 调用 = 初轮 + Beat–Scene 复核），**两次都逐字写出范式给的「刚叠好的蓬松被子」**，可见特征保留、道具与动作未变，六场可见字段零违规；对照基线 0/2。**边界要说清楚：它只消除这一个失败形状。** 同一批数据里 `beatSheet[].retainedValueFromBrief` 两次都仍把原片奖励机制写进来（「善举获得外部认可」／「善举或探索获得正向反馈」），第二次回放的 S6 还从原片重构稿逐字抄了 **9 字**「奶奶露出欣慰的笑容」（第一次最长 4 字，所以那次的干净是抖动）。原片机制经 `reusableHighValueBeats[].beat` / `mustRetain` / `samePlotDriver` / `sameBeatValue` / `creativeDistancePolicy` 漏进展开阶段这条缝**仍然开着**——候选提示词刻意屏蔽这五个字段并配了「原片实例不是本片命令」整段，而 `fullStoryPrompt` 整份下发、正文 0 次提及；那是独立改动，本次未做。
 
 **参考片的片尾署名字幕卡是来源表达，不是必须复用的构件（2026-09-06）。** `fullStoryPrompt` 把**整份** `referenceAnalysis` 与 `sourceScriptReconstruction` `JSON.stringify` 进提示词，所以参考片《明天》的片尾卡（analysis 的 `observation`「黑屏显示文字「⋯⋯继续加油~ 咕嘎！」」、reconstruction 的 `dialogueGist`）会被模型逐字读到并照抄进本片，只换掉名字。它撞的正是同一段已有的「允许不等于必须使用」——因此本次修复是把那条抽象规则对这个具体形状写成可照抄的落笔指引，**不是新增禁令**：不要为本片补一张「黑屏白字 + 主角名」的收尾卡，用最后一场的画面收尾；`sceneScript` 凑不满 6 场时把某一拍展开成两场戏，**加一张文字卡不算一场戏**（选中候选只有 5 拍正是本次的助因）。
 
