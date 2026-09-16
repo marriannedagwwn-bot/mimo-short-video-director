@@ -8,6 +8,7 @@ import {
 } from "./validation.js";
 import { deriveDirectShotSkeleton } from "./direct-shot-timeline.js";
 import { resolveVideoPromptProfile } from "../public/video-prompt-profiles.js";
+import { FULL_STORY_SCHEMA_VERSION, NARRATIVE_FULL_STORY_FIELDS } from "./full-story-contract.js";
 // 维度清单只有一份：mock 少写一个维度就会被 CANDIDATE_REVIEW_DIMENSION_MISSING 拦下，
 // 这正是我们要的——demo 与 live 走同一条校验链。
 import { CANDIDATE_REVIEW_DIMENSION_WEIGHTS } from "../public/story-review-metrics.js";
@@ -462,6 +463,25 @@ export function mockFullStory(input) {
 
 // 两个 mock 分支必须看到同一份场次列表：direct_shot 的镜头骨架由它派生，
 // 一旦两边各算一次就会出现 mock 通过而 live 失败的偏差。
+// The demo keeps canned story content; it is not narrative-quality evidence.
+// Only the mock producer uses this projection. Live output and imported
+// artifacts are never stripped or upgraded to make validation pass.
+export function mockNarrativeFullStory(input = {}) {
+  const legacy = mockFullStory(input);
+  const story = Object.fromEntries(NARRATIVE_FULL_STORY_FIELDS
+    .filter((field) => Object.hasOwn(legacy, field))
+    .map((field) => [field, structuredClone(legacy[field])]));
+  story.schemaVersion = FULL_STORY_SCHEMA_VERSION;
+  story.keyProps = legacy.keyProps.map(({ prop, storyFunction, visualUse }) => ({
+    prop, storyFunction, visualUse
+  }));
+  story.sceneScript.forEach((scene) => {
+    scene.shotAndSound = "保留当前场次的环境声音与动作声。";
+    scene.shootingNotes = "演示稿仅示范数据结构；具体剧情和制作效果需要真实生成与检查。";
+  });
+  return story;
+}
+
 function resolveMockSceneScript(fullStory = {}, fixedName = "固定主角", careRecipient = "被关爱对象") {
   if (Array.isArray(fullStory.sceneScript) && fullStory.sceneScript.length) return fullStory.sceneScript;
   return [

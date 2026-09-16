@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   mockAnalysis, mockReconstruction, mockBrief, mockVisualGuardrails,
-  mockVariants, mockFullStory, mockAnimationPlan
+  mockVariants, mockFullStory, mockNarrativeFullStory, mockAnimationPlan
 } from "../src/mock.js";
 import { lineageRef } from "../src/production-lineage.js";
 import { FULL_STORY_BEAT_SCENE_POSTPASS_SCHEMA_VERSION } from "../src/full-story-beat-scene-postpass.js";
@@ -68,7 +68,7 @@ function postpassResponse(prompt) {
   };
 }
 
-async function fixture(t) {
+async function fixture(t, { narrative = false } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-full-story-control-http-"));
   const analysis = mockAnalysis(input);
   const reconstruction = mockReconstruction(input);
@@ -112,6 +112,9 @@ async function fixture(t) {
       if (review && calls.filter((item) => item.phase === "postpass").length === 1) {
         send({ choices: [{ delta: { reasoning_content: "正在核对节拍" }, finish_reason: null }] });
         return; // Pause/terminate must close this actual HTTP response.
+      }
+      if (narrative && stage === "fullStory" && calls.filter((item) => item.stage === "fullStory").length === 1) {
+        return; // The versioned format has only the primary operation to pause.
       }
       call.finish();
     } catch (error) {
@@ -208,8 +211,8 @@ async function fixture(t) {
   await commit("shotVideo:V1:A01", "shotVideo", {
     result: { outputUrl: "/fixture/original-A01.mp4" }, selectedIndex: 0
   }, [lineageRef(plan.lineage)]);
-  outputs.fullStory = structuredClone(originalStory);
-  outputs.fullStory.shootingPlan[0].practicalNote = "使用窗边自然光完成这次拍摄。";
+  outputs.fullStory = narrative ? mockNarrativeFullStory(storyInput) : structuredClone(originalStory);
+  if (!narrative) outputs.fullStory.shootingPlan[0].practicalNote = "使用窗边自然光完成这次拍摄。";
   const createBody = {
     ...ids, kind: "fullStory",
     input: { variantId: "V1", creatorProfile: input.creatorProfile, candidateBinding: lineageRef(candidate.lineage), modelOverrides: input.modelOverrides }
@@ -221,6 +224,10 @@ async function fixture(t) {
     getTask: () => getTask(task.taskId),
     getTasks: async () => (await json(`/api/tasks?${taskQuery}`)).tasks,
     recreate: () => json("/api/tasks/create", createBody, 202),
+    async atPrimary() {
+      await until(() => calls, (value) => value.some((call) => call.stage === "fullStory"), "Full Story provider not reached");
+      return calls.find((call) => call.stage === "fullStory");
+    },
     async atPostpass() {
       await until(() => calls, (value) => value.some((call) => call.phase === "postpass"), "Full Story postpass provider not reached");
       return calls.find((call) => call.phase === "postpass");
@@ -264,6 +271,40 @@ test("Full Story HTTP pause closes postpass, survives reattach and resumes the s
     assert.equal(after.latestArtifacts[id].lineage.status, "stale");
     assert.deepEqual(after.latestArtifacts[id].content, before.latestArtifacts[id].content);
   }
+});
+
+test("Versioned Full Story HTTP pause resumes the same frozen task, commits once and invalidates old downstream media", { timeout: 25000 }, async (t) => {
+  const f = await fixture(t, { narrative: true });
+  const held = await f.atPrimary();
+  const before = await f.loadRun();
+  await f.control("pause");
+  const paused = await until(f.getTask, (task) => task.progress?.controlState === "paused", "narrative operation never paused");
+  await until(() => held.closed, Boolean, "primary connection stayed open");
+  assert.equal(paused.taskId, f.task.taskId);
+  assert.equal(paused.usage.unreportedCalls, 1);
+  assert.equal((await f.recreate()).task.taskId, f.task.taskId);
+  assert.deepEqual((await f.loadRun()).latestArtifacts, before.latestArtifacts);
+  await f.control("resume");
+  const completed = await until(f.getTask, (task) => task.status === "completed", "versioned operation did not complete");
+  assert.equal(completed.taskId, f.task.taskId);
+  assert.equal(completed.usage.totalTokens, 15);
+  assert.equal(completed.usage.unreportedCalls, 1);
+  assert.equal(completed.usage.usageComplete, false);
+  assert.deepEqual(f.calls.filter((call) => call.stage === "fullStory").map((call) => call.phase), ["main", "main"]);
+  held.finish();
+  const after = await f.loadRun();
+  const story = after.latestArtifacts["fullStory:V1"];
+  assert.equal(story.content.schemaVersion, "full_story/1.1");
+  assert.equal(Object.hasOwn(story.content, "beatSheet"), false);
+  assert.equal(story.lineage.status, "current");
+  for (const id of [...upstreamIds, "variant:V1"]) assert.deepEqual(after.latestArtifacts[id], before.latestArtifacts[id]);
+  for (const id of downstreamIds.slice(1)) {
+    assert.equal(after.latestArtifacts[id].lineage.status, "stale");
+    assert.deepEqual(after.latestArtifacts[id].content, before.latestArtifacts[id].content);
+  }
+  const settled = await f.control("terminate");
+  assert.equal(settled.task.status, "completed");
+  assert.deepEqual((await f.loadRun()).latestArtifacts, after.latestArtifacts);
 });
 
 test("Full Story HTTP terminate aborts postpass and retains old current Story, Plan and media after a late provider response", { timeout: 20000 }, async (t) => {

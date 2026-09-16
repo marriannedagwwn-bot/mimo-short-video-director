@@ -39,13 +39,13 @@ test("两阶段都明确区分角色与普通物件，且不以是否会说话�
   const storyPrompt = fullStoryPrompt(input);
   for (const prompt of [candidatePrompt, storyPrompt]) {
     assert.match(prompt, /人物、动物/u);
-    assert.match(prompt, /已明确具有自主行为与互动的拟人角色/u);
+    assert.match(prompt, /(?:已明确具有自主行为与互动的|已明确设定的)拟人角色/u);
     assert.match(prompt, /普通植物、物件/u);
   }
   assert.match(storyPrompt, /不要求角色必须会说话或是行动发起者/u);
-  assert.match(storyPrompt, /若旧候选把普通植物或物件称为 careRecipient，仍按正文实际行为保留为道具/u);
-  assert.match(storyPrompt, /保留其全部剧情动作与可见细节，写入 keyProps 和 visibleAction/u);
-  assert.match(storyPrompt, /不得为通过校验添加五官、对白或自主行为/u);
+  assert.match(storyPrompt, /普通植物、物件即使被浇水、保护、搬运、修补或承载情感，也不因此成为角色/u);
+  assert.match(storyPrompt, /保留全部动作与用途，写入 keyProps 和 visibleAction/u);
+  assert.match(storyPrompt, /不得为满足角色登记添加拟人行为，也不得删去照料动作/u);
 });
 
 test("候选省略 careRecipient 时，本次提示词不再提供这个键的填写模板", () => {

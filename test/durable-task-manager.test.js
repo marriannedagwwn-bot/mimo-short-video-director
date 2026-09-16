@@ -1331,7 +1331,7 @@ test("director pause closes the attempt, retains claims and completed stages, an
     assert.equal(paused.usage.unreportedCalls, 1);
     await control("resume");
     const result = await manager.waitForTask({ ...run, taskId: created.task.taskId });
-    assert.equal(result.task.status, "completed");
+    assert.equal(result.task.status, "completed", JSON.stringify(result.task.error));
     assert.deepEqual(Object.values(attempts), [1, 3, 1]);
     assert.equal(result.task.usage.calls, 5);
     assert.equal(result.task.usage.reportedCalls, 4);
@@ -1342,7 +1342,9 @@ test("director pause closes the attempt, retains claims and completed stages, an
     const children = (await taskStore.listTasks(run)).filter((task) => task.parentTaskId);
     assert.equal(new Set(children.map((task) => task.requestId)).size, 5);
     assert.equal(children.filter((task) => task.status === "interrupted").length, 2);
-  }, { localStallMs: 50 });
+  // Paused watchdog removal is asserted above; disk I/O under the full suite
+  // must not be mistaken for a stalled active operation.
+  }, { localStallMs: 1000 });
 });
 
 test("director termination aborts current request, records unknown usage, releases all claims and preserves committed content", async () => {

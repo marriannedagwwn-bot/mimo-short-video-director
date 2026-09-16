@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "internal://narrative-full-story-strict",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "selectedVariantId",
+    "title",
+    "oneLinePremise",
+    "targetDurationSeconds",
+    "shootingSynopsis",
+    "characterBible",
+    "sceneScript",
+    "keyProps",
+    "dialogueStyleGuide",
+    "uncertainties"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "full_story/1.1"
+    },
+    "selectedVariantId": {
+      "$ref": "internal://legacy-full-story-strict#/properties/selectedVariantId"
+    },
+    "title": {
+      "$ref": "internal://legacy-full-story-strict#/properties/title"
+    },
+    "oneLinePremise": {
+      "$ref": "internal://legacy-full-story-strict#/properties/oneLinePremise"
+    },
+    "targetDurationSeconds": {
+      "$ref": "internal://legacy-full-story-strict#/properties/targetDurationSeconds"
+    },
+    "shootingSynopsis": {
+      "$ref": "internal://legacy-full-story-strict#/properties/shootingSynopsis"
+    },
+    "characterBible": {
+      "$ref": "internal://legacy-full-story-strict#/properties/characterBible"
+    },
+    "sceneScript": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sceneId",
+          "timeRange",
+          "location",
+          "characters",
+          "visibleAction",
+          "dialogue",
+          "shotAndSound",
+          "emotionNode",
+          "dramaticFunction",
+          "shootingNotes"
+        ],
+        "properties": {
+          "sceneId": {
+            "$ref": "internal://legacy-full-story-strict#/properties/sceneScript/items/properties/sceneId"
+          },
+          "timeRange": {
+            "$ref": "internal://legacy-full-story-strict#/properties/sceneScript/items/properties/timeRange"
+          },
+          "location": {
+            "$ref": "internal://legacy-full-story-strict#/properties/sceneScript/items/properties/location"
+          },
+          "characters": {
+            "$ref": "internal://legacy-full-story-strict#/properties/sceneScript/items/properties/characters"
+          },
+          "offscreenSoundSources": {
+            "$ref": "internal://legacy-full-story-strict#/properties/sceneScript/items/properties/offscreenSoundSources"
+          },
+          "visibleAction": {
+            "$ref": "internal://legacy-full-story-strict#/properties/sceneScript/items/properties/visibleAction"
+          },
+          "dialogue": {
+            "$ref": "internal://legacy-full-story-strict#/properties/sceneScript/items/properties/dialogue"
+          },
+          "shotAndSound": {
+            "$ref": "internal://legacy-full-story-strict#/properties/sceneScript/items/properties/shotAndSound"
+          },
+          "emotionNode": {
+            "$ref": "internal://legacy-full-story-strict#/properties/sceneScript/items/properties/emotionNode"
+          },
+          "dramaticFunction": {
+            "$ref": "internal://legacy-full-story-strict#/properties/sceneScript/items/properties/dramaticFunction"
+          },
+          "shootingNotes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "keyProps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "prop",
+          "storyFunction",
+          "visualUse"
+        ],
+        "properties": {
+          "prop": {
+            "$ref": "internal://legacy-full-story-strict#/$defs/nonEmptyString"
+          },
+          "storyFunction": {
+            "$ref": "internal://legacy-full-story-strict#/$defs/nonEmptyString"
+          },
+          "visualUse": {
+            "$ref": "internal://legacy-full-story-strict#/$defs/nonEmptyString"
+          }
+        }
+      }
+    },
+    "dialogueStyleGuide": {
+      "$ref": "internal://legacy-full-story-strict#/properties/dialogueStyleGuide"
+    },
+    "uncertainties": {
+      "$ref": "internal://legacy-full-story-strict#/properties/uncertainties"
+    }
+  }
+}

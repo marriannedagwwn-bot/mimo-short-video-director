@@ -1,6 +1,7 @@
 import { syncShotCharacterReference } from "./character-reference-sync.js";
 import { formatStageUsageSuffix, mergeStageUsage } from "./token-usage-format.js";
 import { storyPackageFilename } from "./export-filename.js";
+import { isNarrativeFullStory } from "./full-story-format.js";
 import { downloadProductionPackage } from "./production-package-download.js";
 import {
   CANDIDATE_REVIEW_CONFIDENCE_LABELS,
@@ -2625,6 +2626,7 @@ async function generateFullStory({ force = false } = {}) {
 }
 
 function renderFullStory(data) {
+  const narrativeStory = isNarrativeFullStory(data);
   // 形状提示只统计结构化字段（地点+出镜角色、说话者分布），不做语义判断，
   // 也不阻断任何操作——目的是让画面单调和台词集中在生成视频之前就被看见。
   const shapeWarnings = fullStoryShapeWarnings(data);
@@ -2638,28 +2640,28 @@ function renderFullStory(data) {
     ${shapeStrip}
     <div class="data-grid">
       ${cell("主角锁定", data.characterBible?.protagonist?.identity || data.characterBible?.protagonist?.name)}
-      ${cell("被关爱对象", joinParts(data.characterBible?.careRecipient, ["identity", "implicitNeed"]))}
+      ${data.characterBible?.careRecipient ? cell("被关爱对象", joinParts(data.characterBible.careRecipient, ["identity", "implicitNeed"])) : ""}
       ${cell("对白规则", data.dialogueStyleGuide?.protagonistSpeechRule || data.characterBible?.protagonist?.speechRules)}
     </div>
     ${block("剧情梗概", `<p class="long-copy">${escape(data.shootingSynopsis)}</p>`)}
-    ${block("剧情节拍", `<div class="beat-list">${(data.beatSheet || []).map((beat) => `<div class="beat"><strong>${escape(beat.timeRange)} · ${escape(beat.emotion)}</strong><p>${escape(beat.storyAction)}<br><b>功能：</b>${escape(beat.dramaticFunction)}<br><b>保留价值：</b>${escape(beat.retainedValueFromBrief)}</p></div>`).join("")}</div>`)}
+    ${narrativeStory ? "" : block("剧情节拍", `<div class="beat-list">${(data.beatSheet || []).map((beat) => `<div class="beat"><strong>${escape(beat.timeRange)} · ${escape(beat.emotion)}</strong><p>${escape(beat.storyAction)}<br><b>功能：</b>${escape(beat.dramaticFunction)}<br><b>保留价值：</b>${escape(beat.retainedValueFromBrief)}</p></div>`).join("")}</div>`)}
     ${block("可拍分场剧本", `<div class="timeline">${(data.sceneScript || []).map((scene) => `<div class="scene">
       <span class="scene-id">${escape(scene.sceneId)}</span>
       <div class="scene-head"><strong>${escape(scene.location)}</strong><span>${escape(scene.timeRange)}</span></div>
       <p><b>人物：</b>${escape((scene.characters || []).join("、"))}</p>
       <p><b>动作：</b>${escape(scene.visibleAction)}</p>
       <p><b>对白：</b>${formatDialogue(scene.dialogue)}</p>
-      <p><b>镜头/声音：</b>${escape(scene.shotAndSound)}</p>
+      <p><b>${narrativeStory ? "声音" : "镜头/声音"}：</b>${escape(scene.shotAndSound)}</p>
       <div class="scene-meta"><span>${escape(scene.emotionNode)}</span><span>${escape(scene.dramaticFunction)}</span></div>
-      <p><b>拍摄备注：</b>${escape(scene.shootingNotes)}</p>
+      <p><b>${narrativeStory ? "剧情备注" : "拍摄备注"}：</b>${escape(scene.shootingNotes)}</p>
     </div>`).join("")}</div>`)}
-    ${block("关键道具", `<div class="rule-list">${(data.keyProps || []).map((item) => `<div class="rule"><strong>${escape(item.prop)}</strong><p>${escape(item.storyFunction)}<br>${escape(item.visualUse)}<br><b>避相似：</b>${escape(item.avoidSimilarityNote)}</p></div>`).join("")}</div>`)}
-    ${block("拍摄计划", `<div class="rule-list">${(data.shootingPlan || []).map((item) => `<div class="rule"><strong>${escape(item.unit)}</strong><p>${escape(item.setup)}<br><b>必拍：</b>${escape(item.mustCapture)}<br><b>执行：</b>${escape(item.practicalNote)}</p></div>`).join("")}</div>`)}
-    ${block("体验保真", `<div class="data-grid">
+    ${block("关键道具", `<div class="rule-list">${(data.keyProps || []).map((item) => `<div class="rule"><strong>${escape(item.prop)}</strong><p>${escape(item.storyFunction)}<br>${escape(item.visualUse)}${narrativeStory ? "" : `<br><b>避相似：</b>${escape(item.avoidSimilarityNote)}`}</p></div>`).join("")}</div>`)}
+    ${narrativeStory ? "" : block("拍摄计划", `<div class="rule-list">${(data.shootingPlan || []).map((item) => `<div class="rule"><strong>${escape(item.unit)}</strong><p>${escape(item.setup)}<br><b>必拍：</b>${escape(item.mustCapture)}<br><b>执行：</b>${escape(item.practicalNote)}</p></div>`).join("")}</div>`)}
+    ${narrativeStory ? "" : block("体验保真", `<div class="data-grid">
       ${cell("定位", data.experienceFidelity?.positioning)}${cell("受众", data.experienceFidelity?.audience)}${cell("情绪", data.experienceFidelity?.emotion)}
       ${cell("驱动力", data.experienceFidelity?.plotDriver)}${cell("高价值桥段", data.experienceFidelity?.highValueBeats)}${cell("改写证明", data.transformationProof?.changedVisualExpression)}
     </div>`)}
-    <div class="warning-box"><b>连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
+    ${narrativeStory ? "" : `<div class="warning-box"><b>连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>`}
     ${uncertainties(data.uncertainties)}
     <div class="story-review">
       <button type="button" class="outline-button" data-story-review>检查剧情硬伤</button>

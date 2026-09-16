@@ -116,6 +116,6 @@ test("带身份后缀的标准名只报名称不精确，不重复报未登记",
 // 实测有一版直接失败在「芙芙猫出镜 6 场未登记」，补上这条后同一份通过。
 test("跨场登记规则必须写进提示词，不能只在校验器里", () => {
   const text = fullStoryPrompt({ variant: {}, creativeBrief: {}, creatorProfile: {} });
-  assert.match(text, /在两场或更多场次里出镜的角色，必须登记进 characterBible/u);
-  assert.match(text, /只出镜一场的临时配角（路过的邻居、放学的孩子们）不需要登记/u);
+  assert.match(text, /在两场或更多场次里出镜的角色必须登记进 characterBible/u);
+  assert.match(text, /只出镜一场的临时角色不需要硬凑 helpingAction/u);
 });

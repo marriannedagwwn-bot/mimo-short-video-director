@@ -4556,8 +4556,10 @@ test("Variants、Full Story 与旧 v2 Animation Prompt 都不机械注入来源�
   const storyPrompt = fullStoryPrompt({ creativeBrief, visualGuardrails, referenceAnalysis: {}, sourceScriptReconstruction: {}, variant, creatorProfile });
   const animationPrompt = animationPlanPrompt({ creativeBrief, visualGuardrails, variant, fullStory, creatorProfile });
 
+  assert.match(variantPrompt, /positivePromptBoundary/);
+  assert.match(storyPrompt, /requiredTraits/);
+  assert.match(storyPrompt, /forbiddenTraits/);
   for (const prompt of [variantPrompt, storyPrompt]) {
-    assert.match(prompt, /positivePromptBoundary/);
     assert.doesNotMatch(prompt, /"sourceSimilarityRules"\s*:/u);
     assert.doesNotMatch(prompt, /彩虹披风/u);
   }
@@ -4742,15 +4744,11 @@ test("完整剧情提示词要求围绕选中变体并锁定固定角色", () =>
     creatorProfile: { fixedCharacter: "小白子，小女孩，儿童", vertical: "治愈日常", constraints: "只用嗷呜表达" }
   });
   assert.match(prompt, /mimo-v2\.5-pro/);
-  assert.match(prompt, /selectedVariantId 必须等于选中主题变体 id：V2/);
-  assert.match(prompt, /不能改名/);
-  assert.match(prompt, /不得再次解析 fixedCharacter 或重新推断角色特征/);
-  assert.match(prompt, /原片表面表达参考（不是正向内容禁词）/u);
-  assert.match(prompt, /它们不再作为 Full Story 的内容禁词/u);
-  assert.match(prompt, /不得因为来源上下文列出了这些表达，就机械把它们补进/u);
-  assert.match(prompt, /录取通知书/);
-  assert.match(prompt, /孔明灯/);
-  assert.match(prompt, /sceneScript 至少 6 场/);
+  assert.match(prompt, /selectedVariantId 必须等于选中的候选 id：V2/);
+  assert.match(prompt, /固定角色的姓名、身份、性格和外观只沿用已签发的全局角色边界/u);
+  assert.match(prompt, /不再次解析、猜测或扩展身份/u);
+  assert.doesNotMatch(prompt, /录取通知书|孔明灯/u);
+  assert.match(prompt, /至少一场，不设六场或其它固定下限/u);
   assert.match(prompt, /location、characters 和 visibleAction 都必须完整填写/u);
   assert.match(prompt, /speaker 必须逐字存在于同场 characters/u);
   assert.match(prompt, /不支持 offscreen、voiceOver、narrator 或 isVisible/u);

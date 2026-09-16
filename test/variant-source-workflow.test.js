@@ -145,12 +145,12 @@ test("legacy callers keep one call and the original prompt; demo uses no provide
   assert.equal(calls, 1);
 });
 
-test("Full Story treats source as original-film comparison, not new-film requirements", () => {
+test("Full Story excludes source comparisons and retains selected story facts", () => {
   const workflow = new WorkflowService();
   const input = fixture(workflow);
   const variant = mockVariants(input).variants[0];
   const prompt = fullStoryPrompt({ ...input, variant });
-  assert.match(prompt, /transformationProof\.\*\.source 仅为原片对照/u);
-  assert.match(prompt, /正文 storyOutline 是候选剧情事实的权威/u);
-  assert.match(prompt, /原片记录为空也不要求删除本片已选用的内容/u);
+  assert.match(prompt, /来源证明、自评分与原片具体场次不作为本片剧情依据/u);
+  assert.match(prompt, /当前候选 storyOutline\[\]\.action 是已选剧情的权威/u);
+  assert.match(prompt, /必须保留原动作、参与者、物件用途、关键办法和结果承诺/u);
 });

@@ -89,15 +89,27 @@ FULL_STORY_MODEL_OUTPUT_LOG_DIR=debug/full-story-model-outputs
 ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR=debug/animation-plan-model-outputs
 ```
 
+## Full Story 单一正文格式（2026-09-14）
+
+当前生成默认要求 `schemaVersion: "full_story/1.1"`。只读输入投影保留已选 Candidate 的故事事实、已验签固定角色的全部 required/allowed/forbidden traits（含 scope）和对白规则；不再把原片具体场次、Brief 的改编要求、候选来源证明、自评与候选台词草案 `keyDialogueDirections` 注入展开。对白按动作、人物已知信息和用户明确语言限制生成，候选原文不变。 对白规则投影只保留证据全部来自用户固定角色或创作限制的规则，隔离原片风格、混合或未知来源；合法用户原话保持原样。两候选配对实测仍出现点题和未获知先评价的问题，来源隔离本身不代表质量已达标，详见 [对白规则来源 A/B](docs/full-story-dialogue-rules-ab-2026-09-14.md)。服务端仍冻结、验签并复核完整上游 Artifact；投影不创建新 Artifact，也不改写 Candidate 或边界摘要。
+
+《蚂蚁搬家式运书》的后续实验中，两版 FullStory Prompt 调整未通过内容验收并已撤回；该样本最终通过现有候选修订机制明确分量、拿放和往返后真实展开，再人工校订两处表述。当前样本修复不能等同于全自动生成质量已合格，完整证据见 [蚂蚁搬家式运书修复与 A/B](docs/full-story-ant-books-ab-2026-09-14.md)。
+
+新版由 `sceneScript` 独占完整剧情动作，删除第二份 `beatSheet`、`retentionPlan`、改编证明、体验保真、自检和拍摄计划。场数跟随已选动作链，至少一场；保留出镜角色、可见事实与对白的严格 Scene Contract。`shootingNotes` 仍是必填字符串，但没有叙事补充时允许为空；`shotAndSound` 与 `shootingNotes` 的生成职责限于声音和剧情补充，摄影由 Animation Plan 决定。新版提交前复用既有时间线派生函数确认下游可消费，时长目标仍只是 Prompt 目标，实际时长按 `timeRange` 派生。
+
+无版本的旧数据继续走原严格 Schema、六场/六拍规则和 Beat–Scene postpass，不自动补版本、删字段或重算已签发摘要。新版没有第二份节拍表，因此正常生成只有一次 provider call；跳过 postpass 不代表通过叙事质量审查。原有解析重试、唯一姓名局部纠错、候选绑定、任务暂停/继续/终止与迟到回写保护保留。页面按明确版本展示，新版不显示已删除的模板或“连续性检查通过”。
+
+固定输入 A/B、失败记录、兼容验证与剩余质量问题见 [Full Story 改造与验收记录](docs/full-story-narrative-ab-2026-09-14.md)。此版本是一次已实施的迭代，不代表不同题材或成片质量已全面合格。
+
 ## Full Story 局部纠错
 
-Legacy Full Story 当前只对一种可证明的内容错误启用唯一一次局部纠错：首次输出已是完整 JSON，结构化诊断精确指向 `/characterBible/protagonist/name` 的缺失、类型或空字符串错误，并且当前验签 `fixedCharacterBoundary.characterName` 提供唯一正确值。第二次请求只发送 protagonist 子树、诊断、签发姓名与最小角色/Variant 约束；不会再发送整份失败 Story 或原始完整生成提示。服务端以当前进程内的私有签发身份冻结原候选摘要、权威摘要、目标和修复编号；模型返回的 plan 副本或自造 path 无效。合并时重新投影当前权威，要求 `name` 逐字等于签发值，并证明目标外以及目标内其他字段保持不变。
+Full Story 两种格式当前只对一种可证明的内容错误启用唯一一次局部纠错：首次输出已是完整 JSON，结构化诊断精确指向 `/characterBible/protagonist/name` 的缺失、类型或空字符串错误，并且当前验签 `fixedCharacterBoundary.characterName` 提供唯一正确值。第二次请求只发送 protagonist 子树、诊断、签发姓名与最小角色/Variant 约束；不会再发送整份失败 Story 或原始完整生成提示。服务端以当前进程内的私有签发身份冻结原候选摘要、权威摘要、目标和修复编号；模型返回的 plan 副本或自造 path 无效。合并时重新投影当前权威，要求 `name` 逐字等于签发值，并证明目标外以及目标内其他字段保持不变。
 
 合并结果仍须重新通过 exact JSON Schema、Scene Contract、固定角色、Variant 与既有语义边界。未知正文即使看似行为、外观或情绪，也没有服务端可验证的字段级目的地，因此当前一律不自动搬运。配角姓名/身份字段错误、`characters` 与可见动作/对白的冲突、没有签发值来源的必填剧情字段、截断、非法 JSON、无可信路径、整项内容丢失或其他不能安全局部化的错误不会被猜测修复，也不会静默发送整份 Story 重写；局部响应仍失败时终止，只有最终完整合法的 Story 才会保存。
 
-## Full Story Beat–Scene 提交前复核
+## 旧格式 Full Story Beat–Scene 提交前复核
 
-初轮 Full Story（包含实际发生的唯一允许 retry 或 protagonist 姓名局部纠错）通过全部既有校验后，服务端会在提交 Artifact 前独立请求一次同一文本 provider/model，对照只读的 `beatSheet` 与可拍的 `sceneScript` 查找会造成明显叙事断裂的遗漏。这次请求的业务内容只有完整、已合法的 Full Story JSON 和专用复核提示；不会再次上传 Theme Variant、Brief、Visual Guardrails、原片边界、分析或重构数据。
+以下只适用于无版本的旧 Full Story。初轮（包含实际发生的唯一允许 retry 或 protagonist 姓名局部纠错）通过全部既有校验后，服务端会在提交 Artifact 前独立请求一次同一文本 provider/model，对照只读的 `beatSheet` 与可拍的 `sceneScript` 查找会造成明显叙事断裂的遗漏。这次请求的业务内容只有完整、已合法的 Full Story JSON 和专用复核提示；不会再次上传 Theme Variant、Brief、Visual Guardrails、原片边界、分析或重构数据。
 
 复核只能保持 Story 不变，或把某个对应 `beatSheet[beatIndex].storyAction` 中连续、逐字相同的原文作为 `addition`，追加到已有 `sceneScript[].visibleAction` 末尾；模型不能自由生成 suffix、释义或拼接多个不连续片段。每条提议还必须返回 `beatEvidence`，`addition` 必须包含这段逐字证据；全部证据只能是该 `storyAction` 与目标/相关场次现有 `visibleAction` 的逐字 excerpt。无法从 `storyAction` 逐字投影所需内容时必须返回 `blocked`，不能另写一个“更顺”的动作。
 

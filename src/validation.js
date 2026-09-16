@@ -1,11 +1,13 @@
 import {
   validateLegacyFullStoryStrict,
+  validateNarrativeFullStoryStrict,
   validateStoryCandidateStrict,
   validateStoryCandidatesStrict,
   validateAnimationPlanReviewStrict,
   validateStoryCandidateReviewStrict,
   validateStoryQualityReviewStrict
 } from "./contracts/contract-validator.js";
+import { isNarrativeFullStory, NARRATIVE_FULL_STORY_FIELDS } from "./full-story-contract.js";
 import { GLOBAL_CHARACTER_BOUNDARY_VERSION } from "./character-boundary.js";
 import { assertVideoPromptProfile } from "../public/video-prompt-profiles.js";
 // 换皮线、维度权重与五档阈值只有一份，与提示词、浏览器摘要共用：
@@ -363,7 +365,9 @@ export function ensureOutputContract(value, contract) {
     }
   }
   if (contract === "fullStory") {
-    const schemaResult = validateLegacyFullStoryStrict(value);
+    const schemaResult = isNarrativeFullStory(value)
+      ? validateNarrativeFullStoryStrict(value)
+      : validateLegacyFullStoryStrict(value);
     if (!schemaResult.ok) {
       throw new OutputContractError(
         `fullStory 结构校验失败：${schemaResult.diagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
@@ -371,7 +375,10 @@ export function ensureOutputContract(value, contract) {
       );
     }
   }
-  const missing = (outputContracts[contract] || []).filter((key) => !(key in value));
+  const requiredFields = contract === "fullStory" && isNarrativeFullStory(value)
+    ? NARRATIVE_FULL_STORY_FIELDS
+    : (outputContracts[contract] || []);
+  const missing = requiredFields.filter((key) => !(key in value));
   if (missing.length) throw new OutputContractError(`${contract} 缺少必要字段：${missing.join("、")}`);
   const arrayFields = {
     referenceAnalysis: ["characters", "emotionCurve", "retentionDrivers", "observedFacts", "uncertainties"],
@@ -379,7 +386,9 @@ export function ensureOutputContract(value, contract) {
     creativeBrief: ["emotionStructure", "roleAndOccupationMapping", "reusableHighValueBeats", "controlledRewriteVariables", "protectedExpressions", "minimumTransformationRules", "allowedNarrativeComponents"],
     visualGuardrails: ["allowedPositiveTraits", "positivePromptBoundary", "sourceSimilarityRules", "dialogueRules", "uncertainties"],
     themeVariants: ["variants"],
-    fullStory: ["beatSheet", "sceneScript", "keyProps", "shootingPlan", "retentionPlan", "uncertainties"],
+    fullStory: isNarrativeFullStory(value)
+      ? ["sceneScript", "keyProps", "uncertainties"]
+      : ["beatSheet", "sceneScript", "keyProps", "shootingPlan", "retentionPlan", "uncertainties"],
     animationPlan: ["characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "generationChecklist", "modelAgnosticNotes", "uncertainties"],
     storyQualityReview: ["retentionChecks", "sceneFunctionChecks", "issues"],
     animationPlanReview: ["strengths", "dimensions", "shotEvaluations", "propTracking", "sceneCheck", "issues", "otherFindings", "upgradePath"],
@@ -402,8 +411,10 @@ export function ensureOutputContract(value, contract) {
     validateStoryCandidateSetStructure(value.variants);
   }
   if (contract === "fullStory") {
-    if (value.beatSheet.length < 6) throw new OutputContractError("fullStory 至少需要 6 个剧情节拍");
-    if (value.sceneScript.length < 6) throw new OutputContractError("fullStory 至少需要 6 个可拍摄分场");
+    if (!isNarrativeFullStory(value)) {
+      if (value.beatSheet.length < 6) throw new OutputContractError("fullStory 至少需要 6 个剧情节拍");
+      if (value.sceneScript.length < 6) throw new OutputContractError("fullStory 至少需要 6 个可拍摄分场");
+    }
     validateFullStorySceneContract(value);
   }
   if (contract === "animationPlan") {

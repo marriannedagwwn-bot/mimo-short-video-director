@@ -5,6 +5,10 @@ const fullStorySchema = JSON.parse(fs.readFileSync(
   new URL("./schemas/legacy-full-story-strict.schema.json", import.meta.url),
   "utf8"
 ));
+const narrativeFullStorySchema = JSON.parse(fs.readFileSync(
+  new URL("./schemas/narrative-full-story-strict.schema.json", import.meta.url),
+  "utf8"
+));
 const storyCandidatesSchema = JSON.parse(fs.readFileSync(
   new URL("./schemas/story-candidates-strict.schema.json", import.meta.url),
   "utf8"
@@ -27,6 +31,7 @@ const ajv = new Ajv2020({
   verbose: false
 });
 const validateFullStory = ajv.compile(fullStorySchema);
+const validateNarrativeFullStory = ajv.compile(narrativeFullStorySchema);
 const validateStoryCandidates = ajv.compile(storyCandidatesSchema);
 const validateStoryQualityReview = ajv.compile(storyQualityReviewSchema);
 const validateAnimationPlanReview = ajv.compile(animationPlanReviewSchema);
@@ -40,6 +45,13 @@ const validateStoryCandidate = ajv.compile({
 
 export function validateLegacyFullStoryStrict(value) {
   return validateStrictContract(validateFullStory, value, {
+    codePrefix: "FULL_STORY_SCHEMA",
+    label: "Full Story"
+  });
+}
+
+export function validateNarrativeFullStoryStrict(value) {
+  return validateStrictContract(validateNarrativeFullStory, value, {
     codePrefix: "FULL_STORY_SCHEMA",
     label: "Full Story"
   });

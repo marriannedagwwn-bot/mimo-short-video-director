@@ -29,48 +29,39 @@ function prompt(variant = leanVariant) {
   });
 }
 
-test("承接范围只认当前 Variant 实际写出的内容", () => {
+test("承接范围只认候选正文，投影和摘要不能另造动作", () => {
   const text = prompt();
-  assert.match(text, /承接范围只有一个来源：当前选中 Variant 实际写出的内容/u);
-  // 旧文案把七项 taxonomy 与 Variant 内容并列写成“都必须忠实承接”，
-  // 与 Creative Brief 阶段“不会把该构件变成每个新方案的必选项”直接冲突。
-  assert.doesNotMatch(
-    text,
-    /送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾，以及当前 Variant 已选用的人物、任务细节、道具和对白都必须忠实承接/u
-  );
+  assert.match(text, /当前候选 storyOutline\[\]\.action 是已选剧情的权威/u);
+  assert.match(text, /必须保留原动作、参与者、物件用途、关键办法和结果承诺/u);
+  assert.match(text, /不得只写在梗概或 dramaticFunction 里/u);
 });
 
-test("七项 taxonomy 被明确降级为原片分类，而不是本片必备构件", () => {
+test("缺失的可选构件不在 FullStory 补齐", () => {
   const text = prompt();
-  assert.match(text, /是 creativeBrief 用来记录“原片有没有某类通用构件”的分类，不是本片的必备构件，也不是承接清单/u);
-  assert.match(text, /Variant 没写 careRecipient 就不得新增一个被照料对象/u);
-  assert.match(text, /没写 helper 就不得新增一个提供帮助的外部角色/u);
-  assert.match(text, /没写 emotionalMedium 就不得为故事发明一件信物/u);
-  assert.match(text, /没写 endingRitual 就不得给它加一场仪式化收尾/u);
+  assert.match(text, /候选缺少的 careRecipient、helper、emotionalMedium、endingRitual 不得为了填表补回来/u);
+  assert.match(text, /不能用额外打招呼、帮忙或受夸奖挤掉原有互动/u);
+  assert.doesNotMatch(text, /送达任务、旅途结构.*必须忠实承接/u);
 });
 
-test("characterBible.careRecipient 被声明为可选键，且形状说明留在 JSON 结构之外", () => {
+test("未登记 careRecipient 时省略该键，helpers 允许为空", () => {
   const text = prompt();
-  assert.match(text, /characterBible\.careRecipient 是可选键/u);
+  assert.match(text, /本次 characterBible 只输出 protagonist 和 helpers/u);
   assert.match(text, /不存在时整个键省略，不要输出空对象或占位文本/u);
-  assert.match(text, /characterBible\.helpers 没有帮助者时输出空数组 \[\]/u);
-  // JSON 结构样例里不得出现 // 注释：模型会照抄，产出非法 JSON。
+  assert.match(text, /没有帮助者时 helpers 为 \[\]/u);
   assert.doesNotMatch(text, /^\s*\/\//mu);
 });
 
-test("对白质量约束禁止复述画面与播报内心", () => {
+test("对白允许交流，禁止复述画面与播报内心", () => {
   const text = prompt();
-  assert.match(text, /对白不得复述同场 visibleAction 里观众已经能直接看见的信息/u);
-  assert.match(text, /画面演完的事被念了第二遍/u);
-  assert.match(text, /人物性格、情绪、潜台词、关系变化、误会、选择/u);
-  assert.match(text, /宁可让一场戏没有对白，也不要用台词解说画面/u);
-  assert.match(text, /不得用旁白式台词直接播报人物内心/u);
-  assert.match(text, /forbiddenDialoguePatterns 必须至少列出“复述画面已有信息”“台词直接播报内心”“角色说出本片主题或感悟”三条/u);
+  assert.match(text, /可以提问、邀请、打趣、抗议、回应和安慰/u);
+  assert.match(text, /避免把同场看得见的动作逐句再念一遍/u);
+  assert.match(text, /不靠旁白直接播报内心/u);
+  assert.match(text, /约束必须在实际对白中遵守/u);
 });
 
 test("放开可选构件不影响固定角色锁定与既有场次契约", () => {
   const text = prompt();
-  assert.match(text, /主角必须锁定为上方固定角色/u);
+  assert.match(text, /固定角色的姓名、身份、性格和外观只沿用已签发的全局角色边界/u);
   assert.match(text, /characters 只写本场实际出镜的角色/u);
   assert.match(text, /但整片至少要有一个场次的 characters 非空/u);
   assert.match(text, /location 只写这一场实际发生的可拍摄物理地点/u);
@@ -85,7 +76,7 @@ test("候选写了这些构件时，承接要求照常生效", () => {
   });
   assert.match(text, /铃木奶奶/u);
   assert.match(text, /一张褪色便签/u);
-  assert.match(text, /Variant 已选用的人物、任务细节、道具、媒介、结尾方式和对白方向必须忠实承接/u);
+  assert.match(text, /必须保留原动作、参与者、物件用途、关键办法和结果承诺/u);
 });
 
 // targetDurationSeconds 由服务端从 sceneScript 时间轴派生。
@@ -94,20 +85,20 @@ test("候选写了这些构件时，承接要求照常生效", () => {
 // 而下游按时间轴派生出 10 个镜头的 106 秒成片，按镜头计费。
 test("Full Story 提示词写明时长由时间轴决定且会被服务端覆盖", () => {
   const text = prompt();
-  assert.match(text, /由 sceneScript 各场 timeRange 的跨度之和决定，不是由 targetDurationSeconds 这个数字决定/u);
+  assert.match(text, /总时长由 sceneScript 各场 timeRange 的跨度之和决定/u);
   assert.match(text, /合计必须落在 45-90 秒内/u);
-  assert.match(text, /服务端会按时间轴重新计算 targetDurationSeconds 并覆盖你写的值/u);
+  assert.match(text, /服务端会据此覆盖 targetDurationSeconds/u);
 });
 
-// 候选 storyOutline 放开为 5–7 拍后，5 拍候选进 Full Story 会被模型按 1:1 映射成
-// 5 个 beatSheet，撞上 beatSheet >= 6。实测同一个 5 拍候选六次尝试四次失败。
-// 根因是提示词从未提到 storyOutline，模型无从知道两者不是一一对应。
-test("提示词说明 storyOutline 是候选摘要，beatSheet 必须展开而不是照抄拍数", () => {
+// full_story/1.1：生成责任以当前选中候选为界，旧合同由兼容测试保留。
+test("场数服从动作链，取消强制六场与第二份 beatSheet", () => {
   const text = prompt();
-  assert.match(text, /storyOutline 是 5–7 拍的\*\*候选级摘要\*\*，不是本阶段的节拍表/u);
-  assert.match(text, /\*\*不要与 storyOutline 一一对应\*\*/u);
-  assert.match(text, /把 5 拍摘要原样抄成 5 个 beatSheet 是错的/u);
-  assert.match(text, /候选摘要只有 5 拍时，必须把它展开到至少 6 拍/u);
+  assert.match(text, /sceneScript 是唯一完整动作稿/u);
+  assert.match(text, /至少一场，不设六场或其它固定下限/u);
+  assert.match(text, /不要求与候选拍数或 estimatedSeconds 逐位一致/u);
+  assert.doesNotMatch(text, /必须把它展开到至少 6 拍/u);
+  const template = text.slice(text.indexOf('输出 fullStory，严格使用以下结构'));
+  assert.doesNotMatch(template, /"beatSheet"\s*:/u);
 });
 
 // 实测成片的三个对白缺陷，全部来自同一份 Full Story：
@@ -116,34 +107,24 @@ test("提示词说明 storyOutline 是候选摘要，beatSheet 必须展开而�
 //   2. S6 用「下次流星雨，我们还一起来」把主题念给观众
 //   3. 参考片 dialogueStyle.informationDensity 是「低」（对白只承担关系，末场无台词），
 //      成片却让配角用三句台词分别扛起冲突、转折与主题
-test("对白约束给出可执行自查，并禁止角色说出主题", () => {
+test("对白由动作或前一句触发，不设统一配额且禁止主题总结", () => {
   const text = prompt();
-  assert.match(text, /把这句话遮住，只看同场 visibleAction，观众会不会漏掉任何信息/u);
-  assert.match(text, /不会漏，就说明这句在复述画面/u);
-  assert.match(text, /你呀你，真拿你没办法/u);
-  assert.match(text, /\*\*不得让任何角色把本片的主题、意义或感悟说出来。\*\*/u);
-  assert.match(text, /结尾尤其容易犯这个错/u);
-  assert.match(text, /角色说出本片主题或感悟/u);
+  assert.match(text, /对话由前一个动作或对方的话触发，要有反应和回应/u);
+  assert.match(text, /不以统一句数或字数决定是否自然/u);
+  assert.match(text, /不得让角色说出故事主题、意义或总结/u);
+  assert.match(text, /不要把动作叙事误写成全片沉默/u);
 });
 
-test("原片对白风格提成具名投影并要求对齐信息密度", () => {
+test("原片对白与候选台词草案不进入展开，用户对白规则仍在", () => {
   const text = fullStoryPrompt({
-    creatorProfile, creativeBrief: {}, visualGuardrails: {},
-    referenceAnalysis: {
-      dialogueStyle: {
-        tone: "亲切、童真", sentencePattern: "短句为主，口语化",
-        informationDensity: "低", subtext: "通过简单互动传递温情"
-      }
-    },
-    sourceScriptReconstruction: { scenes: [{ dialogueGist: "奶奶叮嘱慢点啊" }, { dialogueGist: "好啦" }] },
-    variant: leanVariant
+    creatorProfile: { ...creatorProfile, constraints: "USER_DIALOGUE_RULE" },
+    creativeBrief: {}, visualGuardrails: { dialogueRules: [{ text: "USER_DIALOGUE_RULE", triggerEvidence: [{ sourcePath: "creatorProfile.constraints", evidence: "USER_DIALOGUE_RULE" }] }] },
+    referenceAnalysis: { dialogueStyle: { tone: "SOURCE_DIALOGUE_TONE", informationDensity: "SOURCE_DENSITY" } },
+    sourceScriptReconstruction: { scenes: [{ dialogueGist: "SOURCE_DIALOGUE_LINE" }] },
+    variant: { ...leanVariant, keyDialogueDirections: ["CANDIDATE_DIALOGUE_DIRECTION"] }
   });
-  assert.match(text, /原片对白风格（必须对齐，见下方硬约束）/u);
-  assert.match(text, /信息密度「低」/u);
-  assert.match(text, /原片各场对白大意（只看它们承担了什么，不要复用内容）/u);
-  assert.match(text, /奶奶叮嘱慢点啊/u);
-  assert.match(text, /对白的信息密度必须对齐上方「原片对白风格」/u);
-  assert.match(text, /原片某场没有对白时，本片对应功能的场次也应当敢于不写对白/u);
+  assert.doesNotMatch(text, /SOURCE_DIALOGUE_TONE|SOURCE_DENSITY|SOURCE_DIALOGUE_LINE|CANDIDATE_DIALOGUE_DIRECTION/u);
+  assert.match(text, /USER_DIALOGUE_RULE/u);
 });
 
 test("参考片没有 dialogueStyle 时不注入空投影", () => {
@@ -206,34 +187,22 @@ const TEXTURE_ANALYSIS = Object.freeze({
   shotRhythm: { shotPatterns: ["特写（人物表情）", "中景（互动场景）", "全景（院落环境）"] }
 });
 
-test("原片生活质感提成具名投影，只取环境道具不取动作事实", () => {
+test("原片质感素材不覆盖选中候选的道具与动作", () => {
   const text = fullStoryPrompt({
     creatorProfile, creativeBrief: {}, visualGuardrails: {},
     sourceScriptReconstruction: {}, variant: leanVariant,
     referenceAnalysis: TEXTURE_ANALYSIS
   });
-  assert.match(text, /原片的生活质感来源（只看它靠什么\*\*类型\*\*的东西留住观众，不要复用具体内容）/u);
-  assert.match(text, /萌系角色吸引力（靠「看到她戴锅防砸的可爱举动」兑现）/u);
-  assert.match(text, /环境道具（注意其中与主线任务无关的那些）：桌上放着一台老式收音机/u);
-  assert.match(text, /景别构成：特写（人物表情）、中景（互动场景）、全景（院落环境）/u);
-  // visible_action 是主线动作，不属于「环境道具」，不该混进投影。
-  // 断言只能限定在投影段内——整份 referenceAnalysis JSON 本来就会原样出现在
-  // 提示词的另一处（既有行为），在全文里找这句话必然命中。
-  const start = text.indexOf("原片的生活质感来源");
-  const projection = text.slice(start, text.indexOf("\n\n", start));
-  assert.doesNotMatch(projection, /小女孩把红枣递给爷爷/u);
-  assert.match(projection, /老式收音机/u);
+  assert.equal(text, prompt());
+  assert.doesNotMatch(text, /看到她戴锅防砸的可爱举动|桌上放着一台老式收音机|小女孩把红枣递给爷爷/u);
 });
 
-test("生活细节与萌点约束到位，且把微表情明确排除在萌点之外", () => {
+test("生活质感来自本片做法，不按幅度或无关细节配额裁决", () => {
   const text = prompt();
-  assert.match(text, /至少 2 场的 visibleAction 要包含一个\*\*与主线任务无关或只有半相关\*\*的生活动作或环境道具/u);
-  assert.match(text, /趴在木桌旁听收音机、老人摇着蒲扇站在门口目送/u);
-  assert.match(text, /这些细节只占一两句，不得挤掉主线动作/u);
-  assert.match(text, /萌点必须是\*\*动作\*\*，不是形容/u);
-  assert.match(text, /环境——乡村院落本来就有小铁锅/u);
-  assert.match(text, /\*\*皱眉、歪头、眨眼、抿嘴这类微表情不算萌点\*\*/u);
-  assert.match(text, /不看脸、只看身体轮廓，观众能认出她在做什么吗/u);
+  assert.match(text, /萌点和性格来自当前角色在这件事里的做法/u);
+  assert.match(text, /允许细小但能看懂的动作/u);
+  assert.match(text, /不设置大动作、帮人、生活细节、对白或结尾仪式的配额/u);
+  assert.doesNotMatch(text, /微表情不算萌点|至少 2 场的 visibleAction|身体轮廓/u);
 });
 
 test("参考片没有质感素材时不注入空投影", () => {
@@ -249,25 +218,22 @@ test("参考片没有质感素材时不注入空投影", () => {
 // 实测 74 份 Full Story 中有 2 份在 transformationProof 里虚构原片事实，
 // 两次是同一个幻觉：上游只写「穿着企鹅装的短发女孩」，它补成「企鹅快递员」
 // 并顺带编出「送货任务」——而同一份 creativeBrief 明写着「送达任务【原片没有】」。
-test("transformationProof 里描述原片的部分必须能回上游找到依据", () => {
+test("FullStory 不再生成来源证明，旧字段不进入新输出模板", () => {
   const text = prompt();
-  assert.match(text, /关于原片的那一半必须能在 sourceScriptReconstruction 或 referenceAnalysis 里逐字找到依据/u);
-  assert.match(text, /把其中描述原片的词单独拎出来，回上游搜一遍/u);
-  assert.match(text, /快递员和送货任务是凭空补的职业与任务/u);
-  assert.match(text, /会污染改编距离判断与原创性检查/u);
+  assert.match(text, /来源证明、自评分与原片具体场次不作为本片剧情依据/u);
+  const template = text.slice(text.indexOf('输出 fullStory，严格使用以下结构'));
+  assert.doesNotMatch(template, /"(?:transformationProof|experienceFidelity|selfCheck)"\s*:/u);
+  assert.match(text, /keyProps 只写实际出现的物件、叙事用途与必要状态/u);
 });
 
-// 上一轮只要求「萌点是大动作」，实测模型用「芙芙猫舔爪子」「打起了呼噜」交差——
-// 幅度不够，而且是配角的动作、与剧情无关。打枣的标准是萌点必须同时是剧情的一环：
-// 戴铁锅同时满足前因、环境、人物、声音、视觉、后续六条。
-test("萌点必须由主角完成且承担剧情功能，宠物小动作不算", () => {
-  const text = prompt();
-  assert.match(text, /必须\*\*由固定主角本人完成\*\*——把萌点安排给配角或宠物不算数/u);
-  assert.match(text, /\*\*宠物舔爪子、打呼噜同样不算\*\*/u);
-  assert.match(text, /萌点还必须\*\*同时承担剧情功能\*\*，不能是贴上去的可爱装饰/u);
-  assert.match(text, /前因——爷爷刚提醒过会被枣砸到/u);
-  assert.match(text, /后续——戴着锅继续把枣捡完/u);
-  assert.match(text, /把这个萌点删掉，剧情会不会缺一块/u);
+// full_story/1.1：生成责任以当前选中候选为界，旧合同由兼容测试保留。
+test("固定主角仍是中心，生活型允许观察反应与陪伴", () => {
+  const text = prompt({ ...leanVariant, narrativeMode: "slice_of_life" });
+  assert.match(text, /固定主角仍是叙事关注中心/u);
+  assert.match(text, /允许在观察、反应、参与和陪伴中体现性格/u);
+  assert.match(text, /本候选为生活型/u);
+  assert.match(text, /不要求艰难选择、额外阻碍、受奖励或表态承诺/u);
+  assert.doesNotMatch(text, /宠物舔爪子、打呼噜同样不算|由固定主角本人完成/u);
 });
 
 // 2026-08-30 实测：12 次 Full Story 截断的退化段起点全部落在同一偏移（约 490），
@@ -356,13 +322,13 @@ test("屏幕文字里的角色名同样要去掉，两个可见事实字段都�
 // 成因是 fullStoryPrompt 把整份 referenceAnalysis / sourceScriptReconstruction 塞进提示词，
 // 模型逐字读到原片那张卡就照抄。这条规则本质是 §「允许不等于必须使用」的具体化，
 // 所以写在承接/来源块里，而不是当成又一条可见事实字段禁令。
-test("参考片的片尾署名卡不得复用，文字卡不算一场戏", () => {
+test("结尾保留候选体验，不从原片补卡或奖励", () => {
   const text = prompt();
-  assert.match(text, /参考片的片尾署名字幕卡是来源表达，不是必须复用的构件/u);
-  assert.match(text, /不要为本片补一张「黑屏白字 \+ 主角名」的收尾卡，用最后一场的画面收尾/u);
-  // 助因：选中候选只有 5 拍而 sceneScript 至少 6 场，模型拿这张卡凑了第 6 场。
-  // 不说清这一点，模型会以为「不许加卡」和「必须 6 场」互相冲突。
-  assert.match(text, /加一张文字卡不算一场戏/u);
+  assert.match(text, /收尾在候选承诺的实际体验与人物回应完成时结束/u);
+  assert.match(text, /原片的片尾卡和署名也不是本片素材/u);
+  assert.match(text, /不另加奖励、仪式、时间跳转或主题总结/u);
+  assert.match(text, /是不是对眼前具体行为的自然反应/u);
+  assert.match(text, /不能拿通用亲密动作替代候选原有的共同体验/u);
 });
 
 // 去名字不能滑成去细节，否则会直接伤到 videoPrompt 的可渲染信息与生活质感约束。
@@ -370,7 +336,7 @@ test("只去名字不去可见细节，且说明名字在其它字段照常保�
   const text = prompt();
   assert.match(text, /\*\*去掉的只有名字，不是可见细节。\*\*/u);
   assert.match(text, /「一个快递盒」不合格/u);
-  assert.match(text, /名字在 location、dialogue 的台词正文、beatSheet、characterBible、shootingNotes 里都可以自由出现/u);
+  assert.match(text, /名字在 location、dialogue 的台词正文、characterBible、shootingNotes 里都可以自由出现/u);
   assert.match(text, /只有 visibleAction 和 shotAndSound 这两个可见事实字段要干净/u);
 });
 
@@ -423,36 +389,23 @@ const DENSE_SOURCE = Object.freeze({
   ]
 });
 
-test("空间与对白密度从参考片现算，不写死数值", () => {
+test("原片空间密度不再给本片预设地点数量", () => {
   const text = fullStoryPrompt({
     creatorProfile, creativeBrief: {}, visualGuardrails: {}, referenceAnalysis: {},
     sourceScriptReconstruction: DENSE_SOURCE, variant: leanVariant
   });
-  assert.match(text, /原片 44 秒里只用了 2 个地点：农村院落门口、农村院落内/u);
-  assert.match(text, /平均每 10 秒 0\.45 个地点/u);
-  assert.match(text, /\*\*换的是动作和机位，不是地点\*\*/u);
-  assert.match(text, /不要为了写出一个大动作就新开一个场景/u);
-  assert.match(text, /原片 4 场里有 4 场带对白/u);
-  assert.match(text, /不要靠减少对白来显得克制/u);
+  assert.equal(text, prompt());
+  assert.doesNotMatch(text, /农村院落门口|平均每 10 秒|原片 4 场里有/u);
+  assert.match(text, /场数由当前动作链、地点与节奏决定/u);
 });
 
-test("换一支参考片，投影数值随之改变", () => {
-  const roadTrip = {
-    scenes: [
-      { timeRange: "00:00-00:15", location: "车站", dialogueGist: "买票" },
-      { timeRange: "00:15-00:30", location: "山路", dialogueGist: "" },
-      { timeRange: "00:30-00:45", location: "海边", dialogueGist: "到了" },
-      { timeRange: "00:45-01:00", location: "旅馆", dialogueGist: "" }
-    ]
-  };
-  const text = fullStoryPrompt({
-    creatorProfile, creativeBrief: {}, visualGuardrails: {}, referenceAnalysis: {},
-    sourceScriptReconstruction: roadTrip, variant: leanVariant
-  });
-  assert.match(text, /原片 60 秒里只用了 4 个地点：车站、山路、海边、旅馆/u);
-  assert.match(text, /平均每 10 秒 0\.67 个地点/u);
-  assert.match(text, /原片 4 场里有 2 场带对白/u);
-  assert.doesNotMatch(text, /农村院落/u);
+test("更换原片不能改变同一已选候选的 FullStory 提示词", () => {
+  const base = { creatorProfile, creativeBrief: {}, visualGuardrails: {}, variant: leanVariant };
+  const other = { scenes: [{ timeRange: "00:00-01:00", location: "旅馆", dialogueGist: "到了" }] };
+  assert.equal(
+    fullStoryPrompt({ ...base, sourceScriptReconstruction: DENSE_SOURCE }),
+    fullStoryPrompt({ ...base, sourceScriptReconstruction: other })
+  );
 });
 
 test("没有参考片时不注入空间投影", () => {
@@ -460,10 +413,11 @@ test("没有参考片时不注入空间投影", () => {
 });
 
 // 写死的举例必须标明来自另一部片子，否则模型会把它们当成本片素材照抄
-test("提示词里的固定举例标注了来源，不会被当成本片内容", () => {
+test("不再用另一支片子的动作示例要求本片补戏", () => {
   const text = prompt();
-  assert.match(text, /下面这个例子来自另一部参考片，只用来说明什么叫「与主线无关」，不要照抄它的内容/u);
-  assert.match(text, /同样来自另一部参考片，只示范判据，不要照抄内容/u);
+  assert.doesNotMatch(text, /趴在木桌旁听收音机|戴着锅继续把枣捡完|爷爷刚提醒过会被枣砸到/u);
+  assert.match(text, /只补足让观众看懂候选所需的动作与过渡/u);
+  assert.match(text, /不另开支线来表现/u);
 });
 
 // 候选的 storyOutline[].action 对角色名没有任何约束，而本阶段的 visibleAction
@@ -495,9 +449,8 @@ test("可见事实字段列出第五种写法：道具的来历或经手人", ()
   assert.match(text, /写进 shootingNotes 或让 dialogue 的台词正文自己说/u);
 });
 
-// 屏蔽字段不是可选项：experienceFidelity 顶层必填，屏蔽会让必填字段无源可写。
-// 这条断言锁住「字段照常下发」，防止后来有人把它们从投影里删掉。
-test("那五个字段仍然完整下发给展开阶段，不做屏蔽", () => {
+// full_story/1.1：生成责任以当前选中候选为界，旧合同由兼容测试保留。
+test("Brief 的来源与改编距离字段不再进入选中候选展开", () => {
   const brief = {
     nonNegotiableExperience: { samePlotDriver: "BRIEF_PLOT_DRIVER_SENTINEL", sameBeatValue: "BRIEF_BEAT_VALUE_SENTINEL" },
     reusableHighValueBeats: [{ beat: "BRIEF_BEAT_SENTINEL", dramaticValue: "价值", mustRetain: "BRIEF_MUST_RETAIN_SENTINEL" }],
@@ -511,6 +464,6 @@ test("那五个字段仍然完整下发给展开阶段，不做屏蔽", () => {
     "BRIEF_PLOT_DRIVER_SENTINEL", "BRIEF_BEAT_VALUE_SENTINEL",
     "BRIEF_BEAT_SENTINEL", "BRIEF_MUST_RETAIN_SENTINEL", "BRIEF_DISTANCE_SENTINEL"
   ]) {
-    assert.match(text, new RegExp(sentinel, "u"));
+    assert.doesNotMatch(text, new RegExp(sentinel, "u"));
   }
 });

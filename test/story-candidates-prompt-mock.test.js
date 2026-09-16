@@ -370,10 +370,11 @@ test("候选取得原片动作与对白证据，来源机制不再混入正向�
 });
 
 test("角色边界投影不夹带上游阶段的剧情指令，角色事实和对白规则仍逐字保留", () => {
+  const userProfile = { ...creatorProfile, constraints: "KEEP_USER_SPEECH_RULE" };
   const visualGuardrails = {
     fixedCharacterBoundary: { characterName: "小白子", requiredTraits: [{ canonicalName: "KEEP_SIGNED_IDENTITY" }] },
     allowedPositiveTraits: ["KEEP_POSITIVE_TRAIT"], positivePromptBoundary: ["KEEP_CHARACTER_BOUNDARY"],
-    dialogueRules: [{ rule: "KEEP_USER_SPEECH_RULE" }],
+    dialogueRules: [{ text: "KEEP_USER_SPEECH_RULE", triggerEvidence: [{ sourcePath: "creatorProfile.constraints", evidence: "KEEP_USER_SPEECH_RULE" }] }],
     stageInstructions: {
       themeVariants: "DO_NOT_FORWARD_TASK_REWARD_TRANSFER",
       fullStory: "DO_NOT_FORWARD_DOWNSTREAM_STORY_TEMPLATE",
@@ -381,7 +382,7 @@ test("角色边界投影不夹带上游阶段的剧情指令，角色事实和�
     }
   };
   const before = structuredClone(visualGuardrails);
-  const prompt = variantsPrompt({ count:4, creatorProfile, creativeBrief:{}, visualGuardrails });
+  const prompt = variantsPrompt({ count:4, creatorProfile: userProfile, creativeBrief:{}, visualGuardrails });
   for (const value of ["KEEP_SIGNED_IDENTITY", "KEEP_POSITIVE_TRAIT", "KEEP_CHARACTER_BOUNDARY", "KEEP_USER_SPEECH_RULE"]) {
     assert.ok(prompt.includes(value), value);
   }
@@ -390,6 +391,8 @@ test("角色边界投影不夹带上游阶段的剧情指令，角色事实和�
   const projection = JSON.parse(boundaryLine.slice("固定角色正向边界与用户台词规则：".length));
   assert.deepEqual(projection.stageInstructions, {});
   assert.deepEqual(visualGuardrails, before, "不能改写已签发的角色边界 Artifact");
-  const downstream = fullStoryPrompt({ creatorProfile, creativeBrief:{}, visualGuardrails });
-  assert.ok(downstream.includes("DO_NOT_FORWARD_DOWNSTREAM_STORY_TEMPLATE"), "该输入隔离只作用于候选阶段");
+  const downstream = fullStoryPrompt({ creatorProfile: userProfile, creativeBrief:{}, visualGuardrails });
+  assert.doesNotMatch(downstream, /DO_NOT_FORWARD_/u);
+  assert.match(downstream, /KEEP_SIGNED_IDENTITY/u);
+  assert.match(downstream, /KEEP_USER_SPEECH_RULE/u);
 });

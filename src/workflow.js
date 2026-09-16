@@ -1,5 +1,6 @@
 import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
-import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
+import { isNarrativeFullStory } from "./full-story-contract.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { compileCharacterFeatures } from "./character-feature-compiler.js";
 import {
@@ -1081,23 +1082,21 @@ export class WorkflowService {
     const visualGuardrails = this.assertGlobalCharacterBoundary(groundedInput);
     const validatedInput = { ...groundedInput, visualGuardrails };
     const settings = this.resolveStage("fullStory", validatedInput);
-    if (!this.hasLiveClient) {
-      return ensureFullStoryMatchesProfile(
-        ensureOutputContract(deriveFullStoryTargetDuration(mockFullStory(validatedInput)), "fullStory"),
-        profile, input.creativeBrief, input.variant, visualGuardrails
-      );
-    }
-    this.assertStageClient(settings, "完整剧情");
-    const prompt = fullStoryPrompt({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
     // targetDurationSeconds 由服务端从 sceneScript 时间轴派生：先派生再校验，
     // 模型声明的值一律被覆盖（可唯一推导，回显不构成新事实）。
-    const validateFullStory = (result) => ensureFullStoryMatchesProfile(
-      ensureOutputContract(deriveFullStoryTargetDuration(result), "fullStory"),
-      profile,
-      input.creativeBrief,
-      input.variant,
-      visualGuardrails
-    );
+    const validateFullStory = (result) => {
+      const story = ensureFullStoryMatchesProfile(
+        ensureOutputContract(deriveFullStoryTargetDuration(result), "fullStory"),
+        profile, input.creativeBrief, input.variant, visualGuardrails
+      );
+      // New stories have one action timeline. Confirm that the existing
+      // downstream can consume it before committing, without generating shots.
+      if (isNarrativeFullStory(story)) deriveDirectShotSkeleton(story);
+      return story;
+    };
+    if (!this.hasLiveClient) return validateFullStory(mockNarrativeFullStory(validatedInput));
+    this.assertStageClient(settings, "完整剧情");
+    const prompt = fullStoryPrompt({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
     const observeFullStoryAttempt = this.fullModelOutputLogWriter?.enabled
       ? (attempt) => this.fullModelOutputLogWriter.recordAttempt({
         ...attempt,
@@ -1193,6 +1192,10 @@ export class WorkflowService {
       throw error;
     }
 
+    // full_story/1.1 has no second model-written beatSheet to reconcile.
+    // This is not a semantic review pass. Legacy replies still use the exact
+    // existing postpass and are never silently converted into the new shape.
+    if (isNarrativeFullStory(fullStory)) return fullStory;
     const beatScenePostpassPlan = createFullStoryBeatScenePostpassPlan(fullStory);
     return this.modelCallCoordinator.runJson({
       client: settings.client,

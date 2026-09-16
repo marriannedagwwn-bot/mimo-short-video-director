@@ -38,6 +38,15 @@ AI 短视频生产工作流系统。
 
 **浏览器工作区生命周期（2026-09-09）**：新的浏览器 Run 必须绑定服务端 `metadata.browserWorkspaceId`。原视频副本在私有 BrowserWorkspaceStore 持久化，Run metadata 记录其 URL 和 SHA-256；Task Store 仍不保存视频、Prompt 或完整请求体。同一标签页刷新/服务重启恢复副本并重新抽帧，不自动重调 provider；更换视频必须先清旧 Run/媒体/应用源副本。pagehide 或页面生命周期连接断开有 60 秒刷新宽限期，5 秒 sweep 清理；后台页连接仍在时不因心跳节流过期，无连接也无关闭通知时最后心跳起 2 分钟兜底，停服期间下次启动补清。sessionStorage 保存 workspace ID，每文档 pageId 与 source generation 分别阻止旧关闭通知和旧输入回写；不再恢复旧 localStorage Run 指针。长期保存仅创作宇宙七项设置（角色、赛道、限制、表情、候选数量、画幅、时长），模型覆盖只存 sessionStorage。表情和三个生成偏好不得并入 creatorProfile。清理须核对页面归属，scheduler → Run 锁撤销任务后删源副本、Run、其命名空间媒体及 Run 内 Debug；迟到 Runner/worker 不得重建已清数据。已有无页面归属历史 Run、用户原文件、主动导出文件、签名密钥不能由此清理。详见 `docs/production-lineage-state.md` 的浏览器工作区生命周期。
 
+**Full Story 单一正文格式（2026-09-14）**：当前生成默认要求显式 `schemaVersion: "full_story/1.1"`，独立严格 Schema 只保留 `selectedVariantId/title/oneLinePremise/targetDurationSeconds/shootingSynopsis/characterBible/sceneScript/keyProps/dialogueStyleGuide/uncertainties` 与版本键。`sceneScript` 是唯一完整动作稿；删除 `beatSheet/retentionPlan/experienceFidelity/transformationProof/continuityAndSafetyCheck/shootingPlan`，`keyProps` 不再写 `avoidSimilarityNote`，不得自动删旧输出字段来过新版校验。至少一场；`shootingNotes` 必填字符串、允许空，其余场次字段、出镜/对白/角色注册合同保持严格。生成 Prompt 取消六场、身体大动作与无关生活细节配额，按已选候选动作与共同体验收尾，外观不授予新能力。镜头指导不属于本阶段职责，但模型是否遵守须看真实原文，不能靠字段声明认定合格。
+
+输入仍通过完整上游冻结与验签，再由 `fullStoryCandidateFacts()` / `fullStoryCharacterFacts()` 只读投影选中故事事实与完整角色 traits（含 scope）/对白规则。原片具体场次、Brief 的改编要求、候选来源证明和自评不再进入 FullStory Prompt；完整 Artifact 不变，不生成 Kernel 或第二份事实源，`narrativeMode` 现在作为候选已声明的展开路径进入该阶段。新版只运行 primary 与实际必要的已有有界修复，不调用没有 beatSheet 目标的 postpass，不伪造语义审查通过；时间线在 commit 前复用 `deriveDirectShotSkeleton()` 检查下游可消费。旧无版本数据继续原严格 Schema、六场/六拍和原 postpass；未知版本拒绝，不自动升级、迁移或改 digest。Full Story control 对新版继续同一 taskId 重跑整个 operation，旧格式仍包括 postpass；候选冻结、claims、usage 累计、迟到回写和媒体 stale 语义不变。后文涉及整份 Brief/原片注入、六场、第二份 beatSheet 与默认 postpass 的旧记录仅描述旧格式和历史实验，以此段为当前生成规则。证据见 `docs/full-story-narrative-ab-2026-09-14.md`。
+
+**Full Story 对白规则来源隔离（2026-09-14）**：`fullStoryCharacterFacts()` 的只读投影仅沿用 `text` 非空、存在非空 `triggerEvidence`，且每条证据的 `sourcePath` 都是 `creatorProfile.fixedCharacter` 或 `creatorProfile.constraints` 的规则。原片/Brief、混合来源与未知来源的规则不得整体提升为用户说话命令；不按“温暖”“太阳味”等词过滤，也不拆句猜测哪部分属于用户。合法用户规则、固定角色 traits 与用户原始 constraints 保持原样；完整上游 Artifact、签名、digest 和既有结构校验不变。此检查只证明来源路径属于用户字段，不证明模型对用户原话的语义解释正确。此次两候选配对回放证实实际请求只改变四条来源规则的有无，但 V2 仍点题、V4 仍未呈现品尝就评价味道；来源边界修复不能等同于对白质量达标。见 `docs/full-story-dialogue-rules-ab-2026-09-14.md`。
+
+对白范围补充：`keyDialogueDirections` 是候选期台词草案，不再进入 FullStory 输入；候选 `storyOutline` 的全部动作与原 Artifact 保持不变。FullStory 按动作、人物已知信息与用户明确对白限制生成交流，已签发 FullStory 台词仍由 Animation Plan 逐字承接。检查说话动机和信息前提，不禁止所有自然亲密反应，也不靠关键词判断自然度。实际 B4 仍出现结尾点题与未尝先评价味道，属于未通过的质量验收；不能因签发成功称为合格产品。
+
+
 ## 当前主流程
 
 当前运行流程：
@@ -52,7 +61,7 @@ Visual Guardrails
  ↓
 Story Candidates（`themeVariants` wire name）
  ↓
-Legacy Full Story
+Full Story full_story/1.1（兼容旧格式）
  ↓
 Animation Plan direct_shot（promptSchemaVersion 3.0）
  ↓
@@ -68,7 +77,7 @@ Durable Task 没有总墙钟 deadline。provider 调用的无进展 watchdog 使
 
 **AI 导演 Run 控制（2026-09-10）**：`directorPipeline` 根任务支持既有 `/api/tasks/:id/control` 的 `pause | resume | terminate`。暂停先写 `progress.controlState=pausing` 阻止新调用与提交，再在 Run 锁外 abort 当前 Qwen/MiMo/DeepSeek HTTP/SSE 连接；当前子任务以 `interrupted/DIRECTOR_STAGE_PAUSED` 收尾后父任务进入 `paused`，不释放五个 claims、不自动重调、不新增 Task status。未派发的 queued 父任务可直接 paused；已运行的暂停父任务保留当前进程输入和 workflow 槽位，暂停期间不计 watchdog。继续复用父 taskId 与创建时输入/模型，新子 taskId/requestId 重新执行首个未完成阶段，已签发 current 阶段保持 revision/digest。中断前那次请求可能已经计费，继续可能再次计费，禁止称为供应商原请求续传。终止写 `terminating`、断开当前连接，父子 active 任务最终 `cancelled` 并释放 claims，保留 Run 和已完成 Artifact；不得宣称远端计算或计费已确认停止。control 的 controller/gate 必须在锁内捕获后锁外操作，防止连续 pause/resume 误伤新请求或遗失唤醒。页面清理撤销任务后也须在锁外唤醒暂停 Runner，不能遗留池槽位。刷新恢复 paused；Node 重启仍按 v1 变 interrupted，不自动调模型。用量只计供应商实际返回的结构化 usage，`calls` 在 fetch 派发点计数，`reportedCalls/unreportedCalls/usageComplete` 明确标识未知；父任务按所有子尝试汇总，不能覆盖成最后一次继续的用量或重复累加。`shotVideoBatch` 的镜头边界暂停语义不变。
 
-**完整剧情任务控制（2026-09-10）**：`fullStory` 根任务通过同一 control 接口支持暂停、继续和终止，页面沿用 AI 导演的左终止、右暂停/继续按钮与 44px 点击区、32px 悬停背景。暂停中断当前 HTTP/SSE，保留创建时输入、模型、全部冻结依赖、目标 expected revision 和 claim；继续保持同一 taskId，以新的 requestId 重新执行整个 Full Story operation（包括初轮与 Beat–Scene postpass），不是续传或只重做 postpass。各次尝试的已知 usage 和未返回用量的实际调用累计保留；旧尝试的迟到回调不得写入新尝试。终止保留此前已签发 Story、Plan、媒体和 Run。commit 与 control 由同一 Run 锁裁决：本次 request 已提交成功时，控制不再改变执行状态，也不重调模型。刷新重新 attach paused，不自动继续；Node 重启仍按 v1 interrupted/reconciliation 规则。页面控制必须绑定当前候选的 root Full Story task，切换候选不能控制另一个候选或被其迟到响应切回。
+**完整剧情任务控制（2026-09-10）**：`fullStory` 根任务通过同一 control 接口支持暂停、继续和终止，页面沿用 AI 导演的左终止、右暂停/继续按钮与 44px 点击区、32px 悬停背景。暂停中断当前 HTTP/SSE，保留创建时输入、模型、全部冻结依赖、目标 expected revision 和 claim；继续保持同一 taskId，以新的 requestId 重新执行整个 Full Story operation（新版包含初轮与实际必要的有界修复；旧格式还包含 Beat–Scene postpass），不是续传或只重做 postpass。各次尝试的已知 usage 和未返回用量的实际调用累计保留；旧尝试的迟到回调不得写入新尝试。终止保留此前已签发 Story、Plan、媒体和 Run。commit 与 control 由同一 Run 锁裁决：本次 request 已提交成功时，控制不再改变执行状态，也不重调模型。刷新重新 attach paused，不自动继续；Node 重启仍按 v1 interrupted/reconciliation 规则。页面控制必须绑定当前候选的 root Full Story task，切换候选不能控制另一个候选或被其迟到响应切回。
 
 per-Run Coordinator 是显式不可重入 FIFO 锁。持锁代码只能调用 `commitArtifactUnlocked`、`recordStageUnlocked`、`loadRunUnlocked` 和 Task Store unlocked 方法，禁止从锁内调用公开的 `commitArtifact()` / `recordStage()` / `loadRun()`；临界区内禁止 provider、网络、FFmpeg 或模型校验。`readCurrentLineageSnapshot`、Task GET 和 atomic manifest snapshot 的 `loadRun` 必须锁外读取；provider 返回后仍保留复检与锁内 commit guard。
 

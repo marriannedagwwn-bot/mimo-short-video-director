@@ -1067,6 +1067,16 @@ DeepSeek 模型 ID 只登记 `deepseek-v4-flash`（页面首选）与 `deepseek-
 
 ### 2.10 Story Contract
 
+**Full Story 单一正文格式（2026-09-14）**：当前生成默认要求显式 `schemaVersion: "full_story/1.1"`，独立严格 Schema 只保留 `selectedVariantId/title/oneLinePremise/targetDurationSeconds/shootingSynopsis/characterBible/sceneScript/keyProps/dialogueStyleGuide/uncertainties` 与版本键。`sceneScript` 是唯一完整动作稿；删除 `beatSheet/retentionPlan/experienceFidelity/transformationProof/continuityAndSafetyCheck/shootingPlan`，`keyProps` 不再写 `avoidSimilarityNote`，不得自动删旧输出字段来过新版校验。至少一场；`shootingNotes` 必填字符串、允许空，其余场次字段、出镜/对白/角色注册合同保持严格。生成 Prompt 取消六场、身体大动作与无关生活细节配额，按已选候选动作与共同体验收尾，外观不授予新能力。镜头指导不属于本阶段职责，但模型是否遵守须看真实原文，不能靠字段声明认定合格。
+
+输入仍通过完整上游冻结与验签，再由 `fullStoryCandidateFacts()` / `fullStoryCharacterFacts()` 只读投影选中故事事实与完整角色 traits（含 scope）/对白规则。原片具体场次、Brief 的改编要求、候选来源证明和自评不再进入 FullStory Prompt；完整 Artifact 不变，不生成 Kernel 或第二份事实源，`narrativeMode` 现在作为候选已声明的展开路径进入该阶段。新版只运行 primary 与实际必要的已有有界修复，不调用没有 beatSheet 目标的 postpass，不伪造语义审查通过；时间线在 commit 前复用 `deriveDirectShotSkeleton()` 检查下游可消费。旧无版本数据继续原严格 Schema、六场/六拍和原 postpass；未知版本拒绝，不自动升级、迁移或改 digest。Full Story control 对新版继续同一 taskId 重跑整个 operation，旧格式仍包括 postpass；候选冻结、claims、usage 累计、迟到回写和媒体 stale 语义不变。后文涉及整份 Brief/原片注入、六场、第二份 beatSheet 与默认 postpass 的旧记录仅描述旧格式和历史实验，以此段为当前生成规则。证据见 `docs/full-story-narrative-ab-2026-09-14.md`。
+
+**Full Story 对白规则来源隔离（2026-09-14）**：`fullStoryCharacterFacts()` 的只读投影仅沿用 `text` 非空、存在非空 `triggerEvidence`，且每条证据的 `sourcePath` 都是 `creatorProfile.fixedCharacter` 或 `creatorProfile.constraints` 的规则。原片/Brief、混合来源与未知来源的规则不得整体提升为用户说话命令；不按“温暖”“太阳味”等词过滤，也不拆句猜测哪部分属于用户。合法用户规则、固定角色 traits 与用户原始 constraints 保持原样；完整上游 Artifact、签名、digest 和既有结构校验不变。此检查只证明来源路径属于用户字段，不证明模型对用户原话的语义解释正确。此次两候选配对回放证实实际请求只改变四条来源规则的有无，但 V2 仍点题、V4 仍未呈现品尝就评价味道；来源边界修复不能等同于对白质量达标。见 `docs/full-story-dialogue-rules-ab-2026-09-14.md`。
+
+对白范围补充：`keyDialogueDirections` 是候选期台词草案，不再进入 FullStory 输入；候选 `storyOutline` 的全部动作与原 Artifact 保持不变。FullStory 按动作、人物已知信息与用户明确对白限制生成交流，已签发 FullStory 台词仍由 Animation Plan 逐字承接。检查说话动机和信息前提，不禁止所有自然亲密反应，也不靠关键词判断自然度。实际 B4 仍出现结尾点题与未尝先评价味道，属于未通过的质量验收；不能因签发成功称为合格产品。
+
+
+
 每个 scene 必须有：`sceneId`、`location`、`characters`、`visibleAction`、`shotAndSound`。
 
 `characterBible.careRecipient` 是可选键：当前 Variant 没有被照料对象时整个省略，`helpers` 无帮助者时输出 `[]`。**Full Story 不得把候选阶段省略的叙事构件补回来**——七项 taxonomy 是 Creative Brief 记录「原片有没有某类构件」的分类，不是本片必备构件，也不是承接清单。承接范围只有一个来源：当前选中 Variant 实际写出的内容。
@@ -1219,6 +1229,8 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：**
 - 网络、鉴权、429、timeout、lineage stale、签名失效**都不是内容 repair**。旧 v2 首尾帧兼容路径的历史整批 retry **不能**用来解释当前行为。
 
 ### Legacy Full Story Beat–Scene 提交前复核
+
+以下仅适用于无版本的旧格式，`full_story/1.1` 不生成 beatSheet，也不调用此协议。
 
 与失败候选 repair **严格分离**。只能在初轮候选（含已用掉的唯一 retry 或 protagonist `name` 局部纠错）通过 exact Schema、Scene Contract、固定角色/Profile、Variant 与既有语义边界的完整校验**之后**执行；失败候选不得借此补写正文。
 
