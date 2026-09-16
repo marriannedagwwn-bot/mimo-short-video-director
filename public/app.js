@@ -10,6 +10,7 @@ import {
   CANDIDATE_REVIEW_OVERRIDE_LABELS,
   CANDIDATE_REVIEW_SPECIAL_DEFECT_LABELS,
   CANDIDATE_REVIEW_TIERS,
+  FULL_STORY_PRECHECK_REASON_LABELS,
   SOURCE_SCAFFOLD_COPY_SCORE,
   candidateReviewHeadline,
   storyReviewHeadline,
@@ -197,6 +198,9 @@ const state = {
   nativeVideoMaxBytes: 0,
   running: false,
   storyRunning: false,
+  // 展开前体检占用的是「生成完整剧情」这个按钮，但它不是 durable task，
+  // 所以与 storyRunning 分开记——混用会让终止/暂停那组控件误以为有任务在跑。
+  storyPrecheckRunning: false,
   animationRunning: false
 };
 
@@ -237,6 +241,7 @@ const elements = {
   mainPage: $("#top"), storyPage: $("#storyPage"), storyModelName: $("#storyModelName"),
   selectedVariantSummary: $("#selectedVariantSummary"), storyStatus: $("#storyStatus"),
   storyGenerate: $("#generateFullStory"), fullStory: $("#fullStoryResult"), backToResults: $("#backToResults"),
+  fullStoryPrecheck: $("#fullStoryPrecheckPanel"),
   fullStoryControls: $("#fullStoryControls"), fullStoryStartArrow: $("#fullStoryStartArrow"),
   terminateFullStory: $("#terminateFullStory"), pauseFullStory: $("#pauseFullStory"), fullStoryControlHint: $("#fullStoryControlHint"),
   animationGenerate: $("#generateAnimationPlan"), animationStatus: $("#animationStatus"), animationPlan: $("#animationPlanResult"),
@@ -450,7 +455,7 @@ function bindEvents() {
     if (event.target.closest("[data-regenerate-variants]")) regenerateThemeVariants();
   });
   elements.backToResults.addEventListener("click", backToMainResults);
-  elements.storyGenerate.addEventListener("click", () => generateFullStory({ force: true }));
+  elements.storyGenerate.addEventListener("click", () => startFullStory({ force: true }));
   elements.terminateFullStory.addEventListener("click", () => controlFullStory("terminate"));
   elements.pauseFullStory.addEventListener("click", () => {
     void controlFullStory(fullStoryControlView(selectedFullStoryTask()).pauseAction);
@@ -2219,7 +2224,9 @@ async function requestStoryCandidateRevision(candidateId, button) {
 
 // 原文与修订版并排。执行者反转、以及「一换一但复杂度暴涨」都没有确定性兜底，
 // 只能靠人在这里看，所以界面上明写这一句。
-function renderStoryCandidateRevision(candidateId, entry) {
+// `withAdoptButton: false` 给展开前体检用：那个面板有自己的「采纳修订并展开」按钮，
+// 把这里的采纳按钮也渲染出来会多一个没绑事件的死按钮，两个采纳并排还会让人不知道点哪个。
+function renderStoryCandidateRevision(candidateId, entry, { withAdoptButton = true } = {}) {
   // entry 是服务端响应展开后再加一个 sourceThemeVariants：
   // { candidateId, revision, themeVariants（已合并）, metadata, sourceThemeVariants（原始） }。
   const before = (entry?.sourceThemeVariants?.variants || []).find((v) => String(v.id) === String(candidateId));
@@ -2271,14 +2278,14 @@ function renderStoryCandidateRevision(candidateId, entry) {
         自己看两件事，程序判不了：①执行者有没有被调换（「甲替乙做某事」不能变成乙替甲）；
         ②有没有一换一但复杂度暴涨。
       </p>
-      <div class="candidate-revision-action">
+      ${withAdoptButton ? `<div class="candidate-revision-action">
         <button type="button" class="outline-button" data-adopt-candidate-revision>采纳并签发新的命题版本</button>
         <span class="muted-note warn">
           采纳会签发新的 themeVariants 版本。**这一批全部命题**的下游（完整剧情、镜头计划、
           已生成的图片与视频）都会失效——即使别的命题一个字没改，因为它们同属一份 Artifact。
           还没选中命题、还没往下做时采纳，代价为零。
         </span>
-      </div>
+      </div>` : ""}
     </div>`;
 }
 
@@ -2287,11 +2294,36 @@ async function adoptStoryCandidateRevision(candidateId, button) {
   const workspaceEpoch = browserWorkspace.epoch;
   const entry = storyCandidateRevisions.get(String(candidateId));
   if (!entry || button.disabled) return;
-  // 修订是针对**当时那一批命题**算出来的，中途换过就必须作废。
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "签发中…";
+  try {
+    const outcome = await adoptThemeVariantsRevision(entry, workspaceEpoch);
+    if (outcome === "stale") storyCandidateRevisions.delete(String(candidateId));
+    if (outcome !== "adopted") {
+      button.disabled = false;
+      button.textContent = original;
+      return;
+    }
+    showError(`命题 ${candidateId} 的修订已采纳，已签发新的主题命题版本。`, "notice");
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    showError(error.message || "修订签发失败；原命题保持不变。");
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+// 签发一份修订过的 themeVariants。**评审面板与展开前体检共用这一份**——
+// 采纳的语义（过期复核、下游征求同意、递归 stale、作废旧报告）只能有一处定义，
+// 两处各写一遍必然漂移。返回 false 表示这次没有签发（已过期或用户拒绝），
+// 提交失败照旧抛错，由调用方恢复按钮。
+async function adoptThemeVariantsRevision(entry, workspaceEpoch) {
+  // 修订是针对**当时那一批命题**算出来的，中途换过就必须作废，
+  // 绝不能把基于旧内容的改写盖到新命题上。
   if (JSON.stringify(state.output.themeVariants) !== JSON.stringify(entry.sourceThemeVariants)) {
-    storyCandidateRevisions.delete(String(candidateId));
     showError("主题命题在修订期间已经变化，这次修订结果已作废，请重新体检并修订。");
-    return;
+    return "stale";
   }
   const downstream = [
     ...Object.keys(state.fullStories || {}).map((variantId) => `${variantId} 的完整剧情`),
@@ -2303,34 +2335,25 @@ async function adoptStoryCandidateRevision(candidateId, button) {
       + "因为整批命题是同一份 Artifact：\n"
       + `${downstream.join("、")}，以及它们下面已生成的镜头媒体。\n\n是否继续？`
     );
-    if (!confirmed) return;
+    if (!confirmed) return "declined";
   }
-  button.disabled = true;
-  const original = button.textContent;
-  button.textContent = "签发中…";
-  try {
-    assertWorkspaceCurrent(workspaceEpoch);
-    const nextThemeVariants = entry.result?.themeVariants || entry.themeVariants;
-    await commitProductionArtifact({
-      artifactId: "themeVariants",
-      artifactType: "themeVariants",
-      content: nextThemeVariants,
-      dependencyRefs: productionDependencies([
-        "referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails"
-      ])
-    });
-    state.output.themeVariants = nextThemeVariants;
-    // 命题内容变了，之前基于旧内容的评审报告与其余修订稿一并作废。
-    lastCandidateReview = null;
-    storyCandidateRevisions.clear();
-    renderVariants(nextThemeVariants);
-    showError(`命题 ${candidateId} 的修订已采纳，已签发新的主题命题版本。`, "notice");
-  } catch (error) {
-    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
-    showError(error.message || "修订签发失败；原命题保持不变。");
-    button.disabled = false;
-    button.textContent = original;
-  }
+  assertWorkspaceCurrent(workspaceEpoch);
+  const nextThemeVariants = entry.result?.themeVariants || entry.themeVariants;
+  await commitProductionArtifact({
+    artifactId: "themeVariants",
+    artifactType: "themeVariants",
+    content: nextThemeVariants,
+    dependencyRefs: productionDependencies([
+      "referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails"
+    ])
+  });
+  state.output.themeVariants = nextThemeVariants;
+  // 命题内容变了，之前基于旧内容的评审报告与其余修订稿一并作废。
+  lastCandidateReview = null;
+  storyCandidateRevisions.clear();
+  renderVariants(nextThemeVariants);
+  renderSelectedVariantSummary(selectedVariant());
+  return "adopted";
 }
 
 // 换一批：用同一份已签发的上游证据（referenceAnalysis / sourceScriptReconstruction /
@@ -2509,7 +2532,7 @@ function renderStoryPage({ autoGenerate = false } = {}) {
     updateStoryExportActions();
     if (variant) {
       setStoryStatus("准备生成完整剧情。", "");
-      if (autoGenerate) generateFullStory();
+      if (autoGenerate) startFullStory();
     } else {
       setStoryStatus("当前页面没有可用主题变体。请先返回工作台，完成视频分析并选择一个主题变体。", "error");
     }
@@ -2547,6 +2570,260 @@ function renderStoryDurationOptions() {
     .map((option) => `<option value="${escape(option.value)}">${escape(option.label)}</option>`)
     .join("");
   elements.storyDurationTarget.value = state.storyDurationTarget;
+}
+
+// ---------------------------------------------------------------------------
+// 展开前体检（2026-09-17）
+//
+// 点「生成完整剧情」时先跑一次体检，**在签发 `variant:<id>` 之前**——体检只出报告，
+// 这一刻还什么都没签发，所以判出要修订时改候选的代价为零。三条路：
+//   直接展开 → 原样走 generateFullStory，多花的只有体检那一次调用；
+//   需修订   → 立刻做一次 scope:root 修订并**只展示差异**，签发只发生在用户点采纳那一刻；
+//   体检失败 → 如实显示原因，给「按原候选展开」与「重试体检」，**绝不静默跳过**。
+//
+// 判定依据见 docs/full-story-precheck-ab-2026-09-16.md：三个样本各 2/2 达到事前登记的
+// 通过线。**它不保证判得对**——承诺清单写得准不准、定位读得对不对都需要语义判断，
+// 没有确定性兜底；评审那一路本身也会整次失败（6 次里 2 次），这是体检可用率的上限。
+let fullStoryPrecheckState = null;
+
+// 体检与修订都只活在页面上：不进 Artifact、不进 lineage、刷新即失，与评审同规格。
+function clearFullStoryPrecheck() {
+  fullStoryPrecheckState = null;
+  elements.fullStoryPrecheck.innerHTML = "";
+  elements.fullStoryPrecheck.classList.add("hidden");
+}
+
+function renderFullStoryPrecheckPanel(html) {
+  elements.fullStoryPrecheck.innerHTML = html;
+  elements.fullStoryPrecheck.classList.remove("hidden");
+  bindFullStoryPrecheckActions(elements.fullStoryPrecheck);
+}
+
+function bindFullStoryPrecheckActions(root) {
+  for (const button of root.querySelectorAll("[data-precheck-expand]")) {
+    button.addEventListener("click", () => {
+      clearFullStoryPrecheck();
+      // 用户明确选择按原候选展开，就照原候选展开——体检只出报告，不是闸门。
+      void generateFullStory({ force: true });
+    });
+  }
+  for (const button of root.querySelectorAll("[data-precheck-retry]")) {
+    button.addEventListener("click", () => void startFullStory({ force: true }));
+  }
+  for (const button of root.querySelectorAll("[data-precheck-adopt]")) {
+    button.addEventListener("click", () => void adoptPrecheckRevisionAndExpand(button));
+  }
+}
+
+// 体检入口。**只有这里会调体检**；generateFullStory 仍是纯展开路径，
+// 采纳之后的续跑与既有的 durable task 恢复都直接走它，不会再体检第二次。
+async function startFullStory({ force = false } = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const variant = selectedVariant();
+  if (!variant) return setStoryStatus("请先选择一个可拍摄主题变体。", "error");
+  // 已有剧情且不是强制重生成时沿用原行为：直接展示，不体检、不花钱。
+  if (!force && state.fullStories[variant.id]) return generateFullStory({ force });
+  if (state.storyRunning || state.storyPrecheckRunning) return;
+  if (activeTaskForKinds(["fullStory"], { rootOnly: true })) return;
+
+  const sourceThemeVariants = state.output?.themeVariants;
+  if (!sourceThemeVariants) return generateFullStory({ force });
+  clearFullStoryPrecheck();
+  state.storyPrecheckRunning = true;
+  elements.storyGenerate.disabled = true;
+  beginStageUsage();
+  // 体检与随后的修订共用一次记账，在交棒给展开之前结掉：展开自己会重开一次，
+  // 不结掉就等于把体检花的钱算进展开、或者干脆丢掉。
+  let usageClosed = false;
+  const closeUsage = () => {
+    if (usageClosed) return "";
+    usageClosed = true;
+    return formatStageUsageSuffix(endStageUsage());
+  };
+  setStoryStatus("正在做展开前体检：这个命题现在展开合不合适…（约 1–3 分钟）", "active");
+  try {
+    const result = await api("/api/full-story-precheck", {
+      themeVariants: sourceThemeVariants,
+      candidateId: variant.id,
+      creatorProfile: profile(),
+      // 与既有评审逐字同一组上游：缺任何一份都不阻断，只是少一节判断依据。
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+      visualGuardrails: state.output.visualGuardrails,
+      creativeBrief: state.output.creativeBrief,
+      referenceAnalysis: state.output.referenceAnalysis
+    });
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    assertSelectedVariant(variant.id);
+    fullStoryPrecheckState = {
+      variantId: variant.id,
+      sourceThemeVariants,
+      route: result.route,
+      reasons: result.reasons || [],
+      review: result.review,
+      promiseCheck: result.promiseCheck,
+      metadata: result.metadata || null
+    };
+    if (result.route === "expand") {
+      const suffix = closeUsage();
+      renderFullStoryPrecheckPanel(renderPrecheckPassed(result, suffix));
+      state.storyPrecheckRunning = false;
+      // await 而不是直接 return：展开自己会接管按钮与状态，
+      // 不等它结束就跑 finally 会把按钮在生成中途重新点亮。
+      await generateFullStory({ force: true });
+      return;
+    }
+    setStoryStatus("体检报出问题，正在改这一个命题…（还没有签发任何东西）", "active");
+    renderFullStoryPrecheckPanel(renderPrecheckFindings(fullStoryPrecheckState));
+    await requestPrecheckRevision(workspaceEpoch, closeUsage);
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    fullStoryPrecheckState = null;
+    // 失败前调用过的模型照样计费，必须显示出来，不能显示成没花钱。
+    setStoryStatus(`展开前体检失败：${error?.message || "未知原因"}${closeUsage()}`, "error");
+    renderFullStoryPrecheckPanel(renderPrecheckFailure(error));
+  } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    closeUsage();
+    state.storyPrecheckRunning = false;
+    elements.storyGenerate.disabled = !selectedVariant() || state.storyRunning;
+  }
+}
+
+// 修订：把体检判出的信号原样交给 scope:root。**结果不写回任何东西**，
+// 与命题定向修订同规格——签发只发生在用户点采纳那一刻。
+async function requestPrecheckRevision(workspaceEpoch, closeUsage) {
+  const entry = fullStoryPrecheckState;
+  if (!entry) return;
+  try {
+    const result = await api("/api/story-candidate-revision", {
+      themeVariants: entry.sourceThemeVariants,
+      review: entry.review,
+      promiseCheck: entry.promiseCheck,
+      candidateId: entry.variantId,
+      scope: "root",
+      creatorProfile: profile(),
+      // 边界验签比对整份上游的 sourceDigest，这几份必须一起送；
+      // 只用于验签与合并后的复验，**不进修订提示词**。
+      visualGuardrails: state.output.visualGuardrails,
+      creativeBrief: state.output.creativeBrief,
+      referenceAnalysis: state.output.referenceAnalysis,
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+      targetDurationSeconds: resolveStoryDurationTarget(state.storyDurationTarget, {
+        metadata: state.metadata,
+        sourceScriptReconstruction: state.output.sourceScriptReconstruction
+      })
+    });
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    if (fullStoryPrecheckState !== entry) return;
+    entry.revision = { ...result, sourceThemeVariants: entry.sourceThemeVariants };
+    setStoryStatus(`修订稿已生成，还没有生效——看过差异后再决定。${closeUsage()}`, "warn");
+    renderFullStoryPrecheckPanel(
+      renderPrecheckFindings(entry)
+      + renderStoryCandidateRevision(entry.variantId, entry.revision, { withAdoptButton: false })
+      + renderPrecheckDecision()
+    );
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    if (fullStoryPrecheckState !== entry) return;
+    setStoryStatus(`修订失败：${error?.message || "未知原因"}${closeUsage()}`, "error");
+    renderFullStoryPrecheckPanel(
+      renderPrecheckFindings(entry)
+      + `<p class="story-review-status error">${escape(error?.message || "定向修订失败")}</p>`
+      + renderPrecheckDecision({ withoutAdopt: true })
+    );
+  }
+}
+
+// 采纳：这才是签发新 themeVariants 版本的地方，之后立刻续跑展开。
+// **续跑走 generateFullStory，不会再体检一次**——改完再体检一遍只会没完没了地花钱。
+async function adoptPrecheckRevisionAndExpand(button) {
+  const entry = fullStoryPrecheckState;
+  if (!entry?.revision || button.disabled) return;
+  const workspaceEpoch = browserWorkspace.epoch;
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "签发中…";
+  try {
+    const outcome = await adoptThemeVariantsRevision(entry.revision, workspaceEpoch);
+    // 过期意味着这份体检与修订都是对旧命题算的，整块作废；拒绝则原样留着。
+    if (outcome === "stale") clearFullStoryPrecheck();
+    if (outcome !== "adopted") {
+      button.disabled = false;
+      button.textContent = original;
+      return;
+    }
+    clearFullStoryPrecheck();
+    await generateFullStory({ force: true });
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    showError(error.message || "修订签发失败；原命题保持不变。");
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+function renderPrecheckPassed(result, usageSuffix = "") {
+  const call = result?.metadata?.fullStoryPromiseCheck || null;
+  return `${resultHeader("PRECHECK", "展开前体检：通过", `直接展开${escape(usageSuffix)}`)}
+    <p class="story-review-status">因果断裂、换皮、BLOCKER 硬伤与标题/钩子的承诺都没有报出问题，
+      已直接开始展开。${call && call.providerCalls > 2 ? "（承诺核对第一次被确定性校验拦下，用的是重做的结果）" : ""}</p>
+    <p class="muted-note warn">体检只出报告，判得对不对没有确定性兜底：承诺清单写得准不准、
+      定位读得对不对都要靠人看。通过不等于这个命题一定好。</p>`;
+}
+
+function renderPrecheckFindings(entry) {
+  const reasons = (entry.reasons || [])
+    .map((reason) => `<li>${escape(FULL_STORY_PRECHECK_REASON_LABELS[reason] || reason)}</li>`)
+    .join("");
+  const gaps = (entry.promiseCheck?.promises || [])
+    .filter((promise) => promise.verdict !== "realized")
+    .map((promise) => {
+      const missing = (promise.findings || [])
+        .filter((finding) => finding.found !== true)
+        .map((finding) => `<li>${escape(promise.mustSee?.[finding.mustSeeIndex] || "")}
+          <br><b>动作链里实际写的是：</b>${escape(finding.why || "")}</li>`)
+        .join("");
+      return `<div class="rule">
+        <strong>${escape(promise.source === "title" ? "标题" : "一句话钩子")}「${escape(promise.quote)}」</strong>
+        <p>${escape(promise.promise)}</p>
+        <ul class="precheck-missing">${missing}</ul>
+      </div>`;
+    }).join("");
+  const breaks = (candidateReviewCheck(entry)?.coherenceChecks || [])
+    .map((check) => `<div class="rule"><strong>第 ${escape((check.beatIndexes || []).join("、"))} 拍</strong>
+      <p>${escape(check.problem)}</p></div>`).join("");
+  return `${resultHeader("PRECHECK", "展开前体检：建议先改这个命题", `${escape((entry.reasons || []).length)} 类问题`)}
+    <div class="summary-strip">还没有签发任何东西。修订稿会并排显示，你点采纳才生效。</div>
+    <ul class="precheck-reasons">${reasons}</ul>
+    ${gaps ? block("标题或钩子许诺了、动作链没演出来", `<div class="rule-list">${gaps}</div>`) : ""}
+    ${breaks ? block("动作链的因果断裂", `<div class="rule-list">${breaks}</div>`) : ""}`;
+}
+
+function candidateReviewCheck(entry) {
+  const checks = entry?.review?.candidateChecks;
+  if (!Array.isArray(checks)) return null;
+  return checks.find((check) => String(check.candidateId) === String(entry.variantId)) || null;
+}
+
+function renderPrecheckDecision({ withoutAdopt = false } = {}) {
+  return `<div class="candidate-revision-action">
+    ${withoutAdopt ? "" : `<button type="button" class="primary-button" data-precheck-adopt>采纳修订并展开</button>`}
+    <button type="button" class="outline-button" data-precheck-expand>按原候选展开</button>
+    <span class="muted-note warn">采纳会签发新的主题命题版本，这一批<b>全部命题</b>的下游都会失效
+      （即使别的命题一个字没改，因为它们同属一份 Artifact）。还没往下做时代价为零。</span>
+  </div>`;
+}
+
+function renderPrecheckFailure(error) {
+  return `${resultHeader("PRECHECK", "展开前体检失败", "没有判定")}
+    <p class="story-review-status error">${escape(error?.message || "未知原因")}</p>
+    <p class="muted-note warn">体检把现有候选评审当作必需的一路，而<b>评审自己会整次失败</b>
+      （2026-09-17 的实测里 6 次有 2 次），失败时没有任何路由判定，不是「体检通过」。
+      可以重试，也可以直接按原候选展开。</p>
+    <div class="candidate-revision-action">
+      <button type="button" class="outline-button" data-precheck-retry>重试体检</button>
+      <button type="button" class="outline-button" data-precheck-expand>按原候选展开</button>
+    </div>`;
 }
 
 async function generateFullStory({ force = false } = {}) {

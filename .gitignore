@@ -8,6 +8,10 @@ public/generated-images/
 public/generated-videos/
 runtime-captures/
 runtime/production-runs/
+# 演示模式（.claude/launch.json 的 demo 配置）的一次性状态目录，不是生产数据。
+runtime/demo-runs/
+runtime/demo-runs-browser-workspaces/
+runtime/demo-runs-browser-workspaces-cleanup/
 runtime/production-runs-browser-workspaces/
 runtime/production-runs-browser-workspaces-cleanup/
 runtime/*.log

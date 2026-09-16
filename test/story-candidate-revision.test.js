@@ -2,16 +2,24 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-import { deriveStoryCandidateProjections } from "../src/validation.js";
+import {
+  InputError,
+  deriveStoryCandidateProjections,
+  ensureOutputContract,
+  ensureStoryCandidateReviewCoversCandidates
+} from "../src/validation.js";
 import {
   assertOnlyCandidateRevisionFieldsChanged,
+  candidateBlockerDefect,
   candidateCoherenceBreaks,
+  candidateScaffoldCopy,
   candidateUnmigratedMechanisms,
   ensureStoryCandidateRevisionContract,
   mergeStoryCandidateRevision
 } from "../src/story-candidate-revision.js";
 import { storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt } from "../src/prompts.js";
-import { CANDIDATE_REVIEW_DIMENSION_WEIGHTS as REVIEW_WEIGHTS } from "../public/story-review-metrics.js";
+import { CANDIDATE_REVIEW_DIMENSION_WEIGHTS as REVIEW_WEIGHTS, SOURCE_SCAFFOLD_COPY_SCORE } from "../public/story-review-metrics.js";
+import { PROMISE_UNREALIZED_REASON, deriveFullStoryPrecheckRoute, promiseCheckGaps } from "../src/full-story-precheck.js";
 import { mockStoryCandidateRevision } from "../src/mock.js";
 import { WorkflowService } from "../src/workflow.js";
 
@@ -621,4 +629,244 @@ test("mock 把两个驱动信号都写进 changeSummary，demo 才走得到两�
   assert.match(revision.changeSummary, /1 条因果问题/u);
   assert.match(revision.changeSummary, /1 条没接住的原片机制/u);
   assert.doesNotThrow(() => ensureStoryCandidateRevisionContract(revision, batch, "V1"));
+});
+
+// ---------------------------------------------------------------------------
+// 展开前体检触发的根问题修订（scope: "root"，2026-09-16）
+
+const ROOT_PROMISE_CHECK = () => ({
+  schemaVersion: "full-story-promise-check/2.0",
+  candidateId: "V1",
+  promises: [
+    {
+      source: "title",
+      quote: "第一个",
+      kind: "promise",
+      promise: "观众期待看到排在第一位的那件事",
+      mustSee: ["那件事的完整过程"],
+      findings: [{ mustSeeIndex: 0, found: true, beat: 1, evidence: "第一拍原文", why: "" }],
+      verdict: "realized"
+    },
+    {
+      source: "oneLineHook",
+      quote: "钩子",
+      kind: "promise",
+      promise: "观众期待钩子里的问题被回答",
+      mustSee: ["问题的答案在画面里出现"],
+      findings: [{ mustSeeIndex: 0, found: false, beat: 0, evidence: "", why: "第 3 拍直接宣布了结果，过程没有演出来" }],
+      verdict: "not_realized"
+    }
+  ]
+});
+
+// 展开前体检的评审只送了一个候选：报告恰好一条。
+function singleReviewFor(id, mutate = (check) => check) {
+  const source = REVIEW.candidateChecks.find((check) => check.candidateId === id);
+  return {
+    ...structuredClone(REVIEW),
+    candidateChecks: [mutate(structuredClone(source))],
+    holisticPreferenceOrder: [id]
+  };
+}
+
+const ROOT_INPUT = (overrides = {}) => ({
+  themeVariants: themeVariants(),
+  review: singleReviewFor("V1"),
+  candidateId: "V1",
+  scope: "root",
+  promiseCheck: ROOT_PROMISE_CHECK(),
+  ...overrides
+});
+
+test("手动修订提示词：不传新参数与显式传默认值逐字相同，且不含体检小节", () => {
+  const args = {
+    candidate: candidate("V1", "命题一", ["动作一", "动作二", "动作三"]),
+    coherenceBreaks: [{ kind: "other", beatIndexes: [1], problem: "x" }],
+    unmigratedMechanisms: [{ id: "M1", mechanism: "机制", whereInSource: "S1", verdict: "not_depicted", actionEvidence: "无", causeEvidence: "", beatIndexes: [] }],
+    targetDurationSeconds: 60
+  };
+  const manual = storyCandidateRevisionPrompt(args);
+  assert.equal(manual, storyCandidateRevisionPrompt({
+    ...args, promiseGaps: [], scaffoldCopy: null, blockerDefect: null, scope: ""
+  }));
+  // 手动路径下即使误传了体检信号也不生效：新小节只在 scope: root 时出现。
+  assert.equal(manual, storyCandidateRevisionPrompt({
+    ...args,
+    promiseGaps: ROOT_PROMISE_CHECK().promises.slice(1),
+    scaffoldCopy: { score: 90, why: "x", links: [{ sourceEvent: "a", candidateEvent: "b", beatIndexes: [1], linkage: "same" }] },
+    blockerDefect: { type: "causalLogic", description: "x" }
+  }));
+  for (const marker of ["展开前体检", "标题或钩子许诺的东西没有被演出来", "与原片是同一条事件链", "评审判定的硬伤"]) {
+    assert.ok(!manual.includes(marker), `手动修订提示词不该出现「${marker}」`);
+  }
+  assert.match(manual, /一份对照评审在下面这个命题里查出了两类问题/u);
+  assert.match(manual, /第二类里\*\*哪几条你决定不接、理由是什么\*\*/u);
+});
+
+test("scope=root 不送未迁移机制，体检的三类小节按信号出现", () => {
+  const base = {
+    candidate: candidate("V1", "命题一", ["动作一", "动作二", "动作三"]),
+    unmigratedMechanisms: [{ id: "M1", mechanism: "原片机制正文", whereInSource: "S1", verdict: "not_depicted", actionEvidence: "无", causeEvidence: "", beatIndexes: [] }],
+    scope: "root"
+  };
+  const onlyPromise = storyCandidateRevisionPrompt({ ...base, promiseGaps: ROOT_PROMISE_CHECK().promises.slice(1) });
+  assert.ok(!onlyPromise.includes("原片机制正文"), "体检修订不送未迁移机制");
+  assert.ok(!/## 第二类/u.test(onlyPromise));
+  assert.match(onlyPromise, /## 标题或钩子许诺的东西没有被演出来（必须修）/u);
+  assert.match(onlyPromise, /【钩子】「钩子」/u);
+  assert.match(onlyPromise, /第 3 拍直接宣布了结果/u);
+  assert.match(onlyPromise, /承诺没演出来怎么修/u);
+  assert.match(onlyPromise, /不要让同一只手同时做两件事/u);
+  assert.ok(!onlyPromise.includes("与原片是同一条事件链"));
+  assert.ok(!onlyPromise.includes("评审判定的硬伤"));
+  assert.match(onlyPromise, /展开前体检在下面这个命题里查出了会被带进完整剧情的根问题/u);
+
+  const withScaffold = storyCandidateRevisionPrompt({
+    ...base,
+    scaffoldCopy: {
+      score: 80,
+      why: "准备、运送、获奖、转赠的顺序一样",
+      links: [{ sourceEvent: "获得外部奖励", candidateEvent: "被奖励一件东西", beatIndexes: [3], linkage: "same" }]
+    },
+    blockerDefect: { type: "causalLogic", description: "结果与前面的动作矛盾" }
+  });
+  assert.match(withScaffold, /## 与原片是同一条事件链（必须修）/u);
+  assert.match(withScaffold, /原片「获得外部奖励」→ 本命题「被奖励一件东西」（第 3 拍，接法与原片相同）/u);
+  assert.match(withScaffold, /## 评审判定的硬伤（必须修）/u);
+  assert.match(withScaffold, /【因果逻辑[^】]*】结果与前面的动作矛盾/u);
+  assert.ok(!withScaffold.includes("标题或钩子许诺的东西没有被演出来"));
+});
+
+test("换皮与硬伤提取器与评审的降级条件一致", () => {
+  const below = singleReviewFor("V1");
+  assert.equal(candidateScaffoldCopy(below, "V1"), null, "分数低于换皮线不送任何环节");
+
+  const copied = singleReviewFor("V1", (check) => {
+    check.sourceScaffoldOverlap.score = SOURCE_SCAFFOLD_COPY_SCORE;
+    check.sourceScaffoldOverlap.eventChain = [
+      { sourceEvent: "一", candidateEvent: "甲", beatIndexes: [1], linkage: "same" },
+      { sourceEvent: "二", candidateEvent: "乙", beatIndexes: [2], linkage: "reordered" },
+      { sourceEvent: "三", candidateEvent: "丙", beatIndexes: [3], linkage: "different" },
+      { sourceEvent: "四", candidateEvent: "候选里没有对应事件", beatIndexes: [], linkage: "absent" }
+    ];
+    return check;
+  });
+  const scaffoldCopy = candidateScaffoldCopy(copied, "V1");
+  assert.equal(scaffoldCopy.score, SOURCE_SCAFFOLD_COPY_SCORE);
+  assert.deepEqual(scaffoldCopy.links.map((link) => link.linkage), ["same", "reordered"]);
+
+  assert.equal(candidateBlockerDefect(below, "V1"), null, "MAJOR 不是硬伤信号");
+  const blocker = singleReviewFor("V1", (check) => {
+    check.dominantDefect = { type: "causalLogic", severity: "BLOCKER", description: "不能带进完整剧情" };
+    return check;
+  });
+  assert.deepEqual(candidateBlockerDefect(blocker, "V1"), { type: "causalLogic", description: "不能带进完整剧情" });
+});
+
+// 路由说「有根问题」时，修订必须收得到对应信号，否则修订模型拿到的是一份空清单。
+test("体检的每一条路由理由都对应一类修订信号", () => {
+  const reviewed = singleReviewFor("V1", (check) => {
+    check.sourceScaffoldOverlap.score = 90;
+    check.sourceScaffoldOverlap.eventChain = [{ sourceEvent: "一", candidateEvent: "甲", beatIndexes: [1], linkage: "same" }];
+    check.dominantDefect = { type: "causalLogic", severity: "BLOCKER", description: "硬伤" };
+    return check;
+  });
+  const validated = ensureStoryCandidateReviewCoversCandidates(
+    ensureOutputContract(structuredClone(reviewed), "storyCandidateReview"),
+    themeVariants().variants.slice(0, 1)
+  );
+  const { reasons } = deriveFullStoryPrecheckRoute({
+    reviewCheck: validated.candidateChecks[0],
+    promiseCheck: ROOT_PROMISE_CHECK()
+  });
+  assert.deepEqual(reasons, ["coherence_break", "scaffold_copy", "blocker_defect", PROMISE_UNREALIZED_REASON]);
+  const signals = {
+    coherence_break: candidateCoherenceBreaks(validated, "V1").length > 0,
+    scaffold_copy: candidateScaffoldCopy(validated, "V1") !== null,
+    blocker_defect: candidateBlockerDefect(validated, "V1") !== null,
+    [PROMISE_UNREALIZED_REASON]: promiseCheckGaps(ROOT_PROMISE_CHECK()).length > 0
+  };
+  for (const reason of reasons) assert.equal(signals[reason], true, `${reason} 没有对应的修订信号`);
+});
+
+test("单候选评审报告只在 scope=root 且就是目标命题时接受", async () => {
+  const workflow = new WorkflowService({ clients: {}, stageDefaults: null });
+  const out = await workflow.createStoryCandidateRevision(ROOT_INPUT());
+  assert.match(out.themeVariants.variants[0].storyOutline[0].action, /demo 模式未调用模型/u);
+  // 合并与复验用整批：同批其余命题逐字节不变。
+  assert.equal(JSON.stringify(out.themeVariants.variants[1]), JSON.stringify(themeVariants().variants[1]));
+
+  // 手动路径仍要求整批报告。
+  await assert.rejects(
+    () => workflow.createStoryCandidateRevision({ themeVariants: themeVariants(), review: singleReviewFor("V1"), candidateId: "V1" }),
+    (error) => error instanceof InputError && /review 不是这一批命题的合法评审报告/u.test(error.message)
+  );
+  // 单条报告写的是别的命题：不按候选 id 静默对齐。
+  await assert.rejects(
+    () => workflow.createStoryCandidateRevision(ROOT_INPUT({ review: singleReviewFor("V2") })),
+    InputError
+  );
+});
+
+test("体检修订的输入错误一律 400", async () => {
+  const workflow = new WorkflowService({ clients: {}, stageDefaults: null });
+  await assert.rejects(
+    () => workflow.createStoryCandidateRevision(ROOT_INPUT({ scope: "everything" })),
+    /scope 只接受 root/u
+  );
+  await assert.rejects(
+    () => workflow.createStoryCandidateRevision({ ...INPUT(), promiseCheck: ROOT_PROMISE_CHECK() }),
+    /promiseCheck 只用于展开前体检触发的修订/u
+  );
+  await assert.rejects(
+    () => workflow.createStoryCandidateRevision(ROOT_INPUT({ promiseCheck: undefined })),
+    (error) => error instanceof InputError && /promiseCheck/u.test(error.message)
+  );
+  const forged = ROOT_PROMISE_CHECK();
+  forged.promises[0].quote = "编出来的标题";
+  await assert.rejects(
+    () => workflow.createStoryCandidateRevision(ROOT_INPUT({ promiseCheck: forged })),
+    (error) => error instanceof InputError && /promiseCheck 不是这个命题的合法承诺核对/u.test(error.message)
+  );
+  // V2 的评审没有任何降级理由、承诺全部兑现：没有根问题就不该走到修订。
+  const v2AllRealized = {
+    schemaVersion: "full-story-promise-check/2.0",
+    candidateId: "V2",
+    promises: [
+      { source: "title", quote: "第二个", kind: "promise", promise: "p", mustSee: ["m"],
+        findings: [{ mustSeeIndex: 0, found: true, beat: 1, evidence: "第一拍原文", why: "" }], verdict: "realized" },
+      { source: "oneLineHook", quote: "钩子", kind: "promise", promise: "p", mustSee: ["m"],
+        findings: [{ mustSeeIndex: 0, found: true, beat: 2, evidence: "第二拍原文", why: "" }], verdict: "realized" }
+    ]
+  };
+  await assert.rejects(
+    () => workflow.createStoryCandidateRevision(ROOT_INPUT({
+      promiseCheck: v2AllRealized,
+      review: singleReviewFor("V2"),
+      candidateId: "V2"
+    })),
+    /没有报出任何根问题/u
+  );
+});
+
+test("体检修订走真实调用路径：提示词带承诺小节、不带机制，结果合并复验", async () => {
+  const { workflow, prompts } = liveRevisionWorkflow([goodRevision()]);
+  const out = await workflow.createStoryCandidateRevision(ROOT_INPUT());
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /标题或钩子许诺的东西没有被演出来/u);
+  assert.match(prompts[0], /因果说不通/u);
+  assert.ok(!prompts[0].includes("机制一"), "体检修订不送未迁移机制");
+  assert.equal(out.themeVariants.variants[0].storyOutline[2].action, "V1 第三拍改过之后的动作");
+  assert.equal(out.metadata.storyCandidateRevision.providerCalls, 1);
+});
+
+test("demo 修订把体检信号写进 changeSummary", () => {
+  const revision = mockStoryCandidateRevision(themeVariants().variants[0], [], [], {
+    promiseGaps: ROOT_PROMISE_CHECK().promises.slice(1),
+    scaffoldCopy: { score: 90, why: "", links: [] },
+    blockerDefect: { type: "causalLogic", description: "" }
+  });
+  assert.match(revision.changeSummary, /1 条没演出来的承诺/u);
+  assert.match(revision.changeSummary, /与原片同一条事件链/u);
+  assert.match(revision.changeSummary, /评审判定的硬伤/u);
 });

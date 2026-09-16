@@ -680,6 +680,14 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
 .revision-diff p { margin: 3px 0 0; }
 .revision-diff.revision-unchanged { opacity: .55; }
 .revision-same { color: var(--muted); }
+/* 展开前体检。路由理由与漏掉的承诺各自成列，漏项那一行要能一眼看到
+   「许诺的是什么」与「动作链里实际写的是什么」并排——判得对不对只能靠人看。 */
+.precheck-reasons { margin: 8px 0 0; padding-left: 18px; color: #b54708;
+  font-size: 10px; line-height: 1.8; }
+.precheck-missing { margin: 6px 0 0; padding-left: 16px; color: var(--muted);
+  font-size: 10px; line-height: 1.7; }
+.precheck-missing li { margin-top: 4px; }
+
 .muted-note { color: var(--muted); font-size: 10px; line-height: 1.7; }
 .muted-note.warn { color: #b54708; }
 

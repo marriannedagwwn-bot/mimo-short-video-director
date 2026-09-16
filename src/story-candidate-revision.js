@@ -8,6 +8,7 @@
 // 它只负责三件事：核对模型有没有越权、把授权的改动合并回整批、证明其余部分逐字节不变。
 // **判定全是形状与字符串比较，零语义**——「这条修订改得对不对」需要语义判断，没有兜底。
 import { ReviewContractError } from "./animation-plan-review-validation.js";
+import { SOURCE_SCAFFOLD_COPY_SCORE } from "../public/story-review-metrics.js";
 
 /**
  * 可写字段。依据是 2026-09-10 的实测：一轮评审报出的三条因果断裂里，**两条的根在任务设定**
@@ -292,6 +293,44 @@ export function candidateCoherenceBreaks(review, candidateId) {
   const checks = Array.isArray(review?.candidateChecks) ? review.candidateChecks : [];
   const entry = checks.find((check) => String(check?.candidateId || "") === String(candidateId || ""));
   return Array.isArray(entry?.coherenceChecks) ? entry.coherenceChecks : [];
+}
+
+function candidateCheckFor(review, candidateId) {
+  const checks = Array.isArray(review?.candidateChecks) ? review.candidateChecks : [];
+  return checks.find((check) => String(check?.candidateId || "") === String(candidateId || "")) || null;
+}
+
+/**
+ * 换皮信号：该命题与原片事件链的重合分达到换皮线时，取出**接法相同或只调了顺序**
+ * 的那些环节，交给展开前体检的修订（scope: "root"）。
+ *
+ * 判定与评审派生 `scaffold_copy` 降级理由的那条完全一致（同一个阈值常量），
+ * 所以「路由说它换皮」与「修订收到换皮信号」不会出现一个有、一个没有。
+ * 没有达到换皮线就返回 null，不送任何环节。
+ */
+export function candidateScaffoldCopy(review, candidateId) {
+  const overlap = candidateCheckFor(review, candidateId)?.sourceScaffoldOverlap;
+  const score = overlap?.score;
+  if (!Number.isInteger(score) || score < SOURCE_SCAFFOLD_COPY_SCORE) return null;
+  const links = (Array.isArray(overlap?.eventChain) ? overlap.eventChain : [])
+    .filter((link) => link?.linkage === "same" || link?.linkage === "reordered")
+    .map((link) => ({
+      sourceEvent: String(link?.sourceEvent || ""),
+      candidateEvent: String(link?.candidateEvent || ""),
+      beatIndexes: Array.isArray(link?.beatIndexes) ? link.beatIndexes : [],
+      linkage: String(link?.linkage || "")
+    }));
+  return { score, why: String(overlap?.why || ""), links };
+}
+
+/**
+ * BLOCKER 级硬伤：评审用 dominantDefect 显式投下的一票否决（派生为 `blocker_defect`）。
+ * 与换皮信号同理，判定与降级理由共用同一个条件，只在 severity 为 BLOCKER 时返回。
+ */
+export function candidateBlockerDefect(review, candidateId) {
+  const defect = candidateCheckFor(review, candidateId)?.dominantDefect;
+  if (String(defect?.severity || "") !== "BLOCKER") return null;
+  return { type: String(defect?.type || ""), description: String(defect?.description || "") };
 }
 
 /**

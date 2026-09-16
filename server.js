@@ -136,7 +136,8 @@ const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
   MODEL_OUTPUT_LOG_SCOPES.STORY_CANDIDATE_REVISION,
   MODEL_OUTPUT_LOG_SCOPES.STORY_QUALITY_REVIEW,
   MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVIEW,
-  MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVISION
+  MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVISION,
+  MODEL_OUTPUT_LOG_SCOPES.FULL_STORY_PROMISE_CHECK
 ];
 const stageModelOutputLogRoot = await resolvePrivateModelOutputLogRoot({
   workspaceRoot: root,
@@ -366,6 +367,10 @@ const routes = {
   // 命题定向修订：按对照评审报出的因果断裂只改被点名的那一个命题。**不签发任何东西**——
   // 返回合并后的整批供页面预览，用户点「采纳」时才由浏览器走既有的 themeVariants 签发流程。
   "/api/story-candidate-revision": (body) => workflow.createStoryCandidateRevision(body),
+  // 完整剧情的展开前体检：原样调用候选对照评审（只送选中的这一个候选）并加一次承诺核对，
+  // 确定性地给出「先修订候选」还是「直接展开」。与评审同规格，只出报告、不签发任何东西；
+  // 候选要改，只能由用户在页面上采纳修订、签发新版本之后再展开。
+  "/api/full-story-precheck": (body) => workflow.createFullStoryPrecheck(body),
   "/api/animation-plan-review": (body) => workflow.createAnimationPlanReview(body),
   // 定向修订：按终审报告只改被点名的镜头。**不签发任何东西**——返回合并后的候选 Plan
   // 供页面预览，用户点「采纳」时才由浏览器走既有的 Plan revision 签发流程。

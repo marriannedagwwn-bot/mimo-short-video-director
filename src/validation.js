@@ -5,7 +5,8 @@ import {
   validateStoryCandidatesStrict,
   validateAnimationPlanReviewStrict,
   validateStoryCandidateReviewStrict,
-  validateStoryQualityReviewStrict
+  validateStoryQualityReviewStrict,
+  validateFullStoryPromiseCheckStrict
 } from "./contracts/contract-validator.js";
 import { isNarrativeFullStory, NARRATIVE_FULL_STORY_FIELDS } from "./full-story-contract.js";
 import { GLOBAL_CHARACTER_BOUNDARY_VERSION } from "./character-boundary.js";
@@ -360,6 +361,17 @@ export function ensureOutputContract(value, contract) {
     if (!schemaResult.ok) {
       throw new OutputContractError(
         `storyCandidateReview 结构校验失败：${schemaResult.diagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+        schemaResult.diagnostics
+      );
+    }
+  }
+  // 展开前承诺核对。schema 只管结构；两个承诺来源是否都核对过、摘句是不是真从
+  // 标题和钩子里摘的、拍号是否存在，由 ensureFullStoryPromiseCheckCoversCandidate 裁决。
+  if (contract === "fullStoryPromiseCheck") {
+    const schemaResult = validateFullStoryPromiseCheckStrict(value);
+    if (!schemaResult.ok) {
+      throw new OutputContractError(
+        `fullStoryPromiseCheck 结构校验失败：${schemaResult.diagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
         schemaResult.diagnostics
       );
     }
@@ -3352,6 +3364,254 @@ function deriveCandidateReviewVerdicts(review) {
   review.runnerUp = allDropped ? "" : (scoreOrder[1] || "");
   review.rejectOrRegenerate = scoreOrder.filter((id) => verdictById.get(id) === "drop");
   return review;
+}
+
+/** 展开前承诺核对里判为「没演出来」的两档。路由与修订信号共用这一份，不另写第二份。 */
+export const FULL_STORY_PROMISE_UNREALIZED_VERDICTS = Object.freeze(["partially_realized", "not_realized"]);
+
+const FULL_STORY_PROMISE_SOURCES = Object.freeze(["title", "oneLineHook"]);
+
+function promiseSourceText(candidate) {
+  return {
+    title: String(candidate?.title || ""),
+    oneLineHook: String(candidate?.oneLineHook || "")
+  };
+}
+
+function throwPromiseContractError(label, details) {
+  if (!details.length) return;
+  throw new OutputContractError(
+    `${label}：${details.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+    details
+  );
+}
+
+/**
+ * 判定由逐条结果**确定性派生**，模型不写 verdict：
+ * 全部找到 = realized，找到一部分 = partially_realized，一条都没找到 = not_realized。
+ * 标题被判为不构成承诺时直接是 not_a_promise，不参与统计。
+ */
+export function derivePromiseVerdict(kind, mustSee, findings) {
+  if (kind === "not_a_promise") return "not_a_promise";
+  const total = Array.isArray(mustSee) ? mustSee.length : 0;
+  if (!total) return "not_realized";
+  const found = (Array.isArray(findings) ? findings : []).filter((entry) => entry?.found === true).length;
+  if (found >= total) return "realized";
+  return found > 0 ? "partially_realized" : "not_realized";
+}
+
+/**
+ * 第一步：**盲写的**承诺清单。这一步的输入不含动作链，所以这里能核验的只有
+ * 「摘句是不是真的来自标题或钩子」与「两个来源都核对过」。
+ *
+ * 分两步是实测结论（2026-09-16）：单次调用里动作链一直在上下文中，模型会照着
+ * 动作链倒推期待——同一个标题在两个候选上写出相反的 mustSee，于是两边都判已兑现。
+ */
+export function ensureFullStoryPromiseListContract(list, candidate) {
+  requireObject(list, "fullStoryPromiseList");
+  const details = [];
+  const push = (code, path, reason) => details.push({ code, path, reason });
+  const candidateId = String(candidate?.id || "").trim();
+  if (String(list.candidateId || "").trim() !== candidateId) {
+    push(
+      "PROMISE_CHECK_CANDIDATE_MISMATCH",
+      "/candidateId",
+      `本次核对的是候选「${candidateId}」，清单写的是「${String(list.candidateId || "")}」`
+    );
+  }
+  const sourceText = promiseSourceText(candidate);
+  const promises = Array.isArray(list.promises) ? list.promises : null;
+  if (!promises) {
+    push("PROMISE_CHECK_LIST_INVALID", "/promises", "promises 必须是数组");
+  }
+  const covered = new Set();
+  (promises || []).forEach((entry, index) => {
+    const source = String(entry?.source || "");
+    const text = sourceText[source];
+    if (text === undefined) {
+      push("PROMISE_CHECK_LIST_INVALID", `/promises/${index}/source`, "source 只能是 title 或 oneLineHook");
+      return;
+    }
+    covered.add(source);
+    const quote = normalizeStoryReviewEcho(entry?.quote);
+    if (!quote || !normalizeStoryReviewEcho(text).includes(quote)) {
+      push(
+        "PROMISE_CHECK_QUOTE_NOT_IN_SOURCE",
+        `/promises/${index}/quote`,
+        `quote 必须逐字摘自候选的 ${source}「${text}」，不得概括或改写`
+      );
+    }
+    if (!String(entry?.promise || "").trim()) {
+      push("PROMISE_CHECK_LIST_INVALID", `/promises/${index}/promise`, "promise 必须写清楚观众因此期待看到什么");
+    }
+    const kind = String(entry?.kind || "");
+    if (kind !== "promise" && kind !== "not_a_promise") {
+      push("PROMISE_CHECK_LIST_INVALID", `/promises/${index}/kind`, "kind 只能是 promise 或 not_a_promise");
+      return;
+    }
+    if (kind === "not_a_promise" && source !== "title") {
+      push(
+        "PROMISE_CHECK_HOOK_NOT_A_PROMISE",
+        `/promises/${index}/kind`,
+        "oneLineHook 本身就是承诺，不能判 not_a_promise；只有标题可以用这个值"
+      );
+    }
+    const mustSee = (Array.isArray(entry?.mustSee) ? entry.mustSee : [])
+      .filter((item) => String(item || "").trim());
+    if (kind === "promise" && !mustSee.length) {
+      push(
+        "PROMISE_CHECK_MUST_SEE_EMPTY",
+        `/promises/${index}/mustSee`,
+        "只要是承诺，就必须写出观众要亲眼看到的 1–3 件事，否则后面没有可核对的内容"
+      );
+    }
+    if (mustSee.length > 3) {
+      push("PROMISE_CHECK_LIST_INVALID", `/promises/${index}/mustSee`, "最多 3 条");
+    }
+  });
+  for (const source of FULL_STORY_PROMISE_SOURCES) {
+    if (!sourceText[source].trim() || covered.has(source)) continue;
+    push(
+      "PROMISE_CHECK_SOURCE_MISSING",
+      "/promises",
+      `候选的 ${source}「${sourceText[source]}」至少要核对一条，不能跳过`
+    );
+  }
+  throwPromiseContractError("fullStoryPromiseList 核验失败", details);
+  return list;
+}
+
+/**
+ * 第二步：逐条定位。**覆盖率由构造保证**——每个 (promiseIndex, mustSeeIndex) 必须
+ * 恰好回答一次，漏一条就拦下，模型无法只挑好找的那几条回答。
+ *
+ * 判 found 必须给出**那一拍原文的逐字引用**：这不能证明它理解对了，但能证明
+ * 它确实指着某一句话说话，而不是凭印象宣布「演了」。判没找到必须写原因。
+ */
+export function ensureFullStoryPromiseFindingsContract(promiseFindings, promiseList, candidate) {
+  requireObject(promiseFindings, "fullStoryPromiseFindings");
+  const details = [];
+  const push = (code, path, reason) => details.push({ code, path, reason });
+  const candidateId = String(candidate?.id || "").trim();
+  if (String(promiseFindings.candidateId || "").trim() !== candidateId) {
+    push(
+      "PROMISE_CHECK_CANDIDATE_MISMATCH",
+      "/candidateId",
+      `本次核对的是候选「${candidateId}」，定位结果写的是「${String(promiseFindings.candidateId || "")}」`
+    );
+  }
+  const promises = Array.isArray(promiseList?.promises) ? promiseList.promises : [];
+  const outline = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline : [];
+  const actionByBeat = new Map(outline.map((beat) => [Number(beat?.beat), String(beat?.action || "")]));
+  const expected = new Set();
+  promises.forEach((entry, promiseIndex) => {
+    if (String(entry?.kind || "") === "not_a_promise") return;
+    (Array.isArray(entry?.mustSee) ? entry.mustSee : []).forEach((item, mustSeeIndex) => {
+      if (!String(item || "").trim()) return;
+      expected.add(`${promiseIndex}:${mustSeeIndex}`);
+    });
+  });
+  const seen = new Set();
+  const rows = Array.isArray(promiseFindings.findings) ? promiseFindings.findings : null;
+  if (!rows) push("PROMISE_CHECK_FINDINGS_INVALID", "/findings", "findings 必须是数组");
+  (rows || []).forEach((row, index) => {
+    const key = `${Number(row?.promiseIndex)}:${Number(row?.mustSeeIndex)}`;
+    if (!expected.has(key)) {
+      push(
+        "PROMISE_CHECK_FINDING_UNKNOWN",
+        `/findings/${index}`,
+        `清单里没有第 ${row?.promiseIndex} 条承诺的第 ${row?.mustSeeIndex} 项，不能凭空回答`
+      );
+      return;
+    }
+    if (seen.has(key)) {
+      push("PROMISE_CHECK_FINDING_DUPLICATE", `/findings/${index}`, "同一项只能回答一次");
+      return;
+    }
+    seen.add(key);
+    if (row?.found === true) {
+      const action = actionByBeat.get(Number(row?.beat));
+      if (action === undefined) {
+        push(
+          "PROMISE_CHECK_UNKNOWN_BEAT",
+          `/findings/${index}/beat`,
+          `引用了不存在的拍号 ${row?.beat}；该候选只有 ${outline.length} 拍`
+        );
+        return;
+      }
+      const evidence = normalizeStoryReviewEcho(row?.evidence);
+      if (!evidence || !normalizeStoryReviewEcho(action).includes(evidence)) {
+        push(
+          "PROMISE_CHECK_EVIDENCE_NOT_IN_BEAT",
+          `/findings/${index}/evidence`,
+          `判「演出来了」就必须逐字引用第 ${row?.beat} 拍 action 里的原文，不能转述或另写一句`
+        );
+      }
+      return;
+    }
+    if (!String(row?.why || "").trim()) {
+      push(
+        "PROMISE_CHECK_WHY_MISSING",
+        `/findings/${index}/why`,
+        "判「没找到」必须写清楚动作链里实际写的是什么"
+      );
+    }
+  });
+  for (const key of expected) {
+    if (seen.has(key)) continue;
+    const [promiseIndex, mustSeeIndex] = key.split(":");
+    push(
+      "PROMISE_CHECK_FINDING_MISSING",
+      "/findings",
+      `第 ${promiseIndex} 条承诺的第 ${mustSeeIndex} 项没有回答；每一项都必须逐条给出结论`
+    );
+  }
+  throwPromiseContractError("fullStoryPromiseFindings 核验失败", details);
+  return promiseFindings;
+}
+
+/**
+ * 合成后的整份报告。它会跨 HTTP 回到服务端（定向修订拿它当输入），所以要重新核验：
+ * 摘句仍然来自标题或钩子、证据仍然来自它引用的那一拍、**verdict 必须等于按逐条结果
+ * 重新派生出来的值**——重新派生就把「改一个字段让它看起来没问题」这条路堵死了。
+ */
+export function ensureFullStoryPromiseCheckCoversCandidate(check, candidate) {
+  requireObject(check, "fullStoryPromiseCheck");
+  ensureFullStoryPromiseListContract(
+    {
+      candidateId: check.candidateId,
+      promises: (Array.isArray(check.promises) ? check.promises : []).map((entry) => ({
+        source: entry?.source,
+        quote: entry?.quote,
+        kind: entry?.kind,
+        promise: entry?.promise,
+        mustSee: entry?.mustSee
+      }))
+    },
+    candidate
+  );
+  ensureFullStoryPromiseFindingsContract(
+    {
+      candidateId: check.candidateId,
+      findings: (Array.isArray(check.promises) ? check.promises : []).flatMap((entry, promiseIndex) => (
+        (Array.isArray(entry?.findings) ? entry.findings : []).map((finding) => ({ ...finding, promiseIndex }))
+      ))
+    },
+    { promises: check.promises },
+    candidate
+  );
+  const details = [];
+  (Array.isArray(check.promises) ? check.promises : []).forEach((entry, index) => {
+    const derived = derivePromiseVerdict(entry?.kind, entry?.mustSee, entry?.findings);
+    if (String(entry?.verdict || "") === derived) return;
+    details.push({
+      code: "PROMISE_CHECK_VERDICT_NOT_DERIVED",
+      path: `/promises/${index}/verdict`,
+      reason: `verdict 由服务端从逐条结果派生，应当是「${derived}」，收到的是「${String(entry?.verdict || "")}」`
+    });
+  });
+  throwPromiseContractError("fullStoryPromiseCheck 覆盖率核验失败", details);
+  return check;
 }
 
 /**

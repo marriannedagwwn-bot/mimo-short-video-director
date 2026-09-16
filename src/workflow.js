@@ -1,6 +1,14 @@
-import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
-import { mockAnalysis, mockAnimationPlan, mockBrief, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
+import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPromiseCheckRetryPrompt, fullStoryPromiseFindingsPrompt, fullStoryPromiseListPrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { isNarrativeFullStory } from "./full-story-contract.js";
+import {
+  FULL_STORY_PRECHECK_SCHEMA_VERSION,
+  FULL_STORY_PROMISE_CHECK_STAGE,
+  assembleFullStoryPromiseCheck,
+  deriveFullStoryPrecheckRoute,
+  promiseCheckGaps,
+  singleCandidateThemeVariants
+} from "./full-story-precheck.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { compileCharacterFeatures } from "./character-feature-compiler.js";
 import {
@@ -49,7 +57,9 @@ import { ModelCallCoordinator, classifyAttemptError } from "./model-call-coordin
 import { ModelPipelineError } from "./model-errors.js";
 import {
   assertOnlyCandidateRevisionFieldsChanged,
+  candidateBlockerDefect,
   candidateCoherenceBreaks,
+  candidateScaffoldCopy,
   candidateUnmigratedMechanisms,
   ensureStoryCandidateRevisionContract,
   findCandidate,
@@ -60,6 +70,9 @@ import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compi
 import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanDirectShotContract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
   deriveStoryCandidateProjections,
   deriveFullStoryTargetDuration,
+  ensureFullStoryPromiseCheckCoversCandidate,
+  ensureFullStoryPromiseFindingsContract,
+  ensureFullStoryPromiseListContract,
   ensureStoryCandidateReviewCoversCandidates,
   ensureStoryQualityReviewCoversStory
 } from "./validation.js";
@@ -605,6 +618,18 @@ export class WorkflowService {
     const themeVariants = requireObject(input.themeVariants, "themeVariants");
     const review = requireObject(input.review, "review");
     const candidateId = requireText(input.candidateId, "candidateId");
+    // scope: "root" = 由完整剧情的展开前体检触发，只修会被带进完整剧情的根问题。
+    // 不传 = 手动修订按钮，行为与提示词逐字不变。其它取值一律拒绝，不猜。
+    const scope = input.scope === undefined || input.scope === null || input.scope === ""
+      ? ""
+      : String(input.scope);
+    if (scope && scope !== "root") {
+      throw new InputError(`scope 只接受 root（展开前体检），收到的是「${scope}」`);
+    }
+    const root = scope === "root";
+    if (!root && input.promiseCheck !== undefined && input.promiseCheck !== null) {
+      throw new InputError("promiseCheck 只用于展开前体检触发的修订，必须同时传 scope: root");
+    }
 
     // themeVariants 与 review 都是**请求输入**，不是本阶段的模型输出。
     // 原样上抛 OutputContractError 会变成 502 加一句「模型输出未通过校验」，
@@ -623,10 +648,22 @@ export class WorkflowService {
     }
     // 评审报告必须是**这一批命题**的报告：拿另一批的报告来修订会当场失败，
     // 不会静默按 candidateId 对齐。
+    //
+    // 唯一的例外来自展开前体检：它的评审只送了这一个候选，报告因此恰好一条。
+    // 只在 scope: root、且那一条正是目标命题时，才按这一个候选核对覆盖率；
+    // 合并与复验仍然用整批，narrativeMode 配比等整批闸门不受影响。
+    const allCandidates = Array.isArray(themeVariants.variants) ? themeVariants.variants : [];
+    const reviewChecks = Array.isArray(review.candidateChecks) ? review.candidateChecks : [];
+    const singleCandidateReview = root
+      && reviewChecks.length === 1
+      && String(reviewChecks[0]?.candidateId || "") === String(candidateId);
+    const reviewedCandidates = singleCandidateReview
+      ? allCandidates.filter((entry) => String(entry?.id || "") === String(candidateId))
+      : allCandidates;
     try {
       ensureStoryCandidateReviewCoversCandidates(
         ensureOutputContract(review, "storyCandidateReview"),
-        Array.isArray(themeVariants.variants) ? themeVariants.variants : []
+        reviewedCandidates
       );
     } catch (error) {
       asInputError(error, "review 不是这一批命题的合法评审报告");
@@ -637,7 +674,31 @@ export class WorkflowService {
     const coherenceBreaks = candidateCoherenceBreaks(review, candidateId);
     // 第二个驱动信号：原片有、这个命题没接住的机制。与因果断裂并列，但修法不同——
     // 接一条机制通常要加动作，而因果断裂明确不许加戏，两者混成一个列表模型就分不清了。
-    const unmigratedMechanisms = candidateUnmigratedMechanisms(review, candidateId);
+    // 展开前体检不送它：那一类是创作取舍，而且会把故事往原片方向推，与换皮信号打架。
+    const unmigratedMechanisms = root ? [] : candidateUnmigratedMechanisms(review, candidateId);
+
+    // 展开前体检的三类根问题。每一类都与体检路由的一条理由一一对应：
+    // coherence_break → 因果断裂、promise_unrealized → 没演出来的承诺、
+    // scaffold_copy → 换皮环节、blocker_defect → 硬伤。路由说有、修订却收不到信号的
+    // 情况因此不会出现（提取器与派生降级理由共用同一个判定条件）。
+    let promiseGaps = [];
+    if (root) {
+      const promiseCheck = requireObject(input.promiseCheck, "promiseCheck");
+      try {
+        ensureFullStoryPromiseCheckCoversCandidate(
+          ensureOutputContract(promiseCheck, "fullStoryPromiseCheck"),
+          candidate
+        );
+      } catch (error) {
+        asInputError(error, "promiseCheck 不是这个命题的合法承诺核对");
+      }
+      promiseGaps = promiseCheckGaps(promiseCheck);
+    }
+    const scaffoldCopy = root ? candidateScaffoldCopy(review, candidateId) : null;
+    const blockerDefect = root ? candidateBlockerDefect(review, candidateId) : null;
+    if (root && !coherenceBreaks.length && !promiseGaps.length && !scaffoldCopy && !blockerDefect) {
+      throw new InputError("展开前体检没有报出任何根问题，不需要修订；请直接展开完整剧情");
+    }
 
     // 固定角色边界照常验签并参与复验：修订改的是动作链，那正是可能混进禁止特征的地方。
     const visualGuardrails = input.visualGuardrails ? this.assertGlobalCharacterBoundary(input) : null;
@@ -647,7 +708,9 @@ export class WorkflowService {
 
     if (!this.hasLiveClient) {
       return {
-        ...finalize(mockStoryCandidateRevision(candidate, coherenceBreaks, unmigratedMechanisms)),
+        ...finalize(mockStoryCandidateRevision(candidate, coherenceBreaks, unmigratedMechanisms, {
+          promiseGaps, scaffoldCopy, blockerDefect
+        })),
         metadata: candidateRevisionMetadata({ provider: "demo", model: "demo" })
       };
     }
@@ -673,6 +736,10 @@ export class WorkflowService {
             candidate,
             coherenceBreaks,
             unmigratedMechanisms,
+            promiseGaps,
+            scaffoldCopy,
+            blockerDefect,
+            scope,
             targetDurationSeconds: input.targetDurationSeconds
           }),
           model: settings.model,
@@ -754,6 +821,177 @@ export class WorkflowService {
       visualGuardrails
     );
     return { candidateId, revision, themeVariants: validated };
+  }
+
+  /**
+   * 完整剧情的展开前体检（2026-09-16）。点「生成完整剧情」时先跑这一步。
+   *
+   * 两路并行：**原样**调用现有候选对照评审（只送这一个候选），再加一次承诺核对。
+   * 路由由两份结果确定性合成（见 deriveFullStoryPrecheckRoute）：有根问题就先修订候选、
+   * 由用户采纳后再展开；没有就直接展开。
+   *
+   * 只出报告，与评审同规格：不签发 Artifact、不进 lineage、不 stale、不阻断后续。
+   * 候选的修改只能由用户采纳后签发新版本，**绝不在已冻结的展开任务里偷换候选**。
+   *
+   * 任一路失败都整体报错，不拿半份结果路由——只看评审会漏掉「承诺没演出来」，
+   * 只看承诺核对会漏掉因果断裂与换皮，两种半截结论都会让人误以为候选没问题。
+   */
+  async createFullStoryPrecheck(input) {
+    requireObject(input, "请求");
+    const themeVariants = requireObject(input.themeVariants, "themeVariants");
+    const candidateId = requireText(input.candidateId, "candidateId");
+    const reviewThemeVariants = singleCandidateThemeVariants(themeVariants, candidateId);
+    const candidate = reviewThemeVariants.variants[0];
+
+    // 必须等两路都结束再决定成败：一路先失败就立即上抛，另一路还在后台计费，
+    // 它的用量会落到这次请求之外——等于把花掉的钱藏起来。
+    const [reviewOutcome, promiseOutcome] = await Promise.allSettled([
+      this.createStoryCandidateReview({ ...input, themeVariants: reviewThemeVariants }),
+      this.createFullStoryPromiseCheck({ ...input, candidate })
+    ]);
+    const failures = [
+      reviewOutcome.status === "rejected" ? { label: "候选评审", reason: reviewOutcome.reason } : null,
+      promiseOutcome.status === "rejected" ? { label: "承诺核对", reason: promiseOutcome.reason } : null
+    ].filter(Boolean);
+    if (failures.length) {
+      const [first, second] = failures;
+      // 两路都失败时两个原因都要说出来，只报一个会让人以为修好它就能过。
+      if (second && first.reason instanceof Error) {
+        try {
+          first.reason.message = `${first.reason.message}；另外${second.label}也失败了：${
+            second.reason instanceof Error ? second.reason.message : String(second.reason)
+          }`;
+        } catch {
+          // message 不可写时保持原样上抛，不因补充说明失败而改变错误本身。
+        }
+      }
+      throw first.reason;
+    }
+
+    const review = reviewOutcome.value.review;
+    const promiseCheck = promiseOutcome.value.promiseCheck;
+    const reviewCheck = Array.isArray(review?.candidateChecks) ? review.candidateChecks[0] || null : null;
+    const { route, reasons } = deriveFullStoryPrecheckRoute({ reviewCheck, promiseCheck });
+    return {
+      schemaVersion: FULL_STORY_PRECHECK_SCHEMA_VERSION,
+      candidateId,
+      route,
+      reasons,
+      review,
+      promiseCheck,
+      metadata: {
+        ...reviewOutcome.value.metadata,
+        ...promiseOutcome.value.metadata
+      }
+    };
+  }
+
+  /**
+   * 展开前承诺核对：标题和钩子许诺的东西，动作链有没有演出来。
+   *
+   * **两次顺序调用，第一次看不到动作链。** 这是 2026-09-16 第一版 A/B 实测出来的：
+   * 单次调用里动作链一直在上下文中，模型会照着动作链倒推期待，于是无论候选写成什么样
+   * 都判「已兑现」（同一个标题在两个候选上写出相反的 mustSee）。所以：
+   *   1. 盲写承诺清单：输入只有标题、钩子、叙事模式与主角名。
+   *   2. 逐条定位：拿冻结的清单去动作链里找，每一项给出拍号与逐字引用。
+   *   3. 判定由服务端从逐条结果派生，模型不写 verdict。
+   *
+   * 两次调用各自允许「第一次做错」：被确定性闸门拦下时只带诊断重做一次，禁止第三次，
+   * 与候选对照评审同规格。原文按本阶段 scope 自己接 attemptObserver 落盘。
+   * **沿用候选评审的模型设置**——两者同属「审这个候选」，不另起一个模型选项。
+   */
+  async createFullStoryPromiseCheck(input) {
+    requireObject(input, "请求");
+    const candidate = requireObject(input.candidate, "candidate");
+    if (!this.hasLiveClient) {
+      const mock = mockFullStoryPromiseCheck(candidate);
+      return {
+        promiseCheck: ensureFullStoryPromiseCheckCoversCandidate(
+          ensureOutputContract(mock, "fullStoryPromiseCheck"),
+          candidate
+        ),
+        metadata: promiseCheckMetadata({ provider: "demo", model: "demo" })
+      };
+    }
+    const settings = this.resolveStage("storyCandidateReview", input);
+    this.assertStageClient(settings, "展开前承诺核对");
+
+    // 实数调用次数，不能从 rejections 反推：传输失败时它是空数组，供应商却确实被调用过。
+    let providerCalls = 0;
+    const rejections = [];
+    const outputLogWriter = this.stageModelOutputLogWriters?.get(FULL_STORY_PROMISE_CHECK_STAGE) || null;
+    const recordAttempt = outputLogWriter?.enabled
+      ? (attempt) => outputLogWriter.recordAttempt(attempt)
+      : null;
+    const runStep = (prompt, validate) => this.modelCallCoordinator.runJson({
+      client: settings.client,
+      request: {
+        prompt,
+        model: settings.model,
+        maxCompletionTokens: settings.maxCompletionTokens,
+        requestTimeoutMs: settings.requestTimeoutMs
+      },
+      provider: settings.provider || "",
+      stage: FULL_STORY_PROMISE_CHECK_STAGE,
+      maxProviderCalls: 2,
+      attemptObserver: async (attempt) => {
+        providerCalls += 1;
+        if (!recordAttempt) return;
+        try {
+          await recordAttempt(attempt);
+        } catch {
+          // 观测失败不改变结论。
+        }
+      },
+      retryTokenLimit,
+      retryPrompt: ({ originalPrompt }) => {
+        const last = rejections[rejections.length - 1];
+        return last?.details?.length
+          ? fullStoryPromiseCheckRetryPrompt({ originalPrompt, details: last.details })
+          : originalPrompt;
+      },
+      validate: (result) => {
+        try {
+          return validate(result);
+        } catch (error) {
+          if (error instanceof OutputContractError) {
+            rejections.push({
+              message: error.message,
+              details: Array.isArray(error.details) ? error.details : []
+            });
+          }
+          throw error;
+        }
+      }
+    });
+
+    let promiseCheck;
+    try {
+      const promiseList = await runStep(
+        fullStoryPromiseListPrompt(candidate),
+        (result) => ensureFullStoryPromiseListContract(result, candidate)
+      );
+      const promiseFindings = await runStep(
+        fullStoryPromiseFindingsPrompt(candidate, promiseList),
+        (result) => ensureFullStoryPromiseFindingsContract(result, promiseList, candidate)
+      );
+      promiseCheck = ensureFullStoryPromiseCheckCoversCandidate(
+        ensureOutputContract(assembleFullStoryPromiseCheck(promiseList, promiseFindings), "fullStoryPromiseCheck"),
+        candidate
+      );
+    } catch (error) {
+      throw candidateReviewPipelineFailure(error, rejections);
+    }
+
+    return {
+      promiseCheck,
+      metadata: promiseCheckMetadata({
+        provider: settings.provider || "",
+        model: settings.model || "",
+        providerCalls,
+        rejections
+      })
+    };
   }
 
   /**
@@ -3283,6 +3521,28 @@ function candidateReviewMetadata({
   const list = Array.isArray(rejections) ? rejections : [];
   return {
     storyCandidateReview: {
+      provider,
+      model,
+      providerCalls,
+      rejections: list.map((rejection, index) => ({
+        attempt: index + 1,
+        message: String(rejection?.message || ""),
+        details: Array.isArray(rejection?.details) ? rejection.details : []
+      }))
+    }
+  };
+}
+
+/** 承诺核对的调用元数据，与评审同形状：拦过一次就必须说出来。 */
+function promiseCheckMetadata({
+  provider = "",
+  model = "",
+  providerCalls = 1,
+  rejections = []
+} = {}) {
+  const list = Array.isArray(rejections) ? rejections : [];
+  return {
+    fullStoryPromiseCheck: {
       provider,
       model,
       providerCalls,

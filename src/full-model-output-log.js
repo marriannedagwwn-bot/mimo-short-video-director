@@ -19,7 +19,9 @@ export const MODEL_OUTPUT_LOG_SCOPES = Object.freeze({
   STORY_CANDIDATE_REVISION: "storyCandidateRevision",
   STORY_QUALITY_REVIEW: "storyQualityReview",
   ANIMATION_PLAN_REVIEW: "animationPlanReview",
-  ANIMATION_PLAN_REVISION: "animationPlanRevision"
+  ANIMATION_PLAN_REVISION: "animationPlanRevision",
+  // 完整剧情的展开前承诺核对（src/full-story-precheck.js 的 FULL_STORY_PROMISE_CHECK_STAGE）。
+  FULL_STORY_PROMISE_CHECK: "fullStoryPromiseCheck"
 });
 
 export async function resolvePrivateModelOutputLogRoot({

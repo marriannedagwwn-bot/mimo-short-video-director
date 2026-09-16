@@ -25,6 +25,10 @@ const storyCandidateReviewSchema = JSON.parse(fs.readFileSync(
   new URL("./schemas/story-candidate-review-strict.schema.json", import.meta.url),
   "utf8"
 ));
+const fullStoryPromiseCheckSchema = JSON.parse(fs.readFileSync(
+  new URL("./schemas/full-story-promise-check-strict.schema.json", import.meta.url),
+  "utf8"
+));
 const ajv = new Ajv2020({
   allErrors: true,
   strict: true,
@@ -36,6 +40,7 @@ const validateStoryCandidates = ajv.compile(storyCandidatesSchema);
 const validateStoryQualityReview = ajv.compile(storyQualityReviewSchema);
 const validateAnimationPlanReview = ajv.compile(animationPlanReviewSchema);
 const validateStoryCandidateReview = ajv.compile(storyCandidateReviewSchema);
+const validateFullStoryPromiseCheck = ajv.compile(fullStoryPromiseCheckSchema);
 const validateStoryCandidate = ajv.compile({
   $schema: storyCandidatesSchema.$schema,
   $id: "internal://story-candidate-strict",
@@ -89,6 +94,13 @@ export function validateStoryCandidateReviewStrict(value) {
   return validateStrictContract(validateStoryCandidateReview, value, {
     codePrefix: "STORY_CANDIDATE_REVIEW_SCHEMA",
     label: "Story Candidate Review"
+  });
+}
+
+export function validateFullStoryPromiseCheckStrict(value) {
+  return validateStrictContract(validateFullStoryPromiseCheck, value, {
+    codePrefix: "FULL_STORY_PROMISE_CHECK_SCHEMA",
+    label: "Full Story Promise Check"
   });
 }
 

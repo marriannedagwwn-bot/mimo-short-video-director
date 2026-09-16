@@ -162,6 +162,20 @@ export const CANDIDATE_REVIEW_OVERRIDE_LABELS = Object.freeze({
   blocker_defect: "终审判定存在 BLOCKER 级硬伤"
 });
 
+/**
+ * 展开前体检多出来的那一条路由理由：标题或钩子许诺的东西，动作链没演出来。
+ * 它与上面三条并列进入路由，**判定字符串只有这一份**——服务端
+ * `src/full-story-precheck.js` 直接引用它，浏览器按同一份表出中文，
+ * 两边各写一遍必然漂移（§2.14 `revisionShotLoad` 记过同一个教训）。
+ */
+export const PROMISE_UNREALIZED_REASON = "promise_unrealized";
+
+/** 体检路由理由的中文标签 = 评审那三条 ∪ 承诺那一条。 */
+export const FULL_STORY_PRECHECK_REASON_LABELS = Object.freeze({
+  ...CANDIDATE_REVIEW_OVERRIDE_LABELS,
+  [PROMISE_UNREALIZED_REASON]: "标题或钩子许诺的东西，动作链没演出来"
+});
+
 /** 三个决定的严格程度，取最严时用。数字只用于比较，不对外展示。 */
 const VERDICT_SEVERITY = Object.freeze({ pass: 0, revise: 1, drop: 2 });
 
