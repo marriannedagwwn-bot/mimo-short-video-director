@@ -194,6 +194,30 @@ test("提示词写明只看动作、不许自报结论，并给出生活流不�
   assert.doesNotMatch(prompt, /双向关怀/u);
 });
 
+// 2026-09-18（docs/story-review-dialogue-response-ab-2026-09-18.md）：creatorProfile 作为硬事实送进评审，
+// 「小白子会说谢谢」被读成合规加分——喂完奶奶自己说「谢谢」那一拍，五次模型输出对白都打 9–9.5。
+// 第一版只问方向，模型替它编了「回应了奶奶煮豆子的隐性付出」；第二版换成「观众能不能不靠猜说出他在谢什么」。
+test("第 11 维先问台词在回应什么，合乎说话限制不是加分理由；contradiction 含台词方向相反的形状", () => {
+  const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
+  assert.match(prompt, /\*\*它回应的是观众刚看见的哪个动作、刚听见的哪句话？\*\*/u);
+  assert.match(prompt, /观众能不能不靠猜，就说出他在谢什么/u);
+  assert.match(prompt, /没演出来的「隐性付出」「平时的照顾」不能拿来替它圆/u);
+  assert.match(prompt, /\*\*合乎角色的说话限制只是底线，不是加分理由\*\*/u);
+  assert.match(prompt, /\*\*台词与同一拍的动作方向相反也算\*\*：刚付出的一方紧接着向受惠的一方道谢/u);
+  // 原来那一问只查「像不像这个角色会说的话」，正是它把合规读成了加分，不许回来。
+  assert.doesNotMatch(prompt, /对白像不像这个角色会说的话/u);
+
+  // §2.12b ⑤：举例一律是抽象形状，不含任何参考片或候选的具体名词——举例会被逐字照抄。
+  const dimension = prompt.slice(prompt.indexOf("11. **dialogueAndNaturalness"), prompt.indexOf("### 四、physicalAssumptions"));
+  const contradiction = prompt.slice(prompt.indexOf("  - contradiction："), prompt.indexOf("  - tool_misuse："));
+  assert.ok(dimension.length > 50 && contradiction.length > 50, "没切到这两段，下面的断言会恒真");
+  for (const text of [dimension, contradiction]) {
+    for (const noun of ["谢谢", "毛豆", "奶奶", "小白子", "蒲扇"]) {
+      assert.doesNotMatch(text, new RegExp(noun, "u"), `新增的判据里不许出现具体名词「${noun}」`);
+    }
+  }
+});
+
 test("提示词带上原片动作稿——没有对照物就发现不了迁移失败", () => {
   const prompt = storyCandidateReviewPrompt(CANDIDATES, RECONSTRUCTION);
   assert.match(prompt, /咕嘎递出棒棒糖/u);

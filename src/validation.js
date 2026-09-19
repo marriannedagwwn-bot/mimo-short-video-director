@@ -2803,7 +2803,7 @@ export function ensureThemeVariantsMatchProfile(
  * 在 `full_story/1.1` 里根本已经不存在，校验器一直在核对一个空数组。
  *
  * **代价要说清楚：2.0 没有「模型逐场看过」这个确定性覆盖属性。** 它换来的是
- * 承诺核对（拿候选当外部参照，而不是场次自报的 dramaticFunction）与九类编辑诊断。
+ * 承诺核对（拿候选当外部参照，而不是场次自报的 dramaticFunction）与十类编辑诊断。
  * 「判得对不对」仍然没有兜底，这一点两个版本相同。
  */
 export function ensureStoryQualityReviewCoversStory(review, fullStory) {
@@ -2876,7 +2876,7 @@ export function ensureStoryQualityEditorialContract(editorial, fullStory) {
         push(
           "STORY_REVIEW_EDITORIAL_TYPE_UNKNOWN",
           `/issues/${index}/type`,
-          `type 必须是这九个之一：${STORY_QUALITY_ISSUE_TYPES.join("、")}；实际写的是「${String(issue.type || "")}」`
+          `type 必须是这 ${STORY_QUALITY_ISSUE_TYPES.length} 个之一：${STORY_QUALITY_ISSUE_TYPES.join("、")}；实际写的是「${String(issue.type || "")}」`
         );
       }
       if (!Array.isArray(issue.sceneIds) || !issue.sceneIds.length) {

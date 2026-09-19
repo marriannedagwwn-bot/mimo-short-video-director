@@ -103,7 +103,8 @@
             "physical_or_world_logic",
             "character_contract",
             "pacing_and_action_density",
-            "ending_naturalness"
+            "ending_naturalness",
+            "dialogue_logic"
           ]
         },
         "severity": { "enum": ["BLOCKER", "MAJOR", "MINOR"] },

@@ -10,6 +10,7 @@ import {
   PROMISE_CHECK_STATUSES,
   PROMISE_SOURCE_FIELDS,
   STORY_QUALITY_ISSUE_TYPES,
+  STORY_QUALITY_ISSUE_TYPE_LABELS,
   storyReviewHeadline,
   storyReviewMetrics
 } from "../public/story-review-metrics.js";
@@ -205,6 +206,44 @@ test("两段提示词逐字含已验证的承重原句", () => {
   for (const field of PROMISE_SOURCE_FIELDS) {
     assert.match(promise, new RegExp(`\`${field}\``, "u"), `source 清单必须把 ${field} 写给模型`);
   }
+});
+
+test("编辑诊断提示词逐个定义全部问题类型，并逐字含 dialogue_logic 的承重句", () => {
+  const editorial = storyQualityEditorialPrompt({ fullStory: story(), fixedCharacter: "小白子" });
+  // 类型定义是手写的，枚举是共享常量——两边各写一份，漏写一类，模型就永远不会报它。
+  for (const type of STORY_QUALITY_ISSUE_TYPES) {
+    assert.match(editorial, new RegExp(`\`${type}\``, "u"), `编辑诊断提示词必须定义 ${type}`);
+  }
+  // 2026-09-18 两轮实测（docs/story-review-dialogue-response-ab-2026-09-18.md）：第一版只问方向，
+  // 毛豆 0/2；换成「不靠猜说出他在谢什么」之后 2/2、新正例 8/8，12 次反例里方向正确的道谢 0 次被报。
+  assert.match(editorial, /\*\*观众能不能不靠猜，就说出他在谢什么、为什么道歉、在夸什么？\*\*/u);
+  assert.match(editorial, /没演出来的「隐性付出」「平时的照顾」不能拿来替它圆/u);
+  // 剧情自己的角色表把「双手捧脸颊表达感谢」登记成招牌动作，评审就读成「严格符合设定」——这一句专堵它。
+  assert.match(editorial, /角色表里登记的招牌动作，只说明他能这样说，不说明这里该说/u);
+
+  // 举例一律是抽象形状，不含参考片或候选的具体名词（§2.12b ⑤）。
+  const bullet = editorial.slice(editorial.indexOf("- `dialogue_logic`"), editorial.indexOf("## 报问题之前先分清三档"));
+  assert.ok(bullet.length > 50, "没切到 dialogue_logic 那一段，下面的断言会恒真");
+  for (const noun of ["谢谢", "毛豆", "奶奶", "小白子", "蒲扇"]) {
+    assert.doesNotMatch(bullet, new RegExp(noun, "u"), `dialogue_logic 的判据里不许出现具体名词「${noun}」`);
+  }
+});
+
+test("dialogue_logic 过得了严格 schema 与编辑诊断校验，每一类都有中文标签，浏览器渲染成「台词接不上」", async () => {
+  const value = story();
+  const review = reviewFor(value);
+  review.issues[0].type = "dialogue_logic";
+  assert.doesNotThrow(() => ensureOutputContract(structuredClone(review), "storyQualityReview"));
+  assert.doesNotThrow(() => ensureStoryQualityEditorialContract(
+    { summary: "s", issues: [structuredClone(review.issues[0])] },
+    value
+  ));
+
+  for (const type of STORY_QUALITY_ISSUE_TYPES) {
+    assert.ok(STORY_QUALITY_ISSUE_TYPE_LABELS[type], `${type} 缺中文标签，页面上会直接露出英文标识`);
+  }
+  const app = await loadAppUi({ story: true });
+  assert.match(app.renderStoryQualityReview(review, {}), /台词接不上/u);
 });
 
 // ---- 工作流：demo 与 live 两条路 ----

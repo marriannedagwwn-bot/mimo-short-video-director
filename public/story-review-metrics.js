@@ -205,7 +205,10 @@ export const PROMISE_CHECK_STATUS_LABELS = Object.freeze({
 });
 
 /**
- * 编辑诊断的九类问题。九个都来自实际观察到的失败形状，不是凭空分类。
+ * 编辑诊断的十类问题。每一类都来自实际观察到的失败形状，不是凭空分类。
+ * `dialogue_logic` 是 2026-09-18 补的第十类：回应型台词接不上（付出的一方自己道谢、
+ * 谢什么要观众去猜），起因是《蒲扇下的毛豆游戏》结尾，数据见
+ * docs/story-review-dialogue-response-ab-2026-09-18.md。
  *
  * **不得按 type 做统计或做闸门**：实测同一个缺陷一次被归 `setup_or_provenance`、
  * 一次被归 `physical_or_world_logic`（2026-09-18 第三轮 vs 第四轮，提示词逐字未变）。
@@ -214,7 +217,7 @@ export const PROMISE_CHECK_STATUS_LABELS = Object.freeze({
 export const STORY_QUALITY_ISSUE_TYPES = Object.freeze([
   "causal_logic", "goal_method_conflict", "setup_or_provenance",
   "missing_reference_state", "progression_or_state_delta", "physical_or_world_logic",
-  "character_contract", "pacing_and_action_density", "ending_naturalness"
+  "character_contract", "pacing_and_action_density", "ending_naturalness", "dialogue_logic"
 ]);
 
 export const STORY_QUALITY_ISSUE_TYPE_LABELS = Object.freeze({
@@ -226,7 +229,8 @@ export const STORY_QUALITY_ISSUE_TYPE_LABELS = Object.freeze({
   physical_or_world_logic: "物理或世界逻辑",
   character_contract: "违反角色设定",
   pacing_and_action_density: "动作密度过载",
-  ending_naturalness: "结尾不自然"
+  ending_naturalness: "结尾不自然",
+  dialogue_logic: "台词接不上"
 });
 
 /**
