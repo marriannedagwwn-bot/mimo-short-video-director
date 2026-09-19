@@ -176,6 +176,59 @@ export const FULL_STORY_PRECHECK_REASON_LABELS = Object.freeze({
   [PROMISE_UNREALIZED_REASON]: "标题或钩子许诺的东西，动作链没演出来"
 });
 
+/**
+ * 剧情体检 2.0：承诺来源只能是候选字段或用户的固定角色设定，**不能是剧情自己**。
+ *
+ * 实测依据（2026-09-18 第三轮）：模型写出过 `source: "characterSetup / 完整剧情 characterBible"`
+ * ——拿剧情自己当承诺来源，就成了自己声明、自己证明。第四轮靠提示词把它压到 0/48，
+ * 但**结构上消除比靠措辞可靠**，所以这里限成枚举。
+ *
+ * 这份常量是唯一来源：提示词、`src/validation.js` 的校验器、schema 的 enum 与浏览器共用它。
+ * `test/story-quality-review.test.js` 断言 schema 的 enum 与它逐项相等。
+ */
+export const PROMISE_SOURCE_FIELDS = Object.freeze([
+  "title", "oneLineHook", "logline", "newTask", "environmentPressure",
+  "keyChoice", "climax", "emotionalPayoff", "keyDialogueDirections",
+  "characterSetup", "novelty", "visualPotential", "storyOutline", "fixedCharacter"
+]);
+
+/** 承诺逐条判定的四档。判成「没守住」的是 MISSING/CONTRADICTED，比 WEAKENED 重。 */
+export const PROMISE_CHECK_STATUSES = Object.freeze([
+  "PRESERVED", "WEAKENED", "MISSING", "CONTRADICTED"
+]);
+
+export const PROMISE_CHECK_STATUS_LABELS = Object.freeze({
+  PRESERVED: "守住了",
+  WEAKENED: "被削弱",
+  MISSING: "没有出现",
+  CONTRADICTED: "做了相反的事"
+});
+
+/**
+ * 编辑诊断的九类问题。九个都来自实际观察到的失败形状，不是凭空分类。
+ *
+ * **不得按 type 做统计或做闸门**：实测同一个缺陷一次被归 `setup_or_provenance`、
+ * 一次被归 `physical_or_world_logic`（2026-09-18 第三轮 vs 第四轮，提示词逐字未变）。
+ * 它只用于分组展示。
+ */
+export const STORY_QUALITY_ISSUE_TYPES = Object.freeze([
+  "causal_logic", "goal_method_conflict", "setup_or_provenance",
+  "missing_reference_state", "progression_or_state_delta", "physical_or_world_logic",
+  "character_contract", "pacing_and_action_density", "ending_naturalness"
+]);
+
+export const STORY_QUALITY_ISSUE_TYPE_LABELS = Object.freeze({
+  causal_logic: "因果不成立",
+  goal_method_conflict: "手段与目的打架",
+  setup_or_provenance: "来由没交代",
+  missing_reference_state: "缺前置参照",
+  progression_or_state_delta: "没有推进",
+  physical_or_world_logic: "物理或世界逻辑",
+  character_contract: "违反角色设定",
+  pacing_and_action_density: "动作密度过载",
+  ending_naturalness: "结尾不自然"
+});
+
 /** 三个决定的严格程度，取最严时用。数字只用于比较，不对外展示。 */
 const VERDICT_SEVERITY = Object.freeze({ pass: 0, revise: 1, drop: 2 });
 
@@ -219,28 +272,30 @@ function list(value) {
   return Array.isArray(value) ? value.filter((item) => item && typeof item === "object") : [];
 }
 
+/**
+ * 剧情体检 2.0 的可比对数字。分母从「声明条数」换成「候选承诺条数」——
+ * 1.0 数的是场次自报的 dramaticFunction，而那被实测为重言式；
+ * 2.0 数的是候选这个**外部参照**有几条没守住。
+ */
 export function storyReviewMetrics(review) {
   if (!review || typeof review !== "object") return null;
 
-  const sceneChecks = list(review.sceneFunctionChecks);
-  const retentionChecks = list(review.retentionChecks);
+  const checks = list(review.promisePreservation?.checks);
   const issues = list(review.issues);
-
-  const countUnmet = (checks) => ({
-    total: checks.length,
-    notDepicted: checks.filter((check) => check.verdict === "not_depicted").length,
-    partial: checks.filter((check) => check.verdict === "partially_depicted").length,
-    unmet: checks.filter((check) => UNMET.has(check.verdict)).length
-  });
-
+  const countStatus = (status) => checks.filter((check) => check.status === status).length;
   const severity = (level) => issues.filter((issue) => issue.severity === level).length;
+  const broken = countStatus("MISSING") + countStatus("CONTRADICTED");
 
   return {
-    sceneFunctions: countUnmet(sceneChecks),
-    retention: countUnmet(retentionChecks),
-    // 「声明未兑现」合计：场次功能与留存设计放在一起数，这是跨故事最直接可比的一个数。
-    declarationsUnmet: countUnmet(sceneChecks).unmet + countUnmet(retentionChecks).unmet,
-    declarationsChecked: sceneChecks.length + retentionChecks.length,
+    promiseStatus: String(review.promisePreservation?.status || ""),
+    promisesChecked: checks.length,
+    preserved: countStatus("PRESERVED"),
+    weakened: countStatus("WEAKENED"),
+    missing: countStatus("MISSING"),
+    contradicted: countStatus("CONTRADICTED"),
+    // 「承诺没守住」合计：MISSING 与 CONTRADICTED 一起数，WEAKENED 单列——
+    // 前者是丢了，后者是还在但变弱，两件事不该混进同一个分子。
+    promisesBroken: broken,
     blocker: severity("BLOCKER"),
     major: severity("MAJOR"),
     minor: severity("MINOR"),
@@ -253,8 +308,13 @@ export function storyReviewHeadline(review) {
   const m = storyReviewMetrics(review);
   if (!m) return "";
   const parts = [];
-  if (m.declarationsChecked) {
-    parts.push(`声明未兑现 ${m.declarationsUnmet}/${m.declarationsChecked}`);
+  if (m.promisesChecked) {
+    const lost = [];
+    if (m.promisesBroken) lost.push(`${m.promisesBroken} 条没守住`);
+    if (m.weakened) lost.push(`${m.weakened} 条被削弱`);
+    parts.push(lost.length
+      ? `候选承诺 ${m.promisesChecked} 条：${lost.join(" · ")}`
+      : `候选承诺 ${m.promisesChecked} 条全部守住`);
   }
   const issues = [];
   if (m.blocker) issues.push(`${m.blocker} 严重`);

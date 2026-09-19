@@ -859,25 +859,34 @@ v1 用 `vertical + constraints` 近似承担「创作目标」。真要独立口
 ④修订那条路径按严格 schema 校验传入的报告，所以**旧形状的报告会被 400 拒掉**
 （页面不会因服务端重启而刷新，这种情况真实存在）——重新体检一次即可，拒得是诚实的。
 
-### 2.13 剧情体检（storyQualityReview v1，2026-09-04）
+### 2.13 剧情体检 = FullStory 终审编辑（`story-quality-review/2.0`，2026-09-18）
 
-Full Story 生成之后的**独立验收，只出报告**：不修改剧情、不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、**不阻断后续 Animation Plan**。与 `boundaryWarning` 同规格，纯展示；刷新页面即失（v1 有意不持久化）。手动触发，`POST /api/story-quality-review`。
+Full Story 生成之后的**独立验收，只出报告**：不修改剧情、不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、**不阻断后续 Animation Plan**。与 `boundaryWarning` 同规格，纯展示；刷新页面即失（有意不持久化）。手动触发，`POST /api/story-quality-review`。它在三层评审里的位置：候选对照评审选哪个故事，**这一档查选中的故事有没有被展开坏**，分镜终审查写好的故事有没有被镜头实现坏。
 
-它检查的是现有校验器全都查不到的一类问题：**字段声称的事，画面里到底有没有。** `dramaticFunction: "建立悬念"` 只是标签不是证据；`retentionPlan[].viewerQuestion` 写着一个问题，不能证明观众看得到引发那个问题的画面。依据是一份已签发 Plan 的实测：剧情与 Plan 都把「末班车已经开走」当作开场核心信息，而首镜画面里没有公交车驶离、没有末班车广播，观众实际只看到一个女孩晚上坐在站台看地图。判定依据**只认 `visibleAction` 与 `dialogue`**——`shotAndSound`、`shootingNotes`、`beatSheet` 是拍摄说明与叙事目标，不是画面本身。
+**两次顺序调用，第一次看不到候选。** 这不是设计偏好，是 2026-09-18 五轮离线 A/B（约 60 次真实调用，数据在 `~/Downloads/fullStory-review-upgrade-ab-2026-09-18/`）实测出来的：
 
-输出三块：`sceneFunctionChecks`（逐场核对 `dramaticFunction`）、`retentionChecks`（逐条核对 `retentionPlan`）、`issues`（`BLOCKER`/`MAJOR`/`MINOR` 三档硬伤）。三档判定 `depicted` / `partially_depicted` / `not_depicted`。
+1. **编辑诊断**（`storyQualityEditorialPrompt`）—— 输入只有 fullStory 与用户的固定角色设定，**不含候选**，输出九类 `issues`。
+2. **承诺核对**（`storyQualityPromisePrompt`）—— 输入候选 + fullStory，只输出 `checks`，不输出 issues。
 
-**覆盖率由服务端确定性核验**（`ensureStoryQualityReviewCoversStory`）——模型完全可以只报它碰巧注意到的两三条，交回一份看起来很专业、实际漏检大半的报告：
-- `sceneFunctionChecks` 与 `sceneScript` **数量相等且 `sceneId` 逐位相同**
-- `retentionChecks` 与 `retentionPlan` **数量相等且 `index` 逐位递增**
-- 回显的 `declaredFunction` / `viewerQuestion` 必须**包含**剧情原文（归一化掉空白与标点）
-- `issues[].sceneIds` 与 `shownInScenes` 引用的场次必须真实存在
+把两件事放进同一次调用时，被漏判的那句话**每次都被同一次调用引用成「承诺已兑现」的证据**：风铃的手段-目的冲突 1/2、阶梯餐厅的物理冲突 0/2，而两处缺陷都写在候选原文里。拆开之后手段-目的冲突升到 2/2，`missing_reference_state` 从 **0/36 升到 2/2** 且对已修好的版本 **0/2**。与 §2.12b ⑥「共享机制清单先于候选产出」、展开前承诺核对拆两次调用是同一个招式。
 
-**真正的覆盖率保证是前两条（数量 + 逐位 id），不是回显。** 回显只多提供「你有没有真看这一条的内容」这个较弱信号，所以判据从「逐字相等」放宽到「包含且归一化标点」：实测严格相等挡下的全是模型在原文后追加注解（千问 10 份里 3 份）和标点替换（MiMo 把「关键选择，打破…」写成「关键选择：打破…」），都不构成歧义；复述与截断仍然被拒。核验通过后**服务端用剧情原文无条件覆盖这两个字段**——它们可从剧情唯一推导，**回显不构成新事实**，与 direct_shot 骨架同规格。
+**1.0 的两张覆盖表已删除，各有实测依据。** `sceneFunctionChecks`（逐场核对 `dramaticFunction`）被证明是**重言式**——它查「声称的事画面里有没有」，而当声称本身很弱时这个检查恒为真：实测六场全判 `depicted`，同时漏掉人工读出的四个真问题。`retentionChecks` 的对象 `retentionPlan` 在 `full_story/1.1` 里**根本已经不存在**，校验器一直在核对一个空数组，而测试之所以全绿是因为它喂的是 legacy mock。**代价必须记着：2.0 没有「模型逐场看过」这个确定性覆盖属性。**
 
-「有没有兑现」本身是语义判断，**没有确定性兜底**：覆盖率只保证模型逐条看过，不保证它看得对。
+**服务端派生，模型不写**：`promisePreservation.status` 由逐条 status 算出（任一 `MISSING`/`CONTRADICTED` → `FAIL`，任一 `WEAKENED` → `WARN`，否则 `PASS`），纯枚举计数、零语义，与 §2.12b ⑩A 同规格。
 
-**明确不做，三条都有实测依据**：①**不打总分、不设门槛**——实测 13 份的模型综合分挤在 7.8–8.3、中位 8.2，ChatGPT 给参考片也才 8.4，此刻画任何线都是拍脑袋；可比对的数字改由 `public/story-review-metrics.js` 从逐条判定里**数出来**（未兑现数、三档硬伤数），跨故事直接可比、不随措辞漂。②**不自动改剧情**——实测「评审→重写」单轮平均只涨 +0.17（6 组对照，落在评分者噪声 MAD 0.45 内），且 40% 撞契约硬失败。③**不阻断生产**——现有闸门全是确定性的，模型意见当硬闸门是另一回事，§2.8 明写「用户明确肯定/否定 > 已签发模型推断」。
+**`checks[].source` 是枚举数组，不是自由文本**（`PROMISE_SOURCE_FIELDS`，`public/story-review-metrics.js` 一份，提示词、schema、校验器、浏览器共用，测试断言 schema 的 enum 与它逐项相等）。依据：实测模型写出过 `source: "characterSetup / 完整剧情 characterBible"`——拿剧情自己当承诺来源，就成了自己声明、自己证明。候选与固定角色设定提供「应当保留什么」，剧情提供「实际写出了什么」，后者只能出现在 `evidence` 里。**结构上消除比靠措辞可靠**：限成枚举之后剧情自己的字段写不进来。
+
+**台词分三档：措辞不是承诺，台词交代的事实是，表演形式约定本身就是承诺。** 依据不是新发明的——`fullStoryPrompt` 逐字写着「不能因少写台词丢失剧情前提」，生成侧本来就是「可以不用那句话、但不能丢那个前提」，评审侧按同一条判才自洽。三版实测：没有这一段时该类误报 8/10；一刀切成「台词一律不算承诺」误报清零、但**把「事实也跟着丢了」一起豁免了**；拆成三档之后同一条承诺在原稿判 `PRESERVED`、在只删了两句载体的 C 稿判 `MISSING`（各 2/2）。
+
+**编辑诊断必须先分三档再报**：明确矛盾 / 信息不足 / 可选优化，**只有第一档能判 MAJOR 或 BLOCKER**。外加三条红线：存在不额外增加关键设定的合理解释就不得判「物理上不可能」；不得先补一个剧情没给的不利条件再据此定罪；`evidence` 必须是原文、不得把概括当引用。实测效果是同样 10 条观察里 **MAJOR 从 7 降到 2**，四条被点名的误报逐条消失——**不是发现得更少，是分类更准**。
+
+**允许第一次做错**：两次调用各自走 `modelCallCoordinator.runJson`、`maxProviderCalls: 2`、**禁止第三次**；重试只发校验器数出来的诊断、不把失败的报告发回去；`metadata.storyQualityReview` 如实上报 provider/model/调用次数/每一次被拦的诊断，**拦过一次浏览器就必须显示出来**。走 coordinator 拿不到 `generateValidatedJson` 自带的 recorder，所以**必须自己接 `attemptObserver`**，不接就静默不写侧车。
+
+**`evidenceInCandidate` 只展示，绝不当闸门。** 服务端按 §2.4 台词闸门同一口径算出 `evidenceRun`（`longestCommonRun` 与 `normalizeDialogueChars` 已提取为 `src/validation.js` 的导出函数共享，**不得再写第二份**），但**不设阈值**：实测同一个道具在两个样本上的命中长度落在 7/8 与 15，只因为展开时多插了两处修饰词；更根本的是它**分不开真假阳性**——真问题（台阶，13/17）与误报（竹席，15/15）都写在候选里。
+
+**四条已知缺口，不得宣称已解决**：①失去逐场覆盖保证（见上）。②三档严重度、「事实有没有被别的方式承载」、`type` 归属都**没有确定性兜底**，而且实测判断会**朝过严的方向抖**——同一条事实在原稿判 `PRESERVED`、在只删了别处两句的 C 稿翻成 `MISSING`，而那两个事实剧情里是有的。③**`type` 归属不稳**：同一缺陷一次被归 `setup_or_provenance`、一次被归 `physical_or_world_logic`（提示词逐字未变），**不得按 `type` 做统计或做闸门**。④**五轮全部跑在同一批开发回归集上，至今没有任何全新盲样本**，所有「全过」都是偏乐观的 in-sample 上界估计。
+
+**明确不做，三条都有实测依据**：①**不打总分、不设门槛**——实测 13 份的模型综合分挤在 7.8–8.3、中位 8.2，ChatGPT 给参考片也才 8.4，此刻画任何线都是拍脑袋；可比对的数字改由 `public/story-review-metrics.js` 从逐条判定里**数出来**（承诺没守住数、三档硬伤数），跨故事直接可比、不随措辞漂。②**不自动改剧情**——实测「评审→重写」单轮平均只涨 +0.17（6 组对照，落在评分者噪声 MAD 0.45 内），且 40% 撞契约硬失败；`optionalSuggestion` 是 advisory，**服务端不得自动写回 fullStory**，浏览器必须标明「实测改法会有方向搞反的情况」。③**不阻断生产**——现有闸门全是确定性的，模型意见当硬闸门是另一回事，§2.8 明写「用户明确肯定/否定 > 已签发模型推断」。
 
 **评审模型的已知偏差**：默认沿用剧情阶段的 provider，也就是写这份剧情的那个模型，自己批自己会偏松（实测同一份剧情自评「AI 可执行性 8.0 / 物理可信度 8.0」，外部模型给 6.8 / 6.8）。本来要默认换一家，但同一批 10 份实测下来现有备选都不胜任：`mimo-v2.5-pro` 7/10 成功且太松（2/62 处 vs 千问 13/91 处），`deepseek-v4-flash` 5/10、反复产不出严格 JSON，`deepseek-v4-pro` 连接中断。一个查不出问题的评审比偏松的评审更没用，稳定性也是硬要求。**先用能干活的那个并如实记下偏差，不靠静默降级掩盖**；它是纯文本阶段（不在 `requiresMediaModel` 里），可按阶段 override 换任意一家。
 

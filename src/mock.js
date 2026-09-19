@@ -1026,27 +1026,49 @@ function time(seconds) {
 // Demo 模式的剧情体检。**从剧情确定性派生**，一律给 depicted、不报硬伤——
 // mock 的职责是让离线链路跑通并满足覆盖率核验，不是伪造评审结论。
 // 与 §八「demo mock 不得伪造语义审计结果」同规格：宁可什么都不说，也不编一个判断。
-export function mockStoryQualityReview(fullStory) {
+/**
+ * demo 模式的剧情体检。返回两次调用各自的**原始输出**，由 workflow 用与 live 完全相同的
+ * 校验器与合成函数走一遍——不得出现 mock 通过而 live 失败的偏差。
+ *
+ * **必须至少产出一条 CONTRADICTED 承诺和一条 issue**：全判 PRESERVED 会让 demo 永远走不到
+ * 派生 FAIL 那个分支，而「mock 全绿所以没人发现 live 会挂」正是 §2.14 记过的成因。
+ */
+export function mockStoryQualityReview(fullStory, candidate) {
   const scenes = Array.isArray(fullStory?.sceneScript) ? fullStory.sceneScript : [];
-  const retention = Array.isArray(fullStory?.retentionPlan) ? fullStory.retentionPlan : [];
+  const firstSceneId = String(scenes[0]?.sceneId || "S1");
+  const firstAction = String(scenes[0]?.visibleAction || "（demo 剧情没有可见动作）");
   return {
-    schemaVersion: "story-quality-review/1.0",
-    selectedVariantId: String(fullStory?.selectedVariantId || "V1"),
-    retentionChecks: retention.map((entry, index) => ({
-      index,
-      viewerQuestion: String(entry?.viewerQuestion || ""),
-      shownInScenes: [],
-      whatViewerSees: "demo 模式不调用模型，未做实际核对。",
-      verdict: "depicted"
-    })),
-    sceneFunctionChecks: scenes.map((scene) => ({
-      sceneId: String(scene?.sceneId || ""),
-      declaredFunction: String(scene?.dramaticFunction || ""),
-      whatViewerSees: "demo 模式不调用模型，未做实际核对。",
-      verdict: "depicted"
-    })),
-    issues: [],
-    summary: "demo 模式：未调用模型，本报告不构成任何质量判断。"
+    editorial: {
+      summary: "demo 模式：未调用模型，本报告不构成任何质量判断。",
+      issues: [{
+        issueId: "FS-001",
+        type: "pacing_and_action_density",
+        severity: "MINOR",
+        sceneIds: [firstSceneId],
+        evidence: firstAction.slice(0, 60),
+        problem: "demo 模式不调用模型，这是一条用来走通渲染与派生路径的占位问题。",
+        viewerImpact: "demo 模式不做实际判断。",
+        confidence: "low",
+        optionalSuggestion: ""
+      }]
+    },
+    promise: {
+      checks: [
+        {
+          promise: String(candidate?.oneLineHook || "demo 候选的一句话钩子"),
+          source: ["oneLineHook"],
+          status: "PRESERVED",
+          evidence: firstAction.slice(0, 60)
+        },
+        {
+          // 刻意判成没守住，让 demo 走到派生 FAIL 那个分支。
+          promise: String(candidate?.emotionalPayoff || "demo 候选的情绪兑现"),
+          source: ["emotionalPayoff"],
+          status: "CONTRADICTED",
+          evidence: "demo 模式不调用模型，这一条是用来走通派生与渲染路径的占位判定。"
+        }
+      ]
+    }
   };
 }
 

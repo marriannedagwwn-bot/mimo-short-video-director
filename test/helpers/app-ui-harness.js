@@ -24,7 +24,9 @@ class Element {
     toggle: (name, enabled = !this.classList.contains(name)) => enabled ? this.classList.add(name) : this.classList.remove(name)
   };
   querySelector(selector) {
-    if (!['span', 'b'].includes(selector)) return null;
+    // 剧情体检的面板容器是 fullStory 的子节点，用属性选择器取。只放行这一个，
+    // 其余未知选择器仍然返回 null——有测试依赖那个 null。
+    if (!['span', 'b', '[data-story-review-body]'].includes(selector)) return null;
     if (!this.children.has(selector)) this.children.set(selector, new Element());
     return this.children.get(selector);
   }
@@ -75,6 +77,7 @@ export async function loadAppUi({ story = false, plan = false, createElement,
     renderDirectorControls, renderDirectorTaskStatus, renderDirectorTaskError, controlDirectorPipeline,
     renderFullStoryControls, selectedFullStoryTask, controlFullStory, generateFullStory, renderFullStoryTaskError,
     startFullStory, adoptThemeVariantsRevision, clearFullStoryPrecheck,
+    runStoryQualityReview, renderStoryQualityReview,
     setStoryRunning, setStoryStatus, attachRestoredStandaloneTask, reloadActiveProductionRun,
     openModelSettings, closeModelSettings, saveModelSettings, resetModelSettings, setModelSettingsStatus,
     renderMainPage, navigateToStory, backToMainResults, regenerateThemeVariants, setStoryPackageStatus,

@@ -18,6 +18,7 @@ import {
   CANDIDATE_REVIEW_DIMENSION_WEIGHTS,
   CANDIDATE_REVIEW_SPECIAL_DEFECT_LABELS,
   CANDIDATE_REVIEW_SPECIAL_DEFECT_TYPES,
+  PROMISE_SOURCE_FIELDS,
   SOURCE_SCAFFOLD_COPY_SCORE
 } from "../public/story-review-metrics.js";
 import { storyDurationWindow } from "../public/story-duration.js";
@@ -2079,84 +2080,224 @@ ${list.join("\n")}
 ${JSON_ONLY}`;
 }
 
-export function storyQualityReviewPrompt(fullStory) {
+/**
+ * 剧情体检第一次调用：编辑诊断。**输入不含候选，这是有意的。**
+ *
+ * 2026-09-18 五轮离线 A/B 实测：把「忠实保留候选」与「判这个动作成不成立」放进同一次调用时，
+ * 被漏判的那句话每次都被同一次调用引用成「承诺已兑现」的证据——风铃的手段-目的冲突 1/2、
+ * 阶梯餐厅的物理冲突 0/2，而两处缺陷都写在候选原文里。拆开、并且让这一步看不到候选之后，
+ * 手段-目的冲突升到 2/2，`missing_reference_state` 从 0/36 升到 2/2 且对已修好的版本 0/2。
+ *
+ * 三档严重度与三条红线是第四轮补的：第三轮实测它开始把「交代不够清楚」说成「物理上不成立」，
+ * 还先补一个剧情没给的不利条件再据此定罪。补上之后同样 10 条观察里 MAJOR 从 7 降到 2。
+ */
+export function storyQualityEditorialPrompt({ fullStory, fixedCharacter } = {}) {
   const scenes = Array.isArray(fullStory?.sceneScript) ? fullStory.sceneScript : [];
-  const retention = Array.isArray(fullStory?.retentionPlan) ? fullStory.retentionPlan : [];
-  return `你不是这个故事的作者，你是短视频剧情质量评审。
+  return `你是这部短视频的**终审编辑**，不是它的作者。
 
-完整剧情：${JSON.stringify(fullStory)}
+我要的是一个会指出故事哪里不成立的编辑，**不是一个看到任何故事都想把它改得更复杂的编剧。**
 
 最高判断原则：**一个完全不知道创作背景的普通观众，刷到最终成片时会看到什么。**
-不要因为这份剧情通过了结构校验就认为它质量合格。
 
 ## 一条压倒一切的纪律：声明不等于呈现
 
-剧情里的 dramaticFunction、emotionNode、viewerQuestion、payoff 全都只是**标签**，
-它们是作者的意图声明，**不是证据**。
-
+剧情里的 dramaticFunction、emotionNode 只是**标签**，是作者的意图声明，**不是证据**。
 判断任何一条声明成不成立，只能回到这两个地方找依据：
 - sceneScript[].visibleAction —— 观众看得见的
 - sceneScript[].dialogue —— 观众听得见的
 
-shotAndSound、shootingNotes、beatSheet 都不算——它们是拍摄说明与叙事目标，不是画面本身。
+shotAndSound、shootingNotes 都不算——它们是拍摄说明，不是画面本身。
 
-反例：某一场写着 dramaticFunction「建立悬念」、留存设计写着观众会问「末班车都走了，
-她为什么还不走」，而该场 visibleAction 只有「小白子坐在站台长椅上，手里捧着路线图」——
-既没有公交车驶离、也没有末班车广播、没有时刻表熄灭。观众实际只会看到
-「一个女孩晚上坐在公交站看地图」，根本不知道有末班车这回事。
-**这条声明就是 not_depicted。**
+## 下判断之前
 
-## 你要产出三块内容
+**先把整个剧情从头到尾通读一遍再开始输出。**
+禁止只看某一场就立刻提问题。某个信息如果已经在别的场次交代过，它就不是问题。
 
-### 一、sceneFunctionChecks —— 逐场核对，一场都不能少
+## 你这次只做一件事：判这份剧情自身成不成立
 
-剧情共 ${scenes.length} 个场次，你必须按 sceneScript 的**原始顺序**给出**恰好 ${scenes.length} 项**。
+**不要检查它和任何上游设定、选题或企划的一致性**——那是另一个独立通道的事，
+即使你能推测出作者本来想做什么，也不要据此判断。只看眼前这份剧情自己立不立得住。
 
-每项：
-- sceneId：逐字照抄该场的 sceneId
-- declaredFunction：**逐字照抄**该场 dramaticFunction 的原文，一个字都不能改、不能概括，**也不要在后面追加你自己的注解**
-- whatViewerSees：这一场观众实际看见与听见了什么（只依据 visibleAction 与 dialogue）
-- verdict：depicted（确实兑现）/ partially_depicted（沾边但不足）/ not_depicted（画面里根本没有）
+至少覆盖这些类型（type 用这些值）：
 
-### 二、retentionChecks —— 逐条核对留存设计${retention.length ? `，共 ${retention.length} 条` : "（本片没有，给空数组）"}
+- \`causal_logic\`：前一个动作是否合理导致下一个动作。
+- \`goal_method_conflict\`：角色采用的办法是否反而在破坏他自己的目标。
+  即使动作看起来很努力、很有戏剧性，只要客观上会毁掉目标，就要指出来。
+- \`setup_or_provenance\`：后面出现的重要道具、地形、人物、能力、信息，前面有没有建立过。
+- \`missing_reference_state\`：**后面的关键结果、变化、恢复、反转，是否依赖前面先建立一个
+  正常状态、初始状态或比较基准。** 例如结尾说钟走准了，前面有没有让观众知道它原本走慢；
+  结尾说花恢复了香味，开头有没有让观众闻到过它原来什么味道；结尾说某个声音「清脆」，
+  前面有没有让观众先听过它正常时是什么声音。**依赖而前面没建立，就记这一条。**
+- \`progression_or_state_delta\`：连续场次是否真的发生了目标、策略、认知、环境、关系、
+  道具状态或情绪的变化。把同一件事换个动作重复一遍**不算**推进。
+- \`physical_or_world_logic\`：行为有没有基本物理可行性，空间关系成不成立；
+  同一个部位是否被要求同时做两件事；在场的其他角色会不会让某个前提不成立。
+- \`character_contract\`：是否违反下面给出的固定角色设定、角色能力或语言边界。
+- \`pacing_and_action_density\`：在这一场的 timeRange 时长里，visibleAction 写的动作演不演得完。
+- \`ending_naturalness\`：结尾动作是不是来自这个故事本身，还是为了「温情」临时加上去的
+  摸头、送礼、流泪、夸懂事这类万能动作。
 
-按 retentionPlan 的原始顺序给出**恰好 ${retention.length} 项**。
+## 报问题之前先分清三档，不要把后两档当成第一档
 
-每项：
-- index：从 0 开始的序号，与 retentionPlan 逐位对应
-- viewerQuestion：**逐字照抄**原文，不要追加注解
-- shownInScenes：哪些场次的画面真正提供了引发这个疑问所需的信息（可以为空数组）
-- whatViewerSees：观众实际看到的是什么
-- verdict：同上三选一
+- **明确矛盾**：剧情自己写下的两处内容互相否定，或者某个动作在**剧情已经给出的条件下**不可能完成。
+- **信息不足**：看得出想表达什么，只是没写清楚；换一种写法就能解决，不需要改变任何关键设定。
+- **可选优化**：现在这样也成立，只是还可以更清楚或更好看。
 
-### 三、issues —— 硬伤清单
+**只有「明确矛盾」才判 MAJOR 或 BLOCKER。信息不足最多 MINOR，可选优化不要写进 issues。**
 
-只写**真正拖低成片质量**的问题，最多 6 条，按严重程度排序。没有就给空数组。
+三条红线：
 
-- BLOCKER：核心因果断裂；高潮不存在；关键信息只写在文字里、画面从未呈现；
-  物理不可能（同一只手同时做两件事、道具凭空出现或消失）；角色突然知道此前没有获得的信息。
-- MAJOR：连续 30 秒以上没有状态变化；固定搭档删掉后剧情完全不受影响；
-  高价值道具没有回收；情绪回报只靠哭、笑、夕阳、拥抱。
-- MINOR：台词在解释画面已有的信息；某段偏长；某个动作可以更自然。
+- **只要存在一种不额外增加关键设定的合理解释，就不得判成「物理上不可能」。**
+  不能因为「通常不是这样」就断定不成立——常见布局不是唯一允许的布局。
+  例：路上用带子提着、到了地方改用自带挂环挂上去，是两种用途，本身不构成矛盾；
+  这种情况正确的写法是「没有交代最终由哪个结构承重」（信息不足），不是「物理逻辑不成立」。
+- **不得先补一个剧情没有给出的不利条件，再用这个条件证明剧情错误。**
+  剧情没说某个部件多大，就不能假定它太小，然后据此判不可行。
+- **evidence 必须是原文，不能把你的概括当成引用。**
+  你写「台词强调了 X」时，X 必须真的出现在 dialogue 的台词正文里；
+  它只出现在 visibleAction 或 shotAndSound 里，就如实说是动作或声音描述。
 
-每条必须给：
-- sceneIds：涉及哪几场（必须是剧情里真实存在的 sceneId）
-- evidence：**从剧情里摘的原文**，不是你的概括
-- problem：具体问题
-- recommendedFix：具体到场次的最小修改建议
+另外：**普通的生活感受不必都有前置铺垫。** 角色觉得某个气味熟悉、某个地方亲切，
+本身不需要前面专门交代过一段渊源；只有当结尾的关键理解**依赖**于那层参照
+（认出了某个人独有的东西、这个细节本身构成证据）时，缺前置才算问题。
 
-不得提出新增角色或改变固定角色身份的建议。
+## 判断时必须守的规矩
 
-## 输出
+1. **实际动作 > 剧作声明。**
+2. **不要因为它是治愈系就默认要求**奖励、转赠、摸头、拥抱、牵手、眼眶泛红、被夸懂事、
+   双向馈赠、小失败后再补救。这些都不是必需品，缺了不算问题。
+3. **安静陪伴、发现、一起玩、环境变化都可以成立**，不强制要求冲突、反转和高潮。
+4. **不要为了修一个问题而新增更多情节。** 优先级固定：
+   strengthen（把已有的写清楚）→ replace（换掉）→ merge/remove（合并或删掉）→ **最后才是 add**。
+5. **找不到真正的问题就少写，不要为了凑数硬找。** 确实没有问题时 issues 输出空数组。
+6. optionalSuggestion 只是参考方向，系统不会自动执行它。宁可写得保守。
 
-{"schemaVersion":"story-quality-review/1.0","selectedVariantId":"${String(fullStory?.selectedVariantId || "")}",
- "retentionChecks":[{"index":0,"viewerQuestion":"","shownInScenes":[],"whatViewerSees":"","verdict":""}],
- "sceneFunctionChecks":[{"sceneId":"","declaredFunction":"","whatViewerSees":"","verdict":""}],
- "issues":[{"severity":"","type":"","sceneIds":[],"evidence":"","problem":"","recommendedFix":""}],
- "summary":""}
+## 固定角色设定（用户原文，硬事实）
+${fixedCharacter || "（未提供）"}
 
-summary 写一句话：这个故事最值得保留的是什么、最该先修的是什么。
+## 完整剧情（共 ${scenes.length} 场）
+${JSON.stringify(fullStory)}
+
+## 输出格式
+
+{
+  "summary": "一句话：这个故事最值得保留的是什么、最该先修的是什么",
+  "issues": [
+    {
+      "issueId": "FS-001",
+      "type": "goal_method_conflict",
+      "severity": "BLOCKER | MAJOR | MINOR",
+      "sceneIds": ["S2"],
+      "evidence": "从剧情里摘的原文，不是概括",
+      "problem": "问题是什么",
+      "viewerImpact": "观众为什么会困惑、失去兴趣或不相信",
+      "confidence": "high | medium | low",
+      "optionalSuggestion": "仅供参考的最小修改方向，不会被自动执行"
+    }
+  ]
+}
+
+- issues 最多 8 条，按严重程度从高到低排。sceneIds 必须是剧情里真实存在的 sceneId，且非空。
+- **不打总分。**
 ${JSON_ONLY}`;
+}
+
+/**
+ * 剧情体检第二次调用：承诺核对。这一次才给候选。
+ *
+ * 台词那三档（措辞 / 事实 / 表演形式）是 2026-09-18 第三轮实测定下来的：
+ * 第一轮没有这一段时，模型把「候选草案台词被改写」当成承诺被破坏，8/10 是误报；
+ * 第二轮一刀切成「台词一律不算承诺」，误报清零但**把「台词交代了事实、事实也跟着丢了」
+ * 一起豁免了**；第三轮拆成三档之后，同一条承诺在原稿判 PRESERVED、
+ * 在只删了两句载体的 C 稿判 MISSING（各 2/2）。
+ *
+ * 依据不是新发明的：`fullStoryPrompt` 里逐字写着「不能因少写台词丢失剧情前提」——
+ * 生成侧本来就是「可以不用那句话、但不能丢那个前提」，评审侧按同一条判才自洽。
+ */
+export function storyQualityPromisePrompt({ candidate, fullStory } = {}) {
+  return `你在核对一件事：**这个选题承诺的东西，在完整剧情里有没有真的被演出来。**
+
+候选是完整剧情必须忠实展开的**故事承诺**。逐条核对：
+
+- oneLineHook 里的核心画面或核心问题，有没有真正出现在画面上，而且出现得够早？
+- 标题里的核心机制有没有成立？
+- keyChoice 有没有成为一个实际发生的选择，而不只是一句声明？climax 有没有真正发生？
+- emotionalPayoff 有没有兑现？
+- **候选对表演形式、声音的明确约定有没有被守住？**
+- 候选里特别有辨识度的行为或物件，有没有被剧情稀释、压缩或换掉？
+- 这些东西出现在合理的时间位置，还是被拖到最后才补上？
+
+## 一条检查只放一个能独立判定的命题
+
+**不要把几件事捆进同一条。**「小动物胆小不敢靠近」「布置一场无声的下午茶」
+「主角全程不发声」是三件事，必须拆成三条，各自给自己的 status。
+一句话里装三件事、最后只给一个状态，读的人分不出到底哪一件保留了、哪一件没有。
+
+## 承诺的来源只能是候选与固定角色设定，不能是剧情自己
+
+候选与固定角色设定提供「**应当**保留什么」，完整剧情提供「**实际**写出了什么」。
+
+\`source\` 是一个数组，每一项**只能**从下面这份清单里选，不得自创：
+
+${PROMISE_SOURCE_FIELDS.map((field) => `- \`${field}\``).join("\n")}
+
+**剧情自己的 characterBible、dialogueStyleGuide 或剧情里的任何声明都不在清单里**——
+拿剧情当承诺来源，就成了自己声明、自己证明。剧情里的内容只能出现在 \`evidence\` 里。
+
+## 不是候选写的每个字都是承诺
+
+候选台词里的每个形容词、每段背景描写，**不会自动升级成不可删除的承诺**。
+先问它是不是承担了**关键因果、人物关系，或明确的创作约定**，是才算承诺。
+只是措辞更生动、细节更多，不算。
+
+## 关于台词：措辞不是承诺，台词里交代的**事实**是
+
+完整剧情按本项目的契约，本来就应该根据动作、人物已知信息和用户明确的对白限制**自己写对白**，
+**不必逐字使用候选里的台词**。但同一份契约也写着「不能因少写台词丢失剧情前提」。所以分三种：
+
+- 候选台词的**措辞**不是承诺：被改写、缩减、换成别的说法，或者干脆没用——**都不算**承诺被破坏，
+  **不要报**，更不要建议把候选的原句恢复回去。
+- **但如果那句台词交代了一个剧情事实**（某个东西的来历、某个人知道了什么、某件事已经发生），
+  那个**事实**必须在剧情里以某种方式成立——**对白、可见动作或画面都算**。
+  事实确实丢了才判 WEAKENED 或 MISSING；只是换了说法、而事实由别的方式成立，判 **PRESERVED**。
+- **候选约定的是「表演形式」时，约定本身就是承诺**，例如「某角色全程不说话」「全程不发出一丝声响」
+  「只用眼神和动作表达」。这类约定被违反，判 CONTRADICTED。
+
+## 判断依据
+
+只认 sceneScript[].visibleAction（观众看得见的）与 sceneScript[].dialogue（观众听得见的）。
+dramaticFunction、emotionNode 这些标签只是声明，不是证据。
+**先把候选和整个剧情都通读一遍再开始输出。**
+
+**这里核对的是「候选承诺有没有演出来」，不是「符不符合创意简报」。**
+不要因为剧情更符合简报就认为它更好。
+
+## 候选（本阶段必须忠实展开的承诺）
+${JSON.stringify(candidate)}
+
+## 完整剧情
+${JSON.stringify(fullStory)}
+
+## 输出格式
+
+{
+  "checks": [
+    {
+      "promise": "候选承诺了什么（一条只放一个命题）",
+      "source": ["emotionalPayoff"],
+      "status": "PRESERVED | WEAKENED | MISSING | CONTRADICTED",
+      "evidence": "剧情里实际发生了什么，摘原文"
+    }
+  ]
+}
+
+- checks 至少一条。**你不写总判定**：程序按你这些逐条 status 算出来。
+${JSON_ONLY}`;
+}
+
+/** 剧情体检被确定性闸门拦下之后的重试正文：原文逐字保留，只在末尾追加诊断。 */
+export function storyQualityReviewRetryPrompt({ originalPrompt = "", details = [] } = {}) {
+  return fullStoryPromiseCheckRetryPrompt({ originalPrompt, details });
 }
 
 export function fullStoryPrompt(input) {

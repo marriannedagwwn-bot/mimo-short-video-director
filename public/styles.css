@@ -585,6 +585,10 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
 .review-verdict.verdict-not_depicted, .review-severity.severity-BLOCKER { color: #b42318; background: #fff3f0; }
 .review-verdict.verdict-partially_depicted, .review-severity.severity-MINOR { color: var(--muted); background: #efebe4; }
 .review-verdict.verdict-depicted { color: var(--green); background: #edf6f1; }
+/* 剧情体检 2.0 的承诺四档。纯新增，不动上面三条——它们同时服务候选评审与分镜终审。 */
+.review-verdict.verdict-CONTRADICTED, .review-verdict.verdict-MISSING { color: #b42318; background: #fff3f0; }
+.review-verdict.verdict-WEAKENED { color: var(--muted); background: #efebe4; }
+.review-verdict.verdict-PRESERVED { color: var(--green); background: #edf6f1; }
 .review-severity.severity-MAJOR { color: #b54708; background: #fff3e8; }
 .review-scenes { color: var(--muted); font-size: 9px; }
 .review-evidence { color: var(--muted); }

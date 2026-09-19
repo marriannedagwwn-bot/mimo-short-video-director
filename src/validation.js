@@ -19,7 +19,10 @@ import {
   SOURCE_SCAFFOLD_COPY_SCORE,
   candidateEffectiveVerdict,
   candidateOverallScore,
-  candidateTier
+  candidateTier,
+  PROMISE_CHECK_STATUSES,
+  PROMISE_SOURCE_FIELDS,
+  STORY_QUALITY_ISSUE_TYPES
 } from "../public/story-review-metrics.js";
 
 export class InputError extends Error {
@@ -74,7 +77,7 @@ const outputContracts = {
   themeVariants: ["variants"],
   fullStory: ["selectedVariantId", "title", "oneLinePremise", "targetDurationSeconds", "shootingSynopsis", "characterBible", "beatSheet", "sceneScript", "keyProps", "shootingPlan", "dialogueStyleGuide", "retentionPlan", "experienceFidelity", "transformationProof", "continuityAndSafetyCheck", "uncertainties"],
   animationPlan: ["selectedVariantId", "title", "productionStrategy", "visualBible", "characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "editPlan", "generationChecklist", "modelAgnosticNotes", "continuityAndSafetyCheck", "uncertainties"],
-  storyQualityReview: ["schemaVersion", "selectedVariantId", "retentionChecks", "sceneFunctionChecks", "issues", "summary"],
+  storyQualityReview: ["schemaVersion", "selectedVariantId", "summary", "promisePreservation", "issues"],
   animationPlanReview: ["schemaVersion", "overallScore", "dominantDefect", "strengths", "dimensions", "shotEvaluations", "propTracking", "sceneCheck", "issues", "otherFindings", "upgradePath", "revisionBrief"],
   storyCandidateReview: ["schemaVersion", "sourceMechanisms", "candidateChecks", "holisticPreferenceOrder", "batchTemplateConvergence", "briefProblemsDetected", "summary"]
 };
@@ -402,7 +405,7 @@ export function ensureOutputContract(value, contract) {
       ? ["sceneScript", "keyProps", "uncertainties"]
       : ["beatSheet", "sceneScript", "keyProps", "shootingPlan", "retentionPlan", "uncertainties"],
     animationPlan: ["characterReferencePrompts", "sceneReferencePrompts", "assetPrompts", "shotPlan", "generationChecklist", "modelAgnosticNotes", "uncertainties"],
-    storyQualityReview: ["retentionChecks", "sceneFunctionChecks", "issues"],
+    storyQualityReview: ["issues"],
     animationPlanReview: ["strengths", "dimensions", "shotEvaluations", "propTracking", "sceneCheck", "issues", "otherFindings", "upgradePath"],
     storyCandidateReview: ["candidateChecks", "holisticPreferenceOrder", "briefProblemsDetected"]
   }[contract] || [];
@@ -1187,12 +1190,14 @@ function dialogueSpokenLines(value) {
   return [text.replace(/[^：:\n。]{1,8}[：:]/gu, "")];
 }
 
-function normalizeDialogueChars(value) {
+// 剧情体检的 evidenceInCandidate 也按同一口径比对，所以这两个必须导出共享，
+// 不能在别处再写一份——判定只有一份。
+export function normalizeDialogueChars(value) {
   return String(value || "").replace(/[^\p{Script=Han}A-Za-z0-9]/gu, "");
 }
 
 /** 最长连续公共子串长度。滚动一行，避免为长 videoPrompt 分配整张表。 */
-function longestCommonRun(a, b) {
+export function longestCommonRun(a, b) {
   if (!a || !b) return 0;
   let previous = new Uint32Array(b.length + 1);
   let best = 0;
@@ -2781,116 +2786,54 @@ export function ensureThemeVariantsMatchProfile(
 // 场次之间允许留白（只禁重叠与回退），所以取跨度之和而不是首尾之差——
 // 留白不产生镜头，也就不进入成片时长。
 /**
- * 剧情体检的覆盖率核验。
+ * 剧情体检（`story-quality-review/2.0`）合成报告的入站核验。
  *
- * 评审的价值全在「逐条看过」上——模型完全可以只报它碰巧注意到的两三条，
- * 交回一份看起来很专业、实际漏检大半的报告。所以覆盖率**不靠模型自觉**：
+ * **这一档能确定性裁决的只有引用真实性。** 形状、枚举与来源合法性由 schema 负责
+ * （`source` 限成候选字段枚举，剧情自己的 characterBible 结构上写不进来），
+ * 承诺总判定由服务端派生，所以这里只剩两条：
  *
- *   1. sceneFunctionChecks 必须与 sceneScript 逐位对齐（同长度、同 sceneId、同顺序）
- *   2. retentionChecks 必须与 retentionPlan 同长度、index 逐位递增
- *   3. 回显的 declaredFunction / viewerQuestion 必须**包含**剧情原文（忽略空白），
- *      核验通过后由服务端用原文无条件覆盖
- *   4. issues[].sceneIds 引用的场次必须真实存在
+ *   1. `issues[].sceneIds` 引用的场次必须真实存在
+ *   2. `selectedVariantId` 必须与剧情一致
  *
- * 这四条是纯计数与字符串比较，**不含语义判断**，与拍号派生同规格。
- * 判定「这个功能到底有没有兑现」本身是语义的，没有兜底——那是本机制已知的边界：
- * 它保证模型逐条看过，不保证它看得对。
+ * 两条都是纯集合与字符串比较，**零语义**。
  *
- * 回显的作用是证明模型读的是这一条：复述成大意就分不清「读了第 3 条」和
- * 「读了第 5 条却写在第 3 位」。判据是**包含**而不是相等——实测模型不复述，
- * 但爱在原文后面追加自己的注解（「高潮：在环境压力下完成保护行动」→
- * 「……，产出可见结果」），10 份里 3 份栽在这上面。包含关系同样能唯一确定读的是哪一条，
- * 却不会因为多说一句就判失败；截断和复述仍然会被拒。
+ * **2.0 刻意删掉了 1.0 的逐场覆盖（`sceneFunctionChecks`）与逐条留存（`retentionChecks`）**：
+ * 前者已被实测为重言式——它查「声称的事画面里有没有」，而当声称本身很弱时这个检查恒为真
+ * （实测六场全判 depicted，同时漏掉人工读出的四个真问题）；后者的对象 `retentionPlan`
+ * 在 `full_story/1.1` 里根本已经不存在，校验器一直在核对一个空数组。
  *
- * 核验通过后服务端用原文覆盖这两个字段——它们可从剧情唯一推导，
- * **回显不构成新事实**，与 direct_shot 骨架同规格。面板上显示的因此永远是剧情真正写的那句。
- *
- * 漏检就明确失败、不做任何补齐——评审调用比一份漏检的报告便宜得多。
+ * **代价要说清楚：2.0 没有「模型逐场看过」这个确定性覆盖属性。** 它换来的是
+ * 承诺核对（拿候选当外部参照，而不是场次自报的 dramaticFunction）与九类编辑诊断。
+ * 「判得对不对」仍然没有兜底，这一点两个版本相同。
  */
 export function ensureStoryQualityReviewCoversStory(review, fullStory) {
   requireObject(review, "storyQualityReview");
   requireObject(fullStory, "fullStory");
   const details = [];
-  const scenes = Array.isArray(fullStory.sceneScript) ? fullStory.sceneScript : [];
-  const retention = Array.isArray(fullStory.retentionPlan) ? fullStory.retentionPlan : [];
-  const sceneChecks = Array.isArray(review.sceneFunctionChecks) ? review.sceneFunctionChecks : [];
-  const retentionChecks = Array.isArray(review.retentionChecks) ? review.retentionChecks : [];
-
   const push = (code, path, reason) => details.push({ code, path, reason });
+  const scenes = Array.isArray(fullStory.sceneScript) ? fullStory.sceneScript : [];
 
-  if (sceneChecks.length !== scenes.length) {
+  const variantId = String(fullStory.selectedVariantId || "").trim();
+  if (String(review.selectedVariantId || "").trim() !== variantId) {
     push(
-      "STORY_REVIEW_SCENE_COVERAGE_INCOMPLETE",
-      "/sceneFunctionChecks",
-      `剧情有 ${scenes.length} 个场次，评审只覆盖了 ${sceneChecks.length} 个；每一场都必须逐条核对`
+      "STORY_REVIEW_VARIANT_MISMATCH",
+      "/selectedVariantId",
+      `体检的是剧情「${variantId}」，报告写的是「${String(review.selectedVariantId || "")}」`
     );
   }
-  scenes.forEach((scene, index) => {
-    const check = sceneChecks[index];
-    if (!check || typeof check !== "object") return;
-    const sceneId = String(scene?.sceneId || "").trim();
-    if (String(check.sceneId || "").trim() !== sceneId) {
-      push(
-        "STORY_REVIEW_SCENE_ID_MISMATCH",
-        `/sceneFunctionChecks/${index}/sceneId`,
-        `第 ${index + 1} 项应当核对场次「${sceneId}」，实际写的是「${String(check.sceneId || "")}」；必须与 sceneScript 逐位同序`
-      );
-    }
-    const declared = String(scene?.dramaticFunction || "");
-    if (!storyReviewEchoCoversSource(check.declaredFunction, declared)) {
-      push(
-        "STORY_REVIEW_DECLARATION_NOT_VERBATIM",
-        `/sceneFunctionChecks/${index}/declaredFunction`,
-        `declaredFunction 必须完整包含 ${sceneId} 的 dramaticFunction 原文，不得复述、概括或截断`
-      );
-    }
-  });
-
-  if (retentionChecks.length !== retention.length) {
-    push(
-      "STORY_REVIEW_RETENTION_COVERAGE_INCOMPLETE",
-      "/retentionChecks",
-      `剧情有 ${retention.length} 条留存设计，评审只覆盖了 ${retentionChecks.length} 条；每一条都必须逐条核对`
-    );
-  }
-  retention.forEach((entry, index) => {
-    const check = retentionChecks[index];
-    if (!check || typeof check !== "object") return;
-    if (Number(check.index) !== index) {
-      push(
-        "STORY_REVIEW_RETENTION_INDEX_MISMATCH",
-        `/retentionChecks/${index}/index`,
-        `第 ${index + 1} 项的 index 必须是 ${index}，且与 retentionPlan 逐位同序`
-      );
-    }
-    const question = String(entry?.viewerQuestion || "");
-    if (!storyReviewEchoCoversSource(check.viewerQuestion, question)) {
-      push(
-        "STORY_REVIEW_DECLARATION_NOT_VERBATIM",
-        `/retentionChecks/${index}/viewerQuestion`,
-        `viewerQuestion 必须完整包含 retentionPlan[${index}] 的原文，不得复述、概括或截断`
-      );
-    }
-  });
 
   const knownSceneIds = new Set(scenes.map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean));
-  const collectSceneIds = (value, path) => {
-    if (!Array.isArray(value)) return;
-    value.forEach((sceneId, index) => {
+  (Array.isArray(review.issues) ? review.issues : []).forEach((issue, index) => {
+    if (!Array.isArray(issue?.sceneIds)) return;
+    issue.sceneIds.forEach((sceneId, position) => {
       const normalized = String(sceneId || "").trim();
       if (!normalized || knownSceneIds.has(normalized)) return;
       push(
         "STORY_REVIEW_UNKNOWN_SCENE_ID",
-        `${path}/${index}`,
+        `/issues/${index}/sceneIds/${position}`,
         `引用了剧情里不存在的场次「${normalized}」`
       );
     });
-  };
-  (Array.isArray(review.issues) ? review.issues : []).forEach((issue, index) => {
-    collectSceneIds(issue?.sceneIds, `/issues/${index}/sceneIds`);
-  });
-  retentionChecks.forEach((check, index) => {
-    collectSceneIds(check?.shownInScenes, `/retentionChecks/${index}/shownInScenes`);
   });
 
   if (details.length) {
@@ -2899,14 +2842,122 @@ export function ensureStoryQualityReviewCoversStory(review, fullStory) {
       details
     );
   }
-  // 回显不构成新事实：这两个字段可从剧情唯一推导，一律用原文覆盖模型追加的注解。
-  sceneChecks.forEach((check, index) => {
-    check.declaredFunction = String(scenes[index]?.dramaticFunction || "");
-  });
-  retentionChecks.forEach((check, index) => {
-    check.viewerQuestion = String(retention[index]?.viewerQuestion || "");
-  });
   return review;
+}
+
+/**
+ * 第一次调用（编辑诊断）原始输出的形状核验。
+ *
+ * 必须在合成**之前**跑：合成时 `annotateStoryQualityIssues` 对非数组的 `issues` 会返回 `[]`，
+ * 那就会把「模型把 issues 写成了字符串」悄悄变成「这份剧情没有问题」——
+ * 静默丢数据比硬失败糟得多。
+ *
+ * 这一步的输入**不含候选**（实测依据见 src/story-quality-review.js 顶部），
+ * 所以这里能核验的只有形状与场次引用，核不了「判得对不对」。
+ */
+export function ensureStoryQualityEditorialContract(editorial, fullStory) {
+  requireObject(editorial, "storyQualityEditorial");
+  const details = [];
+  const push = (code, path, reason) => details.push({ code, path, reason });
+  if (!String(editorial.summary || "").trim()) {
+    push("STORY_REVIEW_EDITORIAL_SUMMARY_MISSING", "/summary", "summary 必须是非空字符串");
+  }
+  if (!Array.isArray(editorial.issues)) {
+    push("STORY_REVIEW_EDITORIAL_ISSUES_INVALID", "/issues", "issues 必须是数组（没有问题时给空数组）");
+  } else {
+    const scenes = Array.isArray(fullStory?.sceneScript) ? fullStory.sceneScript : [];
+    const knownSceneIds = new Set(scenes.map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean));
+    editorial.issues.forEach((issue, index) => {
+      if (!issue || typeof issue !== "object") {
+        push("STORY_REVIEW_EDITORIAL_ISSUE_INVALID", `/issues/${index}`, "每一条 issue 必须是对象");
+        return;
+      }
+      if (!STORY_QUALITY_ISSUE_TYPES.includes(String(issue.type || ""))) {
+        push(
+          "STORY_REVIEW_EDITORIAL_TYPE_UNKNOWN",
+          `/issues/${index}/type`,
+          `type 必须是这九个之一：${STORY_QUALITY_ISSUE_TYPES.join("、")}；实际写的是「${String(issue.type || "")}」`
+        );
+      }
+      if (!Array.isArray(issue.sceneIds) || !issue.sceneIds.length) {
+        push("STORY_REVIEW_EDITORIAL_SCENE_IDS_MISSING", `/issues/${index}/sceneIds`, "sceneIds 必须是非空数组");
+        return;
+      }
+      issue.sceneIds.forEach((sceneId, position) => {
+        const normalized = String(sceneId || "").trim();
+        if (!normalized || knownSceneIds.has(normalized)) return;
+        push(
+          "STORY_REVIEW_UNKNOWN_SCENE_ID",
+          `/issues/${index}/sceneIds/${position}`,
+          `引用了剧情里不存在的场次「${normalized}」`
+        );
+      });
+    });
+  }
+  if (details.length) {
+    throw new OutputContractError(
+      `storyQualityEditorial 结构校验失败：${details.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+      details
+    );
+  }
+  return editorial;
+}
+
+/**
+ * 第二次调用（承诺核对）原始输出的形状核验。同样必须在合成之前跑。
+ *
+ * **`source` 只能是候选字段或用户的固定角色设定。** 依据是实测：第三轮出现过
+ * `source: "characterSetup / 完整剧情 characterBible"`——拿剧情自己当承诺来源，
+ * 就成了自己声明、自己证明。候选与固定角色设定提供「应当保留什么」，
+ * 剧情提供「实际写出了什么」，后者只能出现在 evidence 里。
+ */
+export function ensureStoryQualityPromiseContract(promise) {
+  requireObject(promise, "storyQualityPromise");
+  const details = [];
+  const push = (code, path, reason) => details.push({ code, path, reason });
+  const checks = Array.isArray(promise.checks) ? promise.checks : null;
+  if (!checks) {
+    push("STORY_REVIEW_PROMISE_CHECKS_INVALID", "/checks", "checks 必须是数组");
+  } else if (!checks.length) {
+    push("STORY_REVIEW_PROMISE_CHECKS_EMPTY", "/checks", "checks 至少要有一条——候选总有可核对的承诺");
+  }
+  (checks || []).forEach((check, index) => {
+    if (!check || typeof check !== "object") {
+      push("STORY_REVIEW_PROMISE_CHECK_INVALID", `/checks/${index}`, "每一条检查必须是对象");
+      return;
+    }
+    if (!String(check.promise || "").trim()) {
+      push("STORY_REVIEW_PROMISE_TEXT_MISSING", `/checks/${index}/promise`, "promise 必须是非空字符串");
+    }
+    if (!PROMISE_CHECK_STATUSES.includes(String(check.status || ""))) {
+      push(
+        "STORY_REVIEW_PROMISE_STATUS_UNKNOWN",
+        `/checks/${index}/status`,
+        `status 必须是这四个之一：${PROMISE_CHECK_STATUSES.join("、")}；实际写的是「${String(check.status || "")}」`
+      );
+    }
+    const source = Array.isArray(check.source) ? check.source : null;
+    if (!source || !source.length) {
+      push("STORY_REVIEW_PROMISE_SOURCE_MISSING", `/checks/${index}/source`, "source 必须是非空数组");
+      return;
+    }
+    source.forEach((field, position) => {
+      const normalized = String(field || "").trim();
+      if (PROMISE_SOURCE_FIELDS.includes(normalized)) return;
+      push(
+        "STORY_REVIEW_PROMISE_SOURCE_NOT_CANDIDATE",
+        `/checks/${index}/source/${position}`,
+        `source 只能是候选字段或 fixedCharacter，不能是剧情自己的字段；「${normalized}」不在允许清单里：${PROMISE_SOURCE_FIELDS.join("、")}`
+      );
+    });
+  });
+  if (details.length) {
+    throw new OutputContractError(
+      `storyQualityPromise 结构校验失败：${details.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+      details
+    );
+  }
+  return promise;
 }
 
 /**

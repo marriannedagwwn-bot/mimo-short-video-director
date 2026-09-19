@@ -2213,7 +2213,14 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
     // 一个查不出问题的评审比偏松的评审更没用，稳定性也是硬要求（输出必须过递归 strict schema）。
     // 所以先用能干活的那个，**并如实记下它自评偏松这个已知偏差**——
     // 换更合适的评审模型是后续的事，不靠静默降级掩盖。
-    storyQualityReview: stageSetting(provider, source.storyModel || source.model, source.storyMaxCompletionTokens || source.maxCompletionTokens),
+    // 剧情体检是两次调用（编辑诊断 + 承诺核对），实测各 12k–23k token，
+    // 所以与候选对照评审同规格把上限抬到 ≥32768，只动这一个阶段、不碰全局默认。
+    // **不动 requestTimeoutMs**：实测单次 70–139 秒，全局 900000 有足够余量。
+    storyQualityReview: stageSetting(
+      provider,
+      source.storyModel || source.model,
+      Math.max(Number(source.storyMaxCompletionTokens || source.maxCompletionTokens) || 0, 32768)
+    ),
     // 分镜终审同样沿用剧情 provider，但 **必须单独放宽 timeout**：
     // 实测这个阶段正常出字最长 941 秒，而全局默认 900000 会在它成功前 41 秒把它掐死
     // ——那次失败完全是我们自己造成的，与上游无关。

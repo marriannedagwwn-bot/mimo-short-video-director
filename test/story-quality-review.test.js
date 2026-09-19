@@ -1,11 +1,29 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mockFullStory, mockStoryQualityReview } from "../src/mock.js";
-import { storyQualityReviewPrompt } from "../src/prompts.js";
-import { storyReviewHeadline, storyReviewMetrics } from "../public/story-review-metrics.js";
+import fs from "node:fs";
+// **必须用 mockNarrativeFullStory，不能用 legacy mockFullStory。**
+// 1.0 的测试喂的是 legacy 形状（还带 retentionPlan），所以全绿的同时，
+// 这个阶段在生产里真正会收到的 full_story/1.1 从没被测过——契约都换了两版了。
+import { mockNarrativeFullStory, mockStoryQualityReview, mockVariants } from "../src/mock.js";
+import { storyQualityEditorialPrompt, storyQualityPromisePrompt } from "../src/prompts.js";
+import {
+  PROMISE_CHECK_STATUSES,
+  PROMISE_SOURCE_FIELDS,
+  STORY_QUALITY_ISSUE_TYPES,
+  storyReviewHeadline,
+  storyReviewMetrics
+} from "../public/story-review-metrics.js";
 import { WorkflowService } from "../src/workflow.js";
+import { loadAppUi } from "./helpers/app-ui-harness.js";
+import {
+  assembleStoryQualityReview,
+  buildStoryQualityCandidateProjection,
+  deriveStoryQualityPromiseStatus
+} from "../src/story-quality-review.js";
 import {
   ensureOutputContract,
+  ensureStoryQualityEditorialContract,
+  ensureStoryQualityPromiseContract,
   ensureStoryQualityReviewCoversStory,
   OutputContractError
 } from "../src/validation.js";
@@ -15,10 +33,16 @@ const context = Object.freeze({
   variant: { id: "V1", title: "测试变体" }
 });
 
-const story = () => mockFullStory(context);
+const story = () => mockNarrativeFullStory(context);
+const candidateOf = (value) => buildStoryQualityCandidateProjection(
+  mockVariants(context).variants.find((item) => item.id === value.selectedVariantId)
+  || mockVariants(context).variants[0]
+);
 
 function reviewFor(value) {
-  return mockStoryQualityReview(value);
+  const candidate = candidateOf(value);
+  const mock = mockStoryQualityReview(value, candidate);
+  return assembleStoryQualityReview({ fullStory: value, candidate, ...mock });
 }
 
 function codes(run) {
@@ -33,234 +57,322 @@ function codes(run) {
 
 // ---- schema ----
 
-test("合法评审通过递归 strict schema", () => {
-  assert.doesNotThrow(() => ensureOutputContract(reviewFor(story()), "storyQualityReview"));
+test("合法评审通过递归 strict schema 与覆盖核验", () => {
+  const value = story();
+  assert.doesNotThrow(() => ensureStoryQualityReviewCoversStory(
+    ensureOutputContract(reviewFor(value), "storyQualityReview"),
+    value
+  ));
 });
 
 test("多字段、缺字段、错枚举值都被递归拒绝", () => {
   const base = reviewFor(story());
 
-  const extra = { ...base, extra: 1 };
-  assert.ok(codes(() => ensureOutputContract(extra, "storyQualityReview"))
+  assert.ok(codes(() => ensureOutputContract({ ...base, extra: 1 }, "storyQualityReview"))
     .includes("STORY_QUALITY_REVIEW_SCHEMA_UNKNOWN_FIELD"));
 
   const missing = { ...base };
-  delete missing.summary;
-  assert.ok(codes(() => ensureOutputContract(missing, "storyQualityReview"))
-    .includes("STORY_QUALITY_REVIEW_SCHEMA_REQUIRED"));
+  delete missing.promisePreservation;
+  assert.ok(codes(() => ensureOutputContract(missing, "storyQualityReview")).length);
 
-  const badVerdict = structuredClone(base);
-  badVerdict.sceneFunctionChecks[0].verdict = "maybe";
-  assert.throws(() => ensureOutputContract(badVerdict, "storyQualityReview"), OutputContractError);
+  const badType = structuredClone(base);
+  badType.issues[0].type = "made_up_type";
+  assert.ok(codes(() => ensureOutputContract(badType, "storyQualityReview")).length);
 
-  const badSeverity = structuredClone(base);
-  badSeverity.issues = [{
-    severity: "CRITICAL", type: "x", sceneIds: [], evidence: "e", problem: "p", recommendedFix: "f"
-  }];
-  assert.throws(() => ensureOutputContract(badSeverity, "storyQualityReview"), OutputContractError);
+  const badSource = structuredClone(base);
+  badSource.promisePreservation.checks[0].source = ["characterBible"];
+  assert.ok(
+    codes(() => ensureOutputContract(badSource, "storyQualityReview")).length,
+    "剧情自己的 characterBible 必须被 schema 枚举挡住"
+  );
 });
 
-test("issues 为空数组合法——没有硬伤是正常结果", () => {
-  const value = reviewFor(story());
-  assert.deepEqual(value.issues, []);
-  assert.doesNotThrow(() => ensureOutputContract(value, "storyQualityReview"));
+test("schema 的三个枚举与共享常量逐项相等", () => {
+  // 两边各写一份枚举，迟早漂成「提示词教一套、校验器认另一套」。
+  const schema = JSON.parse(fs.readFileSync(
+    new URL("../src/contracts/schemas/story-quality-review-strict.schema.json", import.meta.url),
+    "utf8"
+  ));
+  assert.deepEqual(schema.$defs.promiseCheck.properties.source.items.enum, [...PROMISE_SOURCE_FIELDS]);
+  assert.deepEqual(schema.$defs.promiseCheck.properties.status.enum, [...PROMISE_CHECK_STATUSES]);
+  assert.deepEqual(schema.$defs.issue.properties.type.enum, [...STORY_QUALITY_ISSUE_TYPES]);
 });
 
-// ---- 覆盖率核验：本方案的关键机制 ----
-//
-// 模型完全可以只报它碰巧注意到的两三条，交回一份看起来很专业、实际漏检大半的报告。
-// 下面四条是纯计数与字符串比较，不含语义判断，专门堵这个。
+// ---- 中间输出的校验器：必须在合成之前拦住，否则会静默丢数据 ----
 
-test("完整覆盖时通过", () => {
+test("编辑诊断输出：issues 不是数组时硬失败，不能被悄悄当成空数组", () => {
   const value = story();
-  assert.doesNotThrow(() => ensureStoryQualityReviewCoversStory(reviewFor(value), value));
+  const found = codes(() => ensureStoryQualityEditorialContract(
+    { summary: "还行", issues: "oops" },
+    value
+  ));
+  assert.ok(found.includes("STORY_REVIEW_EDITORIAL_ISSUES_INVALID"));
 });
 
-test("漏掉任何一个场次都明确失败", () => {
+test("编辑诊断输出：未知 type、空 sceneIds、不存在的场次各自被拦", () => {
   const value = story();
-  const review = reviewFor(value);
-  review.sceneFunctionChecks.pop();
-  const detected = codes(() => ensureStoryQualityReviewCoversStory(review, value));
-  assert.ok(detected.includes("STORY_REVIEW_SCENE_COVERAGE_INCOMPLETE"));
-});
-
-test("场次顺序错位被抓住——必须与 sceneScript 逐位同序", () => {
-  const value = story();
-  const review = reviewFor(value);
-  [review.sceneFunctionChecks[0], review.sceneFunctionChecks[1]] =
-    [review.sceneFunctionChecks[1], review.sceneFunctionChecks[0]];
-  assert.ok(codes(() => ensureStoryQualityReviewCoversStory(review, value))
-    .includes("STORY_REVIEW_SCENE_ID_MISMATCH"));
-});
-
-// 回显的作用是证明模型读的是这一条。判据是**包含**而不是相等——实测模型不复述，
-// 但爱在原文后面追加注解（10 份里 3 份栽在严格相等上）。包含关系同样能唯一确定
-// 读的是哪一条，却不会因为多说一句就判失败。
-test("复述与截断都被抓住", () => {
-  const value = story();
-
-  const paraphrased = reviewFor(value);
-  paraphrased.sceneFunctionChecks[0].declaredFunction = "大概是建立一点悬念的意思";
-  assert.ok(codes(() => ensureStoryQualityReviewCoversStory(paraphrased, value))
-    .includes("STORY_REVIEW_DECLARATION_NOT_VERBATIM"));
-
-  const truncated = reviewFor(value);
-  truncated.sceneFunctionChecks[0].declaredFunction =
-    truncated.sceneFunctionChecks[0].declaredFunction.slice(0, 3);
-  assert.ok(codes(() => ensureStoryQualityReviewCoversStory(truncated, value))
-    .includes("STORY_REVIEW_DECLARATION_NOT_VERBATIM"));
-
-  const wrongEntry = reviewFor(value);
-  wrongEntry.retentionChecks[0].viewerQuestion = "观众大概会好奇后面怎么样";
-  assert.ok(codes(() => ensureStoryQualityReviewCoversStory(wrongEntry, value))
-    .includes("STORY_REVIEW_DECLARATION_NOT_VERBATIM"));
-});
-
-test("原文后追加注解仍通过，且服务端用原文覆盖掉那段注解", () => {
-  const value = story();
-  const review = reviewFor(value);
-  const original = value.sceneScript[0].dramaticFunction;
-  review.sceneFunctionChecks[0].declaredFunction = `${original}，从不爱管闲事到主动介入`;
-  const originalQuestion = value.retentionPlan[0].viewerQuestion;
-  review.retentionChecks[0].viewerQuestion = `${originalQuestion} 观众会一直想知道`;
-
-  assert.doesNotThrow(() => ensureStoryQualityReviewCoversStory(review, value));
-  // 回显不构成新事实：显示的必须是剧情真正写的那句
-  assert.equal(review.sceneFunctionChecks[0].declaredFunction, original);
-  assert.equal(review.retentionChecks[0].viewerQuestion, originalQuestion);
-});
-
-test("只改标点不算复述——覆盖率的两道真闸门是数量与逐位 id，不是这条", () => {
-  const value = story();
-  const review = reviewFor(value);
-  const original = value.sceneScript[0].dramaticFunction;
-  // 实测 MiMo 会把「关键选择，打破…」回显成「关键选择：打破…」，那不构成任何歧义
-  review.sceneFunctionChecks[0].declaredFunction = `${original.replace(/，/gu, "：")}并主动帮忙`;
-  assert.doesNotThrow(() => ensureStoryQualityReviewCoversStory(review, value));
-  assert.equal(review.sceneFunctionChecks[0].declaredFunction, original);
-});
-
-test("漏掉留存设计、或 index 错位都明确失败", () => {
-  const value = story();
-
-  const short = reviewFor(value);
-  short.retentionChecks = [];
-  assert.ok(codes(() => ensureStoryQualityReviewCoversStory(short, value))
-    .includes("STORY_REVIEW_RETENTION_COVERAGE_INCOMPLETE"));
-
-  const misindexed = reviewFor(value);
-  misindexed.retentionChecks[0].index = 5;
-  assert.ok(codes(() => ensureStoryQualityReviewCoversStory(misindexed, value))
-    .includes("STORY_REVIEW_RETENTION_INDEX_MISMATCH"));
-});
-
-test("引用剧情里不存在的场次被抓住", () => {
-  const value = story();
-
-  const badIssue = reviewFor(value);
-  badIssue.issues = [{
-    severity: "BLOCKER", type: "declarationGap", sceneIds: ["S99"],
-    evidence: "e", problem: "p", recommendedFix: "f"
-  }];
-  assert.ok(codes(() => ensureStoryQualityReviewCoversStory(badIssue, value))
-    .includes("STORY_REVIEW_UNKNOWN_SCENE_ID"));
-
-  const badShown = reviewFor(value);
-  badShown.retentionChecks[0].shownInScenes = ["S99"];
-  assert.ok(codes(() => ensureStoryQualityReviewCoversStory(badShown, value))
+  const sceneId = value.sceneScript[0].sceneId;
+  const base = (over) => ({
+    summary: "s",
+    issues: [{ issueId: "FS-001", type: "causal_logic", severity: "MINOR", sceneIds: [sceneId], ...over }]
+  });
+  assert.ok(codes(() => ensureStoryQualityEditorialContract(base({ type: "nope" }), value))
+    .includes("STORY_REVIEW_EDITORIAL_TYPE_UNKNOWN"));
+  assert.ok(codes(() => ensureStoryQualityEditorialContract(base({ sceneIds: [] }), value))
+    .includes("STORY_REVIEW_EDITORIAL_SCENE_IDS_MISSING"));
+  assert.ok(codes(() => ensureStoryQualityEditorialContract(base({ sceneIds: ["S404"] }), value))
     .includes("STORY_REVIEW_UNKNOWN_SCENE_ID"));
 });
 
-test("没有留存设计的剧情，空 retentionChecks 是正确值", () => {
+test("承诺输出：source 只能是候选字段，剧情自己的字段被拦", () => {
+  const ok = { checks: [{ promise: "p", source: ["emotionalPayoff"], status: "PRESERVED", evidence: "e" }] };
+  assert.doesNotThrow(() => ensureStoryQualityPromiseContract(ok));
+
+  const selfEvidencing = { checks: [{ promise: "p", source: ["characterBible"], status: "PRESERVED", evidence: "e" }] };
+  assert.ok(codes(() => ensureStoryQualityPromiseContract(selfEvidencing))
+    .includes("STORY_REVIEW_PROMISE_SOURCE_NOT_CANDIDATE"));
+
+  assert.ok(codes(() => ensureStoryQualityPromiseContract({ checks: [] }))
+    .includes("STORY_REVIEW_PROMISE_CHECKS_EMPTY"));
+  assert.ok(codes(() => ensureStoryQualityPromiseContract({
+    checks: [{ promise: "p", source: ["title"], status: "OK", evidence: "e" }]
+  })).includes("STORY_REVIEW_PROMISE_STATUS_UNKNOWN"));
+});
+
+// ---- 服务端派生 ----
+
+test("承诺总判定由服务端派生，模型给的值一律被覆盖", () => {
+  assert.equal(deriveStoryQualityPromiseStatus([{ status: "PRESERVED" }]), "PASS");
+  assert.equal(deriveStoryQualityPromiseStatus([{ status: "PRESERVED" }, { status: "WEAKENED" }]), "WARN");
+  assert.equal(deriveStoryQualityPromiseStatus([{ status: "WEAKENED" }, { status: "MISSING" }]), "FAIL");
+  assert.equal(deriveStoryQualityPromiseStatus([{ status: "CONTRADICTED" }]), "FAIL");
+
   const value = story();
-  value.retentionPlan = [];
-  const review = reviewFor(value);
-  assert.deepEqual(review.retentionChecks, []);
-  assert.doesNotThrow(() => ensureStoryQualityReviewCoversStory(review, value));
+  const candidate = candidateOf(value);
+  const assembled = assembleStoryQualityReview({
+    fullStory: value,
+    candidate,
+    editorial: { summary: "s", issues: [] },
+    // 模型谎报 PASS，但有一条 MISSING——派生必须覆盖成 FAIL。
+    promise: { status: "PASS", checks: [{ promise: "p", source: ["title"], status: "MISSING", evidence: "e" }] }
+  });
+  assert.equal(assembled.promisePreservation.status, "FAIL");
+});
+
+test("覆盖核验只裁决引用真实性与 selectedVariantId", () => {
+  const value = story();
+  const base = reviewFor(value);
+
+  const wrongVariant = { ...base, selectedVariantId: "V99" };
+  assert.ok(codes(() => ensureStoryQualityReviewCoversStory(wrongVariant, value))
+    .includes("STORY_REVIEW_VARIANT_MISMATCH"));
+
+  const ghost = structuredClone(base);
+  ghost.issues[0].sceneIds = ["S404"];
+  assert.ok(codes(() => ensureStoryQualityReviewCoversStory(ghost, value))
+    .includes("STORY_REVIEW_UNKNOWN_SCENE_ID"));
 });
 
 // ---- 提示词 ----
 
-test("提示词写死本次的逐条数量与逐字回显纪律", () => {
+test("编辑诊断提示词看不到候选——这是本次收益的来源，必须锁住", () => {
   const value = story();
-  const prompt = storyQualityReviewPrompt(value);
-  assert.match(prompt, new RegExp(`恰好 ${value.sceneScript.length} 项`, "u"));
-  assert.match(prompt, new RegExp(`共 ${value.retentionPlan.length} 条`, "u"));
-  assert.match(prompt, /逐字照抄/u);
-  assert.match(prompt, /也不要在后面追加你自己的注解/u);
-  assert.match(prompt, /声明不等于呈现/u);
-  // 只有可见事实字段算数：拍摄说明与叙事目标都不能当依据
-  assert.match(prompt, /shotAndSound、shootingNotes、beatSheet 都不算/u);
+  const candidate = candidateOf(value);
+  const prompt = storyQualityEditorialPrompt({ fullStory: value, fixedCharacter: "小白子" });
+  // 候选独有的字段名一个都不能出现在这段提示词里。
+  for (const marker of ["oneLineHook", "keyDialogueDirections", "emotionalPayoff", "storyOutline"]) {
+    assert.doesNotMatch(prompt, new RegExp(marker, "u"), `编辑诊断提示词不得含候选字段 ${marker}`);
+  }
+  assert.doesNotMatch(prompt, new RegExp(String(candidate.oneLineHook || "不可能出现的串"), "u"));
 });
 
-test("没有留存设计时提示词给出空数组指引，不要求凭空编造", () => {
+test("两段提示词逐字含已验证的承重原句", () => {
   const value = story();
-  value.retentionPlan = [];
-  assert.match(storyQualityReviewPrompt(value), /本片没有，给空数组/u);
+  const editorial = storyQualityEditorialPrompt({ fullStory: value, fixedCharacter: "小白子" });
+  // 三档严重度与三条红线：第四轮实测靠它把 MAJOR 从 7 降到 2、四条误报逐条消失。
+  assert.match(editorial, /只有「明确矛盾」才判 MAJOR 或 BLOCKER/u);
+  assert.match(editorial, /就不得判成「物理上不可能」/u);
+  assert.match(editorial, /不得先补一个剧情没有给出的不利条件/u);
+  assert.match(editorial, /不能把你的概括当成引用/u);
+  assert.match(editorial, /普通的生活感受不必都有前置铺垫/u);
+
+  const promise = storyQualityPromisePrompt({ candidate: candidateOf(value), fullStory: value });
+  // 台词三档：第三轮实测靠它让同一条承诺在原稿判 PRESERVED、在 C 稿判 MISSING。
+  assert.match(promise, /措辞不是承诺，台词里交代的\*\*事实\*\*是/u);
+  assert.match(promise, /不能因少写台词丢失剧情前提/u);
+  assert.match(promise, /一条检查只放一个能独立判定的命题/u);
+  assert.match(promise, /拿剧情当承诺来源，就成了自己声明、自己证明/u);
+  for (const field of PROMISE_SOURCE_FIELDS) {
+    assert.match(promise, new RegExp(`\`${field}\``, "u"), `source 清单必须把 ${field} 写给模型`);
+  }
 });
 
-// ---- 阶段 ----
+// ---- 工作流：demo 与 live 两条路 ----
 
-test("demo 模式产出可用报告，但不伪造任何质量判断", async () => {
-  const workflow = new WorkflowService({ clients: {}, stageDefaults: {} });
+test("demo 模式走通两次调用的合成，并且会走到派生 FAIL 分支", async () => {
+  const service = new WorkflowService({ clients: {}, stageDefaults: {} });
   const value = story();
-  const review = await workflow.createStoryQualityReview({ fullStory: value });
-
-  assert.equal(review.sceneFunctionChecks.length, value.sceneScript.length);
-  assert.equal(review.retentionChecks.length, value.retentionPlan.length);
-  assert.deepEqual(review.issues, []);
-  // mock 不得假装做过核对——与「demo mock 不得伪造语义审计结果」同规格
-  assert.match(review.summary, /未调用模型/u);
+  const result = await service.createStoryQualityReview({
+    fullStory: value,
+    themeVariants: mockVariants(context),
+    candidateId: value.selectedVariantId,
+    creatorProfile: context.creatorProfile
+  });
+  assert.equal(result.review.schemaVersion, "story-quality-review/2.0");
+  // mock 刻意含一条 CONTRADICTED：全判 PRESERVED 会让 demo 永远走不到这个分支。
+  assert.equal(result.review.promisePreservation.status, "FAIL");
+  assert.ok(result.review.issues.length >= 1);
+  assert.ok(Object.hasOwn(result.metadata, "storyQualityReview"));
 });
 
-test("体检对象必须先是一份合法剧情", async () => {
-  const workflow = new WorkflowService({ clients: {}, stageDefaults: {} });
-  const broken = story();
-  broken.sceneScript = [];
-  await assert.rejects(() => workflow.createStoryQualityReview({ fullStory: broken }), OutputContractError);
+test("live 路径：两次顺序调用、第一次被拦下时带诊断重做一次、禁止第三次", async () => {
+  const value = story();
+  const prompts = [];
+  let editorialCalls = 0;
+  const sceneId = value.sceneScript[0].sceneId;
+  const goodEditorial = () => JSON.stringify({
+    summary: "还行",
+    issues: [{
+      issueId: "FS-001", type: "causal_logic", severity: "MINOR", sceneIds: [sceneId],
+      evidence: "e", problem: "p", viewerImpact: "v", confidence: "low", optionalSuggestion: ""
+    }]
+  });
+  const client = {
+    async generateJson() { throw new Error("本阶段必须走 coordinator"); },
+    async requestCompletion({ prompt }) {
+      prompts.push(prompt);
+      if (prompt.includes("你是这部短视频的**终审编辑**")) {
+        editorialCalls += 1;
+        // 第一次故意写一个不存在的场次，逼出确定性诊断与重试。
+        if (editorialCalls === 1) {
+          return { content: JSON.stringify({ summary: "s", issues: [{ issueId: "FS-001", type: "causal_logic", severity: "MINOR", sceneIds: ["S404"], evidence: "e", problem: "p", viewerImpact: "v", confidence: "low", optionalSuggestion: "" }] }) };
+        }
+        return { content: goodEditorial() };
+      }
+      return { content: JSON.stringify({
+        checks: [{ promise: "p", source: ["oneLineHook"], status: "PRESERVED", evidence: "e" }]
+      }) };
+    }
+  };
+  const service = new WorkflowService({
+    clients: { MiMo: client },
+    stageDefaults: { storyQualityReview: { provider: "MiMo", model: "m", maxCompletionTokens: 4096 } }
+  });
+  const result = await service.createStoryQualityReview({
+    fullStory: value,
+    themeVariants: mockVariants(context),
+    candidateId: value.selectedVariantId,
+    creatorProfile: context.creatorProfile
+  });
+  assert.equal(editorialCalls, 2, "第一次被拦下之后应当只重做一次");
+  assert.equal(result.metadata.storyQualityReview.providerCalls, 3, "两次编辑诊断 + 一次承诺核对");
+  assert.equal(result.metadata.storyQualityReview.rejections.length, 1, "被拦过一次就必须如实上报");
+  // 重试正文必须把校验器数出来的诊断追加进去，只说「你错了」第二次只会重复第一次。
+  assert.match(prompts[1], /上一次的输出被确定性校验拦下了/u);
+  assert.match(prompts[1], /STORY_REVIEW_UNKNOWN_SCENE_ID/u);
+  // 承诺核对必须发生在编辑诊断之后，且它才是拿到候选的那一次。
+  assert.match(prompts[2], /这个选题承诺的东西/u);
+});
+
+test("live 路径：第二次仍被拦即 fail closed，两次诊断都带出来", async () => {
+  const value = story();
+  const client = {
+    async requestCompletion() {
+      return { content: JSON.stringify({ summary: "s", issues: [{ issueId: "FS-001", type: "causal_logic", severity: "MINOR", sceneIds: ["S404"], evidence: "e", problem: "p", viewerImpact: "v", confidence: "low", optionalSuggestion: "" }] }) };
+    }
+  };
+  const service = new WorkflowService({
+    clients: { MiMo: client },
+    stageDefaults: { storyQualityReview: { provider: "MiMo", model: "m", maxCompletionTokens: 4096 } }
+  });
+  await assert.rejects(() => service.createStoryQualityReview({
+    fullStory: value,
+    themeVariants: mockVariants(context),
+    candidateId: value.selectedVariantId,
+    creatorProfile: context.creatorProfile
+  }), (error) => {
+    // 序号挂在 metadata.attempt 上——额外字段就是这么被 ValidationDiagnostic.toJSON 带出去的。
+    const attempts = new Set((error.diagnostics || [])
+      .map((detail) => detail?.metadata?.attempt)
+      .filter((value) => Number.isFinite(value)));
+    assert.ok(attempts.has(1) && attempts.has(2), "两次都被拦时，两次的诊断都要在响应里");
+    return true;
+  });
+});
+
+// ---- 接线源码锁 ----
+
+test("服务端接线与侧车 scope 由源码断言锁住", () => {
+  const serverJs = fs.readFileSync(new URL("../server.js", import.meta.url), "utf8");
+  assert.match(serverJs, /"\/api\/story-quality-review": \(body\) => workflow\.createStoryQualityReview\(body\)/u);
+  // scope 必须逐字等于 stage 名：Map 按 scope 建、按 stage 查，对不上就静默不写侧车。
+  assert.match(serverJs, /MODEL_OUTPUT_LOG_SCOPES\.STORY_QUALITY_REVIEW/u);
+
+  const workflowJs = fs.readFileSync(new URL("../src/workflow.js", import.meta.url), "utf8");
+  // normalizeStageDefaults 漏掉这个阶段会让任何非服务端调用在调模型之前就 InputError。
+  assert.match(workflowJs, /storyQualityReview: \{\s*\n\s*provider: fallback\.storyProvider/u);
+});
+
+// 消费者面要真的跑一遍，不能只靠源码断言——⑤⑥ 那次就是渲染器漏改、页面两处空白而不报错。
+test("浏览器：请求体带上候选，渲染出承诺块与诊断块", async () => {
+  const value = story();
+  const review = reviewFor(value);
+  // 造一条没守住的承诺与一条带建议的 issue，保证两块与免责说明都会被渲染到。
+  review.promisePreservation.checks[1].status = "CONTRADICTED";
+  review.issues[0].optionalSuggestion = "把这个动作改成先放下再托腮";
+  const calls = [];
+  const app = await loadAppUi({
+    story: true,
+    fetch: async (url, options) => {
+      calls.push({ url, body: JSON.parse(options.body) });
+      return { ok: true, json: async () => ({ ok: true, result: { review, metadata: {} } }) };
+    }
+  });
+  const button = { disabled: false, textContent: "检查剧情硬伤" };
+  const body = app.elements.fullStory.querySelector("[data-story-review-body]")
+    || (() => { throw new Error("harness 里拿不到体检面板容器"); })();
+  await app.runStoryQualityReview(value, button);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "/api/story-quality-review");
+  // 承诺核对要拿候选当外部参照，缺了它这一档就退回 1.0 的重言式。
+  assert.ok(calls[0].body.themeVariants, "请求体必须带 themeVariants");
+  assert.equal(calls[0].body.candidateId, value.selectedVariantId);
+  assert.ok(Object.hasOwn(calls[0].body, "creatorProfile"));
+
+  assert.match(body.innerHTML, /候选承诺没守住的地方/u);
+  assert.match(body.innerHTML, /做了相反的事/u, "承诺状态要出中文标签");
+  assert.match(body.innerHTML, /编辑诊断/u);
+  assert.match(body.innerHTML, /动作密度过载/u, "issue 类型要出中文标签");
+  assert.match(body.innerHTML, /仅供参考，系统不会自动执行/u);
+  // 1.0 那两张表的对象已经不存在，不能再出现在页面上。
+  assert.doesNotMatch(body.innerHTML, /声明与画面对不上/u);
+  assert.equal(button.disabled, false, "跑完要把按钮放回去");
+});
+
+test("浏览器：拦过一次必须显示出来，花掉的钱不能藏起来", async () => {
+  const value = story();
+  const app = await loadAppUi({ story: true });
+  const html = app.renderStoryQualityReview(reviewFor(value), {
+    storyQualityReview: { provider: "Qwen", model: "m", providerCalls: 3, rejections: [{ message: "x", details: [] }] }
+  });
+  assert.match(html, /有一次调用被确定性校验拦下/u);
+  assert.doesNotMatch(
+    app.renderStoryQualityReview(reviewFor(value), { storyQualityReview: { providerCalls: 2 } }),
+    /被确定性校验拦下/u
+  );
 });
 
 // ---- 可比对数字 ----
-//
-// 不问模型要总分：实测 13 份的模型综合分挤在 7.8–8.3、中位 8.2，分辨率太低。
-// 这几个数是从逐条判定里数出来的，跨故事直接可比，也不需要任何评分刻度。
 
-test("未兑现计数与硬伤计数都从逐条判定里数出来", () => {
+test("metrics 与 headline 数的是候选承诺，不再数留存", () => {
   const value = story();
   const review = reviewFor(value);
-  review.sceneFunctionChecks[0].verdict = "not_depicted";
-  review.sceneFunctionChecks[1].verdict = "partially_depicted";
-  review.retentionChecks[0].verdict = "not_depicted";
-  review.issues = [
-    { severity: "BLOCKER", type: "a", sceneIds: [], evidence: "e", problem: "p", recommendedFix: "f" },
-    { severity: "MINOR", type: "b", sceneIds: [], evidence: "e", problem: "p", recommendedFix: "f" }
-  ];
-
   const metrics = storyReviewMetrics(review);
-  assert.equal(metrics.sceneFunctions.notDepicted, 1);
-  assert.equal(metrics.sceneFunctions.partial, 1);
-  assert.equal(metrics.sceneFunctions.unmet, 2);
-  assert.equal(metrics.retention.unmet, 1);
-  assert.equal(metrics.declarationsUnmet, 3);
-  assert.equal(metrics.declarationsChecked, value.sceneScript.length + value.retentionPlan.length);
-  assert.equal(metrics.blocker, 1);
-  assert.equal(metrics.major, 0);
-  assert.equal(metrics.minor, 1);
-
-  const headline = storyReviewHeadline(review);
-  assert.match(headline, /声明未兑现 3\/9/u);
-  assert.match(headline, /1 严重/u);
-  assert.match(headline, /1 小问题/u);
-});
-
-test("全部兑现且无硬伤时摘要说得明确", () => {
-  const review = reviewFor(story());
-  const headline = storyReviewHeadline(review);
-  assert.match(headline, /声明未兑现 0\//u);
-  assert.match(headline, /未发现硬伤/u);
-});
-
-test("空评审不抛错，返回 null 摘要为空串", () => {
-  assert.equal(storyReviewMetrics(null), null);
+  assert.equal(metrics.promisesChecked, review.promisePreservation.checks.length);
+  assert.equal(metrics.promisesBroken, 1);
+  assert.equal(metrics.issueCount, review.issues.length);
+  assert.ok(!Object.hasOwn(metrics, "retention"), "留存那一半的对象在 full_story/1.1 里已经不存在");
+  assert.match(storyReviewHeadline(review), /候选承诺 2 条：1 条没守住/u);
   assert.equal(storyReviewHeadline(null), "");
 });

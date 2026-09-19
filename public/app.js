@@ -11,7 +11,9 @@ import {
   CANDIDATE_REVIEW_SPECIAL_DEFECT_LABELS,
   CANDIDATE_REVIEW_TIERS,
   FULL_STORY_PRECHECK_REASON_LABELS,
+  PROMISE_CHECK_STATUS_LABELS,
   SOURCE_SCAFFOLD_COPY_SCORE,
+  STORY_QUALITY_ISSUE_TYPE_LABELS,
   candidateReviewHeadline,
   storyReviewHeadline,
   storyReviewMetrics
@@ -318,7 +320,7 @@ const MODEL_STAGE_DEFS = [
   // 只是这张表漏了登记，于是面板选不到、sanitizedModelOverrides 也会把覆盖过滤掉——
   // 这张表就是 override 白名单。都是纯文本阶段（不在 requiresMediaModel 里）。
   // optional：它们由用户手动触发、不属于必经链路，不该参与 modelStagesReady 的就绪判定。
-  { key: "storyQualityReview", label: "剧情体检", hint: "逐场核对声明与画面，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
+  { key: "storyQualityReview", label: "剧情体检", hint: "核对候选承诺 + 编辑诊断，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "animationPlan", label: "动画生产包", hint: "首尾帧、镜头与视频提示词", capability: "文本模型", capabilityKind: "text" },
   { key: "animationPlanReview", label: "分镜终审", hint: "对照剧情核查镜头，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "animationPlanRevision", label: "定向修订", hint: "按终审报告只改被点名的镜头", capability: "文本模型", capabilityKind: "text", optional: true },
@@ -2958,10 +2960,17 @@ async function runStoryQualityReview(fullStory, button) {
   button.disabled = true;
   const original = button.textContent;
   button.textContent = "体检中…";
-  body.innerHTML = `<p class="story-review-status">正在逐场核对声明与画面，通常十几秒…</p>`;
+  body.innerHTML = `<p class="story-review-status">正在核对候选承诺并做编辑诊断，两次调用约 1–3 分钟…</p>`;
   try {
-    const review = await api("/api/story-quality-review", { fullStory });
-    body.innerHTML = renderStoryQualityReview(review);
+    // 承诺核对要拿候选当外部参照，所以必须把候选一起送上去；
+    // 固定角色设定是编辑诊断判 character_contract 的依据。
+    const result = await api("/api/story-quality-review", {
+      fullStory,
+      themeVariants: state.output?.themeVariants,
+      candidateId: fullStory.selectedVariantId,
+      creatorProfile: profile()
+    });
+    body.innerHTML = renderStoryQualityReview(result.review, result.metadata);
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     // 评审失败要把原因完整显示出来——它常常是覆盖率核验拦下的漏检，用户需要看到是哪一条。
@@ -3054,46 +3063,47 @@ function renderAnimationPlanReview(review) {
     </details>` : ""}`;
 }
 
-function renderStoryQualityReview(review) {
+function renderStoryQualityReview(review, metadata = null) {
   const metrics = storyReviewMetrics(review);
-  // 未兑现的排在前面：那才是要看的；已兑现的折叠进一句统计，不占版面。
-  const unmet = (list, keyOf) => (list || []).filter((item) => item.verdict !== "depicted").map(keyOf);
-  const sceneRows = unmet(review.sceneFunctionChecks, (check) => `
+  const checks = review.promisePreservation?.checks || [];
+  // 没守住的排在前面：那才是要看的；守住的折叠进一句统计，不占版面。
+  const brokenRows = checks.filter((check) => check.status !== "PRESERVED").map((check) => `
     <div class="review-check">
       <div class="review-check-head">
-        <span class="scene-id">${escape(check.sceneId)}</span>
-        <span class="review-verdict verdict-${escape(check.verdict)}">${escape(REVIEW_VERDICT_LABEL[check.verdict] || check.verdict)}</span>
+        <span class="scene-id">${escape((check.source || []).join(" / "))}</span>
+        <span class="review-verdict verdict-${escape(check.status)}">${escape(PROMISE_CHECK_STATUS_LABELS[check.status] || check.status)}</span>
       </div>
-      <p><b>声称：</b>${escape(check.declaredFunction)}</p>
-      <p><b>观众实际看到：</b>${escape(check.whatViewerSees)}</p>
-    </div>`);
-  const retentionRows = unmet(review.retentionChecks, (check) => `
-    <div class="review-check">
-      <div class="review-check-head">
-        <span class="scene-id">留存 ${Number(check.index) + 1}</span>
-        <span class="review-verdict verdict-${escape(check.verdict)}">${escape(REVIEW_VERDICT_LABEL[check.verdict] || check.verdict)}</span>
-      </div>
-      <p><b>声称观众会问：</b>${escape(check.viewerQuestion)}</p>
-      <p><b>观众实际看到：</b>${escape(check.whatViewerSees)}</p>
+      <p><b>候选承诺：</b>${escape(check.promise)}</p>
+      <p><b>剧情里实际写的：</b>${escape(check.evidence)}</p>
     </div>`);
   const issueRows = (review.issues || []).map((issue) => `
     <div class="review-issue severity-${escape(issue.severity)}">
       <div class="review-check-head">
         <span class="review-severity severity-${escape(issue.severity)}">${escape(REVIEW_SEVERITY_LABEL[issue.severity] || issue.severity)}</span>
-        <span class="review-scenes">${escape((issue.sceneIds || []).join("、") || "全片")}</span>
+        <span class="review-scenes">${escape(STORY_QUALITY_ISSUE_TYPE_LABELS[issue.type] || issue.type)}　${escape((issue.sceneIds || []).join("、") || "全片")}</span>
       </div>
       <p>${escape(issue.problem)}</p>
       <p class="review-evidence">原文：${escape(issue.evidence)}</p>
-      <p><b>建议：</b>${escape(issue.recommendedFix)}</p>
+      ${issue.viewerImpact ? `<p><b>对观众：</b>${escape(issue.viewerImpact)}</p>` : ""}
+      ${issue.optionalSuggestion
+        ? `<p><b>可能的改法：</b>${escape(issue.optionalSuggestion)}
+             <span class="muted-note">仅供参考，系统不会自动执行；实测改法会有方向搞反的情况，请自行判断。</span></p>`
+        : ""}
+      ${issue.evidenceRun ? `<p class="muted-note">这段证据与候选正文最长连续重合 ${Number(issue.evidenceRun)} 字——只是一个事实，不代表问题出在候选。</p>` : ""}
     </div>`);
+  // 拦过一次就必须说出来：花掉的钱不能藏起来。
+  const retried = Number(metadata?.storyQualityReview?.providerCalls || 0) > 2
+    ? `<p class="story-review-status warn">有一次调用被确定性校验拦下，这是重做之后的结果。</p>`
+    : "";
 
   return `
     <div class="review-headline">${escape(storyReviewHeadline(review))}</div>
+    ${retried}
     <p class="story-review-status">${escape(review.summary || "")}</p>
-    ${issueRows.length ? block("硬伤", issueRows.join("")) : ""}
-    ${sceneRows.length || retentionRows.length
-      ? block("声明与画面对不上的地方", retentionRows.join("") + sceneRows.join(""))
-      : `<p class="story-review-status">逐条核对了 ${metrics.declarationsChecked} 条声明，都能在画面里找到依据。</p>`}
+    ${brokenRows.length
+      ? block("候选承诺没守住的地方", brokenRows.join(""))
+      : `<p class="story-review-status">逐条核对了 ${metrics.promisesChecked} 条候选承诺，都能在画面或对白里找到依据。</p>`}
+    ${issueRows.length ? block("编辑诊断", issueRows.join("")) : `<p class="story-review-status">编辑诊断没有报出问题。</p>`}
     <p class="story-review-foot">这是一份参考报告，不阻断后续生成；判断有没有道理由你决定。刷新页面后不保留。</p>`;
 }
 

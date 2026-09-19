@@ -1,4 +1,4 @@
-import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPromiseCheckRetryPrompt, fullStoryPromiseFindingsPrompt, fullStoryPromiseListPrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityReviewPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPromiseCheckRetryPrompt, fullStoryPromiseFindingsPrompt, fullStoryPromiseListPrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityEditorialPrompt, storyQualityPromisePrompt, storyQualityReviewRetryPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { isNarrativeFullStory } from "./full-story-contract.js";
 import {
@@ -9,6 +9,11 @@ import {
   promiseCheckGaps,
   singleCandidateThemeVariants
 } from "./full-story-precheck.js";
+import {
+  STORY_QUALITY_REVIEW_STAGE,
+  assembleStoryQualityReview,
+  buildStoryQualityCandidateProjection
+} from "./story-quality-review.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { compileCharacterFeatures } from "./character-feature-compiler.js";
 import {
@@ -74,6 +79,8 @@ import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, Inp
   ensureFullStoryPromiseFindingsContract,
   ensureFullStoryPromiseListContract,
   ensureStoryCandidateReviewCoversCandidates,
+  ensureStoryQualityEditorialContract,
+  ensureStoryQualityPromiseContract,
   ensureStoryQualityReviewCoversStory
 } from "./validation.js";
 import {
@@ -411,17 +418,106 @@ export class WorkflowService {
     const fullStory = requireObject(input.fullStory, "fullStory");
     // 体检的对象必须先是一份合法剧情，否则报告没有意义。
     ensureOutputContract(fullStory, "fullStory");
-    const validate = (result) => ensureStoryQualityReviewCoversStory(
-      ensureOutputContract(result, "storyQualityReview"),
+    const themeVariants = requireObject(input.themeVariants, "themeVariants");
+    const candidateId = requireText(input.candidateId || fullStory.selectedVariantId, "candidateId");
+    const candidate = buildStoryQualityCandidateProjection(
+      singleCandidateThemeVariants(themeVariants, candidateId).variants[0]
+    );
+    const fixedCharacter = String(input.creatorProfile?.fixedCharacter || "");
+
+    const assemble = (editorial, promise) => ensureStoryQualityReviewCoversStory(
+      ensureOutputContract(
+        assembleStoryQualityReview({ fullStory, editorial, promise, candidate }),
+        "storyQualityReview"
+      ),
       fullStory
     );
-    if (!this.hasLiveClient) return validate(mockStoryQualityReview(fullStory));
-    const settings = this.resolveStage("storyQualityReview", input);
+    if (!this.hasLiveClient) {
+      const mock = mockStoryQualityReview(fullStory, candidate);
+      return { review: assemble(mock.editorial, mock.promise), metadata: promiseCheckMetadata({
+        provider: "demo", model: "demo", stageKey: STORY_QUALITY_REVIEW_STAGE
+      }) };
+    }
+    const settings = this.resolveStage(STORY_QUALITY_REVIEW_STAGE, input);
     this.assertStageClient(settings, "剧情体检");
-    return this.generateStageJson("storyQualityReview", input, {
-      prompt: storyQualityReviewPrompt(fullStory),
-      validate
+
+    // 实数调用次数，不能从 rejections 反推：传输失败时它是空数组，供应商却确实被调用过。
+    let providerCalls = 0;
+    const rejections = [];
+    // 走 coordinator 拿不到 generateValidatedJson 自带的 recorder，必须自己接，
+    // 不接就**静默不写**侧车——两次调用的原文会永久丢失。
+    const outputLogWriter = this.stageModelOutputLogWriters?.get(STORY_QUALITY_REVIEW_STAGE) || null;
+    const recordAttempt = outputLogWriter?.enabled
+      ? (attempt) => outputLogWriter.recordAttempt(attempt)
+      : null;
+    const runStep = (prompt, validate) => this.modelCallCoordinator.runJson({
+      client: settings.client,
+      request: {
+        prompt,
+        model: settings.model,
+        maxCompletionTokens: settings.maxCompletionTokens,
+        requestTimeoutMs: settings.requestTimeoutMs
+      },
+      provider: settings.provider || "",
+      stage: STORY_QUALITY_REVIEW_STAGE,
+      maxProviderCalls: 2,
+      attemptObserver: async (attempt) => {
+        providerCalls += 1;
+        if (!recordAttempt) return;
+        try {
+          await recordAttempt(attempt);
+        } catch {
+          // 观测失败不改变结论。
+        }
+      },
+      retryTokenLimit,
+      retryPrompt: ({ originalPrompt }) => {
+        const last = rejections[rejections.length - 1];
+        return last?.details?.length
+          ? storyQualityReviewRetryPrompt({ originalPrompt, details: last.details })
+          : originalPrompt;
+      },
+      validate: (result) => {
+        try {
+          return validate(result);
+        } catch (error) {
+          if (error instanceof OutputContractError) {
+            rejections.push({
+              message: error.message,
+              details: Array.isArray(error.details) ? error.details : []
+            });
+          }
+          throw error;
+        }
+      }
     });
+
+    let review;
+    try {
+      // 顺序不能换，而且第一步**看不到候选**——见 src/story-quality-review.js 顶部的实测依据。
+      const editorial = await runStep(
+        storyQualityEditorialPrompt({ fullStory, fixedCharacter }),
+        (result) => ensureStoryQualityEditorialContract(result, fullStory)
+      );
+      const promise = await runStep(
+        storyQualityPromisePrompt({ candidate, fullStory }),
+        (result) => ensureStoryQualityPromiseContract(result)
+      );
+      review = assemble(editorial, promise);
+    } catch (error) {
+      throw candidateReviewPipelineFailure(error, rejections);
+    }
+
+    return {
+      review,
+      metadata: promiseCheckMetadata({
+        provider: settings.provider || "",
+        model: settings.model || "",
+        providerCalls,
+        rejections,
+        stageKey: STORY_QUALITY_REVIEW_STAGE
+      })
+    };
   }
 
   /**
@@ -3534,15 +3630,18 @@ function candidateReviewMetadata({
 }
 
 /** 承诺核对的调用元数据，与评审同形状：拦过一次就必须说出来。 */
+// stageKey 让剧情体检复用同一个工厂——两档都是「两次调用 + 允许第一次做错」，
+// 上报的四个字段完全一样，各写一份只会漂。浏览器按 metadata[stageKey] 取。
 function promiseCheckMetadata({
   provider = "",
   model = "",
   providerCalls = 1,
-  rejections = []
+  rejections = [],
+  stageKey = "fullStoryPromiseCheck"
 } = {}) {
   const list = Array.isArray(rejections) ? rejections : [];
   return {
-    fullStoryPromiseCheck: {
+    [stageKey]: {
       provider,
       model,
       providerCalls,
@@ -4302,7 +4401,17 @@ function normalizeStageDefaults(stageDefaults = null, fallback = {}) {
       maxCompletionTokens: fallback.staticFrameCompilerMaxCompletionTokens || 4096,
       requestTimeoutMs: fallback.staticFrameCompilerTimeoutMs || 300000
     },
-    characterReference: { provider, model: "", maxCompletionTokens: null }
+    characterReference: { provider, model: "", maxCompletionTokens: null },
+    // 剧情体检此前不在这张表里，于是任何不经服务端的调用都解析出 provider: ""，
+    // 在调模型**之前**就 InputError——这正是它长期没被真实调用过的一部分原因。
+    // 沿用剧情阶段的设置（写这份剧情的那个模型自己批自己会偏松，见方法头注释）。
+    // 只补这一项：storyCandidateReview / storyCandidateRevision / animationPlanReview /
+    // animationPlanRevision 同样缺，但那是独立改动，不顺手做。
+    storyQualityReview: {
+      provider: fallback.storyProvider || provider,
+      model: fallback.storyModel || "",
+      maxCompletionTokens: fallback.storyMaxCompletionTokens || null
+    }
   };
   const merged = { ...defaults, ...(stageDefaults || {}) };
   return Object.fromEntries(Object.entries(merged).map(([stage, value]) => [stage, normalizeStageSetting(value, defaults[stage] || defaults.analysis)]));
@@ -4369,6 +4478,7 @@ function stageLabel(stage) {
     characterReference: "人物参考修正",
     storyCandidateReview: "候选对照评审",
     storyCandidateRevision: "命题定向修订",
+    storyQualityReview: "剧情体检",
     animationPlanReview: "分镜终审",
     animationPlanRevision: "分镜修订"
   })[stage] || stage;

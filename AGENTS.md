@@ -529,23 +529,23 @@ V4 被判 drop 的主因是三条机制全部 `not_depicted`，评审 summary �
 
 ---
 
-## 剧情体检（storyQualityReview v1，2026-09-04）
+## 剧情体检 = FullStory 终审编辑（`story-quality-review/2.0`，2026-09-18）
 
-Full Story 生成之后的**独立验收，只出报告**：不修改剧情、不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、**不阻断后续 Animation Plan**。与 `boundaryWarning` 同规格，纯展示；刷新页面即失（v1 有意不持久化）。手动触发，`POST /api/story-quality-review`。
+Full Story 生成之后的**独立验收，只出报告**：不修改剧情、不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、**不阻断后续 Animation Plan**。与 `boundaryWarning` 同规格，纯展示；刷新页面即失。手动触发，`POST /api/story-quality-review`。三层评审里它回答**「选中的故事有没有被展开坏」**——候选对照评审选哪个故事，分镜终审查镜头有没有实现坏。
 
-它检查的是现有校验器全都查不到的一类问题：**字段声称的事，画面里到底有没有。** `dramaticFunction: "建立悬念"` 只是标签不是证据；`retentionPlan[].viewerQuestion` 写着一个问题，不能证明观众看得到引发那个问题的画面。依据是一份已签发 Plan 的实测：剧情与 Plan 都把「末班车已经开走」当作开场核心信息，而首镜画面里没有公交车驶离、没有末班车广播，观众实际只看到一个女孩晚上坐在站台看地图。判定依据**只认 `visibleAction` 与 `dialogue`**——`shotAndSound`、`shootingNotes`、`beatSheet` 是拍摄说明与叙事目标，不是画面本身。
+**两次顺序调用，第一次看不到候选**：① 编辑诊断（只有 fullStory 与固定角色设定，输出九类 `issues`）；② 承诺核对（候选 + fullStory，只输出 `checks`）。依据是 2026-09-18 五轮离线 A/B（约 60 次真实调用）：两件事放进同一次调用时，被漏判的那句话每次都被同一次调用引用成「承诺已兑现」的证据；拆开后手段-目的冲突 1/2 → 2/2，`missing_reference_state` 0/36 → 2/2 且对已修好的版本 0/2。
 
-输出三块：`sceneFunctionChecks`（逐场核对 `dramaticFunction`）、`retentionChecks`（逐条核对 `retentionPlan`）、`issues`（`BLOCKER`/`MAJOR`/`MINOR` 三档硬伤）。三档判定 `depicted` / `partially_depicted` / `not_depicted`。
+**1.0 的两张覆盖表已删除**：`sceneFunctionChecks` 被实测为重言式（六场全判 depicted，同时漏掉四个真问题）；`retentionChecks` 的对象 `retentionPlan` 在 `full_story/1.1` 里已不存在。**代价：2.0 没有「模型逐场看过」这个确定性覆盖属性。**
 
-**覆盖率由服务端确定性核验**（`ensureStoryQualityReviewCoversStory`）——模型完全可以只报它碰巧注意到的两三条，交回一份看起来很专业、实际漏检大半的报告：
-- `sceneFunctionChecks` 与 `sceneScript` **数量相等且 `sceneId` 逐位相同**
-- `retentionChecks` 与 `retentionPlan` **数量相等且 `index` 逐位递增**
-- 回显的 `declaredFunction` / `viewerQuestion` 必须**包含**剧情原文（归一化掉空白与标点）
-- `issues[].sceneIds` 与 `shownInScenes` 引用的场次必须真实存在
+**服务端派生、模型不写**：`promisePreservation.status` 由逐条 status 算出（任一 MISSING/CONTRADICTED → FAIL，任一 WEAKENED → WARN，否则 PASS）。**`checks[].source` 是枚举数组**（`PROMISE_SOURCE_FIELDS` 只有一份），只能指向候选字段或固定角色设定，剧情自己的 `characterBible` 结构上写不进来——实测模型写出过自证式来源。
 
-**真正的覆盖率保证是前两条（数量 + 逐位 id），不是回显。** 回显只多提供「你有没有真看这一条的内容」这个较弱信号，所以判据从「逐字相等」放宽到「包含且归一化标点」：实测严格相等挡下的全是模型在原文后追加注解（千问 10 份里 3 份）和标点替换（MiMo 把「关键选择，打破…」写成「关键选择：打破…」），都不构成歧义；复述与截断仍然被拒。核验通过后**服务端用剧情原文无条件覆盖这两个字段**——它们可从剧情唯一推导，**回显不构成新事实**，与 direct_shot 骨架同规格。
+**台词分三档**：措辞不是承诺；台词交代的**事实**是（对白、动作或画面成立都算）；**表演形式约定本身就是承诺**。依据是 `fullStoryPrompt` 自己写的「不能因少写台词丢失剧情前提」。**编辑诊断先分三档再报**：明确矛盾 / 信息不足 / 可选优化，只有第一档能判 MAJOR/BLOCKER。
 
-「有没有兑现」本身是语义判断，**没有确定性兜底**：覆盖率只保证模型逐条看过，不保证它看得对。
+**允许第一次做错**：两次调用各 `maxProviderCalls: 2`、禁止第三次，`metadata.storyQualityReview` 如实上报调用次数与每次被拦的诊断。`evidenceInCandidate` 只展示、**绝不当闸门**（阈值已被实测证伪，且它分不开真假阳性）。
+
+**已知缺口**：失去逐场覆盖保证；三档严重度、「事实有没有被别的方式承载」、`type` 归属都没有确定性兜底且会朝过严方向抖；`type` 归属不稳，**不得按它做统计或闸门**；五轮全部跑在同一批开发回归集上，**至今无任何全新盲样本**。
+
+「有没有兑现」本身是语义判断，**没有确定性兜底**：校验只保证形状与引用真实，不保证它看得对。
 
 **明确不做，三条都有实测依据**：①**不打总分、不设门槛**——实测 13 份的模型综合分挤在 7.8–8.3、中位 8.2，ChatGPT 给参考片也才 8.4，此刻画任何线都是拍脑袋；可比对的数字改由 `public/story-review-metrics.js` 从逐条判定里**数出来**（未兑现数、三档硬伤数），跨故事直接可比、不随措辞漂。②**不自动改剧情**——实测「评审→重写」单轮平均只涨 +0.17（6 组对照，落在评分者噪声 MAD 0.45 内），且 40% 撞契约硬失败。③**不阻断生产**——现有闸门全是确定性的，模型意见当硬闸门是另一回事，「当前全局角色边界」一节明写「用户明确肯定/否定 > 已签发模型推断」。
 
