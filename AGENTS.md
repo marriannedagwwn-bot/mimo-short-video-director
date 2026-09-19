@@ -61,6 +61,8 @@ AI 短视频生产工作流系统。
 也可以「按原候选展开」。**体检失败不静默跳过**：如实显示原因，给「重试体检」与「按原候选展开」。
 采纳的语义（过期复核、下游征求同意、递归 stale、作废旧报告）与评审面板**共用**
 `adoptThemeVariantsRevision` 一份，测试锁住两个入口都不许自己写 commit。
+**已判直接展开、命题又一字未变时不重复体检**（`precheckPassStillValid`）：展开失败后再点生成直接展开，
+候选一变（采纳修订、换一批）或页面刷新才重新体检——再跑一次没有新信息，只是重掷骰子、白付一次钱。
 
 **三版的实测轨迹，三条都不要重做**：①单次调用的承诺核对被证伪——同一个标题在两个候选上写出
 **相反**的期待（一边「多次往返」一边「同时携带」），因为期待是照着动作链倒推的；
@@ -106,7 +108,7 @@ Video Generation
 
 **Durable Task v1（2026-09-01）**：浏览器主流程不再持有长 provider workflow 或提交模型 Artifact。服务端把 AI 导演表示为一个 `directorPipeline` 父任务和 Analyze、Reconstruct、Brief、Visual Guardrails、Variants 五个顺序子任务；Full Story、Animation Plan、人物精修、角色图片、旧 v2 镜头帧和 shotVideo 也由同一 Task Manager 执行、校验并 commit。Task Store 位于每个 Run 的私有 `tasks/index.json`，只保存执行状态、冻结 lineage refs、创建时的 provider/model、progress、usage、结果 Artifact refs 和脱敏错误；禁止保存 Prompt、Data URL、Base64、完整请求体或第二份业务内容。ProductionStateStore 的 current Artifact 仍是唯一业务权威。
 
-Task 状态只有 `queued | running | completed | failed | conflicted | interrupted | abandoned | cancelled`。`conflicted` 只由 provider 前/后或 commit 前冻结 revision/digest 变化以及 `ARTIFACT_REVISION_CONFLICT` / `ARTIFACT_DEPENDENCY_STALE` 产生；冻结后绝不自动刷新成新 current 内容。所有写目标在创建时原子 claim，`directorPipeline` 一次 claim 五个目标；未 claim 的既有浏览器快速提交和 import 保持可用，有 claim 时只允许 active owner/child commit。相同 operation 复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`；release/watchdog/restart 后迟到 Runner 不能回写。`abandoned` 和 `cancelled` 都不是远端取消，远端调用仍可能计费。
+Task 状态只有 `queued | running | completed | failed | conflicted | interrupted | abandoned | cancelled`。`conflicted` 只由 provider 前/后或 commit 前冻结 revision/digest 变化以及 `ARTIFACT_REVISION_CONFLICT` / `ARTIFACT_DEPENDENCY_STALE` 产生；冻结后绝不自动刷新成新 current 内容。**目标的期望版本是 `latest` 指向的那一版、不论是否已 stale**——与状态库提交门 `commitArtifactUnlocked`、完整剧情展开前复核和浏览器同一口径，Task Manager 的创建冻结、调用前复检与锁内提交前复检三处共用 `targetLatestRevision()`；运行中目标被上游弄 stale 由冻结依赖复检拦截。2026-09-18 之前 stale 目标被冻结成 `null`，任何已失效目标经 Durable Task 重新生成都必然冲突（完整剧情在调模型前被拒，其余阶段在调用做完、提交时被拒），实际路径是采纳展开前体检的候选修订后再展开，详见 `docs/production-lineage-state.md` §4。所有写目标在创建时原子 claim，`directorPipeline` 一次 claim 五个目标；未 claim 的既有浏览器快速提交和 import 保持可用，有 claim 时只允许 active owner/child commit。相同 operation 复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`；release/watchdog/restart 后迟到 Runner 不能回写。`abandoned` 和 `cancelled` 都不是远端取消，远端调用仍可能计费。
 
 Durable Task 没有总墙钟 deadline。provider 调用的无进展 watchdog 使用该 provider 自身 request/poll timeout + 120 秒，本地校验/合并/commit 使用 300 秒，并在 provider 返回、图片流事件、候选和阶段进展时续期。workflow/text 池为 2 running / 8 queued，media 池为 4 running / 8 queued，全局 queued 请求体预算默认 140MB；超过容量返回 `TASK_CAPACITY_EXCEEDED`，不伪造失败 Task。
 

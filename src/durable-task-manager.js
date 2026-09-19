@@ -171,11 +171,14 @@ export class DurableTaskManager {
     const frozenDependencies = prepared.frozenDependencies
       ? normalizeDependencies(prepared.frozenDependencies)
       : dependencyIds.map((artifactId) => requireCurrentLineage(run, artifactId));
+    // 目标的期望版本 = latest 指向的那一版，**不论它是否已 stale**——与状态库提交门
+    // （commitArtifactUnlocked 比的是 manifest.latest）、完整剧情展开前复核与浏览器同一口径。
+    // stale 的目标仍有 revision，重新生成就是在它之上提交下一版。此前这里把 stale 算成 null，
+    // 于是任何已失效目标重新生成都必然冲突（2026-09-18：采纳候选修订后展开，连续三次
+    // FULL_STORY_REQUEST_REVISION_CONFLICT）。运行中目标被上游弄 stale 由冻结依赖复检拦截。
     const targetExpectedRevisions = Object.fromEntries(targetArtifactIds.map((artifactId) => [
       artifactId,
-      run.latestArtifacts?.[artifactId]?.lineage?.status === "current"
-        ? run.latestArtifacts[artifactId].lineage.revision
-        : null
+      targetLatestRevision(run.latestArtifacts?.[artifactId]?.lineage)
     ]));
     const input = prepared.input ?? definition.input ?? {};
     const preparedInputDigest = String(prepared.inputDigest || definition.inputDigest || "").trim().toLowerCase();
@@ -521,9 +524,8 @@ export class DurableTaskManager {
       artifactIds: ids
     });
     for (const [artifactId, expectedRevision] of Object.entries(task.targetExpectedRevisions || {})) {
-      const actual = snapshot.artifacts?.[artifactId];
-      const actualRevision = actual?.status === "current" ? actual.revision : null;
-      if ((expectedRevision || null) !== (actualRevision || null)) {
+      const actualRevision = targetLatestRevision(snapshot.artifacts?.[artifactId]);
+      if ((expectedRevision || null) !== actualRevision) {
         throw frozenConflict(artifactId, expectedRevision, actualRevision);
       }
     }
@@ -1260,6 +1262,16 @@ function requireCurrentLineage(run, artifactId) {
   return lineageRef(lineage);
 }
 
+/**
+ * 目标 Artifact 的「当前版本」：latest 指向的那一版，不论 current 还是 stale。
+ * **创建冻结、调用前复检、锁内提交前复检三处共用这一份**，并与状态库提交门
+ * （commitArtifactUnlocked 的 `currentArtifact(manifest).revision`）逐字同一口径——
+ * 任何一处单独改成「只认 current」，stale 目标的重新生成就会在那一处必然冲突。
+ */
+function targetLatestRevision(lineage) {
+  return lineage?.revision || null;
+}
+
 function assertFrozenInManifest(manifest, task, { targetArtifactId } = {}) {
   const latestArtifact = (artifactId) => {
     const revision = manifest.latest?.[artifactId];
@@ -1269,7 +1281,8 @@ function assertFrozenInManifest(manifest, task, { targetArtifactId } = {}) {
   };
   const target = latestArtifact(targetArtifactId);
   const expected = task.targetExpectedRevisions?.[targetArtifactId] || null;
-  if ((target?.status === "current" ? target.revision : null) !== expected) {
+  if (targetLatestRevision(target) !== expected) {
+    // 本请求自己已经提交过、结果仍是 current：同一 Task 的重复 finalize，不算冲突。
     if (!(target?.requestId === task.requestId && target.status === "current")) {
       throw frozenConflict(targetArtifactId, expected, target?.revision || null);
     }

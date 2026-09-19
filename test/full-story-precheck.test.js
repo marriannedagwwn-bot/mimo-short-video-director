@@ -642,6 +642,45 @@ test("点生成完整剧情：体检跑在签发 variant 之前，判直接展�
   assert.equal(app.state.storyPrecheckRunning, false);
 });
 
+// 2026-09-18：体检通过、展开却失败之后，用户每点一次生成就重新付一次体检。
+// 命题没变时，上一次「直接展开」的结论继续有效；命题一变就必须重新体检。
+function expandRoutes({ failFirstExpand = false } = {}) {
+  let expandCalls = 0;
+  return {
+    "/api/full-story-precheck": PASS_RESULT,
+    "/api/production/artifact/commit": { lineage: { artifactId: "variant:V2", status: "current",
+      revision: "r1", contentDigest: "variant:V2-digest" }, staleArtifactIds: [] },
+    "/api/tasks/create": () => {
+      expandCalls += 1;
+      if (failFirstExpand && expandCalls === 1) throw new Error("第一次展开失败");
+      return { task: { taskId: `task-fullStory-${expandCalls}`, projectId: "project", runId: "run",
+        kind: "fullStory", status: "completed", targetArtifactIds: ["fullStory:V2"],
+        createdAt: "2026-09-18T01:00:00Z", updatedAt: "2026-09-18T01:01:00Z",
+        resultArtifactRefs: [{ artifactId: "fullStory:V2", revision: "r1", contentDigest: "fullStory:V2-digest" }] } };
+    },
+    "/api/production/run/load": () => ({ projectId: "project", runId: "run", latestArtifacts: {} })
+  };
+}
+
+test("体检通过后展开失败：命题没变时再点生成，直接展开、不重复体检", async () => {
+  const { app, calls } = await precheckApp({ routes: expandRoutes({ failFirstExpand: true }) });
+  await app.startFullStory({ force: true });
+  await app.startFullStory({ force: true });
+  assert.equal(calls.filter((call) => call.url === "/api/full-story-precheck").length, 1,
+    "命题没变，上一次「直接展开」的结论继续有效");
+  assert.equal(calls.filter((call) => call.url === "/api/tasks/create").length, 2);
+});
+
+test("命题变了（采纳过修订或换过一批）就重新体检", async () => {
+  // 第一次展开同样让它失败：成功的展开会从服务端重新载入 Run，而夹具的 Run 是空的，
+  // 会把选中命题一并清掉，那样测到的就不是体检决策了。
+  const { app, calls } = await precheckApp({ routes: expandRoutes({ failFirstExpand: true }) });
+  await app.startFullStory({ force: true });
+  app.state.output.themeVariants = revisedBatch(app);
+  await app.startFullStory({ force: true });
+  assert.equal(calls.filter((call) => call.url === "/api/full-story-precheck").length, 2);
+});
+
 test("判需修订：只出修订稿，一个 Artifact 都不签发", async () => {
   const { app, calls } = await precheckApp({ routes: {
     "/api/full-story-precheck": reviseResult(),

@@ -2632,6 +2632,10 @@ async function startFullStory({ force = false } = {}) {
 
   const sourceThemeVariants = state.output?.themeVariants;
   if (!sourceThemeVariants) return generateFullStory({ force });
+  // 上一次体检已判「直接展开」、命题又一字没改：直接展开，不再花钱重跑。体检只看候选，
+  // 候选没变，再跑一次没有新信息，只是重掷一次骰子。起因（2026-09-18）：展开失败之后
+  // 每点一次生成就重新体检一次，当天白跑了两次（每次约 ¥0.8）。候选一变（采纳修订、换一批）或页面刷新，照常体检。
+  if (precheckPassStillValid(variant.id, sourceThemeVariants)) return generateFullStory({ force: true });
   clearFullStoryPrecheck();
   state.storyPrecheckRunning = true;
   elements.storyGenerate.disabled = true;
@@ -2691,6 +2695,12 @@ async function startFullStory({ force = false } = {}) {
     state.storyPrecheckRunning = false;
     elements.storyGenerate.disabled = !selectedVariant() || state.storyRunning;
   }
+}
+
+function precheckPassStillValid(variantId, themeVariants) {
+  const entry = fullStoryPrecheckState;
+  return Boolean(entry && entry.route === "expand" && entry.variantId === variantId
+    && JSON.stringify(entry.sourceThemeVariants) === JSON.stringify(themeVariants));
 }
 
 // 修订：把体检判出的信号原样交给 scope:root。**结果不写回任何东西**，

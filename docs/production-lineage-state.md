@@ -110,6 +110,10 @@ Durable Task 创建时，服务端在共享的 per-Run Coordinator 临界区内�
 
 每次实际 provider 调用前只比较 current revision/digest 与冻结值，不重新取内容。调用前已变化时，Task 在付费调用前变为 `conflicted`；调用期间变化时，provider 返回后的复检或锁内 commit guard 使其变为 `conflicted`，不提交结果。`ARTIFACT_REVISION_CONFLICT` 与 `ARTIFACT_DEPENDENCY_STALE` 也归入同一终态。
 
+**目标的 `expectedCurrentRevision` 是 `latest` 指向的那一版，不论它是 current 还是 stale。** 这是状态库提交门 `commitArtifactUnlocked` 的口径（它比的是 `manifest.latest` 的 revision），完整剧情展开前复核 `assertRunningTarget` 与浏览器 `beginArtifactRequest` / `taskForUi` 都与它一致；Task Manager 的创建冻结、调用前复检与锁内提交前复检三处共用 `targetLatestRevision()` 同一口径。stale 的目标仍有 revision，重新生成就是在它之上提交下一版；别处给目标提交了新版本时 latest 变化，照样冲突；任务运行中上游变化使目标 stale，由冻结依赖的复检拦截。
+
+2026-09-18 之前 Task Manager 把 stale 目标冻结成 `null`，与上面三方都不一致，于是**任何已失效目标经 Durable Task 重新生成都必然冲突**：完整剧情在调模型之前以 `FULL_STORY_REQUEST_REVISION_CONFLICT` 失败，其余阶段会在模型调用做完、锁内提交时以 `ARTIFACT_REVISION_CONFLICT` 失败。实际触发路径是「采纳展开前体检给的候选修订 → 新的 `themeVariants` / `variant:<id>` → 旧剧情 stale → 再展开」；浏览器又因为 `null ≠` 它记住的那一版，把这个失败任务当成旧版本的历史藏起来，页面只剩「准备生成完整剧情。」。任务历史里留下 5 次（09-01 两次、09-18 三次，均为完整剧情；页面关闭会清理对应 Run，所以是下限）。回归由 `test/full-story-run-control-http.test.js`（真实 server 与假供应商原样复现该路径）与 `test/durable-task-manager.test.js` 锁定。
+
 每个目标最多有一个 active owner。`directorPipeline` 创建时一次占用 `referenceAnalysis`、`sourceScriptReconstruction`、`creativeBrief`、`visualGuardrails`、`themeVariants` 五个目标；五个子任务顺序调用现有 WorkflowService 并逐阶段独立提交。目标没有 claim 时，既有浏览器快速提交和 package import 保持可用；有 claim 时，只有 owner Task/child Task 能在 Coordinator lock 内调用 `commitArtifactUnlocked`。release、watchdog 或重启后 owner 失效，迟到结果不能回写。
 
 相同 active operation 的幂等键由 kind、全部目标、目标 expected revisions、冻结 dependencies、模型快照和非 Artifact 输入摘要组成；完全相同则复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`。同一 Task 重复 finalize 时，服务端先识别相同 requestId、digest 与 dependencies，再比较 expected revision，因此只复用原 revision；不同 requestId 没有该豁免。

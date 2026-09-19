@@ -30,7 +30,7 @@ Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主�
 
 清理必须核对页面归属，顺序是 scheduler → Run 锁撤销任务 → 删源副本、Run、其命名空间媒体与 Run 内 Debug；迟到的 Runner/worker **不得重建已清数据**。**四类东西永远不由它清**：无页面归属的历史 Run、用户原文件、主动导出文件、签名密钥。详见 `docs/production-lineage-state.md`。
 
-状态固定为 `queued | running | completed | failed | conflicted | interrupted | abandoned`。冻结后绝不自动换成新 current；每次 provider 调用前后及锁内 commit 都复验 revision/digest。相同 active operation 复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`；只有相同 requestId、digest 与 dependencies 的重复 finalize 可复用 revision。任务没有总墙钟 deadline：provider watchdog 使用自身 timeout 加 120 秒，本地阶段使用 300 秒无进展窗口并随进度续期，超时为 `failed/TASK_STALLED`。`abandoned` 与 `interrupted` 都不表示远端取消，供应商调用可能已经计费。
+状态固定为 `queued | running | completed | failed | conflicted | interrupted | abandoned`。冻结后绝不自动换成新 current；每次 provider 调用前后及锁内 commit 都复验 revision/digest。**目标的期望版本是 `latest` 那一版、不论是否已 stale**（与状态库提交门同一口径，Task Manager 三处复检共用 `targetLatestRevision()`）；2026-09-18 之前 stale 目标被冻结成 `null`，任何已失效目标重新生成都必然冲突（详见 `docs/production-lineage-state.md` §4）。相同 active operation 复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`；只有相同 requestId、digest 与 dependencies 的重复 finalize 可复用 revision。任务没有总墙钟 deadline：provider watchdog 使用自身 timeout 加 120 秒，本地阶段使用 300 秒无进展窗口并随进度续期，超时为 `failed/TASK_STALLED`。`abandoned` 与 `interrupted` 都不表示远端取消，供应商调用可能已经计费。
 
 per-Run Coordinator 是不可重入 FIFO 锁。持锁路径只能调用 `commitArtifactUnlocked`、`recordStageUnlocked`、`loadRunUnlocked` 和 Task Store unlocked 方法；禁止从锁内调用对应公开方法，也禁止在临界区执行 provider、网络、FFmpeg 或模型校验。lineage snapshot、Task GET 与 atomic manifest load 均为锁外读。
 
@@ -1109,6 +1109,8 @@ DeepSeek 模型 ID 只登记 `deepseek-v4-flash`（页面首选）与 `deepseek-
 也可以「按原候选展开」。**体检失败不静默跳过**：如实显示原因，给「重试体检」与「按原候选展开」。
 采纳的语义（过期复核、下游征求同意、递归 stale、作废旧报告）与评审面板**共用**
 `adoptThemeVariantsRevision` 一份，测试锁住两个入口都不许自己写 commit。
+**已判直接展开、命题又一字未变时不重复体检**（`precheckPassStillValid`）：展开失败后再点生成直接展开，
+候选一变（采纳修订、换一批）或页面刷新才重新体检——再跑一次没有新信息，只是重掷骰子、白付一次钱。
 
 **三版的实测轨迹，三条都不要重做**：①单次调用的承诺核对被证伪——同一个标题在两个候选上写出
 **相反**的期待（一边「多次往返」一边「同时携带」），因为期待是照着动作链倒推的；

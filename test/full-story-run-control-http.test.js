@@ -68,7 +68,10 @@ function postpassResponse(prompt) {
   };
 }
 
-async function fixture(t, { narrative = false } = {}) {
+// hold：挂起第一次调用，供暂停/终止测试去中断它（默认，与原有三个测试一致）。
+// restale：创建任务之前先签发新的 themeVariants 与 variant:V1，让旧剧情变成 stale——
+// 原样复现「采纳展开前体检给的候选修订，再展开」那条路。
+async function fixture(t, { narrative = false, hold = true, restale = false } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-full-story-control-http-"));
   const analysis = mockAnalysis(input);
   const reconstruction = mockReconstruction(input);
@@ -109,11 +112,11 @@ async function fixture(t, { narrative = false } = {}) {
         call.completed = true;
         response.end("data: [DONE]\n\n");
       };
-      if (review && calls.filter((item) => item.phase === "postpass").length === 1) {
+      if (hold && review && calls.filter((item) => item.phase === "postpass").length === 1) {
         send({ choices: [{ delta: { reasoning_content: "正在核对节拍" }, finish_reason: null }] });
         return; // Pause/terminate must close this actual HTTP response.
       }
-      if (narrative && stage === "fullStory" && calls.filter((item) => item.stage === "fullStory").length === 1) {
+      if (hold && narrative && stage === "fullStory" && calls.filter((item) => item.stage === "fullStory").length === 1) {
         return; // The versioned format has only the primary operation to pause.
       }
       call.finish();
@@ -213,13 +216,23 @@ async function fixture(t, { narrative = false } = {}) {
   }, [lineageRef(plan.lineage)]);
   outputs.fullStory = narrative ? mockNarrativeFullStory(storyInput) : structuredClone(originalStory);
   if (!narrative) outputs.fullStory.shootingPlan[0].practicalNote = "使用窗边自然光完成这次拍摄。";
+  let binding = candidate;
+  if (restale) {
+    const revised = structuredClone(current.themeVariants.content);
+    revised.variants[0].logline = `${revised.variants[0].logline}（采纳修订后的版本）`;
+    const themeVariants = await commit("themeVariants", "themeVariants", revised,
+      current.themeVariants.lineage.dependencies,
+      { expectedCurrentRevision: current.themeVariants.lineage.revision });
+    binding = await commit("variant:V1", "selectedVariant", revised.variants[0],
+      [lineageRef(themeVariants.lineage)], { expectedCurrentRevision: candidate.lineage.revision });
+  }
   const createBody = {
     ...ids, kind: "fullStory",
-    input: { variantId: "V1", creatorProfile: input.creatorProfile, candidateBinding: lineageRef(candidate.lineage), modelOverrides: input.modelOverrides }
+    input: { variantId: "V1", creatorProfile: input.creatorProfile, candidateBinding: lineageRef(binding.lineage), modelOverrides: input.modelOverrides }
   };
   const task = (await json("/api/tasks/create", createBody, 202)).task;
   return {
-    calls, task, loadRun,
+    calls, task, loadRun, staleStoryRevision: story.lineage.revision,
     control: (action) => json(`/api/tasks/${task.taskId}/control`, { ...ids, action }),
     getTask: () => getTask(task.taskId),
     getTasks: async () => (await json(`/api/tasks?${taskQuery}`)).tasks,
@@ -325,4 +338,23 @@ test("Full Story HTTP terminate aborts postpass and retains old current Story, P
   assert.deepEqual(after.latestArtifacts, before.latestArtifacts);
   for (const id of downstreamIds) assert.equal(after.latestArtifacts[id].lineage.status, "current");
   assert.equal((await f.getTask()).status, "cancelled");
+});
+
+// 2026-09-18 事故原样复现：采纳展开前体检给的候选修订 → 新的 themeVariants 与 variant:V1
+// → 旧剧情 stale（仍是 latest，只是状态变了）→ 重新展开。任务管理器此前把 stale 目标的
+// 期望版本冻结成 null，而展开前复核与状态库提交门都拿 latest 那一版比，于是每次都在
+// 调模型之前以 FULL_STORY_REQUEST_REVISION_CONFLICT 失败；浏览器又把这个失败当成旧版本
+// 的历史藏起来，用户只看到「准备生成完整剧情。」然后再点、再体检。
+test("采纳候选修订后旧剧情已 stale：重新展开冻结那一版 stale revision，完成后签发下一版", { timeout: 20000 }, async (t) => {
+  const f = await fixture(t, { narrative: true, hold: false, restale: true });
+  assert.equal(f.task.targetExpectedRevisions["fullStory:V1"], f.staleStoryRevision,
+    "stale 目标仍有 revision，期望版本必须冻结成它，与状态库提交门同一口径");
+  const done = await until(f.getTask, (task) => ["completed", "failed", "conflicted"].includes(task.status),
+    "Full Story task never settled");
+  assert.equal(done.status, "completed", JSON.stringify(done.error || null));
+  assert.deepEqual(f.calls.filter((call) => call.stage === "fullStory").map((call) => call.phase), ["main"]);
+  const story = (await f.loadRun()).latestArtifacts["fullStory:V1"];
+  assert.equal(story.lineage.status, "current");
+  assert.notEqual(story.lineage.revision, f.staleStoryRevision);
+  assert.equal(story.content.schemaVersion, "full_story/1.1");
 });

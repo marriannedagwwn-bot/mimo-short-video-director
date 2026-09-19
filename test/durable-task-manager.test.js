@@ -644,6 +644,88 @@ test("commit revision and stale-dependency errors are the only other conflicted 
   }
 });
 
+// 目标的期望版本与状态库提交门同一口径：latest 那一版，不论是否 stale。
+// 此前这里把 stale 目标冻结成 null，而提交门比的是 latest，于是任何已失效目标重新生成
+// 都必然以 ARTIFACT_REVISION_CONFLICT 收场——模型调用可能已经做完、钱已经花了。
+async function seedStaleTarget(productionStore, productionRun) {
+  const upstream = await productionStore.commitArtifact({
+    ...productionRun, artifactId: "referenceAnalysis", artifactType: "referenceAnalysis",
+    requestId: "stale-upstream-1", expectedCurrentRevision: null, dependencies: [], content: { version: 1 }
+  });
+  const target = await productionStore.commitArtifact({
+    ...productionRun, artifactId: "creativeBrief", artifactType: "creativeBrief",
+    requestId: "stale-target-1", expectedCurrentRevision: null,
+    dependencies: [upstream.lineage], content: { brief: "old" }
+  });
+  const next = await productionStore.commitArtifact({
+    ...productionRun, artifactId: "referenceAnalysis", artifactType: "referenceAnalysis",
+    requestId: "stale-upstream-2", expectedCurrentRevision: upstream.lineage.revision,
+    dependencies: [], content: { version: 2 }
+  });
+  assert.deepEqual(next.staleArtifactIds, ["creativeBrief"]);
+  return target.lineage;
+}
+
+test("a stale target regenerates: the task freezes its stale revision and commits the next one", async () => {
+  await withManager(async ({ productionStore, manager }) => {
+    const productionRun = await productionStore.createRun({ projectId: "project-stale-target" });
+    const stale = await seedStaleTarget(productionStore, productionRun);
+    const created = await manager.createTask({
+      ...productionRun, kind: "brief", targetArtifactIds: ["creativeBrief"], dependencyIds: ["referenceAnalysis"],
+      execute: async (_input, context) => {
+        await context.beforeProviderCall("provider", 1_000);
+        await context.afterProviderCall("provider_returned");
+        const committed = await context.commitArtifact({
+          artifactId: "creativeBrief", artifactType: "creativeBrief", content: { brief: "regenerated" }
+        });
+        return { resultArtifactRefs: [committed.lineage] };
+      }
+    });
+    assert.equal(created.task.targetExpectedRevisions.creativeBrief, stale.revision);
+    const completed = await manager.waitForTask({ ...productionRun, taskId: created.task.taskId });
+    assert.equal(completed.task.status, "completed", JSON.stringify(completed.task.error || null));
+    const run = await productionStore.loadRun({ ...productionRun, includeContent: true });
+    assert.equal(run.latestArtifacts.creativeBrief.lineage.status, "current");
+    assert.notEqual(run.latestArtifacts.creativeBrief.lineage.revision, stale.revision);
+    assert.deepEqual(run.latestArtifacts.creativeBrief.content, { brief: "regenerated" });
+  });
+});
+
+test("a stale target still conflicts when someone else commits a newer revision during the task", async () => {
+  await withManager(async ({ productionStore, manager }) => {
+    const productionRun = await productionStore.createRun({ projectId: "project-stale-target-race" });
+    const stale = await seedStaleTarget(productionStore, productionRun);
+    const upstream = (await productionStore.loadRun({ ...productionRun, includeContent: false }))
+      .latestArtifacts.referenceAnalysis.lineage;
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const created = await manager.createTask({
+      ...productionRun, kind: "brief", targetArtifactIds: ["creativeBrief"], dependencyIds: ["referenceAnalysis"],
+      execute: async (_input, context) => {
+        await gate;
+        return context.commitArtifact({
+          artifactId: "creativeBrief", artifactType: "creativeBrief", content: { brief: "late" }
+        });
+      }
+    });
+    await waitUntil(() => manager.getTaskById(created.task.taskId), (task) => task.status === "running");
+    // 另一条写入路径（没有 claim 时浏览器快速提交仍然可用）抢先签发了下一版。
+    // 这里只能绕开 claim 直接写状态库来模拟——它证明的是锁内复检仍然拦得住，不是提交入口放行了它。
+    const manifest = await productionStore.readManifest(productionRun.projectId, productionRun.runId);
+    const winner = await productionStore.commitArtifactUnlocked(manifest, {
+      ...productionRun, artifactId: "creativeBrief", artifactType: "creativeBrief",
+      requestId: "someone-else", expectedCurrentRevision: stale.revision,
+      dependencies: [upstream], content: { brief: "winner" }
+    });
+    release();
+    const completed = await manager.waitForTask({ ...productionRun, taskId: created.task.taskId });
+    assert.equal(completed.task.status, "conflicted");
+    const run = await productionStore.loadRun({ ...productionRun, includeContent: true });
+    assert.equal(run.latestArtifacts.creativeBrief.lineage.revision, winner.lineage.revision);
+    assert.deepEqual(run.latestArtifacts.creativeBrief.content, { brief: "winner" });
+  });
+});
+
 test("abandoned runner cannot commit a late result", async () => {
   await withManager(async ({ productionStore, manager }) => {
     const productionRun = await productionStore.createRun({ projectId: "project-abandon" });
@@ -1629,7 +1711,8 @@ async function seedStoryControlArtifact(productionStore, run, input) {
     ...run,
     ...input,
     requestId: `request-story-fixture-${++storySeedRequest}`,
-    expectedCurrentRevision: lineage?.status === "current" ? lineage.revision : null,
+    // 与状态库提交门同一口径：latest 那一版，不论是否 stale。
+    expectedCurrentRevision: lineage?.revision || null,
     dependencies: input.dependencies || []
   });
 }
