@@ -20,6 +20,7 @@ import { executeGenericHttpWorker } from "../workers/generic-http-worker.mjs";
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "../src/mock.js";
 import { syncShotCharacterReference } from "../public/character-reference-sync.js";
+import { resolveVideoPromptProfile } from "../public/video-prompt-profiles.js";
 import { buildFrameReferenceManifest, shotRelatedCharacterReferences, uploadedReferenceImages } from "../public/shot-reference-images.js";
 import { groundingContextDigest, sealReconstruction } from "../src/reconstruction-grounding.js";
 import { sealGlobalCharacterBoundary } from "../src/character-boundary.js";
@@ -342,6 +343,115 @@ test("角色边界 prompt 明确分类规则且禁止生成全局渲染负面词
   assert.match(prompt, /本阶段不生成图片或视频模型的最终负面提示词/);
   assert.match(prompt, /未声明只表示后续正向提示词不得擅自添加/);
   assert.match(prompt, /不得额外输出旧版字段/);
+});
+
+// 校验器要求 characterName 逐字等于 extractFixedCharacterName 的结果，提示词此前却从没说过这个名字，
+// 也没说创作限制里的其它角色不属于这份边界。实测参考片是两个人并排、创作限制里又写着固定搭档时，
+// 模型连续把名字写成「主角与搭档」，并把搭档的外观签成主角的必需特征。
+const colonProfileWithPartner = {
+  fixedCharacter: "小白子：浅灰蓝色长发，头顶有一个光环，性格：活泼可爱，懂事。",
+  vertical: "日系/软萌/日常",
+  constraints: "固定搭档「芙芙猫」：白色与浅蓝色相间的蓬松卷发，猫耳，浅蓝色尾巴的猫尾的小猫。"
+};
+
+function guardrailsRuleSection(prompt) {
+  return prompt.slice(prompt.indexOf("判断规则："), prompt.indexOf("输出 visualGuardrails"));
+}
+
+test("角色边界 prompt 逐字给出校验器要核对的角色名，并把其它角色排除在边界之外", () => {
+  const name = extractFixedCharacterName(colonProfileWithPartner.fixedCharacter);
+  assert.equal(name, "小白子");
+  const rules = guardrailsRuleSection(visualGuardrailsPrompt({ creativeBrief: {}, creatorProfile: colonProfileWithPartner }));
+  assert.ok(rules.includes(`characterName 必须逐字写「${name}」`), "名字必须与校验器取名结果逐字相同");
+  assert.match(rules, /只围绕「固定角色」这一栏里的这一个角色/u);
+  assert.match(rules, /被称为固定搭档、宠物、家人或路人的角色）不属于这个边界/u);
+  assert.match(rules, /不得写进 characterName、canonicalDescription 或 bodyForm/u);
+  assert.match(rules, /外观与身体特征也不得写进 requiredTraits、allowedTraits、forbiddenTraits/u);
+  assert.match(rules, /evidence 必须出自「固定角色」那一栏；出自创作限制的写 creatorProfile\.constraints/u);
+  // 规则本身只写抽象形状：创作限制里的角色名只能出现在「创作限制：」那一行用户原文里。
+  assert.equal(rules.includes("芙芙猫"), false);
+});
+
+test("固定角色文本取不出名字时，角色边界 prompt 不编一个名字让模型照写", () => {
+  const creatorProfile = { ...colonProfileWithPartner, fixedCharacter: "（Q版）浅灰蓝色长发少女" };
+  assert.equal(extractFixedCharacterName(creatorProfile.fixedCharacter), "");
+  const rules = guardrailsRuleSection(visualGuardrailsPrompt({ creativeBrief: {}, creatorProfile }));
+  assert.equal(rules.includes("characterName 必须逐字写"), false);
+  assert.match(rules, /不属于这个边界/u);
+});
+
+test("Visual Guardrails 把搭档并进角色名时照旧拒绝签发，报错里带上模型实际写的名字", async () => {
+  const creatorProfile = {
+    ...colonProfileWithPartner,
+    fixedCharacter: "小白子：q版狼耳少女，有狼尾巴，活泼可爱，村里的热心帮手"
+  };
+  const referenceAnalysis = {};
+  let modelCalls = 0;
+  const workflow = new WorkflowService({
+    client: {
+      async generateJsonWithMedia() {
+        modelCalls += 1;
+        const result = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
+        result.fixedCharacterBoundary = { ...xiaobaiziBoundary(), characterName: "小白子与芙芙猫" };
+        return result;
+      }
+    }
+  });
+  const sourceScriptReconstruction = sealReconstruction(
+    mockReconstruction(input),
+    workflow.groundingKey,
+    groundingContextDigest({
+      transcript: input.transcript,
+      metadata: input.metadata,
+      frames: input.frames,
+      video: null
+    })
+  );
+  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis, sourceScriptReconstruction });
+
+  await assert.rejects(
+    () => workflow.createVisualGuardrails({
+      ...input,
+      creatorProfile,
+      referenceAnalysis,
+      sourceScriptReconstruction,
+      creativeBrief
+    }),
+    (error) => {
+      assert.ok(error instanceof OutputContractError);
+      assert.match(error.message, /未围绕固定角色「小白子」生成外观规则（characterName 写的是「小白子与芙芙猫」）/u);
+      return true;
+    }
+  );
+  assert.equal(modelCalls, 1);
+});
+
+// 演示数据此前有三份各自按逗号切名字、不认冒号的取名规则（角色边界、完整剧情、镜头计划），
+// 「名字：描述」写法会一路签出「名字：描述前半句」这种角色名。整条链跑一遍，任何一份再分叉都会在这里失败。
+test("演示模式按校验器同一规则取固定角色名，「名字：描述」写法能走完角色边界、完整剧情与镜头计划", async () => {
+  const workflow = new WorkflowService();
+  const context = { ...input, creatorProfile: colonProfileWithPartner };
+  const upstream = await workflow.run(context);
+  assert.equal(workflow.mode, "demo");
+  const boundary = upstream.visualGuardrails.fixedCharacterBoundary;
+  assert.equal(boundary.characterName, "小白子");
+  assert.deepEqual(boundary.requiredTraits.map((trait) => trait.canonicalName), ["小白子"]);
+
+  const variant = upstream.themeVariants.variants[0];
+  const fullStory = await workflow.createFullStory({ ...context, ...upstream, variant });
+  assert.equal(fullStory.characterBible.protagonist.name, "小白子");
+
+  const videoPromptTarget = { provider: "Seedance", model: "doubao-seedance-2-0-260128" };
+  const animationPlan = await workflow.createAnimationPlan({
+    ...context,
+    ...upstream,
+    variant,
+    fullStory,
+    animationPlanMode: "direct_shot",
+    videoPromptTarget,
+    videoPromptProfile: resolveVideoPromptProfile(videoPromptTarget)
+  });
+  assert.ok(animationPlan.characterReferencePrompts.some((reference) => reference.characterName === "小白子"));
 });
 
 test("Visual Guardrails 只推断一次并签发全局边界，用户改设定后旧边界失效", async () => {

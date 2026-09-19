@@ -5,7 +5,8 @@ import {
   CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS,
     NO_BACKGROUND_MUSIC_SENTENCE,
   VARIANT_SOURCE_ABSENT_SENTINEL,
-  collectProtectedTermsFromBrief
+  collectProtectedTermsFromBrief,
+  extractFixedCharacterName
 } from "./validation.js";
 import { formatDirectShotSkeleton } from "./direct-shot-timeline.js";
 import { VIDEO_PROMPT_PROFILE_IDS } from "../public/video-prompt-profiles.js";
@@ -498,6 +499,13 @@ export function visualGuardrailsPrompt(input) {
   const fixedCharacter = input.creatorProfile?.fixedCharacter || "未指定";
   const protectedTerms = collectProtectedTermsFromBrief(input.creativeBrief, fixedCharacter);
   const protectedText = protectedTerms.length ? protectedTerms.join("、") : "无";
+  // ensureVisualGuardrailsMatchesProfile 要求 characterName 逐字等于这个名字，所以取名只用同一个函数，
+  // 并且取自用户原文而不是上面那个「未指定」占位——占位本身会被当成名字取出来。
+  // 取不出名字时校验器不核对名字，这里也就不给名字：编一个出来等于让模型照着一个不存在的要求写。
+  const fixedName = extractFixedCharacterName(input.creatorProfile?.fixedCharacter);
+  const characterNameRule = fixedName
+    ? `\n- fixedCharacterBoundary 只围绕「固定角色」这一栏里的这一个角色，characterName 必须逐字写「${fixedName}」——服务端按同一规则从固定角色文本里取名，并逐字核对。`
+    : "";
   return `${SYSTEM_PROMPT}
 
 你现在是“角色边界与创作规则审查 AI”。请参考原片画面/脚本分析、creativeBrief，以及用户自己预设的固定角色内容，生成后续主题变体、完整剧情和动画生产包共用的 visualGuardrails。
@@ -518,7 +526,9 @@ sourceScriptReconstruction：${JSON.stringify(input.sourceScriptReconstruction |
 creativeBrief：${JSON.stringify(input.creativeBrief || {})}
 creativeBrief 已识别的原片表面表达参考：${protectedText}
 
-判断规则：
+判断规则：${characterNameRule}
+- 创作限制、creativeBrief 或原片里出现的其它角色（包括被称为固定搭档、宠物、家人或路人的角色）不属于这个边界：不得写进 characterName、canonicalDescription 或 bodyForm，它们的外观与身体特征也不得写进 requiredTraits、allowedTraits、forbiddenTraits；后续阶段会直接按创作限制原文处理它们。
+- triggerEvidence.sourcePath 写 creatorProfile.fixedCharacter 时，evidence 必须出自「固定角色」那一栏；出自创作限制的写 creatorProfile.constraints。
 - 固定角色文本优先级最高；creativeBrief 和原片不得覆盖固定角色。
 - 必须理解完整语义，不得按单个关键词机械匹配。角色原型、类比和常见形象可以依据模型常识推断稳定特征；推断项标记 evidenceLevel=inferred，并解释依据。
 - 用户明确肯定或否定的设定高于模型常识。配饰、服装、图案、兴趣、临时扮演和文化风格不得升级为真实器官或固定身份。

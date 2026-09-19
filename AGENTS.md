@@ -687,6 +687,10 @@ Creative Brief 的 `allowedNarrativeComponents[].component` 是服务端固定�
 
 `visualGuardrailsPrompt` 配套加了两条生成约束：任何 requiredTrait 的 canonicalName 与 terms 都不得包含任一 forbiddenTrait 的写法；否定短语（「无 X」「没有 X」）只写进 `forbiddenTraits`，不写进 `requiredTraits`——禁止清单本身就表达「不得出现 X」。守卫是 fail closed，没有配套指引会变成反复拒绝而模型不知道怎么改。这不是降低校验标准，是让一条已被接受的契约按自己的语义生效，判定为纯字符串包含、不含语义判断。已签发的旧边界仍可加载查看，只在生成新的下游阶段被拒（所有调用点都是生成路径），与已下线提示词方言的处理同型。
 
+**`characterName` 能从用户输入唯一推导，提示词必须把它说出来（2026-09-19）。** `ensureVisualGuardrailsMatchesProfile` 要求 `fixedCharacterBoundary.characterName` 逐字等于 `extractFixedCharacterName(creatorProfile.fixedCharacter)`，而 `visualGuardrailsPrompt` 此前从没给出这个名字，也没说创作限制里的其它角色不属于这份边界，模型只能猜。实测《累了就歇会》（参考片是两个女孩并排躺着分橘子，创作限制里写着固定搭档「芙芙猫」）批量回放 5 次卡在这一步，5/5 把名字写成「小白子与芙芙猫」、`bodyForm` 写成「人类少女与小猫」，并把芙芙猫的卷发、猫耳、猫尾签成小白子的 requiredTraits，来源还标成 `creatorProfile.fixedCharacter`；同一批另外 3 次通过的边界也 3/3 把「芙芙猫搭档」标成出自固定角色一栏。这条检查拦得对，不得放宽成子集或包含匹配：放宽后那份边界会签发出去，下游角色参考与成片渲染会要求小白子长猫耳猫尾。
+
+现在提示词用同一个函数取名并逐字给出（取不出名字时不给——那时校验器也不核对名字）；写明创作限制、`creativeBrief` 与原片里的其它角色（固定搭档、宠物、家人、路人）不进 `characterName` / `canonicalDescription` / `bodyForm`，它们的外观与身体特征不进三份 traits；证据出自创作限制时 `sourcePath` 写 `creatorProfile.constraints`。规则只写抽象形状、不含任何具体角色名，名字是运行时插值。判定逐字不变，报错补上模型实际写的名字。演示数据的 `mockVisualGuardrails` / `mockFullStory` / `mockAnimationPlan` 此前各自按逗号切名字、不认冒号，「名字：描述」写法在演示模式第一步就被拦，现在都改调 `extractFixedCharacterName`，并由一条跑通整条演示链的测试锁住。已知局限：「固定角色」一栏只登记一个角色，写两个名字时边界只围绕取出的那一个，多固定角色属于 Character Registry / Cast，未实现；模型照不照做没有新增的确定性兜底，这一阶段仍是单次调用、被拦不重试。真实回放过了事先登记的线：同一份上游、同一个模型，《累了就歇会》改前 4/4 失败、改后 6/6 通过（线是 ≥5/6），回归《打枣》《一份长途》4/4；芙芙猫外观被签成小白子特征 0/10，搭档条目来源标成固定角色一栏 0/10。只有 3 个参考片、1 份创作设定，且《累了就歇会》本身是设计样本；数据与局限见 `docs/待解决项.md` 第 15 条。
+
 
 `groundingSeal` 与 `fixedCharacterBoundary.boundarySignature` 所用的两把密钥必须持久化在状态根目录（`.grounding-key` / `.character-boundary-key`，可由 `WORKFLOW_GROUNDING_KEY` / `WORKFLOW_CHARACTER_BOUNDARY_KEY` 覆盖），跨进程重启保持不变。缺失即生成，损坏、长度不足或环境变量非法一律硬失败，**禁止静默回退为随机生成**——换钥会让全部已落盘 Artifact 的签名作废。已落盘 Artifact 不得用新密钥重新签发。
 

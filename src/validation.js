@@ -2223,7 +2223,9 @@ export function ensureVisualGuardrailsMatchesProfile(value, creatorProfile = {})
   const boundary = value.fixedCharacterBoundary || {};
   const mismatches = [];
   if (boundary.characterName !== fixedName) {
-    mismatches.push(`未围绕固定角色「${fixedName}」生成外观规则`);
+    // 判定逐字不变；只把模型实际写的名字带出来。实测它最常见的写法是把创作限制里的搭档并进来
+    // （「主角与搭档」），不写出来的话页面上只剩一句「未围绕固定角色生成外观规则」，看不出错在哪。
+    mismatches.push(`未围绕固定角色「${fixedName}」生成外观规则（characterName 写的是「${boundary.characterName ?? ""}」）`);
   }
   if (boundary.unresolvedConflicts?.length) {
     mismatches.push(`存在未解决的用户设定冲突：${boundary.unresolvedConflicts.map((item) => item.topic).join("、")}`);

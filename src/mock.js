@@ -4,6 +4,7 @@ import {
   BACKGROUND_MUSIC_NONE,
   CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS,
   NO_BACKGROUND_MUSIC_SENTENCE,
+  extractFixedCharacterName,
   normalizeBackgroundMusicMode
 } from "./validation.js";
 import { deriveDirectShotSkeleton } from "./direct-shot-timeline.js";
@@ -154,7 +155,9 @@ export function mockBrief(input) {
 
 export function mockVisualGuardrails(input) {
   const fixed = input.creatorProfile?.fixedCharacter || "固定主角";
-  const fixedName = fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
+  // 与 ensureVisualGuardrailsMatchesProfile 用同一个取名函数。此前这里自己按逗号切，不认冒号，
+  // 「名字：描述」写法会签出「名字：描述前半句」这种角色名，演示模式在这一步就被校验器拦下。
+  const fixedName = extractFixedCharacterName(fixed) || fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
   const evidence = [{ sourcePath: "creatorProfile.fixedCharacter", evidence: fixed }];
   const sourceSimilarityRules = [];
   const dialogueRules = [];
@@ -298,7 +301,8 @@ export function mockVariants(input) {
 export function mockFullStory(input) {
   const variant = input.variant || {};
   const fixed = input.creatorProfile?.fixedCharacter || variant.characterSetup?.protagonist || "固定主角";
-  const fixedName = fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
+  // 取名与校验器同一个函数，理由见 mockVisualGuardrails。
+  const fixedName = extractFixedCharacterName(fixed) || fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
   const title = variant.title || "雨后的那件小事";
   const careRecipient = variant.characterSetup?.careRecipient || "一位不愿麻烦别人的重要关系人";
   const helper = variant.characterSetup?.helper || "路过的热心帮手";
@@ -501,7 +505,8 @@ export function mockAnimationPlan(input) {
   const variant = input.variant || {};
   const fullStory = input.fullStory || {};
   const fixed = input.creatorProfile?.fixedCharacter || fullStory.characterBible?.protagonist?.identity || variant.characterSetup?.protagonist || "固定主角";
-  const fixedName = fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
+  // 取名与校验器同一个函数，理由见 mockVisualGuardrails。
+  const fixedName = extractFixedCharacterName(fixed) || fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
   const title = fullStory.title || variant.title || "可动画化短片";
   const targetRuntime = Number(fullStory.targetDurationSeconds) || 60;
   const targetAspectRatio = input.targetAspectRatio || "16:9";
