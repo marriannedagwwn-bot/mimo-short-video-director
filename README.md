@@ -60,6 +60,8 @@ Phase 1.1 的真实包回放进一步明确：当前结构签名保证的是字�
 
 报告仍然查三件事：原片机制有没有迁移过来（机制清单全批共享、候选按 id 引用）、候选自己的动作链合不合得上（`coherenceChecks`），以及**这个候选和原片的故事链重合多少**（`sourceScaffoldOverlap`）。第三项逐个候选与原片比，判据是事件链——原片的关键事件、候选里对应的事件、两者的因果接法与先后顺序是否相同；任务性质、中段、奖励来源与处置、结尾形状只是辅助观察，每项都允许 `not_applicable`（生活片常常既没有任务也没有奖励）。任务同类、都在傍晚收尾、都有双人协作，本身都不足以判换皮。确定性闸门两条：报出因果断裂不得判 `pass`，骨架重合分到线（`SOURCE_SCAFFOLD_COPY_SCORE`）同样不得判 `pass`。机制兑现的证据拆成前因与动作两格，前因只对清单标了 `requiresCause` 的机制强制——不需要前因的机制也要两条证据，只会逼模型编一段。
 
+`POST /api/story-quality-review`（剧情体检，`story-quality-review/2.0`）在完整剧情生成之后核对两件事：候选承诺有没有被演出来，以及剧情自身有没有编辑级硬伤。两次顺序调用，**第一次编辑诊断刻意看不到候选**；只出报告，不签发、不进 lineage、不阻断后续。报告里每条没守住的承诺与每条编辑诊断都可以勾选，交给 `POST /api/story-quality-repair`（按问题修改，`story-quality-repair/1.0`）另起一次**看得见候选**的调用写局部修改：模型只写「哪一场哪个字段、原文、换成什么」，服务端逐字替换（原文必须恰好出现一次）、逐条重跑与生成剧情同一条签发校验链，执行不了的只拒那一条，也不许把出镜角色删得只剩角色表里一个名字。它同样**只出修订稿**，用户看过逐字对照、点「采纳」才签发新的 fullStory 版本（该变体的镜头计划与媒体随之失效）。两轮真实测试与已知缺口见 [docs/story-quality-repair-ab-2026-09-18.md](docs/story-quality-repair-ab-2026-09-18.md)。
+
 ## 模型输出有界纠错
 
 当前主流程不再把一份已经解析、但校验失败的完整 Artifact 直接交给模型整包重写。服务端只接受稳定的结构化 diagnostics（`code + RFC 6901 JSON Pointer + reason`）；当候选完整、路径可信、目标已存在且权威事实唯一时，才签发一次局部计划。当前有两套互不混用的协议：Legacy Full Story 使用专用 `full_story_partial_repair/1.0`；`artifact_partial_repair/1.0` 编排 Animation Foundation 固定角色安全子集。第二次请求只包含错误目标的当前值、修复说明和最小权威投影，模型只能按服务端 `repairId` 返回 replacement，不能自报 path、JSON Patch 或额外操作。

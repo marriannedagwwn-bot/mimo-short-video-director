@@ -1072,6 +1072,32 @@ export function mockStoryQualityReview(fullStory, candidate) {
   };
 }
 
+// demo 模式的「按问题修改」。第一条给一处真能执行的修改，其余一律「不改」并写明理由——
+// 两个分支都要走到：只给修改会让 demo 永远看不到「不改」长什么样，全不改则走不到采纳。
+// 修改用整场 visibleAction 当原文，保证逐字恰好命中一次，改完照样能过签发校验。
+export function mockStoryQualityRepair(fullStory, items = []) {
+  const scenes = Array.isArray(fullStory?.sceneScript) ? fullStory.sceneScript : [];
+  return {
+    repairs: items.map((item, index) => {
+      const sceneId = item.kind === "issue" ? String(item.issue?.sceneIds?.[0] || "") : "";
+      const scene = scenes.find((entry) => entry.sceneId === sceneId) || scenes[0];
+      if (index > 0 || !scene?.visibleAction) {
+        return { ref: item.ref, patches: [], note: "demo 模式不调用模型：这一条不改，只用来走通「不改」的显示。" };
+      }
+      return {
+        ref: item.ref,
+        patches: [{
+          sceneId: scene.sceneId,
+          field: "visibleAction",
+          find: scene.visibleAction,
+          replace: `${scene.visibleAction}（demo 修改占位）`
+        }],
+        note: "demo 模式不调用模型：这处修改只用来走通预览与采纳，不代表任何判断。"
+      };
+    })
+  };
+}
+
 // demo 模式的候选对照评审。按传入候选的真实 id / title / 拍数生成逐候选覆盖表，
 // 保证 mock 输出能通过与 live 完全相同的覆盖率核验——不得出现 mock 通过而 live 失败的偏差。
 export function mockStoryCandidateReview(candidates) {

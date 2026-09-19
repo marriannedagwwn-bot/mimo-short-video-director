@@ -1,5 +1,5 @@
-import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPromiseCheckRetryPrompt, fullStoryPromiseFindingsPrompt, fullStoryPromiseListPrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityEditorialPrompt, storyQualityPromisePrompt, storyQualityReviewRetryPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
-import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
+import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPromiseCheckRetryPrompt, fullStoryPromiseFindingsPrompt, fullStoryPromiseListPrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityEditorialPrompt, storyQualityPromisePrompt, storyQualityRepairPrompt, storyQualityRepairRetryPrompt, storyQualityReviewRetryPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { isNarrativeFullStory } from "./full-story-contract.js";
 import {
   FULL_STORY_PRECHECK_SCHEMA_VERSION,
@@ -14,6 +14,16 @@ import {
   assembleStoryQualityReview,
   buildStoryQualityCandidateProjection
 } from "./story-quality-review.js";
+import {
+  STORY_QUALITY_REPAIR_SCHEMA_VERSION,
+  STORY_QUALITY_REPAIR_STAGE,
+  assertOnlyStoryRepairFieldsChanged,
+  ensureStoryQualityRepairContract,
+  mergeStoryQualityRepairs,
+  selectStoryQualityRepairItems,
+  storyQualityKeptPromises,
+  storyQualityRepairMetadata
+} from "./story-quality-repair.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { compileCharacterFeatures } from "./character-feature-compiler.js";
 import {
@@ -518,6 +528,155 @@ export class WorkflowService {
         stageKey: STORY_QUALITY_REVIEW_STAGE
       })
     };
+  }
+
+  /**
+   * 剧情体检之后的「按问题修改」：用户在体检报告里勾选要修的条目，这里另起一次调用
+   * 写局部修改，服务端逐字执行、逐条过签发校验链。**只出修订稿，不签发任何东西**——
+   * 与命题定向修订同规格，签发只发生在用户点「采纳」的那一刻，由浏览器走既有的
+   * fullStory 签发流程（新版本会递归 stale 这个变体的镜头计划与媒体）。
+   *
+   * 为什么是单独一次调用、而且看得见候选，实测依据见 src/story-quality-repair.js 顶部。
+   *
+   * 出错分两种，处理不同：
+   *   - 模型输出结构不对（条数、引用号、字段类型）——整份都用不上，带诊断重试一次，禁止第三次；
+   *   - 某一条执行不了（原文找不到、改完不合法、会删掉出镜角色）——**只拒那一条**、如实写明原因，
+   *     其余照常采用。不为单条失败整份重做：重做会让已经写对的那些条也跟着抖。
+   */
+  async createStoryQualityRepair(input) {
+    requireObject(input, "请求");
+    // fullStory 与 review 都是**请求输入**，不是本阶段的模型输出。原样上抛 OutputContractError
+    // 会变成 502「模型输出未通过校验」，让用户去查供应商——与命题修订那处同规格转成 400。
+    const asInputError = (error, label) => {
+      if (!(error instanceof OutputContractError)) throw error;
+      const inputError = new InputError(`${label}：${error.message}`);
+      inputError.details = error.details;
+      throw inputError;
+    };
+    const fullStory = requireObject(input.fullStory, "fullStory");
+    try {
+      ensureOutputContract(fullStory, "fullStory");
+    } catch (error) {
+      asInputError(error, "fullStory 不是一份合法剧情");
+    }
+    // 旧格式剧情还带 beatSheet 这第二份动作稿，只改 sceneScript 会让两份对不上；
+    // 那一路另有 Beat–Scene 复核的约束，不在这里顺手处理。
+    if (!isNarrativeFullStory(fullStory)) {
+      throw new InputError("按问题修改只支持 full_story/1.1 的剧情；旧格式请先重新生成完整剧情");
+    }
+    const review = requireObject(input.review, "review");
+    try {
+      ensureStoryQualityReviewCoversStory(ensureOutputContract(review, "storyQualityReview"), fullStory);
+    } catch (error) {
+      asInputError(error, "review 不是这份剧情的合法体检报告");
+    }
+    const items = selectStoryQualityRepairItems(review, input.selectedRefs);
+    const keptPromises = storyQualityKeptPromises(review);
+    const themeVariants = requireObject(input.themeVariants, "themeVariants");
+    const variant = singleCandidateThemeVariants(themeVariants, fullStory.selectedVariantId).variants[0];
+    const candidate = buildStoryQualityCandidateProjection(variant);
+
+    // 与 createFullStory 同一套验签、同一条校验链：修改后的剧情就是要被签发的那一份。
+    const profile = requireObject(input.creatorProfile, "creatorProfile");
+    requireText(profile.fixedCharacter, "固定角色");
+    const groundedInput = groundedStageInput(input, this.groundingKey);
+    const visualGuardrails = this.assertGlobalCharacterBoundary(groundedInput);
+    const validateStory = (story) => validateFullStoryForSigning(story, {
+      profile, creativeBrief: input.creativeBrief, variant, visualGuardrails
+    });
+    // 原稿自己必须先过，否则「改完不合法」无法归因到修改上。
+    let baseline;
+    try {
+      baseline = validateStory(structuredClone(fullStory));
+    } catch (error) {
+      asInputError(error, "这份剧情本身没有通过签发校验，无法在它上面修改");
+    }
+
+    const finalize = (repair) => {
+      ensureStoryQualityRepairContract(repair, items);
+      const merged = mergeStoryQualityRepairs({ fullStory: baseline, items, repair, validateStory });
+      assertOnlyStoryRepairFieldsChanged(baseline, merged.fullStory);
+      return merged;
+    };
+    const respond = (merged, metadata) => ({
+      schemaVersion: STORY_QUALITY_REPAIR_SCHEMA_VERSION,
+      selectedVariantId: String(fullStory.selectedVariantId || ""),
+      changed: merged.results.some((entry) => entry.status === "applied"),
+      results: merged.results,
+      fullStory: merged.fullStory,
+      metadata
+    });
+
+    if (!this.hasLiveClient) {
+      return respond(
+        finalize(mockStoryQualityRepair(baseline, items)),
+        storyQualityRepairMetadata({ provider: "demo", model: "demo" })
+      );
+    }
+    const settings = this.resolveStage(STORY_QUALITY_REPAIR_STAGE, input);
+    this.assertStageClient(settings, "剧情按问题修改");
+
+    // 实数调用次数，不能从 rejections 反推：传输失败时它是空数组，供应商却确实被调用过。
+    let providerCalls = 0;
+    const rejections = [];
+    // 走 coordinator 拿不到 generateValidatedJson 自带的 recorder，必须自己接，
+    // 不接就**静默不写**侧车。
+    const outputLogWriter = this.stageModelOutputLogWriters?.get(STORY_QUALITY_REPAIR_STAGE) || null;
+    const recordAttempt = outputLogWriter?.enabled
+      ? (attempt) => outputLogWriter.recordAttempt(attempt)
+      : null;
+    let merged;
+    try {
+      merged = await this.modelCallCoordinator.runJson({
+        client: settings.client,
+        request: {
+          prompt: storyQualityRepairPrompt({ fullStory: baseline, candidate, items, keptPromises }),
+          model: settings.model,
+          maxCompletionTokens: settings.maxCompletionTokens,
+          requestTimeoutMs: settings.requestTimeoutMs
+        },
+        provider: settings.provider || "",
+        stage: STORY_QUALITY_REPAIR_STAGE,
+        maxProviderCalls: 2,
+        attemptObserver: async (attempt) => {
+          providerCalls += 1;
+          if (!recordAttempt) return;
+          try {
+            await recordAttempt(attempt);
+          } catch {
+            // 观测失败不改变结论。
+          }
+        },
+        retryTokenLimit,
+        retryPrompt: ({ originalPrompt }) => {
+          const last = rejections[rejections.length - 1];
+          return last?.details?.length
+            ? storyQualityRepairRetryPrompt({ originalPrompt, details: last.details })
+            : originalPrompt;
+        },
+        validate: (result) => {
+          try {
+            return finalize(result);
+          } catch (error) {
+            if (error instanceof OutputContractError) {
+              rejections.push({
+                message: error.message,
+                details: Array.isArray(error.details) ? error.details : []
+              });
+            }
+            throw error;
+          }
+        }
+      });
+    } catch (error) {
+      throw candidateReviewPipelineFailure(error, rejections);
+    }
+    return respond(merged, storyQualityRepairMetadata({
+      provider: settings.provider || "",
+      model: settings.model || "",
+      providerCalls,
+      rejections
+    }));
   }
 
   /**
@@ -1416,18 +1575,9 @@ export class WorkflowService {
     const visualGuardrails = this.assertGlobalCharacterBoundary(groundedInput);
     const validatedInput = { ...groundedInput, visualGuardrails };
     const settings = this.resolveStage("fullStory", validatedInput);
-    // targetDurationSeconds 由服务端从 sceneScript 时间轴派生：先派生再校验，
-    // 模型声明的值一律被覆盖（可唯一推导，回显不构成新事实）。
-    const validateFullStory = (result) => {
-      const story = ensureFullStoryMatchesProfile(
-        ensureOutputContract(deriveFullStoryTargetDuration(result), "fullStory"),
-        profile, input.creativeBrief, input.variant, visualGuardrails
-      );
-      // New stories have one action timeline. Confirm that the existing
-      // downstream can consume it before committing, without generating shots.
-      if (isNarrativeFullStory(story)) deriveDirectShotSkeleton(story);
-      return story;
-    };
+    const validateFullStory = (result) => validateFullStoryForSigning(result, {
+      profile, creativeBrief: input.creativeBrief, variant: input.variant, visualGuardrails
+    });
     if (!this.hasLiveClient) return validateFullStory(mockNarrativeFullStory(validatedInput));
     this.assertStageClient(settings, "完整剧情");
     const prompt = fullStoryPrompt({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
@@ -2697,6 +2847,25 @@ FULL_STORY_COMPLETION_RETRY_V1
 - 必须输出原任务要求的全部顶层和嵌套字段。
 - 内容可以精炼，但不得省略结构字段或以 null 占位。
 - 只输出 JSON。`;
+}
+
+/**
+ * 完整剧情签发前的校验链。**生成（createFullStory）与按问题修改（createStoryQualityRepair）
+ * 共用这一条**——修改后的剧情就是要被签发的那一份，两边各写一遍迟早出现
+ * 「生成时会拒、修改后却放行」的漂移。
+ *
+ * targetDurationSeconds 由服务端从 sceneScript 时间轴派生：先派生再校验，
+ * 模型声明的值一律被覆盖（可唯一推导，回显不构成新事实）。
+ */
+function validateFullStoryForSigning(result, { profile, creativeBrief, variant, visualGuardrails }) {
+  const story = ensureFullStoryMatchesProfile(
+    ensureOutputContract(deriveFullStoryTargetDuration(result), "fullStory"),
+    profile, creativeBrief, variant, visualGuardrails
+  );
+  // New stories have one action timeline. Confirm that the existing
+  // downstream can consume it before committing, without generating shots.
+  if (isNarrativeFullStory(story)) deriveDirectShotSkeleton(story);
+  return story;
 }
 
 function groundedStageInput(input, groundingKey) {
@@ -4411,6 +4580,13 @@ function normalizeStageDefaults(stageDefaults = null, fallback = {}) {
       provider: fallback.storyProvider || provider,
       model: fallback.storyModel || "",
       maxCompletionTokens: fallback.storyMaxCompletionTokens || null
+    },
+    // 按问题修改与剧情体检同规格：沿用剧情阶段的设置。新阶段一上线就登记，
+    // 不重演体检「漏在表外、调模型之前就 InputError」那一次。
+    storyQualityRepair: {
+      provider: fallback.storyProvider || provider,
+      model: fallback.storyModel || "",
+      maxCompletionTokens: fallback.storyMaxCompletionTokens || null
     }
   };
   const merged = { ...defaults, ...(stageDefaults || {}) };
@@ -4479,6 +4655,7 @@ function stageLabel(stage) {
     storyCandidateReview: "候选对照评审",
     storyCandidateRevision: "命题定向修订",
     storyQualityReview: "剧情体检",
+    storyQualityRepair: "剧情按问题修改",
     animationPlanReview: "分镜终审",
     animationPlanRevision: "分镜修订"
   })[stage] || stage;

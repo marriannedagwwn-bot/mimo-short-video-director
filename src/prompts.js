@@ -19,7 +19,9 @@ import {
   CANDIDATE_REVIEW_SPECIAL_DEFECT_LABELS,
   CANDIDATE_REVIEW_SPECIAL_DEFECT_TYPES,
   PROMISE_SOURCE_FIELDS,
-  SOURCE_SCAFFOLD_COPY_SCORE
+  SOURCE_SCAFFOLD_COPY_SCORE,
+  STORY_REPAIR_MAX_PATCHES,
+  STORY_REPAIR_PATCH_FIELDS
 } from "../public/story-review-metrics.js";
 import { storyDurationWindow } from "../public/story-duration.js";
 import { FULL_STORY_SCHEMA_VERSION, fullStoryCandidateFacts, fullStoryCharacterFacts } from "./full-story-contract.js";
@@ -2297,6 +2299,105 @@ ${JSON_ONLY}`;
 
 /** 剧情体检被确定性闸门拦下之后的重试正文：原文逐字保留，只在末尾追加诊断。 */
 export function storyQualityReviewRetryPrompt({ originalPrompt = "", details = [] } = {}) {
+  return fullStoryPromiseCheckRetryPrompt({ originalPrompt, details });
+}
+
+/**
+ * 剧情体检之后的「按问题修改」。正文逐字取自 2026-09-18 第七轮真实测试
+ * （~/Downloads/fullStory-review-patch-2026-09-18/run-repair.mjs），只把条目引用号换成
+ * 与浏览器共用的位置编号（I1、P3…）。
+ *
+ * **它与编辑诊断刻意相反：看得见候选。** 编辑诊断不看候选是它诊断准的原因，可第六轮实测，
+ * 它顺手写的修改 32 条里 4 条把候选承诺改弱或改坏。这一次调用拿到候选与「现在守住的承诺」
+ * 清单之后，同一批问题的承诺退化降到 1 次——而那 1 次是明知故犯（承诺就在清单里，
+ * 为了解决一条 MAJOR 的节奏问题删了细节），所以这条约束**没有确定性兜底**，只能靠人在预览时看。
+ *
+ * 「不改」是合法出口，必须保留：第七轮 32 条里有 6 条它选择不改，其中 4 条是毛病出在候选本身
+ * （候选高潮原文就是「戳破并卷起」），局部修改要么动候选原文、要么不修——它选了说清楚。
+ */
+export function storyQualityRepairPrompt({ fullStory, candidate, items = [], keptPromises = [] } = {}) {
+  const issueLines = items.map((item, index) => {
+    if (item.kind === "issue") {
+      const issue = item.issue || {};
+      return `${index + 1}. [${item.ref}] ${issue.severity} · ${issue.type} · ${(issue.sceneIds || []).join("、")}
+   问题：${issue.problem}
+   原文：${issue.evidence}
+   对观众：${issue.viewerImpact}
+   体检给的参考方向：${issue.optionalSuggestion || "（无）"}`;
+    }
+    const check = item.check || {};
+    const verb = check.status === "WEAKENED" ? "被削弱" : check.status === "MISSING" ? "丢了" : "被违反";
+    return `${index + 1}. [${item.ref}] 候选承诺${verb}（${check.status}）
+   承诺：${check.promise}
+   剧情里实际写的：${check.evidence}`;
+  }).join("\n\n");
+  const kept = keptPromises.map((entry) => `- ${entry.promise}（剧情里：${entry.evidence}）`).join("\n");
+  return `你是这部短视频剧情的**修稿编辑**。剧情体检报出了下面几条问题，你要给出**能直接执行的最小修改**。
+
+用户在页面上点「采纳」之后，程序会逐字执行你写的替换，再把改过的剧情重新走一遍完整校验——
+**你写的每个字都会原样进剧情。**
+
+## 第一条纪律：不能把守住的候选承诺改坏
+
+候选是这部剧情必须忠实展开的**选题承诺**。体检已经核对过，下面这些承诺**现在是守住的**：
+
+${kept || "（体检没有判出守住的承诺）"}
+
+**任何修改都不能让它们变弱或被违反。** 改一个动作之前，先去候选里找有没有写到这个动作——
+写到了，就只能在**保留它**的前提下修。例如候选写的是「双手扶着书」，就不能为了腾出手而改成「双手松开」，
+只能换别的办法（比如只用一只手扶）。**修一个问题而丢掉一条承诺，比不修更糟。**
+
+## 修改的形状
+
+每一处修改：{"sceneId":"S2","field":"visibleAction","find":"剧情原文里的一段","replace":"换成的新文字"}
+
+- field 只能是 ${STORY_REPAIR_PATCH_FIELDS.join("、")}。dialogue 表示在这一场某一句台词的正文（line）里替换。
+- **find 必须从这一场这个字段里逐字复制，一个字、一个标点都不能改**，而且在这一场这个字段里只能出现一次。
+  尽量短，但要短到不会和别处重复——通常就是出问题的那半句。
+- **replace 只写一种改法，不能写「A 或 B」**，也不要写任何说明文字——它会原样进剧情。
+- 要新增一句：find 选紧挨着插入位置的那段原文，replace 写成「那段原文 + 新增的话」或「新增的话 + 那段原文」。
+- 要删掉一整句台词：find 写这句台词的完整原文，replace 写空字符串。
+- **先换再加**：能改一个词就不改一句，能替换就不新增；不新增角色、不新增奖励或礼物、不加点明主题或感悟的台词。
+  一场戏的时长是固定的，**往一场里加动作，这一场就更挤**。
+- visibleAction 与 shotAndSound 里不要写不在这一场 characters 里的角色名；**也不能把某个出镜角色从这一场里删掉**。
+- 一条问题最多 ${STORY_REPAIR_MAX_PATCHES} 处修改。
+
+## 这几种情况不要硬改，patches 写空数组，在 note 里说明
+
+- 修它就必须破坏上面某条守住的承诺——说明冲突在哪。
+- 需要重写整场、改动场次结构、增删出镜角色，或者 ${STORY_REPAIR_MAX_PATCHES} 处改不完——说明要怎么改，由人决定。
+- 你认为体检报的这条问题并不成立——说明理由。**体检的判断不是命令。**
+
+## 体检报出的问题（共 ${items.length} 条，逐条处理，顺序与数量不变）
+
+${issueLines}
+
+## 候选（选题承诺）
+${JSON.stringify(candidate)}
+
+## 完整剧情
+${JSON.stringify(fullStory)}
+
+## 输出格式
+
+{
+  "repairs": [
+    {
+      "ref": "${items[0]?.ref || "I1"}",
+      "patches": [
+        {"sceneId": "S2", "field": "visibleAction", "find": "剧情原文里逐字复制的一段", "replace": "换成的新文字"}
+      ],
+      "note": "一句话：改了什么；没改的说明为什么"
+    }
+  ]
+}
+
+- repairs 与上面的问题**一一对应、顺序相同**，ref 照抄方括号里的编号。
+${JSON_ONLY}`;
+}
+
+/** 按问题修改被结构校验拦下之后的重试正文：原文逐字保留，只在末尾追加诊断。 */
+export function storyQualityRepairRetryPrompt({ originalPrompt = "", details = [] } = {}) {
   return fullStoryPromiseCheckRetryPrompt({ originalPrompt, details });
 }
 

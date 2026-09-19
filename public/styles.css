@@ -589,6 +589,13 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
 .review-verdict.verdict-CONTRADICTED, .review-verdict.verdict-MISSING { color: #b42318; background: #fff3f0; }
 .review-verdict.verdict-WEAKENED { color: var(--muted); background: #efebe4; }
 .review-verdict.verdict-PRESERVED { color: var(--green); background: #edf6f1; }
+/* 剧情按问题修改：勾选框贴在每条问题的标题行右侧；三种结果与承诺状态同一套色 */
+.story-repair-pick { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 9px; cursor: pointer; }
+.story-repair-bar { margin-top: 12px; display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.story-repair-bar .muted-note { flex: 1 1 240px; }
+.review-verdict.repair-applied { color: var(--green); background: #edf6f1; }
+.review-verdict.repair-declined { color: var(--muted); background: #efebe4; }
+.review-verdict.repair-rejected { color: #b42318; background: #fff3f0; }
 .review-severity.severity-MAJOR { color: #b54708; background: #fff3e8; }
 .review-scenes { color: var(--muted); font-size: 9px; }
 .review-evidence { color: var(--muted); }

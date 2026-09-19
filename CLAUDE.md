@@ -886,9 +886,19 @@ Full Story 生成之后的**独立验收，只出报告**：不修改剧情、�
 
 **四条已知缺口，不得宣称已解决**：①失去逐场覆盖保证（见上）。②三档严重度、「事实有没有被别的方式承载」、`type` 归属都**没有确定性兜底**，而且实测判断会**朝过严的方向抖**——同一条事实在原稿判 `PRESERVED`、在只删了别处两句的 C 稿翻成 `MISSING`，而那两个事实剧情里是有的。③**`type` 归属不稳**：同一缺陷一次被归 `setup_or_provenance`、一次被归 `physical_or_world_logic`（提示词逐字未变），**不得按 `type` 做统计或做闸门**。④**五轮全部跑在同一批开发回归集上，至今没有任何全新盲样本**，所有「全过」都是偏乐观的 in-sample 上界估计。
 
-**明确不做，三条都有实测依据**：①**不打总分、不设门槛**——实测 13 份的模型综合分挤在 7.8–8.3、中位 8.2，ChatGPT 给参考片也才 8.4，此刻画任何线都是拍脑袋；可比对的数字改由 `public/story-review-metrics.js` 从逐条判定里**数出来**（承诺没守住数、三档硬伤数），跨故事直接可比、不随措辞漂。②**不自动改剧情**——实测「评审→重写」单轮平均只涨 +0.17（6 组对照，落在评分者噪声 MAD 0.45 内），且 40% 撞契约硬失败；`optionalSuggestion` 是 advisory，**服务端不得自动写回 fullStory**，浏览器必须标明「实测改法会有方向搞反的情况」。③**不阻断生产**——现有闸门全是确定性的，模型意见当硬闸门是另一回事，§2.8 明写「用户明确肯定/否定 > 已签发模型推断」。
+**明确不做，三条都有实测依据**：①**不打总分、不设门槛**——实测 13 份的模型综合分挤在 7.8–8.3、中位 8.2，ChatGPT 给参考片也才 8.4，此刻画任何线都是拍脑袋；可比对的数字改由 `public/story-review-metrics.js` 从逐条判定里**数出来**（承诺没守住数、三档硬伤数），跨故事直接可比、不随措辞漂。②**不自动改剧情**——实测「评审→重写」单轮平均只涨 +0.17（6 组对照，落在评分者噪声 MAD 0.45 内），且 40% 撞契约硬失败；`optionalSuggestion` 是 advisory，**服务端不得自动写回 fullStory**，浏览器必须标明「实测改法会有方向搞反的情况」（2026-09-18 起有用户逐条勾选、看过逐字对照才签发的「按问题修改」，见本节末尾，它是局部替换不是重写，服务端仍然不自动写回）。③**不阻断生产**——现有闸门全是确定性的，模型意见当硬闸门是另一回事，§2.8 明写「用户明确肯定/否定 > 已签发模型推断」。
 
 **评审模型的已知偏差**：默认沿用剧情阶段的 provider，也就是写这份剧情的那个模型，自己批自己会偏松（实测同一份剧情自评「AI 可执行性 8.0 / 物理可信度 8.0」，外部模型给 6.8 / 6.8）。本来要默认换一家，但同一批 10 份实测下来现有备选都不胜任：`mimo-v2.5-pro` 7/10 成功且太松（2/62 处 vs 千问 13/91 处），`deepseek-v4-flash` 5/10、反复产不出严格 JSON，`deepseek-v4-pro` 连接中断。一个查不出问题的评审比偏松的评审更没用，稳定性也是硬要求。**先用能干活的那个并如实记下偏差，不靠静默降级掩盖**；它是纯文本阶段（不在 `requiresMediaModel` 里），可按阶段 override 换任意一家。
+
+**按问题修改（`story-quality-repair/1.0`，2026-09-18）**。用户在体检报告里勾选条目（引用号 `I1…`/`P1…` 由 `storyQualityRepairableItems` 按位置编，浏览器与服务端共用一份），`POST /api/story-quality-repair` 另起**一次**调用写局部修改。**只出修订稿，不签发任何东西**；采纳时浏览器走既有 fullStory 签发（依赖清单与生成剧情共用 `fullStoryDependencyIds`），递归 stale 该变体的镜头计划与媒体。只支持 `full_story/1.1`。
+
+**体检不动，修改另起调用且看得见候选——与编辑诊断刻意相反。** 依据是两轮真实测试（`docs/story-quality-repair-ab-2026-09-18.md`）：让编辑诊断顺手附修改时执行与校验 30/30、修好率 81%，但**打上的 32 条里 4 条把候选承诺改弱或改坏**，另 1 条删成「幽灵角色」——编辑诊断看不到候选正是它诊断准的原因，也正是它改坏承诺的原因。改成独立调用（候选 + 「现在守住的承诺」清单）后同一批问题退化 4 → 1、修好率 85%、执行与校验 26/26，19% 的条目选择不改。
+
+模型只写 `{sceneId, field, find, replace}`，**原文由服务端逐字替换**（`src/story-quality-repair.js`）：`field` 只能是 `visibleAction`/`shotAndSound`/`dialogue`；一条 ≤3 处且原子执行；`find` 在该场该字段**恰好出现一次**，否则拒、不猜；台词「整句原文 + 空替换」= 删句；**不得让出镜角色从本场动作与对白里消失**（`STORY_REPAIR_REMOVES_ON_SCREEN_CHARACTER`，增删出镜角色要改 `characters`）。逐条合并，每一条采用前重跑**与 `createFullStory` 同一条**签发校验链（`validateFullStoryForSigning`，一份定义两处调用），过不了只拒这一条；`assertOnlyStoryRepairFieldsChanged` 自证可写字段之外逐字节不变。
+
+**结构错（条数、引用号顺序、字段、`note` 缺失）带诊断重试一次、禁止第三次；单条执行不了只拒那一条，不整份重做。** 「不改」是合法出口，必须写 `note`。走 coordinator，自己接 `attemptObserver`（scope `storyQualityRepair`）。
+
+**没有确定性兜底，页面必须摆在采纳按钮前**：①删的是不是候选承诺过的细节——唯一那次退化是**明知故犯**（承诺就在清单里，为解一条 MAJOR 节奏问题删了细节，`note` 如实写了）；②执行者有没有被调换；③同一问题两次决定会抖。按字面比对「删掉的字在不在候选里」会被常用词淹没，与已证伪的 `evidenceInCandidate` 同类，**不做**。**毛病出在候选本身时它会拒改**，要回到候选层（展开前体检 / 命题定向修订）解决，本版不提供「强制改」出口。样本 5 份（1 份盲样本），全过也是偏乐观的上界。首次生产路径真实调用：5 条里 3 条因候选冲突拒改、1 条写进本场没登记的角色被签发校验拦下、1 条改成并签发。
 
 ### 2.14 分镜终审与定向修订（animationPlanReview / animationPlanRevision，2026-09-06）
 
@@ -1295,7 +1305,7 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：**
 | `PARTIAL_REPAIR_DEBUG_DIR` | 已成功签发 repair plan 后的四阶段记录（trigger / prompt / response / result），单文件默认 ≤ 256 KiB |
 | `FULL_STORY_MODEL_OUTPUT_LOG_DIR` | Full Story primary / retry-repair / Beat–Scene postpass 的完整 completion `content`，metadata 含 `stage` |
 | `ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR` | Animation Plan 原始 completion，固定 `scope=animationPlan`，覆盖 Foundation、每批 shot、实际发生的语义修复与复审 |
-| `STAGE_MODEL_OUTPUT_LOG_DIR` | 十个阶段（Analyze / Reconstruct / 创意简报 / 主题变体 / 候选对照评审 / 角色与表达边界 / 人物参考精修 / 剧情体检 / 分镜终审 / 定向修订）的原始 completion，按 stage 分 scope；成功与失败都记，失败判定复用 `classifyAttemptError`。前九个共用 `generateValidatedJson`，注册 scope 即生效；**定向修订走 `modelCallCoordinator`，由 `createAnimationPlanRevision` 自己接 `attemptObserver`**，两次 provider 调用各留一条。**scope 取值必须逐字等于 stage 名**——writer map 按 scope 建、按 stage 查，对不上就静默不写（2026-09-07 之前后三个阶段根本没注册，终审失败时原文永久丢失） |
+| `STAGE_MODEL_OUTPUT_LOG_DIR` | 十个阶段（Analyze / Reconstruct / 创意简报 / 主题变体 / 候选对照评审 / 角色与表达边界 / 人物参考精修 / 剧情体检 / 分镜终审 / 定向修订）的原始 completion，按 stage 分 scope；成功与失败都记，失败判定复用 `classifyAttemptError`。前九个共用 `generateValidatedJson`，注册 scope 即生效；**定向修订走 `modelCallCoordinator`，由 `createAnimationPlanRevision` 自己接 `attemptObserver`**，两次 provider 调用各留一条；剧情按问题修改（scope `storyQualityRepair`）同样走 coordinator、由 `createStoryQualityRepair` 自己接。**scope 取值必须逐字等于 stage 名**——writer map 按 scope 建、按 stage 查，对不上就静默不写（2026-09-07 之前后三个阶段根本没注册，终审失败时原文永久丢失） |
 
 统一约束（第四套与前三套逐字同规格）：
 

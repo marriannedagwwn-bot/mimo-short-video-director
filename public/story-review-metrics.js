@@ -229,6 +229,36 @@ export const STORY_QUALITY_ISSUE_TYPE_LABELS = Object.freeze({
   ending_naturalness: "结尾不自然"
 });
 
+/**
+ * 「按问题修改」一处修改能写的字段。只有这三个：观众看得见的动作、听得见的声音与台词。
+ * 出镜角色、时间轴、地点、场次结构一律不能靠文字替换改——那些要么派生下游镜头骨架，
+ * 要么决定谁在画面里，改它们就不是局部修改了。
+ */
+export const STORY_REPAIR_PATCH_FIELDS = Object.freeze(["visibleAction", "shotAndSound", "dialogue"]);
+
+/** 一条问题最多几处修改。三处改不完的，说明它不是局部问题。 */
+export const STORY_REPAIR_MAX_PATCHES = 3;
+
+/**
+ * 剧情体检里能交给「按问题修改」的条目与它们的引用号。
+ * **浏览器的勾选框与服务端的选择校验共用这一份**——两边各编一次号，迟早对不上。
+ *
+ * 引用号按位置编，不用模型写的 issueId：那是模型自报的，两条重号不会被任何闸门拦下，
+ * 而引用号必须唯一。编辑诊断记 I1、I2…，承诺核对按它在全部 checks 里的位置记 P1、P2…；
+ * 守住的承诺（PRESERVED）不列——没有可修的东西，它们作为「修改不得改坏」的清单另送。
+ */
+export function storyQualityRepairableItems(review) {
+  const issues = list(review?.issues).map((issue, index) => ({
+    ref: `I${index + 1}`,
+    kind: "issue",
+    issue
+  }));
+  const promises = list(review?.promisePreservation?.checks)
+    .map((check, index) => ({ ref: `P${index + 1}`, kind: "promise", check }))
+    .filter((item) => String(item.check?.status || "") !== "PRESERVED");
+  return [...issues, ...promises];
+}
+
 /** 三个决定的严格程度，取最严时用。数字只用于比较，不对外展示。 */
 const VERDICT_SEVERITY = Object.freeze({ pass: 0, revise: 1, drop: 2 });
 

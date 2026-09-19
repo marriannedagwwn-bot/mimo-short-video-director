@@ -15,6 +15,7 @@ import {
   SOURCE_SCAFFOLD_COPY_SCORE,
   STORY_QUALITY_ISSUE_TYPE_LABELS,
   candidateReviewHeadline,
+  storyQualityRepairableItems,
   storyReviewHeadline,
   storyReviewMetrics
 } from "./story-review-metrics.js";
@@ -321,6 +322,7 @@ const MODEL_STAGE_DEFS = [
   // 这张表就是 override 白名单。都是纯文本阶段（不在 requiresMediaModel 里）。
   // optional：它们由用户手动触发、不属于必经链路，不该参与 modelStagesReady 的就绪判定。
   { key: "storyQualityReview", label: "剧情体检", hint: "核对候选承诺 + 编辑诊断，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
+  { key: "storyQualityRepair", label: "剧情按问题修改", hint: "按体检里选中的问题写局部修改，只出修订稿", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "animationPlan", label: "动画生产包", hint: "首尾帧、镜头与视频提示词", capability: "文本模型", capabilityKind: "text" },
   { key: "animationPlanReview", label: "分镜终审", hint: "对照剧情核查镜头，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "animationPlanRevision", label: "定向修订", hint: "按终审报告只改被点名的镜头", capability: "文本模型", capabilityKind: "text", optional: true },
@@ -2828,6 +2830,19 @@ function renderPrecheckFailure(error) {
     </div>`;
 }
 
+// 完整剧情签发时依赖的上游。**生成与「按问题修改」的采纳共用这一份**：
+// 两处各列一遍，迟早出现一边多绑、一边少绑，lineage 就对不上了。
+function fullStoryDependencyIds(variantId) {
+  return [
+    "referenceAnalysis",
+    "sourceScriptReconstruction",
+    "creativeBrief",
+    "visualGuardrails",
+    "themeVariants",
+    `variant:${variantId}`
+  ];
+}
+
 async function generateFullStory({ force = false } = {}) {
   const workspaceEpoch = browserWorkspace.epoch;
   if (state.storyRunning || activeTaskForKinds(["fullStory"], { rootOnly: true })) return;
@@ -2870,14 +2885,7 @@ async function generateFullStory({ force = false } = {}) {
         assertWorkspaceCurrent(workspaceEpoch);
         if (state.storyGenerationRequest === request) request.taskId = task.taskId;
       },
-      dependencyIds: [
-        "referenceAnalysis",
-        "sourceScriptReconstruction",
-        "creativeBrief",
-        "visualGuardrails",
-        "themeVariants",
-        `variant:${variant.id}`
-      ]
+      dependencyIds: fullStoryDependencyIds(variant.id)
     });
     assertSelectedVariant(variant.id);
     state.fullStories[variant.id] = fullStory;
@@ -2944,13 +2952,18 @@ function renderFullStory(data) {
     ${uncertainties(data.uncertainties)}
     <div class="story-review">
       <button type="button" class="outline-button" data-story-review>检查剧情硬伤</button>
-      <span class="story-review-hint">读一遍这份剧情，核对每条声明在画面里有没有兑现。只出报告，不改剧情。</span>
+      <span class="story-review-hint">核对候选承诺有没有演出来，并做编辑诊断。可以勾选问题生成局部修改——看过对照、点「采纳」之前不会改动剧情。</span>
       <div class="story-review-body" data-story-review-body></div>
     </div>`;
   reveal(elements.fullStory);
   const button = elements.fullStory.querySelector("[data-story-review]");
   if (button) button.addEventListener("click", () => runStoryQualityReview(data, button));
 }
+
+// 剧情体检的报告与「按问题修改」的修订稿都只活在页面上：不落盘、不进 lineage，刷新即失。
+// 两者都记下它们是针对**哪一份剧情**算出来的——剧情一变，它们就作废。
+let lastStoryQualityReview = null;
+let storyQualityRepairDraft = null;
 
 // 剧情体检：手动触发，只出报告。不改剧情、不签发 Artifact、不阻断后续阶段。
 async function runStoryQualityReview(fullStory, button) {
@@ -2960,6 +2973,8 @@ async function runStoryQualityReview(fullStory, button) {
   button.disabled = true;
   const original = button.textContent;
   button.textContent = "体检中…";
+  lastStoryQualityReview = null;
+  storyQualityRepairDraft = null;
   body.innerHTML = `<p class="story-review-status">正在核对候选承诺并做编辑诊断，两次调用约 1–3 分钟…</p>`;
   try {
     // 承诺核对要拿候选当外部参照，所以必须把候选一起送上去；
@@ -2970,7 +2985,15 @@ async function runStoryQualityReview(fullStory, button) {
       candidateId: fullStory.selectedVariantId,
       creatorProfile: profile()
     });
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    lastStoryQualityReview = {
+      variantId: String(fullStory.selectedVariantId || ""),
+      fullStory: structuredClone(fullStory),
+      review: result.review
+    };
     body.innerHTML = renderStoryQualityReview(result.review, result.metadata);
+    const repairButton = body.querySelector("[data-story-repair]");
+    if (repairButton) repairButton.addEventListener("click", () => requestStoryQualityRepair(body, repairButton));
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     // 评审失败要把原因完整显示出来——它常常是覆盖率核验拦下的漏检，用户需要看到是哪一条。
@@ -3066,12 +3089,19 @@ function renderAnimationPlanReview(review) {
 function renderStoryQualityReview(review, metadata = null) {
   const metrics = storyReviewMetrics(review);
   const checks = review.promisePreservation?.checks || [];
+  // 可修条目的引用号只有一份（与服务端的选择校验共用），按对象身份对回到每一行上。
+  const repairable = storyQualityRepairableItems(review);
+  const refOf = new Map(repairable.map((item) => [item.kind === "issue" ? item.issue : item.check, item.ref]));
+  const pick = (entry) => (refOf.has(entry)
+    ? `<label class="story-repair-pick"><input type="checkbox" data-story-repair-ref="${escape(refOf.get(entry))}" checked> 修这一条</label>`
+    : "");
   // 没守住的排在前面：那才是要看的；守住的折叠进一句统计，不占版面。
   const brokenRows = checks.filter((check) => check.status !== "PRESERVED").map((check) => `
     <div class="review-check">
       <div class="review-check-head">
         <span class="scene-id">${escape((check.source || []).join(" / "))}</span>
         <span class="review-verdict verdict-${escape(check.status)}">${escape(PROMISE_CHECK_STATUS_LABELS[check.status] || check.status)}</span>
+        ${pick(check)}
       </div>
       <p><b>候选承诺：</b>${escape(check.promise)}</p>
       <p><b>剧情里实际写的：</b>${escape(check.evidence)}</p>
@@ -3081,6 +3111,7 @@ function renderStoryQualityReview(review, metadata = null) {
       <div class="review-check-head">
         <span class="review-severity severity-${escape(issue.severity)}">${escape(REVIEW_SEVERITY_LABEL[issue.severity] || issue.severity)}</span>
         <span class="review-scenes">${escape(STORY_QUALITY_ISSUE_TYPE_LABELS[issue.type] || issue.type)}　${escape((issue.sceneIds || []).join("、") || "全片")}</span>
+        ${pick(issue)}
       </div>
       <p>${escape(issue.problem)}</p>
       <p class="review-evidence">原文：${escape(issue.evidence)}</p>
@@ -3104,7 +3135,202 @@ function renderStoryQualityReview(review, metadata = null) {
       ? block("候选承诺没守住的地方", brokenRows.join(""))
       : `<p class="story-review-status">逐条核对了 ${metrics.promisesChecked} 条候选承诺，都能在画面或对白里找到依据。</p>`}
     ${issueRows.length ? block("编辑诊断", issueRows.join("")) : `<p class="story-review-status">编辑诊断没有报出问题。</p>`}
+    ${repairable.length ? `
+    <div class="story-repair-bar">
+      <button type="button" class="outline-button" data-story-repair>按选中的问题生成修改</button>
+      <span class="muted-note">另起一次调用写局部修改，这次会对照候选承诺、守住的不许改坏。只出修订稿，看过对照、点「采纳」才会签发新的剧情版本。</span>
+    </div>
+    <div class="story-repair-slot" data-story-repair-slot></div>` : ""}
     <p class="story-review-foot">这是一份参考报告，不阻断后续生成；判断有没有道理由你决定。刷新页面后不保留。</p>`;
+}
+
+function selectedStoryRepairRefs(root) {
+  return [...root.querySelectorAll("[data-story-repair-ref]")]
+    .filter((input) => input.checked)
+    .map((input) => input.dataset.storyRepairRef);
+}
+
+// 按问题修改：只出修订稿。**返回结果不写回任何东西**——与命题修订、分镜修订同规格，
+// 签发只发生在用户看过逐字对照、点「采纳」的那一刻。
+async function requestStoryQualityRepair(root, button, selectedRefs = selectedStoryRepairRefs(root)) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (!button || button.disabled) return;
+  const slot = root.querySelector("[data-story-repair-slot]");
+  const entry = lastStoryQualityReview;
+  if (!entry) {
+    showError("体检报告已失效，请重新体检后再生成修改。");
+    return;
+  }
+  // 报告是针对**当时那一份剧情**算出来的。中途剧情变了就必须作废，
+  // 不能把基于旧内容的问题清单套到新剧情上。
+  if (JSON.stringify(state.fullStories[entry.variantId]) !== JSON.stringify(entry.fullStory)) {
+    lastStoryQualityReview = null;
+    storyQualityRepairDraft = null;
+    showError("剧情在体检之后已经变了，这份体检报告已作废，请重新体检。");
+    return;
+  }
+  if (!selectedRefs.length) {
+    if (slot) slot.innerHTML = `<p class="story-review-status error">先勾选至少一条要修的问题。</p>`;
+    return;
+  }
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "修改中…";
+  storyQualityRepairDraft = null;
+  if (slot) slot.innerHTML = `<p class="story-review-status">正在按选中的问题写修改，通常半分钟到一分钟…</p>`;
+  try {
+    const result = await api("/api/story-quality-repair", {
+      fullStory: entry.fullStory,
+      review: entry.review,
+      selectedRefs,
+      themeVariants: state.output.themeVariants,
+      creatorProfile: profile(),
+      // 这几份只用于验签与修改后的复验——与生成剧情时同一套，**不进修改提示词**。
+      creativeBrief: state.output.creativeBrief,
+      visualGuardrails: state.output.visualGuardrails,
+      referenceAnalysis: state.output.referenceAnalysis,
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction
+    });
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    storyQualityRepairDraft = { variantId: entry.variantId, sourceFullStory: entry.fullStory, result };
+    if (slot) {
+      slot.innerHTML = renderStoryQualityRepair(storyQualityRepairDraft);
+      const adopt = slot.querySelector("[data-story-repair-adopt]");
+      if (adopt) adopt.addEventListener("click", () => adoptStoryQualityRepair(adopt));
+    }
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    if (slot) slot.innerHTML = `<p class="story-review-status error">${escape(error?.message || "生成修改失败")}</p>`;
+  } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+const STORY_REPAIR_STATUS_LABELS = { applied: "已改", declined: "没改", rejected: "程序拒绝" };
+
+function dialogueAsText(dialogue) {
+  return (Array.isArray(dialogue) ? dialogue : [])
+    .map((line) => `${line.speaker}：${line.line}`)
+    .join("　/　");
+}
+
+// 原文与修订稿逐字并排。「删掉的是不是候选承诺过的细节」「执行者有没有被调换」都没有
+// 确定性兜底，只能靠人在这里看——实测唯一一次承诺退化，模型在 note 里如实写了删了什么。
+function renderStoryQualityRepair(entry) {
+  const result = entry?.result || {};
+  const before = entry?.sourceFullStory || {};
+  const after = result.fullStory || {};
+  const call = result.metadata?.storyQualityRepair || null;
+  const rows = (result.results || []).map((row) => `
+    <div class="review-check">
+      <div class="review-check-head">
+        <span class="scene-id">${escape(row.ref)}</span>
+        <span class="review-verdict repair-${escape(row.status)}">${escape(STORY_REPAIR_STATUS_LABELS[row.status] || row.status)}</span>
+      </div>
+      <p class="review-why">${escape(row.note)}</p>
+      ${row.reason ? `<p class="muted-note warn">${escape(row.reason)}</p>` : ""}
+    </div>`).join("");
+  const diffRow = (label, a, b) => `
+    <div class="revision-diff">
+      <b>${escape(label)}</b>
+      <p class="revision-before">${escape(a || "—")}</p>
+      <p class="revision-after">${escape(b || "—")}</p>
+    </div>`;
+  const diffs = (after.sceneScript || []).flatMap((scene, index) => {
+    const old = (before.sceneScript || [])[index] || {};
+    const out = [];
+    if (String(old.visibleAction || "") !== String(scene.visibleAction || "")) {
+      out.push(diffRow(`${scene.sceneId} · 动作`, old.visibleAction, scene.visibleAction));
+    }
+    if (String(old.shotAndSound || "") !== String(scene.shotAndSound || "")) {
+      out.push(diffRow(`${scene.sceneId} · 声音`, old.shotAndSound, scene.shotAndSound));
+    }
+    const oldLines = dialogueAsText(old.dialogue);
+    const newLines = dialogueAsText(scene.dialogue);
+    if (oldLines !== newLines) out.push(diffRow(`${scene.sceneId} · 台词`, oldLines, newLines));
+    return out;
+  }).join("");
+  const actionChars = (story) => (story.sceneScript || [])
+    .reduce((sum, scene) => sum + String(scene.visibleAction || "").length, 0);
+  const charsBefore = actionChars(before);
+  const charsAfter = actionChars(after);
+  const applied = (result.results || []).filter((row) => row.status === "applied").length;
+  return `
+    <div class="candidate-revision">
+      <p class="story-review-status">修订稿（还没有生效）${call && call.providerCalls > 1
+    ? ` · 第 ${escape(call.providerCalls)} 次调用的结果，第一次被确定性校验拦下` : ""}</p>
+      ${rows}
+      ${diffs || `<p class="story-review-status">这次没有可以采纳的修改。</p>`}
+      ${diffs ? `<p class="muted-note">
+        动作描写字数 ${escape(charsBefore)} → ${escape(charsAfter)}
+        ${charsAfter > charsBefore * 1.2 ? "（明显变长了，多半是在靠加戏解决问题——这几场会更挤）" : ""}
+      </p>
+      <p class="muted-note warn">
+        自己看两件事，程序判不了：①有没有把候选写明的细节改掉（note 里会写删了什么）；
+        ②动作的执行者有没有被调换。
+      </p>
+      <div class="candidate-revision-action">
+        <button type="button" class="outline-button" data-story-repair-adopt>采纳 ${escape(applied)} 条修改并签发新的剧情版本</button>
+        <span class="muted-note warn">采纳会签发新的完整剧情版本；这个命题已经生成的镜头计划、图片与视频都会失效。</span>
+      </div>` : ""}
+    </div>`;
+}
+
+// 采纳：唯一签发新 fullStory 版本的地方。修订稿是针对当时那份剧情算的，
+// 中途剧情变了必须作废，绝不把基于旧内容的改写盖到新剧情上。
+async function adoptStoryQualityRepair(button) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const entry = storyQualityRepairDraft;
+  if (!entry || !entry.result?.changed || button.disabled) return;
+  const variantId = entry.variantId;
+  if (JSON.stringify(state.fullStories[variantId]) !== JSON.stringify(entry.sourceFullStory)) {
+    storyQualityRepairDraft = null;
+    lastStoryQualityReview = null;
+    showError("剧情在修改期间已经变了，这次修订稿已作废，请重新体检。");
+    return;
+  }
+  if (state.storyRunning || state.animationRunning
+    || activeTaskForKinds(["fullStory", "animationPlan"], { rootOnly: true })) {
+    showError("剧情或镜头计划正在生成，等它结束之后再采纳修改。");
+    return;
+  }
+  const hadPlan = Boolean(state.animationPlans[variantId]);
+  if (hadPlan && !window.confirm(
+    "采纳会签发新的完整剧情版本。这个命题已经生成的镜头计划，以及它下面已生成的图片与视频都会失效。\n\n是否继续？"
+  )) return;
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "签发中…";
+  try {
+    assertWorkspaceCurrent(workspaceEpoch);
+    const next = entry.result.fullStory;
+    await commitProductionArtifact({
+      artifactId: `fullStory:${variantId}`,
+      artifactType: "fullStory",
+      content: next,
+      dependencyIds: fullStoryDependencyIds(variantId)
+    });
+    assertWorkspaceCurrent(workspaceEpoch);
+    state.fullStories[variantId] = next;
+    state.output.fullStories = state.fullStories;
+    if (String(state.selectedVariantId || "") === variantId) state.output.fullStory = next;
+    const applied = (entry.result.results || []).filter((row) => row.status === "applied").length;
+    // 剧情变了，体检报告与这份修订稿一并作废；重新渲染剧情会把旧报告面板一起清掉。
+    storyQualityRepairDraft = null;
+    lastStoryQualityReview = null;
+    renderFullStory(next);
+    setStoryStatus(`已采纳 ${applied} 条修改，签发了新的剧情版本。体检报告针对的是旧版本，需要的话请重新体检。`, "ready");
+    elements.animationGenerate.disabled = false;
+    setAnimationStatus(hadPlan ? "剧情已更新，原来的镜头计划已失效，需要重新生成。" : "可以继续生成动画镜头生产包。", "");
+    updateStoryExportActions();
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    showError(error.message || "修改签发失败；原剧情保持不变。");
+    button.disabled = false;
+    button.textContent = original;
+  }
 }
 
 async function generateAnimationPlan({ force = false } = {}) {

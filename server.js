@@ -135,6 +135,7 @@ const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
   MODEL_OUTPUT_LOG_SCOPES.STORY_CANDIDATE_REVIEW,
   MODEL_OUTPUT_LOG_SCOPES.STORY_CANDIDATE_REVISION,
   MODEL_OUTPUT_LOG_SCOPES.STORY_QUALITY_REVIEW,
+  MODEL_OUTPUT_LOG_SCOPES.STORY_QUALITY_REPAIR,
   MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVIEW,
   MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVISION,
   MODEL_OUTPUT_LOG_SCOPES.FULL_STORY_PROMISE_CHECK
@@ -361,6 +362,9 @@ const routes = {
   },
   // 剧情体检：只出报告。不签发 Artifact、不进 lineage、不 stale 任何东西、不阻断后续阶段。
   "/api/story-quality-review": (body) => workflow.createStoryQualityReview(body),
+  // 按体检意见修改：只出修订稿。**不签发任何东西**——返回合并后的剧情供页面预览，
+  // 用户点「采纳」时才由浏览器走既有的 fullStory 签发流程。
+  "/api/story-quality-repair": (body) => workflow.createStoryQualityRepair(body),
   // 候选对照评审：同样只出报告。送审投影里剥掉候选的自我评价字段，让动作链自己说话；
   // verdict 里的 drop 只是一句话，不删候选、不改数量、不触发任何 stale。
   "/api/story-candidate-review": (body) => workflow.createStoryCandidateReview(body),
@@ -2217,6 +2221,13 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
     // 所以与候选对照评审同规格把上限抬到 ≥32768，只动这一个阶段、不碰全局默认。
     // **不动 requestTimeoutMs**：实测单次 70–139 秒，全局 900000 有足够余量。
     storyQualityReview: stageSetting(
+      provider,
+      source.storyModel || source.model,
+      Math.max(Number(source.storyMaxCompletionTokens || source.maxCompletionTokens) || 0, 32768)
+    ),
+    // 按问题修改沿用剧情 provider，token 上限与体检同规格：输出本身不长（实测单次 20–70 秒），
+    // 但思考段可能很长，截断会让整份修改作废。
+    storyQualityRepair: stageSetting(
       provider,
       source.storyModel || source.model,
       Math.max(Number(source.storyMaxCompletionTokens || source.maxCompletionTokens) || 0, 32768)

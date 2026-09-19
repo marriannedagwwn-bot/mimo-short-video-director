@@ -24,9 +24,10 @@ class Element {
     toggle: (name, enabled = !this.classList.contains(name)) => enabled ? this.classList.add(name) : this.classList.remove(name)
   };
   querySelector(selector) {
-    // 剧情体检的面板容器是 fullStory 的子节点，用属性选择器取。只放行这一个，
-    // 其余未知选择器仍然返回 null——有测试依赖那个 null。
-    if (!['span', 'b', '[data-story-review-body]'].includes(selector)) return null;
+    // 剧情体检的面板容器是 fullStory 的子节点，用属性选择器取；按问题修改的按钮、
+    // 预览槽与采纳按钮同理。只放行这几个，其余未知选择器仍然返回 null——有测试依赖那个 null。
+    if (!['span', 'b', '[data-story-review-body]', '[data-story-repair]', '[data-story-repair-slot]',
+      '[data-story-repair-adopt]'].includes(selector)) return null;
     if (!this.children.has(selector)) this.children.set(selector, new Element());
     return this.children.get(selector);
   }
@@ -78,6 +79,7 @@ export async function loadAppUi({ story = false, plan = false, createElement,
     renderFullStoryControls, selectedFullStoryTask, controlFullStory, generateFullStory, renderFullStoryTaskError,
     startFullStory, adoptThemeVariantsRevision, clearFullStoryPrecheck,
     runStoryQualityReview, renderStoryQualityReview,
+    requestStoryQualityRepair, renderStoryQualityRepair, adoptStoryQualityRepair,
     setStoryRunning, setStoryStatus, attachRestoredStandaloneTask, reloadActiveProductionRun,
     openModelSettings, closeModelSettings, saveModelSettings, resetModelSettings, setModelSettingsStatus,
     renderMainPage, navigateToStory, backToMainResults, regenerateThemeVariants, setStoryPackageStatus,
