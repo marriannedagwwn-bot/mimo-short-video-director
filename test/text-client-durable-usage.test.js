@@ -19,8 +19,8 @@ function jsonResponse() {
 }
 
 const CLIENTS = [
-  { provider: "Qwen", Client: QwenClient, model: "qwen3.7-max", response: () => sseResponse({ content: CONTENT, usage: USAGE }) },
-  { provider: "MiMo", Client: MimoClient, model: "mimo-v2.5", response: jsonResponse },
+  { provider: "Qwen", Client: QwenClient, model: "qwen3.7-max", streaming: true, response: () => sseResponse({ content: CONTENT, usage: USAGE }) },
+  { provider: "MiMo", Client: MimoClient, model: "mimo-v2.5", streaming: true, response: () => sseResponse({ content: CONTENT, usage: USAGE }) },
   { provider: "DeepSeek", Client: DeepSeekClient, model: "deepseek-v4-flash", response: jsonResponse }
 ];
 
@@ -123,12 +123,12 @@ for (const spec of CLIENTS) {
       }
     },
     {
-      name: spec.provider === "Qwen" ? "incomplete SSE" : "malformed envelope",
+      name: spec.streaming ? "incomplete SSE" : "malformed envelope",
       response: () => new Response("broken response", { status: 200 }),
-      assertError: (error) => assert.equal(error.code, spec.provider === "Qwen" ? "MODEL_STREAM_INCOMPLETE" : "MODEL_ENVELOPE_INVALID")
+      assertError: (error) => assert.equal(error.code, spec.streaming ? "MODEL_STREAM_INCOMPLETE" : "MODEL_ENVELOPE_INVALID")
     }
   ];
-  if (spec.provider !== "Qwen") {
+  if (!spec.streaming) {
     errorResponses.push({
       name: "null envelope",
       response: () => new Response("null", { status: 200 }),

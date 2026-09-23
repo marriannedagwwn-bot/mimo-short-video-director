@@ -127,7 +127,13 @@ Full Story 两种格式当前只对一种可证明的内容错误启用唯一一
 
 正常路径为初轮生成加 postpass，共 2 次 provider call；初轮消耗一次允许的 retry/repair 后成功时，整个 operation 最多 3 次，不存在第四次调用。postpass 返回 `blocked`、协议或供应商错误、越界/非追加改写，或者合并后完整复验失败时，整次请求 fail closed：不保存初轮候选、不回退原 Story，也不再次复核。只有最终 unchanged 或合法追加并通过全部校验的 Full Story 会提交一次 Artifact；初轮候选和复核响应都不会形成额外 revision。
 
-## 接入 Xiaomi MiMo V2.5
+## 接入 Xiaomi MiMo V2.5 / V2.6
+
+页面「模型设置」中选择 MiMo 后，可在文本、图像理解和视频理解阶段选择 `mimo-v2.6-flash`、`mimo-v2.6-pro` 或 `mimo-v2.6-pro-ultraspeed`。V2.6 复用现有 `MIMO_API_KEY`、`MIMO_BASE_URL` 和 `/chat/completions` 适配器，无需增加独立接口或 Key；模型列表暂时请求失败时，三个模型仍可从内置选项中选择。UltraSpeed 的实际调用权限以账号为准，服务端报错原样保留，不会自动换模型。
+
+本次仅增加可选模型，已有默认模型与页面会话覆盖保持原值。要修改服务端 MiMo 默认值，可将下面示例中的 `MIMO_MODEL` 设为 `mimo-v2.6-flash`，`MIMO_STORY_MODEL` / `MIMO_ANIMATION_MODEL` 设为 `mimo-v2.6-pro`；已有阶段专属环境变量仍优先。Qwen 已配置时仍保持现有默认路由，页面按阶段选择 MiMo 才会覆盖它。`MIMO_THINKING`、JSON 模式、输出预算、用量记账和失败处理沿用现有行为；费用估算仍须在 `MODEL_PRICE_CNY_PER_MILLION` 中按确切新模型 ID 配置价格。
+
+接口与模态依据（2026-09-22 核对）：[官方 Chat Completions 文档](https://mimo.mi.com/docs/en-US/api/chat/openai-api)、[Flash 模型规格](https://mimo.mi.com/models/zh-CN/mimo-v2.6-flash)、[Pro 模型规格](https://mimo.mi.com/models/zh-CN/mimo-v2.6-pro)、[UltraSpeed 模型规格](https://mimo.mi.com/models/zh-CN/mimo-v2.6-pro-ultraspeed)。
 
 项目默认使用小米官方 OpenAI 兼容接口和 `mimo-v2.5` 模型。先确认模型服务可访问：
 
@@ -158,7 +164,7 @@ MIMO_MEDIA_MODE=auto
 
 `MIMO_MEDIA_MODE=auto` 会优先通过 `video_url` 发送原生视频；请求中会按 MiMo V2.5 文档携带 `fps` 与 `media_resolution`，默认 `MIMO_VIDEO_FPS=2`、`MIMO_VIDEO_MEDIA_RESOLUTION=default`。若服务返回不支持媒体类型的 400/415/422，再自动回退为带时间戳关键帧。超过 `MIMO_NATIVE_VIDEO_MAX_MB` 的视频直接使用关键帧，避免 base64 请求占用过多内存。
 
-MiMo 请求参数默认为 `temperature=0.3`、`top_p=0.95`、`max_completion_tokens=8192`、`thinking=disabled`、`stream=false`。如果没有配置 Qwen，参考片分析、脚本还原、creativeBrief、主题变体、完整剧情和动画生产包都会回退到 MiMo 的对应模型。
+MiMo 请求参数默认为 `temperature=0.3`、`top_p=0.95`、`max_completion_tokens=8192`、`thinking=disabled`、`stream=true`。V2.5 / V2.6 的文本、图片、视频理解均通过共享 SSE 解析器接收，推理内容与正文分开，收到完整结束标志后才解析并校验业务 JSON；页面仍在阶段完成后显示结果，不逐字显示未校验正文。每 10 秒最多更新一次任务流进度；实际收到的结构化 token 用量在成功、断流、暂停或终止时均保留，未知用量不估算。流不完整或途中断开明确失败，不回退非流式。HTTP 错误原文及原有媒体兼容回退保持原行为。分镜输出日志通过并行读取响应副本观测 SSE，不阻塞客户端收流；日志只保存正文与供应商用量。[实现与验收记录](docs/mimo-streaming-2026-09-22.md)。如果没有配置 Qwen，参考片分析、脚本还原、creativeBrief、主题变体、完整剧情和动画生产包都会回退到 MiMo 的对应模型。
 
 `MIMO_THINKING=disabled` 时，MiMo 用户消息末尾会追加 `/no_think`；改成 `MIMO_THINKING=enabled` 后，请求体会发送 `thinking={"type":"enabled"}`，并且不会再追加 `/no_think`。
 

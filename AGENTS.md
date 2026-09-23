@@ -626,7 +626,7 @@ Animation Plan 之后的两段式验收，与剧情体检同规格：**只出报
 
 工作流 LLM provider 包括：
 
-**qwen-client 全模型流式传输（2026-09-05）**：`buildQwenRequestBody` 对**全部模型**发送 `stream: true` 与 `stream_options: { include_usage: true }`，响应由 `src/sse-stream.js` 唯一一份 SSE 解析读取。`deepseek-client.js` 与 `mimo-client.js` 传输层与它同构，但本次**未改**，仍是非流式。
+**文本客户端流式传输（Qwen 2026-09-05；MiMo 2026-09-22）**：Qwen 与 MiMo 对全部模型发送 `stream: true`，响应共用 `src/sse-stream.js`。Qwen 额外发送 `stream_options: { include_usage: true }`；MiMo 官方接口直接在 SSE 尾块返回 usage，实测无需该未文档化参数。MiMo 的模型、thinking、JSON 模式、媒体内容和原有输出/媒体修复预算不变；成功与断流均先记实际收到的结构化用量，再做取消/冻结检查；推理与正文分离，每 10 秒最多一次 Durable 心跳，不完整流绝不作为结果提交，也不降级非流式。HTTP 错误仍读取普通错误体。DeepSeek 本次未改，仍为非流式。页面仍只展示已完成并校验的业务结果。Animation Plan 输出日志并行读取响应 clone，结束前不阻塞客户端接收 SSE；日志只投影正文与 usage，断流不标通过。验收见 `docs/mimo-streaming-2026-09-22.md`。
 
 依据是 debug 侧车的实测：非流式长请求会在约 306 秒被上游掐断。kimi-k3 与 qwen3.8-max-0902 各两次，耗时 306503 / 306696 / 306704 / 306861 ms，浮动仅 358ms、**跨两个不同模型**——是确定性的固定超时，不是网络抖动；四次全部 `usage: null`、`finishReason: ""`、零字节输出。而全部成功调用 ≤ **234 秒**（最慢是 qwen3.7-max 的 variants，14321 completion tokens），余量只剩 72 秒。**悬崖在传输层不在模型**，所以不维护按模型的清单——那是治标，换个更长的 prompt 就会再撞上。
 

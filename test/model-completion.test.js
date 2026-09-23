@@ -13,17 +13,12 @@ test("MiMo requestCompletion performs one call and preserves completion metadata
   let calls = 0;
   globalThis.fetch = async () => {
     calls += 1;
-    return new Response(JSON.stringify({
-      id: "body-request",
-      choices: [{
-        finish_reason: "length",
-        message: { content: "{\"ok\":true}" }
-      }],
+    const response = sseResponse({
+      id: "body-request", content: "{\"ok\":true}", finishReason: "length",
       usage: { prompt_tokens: 10, completion_tokens: 20 }
-    }), {
-      status: 200,
-      headers: { "x-request-id": "header-request" }
     });
+    response.headers.set("x-request-id", "header-request");
+    return response;
   };
   try {
     const completion = await new MimoClient(config()).requestCompletion({
@@ -67,7 +62,7 @@ test("Qwen requestCompletion reads body request id when no request-id header is 
   }
 });
 
-test("requestCompletion classifies invalid envelopes without an internal retry", async () => {
+test("MiMo requestCompletion rejects an invalid stream without an internal retry", async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async () => {
@@ -78,7 +73,7 @@ test("requestCompletion classifies invalid envelopes without an internal retry",
     await assert.rejects(
       () => new MimoClient(config()).requestCompletion({ prompt: "return json" }),
       (error) => error instanceof ModelResponseError
-        && error.code === "MODEL_ENVELOPE_INVALID"
+        && error.code === "MODEL_STREAM_INCOMPLETE"
         && error.raw === "not-json"
     );
     assert.equal(calls, 1);

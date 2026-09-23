@@ -350,8 +350,10 @@ const MODEL_OPTION_CATALOG = {
     text: ["qwen3.7-max", "qwen3.7-plus", "qwen-max-latest", "qwen-plus-latest", "qwen-turbo-latest"]
   },
   MiMo: {
-    media: ["mimo-v2.5", "mimo-v2.5-pro"],
-    text: ["mimo-v2.5", "mimo-v2.5-pro"]
+    // Official Chat Completions IDs; all three V2.6 models accept image/video input.
+    // https://mimo.mi.com/docs/en-US/api/chat/openai-api (verified 2026-09-22)
+    media: ["mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed"],
+    text: ["mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed"]
   },
   DeepSeek: {
     text: ["deepseek-v4-flash", "deepseek-v4-pro"]

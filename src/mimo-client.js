@@ -1,6 +1,7 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
 import { recordModelUsage } from "./token-usage.js";
-import { afterDurableProviderCall, beforeDurableProviderCall, durableProviderAbortSignal, throwIfDurableTaskAborted } from "./durable-task-context.js";
+import { afterDurableProviderCall, beforeDurableProviderCall, durableTaskHeartbeat, durableProviderAbortSignal, throwIfDurableTaskAborted } from "./durable-task-context.js";
+import { SseStreamIncompleteError, readSseCompletion } from "./sse-stream.js";
 
 export class ModelResponseError extends Error {
   constructor(message, raw = "", status = 0, metadata = {}) {
@@ -200,14 +201,15 @@ export class MimoClient {
       throwIfDurableTaskAborted();
       throw error;
     });
-    const raw = await response.text().catch((error) => {
-      throwIfDurableTaskAborted();
-      throw error;
-    });
     const headerRequestId = response.headers.get("x-request-id")
       || response.headers.get("request-id")
       || "";
     if (!response.ok) {
+      // HTTP 错误仍读普通响应体，不能作为 SSE 吞掉供应商错误原文。
+      const raw = await response.text().catch((error) => {
+        throwIfDurableTaskAborted();
+        throw error;
+      });
       await afterDurableProviderCall("model_provider_response");
       throw new ModelResponseError(
         `MiMo 请求失败（${response.status}）`,
@@ -221,32 +223,50 @@ export class MimoClient {
       );
     }
 
-    let envelope;
+    let lastHeartbeatAt = 0;
+    const onProgress = ({ contentLength }) => {
+      const now = Date.now();
+      if (now - lastHeartbeatAt < 10_000) return;
+      lastHeartbeatAt = now;
+      // 推理期间也续报进度；观测失败不改变传输结论。
+      Promise.resolve(durableTaskHeartbeat({ streamedChars: contentLength })).catch(() => {});
+    };
+    let stream;
     try {
-      envelope = JSON.parse(raw);
-    } catch {
+      stream = await readSseCompletion(response.body, { onProgress });
+    } catch (error) {
+      // 仅记录实际收到的结构化用量；取消、断流或冻结复检失败也不能丢账。
+      recordModelUsage({ provider: "MiMo", model: body.model, usage: error?.partialUsage });
+      throwIfDurableTaskAborted();
       await afterDurableProviderCall("model_provider_response");
-      throw new ModelResponseError(
-        "MiMo 返回了无法解析的响应包",
-        raw,
-        0,
-        {
-          provider: "MiMo",
-          code: "MODEL_ENVELOPE_INVALID",
-          requestId: headerRequestId
-        }
-      );
+      if (typeof error?.partialChunks === "number" && error.partialChunks > 0) {
+        throw new ModelResponseError(
+          `MiMo 流式传输在收到 ${error.partialContentLength} 字正文（${error.partialChunks} 个数据块）后中断：${error.message}`,
+          String(error.partialRaw || ""),
+          0,
+          { provider: "MiMo", code: "MODEL_STREAM_ABORTED", requestId: headerRequestId, usage: error.partialUsage }
+        );
+      }
+      if (error instanceof SseStreamIncompleteError) {
+        throw new ModelResponseError(
+          `MiMo ${error.message}`,
+          error.raw,
+          0,
+          { provider: "MiMo", code: "MODEL_STREAM_INCOMPLETE", requestId: headerRequestId, usage: error.partialUsage }
+        );
+      }
+      throw error;
     }
-    const usage = envelope?.usage && typeof envelope.usage === "object"
-      ? envelope.usage
+    const raw = stream.raw;
+    const usage = stream.usage && typeof stream.usage === "object"
+      ? stream.usage
       : null;
     // 已完成响应的用量先记账；随后冻结复检失败也不能抹掉已发生的消耗。
     recordModelUsage({ provider: "MiMo", model: body.model, usage });
     await afterDurableProviderCall("model_provider_response");
-    const choice = envelope.choices?.[0];
-    const content = choice?.message?.content;
-    const requestId = headerRequestId || String(envelope.id || "");
-    const finishReason = String(choice?.finish_reason || "");
+    const content = stream.content;
+    const requestId = headerRequestId || String(stream.id || "");
+    const finishReason = String(stream.finishReason || "");
     if (typeof content !== "string") {
       throw new ModelResponseError(
         "MiMo 响应缺少 message.content",
@@ -266,6 +286,8 @@ export class MimoClient {
       finishReason,
       requestId,
       usage,
+      providerName: "MiMo",
+      model: body.model,
       raw
     };
   }
@@ -312,7 +334,9 @@ export function buildRequestBody(config, { prompt, frames = [], video = null, us
     max_completion_tokens: overrides.maxCompletionTokens ?? config.maxCompletionTokens ?? 8192,
     temperature: 0.3,
     top_p: 0.95,
-    stream: false,
+    // MiMo 原生 SSE 尾块包含 usage，无需依赖未文档化的 stream_options。
+    // https://mimo.mi.com/docs/en-US/api/chat/openai-api (实测 2026-09-22)
+    stream: true,
     thinking: { type: thinkingType },
     messages: [
       {

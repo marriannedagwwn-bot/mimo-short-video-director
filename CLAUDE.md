@@ -1052,7 +1052,7 @@ Plan revision 与新 media namespace 并递归 stale 该变体已生成的全部
 
 工作流 LLM provider：**Qwen / MiMo / DeepSeek**。
 
-**qwen-client 全模型流式传输（2026-09-05）**：`buildQwenRequestBody` 对**全部模型**发送 `stream: true` 与 `stream_options: { include_usage: true }`，响应由 `src/sse-stream.js` 唯一一份 SSE 解析读取。`deepseek-client.js` 与 `mimo-client.js` 传输层与它同构，但本次**未改**，仍是非流式。
+**文本客户端流式传输（Qwen 2026-09-05；MiMo 2026-09-22）**：Qwen 与 MiMo 对全部模型发送 `stream: true`，响应共用 `src/sse-stream.js`。Qwen 额外发送 `stream_options: { include_usage: true }`；MiMo 官方接口直接在 SSE 尾块返回 usage，实测无需该未文档化参数。MiMo 的模型、thinking、JSON 模式、媒体内容和原有输出/媒体修复预算不变；成功与断流均先记实际收到的结构化用量，再做取消/冻结检查；推理与正文分离，每 10 秒最多一次 Durable 心跳，不完整流绝不作为结果提交，也不降级非流式。HTTP 错误仍读取普通错误体。DeepSeek 本次未改，仍为非流式。页面仍只展示已完成并校验的业务结果。Animation Plan 输出日志并行读取响应 clone，结束前不阻塞客户端接收 SSE；日志只投影正文与 usage，断流不标通过。验收见 `docs/mimo-streaming-2026-09-22.md`。
 
 依据是 debug 侧车的实测：非流式长请求会在约 306 秒被上游掐断。kimi-k3 与 qwen3.8-max-0902 各两次，耗时 306503 / 306696 / 306704 / 306861 ms，浮动仅 358ms、**跨两个不同模型**——是确定性的固定超时，不是网络抖动；四次全部 `usage: null`、`finishReason: ""`、零字节输出。而全部成功调用 ≤ **234 秒**（最慢是 qwen3.7-max 的 variants，14321 completion tokens），余量只剩 72 秒。**悬崖在传输层不在模型**，所以不维护按模型的清单——那是治标，换个更长的 prompt 就会再撞上。
 
@@ -1063,7 +1063,7 @@ Plan revision 与新 media namespace 并递归 stale 该变体已生成的全部
 - **流不完整必须失败，绝不返回半截内容。** 读到流结束但既没有 `[DONE]` 也没有任何 `finish_reason` 时抛 `MODEL_STREAM_INCOMPLETE`。返回半截内容会让残缺 JSON 被下游报成「JSON 格式错误」，把传输问题伪装成模型输出问题。
 - 该错误码在 `classifyAttemptError` 里**必须单独分类**为 `category: "transport"` + `retryable: true`。不单独分类会落到 `ModelResponseError` 的兜底分支（`status=0` → `protocol` 且 `retryable: false`），把可重试的网络中断变成不可重试的协议错误。
 - **禁止非流式自动回退。** 流式失败就如实报错——自动降级是第五节第 4 条的「失败时返回默认值」。
-- **`terminated` 的包装判据是「收到过任何数据块」，不是「收到过正文」（2026-09-07）。** 连接中途被切断时 `qwen-client` 把它包装成可重试的 `MODEL_STREAM_ABORTED`，判据原为 `partialContentLength > 0`。但下一条明写 `reasoning_content` 单独收集、不算正文，而 qwen3.8-max 实测 **82% 的 completion token 是推理**（`reasoning_tokens` 23449 / `completion_tokens` 28466）——推理期断线时正文长度仍是 0，裸 `TypeError` 漏出包装、一路冒到 HTTP 层变成**不可重试的 500**。实测两次分镜终审失败（158 秒、649 秒）都是这个形状：流一直活着、模型一直在推理，只是还没吐正文。判据改为 `partialChunks > 0`，`classifyAttemptError` 逐字未改。**只改包装条件，不改「流不完整必须失败」的结论。** 只覆盖 `qwen-client`，另外两家仍是非流式。
+- **`terminated` 的包装判据是「收到过任何数据块」，不是「收到过正文」（2026-09-07）。** 连接中途被切断时 `qwen-client` 把它包装成可重试的 `MODEL_STREAM_ABORTED`，判据原为 `partialContentLength > 0`。但下一条明写 `reasoning_content` 单独收集、不算正文，而 qwen3.8-max 实测 **82% 的 completion token 是推理**（`reasoning_tokens` 23449 / `completion_tokens` 28466）——推理期断线时正文长度仍是 0，裸 `TypeError` 漏出包装、一路冒到 HTTP 层变成**不可重试的 500**。实测两次分镜终审失败（158 秒、649 秒）都是这个形状：流一直活着、模型一直在推理，只是还没吐正文。判据改为 `partialChunks > 0`，`classifyAttemptError` 逐字未改。**只改包装条件，不改「流不完整必须失败」的结论。** Qwen 与 MiMo（2026-09-22 起）都适用，只有非流式的 DeepSeek 不涉及。
 - `delta.reasoning_content` 单独收集，**绝不混进正文**；`usage` 只在最后一个数据块里返回，缺 `stream_options` 就拿不到 token 记账。
 - 解码必须用 `TextDecoder` 的 `{ stream: true }`：一个汉字的 UTF-8 字节可能被拆到两个数据块，对每块单独解码会产生乱码。
 - 返回形状与非流式**逐字一致**的 7 个字段：`content` / `finishReason` / `requestId` / `usage` / `providerName` / `model` / `raw`。`providerName` 被 `model-call-coordinator` 与 `workflow` 用于错误归属，`model` 用于用量记账，漏掉会静默降级到回退值。

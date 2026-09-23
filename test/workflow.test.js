@@ -2155,7 +2155,7 @@ test("MiMo thinking disabled 时将视觉内容放在文本前并把 no_think �
   const content = body.messages[1].content;
   assert.equal(body.model, "mimo-v2.5");
   assert.equal(body.max_completion_tokens, 8192);
-  assert.equal(body.stream, false);
+  assert.equal(body.stream, true);
   assert.deepEqual(body.thinking, { type: "disabled" });
   assert.equal(content[0].type, "video_url");
   assert.equal(content[0].video_url.url, "data:video/mp4;base64,AAAA");
@@ -2849,9 +2849,8 @@ test("auto 模式在服务拒绝 video_url 时回退关键帧", async (t) => {
       response.end('{"error":"unsupported video"}');
       return;
     }
-    // MimoClient 仍是非流式，本次只有 qwen-client 改为 SSE
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end('{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}');
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(sseChunks({ content: '{"ok":true}' }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => closeServer(server));
@@ -2880,12 +2879,12 @@ test("auto 模式在原生视频返回坏 JSON 时回退关键帧", async (t) =>
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     requests.push(body);
     const content = body.messages[1].content;
-    response.writeHead(200, { "content-type": "application/json" });
+    response.writeHead(200, { "content-type": "text/event-stream" });
     if (content.some((item) => item.type === "video_url")) {
-      response.end('{"choices":[{"message":{"content":"{\\"ok\\":"}}]}');
+      response.end(sseChunks({ content: '{"ok":' }));
       return;
     }
-    response.end('{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}');
+    response.end(sseChunks({ content: '{"ok":true}' }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => closeServer(server));
@@ -2920,12 +2919,12 @@ test("MiMo JSON 截断时自动用精简 JSON 提示重试", async (t) => {
     for await (const chunk of request) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     requests.push(body);
-    response.writeHead(200, { "content-type": "application/json" });
+    response.writeHead(200, { "content-type": "text/event-stream" });
     if (requests.length === 1) {
-      response.end('{"choices":[{"message":{"content":"{\\"variants\\":[{\\"id\\":\\"V1\\",\\"title\\":\\"截断"}}]}');
+      response.end(sseChunks({ content: '{"variants":[{"id":"V1","title":"截断', finishReason: "length" }));
       return;
     }
-    response.end('{"choices":[{"message":{"content":"{\\"variants\\":[{\\"id\\":\\"V1\\",\\"title\\":\\"修复成功\\"}]}"}}]}');
+    response.end(sseChunks({ content: '{"variants":[{"id":"V1","title":"修复成功"}]}' }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => closeServer(server));

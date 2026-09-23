@@ -14,6 +14,7 @@ import {
   mergeStageUsage
 } from "../public/token-usage-format.js";
 import { MimoClient } from "../src/mimo-client.js";
+import { sseResponse } from "./helpers/sse-response.js";
 
 const PRICES = new Map([
   ["qwen3.7-max", { inputPerMillion: 2.4, outputPerMillion: 9.6 }],
@@ -377,10 +378,10 @@ test("真实客户端的一次调用会被记进当前作用域，并按单价�
   let calls = 0;
   globalThis.fetch = async () => {
     calls += 1;
-    return new Response(JSON.stringify({
-      choices: [{ finish_reason: "stop", message: { content: "{\"ok\":true}" } }],
+    return sseResponse({
+      content: "{\"ok\":true}",
       usage: { prompt_tokens: 1_000_000, completion_tokens: 1_000_000, total_tokens: 2_000_000 }
-    }), { status: 200 });
+    });
   };
   try {
     const client = new MimoClient({
@@ -412,9 +413,7 @@ test("真实客户端的一次调用会被记进当前作用域，并按单价�
 
 test("供应商没返回 usage 时不伪造数字，该请求不产生 usage", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    choices: [{ finish_reason: "stop", message: { content: "{\"ok\":true}" } }]
-  }), { status: 200 });
+  globalThis.fetch = async () => sseResponse({ content: "{\"ok\":true}" });
   try {
     const client = new MimoClient({
       baseUrl: "https://example.invalid/v1",

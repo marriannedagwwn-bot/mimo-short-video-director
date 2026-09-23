@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ModelCallCoordinator } from "../src/model-call-coordinator.js";
 import { MimoClient, parseSingleJsonObject } from "../src/mimo-client.js";
+import { sseResponse } from "./helpers/sse-response.js";
 import {
   ensureFullStoryMatchesProfile,
   ensureOutputContract,
@@ -63,12 +64,7 @@ test("RC-01 characterization: Phase 1 handles finish_reason=length before parse 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     calls += 1;
-    return new Response(JSON.stringify({
-      choices: [{
-        finish_reason: calls === 1 ? "length" : "stop",
-        message: { content: "{\"ok\":true}" }
-      }]
-    }), { status: 200 });
+    return sseResponse({ finishReason: calls === 1 ? "length" : "stop", content: "{\"ok\":true}" });
   };
   try {
     const client = new MimoClient(mimoConfig());
@@ -87,7 +83,7 @@ test("RC-02 and RC-03 characterization: Phase 1 strict parser preserves strings 
   assert.throws(() => parseSingleJsonObject("prefix {\"ok\":true} suffix"));
 });
 
-test("RC-04 characterization: Phase 1 Coordinator retries an invalid provider envelope once", async () => {
+test("RC-04 characterization: Phase 1 Coordinator retries an invalid provider stream once", async () => {
   let calls = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
@@ -152,12 +148,7 @@ function mimoConfig() {
 }
 
 function jsonResponse(value) {
-  return new Response(JSON.stringify({
-    choices: [{
-      finish_reason: "stop",
-      message: { content: JSON.stringify(value) }
-    }]
-  }), { status: 200 });
+  return sseResponse({ content: JSON.stringify(value) });
 }
 
 function runFullStoryCoordinator(client) {
