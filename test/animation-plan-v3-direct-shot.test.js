@@ -361,6 +361,28 @@ test("direct batch 把完整动作链和内部摄影切换写入一条教程式 
   ));
 });
 
+test("direct batch 不再放整份 creativeBrief，与 Foundation 一致", () => {
+  const context = directContext();
+  // creative_brief/2.0 只剩原片主角的驱动结构与换角测试里的原片动作，而这一步要写 videoPrompt。
+  context.creativeBrief.batchPromptLeakSentinel = "BRIEF_BATCH_LEAK_SENTINEL";
+  context.creativeBrief.recastTest = { ...context.creativeBrief.recastTest, collapses: ["RECAST_BATCH_LEAK_SENTINEL"] };
+  const plan = mockAnimationPlan(context);
+  const { shotPlan: ignoredShotPlan, ...animationFoundation } = structuredClone(plan);
+  const sourceScene = structuredClone(context.fullStory.sceneScript[0]);
+  const prompt = animationShotBatchPrompt({
+    ...context,
+    animationFoundation,
+    sourceScenes: [sourceScene],
+    shotIdStartIndex: 1,
+    directShotSkeleton: deriveDirectShotSkeleton({ sceneScript: [sourceScene] })
+  });
+  assert.doesNotMatch(prompt, /\ncreativeBrief：/u);
+  assert.equal(prompt.includes("BRIEF_BATCH_LEAK_SENTINEL"), false);
+  assert.equal(prompt.includes("RECAST_BATCH_LEAK_SENTINEL"), false);
+  // 旧简报的原片表面表达仍以词表形式给出；新简报没有这部分，词表为空。
+  assert.match(prompt, /原片表面表达参考（允许按剧情使用，不得机械注入）：无/u);
+});
+
 test("v3 batch 只接受精确 direct 字段并拒绝端点字段或非空 image negatives", () => {
   const batch = { shotPlan: [directShot()] };
   assert.equal(

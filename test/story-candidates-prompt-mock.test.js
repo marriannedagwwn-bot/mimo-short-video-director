@@ -10,30 +10,24 @@ const creatorProfile = Object.freeze({
   constraints: ""
 });
 
-test("Creative Brief Prompt keeps strong fidelity fields at the dramatic-value layer", () => {
+test("Creative Brief Prompt 只做原片解读，旧简报的指令性字段一个都不再出现", () => {
   const prompt = briefPrompt({
     creatorProfile,
     referenceAnalysis: {},
     sourceScriptReconstruction: {}
   });
-
-  assert.match(prompt, /mustRetain 只能写不可替代的剧作价值/u);
-  assert.match(prompt, /samePlotDriver 只描述抽象因果驱动力/u);
-  assert.match(prompt, /sameBeatValue 只列可独立迁移的剧作价值/u);
-  assert.match(prompt, /creativeDistancePolicy 必须明确/u);
-  assert.match(prompt, /具体任务、角色、奖励、道具、事件顺序和结尾形式均可重新组合/u);
-  assert.match(prompt, /把奖励转赠奶奶、小红花、家庭聚餐、家庭温暖结尾/u);
-  assert.match(prompt, /只有 creatorProfile\.fixedCharacter、creatorProfile\.vertical 或 creatorProfile\.constraints 明确要求/u);
-  assert.match(prompt, /allowedNarrativeComponents 只记录原片是否存在某类通用构件/u);
-  assert.match(prompt, /必须保留角色关系价值和情绪兑现强度/u);
-  assert.match(prompt, /坏例：mustRetain 写成“完成送达后获得小红花，把小红花转赠奶奶，再以家庭聚餐收尾”/u);
-  assert.match(prompt, /奖励价值的好例/u);
-  assert.match(prompt, /不要求物质奖励/u);
-  assert.match(prompt, /关系变化、新信息、任务后果、自我认识或外部反馈/u);
-  assert.match(prompt, /关系兑现的好例/u);
-  assert.match(prompt, /重要关系对象之间可见的关系变化/u);
-  assert.match(prompt, /不要求赠送物品/u);
-  assert.match(prompt, /不预设单向变双向、和解、团聚或任何唯一关系模板/u);
+  const body = prompt.slice(prompt.indexOf("你现在做的是「原片解读」"));
+  assert.match(body, /只分析原片，不设计新片/u);
+  assert.match(body, /storyEngine 描述的是\*\*原片\*\*的驱动结构，不是对新片的要求/u);
+  assert.match(body, /\*\*它不是剧情转折点\*\*/u);
+  assert.match(body, /recastTest 是一个\*\*你必须真做一遍的操作\*\*/u);
+  // creative_brief/2.0 删掉的那一整套：mustRetain / samePlotDriver / creativeDistancePolicy 的写法、
+  // 七项构件、同类物品命名规则。它们没有下游读者，却是 12/13 次简报契约失败的来源。
+  for (const removed of [/mustRetain/u, /samePlotDriver/u, /creativeDistancePolicy/u, /allowedNarrativeComponents/u,
+    /小红花/u, /绿色邮箱、红色邮箱、蓝色邮箱/u, /roleAndOccupationMapping/u]) {
+    assert.doesNotMatch(body, removed);
+  }
+  // 共用的 SYSTEM_PROMPT 仍然声明来源因果链不是不可协商体验。
   assert.match(prompt, /来源故事的具体因果链、任务、奖励、转赠、结尾形式与事件顺序默认不是不可协商体验/u);
   assert.doesNotMatch(prompt, /改编必须保留[^\n]*同类剧情驱动力/u);
 });
@@ -135,9 +129,11 @@ test("Variants Prompt replaces the disposable beat conflict and declares only ca
   // 并明确告诉模型那四个字段不在本阶段，免得它去找。
   assert.match(prompt, /只提取其中的角色关系价值与情绪兑现强度/u);
   assert.match(prompt, /不会下发到本阶段/u);
-  assert.match(prompt, /不要去找它们/u);
-  assert.match(prompt, /creativeBrief 抽象保真投影/u);
-  assert.match(prompt, /SENTINEL_ABSTRACT_DRAMATIC_VALUE/u);
+  assert.match(prompt, /不要去找它/u);
+  assert.match(prompt, /原片定位与换角测试（这是唯一可以作为候选正向要求的上游内容）/u);
+  // creative_brief/2.0 起旧简报的 dramaticValue 也不再下发：「原片价值」改由 referenceAnalysis 的
+  // retentionDrivers 名称承担（只有名称，不含原片情节）。旧简报的 Run 走同一条路径。
+  assert.doesNotMatch(prompt, /SENTINEL_ABSTRACT_DRAMATIC_VALUE/u);
   // storyEngine 与 reusableHighValueBeats[].beat 都**不下发**。
   //
   // 2026-09-09 试过下发（只取 turningMechanism 一个键，外加七项 taxonomy 的存在性布尔值），
@@ -336,11 +332,19 @@ test("mock 候选的 estimatedSeconds 跟随目标，不传时保持历史值", 
 test("候选取得原片动作与对白证据，来源机制不再混入正向保真投影", () => {
   const input = {
     count: 4, creatorProfile,
+    // 旧形状简报：它的定位与价值字段一律不再下发，只有 recastTest 仍从简报读。
     creativeBrief: {
-      emotionStructure: [{ stage: "收尾", function: "SOURCE_REWARD_TRANSFER", targetEmotion: "温暖", intensity: 80 }],
-      reusableHighValueBeats: [{ dramaticValue: "SOURCE_VALUE_REFERENCE", mustRetain: "DO_NOT_PROJECT_MUST_RETAIN" }]
+      emotionStructure: [{ stage: "DO_NOT_PROJECT_BRIEF_STAGE", function: "SOURCE_REWARD_TRANSFER", targetEmotion: "温暖", intensity: 80 }],
+      reusableHighValueBeats: [{ dramaticValue: "DO_NOT_PROJECT_DRAMATIC_VALUE", mustRetain: "DO_NOT_PROJECT_MUST_RETAIN" }],
+      recastTest: { recastAs: "怕出洋相的孩子", collapses: ["KEEP_RECAST_COLLAPSE"], survives: ["DO_NOT_PROJECT_SURVIVES"] }
     },
     referenceAnalysis: {
+      contentPositioning: { format: "动画短片", genre: "治愈日常", contentPromise: "DO_NOT_PROJECT_CONTENT_PROMISE" },
+      targetAudience: { primary: "喜欢萌系内容的年轻观众", psychologicalNeeds: ["寻求温暖"], watchingContext: "DO_NOT_PROJECT_CONTEXT" },
+      // phase 在真实数据里就是「接受任务 / 送达包裹」这种事件名，trigger 是原片动作。
+      emotionCurve: [{ phase: "DO_NOT_PROJECT_PHASE", emotion: "好奇", intensity: 60, trigger: "DO_NOT_PROJECT_TRIGGER" }],
+      retentionDrivers: [{ driver: "悬念设置", viewerQuestion: "包裹里是什么？", payoff: "DO_NOT_PROJECT_PAYOFF" }],
+      whyWatchToEnd: "DO_NOT_PROJECT_WHY_WATCH",
       characters: [{ nameOrLabel: "原片人物", traits: ["SOURCE_COSTUME"] }],
       observedFacts: [{ factType: "visible_action", observation: "SOURCE_OBSERVED_ACTION" }],
       groundingSeal: { signature: "DO_NOT_PROJECT_ANALYSIS_SEAL" }
@@ -357,14 +361,22 @@ test("候选取得原片动作与对白证据，来源机制不再混入正向�
   };
   const before = structuredClone(input);
   const prompt = variantsPrompt(input);
-  const projectionLine = prompt.split("\n").find((line) => line.startsWith("creativeBrief 抽象保真投影"));
+  const projectionLine = prompt.split("\n").find((line) => line.startsWith("原片定位与换角测试"));
   const projection = JSON.parse(projectionLine.slice(projectionLine.indexOf("：") + 1));
-  assert.deepEqual(projection.emotionStructure, [{ stage: "收尾", targetEmotion: "温暖", intensity: 80 }]);
-  assert.equal(projection.reusableDramaticValues, undefined);
+  assert.deepEqual(projection, {
+    format: "动画短片",
+    genre: "治愈日常",
+    targetAudience: "喜欢萌系内容的年轻观众",
+    audienceNeeds: ["寻求温暖"],
+    emotionCurve: [{ emotion: "好奇", intensity: 60 }],
+    retentionDrivers: ["悬念设置"],
+    recastTest: { recastAs: "怕出洋相的孩子", collapses: ["KEEP_RECAST_COLLAPSE"] }
+  });
   for (const fact of ["SOURCE_COSTUME", "SOURCE_OBSERVED_ACTION", "SOURCE_BODY_ACTION", "SOURCE_SPOKEN_RESPONSE", "SOURCE_PROP"]) {
     assert.ok(prompt.includes(fact), `${fact} 必须实际进入模型提示词`);
   }
-  assert.match(prompt, /原片价值解释（只供提炼，不是本片事件要求）：.*SOURCE_VALUE_REFERENCE/u);
+  // 问句形态由 sourceViewerQuestionForms 单独给出，只给问句不给答案。
+  assert.match(prompt, /包裹里是什么？/u);
   assert.doesNotMatch(prompt, /SOURCE_REWARD_TRANSFER|DO_NOT_PROJECT_/u);
   assert.deepEqual(input, before, "只改变提示词投影，不改原片或 Brief Artifact");
 });

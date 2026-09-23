@@ -9,7 +9,7 @@ import path from "node:path";
 import { WorkflowService } from "../src/workflow.js";
 import { getConfig } from "../src/config.js";
 import { InputError, OutputContractError } from "../src/validation.js";
-import { CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS, characterPromptBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile, extractFixedCharacterName, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms } from "../src/validation.js";
+import { CREATIVE_BRIEF_SCHEMA_VERSION, characterPromptBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile, extractFixedCharacterName, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms } from "../src/validation.js";
 import { buildRequestBody, MimoClient, ModelResponseError, parseModelJson } from "../src/mimo-client.js";
 import { buildQwenRequestBody, isZhipuGlm53Model, modelAcceptsTemperature, qwenCompatibleProviderName, QwenClient } from "../src/qwen-client.js";
 import { JimengImageClient, buildCharacterReferenceImagePrompt, buildJimengImageRequestBody, buildShotFrameImagePrompt } from "../src/jimeng-client.js";
@@ -190,19 +190,9 @@ function animationFoundationFixture(plan) {
   return foundation;
 }
 
-function creativeBriefFixture(creatorProfile, mapping = {}) {
-  const brief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  Object.assign(brief.roleAndOccupationMapping[0], {
-    newRole: creatorProfile.fixedCharacter,
-    newOccupationOrIdentity: "村里的热心帮手",
-    mappingLogic: "只保留主动帮助他人的剧作功能",
-    ...mapping
-  });
-  return brief;
-}
-
-function validateCreativeBrief(brief, creatorProfile) {
-  return ensureCreativeBriefMatchesProfile(ensureOutputContract(brief, "creativeBrief"), creatorProfile);
+// creative_brief/2.0 下最常见的契约失败形状：模型把旧简报字段写回顶层。
+function invalidBriefFixture(sentinel = "旧简报字段") {
+  return { ...mockBrief(), contentType: sentinel };
 }
 
 function groundedUpstreamFixture(workflow) {
@@ -285,8 +275,8 @@ test("演示模式跑通完整工作流并分离角色边界与逐镜渲染负�
   assert.equal(workflow.mode, "demo");
   assert.ok(result.referenceAnalysis.whyWatchToEnd);
   assert.ok(result.sourceScriptReconstruction.scenes.length >= 4);
-  assert.ok(result.creativeBrief.reusableHighValueBeats.length >= 4);
-  assert.equal(result.creativeBrief.allowedNarrativeComponents.length, 7);
+  assert.equal(result.creativeBrief.schemaVersion, CREATIVE_BRIEF_SCHEMA_VERSION);
+  assert.deepEqual(Object.keys(result.creativeBrief).sort(), ["recastTest", "schemaVersion", "storyEngine"]);
   assert.ok(result.visualGuardrails.positivePromptBoundary.length);
   assert.equal(Object.hasOwn(result.visualGuardrails, "commonNegativePrompt"), false);
   assert.match(JSON.stringify(result.visualGuardrails.stageInstructions), /themeVariants|positivePromptBoundary/);
@@ -575,84 +565,26 @@ test("Visual Guardrails 拒绝模型伪造服务端签发字段且不整包重�
   assert.equal(modelCalls, 1);
 });
 
-test("creativeBrief 将通用叙事构件列为允许复用而非禁止项", async () => {
+test("creativeBrief 2.0 只产出 storyEngine 与 recastTest，由服务端盖版本号", async () => {
   const workflow = new WorkflowService();
   const referenceAnalysis = await workflow.analyze(input);
   const sourceScriptReconstruction = await workflow.reconstruct({ ...input, referenceAnalysis });
   const creativeBrief = await workflow.createBrief({ ...input, referenceAnalysis, sourceScriptReconstruction });
-  const allowed = creativeBrief.allowedNarrativeComponents.map((item) => item.component);
-  const protectedText = JSON.stringify(creativeBrief.protectedExpressions);
-  for (const component of ["送达任务", "旅途结构", "情感媒介", "获得帮助", "被关爱对象", "天气或空间推动情绪", "生活化或仪式化结尾"]) {
-    assert.ok(allowed.includes(component));
-    assert.equal(protectedText.includes(component), false);
-  }
+  assert.equal(creativeBrief.schemaVersion, CREATIVE_BRIEF_SCHEMA_VERSION);
+  assert.deepEqual(Object.keys(creativeBrief).sort(), ["recastTest", "schemaVersion", "storyEngine"]);
 });
 
-test("creativeBrief 使用服务端固定的七项叙事分类并要求每项非空评估", () => {
-  const creativeBrief = mockBrief({
-    ...input,
-    referenceAnalysis: {},
-    sourceScriptReconstruction: {}
-  });
-  assert.deepEqual(
-    creativeBrief.allowedNarrativeComponents.map((item) => item.component),
-    [...CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS]
-  );
-  assert.doesNotThrow(() => ensureOutputContract(creativeBrief, "creativeBrief"));
-
-  const notApplicable = structuredClone(creativeBrief);
-  notApplicable.allowedNarrativeComponents[0].howToReuseSafely = "【原片没有】原片没有把物品送交他人的任务；本次不采用该构件，保留分类并说明限制。";
-  assert.doesNotThrow(() => ensureOutputContract(notApplicable, "creativeBrief"));
-
-  const reordered = structuredClone(creativeBrief);
-  reordered.allowedNarrativeComponents.reverse();
-  assert.doesNotThrow(() => ensureOutputContract(reordered, "creativeBrief"));
-
-  const missing = structuredClone(creativeBrief);
-  missing.allowedNarrativeComponents = missing.allowedNarrativeComponents.filter(
-    (item) => item.component !== "旅途结构"
-  );
-  assert.throws(
-    () => ensureOutputContract(missing, "creativeBrief"),
-    /creativeBrief 未逐项评估可复用叙事构件：旅途结构/u
-  );
-
-  const confirmedFailureShape = structuredClone(creativeBrief);
-  confirmedFailureShape.allowedNarrativeComponents = confirmedFailureShape.allowedNarrativeComponents.filter(
-    (item) => ["送达任务", "获得帮助", "被关爱对象"].includes(item.component)
-  );
-  assert.throws(
-    () => ensureOutputContract(confirmedFailureShape, "creativeBrief"),
-    /creativeBrief 未逐项评估可复用叙事构件：旅途结构、情感媒介、天气或空间推动情绪、生活化或仪式化结尾/u
-  );
-
-  const renamed = structuredClone(creativeBrief);
-  renamed.allowedNarrativeComponents[1].component = "空间旅程";
-  assert.throws(
-    () => ensureOutputContract(renamed, "creativeBrief"),
-    /creativeBrief 未逐项评估可复用叙事构件：旅途结构/u
-  );
-
-  const blankAssessment = structuredClone(creativeBrief);
-  blankAssessment.allowedNarrativeComponents[2].howToReuseSafely = "  ";
-  assert.throws(
-    () => ensureOutputContract(blankAssessment, "creativeBrief"),
-    /howToReuseSafely 必须填写非空评估/u
-  );
-
-  const unexpected = structuredClone(creativeBrief);
-  unexpected.allowedNarrativeComponents.push({ component: "其他母题", howToReuseSafely: "说明" });
-  assert.throws(
-    () => ensureOutputContract(unexpected, "creativeBrief"),
-    /使用了非服务端签发分类：其他母题/u
-  );
-
-  const duplicate = structuredClone(creativeBrief);
-  duplicate.allowedNarrativeComponents.push(structuredClone(duplicate.allowedNarrativeComponents[0]));
-  assert.throws(
-    () => ensureOutputContract(duplicate, "creativeBrief"),
-    /重复分类：送达任务/u
-  );
+test("creativeBrief 2.0 拒绝任何多余顶层键，包括模型自己写的 schemaVersion", () => {
+  assert.doesNotThrow(() => ensureOutputContract(mockBrief(), "creativeBrief"));
+  for (const key of ["contentType", "allowedNarrativeComponents", "uncertainties", "schemaVersion"]) {
+    assert.throws(
+      () => ensureOutputContract({ ...mockBrief(), [key]: "x" }, "creativeBrief"),
+      (error) => error instanceof OutputContractError
+        && error.details.some((detail) => detail.code === "CREATIVE_BRIEF_UNEXPECTED_FIELD" && detail.path === `/${key}`)
+    );
+  }
+  const { recastTest, ...missingRecast } = mockBrief();
+  assert.throws(() => ensureOutputContract(missingRecast, "creativeBrief"), /缺少必要字段：recastTest/u);
 });
 
 test("主题变体同时提供结构保真与表达变换证明", async () => {
@@ -2412,7 +2344,7 @@ test("非 reconstruction 工作流不会继承证据还原 systemPrompt", async 
     client: {
       async generateJson(args) {
         captured = args;
-        return creativeBriefFixture(creatorProfile);
+        return mockBrief();
       }
     }
   });
@@ -3020,49 +2952,33 @@ test("MiMo 健康检查同时验证服务可达和指定模型已加载", async 
   });
 });
 
-test("brief 提示词区分来源事实、非机械注入与固定角色边界", () => {
+test("brief 提示词只做原片解读：不收用户设定，只要 storyEngine 与 recastTest", () => {
   const prompt = briefPrompt({
-    referenceAnalysis: {},
-    sourceScriptReconstruction: {},
+    referenceAnalysis: { storySynopsis: "ANALYSIS_SENTINEL" },
+    sourceScriptReconstruction: { relationshipPattern: "RECONSTRUCTION_SENTINEL" },
     creatorProfile: {
-      fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾",
-      vertical: "治愈日常",
-      constraints: ""
+      fixedCharacter: "FIXED_CHARACTER_SENTINEL，Q版猫耳少女",
+      vertical: "VERTICAL_SENTINEL",
+      constraints: "CONSTRAINTS_SENTINEL"
     }
   });
-  assert.match(prompt, /都不能仅因原片使用过就一刀切禁止/u);
-  assert.match(prompt, /来源表达只作为来源事实和改编参考/u);
-  assert.match(prompt, /不得仅因它出现在来源上下文中就机械添加/u);
-  assert.match(prompt, /固定角色边界和用户明确约束仍然优先/u);
-  assert.match(prompt, /protectedExpressions 只允许放具体且可识别的表达/);
-  assert.match(prompt, /送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾/);
-  assert.ok(prompt.includes(JSON.stringify(
-    CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS.map((component) => ({
-      component,
-      howToReuseSafely: ""
-    })),
-    null,
-    2
-  )));
-  assert.match(prompt, /七个 component 名称和数量由服务端固定/u);
-  assert.match(prompt, /模型只填写每项非空的 howToReuseSafely/u);
-  assert.match(prompt, /本次不适合采用.*必须保留对应 component/u);
-  assert.match(prompt, /企鹅服女孩/);
-  assert.match(prompt, /原片未经 fixedCharacter 授权.*不能覆盖固定主角身份/u);
-  assert.match(prompt, /可以在当前剧情需要时把企鹅装角色作为独立配角/u);
-  assert.match(prompt, /不能把.*改写成固定主角自身的身份或身体特征/u);
-  assert.match(prompt, /roleAndOccupationMapping 的第一项必须映射原片主角的剧作功能/);
-  assert.match(prompt, /fixedCharacter 是最高优先级/u);
-  assert.match(prompt, /猫娘.*猫耳少女.*猫尾/u);
-  assert.match(prompt, /优先复述用户原词/u);
-  assert.match(prompt, /动物角色.*拟人动物.*兽类角色.*动物形象少女/u);
-  assert.match(prompt, /猫耳发箍.*不能.*猫娘身份/u);
-  assert.match(prompt, /newRole.*newOccupationOrIdentity.*最终身份/u);
-  assert.match(prompt, /mappingLogic.*剧作功能迁移/u);
-  assert.match(prompt, /sourceFunction.*protectedExpressions/u);
-  assert.match(prompt, /每一项都必须重复完整中心名词/u);
-  assert.match(prompt, /绿色邮箱、红色邮箱、蓝色邮箱/u);
-  assert.match(prompt, /不得写“绿色、红色、蓝色邮箱”/u);
+  const body = prompt.slice(prompt.indexOf("你现在做的是「原片解读」"));
+  assert.match(body, /ANALYSIS_SENTINEL/u);
+  assert.match(body, /RECONSTRUCTION_SENTINEL/u);
+  // 两项讲的都是原片：转述用户设定只会造出第二份事实（09-23 那份简报把搭档并进了「固定角色」）。
+  for (const sentinel of ["FIXED_CHARACTER_SENTINEL", "VERTICAL_SENTINEL", "CONSTRAINTS_SENTINEL"]) {
+    assert.equal(prompt.includes(sentinel), false, sentinel);
+  }
+  assert.match(body, /顶层只允许这两个键/u);
+  assert.match(body, /"storyEngine":\{"desire":""/u);
+  assert.match(body, /"recastTest":\{"recastAs":"", "collapses":\[\], "survives":\[\]\}/u);
+  assert.match(body, /本阶段没有 uncertainties 字段/u);
+  // 已删字段不得在正文里出现，否则就是提示词与校验器打架（多写一个键就被拒）。
+  for (const removed of ["allowedNarrativeComponents", "protectedExpressions", "controlledRewriteVariables",
+    "roleAndOccupationMapping", "minimumTransformationRules", "reusableHighValueBeats", "mustRetain",
+    "nonNegotiableExperience", "creativeDistancePolicy", "emotionStructure", "coreEmotion", "contentType"]) {
+    assert.equal(body.includes(removed), false, removed);
+  }
 });
 
 test("模型漏掉必要字段时拒绝把结果标记为成功", () => {
@@ -3467,80 +3383,77 @@ test("标准角色说明后缀使用锚定分隔符诊断且不误伤独立前�
   assert.doesNotThrow(() => ensureOutputContract(independentName, "fullStory"));
 });
 
-test("creativeBrief 将动态身份和来源表面词交给 Visual Guardrails", () => {
+test("角色边界提示词不再读简报，原片表面表达直接取自原片分析与脚本还原", () => {
   const creatorProfile = {
     fixedCharacter: "小白子，q 版狼耳少女，形象类似于猫娘，猫一样的耳朵，整体性格活泼可爱，懂事，学生/村民 · 村里的热心帮手",
     vertical: "治愈/温情/日常/日系 2.5D 新海诚光景风格",
     constraints: "小白子基本只用嗷或嗷呜表达情绪"
   };
-  const brief = creativeBriefFixture(creatorProfile, {
-    newRole: "小白子，猫娘、狼耳少女，村里的热心帮手",
-    newOccupationOrIdentity: "学生/村民",
-    mappingLogic: "保留原片快递员承担送达任务和连接人物的剧作功能"
-  });
-  brief.protectedExpressions.push({
-    expressionType: "身份外壳",
-    sourceExpression: "快递员",
-    prohibition: "不得直接复制原片职业外壳",
-    safeAlternativePrinciple: "只保留任务执行功能"
-  });
-
-  assert.doesNotThrow(() => validateCreativeBrief(brief, creatorProfile));
-
+  // 简报里放一个旧形状的 protectedExpressions 与新形状的 recastTest，两者都不得进入边界提示词：
+  // recastTest.collapses 写的是原片主角的动作，放进来有被签成固定角色性格的风险。
+  const creativeBrief = {
+    ...mockBrief(),
+    recastTest: { recastAs: "怕出洋相的孩子", collapses: ["RECAST_COLLAPSE_SENTINEL"], survives: ["送到东西"] },
+    protectedExpressions: [{ expressionType: "身份外壳", sourceExpression: "BRIEF_SURFACE_SENTINEL", prohibition: "", safeAlternativePrinciple: "" }]
+  };
   const guardrailsPrompt = visualGuardrailsPrompt({
     creatorProfile,
     referenceAnalysis: { storySynopsis: "原片主角承担快递任务" },
     sourceScriptReconstruction: { relationshipPattern: "任务执行者连接村民" },
-    creativeBrief: brief
+    creativeBrief
   });
-  assert.match(guardrailsPrompt, /角色边界与创作规则审查 AI/u);
-  assert.match(guardrailsPrompt, /q 版狼耳少女/u);
-  assert.match(guardrailsPrompt, /形象类似于猫娘/u);
-  assert.match(guardrailsPrompt, /快递员/u);
+  assert.equal(guardrailsPrompt.includes("RECAST_COLLAPSE_SENTINEL"), false);
+  assert.equal(guardrailsPrompt.includes("BRIEF_SURFACE_SENTINEL"), false);
+  assert.equal(guardrailsPrompt.includes("creativeBrief"), false);
+  assert.match(guardrailsPrompt, /原片主角承担快递任务/u);
+  assert.match(guardrailsPrompt, /sourceSimilarityRules 只收录 referenceAnalysis、sourceScriptReconstruction 中真实出现的/u);
+  assert.match(guardrailsPrompt, /"sourcePath":"sourceScriptReconstruction\.scenes\[0\]\.keyProps\[0\]"/u);
   assert.match(guardrailsPrompt, /每一项都必须重复完整中心名词/u);
-  assert.match(guardrailsPrompt, /不得沿用或生成“绿色、红色、蓝色邮箱（组合）”/u);
+  // 去掉简报后，原片表面表达的短词表改由服务端从 keyProps 逐字摘录：回放里模型从长句自己摘，
+  // 2/5 次写出原文没有的简称被逐字绑定闸门拦下；09-19 那批 82% 的证据引用的是简报的那份短词表。
+  const catalogPrompt = visualGuardrailsPrompt({
+    creatorProfile,
+    referenceAnalysis: {},
+    sourceScriptReconstruction: { scenes: [{ keyProps: ["企鹅装", "橘子"] }, { keyProps: ["橘子", "", "绿色挎包"] }] },
+    creativeBrief
+  });
+  const catalog = catalogPrompt.slice(catalogPrompt.indexOf("原片表面表达候选"), catalogPrompt.indexOf("判断规则："));
+  assert.deepEqual(catalog.split("\n").filter((line) => line.startsWith("- ")), [
+    "- sourceScriptReconstruction.scenes[0].keyProps[0]：企鹅装",
+    "- sourceScriptReconstruction.scenes[0].keyProps[1]：橘子",
+    "- sourceScriptReconstruction.scenes[1].keyProps[2]：绿色挎包"
+  ]);
+  assert.match(catalogPrompt, /sourceExpression 原样抄冒号右边的原文/u);
+  assert.match(visualGuardrailsPrompt({ creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} }), /（脚本还原没有记录场次道具）/u);
 
+  // 演示模式与 live 同口径：规则逐字来自还原稿的 keyProps，能过同类物品逐字绑定校验。
+  const sourceScriptReconstruction = {
+    scenes: [{ keyProps: ["任务物", "雨伞"] }, { keyProps: ["任务物", "风车"] }]
+  };
   const guardrails = ensureVisualGuardrailsMatchesProfile(
-    ensureOutputContract(mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: brief }), "visualGuardrails"),
+    ensureOutputContract(mockVisualGuardrails({ ...input, creatorProfile, creativeBrief, sourceScriptReconstruction }), "visualGuardrails"),
     creatorProfile
   );
-  assert.ok(guardrails.sourceSimilarityRules.some((rule) => rule.sourceExpression === "快递员"));
+  assert.deepEqual(guardrails.sourceSimilarityRules.map((rule) => rule.sourceExpression), ["任务物", "雨伞", "风车"]);
+  assert.deepEqual(guardrails.sourceSimilarityRules.map((rule) => rule.triggerEvidence[0].sourcePath), [
+    "sourceScriptReconstruction.scenes[0].keyProps[0]",
+    "sourceScriptReconstruction.scenes[0].keyProps[1]",
+    "sourceScriptReconstruction.scenes[1].keyProps[1]"
+  ]);
 });
 
-test("creativeBrief 第一项 newRole 必须保留固定角色姓名", () => {
-  const creatorProfile = {
-    fixedCharacter: "小白子，猫耳少女，村里的热心帮手",
-    vertical: "治愈日常",
-    constraints: ""
-  };
-  const brief = creativeBriefFixture(creatorProfile, {
-    newRole: "神秘少女阿花",
-    mappingLogic: "小白子原本的剧作功能由阿花承担"
-  });
-  assert.throws(
-    () => validateCreativeBrief(brief, creatorProfile),
-    (error) => error instanceof OutputContractError
-      && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newRole")
-      && error.message.includes("小白子")
-  );
-});
-
-test("creativeBrief 完整候选的固定姓名校验失败时 fail closed", async () => {
+test("creativeBrief 契约失败时 fail closed：只调用一次，不把失败候选发回模型", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾，学生/村民，村里的热心帮手",
     vertical: "治愈/温情/日常",
     constraints: ""
   };
-  const invalidBrief = creativeBriefFixture(creatorProfile, {
-    newRole: "神秘少女阿花",
-    mappingLogic: "小白子的剧作功能错误地交给了阿花，UNRELATED_CREATIVE_BRIEF_SENTINEL"
-  });
   const prompts = [];
   const workflow = new WorkflowService({
     client: {
       async generateJson(args) {
         prompts.push(args.prompt);
-        return invalidBrief;
+        return invalidBriefFixture("UNRELATED_CREATIVE_BRIEF_SENTINEL");
       }
     }
   });
@@ -3548,110 +3461,10 @@ test("creativeBrief 完整候选的固定姓名校验失败时 fail closed", asy
   await assert.rejects(
     () => workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile }),
     (error) => error instanceof OutputContractError
-      && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newRole")
+      && error.details.some((detail) => detail.code === "CREATIVE_BRIEF_UNEXPECTED_FIELD")
   );
-
   assert.equal(prompts.length, 1);
-  const secondPrompts = prompts.slice(1);
-  assert.equal(secondPrompts.length, 0);
-  assert.equal(
-    secondPrompts.some((prompt) => prompt.includes("UNRELATED_CREATIVE_BRIEF_SENTINEL")),
-    false
-  );
-});
-
-test("creativeBrief 不可局修错误即使客户可继续返回也不发起第二请求", async () => {
-  const creatorProfile = {
-    fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾，学生/村民，村里的热心帮手",
-    vertical: "治愈/温情/日常",
-    constraints: ""
-  };
-  const invalidBrief = creativeBriefFixture(creatorProfile, {
-    newRole: "神秘少女阿花",
-    mappingLogic: "小白子的剧作功能错误地交给了阿花"
-  });
-  let calls = 0;
-  const workflow = new WorkflowService({
-    client: {
-      async generateJson() {
-        calls += 1;
-        return invalidBrief;
-      }
-    }
-  });
-
-  await assert.rejects(
-    () => workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile }),
-    (error) => error instanceof OutputContractError
-      && error.message.includes("creativeBrief.roleAndOccupationMapping[0].newRole")
-  );
-  assert.equal(calls, 1);
-});
-
-test("creativeBrief 动态表面词不会在 Visual Guardrails 前触发自动纠偏", async () => {
-  const creatorProfile = {
-    fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
-    vertical: "治愈/温情/日常",
-    constraints: "小白子用嗷或嗷呜表达情绪"
-  };
-  const leakedBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  leakedBrief.roleAndOccupationMapping[0].newRole = "小白子";
-  leakedBrief.roleAndOccupationMapping[0].newOccupationOrIdentity = "一只呆萌但尽责的“企鹅快递员”，是村里孩子们都喜欢的可爱帮手。";
-  leakedBrief.protectedExpressions.push({
-    expressionType: "视觉元素",
-    sourceExpression: "企鹅服",
-    prohibition: "禁止出现企鹅形象的服装或直接扮演企鹅。",
-    safeAlternativePrinciple: "只保留任务执行者、信使、善意连接者和萌系情感载体的剧作功能。"
-  });
-
-  let calls = 0;
-  const workflow = new WorkflowService({
-    client: { async generateJson() { calls += 1; return leakedBrief; } }
-  });
-
-  const result = await workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile });
-  assert.equal(calls, 1);
-  assert.match(result.roleAndOccupationMapping[0].newOccupationOrIdentity, /企鹅快递员/u);
-});
-
-test("creativeBrief 的安全改写方向允许提及被替换的原片表达", async () => {
-  const creatorProfile = {
-    fixedCharacter: "小白子，狼耳少女，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
-    vertical: "温馨/日常/治愈",
-    constraints: "小白子用嗷或嗷呜表达情绪"
-  };
-  const brief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  brief.protectedExpressions.push({
-    expressionType: "关键道具",
-    sourceExpression: "录取通知书",
-    prohibition: "禁止直接复用录取通知书作为情感媒介。",
-    safeAlternativePrinciple: "更换为适合新赛道的新情感媒介。"
-  });
-  brief.controlledRewriteVariables.push({
-    variable: "情感媒介",
-    sourceValue: "录取通知书",
-    allowedDirections: ["不要继续使用录取通知书，改成小白子在村里能自然接触到的新情感媒介", "保留传递希望的剧作功能"],
-    mustChange: true,
-    reason: "允许在安全改写说明中点名被替换对象，但后续故事不能直接复用。"
-  });
-
-  const workflow = new WorkflowService({
-    client: { async generateJson() { return brief; } }
-  });
-
-  const result = await workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile });
-  assert.ok(result.controlledRewriteVariables.some((item) => JSON.stringify(item).includes("录取通知书")));
-});
-
-test("creativeBrief 拒绝 protectedExpressions 的错误字段名", () => {
-  const brief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  brief.protectedExpressions = [{
-    expressionType: "视觉元素",
-    sourceExpression: "企鹅服",
-    prohibition: "禁止出现企鹅形象的服装或直接扮演企鹅。",
-    "safeAlternative Principle": "错误 key，应该是 safeAlternativePrinciple。"
-  }];
-  assert.throws(() => ensureOutputContract(brief, "creativeBrief"), /safeAlternativePrinciple/);
+  assert.equal(prompts[0].includes("UNRELATED_CREATIVE_BRIEF_SENTINEL"), false);
 });
 
 test("主题变体必须锁定用户指定固定角色，不能另起主角名", async () => {
@@ -3717,7 +3530,7 @@ test("主题变体允许按剧情复用原片角色组合，但不覆盖固定�
     vertical: "治愈/温情/日常"
   };
   const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  creativeBrief.protectedExpressions.push({
+  (creativeBrief.protectedExpressions ??= []).push({
     expressionType: "视觉元素",
     sourceExpression: "企鹅服",
     prohibition: "禁止出现企鹅形象的服装或直接扮演企鹅。",
@@ -3783,7 +3596,7 @@ test("主题变体允许按剧情复用 mustChange 来源道具", async () => {
     vertical: "治愈/温情/日常"
   };
   const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  creativeBrief.controlledRewriteVariables.push(
+  (creativeBrief.controlledRewriteVariables ??= []).push(
     {
       variable: "送达物品",
       sourceValue: "录取通知书",
@@ -3860,7 +3673,7 @@ test("完整剧情允许配角与 visibleAction 复用原片角色组合", async
     constraints: "小白子用嗷或嗷呜表达情绪"
   };
   const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  creativeBrief.protectedExpressions.push({
+  (creativeBrief.protectedExpressions ??= []).push({
     expressionType: "视觉元素",
     sourceExpression: "企鹅服",
     prohibition: "禁止出现企鹅形象的服装或直接扮演企鹅。",
@@ -3903,7 +3716,7 @@ test("完整剧情允许在 visibleAction 或避相似说明中使用 mustChange
     constraints: "小白子用嗷或嗷呜表达情绪"
   };
   const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  creativeBrief.controlledRewriteVariables.push(
+  (creativeBrief.controlledRewriteVariables ??= []).push(
     {
       variable: "送达物品",
       sourceValue: "录取通知书",
@@ -3960,7 +3773,7 @@ test("完整剧情无可信局部路径的语义失败不会自动发送完整 S
     constraints: "小白子用嗷或嗷呜表达情绪"
   };
   const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  creativeBrief.protectedExpressions.push({
+  (creativeBrief.protectedExpressions ??= []).push({
     expressionType: "视觉元素",
     sourceExpression: "企鹅服",
     prohibition: "禁止出现企鹅形象的服装或直接扮演企鹅。",
@@ -4323,7 +4136,7 @@ test("动画生产包正向场景允许按剧情复用原片表面形象", async
     constraints: "小白子用嗷或嗷呜表达情绪"
   };
   const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  creativeBrief.protectedExpressions.push({
+  (creativeBrief.protectedExpressions ??= []).push({
     expressionType: "视觉元素",
     sourceExpression: "企鹅服",
     prohibition: "禁止出现企鹅形象的服装或直接扮演企鹅。",
@@ -4863,17 +4676,6 @@ test("冒号写法的固定角色能通过 visualGuardrails 与 creativeBrief �
     ensureVisualGuardrailsMatchesProfile(context.visualGuardrails, creatorProfile).fixedCharacterBoundary.characterName,
     "小白子"
   );
-
-  // 创意简报此前只是因为模型把整段描述抄进 newRole 才「通过」；正确的角色名同样能通过。
-  const brief = creativeBriefFixture(creatorProfile, {
-    newRole: "小白子",
-    newOccupationOrIdentity: "村里的热心帮手",
-    mappingLogic: "只保留主动帮助他人的剧作功能"
-  });
-  assert.equal(
-    ensureCreativeBriefMatchesProfile(brief, creatorProfile).roleAndOccupationMapping[0].newRole,
-    "小白子"
-  );
 });
 
 test("固定角色名提取支持中文逗号设定，variants 提示词声明不可改名", () => {
@@ -5142,10 +4944,7 @@ test("创意简报校验失败时把模型原文与错误码写进阶段日志",
     vertical: "治愈/温情/日常",
     constraints: ""
   };
-  const invalidBrief = creativeBriefFixture(creatorProfile, {
-    newRole: "神秘少女阿花",
-    mappingLogic: "小白子的剧作功能错误地交给了阿花"
-  });
+  const invalidBrief = invalidBriefFixture();
   const rawContent = JSON.stringify(invalidBrief);
   const workflow = new WorkflowService({
     client: {
@@ -5196,6 +4995,6 @@ test("阶段日志写入失败只告警，不改变阶段成败", async () => {
 
   // 关键是它没有抛错：sidecar 写盘失败不得让创意简报阶段失败。
   const result = await workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile });
-  assert.equal(Array.isArray(result.roleAndOccupationMapping), true);
-  assert.equal(result.roleAndOccupationMapping.length > 0, true);
+  assert.equal(result.schemaVersion, CREATIVE_BRIEF_SCHEMA_VERSION);
+  assert.ok(result.recastTest.collapses.length > 0);
 });

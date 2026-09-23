@@ -59,11 +59,17 @@ flowchart LR
 
 ### 阶段三：creativeBrief
 
-`creativeBrief` 是后续创作的唯一结构依据，必须包含：
+**creative_brief/2.0（2026-09-23）起简报只做原片解读**：模型只输出 `storyEngine` 与 `recastTest` 两项，顶层多一个键就以 `CREATIVE_BRIEF_UNEXPECTED_FIELD` 失败；服务端校验通过后盖 `schemaVersion: "creative_brief/2.0"`。提示词只收原片分析与脚本还原，不收固定角色、赛道与创作限制。定位、受众、情绪曲线与观看动力由候选阶段直接从 `referenceAnalysis` 按白名单投影（不取带原片情节的 `emotionCurve.phase/trigger`、`contentPromise`、`whyWatchToEnd`、`retentionDrivers.payoff`），原片表面表达由角色边界阶段从脚本还原 `keyProps` 逐字摘录。依据与回放数据见 `docs/creative-brief-slim-2026-09-23.md`。
+
+简报的两项：
 
 - `storyEngine`：`desire` 欲望、`obstacle` 阻碍、`escalation` 升级、`turningMechanism` 观众理解的转变、`payoff` 回报。2026-09-10 起 `turningMechanism` 是 **`{before, after}` 两个槽位**：`before` 写前半段观众以为这是一段什么关系，`after` 写看完之后重新理解成什么。它**不是剧情转折点**，不是「主角做了什么」，也不是「问题怎么解决的」——那是最自然的误读，提示词明写着点破它。两端必须是对同一组人物关系的两种理解，不能写成「任务没完成 → 任务完成了」或「情绪低落 → 情绪变好」；转变不必是反转，小幅度的重新理解也算。此前这五个子字段**一条定义都没有**，是整份简报里唯一全无说明的子对象，实测三个真实包里一份把它写成了剧情概括。
 - `recastTest`：**换个角色来演，什么会塌掉**（2026-09-11）。`{recastAs, collapses, survives}` 三个槽位——先把原片主角换成一个性格完全不同的角色（`recastAs` 必须写出具体性格），再逐场问「这一场换了这个角色还成立吗」：不成立的进 `collapses`（**只有这个角色才给得了的东西**），照样成立的进 `survives`（谁来做都一样）。它与 `storyEngine` **平级而不在其内**——那五个键本身就是一个完整的**事件结构模型**，问 `desire` 必然答「她想要什么」，在里面加定义只会拿到更精确的事件描述；两轮真实回放（3.7-max 与 3.8-max-0902）写出的 `turningMechanism` 质感不同但都停在事件层，换模型不解决。它刻意写成一个**操作**而非定义：`turningMechanism` 加定义后实测 3/3 照抄措辞框架，而本仓库成功的改动全是结构性的、失败的全是措辞性的；举例一律用反例，不给正例。**两侧同时必填是要点**——只填 `collapses` 模型会把所有东西都塞进去，要求同时列 `survives` 它才必须做区分，与 `transformationProof` 拆两个槽位同一个招式。五条闸门全是类型、非空与集合比较（恰好三个键、`recastAs` 非空、两侧各至少 1 条非空、**两侧归一化后不得有交集**、同侧不重复），**判不出 `collapses` 写的是具体动作还是品质词**。只在生成路径生效，旧简报照常加载。候选阶段只拿到 `collapses`，`survives` 不下发——送它是要候选迁移同一性质的东西，不是复现原片那些动作。
   `validateStoryEngine` 挂在 `ensureOutputContract` 的 `creativeBrief` 分支，判定全是类型、非空与字符串比较：四个文本键非空；`turningMechanism` 必须是恰好含 before/after 两个键的对象；两端非空；归一化后 `before !== after`。**闸门只抓「两边写同一句话」这种退化，判不出写出来的转变是不是真发生在关系上。** 它**只在生成路径生效**（该函数全项目只在 `createBrief` 里调用），所以 `turningMechanism` 仍是字符串的旧简报照常加载，浏览器的「理解转变」格对新旧两种形状各有一个分支。
+
+以下是**旧简报（没有 `schemaVersion`）才有的字段**，creative_brief/2.0 已停产，下游也不再按字段读取；旧简报照常加载与导入，不迁移：
+
+- `contentType` / `targetAudience` / `coreEmotion`：定位三项（实测基本逐字抄原片分析）。
 - `emotionStructure`：每一阶段的剧作功能与目标情绪。
 - `roleAndOccupationMapping`：原片角色功能如何映射到固定角色和赛道身份。
 - `reusableHighValueBeats`：桥段价值、必须保留内容和可改变表面。
@@ -73,13 +79,13 @@ flowchart LR
 - `allowedNarrativeComponents`：七类通用构件的安全复用方式。`component` 由服务端固定为送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾；Prompt 展开完整七项，模型只填写非空的 `howToReuseSafely`。即使不采用也必须保留分类并说明限制，禁止改名、合并、省略、重复或增加分类。每条 `howToReuseSafely` 必须以 `【原片有】` 或 `【原片没有】` 开头作出存在性判定，缺少前缀时校验失败；判定只陈述原片既有事实，不得用一条针对新片的正向复用指令绕过。`【原片有】` 必须用「」引出上游依据并被回查核对，判据为字符覆盖率 ≥ 0.75，允许转述。
 - `nonNegotiableExperience`：五项体验保真要求。
 
-`controlledRewriteVariables.sourceValue` 和 `protectedExpressions.sourceExpression` 若列举同类具体物品，每个名称必须重复完整中心名词，例如“绿色邮箱、红色邮箱、蓝色邮箱”，不得缩写为“绿色、红色、蓝色邮箱（组合）”。这项约束只负责完整表达上游已有事实，不得新增物品，也不得由本地语法规则反向猜测旧缩写。`visualGuardrails.sourceSimilarityRules[].sourceExpression` 另有确定性校验：每个并列项必须逐字出现在同一条规则的 `triggerEvidence[].evidence` 中，补全或拼接即 fail closed；保留上游原文是合法退路。
+（仅旧简报）`controlledRewriteVariables.sourceValue` 和 `protectedExpressions.sourceExpression` 若列举同类具体物品，每个名称必须重复完整中心名词，例如“绿色邮箱、红色邮箱、蓝色邮箱”，不得缩写为“绿色、红色、蓝色邮箱（组合）”。这项约束只负责完整表达上游已有事实，不得新增物品，也不得由本地语法规则反向猜测旧缩写。`visualGuardrails.sourceSimilarityRules[].sourceExpression` 另有确定性校验：每个并列项必须逐字出现在同一条规则的 `triggerEvidence[].evidence` 中，补全或拼接即 fail closed；保留上游原文是合法退路。
 
 这两类来源字段不会自动禁止下游复用对应表达。原片道具、拟声词和角色组合可以按当前选定剧情出现在 Variant、Legacy Full Story 与 Animation Plan 的任意正向业务字段，包括 `visibleAction`、对白、声音与 `videoPrompt`；但来源上下文本身不是使用指令，不得据此机械注入正向内容。该放行不授权修改固定主角，固定主角的签发身份与外观仍由 `fixedCharacterBoundary` 唯一约束。
 
 ### 阶段四：visualGuardrails
 
-`visualGuardrails` 是固定角色语义唯一生成阶段，只负责一次性确定并签发全局角色边界，不负责生成最终图片或视频负面提示词。它同时读取用户角色描述、参考分析、脚本还原和创意简报，并允许视觉模型用通用常识补全用户采用的角色原型；不使用本地物种关键词字典。用户明确肯定或否定的描述优先于模型常识，无法消解的冲突必须进入 `unresolvedConflicts` 并阻断下游。输出必须拆成：
+`visualGuardrails` 是固定角色语义唯一生成阶段，只负责一次性确定并签发全局角色边界，不负责生成最终图片或视频负面提示词。它同时读取用户角色描述、参考分析与脚本还原（creative_brief/2.0 起不再读简报，原片表面表达的候选短词由服务端从脚本还原 `keyProps` 逐字摘出、带路径给出），并允许视觉模型用通用常识补全用户采用的角色原型；不使用本地物种关键词字典。用户明确肯定或否定的描述优先于模型常识，无法消解的冲突必须进入 `unresolvedConflicts` 并阻断下游。输出必须拆成：
 
 生产环境必须校验 `fixedCharacterBoundary` 的 HMAC 签名。本地 `test`/`development` 只有在服务端同时配置 `WORKFLOW_SIGNATURE_POLICY=test_package_unverified` 时才跳过签名比较，以便服务重启后继续回放测试包；`sourceDigest` 与 `boundaryDigest` 仍然强制校验，不能复用其他素材、用户设定或被改写过的边界。
 

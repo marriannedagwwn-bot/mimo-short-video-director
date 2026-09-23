@@ -200,3 +200,67 @@ test("并列里只要有一片是编造的，整条仍然拦下", () => {
 test("连接词切出单字碎片时维持原判定，不靠碎片蒙混通过", () => {
   assert.throws(() => check({ changedVisualExpression: pair("温和的快递站灯光") }), /找不到对应事实/u);
 });
+
+// ── 以下四条从 test/narrative-component-citation.test.js 移植（2026-09-23）──
+// 那个文件测的是简报七项构件的【原片有】引文核对；creative_brief/2.0 删掉了那张表，
+// 但分句与覆盖率算法（citationClauses / citationClauseCovered）仍由本文件这条溯源核对使用。
+// 候选侧原有用例没有覆盖「跨字段粘连」与「只报编造的那一句」，所以原样换到候选路径上保留。
+const REAL_UPSTREAM = Object.freeze({
+  referenceAnalysis: {
+    storySynopsis: "咕嘎收到一封信后，骑着自行车去给一位独居老奶奶送快递。",
+    observedFacts: [
+      "咕嘎骑着自行车，车把上有一个企鹅玩偶。",
+      "画面F2：咕嘎骑自行车，车把上有企鹅玩偶。"
+    ]
+  },
+  sourceScriptReconstruction: {
+    scenes: [{ visibleActions: ["咕嘎骑着自行车，车把上有一个企鹅玩偶"] }]
+  }
+});
+
+const BLANKET_UPSTREAM = Object.freeze({
+  referenceAnalysis: {
+    observedFacts: [
+      "金发戴帽女孩出现，为睡着的企鹅装女孩盖上白色毯子",
+      "00:26-00:36 出现，为咕嘎盖上白毯子"
+    ]
+  },
+  sourceScriptReconstruction: {
+    scenes: [{ visibleActions: ["金发女孩靠近摇椅，展开毯子盖在熟睡者身上，动作轻柔", "拿出白色毯子"] }]
+  }
+});
+
+const checkAgainst = (upstream, source) => ensureThemeVariantsMatchProfile({
+  variants: [{
+    id: "V1",
+    title: "算法用例",
+    transformationProof: {
+      changedCharacters: pair(source),
+      changedTask: pair(VARIANT_SOURCE_ABSENT_SENTINEL),
+      changedDetailsAndProps: pair(VARIANT_SOURCE_ABSENT_SENTINEL),
+      changedDialogue: pair(VARIANT_SOURCE_ABSENT_SENTINEL),
+      changedVisualExpression: pair(VARIANT_SOURCE_ABSENT_SENTINEL)
+    }
+  }]
+}, {}, null, null, upstream);
+
+test("算法：混合上游两种措辞的近似引用照常通过", () => {
+  assert.doesNotThrow(() => checkAgainst(REAL_UPSTREAM, "咕嘎骑着自行车，车把上有企鹅玩偶"));
+});
+
+test("算法：真句混编造句时，只报编造的那一句", () => {
+  assert.throws(
+    () => checkAgainst(REAL_UPSTREAM, "咕嘎骑着自行车，然后把包裹丢进了河里"),
+    (error) => error.message.includes("然后把包裹丢进了河里") && !error.message.includes("「咕嘎骑着自行车」")
+  );
+});
+
+test("算法：跨字段粘连不构成命中", () => {
+  const split = { referenceAnalysis: { observedFacts: ["咕嘎骑着自行车", "车把上有企鹅玩偶"] } };
+  assert.throws(() => checkAgainst(split, "咕嘎骑着自行车车把上有企鹅玩偶"), /找不到对应事实/u);
+});
+
+test("算法：无标点的忠实转述通过，复用真词汇的编造仍然拒绝", () => {
+  assert.doesNotThrow(() => checkAgainst(BLANKET_UPSTREAM, "金发女孩给睡着的角色盖上白毯子"));
+  assert.throws(() => checkAgainst(BLANKET_UPSTREAM, "金发女孩把白毯子卖给了邻居换回一袋橘子"), /找不到对应事实/u);
+});

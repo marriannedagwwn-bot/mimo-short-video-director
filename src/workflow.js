@@ -87,7 +87,7 @@ import {
 } from "./story-candidate-revision.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanDirectShotContract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanDirectShotContract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, CREATIVE_BRIEF_SCHEMA_VERSION, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
   deriveStoryCandidateProjections,
   deriveFullStoryTargetDuration,
   ensureFullStoryPromiseCheckCoversCandidate,
@@ -392,27 +392,18 @@ export class WorkflowService {
     requireObject(input.sourceScriptReconstruction, "sourceScriptReconstruction");
     requireObject(input.creatorProfile || {}, "creatorProfile");
     const groundedInput = groundedStageInput(input, this.groundingKey);
-    // allowedNarrativeComponents 的【原片有】判定要回到上游逐字核对，因此把这两份上游一并交给校验器。
-    const briefUpstream = {
-      referenceAnalysis: input.referenceAnalysis,
-      sourceScriptReconstruction: input.sourceScriptReconstruction
-    };
-    if (!this.hasLiveClient) {
-      return ensureCreativeBriefMatchesProfile(
-        ensureOutputContract(mockBrief(groundedInput), "creativeBrief"),
-        input.creatorProfile,
-        briefUpstream
-      );
-    }
+    // creative_brief/2.0：只校验 storyEngine 与 recastTest 两项、拒绝多余顶层键，通过后由服务端盖版本号。
+    // 盖章放在校验之后，模型写了 schemaVersion 会被当成多余键拒绝，而不是被静默覆盖。
+    const signBrief = (value) => ({
+      schemaVersion: CREATIVE_BRIEF_SCHEMA_VERSION,
+      ...ensureOutputContract(value, "creativeBrief")
+    });
+    if (!this.hasLiveClient) return signBrief(mockBrief(groundedInput));
     const prompt = briefPrompt(groundedInput);
     return this.generateStageJson("brief", groundedInput, {
       prompt,
       retryContext: { stage: "creativeBrief", fixedCharacter: input.creatorProfile?.fixedCharacter || "" },
-      validate: (result) => ensureCreativeBriefMatchesProfile(
-        ensureOutputContract(result, "creativeBrief"),
-        input.creatorProfile,
-        briefUpstream
-      )
+      validate: signBrief
     });
   }
 

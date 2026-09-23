@@ -2,7 +2,6 @@ import {
   ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION,
   ANIMATION_DIRECT_SHOT_MODE,
   BACKGROUND_MUSIC_NONE,
-  CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS,
   NO_BACKGROUND_MUSIC_SENTENCE,
   extractFixedCharacterName,
   normalizeBackgroundMusicMode
@@ -13,18 +12,6 @@ import { FULL_STORY_SCHEMA_VERSION, NARRATIVE_FULL_STORY_FIELDS } from "./full-s
 // 维度清单只有一份：mock 少写一个维度就会被 CANDIDATE_REVIEW_DIMENSION_MISSING 拦下，
 // 这正是我们要的——demo 与 live 走同一条校验链。
 import { CANDIDATE_REVIEW_DIMENSION_WEIGHTS } from "../public/story-review-metrics.js";
-
-// 每条【原片有】都必须用「」引用 mockReconstruction 中真实存在的逐字原文，
-// 否则 mock 自己就违反了 allowedNarrativeComponents 的存在性判定契约。
-const allowedComponentGuidance = [
-  "【原片有】「完成送达或照料」。保留把某物交到某人手中的目标压力，改写物品、接收者和阻碍。",
-  "【原片有】「途中受阻」。保留空间推进带来的关系升温，改写路线、交通方式与停靠事件。",
-  "【原片有】「任务物」。按当前剧情需要选择日常物件承载情绪；来源物件不是禁词，也不得因来源存在而机械注入。",
-  "【原片有】「提供具体帮助」。保留陌生人或同伴援助的情绪回报，改写帮助者身份与帮助方式。",
-  "【原片有】「让显性任务回应隐性需求」。保留显性需求与隐性需求的双层设计，重建人物关系与具体处境。",
-  "【原片有】「遇到外部阻力」。继续让环境形成外部阻力和氛围，但采用新的场景调度。",
-  "【原片有】「用日常小动作收尾」。保留小动作收束情绪的方式，重新设计结尾动作和道具。"
-];
 
 export function mockAnalysis(input) {
   const duration = Math.max(1, Math.round(input.metadata?.duration || 45));
@@ -97,13 +84,10 @@ export function mockReconstruction(input) {
   };
 }
 
-export function mockBrief(input) {
-  const fixed = input.creatorProfile?.fixedCharacter || "固定主角";
-  const vertical = input.creatorProfile?.vertical || "泛生活赛道";
+export function mockBrief() {
+  // creative_brief/2.0：只有 storyEngine 与 recastTest，顶层多一个键就会被 CREATIVE_BRIEF_UNEXPECTED_FIELD 拦下，
+  // 所以 demo 必须与 live 同形；schemaVersion 由服务端盖，这里不写。
   return {
-    contentType: "任务驱动的关系情绪短故事",
-    targetAudience: input.referenceAnalysis?.targetAudience?.primary || "泛生活情感受众",
-    coreEmotion: "从担心到被普通人的善意与克制关心打动",
     storyEngine: { desire: "主角必须完成一项指向重要关系人的具体任务", obstacle: "时间、天气或空间让简单任务变得困难", escalation: "任务成本持续增加并暴露主角的在意", turningMechanism: { before: "观众以为这只是一方单向地替另一方跑腿", after: "观众看出两人一直在互相照应，只是方式不同" }, payoff: "显性任务完成，同时回应被关爱对象未说出口的需要" },
     // 两侧都非空且不重叠——demo 必须走到与 live 同一条校验链（含 OVERLAP 那条闸门），
     // 否则就是 §2.14 记过的「mock 通过而 live 失败」。
@@ -111,45 +95,7 @@ export function mockBrief(input) {
       recastAs: "把主角换成一个凡事先想周全、怕出洋相的孩子",
       collapses: ["把手边一件不该戴在头上的东西扣在头上当防护，然后一本正经继续干活"],
       survives: ["替重要关系人跑一趟，把东西送到"]
-    },
-    emotionStructure: [
-      { stage: "任务钩子", function: "建立结果问题", targetEmotion: "好奇", intensity: 45 },
-      { stage: "成本升级", function: "证明关系重量", targetEmotion: "担心", intensity: 72 },
-      { stage: "善意介入", function: "提供社会情绪回报", targetEmotion: "温暖", intensity: 84 },
-      { stage: "日常兑现", function: "把任务变成关系确认", targetEmotion: "释然", intensity: 92 }
-    ],
-    roleAndOccupationMapping: [
-      { sourceFunction: "承担任务并推动行动", newRole: fixed, newOccupationOrIdentity: `${vertical}中的可信日常身份`, mappingLogic: "职业必须自然地产生任务、工具与行动能力" },
-      { sourceFunction: "承载隐性情感需求", newRole: "与固定角色有稳定关系的人", newOccupationOrIdentity: "由选题决定", mappingLogic: "关系应能让克制照料成立" },
-      { sourceFunction: "在低谷提供转折", newRole: "赛道内可自然出现的帮助者", newOccupationOrIdentity: "场景原生角色", mappingLogic: "帮助方式应具体且不喧宾夺主" }
-    ],
-    reusableHighValueBeats: [
-      { beat: "任务物首次出现并绑定期限", dramaticValue: "3 秒内建立观看问题", mustRetain: "明确目标与未完成代价", adaptableSurface: ["物品", "期限来源", "出发地点"], sourceSceneRefs: ["S1"] },
-      { beat: "主角优先保护任务而不是自己", dramaticValue: "用选择证明关系重量", mustRetain: "产生可见成本", adaptableSurface: ["阻力", "保护动作", "损失"], sourceSceneRefs: ["S2"] },
-      { beat: "帮助者看懂但不追问", dramaticValue: "提供善意和尊严双重回报", mustRetain: "帮助必须解决具体障碍", adaptableSurface: ["帮助者", "工具", "发生地点"], sourceSceneRefs: ["S3"] },
-      { beat: "小动作揭示真正需求", dramaticValue: "将显性任务翻译为隐性关爱", mustRetain: "克制收束而非解释主题", adaptableSurface: ["结尾动作", "道具", "最后一句话"], sourceSceneRefs: ["S4"] }
-    ],
-    controlledRewriteVariables: [
-      { variable: "人物与职业", sourceValue: "原片人物关系", allowedDirections: [fixed, `${vertical}原生职业`], mustChange: true, reason: "适配固定角色并避免人物复制" },
-      { variable: "具体任务", sourceValue: "原片送达/照料事项", allowedDirections: ["修复", "交接", "陪伴", "补救"], mustChange: true, reason: "保留任务引擎但重建事件" },
-      { variable: "道具与阻力", sourceValue: "原片具体物件和环境", allowedDirections: ["赛道工具", "新的天气压力", "新的空间规则"], mustChange: true, reason: "形成新的可识别表达" },
-      { variable: "对白与镜头", sourceValue: "原片台词和镜头排列", allowedDirections: ["角色口癖", "新的信息揭示顺序", "新的调度"], mustChange: true, reason: "避免逐句逐镜对应" }
-    ],
-    protectedExpressions: [
-      { expressionType: "具体对白", sourceExpression: "原片可识别台词原句", prohibition: "不得逐句或近义逐句复写", safeAlternativePrinciple: "从角色身份与当下动作重新生成潜台词" },
-      { expressionType: "独特视听组合", sourceExpression: "罕见道具、动作、机位连续对应", prohibition: "不得复刻连续镜头组合", safeAlternativePrinciple: "保留剧作功能，重做场景调度与视觉焦点" }
-    ],
-    minimumTransformationRules: [
-      { dimension: "人物", minimumChange: "主配角身份、关系呈现和行为习惯均重新设计", acceptanceCheck: "无法仅替换姓名还原原片人物" },
-      { dimension: "任务", minimumChange: "任务对象、完成方式与失败代价至少改变两项", acceptanceCheck: "新任务由垂直赛道自然产生" },
-      { dimension: "细节表达", minimumChange: "关键道具、具体阻力、对白和结尾动作全部重做", acceptanceCheck: "不存在逐句或逐镜对应" },
-      { dimension: "价值保真", minimumChange: "不改变高价值桥段的剧作功能", acceptanceCheck: "每个新桥段能映射回其情绪与叙事价值" }
-    ],
-    allowedNarrativeComponents: CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS.map(
-      (component, index) => ({ component, howToReuseSafely: allowedComponentGuidance[index] })
-    ),
-    nonNegotiableExperience: { samePositioning: "仍是生活关系中的任务型情绪故事", sameAudience: "仍服务需要关系共鸣和善意确认的受众", sameEmotion: "仍经历好奇—担心—温暖—释然", samePlotDriver: "仍由必须完成的具体任务驱动", sameBeatValue: "仍包含成本证明、获得帮助与日常兑现" },
-    creativeDistancePolicy: "结构与体验保持高保真；人物、事件、台词、道具和视听表达保持明确原创。"
+    }
   };
 }
 
@@ -161,20 +107,26 @@ export function mockVisualGuardrails(input) {
   const evidence = [{ sourcePath: "creatorProfile.fixedCharacter", evidence: fixed }];
   const sourceSimilarityRules = [];
   const dialogueRules = [];
-  for (const [index, item] of (input.creativeBrief?.protectedExpressions || []).entries()) {
-    const sourceExpression = String(item?.sourceExpression || "").trim();
-    if (!sourceExpression) continue;
-    const triggerEvidence = [{
-      sourcePath: `creativeBrief.protectedExpressions[${index}].sourceExpression`,
-      evidence: sourceExpression
-    }];
-    if (/台词|对白|口癖|拟声/u.test(String(item?.expressionType || ""))) continue;
-    sourceSimilarityRules.push({
-      text: `记录原片表面表达“${sourceExpression}”；仅在实际使用原片视觉参考时用于 reference_leak 风险判断，不构成正向内容禁词。`,
-      sourceExpression,
-      triggerEvidence,
-      appliesWhenReferenceUsed: true
-    });
+  // 与 live 同口径：原片表面表达直接取自脚本还原（creative_brief/2.0 起简报不再提供）。
+  // evidence 就是 keyProps 原文本身，sourceExpression 逐字出现在其中，能过同类物品逐字绑定校验。
+  const seenProps = new Set();
+  const scenes = Array.isArray(input.sourceScriptReconstruction?.scenes) ? input.sourceScriptReconstruction.scenes : [];
+  for (const [sceneIndex, scene] of scenes.entries()) {
+    for (const [propIndex, prop] of (Array.isArray(scene?.keyProps) ? scene.keyProps : []).entries()) {
+      const sourceExpression = String(prop || "").trim();
+      if (!sourceExpression || seenProps.has(sourceExpression)) continue;
+      seenProps.add(sourceExpression);
+      const triggerEvidence = [{
+        sourcePath: `sourceScriptReconstruction.scenes[${sceneIndex}].keyProps[${propIndex}]`,
+        evidence: sourceExpression
+      }];
+      sourceSimilarityRules.push({
+        text: `记录原片表面表达“${sourceExpression}”；仅在实际使用原片视觉参考时用于 reference_leak 风险判断，不构成正向内容禁词。`,
+        sourceExpression,
+        triggerEvidence,
+        appliesWhenReferenceUsed: true
+      });
+    }
   }
   const constraints = String(input.creatorProfile?.constraints || "").trim();
   if (constraints && /台词|对白|说话|说|口癖|拟声|表达|句子|语气|发声|行为|动作/u.test(constraints)) {

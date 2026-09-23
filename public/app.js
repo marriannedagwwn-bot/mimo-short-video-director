@@ -314,7 +314,7 @@ const directorArtifactSynchronizer = createDirectorArtifactSynchronizer({
 const MODEL_STAGE_DEFS = [
   { key: "analysis", label: "参考片分析", hint: "视频解析、定位、人物、节奏", capability: "视觉模型", capabilityKind: "vision" },
   { key: "reconstruction", label: "脚本还原", hint: "分场、动作、镜头、转折", capability: "视觉模型", capabilityKind: "vision" },
-  { key: "brief", label: "创意简报", hint: "保留价值、受控变量", capability: "文本模型", capabilityKind: "text" },
+  { key: "brief", label: "创意简报", hint: "原片驱动结构、换角测试", capability: "文本模型", capabilityKind: "text" },
   { key: "visualGuardrails", label: "视觉规则", hint: "角色边界、原片来源记录、台词规则", capability: "视觉模型", capabilityKind: "vision" },
   { key: "variants", label: "主题变体", hint: "新故事方向", capability: "文本模型", capabilityKind: "text" },
   { key: "storyCandidateReview", label: "候选对照评审", hint: "横向比对候选动作链，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
@@ -1653,19 +1653,21 @@ function recastTestBlock(recastTest) {
     </div>`);
 }
 
+// creative_brief/2.0（2026-09-23）起简报只写原片：storyEngine 与 recastTest。
+// 旧卡片把 mustRetain 标成「必须保留」、把 protectedExpressions 标成「禁止直接复制」、给七项构件
+// 一律打 ✓——三处都与契约相反（下游不收、不是禁词、多数是【原片没有】）。旧简报里的这些字段
+// 下游已经不读，所以不再显示，只留一行说明；storyEngine / recastTest 两种形状照常显示。
+const BRIEF_DISPLAYED_KEYS = new Set(["schemaVersion", "storyEngine", "recastTest"]);
+
 function renderBrief(data) {
-  elements.brief.innerHTML = `${resultHeader("CREATIVE BRIEF", "AI 导演创意简报")}
-    <div class="summary-strip">${escape(data.creativeDistancePolicy)}</div>
+  const legacyFields = Object.keys(data || {}).filter((key) => !BRIEF_DISPLAYED_KEYS.has(key));
+  elements.brief.innerHTML = `${resultHeader("CREATIVE BRIEF", "创意简报 · 原片解读")}
+    <div class="summary-strip">这里写的全是原片：它靠什么驱动，以及为什么非得是这个角色来做。定位、受众和情绪曲线由后续阶段直接读原片分析。</div>
     <div class="data-grid">
-      ${cell("内容类型", data.contentType)}${cell("核心情绪", data.coreEmotion)}${cell("目标观众", data.targetAudience)}
-      ${cell("人物欲望", data.storyEngine?.desire)}${cell("主要障碍", data.storyEngine?.obstacle)}${cell("情绪兑现", data.storyEngine?.payoff)}${cell("理解转变", storyEngineShift(data.storyEngine))}
+      ${cell("原片主角想要", data.storyEngine?.desire)}${cell("原片的阻力", data.storyEngine?.obstacle)}${cell("压力怎么升高", data.storyEngine?.escalation)}${cell("原片怎么兑现", data.storyEngine?.payoff)}${cell("关系理解转变", storyEngineShift(data.storyEngine))}
     </div>
     ${recastTestBlock(data.recastTest)}
-    ${block("可复用高价值桥段", `<div class="beat-list">${(data.reusableHighValueBeats || []).map((item) => `<div class="beat"><strong>${escape(item.beat)}</strong><p>${escape(item.dramaticValue)}<br><b>必须保留：</b>${escape(item.mustRetain)}</p></div>`).join("")}</div>`)}
-    ${block("允许继续使用的叙事构件", `<div class="allow-grid">${(data.allowedNarrativeComponents || []).map((item) => `<div class="allow-item"><strong>✓ ${escape(item.component)}</strong><p>${escape(item.howToReuseSafely)}</p></div>`).join("")}</div>`)}
-    ${block("受控改写变量", `<div class="rule-list">${(data.controlledRewriteVariables || []).map((item) => `<div class="rule"><strong>${escape(item.variable)}${item.mustChange ? " · 必须改" : ""}</strong><p>${escape(item.reason)}<br>方向：${escape((item.allowedDirections || []).join(" / "))}</p></div>`).join("")}</div>`)}
-    ${block("最低变换规则", `<div class="rule-list">${(data.minimumTransformationRules || []).map((item) => `<div class="rule"><strong>${escape(item.dimension)}</strong><p>${escape(item.minimumChange)}<br><b>验收：</b>${escape(item.acceptanceCheck)}</p></div>`).join("")}</div>`)}
-    <div class="warning-box"><b>真正禁止直接复制：</b> ${(data.protectedExpressions || []).map((item) => `${escape(item.expressionType)}：${escape(item.prohibition)}`).join("；") || "无"}</div>`;
+    ${legacyFields.length ? `<p class="muted-note">这是旧版简报，其余 ${legacyFields.length} 个字段下游已不再使用，未显示。</p>` : ""}`;
   reveal(elements.brief);
 }
 

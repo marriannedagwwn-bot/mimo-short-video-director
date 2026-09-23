@@ -43,11 +43,14 @@ function storyWithActions(actions = ["小白子安静地看向夕阳。"]) {
   };
 }
 
-function buildContext({ actions, protectedExpressions = [], actualReferenceInputs } = {}) {
+// protectedExpressions 构造的是旧形状简报，用来测旧简报在下游的兼容行为；
+// sourceProps 是脚本还原里的道具——creative_brief/2.0 起角色边界的原片表面表达只从这里来。
+function buildContext({ actions, protectedExpressions = [], sourceProps = [], actualReferenceInputs } = {}) {
   const creativeBrief = { protectedExpressions };
+  const sourceScriptReconstruction = { scenes: [{ keyProps: sourceProps }] };
   const fullStory = storyWithActions(actions);
   const visualGuardrails = ensureVisualGuardrailsMatchesProfile(
-    ensureOutputContract(mockVisualGuardrails({ creatorProfile, creativeBrief }), "visualGuardrails"),
+    ensureOutputContract(mockVisualGuardrails({ creatorProfile, creativeBrief, sourceScriptReconstruction }), "visualGuardrails"),
     creatorProfile
   );
   return {
@@ -132,8 +135,7 @@ test("来源拟声词“咕嘎”不升级为 dialogueRules，也不进入渲染
 });
 
 test("企鹅服只属于 sourceSimilarityRules，只有实际传入原片视觉参考才可条件性保留", () => {
-  const protectedExpressions = [{ expressionType: "视觉元素", sourceExpression: "企鹅服" }];
-  const context = buildContext({ protectedExpressions });
+  const context = buildContext({ sourceProps: ["企鹅服"] });
   assert.match(JSON.stringify(context.visualGuardrails.sourceSimilarityRules), /企鹅服/u);
   const plan = buildPlan(context);
   plan.shotPlan[0].negativePrompts.image.push(negativeEntry({

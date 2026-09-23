@@ -214,6 +214,24 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：�
 
 ---
 
+**creative_brief/2.0：简报只做原片解读（2026-09-23）**。简报现在只产出两项：`storyEngine`（原片的驱动结构，含观众对人物关系理解的 before/after）与 `recastTest`（换一个性格完全不同的角色，逐场问还成立吗）。它们是原片分析与脚本还原都没有直接给出的东西；其余十二个旧字段全部停产，服务端在校验通过后盖 `schemaVersion: "creative_brief/2.0"`（模型不输出）。
+
+依据是 09-23 的全局审查（`docs/creative-brief-slim-2026-09-23.md`）：
+- 下发给候选的「定位」字段是逐字抄原片分析：5 个导出包里 `targetAudience` 4/5 与 `referenceAnalysis.targetAudience.primary` 逐字相同，`emotionStructure` 的情绪加强度 5/5 与 `emotionCurve` 相同。
+- `allowedNarrativeComponents` / `roleAndOccupationMapping` / `minimumTransformationRules` / `creativeDistancePolicy` 没有任何阶段按字段读取，`mustRetain` / `samePlotDriver` 只进了已降级的 `briefAlignment`。
+- 82 次简报调用失败 16 次；可归因的 13 次契约失败里 12 次在七项构件引文核对上，其中 4 次是原片确有其事的转述被 0.75 阈值误伤。
+- 按字段名投影挡不住原片情节：`emotionStructure.stage` 把「高潮：获得奖励与反哺」这类原片事件名当正向要求送进了候选阶段。
+
+契约五个面：
+- **生产者**：`briefPrompt` 只收原片分析与脚本还原，不再收固定角色、赛道与创作限制——两项讲的都是原片，转述用户设定只会造出第二份事实（09-23 那份把搭档写进了「固定角色」，而简报会被送进角色边界阶段）。`storyEngine` 与 `recastTest` 的定义、反例逐字保留。
+- **校验器**：`ensureOutputContract(_, "creativeBrief")` 顶层只允许这两个键，多一个就 `CREATIVE_BRIEF_UNEXPECTED_FIELD`（与 `recastTest`「恰好三个键」同规格，模型写了 `schemaVersion` 同样算多余）。七项构件、受保护表达、角色映射的校验器与 `ensureCreativeBriefMatchesProfile` 已删除；引文覆盖率算法仍由候选溯源使用。
+- **消费者 · 候选**：定位、受众、情绪曲线与观看动力改由 `variantsSourcePositioningProjection` 直接从 `referenceAnalysis` 取——`format` / `genre` / `targetAudience.primary` / `psychologicalNeeds` / `emotionCurve[].{emotion,intensity}` / `retentionDrivers[].driver`。白名单按「内容是否天然带原片情节」取舍：`emotionCurve.phase` 与 `trigger`、`contentPromise`、`whyWatchToEnd`、`retentionDrivers.payoff` 一律不取（问句形态仍由 `sourceViewerQuestionForms` 单独给出）。`recastTest.collapses` 照旧从简报读。旧简报的 Run 走同一条路径，不做版本分支。`highValueBeatMapping.briefBeat` 写迁移的是哪一种原片机制（观看动力名称或 `collapses` 的一条），候选 schema 不变。
+- **消费者 · 角色边界**：`visualGuardrailsPrompt` 不再放简报，原片表面表达直接取原片分析与脚本还原。**同时由服务端给出一份确定性的候选短词表**（`sourceSurfaceCatalogText`：各场 `keyProps` 逐字原文、按原文去重、带第一次出现的 sourcePath），要求从候选里选时一条规则只写一个、原样抄。这是回放打回来的：09-19 那批 10/10 通过的输出里，`sourceSimilarityRules` 的证据 82%（47/57）引用的是简报 `protectedExpressions`——那份能原样抄的短词表才是这一阶段过「逐字绑定」闸门的主要来源；直接去掉后 5 次有效调用里 2 次写出原文没有的简称（证据写「企鹅连体衣」它写「企鹅装」）被拦下。补的是一份不经过模型的摘录，不回到简报；与候选溯源直接取 `keyProps` 同一个做法。人物 `traits` 不进这份表：真实数据里全是「可爱 / 活泼」这类性格词。**签名摘要 `computeCharacterBoundarySourceDigest` 仍包含整份简报**——拿掉它会让所有已有 Run 的边界当场失效，需要单独设计带版本的摘要，本次不做。
+- **消费者 · 其它**：候选评审只按旧有允许清单投影（新简报只有 `storyEngine` / `recastTest`，其余两项为 null / []），schema 不变；旧 3.0 分镜批次不再放整份简报（与 Foundation 一致）；旧 v2 兼容路径逐字不动；Full Story 1.1/1.2 与自主分镜 4.0 本来就不读简报。
+- **浏览器**：简报卡改为「创意简报 · 原片解读」，只显示这两项并标明写的是原片；旧简报多出的字段只显示一行说明。旧卡片把 `mustRetain` 标成「必须保留」、把 `protectedExpressions` 标成「禁止直接复制」、给七项构件一律打 ✓，三处都与契约相反。
+
+旧简报只在生成路径被校验，下游只做 `requireObject`，所以照常加载、导入导出，不迁移、不重签。真实回放数据见 `docs/creative-brief-slim-2026-09-23.md`。
+
 **`storyEngine` 五个子字段的定义与 `turningMechanism` 两槽位（2026-09-10）**：`briefPrompt` 此前对
 `storyEngine` 与它的 `desire` / `obstacle` / `escalation` / `turningMechanism` / `payoff` **一条说明都没有**——
 六个词各出现恰好 1 次，就是输出模板里那个空槽位。它是整份简报里**唯一**一个子字段全无定义的子对象
@@ -681,11 +699,11 @@ DeepSeek 当前只允许用于纯文本阶段：
 
 ## 当前全局角色边界
 
-`Visual Guardrails` 是固定角色语义的唯一生成阶段。它允许视觉模型结合用户设定、参考分析、脚本还原、创意简报和模型常识生成开放语义边界，不得新增本地物种关键词字典替代模型判断。
+`Visual Guardrails` 是固定角色语义的唯一生成阶段。它允许视觉模型结合用户设定、参考分析、脚本还原和模型常识（creative_brief/2.0 起不再读简报）生成开放语义边界，不得新增本地物种关键词字典替代模型判断。
 
-Creative Brief 的 `controlledRewriteVariables.sourceValue`、`protectedExpressions.sourceExpression` 以及 Visual Guardrails 的 `sourceSimilarityRules.sourceExpression` 在列举同一类别的多个具体物品时，每一项都必须重复完整中心名词，例如“绿色邮箱、红色邮箱、蓝色邮箱”；禁止输出“绿色、红色、蓝色邮箱（组合）”这类共享末项名词的缩写。该规则只能规范已有来源事实，不授权模型补充新物品；下游也不得通过颜色词、后缀或本地中文语法规则猜测被省略的中心名词。旧 Artifact 含歧义缩写时必须重新生成对应上游阶段，不能原地推断或改写已签发内容。其中「下游不得补全被省略的中心名词」这一半现已由确定性校验强制：`visualGuardrails.sourceSimilarityRules[].sourceExpression` 的每一并列项都必须逐字出现在本条规则自己的 `triggerEvidence[].evidence` 中，否则 fail closed（只归一化引号、空白与句末标点，不做任何中文语法推断）。上游 Creative Brief 是否写出了缩写本身仍只由 Prompt 约束——判定它需要的正是本规则禁止的中心名词推断，因此不做本地实现。
+**（仅旧简报，creative_brief/2.0 已停产这些字段）**Creative Brief 的 `controlledRewriteVariables.sourceValue`、`protectedExpressions.sourceExpression` 以及 Visual Guardrails 的 `sourceSimilarityRules.sourceExpression` 在列举同一类别的多个具体物品时，每一项都必须重复完整中心名词，例如“绿色邮箱、红色邮箱、蓝色邮箱”；禁止输出“绿色、红色、蓝色邮箱（组合）”这类共享末项名词的缩写。该规则只能规范已有来源事实，不授权模型补充新物品；下游也不得通过颜色词、后缀或本地中文语法规则猜测被省略的中心名词。旧 Artifact 含歧义缩写时必须重新生成对应上游阶段，不能原地推断或改写已签发内容。其中「下游不得补全被省略的中心名词」这一半现已由确定性校验强制：`visualGuardrails.sourceSimilarityRules[].sourceExpression` 的每一并列项都必须逐字出现在本条规则自己的 `triggerEvidence[].evidence` 中，否则 fail closed（只归一化引号、空白与句末标点，不做任何中文语法推断）。上游 Creative Brief 是否写出了缩写本身仍只由 Prompt 约束——判定它需要的正是本规则禁止的中心名词推断，因此不做本地实现。
 
-Creative Brief 的 `allowedNarrativeComponents[].component` 是服务端固定的七项 taxonomy：送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾。生成 Prompt 必须展开完整七项；模型只能填写每项非空的 `howToReuseSafely`，不得改名、合并、省略、重复或增加分类。不适合当前素材时也必须保留该项，并在说明中记录不采用或限制条件。每条 `howToReuseSafely` 必须以 `【原片有】` 或 `【原片没有】` 开头，先对原片是否真的存在该构件作出显式判定，再谈复用；该判定只描述上游 `referenceAnalysis`/`sourceScriptReconstruction` 已发生的事实，不描述新片打算怎么拍。缺少判定前缀时确定性校验直接失败，防止模型把"新片可以怎么用"写成复用授权，替原片补出它没有的叙事构件。写 `【原片有】` 时还必须用「」引出上游依据，服务端回到 `sourceScriptReconstruction`/`referenceAnalysis` 核对。判据是字符覆盖率（最长公共子序列，阈值 0.75）而非逐字子串——Brief 阶段的模型在做归纳，引用必然转述，逐字比对会把忠实转述判成编造并阻断整个阶段。引用缺失或覆盖率不足即失败。该核对只在校验器实际收到上游时执行。标记常量与七项名称同样由服务端与 validator 共用。数组顺序不承载业务语义。七项名称由服务端常量与 validator 共用，不得在 Prompt、Mock 或校验器中各自维护第二份列表。
+**（仅旧简报，creative_brief/2.0 已停产这些字段）**Creative Brief 的 `allowedNarrativeComponents[].component` 是服务端固定的七项 taxonomy：送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾。生成 Prompt 必须展开完整七项；模型只能填写每项非空的 `howToReuseSafely`，不得改名、合并、省略、重复或增加分类。不适合当前素材时也必须保留该项，并在说明中记录不采用或限制条件。每条 `howToReuseSafely` 必须以 `【原片有】` 或 `【原片没有】` 开头，先对原片是否真的存在该构件作出显式判定，再谈复用；该判定只描述上游 `referenceAnalysis`/`sourceScriptReconstruction` 已发生的事实，不描述新片打算怎么拍。缺少判定前缀时确定性校验直接失败，防止模型把"新片可以怎么用"写成复用授权，替原片补出它没有的叙事构件。写 `【原片有】` 时还必须用「」引出上游依据，服务端回到 `sourceScriptReconstruction`/`referenceAnalysis` 核对。判据是字符覆盖率（最长公共子序列，阈值 0.75）而非逐字子串——Brief 阶段的模型在做归纳，引用必然转述，逐字比对会把忠实转述判成编造并阻断整个阶段。引用缺失或覆盖率不足即失败。该核对只在校验器实际收到上游时执行。标记常量与七项名称同样由服务端与 validator 共用。数组顺序不承载业务语义。七项名称由服务端常量与 validator 共用，不得在 Prompt、Mock 或校验器中各自维护第二份列表。
 
 上述 Creative Brief 来源字段与 `sourceSimilarityRules` 都只是原片表面表达的 provenance，不是 Variants、Legacy Full Story 或 Animation Plan 的正文禁词。原片道具、拟声词和角色组合允许按当前选定剧情出现在任意正向业务字段，包括 `visibleAction`、对白、声音以及 `videoPrompt`；但不得仅因它们存在于来源上下文就机械注入下游内容。`sourceSimilarityRules` 只在实际生成请求确实携带原片参考时，为 `reference_leak` 提供证据；不得据此扫描或拒绝无原片参考的正文。`dialogueRules` 只能来自用户明确约束，不得把原片对白或拟声词自动提升为对白规则。该放行不改变 `fixedCharacterBoundary` 的优先级：固定主角的签发身份与外观仍是硬边界，复用原片角色组合不授权改写固定主角。
 

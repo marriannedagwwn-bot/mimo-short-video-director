@@ -218,6 +218,24 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
   格式：MiniMax 只接受 **WAV 与 MP3**，单段 2–15 秒、每镜 ≤3 段、合计 ≤15 秒。MP3 的 IANA MIME 是 `audio/mpeg`，而 MiniMax 从 MIME 子类型反推扩展名会读成 `.mpeg` 并以 2013 拒绝，因此**只在 MiniMax 传输边界**把标签改写成 `audio/mp3`（`MINIMAX_AUDIO_MIME_ALIASES`，必须声明在 worker 顶层 `await main()` 之前，否则子进程路径会落进暂时性死区）；Artifact 里仍保留 IANA 正确的 `audio/mpeg`，字节一个不改。`.m4a` MiniMax 不收，会在提交前明确失败。
 - **生成期间的过期复验是硬约束**：服务端把复验回调交给 `generateShotVideo`，生成器必须在①任何供应商调用与文件写入之前、②每条候选提交供应商之前、③每条候选落盘并通过 ffprobe 之后、④组装返回值之前各执行一次，**覆盖全部供应商**，禁止按 provider、模型或提示词方言设门（历史上只有已下线的 H3 路径复验，那是缺陷不是设计）。任一次失败即 fail closed：删除本次已写入的全部候选 mp4，`ProductionStateError`（409）原样上抛，禁止包装、禁止保留产物、禁止降级为成功。清理只删本次调用自己算出的含 nonce 路径，禁止扫描目录；旧 v2 首尾帧 PNG 文件名不含 nonce，不在覆盖内。只有过期触发清理——供应商错误与 ffprobe 失败维持既有语义。浏览器的事后关卡与它是叠加关系，不能用来解释复验缺失。
 
+**creative_brief/2.0：简报只做原片解读（2026-09-23）**。简报现在只产出两项：`storyEngine`（原片的驱动结构，含观众对人物关系理解的 before/after）与 `recastTest`（换一个性格完全不同的角色，逐场问还成立吗）。它们是原片分析与脚本还原都没有直接给出的东西；其余十二个旧字段全部停产，服务端在校验通过后盖 `schemaVersion: "creative_brief/2.0"`（模型不输出）。
+
+依据是 09-23 的全局审查（`docs/creative-brief-slim-2026-09-23.md`）：
+- 下发给候选的「定位」字段是逐字抄原片分析：5 个导出包里 `targetAudience` 4/5 与 `referenceAnalysis.targetAudience.primary` 逐字相同，`emotionStructure` 的情绪加强度 5/5 与 `emotionCurve` 相同。
+- `allowedNarrativeComponents` / `roleAndOccupationMapping` / `minimumTransformationRules` / `creativeDistancePolicy` 没有任何阶段按字段读取，`mustRetain` / `samePlotDriver` 只进了已降级的 `briefAlignment`。
+- 82 次简报调用失败 16 次；可归因的 13 次契约失败里 12 次在七项构件引文核对上，其中 4 次是原片确有其事的转述被 0.75 阈值误伤。
+- 按字段名投影挡不住原片情节：`emotionStructure.stage` 把「高潮：获得奖励与反哺」这类原片事件名当正向要求送进了候选阶段。
+
+契约五个面：
+- **生产者**：`briefPrompt` 只收原片分析与脚本还原，不再收固定角色、赛道与创作限制——两项讲的都是原片，转述用户设定只会造出第二份事实（09-23 那份把搭档写进了「固定角色」，而简报会被送进角色边界阶段）。`storyEngine` 与 `recastTest` 的定义、反例逐字保留。
+- **校验器**：`ensureOutputContract(_, "creativeBrief")` 顶层只允许这两个键，多一个就 `CREATIVE_BRIEF_UNEXPECTED_FIELD`（与 `recastTest`「恰好三个键」同规格，模型写了 `schemaVersion` 同样算多余）。七项构件、受保护表达、角色映射的校验器与 `ensureCreativeBriefMatchesProfile` 已删除；引文覆盖率算法仍由候选溯源使用。
+- **消费者 · 候选**：定位、受众、情绪曲线与观看动力改由 `variantsSourcePositioningProjection` 直接从 `referenceAnalysis` 取——`format` / `genre` / `targetAudience.primary` / `psychologicalNeeds` / `emotionCurve[].{emotion,intensity}` / `retentionDrivers[].driver`。白名单按「内容是否天然带原片情节」取舍：`emotionCurve.phase` 与 `trigger`、`contentPromise`、`whyWatchToEnd`、`retentionDrivers.payoff` 一律不取（问句形态仍由 `sourceViewerQuestionForms` 单独给出）。`recastTest.collapses` 照旧从简报读。旧简报的 Run 走同一条路径，不做版本分支。`highValueBeatMapping.briefBeat` 写迁移的是哪一种原片机制（观看动力名称或 `collapses` 的一条），候选 schema 不变。
+- **消费者 · 角色边界**：`visualGuardrailsPrompt` 不再放简报，原片表面表达直接取原片分析与脚本还原。**同时由服务端给出一份确定性的候选短词表**（`sourceSurfaceCatalogText`：各场 `keyProps` 逐字原文、按原文去重、带第一次出现的 sourcePath），要求从候选里选时一条规则只写一个、原样抄。这是回放打回来的：09-19 那批 10/10 通过的输出里，`sourceSimilarityRules` 的证据 82%（47/57）引用的是简报 `protectedExpressions`——那份能原样抄的短词表才是这一阶段过「逐字绑定」闸门的主要来源；直接去掉后 5 次有效调用里 2 次写出原文没有的简称（证据写「企鹅连体衣」它写「企鹅装」）被拦下。补的是一份不经过模型的摘录，不回到简报；与候选溯源直接取 `keyProps` 同一个做法。人物 `traits` 不进这份表：真实数据里全是「可爱 / 活泼」这类性格词。**签名摘要 `computeCharacterBoundarySourceDigest` 仍包含整份简报**——拿掉它会让所有已有 Run 的边界当场失效，需要单独设计带版本的摘要，本次不做。
+- **消费者 · 其它**：候选评审只按旧有允许清单投影（新简报只有 `storyEngine` / `recastTest`，其余两项为 null / []），schema 不变；旧 3.0 分镜批次不再放整份简报（与 Foundation 一致）；旧 v2 兼容路径逐字不动；Full Story 1.1/1.2 与自主分镜 4.0 本来就不读简报。
+- **浏览器**：简报卡改为「创意简报 · 原片解读」，只显示这两项并标明写的是原片；旧简报多出的字段只显示一行说明。旧卡片把 `mustRetain` 标成「必须保留」、把 `protectedExpressions` 标成「禁止直接复制」、给七项构件一律打 ✓，三处都与契约相反。
+
+旧简报只在生成路径被校验，下游只做 `requireObject`，所以照常加载、导入导出，不迁移、不重签。真实回放数据见 `docs/creative-brief-slim-2026-09-23.md`。
+
 **`storyEngine` 五个子字段的定义与 `turningMechanism` 两槽位（2026-09-10）**：`briefPrompt` 此前对
 `storyEngine` 与它的 `desire` / `obstacle` / `escalation` / `turningMechanism` / `payoff` **一条说明都没有**——
 六个词各出现恰好 1 次，就是输出模板里那个空槽位。它是整份简报里**唯一**一个子字段全无定义的子对象
@@ -1091,7 +1109,7 @@ DeepSeek 模型 ID 只登记 `deepseek-v4-flash`（页面首选）与 `deepseek-
 
 ### 2.8 全局角色边界
 
-- `Visual Guardrails` 是固定角色语义的**唯一生成阶段**。允许视觉模型结合用户设定、参考分析、脚本还原、创意简报与模型常识生成开放语义边界；**不得新增本地物种关键词字典替代模型判断**。
+- `Visual Guardrails` 是固定角色语义的**唯一生成阶段**。允许视觉模型结合用户设定、参考分析、脚本还原与模型常识（creative_brief/2.0 起不再读简报）生成开放语义边界；**不得新增本地物种关键词字典替代模型判断**。
 - 服务端签发的 `fixedCharacterBoundary` 是后续 Variants、Legacy Full Story、Animation Plan、人物参考精修、角色图、视频生成，以及旧 v2 兼容路径的**唯一**固定角色事实来源。后续阶段不得重新解析 `creatorProfile.fixedCharacter`、重新推断关键词或生成第二份边界。
 - **边界不得同时要求与禁止同一特征，判定是单向子串包含（2026-09-06）。** `validateGlobalCharacterBoundary`（`src/validation.js`）对每个 required term `R` 与 forbidden term `F`，`R.includes(F)` 即硬失败，消息同时点名两端（`required「无头饰」包含 forbidden「头饰」`）。这条不变量本来就在，只是此前写成 `Set.has()` 的**精确相等**，而下游每一个扫描器（`hasForbiddenOccurrence` / `findMissingGlobalCharacterTraits`）用的都是 `text.indexOf` **子串**——守卫用相等、扫描器用子串，中间那条缝就是全部原因。
   依据是 2026-09-05 实测：用户 `fixedCharacter` 写「无头饰，但头顶有一个光环」，Guardrails 把「无头饰」签成 requiredTrait、又把「头饰」签成 forbiddenTrait，Full Story 模型把那份 requiredTraits 清单几乎逐字抄进 `characterBible.protagonist.traits`（上游叫 requiredTraits，Story 字段就叫 traits，它是在**服从**边界），于是连续三次 `OUTPUT_CONTRACT_INVALID`、约 7.6 万 token、6.2 分钟，而错误消息指向 `traits[4]`、完全没提边界矛盾。改后同一份数据在 `assertGlobalCharacterBoundary` 就失败：**0 次 provider 调用、2 毫秒**。
@@ -1117,8 +1135,8 @@ DeepSeek 模型 ID 只登记 `deepseek-v4-flash`（页面首选）与 `deepseek-
 
 ### 2.9 来源字段表达规则
 
-- Creative Brief 的 `controlledRewriteVariables.sourceValue`、`protectedExpressions.sourceExpression`，以及 Visual Guardrails 的 `sourceSimilarityRules.sourceExpression`，在列举同类多个具体物品时**每一项都必须重复完整中心名词**（"绿色邮箱、红色邮箱、蓝色邮箱"），禁止"绿色、红色、蓝色邮箱（组合）"式缩写。该规则只规范已有来源事实，**不授权补充新物品**；下游也不得靠颜色词或中文语法猜被省略的名词。旧 Artifact 含歧义缩写时必须**重新生成对应上游阶段**，不能原地推断或改写已签发内容。
-- `allowedNarrativeComponents[].component` 是服务端固定的**七项 taxonomy**：送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾。Prompt 必须展开完整七项；模型只能填每项非空的 `howToReuseSafely`，**不得改名、合并、省略、重复或增加**。不适用时也必须保留该项并说明不采用或限制条件。**每条 `howToReuseSafely` 必须以 `【原片有】` 或 `【原片没有】` 开头**作出存在性判定（只陈述上游已发生的事实，不描述新片打算怎么拍），缺前缀即确定性失败——防止模型把"新片可以怎么用"写成复用授权，替原片补出它没有的构件。`【原片有】` 还必须用「」引出上游依据，服务端按字符覆盖率（LCS，阈值 0.75）回到 `sourceScriptReconstruction`/`referenceAnalysis` 核对；**允许转述，不要求逐字**，覆盖率不足即失败（仅在校验器收到上游时执行）。Story Candidates 的分化规则在后续严格契约中独立执行，不属于 Creative Brief taxonomy。数组顺序不承载业务语义。七项名称由服务端常量与 validator **共用**，禁止在 Prompt、Mock 或校验器中各自维护第二份列表。
+- **（仅旧简报，creative_brief/2.0 已停产这些字段）**Creative Brief 的 `controlledRewriteVariables.sourceValue`、`protectedExpressions.sourceExpression`，以及 Visual Guardrails 的 `sourceSimilarityRules.sourceExpression`，在列举同类多个具体物品时**每一项都必须重复完整中心名词**（"绿色邮箱、红色邮箱、蓝色邮箱"），禁止"绿色、红色、蓝色邮箱（组合）"式缩写。该规则只规范已有来源事实，**不授权补充新物品**；下游也不得靠颜色词或中文语法猜被省略的名词。旧 Artifact 含歧义缩写时必须**重新生成对应上游阶段**，不能原地推断或改写已签发内容。
+- **（仅旧简报，creative_brief/2.0 已停产）** `allowedNarrativeComponents[].component` 是服务端固定的**七项 taxonomy**：送达任务、旅途结构、情感媒介、获得帮助、被关爱对象、天气或空间推动情绪、生活化或仪式化结尾。Prompt 必须展开完整七项；模型只能填每项非空的 `howToReuseSafely`，**不得改名、合并、省略、重复或增加**。不适用时也必须保留该项并说明不采用或限制条件。**每条 `howToReuseSafely` 必须以 `【原片有】` 或 `【原片没有】` 开头**作出存在性判定（只陈述上游已发生的事实，不描述新片打算怎么拍），缺前缀即确定性失败——防止模型把"新片可以怎么用"写成复用授权，替原片补出它没有的构件。`【原片有】` 还必须用「」引出上游依据，服务端按字符覆盖率（LCS，阈值 0.75）回到 `sourceScriptReconstruction`/`referenceAnalysis` 核对；**允许转述，不要求逐字**，覆盖率不足即失败（仅在校验器收到上游时执行）。Story Candidates 的分化规则在后续严格契约中独立执行，不属于 Creative Brief taxonomy。数组顺序不承载业务语义。七项名称由服务端常量与 validator **共用**，禁止在 Prompt、Mock 或校验器中各自维护第二份列表。
 - 上述来源字段与 `sourceSimilarityRules` 只是原片表面表达的 provenance，**不是下游正文禁词**。原片道具、拟声词、角色组合允许按当前选定剧情出现在任意正向业务字段（含 `visibleAction`、对白、声音、`videoPrompt`）；但不得仅因它们存在于来源上下文就机械注入下游。`sourceSimilarityRules` 只在实际生成请求确实携带原片参考时为 `reference_leak` 提供证据。`dialogueRules` 只能来自用户明确约束，不得把原片对白或拟声词自动升级为对白规则。该放行不改变 `fixedCharacterBoundary` 的优先级。
 
 ### 2.10 Story Contract

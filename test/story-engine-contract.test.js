@@ -97,8 +97,9 @@ test("简报提示词写明 turningMechanism 不是剧情转折点", () => {
   assert.match(prompt, /它不是剧情转折点/u);
   assert.match(prompt, /"turningMechanism":\{"before":"", "after":""\}/u);
   // 只扫**本次新增的 storyEngine 定义块**：提示词别处原有的坏例行（写着具体奖励物）不在本次范围内。
+  // creative_brief/2.0 起 storyEngine 定义块之后紧接 recastTest 定义块（原来的「强保真字段」段已删）。
   const blockStart = prompt.indexOf("storyEngine 描述的是");
-  const blockEnd = prompt.indexOf("强保真字段必须停留在抽象剧作层");
+  const blockEnd = prompt.indexOf("recastTest 是一个");
   assert.ok(blockStart >= 0 && blockEnd > blockStart, "未找到 storyEngine 定义块");
   const block = prompt.slice(blockStart, blockEnd);
   for (const noun of ["打枣", "铁锅", "小红花", "蒲公英", "萤火虫", "企鹅"]) {
@@ -111,7 +112,22 @@ test("简报卡对新旧两种 turningMechanism 都有显示分支", () => {
   const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
   assert.match(app, /function storyEngineShift\(storyEngine\)/u);
   assert.match(app, /typeof turning === "string"/u);
-  assert.match(app, /cell\("理解转变", storyEngineShift\(data\.storyEngine\)\)/u);
+  assert.match(app, /cell\("关系理解转变", storyEngineShift\(data\.storyEngine\)\)/u);
+});
+
+// creative_brief/2.0：旧卡片把 mustRetain 标成「必须保留」、protectedExpressions 标成「禁止直接复制」、
+// 七项构件一律打 ✓，三处都与契约相反。旧简报多出的字段下游已不读，只显示一行说明，不再逐项渲染。
+test("简报卡只显示原片解读两项，旧简报多出的字段只留一行说明", () => {
+  const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = app.indexOf("function renderBrief(data)");
+  const body = app.slice(start, app.indexOf("function renderVisualGuardrails(data)"));
+  assert.ok(start >= 0);
+  assert.match(app, /const BRIEF_DISPLAYED_KEYS = new Set\(\["schemaVersion", "storyEngine", "recastTest"\]\)/u);
+  assert.match(body, /创意简报 · 原片解读/u);
+  assert.match(body, /这是旧版简报，其余 \$\{legacyFields\.length\} 个字段下游已不再使用，未显示/u);
+  for (const removed of ["必须保留", "真正禁止直接复制", "allowedNarrativeComponents", "creativeDistancePolicy", "reusableHighValueBeats"]) {
+    assert.equal(body.includes(removed), false, removed);
+  }
 });
 
 // ---------------------------------------------------------------------------

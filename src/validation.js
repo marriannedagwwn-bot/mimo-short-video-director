@@ -72,10 +72,19 @@ export function requireText(value, name, { optional = false, max = 12000 } = {})
   return value.trim();
 }
 
+// creative_brief/2.0（2026-09-23）：简报只保留原片分析与脚本还原都不提供的两项——
+// storyEngine（含观众对关系理解的 before/after）与 recastTest（换角反事实测试）。
+// 定位、受众、情绪曲线由下游直接从 referenceAnalysis 按白名单投影；原片表面表达由角色边界的
+// sourceSimilarityRules 承担。依据见 docs/creative-brief-slim-2026-09-23.md：旧简报里下发给候选的
+// 定位字段是逐字抄原片分析，七项构件表零消费者却是 12/13 次契约失败的来源。
+// schemaVersion 由服务端在校验通过后盖上，模型不输出；这里只列模型必须写、也只能写的键。
+export const CREATIVE_BRIEF_SCHEMA_VERSION = "creative_brief/2.0";
+export const CREATIVE_BRIEF_MODEL_FIELDS = Object.freeze(["storyEngine", "recastTest"]);
+
 const outputContracts = {
   referenceAnalysis: ["contentPositioning", "targetAudience", "storySynopsis", "characters", "protagonistIdentity", "careRecipient", "dialogueStyle", "shotRhythm", "emotionCurve", "retentionDrivers", "whyWatchToEnd", "analysisConfidence", "observedFacts", "uncertainties"],
   sourceScriptReconstruction: ["scenes", "coreEventSequence", "relationshipPattern", "endingAction", "turningPoints", "uncertainties"],
-  creativeBrief: ["contentType", "targetAudience", "coreEmotion", "storyEngine", "recastTest", "emotionStructure", "roleAndOccupationMapping", "reusableHighValueBeats", "controlledRewriteVariables", "protectedExpressions", "minimumTransformationRules", "allowedNarrativeComponents", "nonNegotiableExperience", "creativeDistancePolicy"],
+  creativeBrief: CREATIVE_BRIEF_MODEL_FIELDS,
   visualGuardrails: ["fixedCharacterBoundary", "allowedPositiveTraits", "positivePromptBoundary", "sourceSimilarityRules", "dialogueRules", "stageInstructions", "rationale", "uncertainties"],
   themeVariants: ["variants"],
   fullStory: ["selectedVariantId", "title", "oneLinePremise", "targetDurationSeconds", "shootingSynopsis", "characterBible", "beatSheet", "sceneScript", "keyProps", "shootingPlan", "dialogueStyleGuide", "retentionPlan", "experienceFidelity", "transformationProof", "continuityAndSafetyCheck", "uncertainties"],
@@ -109,20 +118,6 @@ const animationPromptSchemaVersion = "2.0";
 export const ANIMATION_DIRECT_SHOT_MODE = "direct_shot";
 export const ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION = "3.0";
 export const ANIMATION_PLAN_ASPECT_RATIOS = Object.freeze(["9:16", "16:9"]);
-export const CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS = Object.freeze([
-  "送达任务",
-  "旅途结构",
-  "情感媒介",
-  "获得帮助",
-  "被关爱对象",
-  "天气或空间推动情绪",
-  "生活化或仪式化结尾"
-]);
-
-// howToReuseSafely 必须先对"原片是否真的存在该构件"作出显式二选一判定，再谈怎么复用。
-// 缺少这一步时模型会把"新片可以怎么用"直接写成复用授权，等于替原片补出它没有的叙事构件。
-export const CREATIVE_BRIEF_COMPONENT_PRESENCE_MARKERS = Object.freeze(["【原片有】", "【原片没有】"]);
-
 export function requireAnimationPlanAspectRatio(value, path = "targetAspectRatio") {
   const normalized = String(value || "").trim();
   if (!ANIMATION_PLAN_ASPECT_RATIOS.includes(normalized)) {
@@ -402,7 +397,6 @@ export function ensureOutputContract(value, contract) {
   const arrayFields = {
     referenceAnalysis: ["characters", "emotionCurve", "retentionDrivers", "observedFacts", "uncertainties"],
     sourceScriptReconstruction: ["scenes", "coreEventSequence", "turningPoints", "uncertainties"],
-    creativeBrief: ["emotionStructure", "roleAndOccupationMapping", "reusableHighValueBeats", "controlledRewriteVariables", "protectedExpressions", "minimumTransformationRules", "allowedNarrativeComponents"],
     visualGuardrails: ["allowedPositiveTraits", "positivePromptBoundary", "sourceSimilarityRules", "dialogueRules", "uncertainties"],
     themeVariants: ["variants"],
     fullStory: isNarrativeFullStory(value)
@@ -417,10 +411,9 @@ export function ensureOutputContract(value, contract) {
   if (wrongArrays.length) throw new OutputContractError(`${contract} 字段类型无效：${wrongArrays.join("、")} 必须是数组`);
   if (contract === "sourceScriptReconstruction") validateSourceScriptReconstructionContract(value);
   if (contract === "creativeBrief") {
+    validateCreativeBriefTopLevel(value);
     validateStoryEngine(value.storyEngine);
     validateRecastTest(value.recastTest);
-    validateNarrativeComponents(value.allowedNarrativeComponents);
-    validateProtectedExpressions(value.protectedExpressions);
   }
   if (contract === "visualGuardrails") {
     validateVisualGuardrailsContract(value);
@@ -2270,6 +2263,9 @@ function collectUpstreamText(value, sink = []) {
 // 逐字比对把这种忠实转述判成编造，实测每换一个参考视频都会阻断整个阶段。
 // 覆盖率对转述稳健，同时把复用真词汇拼出的编造挡在阈值之外（实测 0.54 对 0.80）。
 // 用最长公共子序列，字符级、语言无关，不做中文语法推断也不引入词典。
+//
+// 上面说的是它最初为简报七项构件表写的来历；creative_brief/2.0（2026-09-23）删掉了那张表，
+// 现在唯一的调用方是候选 transformationProof.source 的溯源核对（validateVariantSourceFactCitations）。
 const CITATION_COVERAGE_THRESHOLD = 0.75;
 
 function longestCommonSubsequenceLength(a, b) {
@@ -2336,55 +2332,6 @@ function citationClauseCovered(clause, upstreamTexts, threshold) {
   if (parts.length < 2) return false;
   if (parts.some((part) => part.length < CITATION_CONJUNCTION_MIN_LENGTH)) return false;
   return parts.every((part) => citationCoverage(part, upstreamTexts) >= threshold);
-}
-
-function validateNarrativeComponentCitations(components, upstream) {
-  // 逐条归一化后各自保留：拼成一整串会让相邻字段在去空白后粘连，制造跨字段的假匹配。
-  const upstreamTexts = collectUpstreamText(upstream)
-    .map((entry) => normalizeSourceExpressionExcerpt(entry))
-    .filter(Boolean);
-  if (!upstreamTexts.length) return;
-  (Array.isArray(components) ? components : []).forEach((item, index) => {
-    const assessment = String(item?.howToReuseSafely || "").trim();
-    if (!assessment.startsWith("【原片有】")) return;
-    const path = `creativeBrief.allowedNarrativeComponents[${index}]（${item?.component}）.howToReuseSafely`;
-    const citations = [...assessment.matchAll(/「([^」]+)」/gu)].map((match) => match[1].trim()).filter(Boolean);
-    if (!citations.length) {
-      throw new OutputContractError(
-        `${path} 判定为【原片有】时必须用「」引出一段 sourceScriptReconstruction 或 referenceAnalysis 中的逐字原文作为依据。`
-      );
-    }
-    const missing = citations.flatMap((citation) => citationClauses(citation)
-      .filter((clause) => !citationClauseCovered(clause, upstreamTexts, CITATION_COVERAGE_THRESHOLD))
-      .map((clause) => ({ clause, coverage: citationCoverage(clause, upstreamTexts) })));
-    if (missing.length) {
-      throw new OutputContractError(
-        `${path} 引用的内容在上游找不到对应事实：`
-        + `${missing.map((entry) => `「${entry.clause}」（覆盖率 ${entry.coverage.toFixed(2)}）`).join("、")}。`
-        + "存在性判定只能引用原片确实发生过的内容，不得为原片补出它没有的叙事构件；"
-        + "允许转述，但必须能在 referenceAnalysis 或 sourceScriptReconstruction 中找到对应原文。"
-      );
-    }
-  });
-}
-
-export function ensureCreativeBriefMatchesProfile(value, creatorProfile = {}, upstream = null) {
-  if (upstream) validateNarrativeComponentCitations(value?.allowedNarrativeComponents, upstream);
-  const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
-  if (!fixedName) return value;
-
-  const mappingText = JSON.stringify(value.roleAndOccupationMapping || []);
-  if (!mappingText.includes(fixedName)) {
-    throw new OutputContractError(`creativeBrief 未将固定角色「${fixedName}」写入角色映射`);
-  }
-
-  if (!String(value.roleAndOccupationMapping?.[0]?.newRole || "").includes(fixedName)) {
-    throw new OutputContractError(
-      `creativeBrief.roleAndOccupationMapping[0].newRole 必须保留固定角色姓名“${fixedName}”，不得更换或重命名主角`
-    );
-  }
-
-  return value;
 }
 
 export function ensureStoryCandidateContract(candidate, { path = "storyCandidate" } = {}) {
@@ -2750,7 +2697,7 @@ export function ensureThemeVariantsMatchProfile(
   upstream = null
 ) {
   // 溯源核对排在最前：一个候选如果连原片是什么都写错了，后面几项判定的对象就是错的。
-  // 与 ensureCreativeBriefMatchesProfile 同规格——没给上游就跳过，旧调用点行为逐字不变。
+  // 没给上游就跳过，旧调用点行为逐字不变。
   if (upstream) validateVariantSourceFactCitations(value?.variants, upstream);
   validateVariantStructuralDivergence(value?.variants);
   validateVariantNarrativeModeMix(value?.variants);
@@ -4636,47 +4583,24 @@ function validateStoryEngine(storyEngine) {
   );
 }
 
-function validateNarrativeComponents(components) {
-  const required = CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS;
-  const names = components.map((item) => item?.component);
-  const present = new Set(names);
-  const missing = required.filter((name) => !present.has(name));
-  if (missing.length) throw new OutputContractError(`creativeBrief 未逐项评估可复用叙事构件：${missing.join("、")}`);
-  const unexpected = [...present].filter((name) => !required.includes(name));
-  if (unexpected.length) {
-    throw new OutputContractError(`creativeBrief.allowedNarrativeComponents 使用了非服务端签发分类：${unexpected.join("、")}`);
-  }
-  const duplicates = names.filter((name, index) => names.indexOf(name) !== index);
-  if (duplicates.length) {
-    throw new OutputContractError(`creativeBrief.allowedNarrativeComponents 重复分类：${[...new Set(duplicates)].join("、")}`);
-  }
-  components.forEach((item, index) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) {
-      throw new OutputContractError(`creativeBrief.allowedNarrativeComponents[${index}] 必须是对象`);
-    }
-    if (typeof item.howToReuseSafely !== "string" || !item.howToReuseSafely.trim()) {
-      throw new OutputContractError(
-        `creativeBrief.allowedNarrativeComponents[${index}].howToReuseSafely 必须填写非空评估`
-      );
-    }
-    const assessment = item.howToReuseSafely.trim();
-    if (!CREATIVE_BRIEF_COMPONENT_PRESENCE_MARKERS.some((marker) => assessment.startsWith(marker))) {
-      throw new OutputContractError(
-        `creativeBrief.allowedNarrativeComponents[${index}]（${item.component}）.howToReuseSafely `
-        + `必须以 ${CREATIVE_BRIEF_COMPONENT_PRESENCE_MARKERS.join(" 或 ")} 开头，`
-        + "先判定原片是否真的存在该构件，再说明如何复用或为何不采用。"
-      );
-    }
-  });
-}
-
-function validateProtectedExpressions(items) {
-  items.forEach((item, index) => {
-    const missing = ["expressionType", "sourceExpression", "prohibition", "safeAlternativePrinciple"].filter((key) => !(key in (item || {})));
-    if (missing.length) {
-      throw new OutputContractError(`creativeBrief.protectedExpressions 第 ${index + 1} 项缺少字段：${missing.join("、")}`);
-    }
-  });
+/**
+ * creative_brief/2.0 的顶层只允许 storyEngine 与 recastTest。与 recastTest「恰好三个键」同规格：
+ * 模型在旧简报上训练出的习惯会把 contentType、allowedNarrativeComponents 之类写回来，
+ * 多出来的键要么没人读、要么会被当成第二份原片解读，所以拒绝而不是静默删掉。
+ * schemaVersion 由服务端盖章，模型写了同样算多余键。
+ */
+function validateCreativeBriefTopLevel(value) {
+  const allowed = new Set(CREATIVE_BRIEF_MODEL_FIELDS);
+  const unexpected = Object.keys(value).filter((key) => !allowed.has(key));
+  if (!unexpected.length) return;
+  throw new OutputContractError(
+    `creativeBrief 只允许 ${CREATIVE_BRIEF_MODEL_FIELDS.join("、")} 两个顶层键，多出：${unexpected.join("、")}`,
+    unexpected.map((key) => ({
+      code: "CREATIVE_BRIEF_UNEXPECTED_FIELD",
+      path: `/${key}`,
+      reason: "creative_brief/2.0 只保留 storyEngine 与 recastTest，其余原片信息由下游直接读原片分析与脚本还原"
+    }))
+  );
 }
 
 export function collectProtectedTermsFromBrief(brief, fixedProfile = "") {
