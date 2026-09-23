@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AttemptStore } from "./attempt-store.js";
-import { ModelResponseError, parseSingleJsonObject } from "./mimo-client.js";
+import { ModelResponseError, assertCompletionNotContentFiltered, parseSingleJsonObject } from "./mimo-client.js";
 import { ModelPipelineError } from "./model-errors.js";
 import { OutputContractError } from "./validation.js";
 import { throwIfDurableTaskAborted } from "./durable-task-context.js";
@@ -56,6 +56,8 @@ export class ModelCallCoordinator {
       try {
         completion = await requestSingleCompletion(client, activeRequest, provider);
         const completionProvider = completion.providerName || provider || "模型";
+        // 审核拦截分类为不可重试，coordinator 不会自动再调一次。
+        assertCompletionNotContentFiltered(completion, completionProvider);
         if (completion.finishReason === "length") {
           throw new ModelResponseError(
             `${completionProvider} 输出因 token 上限被截断`,
@@ -288,7 +290,20 @@ export function classifyAttemptError(error) {
     // 把一个本该重试的网络中断变成不可重试的协议错误。
     // 与 MODEL_STREAM_INCOMPLETE 同规格：连接被对端切断是传输故障，必须可重试。
     // 不单独分类会落到本分支末尾的兜底（status=0 → protocol 且 retryable false）。
-    if (error.code === "MODEL_STREAM_ABORTED" || error.code === "MODEL_STREAM_INCOMPLETE") {
+    // 供应商内容审核拦截：不是格式错误，也不得自动重试（CLAUDE.md §2.6 同一原则）。
+    if (error.code === "MODEL_CONTENT_FILTERED") {
+      return {
+        message: error.message,
+        category: "content-filter",
+        code: error.code,
+        origin: "provider",
+        httpStatus: 502,
+        retryable: false,
+        diagnostics: []
+      };
+    }
+    // 空闲超时（连续 N 秒没收到任何数据）同属传输故障，可重试。
+    if (["MODEL_STREAM_ABORTED", "MODEL_STREAM_INCOMPLETE", "MODEL_STREAM_IDLE_TIMEOUT"].includes(error.code)) {
       return {
         message: error.message,
         category: "transport",

@@ -82,7 +82,7 @@ test("Static Frame Compiler 显式配置被规范化并保持独立模型参数"
   });
 });
 
-test("Qwen、MiMo 与 DeepSeek 显式禁用 JSON 内容重试，并使用单次请求的 timeout 覆盖", async () => {
+test("Qwen、MiMo 与 DeepSeek 显式禁用 JSON 内容重试；只有非流式的 DeepSeek 使用单次请求的总 timeout", async () => {
   const originalFetch = globalThis.fetch;
   const originalTimeout = AbortSignal.timeout;
   const fetchCalls = [];
@@ -150,7 +150,9 @@ test("Qwen、MiMo 与 DeepSeek 显式禁用 JSON 内容重试，并使用单次�
       (error) => error instanceof ModelResponseError && /DeepSeek 未返回严格 JSON/u.test(error.message)
     );
     assert.equal(fetchCalls.length, 3);
-    assert.deepEqual(observedTimeouts, [61_111, 72_222, 83_333]);
+    // Qwen 与 MiMo 是流式：不设总时长，只判空闲（stream-idle-timeout.js），
+    // 单次请求的 requestTimeoutMs 对它们不再生效；非流式 DeepSeek 仍按它设总超时。
+    assert.deepEqual(observedTimeouts, [83_333]);
   } finally {
     globalThis.fetch = originalFetch;
     AbortSignal.timeout = originalTimeout;

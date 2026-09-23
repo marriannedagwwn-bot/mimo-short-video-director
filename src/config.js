@@ -66,6 +66,8 @@ export function getConfig() {
   const animationMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_ANIMATION_MAX_COMPLETION_TOKENS, 12288, 1024, 32768));
   const jsonRetryAttempts = Math.round(clampNumber(process.env.MIMO_JSON_RETRY_ATTEMPTS, 2, 0, 3));
   const mimoRequestTimeoutMs = Math.round(clampNumber(process.env.MIMO_REQUEST_TIMEOUT_MS, 900000, 30000, 900000));
+  // 流式客户端只判空闲，不设总时长：连续这么久没收到任何数据才中断（src/stream-idle-timeout.js）。
+  const mimoStreamIdleTimeoutMs = Math.round(clampNumber(process.env.MIMO_STREAM_IDLE_TIMEOUT_MS, 120000, 10000, 900000));
   const qwenBaseUrl = process.env.QWEN_BASE_URL?.trim() || "";
   const qwenBaseModel = process.env.QWEN_MODEL?.trim() || "qwen3.7-max";
   const qwenVisionFallbackModel = "qwen3.7-plus";
@@ -96,6 +98,7 @@ export function getConfig() {
   const qwenCharacterReferenceMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_CHARACTER_REFERENCE_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
   const qwenJsonRetryAttempts = Math.round(clampNumber(process.env.QWEN_JSON_RETRY_ATTEMPTS, 2, 0, 3));
   const qwenRequestTimeoutMs = Math.round(clampNumber(process.env.QWEN_REQUEST_TIMEOUT_MS, 900000, 30000, 900000));
+  const qwenStreamIdleTimeoutMs = Math.round(clampNumber(process.env.QWEN_STREAM_IDLE_TIMEOUT_MS, 120000, 10000, 900000));
   const qwenEnableThinkingValue = process.env.QWEN_ENABLE_THINKING?.trim().toLowerCase();
   const qwenEnableThinking = qwenEnableThinkingValue === "true" ? true : qwenEnableThinkingValue === "false" ? false : false;
   const deepseekBaseUrl = process.env.DEEPSEEK_BASE_URL?.trim() || "https://api.deepseek.com";
@@ -192,6 +195,7 @@ export function getConfig() {
       animationMaxCompletionTokens,
       jsonRetryAttempts,
       requestTimeoutMs: mimoRequestTimeoutMs,
+      streamIdleTimeoutMs: mimoStreamIdleTimeoutMs,
       thinking,
       enabled: Boolean(baseUrl)
     },
@@ -219,6 +223,7 @@ export function getConfig() {
       characterReferenceMaxCompletionTokens: qwenCharacterReferenceMaxCompletionTokens,
       jsonRetryAttempts: qwenJsonRetryAttempts,
       requestTimeoutMs: qwenRequestTimeoutMs,
+      streamIdleTimeoutMs: qwenStreamIdleTimeoutMs,
       enableThinking: qwenEnableThinking,
       jsonMode: process.env.QWEN_JSON_MODE === "true",
       mediaMode: qwenMediaMode,

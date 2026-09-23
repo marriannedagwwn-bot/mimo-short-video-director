@@ -157,6 +157,7 @@ MIMO_MODEL=mimo-v2.5
 MIMO_STORY_MODEL=mimo-v2.5-pro
 MIMO_ANIMATION_MODEL=mimo-v2.5-pro
 MIMO_REQUEST_TIMEOUT_MS=900000
+MIMO_STREAM_IDLE_TIMEOUT_MS=120000
 MIMO_MEDIA_MODE=auto
 ```
 
@@ -184,6 +185,7 @@ QWEN_STORY_MODEL=qwen3.7-max
 QWEN_ANIMATION_MODEL=qwen3.7-max
 QWEN_CHARACTER_REFERENCE_MODEL=qwen3.7-plus
 QWEN_REQUEST_TIMEOUT_MS=900000
+QWEN_STREAM_IDLE_TIMEOUT_MS=120000
 QWEN_MEDIA_MODE=auto
 QWEN_NATIVE_VIDEO_MAX_MB=7
 QWEN_VIDEO_FPS=2
@@ -266,7 +268,7 @@ STATIC_FRAME_COMPILER_TIMEOUT_MS=300000
 
 `STATIC_FRAME_COMPILER_PROVIDER` 仅支持 `Qwen`、`MiMo` 或 `DeepSeek`，对应 provider 必须已经配置可用。配置缺失或模型不可用时，显式运行旧 v2 兼容路径会明确报告 Static Frame Compiler 不可用；当前 `direct_shot` 不以该配置作为运行前提。
 
-Qwen、MiMo 和 DeepSeek 的单次生成请求默认都允许等待 15 分钟，分别由 `QWEN_REQUEST_TIMEOUT_MS=900000`、`MIMO_REQUEST_TIMEOUT_MS=900000` 和 `DEEPSEEK_REQUEST_TIMEOUT_MS=900000` 控制。`SERVER_REQUEST_TIMEOUT_MS=900000` 同步限制服务端接收请求体的时间；它不替代模型请求超时设置。
+Qwen 与 MiMo 走流式传输，只判空闲、不设总时长：连续 `QWEN_STREAM_IDLE_TIMEOUT_MS` / `MIMO_STREAM_IDLE_TIMEOUT_MS`（默认 120000）没有收到任何数据（含推理内容）才中断，数据一直在来就不会被掐；`QWEN_REQUEST_TIMEOUT_MS` / `MIMO_REQUEST_TIMEOUT_MS` 对它们不再生效。非流式的 DeepSeek 仍按 `DEEPSEEK_REQUEST_TIMEOUT_MS=900000` 设单次请求总超时。`SERVER_REQUEST_TIMEOUT_MS=900000` 同步限制服务端接收请求体的时间；它不替代模型请求超时设置。
 
 Qwen 视频解析遵循阿里云百炼 OpenAI 兼容 Chat Completions 的多模态格式：小视频优先以 `video_url` 发送 Base64 Data URL，大于 `QWEN_NATIVE_VIDEO_MAX_MB` 或 `QWEN_MEDIA_MODE=frames` 时改用关键帧图片列表 `video`。阿里云文档说明 `video_url` 支持公网 URL 或 Base64 Data URL，`fps` 可控制抽帧频率；同时 Base64 视频编码后需小于 10MB，所以默认把原始视频上限设为 7MB。Qwen-VL 只能理解视频视觉信息；如果需要理解视频里的音频，需要选择支持音频的 Qwen-Omni 模型。接口依据：[MiMo V2.5 模型说明](https://mimo.mi.com/docs/en-US/product/introduction/models#MiMo-V25)、[MiMo OpenAI API](https://mimo.mi.com/docs/en-US/api/chat/openai-api)、[MiMo 视频理解文档](https://mimo.mi.com/docs/en-US/use-cases/video-understanding)、[阿里云百炼 OpenAI Chat 兼容文档](https://www.alibabacloud.com/help/zh/model-studio/qwen-api-via-openai-chat-completions) 和 [阿里云图像与视频理解文档](https://help.aliyun.com/zh/model-studio/vision)。
 

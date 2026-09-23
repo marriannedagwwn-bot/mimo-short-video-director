@@ -1,8 +1,9 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
-import { ModelResponseError, parseModelJson, parseStrictModelJson } from "./mimo-client.js";
+import { ModelResponseError, assertCompletionNotContentFiltered, assertCompletionNotTruncated, parseModelJson, parseStrictModelJson, streamIdleTimeoutError } from "./mimo-client.js";
 import { recordModelUsage } from "./token-usage.js";
 import { afterDurableProviderCall, beforeDurableProviderCall, durableTaskHeartbeat, durableProviderAbortSignal, throwIfDurableTaskAborted } from "./durable-task-context.js";
 import { SseStreamIncompleteError, readSseCompletion } from "./sse-stream.js";
+import { createStreamIdleTimer, resolveStreamIdleTimeoutMs } from "./stream-idle-timeout.js";
 
 export class QwenClient {
   constructor(config) {
@@ -140,21 +141,9 @@ export class QwenClient {
       });
       await notifyCompletion(onCompletion, completion);
       const content = completion.content;
+      assertCompletionNotContentFiltered(completion, providerName);
       try {
-        if (completion.finishReason === "length") {
-          throw new ModelResponseError(
-            `${providerName} 输出因 token 上限被截断`,
-            completion.raw,
-            0,
-            {
-              provider: providerName,
-              code: "MODEL_OUTPUT_TRUNCATED",
-              requestId: completion.requestId,
-              finishReason: completion.finishReason,
-              usage: completion.usage
-            }
-          );
-        }
+        assertCompletionNotTruncated(completion, providerName);
         return strictJson
           ? parseStrictModelJson(content, providerName)
           : parseModelJson(content, providerName);
@@ -186,8 +175,19 @@ export class QwenClient {
       { model, maxCompletionTokens, systemPrompt }
     );
     const providerName = qwenCompatibleProviderName(body.model);
-    const effectiveTimeoutMs = requestTimeoutMs ?? this.config.requestTimeoutMs ?? 900_000;
-    await beforeDurableProviderCall("model_provider_call", effectiveTimeoutMs);
+    // 流式请求不设总时长上限，只判空闲：连续 streamIdleTimeoutMs 没收到任何数据才中断。
+    // requestTimeoutMs 在流式客户端上不再生效（参数保留给调用方的统一签名）。
+    const idleTimeoutMs = resolveStreamIdleTimeoutMs(this.config);
+    await beforeDurableProviderCall("model_provider_call", idleTimeoutMs);
+    const idle = createStreamIdleTimer(idleTimeoutMs);
+    try {
+      return await this.streamCompletion({ endpoint, body, providerName, idle });
+    } finally {
+      idle.clear();
+    }
+  }
+
+  async streamCompletion({ endpoint, body, providerName, idle }) {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -195,11 +195,12 @@ export class QwenClient {
         ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {})
       },
       body: JSON.stringify(body),
-      signal: durableProviderAbortSignal(effectiveTimeoutMs)
+      signal: durableProviderAbortSignal(null, idle.signal)
     }).catch((error) => {
       throwIfDurableTaskAborted();
       throw error;
     });
+    idle.touch();
     const headerRequestId = response.headers.get("x-request-id")
       || response.headers.get("request-id")
       || "";
@@ -223,9 +224,10 @@ export class QwenClient {
     }
 
     // 流读取期间定期更新 Durable Task 进度，让界面看得到「还在出字」。
-    // 只更新 progress，不参与超时裁决：provider watchdog 仍是自身 timeout + 120 秒。
+    // 每收到一块数据都重置空闲计时器；心跳本身按 10 秒节流。
     let lastHeartbeatAt = 0;
     const onProgress = ({ contentLength }) => {
+      idle.touch();
       const now = Date.now();
       if (now - lastHeartbeatAt < 10_000) return;
       lastHeartbeatAt = now;
@@ -242,6 +244,7 @@ export class QwenClient {
       recordModelUsage({ provider: providerName, model: body.model, usage: error?.partialUsage });
       throwIfDurableTaskAborted();
       await afterDurableProviderCall("model_provider_response");
+      if (idle.fired) throw streamIdleTimeoutError(providerName, idle, error, headerRequestId);
       // 连接被对端切断（undici 的 TypeError: terminated）时，已收到的内容挂在
       // error.partialRaw 上。把规模带进错误消息，让日志能区分「刚开始就断」与
       // 「快写完才断」——前者重试即可，后者说明该换策略（拆分请求或换模型）。

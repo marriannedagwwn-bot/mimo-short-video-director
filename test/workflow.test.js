@@ -1116,7 +1116,28 @@ test("模型生成请求默认允许等待 15 分钟且支持环境变量覆盖"
   }
 });
 
-test("Qwen 和 MiMo 生成请求使用 15 分钟配置但健康检查仍为 5 秒", async () => {
+test("Qwen 与 MiMo 流式空闲超时默认 120 秒且支持环境变量覆盖", () => {
+  const keys = ["MIMO_STREAM_IDLE_TIMEOUT_MS", "QWEN_STREAM_IDLE_TIMEOUT_MS"];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    const defaults = getConfig();
+    assert.equal(defaults.mimo.streamIdleTimeoutMs, 120_000);
+    assert.equal(defaults.qwen.streamIdleTimeoutMs, 120_000);
+    process.env.MIMO_STREAM_IDLE_TIMEOUT_MS = "90000";
+    process.env.QWEN_STREAM_IDLE_TIMEOUT_MS = "150000";
+    const overridden = getConfig();
+    assert.equal(overridden.mimo.streamIdleTimeoutMs, 90_000);
+    assert.equal(overridden.qwen.streamIdleTimeoutMs, 150_000);
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});
+
+test("Qwen 和 MiMo 流式生成请求不设总时长上限，健康检查仍为 5 秒", async () => {
   const originalFetch = globalThis.fetch;
   const originalTimeout = AbortSignal.timeout;
   const observedTimeouts = [];
@@ -1157,7 +1178,9 @@ test("Qwen 和 MiMo 生成请求使用 15 分钟配置但健康检查仍为 5 �
     await mimo.checkHealth();
     await mimo.generateJson({ prompt: "返回 JSON" });
 
-    assert.deepEqual(observedTimeouts, [5_000, 900_000, 5_000, 900_000]);
+    // 生成请求只判空闲（连续 streamIdleTimeoutMs 没收到数据才中断），不再调用
+    // AbortSignal.timeout 设总时长；requestTimeoutMs 对流式客户端不生效。
+    assert.deepEqual(observedTimeouts, [5_000, 5_000]);
   } finally {
     globalThis.fetch = originalFetch;
     AbortSignal.timeout = originalTimeout;

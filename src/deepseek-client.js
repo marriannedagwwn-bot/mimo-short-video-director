@@ -1,5 +1,5 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
-import { ModelResponseError, parseModelJson, parseStrictModelJson } from "./mimo-client.js";
+import { ModelResponseError, assertCompletionNotContentFiltered, assertCompletionNotTruncated, parseModelJson, parseStrictModelJson } from "./mimo-client.js";
 import { recordModelUsage } from "./token-usage.js";
 import { afterDurableProviderCall, beforeDurableProviderCall, durableProviderAbortSignal, throwIfDurableTaskAborted } from "./durable-task-context.js";
 
@@ -89,7 +89,9 @@ export class DeepSeekClient {
       });
       await notifyCompletion(onCompletion, completion);
       const content = completion.content;
+      assertCompletionNotContentFiltered(completion, "DeepSeek");
       try {
+        assertCompletionNotTruncated(completion, "DeepSeek");
         return strictJson
           ? parseStrictModelJson(content, "DeepSeek")
           : parseModelJson(content, "DeepSeek");

@@ -30,7 +30,7 @@ Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主�
 
 清理必须核对页面归属，顺序是 scheduler → Run 锁撤销任务 → 删源副本、Run、其命名空间媒体与 Run 内 Debug；迟到的 Runner/worker **不得重建已清数据**。**四类东西永远不由它清**：无页面归属的历史 Run、用户原文件、主动导出文件、签名密钥。详见 `docs/production-lineage-state.md`。
 
-状态固定为 `queued | running | completed | failed | conflicted | interrupted | abandoned`。冻结后绝不自动换成新 current；每次 provider 调用前后及锁内 commit 都复验 revision/digest。**目标的期望版本是 `latest` 那一版、不论是否已 stale**（与状态库提交门同一口径，Task Manager 三处复检共用 `targetLatestRevision()`）；2026-09-18 之前 stale 目标被冻结成 `null`，任何已失效目标重新生成都必然冲突（详见 `docs/production-lineage-state.md` §4）。相同 active operation 复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`；只有相同 requestId、digest 与 dependencies 的重复 finalize 可复用 revision。任务没有总墙钟 deadline：provider watchdog 使用自身 timeout 加 120 秒，本地阶段使用 300 秒无进展窗口并随进度续期，超时为 `failed/TASK_STALLED`。`abandoned` 与 `interrupted` 都不表示远端取消，供应商调用可能已经计费。
+状态固定为 `queued | running | completed | failed | conflicted | interrupted | abandoned`。冻结后绝不自动换成新 current；每次 provider 调用前后及锁内 commit 都复验 revision/digest。**目标的期望版本是 `latest` 那一版、不论是否已 stale**（与状态库提交门同一口径，Task Manager 三处复检共用 `targetLatestRevision()`）；2026-09-18 之前 stale 目标被冻结成 `null`，任何已失效目标重新生成都必然冲突（详见 `docs/production-lineage-state.md` §4）。相同 active operation 复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`；只有相同 requestId、digest 与 dependencies 的重复 finalize 可复用 revision。任务没有总墙钟 deadline：provider watchdog 使用自身 timeout 加 120 秒（流式的 Qwen/MiMo 用空闲超时，见 §2.7），本地阶段使用 300 秒无进展窗口并随进度续期，超时为 `failed/TASK_STALLED`。`abandoned` 与 `interrupted` 都不表示远端取消，供应商调用可能已经计费。
 
 per-Run Coordinator 是不可重入 FIFO 锁。持锁路径只能调用 `commitArtifactUnlocked`、`recordStageUnlocked`、`loadRunUnlocked` 和 Task Store unlocked 方法；禁止从锁内调用对应公开方法，也禁止在临界区执行 provider、网络、FFmpeg 或模型校验。lineage snapshot、Task GET 与 atomic manifest load 均为锁外读。
 
@@ -39,6 +39,8 @@ per-Run Coordinator 是不可重入 FIFO 锁。持锁路径只能调用 `commitA
 Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通过递归 strict Schema，且只新增 `keyChoice/climax/emotionalPayoff/novelty/visualPotential` 五个候选级字段。本地校验不使用题材关键词或主观语义打分。选中候选以 current `variant:<id>` Artifact 的精确 revision/digest 绑定 Full Story，服务端在模型调用前后复验；`candidateBinding` 不进入 Prompt 或 Legacy Full Story wire shape。状态恢复只认 current Story/Plan 或明确 `variant:<id>` 记录，仅有 Theme Variants 时必须保持未选中，禁止默认 V1。当前没有 Story Selection/Blueprint/Script Doctor/Targeted Rewrite/Production Package 4.0；Phase 2 只预留「已签发 Candidate 内容 + 精确 lineage reference」接缝。
 
 **可选叙事构件（2026-08-28）**：`characterSetup.careRecipient`、`characterSetup.helper`、`emotionalMedium`、`endingRitual` 以及 Full Story 的 `characterBible.careRecipient` 全部从 required 降级为**可选键**。它们曾强制每个候选长成「主角＋被关爱对象＋帮助者＋情感信物＋仪式结尾」，与 Prompt 要求的候选间根本差异直接矛盾。写了就仍必须合规（非空字符串；`careRecipient` 对象五个子字段齐全），不需要就整个键省略，**禁止输出空字符串或占位文本**。`characterSetup.protagonist`、`characterBible.protagonist` 与 `characterBible.helpers`（可为 `[]`）仍必填，固定角色锁定不受影响。
+
+**`newTask` / `environmentPressure` 一直是必填（2026-09-23）**：与上面四个可选构件不同，这两个字段在 schema 里始终是 `nonEmptyString`。但 `variantsPrompt` 曾把「任务」「天气/空间」也列进「可以更换，也可以整个不设」，slice_of_life 那条又写「没有非做不可的任务」，而全文没有一句定义这两个字段——提示词与契约自相矛盾。实测 MiMo（`mimo-v2.6-pro` 开思考）照字面执行，4 个候选里 3 个 `newTask:""` 被 `STORY_CANDIDATES_SCHEMA_EMPTY_STRING` 拦下；千问一直能过，是因为它自己写成「参与……」「无明确任务，参与……」绕开了矛盾。现已把这两项移出可选清单，并在字段说明里给出定义：`newTask` 写主角做的或参与的那件事（生活型写她参与了什么，不需要是非完成不可的任务），`environmentPressure` 写推动或限制这件事的环境条件（没有外部压力时写当时的时间、天气或空间状态）；命题定向修订提示词同一口径。**契约、schema、消费者均未改**；这是提示词约束，没有新增确定性兜底，空字符串仍由既有 schema 拦截。
 
 **角色与道具边界（2026-09-09）**：`characterSetup.careRecipient/helper` 与 Full Story `characterBible` **只登记角色**——人物、动物，或候选正文已明确设定的拟人角色；不要求它会说话或主动发起行动。**普通植物、物件被照料、保护或承载情感不构成角色身份**：候选照常写它的动作与用途，Full Story 把它放进 `keyProps`、`visibleAction` 与必要摄影说明，**不进角色表、不进 `characters`**。
 
@@ -1041,6 +1043,9 @@ Plan revision 与新 media namespace 并递归 stale 该变体已生成的全部
 现已在 `generateStageJson` → `generateValidatedJson` → client 之间接通；其余阶段该值为 `null`，
 传 `null` 与不传逐字等价，行为不变。**不动全局默认值。**
 
+**2026-09-23 起这个值只对非流式的 DeepSeek 生效。** Qwen 与 MiMo 改为只判空闲、不设总时长（§2.7），
+数据一直在来就不会被掐，1800000 对它们已无意义；接通的参数保留，DeepSeek 仍按它设总超时。
+
 #### 传输不稳定与尚未做的兜底
 
 实测失败率约三分之一，两种形态：`fetch failed`（3–5 秒，没烧 token）与 `terminated`（几百秒才断，token 已烧）。
@@ -1063,6 +1068,9 @@ Plan revision 与新 media namespace 并递归 stale 该变体已生成的全部
 - **流不完整必须失败，绝不返回半截内容。** 读到流结束但既没有 `[DONE]` 也没有任何 `finish_reason` 时抛 `MODEL_STREAM_INCOMPLETE`。返回半截内容会让残缺 JSON 被下游报成「JSON 格式错误」，把传输问题伪装成模型输出问题。
 - 该错误码在 `classifyAttemptError` 里**必须单独分类**为 `category: "transport"` + `retryable: true`。不单独分类会落到 `ModelResponseError` 的兜底分支（`status=0` → `protocol` 且 `retryable: false`），把可重试的网络中断变成不可重试的协议错误。
 - **禁止非流式自动回退。** 流式失败就如实报错——自动降级是第五节第 4 条的「失败时返回默认值」。
+- **流式请求只判空闲，不设总时长（2026-09-23）。** Qwen 与 MiMo 从发出请求起，**连续** `streamIdleTimeoutMs`（`QWEN_STREAM_IDLE_TIMEOUT_MS` / `MIMO_STREAM_IDLE_TIMEOUT_MS`，默认 120 秒）没有收到任何东西才中断；等响应头也按这个判，响应头、正文、`reasoning_content`、SSE 心跳注释都算「有数据」。`requestTimeoutMs`（全局与按阶段覆盖，含分镜终审/定向修订的 1800000）对这两家**不再生效**，只约束非流式的 DeepSeek——它等待期间本来就没有数据，区分不了「在算」与「挂了」。依据是 2026-09-22 MiMo 候选阶段：流一直活着、已收到 6929 个推理数据块，仍在 900 秒整被 `AbortSignal.timeout` 切断。生成总长度已由 max tokens 封顶，不需要墙钟再兜一次。等响应头超时仍是 `TimeoutError`（`MODEL_TIMEOUT`）；读流途中超时报 `MODEL_STREAM_IDLE_TIMEOUT`，与 `MODEL_STREAM_ABORTED` 同为可重试的 transport。计时器只有一份，在 `src/stream-idle-timeout.js`。Durable watchdog 在调用前按「空闲超时 + 120 秒宽限」排期（不少于 300 秒无进展窗口），读流期间每 10 秒心跳续期。
+- **截断必须在解析 JSON 之前判定（2026-09-23）。** `finish_reason === "length"` 时三家 client 的 `generateJson` 一律抛 `MODEL_OUTPUT_TRUNCATED`（`assertCompletionNotTruncated`，`src/mimo-client.js` 一份），消息写出截断前的正文字数与 completion token 数。此前只有 Qwen 判了，MiMo 与 DeepSeek 把截断报成「未返回严格 JSON」：实测 MiMo 候选阶段 16384 额度全部用在推理上、正文 0 字，用户看到的却是 JSON 格式错误。
+- **内容审核拦截同样在解析 JSON 之前判定，且不自动重试（2026-09-23）。** `finish_reason === "content_filter"` 时三家 client 的 `generateJson` 与 `ModelCallCoordinator` 一律抛 `MODEL_CONTENT_FILTERED`（`assertCompletionNotContentFiltered`，`src/mimo-client.js` 一份），`classifyAttemptError` 归为 `category: "content-filter"`、`retryable: false`；client 内的 JSON 内容重试循环也不会碰它（判定放在 try 之外）。消息写明被审核拦截、已输出多少 token、供应商原文，并说明「审核结果不稳定，同一提示词重试常能通过；系统不会自动重试」。实测 MiMo 候选阶段推理 10534 token 后被拦，正文只有「The request was rejected because it was considered high risk」，此前被报成「未返回严格 JSON」并按可重试处理——那等于在第三方安全闸门上「问到放行为止」，与 §2.6 视频审核 `1027` 同一原则：是否再跑由用户显式决定。
 - **`terminated` 的包装判据是「收到过任何数据块」，不是「收到过正文」（2026-09-07）。** 连接中途被切断时 `qwen-client` 把它包装成可重试的 `MODEL_STREAM_ABORTED`，判据原为 `partialContentLength > 0`。但下一条明写 `reasoning_content` 单独收集、不算正文，而 qwen3.8-max 实测 **82% 的 completion token 是推理**（`reasoning_tokens` 23449 / `completion_tokens` 28466）——推理期断线时正文长度仍是 0，裸 `TypeError` 漏出包装、一路冒到 HTTP 层变成**不可重试的 500**。实测两次分镜终审失败（158 秒、649 秒）都是这个形状：流一直活着、模型一直在推理，只是还没吐正文。判据改为 `partialChunks > 0`，`classifyAttemptError` 逐字未改。**只改包装条件，不改「流不完整必须失败」的结论。** Qwen 与 MiMo（2026-09-22 起）都适用，只有非流式的 DeepSeek 不涉及。
 - `delta.reasoning_content` 单独收集，**绝不混进正文**；`usage` 只在最后一个数据块里返回，缺 `stream_options` 就拿不到 token 记账。
 - 解码必须用 `TextDecoder` 的 `{ stream: true }`：一个汉字的 UTF-8 字节可能被拆到两个数据块，对每块单独解码会产生乱码。

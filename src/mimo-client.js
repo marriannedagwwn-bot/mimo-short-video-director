@@ -2,6 +2,7 @@ import { SYSTEM_PROMPT } from "./prompts.js";
 import { recordModelUsage } from "./token-usage.js";
 import { afterDurableProviderCall, beforeDurableProviderCall, durableTaskHeartbeat, durableProviderAbortSignal, throwIfDurableTaskAborted } from "./durable-task-context.js";
 import { SseStreamIncompleteError, readSseCompletion } from "./sse-stream.js";
+import { createStreamIdleTimer, resolveStreamIdleTimeoutMs } from "./stream-idle-timeout.js";
 
 export class ModelResponseError extends Error {
   constructor(message, raw = "", status = 0, metadata = {}) {
@@ -156,7 +157,9 @@ export class MimoClient {
       });
       await notifyCompletion(onCompletion, completion);
       const content = completion.content;
+      assertCompletionNotContentFiltered(completion, "MiMo");
       try {
+        assertCompletionNotTruncated(completion, "MiMo");
         return strictJson
           ? parseStrictModelJson(content, "MiMo")
           : parseModelJson(content, "MiMo");
@@ -187,8 +190,19 @@ export class MimoClient {
       { prompt, frames, video, useVideo },
       { model, maxCompletionTokens, systemPrompt }
     );
-    const effectiveTimeoutMs = requestTimeoutMs ?? this.config.requestTimeoutMs ?? 900_000;
-    await beforeDurableProviderCall("model_provider_call", effectiveTimeoutMs);
+    // 流式请求不设总时长上限，只判空闲：连续 streamIdleTimeoutMs 没收到任何数据才中断。
+    // requestTimeoutMs 在流式客户端上不再生效（参数保留给调用方的统一签名）。
+    const idleTimeoutMs = resolveStreamIdleTimeoutMs(this.config);
+    await beforeDurableProviderCall("model_provider_call", idleTimeoutMs);
+    const idle = createStreamIdleTimer(idleTimeoutMs);
+    try {
+      return await this.streamCompletion({ endpoint, body, idle });
+    } finally {
+      idle.clear();
+    }
+  }
+
+  async streamCompletion({ endpoint, body, idle }) {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -196,11 +210,12 @@ export class MimoClient {
         ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {})
       },
       body: JSON.stringify(body),
-      signal: durableProviderAbortSignal(effectiveTimeoutMs)
+      signal: durableProviderAbortSignal(null, idle.signal)
     }).catch((error) => {
       throwIfDurableTaskAborted();
       throw error;
     });
+    idle.touch();
     const headerRequestId = response.headers.get("x-request-id")
       || response.headers.get("request-id")
       || "";
@@ -225,6 +240,7 @@ export class MimoClient {
 
     let lastHeartbeatAt = 0;
     const onProgress = ({ contentLength }) => {
+      idle.touch();
       const now = Date.now();
       if (now - lastHeartbeatAt < 10_000) return;
       lastHeartbeatAt = now;
@@ -239,6 +255,7 @@ export class MimoClient {
       recordModelUsage({ provider: "MiMo", model: body.model, usage: error?.partialUsage });
       throwIfDurableTaskAborted();
       await afterDurableProviderCall("model_provider_response");
+      if (idle.fired) throw streamIdleTimeoutError("MiMo", idle, error, headerRequestId);
       if (typeof error?.partialChunks === "number" && error.partialChunks > 0) {
         throw new ModelResponseError(
           `MiMo 流式传输在收到 ${error.partialContentLength} 字正文（${error.partialChunks} 个数据块）后中断：${error.message}`,
@@ -370,6 +387,75 @@ export function parseModelJson(content, providerName = "模型") {
     }
     throw new ModelResponseError(`${providerName} 未返回合法 JSON`, content.slice(0, 3000));
   }
+}
+
+// finish_reason 为 length 时输出被 max tokens 截断。必须在解析 JSON 之前判定：
+// 否则截断会被报成「未返回严格 JSON」，把额度问题伪装成模型格式错误。
+// 2026-09-23 实测 MiMo 候选阶段 16384 额度全部用在推理上、正文 0 字，
+// 用户看到的却是「MiMo 未返回严格 JSON」。
+export function assertCompletionNotTruncated(completion, providerName = "模型") {
+  if (completion?.finishReason !== "length") return;
+  const contentLength = typeof completion.content === "string" ? completion.content.length : 0;
+  const completionTokens = Number(completion.usage?.completion_tokens);
+  const budget = Number.isFinite(completionTokens) ? `，本次输出 ${completionTokens} token` : "";
+  const detail = contentLength === 0
+    ? "正文一个字都没写出来，额度很可能全部用在了推理上"
+    : `截断前写出 ${contentLength} 字正文`;
+  throw new ModelResponseError(
+    `${providerName} 输出因 token 上限被截断（${detail}${budget}）`,
+    typeof completion.raw === "string" ? completion.raw : "",
+    0,
+    {
+      provider: providerName,
+      code: "MODEL_OUTPUT_TRUNCATED",
+      requestId: completion.requestId,
+      finishReason: completion.finishReason,
+      usage: completion.usage
+    }
+  );
+}
+
+// finish_reason 为 content_filter 时是供应商内容审核拦截了输出，不是模型格式错误。
+// 必须在解析 JSON 之前判定：2026-09-23 MiMo 候选阶段推理 10534 token 后被审核拦截，
+// 正文只有一句「The request was rejected because it was considered high risk」，
+// 用户看到的却是「MiMo 未返回严格 JSON」。审核是非确定性的（同一提示词另两次都通过），
+// 但按 CLAUDE.md 不得自动重试——那等于在第三方安全闸门上「问到放行为止」，
+// 所以这里抛出的错误被分类为不可重试，由用户显式决定要不要再跑。
+export function assertCompletionNotContentFiltered(completion, providerName = "模型") {
+  if (completion?.finishReason !== "content_filter") return;
+  const providerText = typeof completion.content === "string" ? completion.content.trim().slice(0, 200) : "";
+  const completionTokens = Number(completion.usage?.completion_tokens);
+  const spent = Number.isFinite(completionTokens) ? `，本次已输出 ${completionTokens} token` : "";
+  throw new ModelResponseError(
+    `${providerName} 的内容审核拦截了这次输出（finish_reason=content_filter${spent}）${providerText ? `，供应商原文：${providerText}` : ""}。审核结果不稳定，同一提示词重试常能通过；系统不会自动重试`,
+    typeof completion.raw === "string" ? completion.raw : "",
+    0,
+    {
+      provider: providerName,
+      code: "MODEL_CONTENT_FILTERED",
+      requestId: completion.requestId,
+      finishReason: completion.finishReason,
+      usage: completion.usage
+    }
+  );
+}
+
+// 空闲超时触发后的统一错误：可重试的传输错误，消息说明多久没收到数据、此前收到多少。
+export function streamIdleTimeoutError(providerName, idle, cause, requestId = "") {
+  const seconds = Math.round(idle.timeoutMs / 1000);
+  const chunks = Number(cause?.partialChunks) || 0;
+  const contentLength = Number(cause?.partialContentLength) || 0;
+  return new ModelResponseError(
+    `${providerName} 流式传输连续 ${seconds} 秒没有收到任何数据，已中断（此前收到 ${contentLength} 字正文、${chunks} 个数据块）`,
+    String(cause?.partialRaw || ""),
+    0,
+    {
+      provider: providerName,
+      code: "MODEL_STREAM_IDLE_TIMEOUT",
+      requestId,
+      usage: cause?.partialUsage
+    }
+  );
 }
 
 export function parseStrictModelJson(content, providerName = "模型") {

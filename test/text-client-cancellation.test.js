@@ -200,7 +200,9 @@ for (const spec of CLIENTS) {
   test(`${spec.provider}: ordinary header timeouts retain their transport classification`, { timeout: 5_000 }, async (t) => {
     const server = await fixture(t, () => {});
     const controller = new AbortController();
-    await assert.rejects(start(clientFor(spec, server.baseUrl, { requestTimeoutMs: 60 }), { signal: controller.signal }), (error) => {
+    // 流式客户端等响应头也按空闲超时判；非流式客户端仍是总超时。
+    const timeouts = spec.streaming ? { streamIdleTimeoutMs: 60 } : { requestTimeoutMs: 60 };
+    await assert.rejects(start(clientFor(spec, server.baseUrl, timeouts), { signal: controller.signal }), (error) => {
       assert.equal(error.name, "TimeoutError");
       assert.equal(classifyAttemptError(error).code, "MODEL_TIMEOUT");
       assert.equal(classifyAttemptError(error).retryable, true);
@@ -277,18 +279,43 @@ for (const spec of CLIENTS.filter((item) => item.streaming)) {
     });
   }
 
-  test(`${spec.provider}: a timeout during SSE consumption retains the existing retryable stream error`, { timeout: 5_000 }, async (t) => {
+  test(`${spec.provider}: a stream that goes silent mid-body fails as a retryable idle timeout`, { timeout: 5_000 }, async (t) => {
     const server = await fixture(t, (_request, response) => {
       response.writeHead(200, { "content-type": "text/event-stream" });
       response.write(sseChunks({ content: "partial" }).split("\n\n")[0] + "\n\n");
     });
     const controller = new AbortController();
-    await assert.rejects(start(clientFor(spec, server.baseUrl, { requestTimeoutMs: 60 }), { signal: controller.signal }), (error) => {
-      assert.equal(error.code, "MODEL_STREAM_ABORTED");
-      assert.equal(classifyAttemptError(error).retryable, true);
+    await assert.rejects(start(clientFor(spec, server.baseUrl, { streamIdleTimeoutMs: 60 }), { signal: controller.signal }), (error) => {
+      assert.equal(error.code, "MODEL_STREAM_IDLE_TIMEOUT");
+      assert.match(error.message, /连续 \d+ 秒没有收到任何数据.*7 字正文、1 个数据块/u);
+      const issue = classifyAttemptError(error);
+      assert.equal(issue.category, "transport");
+      assert.equal(issue.retryable, true);
       return true;
     });
     assert.equal(controller.signal.aborted, false);
+  });
+
+  test(`${spec.provider}: a stream that keeps sending data is never cut by a total deadline`, { timeout: 5_000 }, async (t) => {
+    // 总时长远超空闲超时与 requestTimeoutMs，但每个间隔都短于空闲超时：必须完整读完。
+    // 只发推理内容也算「有数据」——2026-09-22 MiMo 就是推理期被总超时掐断的。
+    const server = await fixture(t, (_request, response) => {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      let sent = 0;
+      const timer = setInterval(() => {
+        sent += 1;
+        if (sent <= 8) {
+          response.write(`data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "想" } }] })}\n\n`);
+          return;
+        }
+        clearInterval(timer);
+        response.end(sseChunks({ content: CONTENT, usage: USAGE }));
+      }, 40);
+    });
+    const client = clientFor(spec, server.baseUrl, { streamIdleTimeoutMs: 150, requestTimeoutMs: 100 });
+    const { result } = await start(client, {});
+    assert.deepEqual(result, { ok: true });
+    assert.equal(server.calls(), 1);
   });
 
   test(`${spec.provider}: coordinator preserves a cancelled stream reason and does not automatically retry`, { timeout: 5_000 }, async (t) => {
@@ -305,6 +332,58 @@ for (const spec of CLIENTS.filter((item) => item.streaming)) {
     }, () => new ModelCallCoordinator().runJson({
       client, request: { prompt: "fixture", model: spec.model }, provider: spec.provider, stage: "fixture", validate: (value) => value
     })), (error) => error === reason);
+    assert.equal(server.calls(), 1);
+  });
+}
+
+for (const spec of CLIENTS) {
+  test(`${spec.provider}: output cut at the token limit is reported as truncation, not as invalid JSON`, { timeout: 5_000 }, async (t) => {
+    // 2026-09-23 MiMo 候选阶段：16384 额度全部用在推理上、正文 0 字、finish_reason=length，
+    // 却被报成「未返回严格 JSON」。截断必须在解析 JSON 之前判定。
+    const usage = { prompt_tokens: 12965, completion_tokens: 16384, total_tokens: 29349 };
+    const server = await fixture(t, (_request, response) => {
+      response.setHeader("content-type", spec.streaming ? "text/event-stream" : "application/json");
+      response.end(spec.streaming
+        ? sseChunks({ reasoningContent: "推理", content: "", finishReason: "length", usage })
+        : JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "" } }], usage }));
+    });
+    await assert.rejects(start(clientFor(spec, server.baseUrl), {}, () => (
+      clientFor(spec, server.baseUrl).generateJson({ prompt: "fixture", strictJson: true, jsonRetryAttempts: 0 })
+    )), (error) => {
+      assert.equal(error.code, "MODEL_OUTPUT_TRUNCATED");
+      assert.doesNotMatch(error.message, /严格 JSON/u);
+      assert.match(error.message, /正文一个字都没写出来.*16384 token/u);
+      const issue = classifyAttemptError(error);
+      assert.equal(issue.category, "truncation");
+      assert.equal(issue.code, "MODEL_OUTPUT_TRUNCATED");
+      return true;
+    });
+    assert.equal(server.calls(), 1);
+  });
+}
+
+for (const spec of CLIENTS) {
+  test(`${spec.provider}: a content-filter block is reported as such and never retried as a JSON error`, { timeout: 5_000 }, async (t) => {
+    const usage = { prompt_tokens: 11790, completion_tokens: 10535, total_tokens: 22325 };
+    const refusal = "The request was rejected because it was considered high risk";
+    const server = await fixture(t, (_request, response) => {
+      response.setHeader("content-type", spec.streaming ? "text/event-stream" : "application/json");
+      response.end(spec.streaming
+        ? sseChunks({ reasoningContent: "推理", content: refusal, finishReason: "content_filter", usage })
+        : JSON.stringify({ choices: [{ finish_reason: "content_filter", message: { content: refusal } }], usage }));
+    });
+    // jsonRetryAttempts 保持 2：审核拦截不得进入 JSON 内容重试循环。
+    await assert.rejects(start(clientFor(spec, server.baseUrl), {}, () => (
+      clientFor(spec, server.baseUrl).generateJson({ prompt: "fixture", jsonRetryAttempts: 2 })
+    )), (error) => {
+      assert.equal(error.code, "MODEL_CONTENT_FILTERED");
+      assert.doesNotMatch(error.message, /JSON/u);
+      assert.match(error.message, /内容审核拦截了这次输出/u);
+      const issue = classifyAttemptError(error);
+      assert.equal(issue.category, "content-filter");
+      assert.equal(issue.retryable, false);
+      return true;
+    });
     assert.equal(server.calls(), 1);
   });
 }

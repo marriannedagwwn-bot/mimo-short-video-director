@@ -312,3 +312,34 @@ function completion(content, {
     raw: JSON.stringify({ content, finishReason, requestId, usage })
   };
 }
+
+test("Coordinator reports finish_reason=content_filter as a non-retryable moderation block, never as invalid JSON", async () => {
+  // 2026-09-23：MiMo 审核拦截后正文是一句英文拒绝语，此前被当成 JSON 格式错误、
+  // 按可重试处理——等于在第三方安全闸门上「问到放行为止」。
+  let calls = 0;
+  await assert.rejects(new ModelCallCoordinator().runJson({
+    client: {
+      async requestCompletion() {
+        calls += 1;
+        return completion("The request was rejected because it was considered high risk", {
+          finishReason: "content_filter",
+          usage: { completion_tokens: 10535, total_tokens: 22325 }
+        });
+      }
+    },
+    request: { prompt: "primary", model: "mimo-v2.6-pro" },
+    provider: "MiMo",
+    stage: "variants",
+    maxProviderCalls: 2,
+    validate: (value) => value
+  }), (error) => {
+    assert.ok(error instanceof ModelPipelineError);
+    assert.equal(error.code, "MODEL_CONTENT_FILTERED");
+    assert.equal(error.category, "content-filter");
+    assert.equal(error.retryable, false);
+    assert.match(error.message, /内容审核拦截了这次输出.*10535 token.*high risk.*系统不会自动重试/u);
+    assert.doesNotMatch(error.message, /JSON/u);
+    return true;
+  });
+  assert.equal(calls, 1);
+});

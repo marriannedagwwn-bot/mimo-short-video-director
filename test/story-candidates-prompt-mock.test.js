@@ -396,3 +396,24 @@ test("角色边界投影不夹带上游阶段的剧情指令，角色事实和�
   assert.match(downstream, /KEEP_SIGNED_IDENTITY/u);
   assert.match(downstream, /KEEP_USER_SPEECH_RULE/u);
 });
+
+test("newTask 与 environmentPressure 是必填字段，提示词不得再说任务与天气空间「可以整个不设」", async () => {
+  // 2026-09-23：MiMo 开思考时 4 个候选里 3 个把 newTask 写成空字符串被 schema 拦下。
+  // 提示词一边说「任务、天气/空间……也可以整个不设」「生活型没有非做不可的任务」，
+  // 一边 schema 要求这两个字段非空、全文没有一句定义，模型照字面执行就留空了。
+  const prompt = variantsPrompt({ count: 4, creatorProfile, creativeBrief: {}, referenceAnalysis: {}, visualGuardrails: {} });
+  const optionalRule = prompt.split("\n").find((line) => line.includes("也可以整个不设"));
+  assert.ok(optionalRule, "可选构件那句总则仍在");
+  const optionalList = optionalRule.split("也可以整个不设")[0];
+  assert.doesNotMatch(optionalList, /任务|天气|空间/u);
+  assert.match(optionalRule, /newTask、environmentPressure 两个字段必填/u);
+  assert.match(prompt, /没有非做不可的任务（这时 newTask 写她参与的那件事/u);
+  assert.match(prompt, /- newTask：必填，一句话写主角在本片里做的、或参与的那件具体的事。dramatic 写她要完成的目标；slice_of_life 写她参与的那件正在发生的事，不需要是非完成不可的任务。不得输出空字符串。/u);
+  assert.match(prompt, /- environmentPressure：必填，[^\n]*没有外部压力时，写这件事发生时的时间、天气或空间状态。不得输出空字符串。/u);
+
+  // 命题定向修订按同一口径改写这两个字段，不能再把 newTask 读成「非完成不可的任务」。
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../src/prompts.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /newTask（这个故事的任务是什么）/u);
+  assert.match(source, /- newTask（主角在这个故事里做或参与的那件事；生活型写她参与了什么/u);
+});

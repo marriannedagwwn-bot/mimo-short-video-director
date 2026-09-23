@@ -2167,7 +2167,8 @@ server.listen(config.port, () => {
     console.log("全局角色边界签名：测试包模式（保留 sourceDigest / boundaryDigest 校验）");
   }
   console.log(`运行模式：${workflow.mode === "live" ? `${stageDefaults.analysis.provider} (${stageDefaults.analysis.model}) / 剧情 ${stageDefaults.fullStory.provider} ${stageDefaults.fullStory.model} / 动画 ${stageDefaults.animationPlan.provider} ${stageDefaults.animationPlan.model} / 静态帧编译 ${stageDefaults.staticFrameCompiler.provider || "未配置"} ${stageDefaults.staticFrameCompiler.model || ""}` : "演示数据（配置 .env 后接入模型服务）"}`);
-  console.log(`生成请求超时：${Math.round(config.qwen.requestTimeoutMs / 60000)} 分钟（Qwen）/ ${Math.round(config.mimo.requestTimeoutMs / 60000)} 分钟（MiMo）/ ${Math.round(config.deepseek.requestTimeoutMs / 60000)} 分钟（DeepSeek）`);
+  // Qwen 与 MiMo 是流式，只判空闲、不设总时长；只有非流式的 DeepSeek 有总超时。
+  console.log(`生成请求超时：连续 ${Math.round(config.qwen.streamIdleTimeoutMs / 1000)} 秒无数据（Qwen）/ 连续 ${Math.round(config.mimo.streamIdleTimeoutMs / 1000)} 秒无数据（MiMo）/ 总时长 ${Math.round(config.deepseek.requestTimeoutMs / 60000)} 分钟（DeepSeek）`);
 });
 
 function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {}) {

@@ -16,12 +16,17 @@ export function throwIfDurableTaskAborted() {
 }
 
 // fetch keeps this signal through response-body consumption, including SSE reads.
-export function durableProviderAbortSignal(timeoutMs) {
+// 非流式调用传总时长 timeoutMs；流式调用传 null 并用 idleSignal（空闲超时）代替，
+// 不设总时长上限（见 stream-idle-timeout.js）。
+export function durableProviderAbortSignal(timeoutMs, idleSignal = null) {
   throwIfDurableTaskAborted();
   const context = storage.getStore();
-  const taskSignal = context?.signal;
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  const signal = taskSignal ? AbortSignal.any([taskSignal, timeoutSignal]) : timeoutSignal;
+  const signals = [
+    context?.signal,
+    timeoutMs == null ? null : AbortSignal.timeout(timeoutMs),
+    idleSignal
+  ].filter(Boolean);
+  const signal = signals.length <= 1 ? signals[0] : AbortSignal.any(signals);
   context?.providerRequestStarted?.();
   return signal;
 }

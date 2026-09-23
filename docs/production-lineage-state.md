@@ -122,7 +122,7 @@ Run Coordinator 是显式不可重入的 FIFO 锁。持锁代码只能使用 `co
 
 任务状态固定为 `queued | running | completed | failed | conflicted | interrupted | abandoned | cancelled`。`cancelled` 只表示受控任务已终止并释放本地提交权，不证明远端调用已取消。所有带原因的终态共用脱敏规则；终态 Stage 更新必须匹配 `expectedRequestId`，旧请求不能覆盖新 Stage。
 
-调度器分为 workflow/text（2 running、8 queued）和 media（4 running、8 queued），queued 请求体总预算默认 140MB。超出限制返回 `TASK_CAPACITY_EXCEEDED`，不创建失败 Task。任务没有总墙钟 deadline：provider 调用前把 watchdog 设置为 provider 自身 timeout/poll timeout 加 120 秒，本地校验、合并和 commit 使用 300 秒无进展窗口；每次 provider 返回、流事件和阶段进展都会续期。watchdog 触发后 Task 变为 `failed/TASK_STALLED` 并释放目标，错误明确提示远端调用可能已经提交并计费。
+调度器分为 workflow/text（2 running、8 queued）和 media（4 running、8 queued），queued 请求体总预算默认 140MB。超出限制返回 `TASK_CAPACITY_EXCEEDED`，不创建失败 Task。任务没有总墙钟 deadline：provider 调用前把 watchdog 设置为 provider 自身 timeout/poll timeout 加 120 秒（流式文本客户端 Qwen/MiMo 没有总时长，这里的 timeout 是空闲超时，默认 120 秒），本地校验、合并和 commit 使用 300 秒无进展窗口；每次 provider 返回、流事件和阶段进展都会续期。watchdog 触发后 Task 变为 `failed/TASK_STALLED` 并释放目标，错误明确提示远端调用可能已经提交并计费。
 
 AI 导演根任务使用 `POST /api/tasks/:taskId/control`（请求体 `projectId/runId/action`）执行暂停、继续和终止。控制状态保存在 `progress.controlState`，不是新的 Task status：
 
