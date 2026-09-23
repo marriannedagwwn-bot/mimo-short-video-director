@@ -109,7 +109,7 @@ export async function generateShotVideo(options = {}) {
     });
   }
   if (
-    String(options.animationPromptSchemaVersion || "").trim() === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION
+    [ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, "4.0"].includes(String(options.animationPromptSchemaVersion || "").trim())
     && generationMode === "first_last_frame"
   ) {
     throw new ShotVideoConfigError(

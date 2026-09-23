@@ -8,7 +8,10 @@ import {
   validateStoryQualityReviewStrict,
   validateFullStoryPromiseCheckStrict
 } from "./contracts/contract-validator.js";
-import { isNarrativeFullStory, NARRATIVE_FULL_STORY_FIELDS } from "./full-story-contract.js";
+import { DIRECT_SHOT_MIN_DURATION_SECONDS, DIRECT_SHOT_MAX_DURATION_SECONDS } from "./shot-duration-limits.js";
+import { hasFullStoryCharacterRegistry, isNarrativeFullStory, NARRATIVE_FULL_STORY_FIELDS } from "./full-story-contract.js";
+import { isStoryboardPlan } from "../public/storyboard-plan.js";
+import { ensureStoryboardPlan } from "./storyboard-contract.js";
 import { GLOBAL_CHARACTER_BOUNDARY_VERSION } from "./character-boundary.js";
 import { assertVideoPromptProfile } from "../public/video-prompt-profiles.js";
 // 换皮线、维度权重与五档阈值只有一份，与提示词、浏览器摘要共用：
@@ -318,6 +321,7 @@ export function hasExplicitStandardNameSuffix(value, standardName) {
 }
 
 export function ensureOutputContract(value, contract) {
+  if (contract === "animationPlan" && isStoryboardPlan(value)) return ensureStoryboardPlan(value);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new OutputContractError(`${contract} 必须是对象`);
   if (contract === "themeVariants") {
     const schemaResult = validateStoryCandidatesStrict(value);
@@ -450,6 +454,15 @@ function validateFullStorySceneContract(value) {
   const details = [];
   const seenSceneIds = new Map();
   const standardNames = collectFullStoryStandardCharacterNames(value.characterBible);
+  if (hasFullStoryCharacterRegistry(value)) {
+    const names = [value.characterBible.protagonist.name, ...value.characterBible.supportingCharacters.map(row => row.name)];
+    if (names.length !== new Set(names).size) throw new OutputContractError("完整角色表姓名不能重复");
+    for (const scene of value.sceneScript) {
+      for (const name of [...scene.characters, ...(scene.offscreenSoundSources || []), ...scene.dialogue.map(row => row.speaker)]) {
+        if (!names.includes(name)) throw new OutputContractError(`角色「${name}」未登记到完整角色表；单场和仅发声角色也必须登记`);
+      }
+    }
+  }
   validateFullStoryRecurringCharactersAreRegistered(value.sceneScript, standardNames, details);
 
   value.sceneScript.forEach((scene, sceneIndex) => {
@@ -848,6 +861,7 @@ function collectFullStoryStandardCharacterNames(characterBible = {}) {
   const names = [
     characterBible?.protagonist?.name,
     characterBible?.careRecipient?.nameOrLabel,
+    ...(characterBible.supportingCharacters || []).map(character => character.name),
     ...(Array.isArray(characterBible?.helpers)
       ? characterBible.helpers.map((helper) => helper?.nameOrLabel)
       : [])
@@ -3748,6 +3762,12 @@ export function ensureFullStoryMatchesProfile(value, creatorProfile = {}, creati
 }
 
 export function ensureAnimationPlanMatchesProfile(value, creatorProfile = {}, creativeBrief = null, variant = null, visualGuardrails = null, context = {}) {
+  if (isStoryboardPlan(value)) {
+    ensureStoryboardPlan(value, context.fullStory ? { fullStory: context.fullStory, targetDurationSeconds: context.fullStory.targetDurationSeconds } : {});
+    if (variant?.id && value.selectedVariantId !== variant.id) throw new OutputContractError("新版 Animation Plan 与当前候选不一致");
+    for (const reference of value.characterReferencePrompts) ensureCharacterReferenceMatchesBoundary(reference, visualGuardrails);
+    return value;
+  }
   const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
   if (variant?.id && String(value.selectedVariantId || "") !== String(variant.id)) {
     throw new OutputContractError(`animationPlan.selectedVariantId 必须等于选中的主题变体 ${variant.id}`);
@@ -3911,10 +3931,10 @@ function animationProfileJsonPointer(path) {
     .join("/")}`;
 }
 
-// direct_shot 3.1 的单镜时长边界：Seedance 2.0 与 MiniMax H3 的能力交集。
-// 4 秒是两家的共同下限，15 秒既是共同上限，也是长场次唯一的拆镜阈值。
-export const DIRECT_SHOT_MIN_DURATION_SECONDS = 4;
-export const DIRECT_SHOT_MAX_DURATION_SECONDS = 15;
+// direct_shot 3.1 的单镜时长边界现在住在零依赖的 src/shot-duration-limits.js：
+// 自主分镜的 ajv schema 在模块求值期就要读它，而本文件与 storyboard-contract.js
+// 相互导入，从这里取会落进暂时性死区。原样 re-export，既有消费者一个都不用改。
+export { DIRECT_SHOT_MIN_DURATION_SECONDS, DIRECT_SHOT_MAX_DURATION_SECONDS };
 
 // timeRange 只有这一份解析规则，禁止在别处再写第二份。
 // 秒位放宽到 0–99 是确定性算术而不是推断：mm:ss 下 "00:60" 只可能是 60 秒，

@@ -9,6 +9,9 @@ const narrativeFullStorySchema = JSON.parse(fs.readFileSync(
   new URL("./schemas/narrative-full-story-strict.schema.json", import.meta.url),
   "utf8"
 ));
+const castFullStorySchema = JSON.parse(fs.readFileSync(
+  new URL("./schemas/cast-full-story-strict.schema.json", import.meta.url), "utf8"
+));
 const storyCandidatesSchema = JSON.parse(fs.readFileSync(
   new URL("./schemas/story-candidates-strict.schema.json", import.meta.url),
   "utf8"
@@ -36,6 +39,8 @@ const ajv = new Ajv2020({
 });
 const validateFullStory = ajv.compile(fullStorySchema);
 const validateNarrativeFullStory = ajv.compile(narrativeFullStorySchema);
+const validateCastFullStory = ajv.compile(castFullStorySchema);
+const validateCastRegistry = ajv.compile(castFullStorySchema.properties.characterBible);
 const validateStoryCandidates = ajv.compile(storyCandidatesSchema);
 const validateStoryQualityReview = ajv.compile(storyQualityReviewSchema);
 const validateAnimationPlanReview = ajv.compile(animationPlanReviewSchema);
@@ -56,10 +61,14 @@ export function validateLegacyFullStoryStrict(value) {
 }
 
 export function validateNarrativeFullStoryStrict(value) {
-  return validateStrictContract(validateNarrativeFullStory, value, {
+  return validateStrictContract(value?.schemaVersion === "full_story/1.2" ? validateCastFullStory : validateNarrativeFullStory, value, {
     codePrefix: "FULL_STORY_SCHEMA",
     label: "Full Story"
   });
+}
+
+export function validateFullStoryRegistryStrict(value) {
+  return validateStrictContract(validateCastRegistry, value, { codePrefix: "FULL_STORY_CAST_SCHEMA", label: "角色事实表" });
 }
 
 export function validateStoryCandidatesStrict(value) {

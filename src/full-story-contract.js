@@ -1,6 +1,6 @@
 // Explicitly version the smaller Full Story contract. Unversioned artifacts
 // remain legacy data; readers must not migrate them or change their digest.
-export { FULL_STORY_SCHEMA_VERSION, isNarrativeFullStory } from "../public/full-story-format.js";
+export { FULL_STORY_SCHEMA_VERSION, FULL_STORY_CAST_SCHEMA_VERSION, hasFullStoryCharacterRegistry, isNarrativeFullStory } from "../public/full-story-format.js";
 
 export const NARRATIVE_FULL_STORY_FIELDS = Object.freeze([
   "schemaVersion", "selectedVariantId", "title", "oneLinePremise",

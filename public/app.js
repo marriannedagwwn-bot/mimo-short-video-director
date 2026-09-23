@@ -1,4 +1,7 @@
 import { syncShotCharacterReference } from "./character-reference-sync.js";
+import { isStoryboardPlan, STORYBOARD_PLAN_VERSION, storyboardPromptArtifactId, storyboardPromptMatches, storyboardUsesPreviousFrames } from "./storyboard-plan.js";
+import { renderStoryboard } from "./storyboard-render.js";
+const storyboardPromptRequests = new Map();
 import { formatStageUsageSuffix, mergeStageUsage } from "./token-usage-format.js";
 import { storyPackageFilename } from "./export-filename.js";
 import { isNarrativeFullStory } from "./full-story-format.js";
@@ -479,6 +482,7 @@ function bindEvents() {
   elements.pauseShotVideoBatch.addEventListener("click", toggleShotVideoBatchPause);
   elements.terminateShotVideoBatch.addEventListener("click", terminateShotVideoBatch);
   elements.importStoryPackage.addEventListener("click", () => elements.storyPackageFile.click());
+  $("#importStoryPackageHome").addEventListener("click", () => elements.storyPackageFile.click());
   elements.exportStoryTestPackage.addEventListener("click", exportStoryTestPackage);
   elements.storyPackageFile.addEventListener("change", (event) => {
     const file = event.target.files[0];
@@ -559,6 +563,7 @@ function bindEvents() {
     if (files.length) await addShotVideoReferenceFiles(files);
   });
   elements.confirmGenerateShotVideo.addEventListener("click", confirmGenerateShotVideo);
+  $("#regenerateShotVideoPrompt").addEventListener("click", () => updateShotVideoGeneratorPreview({ regeneratePrompt: true }));
   elements.generatedImagePreview.addEventListener("click", (event) => {
     if (event.target === elements.generatedImagePreview) closeGeneratedImagePreview();
   });
@@ -2876,6 +2881,7 @@ async function generateFullStory({ force = false } = {}) {
     const fullStory = await requestProductionArtifact({
       endpoint: "/api/full-story",
       requestBody: {
+        fullStorySchemaVersion: "full_story/1.2",
         referenceAnalysis: state.output.referenceAnalysis,
         sourceScriptReconstruction: state.output.sourceScriptReconstruction,
         creativeBrief: state.output.creativeBrief,
@@ -2943,6 +2949,7 @@ function renderFullStory(data) {
       ${cell("对白规则", data.dialogueStyleGuide?.protagonistSpeechRule || data.characterBible?.protagonist?.speechRules)}
     </div>
     ${block("剧情梗概", `<p class="long-copy">${escape(data.shootingSynopsis)}</p>`)}
+    ${data.characterBible?.supportingCharacters ? block("完整配角设定", data.characterBible.supportingCharacters.map(row => `<p><b>${escape(row.name)}</b> · ${escape(row.identity)}<br>${escape(row.appearanceFacts.join("；") || "外观未指定，分镜阶段设计")}<br>${escape([row.relationshipToProtagonist, row.storyRole, ...row.personalityFacts, ...row.speechRules].filter(Boolean).join("；"))}</p>`).join("")) : ""}
     ${narrativeStory ? "" : block("剧情节拍", `<div class="beat-list">${(data.beatSheet || []).map((beat) => `<div class="beat"><strong>${escape(beat.timeRange)} · ${escape(beat.emotion)}</strong><p>${escape(beat.storyAction)}<br><b>功能：</b>${escape(beat.dramaticFunction)}<br><b>保留价值：</b>${escape(beat.retainedValueFromBrief)}</p></div>`).join("")}</div>`)}
     ${block("可拍分场剧本", `<div class="timeline">${(data.sceneScript || []).map((scene) => `<div class="scene">
       <span class="scene-id">${escape(scene.sceneId)}</span>
@@ -3353,13 +3360,6 @@ async function generateAnimationPlan({ force = false } = {}) {
   const fullStory = state.fullStories[variant.id] || state.output.fullStory;
   if (!fullStory) return setAnimationStatus("请先生成完整剧情，再生成动画生产包。", "error");
   const targetAspectRatio = selectedAnimationAspectRatio(variant.id);
-  let videoPromptTarget;
-  try {
-    videoPromptTarget = videoPromptTargetForSetting(shotVideoSetting());
-  } catch (error) {
-    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
-    return setAnimationStatus(`${error.message} 请先在模型设置中选择 Seedance 2.0 或 MiniMax H3。`, "error");
-  }
   if (!force && state.animationPlans[variant.id]) {
     renderAnimationPlan(state.animationPlans[variant.id]);
     return;
@@ -3385,9 +3385,9 @@ async function generateAnimationPlan({ force = false } = {}) {
         // 只进 Foundation 与逐镜提示词，不写入 Artifact、不进 digest、不 stale 任何东西。
         characterExpressionRules: characterExpressionRules(),
         animationPlanMode,
+        animationPlanVersion: STORYBOARD_PLAN_VERSION,
         targetAspectRatio,
         backgroundMusicEnabled: backgroundMusicEnabled(variant.id),
-        videoPromptTarget,
         // 暂时弃置，后续优化或删除：direct_shot 不消费 Character Feature private sidecar；旧 v2 请求兼容保留。
         ...(animationPlanMode !== "direct_shot" && previousPrivateSidecars && typeof previousPrivateSidecars === "object" && !Array.isArray(previousPrivateSidecars)
           ? { privateSidecars: structuredClone(previousPrivateSidecars) }
@@ -3410,7 +3410,7 @@ async function generateAnimationPlan({ force = false } = {}) {
     assertSelectedVariant(variant.id);
     const { animationPlan, metadata } = normalizeAnimationPlanResponse(result);
     state.animationPlans[variant.id] = animationPlan;
-    if (metadata?.staticFrameCompiler) state.animationPlanMetadata[variant.id] = metadata;
+    if (metadata?.staticFrameCompiler || metadata?.storyboard) state.animationPlanMetadata[variant.id] = metadata;
     else delete state.animationPlanMetadata[variant.id];
     state.output.animationPlans = state.animationPlans;
     state.output.animationPlanMetadata = state.animationPlanMetadata;
@@ -3582,6 +3582,17 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
   for (const artifactId of mediaTargets) {
     const task = taskForUi({ kinds: ["shotVideo", "shotFrameImage"], artifactId });
     if (task) applyTaskMediaStatus(task);
+  }
+  if (isStoryboardPlan(data)) {
+    elements.animationPlan.innerHTML = renderStoryboard(data, { escape, block, cell, resultHeader,
+      renderCharacters: refs => renderCharacterReferencePrompts(refs) + `<button class="round-add-button" type="button" data-open-character-image-generator aria-label="生成角色参考图">+</button>`,
+      // 服务端拦过一次就必须说出来：六个分镜阶段各自允许「第一次做错」，
+      // metadata.storyboard.calls 如实记着每个阶段的实际调用次数与被拦诊断。
+      renderVideo: renderShotVideoResult, videoLabel: shotVideoProviderLabel(), metadata });
+    syncAnimationAspectRatioControls(data);
+    reveal(elements.animationPlan);
+    syncStoryTaskStatus();
+    return;
   }
   const strategy = data.productionStrategy || {};
   const visual = data.visualBible || {};
@@ -5412,12 +5423,15 @@ function renderShotFrameReferenceUploadList(manifest = {}, options = {}) {
 }
 
 async function openShotVideoGenerator(shotId) {
+  const openingContext = shotFrameContext(shotId);
+  state.shotVideoGeneration.promptKey = null;
+  elements.shotVideoPromptPreview.value = "";
   state.shotVideoGeneration.open = true;
   state.shotVideoGeneration.shotId = String(shotId);
   state.shotVideoGeneration.count = Number(elements.shotVideoCount.value) || 1;
   state.shotVideoGeneration.referenceAssets = [];
   state.shotVideoGeneration.includePreviousShotFrames = shouldIncludePreviousShotFrames({
-    requested: true,
+    requested: !isStoryboardPlan(openingContext?.plan) || storyboardUsesPreviousFrames(openingContext?.shot),
     available: previousShotVideoReferenceContext(shotId).available
   });
   elements.shotVideoGenerationMode.value = state.shotVideoGeneration.generationMode;
@@ -5444,6 +5458,8 @@ async function updateShotVideoGeneratorPreview(options = {}) {
     return false;
   }
   const { shot, plan } = context;
+  const storyboard = isStoryboardPlan(plan);
+  $("#regenerateShotVideoPrompt").classList.toggle("hidden", !storyboard);
   const generationMode = normalizeShotVideoGenerationMode(state.shotVideoGeneration.generationMode);
   state.shotVideoGeneration.generationMode = generationMode;
   elements.shotVideoGenerationMode.value = generationMode;
@@ -5455,18 +5471,41 @@ async function updateShotVideoGeneratorPreview(options = {}) {
   elements.shotVideoCount.value = String(count);
   elements.shotVideoModalTitle.textContent = `用 ${shotVideoProviderLabel()} 生成 ${shot.shotId || "镜头"} 视频`;
   const promptProfileUi = videoPromptProfileUiState(plan, shotVideoSetting());
-  const promptProfileStatus = promptProfileUi.status === "matched"
+  const promptProfileStatus = storyboard ? "按当前模型单独编写本镜提示词" : promptProfileUi.status === "matched"
     ? `${videoPromptProfileLabel(promptProfileUi.current)} 提示词匹配`
     : promptProfileUi.status === "mismatch"
       ? `当前 ${videoPromptProfileLabel(promptProfileUi.target)} · Plan 为 ${videoPromptProfileLabel(promptProfileUi.current)} 提示词`
       : `当前模型与 Plan 提示词 Profile 未匹配`;
-  elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${formatShotDurationSeconds(shot)} · ${normalizeAnimationPlanAspectRatio(plan.productionStrategy?.targetAspectRatio)} · ${promptProfileStatus} · ${generationMode === "all_reference"
+  elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneIds?.join("、") || shot.sourceSceneId || "未标注场次"} · ${formatShotDurationSeconds(shot)} · ${normalizeAnimationPlanAspectRatio(plan.productionStrategy?.targetAspectRatio)} · ${promptProfileStatus} · ${generationMode === "all_reference"
     ? "多模态参考生成，不锁定精确首尾帧"
     : hasPlannedEndpoints(shot)
       ? "精确锁定已添加的首帧/尾帧"
       : "当前镜头没有端点；首尾帧模式不可用"}`;
   elements.shotVideoReferenceList.innerHTML = renderShotVideoReferenceList(shotId);
-  if (!options.preservePrompt || !elements.shotVideoPromptPreview.value.trim()) {
+  if (storyboard) {
+    elements.confirmGenerateShotVideo.disabled = true;
+    try {
+      const key = currentStoryboardPromptKey(context);
+      if (options.regeneratePrompt || state.shotVideoGeneration.promptKey !== key || !elements.shotVideoPromptPreview.value.trim()) {
+        setShotVideoStatus("AI 正在编写本镜视频提示词…", "active");
+        elements.shotVideoPromptPreview.disabled = true;
+        $("#regenerateShotVideoPrompt").disabled = true;
+        const result = await requestStoryboardShotPrompt(context, options.regeneratePrompt);
+        if (!browserWorkspace.isCurrent(workspaceEpoch) || validationRevision !== state.shotVideoGeneration.validationRevision || !state.shotVideoGeneration.open) return false;
+        if (key !== currentStoryboardPromptKey(shotFrameContext(shotId))) throw new Error("分镜或模型设置已变化，请重新生成本镜提示词。");
+        elements.shotVideoPromptPreview.value = result.videoPrompt;
+        state.shotVideoGeneration.promptKey = key;
+      }
+    } catch (error) {
+      if (browserWorkspace.isCurrent(workspaceEpoch) && validationRevision === state.shotVideoGeneration.validationRevision) setShotVideoStatus(error.message || "提示词生成失败，请重试。", "error");
+      return false;
+    } finally {
+      if (browserWorkspace.isCurrent(workspaceEpoch) && validationRevision === state.shotVideoGeneration.validationRevision) {
+        elements.shotVideoPromptPreview.disabled = state.shotVideoGeneration.running;
+        $("#regenerateShotVideoPrompt").disabled = state.shotVideoGeneration.running;
+      }
+    }
+  } else if (!options.preservePrompt || !elements.shotVideoPromptPreview.value.trim()) {
     elements.shotVideoPromptPreview.value = buildShotVideoPromptPreview(
       shot,
       plan.promptSchemaVersion,
@@ -5482,6 +5521,38 @@ async function updateShotVideoGeneratorPreview(options = {}) {
   syncShotVideoTaskStatus({ includeTerminal: true });
   elements.confirmGenerateShotVideo.disabled = !validation.ok || state.shotVideoGeneration.running;
   return true;
+}
+
+function currentStoryboardPromptKey(context) {
+  if (!context?.variant) throw new Error("当前分镜不可用");
+  return JSON.stringify({ context: currentPlanProductionContext(context.variant.id), shotId: context.shot.shotId,
+    target: shotVideoSetting(), writer: effectiveStageSetting("animationPlan") });
+}
+
+async function requestStoryboardShotPrompt(context, regenerate = false) {
+  const key = currentStoryboardPromptKey(context);
+  if (storyboardPromptRequests.has(key)) return storyboardPromptRequests.get(key);
+  const productionContext = currentPlanProductionContext(context.variant.id);
+  const artifactId = storyboardPromptArtifactId(context.variant.id, context.shot.shotId);
+  const cached = state.shotVideoPrompts?.[artifactId];
+  const target = shotVideoSetting(), writer = effectiveStageSetting("animationPlan");
+  if (!regenerate && storyboardPromptMatches(cached, { planDigest: productionContext.planDigest,
+    provider: target.provider, model: target.model, textProvider: writer.provider, textModel: writer.model })) return cached;
+  const pending = (async () => {
+    const created = await createDurableTask("shotVideoPrompt", withModelOverrides({
+      variantId: context.variant.id, shotId: context.shot.shotId, productionContext,
+      videoProvider: target.provider, videoModel: target.model
+    }));
+    const task = await waitForDurableTask(created.task);
+    recordStageUsage(task.usage);
+    const run = await reloadActiveProductionRun(productionContext, { preserveSelectedVariant: true });
+    assertPlanProductionContextCurrent(productionContext);
+    const entry = run.latestArtifacts?.[artifactId];
+    if (entry?.lineage?.status !== "current") throw new Error("本镜提示词已失效，请重新生成。");
+    return entry.content;
+  })();
+  storyboardPromptRequests.set(key, pending);
+  try { return await pending; } finally { storyboardPromptRequests.delete(key); }
 }
 
 function evaluateShotVideoReferences(shotId) {
@@ -5641,6 +5712,7 @@ async function confirmGenerateShotVideo() {
   const shotId = state.shotVideoGeneration.shotId;
   const context = shotFrameContext(shotId);
   if (!context) return setShotVideoStatus("没有找到对应镜头。", "error");
+  if (isStoryboardPlan(context.plan) && state.shotVideoGeneration.promptKey !== currentStoryboardPromptKey(context)) return setShotVideoStatus("分镜或模型已变化，请先重新生成本镜提示词。", "error");
   const promptOverride = runtimePromptOverride(prompt);
   const validation = await evaluateShotVideoReferences(shotId);
   if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
@@ -6518,7 +6590,9 @@ function renderOneShotFramePreview(shotId, frameKind, stateItem) {
 
 function renderShotVideoResult(shotId) {
   const stateItem = shotVideoStateItem(shotId);
-  if (!stateItem) return `<p>选择首尾帧模式或全能参考模式，即可用 ${escape(shotVideoProviderLabel())} 生成该镜头视频。</p>`;
+  if (!stateItem) return isStoryboardPlan(shotFrameContext(shotId)?.plan)
+    ? "<p>本镜视频尚未生成。</p>"
+    : `<p>选择首尾帧模式或全能参考模式，即可用 ${escape(shotVideoProviderLabel())} 生成该镜头视频。</p>`;
   if (stateItem.status === "running") return `<p class="active">${escape(stateItem.message || `正在生成 ${stateItem.expectedCount || 1} 条视频候选…`)}</p>`;
   if (stateItem.status === "capacity") return `<p class="capacity">${escape(stateItem.message || "服务器任务队列已满，请稍后重试。")}</p>`;
   if (stateItem.status === "error") return `<p class="error">${escape(stateItem.message)}</p>`;
@@ -6957,6 +7031,11 @@ async function resetModelSettings() {
 async function offerVideoPromptRewriteForCurrentPlan() {
   const variant = selectedVariant();
   const plan = variant ? state.animationPlans[variant.id] || null : null;
+  if (isStoryboardPlan(plan) && state.shotVideoGeneration.open) {
+    state.shotVideoGeneration.promptKey = null;
+    await updateShotVideoGeneratorPreview();
+    return;
+  }
   if (!variant || !plan || plan.promptSchemaVersion !== "3.0" || plan.productionStrategy?.format !== "direct_shot_video") return;
   renderAnimationPlan(plan);
   const ui = videoPromptProfileUiState(plan, shotVideoSetting());
@@ -7612,6 +7691,7 @@ function restoreRunArtifacts(latestArtifacts = {}, { selectedVariantId = null } 
   state.characterBoundaryProfile = state.output.visualGuardrails ? { ...profile() } : null;
   state.fullStories = {};
   state.animationPlans = {};
+  state.shotVideoPrompts = {};
   state.animationPlanMetadata = {};
   state.animationAspectRatioDrafts = {};
   state.shotFrameResults = {};
@@ -7626,6 +7706,7 @@ function restoreRunArtifacts(latestArtifacts = {}, { selectedVariantId = null } 
       state.animationPlans[variantId] = entry.content;
       state.animationAspectRatioDrafts[variantId] = normalizeAnimationPlanAspectRatio(entry.content?.productionStrategy?.targetAspectRatio);
     }
+    else if (artifactId.startsWith("shotVideoPrompt:")) state.shotVideoPrompts[artifactId] = entry.content;
     else if (artifactId.startsWith("shotVideo:")) {
       const parts = artifactId.split(":");
       const variantId = parts[1] || "";
@@ -7744,6 +7825,7 @@ function updateStoryExportActions() {
   elements.exportStoryPackage.disabled = !hasStory;
   elements.exportStoryTestPackage.disabled = !hasStory;
   elements.startShotVideoBatch.disabled = !hasAnimation || Boolean(state.shotVideoBatch.taskId);
+  elements.startShotVideoBatch.classList.toggle("hidden", isStoryboardPlan(state.output.animationPlan));
 }
 
 function exportJson() {
@@ -7819,6 +7901,7 @@ async function importStoryTestPackage(file) {
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     reportStatus(error.message || "测试包导入失败", "error");
+    if (elements.storyPage.classList.contains("hidden")) showError(error.message || "测试包导入失败");
   }
 }
 

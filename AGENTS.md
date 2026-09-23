@@ -34,6 +34,10 @@ AI 短视频生产工作流系统。
 
 # 1. 当前架构事实（必须遵守）
 
+**Animation Plan 自主分镜 4.0（2026-09-21，工作区接入，真实验收尚未闭环）**：浏览器明确发送 `animationPlanVersion: "4.0"`，旧 API 无版本保留 direct_shot 3.0。新版以完整原 Full Story、角色事实、画幅/时长/风格/表情/音乐参数生成完整 beats，AI 自定片段与时间、可合并相邻场次；每段整数 4–15 秒、总长沿用共享时长窗口。旧 Full Story 不要求重新生成，不修改正文或重签，只由模型抽取缺失配角事实进入 Plan 的 `characterRegistry`。新生成 Full Story 的浏览器请求为 `full_story/1.2`，正文生成后只整理角色表，未知外观仍交给分镜；旧 1.1/无版本数据不迁移。完整上游冻结和验签仍在，创作 Prompt 不送 Brief/候选/原片叙事。
+
+新版先生成设计，再由 AI 审阅并至多一轮按问题修订，保留修订/引导说明；合理简写不改，模型语义意见不阻断继续，字段/时间/引用/签名仍严格。Plan 没有 `videoPrompt`，点击单镜按钮才创建 `shotVideoPrompt` Durable Task，独立 Artifact `shotVideoPrompt:<variantId>:<shotId>` 依赖 current Plan，绑定 digest 与视频/写稿模型配置。Task Store 仍不保存 Prompt；窗口支持缓存、编辑与重新生成，用户确认前不调视频。只有 continuous 默认请求上一镜抽帧；旧媒体接口需要的字符串只读投影，不回写为第二份分镜。新版批量视频和手动终审界面暂不开放；旧版阅读、媒体与审查保持原行为。结构失败当前直接报错：真实回放最后一段 20 秒被拒绝，是否增加一次模型结构修复正在等用户选择，不能自行缩短时间或改写分镜。详见 `docs/animation-storyboard-implementation-2026-09-21.md`；本段优先于后文描述旧 direct_shot 默认路径的历史规则。
+
 **本机出网代理（2026-09-10）**：macOS 服务、`bin/run-video.js` 和 `workers/generic-http-worker.mjs` 在实际请求前统一初始化 `src/system-proxy.js`。以 `scutil --proxy` 当前有效配置为权威，每 2 秒刷新；不固化地址/端口，也不让继承的大小写 HTTP(S)/ALL/NO_PROXY 覆盖系统状态。全局 fetch dispatcher 保持稳定，后续 dispatch 根据 HTTP/HTTPS 独立开关、系统例外和回环绕过选择连接器；更新不重启 Node、不重复提交、不主动中止在途请求。需要 SOCKS 的路由、PAC/自动发现、读取失败和非法启用配置明确阻断相应外部请求，禁止静默猜测或降级。非 macOS 保留环境代理。该层只改变传输路径，不改变 provider/model、Prompt、任务状态或计费语义。说明与证据见 `docs/system-proxy-follow-2026-09-10.md`。
 
 **浏览器工作区生命周期（2026-09-09）**：新的浏览器 Run 必须绑定服务端 `metadata.browserWorkspaceId`。原视频副本在私有 BrowserWorkspaceStore 持久化，Run metadata 记录其 URL 和 SHA-256；Task Store 仍不保存视频、Prompt 或完整请求体。同一标签页刷新/服务重启恢复副本并重新抽帧，不自动重调 provider；更换视频必须先清旧 Run/媒体/应用源副本。pagehide 或页面生命周期连接断开有 60 秒刷新宽限期，5 秒 sweep 清理；后台页连接仍在时不因心跳节流过期，无连接也无关闭通知时最后心跳起 2 分钟兜底，停服期间下次启动补清。sessionStorage 保存 workspace ID，每文档 pageId 与 source generation 分别阻止旧关闭通知和旧输入回写；不再恢复旧 localStorage Run 指针。长期保存仅创作宇宙七项设置（角色、赛道、限制、表情、候选数量、画幅、时长），模型覆盖只存 sessionStorage。表情和三个生成偏好不得并入 creatorProfile。清理须核对页面归属，scheduler → Run 锁撤销任务后删源副本、Run、其命名空间媒体及 Run 内 Debug；迟到 Runner/worker 不得重建已清数据。已有无页面归属历史 Run、用户原文件、主动导出文件、签名密钥不能由此清理。详见 `docs/production-lineage-state.md` 的浏览器工作区生命周期。

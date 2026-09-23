@@ -14,6 +14,7 @@ import { buildShotFrameMultiImagePrompt } from "./public/shot-frame-multi-image-
 import { computeDependencyHash, computePromptHash } from "./src/frame-dependency.js";
 import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./src/frame-reference-request.js";
 import { WorkflowService } from "./src/workflow.js";
+import { isStoryboardPlan, storyboardPromptArtifactId } from "./public/storyboard-plan.js";
 import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, characterPromptBoundaryMismatch, characterReferenceBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, ensureStoryCandidateContract, ensureThemeVariantsMatchProfile, InputError, requireAnimationPlanAspectRatio } from "./src/validation.js";
 import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
 import { resolveAuthoritativeShotVideoInput, resolveAuthoritativeShotVideoReferenceAssets, resolvePreviousShotFrameReference } from "./src/shot-video-continuity.js";
@@ -138,7 +139,14 @@ const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
   MODEL_OUTPUT_LOG_SCOPES.STORY_QUALITY_REPAIR,
   MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVIEW,
   MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVISION,
-  MODEL_OUTPUT_LOG_SCOPES.FULL_STORY_PROMISE_CHECK
+  MODEL_OUTPUT_LOG_SCOPES.FULL_STORY_PROMISE_CHECK,
+  // 自主分镜 4.0 的六个阶段同样走 coordinator，由 storyboard-workflow.js 接 attemptObserver。
+  MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_CHARACTER_FACTS,
+  MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_DESIGN,
+  MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_REVIEW,
+  MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_REVISION,
+  MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_REVIEW_FINAL,
+  MODEL_OUTPUT_LOG_SCOPES.SHOT_VIDEO_PROMPT
 ];
 const stageModelOutputLogRoot = await resolvePrivateModelOutputLogRoot({
   workspaceRoot: root,
@@ -576,6 +584,7 @@ function taskDefinitionForRequest(body = {}) {
   if (kind === "variants") return standaloneVariantsTaskDefinition({ projectId, runId, input });
   if (kind === "fullStory") return fullStoryTaskDefinition({ projectId, runId, input });
   if (kind === "animationPlan") return animationPlanTaskDefinition({ projectId, runId, input });
+  if (kind === "shotVideoPrompt") return shotVideoPromptTaskDefinition({ projectId, runId, input });
   if (kind === "animationPromptRewrite") return animationPromptRewriteTaskDefinition({ projectId, runId, input });
   if (kind === "characterReferenceRefine") return characterReferenceRefineTaskDefinition({ projectId, runId, input });
   if (kind === "characterReferenceImages") return characterReferenceImagesTaskDefinition({ projectId, runId, input });
@@ -737,6 +746,7 @@ function fullStoryTaskDefinition({ projectId, runId, input }) {
         candidateBinding: lineageRef(candidateLineage),
         creatorProfile: input.creatorProfile,
         targetDurationSeconds: input.targetDurationSeconds,
+        fullStorySchemaVersion: input.fullStorySchemaVersion,
         modelOverrides: input.modelOverrides
       };
     },
@@ -787,6 +797,7 @@ function animationPlanTaskDefinition({ projectId, runId, input }) {
         creatorProfile: input.creatorProfile,
         characterExpressionRules: input.characterExpressionRules,
         animationPlanMode: input.animationPlanMode || "direct_shot",
+        animationPlanVersion: input.animationPlanVersion,
         targetAspectRatio: input.targetAspectRatio,
         backgroundMusicEnabled: input.backgroundMusicEnabled,
         videoPromptTarget: input.videoPromptTarget,
@@ -1136,6 +1147,27 @@ async function executeCharacterReferenceImagesTask(input, context) {
   };
 }
 
+function shotVideoPromptTaskDefinition({ projectId, runId, input }) {
+  const variantId = safeIdentifier(input.variantId, "variantId");
+  const shotId = safeIdentifier(input.shotId, "shotId");
+  const planArtifactId = `animationPlan:${variantId}`;
+  const target = shotVideoRequestSetting(input);
+  if (!isShotVideoGenerationModeSupported(target.provider, "all_reference")) throw new InputError("新版单镜提示词需要受支持的全能参考视频模型");
+  return artifactRouteTaskDefinition({
+    projectId, runId, kind: "shotVideoPrompt", pool: "workflow",
+    artifactId: storyboardPromptArtifactId(variantId, shotId), artifactType: "shotVideoPrompt",
+    dependencyIds: [planArtifactId], modelStages: ["animationPlan"], rawInput: input,
+    prepareInput: (run) => {
+      const entry = requireCurrentArtifact(run, planArtifactId);
+      assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry });
+      if (!isStoryboardPlan(entry.content)) throw new InputError("只有新版自主分镜需要单独生成镜头提示词");
+      return { plan: structuredClone(entry.content), shotId, planDigest: entry.lineage.contentDigest,
+        target: { provider: target.provider, model: target.model }, modelOverrides: input.modelOverrides };
+    },
+    invoke: (trustedInput) => animationPromptCapture.run({ route: "shotVideoPrompt", variantId, provider: "" }, () => workflow.createShotVideoPrompt(trustedInput))
+  });
+}
+
 function shotVideoTaskDefinition({ projectId, runId, input }) {
   const variantId = safeIdentifier(input.variantId || input.selectedVariantId, "variantId");
   const shotId = safeIdentifier(input.shotId || input.shot?.shotId, "shotId");
@@ -1229,6 +1261,7 @@ function shotVideoBatchTaskDefinition({ projectId, runId, input }) {
       const planEntry = requireCurrentArtifact(run, planArtifactId);
       assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry: planEntry });
       const plan = planEntry.content || {};
+      if (isStoryboardPlan(plan)) throw new InputError("新版分镜请逐镜生成并确认视频提示词，暂不支持批量生成视频");
       const shots = Array.isArray(plan.shotPlan) ? plan.shotPlan.filter(Boolean) : [];
       if (!shots.length) {
         throw new ProductionStateError("当前 Animation Plan 没有可批量生成的视频镜头", {

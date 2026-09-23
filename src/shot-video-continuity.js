@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isStoryboardPlan, storyboardShotForVideo } from "../public/storyboard-plan.js";
 import {
   mediaFilenameSegment,
   SHOT_VIDEO_CONTINUITY_NONE,
@@ -64,7 +65,8 @@ export function resolveAuthoritativeShotVideoInput({
     });
   }
   const override = String(promptOverride || "").trim();
-  const shot = structuredClone(matches[0]);
+  if (isStoryboardPlan(plan) && !override) throw new ProductionStateError("请先生成并确认此镜头的视频提示词", { code: "SHOT_VIDEO_PROMPT_REQUIRED" });
+  const shot = structuredClone(isStoryboardPlan(plan) ? storyboardShotForVideo(matches[0]) : matches[0]);
   if (override) shot.videoPrompt = override;
   return {
     shot,

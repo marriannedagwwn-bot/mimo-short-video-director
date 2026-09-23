@@ -1,6 +1,11 @@
 import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPromiseCheckRetryPrompt, fullStoryPromiseFindingsPrompt, fullStoryPromiseListPrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityEditorialPrompt, storyQualityPromisePrompt, storyQualityRepairPrompt, storyQualityRepairRetryPrompt, storyQualityReviewRetryPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { isNarrativeFullStory } from "./full-story-contract.js";
+import { FULL_STORY_CAST_SCHEMA_VERSION } from "../public/full-story-format.js";
+import { STORYBOARD_PLAN_VERSION } from "../public/storyboard-plan.js";
+import { createStoryboardPlan, createSingleShotPrompt } from "./storyboard-workflow.js";
+import { fullStoryCharacterRegistryInput, mergeFullStoryCharacterRegistry, mockFullStoryCharacterRegistry } from "./full-story-character-registry.js";
+import { fullStoryCharacterRegistryPrompt, fullStoryRegisteredVoicesPrompt } from "./full-story-character-registry-prompt.js";
 import {
   FULL_STORY_PRECHECK_SCHEMA_VERSION,
   FULL_STORY_PROMISE_CHECK_STAGE,
@@ -1566,6 +1571,8 @@ export class WorkflowService {
 
   async createFullStory(input, { traceContext = null } = {}) {
     requireObject(input, "请求");
+    const completeCast = input.fullStorySchemaVersion === FULL_STORY_CAST_SCHEMA_VERSION;
+    if (input.fullStorySchemaVersion !== undefined && !completeCast && input.fullStorySchemaVersion !== "full_story/1.1") throw new InputError("不支持的 Full Story 生成版本");
     requireObject(input.creativeBrief, "creativeBrief");
     requireObject(input.variant, "variant");
     const profile = requireObject(input.creatorProfile, "creatorProfile");
@@ -1578,9 +1585,15 @@ export class WorkflowService {
     const validateFullStory = (result) => validateFullStoryForSigning(result, {
       profile, creativeBrief: input.creativeBrief, variant: input.variant, visualGuardrails
     });
-    if (!this.hasLiveClient) return validateFullStory(mockNarrativeFullStory(validatedInput));
+    if (!this.hasLiveClient) {
+      const story = validateFullStory(mockNarrativeFullStory(validatedInput));
+      if (!completeCast) return story;
+      const registryInput = fullStoryCharacterRegistryInput(story, profile);
+      return validateFullStory(mergeFullStoryCharacterRegistry(story, mockFullStoryCharacterRegistry(registryInput), registryInput));
+    }
     this.assertStageClient(settings, "完整剧情");
-    const prompt = fullStoryPrompt({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
+    const basePrompt = fullStoryPrompt({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
+    const prompt = completeCast ? fullStoryRegisteredVoicesPrompt(basePrompt) : basePrompt;
     const observeFullStoryAttempt = this.fullModelOutputLogWriter?.enabled
       ? (attempt) => this.fullModelOutputLogWriter.recordAttempt({
         ...attempt,
@@ -1679,6 +1692,18 @@ export class WorkflowService {
     // full_story/1.1 has no second model-written beatSheet to reconcile.
     // This is not a semantic review pass. Legacy replies still use the exact
     // existing postpass and are never silently converted into the new shape.
+    if (completeCast) {
+      if (!isNarrativeFullStory(fullStory)) throw new OutputContractError("完整角色表只能承接本次生成的新版完整剧情，不能自动迁移旧剧情");
+      const registryInput = fullStoryCharacterRegistryInput(fullStory, profile);
+      return this.modelCallCoordinator.runJson({
+        client: settings.client,
+        request: { prompt: fullStoryCharacterRegistryPrompt(registryInput), model: settings.model, maxCompletionTokens: settings.maxCompletionTokens },
+        provider: settings.provider || "", stage: "fullStoryCharacterRegistry",
+        attemptObserver: observeFullStoryAttempt,
+        maxProviderCalls: 1, shouldRetry: () => false,
+        validate: response => validateFullStory(mergeFullStoryCharacterRegistry(fullStory, response, registryInput))
+      });
+    }
     if (isNarrativeFullStory(fullStory)) return fullStory;
     const beatScenePostpassPlan = createFullStoryBeatScenePostpassPlan(fullStory);
     return this.modelCallCoordinator.runJson({
@@ -2323,8 +2348,14 @@ export class WorkflowService {
     return result.animationPlan;
   }
 
+  async createShotVideoPrompt(input) {
+    return createSingleShotPrompt(this, input);
+  }
+
   async createAnimationPlanWithMetadata(input) {
     requireObject(input, "请求");
+    if (input.animationPlanVersion === STORYBOARD_PLAN_VERSION) return createStoryboardPlan(this, input);
+    if (input.animationPlanVersion !== undefined && input.animationPlanVersion !== "3.0") throw new InputError("不支持的 Animation Plan 生成版本");
     requireObject(input.creativeBrief, "creativeBrief");
     requireObject(input.variant, "variant");
     requireObject(input.fullStory, "fullStory");

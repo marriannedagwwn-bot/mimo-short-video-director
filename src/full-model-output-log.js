@@ -22,7 +22,15 @@ export const MODEL_OUTPUT_LOG_SCOPES = Object.freeze({
   ANIMATION_PLAN_REVIEW: "animationPlanReview",
   ANIMATION_PLAN_REVISION: "animationPlanRevision",
   // 完整剧情的展开前承诺核对（src/full-story-precheck.js 的 FULL_STORY_PROMISE_CHECK_STAGE）。
-  FULL_STORY_PROMISE_CHECK: "fullStoryPromiseCheck"
+  FULL_STORY_PROMISE_CHECK: "fullStoryPromiseCheck",
+  // 自主分镜 4.0 的六个阶段。它们走 modelCallCoordinator，由 storyboard-workflow.js 的
+  // 共用 call() 自己接 attemptObserver；取值同样必须逐字等于传给 runJson 的 stage。
+  STORYBOARD_CHARACTER_FACTS: "storyboardCharacterFacts",
+  STORYBOARD_DESIGN: "storyboardDesign",
+  STORYBOARD_REVIEW: "storyboardReview",
+  STORYBOARD_REVISION: "storyboardRevision",
+  STORYBOARD_REVIEW_FINAL: "storyboardReviewFinal",
+  SHOT_VIDEO_PROMPT: "shotVideoPrompt"
 });
 
 export async function resolvePrivateModelOutputLogRoot({

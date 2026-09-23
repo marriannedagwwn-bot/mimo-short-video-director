@@ -21,6 +21,11 @@ export function characterReferenceAudioClips(reference = {}) {
 export function shotRelatedCharacterAudioClips(shot = {}, characterReferences = []) {
   const references = Array.isArray(characterReferences) ? characterReferences.filter(Boolean) : [];
   const dialogueOrSubtitle = String(shot?.dialogueOrSubtitle || "");
+  if (Array.isArray(shot.beats)) {
+    const speakers = new Set(shot.beats.flatMap(beat => (beat.dialogue || []).map(line => line.speaker)));
+    return references.filter(reference => speakers.has(reference.characterName)).flatMap(reference =>
+      characterReferenceAudioClips(reference).map(clip => ({ characterName: reference.characterName, clip })));
+  }
   return references.filter((reference) => (
     dialogueNamesCharacterAsSpeaker(
       dialogueOrSubtitle,

@@ -48,6 +48,7 @@
       <div class="principles" aria-label="改编原则">
         <span>同定位</span><i></i><span>同受众</span><i></i><span>同情绪</span><i></i><span>同类驱动力</span><i></i><span>新表达</span>
       </div>
+      <button class="outline-button" id="importStoryPackageHome" type="button">导入已有完整剧情 JSON</button>
     </section>
 
     <section class="workspace-grid">
@@ -401,6 +402,7 @@
         <div class="modal-panel shot-video-output-panel">
           <span class="block-label">视频提示词预览 · 可编辑</span>
           <textarea class="prompt-preview prompt-preview-editor shot-video-prompt-editor" id="shotVideoPromptPreview" rows="14"></textarea>
+          <button class="outline-button hidden" id="regenerateShotVideoPrompt" type="button">重新生成本镜提示词</button>
           <p class="story-status" id="shotVideoStatus"></p>
           <button class="primary-button" id="confirmGenerateShotVideo" type="button">
             <span>用可灵 AI 生成</span>
