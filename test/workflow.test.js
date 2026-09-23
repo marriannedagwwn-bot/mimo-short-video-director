@@ -1116,6 +1116,34 @@ test("模型生成请求默认允许等待 15 分钟且支持环境变量覆盖"
   }
 });
 
+test("三家文本模型的输出上限默认统一为 32768", () => {
+  // 流式请求已不设总时长，上限是模型陷入重复输出时唯一的刹车，所以调大而不是取消。
+  // 在用的 7 个模型 2026-09-23 实测 32768 与 65536 都被接受。
+  const keys = [
+    "MIMO_MAX_COMPLETION_TOKENS", "MIMO_STORY_MAX_COMPLETION_TOKENS", "MIMO_ANIMATION_MAX_COMPLETION_TOKENS",
+    "QWEN_MAX_COMPLETION_TOKENS", "QWEN_ANALYSIS_MAX_COMPLETION_TOKENS", "QWEN_RECONSTRUCTION_MAX_COMPLETION_TOKENS",
+    "QWEN_BRIEF_MAX_COMPLETION_TOKENS", "QWEN_VISUAL_MAX_COMPLETION_TOKENS", "QWEN_VARIANTS_MAX_COMPLETION_TOKENS",
+    "QWEN_STORY_MAX_COMPLETION_TOKENS", "QWEN_ANIMATION_MAX_COMPLETION_TOKENS", "QWEN_CHARACTER_REFERENCE_MAX_COMPLETION_TOKENS",
+    "DEEPSEEK_MAX_COMPLETION_TOKENS"
+  ];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    const { mimo, qwen, deepseek } = getConfig();
+    for (const [label, value] of Object.entries({
+      "mimo": mimo.maxCompletionTokens, "mimo.story": mimo.storyMaxCompletionTokens, "mimo.animation": mimo.animationMaxCompletionTokens,
+      "qwen": qwen.maxCompletionTokens, "qwen.variants": qwen.variantsMaxCompletionTokens, "qwen.story": qwen.storyMaxCompletionTokens,
+      "qwen.animation": qwen.animationMaxCompletionTokens, "qwen.visual": qwen.visualMaxCompletionTokens,
+      "deepseek": deepseek.maxCompletionTokens
+    })) assert.equal(value, 32_768, label);
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});
+
 test("Qwen 与 MiMo 流式空闲超时默认 120 秒且支持环境变量覆盖", () => {
   const keys = ["MIMO_STREAM_IDLE_TIMEOUT_MS", "QWEN_STREAM_IDLE_TIMEOUT_MS"];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));

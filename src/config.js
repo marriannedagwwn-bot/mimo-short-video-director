@@ -59,11 +59,14 @@ export function getConfig() {
   const videoFps = clampNumber(process.env.MIMO_VIDEO_FPS, 2, 0.1, 10);
   const requestedVideoResolution = process.env.MIMO_VIDEO_MEDIA_RESOLUTION?.trim().toLowerCase() || "default";
   const videoMediaResolution = ["default", "max"].includes(requestedVideoResolution) ? requestedVideoResolution : "default";
-  const maxCompletionTokens = Math.round(clampNumber(process.env.MIMO_MAX_COMPLETION_TOKENS, 8192, 512, 32768));
+  // 输出上限统一默认 32768（2026-09-23）。流式请求已不设总时长，上限是模型陷入重复输出时唯一的刹车，
+  // 所以调大而不取消；在用的 7 个模型（qwen3.7-max/plus、mimo-v2.5/v2.5-pro/v2.6-pro、deepseek-v4-flash/pro）
+  // 实测 32768 与 65536 都被接受。MiMo 的上限包含推理 token。
+  const maxCompletionTokens = Math.round(clampNumber(process.env.MIMO_MAX_COMPLETION_TOKENS, 32768, 512, 32768));
   const requestedThinking = process.env.MIMO_THINKING?.trim().toLowerCase() || "disabled";
   const thinking = ["disabled", "enabled"].includes(requestedThinking) ? requestedThinking : "disabled";
-  const storyMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_STORY_MAX_COMPLETION_TOKENS, 12288, 1024, 32768));
-  const animationMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_ANIMATION_MAX_COMPLETION_TOKENS, 12288, 1024, 32768));
+  const storyMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_STORY_MAX_COMPLETION_TOKENS, 32768, 1024, 32768));
+  const animationMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_ANIMATION_MAX_COMPLETION_TOKENS, 32768, 1024, 32768));
   const jsonRetryAttempts = Math.round(clampNumber(process.env.MIMO_JSON_RETRY_ATTEMPTS, 2, 0, 3));
   const mimoRequestTimeoutMs = Math.round(clampNumber(process.env.MIMO_REQUEST_TIMEOUT_MS, 900000, 30000, 900000));
   // 流式客户端只判空闲，不设总时长：连续这么久没收到任何数据才中断（src/stream-idle-timeout.js）。
@@ -87,7 +90,7 @@ export function getConfig() {
   const qwenMinPixels = optionalInteger(process.env.QWEN_VIDEO_MIN_PIXELS, 4096, 16777216);
   const qwenMaxPixels = optionalInteger(process.env.QWEN_VIDEO_MAX_PIXELS, 4096, 2048000);
   const qwenTotalPixels = optionalInteger(process.env.QWEN_VIDEO_TOTAL_PIXELS, 4096, 819200000);
-  const qwenMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_MAX_COMPLETION_TOKENS, 16384, 1024, 65536));
+  const qwenMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_MAX_COMPLETION_TOKENS, 32768, 1024, 65536));
   const qwenAnalysisMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_ANALYSIS_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
   const qwenReconstructionMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_RECONSTRUCTION_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
   const qwenBriefMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_BRIEF_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
@@ -104,7 +107,7 @@ export function getConfig() {
   const deepseekBaseUrl = process.env.DEEPSEEK_BASE_URL?.trim() || "https://api.deepseek.com";
   const deepseekApiKey = process.env.DEEPSEEK_API_KEY?.trim() || "";
   const deepseekModel = process.env.DEEPSEEK_MODEL?.trim() || "deepseek-v4-flash";
-  const deepseekMaxCompletionTokens = Math.round(clampNumber(process.env.DEEPSEEK_MAX_COMPLETION_TOKENS, 16384, 1024, 65536));
+  const deepseekMaxCompletionTokens = Math.round(clampNumber(process.env.DEEPSEEK_MAX_COMPLETION_TOKENS, 32768, 1024, 65536));
   const deepseekJsonRetryAttempts = Math.round(clampNumber(process.env.DEEPSEEK_JSON_RETRY_ATTEMPTS, 2, 0, 3));
   const deepseekRequestTimeoutMs = Math.round(clampNumber(process.env.DEEPSEEK_REQUEST_TIMEOUT_MS, 900000, 30000, 900000));
   const requestedDeepseekThinking = process.env.DEEPSEEK_THINKING?.trim().toLowerCase() || "disabled";

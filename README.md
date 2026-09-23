@@ -165,7 +165,7 @@ MIMO_MEDIA_MODE=auto
 
 `MIMO_MEDIA_MODE=auto` 会优先通过 `video_url` 发送原生视频；请求中会按 MiMo V2.5 文档携带 `fps` 与 `media_resolution`，默认 `MIMO_VIDEO_FPS=2`、`MIMO_VIDEO_MEDIA_RESOLUTION=default`。若服务返回不支持媒体类型的 400/415/422，再自动回退为带时间戳关键帧。超过 `MIMO_NATIVE_VIDEO_MAX_MB` 的视频直接使用关键帧，避免 base64 请求占用过多内存。
 
-MiMo 请求参数默认为 `temperature=0.3`、`top_p=0.95`、`max_completion_tokens=8192`、`thinking=disabled`、`stream=true`。V2.5 / V2.6 的文本、图片、视频理解均通过共享 SSE 解析器接收，推理内容与正文分开，收到完整结束标志后才解析并校验业务 JSON；页面仍在阶段完成后显示结果，不逐字显示未校验正文。每 10 秒最多更新一次任务流进度；实际收到的结构化 token 用量在成功、断流、暂停或终止时均保留，未知用量不估算。流不完整或途中断开明确失败，不回退非流式。HTTP 错误原文及原有媒体兼容回退保持原行为。分镜输出日志通过并行读取响应副本观测 SSE，不阻塞客户端收流；日志只保存正文与供应商用量。[实现与验收记录](docs/mimo-streaming-2026-09-22.md)。如果没有配置 Qwen，参考片分析、脚本还原、creativeBrief、主题变体、完整剧情和动画生产包都会回退到 MiMo 的对应模型。
+MiMo 请求参数默认为 `temperature=0.3`、`top_p=0.95`、`max_completion_tokens=32768`、`thinking=disabled`、`stream=true`。V2.5 / V2.6 的文本、图片、视频理解均通过共享 SSE 解析器接收，推理内容与正文分开，收到完整结束标志后才解析并校验业务 JSON；页面仍在阶段完成后显示结果，不逐字显示未校验正文。每 10 秒最多更新一次任务流进度；实际收到的结构化 token 用量在成功、断流、暂停或终止时均保留，未知用量不估算。流不完整或途中断开明确失败，不回退非流式。HTTP 错误原文及原有媒体兼容回退保持原行为。分镜输出日志通过并行读取响应副本观测 SSE，不阻塞客户端收流；日志只保存正文与供应商用量。[实现与验收记录](docs/mimo-streaming-2026-09-22.md)。如果没有配置 Qwen，参考片分析、脚本还原、creativeBrief、主题变体、完整剧情和动画生产包都会回退到 MiMo 的对应模型。
 
 `MIMO_THINKING=disabled` 时，MiMo 用户消息末尾会追加 `/no_think`；改成 `MIMO_THINKING=enabled` 后，请求体会发送 `thinking={"type":"enabled"}`，并且不会再追加 `/no_think`。
 
@@ -246,7 +246,7 @@ DeepSeek 只作为显式可选的纯文本 provider，不会因为配置了 API 
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_API_KEY=你的 DeepSeek key
 DEEPSEEK_MODEL=deepseek-v4-flash
-DEEPSEEK_MAX_COMPLETION_TOKENS=16384
+DEEPSEEK_MAX_COMPLETION_TOKENS=32768
 DEEPSEEK_REQUEST_TIMEOUT_MS=900000
 DEEPSEEK_JSON_RETRY_ATTEMPTS=2
 DEEPSEEK_THINKING=disabled
