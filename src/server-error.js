@@ -8,8 +8,10 @@ import {
 import { JimengImageConfigError, JimengImageProviderError } from "./jimeng-client.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { ModelPipelineError, sanitizePublicMetadata } from "./model-errors.js";
+import { describeProviderError } from "./provider-error-codes.js";
 import { ShotVideoConfigError, ShotVideoProviderError } from "./shot-video-generator.js";
 import { StaticFrameCompilerError } from "./static-frame-compiler.js";
+import { readSystemProxyError } from "./system-proxy.js";
 import { ProductionStateError } from "./production-lineage.js";
 import { InputError, OutputContractError } from "./validation.js";
 
@@ -17,6 +19,16 @@ export function serializeServerError(error, {
   attemptStore = null
 } = {}) {
   const store = attemptStore instanceof AttemptStore ? attemptStore : null;
+  const proxyFailure = readSystemProxyError(error);
+  if (proxyFailure) {
+    return response(503, observabilityBody({
+      error: proxyFailure.message,
+      category: "transport",
+      code: proxyFailure.code,
+      origin: "system",
+      retryable: false
+    }));
+  }
 
   if (error instanceof ModelPipelineError) {
     return response(error.httpStatus, {
@@ -26,7 +38,22 @@ export function serializeServerError(error, {
       origin: error.origin,
       retryable: error.retryable,
       details: error.diagnostics,
-      attempts: error.attempts
+      attempts: error.attempts,
+      // 供应商原文此前在这条分支上被整个吞掉：下面的 ModelResponseError 分支
+      // 带 providerError，这条不带，而 coordinator 抛的正是 ModelPipelineError——
+      // 于是**凡是走 coordinator 的阶段**（定向修订、Full Story、Animation Plan、
+      // 候选对照评审）供应商自己的那句话一律看不到。
+      //
+      // 实际代价：2026-09-07 一次重试被 HTTP 400 拒绝，350 字节的错误原文躺在内存
+      // AttemptStore 里（attempts[].rawOutputRef 指着它），而响应里 details 是空数组、
+      // 没有 providerError，根本判断不出 400 的原因，调查就此中断。这与 §5.1
+      // 「原文必须真的显示出来」是同一条规则。
+      //
+      // **纯增字段**：上面七个逐字不变。原始错误由 coordinator 以 cause 传下来
+      // （ModelPipelineError 用 super(message, {cause}) 保留），所以这里不重新记
+      // attempt——原文已经在 error.attempts 的 rawOutput 里，再记一条是重复。
+      // 匹配不到码表就是 null，调用方回退原文。
+      providerError: describeServerProviderError(error)
     });
   }
 
@@ -98,13 +125,16 @@ export function serializeServerError(error, {
   }
 
   if (error instanceof ShotVideoProviderError) {
+    // detail 仍是供应商原文，一个字都不删；providerError 是额外的解释层。
+    const providerError = describeServerProviderError(error);
     return response(502, observabilityBody({
       error: "视频生成服务调用失败",
       detail: error.message,
       category: "provider",
       code: "SHOT_VIDEO_PROVIDER_ERROR",
       origin: "provider",
-      retryable: false
+      retryable: providerError ? providerError.retryable : false,
+      providerError
     }));
   }
 
@@ -123,14 +153,16 @@ export function serializeServerError(error, {
       provider: "Jimeng",
       code: "IMAGE_PROVIDER_ERROR"
     });
+    const providerError = describeServerProviderError(error);
     return response(502, observabilityBody({
       error: "即梦图片生成服务调用失败",
       detail: error.message,
       category: "provider",
       code: "IMAGE_PROVIDER_ERROR",
       origin: "provider",
-      retryable: isRetryableProviderStatus(error.status),
-      attempts
+      retryable: providerError ? providerError.retryable : isRetryableProviderStatus(error.status),
+      attempts,
+      providerError
     }));
   }
 
@@ -165,13 +197,15 @@ export function serializeServerError(error, {
       provider: String(error.provider || ""),
       code: "MODEL_RESPONSE_ERROR"
     });
+    const providerError = describeServerProviderError(error);
     return response(502, observabilityBody({
       error: error.message,
       category: "provider",
       code: "MODEL_RESPONSE_ERROR",
       origin: "provider",
-      retryable: isRetryableProviderStatus(error.status),
-      attempts
+      retryable: providerError ? providerError.retryable : isRetryableProviderStatus(error.status),
+      attempts,
+      providerError
     }));
   }
 
@@ -269,6 +303,33 @@ function observabilityBody({
     attempts: Array.isArray(attempts) ? attempts : [],
     ...extra
   };
+}
+
+/**
+ * HTTP 出口与 Durable Task 共用同一份供应商识别，仅返回码表的展示字段。
+ * 从 ModelPipelineError 的 cause 里取供应商原文并查码表。
+ *
+ * coordinator 把最后一次失败的原始错误作为 cause 传上来，所以只有当它确实是
+ * ModelResponseError（带 raw 与 status）时才有原文可查。传输中断、budget 耗尽
+ * 这类没有供应商响应体的失败一律返回 null，调用方回退原文——**编一句「可能是
+ * 网络问题」比不解释更糟**（§5.1）。
+ */
+export function describeServerProviderError(error) {
+  if (error instanceof ModelPipelineError) {
+    return error.cause instanceof ModelResponseError ? describeServerProviderError(error.cause) : null;
+  }
+  if (error instanceof ShotVideoProviderError) {
+    return describeProviderError({ provider: error.provider, httpStatus: error.status, payload: error.message });
+  }
+  if (error instanceof JimengImageProviderError) {
+    return describeProviderError({ provider: "Jimeng", httpStatus: error.status, payload: error.raw || error.message });
+  }
+  if (!(error instanceof ModelResponseError)) return null;
+  return describeProviderError({
+    provider: error.provider || error.metadata?.provider,
+    httpStatus: error.status,
+    payload: error.raw
+  });
 }
 
 function providerRawAttempt(error, store, {

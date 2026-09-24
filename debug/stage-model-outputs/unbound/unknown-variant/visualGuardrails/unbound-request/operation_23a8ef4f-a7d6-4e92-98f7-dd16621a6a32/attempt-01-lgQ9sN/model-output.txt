@@ -1,0 +1,342 @@
+{
+  "fixedCharacterBoundary": {
+    "schemaVersion": "2.0",
+    "characterName": "小白子",
+    "canonicalDescription": "浅灰蓝色长发，发型为长直发并带有刘海与两侧碎发；服装为深蓝色校服西装外套、白衬衫、蓝领带、深蓝短裙，佩戴蓝色长围巾；无头饰，但头顶有一个光环。",
+    "bodyForm": "人类少女形态，头顶有光环，无其他非人类器官",
+    "requiredTraits": [
+      {
+        "canonicalName": "浅灰蓝色长直发",
+        "terms": [
+          "浅灰蓝色长发",
+          "长直发",
+          "刘海与两侧碎发"
+        ],
+        "scope": "appearance",
+        "evidenceLevel": "explicit",
+        "triggerEvidence": [
+          {
+            "sourcePath": "creatorProfile.fixedCharacter",
+            "evidence": "浅灰蓝色长发，发型为长直发并带有刘海与两侧碎发"
+          }
+        ],
+        "reason": "用户明确指定的发型与发色，必须保留"
+      },
+      {
+        "canonicalName": "深蓝色校服套装",
+        "terms": [
+          "深蓝色校服西装外套",
+          "白衬衫",
+          "蓝领带",
+          "深蓝短裙"
+        ],
+        "scope": "appearance",
+        "evidenceLevel": "explicit",
+        "triggerEvidence": [
+          {
+            "sourcePath": "creatorProfile.fixedCharacter",
+            "evidence": "服装为深蓝色校服西装外套、白衬衫、蓝领带、深蓝短裙"
+          }
+        ],
+        "reason": "用户明确指定的服装，必须保留"
+      },
+      {
+        "canonicalName": "蓝色长围巾",
+        "terms": [
+          "蓝色长围巾"
+        ],
+        "scope": "appearance",
+        "evidenceLevel": "explicit",
+        "triggerEvidence": [
+          {
+            "sourcePath": "creatorProfile.fixedCharacter",
+            "evidence": "佩戴蓝色长围巾"
+          }
+        ],
+        "reason": "用户明确指定的配饰，必须保留"
+      },
+      {
+        "canonicalName": "头顶光环",
+        "terms": [
+          "光环"
+        ],
+        "scope": "appearance",
+        "evidenceLevel": "explicit",
+        "triggerEvidence": [
+          {
+            "sourcePath": "creatorProfile.fixedCharacter",
+            "evidence": "无头饰，但头顶有一个光环"
+          }
+        ],
+        "reason": "用户明确指定的头部特征，必须保留"
+      },
+      {
+        "canonicalName": "无头饰",
+        "terms": [
+          "无头饰"
+        ],
+        "scope": "appearance",
+        "evidenceLevel": "explicit",
+        "triggerEvidence": [
+          {
+            "sourcePath": "creatorProfile.fixedCharacter",
+            "evidence": "无头饰，但头顶有一个光环"
+          }
+        ],
+        "reason": "用户明确排除头饰，必须保留"
+      },
+      {
+        "canonicalName": "学生身份",
+        "terms": [
+          "学生",
+          "孙女"
+        ],
+        "scope": "identity",
+        "evidenceLevel": "explicit",
+        "triggerEvidence": [
+          {
+            "sourcePath": "creativeBrief.roleAndOccupationMapping",
+            "evidence": "学生，与奶奶共同生活的孙女"
+          }
+        ],
+        "reason": "用户明确指定的身份与社会角色"
+      },
+      {
+        "canonicalName": "简单人话能力",
+        "terms": [
+          "谢谢",
+          "再见",
+          "简单人话"
+        ],
+        "scope": "storyFunction",
+        "evidenceLevel": "explicit",
+        "triggerEvidence": [
+          {
+            "sourcePath": "creatorProfile.constraints",
+            "evidence": "小白子会「谢谢、再见」等简单人话"
+          }
+        ],
+        "reason": "用户明确指定的语言能力边界"
+      }
+    ],
+    "allowedTraits": [
+      {
+        "canonicalName": "嗷呜嗷语气表达",
+        "terms": [
+          "嗷呜～",
+          "～",
+          "配合语气表情动作表达"
+        ],
+        "scope": "storyFunction",
+        "evidenceLevel": "explicit",
+        "triggerEvidence": [
+          {
+            "sourcePath": "creatorProfile.constraints",
+            "evidence": "复杂交流以「嗷呜～、～」配合语气、表情和动作清晰表达不同含义"
+          }
+        ],
+        "reason": "用户允许的复杂交流替代方式，可按剧情需要选择使用"
+      },
+      {
+        "canonicalName": "与路人短暂互动",
+        "terms": [
+          "擦肩而过",
+          "打招呼",
+          "短暂交谈",
+          "简单互动"
+        ],
+        "scope": "storyFunction",
+        "evidenceLevel": "explicit",
+        "triggerEvidence": [
+          {
+            "sourcePath": "creatorProfile.constraints",
+            "evidence": "可以根据场景需要自然加入1～2名路人或临时角色。这些角色可以与小白子擦肩而过、打招呼、短暂交谈或产生简单互动"
+          }
+        ],
+        "reason": "用户允许的社交互动范围"
+      }
+    ],
+    "forbiddenTraits": [
+      {
+        "canonicalName": "拟人动物外形",
+        "terms": [
+          "拟人动物",
+          "动物外壳",
+          "翅膀",
+          "兽爪",
+          "肉垫",
+          "鸟喙"
+        ],
+        "scope": "appearance",
+        "evidenceLevel": "inferred",
+        "triggerEvidence": [
+          {
+            "sourcePath": "creativeBrief.protectedExpressions",
+            "evidence": "不得将翅膀、兽爪、肉垫、鸟喙等非人类结构赋予小白子或芙芙猫"
+          }
+        ],
+        "reason": "用户明确禁止将原片拟人动物特征赋予小白子"
+      },
+      {
+        "canonicalName": "非人类器官",
+        "terms": [
+          "非人类器官",
+          "非人类结构"
+        ],
+        "scope": "appearance",
+        "evidenceLevel": "inferred",
+        "triggerEvidence": [
+          {
+            "sourcePath": "creatorProfile.fixedCharacter",
+            "evidence": "固定角色文本优先级最高；不得将翅膀、兽爪、肉垫、鸟喙等非人类结构赋予小白子"
+          }
+        ],
+        "reason": "小白子为人类少女形态，除光环外不得添加非人类器官"
+      },
+      {
+        "canonicalName": "未授权服装头饰",
+        "terms": [
+          "未授权服装",
+          "未授权头饰",
+          "职业装束"
+        ],
+        "scope": "appearance",
+        "evidenceLevel": "inferred",
+        "triggerEvidence": [
+          {
+            "sourcePath": "creativeBrief.protectedExpressions",
+            "evidence": "不得给小白子添加原片未授权的服装、头饰或职业装束"
+          }
+        ],
+        "reason": "用户明确禁止添加未授权外观元素"
+      }
+    ],
+    "unresolvedConflicts": []
+  },
+  "allowedPositiveTraits": [],
+  "positivePromptBoundary": [],
+  "sourceSimilarityRules": [
+    {
+      "text": "原片角色咕嘎的翅膀与糯糯的拟人动物外形不得出现在新片角色身上",
+      "sourceExpression": "咕嘎的翅膀、糯糯的拟人动物外形",
+      "triggerEvidence": [
+        {
+          "sourcePath": "creativeBrief.protectedExpressions[0].sourceExpression",
+          "evidence": "咕嘎的翅膀、糯糯的拟人动物外形"
+        }
+      ],
+      "appliesWhenReferenceUsed": true
+    },
+    {
+      "text": "原片角色咕嘎和糯糯的 unspecified 儿童服装不得复刻",
+      "sourceExpression": "咕嘎和糯糯的 unspecified 儿童服装",
+      "triggerEvidence": [
+        {
+          "sourcePath": "creativeBrief.protectedExpressions[1].sourceExpression",
+          "evidence": "咕嘎和糯糯的 unspecified 儿童服装"
+        }
+      ],
+      "appliesWhenReferenceUsed": true
+    },
+    {
+      "text": "原片道具竹椅、蓝色回收箱、粉笔画格子不得原样复刻",
+      "sourceExpression": "竹椅、蓝色回收箱、粉笔画格子",
+      "triggerEvidence": [
+        {
+          "sourcePath": "creativeBrief.protectedExpressions[2].sourceExpression",
+          "evidence": "竹椅、蓝色回收箱、粉笔画格子"
+        }
+      ],
+      "appliesWhenReferenceUsed": true
+    },
+    {
+      "text": "原片任务物品旧衣服不得出现",
+      "sourceExpression": "旧衣服",
+      "triggerEvidence": [
+        {
+          "sourcePath": "creativeBrief.protectedExpressions[3].sourceExpression",
+          "evidence": "旧衣服"
+        }
+      ],
+      "appliesWhenReferenceUsed": true
+    },
+    {
+      "text": "原片准备方式用身体压平衣服并自称熨斗不得出现",
+      "sourceExpression": "用身体压平衣服并自称斗",
+      "triggerEvidence": [
+        {
+          "sourcePath": "creativeBrief.protectedExpressions[4].sourceExpression",
+          "evidence": "用身体压平衣服并自称熨斗"
+        }
+      ],
+      "appliesWhenReferenceUsed": true
+    },
+    {
+      "text": "原片等待游戏粉笔画格子玩石子游戏不得出现",
+      "sourceExpression": "粉笔画格子玩石子游戏",
+      "triggerEvidence": [
+        {
+          "sourcePath": "creativeBrief.protectedExpressions[5].sourceExpression",
+          "evidence": "粉笔画格子玩石子游戏"
+        }
+      ],
+      "appliesWhenReferenceUsed": true
+    },
+    {
+      "text": "原片奖励物小红花不得出现",
+      "sourceExpression": "小红花",
+      "triggerEvidence": [
+        {
+          "sourcePath": "creativeBrief.protectedExpressions[6].sourceExpression",
+          "evidence": "小红花"
+        }
+      ],
+      "appliesWhenReferenceUsed": true
+    },
+    {
+      "text": "原片结尾食物面条不得出现",
+      "sourceExpression": "面条",
+      "triggerEvidence": [
+        {
+          "sourcePath": "creativeBrief.protectedExpressions[7].sourceExpression",
+          "evidence": "面条"
+        }
+      ],
+      "appliesWhenReferenceUsed": true
+    }
+  ],
+  "dialogueRules": [
+    {
+      "text": "小白子只能说「谢谢」「再见」等简单人话，复杂交流必须以「嗷呜～」「嗷～」配合语气、表情和动作表达",
+      "triggerEvidence": [
+        {
+          "sourcePath": "creatorProfile.constraints",
+          "evidence": "小白子会「谢谢、再见」等简单人话，复杂交流以「嗷呜～、～」配合语气、表情和动作清晰表达不同含义"
+        }
+      ]
+    }
+  ],
+  "stageInstructions": {
+    "themeVariants": "正向提示词服从角色边界；渲染负面提示词由 animationPlan 按当前镜头和明确证据逐镜生成。",
+    "fullStory": "正向提示词服从角色边界；渲染负面提示词由 animationPlan 按当前镜头和明确证据逐镜生成。",
+    "animationPlan": "正向提示词服从角色边界；渲染负面提示词由 animationPlan 按当前镜头和明确证据逐镜生成。"
+  },
+  "rationale": "本阶段仅对固定角色小白子进行完整语义判断，形成后续全部阶段共用的全局角色边界。小白子为人类少女形态，头顶有光环，无其他非人类器官；服装严格限定为深蓝色校服套装与蓝色长围巾，无头饰；语言能力限于简单人话与嗷呜嗷语气表达。原片表面表达已收录至 sourceSimilarityRules，仅在实际使用原片视觉参考时作为渲染负面提示词依据，不得提前解释为剧情或台词禁词。",
+  "uncertainties": [
+    {
+      "field": "小白子的具体年龄",
+      "reason": "用户未明确指定年龄，仅通过校服推断为学生",
+      "safeFallback": "按学生形象处理，不指定具体年龄数字"
+    },
+    {
+      "field": "光环的具体视觉形态",
+      "reason": "用户仅说明「头顶有一个光环」，未描述颜色、大小、发光效果等细节",
+      "safeFallback": "按常见天使光环或神圣光环的视觉惯例处理，保持简洁"
+    },
+    {
+      "field": "芙芙猫的具体外观细节",
+      "reason": "用户描述了毛色、发型、猫耳、猫尾，但未说明体型大小、眼睛颜色、表情特征等",
+      "safeFallback": "按用户描述的毛色与特征处理，其余细节按可爱猫咪的视觉惯例补充"
+    }
+  ]
+}

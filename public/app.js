@@ -1,7 +1,53 @@
 import { syncShotCharacterReference } from "./character-reference-sync.js";
+import { isStoryboardPlan, STORYBOARD_PLAN_VERSION, storyboardPromptArtifactId, storyboardPromptMatches, storyboardUsesPreviousFrames } from "./storyboard-plan.js";
+import { renderStoryboard } from "./storyboard-render.js";
+const storyboardPromptRequests = new Map();
 import { formatStageUsageSuffix, mergeStageUsage } from "./token-usage-format.js";
+import { storyPackageFilename } from "./export-filename.js";
+import { isNarrativeFullStory } from "./full-story-format.js";
+import { downloadProductionPackage } from "./production-package-download.js";
+import {
+  CANDIDATE_REVIEW_CONFIDENCE_LABELS,
+  CANDIDATE_REVIEW_DIMENSION_LABELS,
+  CANDIDATE_REVIEW_LITERAL_DEPENDENCY_LABELS,
+  CANDIDATE_REVIEW_OVERRIDE_LABELS,
+  CANDIDATE_REVIEW_SPECIAL_DEFECT_LABELS,
+  CANDIDATE_REVIEW_TIERS,
+  FULL_STORY_PRECHECK_REASON_LABELS,
+  PROMISE_CHECK_STATUS_LABELS,
+  SOURCE_SCAFFOLD_COPY_SCORE,
+  STORY_QUALITY_ISSUE_TYPE_LABELS,
+  candidateReviewHeadline,
+  storyQualityRepairableItems,
+  storyReviewHeadline,
+  storyReviewMetrics
+} from "./story-review-metrics.js";
+import {
+  createDirectorArtifactSynchronizer,
+  directorControlView,
+  directorTaskView
+} from "./director-pipeline-ui.js";
+import { fullStoryControlView, fullStoryTaskView } from "./full-story-control-ui.js";
+import {
+  isActiveTask, latestTaskForTarget, rememberTaskSnapshot, taskStatusView, shotVideoBatchStatusText, taskErrorMessage
+} from "./task-status-ui.js";
 import { compileShotNegativePrompt } from "./negative-prompts.js";
 import { buildShotFrameImagePrompt, compileShotFrameNegativePrompt } from "./shot-frame-prompt.js";
+import { buildCharacterReferenceImagePrompt } from "./character-reference-prompt.js";
+import {
+  characterReferenceAudioClips,
+  shotRelatedCharacterAudioClips,
+  validateCharacterReferenceAudioClips
+} from "./character-reference-audio.js";
+import {
+  ALL_REFERENCE_MAX_AUDIOS,
+  ALL_REFERENCE_MAX_IMAGES,
+  ALL_REFERENCE_MAX_VIDEO_BYTES,
+  ALL_REFERENCE_MAX_VIDEOS,
+  ALL_REFERENCE_MEDIA_MAX_SECONDS,
+  ALL_REFERENCE_MEDIA_MIN_SECONDS,
+  ALL_REFERENCE_MEDIA_TOTAL_SECONDS
+} from "./all-reference-limits.js";
 import {
   buildFrameReferenceManifest,
   canReusePreviousEndFrameAsStart,
@@ -10,6 +56,18 @@ import {
   shotRelatedCharacterReferences
 } from "./shot-reference-images.js";
 import { computeDependencyHash, computePromptHash } from "./frame-dependency.js";
+import { fullStoryShapeWarnings } from "./full-story-shape-metrics.js";
+import {
+  STORY_DURATION_SOURCE,
+  resolveStoryDurationTarget,
+  storyDurationOptions,
+  storyDurationWindow,
+  storyOutlineTotalSeconds
+} from "./story-duration.js";
+import { CHARACTER_EXPRESSION_RULES_STORAGE_KEY } from "./character-expression-rules.js";
+import {
+  createBrowserWorkspaceClient, creationPreferences, CREATION_PREFERENCES_STORAGE_KEY
+} from "./browser-workspace-client.js";
 import { buildShotFrameMultiImagePrompt } from "./shot-frame-multi-image-prompt.js";
 import {
   createApiRequestError,
@@ -18,29 +76,38 @@ import {
 import {
   ACTIVE_PRODUCTION_RUN_STORAGE_KEY,
   beginArtifactRequest,
+  durableTaskTargetContext,
   emptyProductionState,
   finishArtifactRequest,
   isArtifactRequestCurrent,
   lineageDependency,
+  matchingCurrentArtifactLineage,
   planProductionContext,
   productionRequestHeaders,
-  productionStateFromRun
+  productionStateFromRun,
+  taskResultIsCurrent
 } from "./production-lineage-client.js";
 import {
   animationPlanRuntimeSummary,
+  animationPlanShotDurationRange,
   normalizeAnimationPlanAspectRatio,
 } from "./animation-plan-settings.js";
 import {
   dropStaleMediaResults,
-  estimateOneFpsFrameCount,
+  previousShotReferenceFrameCount,
   shotFrameResultKey,
   previousShotInPlan,
   selectedShotVideoCandidate,
   SHOT_VIDEO_CONTINUITY_NONE,
   SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES,
+  shouldIncludePreviousShotFrames,
   shotVideoArtifactIdFor,
   shotVideoResultKey
 } from "./shot-video-continuity.js";
+import {
+  resolveImportedVariant,
+  resolveRestoredVariantId
+} from "./variant-restore.js";
 import {
   runtimePromptOverride,
   shouldAppendSeedanceNoTextRule,
@@ -57,22 +124,32 @@ const state = {
   metadata: null,
   output: {},
   characterBoundaryProfile: null,
+  variantsRegenerating: false,
   selectedVariantId: null,
   fullStories: {},
   animationPlans: {},
   animationPlanMetadata: {},
   animationAspectRatioDrafts: {},
   animationAspectRatioDefault: "16:9",
+  storyDurationTarget: STORY_DURATION_SOURCE,
   backgroundMusicDrafts: {},
   animationPromptRewriting: false,
   shotVideoResults: {},
   shotFrameResults: {},
   characterReferenceStatuses: {},
+  characterAudioStatuses: {},
+  taskSnapshots: {},
+  directorTaskId: "",
+  directorControlRequest: null,
+  storyGenerationRequest: null,
+  storyControlRequests: {},
+  storyTaskStatusVisible: false,
   production: emptyProductionState(),
   characterImageGeneration: {
     open: false,
     running: false,
     selectedIndex: 0,
+    resultsTarget: "",
     count: 1,
     referenceImageDataUrl: "",
     referenceImageName: "",
@@ -101,6 +178,12 @@ const state = {
     includeCharacterReferences: true,
     referenceAssets: []
   },
+  shotVideoBatch: {
+    taskId: "",
+    status: "idle",
+    controlState: "running",
+    lastRenderedCompletedShots: -1
+  },
   mode: "demo",
   mediaMode: "auto",
   storyModel: "mimo-v2.5-pro",
@@ -121,17 +204,41 @@ const state = {
   nativeVideoMaxBytes: 0,
   running: false,
   storyRunning: false,
+  // 展开前体检占用的是「生成完整剧情」这个按钮，但它不是 durable task，
+  // 所以与 storyRunning 分开记——混用会让终止/暂停那组控件误以为有任务在跑。
+  storyPrecheckRunning: false,
   animationRunning: false
 };
+
+const emptyMediaDialogs = Object.fromEntries(
+  ["characterImageGeneration", "shotFrameImageGeneration", "shotVideoGeneration"].map((key) => [key, structuredClone(state[key])])
+);
+const browserWorkspace = createBrowserWorkspaceClient({
+  storage: sessionStorage,
+  fetch: (...args) => fetch(...args),
+  sendBeacon: (...args) => navigator.sendBeacon(...args)
+});
+let sourceLoading = true;
+const STORY_PACKAGE_HELP = "可导入/导出完整剧情与动画镜头生产包，避免重复请求模型。";
+let storyPackageFeedbackRevision = 0;
+let storyPackageFeedbackContext = "";
+
+function assertWorkspaceCurrent(epoch) {
+  if (browserWorkspace.isCurrent(epoch)) return;
+  const error = new Error("参考视频已切换，已忽略旧页面数据的迟到响应。");
+  error.code = "BROWSER_WORKSPACE_STALE";
+  throw error;
+}
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
   input: $("#videoInput"), dropzone: $("#dropzone"), uploadTitle: $("#uploadTitle"), uploadHint: $("#uploadHint"),
   videoInfo: $("#videoInfo"), preview: $("#videoPreview"), fileName: $("#fileName"), fileMeta: $("#fileMeta"),
   frames: $("#frames"), frameStatus: $("#frameStatus"), replace: $("#replaceVideo"), transcript: $("#transcript"),
-  fixedCharacter: $("#fixedCharacter"), vertical: $("#vertical"), constraints: $("#constraints"), variantCount: $("#variantCount"),
+  fixedCharacter: $("#fixedCharacter"), vertical: $("#vertical"), constraints: $("#constraints"), characterExpressionRules: $("#characterExpressionRules"), variantCount: $("#variantCount"),
   run: $("#runWorkflow"), error: $("#errorMessage"), modelState: $("#modelState"),
-  pipelineUsage: $("#pipelineUsage"),
+  directorControls: $("#directorControls"), directorStartArrow: $("#directorStartArrow"),
+  terminateDirector: $("#terminateDirector"), pauseDirector: $("#pauseDirector"), directorControlHint: $("#directorControlHint"),
   openModelSettings: $("#openModelSettings"), modelSettingsModal: $("#modelSettingsModal"), closeModelSettings: $("#closeModelSettings"),
   modelStageList: $("#modelStageList"), resetModelSettings: $("#resetModelSettings"), saveModelSettings: $("#saveModelSettings"),
   modelSettingsStatus: $("#modelSettingsStatus"),
@@ -140,9 +247,17 @@ const elements = {
   mainPage: $("#top"), storyPage: $("#storyPage"), storyModelName: $("#storyModelName"),
   selectedVariantSummary: $("#selectedVariantSummary"), storyStatus: $("#storyStatus"),
   storyGenerate: $("#generateFullStory"), fullStory: $("#fullStoryResult"), backToResults: $("#backToResults"),
+  fullStoryPrecheck: $("#fullStoryPrecheckPanel"),
+  fullStoryControls: $("#fullStoryControls"), fullStoryStartArrow: $("#fullStoryStartArrow"),
+  terminateFullStory: $("#terminateFullStory"), pauseFullStory: $("#pauseFullStory"), fullStoryControlHint: $("#fullStoryControlHint"),
   animationGenerate: $("#generateAnimationPlan"), animationStatus: $("#animationStatus"), animationPlan: $("#animationPlanResult"),
   animationAspectRatio: $("#animationAspectRatio"),
-  exportStoryPackage: $("#exportStoryPackage"), copyAnimationPack: $("#copyAnimationPack"),
+  storyDurationTarget: $("#storyDurationTarget"),
+  exportStoryPackage: $("#exportStoryPackage"), startShotVideoBatch: $("#startShotVideoBatch"),
+  shotVideoBatchPanel: $("#shotVideoBatchPanel"), shotVideoBatchTitle: $("#shotVideoBatchTitle"),
+  shotVideoBatchStatus: $("#shotVideoBatchStatus"), shotVideoBatchCount: $("#shotVideoBatchCount"),
+  shotVideoBatchProgress: $("#shotVideoBatchProgress"), shotVideoBatchItems: $("#shotVideoBatchItems"),
+  pauseShotVideoBatch: $("#pauseShotVideoBatch"), terminateShotVideoBatch: $("#terminateShotVideoBatch"),
   importStoryPackage: $("#importStoryPackage"), exportStoryTestPackage: $("#exportStoryTestPackage"),
   storyPackageFile: $("#storyPackageFile"), storyPackageStatus: $("#storyPackageStatus"),
   characterImageModal: $("#characterImageModal"), closeCharacterImageModal: $("#closeCharacterImageModal"),
@@ -181,14 +296,39 @@ const elements = {
   generatedImagePreviewCaption: $("#generatedImagePreviewCaption"), closeGeneratedImagePreview: $("#closeGeneratedImagePreview")
 };
 
+const directorArtifactSynchronizer = createDirectorArtifactSynchronizer({
+  reloadRun: (task) => reloadActiveProductionRun(task),
+  renderCompletedStages: ({ previousCompletedStages, completedStages }) => {
+    renderRestoredDirectorArtifacts({
+      fromStage: previousCompletedStages,
+      toStage: completedStages
+    });
+  },
+  onReloadError: (error) => {
+    // 一次临时 fetch 失败不应打断 Durable Task attach；checkpoint 不前移，
+    // 下一次轮询会对同一个 completedStages 再尝试一次。
+    console.warn("已完成阶段暂时无法同步，等待下一次任务轮询重试", error);
+  }
+});
+
 const MODEL_STAGE_DEFS = [
   { key: "analysis", label: "参考片分析", hint: "视频解析、定位、人物、节奏", capability: "视觉模型", capabilityKind: "vision" },
   { key: "reconstruction", label: "脚本还原", hint: "分场、动作、镜头、转折", capability: "视觉模型", capabilityKind: "vision" },
-  { key: "brief", label: "创意简报", hint: "保留价值、受控变量", capability: "文本模型", capabilityKind: "text" },
+  { key: "brief", label: "创意简报", hint: "原片驱动结构、换角测试", capability: "文本模型", capabilityKind: "text" },
   { key: "visualGuardrails", label: "视觉规则", hint: "角色边界、原片来源记录、台词规则", capability: "视觉模型", capabilityKind: "vision" },
   { key: "variants", label: "主题变体", hint: "新故事方向", capability: "文本模型", capabilityKind: "text" },
+  { key: "storyCandidateReview", label: "候选对照评审", hint: "横向比对候选动作链，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
+  { key: "storyCandidateRevision", label: "命题定向修订", hint: "按评审报出的因果断裂只改一个命题，只出修订稿", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "fullStory", label: "完整剧情", hint: "可拍分场剧本", capability: "文本模型", capabilityKind: "text" },
+  // 四个验收阶段。服务端从一开始就在 modelStages / stageHealth 里上报它们，
+  // 只是这张表漏了登记，于是面板选不到、sanitizedModelOverrides 也会把覆盖过滤掉——
+  // 这张表就是 override 白名单。都是纯文本阶段（不在 requiresMediaModel 里）。
+  // optional：它们由用户手动触发、不属于必经链路，不该参与 modelStagesReady 的就绪判定。
+  { key: "storyQualityReview", label: "剧情体检", hint: "核对候选承诺 + 编辑诊断，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
+  { key: "storyQualityRepair", label: "剧情按问题修改", hint: "按体检里选中的问题写局部修改，只出修订稿", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "animationPlan", label: "动画生产包", hint: "首尾帧、镜头与视频提示词", capability: "文本模型", capabilityKind: "text" },
+  { key: "animationPlanReview", label: "分镜终审", hint: "对照剧情核查镜头，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
+  { key: "animationPlanRevision", label: "定向修订", hint: "按终审报告只改被点名的镜头", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "staticFrameCompiler", label: "静态帧编译器", hint: "叙事语言到静态视觉语言的语义合法化", capability: "文本模型", capabilityKind: "text" },
   { key: "characterReference", label: "人物图修正", hint: "根据上传图片修正角色描述", capability: "视觉模型", capabilityKind: "vision" },
   { key: "imageGeneration", label: "图片生成", hint: "角色参考图、镜头首尾帧图片", capability: "图片生成", capabilityKind: "image", providerLocked: true, optional: true },
@@ -213,8 +353,10 @@ const MODEL_OPTION_CATALOG = {
     text: ["qwen3.7-max", "qwen3.7-plus", "qwen-max-latest", "qwen-plus-latest", "qwen-turbo-latest"]
   },
   MiMo: {
-    media: ["mimo-v2.5", "mimo-v2.5-pro"],
-    text: ["mimo-v2.5", "mimo-v2.5-pro"]
+    // Official Chat Completions IDs; all three V2.6 models accept image/video input.
+    // https://mimo.mi.com/docs/en-US/api/chat/openai-api (verified 2026-09-22)
+    media: ["mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed"],
+    text: ["mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed"]
   },
   DeepSeek: {
     text: ["deepseek-v4-flash", "deepseek-v4-pro"]
@@ -243,9 +385,24 @@ const MODEL_OPTION_CATALOG = {
 init();
 
 async function init() {
+  // Historical unscoped Runs are never silently adopted or deleted by this tab.
+  localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
+  localStorage.removeItem("directorModelOverrides");
   restoreProfile();
+  restoreCharacterExpressionRules();
+  restoreCreationPreferences();
+  elements.frames.innerHTML = skeletonFrames(10);
+  elements.characterExpressionRules.addEventListener("input", saveCharacterExpressionRules);
   bindEvents();
   validateReady();
+  // Run/Task 恢复不依赖供应商健康检查。图片或视频 provider 的 /models
+  // 即使很慢，也不能阻塞刷新后的 Durable Task 重新接管。
+  const restorePromise = restoreBrowserWorkspace();
+  window.addEventListener("pagehide", () => browserWorkspace.close());
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) void resumeBrowserWorkspace();
+  });
+  window.setInterval(() => { void touchBrowserWorkspace(); }, 20_000);
   try {
     const health = await fetch("/api/health").then((response) => response.json());
     state.mode = health.mode;
@@ -266,23 +423,32 @@ async function init() {
     elements.modelState.lastElementChild.textContent = connected
       ? modelStateSummary()
       : health.mode !== "demo"
-        ? "模型已配置，但部分阶段不可用"
+        ? health.networkProxy?.error?.message || "模型已配置，但部分阶段不可用"
         : "演示模式 · 配置模型后启用真实分析";
     renderModelSettings();
-    await restoreActiveProductionRun();
   } catch {
     elements.modelState.lastElementChild.textContent = "服务连接失败";
   }
+  await restorePromise;
   renderRoute();
 }
 
 function bindEvents() {
-  elements.input.addEventListener("change", (event) => event.target.files[0] && handleFile(event.target.files[0]));
+  elements.input.addEventListener("change", (event) => {
+    const file = event.target.files[0];
+    event.target.value = "";
+    if (file) void handleFile(file);
+  });
   ["dragenter", "dragover"].forEach((name) => elements.dropzone.addEventListener(name, (event) => { event.preventDefault(); elements.dropzone.classList.add("dragging"); }));
   ["dragleave", "drop"].forEach((name) => elements.dropzone.addEventListener(name, (event) => { event.preventDefault(); elements.dropzone.classList.remove("dragging"); }));
   elements.dropzone.addEventListener("drop", (event) => event.dataTransfer.files[0] && handleFile(event.dataTransfer.files[0]));
   elements.replace.addEventListener("click", () => elements.input.click());
   elements.run.addEventListener("click", runWorkflow);
+  elements.terminateDirector.addEventListener("click", () => controlDirectorPipeline("terminate"));
+  elements.pauseDirector.addEventListener("click", () => {
+    const task = state.taskSnapshots[state.directorTaskId];
+    void controlDirectorPipeline(directorControlView(task).pauseAction);
+  });
   elements.export.addEventListener("click", exportJson);
   elements.openModelSettings.addEventListener("click", openModelSettings);
   elements.closeModelSettings.addEventListener("click", closeModelSettings);
@@ -295,14 +461,28 @@ function bindEvents() {
   elements.variants.addEventListener("click", (event) => {
     const button = event.target.closest("[data-story-variant]");
     if (button) navigateToStory(button.dataset.storyVariant);
+    if (event.target.closest("[data-regenerate-variants]")) regenerateThemeVariants();
   });
   elements.backToResults.addEventListener("click", backToMainResults);
-  elements.storyGenerate.addEventListener("click", () => generateFullStory({ force: true }));
+  elements.storyGenerate.addEventListener("click", () => startFullStory({ force: true }));
+  elements.terminateFullStory.addEventListener("click", () => controlFullStory("terminate"));
+  elements.pauseFullStory.addEventListener("click", () => {
+    void controlFullStory(fullStoryControlView(selectedFullStoryTask()).pauseAction);
+  });
   elements.animationGenerate.addEventListener("click", () => generateAnimationPlan({ force: true }));
   elements.animationAspectRatio.addEventListener("change", () => handleDefaultAspectRatioChange(elements.animationAspectRatio.value));
+  elements.storyDurationTarget.addEventListener("change", () => {
+    state.storyDurationTarget = elements.storyDurationTarget.value;
+    saveCreationPreferences();
+  });
+  elements.variantCount.addEventListener("change", saveCreationPreferences);
+  renderStoryDurationOptions();
   elements.exportStoryPackage.addEventListener("click", exportCurrentStoryPackage);
-  elements.copyAnimationPack.addEventListener("click", copyAnimationProductionPack);
+  elements.startShotVideoBatch.addEventListener("click", startShotVideoBatch);
+  elements.pauseShotVideoBatch.addEventListener("click", toggleShotVideoBatchPause);
+  elements.terminateShotVideoBatch.addEventListener("click", terminateShotVideoBatch);
   elements.importStoryPackage.addEventListener("click", () => elements.storyPackageFile.click());
+  $("#importStoryPackageHome").addEventListener("click", () => elements.storyPackageFile.click());
   elements.exportStoryTestPackage.addEventListener("click", exportStoryTestPackage);
   elements.storyPackageFile.addEventListener("change", (event) => {
     const file = event.target.files[0];
@@ -383,6 +563,7 @@ function bindEvents() {
     if (files.length) await addShotVideoReferenceFiles(files);
   });
   elements.confirmGenerateShotVideo.addEventListener("click", confirmGenerateShotVideo);
+  $("#regenerateShotVideoPrompt").addEventListener("click", () => updateShotVideoGeneratorPreview({ regeneratePrompt: true }));
   elements.generatedImagePreview.addEventListener("click", (event) => {
     if (event.target === elements.generatedImagePreview) closeGeneratedImagePreview();
   });
@@ -396,6 +577,12 @@ function bindEvents() {
   });
   elements.characterImageRole.addEventListener("change", () => {
     state.characterImageGeneration.selectedIndex = Number(elements.characterImageRole.value) || 0;
+    const variantId = String(selectedVariant()?.id || "");
+    if (state.characterImageGeneration.resultsTarget !== `${variantId}:${state.characterImageGeneration.selectedIndex}`) {
+      state.characterImageGeneration.results = [];
+      state.characterImageGeneration.boundaryWarning = "";
+      renderCharacterImageResults();
+    }
     renderCharacterImagePromptPreview();
   });
   elements.characterImageCount.addEventListener("change", () => {
@@ -428,18 +615,35 @@ function bindEvents() {
     if (reuseFrameButton) return reusePreviousTailAsStart(reuseFrameButton.dataset.reusePreviousTail);
     const button = event.target.closest("[data-generate-shot-video]");
     if (button) return openShotVideoGenerator(button.dataset.generateShotVideo);
+    const referenceUploadButton = event.target.closest("[data-character-reference-upload]");
+    if (referenceUploadButton) return openCharacterReferenceInput(referenceUploadButton.dataset.characterReferenceUpload);
+    const audioUploadButton = event.target.closest("[data-character-audio-upload]");
+    if (audioUploadButton) return openCharacterAudioInput(audioUploadButton.dataset.characterAudioUpload);
+    const audioRemoveButton = event.target.closest("[data-character-audio-remove]");
+    if (audioRemoveButton) {
+      return removeCharacterReferenceAudio(
+        audioRemoveButton.dataset.characterAudioIndex,
+        audioRemoveButton.dataset.characterAudioRemove
+      );
+    }
+    if (event.target.closest("[data-character-audio-clips]")) return;
+    // 两个隐藏 file input 都必须在这里挡掉：openCharacterAudioInput / openCharacterReferenceInput
+    // 是用 input.click() 打开选择器的，那次原生 click 会冒泡回这个委托监听器。音频 input 少了这道
+    // 守卫时会一路落到下面的整卡兜底，于是「上传音色/叫声」在打开音频选择器之后又打开了图片选择器，
+    // 图片框盖在上面——用户看到的就是让他传图片。
+    if (event.target.closest("[data-character-audio-input]")) return;
     if (event.target.closest("[data-character-reference-input]")) return;
     const card = event.target.closest("[data-character-reference-card]");
     if (card) return openCharacterReferenceInput(card.dataset.characterReferenceCard);
   });
-  elements.animationPlan.addEventListener("keydown", (event) => {
-    if (!["Enter", " "].includes(event.key)) return;
-    const card = event.target.closest("[data-character-reference-card]");
-    if (!card) return;
-    event.preventDefault();
-    openCharacterReferenceInput(card.dataset.characterReferenceCard);
-  });
   elements.animationPlan.addEventListener("change", (event) => {
+    const audioInput = event.target.closest("[data-character-audio-input]");
+    if (audioInput) {
+      const files = [...(audioInput.files || [])];
+      audioInput.value = "";
+      if (files.length) addCharacterReferenceAudioFiles(audioInput.dataset.characterAudioInput, files);
+      return;
+    }
     const input = event.target.closest("[data-character-reference-input]");
     if (input && input.files[0]) {
       refineCharacterReferenceWithImage(input.dataset.characterReferenceInput, input.files[0]);
@@ -452,19 +656,157 @@ function bindEvents() {
   elements.animationPlan.addEventListener("drop", handleCharacterReferenceDrop);
   window.addEventListener("popstate", renderRoute);
   [elements.fixedCharacter, elements.vertical, elements.constraints].forEach((element) => element.addEventListener("input", handleProfileInput));
-  elements.transcript.addEventListener("input", () => {
-    if (state.characterBoundaryProfile || state.production.runId) invalidateGlobalCharacterBoundary("字幕或台词文本已修改；旧的生产 Run 与全局角色边界已失效，请重新运行工作流。");
+  elements.transcript.addEventListener("input", async () => {
+    if (state.characterBoundaryProfile || state.production.runId) await invalidateGlobalCharacterBoundary("字幕或台词文本已修改；旧的生产 Run 与全局角色边界已失效，请重新运行工作流。");
   });
+}
+
+async function resumeBrowserWorkspace() {
+  try {
+    if (await browserWorkspace.resume()) {
+      clearVideoWorkspaceUi();
+      sourceLoading = true;
+      await restoreBrowserWorkspace();
+    }
+  } catch (error) {
+    showError(error.message || "页面会话暂时无法重新连接，请刷新重试。", "notice");
+  }
+}
+
+async function touchBrowserWorkspace() {
+  try {
+    if (await browserWorkspace.touch()) {
+      clearVideoWorkspaceUi();
+      sourceLoading = false;
+      validateReady();
+      showError("上次页面会话已结束，视频与生成结果已清理；创作宇宙设置已保留。", "notice");
+    }
+  } catch { /* A temporary outage does not discard this tab's workspace identity. */ }
+}
+
+async function restoreBrowserWorkspace() {
+  const epoch = browserWorkspace.epoch;
+  try {
+    const workspace = await browserWorkspace.start();
+    assertWorkspaceCurrent(epoch);
+    if (workspace.source) {
+      const source = workspace.source;
+      const response = await fetch(source.url, { cache: "no-store" });
+      if (!response.ok) throw new Error("保存的原视频无法读取，请重新选择视频。");
+      const file = new File([await response.blob()], source.name, {
+        type: source.type, lastModified: source.lastModified
+      });
+      if (await sourceFileSha256(file) !== source.digest) throw new Error("保存的原视频校验失败，请重新选择视频。");
+      assertWorkspaceCurrent(epoch);
+      await loadSourceVideo(file, epoch);
+    }
+    assertWorkspaceCurrent(epoch);
+    if (workspace.run) {
+      await restoreActiveProductionRun(workspace.run, epoch);
+      assertWorkspaceCurrent(epoch);
+      if (!workspace.source) showError("已恢复导入包的生成结果，但该包未包含原视频。重新选择视频会清除这些结果。", "notice");
+    }
+  } catch (error) {
+    if (browserWorkspace.isCurrent(epoch)) showError(error.message || "页面数据暂时无法恢复，请稍后刷新重试。", "notice");
+  } finally {
+    if (browserWorkspace.isCurrent(epoch)) {
+      sourceLoading = false;
+      validateReady();
+    }
+  }
+}
+
+function clearVideoWorkspaceUi({ keepSource = false } = {}) {
+  resetDirectorClientState();
+  if (!keepSource) {
+    state.file = null;
+    state.videoDataUrl = null;
+    state.frames = [];
+    state.metadata = null;
+  }
+  state.backgroundMusicDrafts = {};
+  state.running = false;
+  state.storyRunning = false;
+  state.animationRunning = false;
+  state.variantsRegenerating = false;
+  state.animationPromptRewriting = false;
+  if (!keepSource) {
+    if (state.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(state.previewUrl);
+    state.previewUrl = null;
+    elements.preview.pause();
+    elements.preview.removeAttribute("src");
+    elements.preview.load();
+    elements.transcript.value = "";
+    elements.frames.innerHTML = skeletonFrames(10);
+    elements.frameStatus.textContent = "等待抽帧";
+    elements.fileName.textContent = "";
+    elements.fileMeta.textContent = "";
+    elements.dropzone.classList.remove("hidden");
+    elements.videoInfo.classList.add("hidden");
+  }
+  for (const element of [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants,
+    elements.fullStory, elements.animationPlan, elements.selectedVariantSummary, elements.characterImageResults,
+    elements.shotFrameImageResults, elements.shotVideoResults, elements.shotVideoBatchItems]) {
+    element.innerHTML = "";
+  }
+  for (const element of [elements.storyStatus, elements.animationStatus,
+    elements.characterImageStatus, elements.shotFrameImageStatus, elements.shotVideoStatus]) element.textContent = "";
+  for (const key of Object.keys(emptyMediaDialogs)) state[key] = structuredClone(emptyMediaDialogs[key]);
+  for (const element of [elements.characterImageModal, elements.shotFrameImageModal, elements.shotVideoModal,
+    elements.generatedImagePreview, elements.shotVideoBatchPanel, elements.export,
+    elements.resultStack]) element.classList.add("hidden");
+  elements.generatedImagePreviewImage.removeAttribute("src");
+  elements.characterImagePreview.removeAttribute("src");
+  elements.characterImageInput.value = "";
+  elements.characterImagePromptPreview.value = "";
+  elements.shotFrameImagePromptPreview.value = "";
+  elements.shotVideoPromptPreview.value = "";
+  elements.saveModelSettings.disabled = false;
+  elements.resetModelSettings.disabled = false;
+  setCharacterImageRunning(false);
+  setShotFrameImageGeneratorRunning(false);
+  setShotVideoGeneratorRunning(false);
+  document.body.classList.remove("modal-open");
+  elements.empty.classList.remove("hidden");
+  setRunning(false);
+  setStoryRunning(false);
+  setAnimationRunning(false);
+  resetPipeline();
+  renderStoryDurationOptions();
+  history.replaceState({}, "", window.location.pathname);
+  renderRoute();
 }
 
 async function handleFile(file) {
   if (!file.type.startsWith("video/")) return showError("请选择视频文件。支持 MP4、MOV、WebM 等浏览器可播放格式。");
-  if (state.characterBoundaryProfile || state.production.runId) invalidateGlobalCharacterBoundary("参考视频已替换；旧的生产 Run 与全局角色边界已失效，请重新运行工作流。");
+  const epoch = browserWorkspace.beginChange();
+  sourceLoading = true;
+  clearVideoWorkspaceUi();
+  showError("");
+  elements.run.disabled = true;
+  elements.uploadHint.textContent = "正在清理上一段视频并保存新视频…";
+  try {
+    const workspace = await browserWorkspace.replaceSource(file, epoch);
+    if (!workspace) return;
+    assertWorkspaceCurrent(epoch);
+    await loadSourceVideo(file, epoch);
+  } catch (error) {
+    if (browserWorkspace.isCurrent(epoch)) showError(error.message || "视频保存失败，请重新选择视频。");
+  } finally {
+    if (browserWorkspace.isCurrent(epoch)) {
+      sourceLoading = false;
+      elements.uploadHint.textContent = "或点击选择文件 · MP4 / MOV / WebM";
+      validateReady();
+    }
+  }
+}
+
+async function loadSourceVideo(file, epoch) {
+  assertWorkspaceCurrent(epoch);
   const media = analysisMediaSettings();
   if (state.mode !== "demo" && media.mediaMode === "video" && file.size > media.nativeVideoMaxBytes) {
-    return showError(`当前强制使用原生视频，文件不能超过 ${formatBytes(media.nativeVideoMaxBytes)}。请压缩视频或改用 auto 模式。`);
+    throw new Error(`当前强制使用原生视频，文件不能超过 ${formatBytes(media.nativeVideoMaxBytes)}。请压缩视频或改用 auto 模式。`);
   }
-  showError("");
   state.file = file;
   state.frames = [];
   state.videoDataUrl = null;
@@ -472,7 +814,9 @@ async function handleFile(file) {
   elements.videoInfo.classList.remove("hidden");
   elements.fileName.textContent = file.name;
   elements.fileMeta.textContent = `${formatBytes(file.size)} · 正在读取视频`;
-  if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+  if (state.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(state.previewUrl);
+  // The persisted source endpoint stays the same across replacements. Bind the
+  // player to this exact File, as sampling does, so it cannot reuse old media.
   state.previewUrl = URL.createObjectURL(file);
   elements.preview.src = state.previewUrl;
   elements.frames.innerHTML = skeletonFrames(10);
@@ -486,9 +830,11 @@ async function handleFile(file) {
       sampleVideo(file, 10),
       shouldReadNativeVideo ? readFileAsDataUrl(file) : Promise.resolve(null)
     ]);
+    assertWorkspaceCurrent(epoch);
     state.frames = sampled.frames;
     state.videoDataUrl = videoDataUrl;
     state.metadata = sampled.metadata;
+    renderStoryDurationOptions();
     elements.fileMeta.textContent = `${formatBytes(file.size)} · ${formatTime(sampled.metadata.duration)} · ${sampled.metadata.width}×${sampled.metadata.height}`;
     elements.frames.innerHTML = sampled.frames.map((frame, index) => `<div class="frame"><img src="${frame.dataUrl}" alt="采样画面 ${index + 1}"><span>F${index + 1} · ${formatTime(frame.timestamp)}</span></div>`).join("");
     const mediaNote = videoDataUrl
@@ -498,11 +844,11 @@ async function handleFile(file) {
         : "关键帧模式";
     elements.frameStatus.textContent = `已抽取 ${sampled.frames.length} 帧 · ${mediaNote}`;
   } catch (error) {
+    assertWorkspaceCurrent(epoch);
     state.file = null;
     elements.frameStatus.textContent = "抽帧失败";
-    showError(`无法读取视频：${error.message}`);
+    throw new Error(`无法读取视频：${error.message}`);
   }
-  validateReady();
 }
 
 async function sampleVideo(file, count) {
@@ -570,132 +916,124 @@ async function urlToDataUrl(url) {
 }
 
 async function runWorkflow() {
-  if (state.running) return;
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (state.running || sourceLoading || !browserWorkspace.workspace) return;
   const creatorProfile = profile();
-  if (state.frames.length < 3 || !creatorProfile.fixedCharacter || !creatorProfile.vertical) return showError("请先上传视频，并填写固定角色和垂直赛道。 ");
+  if (!creatorProfile.fixedCharacter || !creatorProfile.vertical) return showError("请填写固定角色和垂直赛道。 ");
   state.running = true;
-  beginStageUsage();
-  elements.pipelineUsage.textContent = "";
-  state.output = {};
-  state.characterBoundaryProfile = null;
-  state.fullStories = {};
-  state.animationPlans = {};
-  state.animationPlanMetadata = {};
-  state.animationAspectRatioDrafts = {};
-  state.shotVideoResults = {};
-  state.shotFrameResults = {};
-  state.characterReferenceStatuses = {};
-  state.production = emptyProductionState();
-  localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
-  state.selectedVariantId = null;
+  state.directorTaskId = "";
+  state.directorControlRequest = null;
   showError("");
   setRunning(true);
-  resetPipeline();
   elements.empty.classList.add("hidden");
   elements.resultStack.classList.remove("hidden");
-  [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants].forEach((element) => { element.innerHTML = ""; element.classList.add("hidden"); });
-  const media = analysisMediaSettings();
-  const canSendNativeVideo = Boolean(state.videoDataUrl)
-    && state.mode !== "demo"
-    && media.mediaMode !== "frames"
-    && state.file?.size <= media.nativeVideoMaxBytes;
-  const shared = {
-    frames: state.frames,
-    ...(canSendNativeVideo ? { video: { dataUrl: state.videoDataUrl, mimeType: state.file.type, size: state.file.size } } : {}),
-    metadata: state.metadata,
-    transcript: elements.transcript.value.trim(),
-    creatorProfile
-  };
   try {
-    const productionRun = await api("/api/production/run/start", {
-      metadata: {
-        sourceVideo: state.metadata,
-        creatorProfile,
-        transcript: shared.transcript
+    const active = await activeProductionTasks();
+    const activePipeline = active.find((task) => task.kind === "directorPipeline");
+    let task = activePipeline || null;
+    if (!task && active.length) {
+      const confirmed = window.confirm(
+        "当前 Run 还有正在执行的任务。是否明确放弃这些任务并开始新的 Run？\n\n"
+        + "放弃不等于取消远端调用，供应商任务仍可能继续并产生费用。"
+      );
+      if (!confirmed) throw new Error("已保留当前任务，未创建新的 Run。");
+      await abandonProductionTasks(active);
+    }
+    if (!task) {
+      // 即使 Analyze 在首个 Artifact 落盘前就被 Node 重启打断，也必须继续原 Run；
+      // 是否从第几阶段开始只由服务端 current Artifact 链决定。显式 abandon 会先
+      // 清空 state.production，因此不会误复用已经放弃的 Run。
+      const continuingInterruptedRun = Boolean(
+        state.production.projectId
+        && state.production.runId
+        && !state.output.themeVariants
+      );
+      const resumeNeedsMedia = !continuingInterruptedRun || [
+        "referenceAnalysis",
+        "sourceScriptReconstruction",
+        "visualGuardrails"
+      ].some((artifactId) => state.production.artifacts?.[artifactId]?.status !== "current");
+      if (resumeNeedsMedia && state.frames.length < 3) {
+        throw new Error("请重新上传当前 Run 的同一源视频；服务端会先校验 SHA-256，再从首个未完成阶段继续。");
       }
-    });
-    state.production = productionStateFromRun(productionRun);
-    persistActiveProductionRun();
-
-    setStage("analysis", "active");
-    state.output.referenceAnalysis = await requestProductionArtifact({
-      endpoint: "/api/analyze",
-      requestBody: shared,
-      artifactId: "referenceAnalysis",
-      artifactType: "referenceAnalysis"
-    });
-    renderAnalysis(state.output.referenceAnalysis);
-    setStage("analysis", "done");
-
-    setStage("script", "active");
-    state.output.sourceScriptReconstruction = await requestProductionArtifact({
-      endpoint: "/api/reconstruct",
-      requestBody: { ...shared, referenceAnalysis: state.output.referenceAnalysis },
-      artifactId: "sourceScriptReconstruction",
-      artifactType: "sourceScriptReconstruction",
-      dependencyIds: ["referenceAnalysis"]
-    });
-    renderScript(state.output.sourceScriptReconstruction);
-    setStage("script", "done");
-
-    setStage("brief", "active");
-    state.output.creativeBrief = await requestProductionArtifact({
-      endpoint: "/api/brief",
-      requestBody: { referenceAnalysis: state.output.referenceAnalysis, sourceScriptReconstruction: state.output.sourceScriptReconstruction, creatorProfile },
-      artifactId: "creativeBrief",
-      artifactType: "creativeBrief",
-      dependencyIds: ["referenceAnalysis", "sourceScriptReconstruction"]
-    });
-    renderBrief(state.output.creativeBrief);
-    setStage("brief", "done");
-
-    setStage("guardrails", "active");
-    state.output.visualGuardrails = await requestProductionArtifact({
-      endpoint: "/api/visual-guardrails",
-      requestBody: {
-        ...shared,
-        referenceAnalysis: state.output.referenceAnalysis,
-        sourceScriptReconstruction: state.output.sourceScriptReconstruction,
-        creativeBrief: state.output.creativeBrief
-      },
-      artifactId: "visualGuardrails",
-      artifactType: "visualGuardrails",
-      dependencyIds: ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief"]
-    });
-    state.characterBoundaryProfile = { ...creatorProfile };
-    renderVisualGuardrails(state.output.visualGuardrails);
-    setStage("guardrails", "done");
-
-    setStage("variants", "active");
-    state.output.themeVariants = await requestProductionArtifact({
-      endpoint: "/api/variants",
-      requestBody: {
-        referenceAnalysis: state.output.referenceAnalysis,
-        sourceScriptReconstruction: state.output.sourceScriptReconstruction,
-        creativeBrief: state.output.creativeBrief,
-        visualGuardrails: state.output.visualGuardrails,
+      if (!continuingInterruptedRun) resetDirectorClientState();
+      resetPipeline();
+      [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants]
+        .forEach((element) => { element.innerHTML = ""; element.classList.add("hidden"); });
+      if (continuingInterruptedRun) renderRestoredDirectorArtifacts();
+      const media = analysisMediaSettings();
+      if (!state.videoDataUrl && state.file && state.mode !== "demo" && media.mediaMode !== "frames"
+        && state.file.size <= media.nativeVideoMaxBytes) {
+        const videoDataUrl = await readFileAsDataUrl(state.file);
+        assertWorkspaceCurrent(workspaceEpoch);
+        state.videoDataUrl = videoDataUrl;
+      }
+      if (state.mode !== "demo" && media.mediaMode === "video" && state.file?.size > media.nativeVideoMaxBytes) {
+        throw new Error(`当前强制使用原生视频，文件不能超过 ${formatBytes(media.nativeVideoMaxBytes)}。`);
+      }
+      const canSendNativeVideo = Boolean(state.videoDataUrl)
+        && state.mode !== "demo"
+        && media.mediaMode !== "frames"
+        && state.file?.size <= media.nativeVideoMaxBytes;
+      const sourceVideoDigest = await sourceFileSha256(state.file);
+      assertWorkspaceCurrent(workspaceEpoch);
+      const shared = withModelOverrides({
+        frames: state.frames,
+        ...(canSendNativeVideo ? { video: { dataUrl: state.videoDataUrl, mimeType: state.file.type, size: state.file.size } } : {}),
+        metadata: state.metadata,
+        transcript: elements.transcript.value.trim(),
         creatorProfile,
-        count: Number(elements.variantCount.value)
-      },
-      artifactId: "themeVariants",
-      artifactType: "themeVariants",
-      dependencyIds: ["creativeBrief", "visualGuardrails"]
-    });
-    renderVariants(state.output.themeVariants);
-    setStage("variants", "done");
-    const pipelineUsage = endStageUsage();
-    elements.pipelineUsage.textContent = pipelineUsage
-      ? `AI 导演阶段完成${formatStageUsageSuffix(pipelineUsage)}`
-      : "";
-    elements.pipelineUsage.className = "story-status ready";
+        count: Number(elements.variantCount.value),
+        // 候选阶段的时长目标必须从这里就带上。§2.10 写着「浏览器请求体、server.js 入口校验、
+        // Durable buildInput 白名单三处缺一不可」，而实际漏的正是这一处：白名单读的是
+        // raw.targetDurationSeconds，一键 AI 导演送进 directorPipeline 的 shared 里却没有这个键，
+        // 于是 variantsPrompt 取不到目标、durationRule 整段省略——**静默降级**。只有手动点
+        //「换一批」那条路送到了，所以现象是「换一批有效、一键跑无效」。
+        //
+        // 实测代价（2026-09-09 六份真实导出包）：五个带 lineage 的 run 全部生成于 09-05 修复之后，
+        // 候选 estimatedSeconds 合计 20/20 落在窗口外——原片 33 秒的写成 56-60 秒、原片 122 秒的
+        // 写成 60-90 秒；唯一 4/4 落在窗口内的那份，四个候选精确等于窗口下界。而下游 Full Story
+        // 6/6 命中 Math.round(原片时长)，于是候选估的 60 秒要么被压进 33 秒、要么被摊到 122 秒，
+        // 正是 docs/待解决项.md 第 1 条「单场动作过载」的上游。
+        targetDurationSeconds: resolveStoryDurationTarget(state.storyDurationTarget, {
+          metadata: state.metadata,
+          sourceScriptReconstruction: state.output.sourceScriptReconstruction
+        }),
+        sourceVideoDigest
+      });
+      if (!continuingInterruptedRun) {
+        const productionRun = await api("/api/production/run/start", {
+          ...browserWorkspace.reference(),
+          metadata: {
+            sourceVideo: state.metadata,
+            sourceVideoDigest,
+            creatorProfile,
+            transcript: shared.transcript
+          }
+        });
+        state.production = productionStateFromRun(productionRun);
+        persistActiveProductionRun();
+      }
+      assertWorkspaceCurrent(workspaceEpoch);
+      const created = await createDurableTask("directorPipeline", shared);
+      task = created.task;
+    }
+    const completedTask = await waitForDurableTask(task, updateDirectorTaskProgress);
+    recordStageUsage(completedTask.usage);
+    await directorArtifactSynchronizer.sync(completedTask);
+    assertWorkspaceCurrent(workspaceEpoch);
+    renderDirectorTaskStatus(completedTask);
     elements.export.classList.remove("hidden");
     elements.variants.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
-    const active = document.querySelector(".pipeline li.active");
-    if (active) setStage(active.dataset.stage, "error");
-    showError(error.message || "工作流执行失败");
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    if (isTaskCapacityError(error)) {
+      showError(taskCapacityMessage(error), "notice");
+      return;
+    }
+    renderDirectorTaskError(error, "工作流执行失败");
   } finally {
-    endStageUsage();
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     state.running = false;
     setRunning(false);
     validateReady();
@@ -706,50 +1044,312 @@ async function requestProductionArtifact({
   endpoint,
   requestBody,
   artifactId,
-  artifactType,
-  dependencyIds = [],
-  dependencyRefs = null,
-  createMediaNamespace = false,
-  contentForArtifact = (value) => value
+  artifactType: _artifactType,
+  dependencyIds: _dependencyIds = [],
+  dependencyRefs: _dependencyRefs = null,
+  createMediaNamespace: _createMediaNamespace = false,
+  contentForArtifact: _contentForArtifact = (value) => value,
+  onTaskCreated = null
 }) {
   assertActiveProductionRun();
-  const requestId = crypto.randomUUID();
-  const token = beginArtifactRequest(state.production, artifactId, requestId);
-  try {
-    const dependencies = dependencyRefs ? structuredClone(dependencyRefs) : productionDependencies(dependencyIds);
-    const started = await api("/api/production/stage/update", {
-      ...token,
-      stageId: artifactId,
-      status: "running"
-    });
-    assertCurrentProductionRequest(token);
-    updateProductionCheckpoint(started);
-    const responseContent = await api(endpoint, requestBody, { productionToken: token });
-    assertCurrentProductionRequest(token);
-    const content = contentForArtifact(responseContent);
-    const committed = await api("/api/production/artifact/commit", {
-      ...token,
-      artifactType,
-      content,
-      dependencies,
-      createMediaNamespace
-    });
-    assertCurrentProductionRequest(token);
-    acceptProductionCommit(committed);
-    return responseContent;
-  } catch (error) {
-    if (isArtifactRequestCurrent(state.production, token)) {
-      await api("/api/production/stage/update", {
-        ...token,
-        stageId: artifactId,
-        status: "failed",
-        error: { code: error.code || "STAGE_FAILED", message: error.message || "阶段执行失败" }
-      }).catch(() => {});
-    }
-    throw error;
-  } finally {
-    finishArtifactRequest(state.production, token);
+  const kind = durableTaskKindForEndpoint(endpoint);
+  const input = withModelOverrides({
+    ...requestBody,
+    ...(requestBody?.variant?.id ? { variantId: requestBody.variant.id } : {}),
+    ...(artifactId.startsWith("fullStory:") || artifactId.startsWith("animationPlan:")
+      ? { variantId: artifactId.split(":").slice(1).join(":") }
+      : {})
+  });
+  const created = await createDurableTask(kind, input);
+  if (onTaskCreated) onTaskCreated(created.task);
+  const task = await waitForDurableTask(created.task);
+  state.productionTasks ||= {};
+  state.productionTasks[artifactId] = task;
+  recordStageUsage(task.usage);
+  const run = await reloadActiveProductionRun(state.production, { preserveSelectedVariant: kind === "fullStory" });
+  const entry = run.latestArtifacts?.[artifactId];
+  if (!entry?.lineage || entry.lineage.status !== "current") {
+    throw new Error(`任务完成后没有找到 current Artifact：${artifactId}`);
   }
+  return entry.content;
+}
+
+function durableTaskKindForEndpoint(endpoint) {
+  const kinds = {
+    "/api/variants": "variants",
+    "/api/full-story": "fullStory",
+    "/api/animation-plan": "animationPlan",
+    "/api/animation-plan/video-prompts/rewrite": "animationPromptRewrite"
+  };
+  const kind = kinds[endpoint];
+  if (!kind) throw new Error(`该操作尚未接入 Durable Task：${endpoint}`);
+  return kind;
+}
+
+async function createDurableTask(kind, input) {
+  return api("/api/tasks/create", {
+    projectId: state.production.projectId,
+    runId: state.production.runId,
+    kind,
+    input
+  });
+}
+
+async function readDurableTask(taskId) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const query = new URLSearchParams({
+    projectId: state.production.projectId,
+    runId: state.production.runId
+  });
+  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}?${query}`);
+  const data = await response.json().catch(() => ({}));
+  assertWorkspaceCurrent(workspaceEpoch);
+  if (!response.ok || !data.ok) throw createApiRequestError(data, response.status, `任务查询失败（${response.status}）`);
+  return data.task || data.result;
+}
+
+async function waitForDurableTask(initialTask, onProgress = null) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  let task = initialTask;
+  while (["queued", "running"].includes(task.status)) {
+    assertWorkspaceCurrent(workspaceEpoch);
+    updateTaskSnapshot(task);
+    if (onProgress) await onProgress(task);
+    await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    assertWorkspaceCurrent(workspaceEpoch);
+    task = await readDurableTask(task.taskId);
+    assertWorkspaceCurrent(workspaceEpoch);
+  }
+  assertWorkspaceCurrent(workspaceEpoch);
+  updateTaskSnapshot(task);
+  if (onProgress) await onProgress(task);
+  assertWorkspaceCurrent(workspaceEpoch);
+  if (task.status !== "completed") {
+    const error = new Error(taskErrorMessage(task, `任务以 ${task.status} 结束`));
+    error.code = task.error?.code || `TASK_${String(task.status || "failed").toUpperCase()}`;
+    error.category = task.error?.category || "task";
+    error.details = task.error?.details || [];
+    error.task = task;
+    throw error;
+  }
+  return task;
+}
+
+async function activeProductionTasks() {
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (!state.production.projectId || !state.production.runId) return [];
+  const query = new URLSearchParams({
+    projectId: state.production.projectId,
+    runId: state.production.runId,
+    active: "1"
+  });
+  const response = await fetch(`/api/tasks?${query}`);
+  const data = await response.json().catch(() => ({}));
+  assertWorkspaceCurrent(workspaceEpoch);
+  if (!response.ok || !data.ok) {
+    throw createApiRequestError(data, response.status, `任务列表读取失败（${response.status}）`);
+  }
+  return Array.isArray(data.tasks) ? data.tasks : Array.isArray(data.result) ? data.result : [];
+}
+
+function isTaskCapacityError(error) {
+  return error?.code === "TASK_CAPACITY_EXCEEDED" || Number(error?.status) === 429;
+}
+
+function taskCapacityMessage(error) {
+  return error?.message || "服务器任务队列已满，请稍后重试。";
+}
+
+async function abandonProductionTasks(tasks) {
+  const released = [];
+  for (const task of tasks.filter((item) => !item.parentTaskId)) {
+    const terminal = await api(`/api/tasks/${encodeURIComponent(task.taskId)}/release`, {
+      projectId: task.projectId,
+      runId: task.runId
+    });
+    if (["queued", "running"].includes(terminal?.status)) {
+      throw new Error(`任务 ${task.taskId} 尚未释放，已阻止创建新 Run。`);
+    }
+    released.push(terminal);
+  }
+  return released;
+}
+
+async function reloadActiveProductionRun(expectedProduction = state.production, { preserveSelectedVariant = false } = {}) {
+  const projectId = String(expectedProduction?.projectId || "");
+  const runId = String(expectedProduction?.runId || "");
+  if (!projectId || !runId) throw new Error("当前没有可重新加载的 Production Run");
+  const run = await api("/api/production/run/load", {
+    projectId,
+    runId,
+    includeContent: true
+  });
+  if (state.production.projectId !== projectId || state.production.runId !== runId) {
+    const error = new Error("Production Run 已切换，已忽略旧任务的迟到同步结果");
+    error.code = "DIRECTOR_RUN_SYNC_STALE";
+    throw error;
+  }
+  state.production = productionStateFromRun(run);
+  restoreRunArtifacts(run.latestArtifacts || {}, { selectedVariantId: preserveSelectedVariant ? state.selectedVariantId : null });
+  persistActiveProductionRun();
+  return run;
+}
+
+async function updateDirectorTaskProgress(task) {
+  // Loading newly committed Artifacts re-renders the stage list. Apply the
+  // task snapshot afterwards so that render cannot reset the active stage.
+  await directorArtifactSynchronizer.sync(task);
+  renderDirectorTaskStatus(task);
+}
+
+function renderDirectorTaskStatus(task) {
+  // A control response may be newer than the poll which is still synchronizing
+  // completed Artifacts. Always render the accepted snapshot for this task.
+  task = state.taskSnapshots[task.taskId] || task;
+  state.directorTaskId = task.taskId;
+  const artifactToStage = {
+    referenceAnalysis: "analysis",
+    sourceScriptReconstruction: "script",
+    creativeBrief: "brief",
+    visualGuardrails: "guardrails",
+    themeVariants: "variants"
+  };
+  const currentArtifact = String(task.progress?.currentStage || "");
+  const completedCount = Number(task.progress?.completedStages) || 0;
+  const order = ["analysis", "script", "brief", "guardrails", "variants"];
+  order.forEach((stage, index) => setStage(stage, index < completedCount ? "done" : ""));
+  const view = directorTaskView(task);
+  // currentStage can still refer to the stage just committed at a boundary.
+  // A pause/stop must not erase its completed presentation.
+  if (artifactToStage[currentArtifact] && order.indexOf(artifactToStage[currentArtifact]) >= completedCount) {
+    setStage(artifactToStage[currentArtifact], view.stageStatus);
+  }
+  renderDirectorControls(task);
+}
+
+function renderDirectorTaskError(error, fallback) {
+  if (error.task) {
+    renderDirectorTaskStatus(error.task);
+    showError(error.task.status === "cancelled" ? "" : error.message || fallback,
+      ["interrupted", "conflicted", "abandoned"].includes(error.task.status) ? "notice" : "error");
+    return;
+  }
+  const active = document.querySelector(".pipeline li.active");
+  if (active?.dataset.stage) setStage(active.dataset.stage, "error");
+  showError(error.message || fallback);
+}
+
+function renderDirectorControls(task = state.taskSnapshots[state.directorTaskId]) {
+  const view = directorControlView(task, {
+    starting: state.running && !task,
+    pendingAction: state.directorControlRequest?.action || ""
+  });
+  elements.directorControls.classList.toggle("active", view.visible);
+  elements.run.classList.toggle("running", view.visible);
+  elements.run.querySelector("span").textContent = view.label;
+  elements.directorStartArrow.classList.toggle("hidden", view.visible);
+  elements.directorControlHint.classList.toggle("hidden", !view.visible);
+  elements.run.disabled = state.running || isActiveTask(task);
+  if (!elements.run.disabled) validateReady();
+  for (const button of [elements.terminateDirector, elements.pauseDirector]) button.classList.toggle("hidden", !view.visible);
+  elements.terminateDirector.disabled = view.stopDisabled;
+  elements.pauseDirector.disabled = view.pauseDisabled;
+  elements.pauseDirector.setAttribute("aria-label", view.pauseLabel);
+  elements.pauseDirector.setAttribute("title", view.pauseLabel);
+  elements.pauseDirector.innerHTML = view.paused
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg>';
+}
+
+async function controlDirectorPipeline(action) {
+  const task = state.taskSnapshots[state.directorTaskId];
+  if (!task || state.directorControlRequest) return;
+  const view = directorControlView(task);
+  if (action === "terminate" ? view.stopDisabled : view.pauseDisabled || action !== view.pauseAction) return;
+  const request = { taskId: task.taskId, action, epoch: browserWorkspace.epoch };
+  state.directorControlRequest = request;
+  renderDirectorControls(task);
+  showError("");
+  try {
+    const updated = await controlDurableTask(task.taskId, action);
+    if (!browserWorkspace.isCurrent(request.epoch) || state.directorTaskId !== request.taskId) return;
+    updateTaskSnapshot(updated);
+    await updateDirectorTaskProgress(updated);
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(request.epoch) || state.directorTaskId !== request.taskId) return;
+    showError(error.message || "AI 导演控制失败，请重试。");
+  } finally {
+    if (state.directorControlRequest === request) {
+      state.directorControlRequest = null;
+      renderDirectorControls();
+    }
+  }
+}
+
+function renderRestoredDirectorArtifacts({ fromStage = 0, toStage = 5 } = {}) {
+  const stages = [
+    ["referenceAnalysis", "analysis", renderAnalysis],
+    ["sourceScriptReconstruction", "script", renderScript],
+    ["creativeBrief", "brief", renderBrief],
+    ["visualGuardrails", "guardrails", renderVisualGuardrails],
+    ["themeVariants", "variants", renderVariants]
+  ];
+  stages.slice(Math.max(0, fromStage), Math.max(0, toStage)).forEach(([artifactId, stage, render]) => {
+    if (!state.output[artifactId]) return;
+    render(state.output[artifactId]);
+    setStage(stage, "done");
+  });
+}
+
+function renderedDirectorStageCount() {
+  const artifactIds = [
+    "referenceAnalysis",
+    "sourceScriptReconstruction",
+    "creativeBrief",
+    "visualGuardrails",
+    "themeVariants"
+  ];
+  let count = 0;
+  while (count < artifactIds.length && state.output[artifactIds[count]]) count += 1;
+  return count;
+}
+
+function resetDirectorClientState() {
+  directorArtifactSynchronizer.reset();
+  state.output = {};
+  state.characterBoundaryProfile = null;
+  state.fullStories = {};
+  state.animationPlans = {};
+  state.animationPlanMetadata = {};
+  state.animationAspectRatioDrafts = {};
+  state.shotVideoResults = {};
+  state.shotFrameResults = {};
+  state.shotVideoBatch = {
+    taskId: "",
+    status: "idle",
+    controlState: "running",
+    lastRenderedCompletedShots: -1
+  };
+  elements.shotVideoBatchPanel.classList.add("hidden");
+  state.characterReferenceStatuses = {};
+  state.characterAudioStatuses = {};
+  state.productionTasks = {};
+  state.taskSnapshots = {};
+  state.directorTaskId = "";
+  state.directorControlRequest = null;
+  state.production = emptyProductionState();
+  state.storyGenerationRequest = null;
+  state.storyControlRequests = {};
+  state.storyTaskStatusVisible = false;
+  localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
+  state.selectedVariantId = null;
+  resetStoryPackageStatus();
+}
+
+async function sourceFileSha256(file) {
+  if (!file || typeof file.arrayBuffer !== "function") return "";
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function commitProductionArtifact({
@@ -762,6 +1362,14 @@ async function commitProductionArtifact({
   requestToken = null
 }) {
   assertActiveProductionRun();
+  if (requestToken) assertCurrentProductionRequest(requestToken);
+  const dependencies = dependencyRefs ? structuredClone(dependencyRefs) : productionDependencies(dependencyIds);
+  const current = await matchingCurrentArtifactLineage(state.production, {
+    artifactId,
+    content,
+    dependencies
+  });
+  if (current && (!createMediaNamespace || current.mediaNamespace)) return current;
   const ownsToken = !requestToken;
   const token = requestToken || beginArtifactRequest(state.production, artifactId, crypto.randomUUID());
   try {
@@ -770,7 +1378,7 @@ async function commitProductionArtifact({
       ...token,
       artifactType,
       content,
-      dependencies: dependencyRefs ? structuredClone(dependencyRefs) : productionDependencies(dependencyIds),
+      dependencies,
       createMediaNamespace
     });
     assertCurrentProductionRequest(token);
@@ -814,7 +1422,10 @@ function applyStaleProductionArtifacts(artifactIds = []) {
         || String(state.output.animationPlan?.selectedVariantId || "") === variantId
       ) delete state.output.animationPlan;
       dropStaleMediaResults(state, artifactId);
-      if (String(state.selectedVariantId || "") === variantId) state.characterReferenceStatuses = {};
+      if (String(state.selectedVariantId || "") === variantId) {
+        state.characterReferenceStatuses = {};
+        state.characterAudioStatuses = {};
+      }
       elements.animationPlan.innerHTML = "";
       elements.animationPlan.classList.add("hidden");
     } else if (artifactId.startsWith("fullStory:")) {
@@ -871,7 +1482,18 @@ function endStageUsage() {
   return mergeStageUsage(entries || []);
 }
 
+// 纯旁路：没有 usage 的请求（簿记类）不会进合计，也不影响返回值或失败语义。
+function recordStageUsage(usage) {
+  if (stageUsageEntries && usage) stageUsageEntries.push(usage);
+}
+
+/** 阶段失败时的后缀：失败前调用过的模型照样计费，不能显示成 0 或干脆不显示。 */
+function failedStageUsageSuffix() {
+  return formatStageUsageSuffix(endStageUsage(), { label: "失败前已消耗" });
+}
+
 async function api(path, body, { productionToken = null } = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const response = await fetch(path, {
     method: "POST",
     headers: {
@@ -881,16 +1503,19 @@ async function api(path, body, { productionToken = null } = {}) {
     body: JSON.stringify(withModelOverrides(body))
   });
   const data = await response.json().catch(() => ({}));
+  assertWorkspaceCurrent(workspaceEpoch);
+  // 先记账再判成败：失败响应上的 usage 是失败前真实花掉的钱，抛错前必须收进合计。
+  recordStageUsage(data.usage);
   if (!response.ok || !data.ok) {
     throw createApiRequestError(data, response.status, `请求失败（${response.status}）`);
   }
-  // 纯旁路：没有 usage 的请求（簿记类）不会进合计，也不影响返回值。
-  if (stageUsageEntries && data.usage) stageUsageEntries.push(data.usage);
   return data.result;
 }
 
 async function streamJsonEvents(path, body, onEvent) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const response = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(withModelOverrides(body)) });
+  assertWorkspaceCurrent(workspaceEpoch);
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     throw createApiRequestError(data, response.status, `请求失败（${response.status}）`);
@@ -901,6 +1526,7 @@ async function streamJsonEvents(path, body, onEvent) {
   let buffer = "";
   while (true) {
     const { done, value } = await reader.read();
+    assertWorkspaceCurrent(workspaceEpoch);
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const blocks = buffer.split(/\r?\n\r?\n/u);
@@ -993,18 +1619,55 @@ function renderScript(data) {
   reveal(elements.script);
 }
 
+// turningMechanism 2026-09-10 由字符串改成 {before, after}：它写的是**观众对人物关系的理解
+// 怎样改变**，混在一个字符串里时读不出哪一半描述哪一端。
+//
+// 两种形状都要能显示——新校验只在 createBrief 的生成路径跑，下游对 creativeBrief 只做裸
+// requireObject，所以已签发的旧简报（字符串）照常加载，页面不能把它显示成空白。
+function storyEngineShift(storyEngine) {
+  const turning = storyEngine?.turningMechanism;
+  if (typeof turning === "string") return turning;
+  if (!turning || typeof turning !== "object") return "";
+  return [turning.before, turning.after].filter(Boolean).join(" → ");
+}
+
+// 换角测试：上面那一排格子写的是这部片子「发生了什么」，这一块写的是
+// 「为什么是这个角色做这件事才好看」。collapses 那一侧就是换个人来演就没了的东西。
+// 旧简报没有这个键——整块不显示，不留空白（与 storyEngineShift 同一条理由）。
+function recastTestBlock(recastTest) {
+  const collapses = Array.isArray(recastTest?.collapses) ? recastTest.collapses.filter(Boolean) : [];
+  const survives = Array.isArray(recastTest?.survives) ? recastTest.survives.filter(Boolean) : [];
+  if (!collapses.length && !survives.length) return "";
+  const list = (items, cls) => `<ul class="recast-list ${cls}">${items.map((item) => `<li>${escape(item)}</li>`).join("")}</ul>`;
+  return block("换个角色来演，什么会塌掉", `
+    <p class="recast-premise"><b>假设换成：</b>${escape(recastTest?.recastAs || "—")}</p>
+    <div class="recast-split">
+      <div>
+        <b>塌掉的 · 只有这个角色才给得了</b>
+        ${collapses.length ? list(collapses, "collapses") : "<p class=\"muted-note\">—</p>"}
+      </div>
+      <div>
+        <b>不塌的 · 换谁来做都一样</b>
+        ${survives.length ? list(survives, "survives") : "<p class=\"muted-note\">—</p>"}
+      </div>
+    </div>`);
+}
+
+// creative_brief/2.0（2026-09-23）起简报只写原片：storyEngine 与 recastTest。
+// 旧卡片把 mustRetain 标成「必须保留」、把 protectedExpressions 标成「禁止直接复制」、给七项构件
+// 一律打 ✓——三处都与契约相反（下游不收、不是禁词、多数是【原片没有】）。旧简报里的这些字段
+// 下游已经不读，所以不再显示，只留一行说明；storyEngine / recastTest 两种形状照常显示。
+const BRIEF_DISPLAYED_KEYS = new Set(["schemaVersion", "storyEngine", "recastTest"]);
+
 function renderBrief(data) {
-  elements.brief.innerHTML = `${resultHeader("CREATIVE BRIEF", "AI 导演创意简报")}
-    <div class="summary-strip">${escape(data.creativeDistancePolicy)}</div>
+  const legacyFields = Object.keys(data || {}).filter((key) => !BRIEF_DISPLAYED_KEYS.has(key));
+  elements.brief.innerHTML = `${resultHeader("CREATIVE BRIEF", "创意简报 · 原片解读")}
+    <div class="summary-strip">这里写的全是原片：它靠什么驱动，以及为什么非得是这个角色来做。定位、受众和情绪曲线由后续阶段直接读原片分析。</div>
     <div class="data-grid">
-      ${cell("内容类型", data.contentType)}${cell("核心情绪", data.coreEmotion)}${cell("目标观众", data.targetAudience)}
-      ${cell("人物欲望", data.storyEngine?.desire)}${cell("主要障碍", data.storyEngine?.obstacle)}${cell("情绪兑现", data.storyEngine?.payoff)}
+      ${cell("原片主角想要", data.storyEngine?.desire)}${cell("原片的阻力", data.storyEngine?.obstacle)}${cell("压力怎么升高", data.storyEngine?.escalation)}${cell("原片怎么兑现", data.storyEngine?.payoff)}${cell("关系理解转变", storyEngineShift(data.storyEngine))}
     </div>
-    ${block("可复用高价值桥段", `<div class="beat-list">${(data.reusableHighValueBeats || []).map((item) => `<div class="beat"><strong>${escape(item.beat)}</strong><p>${escape(item.dramaticValue)}<br><b>必须保留：</b>${escape(item.mustRetain)}</p></div>`).join("")}</div>`)}
-    ${block("允许继续使用的叙事构件", `<div class="allow-grid">${(data.allowedNarrativeComponents || []).map((item) => `<div class="allow-item"><strong>✓ ${escape(item.component)}</strong><p>${escape(item.howToReuseSafely)}</p></div>`).join("")}</div>`)}
-    ${block("受控改写变量", `<div class="rule-list">${(data.controlledRewriteVariables || []).map((item) => `<div class="rule"><strong>${escape(item.variable)}${item.mustChange ? " · 必须改" : ""}</strong><p>${escape(item.reason)}<br>方向：${escape((item.allowedDirections || []).join(" / "))}</p></div>`).join("")}</div>`)}
-    ${block("最低变换规则", `<div class="rule-list">${(data.minimumTransformationRules || []).map((item) => `<div class="rule"><strong>${escape(item.dimension)}</strong><p>${escape(item.minimumChange)}<br><b>验收：</b>${escape(item.acceptanceCheck)}</p></div>`).join("")}</div>`)}
-    <div class="warning-box"><b>真正禁止直接复制：</b> ${(data.protectedExpressions || []).map((item) => `${escape(item.expressionType)}：${escape(item.prohibition)}`).join("；") || "无"}</div>`;
+    ${recastTestBlock(data.recastTest)}
+    ${legacyFields.length ? `<p class="muted-note">这是旧版简报，其余 ${legacyFields.length} 个字段下游已不再使用，未显示。</p>` : ""}`;
   reveal(elements.brief);
 }
 
@@ -1096,17 +1759,23 @@ function structuredValue(value) {
   return String(value ?? "");
 }
 
+const REGENERATE_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.9 4.5"/><polyline points="20 4 20 11 13 11"/></svg>`;
+
 function renderVariants(data) {
-  elements.variants.innerHTML = `${resultHeader("THEME VARIANTS", "可拍摄的具体主题变体")}
+  const regenerating = Boolean(state.variantsRegenerating);
+  const regenerateButton = `<button class="round-add-button${regenerating ? " is-busy" : ""}" type="button" data-regenerate-variants aria-label="换一批主题变体" title="${regenerating ? "正在重新生成主题变体…" : "换一批：用同一份上游证据重新生成主题变体"}"${regenerating ? " disabled" : ""}>${REGENERATE_ICON}</button>`;
+  elements.variants.innerHTML = `${resultHeader("THEME VARIANTS", "可拍摄的具体主题变体", "", regenerateButton)}
     <div class="variant-grid">${(data.variants || []).map((variant) => `<div class="variant">
       <div class="variant-top">
         <div><span class="variant-number">${escape(variant.id)} · NEW EPISODE</span><h4>${escape(variant.title)}</h4></div>
         <div class="variant-top-meta">
           <label class="variant-switch" title="${backgroundMusicEnabled(variant.id) ? "开启：允许为该主题生成背景音乐" : "关闭：成片只保留现场环境声与动作声"}">
-            <input type="checkbox" data-background-music="${escape(variant.id)}" aria-label="${escape(variant.title)} 的背景音乐"${backgroundMusicEnabled(variant.id) ? " checked" : ""}>
+            <input type="checkbox" data-background-music="${escape(variant.id)}" aria-label="${escape(variant.title)} 的背景音乐"${backgroundMusicEnabled(variant.id) ? " checked" : ""}${regenerating ? " disabled" : ""}>
             <span class="variant-switch-track" aria-hidden="true"></span>
             <span class="variant-switch-label">配乐</span>
           </label>
+          ${variantDurationBadge(variant.storyOutline)}
+          ${narrativeModeBadge(variant.narrativeMode)}
           <span class="risk">相似风险 ${escape(variant.originalityRiskCheck?.riskLevel || "-")}</span>
         </div>
       </div>
@@ -1114,14 +1783,664 @@ function renderVariants(data) {
       <p class="variant-logline">${escape(variant.logline)}</p>
       <div class="variant-cast">
         <span><b>主角</b>${escape(variant.characterSetup?.protagonist || "待确认")}</span>
-        <span><b>被关爱对象</b>${escape(variant.characterSetup?.careRecipient || "待确认")}</span>
-        <span><b>帮助者</b>${escape(variant.characterSetup?.helper || "待确认")}</span>
+        ${optionalCastSpan("被关爱对象", variant.characterSetup?.careRecipient)}
+        ${optionalCastSpan("帮助者", variant.characterSetup?.helper)}
       </div>
       <ul class="mini-beats">${(variant.storyOutline || []).map((beat) => `<li><b>${escape(beat.beat)}</b><span><strong>${escape(beat.phase)}</strong> · ${escape(beat.action)}</span></li>`).join("")}</ul>
-      <div class="variant-ending"><b>结尾仪式：</b>${escape(variant.endingRitual)}</div>
-      <button class="outline-button variant-story-button" type="button" data-story-variant="${escape(variant.id)}">进入完整剧情 →</button>
-    </div>`).join("")}</div>`;
+      ${variant.endingRitual ? `<div class="variant-ending"><b>结尾仪式：</b>${escape(variant.endingRitual)}</div>` : ""}
+      <button class="outline-button variant-story-button" type="button" data-story-variant="${escape(variant.id)}"${regenerating ? " disabled" : ""}>进入完整剧情 →</button>
+    </div>`).join("")}</div>
+    <div class="story-review">
+      <button type="button" class="outline-button" data-candidate-review${regenerating ? " disabled" : ""}>对照原片体检候选</button>
+      <span class="story-review-hint">只看动作链，不看候选的自我评价——评审拿不到新颖性、保留价值和体验保真这些字段。只出报告，不改候选、不淘汰、不影响后续。</span>
+      <div class="story-review-body" data-candidate-review-body></div>
+    </div>`;
   reveal(elements.variants);
+  const reviewButton = elements.variants.querySelector("[data-candidate-review]");
+  if (reviewButton) reviewButton.addEventListener("click", () => runStoryCandidateReview(data, reviewButton));
+}
+
+// 候选对照评审：手动触发，只出报告。不改候选、不签发 Artifact、不改变候选数量、
+// 不 stale 任何东西、不阻断后续阶段。报告不落盘，刷新页面即失。
+async function runStoryCandidateReview(themeVariants, button) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const body = elements.variants.querySelector("[data-candidate-review-body]");
+  if (!body || button.disabled) return;
+  if (!state.output.sourceScriptReconstruction) {
+    body.innerHTML = `<p class="story-review-status error">缺少原片脚本还原，无法做对照评审。</p>`;
+    return;
+  }
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "体检中…";
+  body.innerHTML = `<p class="story-review-status">正在逐个候选核对动作链与原片机制，通常十几秒…</p>`;
+  try {
+    // 响应是 { review, metadata } 两层：metadata 是服务端的调用记录，**不属于**
+    // 模型输出契约（schema 是 additionalProperties: false），混进去会让这份报告
+    // 送不回服务端——而命题定向修订要拿它当输入。
+    const result = await api("/api/story-candidate-review", {
+      themeVariants,
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+      visualGuardrails: state.output.visualGuardrails,
+      // 三份上游（2026-09-12）：角色是硬事实、简报是**可以质疑的创作假设**、
+      // 参考分析只用来理解参考片为什么留得住人。服务端按允许清单投影后才进提示词，
+      // **它们都不会成为原片事实基准**——机制与骨架对照仍然只认脚本还原。
+      // 缺任何一份都不阻断评审，只是少一节判断依据。
+      creatorProfile: profile(),
+      creativeBrief: state.output.creativeBrief,
+      referenceAnalysis: state.output.referenceAnalysis
+    });
+    // 报告连同它评的那一份 themeVariants 一起留在内存里，给定向修订当输入。
+    // 与评审本身同规格：只在页面上活着，刷新即失，不进 Artifact、不进 lineage。
+    // 连 themeVariants 一起存是为了在修订时复核报告评的还是不是当前这一批。
+    lastCandidateReview = { review: result.review, themeVariants };
+    storyCandidateRevisions.clear();
+    body.innerHTML = renderStoryCandidateReview(result.review, themeVariants, result.metadata);
+    bindCandidateReviewActions(body);
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    // 覆盖率核验拦下的漏检要完整显示：用户需要看到是哪个候选没被评到。
+    body.innerHTML = `<p class="story-review-status error">${escape(error?.message || "候选体检失败")}</p>`;
+  } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+// 最近一次评审报告，连同它评的那一份 themeVariants。定向修订拿它当输入，
+// 并在发请求前复核这一批命题有没有换过。刷新即失，与评审同规格。
+let lastCandidateReview = null;
+
+// 修订按钮在这个命题被报出**因果断裂**或**有原片机制没接住**时出现。
+//
+// 驱动信号刻意不是 verdict：2026-09-10 实测同一份命题三次回放，verdict 与
+// recommendedOrder 每次都不同（2 pass/2 revise → 2 revise/2 drop → 2 revise/2 drop），
+// 而这两类都逐条锚定——断裂锚到拍号，机制锚到清单 id。拿不稳的信号当修订入口只会让人白花钱。
+//
+// 机制未迁移是 2026-09-11 补上的第二个信号。此前只看因果断裂，实测代价：V4 被判 drop 的
+// 主因是三条机制全部 not_depicted，而修订只收到那条最轻的空间断裂，于是只把「小木箱」
+// 换成了「高脚木凳」——评审自己的 summary 写着「最该先改的是补充转赠长辈的动作」，那条没送到。
+function reviseAction(check) {
+  const breaks = Array.isArray(check?.coherenceChecks) ? check.coherenceChecks : [];
+  const unmigrated = (Array.isArray(check?.mechanismChecks) ? check.mechanismChecks : [])
+    .filter((entry) => entry?.verdict === "not_depicted" || entry?.verdict === "partially_depicted");
+  if (!breaks.length && !unmigrated.length) return "";
+  const parts = [];
+  if (breaks.length) parts.push(`${breaks.length} 处因果问题`);
+  if (unmigrated.length) parts.push(`${unmigrated.length} 条没接住的原片机制`);
+  return `
+    <div class="candidate-revision-action">
+      <button type="button" class="outline-button" data-revise-candidate="${escape(check.candidateId)}">
+        按评审意见修订（${parts.join(" + ")}）
+      </button>
+      <span class="muted-note">只出修订稿供对照，<b>不会</b>改动当前命题；采纳与否由你决定。机制接不接由修订模型判断，它可以明确拒绝并说明理由。</span>
+    </div>`;
+}
+
+// 定向修订结果按命题 id 隔离，与分镜修订同规格：只在页面上活着，
+// 真正签发只发生在用户点「采纳」的那一刻。
+const storyCandidateRevisions = new Map();
+
+const CANDIDATE_VERDICT_LABEL = { pass: "可展开", revise: "需修改", drop: "建议淘汰" };
+
+// 五档质量等级与降级理由的中文标签都从共用常量取（`public/story-review-metrics.js`），
+// **浏览器里不再写第二份数字或第二套档位**。
+const CANDIDATE_TIER_LABEL = Object.fromEntries(
+  CANDIDATE_REVIEW_TIERS.map((tier) => [tier.id, tier.label])
+);
+
+const DEFECT_SEVERITY_LABEL = { BLOCKER: "致命", MAJOR: "重要", MINOR: "轻微", NONE: "无" };
+
+const BRIEF_ALIGNMENT_LABEL = { PASS: "不冲突", WARN: "需注意", FAIL: "违反硬约束" };
+
+const SUGGESTION_KIND_LABEL = {
+  strengthen: "强化已有",
+  replace: "替换",
+  remove: "删除",
+  recycle: "回收伏笔",
+  add: "新增"
+};
+
+// 因果自洽问题的五种形状，与 schema 的 kind 枚举逐字一一对应。
+// 枚举值本身是英文标识，直接显示等于让人对着 purpose_nullified 猜它指什么。
+const COHERENCE_KIND_LABEL = {
+  contradiction: "前后互相否定",
+  tool_misuse: "手上已有更好的办法",
+  purpose_nullified: "目的被当场抵消",
+  space_or_time: "空间或时间说不通",
+  other: "其它"
+};
+
+// 事件链逐环的接法，与 schema 的 linkage 枚举逐字一一对应。
+// same 是这里唯一的坏消息：因果接法与顺序都照搬，就是换皮的形状。
+const SCAFFOLD_LINKAGE_LABEL = {
+  same: "同一条因果接法、同一顺序",
+  reordered: "有对应事件但顺序或接法变了",
+  different: "这个位置做的是另一件事",
+  absent: "候选里没有这件事"
+};
+
+// 五个辅助观察的取值。not_applicable 是 2026-09-12 补的：原片或候选根本没有
+// 任务、没有奖励时（生活片段型很常见），逼模型在 same/partial/different 里三选一
+// 只会得到一个编出来的值。
+const SCAFFOLD_DIMENSION_LABEL = {
+  same: "同类",
+  partial: "部分相同",
+  different: "不同",
+  not_applicable: "不适用"
+};
+
+const SCAFFOLD_DIMENSION_TITLE = {
+  taskType: "任务性质",
+  midSection: "中段怎么推进",
+  rewardSource: "获得的东西从哪来",
+  rewardHandling: "拿到之后怎么处置",
+  endingShape: "结尾形状"
+};
+
+// 评审结论与候选**自己的说辞**并排显示。
+// 模型看不到右边那一栏（服务端按允许清单剥掉了），你看得见——差在哪一眼就知道。
+function renderStoryCandidateReview(review, themeVariants, metadata = null) {
+  const byId = new Map((themeVariants?.variants || []).map((variant) => [String(variant.id), variant]));
+  const headline = candidateReviewHeadline(review);
+  // 服务端拦过一次就必须说出来，不能让用户以为模型一次就写对了。
+  // 这一档现在允许「第一次做错」：被确定性闸门拦下时带诊断重做一次，预算封在 2 次。
+  // metadata 是**外挂的一层**，不在 review 对象里——review 的 schema 是
+  // additionalProperties: false，混进去它就送不回服务端，而定向修订要拿它当输入。
+  const call = metadata?.storyCandidateReview || null;
+  const rejectionReasons = (call?.rejections || [])
+    .flatMap((rejection) => (rejection?.details || []))
+    .map((detail) => String(detail?.reason || detail?.message || "").trim())
+    .filter(Boolean);
+  const retryNote = call && call.providerCalls > 1 ? `
+    <p class="story-review-status warn">这份报告是第 ${escape(call.providerCalls)} 次调用的结果——第一次被确定性校验拦下并按诊断重做了一次${rejectionReasons.length ? `：${escape(rejectionReasons.join("；"))}` : "。"}</p>` : "";
+  // 原片机制是**全批共享的一份清单**，候选只按 id 引用（§2.12b ⑥）。
+  // 不把清单显示出来，下面每条 mechanismCheck 就只剩一个孤零零的 id，
+  // 而「这批候选到底在对照原片的哪几条机制」正是这份报告最该先说清的事。
+  const mechanismById = new Map((review.sourceMechanisms || []).map((entry) => [String(entry.id), entry]));
+  const sourceMechanisms = (review.sourceMechanisms || []).length ? `
+    <div class="candidate-review-mechanisms">
+      <b>原片机制清单（全部候选共用这一份，最多 4 条）</b>
+      ${(review.sourceMechanisms || []).map((entry) => `
+        <div class="review-check">
+          <div class="review-check-head">
+            <span class="scene-id">${escape(entry.id)}</span>
+            <b>${escape(entry.mechanism)}</b>
+            ${entry.requiresCause === true ? `<span class="review-verdict verdict-partially_depicted">需要前因</span>` : ""}
+          </div>
+          <p><b>原片在哪兑现：</b>${escape(entry.whereInSource)}</p>
+        </div>`).join("")}
+    </div>` : "";
+  const cards = (review.candidateChecks || []).map((check) => {
+    const candidate = byId.get(String(check.candidateId));
+    const interaction = check.coreInteraction || {};
+    const mechanisms = (check.mechanismChecks || []).map((entry) => {
+      // 校验器已保证这个 id 在清单里（CANDIDATE_REVIEW_UNKNOWN_MECHANISM），
+      // 取不到时仍只显示 id，不编一句解释。
+      const source = mechanismById.get(String(entry.sourceMechanismId));
+      return `
+      <div class="review-check">
+        <div class="review-check-head">
+          <span class="scene-id">${escape(entry.sourceMechanismId)}</span>
+          ${source ? `<b>${escape(source.mechanism)}</b>` : ""}
+          <span class="review-verdict verdict-${escape(entry.verdict)}">${escape(REVIEW_VERDICT_LABEL[entry.verdict] || entry.verdict)}</span>
+        </div>
+        <p><b>本候选在哪兑现：</b>${escape(entry.actionEvidence)}${(entry.beatIndexes || []).length ? `（第 ${escape((entry.beatIndexes || []).join("、"))} 拍）` : ""}</p>
+        ${source?.requiresCause === true ? `
+        <p><b>前因：</b>${entry.causeEvidence ? escape(entry.causeEvidence) : "<span class=\"muted-note\">这条机制标了需要前因，而评审没有写出前因</span>"}</p>` : ""}
+      </div>`;
+    }).join("");
+    // 骨架对照（2026-09-12）。评审此前只比候选**之间**的差异，从来没比过候选与原片——
+    // 四个候选彼此完全不同，仍然可能各自都在复刻原片，那是两个独立的问题。
+    // 事件链是判据，五个维度只是辅助观察；不渲染事件链就只剩一个没有依据的分数。
+    const scaffold = check.sourceScaffoldOverlap;
+    const scaffoldBlock = scaffold ? `
+      <div class="candidate-review-scaffold">
+        <b>与原片的故事链重合：${escape(scaffold.score)} / 100${Number.isInteger(scaffold.score) && scaffold.score >= SOURCE_SCAFFOLD_COPY_SCORE ? "（疑似换皮）" : ""}</b>
+        <p class="review-why">${escape(scaffold.why)}</p>
+        ${(scaffold.eventChain || []).map((link) => `
+          <div class="review-check">
+            <div class="review-check-head">
+              <span class="review-verdict verdict-${link.linkage === "same" ? "not_depicted" : link.linkage === "reordered" ? "partially_depicted" : "depicted"}">${escape(SCAFFOLD_LINKAGE_LABEL[link.linkage] || link.linkage)}</span>
+              ${(link.beatIndexes || []).length ? `<span class="scene-id">第 ${escape((link.beatIndexes || []).join("、"))} 拍</span>` : ""}
+            </div>
+            <p><b>原片：</b>${escape(link.sourceEvent)}</p>
+            <p><b>本候选：</b>${escape(link.candidateEvent)}</p>
+          </div>`).join("")}
+        <div class="data-grid">
+          ${Object.keys(SCAFFOLD_DIMENSION_TITLE).map((key) => cell(
+            SCAFFOLD_DIMENSION_TITLE[key],
+            SCAFFOLD_DIMENSION_LABEL[scaffold[key]] || scaffold[key]
+          )).join("")}
+        </div>
+        <span class="muted-note">任务同类、结尾相似、都是两个人一起做事，本身都不足以判换皮；判据是那条因果链。</span>
+      </div>` : "";
+    // 因果自洽检查是这份报告里唯一「呈现 vs 呈现」的一档（§2.12b ⑤），
+    // 它的全部意义就是把动作链里的断裂摆出来给人看——不渲染等于这一档没做。
+    const coherence = (check.coherenceChecks || []).length ? `
+      <div class="candidate-review-coherence">
+        <b>因果自洽问题（${(check.coherenceChecks || []).length} 处）</b>
+        ${(check.coherenceChecks || []).map((entry) => `
+          <div class="review-check">
+            <div class="review-check-head">
+              <span class="review-verdict verdict-not_depicted">${escape(COHERENCE_KIND_LABEL[entry.kind] || entry.kind)}</span>
+              <span class="scene-id">第 ${escape((entry.beatIndexes || []).join("、"))} 拍</span>
+            </div>
+            <p>${escape(entry.problem)}</p>
+          </div>`).join("")}
+      </div>` : "";
+    const claims = candidate ? `
+      <div class="candidate-review-claim">
+        <b>候选自己的说辞（评审看不到这一栏）</b>
+        <p><b>新颖性：</b>${escape(candidate.novelty || "—")}</p>
+        <p><b>保留价值：</b>${escape((candidate.highValueBeatMapping || []).map((entry) => entry.retainedValue).filter(Boolean).join("；") || "—")}</p>
+        <p><b>体验保真：</b>${escape(candidate.experienceFidelity?.plotDriver || "—")}</p>
+      </div>` : "";
+    // 分数与放行决定是**两件事**，界面上必须分开显示（2026-09-12）：
+    // 一个 9.2 分、最高档的候选，可能因为动作链有因果断裂而暂时不能晋级。
+    // 把它显示成「7 分」或只显示「需修改」，都会让人以为这个故事不好。
+    const verdict = check.effectiveVerdict || check.verdict;
+    const overrides = Array.isArray(check.verdictOverrideReasons) ? check.verdictOverrideReasons : [];
+    const scoreBlock = Number.isFinite(Number(check.overallScore)) ? `
+      <div class="candidate-review-score">
+        <b>${escape(Number(check.overallScore).toFixed(2))} / 10</b>
+        <span class="scene-id">${escape(CANDIDATE_TIER_LABEL[check.tier] || check.tier || "")}</span>
+        ${overrides.length ? `<span class="review-verdict verdict-not_depicted">${escape(
+          `按分数本可${CANDIDATE_VERDICT_LABEL[check.scoreBasedVerdict] || check.scoreBasedVerdict}，现降为${CANDIDATE_VERDICT_LABEL[verdict] || verdict}`
+        )}</span>` : ""}
+        ${overrides.length ? `<p class="muted-note">降级原因：${escape(
+          overrides.map((reason) => CANDIDATE_REVIEW_OVERRIDE_LABELS[reason] || reason).join("；")
+        )}（质量分与等级不因此改变）</p>` : ""}
+        <div class="data-grid">
+          ${(check.dimensions || []).map((dim) => cell(
+            CANDIDATE_REVIEW_DIMENSION_LABELS[dim.id] || dim.id,
+            `${Number(dim.score).toFixed(1)} · ${dim.evidence || ""}`
+          )).join("")}
+        </div>
+      </div>` : "";
+    const defect = check.dominantDefect;
+    // 缺陷类型要显示中文：十一个维度复用维度标签，另外四个特殊值单列——
+    // 让人对着 ownership_or_authority 猜是这套报告最容易犯的可读性错误。
+    const defectTypeLabel = defect
+      ? (CANDIDATE_REVIEW_DIMENSION_LABELS[defect.type]
+        || CANDIDATE_REVIEW_SPECIAL_DEFECT_LABELS[defect.type]
+        || defect.type)
+      : "";
+    const defectBlock = defect && defect.type && defect.type !== "none" ? `
+      <p class="review-why"><b>主要缺陷 · ${escape(defectTypeLabel)}（${escape(DEFECT_SEVERITY_LABEL[defect.severity] || defect.severity)}）：</b>${escape(defect.description || defect.type)}</p>` : "";
+    // 物理机制：**不是「可行 / 不可行」二选一**，中间那档才是常态——
+    // 「换个条件就成立」的土办法要把依赖的条件摆出来，下游才知道正文里该补哪一句。
+    const assumptions = (check.physicalAssumptions || []).length ? `
+      <div class="candidate-review-assumptions">
+        <b>物理机制的可信度</b>
+        ${(check.physicalAssumptions || []).map((row) => `
+          <div class="review-check">
+            <div class="review-check-head">
+              <span class="review-verdict verdict-${row.confidence === "established" ? "depicted" : row.confidence === "conditional" ? "partially_depicted" : "not_depicted"}">${escape(CANDIDATE_REVIEW_CONFIDENCE_LABELS[row.confidence] || row.confidence)}</span>
+              ${(row.beatIndexes || []).length ? `<span class="scene-id">第 ${escape((row.beatIndexes || []).join("、"))} 拍</span>` : ""}
+            </div>
+            <p>${escape(row.mechanism)}</p>
+            <p><b>故事依赖程度：</b>${escape(CANDIDATE_REVIEW_LITERAL_DEPENDENCY_LABELS[row.literalDependency] || row.literalDependency || "—")}${row.literalDependency === "make_believe" ? "（物理上立不住不算缺陷）" : ""}</p>
+            ${(row.necessaryAssumptions || []).length ? `<p><b>依赖但没交代的条件：</b>${escape((row.necessaryAssumptions || []).join("；"))}</p>` : ""}
+            ${row.failureRisk ? `<p><b>不成立时：</b>${escape(row.failureRisk)}</p>` : ""}
+          </div>`).join("")}
+      </div>` : "";
+    const brief = check.briefAlignment;
+    // 简报合规**不进质量分**，所以单独一块显示：一个不听简报但更好看的故事，
+    // 该改的是简报，不是这个候选。
+    const briefBlock = brief && brief.status ? `
+      <div class="candidate-review-brief">
+        <b>创意简报：${escape(BRIEF_ALIGNMENT_LABEL[brief.status] || brief.status)}</b>
+        ${brief.conflict ? `<p>${escape(brief.conflict)}</p>` : ""}
+        ${brief.suggestBriefChange ? `<p><b>建议改简报：</b>${escape(brief.suggestBriefChange)}</p>` : ""}
+        <span class="muted-note">仅供参考：不参与分数、等级与放行决定。实测同一份候选三次回放，这一格的判定会互相翻转，跨包时改简报的方向甚至相反——请人工判断。</span>
+      </div>` : "";
+    const suggestions = (check.top3RevisionSuggestions || []).length ? `
+      <div class="candidate-review-suggestions">
+        <b>最高价值的 ${escape((check.top3RevisionSuggestions || []).length)} 处修改（先换再加）</b>
+        ${(check.top3RevisionSuggestions || []).map((row) => `
+          <div class="review-check">
+            <div class="review-check-head">
+              <span class="review-verdict verdict-${row.kind === "add" ? "not_depicted" : "partially_depicted"}">${escape(SUGGESTION_KIND_LABEL[row.kind] || row.kind)}</span>
+            </div>
+            <p>${escape(row.suggestion)}</p>
+            ${row.replacesOrStrengthens ? `<p><b>换掉或强化：</b>${escape(row.replacesOrStrengthens)}</p>` : ""}
+            ${row.whyOnlyHere ? `<p><b>为什么只能发生在这个故事里：</b>${escape(row.whyOnlyHere)}</p>` : ""}
+          </div>`).join("")}
+      </div>` : "";
+    return `
+      <details class="candidate-review-card" ${verdict === "pass" ? "" : "open"}>
+        <summary>
+          <span class="scene-id">${escape(check.candidateId)}</span>
+          <b>${escape(check.title)}</b>
+          ${Number.isFinite(Number(check.overallScore)) ? `<span class="scene-id">${escape(Number(check.overallScore).toFixed(2))}</span>` : ""}
+          <span class="review-verdict verdict-${verdict === "pass" ? "depicted" : verdict === "revise" ? "partially_depicted" : "not_depicted"}">${escape(CANDIDATE_VERDICT_LABEL[verdict] || verdict)}</span>
+        </summary>
+        <p class="review-why">${escape(check.why)}</p>
+        ${check.strongestReason ? `<p class="review-keep"><b>最强的一处：</b>${escape(check.strongestReason)}</p>` : ""}
+        ${defectBlock}
+        ${scoreBlock}
+        <div class="data-grid">
+          ${cell("具体困境", interaction.setback)}${cell("主角介入", interaction.intervention)}
+          ${cell("对方回应", interaction.response)}${cell("可见前后变化", interaction.visibleChange)}
+        </div>
+        ${mechanisms}
+        ${coherence}
+        ${scaffoldBlock}
+        ${assumptions}
+        ${briefBlock}
+        ${suggestions}
+        <p class="review-keep"><b>别改掉：</b>${escape(check.keepThis)}</p>
+        ${claims}
+        ${reviseAction(check)}
+        <div class="candidate-revision-slot" data-revision-slot="${escape(check.candidateId)}"></div>
+      </details>`;
+  }).join("");
+  // 批次模板收敛是**集合属性**，不属于任何单个候选：逐个看每一个都可以声称自己原创，
+  // 只有横着看才会发现四个故事其实是同一套机制换了四套布景。所以它置顶显示。
+  const convergence = review.batchTemplateConvergence;
+  const convergenceBlock = convergence && convergence.converged === true ? `
+    <div class="candidate-review-convergence">
+      <b>这一批共用同一套深层机制（${escape((convergence.affectedCandidateIds || []).join("、"))}）</b>
+      <p>${escape(convergence.sharedMechanism)}</p>
+      ${convergence.evidence ? `<p class="muted-note">${escape(convergence.evidence)}</p>` : ""}
+    </div>` : "";
+  const briefProblems = (review.briefProblemsDetected || []).length ? `
+    <div class="candidate-review-brief">
+      <b>这一批暴露出的创意简报问题</b>
+      ${(review.briefProblemsDetected || []).map((entry) => `<p>${escape(entry)}</p>`).join("")}
+      <span class="muted-note">简报是上一阶段的创作假设，不是硬事实——这里说的是该改简报，不是该改候选。</span>
+    </div>` : "";
+  // winner / runnerUp / 淘汰名单都是服务端从推荐顺序与派生等级算出来的，
+  // 不是模型另写的一份，所以不会出现「判了淘汰却不在名单里」。
+  const winner = String(review.recommendedWinner || "");
+  const rejects = Array.isArray(review.rejectOrRegenerate) ? review.rejectOrRegenerate : [];
+  return `
+    <p class="story-review-status">${escape(headline)}</p>
+    <p class="story-review-status">按评分排序：${escape((review.scoreOrder || []).join(" → "))}</p>
+    ${(review.holisticPreferenceOrder || []).length ? `<p class="story-review-status">模型整体偏好：${escape((review.holisticPreferenceOrder || []).join(" → "))}${(review.scoreOrder || []).join() !== (review.holisticPreferenceOrder || []).join() ? "　<b>（与评分排序不一致——两套判断在这一批上看法不同，值得看一眼为什么）</b>" : ""}</p>` : ""}
+    ${winner ? `<p class="story-review-status">首选 <b>${escape(winner)}</b>${review.runnerUp ? ` · 次选 ${escape(review.runnerUp)}` : ""}${rejects.length ? ` · 建议淘汰或重做 ${escape(rejects.join("、"))}` : ""}</p>` : ""}
+    ${retryNote}
+    ${convergenceBlock}
+    ${briefProblems}
+    ${sourceMechanisms}
+    ${cards}
+    <p class="story-review-summary">${escape(review.summary)}</p>`;
+}
+
+// 评审面板是整块 innerHTML 渲染的，按钮只能在渲染之后绑。
+function bindCandidateReviewActions(root) {
+  for (const button of root.querySelectorAll("[data-revise-candidate]")) {
+    button.addEventListener("click", () => requestStoryCandidateRevision(button.dataset.reviseCandidate, button));
+  }
+}
+
+// 定向修订：按评审报出的因果断裂只改这一个命题。**返回结果不写回任何东西**——
+// 与分镜修订同规格，签发只发生在用户点「采纳」的那一刻。
+async function requestStoryCandidateRevision(candidateId, button) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (!candidateId || button.disabled) return;
+  const entry = lastCandidateReview;
+  if (!entry) {
+    showError("评审报告已失效，请重新体检后再修订。");
+    return;
+  }
+  // 报告是针对**当时那一批命题**算出来的。中途换过一批就必须重新体检，
+  // 不能把基于旧内容的修订意见套到新命题上。
+  if (JSON.stringify(state.output.themeVariants) !== JSON.stringify(entry.themeVariants)) {
+    lastCandidateReview = null;
+    showError("主题命题在体检之后已经换过一批，这份评审报告已作废，请重新体检。");
+    return;
+  }
+  const slot = document.querySelector(`[data-revision-slot="${CSS.escape(candidateId)}"]`);
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "修订中…";
+  if (slot) slot.innerHTML = `<p class="story-review-status">正在按评审意见改这一个命题，通常一两分钟…</p>`;
+  try {
+    const result = await api("/api/story-candidate-revision", {
+      themeVariants: entry.themeVariants,
+      review: entry.review,
+      candidateId,
+      creatorProfile: profile(),
+      // 边界验签比对整份上游的 sourceDigest，这几份必须一起送；
+      // 它们只用于验签与合并后的复验，**不进修订提示词**。
+      visualGuardrails: state.output.visualGuardrails,
+      creativeBrief: state.output.creativeBrief,
+      referenceAnalysis: state.output.referenceAnalysis,
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+      targetDurationSeconds: resolveStoryDurationTarget(state.storyDurationTarget, {
+        metadata: state.metadata,
+        sourceScriptReconstruction: state.output.sourceScriptReconstruction
+      })
+    });
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    storyCandidateRevisions.set(String(candidateId), {
+      ...result,
+      sourceThemeVariants: entry.themeVariants
+    });
+    if (slot) {
+      slot.innerHTML = renderStoryCandidateRevision(candidateId, storyCandidateRevisions.get(String(candidateId)));
+      const adopt = slot.querySelector("[data-adopt-candidate-revision]");
+      if (adopt) adopt.addEventListener("click", () => adoptStoryCandidateRevision(candidateId, adopt));
+    }
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    if (slot) slot.innerHTML = `<p class="story-review-status error">${escape(error?.message || "定向修订失败")}</p>`;
+  } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+// 原文与修订版并排。执行者反转、以及「一换一但复杂度暴涨」都没有确定性兜底，
+// 只能靠人在这里看，所以界面上明写这一句。
+// `withAdoptButton: false` 给展开前体检用：那个面板有自己的「采纳修订并展开」按钮，
+// 把这里的采纳按钮也渲染出来会多一个没绑事件的死按钮，两个采纳并排还会让人不知道点哪个。
+function renderStoryCandidateRevision(candidateId, entry, { withAdoptButton = true } = {}) {
+  // entry 是服务端响应展开后再加一个 sourceThemeVariants：
+  // { candidateId, revision, themeVariants（已合并）, metadata, sourceThemeVariants（原始） }。
+  const before = (entry?.sourceThemeVariants?.variants || []).find((v) => String(v.id) === String(candidateId));
+  const after = (entry?.themeVariants?.variants || []).find((v) => String(v.id) === String(candidateId));
+  if (!before || !after) return `<p class="story-review-status error">修订结果里找不到命题 ${escape(candidateId)}。</p>`;
+  const revision = entry?.revision || {};
+  const call = entry?.metadata?.storyCandidateRevision || null;
+
+  const fieldRow = (label, a, b) => (String(a || "") === String(b || "") ? "" : `
+    <div class="revision-diff">
+      <b>${escape(label)}</b>
+      <p class="revision-before">${escape(a || "—")}</p>
+      <p class="revision-after">${escape(b || "—")}</p>
+    </div>`);
+
+  const beats = (before.storyOutline || []).map((beat, index) => {
+    const next = (after.storyOutline || [])[index] || {};
+    const same = String(beat.action || "") === String(next.action || "");
+    return `
+      <div class="revision-diff ${same ? "revision-unchanged" : ""}">
+        <b>第 ${escape(beat.beat)} 拍 · ${escape(beat.dramaticFunction)} · ${escape(beat.estimatedSeconds)}${
+  Number(beat.estimatedSeconds) === Number(next.estimatedSeconds) ? "" : ` → ${escape(next.estimatedSeconds)}`} 秒</b>
+        ${same
+    ? `<p class="revision-same">${escape(beat.action)}</p>`
+    : `<p class="revision-before">${escape(beat.action)}</p><p class="revision-after">${escape(next.action)}</p>`}
+      </div>`;
+  }).join("");
+
+  const totalBefore = (before.storyOutline || []).reduce((sum, b) => sum + Number(b.estimatedSeconds || 0), 0);
+  const totalAfter = (after.storyOutline || []).reduce((sum, b) => sum + Number(b.estimatedSeconds || 0), 0);
+  const charsBefore = (before.storyOutline || []).reduce((sum, b) => sum + String(b.action || "").length, 0);
+  const charsAfter = (after.storyOutline || []).reduce((sum, b) => sum + String(b.action || "").length, 0);
+
+  return `
+    <div class="candidate-revision">
+      <p class="story-review-status">修订稿（还没有生效）${call && call.providerCalls > 1
+    ? ` · 第 ${escape(call.providerCalls)} 次调用的结果，第一次被确定性校验拦下` : ""}</p>
+      <p class="review-why">${escape(revision.changeSummary || "")}</p>
+      ${fieldRow("任务", before.newTask, after.newTask)}
+      ${fieldRow("环境压力", before.environmentPressure, after.environmentPressure)}
+      ${fieldRow("一句话概括", before.logline, after.logline)}
+      ${beats}
+      <p class="muted-note">
+        合计时长 ${escape(totalBefore)} → ${escape(totalAfter)} 秒 ·
+        动作链字数 ${escape(charsBefore)} → ${escape(charsAfter)}
+        ${charsAfter > charsBefore * 1.2 ? "（明显变长了，多半是在靠加戏解决问题——下游镜头会更挤）" : ""}
+      </p>
+      <p class="muted-note warn">
+        自己看两件事，程序判不了：①执行者有没有被调换（「甲替乙做某事」不能变成乙替甲）；
+        ②有没有一换一但复杂度暴涨。
+      </p>
+      ${withAdoptButton ? `<div class="candidate-revision-action">
+        <button type="button" class="outline-button" data-adopt-candidate-revision>采纳并签发新的命题版本</button>
+        <span class="muted-note warn">
+          采纳会签发新的 themeVariants 版本。**这一批全部命题**的下游（完整剧情、镜头计划、
+          已生成的图片与视频）都会失效——即使别的命题一个字没改，因为它们同属一份 Artifact。
+          还没选中命题、还没往下做时采纳，代价为零。
+        </span>
+      </div>` : ""}
+    </div>`;
+}
+
+// 采纳：这才是唯一签发新 themeVariants 版本的地方。
+async function adoptStoryCandidateRevision(candidateId, button) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const entry = storyCandidateRevisions.get(String(candidateId));
+  if (!entry || button.disabled) return;
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "签发中…";
+  try {
+    const outcome = await adoptThemeVariantsRevision(entry, workspaceEpoch);
+    if (outcome === "stale") storyCandidateRevisions.delete(String(candidateId));
+    if (outcome !== "adopted") {
+      button.disabled = false;
+      button.textContent = original;
+      return;
+    }
+    showError(`命题 ${candidateId} 的修订已采纳，已签发新的主题命题版本。`, "notice");
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    showError(error.message || "修订签发失败；原命题保持不变。");
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+// 签发一份修订过的 themeVariants。**评审面板与展开前体检共用这一份**——
+// 采纳的语义（过期复核、下游征求同意、递归 stale、作废旧报告）只能有一处定义，
+// 两处各写一遍必然漂移。返回 false 表示这次没有签发（已过期或用户拒绝），
+// 提交失败照旧抛错，由调用方恢复按钮。
+async function adoptThemeVariantsRevision(entry, workspaceEpoch) {
+  // 修订是针对**当时那一批命题**算出来的，中途换过就必须作废，
+  // 绝不能把基于旧内容的改写盖到新命题上。
+  if (JSON.stringify(state.output.themeVariants) !== JSON.stringify(entry.sourceThemeVariants)) {
+    showError("主题命题在修订期间已经变化，这次修订结果已作废，请重新体检并修订。");
+    return "stale";
+  }
+  const downstream = [
+    ...Object.keys(state.fullStories || {}).map((variantId) => `${variantId} 的完整剧情`),
+    ...Object.keys(state.animationPlans || {}).map((variantId) => `${variantId} 的镜头计划`)
+  ];
+  if (downstream.length) {
+    const confirmed = window.confirm(
+      `采纳会签发新的主题命题版本。已生成的下游内容会全部失效——**包括没有被修订的那些命题**，`
+      + "因为整批命题是同一份 Artifact：\n"
+      + `${downstream.join("、")}，以及它们下面已生成的镜头媒体。\n\n是否继续？`
+    );
+    if (!confirmed) return "declined";
+  }
+  assertWorkspaceCurrent(workspaceEpoch);
+  const nextThemeVariants = entry.result?.themeVariants || entry.themeVariants;
+  await commitProductionArtifact({
+    artifactId: "themeVariants",
+    artifactType: "themeVariants",
+    content: nextThemeVariants,
+    dependencyRefs: productionDependencies([
+      "referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails"
+    ])
+  });
+  state.output.themeVariants = nextThemeVariants;
+  // 命题内容变了，之前基于旧内容的评审报告与其余修订稿一并作废。
+  lastCandidateReview = null;
+  storyCandidateRevisions.clear();
+  renderVariants(nextThemeVariants);
+  renderSelectedVariantSummary(selectedVariant());
+  return "adopted";
+}
+
+// 换一批：用同一份已签发的上游证据（referenceAnalysis / sourceScriptReconstruction /
+// creativeBrief / visualGuardrails）重新调用一次 /api/variants，不重跑前四个阶段。
+//
+// 新的 themeVariants revision 会让服务端 propagateStale 递归作废下游的
+// variant / fullStory / animationPlan / 镜头媒体——这是 P0 的状态隔离要求，
+// 不是可选项。所以下游已经有产出时必须先明确征求同意，拒绝就什么都不动。
+async function regenerateThemeVariants() {
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (state.variantsRegenerating) return;
+  if (!state.output.creativeBrief || !state.output.visualGuardrails) {
+    showError("上游创意简报或角色边界尚未生成，无法重新生成主题变体。");
+    return;
+  }
+
+  const downstream = [
+    ...Object.keys(state.fullStories || {}).map((variantId) => `${variantId} 的完整剧情`),
+    ...Object.keys(state.animationPlans || {}).map((variantId) => `${variantId} 的镜头计划`)
+  ];
+  if (downstream.length) {
+    const confirmed = window.confirm(
+      "换一批会签发新的主题变体，已生成的下游内容会全部失效：\n"
+      + `${downstream.join("、")}，以及它们下面已生成的镜头媒体。\n\n是否继续？`
+    );
+    if (!confirmed) return;
+  }
+
+  resetStoryPackageStatus();
+  state.variantsRegenerating = true;
+  renderVariants(state.output.themeVariants);
+  setStage("variants", "active");
+  beginStageUsage();
+  try {
+    const themeVariants = await requestProductionArtifact({
+      endpoint: "/api/variants",
+      requestBody: {
+        referenceAnalysis: state.output.referenceAnalysis,
+        sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+        creativeBrief: state.output.creativeBrief,
+        visualGuardrails: state.output.visualGuardrails,
+        creatorProfile: profile(),
+        count: Number(elements.variantCount.value),
+        // 只是给模型的目标，与 Full Story 那处同一个调用形状：不写入 Artifact、
+        // 不参与派生。候选的 estimatedSeconds 合计会决定下游成片长度，所以目标
+        // 必须在这一阶段就送到，否则模型只能凭空估。
+        targetDurationSeconds: resolveStoryDurationTarget(state.storyDurationTarget, {
+          metadata: state.metadata,
+          sourceScriptReconstruction: state.output.sourceScriptReconstruction
+        })
+      },
+      artifactId: "themeVariants",
+      artifactType: "themeVariants",
+      dependencyIds: ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails"]
+    });
+    state.output.themeVariants = themeVariants;
+    // 旧的选中项已经不存在了，别让它继续指向一个已作废的 variant。
+    state.selectedVariantId = null;
+    state.backgroundMusicDrafts = {};
+    setStage("variants", "done");
+    endStageUsage();
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    setStage("variants", isTaskCapacityError(error) ? "" : "error");
+    failedStageUsageSuffix();
+    showError(
+      isTaskCapacityError(error) ? taskCapacityMessage(error) : error.message || "重新生成主题变体失败",
+      isTaskCapacityError(error) ? "notice" : "error"
+    );
+  } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    state.variantsRegenerating = false;
+    renderVariants(state.output.themeVariants);
+  }
 }
 
 // 开关默认关闭；已有 Plan 时以 Plan 已签发的 backgroundMusicMode 为准。
@@ -1188,11 +2507,13 @@ function renderRoute() {
 }
 
 function renderMainPage() {
+  resetStoryPackageStatus();
   elements.storyPage.classList.add("hidden");
   elements.mainPage.classList.remove("hidden");
 }
 
 function renderStoryPage({ autoGenerate = false } = {}) {
+  syncStoryPackageStatusContext();
   elements.mainPage.classList.add("hidden");
   elements.storyPage.classList.remove("hidden");
   window.scrollTo({ top: 0, behavior: "instant" });
@@ -1224,12 +2545,13 @@ function renderStoryPage({ autoGenerate = false } = {}) {
     updateStoryExportActions();
     if (variant) {
       setStoryStatus("准备生成完整剧情。", "");
-      if (autoGenerate) generateFullStory();
+      if (autoGenerate) startFullStory();
     } else {
       setStoryStatus("当前页面没有可用主题变体。请先返回工作台，完成视频分析并选择一个主题变体。", "error");
     }
   }
   elements.storyGenerate.disabled = !variant || state.storyRunning;
+  syncStoryTaskStatus({ includeTerminal: true });
   updateStoryExportActions();
 }
 
@@ -1246,114 +2568,807 @@ function renderSelectedVariantSummary(variant) {
       <span><b>主角</b>${escape(variant.characterSetup?.protagonist || "待确认")}</span>
       <span><b>任务</b>${escape(variant.newTask || "待确认")}</span>
       <span><b>压力</b>${escape(variant.environmentPressure || "待确认")}</span>
-      <span><b>媒介</b>${escape(variant.emotionalMedium || "待确认")}</span>
+      ${optionalCastSpan("媒介", variant.emotionalMedium)}
     </div>`;
 }
 
+// 「与原片对齐」的标签带上实际秒数，让用户在生成前就知道会得到多长。
+// 上传参考片后与恢复旧 run 后都要刷新一次。
+function renderStoryDurationOptions() {
+  const options = storyDurationOptions({
+    metadata: state.metadata,
+    sourceScriptReconstruction: state.output?.sourceScriptReconstruction
+  });
+  elements.storyDurationTarget.innerHTML = options
+    .map((option) => `<option value="${escape(option.value)}">${escape(option.label)}</option>`)
+    .join("");
+  elements.storyDurationTarget.value = state.storyDurationTarget;
+}
+
+// ---------------------------------------------------------------------------
+// 展开前体检（2026-09-17）
+//
+// 点「生成完整剧情」时先跑一次体检，**在签发 `variant:<id>` 之前**——体检只出报告，
+// 这一刻还什么都没签发，所以判出要修订时改候选的代价为零。三条路：
+//   直接展开 → 原样走 generateFullStory，多花的只有体检那一次调用；
+//   需修订   → 立刻做一次 scope:root 修订并**只展示差异**，签发只发生在用户点采纳那一刻；
+//   体检失败 → 如实显示原因，给「按原候选展开」与「重试体检」，**绝不静默跳过**。
+//
+// 判定依据见 docs/full-story-precheck-ab-2026-09-16.md：三个样本各 2/2 达到事前登记的
+// 通过线。**它不保证判得对**——承诺清单写得准不准、定位读得对不对都需要语义判断，
+// 没有确定性兜底；评审那一路本身也会整次失败（6 次里 2 次），这是体检可用率的上限。
+let fullStoryPrecheckState = null;
+
+// 体检与修订都只活在页面上：不进 Artifact、不进 lineage、刷新即失，与评审同规格。
+function clearFullStoryPrecheck() {
+  fullStoryPrecheckState = null;
+  elements.fullStoryPrecheck.innerHTML = "";
+  elements.fullStoryPrecheck.classList.add("hidden");
+}
+
+function renderFullStoryPrecheckPanel(html) {
+  elements.fullStoryPrecheck.innerHTML = html;
+  elements.fullStoryPrecheck.classList.remove("hidden");
+  bindFullStoryPrecheckActions(elements.fullStoryPrecheck);
+}
+
+function bindFullStoryPrecheckActions(root) {
+  for (const button of root.querySelectorAll("[data-precheck-expand]")) {
+    button.addEventListener("click", () => {
+      clearFullStoryPrecheck();
+      // 用户明确选择按原候选展开，就照原候选展开——体检只出报告，不是闸门。
+      void generateFullStory({ force: true });
+    });
+  }
+  for (const button of root.querySelectorAll("[data-precheck-retry]")) {
+    button.addEventListener("click", () => void startFullStory({ force: true }));
+  }
+  for (const button of root.querySelectorAll("[data-precheck-adopt]")) {
+    button.addEventListener("click", () => void adoptPrecheckRevisionAndExpand(button));
+  }
+}
+
+// 体检入口。**只有这里会调体检**；generateFullStory 仍是纯展开路径，
+// 采纳之后的续跑与既有的 durable task 恢复都直接走它，不会再体检第二次。
+async function startFullStory({ force = false } = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const variant = selectedVariant();
+  if (!variant) return setStoryStatus("请先选择一个可拍摄主题变体。", "error");
+  // 已有剧情且不是强制重生成时沿用原行为：直接展示，不体检、不花钱。
+  if (!force && state.fullStories[variant.id]) return generateFullStory({ force });
+  if (state.storyRunning || state.storyPrecheckRunning) return;
+  if (activeTaskForKinds(["fullStory"], { rootOnly: true })) return;
+
+  const sourceThemeVariants = state.output?.themeVariants;
+  if (!sourceThemeVariants) return generateFullStory({ force });
+  // 上一次体检已判「直接展开」、命题又一字没改：直接展开，不再花钱重跑。体检只看候选，
+  // 候选没变，再跑一次没有新信息，只是重掷一次骰子。起因（2026-09-18）：展开失败之后
+  // 每点一次生成就重新体检一次，当天白跑了两次（每次约 ¥0.8）。候选一变（采纳修订、换一批）或页面刷新，照常体检。
+  if (precheckPassStillValid(variant.id, sourceThemeVariants)) return generateFullStory({ force: true });
+  clearFullStoryPrecheck();
+  state.storyPrecheckRunning = true;
+  elements.storyGenerate.disabled = true;
+  beginStageUsage();
+  // 体检与随后的修订共用一次记账，在交棒给展开之前结掉：展开自己会重开一次，
+  // 不结掉就等于把体检花的钱算进展开、或者干脆丢掉。
+  let usageClosed = false;
+  const closeUsage = () => {
+    if (usageClosed) return "";
+    usageClosed = true;
+    return formatStageUsageSuffix(endStageUsage());
+  };
+  setStoryStatus("正在做展开前体检：这个命题现在展开合不合适…（约 1–3 分钟）", "active");
+  try {
+    const result = await api("/api/full-story-precheck", {
+      themeVariants: sourceThemeVariants,
+      candidateId: variant.id,
+      creatorProfile: profile(),
+      // 与既有评审逐字同一组上游：缺任何一份都不阻断，只是少一节判断依据。
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+      visualGuardrails: state.output.visualGuardrails,
+      creativeBrief: state.output.creativeBrief,
+      referenceAnalysis: state.output.referenceAnalysis
+    });
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    assertSelectedVariant(variant.id);
+    fullStoryPrecheckState = {
+      variantId: variant.id,
+      sourceThemeVariants,
+      route: result.route,
+      reasons: result.reasons || [],
+      review: result.review,
+      promiseCheck: result.promiseCheck,
+      metadata: result.metadata || null
+    };
+    if (result.route === "expand") {
+      const suffix = closeUsage();
+      renderFullStoryPrecheckPanel(renderPrecheckPassed(result, suffix));
+      state.storyPrecheckRunning = false;
+      // await 而不是直接 return：展开自己会接管按钮与状态，
+      // 不等它结束就跑 finally 会把按钮在生成中途重新点亮。
+      await generateFullStory({ force: true });
+      return;
+    }
+    setStoryStatus("体检报出问题，正在改这一个命题…（还没有签发任何东西）", "active");
+    renderFullStoryPrecheckPanel(renderPrecheckFindings(fullStoryPrecheckState));
+    await requestPrecheckRevision(workspaceEpoch, closeUsage);
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    fullStoryPrecheckState = null;
+    // 失败前调用过的模型照样计费，必须显示出来，不能显示成没花钱。
+    setStoryStatus(`展开前体检失败：${error?.message || "未知原因"}${closeUsage()}`, "error");
+    renderFullStoryPrecheckPanel(renderPrecheckFailure(error));
+  } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    closeUsage();
+    state.storyPrecheckRunning = false;
+    elements.storyGenerate.disabled = !selectedVariant() || state.storyRunning;
+  }
+}
+
+function precheckPassStillValid(variantId, themeVariants) {
+  const entry = fullStoryPrecheckState;
+  return Boolean(entry && entry.route === "expand" && entry.variantId === variantId
+    && JSON.stringify(entry.sourceThemeVariants) === JSON.stringify(themeVariants));
+}
+
+// 修订：把体检判出的信号原样交给 scope:root。**结果不写回任何东西**，
+// 与命题定向修订同规格——签发只发生在用户点采纳那一刻。
+async function requestPrecheckRevision(workspaceEpoch, closeUsage) {
+  const entry = fullStoryPrecheckState;
+  if (!entry) return;
+  try {
+    const result = await api("/api/story-candidate-revision", {
+      themeVariants: entry.sourceThemeVariants,
+      review: entry.review,
+      promiseCheck: entry.promiseCheck,
+      candidateId: entry.variantId,
+      scope: "root",
+      creatorProfile: profile(),
+      // 边界验签比对整份上游的 sourceDigest，这几份必须一起送；
+      // 只用于验签与合并后的复验，**不进修订提示词**。
+      visualGuardrails: state.output.visualGuardrails,
+      creativeBrief: state.output.creativeBrief,
+      referenceAnalysis: state.output.referenceAnalysis,
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction,
+      targetDurationSeconds: resolveStoryDurationTarget(state.storyDurationTarget, {
+        metadata: state.metadata,
+        sourceScriptReconstruction: state.output.sourceScriptReconstruction
+      })
+    });
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    if (fullStoryPrecheckState !== entry) return;
+    entry.revision = { ...result, sourceThemeVariants: entry.sourceThemeVariants };
+    setStoryStatus(`修订稿已生成，还没有生效——看过差异后再决定。${closeUsage()}`, "warn");
+    renderFullStoryPrecheckPanel(
+      renderPrecheckFindings(entry)
+      + renderStoryCandidateRevision(entry.variantId, entry.revision, { withAdoptButton: false })
+      + renderPrecheckDecision()
+    );
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    if (fullStoryPrecheckState !== entry) return;
+    setStoryStatus(`修订失败：${error?.message || "未知原因"}${closeUsage()}`, "error");
+    renderFullStoryPrecheckPanel(
+      renderPrecheckFindings(entry)
+      + `<p class="story-review-status error">${escape(error?.message || "定向修订失败")}</p>`
+      + renderPrecheckDecision({ withoutAdopt: true })
+    );
+  }
+}
+
+// 采纳：这才是签发新 themeVariants 版本的地方，之后立刻续跑展开。
+// **续跑走 generateFullStory，不会再体检一次**——改完再体检一遍只会没完没了地花钱。
+async function adoptPrecheckRevisionAndExpand(button) {
+  const entry = fullStoryPrecheckState;
+  if (!entry?.revision || button.disabled) return;
+  const workspaceEpoch = browserWorkspace.epoch;
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "签发中…";
+  try {
+    const outcome = await adoptThemeVariantsRevision(entry.revision, workspaceEpoch);
+    // 过期意味着这份体检与修订都是对旧命题算的，整块作废；拒绝则原样留着。
+    if (outcome === "stale") clearFullStoryPrecheck();
+    if (outcome !== "adopted") {
+      button.disabled = false;
+      button.textContent = original;
+      return;
+    }
+    clearFullStoryPrecheck();
+    await generateFullStory({ force: true });
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    showError(error.message || "修订签发失败；原命题保持不变。");
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+function renderPrecheckPassed(result, usageSuffix = "") {
+  const call = result?.metadata?.fullStoryPromiseCheck || null;
+  return `${resultHeader("PRECHECK", "展开前体检：通过", `直接展开${escape(usageSuffix)}`)}
+    <p class="story-review-status">因果断裂、换皮、BLOCKER 硬伤与标题/钩子的承诺都没有报出问题，
+      已直接开始展开。${call && call.providerCalls > 2 ? "（承诺核对第一次被确定性校验拦下，用的是重做的结果）" : ""}</p>
+    <p class="muted-note warn">体检只出报告，判得对不对没有确定性兜底：承诺清单写得准不准、
+      定位读得对不对都要靠人看。通过不等于这个命题一定好。</p>`;
+}
+
+function renderPrecheckFindings(entry) {
+  const reasons = (entry.reasons || [])
+    .map((reason) => `<li>${escape(FULL_STORY_PRECHECK_REASON_LABELS[reason] || reason)}</li>`)
+    .join("");
+  const gaps = (entry.promiseCheck?.promises || [])
+    .filter((promise) => promise.verdict !== "realized")
+    .map((promise) => {
+      const missing = (promise.findings || [])
+        .filter((finding) => finding.found !== true)
+        .map((finding) => `<li>${escape(promise.mustSee?.[finding.mustSeeIndex] || "")}
+          <br><b>动作链里实际写的是：</b>${escape(finding.why || "")}</li>`)
+        .join("");
+      return `<div class="rule">
+        <strong>${escape(promise.source === "title" ? "标题" : "一句话钩子")}「${escape(promise.quote)}」</strong>
+        <p>${escape(promise.promise)}</p>
+        <ul class="precheck-missing">${missing}</ul>
+      </div>`;
+    }).join("");
+  const breaks = (candidateReviewCheck(entry)?.coherenceChecks || [])
+    .map((check) => `<div class="rule"><strong>第 ${escape((check.beatIndexes || []).join("、"))} 拍</strong>
+      <p>${escape(check.problem)}</p></div>`).join("");
+  return `${resultHeader("PRECHECK", "展开前体检：建议先改这个命题", `${escape((entry.reasons || []).length)} 类问题`)}
+    <div class="summary-strip">还没有签发任何东西。修订稿会并排显示，你点采纳才生效。</div>
+    <ul class="precheck-reasons">${reasons}</ul>
+    ${gaps ? block("标题或钩子许诺了、动作链没演出来", `<div class="rule-list">${gaps}</div>`) : ""}
+    ${breaks ? block("动作链的因果断裂", `<div class="rule-list">${breaks}</div>`) : ""}`;
+}
+
+function candidateReviewCheck(entry) {
+  const checks = entry?.review?.candidateChecks;
+  if (!Array.isArray(checks)) return null;
+  return checks.find((check) => String(check.candidateId) === String(entry.variantId)) || null;
+}
+
+function renderPrecheckDecision({ withoutAdopt = false } = {}) {
+  return `<div class="candidate-revision-action">
+    ${withoutAdopt ? "" : `<button type="button" class="primary-button" data-precheck-adopt>采纳修订并展开</button>`}
+    <button type="button" class="outline-button" data-precheck-expand>按原候选展开</button>
+    <span class="muted-note warn">采纳会签发新的主题命题版本，这一批<b>全部命题</b>的下游都会失效
+      （即使别的命题一个字没改，因为它们同属一份 Artifact）。还没往下做时代价为零。</span>
+  </div>`;
+}
+
+function renderPrecheckFailure(error) {
+  return `${resultHeader("PRECHECK", "展开前体检失败", "没有判定")}
+    <p class="story-review-status error">${escape(error?.message || "未知原因")}</p>
+    <p class="muted-note warn">体检把现有候选评审当作必需的一路，而<b>评审自己会整次失败</b>
+      （2026-09-17 的实测里 6 次有 2 次），失败时没有任何路由判定，不是「体检通过」。
+      可以重试，也可以直接按原候选展开。</p>
+    <div class="candidate-revision-action">
+      <button type="button" class="outline-button" data-precheck-retry>重试体检</button>
+      <button type="button" class="outline-button" data-precheck-expand>按原候选展开</button>
+    </div>`;
+}
+
+// 完整剧情签发时依赖的上游。**生成与「按问题修改」的采纳共用这一份**：
+// 两处各列一遍，迟早出现一边多绑、一边少绑，lineage 就对不上了。
+function fullStoryDependencyIds(variantId) {
+  return [
+    "referenceAnalysis",
+    "sourceScriptReconstruction",
+    "creativeBrief",
+    "visualGuardrails",
+    "themeVariants",
+    `variant:${variantId}`
+  ];
+}
+
 async function generateFullStory({ force = false } = {}) {
-  if (state.storyRunning) return;
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (state.storyRunning || activeTaskForKinds(["fullStory"], { rootOnly: true })) return;
   const variant = selectedVariant();
   if (!variant) return setStoryStatus("请先选择一个可拍摄主题变体。", "error");
   if (!force && state.fullStories[variant.id]) {
     renderFullStory(state.fullStories[variant.id]);
     return;
   }
+  const request = { variantId: variant.id, epoch: workspaceEpoch, taskId: "" };
+  state.storyGenerationRequest = request;
   state.storyRunning = true;
   setStoryRunning(true);
   beginStageUsage();
   setStoryStatus(`正在调用 ${storyModelLabel()} 生成完整剧情…`, "active");
   try {
-    await ensureSelectedVariantArtifact(variant);
+    const candidateLineage = await ensureSelectedVariantArtifact(variant);
+    assertWorkspaceCurrent(workspaceEpoch);
     const fullStory = await requestProductionArtifact({
       endpoint: "/api/full-story",
       requestBody: {
+        fullStorySchemaVersion: "full_story/1.2",
         referenceAnalysis: state.output.referenceAnalysis,
         sourceScriptReconstruction: state.output.sourceScriptReconstruction,
         creativeBrief: state.output.creativeBrief,
         visualGuardrails: state.output.visualGuardrails,
         themeVariants: state.output.themeVariants,
         variant,
-        creatorProfile: profile()
+        candidateBinding: lineageDependency(candidateLineage),
+        creatorProfile: profile(),
+        // 只是给模型的目标；Artifact 里的 targetDurationSeconds 仍由服务端从
+        // sceneScript 时间轴派生，模型没打准时页面显示的也是派生出的真实值。
+        targetDurationSeconds: resolveStoryDurationTarget(state.storyDurationTarget, {
+          metadata: state.metadata,
+          sourceScriptReconstruction: state.output.sourceScriptReconstruction
+        })
       },
       artifactId: `fullStory:${variant.id}`,
       artifactType: "fullStory",
-      dependencyIds: [
-        "referenceAnalysis",
-        "sourceScriptReconstruction",
-        "creativeBrief",
-        "visualGuardrails",
-        "themeVariants",
-        `variant:${variant.id}`
-      ]
+      onTaskCreated(task) {
+        assertWorkspaceCurrent(workspaceEpoch);
+        if (state.storyGenerationRequest === request) request.taskId = task.taskId;
+      },
+      dependencyIds: fullStoryDependencyIds(variant.id)
     });
     assertSelectedVariant(variant.id);
     state.fullStories[variant.id] = fullStory;
     state.output.fullStories = state.fullStories;
     state.output.fullStory = fullStory;
     renderFullStory(fullStory);
-    setStoryStatus(`完整剧情已生成 · ${storyModelLabel()}${formatStageUsageSuffix(endStageUsage())}`, "ready");
+    setStoryStatus(`完整剧情已生成 · ${persistedTaskModelLabel(`fullStory:${variant.id}`, "fullStory", storyModelLabel())}${formatStageUsageSuffix(endStageUsage())}`, "ready");
     elements.animationGenerate.disabled = false;
     setAnimationStatus("可以继续生成动画镜头生产包。", "");
     updateStoryExportActions();
     elements.export.classList.remove("hidden");
   } catch (error) {
-    setStoryStatus(error.message || "完整剧情生成失败", "error");
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    renderFullStoryTaskError(error, "完整剧情生成失败", variant.id);
   } finally {
-    state.storyRunning = false;
-    setStoryRunning(false);
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    endStageUsage();
+    if (state.storyGenerationRequest === request) {
+      state.storyGenerationRequest = null;
+      state.storyRunning = false;
+      setStoryRunning(false);
+      if (request.taskId || state.storyTaskStatusVisible) syncStoryTaskStatus({ includeTerminal: true });
+    }
   }
 }
 
 function renderFullStory(data) {
+  const narrativeStory = isNarrativeFullStory(data);
+  // 形状提示只统计结构化字段（地点+出镜角色、说话者分布），不做语义判断，
+  // 也不阻断任何操作——目的是让画面单调和台词集中在生成视频之前就被看见。
+  const shapeWarnings = fullStoryShapeWarnings(data);
+  const shapeStrip = shapeWarnings.length
+    ? `<div class="shape-warnings">${shapeWarnings
+        .map((w) => `<span class="shape-warning" title="${escape(w.detail)}">${escape(w.label)}</span>`)
+        .join("")}</div>`
+    : "";
   elements.fullStory.innerHTML = `${resultHeader("FULL STORY", data.title || "完整剧情", `${escape(data.targetDurationSeconds || 60)} 秒`)}
     <div class="summary-strip">${escape(data.oneLinePremise || data.shootingSynopsis)}</div>
+    ${shapeStrip}
     <div class="data-grid">
       ${cell("主角锁定", data.characterBible?.protagonist?.identity || data.characterBible?.protagonist?.name)}
-      ${cell("被关爱对象", joinParts(data.characterBible?.careRecipient, ["identity", "implicitNeed"]))}
+      ${data.characterBible?.careRecipient ? cell("被关爱对象", joinParts(data.characterBible.careRecipient, ["identity", "implicitNeed"])) : ""}
       ${cell("对白规则", data.dialogueStyleGuide?.protagonistSpeechRule || data.characterBible?.protagonist?.speechRules)}
     </div>
     ${block("剧情梗概", `<p class="long-copy">${escape(data.shootingSynopsis)}</p>`)}
-    ${block("剧情节拍", `<div class="beat-list">${(data.beatSheet || []).map((beat) => `<div class="beat"><strong>${escape(beat.timeRange)} · ${escape(beat.emotion)}</strong><p>${escape(beat.storyAction)}<br><b>功能：</b>${escape(beat.dramaticFunction)}<br><b>保留价值：</b>${escape(beat.retainedValueFromBrief)}</p></div>`).join("")}</div>`)}
+    ${data.characterBible?.supportingCharacters ? block("完整配角设定", data.characterBible.supportingCharacters.map(row => `<p><b>${escape(row.name)}</b> · ${escape(row.identity)}<br>${escape(row.appearanceFacts.join("；") || "外观未指定，分镜阶段设计")}<br>${escape([row.relationshipToProtagonist, row.storyRole, ...row.personalityFacts, ...row.speechRules].filter(Boolean).join("；"))}</p>`).join("")) : ""}
+    ${narrativeStory ? "" : block("剧情节拍", `<div class="beat-list">${(data.beatSheet || []).map((beat) => `<div class="beat"><strong>${escape(beat.timeRange)} · ${escape(beat.emotion)}</strong><p>${escape(beat.storyAction)}<br><b>功能：</b>${escape(beat.dramaticFunction)}<br><b>保留价值：</b>${escape(beat.retainedValueFromBrief)}</p></div>`).join("")}</div>`)}
     ${block("可拍分场剧本", `<div class="timeline">${(data.sceneScript || []).map((scene) => `<div class="scene">
       <span class="scene-id">${escape(scene.sceneId)}</span>
       <div class="scene-head"><strong>${escape(scene.location)}</strong><span>${escape(scene.timeRange)}</span></div>
       <p><b>人物：</b>${escape((scene.characters || []).join("、"))}</p>
       <p><b>动作：</b>${escape(scene.visibleAction)}</p>
       <p><b>对白：</b>${formatDialogue(scene.dialogue)}</p>
-      <p><b>镜头/声音：</b>${escape(scene.shotAndSound)}</p>
+      <p><b>${narrativeStory ? "声音" : "镜头/声音"}：</b>${escape(scene.shotAndSound)}</p>
       <div class="scene-meta"><span>${escape(scene.emotionNode)}</span><span>${escape(scene.dramaticFunction)}</span></div>
-      <p><b>拍摄备注：</b>${escape(scene.shootingNotes)}</p>
+      <p><b>${narrativeStory ? "剧情备注" : "拍摄备注"}：</b>${escape(scene.shootingNotes)}</p>
     </div>`).join("")}</div>`)}
-    ${block("关键道具", `<div class="rule-list">${(data.keyProps || []).map((item) => `<div class="rule"><strong>${escape(item.prop)}</strong><p>${escape(item.storyFunction)}<br>${escape(item.visualUse)}<br><b>避相似：</b>${escape(item.avoidSimilarityNote)}</p></div>`).join("")}</div>`)}
-    ${block("拍摄计划", `<div class="rule-list">${(data.shootingPlan || []).map((item) => `<div class="rule"><strong>${escape(item.unit)}</strong><p>${escape(item.setup)}<br><b>必拍：</b>${escape(item.mustCapture)}<br><b>执行：</b>${escape(item.practicalNote)}</p></div>`).join("")}</div>`)}
-    ${block("体验保真", `<div class="data-grid">
+    ${block("关键道具", `<div class="rule-list">${(data.keyProps || []).map((item) => `<div class="rule"><strong>${escape(item.prop)}</strong><p>${escape(item.storyFunction)}<br>${escape(item.visualUse)}${narrativeStory ? "" : `<br><b>避相似：</b>${escape(item.avoidSimilarityNote)}`}</p></div>`).join("")}</div>`)}
+    ${narrativeStory ? "" : block("拍摄计划", `<div class="rule-list">${(data.shootingPlan || []).map((item) => `<div class="rule"><strong>${escape(item.unit)}</strong><p>${escape(item.setup)}<br><b>必拍：</b>${escape(item.mustCapture)}<br><b>执行：</b>${escape(item.practicalNote)}</p></div>`).join("")}</div>`)}
+    ${narrativeStory ? "" : block("体验保真", `<div class="data-grid">
       ${cell("定位", data.experienceFidelity?.positioning)}${cell("受众", data.experienceFidelity?.audience)}${cell("情绪", data.experienceFidelity?.emotion)}
       ${cell("驱动力", data.experienceFidelity?.plotDriver)}${cell("高价值桥段", data.experienceFidelity?.highValueBeats)}${cell("改写证明", data.transformationProof?.changedVisualExpression)}
     </div>`)}
-    <div class="warning-box"><b>连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
-    ${uncertainties(data.uncertainties)}`;
+    ${narrativeStory ? "" : `<div class="warning-box"><b>连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>`}
+    ${uncertainties(data.uncertainties)}
+    <div class="story-review">
+      <button type="button" class="outline-button" data-story-review>检查剧情硬伤</button>
+      <span class="story-review-hint">核对候选承诺有没有演出来，并做编辑诊断。可以勾选问题生成局部修改——看过对照、点「采纳」之前不会改动剧情。</span>
+      <div class="story-review-body" data-story-review-body></div>
+    </div>`;
   reveal(elements.fullStory);
+  const button = elements.fullStory.querySelector("[data-story-review]");
+  if (button) button.addEventListener("click", () => runStoryQualityReview(data, button));
+}
+
+// 剧情体检的报告与「按问题修改」的修订稿都只活在页面上：不落盘、不进 lineage，刷新即失。
+// 两者都记下它们是针对**哪一份剧情**算出来的——剧情一变，它们就作废。
+let lastStoryQualityReview = null;
+let storyQualityRepairDraft = null;
+
+// 剧情体检：手动触发，只出报告。不改剧情、不签发 Artifact、不阻断后续阶段。
+async function runStoryQualityReview(fullStory, button) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const body = elements.fullStory.querySelector("[data-story-review-body]");
+  if (!body || button.disabled) return;
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "体检中…";
+  lastStoryQualityReview = null;
+  storyQualityRepairDraft = null;
+  body.innerHTML = `<p class="story-review-status">正在核对候选承诺并做编辑诊断，两次调用约 1–3 分钟…</p>`;
+  try {
+    // 承诺核对要拿候选当外部参照，所以必须把候选一起送上去；
+    // 固定角色设定是编辑诊断判 character_contract 的依据。
+    const result = await api("/api/story-quality-review", {
+      fullStory,
+      themeVariants: state.output?.themeVariants,
+      candidateId: fullStory.selectedVariantId,
+      creatorProfile: profile()
+    });
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    lastStoryQualityReview = {
+      variantId: String(fullStory.selectedVariantId || ""),
+      fullStory: structuredClone(fullStory),
+      review: result.review
+    };
+    body.innerHTML = renderStoryQualityReview(result.review, result.metadata);
+    const repairButton = body.querySelector("[data-story-repair]");
+    if (repairButton) repairButton.addEventListener("click", () => requestStoryQualityRepair(body, repairButton));
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    // 评审失败要把原因完整显示出来——它常常是覆盖率核验拦下的漏检，用户需要看到是哪一条。
+    body.innerHTML = `<p class="story-review-status error">${escape(error?.message || "体检失败")}</p>`;
+  } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+const REVIEW_VERDICT_LABEL = { depicted: "已兑现", partially_depicted: "只沾边", not_depicted: "画面里没有" };
+const REVIEW_SEVERITY_LABEL = { BLOCKER: "严重", MAJOR: "建议", MINOR: "小问题" };
+
+const DEFECT_TYPE_LABEL = {
+  identity_logic: "身份逻辑冲突", causal_logic: "因果断裂", opening_hook: "开场没建立观看理由",
+  motivation: "动机缺失", emotional_payoff: "情绪没有兑现", continuity: "跨镜不连续",
+  prop_state: "道具状态断裂", physical_logic: "动作物理上不成立", pacing: "节奏与时长不匹配",
+  escalation: "故事停滞", character_agency: "结果不是主角选择造成的",
+  visual_readability: "画面讲不清楚", ai_execution_risk: "AI 生成风险高"
+};
+
+function renderAnimationPlanReview(review) {
+  const defect = review.dominantDefect || {};
+  const issues = review.issues || [];
+  const strengths = review.strengths || [];
+  const upgrades = review.upgradePath || [];
+  const findings = review.otherFindings || [];
+  const brokenProps = (review.propTracking || []).filter((p) => p.disappeared || p.positionUnclear);
+  const sceneMismatch = (review.sceneCheck || []).filter((s) => s.consistent === false);
+  const order = { BLOCKER: 0, MAJOR: 1, MINOR: 2 };
+
+  const list = (items, render) => items.map(render).join("") || "";
+
+  return `
+    <div class="plan-review-defect severity-${escape(defect.severity || "MAJOR")}">
+      <div class="plan-review-defect-head">
+        <span class="review-severity severity-${escape(defect.severity || "MAJOR")}">${escape(REVIEW_SEVERITY_LABEL[defect.severity] || defect.severity || "")}</span>
+        <b>当前最主要的问题：${escape(DEFECT_TYPE_LABEL[defect.type] || defect.type || "未判定")}</b>
+      </div>
+      <p>${escape(defect.description || "")}</p>
+    </div>
+
+    <p class="story-review-status">
+      综合 ${escape(review.overallScore)} 分 ·
+      <span class="plan-review-score-note">这个数字只用于同一片子改前改后对比，不作放行门槛——实测两个模型评同一份方案总分只差 0.06，而单个维度能差 1 分</span>
+    </p>
+
+    ${issues.length ? `<details open><summary>硬伤 ${issues.length} 条</summary>
+      ${list([...issues].sort((a, b) => order[a.severity] - order[b.severity]), (item) => `
+        <div class="review-check">
+          <div class="review-check-head">
+            <span class="review-severity severity-${escape(item.severity)}">${escape(REVIEW_SEVERITY_LABEL[item.severity] || item.severity)}</span>
+            <span class="scene-id">${escape(item.category)}</span>
+          </div>
+          <p>${escape(item.problem)}</p>
+          <p class="review-fix"><b>怎么改：</b>${escape(item.revisionIntent)}</p>
+        </div>`)}
+    </details>` : ""}
+
+    ${upgrades.length ? `<details><summary>升级建议 ${upgrades.length} 条</summary>
+      ${list(upgrades, (item) => `
+        <div class="review-check">
+          <div class="review-check-head"><span class="scene-id">${escape(item.principle)}</span></div>
+          <p class="review-current">${escape(item.currentState)}</p>
+          <p class="review-fix"><b>改成：</b>${escape(item.concreteChange)}</p>
+          ${item.whyOnlyThisStory ? `<p class="review-why">只能发生在本片：${escape(item.whyOnlyThisStory)}</p>` : ""}
+        </div>`)}
+    </details>` : ""}
+
+    ${strengths.length ? `<details><summary>做得好的 ${strengths.length} 处（修订时别改掉）</summary>
+      ${list(strengths, (item) => `
+        <div class="review-check">
+          <div class="review-check-head"><span class="scene-id">${escape(item.what)}</span></div>
+          <p>${escape(item.whyItWorks)}</p>
+          <p class="review-keep"><b>不能丢：</b>${escape(item.mustNotLose)}</p>
+        </div>`)}
+    </details>` : ""}
+
+    ${brokenProps.length || sceneMismatch.length || findings.length ? `<details><summary>其他核对结果</summary>
+      ${list(brokenProps, (p) => `<div class="review-check"><div class="review-check-head">
+        <span class="review-severity severity-${p.disappeared ? "MAJOR" : "MINOR"}">${p.disappeared ? "道具消失" : "位置不清"}</span>
+        <span class="scene-id">${escape(p.prop)}</span></div><p>${escape(p.problem || "")}</p></div>`)}
+      ${list(sceneMismatch, (s) => `<div class="review-check"><div class="review-check-head">
+        <span class="review-severity severity-MINOR">场景不符</span><span class="scene-id">${escape(s.shotId)}</span>
+        </div><p>${escape(s.problem || "")}</p></div>`)}
+      ${list(findings, (f) => `<div class="review-check"><div class="review-check-head">
+        <span class="scene-id">其他发现</span></div><p>${escape(f.finding)}</p>
+        <p class="review-why">${escape(f.whyItMatters)}</p></div>`)}
+    </details>` : ""}`;
+}
+
+function renderStoryQualityReview(review, metadata = null) {
+  const metrics = storyReviewMetrics(review);
+  const checks = review.promisePreservation?.checks || [];
+  // 可修条目的引用号只有一份（与服务端的选择校验共用），按对象身份对回到每一行上。
+  const repairable = storyQualityRepairableItems(review);
+  const refOf = new Map(repairable.map((item) => [item.kind === "issue" ? item.issue : item.check, item.ref]));
+  const pick = (entry) => (refOf.has(entry)
+    ? `<label class="story-repair-pick"><input type="checkbox" data-story-repair-ref="${escape(refOf.get(entry))}" checked> 修这一条</label>`
+    : "");
+  // 没守住的排在前面：那才是要看的；守住的折叠进一句统计，不占版面。
+  const brokenRows = checks.filter((check) => check.status !== "PRESERVED").map((check) => `
+    <div class="review-check">
+      <div class="review-check-head">
+        <span class="scene-id">${escape((check.source || []).join(" / "))}</span>
+        <span class="review-verdict verdict-${escape(check.status)}">${escape(PROMISE_CHECK_STATUS_LABELS[check.status] || check.status)}</span>
+        ${pick(check)}
+      </div>
+      <p><b>候选承诺：</b>${escape(check.promise)}</p>
+      <p><b>剧情里实际写的：</b>${escape(check.evidence)}</p>
+    </div>`);
+  const issueRows = (review.issues || []).map((issue) => `
+    <div class="review-issue severity-${escape(issue.severity)}">
+      <div class="review-check-head">
+        <span class="review-severity severity-${escape(issue.severity)}">${escape(REVIEW_SEVERITY_LABEL[issue.severity] || issue.severity)}</span>
+        <span class="review-scenes">${escape(STORY_QUALITY_ISSUE_TYPE_LABELS[issue.type] || issue.type)}　${escape((issue.sceneIds || []).join("、") || "全片")}</span>
+        ${pick(issue)}
+      </div>
+      <p>${escape(issue.problem)}</p>
+      <p class="review-evidence">原文：${escape(issue.evidence)}</p>
+      ${issue.viewerImpact ? `<p><b>对观众：</b>${escape(issue.viewerImpact)}</p>` : ""}
+      ${issue.optionalSuggestion
+        ? `<p><b>可能的改法：</b>${escape(issue.optionalSuggestion)}
+             <span class="muted-note">仅供参考，系统不会自动执行；实测改法会有方向搞反的情况，请自行判断。</span></p>`
+        : ""}
+      ${issue.evidenceRun ? `<p class="muted-note">这段证据与候选正文最长连续重合 ${Number(issue.evidenceRun)} 字——只是一个事实，不代表问题出在候选。</p>` : ""}
+    </div>`);
+  // 拦过一次就必须说出来：花掉的钱不能藏起来。
+  const retried = Number(metadata?.storyQualityReview?.providerCalls || 0) > 2
+    ? `<p class="story-review-status warn">有一次调用被确定性校验拦下，这是重做之后的结果。</p>`
+    : "";
+
+  return `
+    <div class="review-headline">${escape(storyReviewHeadline(review))}</div>
+    ${retried}
+    <p class="story-review-status">${escape(review.summary || "")}</p>
+    ${brokenRows.length
+      ? block("候选承诺没守住的地方", brokenRows.join(""))
+      : `<p class="story-review-status">逐条核对了 ${metrics.promisesChecked} 条候选承诺，都能在画面或对白里找到依据。</p>`}
+    ${issueRows.length ? block("编辑诊断", issueRows.join("")) : `<p class="story-review-status">编辑诊断没有报出问题。</p>`}
+    ${repairable.length ? `
+    <div class="story-repair-bar">
+      <button type="button" class="outline-button" data-story-repair>按选中的问题生成修改</button>
+      <span class="muted-note">另起一次调用写局部修改，这次会对照候选承诺、守住的不许改坏。只出修订稿，看过对照、点「采纳」才会签发新的剧情版本。</span>
+    </div>
+    <div class="story-repair-slot" data-story-repair-slot></div>` : ""}
+    <p class="story-review-foot">这是一份参考报告，不阻断后续生成；判断有没有道理由你决定。刷新页面后不保留。</p>`;
+}
+
+function selectedStoryRepairRefs(root) {
+  return [...root.querySelectorAll("[data-story-repair-ref]")]
+    .filter((input) => input.checked)
+    .map((input) => input.dataset.storyRepairRef);
+}
+
+// 按问题修改：只出修订稿。**返回结果不写回任何东西**——与命题修订、分镜修订同规格，
+// 签发只发生在用户看过逐字对照、点「采纳」的那一刻。
+async function requestStoryQualityRepair(root, button, selectedRefs = selectedStoryRepairRefs(root)) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (!button || button.disabled) return;
+  const slot = root.querySelector("[data-story-repair-slot]");
+  const entry = lastStoryQualityReview;
+  if (!entry) {
+    showError("体检报告已失效，请重新体检后再生成修改。");
+    return;
+  }
+  // 报告是针对**当时那一份剧情**算出来的。中途剧情变了就必须作废，
+  // 不能把基于旧内容的问题清单套到新剧情上。
+  if (JSON.stringify(state.fullStories[entry.variantId]) !== JSON.stringify(entry.fullStory)) {
+    lastStoryQualityReview = null;
+    storyQualityRepairDraft = null;
+    showError("剧情在体检之后已经变了，这份体检报告已作废，请重新体检。");
+    return;
+  }
+  if (!selectedRefs.length) {
+    if (slot) slot.innerHTML = `<p class="story-review-status error">先勾选至少一条要修的问题。</p>`;
+    return;
+  }
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "修改中…";
+  storyQualityRepairDraft = null;
+  if (slot) slot.innerHTML = `<p class="story-review-status">正在按选中的问题写修改，通常半分钟到一分钟…</p>`;
+  try {
+    const result = await api("/api/story-quality-repair", {
+      fullStory: entry.fullStory,
+      review: entry.review,
+      selectedRefs,
+      themeVariants: state.output.themeVariants,
+      creatorProfile: profile(),
+      // 这几份只用于验签与修改后的复验——与生成剧情时同一套，**不进修改提示词**。
+      creativeBrief: state.output.creativeBrief,
+      visualGuardrails: state.output.visualGuardrails,
+      referenceAnalysis: state.output.referenceAnalysis,
+      sourceScriptReconstruction: state.output.sourceScriptReconstruction
+    });
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    storyQualityRepairDraft = { variantId: entry.variantId, sourceFullStory: entry.fullStory, result };
+    if (slot) {
+      slot.innerHTML = renderStoryQualityRepair(storyQualityRepairDraft);
+      const adopt = slot.querySelector("[data-story-repair-adopt]");
+      if (adopt) adopt.addEventListener("click", () => adoptStoryQualityRepair(adopt));
+    }
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    if (slot) slot.innerHTML = `<p class="story-review-status error">${escape(error?.message || "生成修改失败")}</p>`;
+  } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+const STORY_REPAIR_STATUS_LABELS = { applied: "已改", declined: "没改", rejected: "程序拒绝" };
+
+function dialogueAsText(dialogue) {
+  return (Array.isArray(dialogue) ? dialogue : [])
+    .map((line) => `${line.speaker}：${line.line}`)
+    .join("　/　");
+}
+
+// 原文与修订稿逐字并排。「删掉的是不是候选承诺过的细节」「执行者有没有被调换」都没有
+// 确定性兜底，只能靠人在这里看——实测唯一一次承诺退化，模型在 note 里如实写了删了什么。
+function renderStoryQualityRepair(entry) {
+  const result = entry?.result || {};
+  const before = entry?.sourceFullStory || {};
+  const after = result.fullStory || {};
+  const call = result.metadata?.storyQualityRepair || null;
+  const rows = (result.results || []).map((row) => `
+    <div class="review-check">
+      <div class="review-check-head">
+        <span class="scene-id">${escape(row.ref)}</span>
+        <span class="review-verdict repair-${escape(row.status)}">${escape(STORY_REPAIR_STATUS_LABELS[row.status] || row.status)}</span>
+      </div>
+      <p class="review-why">${escape(row.note)}</p>
+      ${row.reason ? `<p class="muted-note warn">${escape(row.reason)}</p>` : ""}
+    </div>`).join("");
+  const diffRow = (label, a, b) => `
+    <div class="revision-diff">
+      <b>${escape(label)}</b>
+      <p class="revision-before">${escape(a || "—")}</p>
+      <p class="revision-after">${escape(b || "—")}</p>
+    </div>`;
+  const diffs = (after.sceneScript || []).flatMap((scene, index) => {
+    const old = (before.sceneScript || [])[index] || {};
+    const out = [];
+    if (String(old.visibleAction || "") !== String(scene.visibleAction || "")) {
+      out.push(diffRow(`${scene.sceneId} · 动作`, old.visibleAction, scene.visibleAction));
+    }
+    if (String(old.shotAndSound || "") !== String(scene.shotAndSound || "")) {
+      out.push(diffRow(`${scene.sceneId} · 声音`, old.shotAndSound, scene.shotAndSound));
+    }
+    const oldLines = dialogueAsText(old.dialogue);
+    const newLines = dialogueAsText(scene.dialogue);
+    if (oldLines !== newLines) out.push(diffRow(`${scene.sceneId} · 台词`, oldLines, newLines));
+    return out;
+  }).join("");
+  const actionChars = (story) => (story.sceneScript || [])
+    .reduce((sum, scene) => sum + String(scene.visibleAction || "").length, 0);
+  const charsBefore = actionChars(before);
+  const charsAfter = actionChars(after);
+  const applied = (result.results || []).filter((row) => row.status === "applied").length;
+  return `
+    <div class="candidate-revision">
+      <p class="story-review-status">修订稿（还没有生效）${call && call.providerCalls > 1
+    ? ` · 第 ${escape(call.providerCalls)} 次调用的结果，第一次被确定性校验拦下` : ""}</p>
+      ${rows}
+      ${diffs || `<p class="story-review-status">这次没有可以采纳的修改。</p>`}
+      ${diffs ? `<p class="muted-note">
+        动作描写字数 ${escape(charsBefore)} → ${escape(charsAfter)}
+        ${charsAfter > charsBefore * 1.2 ? "（明显变长了，多半是在靠加戏解决问题——这几场会更挤）" : ""}
+      </p>
+      <p class="muted-note warn">
+        自己看两件事，程序判不了：①有没有把候选写明的细节改掉（note 里会写删了什么）；
+        ②动作的执行者有没有被调换。
+      </p>
+      <div class="candidate-revision-action">
+        <button type="button" class="outline-button" data-story-repair-adopt>采纳 ${escape(applied)} 条修改并签发新的剧情版本</button>
+        <span class="muted-note warn">采纳会签发新的完整剧情版本；这个命题已经生成的镜头计划、图片与视频都会失效。</span>
+      </div>` : ""}
+    </div>`;
+}
+
+// 采纳：唯一签发新 fullStory 版本的地方。修订稿是针对当时那份剧情算的，
+// 中途剧情变了必须作废，绝不把基于旧内容的改写盖到新剧情上。
+async function adoptStoryQualityRepair(button) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const entry = storyQualityRepairDraft;
+  if (!entry || !entry.result?.changed || button.disabled) return;
+  const variantId = entry.variantId;
+  if (JSON.stringify(state.fullStories[variantId]) !== JSON.stringify(entry.sourceFullStory)) {
+    storyQualityRepairDraft = null;
+    lastStoryQualityReview = null;
+    showError("剧情在修改期间已经变了，这次修订稿已作废，请重新体检。");
+    return;
+  }
+  if (state.storyRunning || state.animationRunning
+    || activeTaskForKinds(["fullStory", "animationPlan"], { rootOnly: true })) {
+    showError("剧情或镜头计划正在生成，等它结束之后再采纳修改。");
+    return;
+  }
+  const hadPlan = Boolean(state.animationPlans[variantId]);
+  if (hadPlan && !window.confirm(
+    "采纳会签发新的完整剧情版本。这个命题已经生成的镜头计划，以及它下面已生成的图片与视频都会失效。\n\n是否继续？"
+  )) return;
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "签发中…";
+  try {
+    assertWorkspaceCurrent(workspaceEpoch);
+    const next = entry.result.fullStory;
+    await commitProductionArtifact({
+      artifactId: `fullStory:${variantId}`,
+      artifactType: "fullStory",
+      content: next,
+      dependencyIds: fullStoryDependencyIds(variantId)
+    });
+    assertWorkspaceCurrent(workspaceEpoch);
+    state.fullStories[variantId] = next;
+    state.output.fullStories = state.fullStories;
+    if (String(state.selectedVariantId || "") === variantId) state.output.fullStory = next;
+    const applied = (entry.result.results || []).filter((row) => row.status === "applied").length;
+    // 剧情变了，体检报告与这份修订稿一并作废；重新渲染剧情会把旧报告面板一起清掉。
+    storyQualityRepairDraft = null;
+    lastStoryQualityReview = null;
+    renderFullStory(next);
+    setStoryStatus(`已采纳 ${applied} 条修改，签发了新的剧情版本。体检报告针对的是旧版本，需要的话请重新体检。`, "ready");
+    elements.animationGenerate.disabled = false;
+    setAnimationStatus(hadPlan ? "剧情已更新，原来的镜头计划已失效，需要重新生成。" : "可以继续生成动画镜头生产包。", "");
+    updateStoryExportActions();
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    showError(error.message || "修改签发失败；原剧情保持不变。");
+    button.disabled = false;
+    button.textContent = original;
+  }
 }
 
 async function generateAnimationPlan({ force = false } = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (state.animationRunning) return;
   const variant = selectedVariant();
   if (!variant) return setAnimationStatus("请先选择一个主题变体。", "error");
   const fullStory = state.fullStories[variant.id] || state.output.fullStory;
   if (!fullStory) return setAnimationStatus("请先生成完整剧情，再生成动画生产包。", "error");
   const targetAspectRatio = selectedAnimationAspectRatio(variant.id);
-  let videoPromptTarget;
-  try {
-    videoPromptTarget = videoPromptTargetForSetting(shotVideoSetting());
-  } catch (error) {
-    return setAnimationStatus(`${error.message} 请先在模型设置中选择 Seedance 2.0 或 MiniMax H3。`, "error");
-  }
   if (!force && state.animationPlans[variant.id]) {
     renderAnimationPlan(state.animationPlans[variant.id]);
     return;
   }
   state.animationRunning = true;
   setAnimationRunning(true);
+  beginStageUsage();
   setAnimationStatus(`正在调用 ${animationModelLabel()} 生成直接视频镜头生产包…`, "active");
   try {
     const animationPlanMode = "direct_shot";
@@ -1369,10 +3384,12 @@ async function generateAnimationPlan({ force = false } = {}) {
         variant,
         fullStory,
         creatorProfile: profile(),
+        // 只进 Foundation 与逐镜提示词，不写入 Artifact、不进 digest、不 stale 任何东西。
+        characterExpressionRules: characterExpressionRules(),
         animationPlanMode,
+        animationPlanVersion: STORYBOARD_PLAN_VERSION,
         targetAspectRatio,
         backgroundMusicEnabled: backgroundMusicEnabled(variant.id),
-        videoPromptTarget,
         // 暂时弃置，后续优化或删除：direct_shot 不消费 Character Feature private sidecar；旧 v2 请求兼容保留。
         ...(animationPlanMode !== "direct_shot" && previousPrivateSidecars && typeof previousPrivateSidecars === "object" && !Array.isArray(previousPrivateSidecars)
           ? { privateSidecars: structuredClone(previousPrivateSidecars) }
@@ -1395,24 +3412,30 @@ async function generateAnimationPlan({ force = false } = {}) {
     assertSelectedVariant(variant.id);
     const { animationPlan, metadata } = normalizeAnimationPlanResponse(result);
     state.animationPlans[variant.id] = animationPlan;
-    if (metadata?.staticFrameCompiler) state.animationPlanMetadata[variant.id] = metadata;
+    if (metadata?.staticFrameCompiler || metadata?.storyboard) state.animationPlanMetadata[variant.id] = metadata;
     else delete state.animationPlanMetadata[variant.id];
     state.output.animationPlans = state.animationPlans;
     state.output.animationPlanMetadata = state.animationPlanMetadata;
     state.output.animationPlan = animationPlan;
     state.animationAspectRatioDrafts[variant.id] = normalizeAnimationPlanAspectRatio(animationPlan.productionStrategy?.targetAspectRatio);
     renderAnimationPlan(animationPlan, metadata);
-    setAnimationStatus(`动画生产包已生成 · ${state.animationAspectRatioDrafts[variant.id]} · ${animationModelLabel()}${formatStageUsageSuffix(endStageUsage())}`, "ready");
+    setAnimationStatus(`动画生产包已生成 · ${state.animationAspectRatioDrafts[variant.id]} · ${persistedTaskModelLabel(`animationPlan:${variant.id}`, "animationPlan", animationModelLabel())}${formatStageUsageSuffix(endStageUsage())}`, "ready");
     updateStoryExportActions();
     elements.export.classList.remove("hidden");
   } catch (error) {
-    setAnimationStatus(error.message || "动画生产包生成失败", "error");
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    setAnimationStatus(
+      isTaskCapacityError(error) ? taskCapacityMessage(error) : `${error.message || "动画生产包生成失败"}${failedStageUsageSuffix()}`,
+      isTaskCapacityError(error) ? "warn" : "error"
+    );
     const compilerFailure = renderCompilerFailureDetails(error);
     if (compilerFailure) {
       elements.animationPlan.innerHTML = `${resultHeader("COMPILER FAILURE", "动画生产包未能安全编译")}${compilerFailure}`;
       reveal(elements.animationPlan);
     }
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    endStageUsage();
     state.animationRunning = false;
     setAnimationRunning(false);
   }
@@ -1420,11 +3443,13 @@ async function generateAnimationPlan({ force = false } = {}) {
 
 async function ensureSelectedVariantArtifact(variant) {
   if (!variant?.id) throw new Error("选中主题缺少 id。");
+  const artifactId = `variant:${variant.id}`;
+  const dependencies = productionDependencies(["themeVariants"]);
   return commitProductionArtifact({
-    artifactId: `variant:${variant.id}`,
+    artifactId,
     artifactType: "selectedVariant",
     content: variant,
-    dependencyIds: ["themeVariants"]
+    dependencyRefs: dependencies
   });
 }
 
@@ -1507,6 +3532,7 @@ function selectedAnimationAspectRatio(variantId = selectedVariant()?.id) {
 // 不因为这里拨一下就重签 revision 或 stale 媒体。切换已有 Plan 的入口仍在 Plan 卡片内。
 function handleDefaultAspectRatioChange(value) {
   state.animationAspectRatioDefault = normalizeAnimationPlanAspectRatio(value);
+  saveCreationPreferences();
   syncAnimationAspectRatioControls();
 }
 
@@ -1550,6 +3576,26 @@ function hasPlannedEndpoints(shot = {}) {
 }
 
 function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
+  // A Run reload replaces media maps with current Artifacts. Restore task
+  // overlays before rendering so in-flight/failed cards do not look idle.
+  const mediaTargets = new Set(Object.values(state.taskSnapshots)
+    .filter((task) => ["shotVideo", "shotFrameImage"].includes(task.kind))
+    .flatMap((task) => task.targetArtifactIds || []));
+  for (const artifactId of mediaTargets) {
+    const task = taskForUi({ kinds: ["shotVideo", "shotFrameImage"], artifactId });
+    if (task) applyTaskMediaStatus(task);
+  }
+  if (isStoryboardPlan(data)) {
+    elements.animationPlan.innerHTML = renderStoryboard(data, { escape, block, cell, resultHeader,
+      renderCharacters: refs => renderCharacterReferencePrompts(refs) + `<button class="round-add-button" type="button" data-open-character-image-generator aria-label="生成角色参考图">+</button>`,
+      // 服务端拦过一次就必须说出来：六个分镜阶段各自允许「第一次做错」，
+      // metadata.storyboard.calls 如实记着每个阶段的实际调用次数与被拦诊断。
+      renderVideo: renderShotVideoResult, videoLabel: shotVideoProviderLabel(), metadata });
+    syncAnimationAspectRatioControls(data);
+    reveal(elements.animationPlan);
+    syncStoryTaskStatus();
+    return;
+  }
   const strategy = data.productionStrategy || {};
   const visual = data.visualBible || {};
   const directShotPlan = data.promptSchemaVersion === "3.0";
@@ -1561,7 +3607,7 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
     <div class="data-grid">
       ${cell("目标画幅", `${currentAspectRatio} · ${currentAspectRatio === "9:16" ? "竖屏" : "横屏"}`)}
       ${cell("镜头计划合计时长", formatAnimationPlanRuntime(runtimeSummary))}
-      ${cell("单镜头", `${strategy.recommendedShotDurationSeconds?.min || 3}-${strategy.recommendedShotDurationSeconds?.max || 6} 秒`)}
+      ${cell("单镜头", formatAnimationShotDurationRange(data))}
       ${cell("动画风格", visual.animationStyle)}
       ${cell("色彩", (visual.colorPalette || []).join(" / "))}
       ${cell("镜头语言", visual.cameraLanguage)}
@@ -1593,7 +3639,7 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
         ` : ""}
         <div class="prompt-card"><span class="prompt-label">视频 prompt</span><p class="video-prompt-body">${renderVideoPromptBody(shot.videoPrompt, sharedPromptClauses)}</p></div>
         ${hasPlannedEndpoints(shot) ? renderShotNegativePromptCard(shot, "image", "图片负面提示词") : ""}
-        ${renderShotNegativePromptCard(shot, "video", "视频负面提示词")}
+        ${renderShotVideoPromptCell(shot, currentAspectRatio)}
       </div>
       <p><b>镜头运动：</b>${escape(shot.cameraMotion)}<br><b>动作：</b>${escape(shot.characterAction)}<br><b>对白/字幕：</b>${escape(shot.dialogueOrSubtitle)}<br><b>声音：</b>${escape(shot.soundDesign)}</p>
       <div class="tag-row">${(shot.acceptanceCriteria || []).map((item) => `<span class="tag">${escape(item)}</span>`).join("")}</div>
@@ -1617,9 +3663,225 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
     </div>`)}
     ${block("生成验收清单", `<div class="rule-list">${(data.generationChecklist || []).map((item) => `<div class="rule"><strong>${escape(item.check)}</strong><p>${escape(item.passCriteria)}</p></div>`).join("")}</div>`)}
     <div class="warning-box"><b>动画连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>
-    ${uncertainties(data.uncertainties)}`;
+    ${uncertainties(data.uncertainties)}
+    <div class="story-review">
+      <button type="button" class="outline-button" data-plan-review>分镜终审</button>
+      <span class="story-review-hint">对照剧情逐镜核对：声称要拍的画面有没有真的写进提示词。只出报告，不改方案。</span>
+      <div class="story-review-body" data-plan-review-body></div>
+    </div>`;
   syncAnimationAspectRatioControls(data);
   reveal(elements.animationPlan);
+  const reviewButton = elements.animationPlan.querySelector("[data-plan-review]");
+  if (reviewButton) reviewButton.addEventListener("click", () => runAnimationPlanReview(data, reviewButton));
+  syncStoryTaskStatus();
+}
+
+// 分镜终审：手动触发，只出报告。不改 Plan、不签发 Artifact、不进 lineage、刷新即失。
+// 评审必须同时把剧情送过去——没有对照物就发现不了「剧情写了、镜头没拍」。
+async function runAnimationPlanReview(animationPlan, button) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const body = elements.animationPlan.querySelector("[data-plan-review-body]");
+  const fullStory = state.output.fullStory;
+  if (!body || button.disabled) return;
+  if (!fullStory) {
+    body.innerHTML = `<p class="story-review-status error">终审需要对照当前剧情，请先生成完整剧情。</p>`;
+    return;
+  }
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "终审中…";
+  // 实测这个阶段正常出字要十几分钟，说清楚免得用户以为卡死了。
+  body.innerHTML = `<p class="story-review-status">正在逐镜、逐道具、逐场景核对，这一步比较慢，通常十分钟以上…</p>`;
+  try {
+    const review = await api("/api/animation-plan-review", { animationPlan, fullStory });
+    body.innerHTML = renderAnimationPlanReview(review) + renderRevisionLauncher(review);
+    bindAnimationPlanRevision(body, animationPlan, review);
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    body.innerHTML = `<p class="story-review-status error">${escape(error?.message || "终审失败")}</p>`;
+  } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+// 修订结果按 variant 隔离，与终审报告同规格：只在页面上活着，刷新即失，
+// 不进 Artifact、不进 lineage。真正签发只发生在用户点「采纳」的那一刻。
+const animationPlanRevisions = new Map();
+
+// 模型唯一可写的七个字段，与服务端的 ANIMATION_PLAN_REVISION_WRITABLE_FIELDS 对应。
+// 这里只用于把「改了什么」展示出来，不参与任何判定。
+const REVISION_DIFF_FIELDS = [
+  ["videoPrompt", "视频提示词"],
+  ["characterAction", "动作"],
+  ["cameraMotion", "镜头运动"],
+  ["dialogueOrSubtitle", "对白/字幕"],
+  ["soundDesign", "声音"],
+  ["continuityNotes", "连续性备注"],
+  ["acceptanceCriteria", "验收标准"]
+];
+
+function renderRevisionLauncher(review) {
+  const count = (review.issues || []).length + (review.upgradePath || []).length;
+  if (!count) return "";
+  return `
+    <div class="plan-revision" data-plan-revision>
+      <button type="button" class="outline-button" data-run-plan-revision>按报告修订这 ${count} 条</button>
+      <span class="story-review-hint">只改被点名的镜头。结果先给你看，确认后才签发新 Plan 版本。</span>
+      <div class="plan-revision-body" data-plan-revision-body></div>
+    </div>`;
+}
+
+function revisionFieldValue(value) {
+  return Array.isArray(value) ? value.join(" / ") : String(value ?? "");
+}
+
+// 前后对照。逐字未变的字段不显示——把没改的东西也并排列出来，真正的改动就淹了。
+function renderRevisionShotDiff(sourceShot, row) {
+  const changed = REVISION_DIFF_FIELDS
+    .filter(([field]) => row[field] !== undefined
+      && revisionFieldValue(row[field]) !== revisionFieldValue(sourceShot?.[field]))
+    .map(([field, label]) => `
+      <div class="revision-field">
+        <span class="prompt-label">${escape(label)}</span>
+        <p class="revision-before">${escape(revisionFieldValue(sourceShot?.[field]))}</p>
+        <p class="revision-after">${escape(revisionFieldValue(row[field]))}</p>
+      </div>`).join("");
+  const ledger = (items, label, tone) => (items || []).length
+    ? `<div class="revision-ledger ${tone}"><b>${label} ${items.length}</b>${
+      items.map((item) => `<span class="tag">${escape(item)}</span>`).join("")}</div>`
+    : "";
+  return `
+    <div class="revision-shot">
+      <div class="review-check-head">
+        <span class="scene-id">${escape(row.shotId)}</span>
+        <span class="revision-summary">${escape(row.changeSummary || "")}</span>
+      </div>
+      ${ledger(row.removedActions, "删除动作", "removed")}
+      ${ledger(row.addedActions, "新增动作", "added")}
+      ${changed || `<p class="story-review-status">本镜没有实际改动。</p>`}
+    </div>`;
+}
+
+function renderRevisionPreview(entry) {
+  const shots = entry.sourcePlan.shotPlan || [];
+  const byId = new Map(shots.map((shot) => [String(shot.shotId), shot]));
+  const rejection = entry.metadata?.animationPlanRevision?.firstAttemptRejection;
+  return `
+    <p class="story-review-status">
+      模型改了 ${entry.revision.revisedShots.length} 个镜头。
+      <b>现在还没有签发</b>——Plan 与已生成的媒体都没有任何变化。
+      ${rejection
+        ? `第一次输出被服务端的净预算校验拦下（${escape(rejection.redoneShotIds.join("、"))} 已按诊断重做一次）。`
+        : ""}
+    </p>
+    ${entry.revision.revisedShots
+      .map((row) => renderRevisionShotDiff(byId.get(String(row.shotId)), row)).join("")}
+    <p class="story-review-status">
+      执行者有没有写反（「甲替乙」被写成「乙替甲」）<b>没有确定性校验兜底</b>，只能在这里人工看一眼。
+    </p>
+    <div class="shot-action-row">
+      <button type="button" class="outline-button" data-adopt-plan-revision>采纳并签发新 Plan 版本</button>
+      <button type="button" class="outline-button" data-discard-plan-revision>放弃</button>
+    </div>
+    <p class="story-review-foot">
+      采纳会签发新的 Plan revision 与新的媒体命名空间，并把该变体已生成的全部图片与视频标记为 stale（需要重做）。
+    </p>`;
+}
+
+function bindAnimationPlanRevision(body, animationPlan, review) {
+  const run = body.querySelector("[data-run-plan-revision]");
+  if (run) run.addEventListener("click", () => runAnimationPlanRevision(animationPlan, review, run));
+}
+
+// 定向修订：只改终审点名的镜头。**返回后不写回 Plan**——先预览，用户确认才签发。
+// 这样把「作废该变体全部已生成媒体」的重代价推迟到确认那一刻。
+async function runAnimationPlanRevision(animationPlan, review, button) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const host = elements.animationPlan.querySelector("[data-plan-revision-body]");
+  if (!host || button.disabled) return;
+  const variant = selectedVariant();
+  if (!variant) {
+    host.innerHTML = `<p class="story-review-status error">没有选中的主题变体，无法修订。</p>`;
+    return;
+  }
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "修订中…";
+  host.innerHTML = `<p class="story-review-status">正在按报告改写被点名的镜头，这一步也比较慢，通常几分钟到十几分钟…</p>`;
+  try {
+    const outcome = await api("/api/animation-plan-revision", { animationPlan, report: review });
+    const entry = { ...outcome, sourcePlan: animationPlan, variantId: variant.id };
+    animationPlanRevisions.set(variant.id, entry);
+    host.innerHTML = renderRevisionPreview(entry);
+    const adopt = host.querySelector("[data-adopt-plan-revision]");
+    const discard = host.querySelector("[data-discard-plan-revision]");
+    if (adopt) adopt.addEventListener("click", () => adoptAnimationPlanRevision(variant.id, adopt));
+    if (discard) {
+      discard.addEventListener("click", () => {
+        animationPlanRevisions.delete(variant.id);
+        host.innerHTML = `<p class="story-review-status">已放弃这次修订，Plan 未改动。</p>`;
+      });
+    }
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    host.innerHTML = `<p class="story-review-status error">${escape(error?.message || "修订失败")}</p>`;
+  } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+// 采纳：这才是唯一签发新 Plan revision 的地方。
+async function adoptAnimationPlanRevision(variantId, button) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const entry = animationPlanRevisions.get(variantId);
+  if (!entry || button.disabled) return;
+  const variant = selectedVariant();
+  const plan = variant ? state.animationPlans[variant.id] : null;
+  if (!variant || variant.id !== variantId || !plan) {
+    setAnimationStatus("当前选中的主题已经变了，这次修订不再适用。", "error");
+    return;
+  }
+  // 修订是针对**当时那一份 Plan** 算出来的。中途 Plan 被重新生成或改过，
+  // 就必须重做修订，不能把基于旧内容的改写盖到新 Plan 上。
+  if (JSON.stringify(plan) !== JSON.stringify(entry.sourcePlan)) {
+    animationPlanRevisions.delete(variantId);
+    setAnimationStatus("Animation Plan 在修订期间已经变化，这次修订结果已作废，请重新终审并修订。", "error");
+    return;
+  }
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "签发中…";
+  setAnimationStatus("正在签发修订后的 Plan revision…", "active");
+  try {
+    assertWorkspaceCurrent(workspaceEpoch);
+    await commitProductionArtifact({
+      artifactId: animationPlanArtifactId(variant.id),
+      artifactType: "animationPlan",
+      content: entry.animationPlan,
+      dependencyRefs: currentPlanDependencyRefs(variant.id),
+      createMediaNamespace: true
+    });
+    assertSelectedVariant(variant.id);
+    state.animationPlans[variant.id] = entry.animationPlan;
+    state.output.animationPlans = state.animationPlans;
+    state.output.animationPlan = entry.animationPlan;
+    animationPlanRevisions.delete(variantId);
+    renderAnimationPlan(entry.animationPlan);
+    setAnimationStatus(
+      `修订已采纳：${entry.revision.revisedShots.length} 个镜头已更新，已签发新 Plan revision，旧媒体已标记 stale。`,
+      "ready"
+    );
+    updateStoryExportActions();
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    setAnimationStatus(error.message || "修订签发失败；原 Animation Plan 保持不变。", "error");
+    button.disabled = false;
+    button.textContent = original;
+  }
 }
 
 function renderVideoPromptProfileCell(plan = {}) {
@@ -1670,6 +3932,25 @@ function renderVideoPromptBody(prompt, sharedClauses = new Set()) {
     if (!clause || sharedClauses.has(clause)) return escape(segment);
     return `<strong>${escape(segment)}</strong>`;
   }).join("");
+}
+
+// 时长缺失是契约错误，不是可以静默补 4 秒的显示问题：如实显示缺失。
+function formatShotDurationSeconds(shot) {
+  const duration = Number(shot?.durationSeconds);
+  return Number.isFinite(duration) && duration > 0 ? `${duration} 秒` : "时长缺失";
+}
+
+// direct_shot 3.1 的单镜时长由各场 timeRange 派生，只能从 shotPlan 汇总；
+// 旧的首尾帧 Plan 仍旧读它自己签发的 recommendedShotDurationSeconds。
+function formatAnimationShotDurationRange(plan) {
+  const range = animationPlanShotDurationRange(plan);
+  if (range) {
+    return range.min === range.max ? `${range.min} 秒` : `${range.min}-${range.max} 秒`;
+  }
+  const recommended = plan?.productionStrategy?.recommendedShotDurationSeconds;
+  const min = Number(recommended?.min);
+  const max = Number(recommended?.max);
+  return Number.isFinite(min) && Number.isFinite(max) ? `${min}-${max} 秒` : "待确认";
 }
 
 function formatAnimationPlanRuntime(summary) {
@@ -1879,11 +4160,57 @@ function compilerFlag(value, trueLabel, falseLabel, falseTone = "no") {
 }
 
 function renderShotNegativePromptCard(shot = {}, target = "image", label = "负面提示词") {
+  return `<div class="prompt-card">${renderShotNegativePromptCardBody(shot, target, label)}</div>`;
+}
+
+function renderShotNegativePromptCardBody(shot = {}, target = "image", label = "负面提示词") {
   const entries = Array.isArray(shot?.negativePrompts?.[target]) ? shot.negativePrompts[target] : [];
   const content = entries.length
     ? `<div class="rule-list">${entries.map((entry) => renderShotNegativePromptEntry(entry)).join("")}</div>`
     : `<p class="long-copy">无</p>`;
-  return `<div class="prompt-card"><span class="prompt-label">${escape(label)}</span>${content}</div>`;
+  return `<span class="prompt-label">${escape(label)}</span>${content}`;
+}
+
+// 镜头卡片右上这一格：本镜头一有可播放的视频候选，整格就换成视频；没有视频时逐字保持
+// 原来的视频负面提示词卡片。纯展示切换，不改 Plan 的 negativePrompts 字段，也不改任何 lineage。
+function renderShotVideoPromptCell(shot = {}, aspectRatio) {
+  return `<div class="prompt-card" data-shot-video-media="${escape(shot.shotId)}" style="${shotVideoAspectStyle(aspectRatio)}">${renderShotVideoPromptCellBody(shot)}</div>`;
+}
+
+// 候选播放器的画幅跟随当前 Plan 的 targetAspectRatio：16:9 的成片不该被塞进 9:16 的黑框里。
+// 只影响播放器外框尺寸，不改任何 Plan 字段，也不碰旧 v2 首尾帧图的 9:16 预览。
+function shotVideoAspectStyle(aspectRatio) {
+  return normalizeAnimationPlanAspectRatio(aspectRatio) === "9:16"
+    ? "--shot-video-aspect: 9 / 16; --shot-video-card-max: 165px"
+    : "--shot-video-aspect: 16 / 9; --shot-video-card-max: 240px";
+}
+
+function renderShotVideoPromptCellBody(shot = {}) {
+  const videos = shotVideoPlayableCandidates(shot.shotId);
+  if (!videos.length) return renderShotNegativePromptCardBody(shot, "video", "视频负面提示词");
+  const selectedIndex = shotVideoSelectedIndex(shotVideoStateItem(shot.shotId));
+  return `<span class="prompt-label">${videos.length > 1 ? `镜头视频 · ${escape(videos.length)} 条候选` : "当前镜头视频"}</span>
+    <div class="shot-video-candidate-list">${videos.map((video, index) => {
+      const url = video.outputUrl || video.url || "";
+      return `<div class="shot-video-result-card${index === selectedIndex ? " selected" : ""}">
+        <span>${index === selectedIndex ? "当前镜头视频" : `候选 ${index + 1}`}</span>
+        <video src="${escape(url)}" controls playsinline></video>
+        <a href="${escape(url)}" download>下载视频</a>
+      </div>`;
+    }).join("")}</div>`;
+}
+
+function shotVideoPlayableCandidates(shotId) {
+  const stateItem = shotVideoStateItem(shotId);
+  if (!stateItem || stateItem.status === "running" || stateItem.status === "error") return [];
+  const result = stateItem.result;
+  const videos = Array.isArray(result?.videos) && result.videos.length ? result.videos : result?.outputUrl ? [result] : [];
+  return videos.filter((video) => video?.outputUrl || video?.url);
+}
+
+function shotVideoSelectedIndex(stateItem) {
+  const raw = Number(stateItem?.selectedIndex ?? stateItem?.result?.selectedIndex);
+  return Number.isFinite(raw) ? raw : 0;
 }
 
 function renderShotNegativePromptEntry(entry = {}) {
@@ -1897,25 +4224,198 @@ function renderShotNegativePromptEntry(entry = {}) {
 }
 
 function renderCharacterReferencePrompts(items = []) {
+  const refineTask = taskForUi({ kinds: ["characterReferenceRefine"], artifactId: `animationPlan:${state.selectedVariantId}` });
+  const refineView = isActiveTask(refineTask) ? taskUiView(refineTask) : null;
   return `<div class="rule-list">${items.map((item, index) => {
     const key = characterReferenceStatusKey(index);
     const status = state.characterReferenceStatuses[key];
     const hasReference = Boolean(item.referenceImageAdded || item.referenceImageDataUrl);
-    const statusText = status?.message || (hasReference ? "点击或拖入图片可更换人物参考图" : "点击或拖入人物参考图");
-    return `<div class="rule character-reference-card${hasReference ? " has-reference-image" : ""}" data-character-reference-card="${escape(index)}" role="button" tabindex="0" aria-label="${escape(item.characterName || "角色")}人物参考图上传区">
+    const audioClips = characterReferenceAudioClips(item);
+    const audioStatus = state.characterAudioStatuses[characterAudioStatusKey(index)];
+    const statusText = refineView?.message || status?.message || (hasReference ? "点击或拖入图片可更换人物参考图" : "点击或拖入人物参考图");
+    return `<div class="rule character-reference-card${hasReference ? " has-reference-image" : ""}" data-character-reference-card="${escape(index)}">
       <div class="reference-card-top">
         <strong>${escape(item.characterName)}<br><small>${escape(item.storyRole)}</small></strong>
+        <input class="hidden" type="file" accept=".mp3,.m4a,.wav,audio/mpeg,audio/mp4,audio/wav,audio/x-wav" multiple data-character-audio-input="${escape(index)}">
+        ${audioStatus?.message ? `<span class="character-audio-status ${escape(audioStatus.status || "")}">${escape(audioStatus.message)}</span>` : ""}
+        <button class="character-audio-upload-button" type="button" data-character-audio-upload="${escape(index)}"${audioStatus?.status === "running" ? " disabled" : ""}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+          <span>${audioClips.length ? "添加音色/叫声" : "上传音色/叫声"}</span>
+        </button>
         ${hasReference ? `<span class="reference-image-badge">已添加人物参考图</span>` : ""}
       </div>
       <div class="character-reference-body">
         <p>${escape(item.appearancePrompt)}<br><b>一致性标签：</b>${escape((item.consistencyTags || []).join(" / "))}<br><b>禁止变化：</b>${escape((item.forbiddenChanges || []).join(" / "))}${item.referenceImageNotes ? `<br><b>参考图吸收：</b>${escape(item.referenceImageNotes)}` : ""}</p>
         <div class="character-reference-actions">
           <input class="hidden" type="file" accept="image/*" data-character-reference-input="${escape(index)}">
-          <span class="character-reference-status ${escape(status?.status || "idle")}">${escape(statusText)}</span>
+          <button class="character-reference-status ${escape(refineView ? "running" : status?.status || "idle")}" type="button" data-character-reference-upload="${escape(index)}"${refineView ? " disabled" : ""}>${escape(statusText)}</button>
         </div>
+        ${renderCharacterReferenceAudioClips(audioClips, index)}
       </div>
     </div>`;
   }).join("") || "<p class=\"long-copy\">无角色参考提示词。</p>"}</div>`;
+}
+
+function renderCharacterReferenceAudioClips(clips, characterIndex) {
+  if (!clips.length) return "";
+  return `<div class="character-audio-clips" data-character-audio-clips>
+    <span class="character-audio-heading">参考音色/叫声 · ${escape(clips.length)} 段</span>
+    ${clips.map((clip) => `<div class="character-audio-clip">
+      <div class="character-audio-clip-meta">
+        <strong title="${escape(clip.fileName)}">${escape(clip.label)}</strong>
+        <small>${escape(clip.durationSeconds.toFixed(2))} 秒</small>
+      </div>
+      <audio controls preload="metadata" src="${escape(clip.dataUrl)}" aria-label="试听 ${escape(clip.label)}"></audio>
+      <button class="character-audio-remove-button" type="button" data-character-audio-index="${escape(characterIndex)}" data-character-audio-remove="${escape(clip.id)}" aria-label="删除 ${escape(clip.label)}" title="删除参考声音">×</button>
+    </div>`).join("")}
+  </div>`;
+}
+
+function openCharacterAudioInput(indexValue) {
+  if (state.characterAudioStatuses[characterAudioStatusKey(indexValue)]?.status === "running") return;
+  const input = [...elements.animationPlan.querySelectorAll("[data-character-audio-input]")]
+    .find((item) => String(item.dataset.characterAudioInput) === String(indexValue));
+  if (input) input.click();
+}
+
+async function addCharacterReferenceAudioFiles(indexValue, files) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const index = Number(indexValue);
+  const variant = selectedVariant();
+  const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
+  const item = plan?.characterReferencePrompts?.[index];
+  if (!variant || !plan || !item) return setAnimationStatus("没有找到对应角色参考项。", "error");
+  const key = characterAudioStatusKey(index);
+  state.characterAudioStatuses[key] = { status: "running", message: "正在保存参考声音…" };
+  renderAnimationPlan(plan);
+
+  try {
+    const additions = [];
+    for (const file of files) {
+      const mimeType = characterAudioMimeType(file);
+      if (!mimeType) throw new Error(`${file.name} 不是支持的 MP3、M4A 或 WAV 音频。`);
+      if (file.size > 8 * 1024 * 1024) throw new Error(`${file.name} 不能超过 8MB。`);
+      const durationSeconds = await browserMediaDuration(file, "audio");
+      const rawDataUrl = await readFileAsDataUrl(file);
+      additions.push({
+        id: crypto.randomUUID(),
+        label: characterAudioLabel(file.name),
+        fileName: file.name,
+        mimeType,
+        dataUrl: normalizeAudioDataUrlMime(rawDataUrl, mimeType),
+        sizeBytes: file.size,
+        durationSeconds
+      });
+    }
+    const existingClips = characterReferenceAudioClips(item);
+    const seenDataUrls = new Set();
+    const clips = [...existingClips, ...additions].filter((clip) => {
+      if (seenDataUrls.has(clip.dataUrl)) return false;
+      seenDataUrls.add(clip.dataUrl);
+      return true;
+    });
+    if (clips.length === existingClips.length) throw new Error("所选参考声音已经上传过。");
+    const issue = validateCharacterReferenceAudioClips(clips);
+    if (issue) throw new Error(issue);
+    const updatedPlan = structuredClone(plan);
+    updatedPlan.characterReferencePrompts[index].referenceAudioClips = clips;
+    assertWorkspaceCurrent(workspaceEpoch);
+    await commitProductionArtifact({
+      artifactId: animationPlanArtifactId(variant.id),
+      artifactType: "animationPlan",
+      content: updatedPlan,
+      dependencyRefs: currentPlanDependencyRefs(variant.id),
+      createMediaNamespace: true
+    });
+    assertSelectedVariant(variant.id);
+    state.animationPlans[variant.id] = updatedPlan;
+    state.output.animationPlans = state.animationPlans;
+    state.output.animationPlan = updatedPlan;
+    state.characterAudioStatuses[key] = { status: "ready", message: `已保存 ${clips.length} 段参考声音` };
+    renderAnimationPlan(updatedPlan);
+    // 上面那道 validateCharacterReferenceAudioClips 判的是「每个角色最多几段」，而供应商
+    // 上限是「每个镜头最多几段」——两个角色各传 3 段且在同一镜都明确发声就必然渲染不了。这里按镜头
+    // 再数一遍，让问题在上传当场暴露，而不是拖到批量生成才失败。
+    // 只提示不阻断：用户随后完全可能改 Plan、换角色，把它做成硬闸门会误伤合法的中间状态。
+    const overloadedShotIds = (updatedPlan.shotPlan || [])
+      .filter((shot) => shotRelatedCharacterAudioClips(shot, updatedPlan.characterReferencePrompts || []).length > ALL_REFERENCE_MAX_AUDIOS)
+      .map((shot) => shot.shotId)
+      .filter(Boolean);
+    setAnimationStatus(
+      overloadedShotIds.length
+        ? `${item.characterName || "角色"} 的参考声音已保存，但镜头 ${overloadedShotIds.join("、")} 的说话人语音合计超过每镜 ${ALL_REFERENCE_MAX_AUDIOS} 段上限，这些镜头目前无法生成视频；请减少说话人的语音段数。`
+        : `${item.characterName || "角色"} 的参考声音已保存；仅当该角色在镜头对白中明确发声时，单镜头与批量全能参考生成才会使用。`,
+      overloadedShotIds.length ? "warn" : "ready"
+    );
+    updateStoryExportActions();
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    state.characterAudioStatuses[key] = { status: "error", message: error.message || "参考声音保存失败" };
+    renderAnimationPlan(plan);
+    setAnimationStatus(error.message || "参考声音保存失败。", "error");
+  }
+}
+
+async function removeCharacterReferenceAudio(indexValue, clipId) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const index = Number(indexValue);
+  const variant = selectedVariant();
+  const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
+  const item = plan?.characterReferencePrompts?.[index];
+  if (!variant || !plan || !item) return setAnimationStatus("没有找到对应角色参考项。", "error");
+  const key = characterAudioStatusKey(index);
+  if (state.characterAudioStatuses[key]?.status === "running") return;
+  const previousClips = characterReferenceAudioClips(item);
+  const clips = previousClips.filter((clip) => String(clip.id) !== String(clipId));
+  if (clips.length === previousClips.length) return;
+  state.characterAudioStatuses[key] = { status: "running", message: "正在删除参考声音…" };
+  renderAnimationPlan(plan);
+  try {
+    const updatedPlan = structuredClone(plan);
+    if (clips.length) updatedPlan.characterReferencePrompts[index].referenceAudioClips = clips;
+    else delete updatedPlan.characterReferencePrompts[index].referenceAudioClips;
+    assertWorkspaceCurrent(workspaceEpoch);
+    await commitProductionArtifact({
+      artifactId: animationPlanArtifactId(variant.id),
+      artifactType: "animationPlan",
+      content: updatedPlan,
+      dependencyRefs: currentPlanDependencyRefs(variant.id),
+      createMediaNamespace: true
+    });
+    assertSelectedVariant(variant.id);
+    state.animationPlans[variant.id] = updatedPlan;
+    state.output.animationPlans = state.animationPlans;
+    state.output.animationPlan = updatedPlan;
+    state.characterAudioStatuses[key] = { status: "ready", message: clips.length ? `剩余 ${clips.length} 段参考声音` : "参考声音已删除" };
+    renderAnimationPlan(updatedPlan);
+    setAnimationStatus(`${item.characterName || "角色"} 的参考声音已更新。`, "ready");
+    updateStoryExportActions();
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    state.characterAudioStatuses[key] = { status: "error", message: error.message || "参考声音删除失败" };
+    renderAnimationPlan(plan);
+    setAnimationStatus(error.message || "参考声音删除失败。", "error");
+  }
+}
+
+function characterAudioStatusKey(index) {
+  const variant = selectedVariant();
+  return `${variant?.id || "variant"}:${index}`;
+}
+
+function characterAudioMimeType(file) {
+  const declared = String(file?.type || "").toLowerCase();
+  if (["audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav"].includes(declared)) return declared;
+  const extension = String(file?.name || "").toLowerCase().split(".").at(-1);
+  return ({ mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav" })[extension] || "";
+}
+
+function characterAudioLabel(fileName) {
+  return String(fileName || "参考声音").replace(/\.[^.]+$/u, "").trim().slice(0, 40) || "参考声音";
+}
+
+function normalizeAudioDataUrlMime(dataUrl, mimeType) {
+  return String(dataUrl || "").replace(/^data:[^;,]*;/iu, `data:${mimeType};`);
 }
 
 function renderShotFramePromptCard(shotId, frameKind, label, prompt) {
@@ -1930,12 +4430,13 @@ function renderShotFramePromptCard(shotId, frameKind, label, prompt) {
 
 function renderShotFrameStatusBadge(shotId, frameKind) {
   const status = shotFrameStatus(shotId, frameKind);
+  const task = taskForUi({ kinds: ["shotFrameImage"], artifactId: `shotFrame:${state.selectedVariantId}:${shotId}:${frameKind}` });
   const label = status === "ready"
     ? "已添加参考图"
     : status === "pending"
       ? "待选择"
       : status === "running"
-        ? "生成中"
+        ? task?.status === "queued" ? "排队中" : "生成中"
         : status === "error"
           ? "生成失败"
           : status === "stale"
@@ -1988,6 +4489,7 @@ function hasImageTransfer(event) {
 }
 
 async function refineCharacterReferenceWithImage(indexValue, file) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const index = Number(indexValue);
   const variant = selectedVariant();
   const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
@@ -1998,16 +4500,19 @@ async function refineCharacterReferenceWithImage(indexValue, file) {
 
   const key = characterReferenceStatusKey(index);
   const planArtifactId = animationPlanArtifactId(variant.id);
-  const planDependencyRefs = currentPlanDependencyRefs(variant.id);
-  const planToken = beginArtifactRequest(state.production, planArtifactId, crypto.randomUUID());
-  state.characterReferenceStatuses[key] = { status: "running", message: "正在用 MiMo 分析人物参考图…" };
+  const setting = effectiveStageSetting("characterReference");
+  state.characterReferenceStatuses[key] = { status: "running", message: setting?.provider && setting?.model
+    ? `正在用 ${setting.provider} · ${setting.model} 分析人物参考图…` : "正在分析人物参考图…" };
   renderAnimationPlan(plan);
   setAnimationStatus(`正在分析 ${item.characterName || "角色"} 的人物参考图…`, "active");
 
   try {
     const imageDataUrl = await readFileAsDataUrl(file);
-    const { referenceImageDataUrl, ...safeCharacterReference } = item;
-    const refined = await api("/api/refine-character-reference", {
+    const { referenceImageDataUrl: _referenceImageDataUrl, ...safeCharacterReference } = item;
+    assertWorkspaceCurrent(workspaceEpoch);
+    const created = await createDurableTask("characterReferenceRefine", withModelOverrides({
+      variantId: variant.id,
+      roleIndex: index,
       imageName: file.name,
       imageDataUrl,
       characterReference: safeCharacterReference,
@@ -2023,48 +4528,36 @@ async function refineCharacterReferenceWithImage(indexValue, file) {
         productionStrategy: plan.productionStrategy,
         visualBible: plan.visualBible
       }
-    });
-    assertCurrentProductionRequest(planToken);
-    // boundaryWarning 只用于提醒展示，绝不写进 Plan Artifact。
-    const { boundaryWarning = "", ...refinedFields } = refined || {};
-    const updatedPlan = structuredClone(plan);
-    const previousInPlan = updatedPlan.characterReferencePrompts[index];
-    const updated = {
-      ...previousInPlan,
-      ...refinedFields,
-      referenceImageAdded: true,
-      referenceImageName: file.name,
-      referenceImageDataUrl: imageDataUrl
-    };
-    updatedPlan.characterReferencePrompts[index] = updated;
-    const syncedShots = syncShotCharacterReference(updatedPlan, previousInPlan, updated);
-    await commitProductionArtifact({
-      artifactId: planArtifactId,
-      artifactType: "animationPlan",
-      content: updatedPlan,
-      dependencyRefs: planDependencyRefs,
-      createMediaNamespace: true,
-      requestToken: planToken
-    });
+    }));
+    const task = await waitForDurableTask(created.task);
+    const run = await reloadActiveProductionRun();
+    const updatedPlan = run.latestArtifacts?.[planArtifactId]?.content;
+    if (!updatedPlan) throw new Error("人物精修完成后没有找到 current Animation Plan。");
+    const refineNotice = (task.notices || []).join("；");
+    const updated = updatedPlan.characterReferencePrompts?.[index] || {};
     assertSelectedVariant(variant.id);
     state.animationPlans[variant.id] = updatedPlan;
     state.output.animationPlans = state.animationPlans;
     state.output.animationPlan = updatedPlan;
-    state.characterReferenceStatuses[key] = boundaryWarning
-      ? { status: "warn", message: boundaryWarning }
-      : { status: "ready", message: syncedShots ? `已更新人物描述，并同步 ${syncedShots} 个镜头` : "已更新人物描述" };
+    state.characterReferenceStatuses[key] = refineNotice
+      ? { status: "warn", message: refineNotice }
+      : { status: "ready", message: "已更新人物描述并同步镜头引用" };
     renderAnimationPlan(updatedPlan);
-    setAnimationStatus(`${updated.characterName || "角色"} 已添加人物参考图，并更新了角色描述${syncedShots ? `，同步了 ${syncedShots} 个镜头提示词` : ""}。`, boundaryWarning ? "warn" : "ready");
+    setAnimationStatus(`${updated.characterName || "角色"} 已添加人物参考图，并由服务端同步镜头提示词。`, refineNotice ? "warn" : "ready");
     updateStoryExportActions();
   } catch (error) {
-    const currentLineage = state.production.artifacts[planArtifactId];
-    if (currentLineage?.status === "current" && currentLineage.revision === planToken.expectedCurrentRevision) {
-      state.characterReferenceStatuses[key] = { status: "error", message: error.message || "人物参考图分析失败" };
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    if (String(selectedVariant()?.id || "") === String(variant.id)) {
+      state.characterReferenceStatuses[key] = {
+        status: isTaskCapacityError(error) ? "warn" : "error",
+        message: isTaskCapacityError(error) ? taskCapacityMessage(error) : error.message || "人物参考图分析失败"
+      };
       renderAnimationPlan(plan);
     }
-    setAnimationStatus(error.message || "人物参考图分析失败", "error");
-  } finally {
-    finishArtifactRequest(state.production, planToken);
+    setAnimationStatus(
+      isTaskCapacityError(error) ? taskCapacityMessage(error) : error.message || "人物参考图分析失败",
+      isTaskCapacityError(error) ? "warn" : "error"
+    );
   }
 }
 
@@ -2079,17 +4572,35 @@ function openCharacterImageGenerator() {
   const items = plan?.characterReferencePrompts || [];
   if (!variant || !plan || !items.length) return setAnimationStatus("请先生成动画生产包，再生成角色参考图。", "error");
   state.characterImageGeneration.open = true;
-  state.characterImageGeneration.running = false;
   state.characterImageGeneration.selectedIndex = Math.min(state.characterImageGeneration.selectedIndex || 0, items.length - 1);
   state.characterImageGeneration.count = Number(elements.characterImageCount.value) || 1;
-  state.characterImageGeneration.results = [];
-  state.characterImageGeneration.boundaryWarning = "";
+  const resultTarget = `${variant.id}:${state.characterImageGeneration.selectedIndex}`;
+  const matchingTask = taskForUi({ kinds: ["characterReferenceImages"], artifactId: `characterImages:${resultTarget}` });
+  state.characterImageGeneration.running = isActiveTask(matchingTask)
+    || (state.characterImageGeneration.running && state.characterImageGeneration.resultsTarget === resultTarget);
+  if (!state.characterImageGeneration.running && state.characterImageGeneration.resultsTarget !== resultTarget) {
+    state.characterImageGeneration.results = [];
+    state.characterImageGeneration.boundaryWarning = "";
+  }
   elements.characterImageRole.innerHTML = items.map((item, index) => `<option value="${escape(index)}">${escape(item.characterName || `角色 ${index + 1}`)} · ${escape(item.storyRole || "角色参考")}</option>`).join("");
   elements.characterImageRole.value = String(state.characterImageGeneration.selectedIndex);
   elements.characterImageCount.value = String(state.characterImageGeneration.count);
-  elements.characterImageResults.innerHTML = "";
-  setCharacterImageStatus(state.imageProviderConfigured ? "上传一张参考图片后即可生成。" : "未检测到 JIMENG_API_KEY，生成时会提示配置错误。", state.imageProviderConfigured ? "" : "error");
+  renderCharacterImageResults();
+  setCharacterImageStatus(
+    state.characterImageGeneration.running
+      ? "已重新接管服务端角色参考图任务…"
+      : state.characterImageGeneration.results.some((item) => item.status === "ready")
+        ? "已恢复上次生成的角色参考图，可继续预览或设为人物参考图。"
+        : state.imageProviderConfigured ? "上传一张参考图片后即可生成。" : "未检测到 JIMENG_API_KEY，生成时会提示配置错误。",
+    state.characterImageGeneration.running
+      ? "active"
+      : state.characterImageGeneration.results.some((item) => item.status === "ready")
+        ? "ready"
+        : state.imageProviderConfigured ? "" : "error"
+  );
   renderCharacterImagePromptPreview();
+  setCharacterImageRunning(state.characterImageGeneration.running);
+  syncCharacterImageTaskStatus({ includeTerminal: true });
   elements.characterImageModal.classList.remove("hidden");
   elements.characterImageModal.setAttribute("aria-hidden", "false");
 }
@@ -2102,33 +4613,38 @@ function closeCharacterImageGenerator() {
 }
 
 async function setCharacterImageReferenceFile(file) {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (!file.type.startsWith("image/")) return setCharacterImageStatus("请选择图片文件。", "error");
   if (file.size > 30 * 1024 * 1024) return setCharacterImageStatus(`参考图片不能超过 ${formatBytes(30 * 1024 * 1024)}。`, "error");
   try {
     const dataUrl = await readFileAsDataUrl(file);
+    assertWorkspaceCurrent(workspaceEpoch);
     state.characterImageGeneration.referenceImageDataUrl = dataUrl;
     state.characterImageGeneration.referenceImageName = file.name;
     elements.characterImagePreview.src = dataUrl;
     elements.characterImagePreviewWrap.classList.remove("hidden");
     elements.characterImageDropTitle.textContent = file.name;
-    elements.characterImageDropHint.textContent = "已载入参考图。生成时会参考它，但会移除水果摊和无关背景。";
+    elements.characterImageDropHint.textContent = "已载入参考图。生成时会参考它，但会移除无关背景。";
     setCharacterImageStatus("参考图片已载入。", "ready");
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setCharacterImageStatus(error.message || "参考图片读取失败。", "error");
   }
 }
 
 function renderCharacterImagePromptPreview() {
-  const item = currentCharacterImageReference();
   const count = Number(elements.characterImageCount.value) || state.characterImageGeneration.count || 1;
-  const base = item?.appearancePrompt || item?.identity || item?.characterName || "";
-  const countNote = count > 1 ? `\n本次需要输出 ${count} 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。` : "";
-  elements.characterImagePromptPreview.value = base
-    ? `参考我上传的这张图片，不要水果摊，生成一张${base}\n注意：人物必须是站立姿态的全身图。\n画面只保留人物主体，干净浅色背景，适合作为后续动画角色参考图。\n不要生成摊位、水果、杂乱街景、路人或与角色无关的物体。${countNote}`
-    : "当前角色没有可用的角色参考提示词。";
+  // 与服务端回退路径共用同一份模板：用户在这里看到并可编辑的，就是实际发送的。
+  const prompt = buildCharacterReferenceImagePrompt({
+    characterReference: currentCharacterImageReference() || {},
+    count,
+    visualBible: currentCharacterImagePlan()?.visualBible || null
+  });
+  elements.characterImagePromptPreview.value = prompt || "当前角色没有可用的角色参考提示词。";
 }
 
 async function generateCharacterReferenceImages() {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (state.characterImageGeneration.running) return;
   const item = currentCharacterImageReference();
   if (!item) return setCharacterImageStatus("请选择要生成参考图的角色。", "error");
@@ -2139,9 +4655,10 @@ async function generateCharacterReferenceImages() {
   const variant = selectedVariant();
   if (!variant) return setCharacterImageStatus("当前没有选中的主题变体。", "error");
   const productionContext = currentPlanProductionContext(variant.id);
-  const planLineageRef = currentPlanLineageRef(variant.id);
   const roleIndex = Number(elements.characterImageRole.value) || 0;
   state.characterImageGeneration.running = true;
+  state.characterImageGeneration.selectedIndex = roleIndex;
+  state.characterImageGeneration.resultsTarget = `${variant.id}:${roleIndex}`;
   state.characterImageGeneration.count = count;
   state.characterImageGeneration.boundaryWarning = "";
   state.characterImageGeneration.results = Array.from({ length: count }, (_, index) => ({ status: "loading", imageIndex: index }));
@@ -2149,7 +4666,10 @@ async function generateCharacterReferenceImages() {
   setCharacterImageRunning(true);
   setCharacterImageStatus(`正在用 ${state.imageProvider} ${modelName(state.imageModel)} 生成 ${count} 张参考图…`, "active");
   try {
-    await streamJsonEvents("/api/generate-character-reference-images", {
+    assertWorkspaceCurrent(workspaceEpoch);
+    const created = await createDurableTask("characterReferenceImages", withModelOverrides({
+      variantId: variant.id,
+      roleIndex,
       count,
       prompt,
       referenceImageDataUrl: state.characterImageGeneration.referenceImageDataUrl,
@@ -2162,39 +4682,57 @@ async function generateCharacterReferenceImages() {
       visualGuardrails: state.output.visualGuardrails,
       selectedVariant: variant,
       productionContext
-    }, (event) => {
+    }));
+    const task = await waitForDurableTask(created.task, (current) => {
       assertPlanProductionContextCurrent(productionContext);
-      handleCharacterImageStreamEvent(event);
+      applyCharacterImageTaskProgress(current);
     });
     assertPlanProductionContextCurrent(productionContext);
-    const readyCount = state.characterImageGeneration.results.filter((result) => result.status === "ready").length;
-    if (readyCount) {
-      await commitProductionArtifact({
-        artifactId: `characterImages:${variant.id}:${roleIndex}`,
-        artifactType: "characterImages",
-        content: {
-          characterName: item.characterName || "",
-          results: state.characterImageGeneration.results.filter((result) => result.status === "ready")
-        },
-        dependencyRefs: [planLineageRef]
-      });
-    }
+    applyCharacterImageTaskProgress(task);
+    await reloadActiveProductionRun();
+    const readyCount = Number(task.progress?.readyCount) || state.characterImageGeneration.results.filter((result) => result.status === "ready").length;
     const finalMessage = readyCount ? `已生成 ${readyCount} 张参考图，可选择一张设为人物参考图。` : "生成结束，但没有返回可用图片。";
-    const finalWarning = state.characterImageGeneration.boundaryWarning;
+    const finalWarning = (task.notices || []).join("；");
     setCharacterImageStatus(
       finalWarning ? `${finalMessage}${finalWarning}` : finalMessage,
       readyCount ? (finalWarning ? "warn" : "ready") : "error"
     );
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (error.code === "STALE_MEDIA_RESULT") {
       state.characterImageGeneration.results = [];
       renderCharacterImageResults();
     }
-    setCharacterImageStatus(error.message || "角色参考图生成失败。", "error");
+    setCharacterImageStatus(
+      isTaskCapacityError(error) ? taskCapacityMessage(error) : error.message || "角色参考图生成失败。",
+      isTaskCapacityError(error) ? "warn" : "error"
+    );
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     state.characterImageGeneration.running = false;
     setCharacterImageRunning(false);
   }
+}
+
+function applyCharacterImageTaskProgress(task) {
+  const target = durableTaskTargetContext(task);
+  if (target.variantId && target.variantId !== state.selectedVariantId) return;
+  if (state.characterImageGeneration.open && target.roleIndex !== Number(elements.characterImageRole.value)) return;
+  const expectedCount = Number(task.progress?.expectedCount) || state.characterImageGeneration.count || 1;
+  state.characterImageGeneration.count = expectedCount;
+  const next = Array.from({ length: expectedCount }, (_, imageIndex) => ({
+    status: isActiveTask(task) ? "loading" : "error", imageIndex,
+    ...(!isActiveTask(task) ? { error: taskErrorMessage(task, "任务已结束，未返回该图片。") } : {})
+  }));
+  for (const result of task.progress?.results || []) {
+    const index = Number(result.imageIndex) || 0;
+    next[index] = result.status === "error" ? { ...result, status: "error" } : { ...result, status: "ready" };
+  }
+  state.characterImageGeneration.results = next;
+  renderCharacterImageResults();
+  const view = taskUiView(task);
+  setCharacterImageStatus(view.message, view.tone);
+  syncCharacterImageTaskStatus();
 }
 
 function handleCharacterImageStreamEvent(event) {
@@ -2279,6 +4817,7 @@ function closeGeneratedImagePreview() {
 }
 
 async function useGeneratedCharacterReference(resultIndexValue) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const result = state.characterImageGeneration.results[Number(resultIndexValue)];
   const roleIndex = Number(elements.characterImageRole.value);
   const variant = selectedVariant();
@@ -2299,10 +4838,11 @@ async function useGeneratedCharacterReference(resultIndexValue) {
       referenceImageAdded: true,
       referenceImageName: result.filename || `jimeng-reference-${Number(resultIndexValue) + 1}.png`,
       referenceImageDataUrl: imageDataUrl,
-      referenceImageNotes: `由 ${state.imageProvider} ${modelName(result.model || state.imageModel)} 根据上传参考图生成；已要求去掉水果摊，保留站立全身角色。`
+      referenceImageNotes: `由 ${state.imageProvider} ${modelName(result.model || state.imageModel)} 根据上传参考图生成；已要求干净背景，保留站立全身角色。`
     };
     updatedPlan.characterReferencePrompts[roleIndex] = updated;
     const syncedShots = syncShotCharacterReference(updatedPlan, previousInPlan, updated);
+    assertWorkspaceCurrent(workspaceEpoch);
     await commitProductionArtifact({
       artifactId: planArtifactId,
       artifactType: "animationPlan",
@@ -2324,20 +4864,27 @@ async function useGeneratedCharacterReference(resultIndexValue) {
     setCharacterImageStatus("已设为人物参考图。", "ready");
     updateStoryExportActions();
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setCharacterImageStatus(error.message || "写入人物参考图失败。", "error");
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     finishArtifactRequest(state.production, planToken);
   }
 }
 
-function currentCharacterImageReference() {
+function currentCharacterImagePlan() {
   const variant = selectedVariant();
-  const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
+  return variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
+}
+
+function currentCharacterImageReference() {
+  const plan = currentCharacterImagePlan();
   return plan?.characterReferencePrompts?.[Number(elements.characterImageRole.value) || state.characterImageGeneration.selectedIndex || 0] || null;
 }
 
 function stripReferenceImageData(item = {}) {
   const { referenceImageDataUrl, ...safe } = item;
+  delete safe.referenceAudioClips;
   return safe;
 }
 
@@ -2494,7 +5041,6 @@ async function openShotFrameImageGenerator(shotId, frameKindValue = "start") {
   }
   const frameKind = frameKindValue === "end" ? "end" : "start";
   state.shotFrameImageGeneration.open = true;
-  state.shotFrameImageGeneration.running = false;
   state.shotFrameImageGeneration.shotId = String(shotId);
   state.shotFrameImageGeneration.frameKind = frameKind;
   state.shotFrameImageGeneration.frameReferenceMode = "";
@@ -2505,12 +5051,13 @@ async function openShotFrameImageGenerator(shotId, frameKindValue = "start") {
   elements.shotFrameImageModal.setAttribute("aria-hidden", "false");
   setShotFrameImageStatus("正在整理端点状态与参考图…", "active");
   if (!await updateShotFrameImageGeneratorPreview({ resetMode: true })) return;
-  setShotFrameImageGeneratorRunning(false);
+  if (!syncShotFrameTaskStatus({ includeTerminal: true })) setShotFrameImageGeneratorRunning(false);
   renderShotFrameImageResults();
   elements.shotFrameImagePromptPreview.focus();
 }
 
 async function updateShotFrameImageGeneratorPreview(options = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (!state.shotFrameImageGeneration.open) return true;
   const revision = ++state.shotFrameImageGeneration.previewRevision;
   elements.confirmGenerateShotFrameImage.disabled = true;
@@ -2527,7 +5074,11 @@ async function updateShotFrameImageGeneratorPreview(options = {}) {
   state.shotFrameImageGeneration.frameKind = frameKind;
   elements.shotFrameImageModalTitle.textContent = `生成${label}镜头`;
   elements.confirmGenerateShotFrameImageLabel.textContent = `生成${label}`;
-  elements.shotFrameImageMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || ""} 秒 · 参考顺序由统一清单锁定`;
+  elements.shotFrameImageMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${formatShotDurationSeconds(shot)} · 参考顺序由统一清单锁定`;
+  if (syncShotFrameTaskStatus()) {
+    renderShotFrameImageResults();
+    return true;
+  }
   elements.shotFrameReferenceModeField.classList.toggle("hidden", frameKind !== "end" || !structuredEndpointShot);
   elements.shotFrameReferenceModeHint.classList.toggle("hidden", frameKind !== "end" || !structuredEndpointShot);
   let frameReferenceMode = "";
@@ -2553,14 +5104,15 @@ async function updateShotFrameImageGeneratorPreview(options = {}) {
   try {
     referenceContext = await buildShotFrameReferenceContext({ shot, plan, frameKind, frameReferenceMode });
   } catch (error) {
-    if (revision !== state.shotFrameImageGeneration.previewRevision) return false;
+    if (!browserWorkspace.isCurrent(workspaceEpoch) || revision !== state.shotFrameImageGeneration.previewRevision) return false;
     elements.confirmGenerateShotFrameImage.disabled = true;
     elements.shotFrameImagePromptPreview.value = "";
     elements.shotFrameReferenceList.innerHTML = "<p>当前策略需要先选择首帧视觉参考；系统不会自动改成 independent。</p>";
     setShotFrameImageStatus(error.message || "参考图读取失败。", "error");
     return false;
   }
-  if (revision !== state.shotFrameImageGeneration.previewRevision) return false;
+  if (!browserWorkspace.isCurrent(workspaceEpoch) || revision !== state.shotFrameImageGeneration.previewRevision) return false;
+  if (syncShotFrameTaskStatus()) return true;
   const { characterReferences, sceneReference, manifest, startFrameDataUrl } = referenceContext;
   state.shotFrameImageGeneration.referenceManifest = manifest;
   elements.shotFrameReferenceList.innerHTML = renderShotFrameReferenceUploadList(manifest, {
@@ -2684,12 +5236,14 @@ function previousShotVideoReferenceContext(shotId) {
   if (!candidate) {
     return { available: false, previousShot, reason: `${previousShot.shotId} 尚未生成并选择可用的视频候选。` };
   }
-  const estimatedFrameCount = estimateOneFpsFrameCount(previousShot.durationSeconds);
-  if (!estimatedFrameCount || estimatedFrameCount > 9) {
+  // 抽帧数已固定为 5 张，不再随时长变化；这里只需要确认上一镜时长有效。
+  // 5 张与本镜角色参考图共用 9 图上限，超限由服务端 validateAllReferenceArtifacts 明确拦截。
+  const estimatedFrameCount = previousShotReferenceFrameCount(previousShot.durationSeconds);
+  if (!estimatedFrameCount) {
     return {
       available: false,
       previousShot,
-      reason: `${previousShot.shotId} 预计每秒抽帧 ${estimatedFrameCount || 0} 张，无法满足最多 9 张图片的限制。`
+      reason: `${previousShot.shotId} 的时长无效，无法抽取参考帧。`
     };
   }
   return {
@@ -2717,6 +5271,8 @@ function closeShotFrameImageGenerator() {
 }
 
 async function confirmGenerateShotFrameImage() {
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (syncShotFrameTaskStatus() && state.shotFrameImageGeneration.running) return;
   if (state.shotFrameImageGeneration.running) return;
   const shotId = state.shotFrameImageGeneration.shotId;
   const frameKind = elements.shotFrameImageKind.value === "end" ? "end" : "start";
@@ -2753,6 +5309,7 @@ async function confirmGenerateShotFrameImage() {
     const promptHash = frameKind === "end" && frameReferenceMode
       ? await computePromptHash(buildShotFrameMultiImagePrompt(prompt, count))
       : "";
+    assertWorkspaceCurrent(workspaceEpoch);
     setShotFrameImageGeneratorRunning(true);
     setShotFrameImageStatus(`正在用即梦生成${frameKind === "end" ? "尾帧" : "首帧"}图片…`, "active");
     state.shotFrameImageGeneration.count = count;
@@ -2764,12 +5321,18 @@ async function confirmGenerateShotFrameImage() {
       dependencyHash,
       promptHash
     });
+    assertWorkspaceCurrent(workspaceEpoch);
     const actualCount = state.shotFrameResults[shotFrameKey(shotId, frameKind)]?.result?.images?.length || count;
     setShotFrameImageStatus(`已生成 ${actualCount} 张${frameKind === "end" ? "尾帧" : "首帧"}候选图，请选择一张添加到镜头。`, "ready");
     setShotFrameImageGeneratorRunning(false);
   } catch (error) {
-    setShotFrameImageStatus(error.message || "镜头帧图片生成失败", "error");
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    setShotFrameImageStatus(
+      isTaskCapacityError(error) ? taskCapacityMessage(error) : error.message || "镜头帧图片生成失败",
+      isTaskCapacityError(error) ? "warn" : "error"
+    );
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (state.shotFrameImageGeneration.running) setShotFrameImageGeneratorRunning(false);
   }
 }
@@ -2796,6 +5359,9 @@ function setShotFrameImageGeneratorRunning(running) {
     }));
   }
   elements.closeShotFrameImageModal.disabled = running;
+  elements.confirmGenerateShotFrameImage.classList.toggle("running", running);
+  elements.confirmGenerateShotFrameImageLabel.textContent = running
+    ? "镜头帧图片生成中…" : `生成${state.shotFrameImageGeneration.frameKind === "end" ? "尾帧" : "首帧"}`;
 }
 
 function setShotFrameImageStatus(message, tone = "") {
@@ -2861,17 +5427,22 @@ function renderShotFrameReferenceUploadList(manifest = {}, options = {}) {
 }
 
 async function openShotVideoGenerator(shotId) {
+  const openingContext = shotFrameContext(shotId);
+  state.shotVideoGeneration.promptKey = null;
+  elements.shotVideoPromptPreview.value = "";
   state.shotVideoGeneration.open = true;
-  state.shotVideoGeneration.running = false;
   state.shotVideoGeneration.shotId = String(shotId);
   state.shotVideoGeneration.count = Number(elements.shotVideoCount.value) || 1;
   state.shotVideoGeneration.referenceAssets = [];
-  state.shotVideoGeneration.includePreviousShotFrames = false;
+  state.shotVideoGeneration.includePreviousShotFrames = shouldIncludePreviousShotFrames({
+    requested: !isStoryboardPlan(openingContext?.plan) || storyboardUsesPreviousFrames(openingContext?.shot),
+    available: previousShotVideoReferenceContext(shotId).available
+  });
   elements.shotVideoGenerationMode.value = state.shotVideoGeneration.generationMode;
-  elements.shotVideoIncludePreviousShotFrames.checked = false;
+  elements.shotVideoIncludePreviousShotFrames.checked = state.shotVideoGeneration.includePreviousShotFrames;
   elements.shotVideoIncludeEndpointFrames.checked = state.shotVideoGeneration.includeEndpointFrames;
   elements.shotVideoIncludeCharacterReferences.checked = state.shotVideoGeneration.includeCharacterReferences;
-  setShotVideoGeneratorRunning(false);
+  if (!syncShotVideoTaskStatus()) setShotVideoGeneratorRunning(false);
   elements.shotVideoModal.classList.remove("hidden");
   elements.shotVideoModal.setAttribute("aria-hidden", "false");
   setShotVideoStatus("正在校验视频参考素材…", "active");
@@ -2881,6 +5452,7 @@ async function openShotVideoGenerator(shotId) {
 }
 
 async function updateShotVideoGeneratorPreview(options = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (!state.shotVideoGeneration.open) return true;
   const validationRevision = ++state.shotVideoGeneration.validationRevision;
   const shotId = state.shotVideoGeneration.shotId;
@@ -2890,6 +5462,8 @@ async function updateShotVideoGeneratorPreview(options = {}) {
     return false;
   }
   const { shot, plan } = context;
+  const storyboard = isStoryboardPlan(plan);
+  $("#regenerateShotVideoPrompt").classList.toggle("hidden", !storyboard);
   const generationMode = normalizeShotVideoGenerationMode(state.shotVideoGeneration.generationMode);
   state.shotVideoGeneration.generationMode = generationMode;
   elements.shotVideoGenerationMode.value = generationMode;
@@ -2901,30 +5475,88 @@ async function updateShotVideoGeneratorPreview(options = {}) {
   elements.shotVideoCount.value = String(count);
   elements.shotVideoModalTitle.textContent = `用 ${shotVideoProviderLabel()} 生成 ${shot.shotId || "镜头"} 视频`;
   const promptProfileUi = videoPromptProfileUiState(plan, shotVideoSetting());
-  const promptProfileStatus = promptProfileUi.status === "matched"
+  const promptProfileStatus = storyboard ? "按当前模型单独编写本镜提示词" : promptProfileUi.status === "matched"
     ? `${videoPromptProfileLabel(promptProfileUi.current)} 提示词匹配`
     : promptProfileUi.status === "mismatch"
       ? `当前 ${videoPromptProfileLabel(promptProfileUi.target)} · Plan 为 ${videoPromptProfileLabel(promptProfileUi.current)} 提示词`
       : `当前模型与 Plan 提示词 Profile 未匹配`;
-  elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneId || "未标注场次"} · ${shot.durationSeconds || 4} 秒 · ${normalizeAnimationPlanAspectRatio(plan.productionStrategy?.targetAspectRatio)} · ${promptProfileStatus} · ${generationMode === "all_reference"
+  elements.shotVideoMeta.textContent = `${shot.shotId || "镜头"} · ${shot.sourceSceneIds?.join("、") || shot.sourceSceneId || "未标注场次"} · ${formatShotDurationSeconds(shot)} · ${normalizeAnimationPlanAspectRatio(plan.productionStrategy?.targetAspectRatio)} · ${promptProfileStatus} · ${generationMode === "all_reference"
     ? "多模态参考生成，不锁定精确首尾帧"
     : hasPlannedEndpoints(shot)
       ? "精确锁定已添加的首帧/尾帧"
       : "当前镜头没有端点；首尾帧模式不可用"}`;
   elements.shotVideoReferenceList.innerHTML = renderShotVideoReferenceList(shotId);
-  if (!options.preservePrompt || !elements.shotVideoPromptPreview.value.trim()) {
+  if (storyboard) {
+    elements.confirmGenerateShotVideo.disabled = true;
+    try {
+      const key = currentStoryboardPromptKey(context);
+      if (options.regeneratePrompt || state.shotVideoGeneration.promptKey !== key || !elements.shotVideoPromptPreview.value.trim()) {
+        setShotVideoStatus("AI 正在编写本镜视频提示词…", "active");
+        elements.shotVideoPromptPreview.disabled = true;
+        $("#regenerateShotVideoPrompt").disabled = true;
+        const result = await requestStoryboardShotPrompt(context, options.regeneratePrompt);
+        if (!browserWorkspace.isCurrent(workspaceEpoch) || validationRevision !== state.shotVideoGeneration.validationRevision || !state.shotVideoGeneration.open) return false;
+        if (key !== currentStoryboardPromptKey(shotFrameContext(shotId))) throw new Error("分镜或模型设置已变化，请重新生成本镜提示词。");
+        elements.shotVideoPromptPreview.value = result.videoPrompt;
+        state.shotVideoGeneration.promptKey = key;
+      }
+    } catch (error) {
+      if (browserWorkspace.isCurrent(workspaceEpoch) && validationRevision === state.shotVideoGeneration.validationRevision) setShotVideoStatus(error.message || "提示词生成失败，请重试。", "error");
+      return false;
+    } finally {
+      if (browserWorkspace.isCurrent(workspaceEpoch) && validationRevision === state.shotVideoGeneration.validationRevision) {
+        elements.shotVideoPromptPreview.disabled = state.shotVideoGeneration.running;
+        $("#regenerateShotVideoPrompt").disabled = state.shotVideoGeneration.running;
+      }
+    }
+  } else if (!options.preservePrompt || !elements.shotVideoPromptPreview.value.trim()) {
     elements.shotVideoPromptPreview.value = buildShotVideoPromptPreview(
       shot,
       plan.promptSchemaVersion,
       plan.productionStrategy?.videoPromptProfile
     );
   }
+  if (syncShotVideoTaskStatus()) return true;
   const validation = await evaluateShotVideoReferences(shotId);
-  if (validationRevision !== state.shotVideoGeneration.validationRevision || validation.cancelled) return false;
+  if (!browserWorkspace.isCurrent(workspaceEpoch) || validationRevision !== state.shotVideoGeneration.validationRevision || validation.cancelled) return false;
+  if (syncShotVideoTaskStatus()) return true;
   elements.shotVideoReferenceList.innerHTML = renderShotVideoReferenceList(shotId);
   setShotVideoStatus(validation.message, validation.ok ? (validation.status === "prompt_changed" ? "active" : "") : "error");
-  elements.confirmGenerateShotVideo.disabled = !validation.ok;
+  syncShotVideoTaskStatus({ includeTerminal: true });
+  elements.confirmGenerateShotVideo.disabled = !validation.ok || state.shotVideoGeneration.running;
   return true;
+}
+
+function currentStoryboardPromptKey(context) {
+  if (!context?.variant) throw new Error("当前分镜不可用");
+  return JSON.stringify({ context: currentPlanProductionContext(context.variant.id), shotId: context.shot.shotId,
+    target: shotVideoSetting(), writer: effectiveStageSetting("animationPlan") });
+}
+
+async function requestStoryboardShotPrompt(context, regenerate = false) {
+  const key = currentStoryboardPromptKey(context);
+  if (storyboardPromptRequests.has(key)) return storyboardPromptRequests.get(key);
+  const productionContext = currentPlanProductionContext(context.variant.id);
+  const artifactId = storyboardPromptArtifactId(context.variant.id, context.shot.shotId);
+  const cached = state.shotVideoPrompts?.[artifactId];
+  const target = shotVideoSetting(), writer = effectiveStageSetting("animationPlan");
+  if (!regenerate && storyboardPromptMatches(cached, { planDigest: productionContext.planDigest,
+    provider: target.provider, model: target.model, textProvider: writer.provider, textModel: writer.model })) return cached;
+  const pending = (async () => {
+    const created = await createDurableTask("shotVideoPrompt", withModelOverrides({
+      variantId: context.variant.id, shotId: context.shot.shotId, productionContext,
+      videoProvider: target.provider, videoModel: target.model
+    }));
+    const task = await waitForDurableTask(created.task);
+    recordStageUsage(task.usage);
+    const run = await reloadActiveProductionRun(productionContext, { preserveSelectedVariant: true });
+    assertPlanProductionContextCurrent(productionContext);
+    const entry = run.latestArtifacts?.[artifactId];
+    if (entry?.lineage?.status !== "current") throw new Error("本镜提示词已失效，请重新生成。");
+    return entry.content;
+  })();
+  storyboardPromptRequests.set(key, pending);
+  try { return await pending; } finally { storyboardPromptRequests.delete(key); }
 }
 
 function evaluateShotVideoReferences(shotId) {
@@ -2957,12 +5589,13 @@ async function evaluateAllReferenceAssets(shotId) {
     ok: true,
     status: "ready",
     message: `全能参考已就绪：${counts.image} 图、${counts.video} 视频、${counts.audio} 音频。${state.shotVideoGeneration.includePreviousShotFrames
-      ? `${previousReference.previousShot.shotId} 将由服务端 FFmpeg 每秒抽取一帧；`
+      ? `${previousReference.previousShot.shotId} 将由服务端 FFmpeg 均匀抽取 ${previousReference.estimatedFrameCount} 张（首帧、末帧和中间三等分点）；`
       : ""}它们只作为参考，不会被解释为精确首帧或尾帧。`
   };
 }
 
 async function evaluateShotVideoEndpoints(shotId) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const context = shotFrameContext(shotId);
   if (!context) return { ok: false, message: "没有找到对应镜头。" };
   if (!hasPlannedEndpoints(context.shot)) {
@@ -2984,7 +5617,7 @@ async function evaluateShotVideoEndpoints(shotId) {
   const dependencyHash = endCandidate?.dependencyHash || endStateItem.result?.dependencyHash || "";
   const frameReferenceMode = endCandidate?.frameReferenceMode || endStateItem.result?.frameReferenceMode || "";
   const endpointIdentity = currentVideoEndpointIdentity(shotId);
-  const endpointsUnchanged = () => currentVideoEndpointIdentity(shotId) === endpointIdentity;
+  const endpointsUnchanged = () => browserWorkspace.isCurrent(workspaceEpoch) && currentVideoEndpointIdentity(shotId) === endpointIdentity;
   if (!dependencyHash || !["inherit", "transition", "independent"].includes(frameReferenceMode)) {
     endStateItem.status = "legacy_unverified";
     endStateItem.message = "旧尾帧没有硬依赖校验信息；可以预览，但生成新视频前必须重新生成尾帧。";
@@ -3075,14 +5708,18 @@ function closeShotVideoGenerator() {
 }
 
 async function confirmGenerateShotVideo() {
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (syncShotVideoTaskStatus() && state.shotVideoGeneration.running) return;
   if (state.shotVideoGeneration.running) return;
   const prompt = elements.shotVideoPromptPreview.value.trim();
   if (!prompt) return setShotVideoStatus("视频提示词不能为空。", "error");
   const shotId = state.shotVideoGeneration.shotId;
   const context = shotFrameContext(shotId);
   if (!context) return setShotVideoStatus("没有找到对应镜头。", "error");
+  if (isStoryboardPlan(context.plan) && state.shotVideoGeneration.promptKey !== currentStoryboardPromptKey(context)) return setShotVideoStatus("分镜或模型已变化，请先重新生成本镜提示词。", "error");
   const promptOverride = runtimePromptOverride(prompt);
   const validation = await evaluateShotVideoReferences(shotId);
+  if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
   if (!validation.ok) return setShotVideoStatus(validation.message, "error");
   const count = Math.max(1, Math.min(4, Number(elements.shotVideoCount.value) || 1));
   state.shotVideoGeneration.count = count;
@@ -3090,11 +5727,17 @@ async function confirmGenerateShotVideo() {
   setShotVideoStatus(`${shotVideoProviderLabel()} 正在生成 ${count} 条视频候选…`, "active");
   try {
     await generateShotVideo(shotId, promptOverride, { count, throwOnError: true });
+    assertWorkspaceCurrent(workspaceEpoch);
     const actualCount = shotVideoStateItem(shotId)?.result?.videos?.length || count;
     setShotVideoStatus(`已生成 ${actualCount} 条视频候选，可选择一条设为当前镜头视频。`, "ready");
   } catch (error) {
-    setShotVideoStatus(error.message || "镜头视频生成失败", "error");
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    setShotVideoStatus(
+      isTaskCapacityError(error) ? taskCapacityMessage(error) : error.message || "镜头视频生成失败",
+      isTaskCapacityError(error) ? "warn" : "error"
+    );
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (state.shotVideoGeneration.running) setShotVideoGeneratorRunning(false);
   }
 }
@@ -3130,7 +5773,7 @@ function allReferenceAssetDescriptors(shotId) {
       assets.push({
         id: "previous-shot-frames",
         mediaType: "image",
-        name: `${previousReference.previousShot.shotId} 上一镜内容（每秒一帧）`,
+        name: `${previousReference.previousShot.shotId} 上一镜内容（均匀 ${previousReference.estimatedFrameCount} 帧）`,
         sizeBytes: 0,
         durationSeconds: 0,
         referenceCount: previousReference.estimatedFrameCount,
@@ -3141,17 +5784,33 @@ function allReferenceAssetDescriptors(shotId) {
     }
   }
   if (state.shotVideoGeneration.includeCharacterReferences) {
-    const references = shotRelatedCharacterReferences(context.shot, context.plan.characterReferencePrompts || []);
+    const characterReferences = context.plan.characterReferencePrompts || [];
+    const references = shotRelatedCharacterReferences(context.shot, characterReferences);
     for (const reference of references) {
-      if (!reference?.referenceImageDataUrl) continue;
+      if (reference?.referenceImageDataUrl) {
+        assets.push({
+          id: `character-${reference.characterName || assets.length}`,
+          mediaType: "image",
+          name: `${reference.characterName || "角色"}参考图`,
+          dataUrl: reference.referenceImageDataUrl,
+          sizeBytes: 0,
+          durationSeconds: 0,
+          source: "character_reference",
+          // 服务端仍会用 Plan 解析结果覆写这个值，这里只是让本地描述符与之一致。
+          sourceCharacterName: reference.characterName || ""
+        });
+      }
+    }
+    for (const { characterName, clip } of shotRelatedCharacterAudioClips(context.shot, characterReferences)) {
       assets.push({
-        id: `character-${reference.characterName || assets.length}`,
-        mediaType: "image",
-        name: `${reference.characterName || "角色"}参考图`,
-        dataUrl: reference.referenceImageDataUrl,
-        sizeBytes: 0,
-        durationSeconds: 0,
-        source: "character_reference"
+        id: `character-audio-${clip.id}`,
+        mediaType: "audio",
+        name: `${characterName || "角色"} · ${clip.label}`,
+        dataUrl: clip.dataUrl,
+        sizeBytes: clip.sizeBytes,
+        durationSeconds: clip.durationSeconds,
+        source: "character_audio_reference",
+        sourceCharacterName: characterName
       });
     }
   }
@@ -3202,22 +5861,26 @@ function referenceAssetCounts(assets) {
 function validateAllReferenceAssetDescriptors(assets) {
   const counts = referenceAssetCounts(assets);
   if (!counts.image && !counts.video) return "全能参考模式至少需要一张图片或一段视频，不能只上传音频。";
-  if (counts.image > 9) return `全能参考图片最多 9 张，当前 ${counts.image} 张。`;
-  if (counts.video > 3) return `全能参考视频最多 3 段，当前 ${counts.video} 段。`;
-  if (counts.audio > 3) return `全能参考音频最多 3 段，当前 ${counts.audio} 段。`;
+  if (counts.image > ALL_REFERENCE_MAX_IMAGES) return `全能参考图片最多 ${ALL_REFERENCE_MAX_IMAGES} 张，当前 ${counts.image} 张。`;
+  if (counts.video > ALL_REFERENCE_MAX_VIDEOS) return `全能参考视频最多 ${ALL_REFERENCE_MAX_VIDEOS} 段，当前 ${counts.video} 段。`;
+  if (counts.audio > ALL_REFERENCE_MAX_AUDIOS) return `全能参考音频最多 ${ALL_REFERENCE_MAX_AUDIOS} 段，当前 ${counts.audio} 段。`;
   const videos = assets.filter((asset) => asset.mediaType === "video");
   const audios = assets.filter((asset) => asset.mediaType === "audio");
-  const invalidDuration = [...videos, ...audios].find((asset) => asset.durationSeconds < 2 || asset.durationSeconds > 15);
-  if (invalidDuration) return `${invalidDuration.name} 时长必须在 2–15 秒之间。`;
-  if (videos.some((asset) => asset.sizeBytes > 50 * 1024 * 1024)) return "单段参考视频不得超过 50MB。";
+  const invalidDuration = [...videos, ...audios].find((asset) => (
+    asset.durationSeconds < ALL_REFERENCE_MEDIA_MIN_SECONDS
+    || asset.durationSeconds > ALL_REFERENCE_MEDIA_MAX_SECONDS
+  ));
+  if (invalidDuration) return `${invalidDuration.name} 时长必须在 ${ALL_REFERENCE_MEDIA_MIN_SECONDS}–${ALL_REFERENCE_MEDIA_MAX_SECONDS} 秒之间。`;
+  if (videos.some((asset) => asset.sizeBytes > ALL_REFERENCE_MAX_VIDEO_BYTES)) return "单段参考视频不得超过 50MB。";
   const videoDuration = videos.reduce((sum, asset) => sum + Number(asset.durationSeconds || 0), 0);
   const audioDuration = audios.reduce((sum, asset) => sum + Number(asset.durationSeconds || 0), 0);
-  if (videoDuration > 15.05) return `参考视频总时长不得超过 15 秒，当前 ${videoDuration.toFixed(2)} 秒。`;
-  if (audioDuration > 15.05) return `参考音频总时长不得超过 15 秒，当前 ${audioDuration.toFixed(2)} 秒。`;
+  if (videoDuration > ALL_REFERENCE_MEDIA_TOTAL_SECONDS) return `参考视频总时长不得超过 ${ALL_REFERENCE_MEDIA_MAX_SECONDS} 秒，当前 ${videoDuration.toFixed(2)} 秒。`;
+  if (audioDuration > ALL_REFERENCE_MEDIA_TOTAL_SECONDS) return `参考音频总时长不得超过 ${ALL_REFERENCE_MEDIA_MAX_SECONDS} 秒，当前 ${audioDuration.toFixed(2)} 秒。`;
   return "";
 }
 
 async function addShotVideoReferenceFiles(files) {
+  const workspaceEpoch = browserWorkspace.epoch;
   try {
     const added = [];
     for (const file of files) {
@@ -3234,12 +5897,14 @@ async function addShotVideoReferenceFiles(files) {
         source: "upload"
       });
     }
+    assertWorkspaceCurrent(workspaceEpoch);
     const candidateAssets = [...state.shotVideoGeneration.referenceAssets, ...added];
     const issue = validateAllReferenceAssetDescriptors(candidateAssets);
     if (issue && !/至少需要一张图片或一段视频/u.test(issue)) throw new Error(issue);
     state.shotVideoGeneration.referenceAssets = candidateAssets;
     await updateShotVideoGeneratorPreview({ preservePrompt: true });
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setShotVideoStatus(error.message || "无法添加全能参考素材。", "error");
   }
 }
@@ -3280,13 +5945,19 @@ function renderShotVideoReferenceList(shotId) {
     const assets = allReferenceAssetDescriptors(shotId);
     const previousReference = previousShotVideoReferenceContext(shotId);
     if (!assets.length) {
-      return `<p class="shot-video-reference-note">尚未选择参考素材。可加入上个镜头抽帧、已有首尾帧、角色参考图，或上传图片、视频和音频。${previousReference.available ? `上个镜头 ${escape(previousReference.previousShot.shotId)} 已就绪，勾选后预计抽取 ${escape(previousReference.estimatedFrameCount)} 张。` : `上个镜头不可用：${escape(previousReference.reason)}`}</p>`;
+      return `<div>
+      <span class="block-label">全能参考素材 · 0 项</span>
+      <div class="shot-video-reference-box">
+        <p class="shot-video-reference-note">尚未选择参考素材。可加入上个镜头抽帧、已有首尾帧、角色参考图，或上传图片、视频和音频。${previousReference.available ? `上个镜头 ${escape(previousReference.previousShot.shotId)} 已就绪，勾选后预计抽取 ${escape(previousReference.estimatedFrameCount)} 张。` : `上个镜头不可用：${escape(previousReference.reason)}`}</p>
+      </div>
+    </div>`;
     }
     const labels = { image: "图片", video: "视频", audio: "音频" };
     return `<div>
       <span class="block-label">全能参考素材 · ${escape(assets.length)} 项</span>
-      <div class="shot-video-reference-assets">
-        ${assets.map((asset) => `<div class="shot-video-reference-asset">
+      <div class="shot-video-reference-box">
+        <div class="shot-video-reference-assets">
+          ${assets.map((asset) => `<div class="shot-video-reference-asset">
           <span>${escape(labels[asset.mediaType] || asset.mediaType)}</span>
           <strong title="${escape(asset.name)}">${escape(asset.name)}</strong>
           <small>${asset.source === "previous_shot_frames"
@@ -3295,15 +5966,16 @@ function renderShotVideoReferenceList(shotId) {
               ? `${escape(asset.durationSeconds.toFixed(2))} 秒`
               : asset.sizeBytes
                 ? escape(formatBytes(asset.sizeBytes))
-                : escape(asset.source === "character_reference" ? "角色锁定" : "工作流参考")}</small>
+                : escape(["character_reference", "character_audio_reference"].includes(asset.source) ? "角色锁定" : "工作流参考")}</small>
           ${asset.source === "upload" ? `<button class="shot-video-reference-remove" type="button" data-remove-shot-video-reference="${escape(asset.id)}" aria-label="移除 ${escape(asset.name)}">×</button>` : ""}
         </div>`).join("")}
       </div>
-      <p class="shot-video-reference-note">这些素材会以 reference_image / reference_video / reference_audio 发送，不会混入 first_frame / last_frame。上一镜抽帧只增强一致性，当前镜头的剧情、角色边界与目标场景仍优先。${previousReference.available
+      <p class="shot-video-reference-note">这些素材会以 reference_image / reference_video / reference_audio 发送，不会混入 first_frame / last_frame。角色参考声音只在“对白/字幕”明确标出该角色发声时加入。上一镜抽帧只增强一致性，当前镜头的剧情、角色边界与目标场景仍优先。${previousReference.available
         ? state.shotVideoGeneration.includePreviousShotFrames
           ? ""
           : `上个镜头 ${escape(previousReference.previousShot.shotId)} 已就绪，可按需勾选，预计抽取 ${escape(previousReference.estimatedFrameCount)} 张。`
         : `上个镜头不可用：${escape(previousReference.reason)}`}</p>
+      </div>
     </div>`;
   }
   const context = shotFrameContext(shotId);
@@ -3356,15 +6028,195 @@ function buildShotVideoPromptPreview(shot = {}, promptSchemaVersion = "", videoP
   ].filter(Boolean).join("\n");
 }
 
+async function startShotVideoBatch() {
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (state.shotVideoBatch.taskId) return;
+  const variant = selectedVariant();
+  const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : null;
+  if (!variant || !plan?.shotPlan?.length) {
+    return setAnimationStatus("请先生成 Animation Plan，再批量生成镜头视频。", "error");
+  }
+  const setting = shotVideoSetting();
+  if (!shotVideoModeSupported(setting.provider, "all_reference")) {
+    return setAnimationStatus(
+      `${shotVideoProviderLabel(setting.provider)} 不支持全能参考模式，请在模型设置中切换为 Seedance 或 MiniMax。`,
+      "error"
+    );
+  }
+  try {
+    const productionContext = currentPlanProductionContext(variant.id);
+    state.shotVideoBatch = {
+      taskId: "creating",
+      status: "queued",
+      controlState: "running",
+      lastRenderedCompletedShots: -1
+    };
+    renderShotVideoBatchProgress({
+      status: "queued",
+      progress: {
+        controlState: "running",
+        totalShots: plan.shotPlan.length,
+        completedShots: 0,
+        failedShots: 0,
+        items: plan.shotPlan.map((shot) => ({ shotId: shot.shotId, status: "pending", message: "等待提交" }))
+      }
+    });
+    updateStoryExportActions();
+    assertWorkspaceCurrent(workspaceEpoch);
+    const created = await createDurableTask("shotVideoBatch", withModelOverrides({
+      variantId: variant.id,
+      selectedVariantId: variant.id,
+      generationMode: "all_reference",
+      includePreviousShotFrames: true,
+      count: 1,
+      productionContext
+    }));
+    state.shotVideoBatch.taskId = created.task.taskId;
+    await monitorShotVideoBatch(created.task);
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    state.shotVideoBatch.taskId = "";
+    state.shotVideoBatch.status = "failed";
+    renderShotVideoBatchProgress({
+      status: "failed",
+      error: { message: error.message || "批量视频任务创建失败" },
+      progress: { controlState: "running", totalShots: plan.shotPlan.length, completedShots: 0, failedShots: 0, items: [] }
+    });
+    setAnimationStatus(error.message || "批量视频任务创建失败", "error");
+    updateStoryExportActions();
+  }
+}
+
+async function monitorShotVideoBatch(initialTask, { restored = false } = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  state.shotVideoBatch.taskId = initialTask.taskId;
+  state.shotVideoBatch.status = initialTask.status;
+  if (restored) state.shotVideoBatch.lastRenderedCompletedShots = -1;
+  try {
+    const completed = await waitForDurableTask(initialTask, async (task) => {
+      renderShotVideoBatchProgress(task);
+      const processedShots = Number(task.progress?.completedShots || 0) + Number(task.progress?.failedShots || 0);
+      if (processedShots !== state.shotVideoBatch.lastRenderedCompletedShots) {
+        state.shotVideoBatch.lastRenderedCompletedShots = processedShots;
+        if (processedShots > 0) {
+          await reloadActiveProductionRun();
+          renderShotVideoBatchProgress(task);
+        }
+      }
+    });
+    await reloadActiveProductionRun();
+    renderShotVideoBatchProgress(completed);
+    const failedShots = Number(completed.progress?.failedShots) || 0;
+    setAnimationStatus(
+      failedShots
+        ? `批量视频生成完成，${failedShots} 个镜头失败；已保留其余成功片段。`
+        : "全部镜头视频已生成完成。",
+      failedShots ? "warn" : "ready"
+    );
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    const task = error.task || initialTask;
+    renderShotVideoBatchProgress(task);
+    if (task.status === "cancelled" || error.code === "SHOT_VIDEO_BATCH_TERMINATED") {
+      await reloadActiveProductionRun().catch(() => null);
+      renderShotVideoBatchProgress(task);
+      setAnimationStatus("批量视频生成已终止；已完成片段已经保留。", "warn");
+    } else {
+      setAnimationStatus(error.message || "批量视频生成中断", "error");
+    }
+  } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    state.shotVideoBatch.taskId = "";
+    if (state.shotVideoGeneration.open && initialTask.targetArtifactIds?.includes(
+      `shotVideo:${state.selectedVariantId}:${state.shotVideoGeneration.shotId}`
+    )) {
+      setShotVideoGeneratorRunning(false);
+      await updateShotVideoGeneratorPreview({ preservePrompt: true });
+    }
+    updateStoryExportActions();
+  }
+}
+
+function renderShotVideoBatchProgress(task = {}) {
+  if (task.taskId) rememberTaskSnapshot(state.taskSnapshots, task);
+  const progress = task.progress || {};
+  const items = Array.isArray(progress.items) ? progress.items : [];
+  const batchSetting = task.modelSnapshot?.shotVideo;
+  const batchLabel = batchSetting?.model
+    ? modelDisplayLabel(batchSetting.provider, batchSetting.model)
+    : shotVideoProviderLabel();
+  const totalShots = Number(progress.totalShots) || items.length;
+  const completedShots = Number(progress.completedShots) || 0;
+  const failedShots = Number(progress.failedShots) || 0;
+  const processedShots = Math.min(totalShots, completedShots + failedShots);
+  const controlState = String(progress.controlState || "running");
+  const terminal = ["completed", "failed", "cancelled", "abandoned", "conflicted", "interrupted"].includes(task.status);
+  state.shotVideoBatch.status = task.status || state.shotVideoBatch.status;
+  state.shotVideoBatch.controlState = controlState;
+  elements.shotVideoBatchPanel.classList.remove("hidden");
+  elements.shotVideoBatchCount.textContent = `${processedShots} / ${totalShots}`;
+  elements.shotVideoBatchProgress.style.width = `${totalShots ? Math.round(processedShots / totalShots * 100) : 0}%`;
+  elements.shotVideoBatchTitle.textContent = `${batchLabel} 全能参考批量生成`;
+  elements.shotVideoBatchStatus.textContent = shotVideoBatchStatusText(task, progress);
+  elements.shotVideoBatchItems.innerHTML = items.map((item) => `<span class="${escape(item.status || "pending")}" title="${escape(item.message || "")}">${escape(item.shotId || "镜头")}</span>`).join("");
+  elements.pauseShotVideoBatch.disabled = terminal;
+  elements.terminateShotVideoBatch.disabled = terminal;
+  const paused = controlState === "paused";
+  elements.pauseShotVideoBatch.setAttribute("aria-label", paused ? "继续批量生成" : "暂停批量生成");
+  elements.pauseShotVideoBatch.setAttribute("title", paused ? "继续批量生成" : "暂停批量生成");
+  elements.pauseShotVideoBatch.innerHTML = paused
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg>';
+  syncShotVideoTaskStatus();
+}
+
+async function toggleShotVideoBatchPause() {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const taskId = state.shotVideoBatch.taskId;
+  if (!taskId || taskId === "creating") return;
+  const action = state.shotVideoBatch.controlState === "paused" ? "resume" : "pause";
+  try {
+    const task = await controlDurableTask(taskId, action);
+    renderShotVideoBatchProgress(task);
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    setAnimationStatus(error.message || "批量任务控制失败", "error");
+  }
+}
+
+async function terminateShotVideoBatch() {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const taskId = state.shotVideoBatch.taskId;
+  if (!taskId || taskId === "creating") return;
+  const confirmed = window.confirm(
+    "确认终止剩余镜头的视频生成？\n\n已完成片段会保留；当前已提交给供应商的片段可能仍会执行并产生费用。"
+  );
+  if (!confirmed) return;
+  try {
+    const task = await controlDurableTask(taskId, "terminate");
+    renderShotVideoBatchProgress(task);
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    setAnimationStatus(error.message || "终止批量任务失败", "error");
+  }
+}
+
+function controlDurableTask(taskId, action) {
+  return api(`/api/tasks/${encodeURIComponent(taskId)}/control`, {
+    projectId: state.production.projectId,
+    runId: state.production.runId,
+    action
+  });
+}
+
 async function generateShotVideo(shotId, promptOverride = "", options = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const variant = selectedVariant();
   const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
   const shot = (plan?.shotPlan || []).find((item) => String(item.shotId) === String(shotId));
   if (!shot) return setAnimationStatus("没有找到对应镜头。", "error");
   const productionContext = currentPlanProductionContext(variant.id);
-  const planLineageRef = currentPlanLineageRef(variant.id);
   const mediaArtifactId = shotVideoArtifactId(variant.id, shotId);
-  const mediaToken = beginArtifactRequest(state.production, mediaArtifactId, crypto.randomUUID());
   const count = Math.max(1, Math.min(4, Number(options.count) || 1));
   setShotVideoStateItem(shotId, { status: "running", message: `正在调用 ${shotVideoProviderLabel()} · ${count} 条…`, expectedCount: count }, variant.id);
   updateShotVideoResult(shotId);
@@ -3392,8 +6244,10 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
         frameCandidateDataUrl(endFrame)
       ]);
     }
-    const result = await api("/api/generate-shot-video", {
+    assertWorkspaceCurrent(workspaceEpoch);
+    const created = await createDurableTask("shotVideo", withModelOverrides({
       ...globalCharacterBoundaryContext(),
+      variantId: variant.id,
       selectedVariantId: variant?.id || "",
       count,
       generationMode,
@@ -3406,49 +6260,42 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
         ? { referenceAssets }
         : { startFrameDataUrl, endFrameDataUrl }),
       productionContext
+    }));
+    await waitForDurableTask(created.task, (current) => {
+      const completed = Number.isInteger(Number(current.progress?.candidateIndex))
+        ? Number(current.progress.candidateIndex) + 1
+        : Number(current.progress?.completedCandidates) || 0;
+      setShotVideoStateItem(shotId, {
+        status: "running",
+        message: current.status === "queued" ? "镜头视频任务正在排队…" : `镜头视频生成中${completed ? ` · 已完成 ${completed}` : ""}`,
+        expectedCount: count
+      }, variant.id);
+      updateShotVideoResult(shotId);
+      renderShotVideoModalResults();
     });
     assertPlanProductionContextCurrent(productionContext);
-    assertCurrentProductionRequest(mediaToken);
-    const videos = Array.isArray(result.videos) && result.videos.length ? result.videos : result.outputUrl ? [result] : [];
-    if (videos.length !== count) throw new Error(`视频数量不足：请求 ${count} 条，实际返回 ${videos.length} 条。`);
-    if (
-      continuityReferenceMode === SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
-      && !result.continuityReferenceReceipt?.sourceArtifact
-    ) {
-      throw new Error("服务端没有返回上一镜抽帧的精确媒体血缘，已拒绝提交结果。");
-    }
-    const selectedIndex = 0;
-    const readyResult = {
-      status: "ready",
-      result: { ...result, videos, selectedIndex, outputUrl: videos[selectedIndex]?.outputUrl || result.outputUrl || "" },
-      selectedIndex
-    };
-    await commitProductionArtifact({
-      artifactId: mediaArtifactId,
-      artifactType: "shotVideo",
-      content: readyResult,
-      dependencyRefs: [
-        planLineageRef,
-        ...(result.continuityReferenceReceipt?.sourceArtifact
-          ? [result.continuityReferenceReceipt.sourceArtifact]
-          : [])
-      ],
-      requestToken: mediaToken
-    });
+    const run = await reloadActiveProductionRun();
+    const readyResult = run.latestArtifacts?.[mediaArtifactId]?.content;
+    if (!readyResult || readyResult.status !== "ready") throw new Error("视频任务完成后没有找到 ready shotVideo Artifact。");
     assertPlanProductionContextCurrent(productionContext);
     setShotVideoStateItem(shotId, readyResult, variant.id);
-    setAnimationStatus(`${shotId} 镜头视频已生成 ${videos.length} 条候选。`, "ready");
+    setAnimationStatus(`${shotId} 镜头视频已生成 ${readyResult.result?.videos?.length || count} 条候选。`, "ready");
   } catch (error) {
-    if (isArtifactRequestCurrent(state.production, mediaToken) && !["STALE_ASYNC_RESULT", "STALE_MEDIA_RESULT"].includes(error.code)) {
-      setShotVideoStateItem(shotId, { status: "error", message: error.message || "镜头视频生成失败" }, variant.id);
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    if (!["STALE_ASYNC_RESULT", "STALE_MEDIA_RESULT"].includes(error.code)) {
+      setShotVideoStateItem(shotId, {
+        status: isTaskCapacityError(error) ? "capacity" : "error",
+        message: isTaskCapacityError(error) ? taskCapacityMessage(error) : error.message || "镜头视频生成失败"
+      }, variant.id);
     }
-    setAnimationStatus(error.message || "镜头视频生成失败", "error");
+    setAnimationStatus(
+      isTaskCapacityError(error) ? taskCapacityMessage(error) : error.message || "镜头视频生成失败",
+      isTaskCapacityError(error) ? "warn" : "error"
+    );
     updateShotVideoResult(shotId);
     renderShotVideoModalResults();
     if (options.throwOnError) throw error;
     return false;
-  } finally {
-    finishArtifactRequest(state.production, mediaToken);
   }
   updateShotVideoResult(shotId);
   renderShotVideoModalResults();
@@ -3487,6 +6334,7 @@ function renderShotVideoModalResults() {
   if (!state.shotVideoGeneration.open) return;
   const shotId = state.shotVideoGeneration.shotId;
   const stateItem = shotVideoStateItem(shotId);
+  elements.shotVideoResults.setAttribute("style", shotVideoAspectStyle(shotFrameContext(shotId)?.plan?.productionStrategy?.targetAspectRatio));
   if (!stateItem) {
     elements.shotVideoResults.innerHTML = "";
     return;
@@ -3494,6 +6342,10 @@ function renderShotVideoModalResults() {
   if (stateItem.status === "running") {
     const count = Number(stateItem.expectedCount) || 1;
     elements.shotVideoResults.innerHTML = Array.from({ length: count }, (_, index) => `<div class="generated-reference-card shot-video-candidate loading"><span>第 ${index + 1} 条视频生成中…</span></div>`).join("");
+    return;
+  }
+  if (stateItem.status === "capacity") {
+    elements.shotVideoResults.innerHTML = `<div class="generated-reference-card"><strong>服务器任务队列已满</strong><p>${escape(stateItem.message || "请稍后重试。")}</p></div>`;
     return;
   }
   if (stateItem.status === "error") {
@@ -3510,6 +6362,7 @@ function renderShotVideoModalResults() {
 }
 
 async function selectShotVideoCandidate(shotId, candidateIndexValue) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const stateItem = shotVideoStateItem(shotId);
   const videos = stateItem?.result?.videos || [];
   const selectedIndex = Number(candidateIndexValue);
@@ -3525,6 +6378,7 @@ async function selectShotVideoCandidate(shotId, candidateIndexValue) {
     updatedStateItem.result.selectedIndex = selectedIndex;
     updatedStateItem.result.outputUrl = videos[selectedIndex].outputUrl || videos[selectedIndex].url || "";
     updatedStateItem.result.outputPath = videos[selectedIndex].outputPath || "";
+    assertWorkspaceCurrent(workspaceEpoch);
     await commitProductionArtifact({
       artifactId: mediaArtifactId,
       artifactType: "shotVideo",
@@ -3539,11 +6393,13 @@ async function selectShotVideoCandidate(shotId, candidateIndexValue) {
     setShotVideoStatus(`已将第 ${selectedIndex + 1} 条设为当前镜头视频。`, "ready");
     setAnimationStatus(`${shotId} 已切换为第 ${selectedIndex + 1} 条视频候选。`, "ready");
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setShotVideoStatus(error.message || "切换镜头视频失败。", "error");
   }
 }
 
 async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "", options = {}) {
+  const workspaceEpoch = browserWorkspace.epoch;
   const frameKind = frameKindValue === "end" ? "end" : "start";
   const variant = selectedVariant();
   const plan = variant ? state.animationPlans[variant.id] || state.output.animationPlan : state.output.animationPlan;
@@ -3554,9 +6410,7 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
   }
   const key = shotFrameKey(shotId, frameKind);
   const productionContext = currentPlanProductionContext(variant.id);
-  const planLineageRef = currentPlanLineageRef(variant.id);
   const mediaArtifactId = `shotFrame:${variant.id}:${shotId}:${frameKind}`;
-  const mediaToken = beginArtifactRequest(state.production, mediaArtifactId, crypto.randomUUID());
   const count = Math.max(1, Math.min(6, Number(options.count) || 1));
   state.shotFrameResults[key] = { status: "running", frameKind, message: `正在生成${frameKind === "end" ? "尾帧" : "首帧"}镜头 · ${count} 张…` };
   updateShotFrameResult(shotId);
@@ -3597,8 +6451,12 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
     delete frameShot.negativePromptEntries;
     delete frameShot.compiledNegativePrompt;
     frameShot.negativePrompts = { image: negativePromptApplication.negativePromptEntries };
-    const result = await api("/api/generate-shot-frame-image", {
+    assertWorkspaceCurrent(workspaceEpoch);
+    const created = await createDurableTask("shotFrameImage", withModelOverrides({
       ...globalCharacterBoundaryContext(),
+      variantId: variant.id,
+      shotId,
+      autoSelectFirst: Boolean(options.autoSelectFirst),
       selectedVariantId: variant?.id || "",
       animationPromptSchemaVersion: plan.promptSchemaVersion || "",
       frameKind,
@@ -3616,51 +6474,36 @@ async function generateShotFrameImage(shotId, frameKindValue, promptOverride = "
         dependencyHash,
         promptHash
       } : {})
-    });
+    }));
+    await waitForDurableTask(created.task);
     assertPlanProductionContextCurrent(productionContext);
-    assertCurrentProductionRequest(mediaToken);
-    const images = Array.isArray(result.images) && result.images.length ? result.images : [result];
-    const authority = {
-      frameReferenceMode: result.frameReferenceMode || frameReferenceMode,
-      dependencyHash: result.dependencyHash || dependencyHash,
-      promptHash: result.promptHash || promptHash,
-      usedStartFrameReference: Boolean(result.usedStartFrameReference)
-    };
-    result.images = await Promise.all(images.map(async (image) => ({
-      ...image,
-      ...(frameKind === "end" && frameReferenceMode ? authority : {}),
-      dataUrl: await urlToDataUrl(image.url)
-    })));
-    if (frameKind === "end" && frameReferenceMode) Object.assign(result, authority);
-    result.selectedIndex = -1;
-    result.url = "";
-    result.dataUrl = "";
-    const readyResult = { status: options.autoSelectFirst ? "ready" : "pending", frameKind, result, selectedIndex: options.autoSelectFirst ? 0 : -1, message: `已生成 ${result.images.length} 张候选图，请选择一张添加到镜头。` };
-    await commitProductionArtifact({
-      artifactId: mediaArtifactId,
-      artifactType: "shotFrame",
-      content: readyResult,
-      dependencyRefs: [planLineageRef],
-      requestToken: mediaToken
-    });
+    const run = await reloadActiveProductionRun();
+    const readyResult = run.latestArtifacts?.[mediaArtifactId]?.content;
+    if (!readyResult) throw new Error("图片任务完成后没有找到 shotFrame Artifact。");
     assertPlanProductionContextCurrent(productionContext);
     state.shotFrameResults[key] = readyResult;
     if (options.autoSelectFirst) {
       selectShotFrameCandidate(shotId, frameKind, 0);
     } else {
-      setAnimationStatus(`${shotId} ${frameKind === "end" ? "尾帧" : "首帧"}镜头已生成 ${result.images.length} 张候选图，等待选择。`, "ready");
+      setAnimationStatus(`${shotId} ${frameKind === "end" ? "尾帧" : "首帧"}镜头已生成 ${readyResult.result?.images?.length || count} 张候选图，等待选择。`, "ready");
     }
   } catch (error) {
-    if (isArtifactRequestCurrent(state.production, mediaToken) && !["STALE_ASYNC_RESULT", "STALE_MEDIA_RESULT"].includes(error.code)) {
-      state.shotFrameResults[key] = { status: "error", frameKind, message: error.message || "镜头帧图片生成失败" };
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    if (!["STALE_ASYNC_RESULT", "STALE_MEDIA_RESULT"].includes(error.code)) {
+      state.shotFrameResults[key] = {
+        status: isTaskCapacityError(error) ? "capacity" : "error",
+        frameKind,
+        message: isTaskCapacityError(error) ? taskCapacityMessage(error) : error.message || "镜头帧图片生成失败"
+      };
     }
-    setAnimationStatus(error.message || "镜头帧图片生成失败", "error");
+    setAnimationStatus(
+      isTaskCapacityError(error) ? taskCapacityMessage(error) : error.message || "镜头帧图片生成失败",
+      isTaskCapacityError(error) ? "warn" : "error"
+    );
     updateShotFrameResult(shotId);
     renderShotFrameImageResults();
     if (options.throwOnError) throw error;
     return false;
-  } finally {
-    finishArtifactRequest(state.production, mediaToken);
   }
   updateShotFrameResult(shotId);
   renderShotFrameImageResults();
@@ -3671,6 +6514,13 @@ function updateShotVideoResult(shotId) {
   const resultBox = [...elements.animationPlan.querySelectorAll("[data-shot-video-result]")]
     .find((item) => String(item.dataset.shotVideoResult) === String(shotId));
   if (resultBox) resultBox.innerHTML = renderShotVideoResult(shotId);
+  const mediaCell = [...elements.animationPlan.querySelectorAll("[data-shot-video-media]")]
+    .find((item) => String(item.dataset.shotVideoMedia) === String(shotId));
+  const mediaContext = shotFrameContext(shotId);
+  if (mediaCell && mediaContext?.shot) {
+    mediaCell.setAttribute("style", shotVideoAspectStyle(mediaContext.plan?.productionStrategy?.targetAspectRatio));
+    mediaCell.innerHTML = renderShotVideoPromptCellBody(mediaContext.shot);
+  }
   const button = [...elements.animationPlan.querySelectorAll("[data-generate-shot-video]")]
     .find((item) => String(item.dataset.generateShotVideo) === String(shotId));
   if (button) button.disabled = shotVideoStateItem(shotId)?.status === "running";
@@ -3722,6 +6572,7 @@ function renderOneShotFramePreview(shotId, frameKind, stateItem) {
   const label = frameKind === "end" ? "尾帧" : "首帧";
   if (!stateItem) return `<figure class="empty"><span>${label}</span><p>未生成</p></figure>`;
   if (stateItem.status === "running") return `<figure class="loading"><span>${label}</span><p>${escape(stateItem.message || "生成中…")}</p></figure>`;
+  if (stateItem.status === "capacity") return `<figure class="empty"><span>${label}</span><p>${escape(stateItem.message || "服务器任务队列已满，请稍后重试。")}</p></figure>`;
   if (stateItem.status === "error") return `<figure class="error"><span>${label}</span><p>${escape(stateItem.message || "生成失败")}</p></figure>`;
   const result = stateItem.result || {};
   const images = Array.isArray(result.images) && result.images.length ? result.images : [result];
@@ -3743,8 +6594,11 @@ function renderOneShotFramePreview(shotId, frameKind, stateItem) {
 
 function renderShotVideoResult(shotId) {
   const stateItem = shotVideoStateItem(shotId);
-  if (!stateItem) return `<p>选择首尾帧模式或全能参考模式，即可用 ${escape(shotVideoProviderLabel())} 生成该镜头视频。</p>`;
-  if (stateItem.status === "running") return `<p class="active">生成中：正在生成 ${escape(stateItem.expectedCount || 1)} 条视频候选…</p>`;
+  if (!stateItem) return isStoryboardPlan(shotFrameContext(shotId)?.plan)
+    ? "<p>本镜视频尚未生成。</p>"
+    : `<p>选择首尾帧模式或全能参考模式，即可用 ${escape(shotVideoProviderLabel())} 生成该镜头视频。</p>`;
+  if (stateItem.status === "running") return `<p class="active">${escape(stateItem.message || `正在生成 ${stateItem.expectedCount || 1} 条视频候选…`)}</p>`;
+  if (stateItem.status === "capacity") return `<p class="capacity">${escape(stateItem.message || "服务器任务队列已满，请稍后重试。")}</p>`;
   if (stateItem.status === "error") return `<p class="error">${escape(stateItem.message)}</p>`;
   const startFrameUrl = stateItem.result?.startFrameUrl || "";
   const endFrameUrl = stateItem.result?.endFrameUrl || "";
@@ -3754,29 +6608,19 @@ function renderShotVideoResult(shotId) {
         ${endFrameUrl ? `<figure><img src="${escape(endFrameUrl)}" alt="尾帧"><figcaption>尾帧</figcaption></figure>` : ""}
       </div>`
     : "";
-  const videos = Array.isArray(stateItem.result?.videos) && stateItem.result.videos.length ? stateItem.result.videos : stateItem.result?.outputUrl ? [stateItem.result] : [];
+  // 可播放的候选已上移到上方 prompt 网格那一格，这里只留连续性回执、旧 v2 首尾帧预览与异常说明。
+  const videos = shotVideoPlayableCandidates(shotId);
   const continuityReceipt = stateItem.result?.continuityReferenceReceipt;
   const continuityHtml = continuityReceipt?.mode === SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
-    ? `<p class="ready">连续性参考：${escape(continuityReceipt.sourceShotId)} 每秒抽帧，共 ${escape(continuityReceipt.frameCount)} 张普通参考图。</p>`
+    ? `<p class="ready">连续性参考：${escape(continuityReceipt.sourceShotId)} 均匀抽帧，共 ${escape(continuityReceipt.frameCount)} 张普通参考图。</p>`
     : "";
-  const selectedIndex = Number.isFinite(Number(stateItem.selectedIndex ?? stateItem.result?.selectedIndex)) ? Number(stateItem.selectedIndex ?? stateItem.result?.selectedIndex) : 0;
-  const videoHtml = videos.length
-    ? `<div class="shot-video-candidate-list">${videos.map((video, index) => {
-        const url = video.outputUrl || video.url || "";
-        return `<div class="shot-video-result-card${index === selectedIndex ? " selected" : ""}">
-          <span>${index === selectedIndex ? "当前镜头视频" : `候选 ${index + 1}`}</span>
-          <video src="${escape(url)}" controls playsinline></video>
-          <a href="${escape(url)}" download>下载视频</a>
-        </div>`;
-      }).join("")}</div>`
-    : "";
-  return videoHtml
-    ? `${continuityHtml}${frameHtml}${videoHtml}`
+  return videos.length
+    ? `${continuityHtml}${frameHtml}`
     : `${continuityHtml}${frameHtml}<p>视频已生成，但未返回可播放地址。</p>`;
 }
 
-function resultHeader(kicker, title, badge = "") {
-  return `<div class="result-title"><div><p>${kicker}</p><h3>${title}</h3></div>${badge ? `<span class="confidence">${escape(badge)}</span>` : ""}</div>`;
+function resultHeader(kicker, title, badge = "", action = "") {
+  return `<div class="result-title"><div><p>${kicker}</p><h3>${title}</h3></div>${badge ? `<span class="confidence">${escape(badge)}</span>` : ""}${action}</div>`;
 }
 function block(label, content) { return `<div class="result-block"><span class="block-label">${label}</span>${content}</div>`; }
 function actionBlock(label, content, action = "") { return `<div class="result-block"><div class="result-block-head"><span class="block-label">${label}</span>${action}</div>${content}</div>`; }
@@ -3788,14 +6632,102 @@ function reveal(element) { element.classList.remove("hidden"); }
 function setStage(stage, status) {
   const element = document.querySelector(`[data-stage="${stage}"]`);
   element.className = status;
-  element.querySelector("b").textContent = ({ active: "生成中", done: "完成", error: "失败" })[status] || "等待";
+  element.querySelector("b").textContent = ({ active: "生成中", done: "完成", error: "失败", paused: "已暂停", stopped: "已停止" })[status] || "等待";
 }
 function resetPipeline() { document.querySelectorAll(".pipeline li").forEach((item) => { item.className = ""; item.querySelector("b").textContent = "等待"; }); }
-function setRunning(running) { elements.run.classList.toggle("running", running); elements.run.querySelector("span").textContent = running ? "AI 导演工作中…" : "启动 AI 导演"; elements.run.disabled = running; }
+function setRunning(running) {
+  state.running = running;
+  renderDirectorControls();
+}
 function setStoryRunning(running) {
-  elements.storyGenerate.classList.toggle("running", running);
-  elements.storyGenerate.querySelector("span").textContent = running ? "完整剧情生成中…" : `用 ${storyModelLabel()} 生成完整剧情`;
-  elements.storyGenerate.disabled = running || !selectedVariant();
+  renderFullStoryControls({ running });
+}
+
+function selectedFullStoryTask() {
+  const variant = selectedVariant();
+  return variant ? taskForUi({ kinds: ["fullStory"], artifactId: `fullStory:${variant.id}`, rootOnly: true }) : null;
+}
+
+function renderFullStoryControls({ running = state.storyRunning } = {}) {
+  const variant = selectedVariant();
+  const request = state.storyGenerationRequest;
+  const starting = Boolean(variant && request?.variantId === variant.id && !request.taskId);
+  const task = starting ? null : selectedFullStoryTask();
+  const active = activeTaskForKinds(["fullStory"], { rootOnly: true });
+  const view = fullStoryControlView(task, {
+    starting,
+    pendingAction: state.storyControlRequests[task?.taskId]?.action || "",
+    idleLabel: `用 ${storyModelLabel()} 生成完整剧情`
+  });
+  let label = view.label;
+  if (!view.visible && active) {
+    label = `${durableTaskTargetContext(active).variantId} · ${fullStoryControlView(active).label}`;
+  } else if (!view.visible && request && running) {
+    label = `${request.variantId} · 正在启动完整剧情…`;
+  }
+  elements.fullStoryControls.classList.toggle("active", view.visible);
+  elements.storyGenerate.classList.toggle("running", view.visible);
+  elements.storyGenerate.querySelector("span").textContent = label;
+  elements.storyGenerate.disabled = running || Boolean(active) || view.visible || !variant;
+  elements.fullStoryStartArrow.classList.toggle("hidden", view.visible);
+  elements.fullStoryControlHint.classList.toggle("hidden", !view.visible);
+  for (const button of [elements.terminateFullStory, elements.pauseFullStory]) button.classList.toggle("hidden", !view.visible);
+  elements.terminateFullStory.disabled = view.stopDisabled;
+  elements.pauseFullStory.disabled = view.pauseDisabled;
+  elements.pauseFullStory.setAttribute("aria-label", view.pauseLabel);
+  elements.pauseFullStory.setAttribute("title", view.pauseLabel);
+  elements.pauseFullStory.innerHTML = view.paused
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg>';
+}
+
+async function controlFullStory(action) {
+  const task = selectedFullStoryTask();
+  const variant = selectedVariant();
+  if (!task || !variant || state.storyControlRequests[task.taskId]
+    || (state.storyGenerationRequest?.variantId === variant.id && !state.storyGenerationRequest.taskId)) return;
+  const view = fullStoryControlView(task);
+  if (action === "terminate" ? view.stopDisabled : view.pauseDisabled || action !== view.pauseAction) return;
+  const request = { taskId: task.taskId, variantId: variant.id, action, epoch: browserWorkspace.epoch };
+  state.storyControlRequests[task.taskId] = request;
+  renderFullStoryControls();
+  try {
+    const updated = await controlDurableTask(task.taskId, action);
+    if (!browserWorkspace.isCurrent(request.epoch)) return;
+    if (updated?.taskId !== request.taskId) throw new Error("完整剧情控制返回了不同任务，请刷新后重试。");
+    // Keep the scoped server snapshot even if the user has navigated away.
+    // Only the currently selected task may update the visible status/controls.
+    updateTaskSnapshot(updated, { render: false });
+    if (state.selectedVariantId !== request.variantId || selectedFullStoryTask()?.taskId !== request.taskId) return;
+    syncStoryTaskStatus({ includeTerminal: true });
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(request.epoch) || state.selectedVariantId !== request.variantId
+      || selectedFullStoryTask()?.taskId !== request.taskId) return;
+    setStoryStatus(error.message || "完整剧情控制失败，请重试。", "error");
+  } finally {
+    if (state.storyControlRequests[request.taskId] === request) {
+      delete state.storyControlRequests[request.taskId];
+      renderFullStoryControls();
+    }
+  }
+}
+
+function renderFullStoryTaskError(error, fallback, variantId) {
+  if (state.selectedVariantId !== variantId) return;
+  if (error.task?.kind === "fullStory") {
+    const latest = latestTaskForTarget(state.taskSnapshots, {
+      kinds: ["fullStory"], artifactId: `fullStory:${variantId}`, rootOnly: true
+    });
+    if (latest && latest.taskId !== error.task.taskId) return;
+    const view = taskUiView(latest || error.task);
+    setStoryStatus(view.message, view.tone);
+    state.storyTaskStatusVisible = true;
+    return;
+  }
+  setStoryStatus(
+    isTaskCapacityError(error) ? taskCapacityMessage(error) : `${error.message || fallback}${failedStageUsageSuffix()}`,
+    isTaskCapacityError(error) ? "warn" : "error"
+  );
 }
 function setAnimationRunning(running) {
   elements.animationGenerate.classList.toggle("running", running);
@@ -3813,12 +6745,176 @@ function setAnimationRunning(running) {
   updateStoryExportActions();
 }
 function setStoryStatus(message, tone = "") {
+  state.storyTaskStatusVisible = false;
   elements.storyStatus.textContent = message;
   elements.storyStatus.className = `story-status ${tone}`;
 }
 function setAnimationStatus(message, tone = "") {
   elements.animationStatus.textContent = message;
   elements.animationStatus.className = `story-status ${tone}`;
+}
+
+function updateTaskSnapshot(task, { render = true } = {}) {
+  if (task?.projectId !== state.production.projectId || task?.runId !== state.production.runId) return;
+  if (!rememberTaskSnapshot(state.taskSnapshots, task)) return;
+  applyTaskMediaStatus(task, { render });
+  if (render) {
+    syncDirectorTaskStatus();
+    syncStoryTaskStatus();
+    syncCharacterImageTaskStatus();
+    syncShotFrameTaskStatus();
+    syncShotVideoTaskStatus();
+  }
+}
+
+function applyTaskMediaStatus(task, { render = false } = {}) {
+  const target = durableTaskTargetContext(task);
+  if (["shotVideo", "shotFrameImage"].includes(task.kind) && task.status !== "completed") {
+    if (taskForUi({ kinds: [task.kind], artifactId: target.artifactId })?.taskId !== task.taskId) return;
+    const view = taskStatusView(task);
+    const item = { status: view.busy ? "running" : "error", message: view.message };
+    if (task.kind === "shotVideo") {
+      setShotVideoStateItem(target.shotId, item, target.variantId);
+      if (render && target.variantId === state.selectedVariantId) updateShotVideoResult(target.shotId);
+    } else {
+      state.shotFrameResults[shotFrameKey(target.shotId, target.frameKind, target.variantId)] = { ...item, frameKind: target.frameKind };
+      if (render && target.variantId === state.selectedVariantId) updateShotFrameResult(target.shotId);
+    }
+  }
+}
+
+function taskForUi(options) {
+  const task = latestTaskForTarget(state.taskSnapshots, options);
+  // A completed task for an older Artifact revision must not label a new Plan
+  // or a different set of media as completed.
+  if (!task || isActiveTask(task)) return task;
+  if (task.status === "completed") return taskResultIsCurrent(state.production, task) ? task : null;
+  // Failures from a superseded Plan/Story are history, not the current target's
+  // status. This only selects a UI snapshot; frozen task refs stay untouched.
+  if ((task.frozenDependencies || []).some((ref) => {
+    const current = state.production.artifacts[ref.artifactId];
+    return !current || current.status !== "current" || current.revision !== ref.revision || current.contentDigest !== ref.contentDigest;
+  })) return null;
+  if (Object.entries(task.targetExpectedRevisions || {}).some(([artifactId, revision]) =>
+    (state.production.artifacts[artifactId]?.revision || null) !== revision)) return null;
+  return task;
+}
+
+function taskUiView(task) {
+  const modelLabel = [...new Set(Object.values(task.modelSnapshot || {})
+    .map((item) => modelDisplayLabel(item.provider, item.model)).filter(Boolean))].join(" / ");
+  if (task.kind === "fullStory") return fullStoryTaskView(task, { modelLabel });
+  const view = taskStatusView(task, { modelLabel });
+  if (!view.busy) view.message += formatStageUsageSuffix(task.usage);
+  return view;
+}
+
+function activeTaskForKinds(kinds, { rootOnly = false } = {}) {
+  return latestTaskForTarget(Object.fromEntries(Object.entries(state.taskSnapshots)
+    .filter(([, task]) => isActiveTask(task))), { kinds, rootOnly });
+}
+
+function syncStoryTaskStatus({ includeTerminal = false } = {}) {
+  syncFullStoryTaskStatus({ includeTerminal });
+  const variant = selectedVariant();
+  if (!variant) return;
+  const apply = (kinds, artifactId, localRunning, setRunning, setStatus, button, label) => {
+    const active = activeTaskForKinds(kinds);
+    const task = active || taskForUi({ kinds, artifactId });
+    const busy = Boolean(active) || localRunning;
+    setRunning(busy);
+    if (active || (includeTerminal && task && !localRunning)) {
+      const view = taskUiView(task);
+      const target = durableTaskTargetContext(task);
+      const prefix = target.variantId && target.variantId !== variant.id ? `${target.variantId} · ` : "";
+      setStatus(`${prefix}${view.message}`, view.tone);
+      if (view.busy) button.textContent = `${prefix}${view.buttonLabel}`;
+    } else if (localRunning) {
+      setStatus(`正在生成${label}…`, "active");
+    }
+  };
+  apply(["animationPlan", "animationPromptRewrite", "characterReferenceRefine"], `animationPlan:${variant.id}`, state.animationRunning,
+    setAnimationRunning, setAnimationStatus, elements.animationGenerate, "动画生产包");
+}
+
+function syncFullStoryTaskStatus({ includeTerminal = false } = {}) {
+  const variant = selectedVariant();
+  const current = selectedFullStoryTask();
+  const active = isActiveTask(current) ? current : activeTaskForKinds(["fullStory"], { rootOnly: true });
+  const request = state.storyGenerationRequest;
+  const task = active || current;
+  setStoryRunning(Boolean(active) || state.storyRunning);
+  if (!variant) return;
+  if (active || (includeTerminal && task && (!state.storyRunning || task.taskId === request?.taskId))) {
+    const view = taskUiView(task);
+    const target = durableTaskTargetContext(task);
+    const prefix = target.variantId && target.variantId !== variant.id ? `${target.variantId} · ` : "";
+    setStoryStatus(`${prefix}${view.message}`, view.tone);
+    state.storyTaskStatusVisible = true;
+  } else if (state.storyRunning && request) {
+    const prefix = request.variantId !== variant.id ? `${request.variantId} · ` : "";
+    setStoryStatus(`${prefix}正在启动完整剧情生成…`, "active");
+    state.storyTaskStatusVisible = true;
+  } else if (state.storyTaskStatusVisible) {
+    const story = state.fullStories[variant.id];
+    setStoryStatus(story ? `已生成完整剧情 · ${storyModelLabel()}` : "准备生成完整剧情。", story ? "ready" : "");
+  }
+}
+
+function syncCharacterImageTaskStatus({ includeTerminal = false } = {}) {
+  if (!state.characterImageGeneration.open) return false;
+  const variant = selectedVariant();
+  const index = Number(elements.characterImageRole.value) || 0;
+  const task = taskForUi({ kinds: ["characterReferenceImages"], artifactId: `characterImages:${variant?.id}:${index}` });
+  if (!task || (!isActiveTask(task) && !includeTerminal)) return false;
+  const view = taskUiView(task);
+  state.characterImageGeneration.running = view.busy;
+  if (Number(task.progress?.expectedCount) > 0) {
+    state.characterImageGeneration.count = Number(task.progress.expectedCount);
+    elements.characterImageCount.value = String(task.progress.expectedCount);
+  }
+  setCharacterImageRunning(view.busy);
+  setCharacterImageStatus(view.message, view.tone);
+  if (view.busy) elements.generateCharacterImages.querySelector("span").textContent = view.buttonLabel;
+  return true;
+}
+
+function syncShotFrameTaskStatus({ includeTerminal = false } = {}) {
+  if (!state.shotFrameImageGeneration.open) return false;
+  const { shotId, frameKind } = state.shotFrameImageGeneration;
+  const task = taskForUi({ kinds: ["shotFrameImage"], artifactId: `shotFrame:${state.selectedVariantId}:${shotId}:${frameKind}` });
+  if (!task || (!isActiveTask(task) && !includeTerminal)) return false;
+  const view = taskUiView(task);
+  setShotFrameImageGeneratorRunning(view.busy);
+  setShotFrameImageStatus(view.message, view.tone);
+  if (view.busy) elements.confirmGenerateShotFrameImageLabel.textContent = view.buttonLabel;
+  return true;
+}
+
+function syncShotVideoTaskStatus({ includeTerminal = false } = {}) {
+  if (!state.shotVideoGeneration.open) return false;
+  const artifactId = `shotVideo:${state.selectedVariantId}:${state.shotVideoGeneration.shotId}`;
+  const batch = taskForUi({ kinds: ["shotVideoBatch"], artifactId });
+  const single = taskForUi({ kinds: ["shotVideo"], artifactId });
+  const task = isActiveTask(batch) ? batch : isActiveTask(single) ? single
+    : latestTaskForTarget(Object.fromEntries([single, batch].filter(Boolean).map((item) => [item.taskId, item])));
+  if (!task || (!isActiveTask(task) && !includeTerminal)) return false;
+  const view = taskUiView(task);
+  setShotVideoGeneratorRunning(view.busy);
+  setShotVideoStatus(task.kind === "shotVideoBatch"
+    ? `该镜头属于批量任务：${shotVideoBatchStatusText(task)}` : view.message, view.tone);
+  if (view.busy) elements.confirmGenerateShotVideo.querySelector("span").textContent = view.buttonLabel;
+  return true;
+}
+
+function syncDirectorTaskStatus() {
+  const pipeline = latestTaskForTarget(state.taskSnapshots, { kinds: ["directorPipeline"], rootOnly: true });
+  if (pipeline) renderDirectorTaskStatus(pipeline);
+  const variants = latestTaskForTarget(state.taskSnapshots, { kinds: ["variants"], rootOnly: true });
+  if (variants && (!pipeline || variants.createdAt > pipeline.createdAt)) {
+    const view = taskUiView(variants);
+    setStage("variants", view.busy ? "active" : variants.status === "completed" ? "done" : "error");
+  }
 }
 function storyModelLabel() { return modelDisplayLabel(state.storyProvider, state.storyModel); }
 function animationModelLabel() { return modelDisplayLabel(state.animationProvider, state.animationModel); }
@@ -3849,6 +6945,7 @@ function shotVideoResultLabel(video = {}, result = {}) {
   return model ? `${shotVideoProviderLabel(provider)} ${modelName(model)}` : shotVideoProviderLabel(provider);
 }
 function openModelSettings() {
+  if (!state.animationPromptRewriting) setModelSettingsStatus("");
   renderModelSettings();
   elements.modelSettingsModal.classList.remove("hidden");
   elements.modelSettingsModal.setAttribute("aria-hidden", "false");
@@ -3914,7 +7011,7 @@ async function saveModelSettings() {
     }
   }
   state.modelOverrides = next;
-  localStorage.setItem("directorModelOverrides", JSON.stringify(next));
+  sessionStorage.setItem("directorModelOverrides", JSON.stringify(next));
   applyEffectiveModelState();
   renderModelSettings();
   updateModelStateLabel();
@@ -3925,7 +7022,7 @@ async function saveModelSettings() {
 }
 async function resetModelSettings() {
   state.modelOverrides = {};
-  localStorage.removeItem("directorModelOverrides");
+  sessionStorage.removeItem("directorModelOverrides");
   applyEffectiveModelState();
   renderModelSettings();
   updateModelStateLabel();
@@ -3938,6 +7035,11 @@ async function resetModelSettings() {
 async function offerVideoPromptRewriteForCurrentPlan() {
   const variant = selectedVariant();
   const plan = variant ? state.animationPlans[variant.id] || null : null;
+  if (isStoryboardPlan(plan) && state.shotVideoGeneration.open) {
+    state.shotVideoGeneration.promptKey = null;
+    await updateShotVideoGeneratorPreview();
+    return;
+  }
   if (!variant || !plan || plan.promptSchemaVersion !== "3.0" || plan.productionStrategy?.format !== "direct_shot_video") return;
   renderAnimationPlan(plan);
   const ui = videoPromptProfileUiState(plan, shotVideoSetting());
@@ -3966,6 +7068,7 @@ async function offerVideoPromptRewriteForCurrentPlan() {
 }
 
 async function rewriteCurrentAnimationVideoPrompts(videoPromptTarget) {
+  const workspaceEpoch = browserWorkspace.epoch;
   if (state.animationPromptRewriting) return;
   const variant = selectedVariant();
   const plan = variant ? state.animationPlans[variant.id] || null : null;
@@ -3981,6 +7084,7 @@ async function rewriteCurrentAnimationVideoPrompts(videoPromptTarget) {
     productionContext = currentPlanProductionContext(variant.id);
     dependencyRefs = currentPlanDependencyRefs(variant.id);
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setModelSettingsStatus(error.message || "当前 Animation Plan lineage 已失效。", "error");
     return;
   }
@@ -3989,7 +7093,7 @@ async function rewriteCurrentAnimationVideoPrompts(videoPromptTarget) {
   elements.resetModelSettings.disabled = true;
   elements.animationGenerate.disabled = true;
   setModelSettingsStatus(`正在为 ${shotVideoProviderLabel(videoPromptTarget.provider)} 重写 direct_shot.videoPrompt…`, "active");
-  setAnimationStatus("正在只重写视频提示词；镜头拆分、动作、时长和其他字段保持不变…", "active");
+  setAnimationStatus("正在只重写视频提示词；镜头映射、动作、时长和其他字段保持不变…", "active");
   try {
     const response = await requestProductionArtifact({
       endpoint: "/api/animation-plan/video-prompts/rewrite",
@@ -4028,10 +7132,12 @@ async function rewriteCurrentAnimationVideoPrompts(videoPromptTarget) {
     setAnimationStatus("视频提示词已更新并签发新 Plan revision；旧 Plan 媒体已标记 stale。", "ready");
     updateStoryExportActions();
   } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     renderAnimationPlan(plan);
     setModelSettingsStatus(error.message || "视频提示词重写失败。", "error");
     setAnimationStatus("提示词重写失败；原 Animation Plan 保持不变。", "error");
   } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     state.animationPromptRewriting = false;
     elements.saveModelSettings.disabled = false;
     elements.resetModelSettings.disabled = false;
@@ -4044,7 +7150,7 @@ function setModelSettingsStatus(message, tone = "") {
 }
 function readModelOverrides() {
   try {
-    const value = JSON.parse(localStorage.getItem("directorModelOverrides") || "{}");
+    const value = JSON.parse(sessionStorage.getItem("directorModelOverrides") || "{}");
     return value && typeof value === "object" && !Array.isArray(value) ? sanitizeStoredModelOverrides(value) : {};
   } catch {
     return {};
@@ -4192,7 +7298,7 @@ function modelStateSummary() {
   return `${modelDisplayLabel(state.analysisProvider, state.analysisModel)} 解析 · 剧情 ${modelDisplayLabel(state.storyProvider, state.storyModel)} · 动画 ${modelDisplayLabel(state.animationProvider, state.animationModel)}${compiler ? ` · 静态帧 ${compiler}` : ""}`;
 }
 function updateModelActionLabels() {
-  if (!state.storyRunning) elements.storyGenerate.querySelector("span").textContent = `用 ${storyModelLabel()} 生成完整剧情`;
+  renderFullStoryControls();
   if (!state.animationRunning) elements.animationGenerate.textContent = "生成动画镜头生产包";
   updateShotVideoProviderUi();
 }
@@ -4204,6 +7310,7 @@ function updateShotVideoProviderUi() {
   elements.animationPlan.querySelectorAll("[data-generate-shot-video]").forEach((button) => {
     button.textContent = `用 ${label} 生成此镜头视频`;
   });
+  elements.startShotVideoBatch.textContent = `用 ${label} 批量生成全部镜头视频`;
   if (state.shotVideoGeneration.open) {
     updateShotVideoGeneratorPreview({ preservePrompt: true });
   }
@@ -4213,39 +7320,70 @@ function modelDisplayLabel(provider, model) {
   if (!name) return String(provider || "");
   return provider && !name.toLowerCase().includes(String(provider).toLowerCase()) ? `${provider} ${name}` : name;
 }
+function persistedTaskModelLabel(artifactId, stage, fallback = "") {
+  const snapshot = state.productionTasks?.[artifactId]?.modelSnapshot?.[stage];
+  return snapshot?.model ? modelDisplayLabel(snapshot.provider, snapshot.model) : fallback;
+}
 function modelName(model) { return String(model || "").split("/").pop(); }
-function validateReady() { if (!state.running) elements.run.disabled = !(state.frames.length >= 3 && elements.fixedCharacter.value.trim() && elements.vertical.value.trim()); }
-function showError(message) { elements.error.textContent = message; }
+function validateReady() {
+  if (sourceLoading || !browserWorkspace.workspace) { elements.run.disabled = true; return; }
+  if (state.running) return;
+  const resumableWithoutMedia = Boolean(
+    state.production.runId
+    && state.production.artifacts?.referenceAnalysis?.status === "current"
+    && state.production.artifacts?.sourceScriptReconstruction?.status === "current"
+    && state.production.artifacts?.visualGuardrails?.status === "current"
+    && state.production.artifacts?.themeVariants?.status !== "current"
+  );
+  elements.run.disabled = !((state.frames.length >= 3 || resumableWithoutMedia)
+    && elements.fixedCharacter.value.trim()
+    && elements.vertical.value.trim());
+}
+function showError(message, tone = "error") {
+  elements.error.textContent = message;
+  elements.error.classList.toggle("notice", Boolean(message) && tone === "notice");
+}
 function profile() { return { fixedCharacter: elements.fixedCharacter.value.trim(), vertical: elements.vertical.value.trim(), constraints: elements.constraints.value.trim() }; }
-function handleProfileInput() {
+async function handleProfileInput() {
   const currentProfile = profile();
+  // Keep the user's settings even if they close the page during server cleanup.
+  saveProfile();
   if (
     state.production.runId
     && (!state.characterBoundaryProfile || JSON.stringify(currentProfile) !== JSON.stringify(state.characterBoundaryProfile))
   ) {
-    invalidateGlobalCharacterBoundary();
+    await invalidateGlobalCharacterBoundary();
   }
-  saveProfile();
   validateReady();
 }
-function invalidateGlobalCharacterBoundary(message = "固定角色或创作设定已修改；旧的全局角色边界已失效，请重新运行工作流。") {
-  abandonActiveProductionRun();
-  state.characterBoundaryProfile = null;
-  state.output = {};
-  state.selectedVariantId = null;
-  state.fullStories = {};
-  state.animationPlans = {};
-  state.animationPlanMetadata = {};
-  state.animationAspectRatioDrafts = {};
-  state.shotFrameResults = {};
-  state.shotVideoResults = {};
-  [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants].forEach((element) => {
-    element.innerHTML = "";
-    element.classList.add("hidden");
-  });
-  elements.export.classList.add("hidden");
-  showError(message);
+async function invalidateGlobalCharacterBoundary(message = "固定角色或创作设定已修改；旧的全局角色边界已失效，请重新运行工作流。") {
+  const active = await activeProductionTasks();
+  if (active.length) {
+    const confirmed = window.confirm(
+      `${message}\n\n当前仍有服务端任务在执行。是否明确放弃这些任务？\n`
+      + "放弃不会取消已经提交给供应商的远端任务，仍可能产生费用。"
+    );
+    if (!confirmed) {
+      showError("已保留当前 Run 和任务；未清除服务端状态。");
+      return false;
+    }
+  }
+  const epoch = browserWorkspace.beginChange();
+  sourceLoading = true;
+  validateReady();
+  try {
+    if (!await browserWorkspace.resetRun(epoch)) return false;
+    clearVideoWorkspaceUi({ keepSource: true });
+    showError(message);
+    return true;
+  } catch (error) {
+    if (browserWorkspace.isCurrent(epoch)) showError(error.message || "旧生产结果尚未清理成功，请重试。");
+    return false;
+  } finally {
+    if (browserWorkspace.isCurrent(epoch)) { sourceLoading = false; validateReady(); }
+  }
 }
+
 function globalCharacterBoundaryContext() {
   return {
     creatorProfile: profile(),
@@ -4256,44 +7394,278 @@ function globalCharacterBoundaryContext() {
   };
 }
 function saveProfile() { localStorage.setItem("directorProfile", JSON.stringify(profile())); }
+// 角色表情规则单独存。**绝不能并进 directorProfile**：那是 profile() 的存档，而
+// profile() 整体进 character-boundary 的 sourceDigest，混进去会让「改一句表情」
+// 作废全局角色边界并要求重跑整条工作流。表情是表演表现，不是角色身份事实。
+function characterExpressionRules() { return elements.characterExpressionRules.value.trim(); }
+function saveCharacterExpressionRules() {
+  try { localStorage.setItem(CHARACTER_EXPRESSION_RULES_STORAGE_KEY, elements.characterExpressionRules.value); } catch {}
+}
+function restoreCharacterExpressionRules() {
+  // catch 只兜 localStorage 本身不可用（隐私模式、站点数据被禁），不兜代码错误——
+  // 第一版把整段包进 try 里，常量的 TDZ ReferenceError 被静默吞掉，刷新后文本框一直是空的。
+  let saved = null;
+  try { saved = localStorage.getItem(CHARACTER_EXPRESSION_RULES_STORAGE_KEY); } catch { return; }
+  if (typeof saved === "string") elements.characterExpressionRules.value = saved;
+}
 function restoreProfile() { try { const data = JSON.parse(localStorage.getItem("directorProfile")); if (data) { elements.fixedCharacter.value = data.fixedCharacter || ""; elements.vertical.value = data.vertical || ""; elements.constraints.value = data.constraints || ""; } } catch {} }
 
+function saveCreationPreferences() {
+  localStorage.setItem(CREATION_PREFERENCES_STORAGE_KEY, JSON.stringify(creationPreferences({
+    variantCount: elements.variantCount.value,
+    animationAspectRatioDefault: state.animationAspectRatioDefault,
+    storyDurationTarget: state.storyDurationTarget
+  })));
+}
+
+function restoreCreationPreferences() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(CREATION_PREFERENCES_STORAGE_KEY) || "{}"); } catch {}
+  const preferences = creationPreferences(saved || {});
+  elements.variantCount.value = preferences.variantCount;
+  state.animationAspectRatioDefault = preferences.animationAspectRatioDefault;
+  state.storyDurationTarget = preferences.storyDurationTarget;
+  syncAnimationAspectRatioControls();
+}
+
 function persistActiveProductionRun() {
-  if (!state.production.projectId || !state.production.runId) return;
-  localStorage.setItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY, JSON.stringify({
-    projectId: state.production.projectId,
-    runId: state.production.runId
-  }));
+  browserWorkspace.rememberRun(state.production);
 }
 
-function abandonActiveProductionRun() {
-  state.production = emptyProductionState();
-  localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
-}
-
-async function restoreActiveProductionRun() {
-  let active;
-  try {
-    active = JSON.parse(localStorage.getItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY) || "null");
-  } catch {
-    localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
-    return false;
-  }
+async function restoreActiveProductionRun(active, workspaceEpoch = browserWorkspace.epoch) {
   if (!active?.projectId || !active?.runId) return false;
   try {
-    const run = await api("/api/production/run/load", {
-      projectId: active.projectId,
-      runId: active.runId,
-      includeContent: true
-    });
+    const taskQuery = new URLSearchParams({ projectId: active.projectId, runId: active.runId });
+    const [run, taskPayload] = await Promise.all([
+      api("/api/production/run/load", {
+        projectId: active.projectId,
+        runId: active.runId,
+        includeContent: true
+      }),
+      fetch(`/api/tasks?${taskQuery}`).then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.ok) {
+          throw createApiRequestError(payload, response.status, `任务列表读取失败（${response.status}）`);
+        }
+        return payload;
+      })
+    ]);
+    assertWorkspaceCurrent(workspaceEpoch);
     state.production = productionStateFromRun(run);
+    const allTasks = Array.isArray(taskPayload.tasks) ? taskPayload.tasks : [];
+    state.taskSnapshots = {};
+    for (const task of allTasks) rememberTaskSnapshot(state.taskSnapshots, task);
     restoreRunMetadata(run.metadata || {});
     restoreRunArtifacts(run.latestArtifacts || {});
     persistActiveProductionRun();
+    renderRestoredDirectorArtifacts();
+    state.productionTasks = {};
+    for (const task of [...allTasks].reverse()) {
+      for (const artifactId of task.targetArtifactIds || []) state.productionTasks[artifactId] = task;
+    }
+    const activeTasks = allTasks.filter((task) => ["queued", "running"].includes(task.status));
+    const latestShotVideoBatch = allTasks.find((task) => task.kind === "shotVideoBatch" && !task.parentTaskId);
+    if (latestShotVideoBatch) renderShotVideoBatchProgress(latestShotVideoBatch);
+    const activeCharacterImages = activeTasks.find((task) => task.kind === "characterReferenceImages");
+    if (!activeCharacterImages) {
+      const completedCharacterImages = allTasks.find((task) => (
+        task.kind === "characterReferenceImages"
+        && task.status === "completed"
+        && taskResultIsCurrent(state.production, task)
+        && durableTaskTargetContext(task).variantId === state.selectedVariantId
+      ));
+      if (completedCharacterImages) {
+        adoptCharacterImageTaskTarget(completedCharacterImages);
+        applyCharacterImageTaskProgress(completedCharacterImages);
+        state.characterImageGeneration.running = false;
+        setCharacterImageStatus("已恢复上次生成的角色参考图，可继续预览或设为人物参考图。", "ready");
+      }
+    }
+    const pipeline = activeTasks.find((task) => task.kind === "directorPipeline");
+    if (pipeline) {
+      state.running = true;
+      setRunning(true);
+      directorArtifactSynchronizer.markRendered(pipeline, renderedDirectorStageCount());
+      void updateDirectorTaskProgress(pipeline);
+      void attachRestoredDirectorPipeline(pipeline);
+    }
+    for (const task of activeTasks.filter((item) => !item.parentTaskId && item.kind !== "directorPipeline")) {
+      markRestoredTaskRunning(task);
+      void attachRestoredStandaloneTask(task);
+    }
+    syncDirectorTaskStatus();
+    syncStoryTaskStatus({ includeTerminal: true });
     return true;
-  } catch {
-    abandonActiveProductionRun();
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return false;
+    // 暂时的服务不可用不能删除当前页面的 workspace 指针。
+    showError(error?.message || "暂时无法恢复上次生产 Run，请稍后刷新重试。", "notice");
     return false;
+  }
+}
+
+async function attachRestoredDirectorPipeline(task) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  try {
+    const completed = await waitForDurableTask(task, updateDirectorTaskProgress);
+    await directorArtifactSynchronizer.sync(completed);
+    assertWorkspaceCurrent(workspaceEpoch);
+    renderDirectorTaskStatus(completed);
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    renderDirectorTaskError(error, "AI 导演任务未能继续");
+  } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    state.running = false;
+    setRunning(false);
+    validateReady();
+  }
+}
+
+function markRestoredTaskRunning(task) {
+  const target = durableTaskTargetContext(task);
+  if (task.kind === "variants") {
+    state.variantsRegenerating = true;
+    if (state.output.themeVariants) renderVariants(state.output.themeVariants);
+    setStage("variants", "active");
+  } else if (task.kind === "fullStory") {
+    state.storyRunning = true;
+    syncStoryTaskStatus();
+  } else if (["animationPlan", "animationPromptRewrite", "characterReferenceRefine"].includes(task.kind)) {
+    state.animationRunning = true;
+    syncStoryTaskStatus();
+  } else if (task.kind === "shotVideoBatch") {
+    state.shotVideoBatch.taskId = task.taskId;
+    renderShotVideoBatchProgress(task);
+  } else if (task.kind === "shotVideo" && target.shotId) {
+    setShotVideoStateItem(target.shotId, { status: "running", message: "已重新接管服务端视频任务…" }, target.variantId);
+  } else if (task.kind === "shotFrameImage" && target.shotId) {
+    state.shotFrameResults[shotFrameKey(target.shotId, target.frameKind, target.variantId)] = {
+      status: "running",
+      frameKind: target.frameKind,
+      message: "已重新接管服务端镜头帧任务…"
+    };
+  } else if (task.kind === "characterReferenceImages") {
+    adoptCharacterImageTaskTarget(task);
+    state.characterImageGeneration.running = true;
+    applyCharacterImageTaskProgress(task);
+    setCharacterImageRunning(true);
+  }
+}
+
+function adoptCharacterImageTaskTarget(task) {
+  const target = durableTaskTargetContext(task);
+  if (!target.variantId || target.roleIndex === null) return false;
+  state.characterImageGeneration.selectedIndex = target.roleIndex;
+  state.characterImageGeneration.resultsTarget = `${target.variantId}:${target.roleIndex}`;
+  if ([...elements.characterImageRole.options].some((option) => option.value === String(target.roleIndex))) {
+    elements.characterImageRole.value = String(target.roleIndex);
+  }
+  return true;
+}
+
+async function attachRestoredStandaloneTask(task) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (task.kind === "shotVideoBatch") {
+    await monitorShotVideoBatch(task, { restored: true });
+    return;
+  }
+  try {
+    const completed = await waitForDurableTask(task, (current) => {
+      if (current.kind === "characterReferenceImages") applyCharacterImageTaskProgress(current);
+    });
+    state.productionTasks ||= {};
+    for (const artifactId of completed.targetArtifactIds || []) state.productionTasks[artifactId] = completed;
+    await reloadActiveProductionRun(state.production, { preserveSelectedVariant: task.kind === "fullStory" });
+    const artifactId = completed.targetArtifactIds?.[0] || "";
+    if (completed.kind === "variants") {
+      setStage("variants", "done");
+    } else if (completed.kind === "fullStory") {
+      const variantId = artifactId.slice("fullStory:".length);
+      const story = state.fullStories[variantId];
+      if (variantId === state.selectedVariantId) {
+        if (story) renderFullStory(story);
+        setStoryStatus(`完整剧情任务已完成${formatStageUsageSuffix(completed.usage)}`, "ready");
+      }
+    } else if (["animationPlan", "animationPromptRewrite", "characterReferenceRefine"].includes(completed.kind)) {
+      const variantId = artifactId.slice("animationPlan:".length);
+      const plan = state.animationPlans[variantId];
+      if (plan) renderAnimationPlan(plan);
+      setAnimationStatus(`服务端任务已完成${formatStageUsageSuffix(completed.usage)}`, "ready");
+    } else if (completed.kind === "characterReferenceImages") {
+      adoptCharacterImageTaskTarget(completed);
+      applyCharacterImageTaskProgress(completed);
+      setCharacterImageStatus(`角色参考图任务已完成${formatStageUsageSuffix(completed.usage)}`, "ready");
+    } else if (["shotVideo", "shotFrameImage"].includes(completed.kind)) {
+      const variantId = artifactId.split(":")[1] || "";
+      const plan = state.animationPlans[variantId];
+      if (plan) renderAnimationPlan(plan);
+      setAnimationStatus("镜头媒体任务已完成。", "ready");
+    }
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    const target = durableTaskTargetContext(task);
+    if (task.kind === "variants") {
+      setStage("variants", "error");
+      showError(error.message || "主题变体任务中断");
+    } else if (task.kind === "fullStory") renderFullStoryTaskError(error, "完整剧情任务中断", target.variantId);
+    else if (["animationPlan", "animationPromptRewrite", "characterReferenceRefine"].includes(task.kind)) {
+      setAnimationStatus(error.message || "动画任务中断", "error");
+    } else if (task.kind === "characterReferenceImages") {
+      setCharacterImageStatus(error.message || "角色参考图任务中断", "error");
+    } else if (task.kind === "shotVideo" && target.shotId) {
+      setShotVideoStateItem(target.shotId, {
+        status: "error",
+        message: error.message || "镜头视频任务中断"
+      }, target.variantId);
+      updateShotVideoResult(target.shotId);
+      renderShotVideoModalResults();
+      setAnimationStatus(error.message || "镜头视频任务中断", "error");
+    } else if (task.kind === "shotFrameImage" && target.shotId) {
+      state.shotFrameResults[shotFrameKey(target.shotId, target.frameKind, target.variantId)] = {
+        status: "error",
+        frameKind: target.frameKind,
+        message: error.message || "镜头帧任务中断"
+      };
+      updateShotFrameResult(target.shotId);
+      renderShotFrameImageResults();
+      setAnimationStatus(error.message || "镜头帧任务中断", "error");
+    }
+  } finally {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    if (task.kind === "variants") {
+      state.variantsRegenerating = false;
+      if (state.output.themeVariants) renderVariants(state.output.themeVariants);
+    }
+    if (task.kind === "fullStory") {
+      state.storyRunning = false;
+      setStoryRunning(false);
+      syncStoryTaskStatus({ includeTerminal: true });
+    }
+    if (["animationPlan", "animationPromptRewrite", "characterReferenceRefine"].includes(task.kind)) {
+      state.animationRunning = false;
+      setAnimationRunning(false);
+    }
+    if (task.kind === "characterReferenceImages") {
+      state.characterImageGeneration.running = false;
+      setCharacterImageRunning(false);
+      syncCharacterImageTaskStatus({ includeTerminal: true });
+    }
+    if (task.kind === "shotVideo") {
+      renderShotVideoModalResults();
+      if (state.shotVideoGeneration.open) {
+        setShotVideoGeneratorRunning(false);
+        await updateShotVideoGeneratorPreview({ preservePrompt: true });
+      }
+    }
+    if (task.kind === "shotFrameImage") {
+      renderShotFrameImageResults();
+      if (state.shotFrameImageGeneration.open) {
+        setShotFrameImageGeneratorRunning(false);
+        await updateShotFrameImageGeneratorPreview();
+      }
+      syncShotFrameTaskStatus({ includeTerminal: true });
+    }
   }
 }
 
@@ -4308,7 +7680,7 @@ function restoreRunMetadata(metadata = {}) {
   if (typeof metadata.transcript === "string") elements.transcript.value = metadata.transcript;
 }
 
-function restoreRunArtifacts(latestArtifacts = {}) {
+function restoreRunArtifacts(latestArtifacts = {}, { selectedVariantId = null } = {}) {
   const currentContent = (artifactId) => {
     const entry = latestArtifacts[artifactId];
     return entry?.lineage?.status === "current" ? entry.content : null;
@@ -4323,6 +7695,7 @@ function restoreRunArtifacts(latestArtifacts = {}) {
   state.characterBoundaryProfile = state.output.visualGuardrails ? { ...profile() } : null;
   state.fullStories = {};
   state.animationPlans = {};
+  state.shotVideoPrompts = {};
   state.animationPlanMetadata = {};
   state.animationAspectRatioDrafts = {};
   state.shotFrameResults = {};
@@ -4337,6 +7710,7 @@ function restoreRunArtifacts(latestArtifacts = {}) {
       state.animationPlans[variantId] = entry.content;
       state.animationAspectRatioDrafts[variantId] = normalizeAnimationPlanAspectRatio(entry.content?.productionStrategy?.targetAspectRatio);
     }
+    else if (artifactId.startsWith("shotVideoPrompt:")) state.shotVideoPrompts[artifactId] = entry.content;
     else if (artifactId.startsWith("shotVideo:")) {
       const parts = artifactId.split(":");
       const variantId = parts[1] || "";
@@ -4352,12 +7726,9 @@ function restoreRunArtifacts(latestArtifacts = {}) {
   }
   state.output.fullStories = state.fullStories;
   state.output.animationPlans = state.animationPlans;
-  const latestPlanId = [...currentEntries].reverse().find(([artifactId]) => artifactId.startsWith("animationPlan:"))?.[0];
-  const latestStoryId = [...currentEntries].reverse().find(([artifactId]) => artifactId.startsWith("fullStory:"))?.[0];
-  state.selectedVariantId = latestPlanId?.slice("animationPlan:".length)
-    || latestStoryId?.slice("fullStory:".length)
-    || state.output.themeVariants?.variants?.[0]?.id
-    || null;
+  const selectionStillAvailable = selectedVariantId && state.output.themeVariants?.variants
+    .some((variant) => String(variant.id) === String(selectedVariantId));
+  state.selectedVariantId = selectionStillAvailable ? selectedVariantId : resolveRestoredVariantId(latestArtifacts);
   if (state.selectedVariantId) {
     state.output.fullStory = state.fullStories[state.selectedVariantId] || null;
     state.output.animationPlan = state.animationPlans[state.selectedVariantId] || null;
@@ -4392,6 +7763,7 @@ function renderCurrentMainOutputs() {
     elements.resultStack.classList.add("hidden");
     elements.export.classList.add("hidden");
   }
+  syncDirectorTaskStatus();
 }
 function selectedVariant() { return (state.output.themeVariants?.variants || []).find((variant) => String(variant.id) === String(state.selectedVariantId)); }
 function currentFullStory() {
@@ -4456,7 +7828,8 @@ function updateStoryExportActions() {
   const hasAnimation = Boolean(pack?.animationPlan);
   elements.exportStoryPackage.disabled = !hasStory;
   elements.exportStoryTestPackage.disabled = !hasStory;
-  elements.copyAnimationPack.disabled = !hasAnimation;
+  elements.startShotVideoBatch.disabled = !hasAnimation || Boolean(state.shotVideoBatch.taskId);
+  elements.startShotVideoBatch.classList.toggle("hidden", isStoryboardPlan(state.output.animationPlan));
 }
 
 function exportJson() {
@@ -4470,27 +7843,28 @@ function exportJson() {
 }
 
 async function exportCurrentStoryPackage() {
+  const reportStatus = createStoryPackageStatusReporter();
   const pack = selectedStoryPackage();
   if (!pack?.fullStory) return setStoryStatus("请先生成完整剧情，再导出当前生产包。", "error");
   try {
     const sealed = await sealProductionPackage(pack);
-    const suffix = sealed.animationPlan ? "动画生产包" : "完整剧情";
-    downloadJson(sealed, `短视频${suffix}-${sealed.selectedVariant?.id || "variant"}-${Date.now()}.json`);
+    downloadProductionPackage(sealed, { onError: (message) => reportStatus(message, "error") });
+    reportStatus(`已发起下载：${storyPackageFilename(sealed)}`, "ready");
   } catch (error) {
-    setStoryStatus(error.message || "生产包签发失败。", "error");
+    reportStatus(error.message || "生产包签发失败。", "error");
   }
 }
 
 async function exportStoryTestPackage() {
+  const reportStatus = createStoryPackageStatusReporter();
   const pack = selectedStoryPackage();
-  if (!pack?.fullStory) return setStoryPackageStatus("请先生成或导入完整剧情，再导出测试包。", "error");
+  if (!pack?.fullStory) return reportStatus("请先生成或导入完整剧情，再导出测试包。", "error");
   try {
     const sealed = await sealProductionPackage(pack);
-    const suffix = sealed.animationPlan ? "完整剧情-动画测试包" : "完整剧情测试包";
-    downloadJson(sealed, `短视频${suffix}-${sealed.selectedVariant?.id || "variant"}-${Date.now()}.json`);
-    setStoryPackageStatus(`已导出签名的 ${sealed.animationPlan ? "完整剧情 + 动画生产包" : "完整剧情"} 测试包。`, "ready");
+    downloadProductionPackage(sealed, { testPackage: true, onError: (message) => reportStatus(message, "error") });
+    reportStatus(`已发起下载：${storyPackageFilename(sealed, { testPackage: true })}`, "ready");
   } catch (error) {
-    setStoryPackageStatus(error.message || "测试包签发失败。", "error");
+    reportStatus(error.message || "测试包签发失败。", "error");
   }
 }
 
@@ -4504,21 +7878,41 @@ function sealProductionPackage(payload) {
 }
 
 async function importStoryTestPackage(file) {
+  let workspaceEpoch = browserWorkspace.epoch;
+  let reportStatus = createStoryPackageStatusReporter();
   try {
-    setStoryPackageStatus("正在导入测试包…", "");
+    reportStatus("正在导入测试包…", "");
     const payload = JSON.parse(await file.text());
-    const imported = await api("/api/production/package/import", { package: payload });
-    const restored = restoreStoryPackage(imported.payload, imported.production);
-    setStoryPackageStatus(`已校验并隔离导入 ${restored.id}：${restored.hasStory ? "完整剧情" : "未含完整剧情"}${restored.hasAnimation ? " + 动画生产包" : ""}；旧媒体未混入。`, "ready");
+    assertWorkspaceCurrent(workspaceEpoch);
+    const imported = await browserWorkspace.importPackage(payload, workspaceEpoch);
+    if (!imported) return;
+    assertWorkspaceCurrent(workspaceEpoch);
+    // Only a valid import replaces the active UI lifetime. A rejected package
+    // must leave the existing pipeline's progress observers attached.
+    workspaceEpoch = browserWorkspace.beginChange();
+    clearVideoWorkspaceUi();
+    sourceLoading = false;
+    let restored;
+    try {
+      restored = restoreStoryPackage(imported.payload, imported.production);
+    } finally {
+      // This accepted import synchronously establishes a new Run and page.
+      // Its feedback belongs there, including a local restore error.
+      reportStatus = createStoryPackageStatusReporter();
+    }
+    showError("导入包未包含原视频；已清理此前上传的视频。重新选择视频会清除当前导入结果。", "notice");
+    reportStatus(`已校验并隔离导入 ${restored.id}：${restored.hasStory ? "完整剧情" : "未含完整剧情"}${restored.hasAnimation ? " + 动画生产包" : ""}；旧媒体未混入。`, "ready");
   } catch (error) {
-    setStoryPackageStatus(error.message || "测试包导入失败", "error");
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    reportStatus(error.message || "测试包导入失败", "error");
+    if (elements.storyPage.classList.contains("hidden")) showError(error.message || "测试包导入失败");
   }
 }
 
 function restoreStoryPackage(payload, production) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("测试包 JSON 格式无效。");
   if (!production?.projectId || !production?.runId || !production?.artifacts) throw new Error("服务端没有返回隔离后的生产 Run。");
-  const variant = normalizeImportedVariant(payload);
+  const variant = resolveImportedVariant(payload);
   if (!variant?.id) throw new Error("测试包缺少 selectedVariant 或主题变体 id。");
   const id = String(variant.id);
   const fullStory = payload.fullStory || payload.fullStories?.[id] || payload.output?.fullStory || null;
@@ -4534,7 +7928,7 @@ function restoreStoryPackage(payload, production) {
   if (payload.modelInfo) {
     if (payload.modelInfo.overrides && typeof payload.modelInfo.overrides === "object") {
       state.modelOverrides = sanitizeStoredModelOverrides(payload.modelInfo.overrides);
-      localStorage.setItem("directorModelOverrides", JSON.stringify(state.modelOverrides));
+      sessionStorage.setItem("directorModelOverrides", JSON.stringify(state.modelOverrides));
     } else {
       state.storyProvider = payload.modelInfo.storyProvider || state.storyProvider;
       state.storyModel = payload.modelInfo.storyModel || state.storyModel;
@@ -4576,6 +7970,7 @@ function restoreStoryPackage(payload, production) {
   state.shotFrameResults = {};
   state.shotVideoResults = {};
   state.characterReferenceStatuses = {};
+  state.characterAudioStatuses = {};
   if (fullStory) {
     state.fullStories[id] = fullStory;
     state.output.fullStory = fullStory;
@@ -4634,17 +8029,6 @@ function legacySourceVideoMetadata(metadata) {
   return videoKeys.some((key) => metadata[key] !== undefined) ? metadata : null;
 }
 
-function normalizeImportedVariant(payload) {
-  const variant = payload.selectedVariant || payload.variant || payload.output?.selectedVariant || null;
-  if (variant?.id) return variant;
-  const variants = payload.themeVariants?.variants || payload.output?.themeVariants?.variants || [];
-  const fullStory = payload.fullStory || payload.output?.fullStory || null;
-  const animationPlan = payload.animationPlan || payload.output?.animationPlan || null;
-  const id = fullStory?.selectedVariantId || animationPlan?.selectedVariantId || variants[0]?.id || "";
-  if (id) return variants.find((item) => String(item.id) === String(id)) || { id, title: fullStory?.title || animationPlan?.title || id, characterSetup: { protagonist: payload.creatorProfile?.fixedCharacter || "" } };
-  return variant;
-}
-
 function mergeImportedThemeVariants(themeVariants, variant) {
   const imported = Array.isArray(themeVariants?.variants) ? themeVariants.variants : [];
   const merged = [...imported, variant].filter(Boolean).reduce((acc, item) => {
@@ -4660,6 +8044,35 @@ function setStoryPackageStatus(message, tone = "") {
   elements.storyPackageStatus.className = tone;
 }
 
+function storyPackageContext() {
+  return JSON.stringify([state.production.projectId, state.production.runId, state.selectedVariantId]);
+}
+
+function resetStoryPackageStatus() {
+  storyPackageFeedbackRevision += 1;
+  storyPackageFeedbackContext = storyPackageContext();
+  setStoryPackageStatus(STORY_PACKAGE_HELP);
+}
+
+function syncStoryPackageStatusContext() {
+  if (storyPackageFeedbackContext !== storyPackageContext()) resetStoryPackageStatus();
+}
+
+function createStoryPackageStatusReporter() {
+  syncStoryPackageStatusContext();
+  const revision = ++storyPackageFeedbackRevision;
+  const context = storyPackageFeedbackContext;
+  const workspaceEpoch = browserWorkspace.epoch;
+  // A download may finish after navigation. Keep the download, but do not
+  // carry its transient acknowledgement or error into a different page.
+  return (message, tone = "") => {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)
+      || revision !== storyPackageFeedbackRevision
+      || context !== storyPackageContext()) return;
+    setStoryPackageStatus(message, tone);
+  };
+}
+
 async function copyAnimationProductionPack() {
   const pack = selectedStoryPackage();
   if (!pack?.animationPlan) return setAnimationStatus("请先生成动画生产包，再复制给供应商程序使用。", "error");
@@ -4670,15 +8083,6 @@ async function copyAnimationProductionPack() {
   } catch {
     setAnimationStatus("浏览器拒绝访问剪贴板，请使用“导出当前生产包 JSON”。", "error");
   }
-}
-
-function downloadJson(payload, filename) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
 }
 
 function formatAnimationPackMarkdown(pack) {
@@ -4697,7 +8101,7 @@ function formatAnimationPackMarkdown(pack) {
     ...(runtimeSummary.valid && runtimeSummary.deltaSeconds !== null
       ? [`- 时长偏差：${runtimeSummary.deltaSeconds > 0 ? "+" : ""}${runtimeSummary.deltaSeconds} 秒`]
       : []),
-    `- 单镜头时长：${strategy.recommendedShotDurationSeconds?.min || 3}-${strategy.recommendedShotDurationSeconds?.max || 6} 秒`,
+    `- 单镜头时长：${formatAnimationShotDurationRange(plan)}`,
     `- 工作流：${strategy.format || "first_last_frame_video"}`,
     `- Prompt Schema：${plan.promptSchemaVersion || "legacy"}`,
     "",
@@ -4742,10 +8146,14 @@ function formatAnimationPackMarkdown(pack) {
     "## 角色参考图 Prompt"
   );
   for (const item of plan.characterReferencePrompts || []) {
+    const audioClips = characterReferenceAudioClips(item);
     lines.push(
       "",
       `### ${item.characterName || "角色"}`,
       item.referenceImageAdded ? `参考图：已添加人物参考图${item.referenceImageName ? `（${item.referenceImageName}）` : ""}` : "参考图：未添加",
+      audioClips.length
+        ? `参考音色/叫声：${audioClips.map((clip) => `${clip.label}（${clip.durationSeconds.toFixed(2)} 秒）`).join(" / ")}`
+        : "参考音色/叫声：未添加",
       item.appearancePrompt || "",
       item.referenceImageNotes ? `参考图吸收：${item.referenceImageNotes}` : "",
       `一致性标签：${(item.consistencyTags || []).join(" / ")}`
@@ -4779,7 +8187,7 @@ function formatAnimationPackMarkdown(pack) {
     ] : [];
     lines.push(
       "",
-      `### ${shot.shotId || "镜头"} · ${shot.sourceSceneId || ""} · ${shot.durationSeconds || 4} 秒`,
+      `### ${shot.shotId || "镜头"} · ${shot.sourceSceneId || ""} · ${formatShotDurationSeconds(shot)}`,
       `场景 ID：${shot.sceneId || ""}`,
       `剧情功能：${shot.storyPurpose || ""}`,
       `情绪目标：${shot.emotionalTarget || ""}`,
@@ -4838,6 +8246,40 @@ function formatShotNegativeEntriesMarkdown(shot = {}, target = "image") {
 
 function escape(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
+}
+// careRecipient / helper / emotionalMedium 是可选叙事构件：故事不需要就整个字段省略。
+// 缺席时整行不渲染——渲染成“待确认”会让用户以为模型漏填了，实际是这个故事根本不需要它。
+// 候选的叙事路径徽章。参考片基本不靠戏剧结构留人，因此候选契约允许
+// slice_of_life（生活片段型）——主角可以没有目标、不作艰难抉择。
+// 标出来让用户按口味挑，而不是每次都拿到四个任务型故事。
+// 候选合计时长徽章。纯展示：不进 Artifact、不参与派生、不 stale 任何东西。
+// 存在理由是这个数字此前完全不可见，而它实际决定成片长度——下游 Full Story 按
+// 它排场次时间轴，Animation Plan 再按时间轴派生镜头。用户此前只能在生成完
+// Full Story 之后才发现片子变长了。
+function variantDurationBadge(storyOutline) {
+  const total = storyOutlineTotalSeconds(storyOutline);
+  if (total <= 0) return "";
+  const window = storyDurationWindow(resolveStoryDurationTarget(state.storyDurationTarget, {
+    metadata: state.metadata,
+    sourceScriptReconstruction: state.output.sourceScriptReconstruction
+  }));
+  const offTarget = Boolean(window) && (total < window.min || total > window.max);
+  const title = window
+    ? `候选各拍 estimatedSeconds 合计 ${total} 秒，当前目标窗口 ${window.min}-${window.max} 秒。成片长度由这个合计决定。`
+    : `候选各拍 estimatedSeconds 合计 ${total} 秒。成片长度由这个合计决定。`;
+  return `<span class="duration-badge${offTarget ? " duration-off" : ""}" title="${escape(title)}">约 ${escape(total)} 秒</span>`;
+}
+
+function narrativeModeBadge(mode) {
+  if (mode === "slice_of_life") return `<span class="mode-badge mode-slice">生活型</span>`;
+  if (mode === "dramatic") return `<span class="mode-badge mode-dramatic">剧情型</span>`;
+  return "";
+}
+
+function optionalCastSpan(label, value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  return `<span><b>${escape(label)}</b>${escape(text)}</span>`;
 }
 function formatDialogue(items = []) {
   if (!Array.isArray(items) || !items.length) return "无对白，以动作和声画推进";

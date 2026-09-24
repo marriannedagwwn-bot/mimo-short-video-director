@@ -1,0 +1,106 @@
+{
+  "id": "V1",
+  "title": "最后一格电",
+  "oneLineHook": "只剩最后一次机会，验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套必须完成：在闭店前修复并送回一件承载回忆的旧设备。",
+  "logline": "验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套在暴雨导致街区停电的条件下执行一项看似普通的任务，途中获得克制的帮助，最终发现对方真正需要的是“没有被落下”。",
+  "verticalFit": "任务、工具与解决方式均从治愈日常短故事的真实工作细节产生，固定角色的能力直接推动剧情。",
+  "characterSetup": {
+    "protagonist": "验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套",
+    "careRecipient": "一位不愿直接表达需求的重要关系人",
+    "helper": "夜班便利店员借出移动电源"
+  },
+  "newTask": "在闭店前修复并送回一件承载回忆的旧设备",
+  "emotionalMedium": "一段未导出的旧录音",
+  "environmentPressure": "暴雨导致街区停电",
+  "keyChoiceBeat": 2,
+  "climaxBeat": 4,
+  "keyChoice": "验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套选择付出额外成本保护任务与关系，而不是按最省事的方式放弃。",
+  "climax": "验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套在暴雨导致街区停电造成的最后阻碍中亲手完成在闭店前修复并送回一件承载回忆的旧设备的决定性动作。",
+  "emotionalPayoff": "老人把修好的设备放回空着的餐位旁，按下播放键，此前没有说出口的关心转化为双方都能确认的关系变化。",
+  "storyOutline": [
+    {
+      "beat": 1,
+      "phase": "任务出现",
+      "action": "验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套发现任务物出问题，并确认最后期限。",
+      "emotion": "紧迫",
+      "dramaticFunction": "建立结果问题",
+      "estimatedSeconds": 4
+    },
+    {
+      "beat": 2,
+      "phase": "承担代价",
+      "action": "验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套选择付出额外成本保护任务与关系，而不是按最省事的方式放弃。",
+      "emotion": "担心",
+      "dramaticFunction": "证明关系重量",
+      "estimatedSeconds": 12
+    },
+    {
+      "beat": 3,
+      "phase": "条件改变",
+      "action": "验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套让夜班便利店员借出移动电源看见真实困境，并接受一项不替自己完成任务的具体帮助。",
+      "emotion": "温暖",
+      "dramaticFunction": "获得帮助但保留人物尊严",
+      "estimatedSeconds": 10
+    },
+    {
+      "beat": 4,
+      "phase": "亲手解决",
+      "action": "验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套在暴雨导致街区停电造成的最后阻碍中亲手完成在闭店前修复并送回一件承载回忆的旧设备的决定性动作。",
+      "emotion": "紧张",
+      "dramaticFunction": "用日常仪式回应隐性需求",
+      "estimatedSeconds": 10
+    },
+    {
+      "beat": 5,
+      "phase": "关系兑现",
+      "action": "老人把修好的设备放回空着的餐位旁，按下播放键，此前没有说出口的关心转化为双方都能确认的关系变化。",
+      "emotion": "释然",
+      "dramaticFunction": "以可见状态变化完成情绪兑现",
+      "estimatedSeconds": 8
+    }
+  ],
+  "novelty": "以一段未导出的旧录音连接任务与关系，并让帮助只改变条件、不替验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套完成选择。",
+  "visualPotential": "暴雨导致街区停电、任务物状态变化与老人把修好的设备放回空着的餐位旁，按下播放键形成可见的动作和环境对照。",
+  "highValueBeatMapping": [
+    {
+      "briefBeat": "任务与期限",
+      "newExpression": "在闭店前修复并送回一件承载回忆的旧设备",
+      "retainedValue": "快速建立观看问题"
+    },
+    {
+      "briefBeat": "外部帮助",
+      "newExpression": "夜班便利店员借出移动电源",
+      "retainedValue": "普通人善意成为情绪转折"
+    },
+    {
+      "briefBeat": "仪式化结尾",
+      "newExpression": "老人把修好的设备放回空着的餐位旁，按下播放键",
+      "retainedValue": "通过动作而非说教完成情绪兑现"
+    }
+  ],
+  "keyDialogueDirections": [
+    "主角不解释自己的辛苦",
+    "帮助者只确认需要什么",
+    "结尾不直接说谢谢或我爱你"
+  ],
+  "endingRitual": "老人把修好的设备放回空着的餐位旁，按下播放键",
+  "transformationProof": {
+    "changedCharacters": "人物映射为验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套及治愈日常短故事原生关系",
+    "changedTask": "在闭店前修复并送回一件承载回忆的旧设备",
+    "changedDetailsAndProps": "一段未导出的旧录音与暴雨导致街区停电",
+    "changedDialogue": "按新职业口吻重写，禁止复用原句",
+    "changedVisualExpression": "围绕新工具、空间和动作重新设计镜头"
+  },
+  "experienceFidelity": {
+    "positioning": "生活关系型情绪故事",
+    "audience": "保留对善意与关系共鸣敏感的受众",
+    "emotion": "好奇—担心—温暖—释然",
+    "plotDriver": "有期限的具体任务",
+    "highValueBeats": "成本证明、获得帮助、动作兑现"
+  },
+  "originalityRiskCheck": {
+    "riskLevel": "low",
+    "possibleSimilarity": "保留任务旅途和帮助转折等通用结构",
+    "mitigation": "人物、任务、媒介、阻力、帮助方式和结尾动作均为新设计"
+  }
+}

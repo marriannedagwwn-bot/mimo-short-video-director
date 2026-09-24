@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   normalizeModelUsage,
   parseModelPrices,
+  readModelUsageFromError,
   recordModelUsage,
   runWithUsageAccounting,
   summarizeModelUsage
@@ -13,6 +14,7 @@ import {
   mergeStageUsage
 } from "../public/token-usage-format.js";
 import { MimoClient } from "../src/mimo-client.js";
+import { sseResponse } from "./helpers/sse-response.js";
 
 const PRICES = new Map([
   ["qwen3.7-max", { inputPerMillion: 2.4, outputPerMillion: 9.6 }],
@@ -60,6 +62,129 @@ test("记账作用域按调用累加，作用域之外记录是 no-op 且不抛�
 test("没有模型调用的请求不返回 usage", async () => {
   const { result, usage } = await runWithUsageAccounting(async () => "bookkeeping", { prices: PRICES });
   assert.equal(result, "bookkeeping");
+  assert.equal(usage, null);
+});
+
+test("onUsage 同步收到当前作用域累计快照，形状和最终 usage 一致", async () => {
+  const snapshots = [];
+  const { result, usage } = await runWithUsageAccounting(async () => {
+    recordModelUsage({ provider: "Qwen", model: "qwen3.7-max", usage: { prompt_tokens: 1000, completion_tokens: 200 } });
+    assert.equal(snapshots.length, 1);
+    assert.equal(snapshots[0].totalTokens, 1200);
+    recordModelUsage({ provider: "Qwen", model: "qwen3.7-max", usage: { prompt_tokens: 500, completion_tokens: 100 } });
+    assert.equal(snapshots.length, 2);
+    assert.equal(snapshots[1].totalTokens, 1800);
+    return "done";
+  }, { prices: PRICES, onUsage: (summary) => snapshots.push(summary) });
+
+  assert.equal(result, "done");
+  assert.deepEqual(snapshots[1], usage);
+  assert.equal(usage.costCny, 0.01);
+  assert.equal(snapshots[0].calls, 1);
+  assert.equal(snapshots[0].byModel[0].totalTokens, 1200);
+});
+
+test("onUsage 修改快照不会污染后续累计或最终记账", async () => {
+  const observedTotals = [];
+  const observerReceivers = [];
+  const { usage } = await runWithUsageAccounting(async () => {
+    recordModelUsage({ provider: "Qwen", model: "qwen3.7-max", usage: { total_tokens: 10 } });
+    recordModelUsage({ provider: "Qwen", model: "qwen3.7-max", usage: { total_tokens: 20 } });
+  }, { prices: PRICES, onUsage(summary) {
+    observerReceivers.push(this);
+    observedTotals.push(summary.totalTokens);
+    summary.totalTokens = 999;
+    summary.byModel[0].totalTokens = 999;
+    summary.byModel[0].model = "changed";
+    summary.byModel.push({ model: "injected", totalTokens: 999 });
+  } });
+
+  assert.deepEqual(observedTotals, [10, 30]);
+  assert.deepEqual(observerReceivers, [undefined, undefined]);
+  assert.equal(usage.totalTokens, 30);
+  assert.equal(usage.byModel.length, 1);
+  assert.equal(usage.byModel[0].totalTokens, 30);
+  assert.equal(usage.byModel[0].model, "qwen3.7-max");
+});
+
+test("并发及嵌套作用域的 onUsage 只收到各自的记账", async () => {
+  const aReady = Promise.withResolvers();
+  const bReady = Promise.withResolvers();
+  const observedA = [];
+  const observedB = [];
+  const observedChild = [];
+  const [a, b] = await Promise.all([
+    runWithUsageAccounting(async () => {
+      recordModelUsage({ model: "a", usage: { total_tokens: 10 } });
+      aReady.resolve();
+      await bReady.promise;
+      const child = await runWithUsageAccounting(async () => {
+        recordModelUsage({ model: "child", usage: { total_tokens: 1000 } });
+      }, { onUsage: (summary) => observedChild.push(summary.totalTokens) });
+      assert.equal(child.usage.totalTokens, 1000);
+      recordModelUsage({ model: "a", usage: { total_tokens: 20 } });
+    }, { onUsage: (summary) => observedA.push(summary.totalTokens) }),
+    runWithUsageAccounting(async () => {
+      await aReady.promise;
+      recordModelUsage({ model: "b", usage: { total_tokens: 100 } });
+      bReady.resolve();
+      await Promise.resolve();
+      recordModelUsage({ model: "b", usage: { total_tokens: 200 } });
+    }, { onUsage: (summary) => observedB.push(summary.totalTokens) })
+  ]);
+
+  assert.deepEqual(observedA, [10, 30]);
+  assert.deepEqual(observedB, [100, 300]);
+  assert.deepEqual(observedChild, [1000]);
+  assert.equal(a.usage.totalTokens, 30);
+  assert.equal(b.usage.totalTokens, 300);
+});
+
+test("onUsage 同步抛错和异步拒绝都不改变业务返回或累计", async () => {
+  let notifications = 0;
+  const { result, usage } = await runWithUsageAccounting(async () => {
+    recordModelUsage({ usage: { total_tokens: 10 } });
+    recordModelUsage({ usage: { total_tokens: 20 } });
+    return "still fine";
+  }, { onUsage() {
+    notifications += 1;
+    if (notifications === 1) throw new Error("observer sync failure");
+    return Promise.reject(new Error("observer async failure"));
+  } });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(notifications, 2);
+  assert.equal(result, "still fine");
+  assert.equal(usage.totalTokens, 30);
+});
+
+test("onUsage 不等待异步观察，终止错误仍携带已确认的 usage", async () => {
+  const pendingObserver = Promise.withResolvers();
+  const original = new DOMException("用户终止", "AbortError");
+  let observed;
+  const error = await runWithUsageAccounting(async () => {
+    recordModelUsage({ usage: { total_tokens: 10 } });
+    throw original;
+  }, { onUsage(summary) {
+    observed = summary;
+    return pendingObserver.promise;
+  } }).then(() => null, (caught) => caught);
+
+  pendingObserver.resolve();
+  assert.equal(error, original);
+  assert.equal(observed.totalTokens, 10);
+  assert.deepEqual(readModelUsageFromError(error), observed);
+  assert.equal(Object.keys(error).includes("usage"), false);
+});
+
+test("缺失或无效 usage 不触发 onUsage，也不伪造零消耗", async () => {
+  const snapshots = [];
+  const { usage } = await runWithUsageAccounting(async () => {
+    recordModelUsage({ usage: null });
+    recordModelUsage({ usage: { unknown: 10 } });
+  }, { onUsage: (summary) => snapshots.push(summary) });
+
+  assert.deepEqual(snapshots, []);
   assert.equal(usage, null);
 });
 
@@ -121,6 +246,72 @@ test("被包裹函数抛错时错误原样向上抛，记账不改变失败语�
   );
 });
 
+test("阶段失败时，失败前已花掉的 token 挂在错误上一并报出", async () => {
+  const original = new Error("模型输出未通过校验");
+  original.code = "OUTPUT_CONTRACT_INVALID";
+  const error = await runWithUsageAccounting(async () => {
+    recordModelUsage({ provider: "Qwen", model: "qwen3.7-max", usage: { prompt_tokens: 1e6, completion_tokens: 0 } });
+    recordModelUsage({ provider: "Qwen", model: "qwen3.7-max", usage: { prompt_tokens: 1e6, completion_tokens: 0 } });
+    throw original;
+  }, { prices: PRICES }).then(() => null, (caught) => caught);
+
+  // 错误对象本身逐字不变：不是新错误，不改 message/code。
+  assert.equal(error, original);
+  assert.equal(error.message, "模型输出未通过校验");
+  assert.equal(error.code, "OUTPUT_CONTRACT_INVALID");
+
+  const usage = readModelUsageFromError(error);
+  assert.equal(usage.calls, 2);
+  assert.equal(usage.totalTokens, 2e6);
+  assert.equal(usage.costKnown, true);
+  assert.equal(usage.costCny, 4.8);
+
+  // Symbol 键不参与枚举：不会渗进错误信封的业务字段，也不会被日志序列化带出去。
+  assert.deepEqual(Object.keys(error), ["code"]);
+  assert.equal(JSON.parse(JSON.stringify({ ...error })).usage, undefined);
+});
+
+test("失败前一次模型调用都没发生时不返回 usage，非错误对象读取也不抛", async () => {
+  const error = await runWithUsageAccounting(async () => {
+    throw new Error("鉴权失败");
+  }, { prices: PRICES }).then(() => null, (caught) => caught);
+  assert.equal(readModelUsageFromError(error), null);
+
+  assert.equal(readModelUsageFromError(null), null);
+  assert.equal(readModelUsageFromError("字符串错误"), null);
+  assert.equal(readModelUsageFromError(undefined), null);
+});
+
+test("冻结的错误对象无法挂载 usage 时只放弃记账，不改变失败语义", async () => {
+  const frozen = Object.freeze(new Error("冻结错误"));
+  await assert.rejects(
+    () => runWithUsageAccounting(async () => {
+      recordModelUsage({ provider: "Qwen", model: "qwen3.7-max", usage: { total_tokens: 10 } });
+      throw frozen;
+    }, { prices: PRICES }),
+    /冻结错误/u
+  );
+  assert.equal(readModelUsageFromError(frozen), null);
+});
+
+test("单价解析容忍中文输入法的全角分隔符，不静默吞掉后面的条目", () => {
+  // 真实踩到的坑：deepseek 那条留着占位符没填，且后面跟的是全角逗号，
+  // 只按半角切分会把 mimo-v2.5 一起并进同一个条目而整条丢弃。
+  const line = "qwen3.7-max=12/36,qwen3.7-plus=2/8,deepseek-v4-flash=输入/输出，mimo-v2.5=1/2,mimo-v2.5-pro=3/6,";
+  const { prices, invalid } = parseModelPrices(line);
+  assert.deepEqual(prices.get("mimo-v2.5"), { inputPerMillion: 1, outputPerMillion: 2 });
+  assert.deepEqual(prices.get("mimo-v2.5-pro"), { inputPerMillion: 3, outputPerMillion: 6 });
+  assert.deepEqual(prices.get("qwen3.7-max"), { inputPerMillion: 12, outputPerMillion: 36 });
+  // 没填真实数字的占位符仍然只跳过它自己，并被如实报出来。
+  assert.deepEqual(invalid, ["deepseek-v4-flash=输入/输出"]);
+
+  // 顿号分隔与全角斜杠同样接受。
+  const wide = parseModelPrices("mimo-v2.5=1／2、mimo-v2.5-pro=3/6");
+  assert.deepEqual(wide.prices.get("mimo-v2.5"), { inputPerMillion: 1, outputPerMillion: 2 });
+  assert.deepEqual(wide.prices.get("mimo-v2.5-pro"), { inputPerMillion: 3, outputPerMillion: 6 });
+  assert.deepEqual(wide.invalid, []);
+});
+
 test("单价解析接受合法条目，跳过畸形条目", () => {
   const { prices, invalid } = parseModelPrices("qwen3.7-max=2.4/9.6, deepseek-v4-flash = 0.5/1.5 ,坏条目, x=1");
   assert.deepEqual(prices.get("qwen3.7-max"), { inputPerMillion: 2.4, outputPerMillion: 9.6 });
@@ -171,6 +362,13 @@ test("展示：千分位、不足一分显示 < ¥0.01、缺单价时不输出�
   // 演示模式没有模型调用：后缀为空，原状态文案保持不变。
   assert.equal(formatStageUsageSuffix(null), "");
   assert.equal(formatStageUsageSuffix({ totalTokens: 0, costKnown: false }), "");
+
+  // 失败阶段换一个措辞：这笔钱确实花了，但没有买到结果。
+  assert.equal(
+    formatStageUsageSuffix({ totalTokens: 12345, costCny: 0.12, costKnown: true }, { label: "失败前已消耗" }),
+    " · 失败前已消耗 12,345 tokens · 约 ¥0.12"
+  );
+  assert.equal(formatStageUsageSuffix(null, { label: "失败前已消耗" }), "");
 });
 
 
@@ -180,10 +378,10 @@ test("真实客户端的一次调用会被记进当前作用域，并按单价�
   let calls = 0;
   globalThis.fetch = async () => {
     calls += 1;
-    return new Response(JSON.stringify({
-      choices: [{ finish_reason: "stop", message: { content: "{\"ok\":true}" } }],
+    return sseResponse({
+      content: "{\"ok\":true}",
       usage: { prompt_tokens: 1_000_000, completion_tokens: 1_000_000, total_tokens: 2_000_000 }
-    }), { status: 200 });
+    });
   };
   try {
     const client = new MimoClient({
@@ -215,9 +413,7 @@ test("真实客户端的一次调用会被记进当前作用域，并按单价�
 
 test("供应商没返回 usage 时不伪造数字，该请求不产生 usage", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    choices: [{ finish_reason: "stop", message: { content: "{\"ok\":true}" } }]
-  }), { status: 200 });
+  globalThis.fetch = async () => sseResponse({ content: "{\"ok\":true}" });
   try {
     const client = new MimoClient({
       baseUrl: "https://example.invalid/v1",

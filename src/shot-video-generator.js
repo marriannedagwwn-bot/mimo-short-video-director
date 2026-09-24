@@ -7,6 +7,16 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { compileShotNegativePrompt } from "../public/negative-prompts.js";
 import {
+  ALL_REFERENCE_MAX_AUDIOS,
+  ALL_REFERENCE_MAX_IMAGES,
+  ALL_REFERENCE_MAX_VIDEO_BYTES,
+  ALL_REFERENCE_MAX_VIDEOS,
+  ALL_REFERENCE_MEDIA_MAX_SECONDS,
+  ALL_REFERENCE_MEDIA_MIN_SECONDS,
+  ALL_REFERENCE_MEDIA_TOTAL_SECONDS,
+  MINIMAX_H3_MAX_TOTAL_ASSETS
+} from "../public/all-reference-limits.js";
+import {
   assertVideoPromptProfile,
   VIDEO_PROMPT_PROFILE_IDS
 } from "../public/video-prompt-profiles.js";
@@ -16,11 +26,13 @@ import {
 } from "./validation.js";
 import { assertMiniMaxH3Duration } from "./minimax-h3-prompt.js";
 import {
+  buildReferenceManifestText,
   mediaFilenameSegment,
   normalizeShotVideoContinuityReferenceMode,
   SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
 } from "./shot-video-continuity.js";
 import {
+  assertShotVideoDurationSupported,
   inferShotVideoProvider,
   isNonDomesticKlingApiEndpoint,
   isShotVideoGenerationModeSupported,
@@ -30,6 +42,8 @@ import {
   resolveShotVideoSetting,
   shotVideoRuntimeConfig
 } from "./shot-video-providers.js";
+import { afterDurableProviderCall, beforeDurableProviderCall } from "./durable-task-context.js";
+import { assertWorkspaceMediaLifetime, requireWorkspaceMediaDirectory } from "./workspace-media-lifetime.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -80,15 +94,22 @@ export async function generateShotVideo(options = {}) {
   const continuityReferenceMode = normalizeShotVideoContinuityReferenceMode(options.continuityReferenceMode);
   const aspectRatio = normalizeShotVideoAspectRatio(options.aspectRatio);
   const miniMaxH3Runtime = videoProvider === "MiniMax" && videoModel === "MiniMax-H3";
+  // 镜头时长由 Plan 唯一决定；这里只复核当前供应商能不能原样渲染它。
+  // H3 保留自己的诊断码，其余供应商走统一能力表，都不做任何钳制。
   if (miniMaxH3Runtime) {
     try {
       assertMiniMaxH3Duration(shot.durationSeconds, "shot.durationSeconds");
     } catch (error) {
       throw new ShotVideoConfigError(error.message);
     }
+  } else {
+    assertShotVideoDurationSupported(videoProvider, videoModel, shot.durationSeconds, {
+      path: "shot.durationSeconds",
+      ErrorType: ShotVideoConfigError
+    });
   }
   if (
-    String(options.animationPromptSchemaVersion || "").trim() === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION
+    [ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, "4.0"].includes(String(options.animationPromptSchemaVersion || "").trim())
     && generationMode === "first_last_frame"
   ) {
     throw new ShotVideoConfigError(
@@ -134,11 +155,30 @@ export async function generateShotVideo(options = {}) {
   const filenamePrefix = options.filenamePrefix ? `${safeSegment(options.filenamePrefix)}-` : "";
   const stamp = new Date().toISOString().replace(/[-:.]/gu, "").replace(/Z$/u, "");
   const requestNonce = safeSegment(options.requestNonce || randomUUID());
-  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-"));
+  const workDir = await createShotVideoWorkDirectory(options);
   const count = clampVideoCount(options.count);
+  // 供应商要跑几分钟，这期间用户可能重新生成 Plan 或切换上一镜候选。只靠事后
+  // 关卡（浏览器 assertPlanProductionContextCurrent、commitProductionArtifact 的
+  // expectedCurrentRevision）只能挡住旧结果成为 current Artifact，挡不住无效付费、
+  // 孤儿文件和过期成功结果回到 UI，所以生成期间必须自己复验。
+  const writtenOutputPaths = [];
+  const assertCurrentOrDiscard = async () => {
+    try {
+      await assertWorkspaceMediaLifetime(options.lifetimeFile);
+      if (typeof options.assertProductionContextCurrent === "function") await options.assertProductionContextCurrent();
+    } catch (error) {
+      await discardStaleShotVideoOutputs(writtenOutputPaths);
+      // 原样上抛：ProductionStateError 一旦被包成 ShotVideoConfigError/
+      // ShotVideoProviderError，serializeServerError 就判不出 409 和 stale code。
+      throw error;
+    }
+  };
 
   try {
-    await fs.mkdir(outputRoot, { recursive: true });
+    // ① 任何供应商调用与文件写入之前。
+    await assertCurrentOrDiscard();
+    if (options.lifetimeFile) await requireWorkspaceMediaDirectory(outputRoot, options.lifetimeFile);
+    else await fs.mkdir(outputRoot, { recursive: true });
     const frames = generationMode === "first_last_frame"
       ? await prepareFrameArtifacts({
         shot,
@@ -168,15 +208,33 @@ export async function generateShotVideo(options = {}) {
           ...(continuityReference?.artifacts || [])
         ];
         validateAllReferenceArtifacts(combined, {
-          maxTotal: miniMaxH3Runtime ? 12 : Number.POSITIVE_INFINITY
+          maxTotal: miniMaxH3Runtime ? MINIMAX_H3_MAX_TOTAL_ASSETS : Number.POSITIVE_INFINITY
         });
         return combined;
       })();
-    let effectiveVideoPrompt = String(shot.videoPrompt || "").trim();
+    // 参考素材清单前置：服务端已经知道每张素材是什么，不写进正文模型就无从分辨。
+    // 放在正文之前而不是之后，是为了让 backgroundMusicMode=none 的禁配乐句仍然是
+    // 整条提示词的最后一句（CLAUDE.md 2.4 的逐字收尾语义）。
+    const referenceManifest = generationMode === "all_reference"
+      ? buildReferenceManifestText(inputArtifacts)
+      : "";
+    //
+    // 清单的安全性来自构造而不是事后校验：文本只由受控来源枚举、Plan 权威的
+    // sourceCharacterName 和 lineage 解析出的 sourceShotId 拼成，上传素材的原始
+    // 文件名（唯一的注入面）永远不进入。这里**不**补 ensureCharacterPromptMatchesBoundary：
+    // 视频提示词天然是多角色的，走的是 promptScope="multi_character"，而该分支在
+    // validation.js 里无条件短路返回空串，加上去只是一个看起来像闸门的空操作。
+    let effectiveVideoPrompt = [referenceManifest, String(shot.videoPrompt || "").trim()]
+      .filter(Boolean)
+      .join("\n");
     const videos = [];
     for (let index = 0; index < count; index += 1) {
+      // ② 提交这一条候选给供应商之前：过期就不再产生新的付费调用。
+      await assertCurrentOrDiscard();
       const suffix = count > 1 ? `-${index + 1}` : "";
       const outputPath = path.join(outputRoot, `${filenamePrefix}${shotId}-${stamp}-${requestNonce}${suffix}.mp4`);
+      // 先登记再调用：worker 半途写了一半的文件也要进清理范围。
+      writtenOutputPaths.push(outputPath);
       const request = buildShotVideoRequest(shot, {
         outputPath,
         inputArtifacts,
@@ -189,13 +247,29 @@ export async function generateShotVideo(options = {}) {
         prompt: effectiveVideoPrompt,
         videoPromptProfile: options.videoPromptProfile,
       });
-      const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: options.workerRunner });
-      await assertUsableVideoOutput(outputPath, {
+      const providerTimeoutMs = Number(providerRuntime.pollTimeoutMs || config.pollTimeoutMs || 900_000);
+      await beforeDurableProviderCall(`video_provider_candidate_${index + 1}`, providerTimeoutMs);
+      const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: options.workerRunner, lifetimeFile: options.lifetimeFile });
+      await afterDurableProviderCall(`video_provider_candidate_${index + 1}_returned`, {
+        candidateIndex: index,
+        candidateCount: count
+      });
+      const measuredDurationSeconds = await assertUsableVideoOutput(outputPath, {
         outputProbe: options.videoOutputProbe,
         skipFfprobeForInjectedWorker: Boolean(options.workerRunner) && !options.videoOutputProbe
       });
+      // ③ 这一条已经落盘：过期就把本次写入的全部候选删掉，不留孤儿文件。
+      await assertCurrentOrDiscard();
       videos.push({
         candidateIndex: index,
+        // 供应商实际产出的时长，与 Plan 要求的时长并列记录。
+        // 两者不等**不是失败**：实测 MiniMax H3 请求 5 秒稳定产出 5.167 秒
+        // （9/9 完全一致），请求 4 秒得 4.458 秒——这是供应商的确定性行为，
+        // 硬失败会让该供应商 100% 不可用，重生成也拿不到不同结果。
+        // 这里只负责让偏差不再是静默的：数值如实上报，是否、如何对齐成片总长
+        // 属于契约决定（容差多少、失败还是告警、以谁为准），不在这里替它选。
+        plannedDurationSeconds: Number(shot.durationSeconds) || 0,
+        measuredDurationSeconds,
         provider: videoProvider,
         model: videoModel,
         taskId: request.taskId,
@@ -205,6 +279,8 @@ export async function generateShotVideo(options = {}) {
         generatedAt: new Date().toISOString()
       });
     }
+    // ④ 组装返回值之前：过期的成功结果不许回到 UI。
+    await assertCurrentOrDiscard();
     const firstVideo = videos[0] || {};
     return {
       taskId: firstVideo.taskId || `${shot.shotId || "SHOT"}-VIDEO-PREVIEW`,
@@ -217,6 +293,7 @@ export async function generateShotVideo(options = {}) {
       endFrameUrl: frames?.end?.url || "",
       endFramePath: frames?.end?.path || "",
       referenceSummary: generationMode === "all_reference" ? summarizeReferenceArtifacts(inputArtifacts) : null,
+      referenceManifest,
       videoPromptSource: options.videoPromptSource === "runtime_override" ? "runtime_override" : "animation_plan",
       sourceVideoPrompt: String(shot.videoPrompt || ""),
       effectiveVideoPrompt,
@@ -253,9 +330,34 @@ export async function generateShotVideo(options = {}) {
       receipt: firstVideo.receipt || {},
       generatedAt: new Date().toISOString()
     };
+  } catch (error) {
+    // A cancelled/deleted workspace can fail the durable post-provider check
+    // before assertCurrentOrDiscard runs. Remove late worker outputs as well.
+    if (options.lifetimeFile) await discardStaleShotVideoOutputs(writtenOutputPaths);
+    throw error;
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
   }
+}
+
+async function createShotVideoWorkDirectory(options) {
+  if (!options.workRoot) {
+    if (options.lifetimeFile) throw new ShotVideoConfigError("页面工作区的视频生成必须指定私有 workRoot");
+    return fs.mkdtemp(path.join(os.tmpdir(), "shot-video-"));
+  }
+  const workRoot = path.resolve(options.workRoot);
+  await assertWorkspaceMediaLifetime(options.lifetimeFile);
+  if (options.lifetimeFile && path.dirname(workRoot) !== path.dirname(path.resolve(options.lifetimeFile))) {
+    throw new ShotVideoConfigError("页面工作区的 workRoot 必须位于当前 Run 目录内");
+  }
+  try {
+    // Never recreate a deleted Run ancestor after its lifetime check.
+    await fs.mkdir(workRoot, { mode: 0o700 });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+  }
+  await requireWorkspaceMediaDirectory(workRoot, options.lifetimeFile);
+  return fs.mkdtemp(path.join(workRoot, "shot-video-"));
 }
 
 export function shotVideoGenerationPromptText(options = {}) {
@@ -288,13 +390,14 @@ async function prepareOneFrameArtifact(context) {
       publicBasePath,
       outputKey,
       basename: `${filenamePrefix}${shotId}-${frameKind}-${stamp}`,
-      dataUrl
+      dataUrl,
+      lifetimeFile: context.options.lifetimeFile
     });
   }
 
   const outputPath = path.join(outputRoot, `${filenamePrefix}${shotId}-${frameKind}-${stamp}.png`);
   const request = buildFrameRequest(shot, { frameKind, outputPath, outputKey, prompt });
-  const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: context.options.workerRunner });
+  const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: context.options.workerRunner, lifetimeFile: context.options.lifetimeFile });
   return {
     outputKey,
     path: outputPath,
@@ -338,6 +441,18 @@ function buildFrameRequest(shot = {}, context = {}) {
   };
 }
 
+// Plan 的 durationSeconds 是唯一权威。缺失或非法时必须明确失败，
+// 不能像过去那样悄悄回落到 4 秒——那会把一个契约错误变成一段错时长的成片。
+function requireShotDurationSeconds(shot) {
+  const duration = Number(shot?.durationSeconds);
+  if (!Number.isFinite(duration) || duration <= 0) {
+    throw new ShotVideoConfigError(
+      `镜头 ${shot?.shotId || "未知"} 缺少有效的 durationSeconds，无法提交视频生成；时长必须来自当前 Animation Plan。`
+    );
+  }
+  return duration;
+}
+
 function buildShotVideoRequest(shot = {}, context = {}) {
   const candidateIndex = Number(context.candidateIndex) || 0;
   const candidateCount = Number(context.candidateCount) || 1;
@@ -366,7 +481,7 @@ function buildShotVideoRequest(shot = {}, context = {}) {
     inputArtifacts: context.inputArtifacts || [],
     parameters: {
       aspectRatio: context.aspectRatio || "9:16",
-      durationSeconds: Number(shot.durationSeconds) || 4,
+      durationSeconds: requireShotDurationSeconds(shot),
       shotId: shot.shotId || "",
       sourceSceneId: shot.sourceSceneId || "",
       cameraMotion: shot.cameraMotion || "",
@@ -381,6 +496,24 @@ function buildShotVideoRequest(shot = {}, context = {}) {
     acceptanceCriteria: shot.acceptanceCriteria || [],
     rawJob: shot
   };
+}
+
+/**
+ * 删除本次调用**自己算出的**候选文件。只在生产上下文过期时调用。
+ *
+ * 这些路径都含 requestNonce，不可能撞上并发请求的产物；绝不扫描或 glob 目录。
+ * 删除失败只吞掉：清理是尽力而为，不能改变 fail closed 的结论。
+ * 旧 v2 首尾帧 PNG 不在覆盖内——它的文件名只有毫秒 stamp、不含 nonce，
+ * 删除有误伤并发请求的风险，而 first_last_frame 本身已是弃置兼容路径。
+ */
+async function discardStaleShotVideoOutputs(outputPaths = []) {
+  for (const outputPath of outputPaths) {
+    try {
+      await fs.rm(outputPath, { force: true });
+    } catch {
+      // 忽略：文件不存在、权限问题都不应影响过期错误的上抛。
+    }
+  }
 }
 
 async function assertUsableVideoOutput(outputPath, { outputProbe, skipFfprobeForInjectedWorker = false } = {}) {
@@ -407,11 +540,14 @@ async function assertUsableVideoOutput(outputPath, { outputProbe, skipFfprobeFor
   } finally {
     await file.close();
   }
+  // 返回实测时长供调用方如实记录。注入的 outputProbe 若给出有限正数就采用它，
+  // 否则视为「这条链路测不出时长」返回 0——0 表示未测得，不表示时长为零。
   if (typeof outputProbe === "function") {
-    await outputProbe(outputPath);
-  } else if (!skipFfprobeForInjectedWorker) {
-    await probePlayableVideoOutput(outputPath);
+    const probed = Number(await outputProbe(outputPath));
+    return Number.isFinite(probed) && probed > 0 ? probed : 0;
   }
+  if (!skipFfprobeForInjectedWorker) return probePlayableVideoOutput(outputPath);
+  return 0;
 }
 
 async function probePlayableVideoOutput(outputPath) {
@@ -435,16 +571,18 @@ async function probePlayableVideoOutput(outputPath) {
       .find((value) => Number.isFinite(value) && value > 0)
       || Number(metadata.format?.duration);
     if (!Number.isFinite(duration) || duration <= 0) throw new Error("视频时长无效");
+    return duration;
   } catch (error) {
     throw new ShotVideoProviderError(`视频生成服务返回的文件无法通过 ffprobe 播放性校验：${error.message || "无有效视频流"}。`);
   }
 }
 
-async function writeDataUrlArtifact({ outputRoot, publicBasePath, outputKey, basename, dataUrl }) {
+async function writeDataUrlArtifact({ outputRoot, publicBasePath, outputKey, basename, dataUrl, lifetimeFile }) {
   const match = String(dataUrl || "").match(/^data:([^;,]+);base64,(.+)$/u);
   if (!match) throw new ShotVideoConfigError(`${basename} 不是有效的 base64 data URL`);
   const [, mimeType, payload] = match;
-  await fs.mkdir(outputRoot, { recursive: true });
+  if (lifetimeFile) await requireWorkspaceMediaDirectory(outputRoot, lifetimeFile);
+  else await fs.mkdir(outputRoot, { recursive: true });
   const filePath = path.join(outputRoot, `${basename}${extensionForMime(mimeType)}`);
   await fs.writeFile(filePath, Buffer.from(payload, "base64"));
   return {
@@ -456,7 +594,7 @@ async function writeDataUrlArtifact({ outputRoot, publicBasePath, outputKey, bas
   };
 }
 
-async function runGenericWorker({ request, outputPath, workDir, configPath, workerRunner = null }) {
+async function runGenericWorker({ request, outputPath, workDir, configPath, workerRunner = null, lifetimeFile = "" }) {
   const requestPath = path.join(workDir, `${safeSegment(request.taskId)}.request.json`);
   const receiptPath = path.join(workDir, `${safeSegment(request.taskId)}.receipt.json`);
   await fs.writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`);
@@ -466,7 +604,8 @@ async function runGenericWorker({ request, outputPath, workDir, configPath, work
     "--request", requestPath,
     "--output", outputPath,
     "--receipt", receiptPath,
-    "--root", process.cwd()
+    "--root", process.cwd(),
+    ...(lifetimeFile ? ["--lifetime-file", lifetimeFile] : [])
   ];
   try {
     if (typeof workerRunner === "function") {
@@ -475,14 +614,20 @@ async function runGenericWorker({ request, outputPath, workDir, configPath, work
         request: requestPath,
         output: outputPath,
         receipt: receiptPath,
-        root: process.cwd()
+        root: process.cwd(),
+        ...(lifetimeFile ? { lifetimeFile } : {})
       });
     } else {
       await execFileAsync(process.execPath, args, { maxBuffer: 10 * 1024 * 1024 });
     }
   } catch (error) {
     const message = String(error.stderr || error.message || "生成失败").trim();
-    throw new ShotVideoProviderError(message);
+    const providerError = new ShotVideoProviderError(message);
+    // 供应商与模型带上，错误出口才能查对应厂商的官方错误码表。
+    // 纯诊断信息，不参与任何控制流。
+    providerError.provider = String(request.provider || "");
+    providerError.model = String(request.model || "");
+    throw providerError;
   }
   return readJsonIfExists(receiptPath);
 }
@@ -565,7 +710,7 @@ async function prepareAllReferenceArtifacts(referenceAssets, workDir) {
 }
 
 async function preparePreviousShotFrameArtifacts({ reference, workDir, extractor } = {}) {
-  const frameExtractor = typeof extractor === "function" ? extractor : extractVideoFramesEverySecond;
+  const frameExtractor = typeof extractor === "function" ? extractor : extractEvenlySpacedVideoFrames;
   const sourceSnapshot = await snapshotTrustedPreviousVideo(reference, workDir);
   const extracted = await frameExtractor({
     sourcePath: sourceSnapshot.path,
@@ -576,8 +721,10 @@ async function preparePreviousShotFrameArtifacts({ reference, workDir, extractor
   if (!frames.length) {
     throw new ShotVideoConfigError(`${reference.sourceShotId} 没有抽取到可用视频帧。`);
   }
-  if (frames.length > 9) {
-    throw new ShotVideoConfigError(`${reference.sourceShotId} 按每秒一帧抽取后得到 ${frames.length} 张，超过全能参考图片上限 9 张。`);
+  if (frames.length > PREVIOUS_SHOT_REFERENCE_FRAME_COUNT) {
+    throw new ShotVideoConfigError(
+      `${reference.sourceShotId} 抽取到 ${frames.length} 张参考帧，超过上一镜参考帧上限 ${PREVIOUS_SHOT_REFERENCE_FRAME_COUNT} 张。`
+    );
   }
   const artifacts = [];
   const trustedWorkDir = path.resolve(workDir);
@@ -643,50 +790,92 @@ async function snapshotTrustedPreviousVideo(reference = {}, workDir = "") {
   }
 }
 
-export async function extractVideoFramesEverySecond({
+// 上一镜参考帧固定取 5 张：首帧、末帧和中间三等分点。
+//
+// 旧实现按每秒一帧抽，3.1 把单镜时长放宽到 4–15 秒之后有两个后果：
+// 超过 9 秒的镜头直接撞上 9 图上限报错（实测语料里 56% 的镜头），而且
+// 9 张上限是和角色参考图共用的——每秒一帧会把锁角色长相的那几张挤出去。
+// 固定 5 张同时解决两件事，并且正好落在 MiniMax 的 5 张免费额度内。
+export const PREVIOUS_SHOT_REFERENCE_FRAME_COUNT = 5;
+
+// 容器时长是最后一帧的结束时刻，`-ss 时长` 落在画面之外解不出帧。
+// 回退 0.1 秒稳定落在最后一帧上（常见 24–30fps 下一帧是 0.033–0.042 秒），
+// 仍然代表镜头结尾状态。
+const LAST_FRAME_BACKOFF_SECONDS = 0.1;
+
+const PREVIOUS_SHOT_FRAME_SCALE_FILTER =
+  "scale=w='if(gt(iw,ih),min(720,iw),-2)':h='if(gt(iw,ih),-2,min(720,ih))'";
+
+/**
+ * 按 t = D×i/(N-1) 均匀布点，含首帧与末帧。纯函数，便于单测与复现。
+ * 时间戳保留三位小数：它会写进抽帧产物的 provenance，必须确定可复算。
+ */
+export function previousShotFrameTimestamps(
+  durationSeconds,
+  frameCount = PREVIOUS_SHOT_REFERENCE_FRAME_COUNT
+) {
+  const duration = Number(durationSeconds);
+  if (!Number.isFinite(duration) || duration <= 0) return [];
+  const count = Math.max(1, Math.round(Number(frameCount) || 0));
+  const lastStamp = Math.max(0, duration - LAST_FRAME_BACKOFF_SECONDS);
+  if (count === 1) return [roundSeconds(lastStamp)];
+  const stamps = [];
+  for (let index = 0; index < count; index += 1) {
+    stamps.push(roundSeconds(Math.min(lastStamp, (duration * index) / (count - 1))));
+  }
+  // 极短视频上多个布点可能落到同一帧；去重后宁可少给几张，也不重复上传同一画面。
+  return [...new Set(stamps)];
+}
+
+function roundSeconds(value) {
+  return Math.round(value * 1000) / 1000;
+}
+
+export async function extractEvenlySpacedVideoFrames({
   sourcePath,
   outputDirectory,
   sourceShotId = "previous-shot",
+  frameCount = PREVIOUS_SHOT_REFERENCE_FRAME_COUNT,
   execFileRunner = execFileAsync,
   durationProbe = probeMediaDuration
 } = {}) {
   const durationSeconds = await durationProbe(sourcePath, "video");
-  if (durationSeconds > 9) {
-    throw new ShotVideoConfigError(`${sourceShotId} 时长 ${formatDuration(durationSeconds)} 秒，按每秒一帧会超过全能参考图片上限 9 张。`);
+  const timestamps = previousShotFrameTimestamps(durationSeconds, frameCount);
+  if (!timestamps.length) {
+    throw new ShotVideoConfigError(`${sourceShotId} 的视频时长无效，无法抽取参考帧。`);
   }
   const basename = `previous-${safeSegment(sourceShotId)}-frame`;
-  const outputPattern = path.join(outputDirectory, `${basename}-%02d.jpg`);
-  await execFileRunner("ffmpeg", [
-    "-hide_banner",
-    "-loglevel", "error",
-    "-y",
-    "-i", sourcePath,
-    "-map", "0:v:0",
-    "-an",
-    "-vf", "fps=1,scale=w='if(gt(iw,ih),min(720,iw),-2)':h='if(gt(iw,ih),-2,min(720,ih))'",
-    "-q:v", "4",
-    outputPattern
-  ], {
-    timeout: 60_000,
-    maxBuffer: 1024 * 1024,
-    killSignal: "SIGKILL"
-  });
-  const filenames = (await fs.readdir(outputDirectory))
-    .filter((name) => name.startsWith(`${basename}-`) && name.endsWith(".jpg"))
-    .sort();
-  if (!filenames.length) {
-    throw new ShotVideoConfigError(`${sourceShotId} 没有可解码的视频帧。`);
+  const frames = [];
+  // 逐个时间戳精确截帧，而不是靠 fps 滤镜的副产品：布点必须显式可控，
+  // 首帧与末帧才能保证取到，时间戳也才能如实记进产物。
+  for (const [index, timestampSeconds] of timestamps.entries()) {
+    const framePath = path.join(outputDirectory, `${basename}-${String(index + 1).padStart(2, "0")}.jpg`);
+    await execFileRunner("ffmpeg", [
+      "-hide_banner",
+      "-loglevel", "error",
+      "-y",
+      "-ss", timestampSeconds.toFixed(3),
+      "-i", sourcePath,
+      "-map", "0:v:0",
+      "-an",
+      "-frames:v", "1",
+      "-vf", PREVIOUS_SHOT_FRAME_SCALE_FILTER,
+      "-q:v", "4",
+      framePath
+    ], {
+      timeout: 60_000,
+      maxBuffer: 1024 * 1024,
+      killSignal: "SIGKILL"
+    });
+    const stat = await fs.stat(framePath).catch(() => null);
+    if (!stat?.isFile() || stat.size < 1) {
+      throw new ShotVideoConfigError(
+        `${sourceShotId} 在第 ${timestampSeconds.toFixed(2)} 秒处没有可解码的视频帧。`
+      );
+    }
+    frames.push({ path: framePath, timestampSeconds });
   }
-  if (filenames.length > 9) {
-    throw new ShotVideoConfigError(`${sourceShotId} 按每秒一帧抽取后得到 ${filenames.length} 张，超过全能参考图片上限 9 张。`);
-  }
-  return {
-    durationSeconds,
-    frames: filenames.map((name, index) => ({
-      path: path.join(outputDirectory, name),
-      timestampSeconds: index
-    }))
-  };
+  return { durationSeconds, frames };
 }
 
 function validateAllReferenceArtifacts(artifacts, { maxTotal = Number.POSITIVE_INFINITY } = {}) {
@@ -695,24 +884,27 @@ function validateAllReferenceArtifacts(artifacts, { maxTotal = Number.POSITIVE_I
   const videos = grouped.video || [];
   const audios = grouped.audio || [];
   if (!images.length && !videos.length) throw new ShotVideoConfigError("全能参考模式不能只上传音频；至少需要一张图片或一段视频。");
-  if (images.length > 9) throw new ShotVideoConfigError(`全能参考图片最多 9 张，当前 ${images.length} 张。`);
-  if (videos.length > 3) throw new ShotVideoConfigError(`全能参考视频最多 3 段，当前 ${videos.length} 段。`);
-  if (audios.length > 3) throw new ShotVideoConfigError(`全能参考音频最多 3 段，当前 ${audios.length} 段。`);
+  if (images.length > ALL_REFERENCE_MAX_IMAGES) throw new ShotVideoConfigError(`全能参考图片最多 ${ALL_REFERENCE_MAX_IMAGES} 张，当前 ${images.length} 张。`);
+  if (videos.length > ALL_REFERENCE_MAX_VIDEOS) throw new ShotVideoConfigError(`全能参考视频最多 ${ALL_REFERENCE_MAX_VIDEOS} 段，当前 ${videos.length} 段。`);
+  if (audios.length > ALL_REFERENCE_MAX_AUDIOS) throw new ShotVideoConfigError(`全能参考音频最多 ${ALL_REFERENCE_MAX_AUDIOS} 段，当前 ${audios.length} 段。`);
   if (artifacts.length > maxTotal) {
     throw new ShotVideoConfigError(`MiniMax H3 混合参考素材总数最多 ${maxTotal} 项，当前 ${artifacts.length} 项。`);
   }
   for (const item of [...videos, ...audios]) {
-    if (item.durationSeconds < 2 || item.durationSeconds > 15) {
-      throw new ShotVideoConfigError(`${item.filename} 时长必须在 2–15 秒之间，当前 ${formatDuration(item.durationSeconds)} 秒。`);
+    if (
+      item.durationSeconds < ALL_REFERENCE_MEDIA_MIN_SECONDS
+      || item.durationSeconds > ALL_REFERENCE_MEDIA_MAX_SECONDS
+    ) {
+      throw new ShotVideoConfigError(`${item.filename} 时长必须在 ${ALL_REFERENCE_MEDIA_MIN_SECONDS}–${ALL_REFERENCE_MEDIA_MAX_SECONDS} 秒之间，当前 ${formatDuration(item.durationSeconds)} 秒。`);
     }
   }
-  if (videos.some((item) => item.sizeBytes > 50 * 1024 * 1024)) {
+  if (videos.some((item) => item.sizeBytes > ALL_REFERENCE_MAX_VIDEO_BYTES)) {
     throw new ShotVideoConfigError("单段参考视频不得超过 50MB。");
   }
   const videoDuration = videos.reduce((sum, item) => sum + item.durationSeconds, 0);
   const audioDuration = audios.reduce((sum, item) => sum + item.durationSeconds, 0);
-  if (videoDuration > 15.05) throw new ShotVideoConfigError(`参考视频总时长不得超过 15 秒，当前 ${formatDuration(videoDuration)} 秒。`);
-  if (audioDuration > 15.05) throw new ShotVideoConfigError(`参考音频总时长不得超过 15 秒，当前 ${formatDuration(audioDuration)} 秒。`);
+  if (videoDuration > ALL_REFERENCE_MEDIA_TOTAL_SECONDS) throw new ShotVideoConfigError(`参考视频总时长不得超过 ${ALL_REFERENCE_MEDIA_MAX_SECONDS} 秒，当前 ${formatDuration(videoDuration)} 秒。`);
+  if (audioDuration > ALL_REFERENCE_MEDIA_TOTAL_SECONDS) throw new ShotVideoConfigError(`参考音频总时长不得超过 ${ALL_REFERENCE_MEDIA_MAX_SECONDS} 秒，当前 ${formatDuration(audioDuration)} 秒。`);
 }
 
 function assertAllReferenceRequestSize(options) {

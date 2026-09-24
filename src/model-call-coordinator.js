@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { AttemptStore } from "./attempt-store.js";
-import { ModelResponseError, parseSingleJsonObject } from "./mimo-client.js";
+import { ModelResponseError, assertCompletionNotContentFiltered, parseSingleJsonObject } from "./mimo-client.js";
 import { ModelPipelineError } from "./model-errors.js";
 import { OutputContractError } from "./validation.js";
+import { throwIfDurableTaskAborted } from "./durable-task-context.js";
+import { SHARED_OUTPUT_TOKEN_CEILING, growOutputTokenLimit } from "./output-token-ceilings.js";
 
 const DEFAULT_FULL_STORY_PROVIDER_CALLS = 2;
 
@@ -54,13 +56,16 @@ export class ModelCallCoordinator {
       let candidate = null;
       try {
         completion = await requestSingleCompletion(client, activeRequest, provider);
+        const completionProvider = completion.providerName || provider || "模型";
+        // 审核拦截分类为不可重试，coordinator 不会自动再调一次。
+        assertCompletionNotContentFiltered(completion, completionProvider);
         if (completion.finishReason === "length") {
           throw new ModelResponseError(
-            `${provider || "模型"} 输出因 token 上限被截断`,
+            `${completionProvider} 输出因 token 上限被截断`,
             completion.raw,
             0,
             {
-              provider,
+              provider: completionProvider,
               code: "MODEL_OUTPUT_TRUNCATED",
               requestId: completion.requestId,
               finishReason: completion.finishReason,
@@ -69,14 +74,14 @@ export class ModelCallCoordinator {
           );
         }
         candidate = completion.parsed === undefined
-          ? parseSingleJsonObject(completion.content, provider || "模型")
+          ? parseSingleJsonObject(completion.content, completionProvider)
           : completion.parsed;
         const value = await validate(candidate);
         const attempt = this.recordAttempt({
           operationId,
           callIndex,
           stage,
-          provider,
+          provider: completionProvider,
           model: activeRequest.model,
           reason: callIndex === 0 ? "primary" : "coordinator-retry",
           startedAtMs,
@@ -100,12 +105,13 @@ export class ModelCallCoordinator {
         });
         return value;
       } catch (error) {
+        throwIfDurableTaskAborted();
         const issue = classifyAttemptError(error);
         const attempt = this.recordAttempt({
           operationId,
           callIndex,
           stage,
-          provider: provider || error?.provider,
+          provider: completion?.providerName || error?.provider || provider,
           model: activeRequest.model,
           reason: callIndex === 0 ? "primary" : "coordinator-retry",
           startedAtMs,
@@ -125,7 +131,11 @@ export class ModelCallCoordinator {
           content: typeof completion?.content === "string" ? completion.content : "",
           contentPresent: typeof completion?.content === "string",
           providerRequestId: completion?.requestId || error?.requestId || "",
-          usage: completion?.usage || error?.usage || null
+          usage: completion?.usage || error?.usage || null,
+          // 校验器的结构化 details（classifyAttemptError 原样带出）。观测方都是 FullModelOutputLogWriter，
+          // 它只留 code / jsonPointer / reason 并脱敏。漏传时阶段日志的失败记录恒为 []，
+          // 2026-09-24 候选评审、承诺核对、自主分镜的失败都只能靠离线重放才看得到原因。
+          diagnostics: Array.isArray(issue.diagnostics) ? issue.diagnostics : []
         });
 
         const retryAllowed = typeof shouldRetry !== "function" || shouldRetry({
@@ -251,7 +261,7 @@ async function requestSingleCompletion(client, request, provider) {
   };
 }
 
-function classifyAttemptError(error) {
+export function classifyAttemptError(error) {
   if (error instanceof OutputContractError) {
     const diagnostics = Array.isArray(error.details) ? error.details : [];
     const schemaFailure = diagnostics.some((detail) => (
@@ -275,6 +285,49 @@ function classifyAttemptError(error) {
         category: "truncation",
         code: error.code,
         origin: "model",
+        httpStatus: 502,
+        retryable: true,
+        diagnostics: []
+      };
+    }
+    // 流式响应在收到结束标志前中断，是传输失败而不是协议错误。不单独分类的话
+    // 它会落到本分支末尾的兜底（status=0 → category "protocol"、retryable false），
+    // 把一个本该重试的网络中断变成不可重试的协议错误。
+    // 与 MODEL_STREAM_INCOMPLETE 同规格：连接被对端切断是传输故障，必须可重试。
+    // 不单独分类会落到本分支末尾的兜底（status=0 → protocol 且 retryable false）。
+    // 输出陷入逐字重复、被读取流程主动叫停（src/output-degeneration.js）。与截断同口径：
+    // 是模型这一次的输出坏了，只在各阶段已有的重试预算内再试一次，不新增任何重试路径；
+    // 单独成类是为了和截断分开统计——截断专用的「要求压缩、抬额度」对它没有意义。
+    if (error.code === "MODEL_OUTPUT_DEGENERATE") {
+      return {
+        message: error.message,
+        category: "degeneration",
+        code: error.code,
+        origin: "model",
+        httpStatus: 502,
+        retryable: true,
+        diagnostics: []
+      };
+    }
+    // 供应商内容审核拦截：不是格式错误，也不得自动重试（CLAUDE.md §2.6 同一原则）。
+    if (error.code === "MODEL_CONTENT_FILTERED") {
+      return {
+        message: error.message,
+        category: "content-filter",
+        code: error.code,
+        origin: "provider",
+        httpStatus: 502,
+        retryable: false,
+        diagnostics: []
+      };
+    }
+    // 空闲超时（连续 N 秒没收到任何数据）同属传输故障，可重试。
+    if (["MODEL_STREAM_ABORTED", "MODEL_STREAM_INCOMPLETE", "MODEL_STREAM_IDLE_TIMEOUT"].includes(error.code)) {
+      return {
+        message: error.message,
+        category: "transport",
+        code: error.code,
+        origin: "provider",
         httpStatus: 502,
         retryable: true,
         diagnostics: []
@@ -350,8 +403,7 @@ function classifyAttemptError(error) {
   };
 }
 
+// coordinator 不知道供应商是谁，只抬到三家都实测接受的 SHARED 上限；请求里没写上限时保持不写。
 function defaultRetryTokenLimit(value) {
-  const current = Number(value || 8192);
-  if (!Number.isFinite(current)) return 12288;
-  return Math.min(32768, Math.max(12288, Math.ceil(current * 1.5)));
+  return growOutputTokenLimit(value, { factor: 1.5, ceiling: SHARED_OUTPUT_TOKEN_CEILING });
 }

@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "partial-repair-debug/1.0",
+  "repairSessionId": "a5ca98ed-4181-4d56-ba19-c0a14f1951c0",
+  "completedAt": "2026-09-01T19:59:05.013Z",
+  "status": "repaired",
+  "acceptedRepairs": [
+    {
+      "index": 0,
+      "repairId": "R1",
+      "replacement": {
+        "fields": {
+          "characterName": "小白子",
+          "storyRole": "protagonist",
+          "identity": "q版猫耳少女，学生或村民，活泼可爱、充满阳光、聪明伶俐，最不爱管闲事的人",
+          "appearancePrompt": "q版猫耳少女，猫一样的耳朵，圆润大眼，短发或中长发，穿着日常学生或村民便服，体型娇小可爱，四肢比例偏Q版",
+          "consistencyTags": [
+            "猫耳",
+            "q版体型",
+            "活泼可爱",
+            "阳光",
+            "聪明伶俐",
+            "学生或村民身份",
+            "q 版体型"
+          ],
+          "forbiddenChanges": [
+            "企鹅造型",
+            "快递员身份",
+            "浅蓝色长发人类女孩造型",
+            "翅膀",
+            "企鹅服"
+          ]
+        },
+        "extraKeys": []
+      },
+      "extraKeys": []
+    }
+  ]
+}

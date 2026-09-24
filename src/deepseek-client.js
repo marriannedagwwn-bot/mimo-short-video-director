@@ -1,6 +1,7 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
-import { ModelResponseError, parseModelJson, parseStrictModelJson } from "./mimo-client.js";
+import { ModelResponseError, assertCompletionNotContentFiltered, assertCompletionNotTruncated, parseModelJson, parseStrictModelJson } from "./mimo-client.js";
 import { recordModelUsage } from "./token-usage.js";
+import { afterDurableProviderCall, beforeDurableProviderCall, durableProviderAbortSignal, throwIfDurableTaskAborted } from "./durable-task-context.js";
 
 export class DeepSeekClient {
   constructor(config) {
@@ -34,7 +35,8 @@ export class DeepSeekClient {
     systemPrompt = null,
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
-    strictJson = false
+    strictJson = false,
+    onCompletion = null
   } = {}) {
     return this.requestJson({
       prompt,
@@ -43,7 +45,8 @@ export class DeepSeekClient {
       systemPrompt,
       requestTimeoutMs,
       jsonRetryAttempts,
-      strictJson
+      strictJson,
+      onCompletion
     });
   }
 
@@ -66,7 +69,8 @@ export class DeepSeekClient {
     systemPrompt = null,
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
-    strictJson = false
+    strictJson = false,
+    onCompletion = null
   }) {
     const retryAttempts = jsonRetryAttempts === null
       ? Number.isFinite(Number(this.config.jsonRetryAttempts)) ? Number(this.config.jsonRetryAttempts) : 2
@@ -83,8 +87,11 @@ export class DeepSeekClient {
         systemPrompt,
         requestTimeoutMs
       });
+      await notifyCompletion(onCompletion, completion);
       const content = completion.content;
+      assertCompletionNotContentFiltered(completion, "DeepSeek");
       try {
+        assertCompletionNotTruncated(completion, "DeepSeek");
         return strictJson
           ? parseStrictModelJson(content, "DeepSeek")
           : parseModelJson(content, "DeepSeek");
@@ -112,6 +119,8 @@ export class DeepSeekClient {
       { prompt },
       { model, maxCompletionTokens, systemPrompt }
     );
+    const effectiveTimeoutMs = requestTimeoutMs ?? this.config.requestTimeoutMs ?? 900_000;
+    await beforeDurableProviderCall("model_provider_call", effectiveTimeoutMs);
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -119,13 +128,20 @@ export class DeepSeekClient {
         ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {})
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(requestTimeoutMs ?? this.config.requestTimeoutMs ?? 900_000)
+      signal: durableProviderAbortSignal(effectiveTimeoutMs)
+    }).catch((error) => {
+      throwIfDurableTaskAborted();
+      throw error;
     });
-    const raw = await response.text();
+    const raw = await response.text().catch((error) => {
+      throwIfDurableTaskAborted();
+      throw error;
+    });
     const headerRequestId = response.headers.get("x-request-id")
       || response.headers.get("request-id")
       || "";
     if (!response.ok) {
+      await afterDurableProviderCall("model_provider_response");
       throw new ModelResponseError(
         `DeepSeek 请求失败（${response.status}）`,
         raw,
@@ -142,6 +158,7 @@ export class DeepSeekClient {
     try {
       envelope = JSON.parse(raw);
     } catch {
+      await afterDurableProviderCall("model_provider_response");
       throw new ModelResponseError(
         "DeepSeek 返回了无法解析的响应包",
         raw,
@@ -153,14 +170,15 @@ export class DeepSeekClient {
         }
       );
     }
+    const usage = envelope?.usage && typeof envelope.usage === "object"
+      ? envelope.usage
+      : null;
+    // 已完成响应的用量先记账；随后冻结复检失败也不能抹掉已发生的消耗。
+    recordModelUsage({ provider: "DeepSeek", model: body.model, usage });
+    await afterDurableProviderCall("model_provider_response");
     const choice = envelope.choices?.[0];
     const content = choice?.message?.content;
     const requestId = headerRequestId || String(envelope.id || "");
-    const usage = envelope.usage && typeof envelope.usage === "object"
-      ? envelope.usage
-      : null;
-    // 记入当前请求的 token 记账作用域；作用域外是 no-op，异常内部吞掉。
-    recordModelUsage({ provider: "DeepSeek", model: body.model, usage });
     const finishReason = String(choice?.finish_reason || "");
     if (typeof content !== "string") {
       throw new ModelResponseError(
@@ -228,4 +246,14 @@ function retryTokenLimit(value) {
   const current = Number(value || 16384);
   if (!Number.isFinite(current)) return 24576;
   return Math.min(65536, Math.max(24576, Math.ceil(current * 1.35)));
+}
+
+// 只观测，不参与控制流：回调抛错或 reject 一律吞掉，日志 sidecar 不得改变模型调用的成败。
+async function notifyCompletion(onCompletion, completion) {
+  if (typeof onCompletion !== "function") return;
+  try {
+    await onCompletion(completion);
+  } catch {
+    // 观测失败必须 fail-open。
+  }
 }

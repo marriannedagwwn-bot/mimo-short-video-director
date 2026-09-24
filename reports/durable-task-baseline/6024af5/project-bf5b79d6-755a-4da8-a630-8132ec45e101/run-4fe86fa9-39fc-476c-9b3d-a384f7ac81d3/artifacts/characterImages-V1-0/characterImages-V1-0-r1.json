@@ -1,0 +1,27 @@
+{
+  "characterName": "验收猫",
+  "results": [
+    {
+      "type": "image",
+      "imageIndex": 0,
+      "characterName": "验收猫",
+      "model": "doubao-seedream-5-0-260128",
+      "created": 1788195600,
+      "size": "1728x2304",
+      "url": "/generated-images/project-bf5b79d6-755a-4da8-a630-8132ec45e101/run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3/animationPlan-V1-r2-026cdfb0204a47e5/animationPlan-V1-r2-026cdfb0204a-验收猫-reference-20260901T024247343-1.png",
+      "filename": "animationPlan-V1-r2-026cdfb0204a-验收猫-reference-20260901T024247343-1.png",
+      "prompt": "验收猫，验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套，圆润可爱的 2.5D 动画造型，严格保持用户明确设定的身份、外观、服装、发型和年龄感，表情活泼但懂事，动作小而认真。 参考用户上传的人物图，保持人物外观、服装和色彩一致。\n验收编辑：只增加这一句。"
+    },
+    {
+      "type": "image",
+      "imageIndex": 1,
+      "characterName": "验收猫",
+      "model": "doubao-seedream-5-0-260128",
+      "created": 1788195600,
+      "size": "1728x2304",
+      "url": "/generated-images/project-bf5b79d6-755a-4da8-a630-8132ec45e101/run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3/animationPlan-V1-r2-026cdfb0204a47e5/animationPlan-V1-r2-026cdfb0204a-验收猫-reference-20260901T024247343-2.png",
+      "filename": "animationPlan-V1-r2-026cdfb0204a-验收猫-reference-20260901T024247343-2.png",
+      "prompt": "验收猫，验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套，圆润可爱的 2.5D 动画造型，严格保持用户明确设定的身份、外观、服装、发型和年龄感，表情活泼但懂事，动作小而认真。 参考用户上传的人物图，保持人物外观、服装和色彩一致。\n验收编辑：只增加这一句。"
+    }
+  ]
+}

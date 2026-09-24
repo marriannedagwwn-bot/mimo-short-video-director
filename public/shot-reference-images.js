@@ -8,6 +8,10 @@ export function shotRelatedCharacterReferences(shot = {}, characterReferences = 
 } = {}) {
   const references = Array.isArray(characterReferences) ? characterReferences.filter(Boolean) : [];
   if (!references.length) return [];
+  if (Array.isArray(shot.beats)) {
+    const visible = new Set(shot.beats.flatMap(beat => beat.characters || []));
+    return references.filter(reference => visible.has(reference.characterName));
+  }
   const shotText = normalizeShotReferenceText(shot, frameKind);
   const matched = references.filter((item) => characterMatchesShot(item, shotText));
   if (hasStructuredPromptSource(shot)) return matched;

@@ -1,5 +1,11 @@
 import { InputError } from "./validation.js";
 import { buildShotFrameImagePrompt as buildSharedShotFrameImagePrompt } from "../public/shot-frame-prompt.js";
+import { buildCharacterReferenceImagePrompt as buildSharedCharacterReferenceImagePrompt } from "../public/character-reference-prompt.js";
+import {
+  afterDurableProviderCall,
+  beforeDurableProviderCall,
+  durableTaskHeartbeat
+} from "./durable-task-context.js";
 
 export class JimengImageConfigError extends Error {}
 export class JimengImageProviderError extends Error {
@@ -43,6 +49,8 @@ export class JimengImageClient {
     const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/images/generations`;
     const body = buildJimengImageRequestBody(this.config, input);
     const requestReceipt = buildJimengImageRequestReceipt(body, input.negativePromptDelivery);
+    const timeoutMs = this.config.timeoutMs || 300_000;
+    await beforeDurableProviderCall("image_provider_call", timeoutMs);
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -50,7 +58,7 @@ export class JimengImageClient {
         authorization: `Bearer ${this.config.apiKey}`
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.config.timeoutMs || 300_000)
+      signal: AbortSignal.timeout(timeoutMs)
     });
 
     if (!response.ok) {
@@ -61,25 +69,23 @@ export class JimengImageClient {
     if (!contentType.includes("text/event-stream")) {
       const envelope = await response.json();
       await emitNonStreamingEnvelope(envelope, onEvent);
+      await afterDurableProviderCall("image_provider_response");
       return requestReceipt;
     }
     if (!response.body) throw new JimengImageProviderError("即梦没有返回可读取的流式响应");
-    await parseSseStream(response.body, onEvent);
+    await parseSseStream(response.body, async (event) => {
+      await durableTaskHeartbeat({ providerEvent: String(event?.type || "image_event") });
+      await onEvent(event);
+    });
+    await afterDurableProviderCall("image_provider_response");
     return requestReceipt;
   }
 }
 
-export function buildCharacterReferenceImagePrompt(characterReference = {}, count = 1) {
-  const prompt = String(characterReference.appearancePrompt || characterReference.identity || characterReference.characterName || "").trim();
+export function buildCharacterReferenceImagePrompt(characterReference = {}, count = 1, visualBible = null) {
+  const prompt = buildSharedCharacterReferenceImagePrompt({ characterReference, count, visualBible });
   if (!prompt) throw new InputError("角色参考提示词为空，无法生成参考图。");
-  const countNote = Number(count) > 1 ? `本次需要输出 ${Number(count)} 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。` : "";
-  return [
-    `参考我上传的这张图片，不要水果摊，生成一张${prompt}`,
-    "注意：人物必须是站立姿态的全身图。",
-    "画面只保留人物主体，干净浅色背景，适合作为后续动画角色参考图。",
-    "不要生成摊位、水果、杂乱街景、路人或与角色无关的物体。",
-    countNote
-  ].filter(Boolean).join("\n");
+  return prompt;
 }
 
 export function buildShotFrameImagePrompt(input = {}) {
@@ -92,7 +98,8 @@ export function buildShotFrameImagePrompt(input = {}) {
 
 export function buildJimengImageRequestBody(config = {}, input = {}) {
   const count = clampInteger(input.count, 1, config.maxImages || 6);
-  const prompt = input.prompt || buildCharacterReferenceImagePrompt(input.characterReference, count);
+  const prompt = input.prompt
+    || buildCharacterReferenceImagePrompt(input.characterReference, count, input.visualBible);
   const body = {
     model: input.model || config.model,
     prompt,

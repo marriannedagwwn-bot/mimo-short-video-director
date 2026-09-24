@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "internal://animation-plan-review-strict",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "overallScore",
+    "dominantDefect",
+    "strengths",
+    "dimensions",
+    "shotEvaluations",
+    "propTracking",
+    "sceneCheck",
+    "issues",
+    "otherFindings",
+    "upgradePath",
+    "revisionBrief"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "animation-plan-review/4.0" },
+    "overallScore": { "type": "number", "minimum": 0, "maximum": 10 },
+    "dominantDefect": { "$ref": "#/$defs/dominantDefect" },
+    "emotionalResponseAssessment": { "$ref": "#/$defs/emotionalResponseAssessment" },
+    "strengths": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/strength" }
+    },
+    "dimensions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/dimension" }
+    },
+    "shotEvaluations": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/shotEvaluation" }
+    },
+    "propTracking": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/propTrack" }
+    },
+    "sceneCheck": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/sceneCheckEntry" }
+    },
+    "issues": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/issue" }
+    },
+    "otherFindings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/otherFinding" }
+    },
+    "upgradePath": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/upgrade" }
+    },
+    "revisionBrief": { "$ref": "#/$defs/revisionBrief" }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "stringList": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "score": { "type": "number", "minimum": 0, "maximum": 10 },
+    "severity": { "enum": ["BLOCKER", "MAJOR", "MINOR"] },
+    "depiction": { "enum": ["depicted", "partially_depicted", "not_depicted"] },
+    "defectType": {
+      "enum": [
+        "identity_logic",
+        "causal_logic",
+        "opening_hook",
+        "motivation",
+        "emotional_payoff",
+        "continuity",
+        "prop_state",
+        "physical_logic",
+        "pacing",
+        "escalation",
+        "character_agency",
+        "visual_readability",
+        "ai_execution_risk"
+      ]
+    },
+    "issueCategory": {
+      "enum": [
+        "continuity",
+        "unrealized_declaration",
+        "physical_conflict",
+        "prop_state_break",
+        "scene_mismatch",
+        "dialogue_not_in_prompt",
+        "identity_logic",
+        "causal_logic",
+        "pacing",
+        "ai_risk"
+      ]
+    },
+    "dominantDefect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "severity", "description"],
+      "properties": {
+        "type": { "$ref": "#/$defs/defectType" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "description": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "emotionalResponseAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["needed", "reason"],
+      "properties": {
+        "needed": { "type": "boolean" },
+        "existingPayoffBeats": { "$ref": "#/$defs/stringList" },
+        "reason": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "strength": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["what", "whyItWorks", "evidencePaths", "mustNotLose"],
+      "properties": {
+        "what": { "$ref": "#/$defs/nonEmptyString" },
+        "whyItWorks": { "$ref": "#/$defs/nonEmptyString" },
+        "evidencePaths": { "$ref": "#/$defs/stringList" },
+        "mustNotLose": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "dimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "weight", "score", "evidencePaths", "diagnosis", "viewerImpact", "recommendedChange"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "weight": { "type": "number", "minimum": 0, "maximum": 1 },
+        "score": { "$ref": "#/$defs/score" },
+        "evidencePaths": { "$ref": "#/$defs/stringList" },
+        "diagnosis": { "$ref": "#/$defs/nonEmptyString" },
+        "viewerImpact": { "$ref": "#/$defs/nonEmptyString" },
+        "recommendedChange": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "shotEvaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shotId", "declaredPurpose", "actuallyDepicted", "whatViewerSees", "issues"],
+      "properties": {
+        "shotId": { "$ref": "#/$defs/nonEmptyString" },
+        "declaredPurpose": { "type": "string" },
+        "actuallyDepicted": { "$ref": "#/$defs/depiction" },
+        "whatViewerSees": { "$ref": "#/$defs/nonEmptyString" },
+        "issues": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "propTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shotId", "state"],
+      "properties": {
+        "shotId": { "$ref": "#/$defs/nonEmptyString" },
+        "state": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "propTrack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prop", "firstAppears", "trace", "disappeared", "positionUnclear"],
+      "properties": {
+        "prop": { "$ref": "#/$defs/nonEmptyString" },
+        "firstAppears": { "$ref": "#/$defs/nonEmptyString" },
+        "trace": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/propTrace" }
+        },
+        "disappeared": { "type": "boolean" },
+        "positionUnclear": { "type": "boolean" },
+        "problem": { "type": "string" }
+      }
+    },
+    "sceneCheckEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shotId", "declaredSceneId", "promptOpensIn", "consistent"],
+      "properties": {
+        "shotId": { "$ref": "#/$defs/nonEmptyString" },
+        "declaredSceneId": { "$ref": "#/$defs/nonEmptyString" },
+        "declaredLocation": { "type": "string" },
+        "promptOpensIn": { "$ref": "#/$defs/nonEmptyString" },
+        "consistent": { "type": "boolean" },
+        "problem": { "type": "string" }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issueId", "severity", "category", "evidencePaths", "problem", "revisionIntent", "affectedPaths"],
+      "properties": {
+        "issueId": { "$ref": "#/$defs/nonEmptyString" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "category": { "$ref": "#/$defs/issueCategory" },
+        "evidencePaths": { "$ref": "#/$defs/stringList" },
+        "problem": { "$ref": "#/$defs/nonEmptyString" },
+        "revisionIntent": { "$ref": "#/$defs/nonEmptyString" },
+        "affectedPaths": { "$ref": "#/$defs/stringList" },
+        "mustPreserve": { "$ref": "#/$defs/stringList" }
+      }
+    },
+    "otherFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finding", "whyItMatters"],
+      "properties": {
+        "finding": { "$ref": "#/$defs/nonEmptyString" },
+        "whyItMatters": { "$ref": "#/$defs/nonEmptyString" },
+        "evidencePaths": { "$ref": "#/$defs/stringList" }
+      }
+    },
+    "upgrade": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["upgradeId", "principle", "currentState", "concreteChange", "netActionBudget", "affectedPaths"],
+      "properties": {
+        "upgradeId": { "$ref": "#/$defs/nonEmptyString" },
+        "principle": { "$ref": "#/$defs/nonEmptyString" },
+        "currentState": { "$ref": "#/$defs/nonEmptyString" },
+        "concreteChange": { "$ref": "#/$defs/nonEmptyString" },
+        "expectedGain": { "type": "string" },
+        "whyOnlyThisStory": { "type": "string" },
+        "netActionBudget": { "$ref": "#/$defs/nonEmptyString" },
+        "affectedPaths": { "$ref": "#/$defs/stringList" }
+      }
+    },
+    "revisionBrief": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["priorityIssueIds", "priorityUpgradeIds", "mustPreserve", "revisionMode"],
+      "properties": {
+        "priorityIssueIds": { "type": "array", "items": { "type": "string" } },
+        "priorityUpgradeIds": { "type": "array", "items": { "type": "string" } },
+        "mustPreserve": { "$ref": "#/$defs/stringList" },
+        "conflictWarnings": { "type": "array", "items": { "type": "string" } },
+        "revisionMode": { "enum": ["targeted_patch"] }
+      }
+    }
+  }
+}

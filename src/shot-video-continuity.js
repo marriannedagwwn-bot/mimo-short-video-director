@@ -1,11 +1,16 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isStoryboardPlan, storyboardShotForVideo } from "../public/storyboard-plan.js";
 import {
   mediaFilenameSegment,
   SHOT_VIDEO_CONTINUITY_NONE,
   SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
 } from "../public/shot-video-continuity.js";
 import { lineageRef, ProductionStateError } from "./production-lineage.js";
+import {
+  characterReferenceAudioClips,
+  shotRelatedCharacterAudioClips
+} from "../public/character-reference-audio.js";
 
 export {
   mediaFilenameSegment,
@@ -60,7 +65,8 @@ export function resolveAuthoritativeShotVideoInput({
     });
   }
   const override = String(promptOverride || "").trim();
-  const shot = structuredClone(matches[0]);
+  if (isStoryboardPlan(plan) && !override) throw new ProductionStateError("请先生成并确认此镜头的视频提示词", { code: "SHOT_VIDEO_PROMPT_REQUIRED" });
+  const shot = structuredClone(isStoryboardPlan(plan) ? storyboardShotForVideo(matches[0]) : matches[0]);
   if (override) shot.videoPrompt = override;
   return {
     shot,
@@ -71,16 +77,24 @@ export function resolveAuthoritativeShotVideoInput({
   };
 }
 
-export function resolveAuthoritativeShotVideoReferenceAssets(referenceAssets, plan = {}) {
+export function resolveAuthoritativeShotVideoReferenceAssets(referenceAssets, plan = {}, shot = {}) {
   const assets = Array.isArray(referenceAssets) ? referenceAssets : [];
-  const signedCharacterImages = (Array.isArray(plan.characterReferencePrompts)
+  const characterReferences = Array.isArray(plan.characterReferencePrompts)
     ? plan.characterReferencePrompts
-    : [])
+    : [];
+  const signedCharacterImages = characterReferences
     .filter((reference) => String(reference?.referenceImageDataUrl || "").trim())
     .map((reference) => ({
       characterName: String(reference.characterName || "").trim(),
       dataUrl: String(reference.referenceImageDataUrl || "").trim()
     }));
+  const signedCharacterAudio = characterReferences
+    .flatMap((reference) => characterReferenceAudioClips(reference).map((clip) => ({
+      characterName: String(reference.characterName || "").trim(),
+      dataUrl: clip.dataUrl
+    })));
+  const currentShotCharacterAudio = shotRelatedCharacterAudioClips(shot, characterReferences)
+    .map(({ characterName, clip }) => ({ characterName, dataUrl: clip.dataUrl }));
   return assets.map((asset, index) => {
     const source = String(asset?.source || "upload").trim() || "upload";
     if (["previous_shot_frame", "previous_shot_frames"].includes(source)) {
@@ -89,8 +103,33 @@ export function resolveAuthoritativeShotVideoReferenceAssets(referenceAssets, pl
         { code: "SHOT_VIDEO_REFERENCE_SOURCE_RESERVED", httpStatus: 409 }
       );
     }
-    if (source !== "character_reference") return structuredClone(asset);
     const dataUrl = String(asset?.dataUrl || "").trim();
+    if (source === "character_audio_reference") {
+      const matches = signedCharacterAudio.filter((reference) => reference.dataUrl === dataUrl);
+      if (matches.length !== 1) {
+        throw new ProductionStateError(
+          `referenceAssets[${index}] 声明为 character_audio_reference，但内容不属于当前签发 Animation Plan 的唯一角色参考声音。`,
+          { code: "SHOT_VIDEO_CHARACTER_AUDIO_REFERENCE_UNTRUSTED", httpStatus: 409 }
+        );
+      }
+      const currentShotMatches = currentShotCharacterAudio.filter((reference) => (
+        reference.dataUrl === dataUrl && reference.characterName === matches[0].characterName
+      ));
+      if (currentShotMatches.length !== 1) {
+        throw new ProductionStateError(
+          `角色「${matches[0].characterName || "未知"}」没有在当前镜头的 dialogueOrSubtitle 中明确发声，拒绝附带其角色参考声音。`,
+          { code: "SHOT_VIDEO_CHARACTER_AUDIO_REFERENCE_NOT_SPEAKER", httpStatus: 409 }
+        );
+      }
+      return {
+        ...structuredClone(asset),
+        mediaType: "audio",
+        name: `${matches[0].characterName || "角色"}参考声音`,
+        source: "character_audio_reference",
+        sourceCharacterName: matches[0].characterName
+      };
+    }
+    if (source !== "character_reference") return structuredClone(asset);
     const matches = signedCharacterImages.filter((reference) => reference.dataUrl === dataUrl);
     if (matches.length !== 1) {
       throw new ProductionStateError(
@@ -287,4 +326,134 @@ function unsafePreviousVideoError() {
     code: "SHOT_VIDEO_PREVIOUS_URL_UNTRUSTED",
     httpStatus: 409
   });
+}
+
+// 运行时参考素材清单：把服务端已经验证过的素材身份写进提示词正文。
+//
+// 只允许使用受控来源枚举、Plan 权威的 sourceCharacterName 和 lineage 解析出的
+// sourceShotId。**绝不能**写入 upload 素材的 name/logicalName——那是原始用户
+// 文件名，是这条链路上唯一的注入面。上传素材一律只写「用户上传的参考素材」。
+const REFERENCE_MEDIA_WORDS = Object.freeze({
+  image: "参考图",
+  video: "参考视频",
+  audio: "参考音频"
+});
+
+// 抽帧 Artifact 的 source 是单数形态；运行时开关常量是复数形态，两个都认。
+const PREVIOUS_SHOT_FRAME_SOURCE = "previous_shot_frame";
+const CONTROL_CHARACTER_PATTERN = /[\p{Cc}\p{Cf}]/gu;
+
+function manifestSafeTerm(value, maxLength) {
+  // Plan 权威值仍然过一遍消毒：控制字符和超长内容不该进提示词。
+  return String(value || "").replace(CONTROL_CHARACTER_PATTERN, "").trim().slice(0, maxLength);
+}
+
+function manifestGroupKey(artifact = {}) {
+  return [
+    String(artifact.mediaType || ""),
+    String(artifact.source || ""),
+    manifestSafeTerm(artifact.sourceCharacterName, 40),
+    manifestSafeTerm(artifact.sourceShotId, 16)
+  ].join(" ");
+}
+
+function manifestClause(artifact, label, { hasCharacterReference = false, endLabel = "" } = {}) {
+  const source = String(artifact.source || "");
+  if ([PREVIOUS_SHOT_FRAME_SOURCE, SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES].includes(source)) {
+    const shotId = manifestSafeTerm(artifact.sourceShotId, 16) || "上一镜";
+    // 五张帧里只有最后一张是「上一镜结束时的状态」，另外四张是过程。抽帧按
+    // t = 时长×i/4 均匀采样（首帧、末帧与中间三等分点），所以这一批的最后一张
+    // 就是末帧——这是确定性事实，不是推断。
+    //
+    // 不点名会出事：清单原来把五张当成一个整体介绍，模型没有理由认为第五张比
+    // 第一张更重要。实测 A02 的奔跑段直接复用了参考图3（A01 的**起点**构图，
+    // 大树在左、晾衣绳在右），于是角色在空间上倒退了整整一镜——A01 结束时她
+    // 已经贴到房子边上，A02 却把她送回大树下重跑一遍。
+    const continuationRule = endLabel
+      ? `其中${endLabel}是上一镜的最后一帧，本镜必须从它的状态与位置继续，其余几张只说明这一镜经过了什么，不代表本镜的起始位置`
+      : "它是上一镜的最后一帧，本镜必须从它的状态与位置继续";
+    // 抽帧**不承接角色外观与服装**。它承接的是场景侧的状态。
+    //
+    // 原措辞让它「承接角色外观、服装、道具与场景状态」，而角色参考图那句同时写着
+    // 「锁定该角色的长相与服装」——两句都声称管服装，清单自己把冲突制度化了。
+    // 实测代价：A01 把校服画成了米色无袖（本身就违背角色参考图），抽帧把这个错误
+    // 当成事实传给 A02，于是 A02 在 8 秒内两次换装（3.4 秒黑色校服、7.9 秒米色）。
+    // 上一镜是**待核实的产出**，角色参考图才是签发权威，两者冲突时没有理由让前者赢。
+    const appearanceRule = hasCharacterReference
+      ? "；角色的长相与服装一律以角色参考图为准，不要沿用抽帧里的角色外观"
+      : "";
+    return `${label} 是上一镜 ${shotId} 从头到尾的均匀抽帧，${continuationRule}；这批帧只用于承接场景、道具与光线${appearanceRule}，不要复制它的构图与动作`;
+  }
+  if (source === "character_reference") {
+    const name = manifestSafeTerm(artifact.sourceCharacterName, 40);
+    return name
+      ? `${label} 是「${name}」的角色参考图，是该角色长相与服装的唯一依据`
+      : `${label} 是角色参考图，是角色长相与服装的唯一依据`;
+  }
+  // 参考音频只说「用于保持音色」是不够的，实测会被当成可以直接播放的素材。
+  //
+  // 2026-09-03 的 A01 成片里，芙芙猫在整段背景中持续喵叫，与上传的 4.73 秒样音在
+  // 相同时间位置高度相关——供应商把样音直接混进了成片，而不是提取音色再合成。
+  // 官方文档也确认 `audio_url` 只是「参考音频（仅多模态参考场景）」，**没有任何
+  // 把音色定向到画面中某个主体的机制**，所以这句话是我们唯一能约束它的地方。
+  //
+  // 因此除了说明这是谁的声音，还必须显式排除观察到的那两种误用：当成背景音铺满全片、
+  // 在该角色不发声的时间里重复。这是 Prompt 约束，**没有确定性校验兜底**——判断成片里
+  // 有没有把样音当环境声播放需要听觉判断。真正的兜底是上游那道说话人闸门：
+  // 该角色不是本镜明确说话人时，这段音频根本不会被发送。
+  if (source === "character_audio_reference") {
+    const name = manifestSafeTerm(artifact.sourceCharacterName, 40);
+    const subject = name ? `「${name}」` : "该角色";
+    return `${label} 是${subject}的声音样本，${subject}在本镜确实会发声；只用它决定${subject}发声时的音色，不要把它当作背景音或环境声播放，也不要在${subject}不发声的时间里重复它`;
+  }
+  if (source === "workflow_start_frame") return `${label} 是本镜已选的首帧画面，只作普通参考`;
+  if (source === "workflow_end_frame") return `${label} 是本镜已选的尾帧画面，只作普通参考`;
+  return `${label} 是用户上传的参考素材`;
+}
+
+/**
+ * Builds the deterministic reference manifest prepended to the runtime video prompt.
+ * Input is the already-assembled, already-validated artifact list; ordering and
+ * numbering come from that array so the text always matches what the provider receives.
+ */
+export function buildReferenceManifestText(inputArtifacts = []) {
+  const artifacts = Array.isArray(inputArtifacts) ? inputArtifacts : [];
+  const perTypeCount = { image: 0, video: 0, audio: 0 };
+  const numbered = [];
+  for (const artifact of artifacts) {
+    const mediaType = String(artifact?.mediaType || "");
+    if (!Object.hasOwn(REFERENCE_MEDIA_WORDS, mediaType)) continue;
+    perTypeCount[mediaType] += 1;
+    numbered.push({ artifact, mediaType, index: perTypeCount[mediaType] });
+  }
+  if (!numbered.length) return "";
+
+  // 只有本次确实带了角色参考图，才让抽帧把外观权威让给它——否则等于指向一个
+  // 不存在的素材，反而让模型无所适从。
+  const hasCharacterReference = numbered.some(
+    (entry) => String(entry.artifact?.source || "") === "character_reference"
+  );
+
+  const clauses = [];
+  let run = null;
+  const flush = () => {
+    if (!run) return;
+    const word = REFERENCE_MEDIA_WORDS[run.mediaType];
+    const label = run.first === run.last ? `${word}${run.first}` : `${word}${run.first}-${run.last}`;
+    // 抽帧成组时点名末帧的编号；单张时它自己就是末帧，由 manifestClause 处理。
+    const endLabel = run.first === run.last ? "" : `${word}${run.last}`;
+    clauses.push(manifestClause(run.artifact, label, { hasCharacterReference, endLabel }));
+    run = null;
+  };
+  for (const entry of numbered) {
+    const key = manifestGroupKey(entry.artifact);
+    if (run && run.key === key && entry.index === run.last + 1) {
+      run.last = entry.index;
+      continue;
+    }
+    flush();
+    run = { key, mediaType: entry.mediaType, artifact: entry.artifact, first: entry.index, last: entry.index };
+  }
+  flush();
+  return `本次提供的参考素材：${clauses.join("；")}。`;
 }

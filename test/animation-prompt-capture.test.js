@@ -9,6 +9,75 @@ import {
   FullModelOutputLogWriter,
   MODEL_OUTPUT_LOG_SCOPES
 } from "../src/full-model-output-log.js";
+import { OutputContractError } from "../src/validation.js";
+import { readSseCompletion } from "../src/sse-stream.js";
+import { sseChunks } from "./helpers/sse-response.js";
+
+test("Animation Plan SSE 日志不等待流结束才交给客户端，且保存正文与真实用量", async () => {
+  const attempts = [];
+  const finalized = [];
+  const capture = new AnimationPromptCapture({ modelOutputLogWriter: {
+    enabled: true,
+    async recordAttempt(value) { attempts.push(value); return { id: "attempt" }; },
+    async finalizeAttempt(ref, value) { finalized.push(value); }
+  } });
+  let controller;
+  const response = new Response(new ReadableStream({ start(value) { controller = value; } }), {
+    headers: { "content-type": "text/event-stream", "x-request-id": "stream-id" }
+  });
+  const capturedFetch = capture.wrapFetch(async () => response);
+  const usage = { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 };
+  await capture.run({ provider: "MiMo", variantId: "V1" }, async () => {
+    const pending = capturedFetch("https://provider.example/v1/chat/completions", {
+      method: "POST", body: JSON.stringify({ model: "mimo-v2.6-flash", stream: true, messages: [] })
+    });
+    let timer;
+    const early = await Promise.race([
+      pending,
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), 100); })
+    ]);
+    clearTimeout(timer);
+    // 无论断言结果如何，先释放流，防止旧实现留下挂起的 reader。
+    controller.enqueue(new TextEncoder().encode(sseChunks({
+      content: '{"ok":true}', reasoningContent: "推理不能混入正文", usage
+    })));
+    controller.close();
+    const delivered = await pending;
+    assert.equal(early, response, "fetch 必须在最后一个数据块到达之前返回");
+    const completion = await readSseCompletion(delivered.body);
+    assert.equal(completion.content, '{"ok":true}');
+  });
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].content, '{"ok":true}');
+  assert.equal(attempts[0].providerRequestId, "stream-id");
+  assert.deepEqual(attempts[0].usage, usage);
+  assert.equal(finalized[0].validationStatus, "passed");
+});
+
+test("Animation Plan SSE 未结束不能记为日志成功，仍保留实际收到的 usage", async () => {
+  const attempts = [];
+  const finalized = [];
+  const usage = { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 };
+  const capture = new AnimationPromptCapture({ modelOutputLogWriter: {
+    enabled: true,
+    async recordAttempt(value) { attempts.push(value); return { id: "attempt" }; },
+    async finalizeAttempt(ref, value) { finalized.push(value); }
+  } });
+  const wire = `data: ${JSON.stringify({ choices: [{ delta: { content: '{"ok":true}' } }], usage })}\n\n`;
+  const capturedFetch = capture.wrapFetch(async () => new Response(wire, {
+    headers: { "content-type": "text/event-stream" }
+  }));
+  await assert.rejects(() => capture.run({ provider: "MiMo" }, async () => {
+    const response = await capturedFetch("https://provider.example/v1/chat/completions", {
+      method: "POST", body: JSON.stringify({ stream: true, messages: [] })
+    });
+    await readSseCompletion(response.body);
+  }), { name: "SseStreamIncompleteError" });
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].status, "failed");
+  assert.deepEqual(attempts[0].usage, usage);
+  assert.equal(finalized[0].code, "MODEL_STREAM_INCOMPLETE");
+});
 
 test("animation prompt capture 保存 wire-effective prompt 且不记录请求头或媒体", async (t) => {
   const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), "animation-prompt-capture-"));
@@ -185,12 +254,63 @@ test("Animation Plan output-only 模式保存 exact completion 且不落 Prompt�
   assert.equal(metadata.production.productionRequestId, "production-request-a");
   assert.equal(metadata.attempt.phase, "animation-shot-batch");
   assert.equal(metadata.attempt.sequence, 1);
+  assert.equal(metadata.attempt.validationStatus, "passed");
   assert.equal(metadata.provider.name, "Qwen");
   assert.equal(metadata.provider.providerRequestId, "provider-request-id");
   assert.doesNotMatch(
     `${metadataText}\n${await fs.readFile(outputPath, "utf8")}`,
     /MUST_NOT_BE_LOGGED|SYSTEM_PROMPT_MUST_NOT_BE_LOGGED|USER_PROMPT_MUST_NOT_BE_LOGGED/u
   );
+});
+
+test("Animation Plan 失败 attempt 记录稳定诊断与 build identity 且 metadata 不落敏感负载", async (t) => {
+  const modelOutputRoot = await fs.mkdtemp(path.join(os.tmpdir(), "animation-model-output-failed-"));
+  t.after(() => fs.rm(modelOutputRoot, { recursive: true, force: true }));
+  const writer = new FullModelOutputLogWriter({
+    outputRoot: modelOutputRoot,
+    scope: MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN,
+    gitCommit: "abcdef1234567890",
+    buildId: "animation-test-build"
+  });
+  const capture = new AnimationPromptCapture({ modelOutputLogWriter: writer });
+  const capturedFetch = capture.wrapFetch(async () => new Response(JSON.stringify({
+    choices: [{ message: { content: "{\"shotPlan\":[]}" }, finish_reason: "stop" }]
+  }), { status: 200 }));
+
+  await assert.rejects(
+    () => capture.run({ variantId: "V1" }, async () => {
+      await capturedFetch("https://provider.example/v1/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({
+          model: "test-model",
+          messages: [{ role: "user", content: "直接视频镜头批次" }]
+        })
+      });
+      throw new OutputContractError("镜头校验失败", [{
+        code: "DIRECT_SHOT_TEST_FAILURE",
+        jsonPointer: "/shotPlan/0/videoPrompt",
+        reason: "提示词与签发事实冲突",
+        boundarySignature: "MUST_NOT_BE_LOGGED_SIGNATURE",
+        referenceImageDataUrl: "data:image/png;base64,MUST_NOT_BE_LOGGED_DATA_URL"
+      }]);
+    }),
+    /镜头校验失败/u
+  );
+
+  const files = await recursiveFiles(modelOutputRoot);
+  const metadataPath = files.find((file) => file.endsWith("metadata.json"));
+  const metadataText = await fs.readFile(metadataPath, "utf8");
+  const metadata = JSON.parse(metadataText);
+  assert.equal(metadata.gitCommit, "abcdef1234567890");
+  assert.equal(metadata.buildId, "animation-test-build");
+  assert.equal(metadata.attempt.validationStatus, "failed");
+  assert.equal(metadata.attempt.errorName, "OutputContractError");
+  assert.deepEqual(metadata.attempt.diagnostics, [{
+    code: "DIRECT_SHOT_TEST_FAILURE",
+    jsonPointer: "/shotPlan/0/videoPrompt",
+    reason: "提示词与签发事实冲突"
+  }]);
+  assert.doesNotMatch(metadataText, /MUST_NOT_BE_LOGGED|data:image|base64|boundarySignature/u);
 });
 
 test("Animation Plan 输出日志写入失败不改变模型 Response", async () => {

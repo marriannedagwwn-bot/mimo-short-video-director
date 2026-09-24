@@ -1,0 +1,33 @@
+{
+  "shotPlan":[{
+    "shotId":"A01",
+    "sourceSceneId":"S1",
+    "sceneId":"LOC01",
+    "durationSeconds":15,
+    "storyPurpose":"建立祖孙亲密关系，展示旧围巾的情感价值与物理状态，为后续行动提供动机",
+    "emotionalTarget":"温馨、关切",
+    "videoPrompt":"日系2.5D动画，融合新海诚细腻光影与吉卜力温暖质感，画面柔和通透。温馨日式客厅，木质地板，窗边放置摇椅与矮桌，夕阳透过窗户洒入，光线柔和金黄，墙上挂有家庭照片，角落有绿植。浅灰蓝色长直发少女小白子，带有刘海与两侧碎发，穿深蓝色校服西装外套、白衬衫、蓝领带、深蓝短裙，佩戴蓝色长围巾，头顶有一个柔和发光的光环，无头饰。银灰色短发奶奶，面容慈祥，穿米色居家针织衫与长裙，脖子上围着一条边缘起毛、有明显破洞的米白色旧围巾。白色与浅蓝色相间蓬松卷发、头顶卷曲呆毛、猫耳、浅蓝色尾巴的芙芙猫。夕阳暖光中，芙芙猫蜷在奶奶脚边打盹，奶奶坐在窗边摇椅上织毛衣。小白子推门进来，放下书包，走近奶奶，用「嗷呜～」配合指向围巾破洞的动作表达关心。奶奶放下毛衣，摸摸小白子的头，笑着说「这条围巾跟了我二十年啦」。小白子低头看自己脖子上的蓝色长围巾，若有所思地摸了摸围巾边缘。中景展示客厅温馨氛围，缓慢推进至特写旧围巾的磨损细节与破洞，再切至特写小白子关切的眼神与若有所思的表情。表演节奏舒缓温暖，对白自然亲切。全片无背景音乐，只保留现场环境声与动作声。",
+    "cameraMotion":"中景开场展示客厅全景与夕阳氛围，缓慢推进至奶奶与旧围巾特写，硬切至小白子面部特写捕捉关切与若有所思的表情变化",
+    "characterAction":"芙芙猫蜷在奶奶脚边打盹；奶奶坐在摇椅上织毛衣；小白子推门进入客厅，放下书包，走近奶奶，用「嗷呜～」配合指向围巾破洞的动作表达关心；奶奶放下毛衣，摸摸小白子的头并说话；小白子低头看自己的蓝色长围巾，若有所思地摸围巾边缘",
+    "dialogueOrSubtitle":"奶奶：「这条围巾跟了我二十年啦」",
+    "soundDesign":"摇椅轻微晃动声、毛线针碰撞声、脚步声、书包放下声、小白子「嗷呜～」发声",
+    "continuityNotes":"旧围巾始终在奶奶脖子上，边缘起毛与破洞清晰可见；小白子蓝色长围巾始终佩戴；芙芙猫在脚边位置固定；夕阳暖光贯穿全场",
+    "negativePrompts":{"image":[],"video":[{"text":"不得出现拟人动物外壳、翅膀、兽爪、肉垫、鸟喙等非人类结构赋予小白子","appliesTo":"video","triggerEvidence":[{"sourcePath":"creativeBrief.protectedExpressions","evidence":"不得将翅膀、兽爪、肉垫、鸟喙等非人类结构赋予小白子或芙芙猫"}],"reasonCode":"explicit_identity_conflict","priority":"high","enabled":true},{"text":"不得给小白子添加任何头饰","appliesTo":"video","triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter","evidence":"无头饰，但头顶有一个光环"}],"reasonCode":"explicit_identity_conflict","priority":"high","enabled":true}]},
+    "acceptanceCriteria":["旧围巾的边缘起毛与破洞在特写中清晰可见","小白子完整呈现浅灰蓝色长直发、深蓝色校服套装、蓝色长围巾、头顶光环、无头饰","奶奶说出完整台词「这条围巾跟了我二十年啦」"]
+  },{
+    "shotId":"A02",
+    "sourceSceneId":"S2",
+    "sceneId":"LOC02",
+    "durationSeconds":10,
+    "storyPurpose":"展示主角主动性与计划能力，建立「花纹复杂」障碍",
+    "emotionalTarget":"期待、紧张",
+    "videoPrompt":"日系2.5D动画，融合新海诚细腻光影与吉卜力温暖质感，画面柔和通透。简洁温馨的学生卧室，木质衣柜、书桌、单人床，地板铺有浅色地毯，傍晚自然光从窗户透入。浅灰蓝色长直发少女小白子，带有刘海与两侧碎发，穿深蓝色校服西装外套、白衬衫、蓝领带、深蓝短裙，佩戴蓝色长围巾，头顶有一个柔和发光的光环，无头饰。白色与浅蓝色相间蓬松卷发、头顶卷曲呆毛、猫耳、浅蓝色尾巴的芙芙猫。米白色旧围巾边缘起毛、有明显破洞、花纹复杂但磨损。黄铜色边框圆形放大镜，手柄木质。复古铁盒针线盒，内含针线与毛线团。小白子踮脚从衣柜顶层取针线盒，身体前倾保持平衡，差点摔倒但稳住了。她把旧围巾铺在地板上，用放大镜贴近织物逐格观察花纹，在笔记本上画下图案草稿。芙芙猫在旁边好奇地用爪子拨弄毛线团，毛线滚出去一段。中景展示小白子踮脚取物的紧张感，硬切至特写放大镜下的织物纹理，再切至特写笔记本上的图案草稿。表演节奏先紧张后专注。全片无背景音乐，只保留现场环境声与动作声。",
+    "cameraMotion":"中景展示小白子踮脚取针线盒的全身动作与紧张感，硬切至放大镜贴近织物的特写，再切至笔记本上图案草稿的特写",
+    "characterAction":"小白子踮脚从衣柜顶层取针线盒，身体前倾保持平衡，差点摔倒但稳住；把旧围巾铺在地板上；用放大镜贴近织物逐格观察花纹；在笔记本上画下图案草稿；芙芙猫在旁边用爪子拨弄毛线团，毛线滚出去一段",
+    "dialogueOrSubtitle":"",
+    "soundDesign":"衣柜门轻响、针线盒取出声、织物铺展声、放大镜移动声、铅笔绘画声、毛线滚动声、芙芙猫爪子拨弄声",
+    "continuityNotes":"承接A01小白子已回到卧室；旧围巾从奶奶处取来铺在地板上；针线盒从衣柜顶层取出；放大镜下花纹细节需清晰呈现复刻难度",
+    "negativePrompts":{"image":[],"video":[{"text":"不得出现拟人动物外壳、翅膀、兽爪、肉垫、鸟喙等非人类结构赋予小白子","appliesTo":"video","triggerEvidence":[{"sourcePath":"creativeBrief.protectedExpressions","evidence":"不得将翅膀、兽爪、肉垫、鸟喙等非人类结构赋予小白子或芙芙猫"}],"reasonCode":"explicit_identity_conflict","priority":"high","enabled":true},{"text":"不得给小白子添加任何头饰","appliesTo":"video","triggerEvidence":[{"sourcePath":"creatorProfile.fixedCharacter","evidence":"无头饰，但头顶有一个光环"}],"reasonCode":"explicit_identity_conflict","priority":"high","enabled":true}]},
+    "acceptanceCriteria":["放大镜下的织物花纹纹理在特写中清晰可见","小白子踮脚取物时身体前倾保持平衡的动作完整呈现","笔记本上出现图案草稿"]
+  }]
+}

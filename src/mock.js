@@ -2,23 +2,16 @@ import {
   ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION,
   ANIMATION_DIRECT_SHOT_MODE,
   BACKGROUND_MUSIC_NONE,
-  CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS,
   NO_BACKGROUND_MUSIC_SENTENCE,
+  extractFixedCharacterName,
   normalizeBackgroundMusicMode
 } from "./validation.js";
+import { deriveDirectShotSkeleton } from "./direct-shot-timeline.js";
 import { resolveVideoPromptProfile } from "../public/video-prompt-profiles.js";
-
-// 每条【原片有】都必须用「」引用 mockReconstruction 中真实存在的逐字原文，
-// 否则 mock 自己就违反了 allowedNarrativeComponents 的存在性判定契约。
-const allowedComponentGuidance = [
-  "【原片有】「完成送达或照料」。保留把某物交到某人手中的目标压力，改写物品、接收者和阻碍。",
-  "【原片有】「途中受阻」。保留空间推进带来的关系升温，改写路线、交通方式与停靠事件。",
-  "【原片有】「任务物」。按当前剧情需要选择日常物件承载情绪；来源物件不是禁词，也不得因来源存在而机械注入。",
-  "【原片有】「提供具体帮助」。保留陌生人或同伴援助的情绪回报，改写帮助者身份与帮助方式。",
-  "【原片有】「让显性任务回应隐性需求」。保留显性需求与隐性需求的双层设计，重建人物关系与具体处境。",
-  "【原片有】「遇到外部阻力」。继续让环境形成外部阻力和氛围，但采用新的场景调度。",
-  "【原片有】「用日常小动作收尾」。保留小动作收束情绪的方式，重新设计结尾动作和道具。"
-];
+import { FULL_STORY_SCHEMA_VERSION, NARRATIVE_FULL_STORY_FIELDS } from "./full-story-contract.js";
+// 维度清单只有一份：mock 少写一个维度就会被 CANDIDATE_REVIEW_DIMENSION_MISSING 拦下，
+// 这正是我们要的——demo 与 live 走同一条校验链。
+import { CANDIDATE_REVIEW_DIMENSION_WEIGHTS } from "../public/story-review-metrics.js";
 
 export function mockAnalysis(input) {
   const duration = Math.max(1, Math.round(input.metadata?.duration || 45));
@@ -91,75 +84,49 @@ export function mockReconstruction(input) {
   };
 }
 
-export function mockBrief(input) {
-  const fixed = input.creatorProfile?.fixedCharacter || "固定主角";
-  const vertical = input.creatorProfile?.vertical || "泛生活赛道";
+export function mockBrief() {
+  // creative_brief/2.0：只有 storyEngine 与 recastTest，顶层多一个键就会被 CREATIVE_BRIEF_UNEXPECTED_FIELD 拦下，
+  // 所以 demo 必须与 live 同形；schemaVersion 由服务端盖，这里不写。
   return {
-    contentType: "任务驱动的关系情绪短故事",
-    targetAudience: input.referenceAnalysis?.targetAudience?.primary || "泛生活情感受众",
-    coreEmotion: "从担心到被普通人的善意与克制关心打动",
-    storyEngine: { desire: "主角必须完成一项指向重要关系人的具体任务", obstacle: "时间、天气或空间让简单任务变得困难", escalation: "任务成本持续增加并暴露主角的在意", turningMechanism: "帮助者通过观察行动而非听取解释介入", payoff: "显性任务完成，同时回应被关爱对象未说出口的需要" },
-    emotionStructure: [
-      { stage: "任务钩子", function: "建立结果问题", targetEmotion: "好奇", intensity: 45 },
-      { stage: "成本升级", function: "证明关系重量", targetEmotion: "担心", intensity: 72 },
-      { stage: "善意介入", function: "提供社会情绪回报", targetEmotion: "温暖", intensity: 84 },
-      { stage: "日常兑现", function: "把任务变成关系确认", targetEmotion: "释然", intensity: 92 }
-    ],
-    roleAndOccupationMapping: [
-      { sourceFunction: "承担任务并推动行动", newRole: fixed, newOccupationOrIdentity: `${vertical}中的可信日常身份`, mappingLogic: "职业必须自然地产生任务、工具与行动能力" },
-      { sourceFunction: "承载隐性情感需求", newRole: "与固定角色有稳定关系的人", newOccupationOrIdentity: "由选题决定", mappingLogic: "关系应能让克制照料成立" },
-      { sourceFunction: "在低谷提供转折", newRole: "赛道内可自然出现的帮助者", newOccupationOrIdentity: "场景原生角色", mappingLogic: "帮助方式应具体且不喧宾夺主" }
-    ],
-    reusableHighValueBeats: [
-      { beat: "任务物首次出现并绑定期限", dramaticValue: "3 秒内建立观看问题", mustRetain: "明确目标与未完成代价", adaptableSurface: ["物品", "期限来源", "出发地点"], sourceSceneRefs: ["S1"] },
-      { beat: "主角优先保护任务而不是自己", dramaticValue: "用选择证明关系重量", mustRetain: "产生可见成本", adaptableSurface: ["阻力", "保护动作", "损失"], sourceSceneRefs: ["S2"] },
-      { beat: "帮助者看懂但不追问", dramaticValue: "提供善意和尊严双重回报", mustRetain: "帮助必须解决具体障碍", adaptableSurface: ["帮助者", "工具", "发生地点"], sourceSceneRefs: ["S3"] },
-      { beat: "小动作揭示真正需求", dramaticValue: "将显性任务翻译为隐性关爱", mustRetain: "克制收束而非解释主题", adaptableSurface: ["结尾动作", "道具", "最后一句话"], sourceSceneRefs: ["S4"] }
-    ],
-    controlledRewriteVariables: [
-      { variable: "人物与职业", sourceValue: "原片人物关系", allowedDirections: [fixed, `${vertical}原生职业`], mustChange: true, reason: "适配固定角色并避免人物复制" },
-      { variable: "具体任务", sourceValue: "原片送达/照料事项", allowedDirections: ["修复", "交接", "陪伴", "补救"], mustChange: true, reason: "保留任务引擎但重建事件" },
-      { variable: "道具与阻力", sourceValue: "原片具体物件和环境", allowedDirections: ["赛道工具", "新的天气压力", "新的空间规则"], mustChange: true, reason: "形成新的可识别表达" },
-      { variable: "对白与镜头", sourceValue: "原片台词和镜头排列", allowedDirections: ["角色口癖", "新的信息揭示顺序", "新的调度"], mustChange: true, reason: "避免逐句逐镜对应" }
-    ],
-    protectedExpressions: [
-      { expressionType: "具体对白", sourceExpression: "原片可识别台词原句", prohibition: "不得逐句或近义逐句复写", safeAlternativePrinciple: "从角色身份与当下动作重新生成潜台词" },
-      { expressionType: "独特视听组合", sourceExpression: "罕见道具、动作、机位连续对应", prohibition: "不得复刻连续镜头组合", safeAlternativePrinciple: "保留剧作功能，重做场景调度与视觉焦点" }
-    ],
-    minimumTransformationRules: [
-      { dimension: "人物", minimumChange: "主配角身份、关系呈现和行为习惯均重新设计", acceptanceCheck: "无法仅替换姓名还原原片人物" },
-      { dimension: "任务", minimumChange: "任务对象、完成方式与失败代价至少改变两项", acceptanceCheck: "新任务由垂直赛道自然产生" },
-      { dimension: "细节表达", minimumChange: "关键道具、具体阻力、对白和结尾动作全部重做", acceptanceCheck: "不存在逐句或逐镜对应" },
-      { dimension: "价值保真", minimumChange: "不改变高价值桥段的剧作功能", acceptanceCheck: "每个新桥段能映射回其情绪与叙事价值" }
-    ],
-    allowedNarrativeComponents: CREATIVE_BRIEF_ALLOWED_NARRATIVE_COMPONENTS.map(
-      (component, index) => ({ component, howToReuseSafely: allowedComponentGuidance[index] })
-    ),
-    nonNegotiableExperience: { samePositioning: "仍是生活关系中的任务型情绪故事", sameAudience: "仍服务需要关系共鸣和善意确认的受众", sameEmotion: "仍经历好奇—担心—温暖—释然", samePlotDriver: "仍由必须完成的具体任务驱动", sameBeatValue: "仍包含成本证明、获得帮助与日常兑现" },
-    creativeDistancePolicy: "结构与体验保持高保真；人物、事件、台词、道具和视听表达保持明确原创。"
+    storyEngine: { desire: "主角必须完成一项指向重要关系人的具体任务", obstacle: "时间、天气或空间让简单任务变得困难", escalation: "任务成本持续增加并暴露主角的在意", turningMechanism: { before: "观众以为这只是一方单向地替另一方跑腿", after: "观众看出两人一直在互相照应，只是方式不同" }, payoff: "显性任务完成，同时回应被关爱对象未说出口的需要" },
+    // 两侧都非空且不重叠——demo 必须走到与 live 同一条校验链（含 OVERLAP 那条闸门），
+    // 否则就是 §2.14 记过的「mock 通过而 live 失败」。
+    recastTest: {
+      recastAs: "把主角换成一个凡事先想周全、怕出洋相的孩子",
+      collapses: ["把手边一件不该戴在头上的东西扣在头上当防护，然后一本正经继续干活"],
+      survives: ["替重要关系人跑一趟，把东西送到"]
+    }
   };
 }
 
 export function mockVisualGuardrails(input) {
   const fixed = input.creatorProfile?.fixedCharacter || "固定主角";
-  const fixedName = fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
+  // 与 ensureVisualGuardrailsMatchesProfile 用同一个取名函数。此前这里自己按逗号切，不认冒号，
+  // 「名字：描述」写法会签出「名字：描述前半句」这种角色名，演示模式在这一步就被校验器拦下。
+  const fixedName = extractFixedCharacterName(fixed) || fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
   const evidence = [{ sourcePath: "creatorProfile.fixedCharacter", evidence: fixed }];
   const sourceSimilarityRules = [];
   const dialogueRules = [];
-  for (const [index, item] of (input.creativeBrief?.protectedExpressions || []).entries()) {
-    const sourceExpression = String(item?.sourceExpression || "").trim();
-    if (!sourceExpression) continue;
-    const triggerEvidence = [{
-      sourcePath: `creativeBrief.protectedExpressions[${index}].sourceExpression`,
-      evidence: sourceExpression
-    }];
-    if (/台词|对白|口癖|拟声/u.test(String(item?.expressionType || ""))) continue;
-    sourceSimilarityRules.push({
-      text: `记录原片表面表达“${sourceExpression}”；仅在实际使用原片视觉参考时用于 reference_leak 风险判断，不构成正向内容禁词。`,
-      sourceExpression,
-      triggerEvidence,
-      appliesWhenReferenceUsed: true
-    });
+  // 与 live 同口径：原片表面表达直接取自脚本还原（creative_brief/2.0 起简报不再提供）。
+  // evidence 就是 keyProps 原文本身，sourceExpression 逐字出现在其中，能过同类物品逐字绑定校验。
+  const seenProps = new Set();
+  const scenes = Array.isArray(input.sourceScriptReconstruction?.scenes) ? input.sourceScriptReconstruction.scenes : [];
+  for (const [sceneIndex, scene] of scenes.entries()) {
+    for (const [propIndex, prop] of (Array.isArray(scene?.keyProps) ? scene.keyProps : []).entries()) {
+      const sourceExpression = String(prop || "").trim();
+      if (!sourceExpression || seenProps.has(sourceExpression)) continue;
+      seenProps.add(sourceExpression);
+      const triggerEvidence = [{
+        sourcePath: `sourceScriptReconstruction.scenes[${sceneIndex}].keyProps[${propIndex}]`,
+        evidence: sourceExpression
+      }];
+      sourceSimilarityRules.push({
+        text: `记录原片表面表达“${sourceExpression}”；仅在实际使用原片视觉参考时用于 reference_leak 风险判断，不构成正向内容禁词。`,
+        sourceExpression,
+        triggerEvidence,
+        appliesWhenReferenceUsed: true
+      });
+    }
   }
   const constraints = String(input.creatorProfile?.constraints || "").trim();
   if (constraints && /台词|对白|说话|说|口癖|拟声|表达|句子|语气|发声|行为|动作/u.test(constraints)) {
@@ -200,6 +167,41 @@ export function mockVisualGuardrails(input) {
   };
 }
 
+// keyChoice / climax / emotionalPayoff 由服务端按 keyChoiceBeat / climaxBeat 派生，
+// 因果序还要求「关键选择拍 < 高潮拍 < 最后一拍」且中间隔一拍。
+// 这里先写死五拍，再把三个顶层字段从 action 原样取出——
+// 顺序反过来（先写顶层再编 outline）就会像模型那样写出两版剧情。
+// 按目标时长等比缩放各拍秒数：取整后把余数逐秒给靠前的拍，做法与 direct_shot
+// 长场次均分一致。目标缺失时逐字保持历史值（44 秒），不引入新行为。
+function scaleOutlineSeconds(storyOutline, targetDurationSeconds) {
+  const target = Number(targetDurationSeconds);
+  if (!Number.isFinite(target) || target <= 0) return storyOutline;
+  const base = storyOutline.reduce((sum, beat) => sum + beat.estimatedSeconds, 0);
+  if (base <= 0) return storyOutline;
+  const scaled = storyOutline.map((beat) => Math.max(1, Math.floor(beat.estimatedSeconds * target / base)));
+  let remainder = Math.round(target) - scaled.reduce((sum, seconds) => sum + seconds, 0);
+  for (let index = 0; remainder > 0; index = (index + 1) % scaled.length, remainder -= 1) scaled[index] += 1;
+  return storyOutline.map((beat, index) => ({ ...beat, estimatedSeconds: scaled[index] }));
+}
+
+function mockCandidateProjection(fixed, seed, targetDurationSeconds) {
+  const storyOutline = scaleOutlineSeconds([
+    { beat: 1, phase: "任务出现", action: `${fixed}发现任务物出问题，并确认最后期限。`, emotion: "紧迫", dramaticFunction: seed.shape[0], estimatedSeconds: 4 },
+    { beat: 2, phase: "承担代价", action: `${fixed}选择付出额外成本保护任务与关系，而不是按最省事的方式放弃。`, emotion: "担心", dramaticFunction: seed.shape[1], estimatedSeconds: 12 },
+    { beat: 3, phase: "条件改变", action: `${fixed}让${seed.helper}看见真实困境，并接受一项不替自己完成任务的具体帮助。`, emotion: "温暖", dramaticFunction: seed.shape[2], estimatedSeconds: 10 },
+    { beat: 4, phase: "亲手解决", action: `${fixed}在${seed.pressure}造成的最后阻碍中亲手完成${seed.task}的决定性动作。`, emotion: "紧张", dramaticFunction: seed.shape[3], estimatedSeconds: 10 },
+    { beat: 5, phase: "关系兑现", action: `${seed.ending}，此前没有说出口的关心转化为双方都能确认的关系变化。`, emotion: "释然", dramaticFunction: "以可见状态变化完成情绪兑现", estimatedSeconds: 8 }
+  ], targetDurationSeconds);
+  return {
+    keyChoiceBeat: 2,
+    climaxBeat: 4,
+    keyChoice: storyOutline[1].action,
+    climax: storyOutline[3].action,
+    emotionalPayoff: storyOutline[4].action,
+    storyOutline
+  };
+}
+
 export function mockVariants(input) {
   const count = Math.max(1, Math.min(6, Number(input.count) || 3));
   const fixed = input.creatorProfile?.fixedCharacter || "固定主角";
@@ -222,20 +224,27 @@ export function mockVariants(input) {
     newTask: seed.task,
     emotionalMedium: seed.medium,
     environmentPressure: seed.pressure,
-    storyOutline: [
-      { beat: 1, phase: "钩子", action: "任务物出问题，明确最后期限", emotion: "紧迫", dramaticFunction: seed.shape[0], estimatedSeconds: 4 },
-      { beat: 2, phase: "推进", action: "常规方案失效，主角付出额外成本保护任务", emotion: "担心", dramaticFunction: seed.shape[1], estimatedSeconds: 14 },
-      { beat: 3, phase: "转折", action: `${seed.helper}看出困境并提供具体帮助`, emotion: "温暖", dramaticFunction: seed.shape[2], estimatedSeconds: 12 },
-      { beat: 4, phase: "兑现", action: seed.ending, emotion: "释然", dramaticFunction: seed.shape[3], estimatedSeconds: 10 }
-    ],
+    narrativeMode: index % 2 === 1 ? "slice_of_life" : "dramatic",
+    ...mockCandidateProjection(fixed, seed, input.targetDurationSeconds),
+    novelty: `以${seed.medium}连接任务与关系，并让帮助只改变条件、不替${fixed}完成选择。`,
+    visualPotential: `${seed.pressure}、任务物状态变化与${seed.ending}形成可见的动作和环境对照。`,
     highValueBeatMapping: [
-      { briefBeat: "任务与期限", newExpression: seed.task, retainedValue: "快速建立观看问题" },
-      { briefBeat: "外部帮助", newExpression: seed.helper, retainedValue: "普通人善意成为情绪转折" },
-      { briefBeat: "仪式化结尾", newExpression: seed.ending, retainedValue: "通过动作而非说教完成情绪兑现" }
+      { briefBeat: "任务与期限", newExpression: seed.task, retainedValue: "快速建立观看问题", failureSignal: "开场只交代情绪或身份，观众看不出有一件必须完成的事" },
+      { briefBeat: "外部帮助", newExpression: seed.helper, retainedValue: "普通人善意成为情绪转折", failureSignal: "帮助者直接替主角完成任务，主角只剩下道谢的动作" },
+      { briefBeat: "仪式化结尾", newExpression: seed.ending, retainedValue: "通过动作而非说教完成情绪兑现", failureSignal: "结尾靠台词宣布心意或靠夕阳与拥抱收束，没有可见的动作变化" }
     ],
     keyDialogueDirections: ["主角不解释自己的辛苦", "帮助者只确认需要什么", "结尾不直接说谢谢或我爱你"],
     endingRitual: seed.ending,
-    transformationProof: { changedCharacters: `人物映射为${fixed}及${vertical}原生关系`, changedTask: seed.task, changedDetailsAndProps: `${seed.medium}与${seed.pressure}`, changedDialogue: "按新职业口吻重写，禁止复用原句", changedVisualExpression: "围绕新工具、空间和动作重新设计镜头" },
+    // source 只引用 mockReconstruction 里真实存在的逐字原文，replacement 才写本片改法——
+    // 与 mockBrief 的【原片有】同规格：mock 必须自己就能通过真实契约校验，
+    // 否则会出现 mock 通过而 live 失败的偏差（CLAUDE.md §2.4）。
+    transformationProof: {
+      changedCharacters: { source: "帮助者", replacement: `人物映射为${fixed}及${vertical}原生关系` },
+      changedTask: { source: "完成送达或照料", replacement: seed.task },
+      changedDetailsAndProps: { source: "任务物", replacement: `${seed.medium}与${seed.pressure}` },
+      changedDialogue: { source: "对白稀少，以动作体现坚持", replacement: "按新职业口吻重写，禁止复用原句" },
+      changedVisualExpression: { source: "近景与物件特写", replacement: "围绕新工具、空间和动作重新设计镜头" }
+    },
     experienceFidelity: { positioning: "生活关系型情绪故事", audience: "保留对善意与关系共鸣敏感的受众", emotion: "好奇—担心—温暖—释然", plotDriver: "有期限的具体任务", highValueBeats: "成本证明、获得帮助、动作兑现" },
     originalityRiskCheck: { riskLevel: "low", possibleSimilarity: "保留任务旅途和帮助转折等通用结构", mitigation: "人物、任务、媒介、阻力、帮助方式和结尾动作均为新设计" }
   })) };
@@ -244,7 +253,8 @@ export function mockVariants(input) {
 export function mockFullStory(input) {
   const variant = input.variant || {};
   const fixed = input.creatorProfile?.fixedCharacter || variant.characterSetup?.protagonist || "固定主角";
-  const fixedName = fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
+  // 取名与校验器同一个函数，理由见 mockVisualGuardrails。
+  const fixedName = extractFixedCharacterName(fixed) || fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
   const title = variant.title || "雨后的那件小事";
   const careRecipient = variant.characterSetup?.careRecipient || "一位不愿麻烦别人的重要关系人";
   const helper = variant.characterSetup?.helper || "路过的热心帮手";
@@ -407,6 +417,39 @@ export function mockFullStory(input) {
   };
 }
 
+// 两个 mock 分支必须看到同一份场次列表：direct_shot 的镜头骨架由它派生，
+// 一旦两边各算一次就会出现 mock 通过而 live 失败的偏差。
+// The demo keeps canned story content; it is not narrative-quality evidence.
+// Only the mock producer uses this projection. Live output and imported
+// artifacts are never stripped or upgraded to make validation pass.
+export function mockNarrativeFullStory(input = {}) {
+  const legacy = mockFullStory(input);
+  const story = Object.fromEntries(NARRATIVE_FULL_STORY_FIELDS
+    .filter((field) => Object.hasOwn(legacy, field))
+    .map((field) => [field, structuredClone(legacy[field])]));
+  story.schemaVersion = FULL_STORY_SCHEMA_VERSION;
+  story.keyProps = legacy.keyProps.map(({ prop, storyFunction, visualUse }) => ({
+    prop, storyFunction, visualUse
+  }));
+  story.sceneScript.forEach((scene) => {
+    scene.shotAndSound = "保留当前场次的环境声音与动作声。";
+    scene.shootingNotes = "演示稿仅示范数据结构；具体剧情和制作效果需要真实生成与检查。";
+  });
+  return story;
+}
+
+function resolveMockSceneScript(fullStory = {}, fixedName = "固定主角", careRecipient = "被关爱对象") {
+  if (Array.isArray(fullStory.sceneScript) && fullStory.sceneScript.length) return fullStory.sceneScript;
+  return [
+    { sceneId: "S1", timeRange: "00:00-00:05", location: "出发点", visibleAction: `${fixedName}确认任务物后出发。`, emotionNode: "任务启动", dramaticFunction: "建立任务" },
+    { sceneId: "S2", timeRange: "00:05-00:14", location: "途中", visibleAction: `${fixedName}在环境压力中保护任务物。`, emotionNode: "压力上升", dramaticFunction: "增加成本" },
+    { sceneId: "S3", timeRange: "00:14-00:25", location: "受阻点", visibleAction: `${fixedName}差点失手但护住任务物。`, emotionNode: "担心", dramaticFunction: "证明在意" },
+    { sceneId: "S4", timeRange: "00:25-00:38", location: "临时停靠点", visibleAction: "帮助者递出关键工具。", emotionNode: "温暖", dramaticFunction: "善意转折" },
+    { sceneId: "S5", timeRange: "00:38-00:51", location: "到达点", visibleAction: `${fixedName}把任务物交给${careRecipient}。`, emotionNode: "克制", dramaticFunction: "关系揭示" },
+    { sceneId: "S6", timeRange: "00:51-01:00", location: "结尾空间", visibleAction: "两人完成生活化结尾动作。", emotionNode: "释然", dramaticFunction: "情绪兑现" }
+  ];
+}
+
 export function mockAnimationPlan(input) {
   if (input.animationPlanMode === ANIMATION_DIRECT_SHOT_MODE) {
     return mockDirectAnimationPlan(input);
@@ -414,7 +457,8 @@ export function mockAnimationPlan(input) {
   const variant = input.variant || {};
   const fullStory = input.fullStory || {};
   const fixed = input.creatorProfile?.fixedCharacter || fullStory.characterBible?.protagonist?.identity || variant.characterSetup?.protagonist || "固定主角";
-  const fixedName = fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
+  // 取名与校验器同一个函数，理由见 mockVisualGuardrails。
+  const fixedName = extractFixedCharacterName(fixed) || fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || fixed;
   const title = fullStory.title || variant.title || "可动画化短片";
   const targetRuntime = Number(fullStory.targetDurationSeconds) || 60;
   const targetAspectRatio = input.targetAspectRatio || "16:9";
@@ -423,14 +467,7 @@ export function mockAnimationPlan(input) {
   const careRecipient = fullStory.characterBible?.careRecipient?.nameOrLabel || variant.characterSetup?.careRecipient || "被关爱对象";
   const explicitIdentity = [...new Set([fixed, protagonistIdentity].map((item) => String(item || "").trim()).filter(Boolean))].join("，");
   const protagonistPrompt = `${fixedName}，${explicitIdentity}，圆润可爱的 2.5D 动画造型，严格保持用户明确设定的身份、外观、服装、发型和年龄感，表情活泼但懂事，动作小而认真。`;
-  const sceneScript = Array.isArray(fullStory.sceneScript) && fullStory.sceneScript.length ? fullStory.sceneScript : [
-    { sceneId: "S1", timeRange: "00:00-00:05", location: "出发点", visibleAction: `${fixedName}确认任务物后出发。`, emotionNode: "任务启动", dramaticFunction: "建立任务" },
-    { sceneId: "S2", timeRange: "00:05-00:14", location: "途中", visibleAction: `${fixedName}在环境压力中保护任务物。`, emotionNode: "压力上升", dramaticFunction: "增加成本" },
-    { sceneId: "S3", timeRange: "00:14-00:25", location: "受阻点", visibleAction: `${fixedName}差点失手但护住任务物。`, emotionNode: "担心", dramaticFunction: "证明在意" },
-    { sceneId: "S4", timeRange: "00:25-00:38", location: "临时停靠点", visibleAction: "帮助者递出关键工具。", emotionNode: "温暖", dramaticFunction: "善意转折" },
-    { sceneId: "S5", timeRange: "00:38-00:51", location: "到达点", visibleAction: `${fixedName}把任务物交给${careRecipient}。`, emotionNode: "克制", dramaticFunction: "关系揭示" },
-    { sceneId: "S6", timeRange: "00:51-01:00", location: "结尾空间", visibleAction: "两人完成生活化结尾动作。", emotionNode: "释然", dramaticFunction: "情绪兑现" }
-  ];
+  const sceneScript = resolveMockSceneScript(fullStory, fixedName, careRecipient);
   const sceneReferencePrompts = sceneScript.map((scene, index) => {
     const sceneId = `LOC${String(index + 1).padStart(2, "0")}`;
     const location = scene.location || "生活化场景";
@@ -579,6 +616,24 @@ export function mockAnimationVideoPromptRewrite(animationPlan = {}, videoPromptP
   };
 }
 
+function omitKeys(source = {}, keys = []) {
+  return Object.fromEntries(Object.entries(source).filter(([key]) => !keys.includes(key)));
+}
+
+// 长场次拆成多镜后 shotId 会重排，负面提示词的证据路径必须跟着指向本镜。
+function rewriteMockNegativePromptShotIds(items, shotId) {
+  return structuredClone(items || []).map((item) => ({
+    ...item,
+    triggerEvidence: (item.triggerEvidence || []).map((evidence) => ({
+      ...evidence,
+      sourcePath: String(evidence.sourcePath || "").replace(
+        /animationPlan\.shotPlan\[[^\]]*\]/u,
+        `animationPlan.shotPlan[${shotId}]`
+      )
+    }))
+  }));
+}
+
 function mockDirectAnimationPlan(input) {
   const legacy = mockAnimationPlan({ ...input, animationPlanMode: "" });
   const videoPromptProfile = structuredClone(
@@ -589,8 +644,29 @@ function mockDirectAnimationPlan(input) {
   const noBackgroundMusic = normalizeBackgroundMusicMode(
     input.backgroundMusicMode ?? input.backgroundMusicEnabled
   ) === BACKGROUND_MUSIC_NONE;
-  const directShots = legacy.shotPlan.map((shot) => {
-    const sourceScene = (input.fullStory?.sceneScript || []).find(
+  // 3.1：镜头骨架由 Full Story 的 timeRange 确定性派生，mock 必须走同一条派生，
+  // 否则 demo 会产出真实契约拒绝的镜头数或时长。
+  const mockSceneScript = resolveMockSceneScript(
+    input.fullStory || {},
+    legacy.characterReferencePrompts?.[0]?.characterName || "固定主角"
+  );
+  const skeleton = Array.isArray(input.directShotSkeleton) && input.directShotSkeleton.length
+    ? input.directShotSkeleton
+    : deriveDirectShotSkeleton({ sceneScript: mockSceneScript });
+  const legacyShotBySourceScene = new Map(
+    legacy.shotPlan.map((item) => [String(item.sourceSceneId || ""), item])
+  );
+  const directShots = skeleton.map((skeletonShot) => {
+    const legacyShot = legacyShotBySourceScene.get(skeletonShot.sourceSceneId) || legacy.shotPlan[0];
+    const shot = {
+      ...legacyShot,
+      shotId: skeletonShot.shotId,
+      sourceSceneId: skeletonShot.sourceSceneId,
+      durationSeconds: skeletonShot.durationSeconds,
+      storyPurpose: skeletonShot.storyPurpose || legacyShot.storyPurpose,
+      emotionalTarget: skeletonShot.emotionalTarget || legacyShot.emotionalTarget
+    };
+    const sourceScene = mockSceneScript.find(
       (scene) => String(scene?.sceneId || "") === String(shot.sourceSceneId || "")
     ) || {};
     const sceneReference = (legacy.sceneReferencePrompts || []).find(
@@ -659,7 +735,7 @@ function mockDirectAnimationPlan(input) {
       continuityNotes: continuityNotes || "角色、场景和关键道具与前后镜头连续",
       negativePrompts: {
         image: [],
-        video: structuredClone(shot.negativePrompts?.video || [])
+        video: rewriteMockNegativePromptShotIds(shot.negativePrompts?.video || [], shot.shotId)
       },
       acceptanceCriteria: [
         `“${characterAction}”按顺序完整发生且可见结果清楚`,
@@ -673,13 +749,19 @@ function mockDirectAnimationPlan(input) {
     promptSchemaVersion: ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION,
     title: legacy.title.replace("首尾帧动画生产包", "直接视频镜头生产包"),
     productionStrategy: {
-      ...legacy.productionStrategy,
+      ...omitKeys(legacy.productionStrategy, ["recommendedShotDurationSeconds"]),
       format: "direct_shot_video",
-      recommendedShotDurationSeconds: { min: 4, max: 6 },
+      targetRuntimeSeconds: directShots.reduce((total, shot) => total + shot.durationSeconds, 0),
       videoPromptProfile,
       generationOrder: ["锁定角色、场景和资产", "生成直接视频镜头", "质检并挑选候选", "剪辑、配音、字幕和音效"],
       whyThisWorkflow: "镜头内容由模型直接写成完整视频指令，不生产首帧、尾帧或端点运动结构。"
     },
+    sceneReferencePrompts: (legacy.sceneReferencePrompts || []).map((scene) => ({
+      ...scene,
+      relatedShotIds: directShots
+        .filter((shot) => String(shot.sceneId || "") === String(scene.sceneId || ""))
+        .map((shot) => shot.shotId)
+    })),
     shotPlan: directShots,
     generationChecklist: (legacy.generationChecklist || []).filter((item) => item.check !== "首尾帧因果"),
     modelAgnosticNotes: [
@@ -896,4 +978,427 @@ function buildMockShotNegativePrompts(scene = {}, context = {}) {
 function time(seconds) {
   const value = Math.max(0, Math.floor(seconds));
   return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+}
+
+// Demo 模式的剧情体检。**从剧情确定性派生**，一律给 depicted、不报硬伤——
+// mock 的职责是让离线链路跑通并满足覆盖率核验，不是伪造评审结论。
+// 与 §八「demo mock 不得伪造语义审计结果」同规格：宁可什么都不说，也不编一个判断。
+/**
+ * demo 模式的剧情体检。返回两次调用各自的**原始输出**，由 workflow 用与 live 完全相同的
+ * 校验器与合成函数走一遍——不得出现 mock 通过而 live 失败的偏差。
+ *
+ * **必须至少产出一条 CONTRADICTED 承诺和一条 issue**：全判 PRESERVED 会让 demo 永远走不到
+ * 派生 FAIL 那个分支，而「mock 全绿所以没人发现 live 会挂」正是 §2.14 记过的成因。
+ */
+export function mockStoryQualityReview(fullStory, candidate) {
+  const scenes = Array.isArray(fullStory?.sceneScript) ? fullStory.sceneScript : [];
+  const firstSceneId = String(scenes[0]?.sceneId || "S1");
+  const firstAction = String(scenes[0]?.visibleAction || "（demo 剧情没有可见动作）");
+  return {
+    editorial: {
+      summary: "demo 模式：未调用模型，本报告不构成任何质量判断。",
+      issues: [{
+        issueId: "FS-001",
+        type: "pacing_and_action_density",
+        severity: "MINOR",
+        sceneIds: [firstSceneId],
+        evidence: firstAction.slice(0, 60),
+        problem: "demo 模式不调用模型，这是一条用来走通渲染与派生路径的占位问题。",
+        viewerImpact: "demo 模式不做实际判断。",
+        confidence: "low",
+        optionalSuggestion: ""
+      }]
+    },
+    promise: {
+      checks: [
+        {
+          promise: String(candidate?.oneLineHook || "demo 候选的一句话钩子"),
+          source: ["oneLineHook"],
+          status: "PRESERVED",
+          evidence: firstAction.slice(0, 60)
+        },
+        {
+          // 刻意判成没守住，让 demo 走到派生 FAIL 那个分支。
+          promise: String(candidate?.emotionalPayoff || "demo 候选的情绪兑现"),
+          source: ["emotionalPayoff"],
+          status: "CONTRADICTED",
+          evidence: "demo 模式不调用模型，这一条是用来走通派生与渲染路径的占位判定。"
+        }
+      ]
+    }
+  };
+}
+
+// demo 模式的「按问题修改」。第一条给一处真能执行的修改，其余一律「不改」并写明理由——
+// 两个分支都要走到：只给修改会让 demo 永远看不到「不改」长什么样，全不改则走不到采纳。
+// 修改用整场 visibleAction 当原文，保证逐字恰好命中一次，改完照样能过签发校验。
+export function mockStoryQualityRepair(fullStory, items = []) {
+  const scenes = Array.isArray(fullStory?.sceneScript) ? fullStory.sceneScript : [];
+  return {
+    repairs: items.map((item, index) => {
+      const sceneId = item.kind === "issue" ? String(item.issue?.sceneIds?.[0] || "") : "";
+      const scene = scenes.find((entry) => entry.sceneId === sceneId) || scenes[0];
+      if (index > 0 || !scene?.visibleAction) {
+        return { ref: item.ref, patches: [], note: "demo 模式不调用模型：这一条不改，只用来走通「不改」的显示。" };
+      }
+      return {
+        ref: item.ref,
+        patches: [{
+          sceneId: scene.sceneId,
+          field: "visibleAction",
+          find: scene.visibleAction,
+          replace: `${scene.visibleAction}（demo 修改占位）`
+        }],
+        note: "demo 模式不调用模型：这处修改只用来走通预览与采纳，不代表任何判断。"
+      };
+    })
+  };
+}
+
+// demo 模式的候选对照评审。按传入候选的真实 id / title / 拍数生成逐候选覆盖表，
+// 保证 mock 输出能通过与 live 完全相同的覆盖率核验——不得出现 mock 通过而 live 失败的偏差。
+export function mockStoryCandidateReview(candidates) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  return {
+    schemaVersion: "story-candidate-review/1.0",
+    // 全批共享的原片机制清单，先于候选产出；下面每个候选只能按 id 引用它。
+    // 至少两条：schema 的 minItems 就是 2。
+    // requiresCause 两个分支都走到：true 的那条会启用双证据闸门，false 的那条不会。
+    // 只写一种取值会让 mock 永远只经过半条判定路径。
+    sourceMechanisms: [
+      {
+        id: "M1",
+        mechanism: "demo 模式未提炼原片机制。",
+        whereInSource: "demo 模式未定位原片动作。",
+        requiresCause: true
+      },
+      {
+        id: "M2",
+        mechanism: "demo 模式未提炼第二条原片机制。",
+        whereInSource: "demo 模式未定位原片动作。",
+        requiresCause: false
+      }
+    ],
+    candidateChecks: list.map((candidate, index) => {
+      const beats = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline.length : 0;
+      return {
+        candidateId: String(candidate?.id || ""),
+        title: String(candidate?.title || ""),
+        coreInteraction: {
+          setback: "demo 模式不调用模型，未做实际核对。",
+          intervention: "demo 模式不调用模型，未做实际核对。",
+          response: "demo 模式不调用模型，未做实际核对。",
+          visibleChange: "demo 模式不调用模型，未做实际核对。"
+        },
+        mechanismChecks: [
+          {
+            // 引用的是 requiresCause: true 的那条，所以判 depicted 就必须带前因证据——
+            // mock 自己也得守这条闸门，否则又是一次 mock 过而 live 挂。
+            sourceMechanismId: "M1",
+            causeEvidence: "demo 模式未定位前因。",
+            actionEvidence: "demo 模式未定位候选动作。",
+            beatIndexes: beats ? [1] : [],
+            verdict: "depicted"
+          },
+          {
+            // requiresCause: false 的那条，causeEvidence 留空是合法的正常写法。
+            sourceMechanismId: "M2",
+            causeEvidence: "",
+            actionEvidence: "demo 模式未定位候选动作。",
+            beatIndexes: beats ? [1] : [],
+            verdict: "partially_depicted"
+          }
+        ],
+        // 两个分支都必须走到：只写空数组会让 mock 通过而 live 失败——
+        // 分镜终审正是因为镜头级 issues 全写 [] 而没暴露元素类型误读（AGENTS.md §2.14）。
+        // 第一个候选带一条自洽问题，因此它的 verdict 不能是 pass（同一条确定性闸门）。
+        coherenceChecks: index === 0 && beats
+          ? [{ kind: "other", beatIndexes: [1], problem: "demo 模式不调用模型，这条只用于走通非空分支。" }]
+          : [],
+        // 骨架对照。形状上把有风险的几种都走到：一条有对应事件、一条 absent（空拍号 +
+        // 明写没有对应事件），辅助观察同时出现 different 与 not_applicable。
+        //
+        // **分数固定为 0，不是因为 demo 判它不换皮，而是 demo 不判。** 给一个高分会让
+        // 页面显示「疑似换皮」，那是伪造结论——mock 可以铺形状，不能替模型下判断。
+        // 换皮闸门（score >= 70 不得 pass）由单元测试覆盖，不靠 mock 触发。
+        sourceScaffoldOverlap: {
+          eventChain: [
+            {
+              sourceEvent: "demo 模式未提炼原片关键事件。",
+              candidateEvent: "demo 模式未定位候选对应事件。",
+              beatIndexes: beats ? [1] : [],
+              linkage: "different"
+            },
+            {
+              sourceEvent: "demo 模式未提炼第二件原片关键事件。",
+              candidateEvent: "候选里没有对应事件",
+              beatIndexes: [],
+              linkage: "absent"
+            }
+          ],
+          taskType: "different",
+          midSection: "different",
+          rewardSource: "not_applicable",
+          rewardHandling: "not_applicable",
+          endingShape: "different",
+          score: 0,
+          why: "demo 模式不调用模型，这个分数不构成任何相似度结论。"
+        },
+        // 十一个维度必须齐全（校验器按权重表逐个点名），分数一律 5——
+        // **不是 demo 认为它中等，是 demo 不评分**。给一个高分会让页面显示
+        // 「可直接展开」，那是伪造结论；派生链本身由单元测试覆盖，不靠 mock 触发。
+        dimensions: Object.keys(CANDIDATE_REVIEW_DIMENSION_WEIGHTS).map((id) => ({
+          id,
+          score: 5,
+          evidence: "demo 模式不调用模型，未做实际判断。",
+          evidenceRefs: []
+        })),
+        // 两个分支都走到：第一个候选给一条 conditional（必须带依赖条件与失败风险，
+        // 正是闸门管的那条路径），其余给空数组——没有值得一提的机制是合法结论。
+        physicalAssumptions: index === 0 && beats
+          ? [
+            {
+              mechanism: "demo 模式不调用模型，这条只用于走通需要条件的分支。",
+              confidence: "conditional",
+              literalDependency: "required",
+              necessaryAssumptions: ["demo 模式未列出真实条件。"],
+              failureRisk: "demo 模式未评估失败风险。",
+              beatIndexes: [1]
+            },
+            {
+              // make_believe 分支也要走到：它是「物理上立不住但剧情本来就不依赖它」
+              // 那一类，不该因为现实做不到而扣分。只写一条会让这个区分从没被经过。
+              mechanism: "demo 模式不调用模型，这条只用于走通想象类机制的分支。",
+              confidence: "unlikely",
+              literalDependency: "make_believe",
+              necessaryAssumptions: ["demo 模式未列出真实条件。"],
+              failureRisk: "demo 模式未评估失败风险。",
+              beatIndexes: [1]
+            }
+          ]
+          : [],
+        strongestReason: "demo 模式未作判断。",
+        // 两个分支都走到：第一个候选写一条真实形状的缺陷，其余走 none 出口。
+        // 只写 none 会让 mock 永远不经过「type/severity 一致性」那条闸门。
+        dominantDefect: index === 0 && beats
+          ? { type: "openingHook", severity: "MINOR", description: "demo 模式占位，不构成任何质量结论。" }
+          : { type: "none", severity: "NONE", description: "" },
+        briefAlignment: {
+          status: "PASS",
+          conflict: "",
+          suggestBriefChange: ""
+        },
+        // kind 的两个分支：remove 不要求 whyOnlyHere，strengthen 要求——
+        // 只写一种会让那条闸门在 demo 路径上从来不被经过。
+        top3RevisionSuggestions: [
+          {
+            kind: "strengthen",
+            suggestion: "demo 模式不调用模型，这条只用于走通需要理由的分支。",
+            replacesOrStrengthens: "demo 占位",
+            whyOnlyHere: "demo 模式未作判断。"
+          },
+          {
+            kind: "remove",
+            suggestion: "demo 模式不调用模型，这条只用于走通可以留空的分支。",
+            replacesOrStrengthens: "demo 占位",
+            whyOnlyHere: ""
+          }
+        ],
+        why: "demo 模式不调用模型，本判定不构成任何质量结论。",
+        keepThis: "demo 模式未作判断。"
+      };
+    }),
+    holisticPreferenceOrder: list.map((candidate) => String(candidate?.id || "")),
+    // demo 不判收敛：判 true 会在页面上显示「这一批是同一个模板」，同样是伪造结论。
+    batchTemplateConvergence: {
+      converged: false,
+      sharedMechanism: "",
+      affectedCandidateIds: [],
+      evidence: "demo 模式不调用模型，未做批次比较。"
+    },
+    briefProblemsDetected: [],
+    summary: "demo 模式：未调用模型，本报告不构成任何选题判断。"
+  };
+}
+
+// demo 模式的分镜终审。按传入 Plan 的真实 shotPlan 生成三张覆盖表，
+// 保证 mock 输出能通过与 live 完全相同的校验链——不得出现 mock 通过而 live 失败的偏差。
+export function mockAnimationPlanReview(animationPlan) {
+  const shots = Array.isArray(animationPlan?.shotPlan) ? animationPlan.shotPlan : [];
+  const scenes = Array.isArray(animationPlan?.sceneReferencePrompts) ? animationPlan.sceneReferencePrompts : [];
+  const locationOf = (sceneId) => {
+    const hit = scenes.find((scene) => String(scene?.sceneId || "") === String(sceneId || ""));
+    return String(hit?.locationName || hit?.sceneName || sceneId || "");
+  };
+  const note = "demo 模式不调用模型，未做实际核对。";
+  const DIMENSIONS = [
+    ["realizedOpeningHook", 0.10], ["memorableMoment", 0.10], ["causalClarity", 0.10],
+    ["protagonistAgency", 0.07], ["supportingAgency", 0.05], ["objectArc", 0.06],
+    ["pacingAndDuration", 0.10], ["emotionalPayoff", 0.10], ["visualReadability", 0.09],
+    ["continuity", 0.09], ["physicalFeasibility", 0.07], ["aiStability", 0.07]
+  ];
+  return {
+    schemaVersion: "animation-plan-review/4.0",
+    overallScore: 0,
+    dominantDefect: {
+      type: "pacing",
+      severity: "MINOR",
+      description: note
+    },
+    emotionalResponseAssessment: {
+      needed: false,
+      existingPayoffBeats: [],
+      reason: note
+    },
+    strengths: [{
+      what: "demo 占位",
+      whyItWorks: note,
+      evidencePaths: [],
+      mustNotLose: note
+    }],
+    dimensions: DIMENSIONS.map(([id, weight]) => ({
+      id,
+      weight,
+      score: 0,
+      evidencePaths: [],
+      diagnosis: note,
+      viewerImpact: note,
+      recommendedChange: note
+    })),
+    // 第一个镜头带一条 issues，其余留空：两个分支都要被 demo 走到。
+    // 全部写 [] 正是实测漏掉这类缺陷的原因——镜头级 issues 是纯字符串数组，
+    // 与顶层同名的对象数组形状不同，而非空分支从来没被构造过，
+    // 于是 mock 通过、live 因为模型按顶层对象结构填写而硬失败。
+    // note 不构成质量判断，与 strengths / dimensions 里的占位写法同规格。
+    shotEvaluations: shots.map((shot, index) => ({
+      shotId: String(shot?.shotId || ""),
+      declaredPurpose: String(shot?.storyPurpose || ""),
+      actuallyDepicted: "depicted",
+      whatViewerSees: note,
+      issues: index === 0 ? [note] : []
+    })),
+    propTracking: [],
+    sceneCheck: shots.map((shot) => ({
+      shotId: String(shot?.shotId || ""),
+      declaredSceneId: String(shot?.sceneId || ""),
+      declaredLocation: locationOf(shot?.sceneId),
+      promptOpensIn: note,
+      consistent: true
+    })),
+    issues: [],
+    otherFindings: [],
+    upgradePath: [],
+    revisionBrief: {
+      priorityIssueIds: [],
+      priorityUpgradeIds: [],
+      mustPreserve: [note],
+      conflictWarnings: [],
+      revisionMode: "targeted_patch"
+    }
+  };
+}
+
+// demo 模式的定向修订。**逐字回显原镜头，不伪造任何改动**——demo 不调用模型，
+// 编一版「改过的」提示词就是伪造生产内容，与 mockAnimationPlanReview 不伪造质量判断同理。
+//
+// 回显同时保证了合并后的 Plan 与源 Plan 逐字节相同，因此必然通过与 live 完全相同的
+// 校验链：ensureRevisionContract 的台账（0 >= 0）、direct_shot 契约、台词必须逐字
+// 出现在 videoPrompt、关闭背景音乐时的收尾句，一条都不会出现 mock 过而 live 挂的偏差。
+export function mockAnimationPlanRevision(animationPlan, report, targetShotIds = []) {
+  const shots = Array.isArray(animationPlan?.shotPlan) ? animationPlan.shotPlan : [];
+  const targets = shots.filter((shot) => targetShotIds.includes(String(shot?.shotId || "")));
+  return {
+    revisedShots: targets.map((shot) => ({
+      shotId: String(shot?.shotId || ""),
+      videoPrompt: shot?.videoPrompt,
+      cameraMotion: shot?.cameraMotion,
+      characterAction: shot?.characterAction,
+      dialogueOrSubtitle: shot?.dialogueOrSubtitle,
+      soundDesign: shot?.soundDesign,
+      continuityNotes: shot?.continuityNotes,
+      acceptanceCriteria: Array.isArray(shot?.acceptanceCriteria) ? [...shot.acceptanceCriteria] : [],
+      removedActions: [],
+      addedActions: [],
+      changeSummary: "demo 模式不调用模型，本镜逐字保持原样。"
+    }))
+  };
+}
+
+// demo 模式的命题定向修订。**只做一处最小、可预测的改动，不伪造创作内容。**
+//
+// 与 mockAnimationPlanRevision 的一处不同：那边可以逐字回显，因为它的台账写 0/0 就合规；
+// 这边有一条 CANDIDATE_REVISION_NO_CHANGE 闸门——逐字回显会被自己的校验器拒绝，
+// 于是 demo 就走不到合并与复验，等于 mock 根本没有覆盖到 live 的那条路。
+//
+// 所以 demo 在第一拍的 action 末尾追加一句写明这是 demo 的句子：改动真实存在（闸门放行），
+// 内容却不冒充创作（谁都看得出这不是模型写的），而且**只动一个可写字段**，
+// 合并之后除了那一处逐字节不变，与 live 走完全相同的派生与校验链。
+/**
+ * 展开前承诺核对的 demo 结果（合成后的形状）。**mock 只铺形状，不替模型下判断**：
+ * 标题一条全部找到、钩子一条没找到，realized 与 not_realized 两个分支都走到——
+ * 只写一种会让 demo 永远经过不了「没兑现 → 需修订」那半条路径。
+ * 证据必须是第一拍 action 的逐字片段，否则 mock 自己过不了确定性闸门。
+ */
+export function mockFullStoryPromiseCheck(candidate) {
+  const outline = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline : [];
+  const firstBeat = Number.isInteger(outline[0]?.beat) ? outline[0].beat : 0;
+  const firstAction = String(outline[0]?.action || "");
+  const promises = [];
+  if (String(candidate?.title || "").trim()) {
+    promises.push({
+      source: "title",
+      quote: String(candidate.title),
+      kind: "promise",
+      promise: "demo 模式不调用模型，未实际解读标题的承诺。",
+      mustSee: ["demo 模式未列出观众必须看到的内容。"],
+      findings: firstAction
+        ? [{ mustSeeIndex: 0, found: true, beat: firstBeat, evidence: firstAction.slice(0, 6), why: "" }]
+        : [{ mustSeeIndex: 0, found: false, beat: 0, evidence: "", why: "demo 模式：候选没有任何拍。" }],
+      verdict: firstAction ? "realized" : "not_realized"
+    });
+  }
+  if (String(candidate?.oneLineHook || "").trim()) {
+    promises.push({
+      source: "oneLineHook",
+      quote: String(candidate.oneLineHook),
+      kind: "promise",
+      promise: "demo 模式不调用模型，未实际解读钩子的承诺。",
+      mustSee: ["demo 模式未列出观众必须看到的内容。"],
+      findings: [{ mustSeeIndex: 0, found: false, beat: 0, evidence: "", why: "demo 模式不调用模型，这一条只用于走通「需修订」分支。" }],
+      verdict: "not_realized"
+    });
+  }
+  return {
+    schemaVersion: "full-story-promise-check/2.0",
+    candidateId: String(candidate?.id || ""),
+    promises
+  };
+}
+
+export function mockStoryCandidateRevision(candidate, coherenceBreaks = [], unmigratedMechanisms = [], {
+  promiseGaps = [],
+  scaffoldCopy = null,
+  blockerDefect = null
+} = {}) {
+  const outline = Array.isArray(candidate?.storyOutline) ? candidate.storyOutline : [];
+  const first = outline[0] || null;
+  // 每个驱动信号都要在 changeSummary 里露面，否则 demo 只走得到一个分支，
+  // 就会重演「mock 通过而 live 失败」（§2.14 的 issues 那次）。
+  const noted = [
+    coherenceBreaks.length ? `${coherenceBreaks.length} 条因果问题` : "",
+    unmigratedMechanisms.length ? `${unmigratedMechanisms.length} 条没接住的原片机制` : "",
+    promiseGaps.length ? `${promiseGaps.length} 条没演出来的承诺` : "",
+    scaffoldCopy ? "与原片同一条事件链" : "",
+    blockerDefect ? "评审判定的硬伤" : ""
+  ].filter(Boolean);
+  return {
+    schemaVersion: "story-candidate-revision/1.0",
+    candidateId: String(candidate?.id || ""),
+    revisedBeats: first
+      ? [{ beat: first.beat, action: `${String(first.action || "")}（demo 模式未调用模型，此处仅作占位改动）` }]
+      : [],
+    changeSummary: noted.length
+      ? `demo 模式不调用模型，未实际处理${noted.join("、")}。`
+      : "demo 模式不调用模型，评审也没有报出任何问题。"
+  };
 }

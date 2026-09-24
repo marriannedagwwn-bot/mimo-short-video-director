@@ -9,6 +9,8 @@
 
 lineage 是服务端确定性签发的 sidecar。任何 LLM 都不能生成、补写或修改 revision、digest、dependency 或 media namespace。
 
+Task sidecar 同样不是业务事实源。它只记录 `taskId`、父子关系、状态、冻结引用、模型快照、进度、usage、结果 Artifact refs 和脱敏错误；不保存 Prompt、Data URL、Base64、完整请求体或 Artifact 内容。ProductionStateStore 中的 current Artifact 仍是唯一业务权威。
+
 ## 2. 身份与冻结点
 
 浏览器每次从视频输入运行主流程时创建一个 Run：
@@ -18,7 +20,8 @@ projectId
 └── runId
     ├── Stage 状态
     ├── Artifact revisions
-    └── Checkpoint
+    ├── Checkpoint
+    └── tasks/index.json（Durable Task 执行 sidecar）
 ```
 
 每个 Artifact 成功提交就是一个数据冻结点。服务端对 canonical JSON 计算 SHA-256；对象键顺序不影响摘要，数组顺序和真实值变化会影响摘要。同一 artifact 的不同内容使用单调 revision，例如 `fullStory-V1-r2`。
@@ -87,21 +90,59 @@ Animation Plan 全量模型输出日志遵循同一 lineage 隔离，但使用�
 
 Animation Plan 同样只有在 Foundation/shot 合并、完整契约校验、逐镜证据审计以及必要的有界修复全部通过后，才作为一次 Artifact revision 提交；中间候选、修复中间态都不是 Artifact，也不是恢复数据。
 
-默认每个 `shotVideo` 只依赖当前 Animation Plan。若某镜请求显式使用 `continuityReferenceMode=previous_shot_frames`，它还必须依赖 Plan 顺序中紧邻上一镜的 current `shotVideo` 精确 revision/digest；服务端回执提供该 source lineage，浏览器提交媒体 Artifact 时冻结它。上一镜重生成或切换候选会签发新 revision，并递归使所有引用旧 revision 的后镜视频 stale。切换后镜自己的候选只是更新同一媒体 Artifact，必须原样保留已有依赖，不能退回为只依赖 Plan。
+默认每个 `shotVideo` 只依赖当前 Animation Plan。若某镜请求显式使用 `continuityReferenceMode=previous_shot_frames`，它还必须依赖 Plan 顺序中紧邻上一镜的 current `shotVideo` 精确 revision/digest；Task 创建时由服务端冻结该 source lineage，并由 Runner 按精确媒体形状提交 Artifact。上一镜重生成或切换候选会签发新 revision，并递归使所有引用旧 revision 的后镜视频 stale。切换后镜自己的候选只是更新同一媒体 Artifact，必须原样保留已有依赖，不能退回为只依赖 Plan。
 
 浏览器恢复和运行时缓存必须按 `variantId + shotId`（旧 v2 帧再加 `frameKind`）区分媒体结果。服务端只将具体下游 Artifact 标为 stale 时，前端只移除对应缓存项；不得清空其他 Variant、上一镜或同 Plan 内仍为 current 的媒体结果。
 
 ## 4. 异步请求规则
 
-模型调用开始前，浏览器冻结：
+Durable Task 创建时，服务端在共享的 per-Run Coordinator 临界区内读取 current Artifact、冻结依赖并一次占用全部写目标。浏览器若携带 Artifact 副本，只用于 digest 复核；Runner 使用服务端冻结内容，冻结后不得在调用前偷偷换成更新后的 current 内容。
+
+冻结集合包括：
 
 - `projectId` / `runId`
 - 目标 `artifactId`
-- `requestId`
+- Task 独立签发的 `requestId`
 - `expectedCurrentRevision`
 - 完整上游 dependency revisions
+- dependency content digests
+- 创建时的 provider/model 快照与非 Artifact 输入摘要
 
-模型返回后先检查浏览器内 request token；提交时服务端再检查目标 revision 与所有依赖是否仍为 current。较新的请求、Story 或 Plan 已经出现时，旧响应必须明确失败，不能选择任一版本静默覆盖。
+每次实际 provider 调用前只比较 current revision/digest 与冻结值，不重新取内容。调用前已变化时，Task 在付费调用前变为 `conflicted`；调用期间变化时，provider 返回后的复检或锁内 commit guard 使其变为 `conflicted`，不提交结果。`ARTIFACT_REVISION_CONFLICT` 与 `ARTIFACT_DEPENDENCY_STALE` 也归入同一终态。
+
+**目标的 `expectedCurrentRevision` 是 `latest` 指向的那一版，不论它是 current 还是 stale。** 这是状态库提交门 `commitArtifactUnlocked` 的口径（它比的是 `manifest.latest` 的 revision），完整剧情展开前复核 `assertRunningTarget` 与浏览器 `beginArtifactRequest` / `taskForUi` 都与它一致；Task Manager 的创建冻结、调用前复检与锁内提交前复检三处共用 `targetLatestRevision()` 同一口径。stale 的目标仍有 revision，重新生成就是在它之上提交下一版；别处给目标提交了新版本时 latest 变化，照样冲突；任务运行中上游变化使目标 stale，由冻结依赖的复检拦截。
+
+2026-09-18 之前 Task Manager 把 stale 目标冻结成 `null`，与上面三方都不一致，于是**任何已失效目标经 Durable Task 重新生成都必然冲突**：完整剧情在调模型之前以 `FULL_STORY_REQUEST_REVISION_CONFLICT` 失败，其余阶段会在模型调用做完、锁内提交时以 `ARTIFACT_REVISION_CONFLICT` 失败。实际触发路径是「采纳展开前体检给的候选修订 → 新的 `themeVariants` / `variant:<id>` → 旧剧情 stale → 再展开」；浏览器又因为 `null ≠` 它记住的那一版，把这个失败任务当成旧版本的历史藏起来，页面只剩「准备生成完整剧情。」。任务历史里留下 5 次（09-01 两次、09-18 三次，均为完整剧情；页面关闭会清理对应 Run，所以是下限）。回归由 `test/full-story-run-control-http.test.js`（真实 server 与假供应商原样复现该路径）与 `test/durable-task-manager.test.js` 锁定。
+
+每个目标最多有一个 active owner。`directorPipeline` 创建时一次占用 `referenceAnalysis`、`sourceScriptReconstruction`、`creativeBrief`、`visualGuardrails`、`themeVariants` 五个目标；五个子任务顺序调用现有 WorkflowService 并逐阶段独立提交。目标没有 claim 时，既有浏览器快速提交和 package import 保持可用；有 claim 时，只有 owner Task/child Task 能在 Coordinator lock 内调用 `commitArtifactUnlocked`。release、watchdog 或重启后 owner 失效，迟到结果不能回写。
+
+相同 active operation 的幂等键由 kind、全部目标、目标 expected revisions、冻结 dependencies、模型快照和非 Artifact 输入摘要组成；完全相同则复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`。同一 Task 重复 finalize 时，服务端先识别相同 requestId、digest 与 dependencies，再比较 expected revision，因此只复用原 revision；不同 requestId 没有该豁免。
+
+Run Coordinator 是显式不可重入的 FIFO 锁。持锁代码只能使用 `commitArtifactUnlocked`、`recordStageUnlocked`、`loadRunUnlocked` 和 Task Store 的 unlocked 方法，禁止从锁内调用公开 `commitArtifact()`、`recordStage()` 或 `loadRun()`。临界区只做本地状态操作，不含 provider、网络、FFmpeg 或模型校验。`readCurrentLineageSnapshot`、`GET /api/tasks` 与原子 manifest snapshot 的 `loadRun` 均为锁外读取；provider 返回后仍执行复检和锁内 commit 校验覆盖竞态。
+
+任务状态固定为 `queued | running | completed | failed | conflicted | interrupted | abandoned | cancelled`。`cancelled` 只表示受控任务已终止并释放本地提交权，不证明远端调用已取消。所有带原因的终态共用脱敏规则；终态 Stage 更新必须匹配 `expectedRequestId`，旧请求不能覆盖新 Stage。
+
+调度器分为 workflow/text（2 running、8 queued）和 media（4 running、8 queued），queued 请求体总预算默认 140MB。超出限制返回 `TASK_CAPACITY_EXCEEDED`，不创建失败 Task。任务没有总墙钟 deadline：provider 调用前把 watchdog 设置为 provider 自身 timeout/poll timeout 加 120 秒（流式文本客户端 Qwen/MiMo 没有总时长，这里的 timeout 是空闲超时，默认 120 秒），本地校验、合并和 commit 使用 300 秒无进展窗口；每次 provider 返回、流事件和阶段进展都会续期。watchdog 触发后 Task 变为 `failed/TASK_STALLED` 并释放目标，错误明确提示远端调用可能已经提交并计费。
+
+AI 导演根任务使用 `POST /api/tasks/:taskId/control`（请求体 `projectId/runId/action`）执行暂停、继续和终止。控制状态保存在 `progress.controlState`，不是新的 Task status：
+
+| 操作 | 父任务状态 | 当前请求与后续执行 |
+| --- | --- | --- |
+| pause | running + pausing → paused；queued 可直接 paused | 先阻止新调用/commit，再中断当前 HTTP/SSE；子尝试 interrupted，不自动重试 |
+| resume | 原父任务 running；尚排队的保持 queued | 使用新的 AbortController 与子 taskId/requestId，重新执行首个未完成阶段 |
+| terminate | terminating → cancelled | 中断连接，禁止迟到 commit，释放 claims，保留 Run 与已完成 Artifact |
+
+暂停期间五个写目标继续被原父任务 claim，创建时输入和 provider/model 仍冻结在当前 Node 内存中。已运行的父任务暂停时保留一个 workflow 槽位；未派发的 queued 任务不会因暂停/继续被提前启动 watchdog。继续时依次复用 current 阶段，revision、digest 与内容不变。当前阶段可能包含不止一次文本调用（例如候选选源与正文）；暂停后重新执行的是整个未完成阶段，可能再次计费。浏览器刷新重新 attach 并显示 paused，不隐式继续；Node 重启不能恢复内存上下文，仍按 v1 reconciliation 变为 interrupted 或已提交结果对应的 completed。
+
+`fullStory` 根任务也使用同一控制接口与 `progress.controlState`，保留单个 `fullStory:<variantId>` claim。暂停中断当前请求并保留原输入、模型、冻结依赖和目标 expected revision；继续保持 root taskId，用新 requestId 从初轮重新执行整个 Full Story operation，包括 Beat–Scene postpass。每次尝试的已返回 usage 与实际调用数分别收束后累计，不能用新尝试覆盖旧消耗；旧 context 的迟到更新必须被原尝试的 signal/身份拦住。暂停、终止期间旧 Story、Plan 和媒体仍保持原 current 状态，只有新 Full Story 成功提交才使其下游 stale。commit 与 control 共用 Run 锁；本次 request 已成功提交时，控制不再暂停或终止该任务，也不会重跑已提交内容。queued、watchdog、刷新、进程重启、release 与页面清理边界沿用上述规则。浏览器控制绑定当前候选的 root Full Story task，其他候选的活动任务不能被当前页按钮控制，其完成响应也不能覆盖用户新选择。
+
+Qwen、MiMo、DeepSeek 使用任务 AbortSignal 与原 provider timeout 的组合；取消覆盖等待响应头和读取响应体。控制先在 Run 锁内改变门禁，再在锁外 abort/唤醒；controller 和 resume gate 必须绑定该次转移，连续控制不能唤醒错误 gate。commit 保留 active owner、冻结依赖与 revision 复核。暂停无 watchdog；终止、强制释放和页面清理均需唤醒暂停 Runner，以便释放当前进程的槽位。HTTP 连接关闭不证明供应商已停止计算，也不提供远端请求续传或自动恢复。
+
+每个子尝试只记录实际收到的结构化 usage；SSE 断流前已经收到的 usage 仍计账，未收到的不根据字符数估算。fetch 派发点记录 `calls`，guard 后但 fetch 前取消不算已派发。`reportedCalls`、`unreportedCalls` 和 `usageComplete` 区分已知/未知；存在未知时 `costCny=null/costKnown=false`，页面显示已确认 token 和“次请求未返回用量”。父任务按全部子尝试汇总（包括暂停产生的 interrupted 子任务），成功继续不会覆盖此前用量，也不会重复累计同一条回报。
+
+`shotVideoBatch` 是当前进程内的 Plan 级顺序父任务。创建时一次 claim 当前 Variant 的全部 `shotVideo:<variantId>:<shotId>` 目标，冻结 current Animation Plan lineage、启动时的镜头视频 provider/model 和全能参考配置；每镜复用既有 `shotVideo` Runner 独立提交 Artifact，父任务只持久化调度进度和脱敏结果引用，不复制 Prompt 或媒体正文。已存在且 current 的镜头视频标为 `reused`，其余镜头在创建时先逐镜预检参考素材上限（角色参考图与上一镜抽帧共用 9 图上限、每镜语音 ≤3 段且总时长 ≤15 秒），任一镜超限即拒绝创建并一次列全，不产生供应商调用；通过预检后按 Plan 顺序生成，运行期单镜参考素材问题只失败该镜、不中止整批；每个子任务完成后立即刷新父任务 progress，因此浏览器刷新后可从 `tasks/index.json` 重新 attach，并从 current Artifact 恢复已完成视频。
+
+批量控制只允许 `pause | resume | terminate`。暂停保持父任务 `running` 和全部 claims，只在镜头边界阻止下一次 provider 提交；正在轮询或下载的当前镜头不会被强停。终止把父子任务标为 `cancelled`、释放 claims 并禁止迟到结果 commit，但已经提交给供应商的请求可能继续运行和计费。它不是跨进程 batch queue：Node 重启后仍按 Durable Task v1 规则变为 `interrupted`，不会从远端 task id 接管或自动续跑。
 
 
 合法反例：JSON 对象只调整键顺序时 digest 不变，应复用当前 revision。非法串线：Variant 仍叫 `V1`，但标题、角色或剧情内容已变化时 digest 必须变化，旧 Story/Plan 不能继续使用。
@@ -121,7 +162,15 @@ public/generated-images/<mediaNamespace>/
 public/generated-videos/<mediaNamespace>/
 ```
 
-文件名也带 Plan revision 和 digest 前缀。远端生成期间 Plan 若更新，旧任务可能仍在旧目录完成，但前端会拒绝把结果挂到新 Plan。
+文件名也带 Plan revision、digest 前缀和不可碰撞的请求 nonce。
+
+远端生成往往要跑几分钟，这期间 Plan 可能被重新生成、上一镜候选可能被切换。因此 `/api/generate-shot-video` 在生成期间必须自己复验，而不是只依赖事后关卡：服务端把一个复验回调交给生成器，生成器在**任何供应商调用与文件写入之前**、**每条候选提交供应商之前**、**每条候选落盘并通过 ffprobe 之后**、**组装返回值之前**各执行一次。回调重新从状态库读取 run，比对 Plan 的 revision/digest/mediaNamespace 是否仍为 current；请求使用 `continuityReferenceMode=previous_shot_frames` 时还比对上一镜 current `shotVideo` 的精确 revision/digest 与选中候选。
+
+任一复验失败即 fail closed：删除本次请求已经写入的全部候选 mp4，并把 `ProductionStateError`（`MEDIA_PLAN_LINEAGE_STALE` / `SHOT_VIDEO_PREVIOUS_REFERENCE_STALE`，HTTP 409）原样上抛，不得包装成配置或供应商错误。清理只删除本次调用自己算出的、含该请求 nonce 的路径，绝不扫描目录；清理本身失败只被吞掉，不改变 fail closed 的结论。只有过期触发删除——供应商错误与 ffprobe 失败维持既有语义，产物留在原地便于排查。
+
+两处已知边界：单条候选一旦提交给供应商，主进程无法中断它（worker 在同一个子进程里完成提交、轮询与下载），那条的花费无法收回，复验阻止的是后续候选的付费、文件留存与结果回写；旧 v2 `first_last_frame` 路径写出的首尾帧 PNG 文件名不含请求 nonce，不在清理覆盖内。
+
+复验之外，前端仍会拒绝把过期结果挂到新 Plan——两层是叠加关系，不是替代关系。
 
 
 上一镜抽帧不信任浏览器提交的绝对路径或任意 URL。服务端根据当前 Plan 的 `shotPlan[]` 顺序导出 source shot，读取同一 Run 中 current `shotVideo` Artifact 的选中候选，只把当前 `public/generated-videos/<mediaNamespace>/` 单层目录内、文件名前缀同时绑定当前 Plan 和 source shotId 的普通 mp4 映射回本地文件。旧 namespace、远程 URL、路径穿越、子目录、符号链接和缺失文件必须明确拒绝。通过路径校验后仍须以 `O_NOFOLLOW` 文件句柄读取并冻结到任务私有目录，抽帧回执记录实际读取源字节及各 JPEG 的 SHA-256，避免路径校验与 FFmpeg 打开之间的文件替换使 lineage 与实际输入脱钩。
@@ -131,19 +180,41 @@ public/generated-videos/<mediaNamespace>/
 默认状态根目录为 `runtime/production-runs/`，可通过服务端环境变量 `WORKFLOW_PRODUCTION_STATE_DIR` 修改。每个 Run 的 manifest 记录：
 
 - Run 元数据和状态；
-- Stage 的 `running` / `completed` / `failed` / `stale`；
+- Stage 的 `running` / `completed` / `failed` / `stale`，以及 `interrupted` / `conflicted` / `abandoned`；
 - Artifact revision、digest、dependencies 和状态；
 - 单调 Checkpoint sequence；
 - 有界事件记录。
 
-Artifact 内容独立写入原子替换的 JSON 文件。浏览器只在服务端提交成功后更新页面主状态。刷新页面时通过 localStorage 中的 project/run 指针读取最近 checkpoint，只恢复 `current` Artifact。
+Artifact 内容独立写入原子替换的 JSON 文件。浏览器只在服务端提交成功后更新页面主状态。刷新页面时通过 sessionStorage 中的 workspace 指针读取该页面归属的 Run 和最近 checkpoint，只恢复 `current` Artifact；不再从旧 localStorage project/run 指针自动加载历史结果。
+
+`tasks/index.json` 同样原子写入，路径中的 project/run/task ID 都经过 `safeIdentifier` 与根目录包含校验。公开 Task 包含冻结 provider/model 和持久 usage；恢复 UI 不得拿刷新后的下拉框设置冒充原任务模型。角色参考图的逐张结果进入脱敏 progress，断线后可以恢复计数与预览；Prompt 只记录 digest，不进入 Task sidecar。
+
+同一 Node 进程内，Runner 独立于 HTTP response。刷新或 HTTP 断线后，第二个页面查询同一 Run 即可 attach；旧同步 HTTP 入口只等待同一 Task 终态，断线只结束等待者。角色图片旧 SSE wire 订阅 Task progress，SSE 断线只移除订阅者。
+
+Node 启动 reconciliation 会检查 active Task：current Artifact 已由同一 requestId 成功提交时补记 completed；五个 pipeline 目标均已 current 时父任务补记 completed；其余 queued/running 变为 `interrupted` 并释放 claims，绝不自动重调 provider。浏览器可在同一 Run 从首个未完成阶段继续；需要媒体的阶段使用恢复副本重新采样，副本不存在时必须重新上传 `sourceVideoDigest` 相同的原始文件。
 
 当前恢复边界：
 
-- 不持久化原始上传视频、浏览器 Object URL 或抽帧源文件；
-- 不接管刷新前尚未完成的 provider 请求；
-- 不提供跨机器共享存储、任务队列或多用户权限；
+- 浏览器工作区持久化原视频二进制副本；不保存 Object URL，抽帧在恢复时重新生成；
+- 不持久化大型请求体，所以 Node 重启后不能恢复内存 Runner；
+- 不保存或查询远端 provider task ID，不具备 provider restart resume/cancel；
+- 不提供跨机器共享存储、多 Node worker、lease 或正式 batch queue；
+- 失败/中断时已经落盘但未提交的角色图仍是孤儿文件，等待 T04 quarantine；
 - 已完成的 Story、Plan 和已登记媒体可以恢复并继续下游操作。
+
+### 浏览器工作区生命周期（2026-09-09）
+
+`BrowserWorkspaceStore` 与 Run/Task 分离，默认位于 `runtime/production-runs-browser-workspaces/<workspace UUID>/`（配置状态根目录时在其名称后追加 `-browser-workspaces`）。`session.json` 只保存时间、页面归属、generation、原视频元数据和 Run 引用，源文件以私有二进制文件原子保存，不进入 Task JSON。源上传上限 512 MB；`/api/browser-workspace/:id/source` 支持 GET/HEAD/Range，返回 `Cache-Control: no-store`。创建 Run 时服务端以已保存源文件的 SHA-256 和 URL 签入 Run metadata，拒绝旧代次或不同 digest；业务 Artifact wire shape 不变。
+
+浏览器 sessionStorage 只保存 workspace ID；每次文档加载生成独立 pageId。刷新用 start/resume 认领新 pageId，旧文档迟到的关闭通知、心跳、上传与 Run 创建被拒绝。换视频先 reset，再上传，即便新文件上传失败也不能复活旧结果；异步 UI 返回还要通过本地 epoch 检查。修改已签发边界对应的创作设置或明确放弃任务时，reset-run 清除旧结果但保留当前原视频；同源重跑替换 Run。导入包先校验有效性，再清除旧源视频和旧 Run，包中没有源文件字节时不与其他视频自动配对。
+
+页面通过 EventSource 保持一条生命周期连接，连接仍在时不因后台标签页暂停 JavaScript 心跳而过期。连接断开或 pagehide 关闭通知触发 60 秒刷新宽限期；5 秒一次 sweep 删除已到期工作区。刷新后的新页面、同一页面的连接重建可以撤销关闭，晚到的普通 heartbeat、上传和 reset 不能延后截止。连接 token 仅在内存中，每次连接独立签发，旧连接断开不能关闭替代连接或新文档。无生命周期连接且未收到关闭通知时，最后心跳起 2 分钟过期；Node 停止期间不能清理，下次启动执行到期清理。因此服务重启后恢复仅适用于尚未过期的工作区。这是单进程本地页面生命周期，不是跨 Node 批量任务 lease，也不能保证浏览器崩溃瞬间删除。
+
+清理仅认 manifest 中服务端写入的 `metadata.browserWorkspaceId`：先按 scheduler → Run 锁顺序撤销 active owner 与队列，再删除 Run、该 project/run 下的图片和视频、源视频副本及本次 Debug。启用的模型输出、局部修复和动画 Prompt 抓取通过可信 Durable Task 上下文落在 Run 的 `debug/` 子目录；旧无页面归属的调用保持原日志位置。仍有本机 Runner 时，保留仅含 ID 的清理记录并重扫迟到文件。视频 worker 的输入/参考素材临时目录也位于 Run 内，并通过本机 `--lifetime-file` 参数防止已关闭页面的迟到 worker 重建输出；该路径从不进入供应商请求。
+
+服务启动且尚未接收请求时，另行核对带有效 workspace UUID 归属的 Run 是否仍被对应 session 的 current Run 或 pendingCleanup 引用；仅清理确定没有引用的孤立 Run。无法读取归属时不猜测删除，历史无归属 Run 和符号链接跳过。导入 Run 在第一次 createRun 时即写入归属，以覆盖进程在导入一半、或创建成功但尚未 attach 时退出的窗口。导入与视频替换共用浏览器串行写队列，导入响应即便已被用户切换淘汰，也先推进客户端版本，再执行排队的视频替换，避免旧 generation 将后续操作卡在 409。
+
+长期保存白名单为固定角色、垂直赛道、创作限制、角色表情规则、候选数量、目标画幅和剧情时长。后三项与表情规则独立于 `creatorProfile`，不进入角色边界 digest；模型覆盖只在 sessionStorage 保存。升级时移除旧自动恢复指针，不将没有可信页面归属的历史 Run 纳入清理，也不删除用户选取的原始文件、外部导出文件或全局签名密钥。
 
 ## 7. v3 测试/规划包
 
@@ -155,6 +226,18 @@ Artifact 内容独立写入原子替换的 JSON 文件。浏览器只在服务�
 - `packageDigest`
 - `packageSignature`
 
-签名密钥保存在状态根目录，只代表当前安装实例的本地信任。导入必须依次验证 type、version、digest、HMAC、各 Artifact digest、Variant ID 和 parent lineage。验证成功后建立新的 project/run，重新签发本地 revisions；禁止与浏览器现态 merge，并清空包内媒体选择。
+服务端有三把本地签名密钥，**全部保存在状态根目录**（默认 `runtime/production-runs/`，随 `WORKFLOW_PRODUCTION_STATE_DIR` 移动），只代表当前安装实例的本地信任：
+
+| 文件 | 用途 | 长度 | 环境变量覆盖 |
+| --- | --- | --- | --- |
+| `.package-signing-key` | v3 测试/规划包 `packageSignature` | 48 字节 | 无 |
+| `.grounding-key` | `referenceAnalysis` / `sourceScriptReconstruction` 的 `groundingSeal` | 32 字节 | `WORKFLOW_GROUNDING_KEY` |
+| `.character-boundary-key` | `fixedCharacterBoundary.boundarySignature` | 32 字节 | `WORKFLOW_CHARACTER_BOUNDARY_KEY` |
+
+三把密钥共用同一套「读取或创建」（`src/persistent-key.js`）：环境变量优先于文件；文件缺失时以 `wx` + `0o600` 生成，目录以 `0o700` 创建；并发首启撞上 `EEXIST` 时回读对方写入的那份。**密钥必须跨进程重启保持不变**——落盘 Artifact 上的签名就是用它签的，换钥等于让已恢复的 Run 在下一次点击时全部作废。因此环境变量非法、密钥文件损坏或长度不足时一律硬失败：**禁止静默回退到随机生成**，也禁止覆盖长度不足的文件（它可能是正确密钥被截断的残骸）。密钥材料不进 config 对象、不进任何响应、不写日志，启动日志只报来源。
+
+历史遗留：在密钥持久化之前签发的 Run，其 `groundingSeal` 与 `boundarySignature` 由已消失的随机密钥所签，无法恢复，必须重新运行工作流。已落盘 Artifact **不会**被重新签发——那等于用当前密钥给一批无法验证来源的内容背书。
+
+导入沿用包签名密钥。导入必须依次验证 type、version、digest、HMAC、各 Artifact digest、Variant ID 和 parent lineage。验证成功后建立新的 project/run，重新签发本地 revisions；禁止与浏览器现态 merge，并清空包内媒体选择。
 
 因此 v3 文件是可验证的本地测试/规划包，但不是包含供应商任务状态、跨环境证书链、批量调度和完整 canonical provenance 的最终 Production Package。

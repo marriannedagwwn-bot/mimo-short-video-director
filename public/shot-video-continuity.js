@@ -1,6 +1,10 @@
 export const SHOT_VIDEO_CONTINUITY_NONE = "none";
 export const SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES = "previous_shot_frames";
 
+export function shouldIncludePreviousShotFrames({ requested = false, available = false } = {}) {
+  return Boolean(requested && available);
+}
+
 export function shotVideoArtifactIdFor(variantId, shotId) {
   return `shotVideo:${String(variantId || "")}:${String(shotId || "")}`;
 }
@@ -64,8 +68,13 @@ export function selectedShotVideoCandidate(stateItem = {}) {
   return outputUrl ? { ...selected, outputUrl, selectedIndex } : null;
 }
 
-export function estimateOneFpsFrameCount(durationSeconds) {
+// 上一镜参考帧固定 5 张（首帧 + 三等分点 + 末帧），与服务端
+// PREVIOUS_SHOT_REFERENCE_FRAME_COUNT 保持一致。数量不再随镜头时长变化，
+// 所以浏览器只需要确认时长有效，不必再按时长预估张数。
+export const PREVIOUS_SHOT_REFERENCE_FRAME_COUNT = 5;
+
+export function previousShotReferenceFrameCount(durationSeconds) {
   const duration = Number(durationSeconds);
   if (!Number.isFinite(duration) || duration <= 0) return 0;
-  return Math.max(1, Math.round(duration));
+  return PREVIOUS_SHOT_REFERENCE_FRAME_COUNT;
 }

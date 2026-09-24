@@ -1,0 +1,225 @@
+{
+  "status": "ready",
+  "result": {
+    "taskId": "A01-VIDEO-PREVIEW-1",
+    "shotId": "A01",
+    "provider": "Seedance",
+    "model": "doubao-seedance-2-0-260128",
+    "generationMode": "all_reference",
+    "startFrameUrl": "",
+    "startFramePath": "",
+    "endFrameUrl": "",
+    "endFramePath": "",
+    "referenceSummary": {
+      "image": 1,
+      "video": 0,
+      "audio": 0
+    },
+    "referenceManifest": "本次提供的参考素材：参考图1 是用户上传的参考素材。",
+    "videoPromptSource": "animation_plan",
+    "sourceVideoPrompt": "2.5D 动画，轻微手绘质感，角色圆润可爱，动作真实但带一点童话感。，治愈生活流短片，细节干净，情绪克制，不夸张煽情。，自然散射光，情绪低点偏冷，帮助和结尾逐步转暖。。横屏 16:9，出发点，治愈生活流 2.5D 动画场景参考图，空间真实可信，背景层级清楚，光线自然，适合验收猫在其中完成短镜头动作。。验收猫（验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套，圆润可爱的 2.5D 动画造型，严格保持用户明确设定的身份、外观、服装、发型和年龄感，表情活泼但懂事，动作小而认真），验收猫确认一段未导出的旧录音，听到任务期限后立刻把它收好。。镜头按动作顺序轻微跟随；沿同一空间轴线缓慢向前并跟随主体，全程不切镜；slow。验收猫在完成同一动作的过程中，情绪从任务启动逐步显露出更坚定的结果感。在 5 秒内按上述顺序清楚完成动作，节奏服务“任务启动”。验收猫：我现在去。；对白只作为声音，不渲染画面文字。出发点的轻微生活环境声；与“验收猫确认一段未导出的旧录音，听到任务期限后立刻把它收好。”同步的自然动作声；轻钢琴或木吉他底色，不抢动作节奏。内部摄影段与前后镜头均保持验收猫身份、年龄感、发型和服装不变；出发点的室内外属性、空间轴线和背景层级不变；关键道具外观、尺寸和数量不变；光源方向和色彩对比不跳变。达到 endFrame 定义的姿态、手部道具和表情状态后立即停止，不追加动作。全片无背景音乐，只保留现场环境声与动作声。",
+    "effectiveVideoPrompt": "本次提供的参考素材：参考图1 是用户上传的参考素材。\n2.5D 动画，轻微手绘质感，角色圆润可爱，动作真实但带一点童话感。，治愈生活流短片，细节干净，情绪克制，不夸张煽情。，自然散射光，情绪低点偏冷，帮助和结尾逐步转暖。。横屏 16:9，出发点，治愈生活流 2.5D 动画场景参考图，空间真实可信，背景层级清楚，光线自然，适合验收猫在其中完成短镜头动作。。验收猫（验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套，圆润可爱的 2.5D 动画造型，严格保持用户明确设定的身份、外观、服装、发型和年龄感，表情活泼但懂事，动作小而认真），验收猫确认一段未导出的旧录音，听到任务期限后立刻把它收好。。镜头按动作顺序轻微跟随；沿同一空间轴线缓慢向前并跟随主体，全程不切镜；slow。验收猫在完成同一动作的过程中，情绪从任务启动逐步显露出更坚定的结果感。在 5 秒内按上述顺序清楚完成动作，节奏服务“任务启动”。验收猫：我现在去。；对白只作为声音，不渲染画面文字。出发点的轻微生活环境声；与“验收猫确认一段未导出的旧录音，听到任务期限后立刻把它收好。”同步的自然动作声；轻钢琴或木吉他底色，不抢动作节奏。内部摄影段与前后镜头均保持验收猫身份、年龄感、发型和服装不变；出发点的室内外属性、空间轴线和背景层级不变；关键道具外观、尺寸和数量不变；光源方向和色彩对比不跳变。达到 endFrame 定义的姿态、手部道具和表情状态后立即停止，不追加动作。全片无背景音乐，只保留现场环境声与动作声。",
+    "promptReceipt": null,
+    "continuityReferenceReceipt": null,
+    "outputUrl": "/generated-videos/project-bf5b79d6-755a-4da8-a630-8132ec45e101/run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3/animationPlan-V1-r2-026cdfb0204a47e5/animationPlan-V1-r2-026cdfb0204a-A01-20260901T024247354-7e9ee607-bf77-4da3-8231-9de922bbb004-2.mp4",
+    "outputPath": "/private/var/folders/ps/1zh3d0tx72v6m9dwhwd46ptm0000gn/T/mimo-durable-baseline.XXXXXX.YEneICPvd3/public/generated-videos/project-bf5b79d6-755a-4da8-a630-8132ec45e101/run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3/animationPlan-V1-r2-026cdfb0204a47e5/animationPlan-V1-r2-026cdfb0204a-A01-20260901T024247354-7e9ee607-bf77-4da3-8231-9de922bbb004-2.mp4",
+    "count": 2,
+    "actualCount": 2,
+    "videos": [
+      {
+        "candidateIndex": 0,
+        "plannedDurationSeconds": 5,
+        "measuredDurationSeconds": 1,
+        "provider": "Seedance",
+        "model": "doubao-seedance-2-0-260128",
+        "taskId": "A01-VIDEO-PREVIEW-1",
+        "outputUrl": "/generated-videos/project-bf5b79d6-755a-4da8-a630-8132ec45e101/run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3/animationPlan-V1-r2-026cdfb0204a47e5/animationPlan-V1-r2-026cdfb0204a-A01-20260901T024247354-7e9ee607-bf77-4da3-8231-9de922bbb004-1.mp4",
+        "outputPath": "/private/var/folders/ps/1zh3d0tx72v6m9dwhwd46ptm0000gn/T/mimo-durable-baseline.XXXXXX.YEneICPvd3/public/generated-videos/project-bf5b79d6-755a-4da8-a630-8132ec45e101/run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3/animationPlan-V1-r2-026cdfb0204a47e5/animationPlan-V1-r2-026cdfb0204a-A01-20260901T024247354-7e9ee607-bf77-4da3-8231-9de922bbb004-1.mp4",
+        "receipt": {
+          "provider": "generic-http-worker",
+          "videoProvider": "Seedance",
+          "taskId": "A01-VIDEO-PREVIEW-1",
+          "capability": "all_reference_video_generation",
+          "outputKey": "preview.A01",
+          "outputPath": "/private/var/folders/ps/1zh3d0tx72v6m9dwhwd46ptm0000gn/T/mimo-durable-baseline.XXXXXX.YEneICPvd3/public/generated-videos/project-bf5b79d6-755a-4da8-a630-8132ec45e101/run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3/animationPlan-V1-r2-026cdfb0204a47e5/animationPlan-V1-r2-026cdfb0204a-A01-20260901T024247354-7e9ee607-bf77-4da3-8231-9de922bbb004-1.mp4",
+          "endpoint": "http://127.0.0.1:4399/api/v3/contents/generations/tasks",
+          "model": "doubao-seedance-2-0-260128",
+          "audioRequested": true,
+          "audioOutputMode": "requested",
+          "negativePromptDelivery": {
+            "supported": false,
+            "appliedMode": "not_supported",
+            "providerField": "",
+            "compiledNegativePrompt": "",
+            "appliedText": "",
+            "providerIgnored": false,
+            "ignored": []
+          },
+          "requestPreview": {
+            "method": "POST",
+            "endpoint": "http://127.0.0.1:4399/api/v3/contents/generations/tasks",
+            "headers": {
+              "content-type": "application/json",
+              "Authorization": "[REDACTED]"
+            },
+            "body": {
+              "model": "doubao-seedance-2-0-260128",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "本次提供的参考素材：参考图1 是用户上传的参考素材。\n2.5D 动画，轻微手绘质感，角色圆润可爱，动作真实但带一点童话感。，治愈生活流短片，细节干净，情绪克制，不夸张煽情。，自然散射光，情绪低点偏冷，帮助和结尾逐步转暖。。横屏 16:9，出发点，治愈生活流 2.5D 动画场景参考图，空间真实可信，背景层级清楚，光线自然，适合验收猫在其中完成短镜头动作。。验收猫（验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套，圆润可爱的 2.5D 动画造型，严格保持用户明确设定的身份、外观、服装、发型和年龄感，表情活泼但懂事，动作小而认真），验收猫确认一段未导出的旧录音，听到任务期限后立刻把它收好。。镜头按动作顺序轻微跟随；沿同一空间轴线缓慢向前并跟随主体，全程不切镜；slow。验收猫在完成同一动作的过程中，情绪从任务启动逐步显露出更坚定的结果感。在 5 秒内按上述顺序清楚完成动作，节奏服务“任务启动”。验收猫：我现在去。；对白只作为声音，不渲染画面文字。出发点的轻微生活环境声；与“验收猫确认一段未导出的旧录音，听到任务期限后立刻把它收好。”同步的自然动作声；轻钢琴或木吉他底色，不抢动作节奏。内部摄影段与前后镜头均保持验收猫身份、年龄感、发型和服装不变；出发点的室内外属性、空间轴线和背景层级不变；关键道具外观、尺寸和数量不变；光源方向和色彩对比不跳变。达到 endFrame 定义的姿态、手部道具和表情状态后立即停止，不追加动作。全片无背景音乐，只保留现场环境声与动作声。"
+                },
+                {
+                  "type": "image_url",
+                  "image_url": {
+                    "url": "[REDACTED_DATA_URL length=114]"
+                  },
+                  "role": "reference_image"
+                }
+              ],
+              "ratio": "16:9",
+              "duration": 5,
+              "watermark": false,
+              "generate_audio": true,
+              "return_last_frame": false,
+              "resolution": "720p"
+            }
+          },
+          "resultKind": "url",
+          "providerTaskId": "acceptance-video-1",
+          "elapsedMs": 75,
+          "generatedAt": "2026-09-01T02:42:47.460Z"
+        },
+        "generatedAt": "2026-09-01T02:42:47.501Z"
+      },
+      {
+        "candidateIndex": 1,
+        "plannedDurationSeconds": 5,
+        "measuredDurationSeconds": 1,
+        "provider": "Seedance",
+        "model": "doubao-seedance-2-0-260128",
+        "taskId": "A01-VIDEO-PREVIEW-2",
+        "outputUrl": "/generated-videos/project-bf5b79d6-755a-4da8-a630-8132ec45e101/run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3/animationPlan-V1-r2-026cdfb0204a47e5/animationPlan-V1-r2-026cdfb0204a-A01-20260901T024247354-7e9ee607-bf77-4da3-8231-9de922bbb004-2.mp4",
+        "outputPath": "/private/var/folders/ps/1zh3d0tx72v6m9dwhwd46ptm0000gn/T/mimo-durable-baseline.XXXXXX.YEneICPvd3/public/generated-videos/project-bf5b79d6-755a-4da8-a630-8132ec45e101/run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3/animationPlan-V1-r2-026cdfb0204a47e5/animationPlan-V1-r2-026cdfb0204a-A01-20260901T024247354-7e9ee607-bf77-4da3-8231-9de922bbb004-2.mp4",
+        "receipt": {
+          "provider": "generic-http-worker",
+          "videoProvider": "Seedance",
+          "taskId": "A01-VIDEO-PREVIEW-2",
+          "capability": "all_reference_video_generation",
+          "outputKey": "preview.A01",
+          "outputPath": "/private/var/folders/ps/1zh3d0tx72v6m9dwhwd46ptm0000gn/T/mimo-durable-baseline.XXXXXX.YEneICPvd3/public/generated-videos/project-bf5b79d6-755a-4da8-a630-8132ec45e101/run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3/animationPlan-V1-r2-026cdfb0204a47e5/animationPlan-V1-r2-026cdfb0204a-A01-20260901T024247354-7e9ee607-bf77-4da3-8231-9de922bbb004-2.mp4",
+          "endpoint": "http://127.0.0.1:4399/api/v3/contents/generations/tasks",
+          "model": "doubao-seedance-2-0-260128",
+          "audioRequested": true,
+          "audioOutputMode": "requested",
+          "negativePromptDelivery": {
+            "supported": false,
+            "appliedMode": "not_supported",
+            "providerField": "",
+            "compiledNegativePrompt": "",
+            "appliedText": "",
+            "providerIgnored": false,
+            "ignored": []
+          },
+          "requestPreview": {
+            "method": "POST",
+            "endpoint": "http://127.0.0.1:4399/api/v3/contents/generations/tasks",
+            "headers": {
+              "content-type": "application/json",
+              "Authorization": "[REDACTED]"
+            },
+            "body": {
+              "model": "doubao-seedance-2-0-260128",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "本次提供的参考素材：参考图1 是用户上传的参考素材。\n2.5D 动画，轻微手绘质感，角色圆润可爱，动作真实但带一点童话感。，治愈生活流短片，细节干净，情绪克制，不夸张煽情。，自然散射光，情绪低点偏冷，帮助和结尾逐步转暖。。横屏 16:9，出发点，治愈生活流 2.5D 动画场景参考图，空间真实可信，背景层级清楚，光线自然，适合验收猫在其中完成短镜头动作。。验收猫（验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套，圆润可爱的 2.5D 动画造型，严格保持用户明确设定的身份、外观、服装、发型和年龄感，表情活泼但懂事，动作小而认真），验收猫确认一段未导出的旧录音，听到任务期限后立刻把它收好。。镜头按动作顺序轻微跟随；沿同一空间轴线缓慢向前并跟随主体，全程不切镜；slow。验收猫在完成同一动作的过程中，情绪从任务启动逐步显露出更坚定的结果感。在 5 秒内按上述顺序清楚完成动作，节奏服务“任务启动”。验收猫：我现在去。；对白只作为声音，不渲染画面文字。出发点的轻微生活环境声；与“验收猫确认一段未导出的旧录音，听到任务期限后立刻把它收好。”同步的自然动作声；轻钢琴或木吉他底色，不抢动作节奏。内部摄影段与前后镜头均保持验收猫身份、年龄感、发型和服装不变；出发点的室内外属性、空间轴线和背景层级不变；关键道具外观、尺寸和数量不变；光源方向和色彩对比不跳变。达到 endFrame 定义的姿态、手部道具和表情状态后立即停止，不追加动作。全片无背景音乐，只保留现场环境声与动作声。"
+                },
+                {
+                  "type": "image_url",
+                  "image_url": {
+                    "url": "[REDACTED_DATA_URL length=114]"
+                  },
+                  "role": "reference_image"
+                }
+              ],
+              "ratio": "16:9",
+              "duration": 5,
+              "watermark": false,
+              "generate_audio": true,
+              "return_last_frame": false,
+              "resolution": "720p"
+            }
+          },
+          "resultKind": "url",
+          "providerTaskId": "acceptance-video-2",
+          "elapsedMs": 74,
+          "generatedAt": "2026-09-01T02:42:47.602Z"
+        },
+        "generatedAt": "2026-09-01T02:42:47.642Z"
+      }
+    ],
+    "frameReceipts": {
+      "start": {},
+      "end": {}
+    },
+    "receipt": {
+      "provider": "generic-http-worker",
+      "videoProvider": "Seedance",
+      "taskId": "A01-VIDEO-PREVIEW-1",
+      "capability": "all_reference_video_generation",
+      "outputKey": "preview.A01",
+      "outputPath": "/private/var/folders/ps/1zh3d0tx72v6m9dwhwd46ptm0000gn/T/mimo-durable-baseline.XXXXXX.YEneICPvd3/public/generated-videos/project-bf5b79d6-755a-4da8-a630-8132ec45e101/run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3/animationPlan-V1-r2-026cdfb0204a47e5/animationPlan-V1-r2-026cdfb0204a-A01-20260901T024247354-7e9ee607-bf77-4da3-8231-9de922bbb004-1.mp4",
+      "endpoint": "http://127.0.0.1:4399/api/v3/contents/generations/tasks",
+      "model": "doubao-seedance-2-0-260128",
+      "audioRequested": true,
+      "audioOutputMode": "requested",
+      "negativePromptDelivery": {
+        "supported": false,
+        "appliedMode": "not_supported",
+        "providerField": "",
+        "compiledNegativePrompt": "",
+        "appliedText": "",
+        "providerIgnored": false,
+        "ignored": []
+      },
+      "requestPreview": {
+        "method": "POST",
+        "endpoint": "http://127.0.0.1:4399/api/v3/contents/generations/tasks",
+        "headers": {
+          "content-type": "application/json",
+          "Authorization": "[REDACTED]"
+        },
+        "body": {
+          "model": "doubao-seedance-2-0-260128",
+          "content": [
+            {
+              "type": "text",
+              "text": "本次提供的参考素材：参考图1 是用户上传的参考素材。\n2.5D 动画，轻微手绘质感，角色圆润可爱，动作真实但带一点童话感。，治愈生活流短片，细节干净，情绪克制，不夸张煽情。，自然散射光，情绪低点偏冷，帮助和结尾逐步转暖。。横屏 16:9，出发点，治愈生活流 2.5D 动画场景参考图，空间真实可信，背景层级清楚，光线自然，适合验收猫在其中完成短镜头动作。。验收猫（验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套，圆润可爱的 2.5D 动画造型，严格保持用户明确设定的身份、外观、服装、发型和年龄感，表情活泼但懂事，动作小而认真），验收猫确认一段未导出的旧录音，听到任务期限后立刻把它收好。。镜头按动作顺序轻微跟随；沿同一空间轴线缓慢向前并跟随主体，全程不切镜；slow。验收猫在完成同一动作的过程中，情绪从任务启动逐步显露出更坚定的结果感。在 5 秒内按上述顺序清楚完成动作，节奏服务“任务启动”。验收猫：我现在去。；对白只作为声音，不渲染画面文字。出发点的轻微生活环境声；与“验收猫确认一段未导出的旧录音，听到任务期限后立刻把它收好。”同步的自然动作声；轻钢琴或木吉他底色，不抢动作节奏。内部摄影段与前后镜头均保持验收猫身份、年龄感、发型和服装不变；出发点的室内外属性、空间轴线和背景层级不变；关键道具外观、尺寸和数量不变；光源方向和色彩对比不跳变。达到 endFrame 定义的姿态、手部道具和表情状态后立即停止，不追加动作。全片无背景音乐，只保留现场环境声与动作声。"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "[REDACTED_DATA_URL length=114]"
+              },
+              "role": "reference_image"
+            }
+          ],
+          "ratio": "16:9",
+          "duration": 5,
+          "watermark": false,
+          "generate_audio": true,
+          "return_last_frame": false,
+          "resolution": "720p"
+        }
+      },
+      "resultKind": "url",
+      "providerTaskId": "acceptance-video-1",
+      "elapsedMs": 75,
+      "generatedAt": "2026-09-01T02:42:47.460Z"
+    },
+    "generatedAt": "2026-09-01T02:42:47.643Z",
+    "selectedIndex": 1
+  },
+  "selectedIndex": 1
+}

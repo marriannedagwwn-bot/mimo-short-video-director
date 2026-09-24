@@ -1,0 +1,358 @@
+{
+  "scenes": [
+    {
+      "sceneId": "S1",
+      "timeRange": "00:00-00:14",
+      "location": "屋内房间",
+      "characters": [
+        "咕嘎",
+        "糯糯",
+        "奶奶"
+      ],
+      "visibleActions": [
+        "糯糯从衣柜取出叠好的衣服递给咕嘎",
+        "咕嘎接过衣服后趴在地上用身体压平衣服，自称'咕嘎牌熨斗'",
+        "咕嘎抱着衣服在地上打滚继续'熨'衣服",
+        "奶奶坐在竹椅上慈祥地看着孩子们笑",
+        "衣服装满纸箱后，咕嘎和糯糯击掌庆祝"
+      ],
+      "dialogueGist": "咕嘎自称'咕嘎牌熨斗'；奶奶笑着说'呵呵，你们这两个小家伙'；咕嘎和糯糯击掌庆祝",
+      "shotDesign": [
+        {
+          "shotSize": "中景",
+          "camera": "固定",
+          "visibleContent": "屋内衣柜前，糯糯递衣服，咕嘎接衣服，奶奶坐在竹椅上观看"
+        },
+        {
+          "shotSize": "特写",
+          "camera": "固定",
+          "visibleContent": "咕嘎趴在地上压平衣服，衣服上浮现'咕嘎牌熨斗'字样"
+        },
+        {
+          "shotSize": "特写",
+          "camera": "固定",
+          "visibleContent": "奶奶慈祥微笑的面部表情"
+        },
+        {
+          "shotSize": "中景",
+          "camera": "固定",
+          "visibleContent": "咕嘎和糯糯在装满衣服的纸箱前击掌，奶奶在后方微笑"
+        }
+      ],
+      "emotionNode": "温馨、愉快、充满童趣",
+      "dramaticFunction": "开场，建立角色关系与温馨家庭氛围，引出整理旧衣服的事件",
+      "turningPoint": "",
+      "keyProps": [
+        "旧衣服",
+        "纸箱",
+        "竹椅",
+        "衣柜"
+      ],
+      "sourceEvidence": [
+        "video 00:00-00:14",
+        "用户补充文本 00:00-00:14"
+      ],
+      "confidence": 95
+    },
+    {
+      "sceneId": "S2",
+      "timeRange": "00:15-00:18",
+      "location": "家门口街道",
+      "characters": [
+        "咕嘎",
+        "糯糯",
+        "奶奶"
+      ],
+      "visibleActions": [
+        "糯糯推着载满衣服的小车，咕嘎在前头拉车",
+        "奶奶在门口送别，叮嘱孩子们慢点并记得回来吃饭",
+        "咕嘎脆生生地答应"
+      ],
+      "dialogueGist": "奶奶叮嘱'慢点啊，过会记得回来吃饭'；咕嘎答应",
+      "shotDesign": [
+        {
+          "shotSize": "中景",
+          "camera": "跟随",
+          "visibleContent": "咕嘎拉车、糯糯推车离开，奶奶站在门口目送"
+        }
+      ],
+      "emotionNode": "温馨、期待",
+      "dramaticFunction": "过渡，从家庭场景转向外部捐赠场景",
+      "turningPoint": "",
+      "keyProps": [
+        "装满衣服的小车",
+        "纸箱"
+      ],
+      "sourceEvidence": [
+        "video 00:15-00:18",
+        "用户补充文本 00:15-00:18"
+      ],
+      "confidence": 95
+    },
+    {
+      "sceneId": "S3",
+      "timeRange": "00:19-00:29",
+      "location": "回收站前",
+      "characters": [
+        "咕嘎",
+        "糯糯",
+        "志愿者阿姨"
+      ],
+      "visibleActions": [
+        "志愿者阿姨在回收站前的桌子旁写字",
+        "阿姨抬头看到孩子们，笑容温暖地打招呼",
+        "咕嘎和糯糯拉着小车上前打招呼，咕嘎挥动翅膀说'我们来捐衣服啦'",
+        "阿姨招呼孩子们稍等一会儿"
+      ],
+      "dialogueGist": "阿姨说'哎呀，小咕嘎跟糯糯来了'；孩子们说'我们来捐衣服啦'；阿姨说'好好，稍等阿姨一会啊'",
+      "shotDesign": [
+        {
+          "shotSize": "中景",
+          "camera": "固定",
+          "visibleContent": "回收站前，阿姨在桌前写字，背景是蓝色回收箱"
+        },
+        {
+          "shotSize": "特写",
+          "camera": "固定",
+          "visibleContent": "阿姨抬头微笑的面部表情"
+        },
+        {
+          "shotSize": "中景",
+          "camera": "固定",
+          "visibleContent": "咕嘎和糯糯拉着小车走向阿姨"
+        }
+      ],
+      "emotionNode": "友善、期待",
+      "dramaticFunction": "发展，引入捐赠事件和志愿者角色",
+      "turningPoint": "",
+      "keyProps": [
+        "回收箱",
+        "登记表",
+        "小车"
+      ],
+      "sourceEvidence": [
+        "video 00:19-00:29",
+        "用户补充文本 00:19-00:29"
+      ],
+      "confidence": 95
+    },
+    {
+      "sceneId": "S4",
+      "timeRange": "00:30-00:38",
+      "location": "回收站旁空地",
+      "characters": [
+        "咕嘎",
+        "糯糯"
+      ],
+      "visibleActions": [
+        "咕嘎和糯糯蹲在地上，用粉笔画格子玩石子游戏",
+        "咕嘎用手指拨动石子",
+        "游戏结束，俩孩子心满意足地站起身"
+      ],
+      "dialogueGist": "孩子们说'好啦'",
+      "shotDesign": [
+        {
+          "shotSize": "中景",
+          "camera": "固定",
+          "visibleContent": "俩孩子蹲在地上玩石子游戏，地上有粉笔画的格子"
+        },
+        {
+          "shotSize": "特写",
+          "camera": "固定",
+          "visibleContent": "咕嘎用手指拨动石子的动作"
+        }
+      ],
+      "emotionNode": "开心、专注",
+      "dramaticFunction": "过渡，展现等待期间的童趣时光",
+      "turningPoint": "",
+      "keyProps": [
+        "石子",
+        "粉笔格子"
+      ],
+      "sourceEvidence": [
+        "video 00:30-00:38",
+        "用户补充文本 00:30-00:38"
+      ],
+      "confidence": 95
+    },
+    {
+      "sceneId": "S5",
+      "timeRange": "00:39-00:48",
+      "location": "回收站前",
+      "characters": [
+        "咕嘎",
+        "糯糯",
+        "志愿者阿姨"
+      ],
+      "visibleActions": [
+        "阿姨笑眯眯地告诉孩子们衣服已经整理完了，并道谢",
+        "阿姨给咕嘎和糯糯胸前各别上一朵小红花",
+        "俩孩子先是惊讶，随后笑得甜甜"
+      ],
+      "dialogueGist": "阿姨说'衣服阿姨已经整理完了，谢谢你们啊'",
+      "shotDesign": [
+        {
+          "shotSize": "中景",
+          "camera": "固定",
+          "visibleContent": "阿姨站在回收箱前对孩子们说话"
+        },
+        {
+          "shotSize": "特写",
+          "camera": "固定",
+          "visibleContent": "阿姨的手将小红花别在孩子们胸前"
+        },
+        {
+          "shotSize": "特写",
+          "camera": "固定",
+          "visibleContent": "咕嘎和糯糯胸前戴着小红花，露出开心的笑容"
+        }
+      ],
+      "emotionNode": "开心、被认可",
+      "dramaticFunction": "发展高潮，孩子们因善举获得奖励",
+      "turningPoint": "",
+      "keyProps": [
+        "小红花"
+      ],
+      "sourceEvidence": [
+        "video 00:39-00:48",
+        "用户补充文本 00:39-00:48"
+      ],
+      "confidence": 95
+    },
+    {
+      "sceneId": "S6",
+      "timeRange": "00:49-01:05",
+      "location": "奶奶家院子",
+      "characters": [
+        "咕嘎",
+        "糯糯",
+        "奶奶"
+      ],
+      "visibleActions": [
+        "三人围坐在院子里的木桌旁吃面条",
+        "咕嘎和糯糯悄悄摘下自己的小红花",
+        "俩孩子把小红花别到了奶奶身上",
+        "奶奶先是一愣，随后笑得无比欣慰",
+        "镜头拉远，展现夕阳余晖中三人吃饭的温馨画面"
+      ],
+      "dialogueGist": "奶奶说'咦？哎哟，你们这俩孩子……'",
+      "shotDesign": [
+        {
+          "shotSize": "特写",
+          "camera": "固定",
+          "visibleContent": "一碗热气腾腾的面条被放在桌上"
+        },
+        {
+          "shotSize": "中景",
+          "camera": "固定",
+          "visibleContent": "三人围坐在桌旁吃面，孩子们胸前戴着小红花"
+        },
+        {
+          "shotSize": "特写",
+          "camera": "固定",
+          "visibleContent": "孩子们取下小红花别在奶奶衣服上"
+        },
+        {
+          "shotSize": "特写",
+          "camera": "固定",
+          "visibleContent": "奶奶欣慰的笑容"
+        },
+        {
+          "shotSize": "远景",
+          "camera": "拉远",
+          "visibleContent": "夕阳下的院子，三人围坐吃饭，画面温暖"
+        }
+      ],
+      "emotionNode": "感动、温暖、升华",
+      "dramaticFunction": "结尾，情感升华，孩子们将奖励回馈给奶奶，传递爱与感恩",
+      "turningPoint": "孩子们将小红花别在奶奶身上",
+      "keyProps": [
+        "面条",
+        "小红花",
+        "木桌"
+      ],
+      "sourceEvidence": [
+        "video 00:49-01:05",
+        "用户补充文本 00:49-01:05"
+      ],
+      "confidence": 95
+    }
+  ],
+  "coreEventSequence": [
+    {
+      "order": 1,
+      "event": "咕嘎和糯糯在奶奶陪伴下整理旧衣服",
+      "causalRole": "起因，建立温馨家庭氛围并引出捐赠事件",
+      "sceneRefs": [
+        "S1"
+      ]
+    },
+    {
+      "order": 2,
+      "event": "孩子们拉着小车将衣服送到回收站捐赠",
+      "causalRole": "发展，展现孩子们的善举",
+      "sceneRefs": [
+        "S2",
+        "S3"
+      ]
+    },
+    {
+      "order": 3,
+      "event": "等待期间孩子们玩石子游戏",
+      "causalRole": "过渡，展现童趣时光",
+      "sceneRefs": [
+        "S4"
+      ]
+    },
+    {
+      "order": 4,
+      "event": "志愿者阿姨为孩子们别上小红花作为奖励",
+      "causalRole": "发展高潮，善举得到认可",
+      "sceneRefs": [
+        "S5"
+      ]
+    },
+    {
+      "order": 5,
+      "event": "孩子们将小红花别在奶奶身上，三人共进晚餐",
+      "causalRole": "结尾，情感升华，传递爱与感恩",
+      "sceneRefs": [
+        "S6"
+      ]
+    }
+  ],
+  "relationshipPattern": "咕嘎和糯糯是亲密的伙伴，与奶奶是祖孙关系；志愿者阿姨是友善的陌生人，给予孩子们鼓励和奖励；孩子们将奖励回馈给奶奶，体现家庭内部的爱的循环",
+  "endingAction": {
+    "action": "咕嘎和糯糯将志愿者阿姨奖励的小红花别在奶奶身上，三人一起在夕阳下的院子里吃面条",
+    "emotionalMeaning": "孩子们将外界的善意认可转化为对家人的爱，体现感恩与家庭温暖，情感得到升华",
+    "evidence": [
+      "video 00:54-01:05",
+      "用户补充文本 00:54-01:05"
+    ]
+  },
+  "turningPoints": [
+    {
+      "sceneRef": "S6",
+      "from": "孩子们佩戴小红花享受奖励",
+      "to": "孩子们将小红花转赠给奶奶",
+      "trigger": "孩子们对奶奶的爱与感恩"
+    }
+  ],
+  "uncertainties": [
+    {
+      "timeRange": "00:00-01:05",
+      "unknown": "角色的具体年龄",
+      "safeAssumption": "咕嘎和糯糯是儿童或学生年龄"
+    },
+    {
+      "timeRange": "00:19-00:48",
+      "unknown": "捐赠衣服的具体去向和用途",
+      "safeAssumption": "衣服将被回收站用于慈善或环保用途"
+    },
+    {
+      "timeRange": "00:00-01:05",
+      "unknown": "咕嘎和糯糯与奶奶的确切亲属关系（是否为亲祖孙）",
+      "safeAssumption": "根据互动模式推测为祖孙关系或亲密的长辈与晚辈关系"
+    }
+  ]
+}

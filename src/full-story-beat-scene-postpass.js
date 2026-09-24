@@ -75,7 +75,7 @@ export function fullStoryBeatScenePostpassPrompt(plan) {
 2. 逐个、按原顺序检查所有 beat。只拦截会造成明显剧情断裂的实质问题：核心任务动作完全未落入分场、节拍宣称完成但没有可见结果、相邻场的持久道具数量/位置/状态无桥接、必须依赖未展示事件才能从前一场跳到后一场。
 3. 同义表达、一个节拍拆成多场、合理旅途省略、情绪通过表演表达，均不是问题。若 visibleAction 已明确写出蒙太奇/时间压缩、重复动作、终态与返程，则必须 pass，不要求逐件逐户完整拍满。
 4. 只有当遗漏可由本 JSON 内的节拍、当前场和相邻场唯一推出，并且只需在一个既有 sceneScript[].visibleAction 末尾追加时，才可 completed。每次最多补 3 个场次；超过该范围必须 blocked。
-5. 不得删除、替换、重排已有 visibleAction；不得修改 beatSheet；不得新增/删除/重排场次；不得修改 sceneId、timeRange、location、characters、dialogue、shotAndSound、emotionNode、dramaticFunction、shootingNotes、角色、道具或任何其他字段。
+5. 不得删除、替换、重排已有 visibleAction；不得修改 beatSheet；不得新增/删除/重排场次；不得修改 sceneId、timeRange、location、characters、offscreenSoundSources、dialogue、shotAndSound、emotionNode、dramaticFunction、shootingNotes、角色、道具或任何其他字段。
 6. 若需要上述非追加修改、需要新增角色/地点/对白/道具、现有字段显式矛盾、目标场次不唯一或内部证据不足，必须 blocked，不能猜写。
 
 每个 review 必须对应原 beatSheet 的同一数组下标，并逐字返回 beatIndex 与 beat。sceneIds 只能列出现有 sceneId。非 pass 的 beatEvidence 只能逐字取自该 beat 的 storyAction；sceneEvidence 只能逐字取自所列场次的 visibleAction；nextStateEvidence 若非空，只能逐字取自所列最后一场或它的紧邻下一场 visibleAction。completed 的 completionId 必须引用一条 completion。

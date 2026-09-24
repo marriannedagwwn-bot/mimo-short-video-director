@@ -76,6 +76,11 @@ function safeVariant() {
     newTask: "把新鲜水果送给村中老人",
     emotionalMedium: "围裙、苹果、蜂蜜糖、稻草和木板",
     environmentPressure: "傍晚露水让草垛变潮",
+    keyChoice: "小白子选择先保护滚落的水果，再接受伙伴帮助搭建防潮小棚。",
+    climax: "小白子在露水加重前把最后一篮水果送达，并亲手固定小棚木板。",
+    emotionalPayoff: "小白子从独自完成任务转为确认自己也可以接受伙伴照顾。",
+    novelty: "把送达任务与主角接受照顾的关系转变结合。",
+    visualPotential: "滚落苹果、傍晚露水和木板小棚形成连续可见的状态变化。",
     storyOutline: [{
       beat: 1,
       phase: "受到照顾",

@@ -1,0 +1,620 @@
+{
+  "manifestType": "mimo-production-run",
+  "schemaVersion": "1.0",
+  "lineageSchemaVersion": "1.0",
+  "projectId": "project-bf5b79d6-755a-4da8-a630-8132ec45e101",
+  "runId": "run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3",
+  "status": "active",
+  "gitCommit": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2",
+  "buildId": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2",
+  "createdAt": "2026-09-01T02:42:47.240Z",
+  "updatedAt": "2026-09-01T02:42:47.657Z",
+  "metadata": {
+    "sourceVideo": {
+      "name": "durable-task-acceptance.mp4",
+      "size": 4096,
+      "type": "video/mp4",
+      "duration": 44,
+      "width": 1280,
+      "height": 720
+    },
+    "creatorProfile": {
+      "fixedCharacter": "验收猫，Q版猫耳少女，白色短发，蓝色眼睛，深蓝学生外套",
+      "vertical": "治愈日常短故事",
+      "constraints": "对白克制；禁止字幕水印；固定角色外观不可变化。"
+    },
+    "transcript": "00:00-00:44 验收固定输入；只用于验证 Durable Task，不作为质量样本。",
+    "startedBy": "browser-workflow"
+  },
+  "stages": {
+    "referenceAnalysis": {
+      "stageId": "referenceAnalysis",
+      "artifactType": "referenceAnalysis",
+      "status": "completed",
+      "requestId": "acceptance-830180cd-a2b4-499b-bae9-9254c79d1ba8",
+      "revision": "referenceAnalysis-r1",
+      "contentDigest": "e9fedc8aa4a4ddb94b0048d8f47cf5168adfee53ed6af89bfe8fa96ed7e84950",
+      "updatedAt": "2026-09-01T02:42:47.253Z"
+    },
+    "sourceScriptReconstruction": {
+      "stageId": "sourceScriptReconstruction",
+      "artifactType": "sourceScriptReconstruction",
+      "status": "completed",
+      "requestId": "acceptance-30909de3-d01f-495b-985d-3fa0f2f1ca23",
+      "revision": "sourceScriptReconstruction-r1",
+      "contentDigest": "974d351ddab9efcfa2737803147ecdae7f5c09896611edea3f61a7799e37fa69",
+      "updatedAt": "2026-09-01T02:42:47.263Z"
+    },
+    "creativeBrief": {
+      "stageId": "creativeBrief",
+      "artifactType": "creativeBrief",
+      "status": "completed",
+      "requestId": "acceptance-227768d7-cc0b-4e02-becb-19b96f3b0902",
+      "revision": "creativeBrief-r1",
+      "contentDigest": "cfedafa751de45968ca1527ee2e6f86822c47ae41f14e988cd185fc0bb34702f",
+      "updatedAt": "2026-09-01T02:42:47.273Z"
+    },
+    "visualGuardrails": {
+      "stageId": "visualGuardrails",
+      "artifactType": "visualGuardrails",
+      "status": "completed",
+      "requestId": "acceptance-63ed69cd-e4e5-4638-8ddd-394dfe629252",
+      "revision": "visualGuardrails-r1",
+      "contentDigest": "698bc16a30a8f4e2dfea3b258cf73030e5b52a32ec466b974858e1720c9b9dd0",
+      "updatedAt": "2026-09-01T02:42:47.283Z"
+    },
+    "themeVariants": {
+      "stageId": "themeVariants",
+      "artifactType": "themeVariants",
+      "status": "completed",
+      "requestId": "acceptance-33c12cf3-c280-49a1-8a86-a8f9bdb51b5e",
+      "revision": "themeVariants-r1",
+      "contentDigest": "7f16c79c2d5e98c08edfa316f62c8a2d42aada16546639e008e021aa018c804f",
+      "updatedAt": "2026-09-01T02:42:47.292Z"
+    },
+    "variant:V1": {
+      "stageId": "variant:V1",
+      "artifactType": "selectedVariant",
+      "status": "completed",
+      "requestId": "acceptance-20bf86e3-780e-4846-9a6e-f820f76a263e",
+      "revision": "variant-V1-r1",
+      "contentDigest": "c3ce23bd0992eebd62b482857f632e5d045c0f712c7ac2bf728b6af3fb8418ef",
+      "updatedAt": "2026-09-01T02:42:47.297Z"
+    },
+    "fullStory:V1": {
+      "stageId": "fullStory:V1",
+      "artifactType": "fullStory",
+      "status": "completed",
+      "requestId": "acceptance-cee7e7d7-06ad-4057-a4a4-0dd1a5c3465d",
+      "revision": "fullStory-V1-r1",
+      "contentDigest": "d1a0dea323790fafd5f8162646ccd6d20a327ca21c946c35dfeebfe3576e8d88",
+      "updatedAt": "2026-09-01T02:42:47.310Z"
+    },
+    "animationPlan:V1": {
+      "stageId": "animationPlan:V1",
+      "artifactType": "animationPlan",
+      "status": "completed",
+      "requestId": "acceptance-7b311aa5-cd31-441f-8145-b440a6e8ba9c",
+      "revision": "animationPlan-V1-r2",
+      "contentDigest": "026cdfb0204a47e5786dc5927c8af832d917884de97e0e22cebf25300cf2ba2b",
+      "updatedAt": "2026-09-01T02:42:47.334Z"
+    },
+    "characterImages:V1:0": {
+      "stageId": "characterImages:V1:0",
+      "artifactType": "characterImages",
+      "status": "completed",
+      "requestId": "acceptance-92ba3bbf-67c7-4a7c-be1c-3575cdfc352a",
+      "revision": "characterImages-V1-0-r1",
+      "contentDigest": "2d589e2473f6e5fbcc54844cc860d0c71135d68386873ae42760cae7ca5e4f00",
+      "updatedAt": "2026-09-01T02:42:47.349Z"
+    },
+    "shotVideo:V1:A01": {
+      "stageId": "shotVideo:V1:A01",
+      "artifactType": "shotVideo",
+      "status": "completed",
+      "requestId": "acceptance-cca45c8b-148b-4583-acf0-c3c85d32532f",
+      "revision": "shotVideo-V1-A01-r2",
+      "contentDigest": "f9f155a17bdb414212a78c4aee50f6adbee07f6eea470130efd6bf6b6b504c4d",
+      "updatedAt": "2026-09-01T02:42:47.657Z"
+    }
+  },
+  "checkpoint": {
+    "sequence": 19,
+    "updatedAt": "2026-09-01T02:42:47.657Z"
+  },
+  "counters": {
+    "referenceAnalysis": 1,
+    "sourceScriptReconstruction": 1,
+    "creativeBrief": 1,
+    "visualGuardrails": 1,
+    "themeVariants": 1,
+    "variant:V1": 1,
+    "fullStory:V1": 1,
+    "animationPlan:V1": 2,
+    "characterImages:V1:0": 1,
+    "shotVideo:V1:A01": 2
+  },
+  "latest": {
+    "referenceAnalysis": "referenceAnalysis-r1",
+    "sourceScriptReconstruction": "sourceScriptReconstruction-r1",
+    "creativeBrief": "creativeBrief-r1",
+    "visualGuardrails": "visualGuardrails-r1",
+    "themeVariants": "themeVariants-r1",
+    "variant:V1": "variant-V1-r1",
+    "fullStory:V1": "fullStory-V1-r1",
+    "animationPlan:V1": "animationPlan-V1-r2",
+    "characterImages:V1:0": "characterImages-V1-0-r1",
+    "shotVideo:V1:A01": "shotVideo-V1-A01-r2"
+  },
+  "artifacts": [
+    {
+      "artifactId": "referenceAnalysis",
+      "artifactType": "referenceAnalysis",
+      "revision": "referenceAnalysis-r1",
+      "contentDigest": "e9fedc8aa4a4ddb94b0048d8f47cf5168adfee53ed6af89bfe8fa96ed7e84950",
+      "dependencies": [],
+      "requestId": "acceptance-830180cd-a2b4-499b-bae9-9254c79d1ba8",
+      "status": "current",
+      "createdAt": "2026-09-01T02:42:47.253Z",
+      "contentPath": "artifacts/referenceAnalysis/referenceAnalysis-r1.json"
+    },
+    {
+      "artifactId": "sourceScriptReconstruction",
+      "artifactType": "sourceScriptReconstruction",
+      "revision": "sourceScriptReconstruction-r1",
+      "contentDigest": "974d351ddab9efcfa2737803147ecdae7f5c09896611edea3f61a7799e37fa69",
+      "dependencies": [
+        {
+          "artifactId": "referenceAnalysis",
+          "revision": "referenceAnalysis-r1",
+          "contentDigest": "e9fedc8aa4a4ddb94b0048d8f47cf5168adfee53ed6af89bfe8fa96ed7e84950"
+        }
+      ],
+      "requestId": "acceptance-30909de3-d01f-495b-985d-3fa0f2f1ca23",
+      "status": "current",
+      "createdAt": "2026-09-01T02:42:47.263Z",
+      "contentPath": "artifacts/sourceScriptReconstruction/sourceScriptReconstruction-r1.json"
+    },
+    {
+      "artifactId": "creativeBrief",
+      "artifactType": "creativeBrief",
+      "revision": "creativeBrief-r1",
+      "contentDigest": "cfedafa751de45968ca1527ee2e6f86822c47ae41f14e988cd185fc0bb34702f",
+      "dependencies": [
+        {
+          "artifactId": "referenceAnalysis",
+          "revision": "referenceAnalysis-r1",
+          "contentDigest": "e9fedc8aa4a4ddb94b0048d8f47cf5168adfee53ed6af89bfe8fa96ed7e84950"
+        },
+        {
+          "artifactId": "sourceScriptReconstruction",
+          "revision": "sourceScriptReconstruction-r1",
+          "contentDigest": "974d351ddab9efcfa2737803147ecdae7f5c09896611edea3f61a7799e37fa69"
+        }
+      ],
+      "requestId": "acceptance-227768d7-cc0b-4e02-becb-19b96f3b0902",
+      "status": "current",
+      "createdAt": "2026-09-01T02:42:47.273Z",
+      "contentPath": "artifacts/creativeBrief/creativeBrief-r1.json"
+    },
+    {
+      "artifactId": "visualGuardrails",
+      "artifactType": "visualGuardrails",
+      "revision": "visualGuardrails-r1",
+      "contentDigest": "698bc16a30a8f4e2dfea3b258cf73030e5b52a32ec466b974858e1720c9b9dd0",
+      "dependencies": [
+        {
+          "artifactId": "creativeBrief",
+          "revision": "creativeBrief-r1",
+          "contentDigest": "cfedafa751de45968ca1527ee2e6f86822c47ae41f14e988cd185fc0bb34702f"
+        },
+        {
+          "artifactId": "referenceAnalysis",
+          "revision": "referenceAnalysis-r1",
+          "contentDigest": "e9fedc8aa4a4ddb94b0048d8f47cf5168adfee53ed6af89bfe8fa96ed7e84950"
+        },
+        {
+          "artifactId": "sourceScriptReconstruction",
+          "revision": "sourceScriptReconstruction-r1",
+          "contentDigest": "974d351ddab9efcfa2737803147ecdae7f5c09896611edea3f61a7799e37fa69"
+        }
+      ],
+      "requestId": "acceptance-63ed69cd-e4e5-4638-8ddd-394dfe629252",
+      "status": "current",
+      "createdAt": "2026-09-01T02:42:47.283Z",
+      "contentPath": "artifacts/visualGuardrails/visualGuardrails-r1.json"
+    },
+    {
+      "artifactId": "themeVariants",
+      "artifactType": "themeVariants",
+      "revision": "themeVariants-r1",
+      "contentDigest": "7f16c79c2d5e98c08edfa316f62c8a2d42aada16546639e008e021aa018c804f",
+      "dependencies": [
+        {
+          "artifactId": "creativeBrief",
+          "revision": "creativeBrief-r1",
+          "contentDigest": "cfedafa751de45968ca1527ee2e6f86822c47ae41f14e988cd185fc0bb34702f"
+        },
+        {
+          "artifactId": "visualGuardrails",
+          "revision": "visualGuardrails-r1",
+          "contentDigest": "698bc16a30a8f4e2dfea3b258cf73030e5b52a32ec466b974858e1720c9b9dd0"
+        }
+      ],
+      "requestId": "acceptance-33c12cf3-c280-49a1-8a86-a8f9bdb51b5e",
+      "status": "current",
+      "createdAt": "2026-09-01T02:42:47.292Z",
+      "contentPath": "artifacts/themeVariants/themeVariants-r1.json"
+    },
+    {
+      "artifactId": "variant:V1",
+      "artifactType": "selectedVariant",
+      "revision": "variant-V1-r1",
+      "contentDigest": "c3ce23bd0992eebd62b482857f632e5d045c0f712c7ac2bf728b6af3fb8418ef",
+      "dependencies": [
+        {
+          "artifactId": "themeVariants",
+          "revision": "themeVariants-r1",
+          "contentDigest": "7f16c79c2d5e98c08edfa316f62c8a2d42aada16546639e008e021aa018c804f"
+        }
+      ],
+      "requestId": "acceptance-20bf86e3-780e-4846-9a6e-f820f76a263e",
+      "status": "current",
+      "createdAt": "2026-09-01T02:42:47.297Z",
+      "contentPath": "artifacts/variant-V1/variant-V1-r1.json"
+    },
+    {
+      "artifactId": "fullStory:V1",
+      "artifactType": "fullStory",
+      "revision": "fullStory-V1-r1",
+      "contentDigest": "d1a0dea323790fafd5f8162646ccd6d20a327ca21c946c35dfeebfe3576e8d88",
+      "dependencies": [
+        {
+          "artifactId": "creativeBrief",
+          "revision": "creativeBrief-r1",
+          "contentDigest": "cfedafa751de45968ca1527ee2e6f86822c47ae41f14e988cd185fc0bb34702f"
+        },
+        {
+          "artifactId": "referenceAnalysis",
+          "revision": "referenceAnalysis-r1",
+          "contentDigest": "e9fedc8aa4a4ddb94b0048d8f47cf5168adfee53ed6af89bfe8fa96ed7e84950"
+        },
+        {
+          "artifactId": "sourceScriptReconstruction",
+          "revision": "sourceScriptReconstruction-r1",
+          "contentDigest": "974d351ddab9efcfa2737803147ecdae7f5c09896611edea3f61a7799e37fa69"
+        },
+        {
+          "artifactId": "themeVariants",
+          "revision": "themeVariants-r1",
+          "contentDigest": "7f16c79c2d5e98c08edfa316f62c8a2d42aada16546639e008e021aa018c804f"
+        },
+        {
+          "artifactId": "variant:V1",
+          "revision": "variant-V1-r1",
+          "contentDigest": "c3ce23bd0992eebd62b482857f632e5d045c0f712c7ac2bf728b6af3fb8418ef"
+        },
+        {
+          "artifactId": "visualGuardrails",
+          "revision": "visualGuardrails-r1",
+          "contentDigest": "698bc16a30a8f4e2dfea3b258cf73030e5b52a32ec466b974858e1720c9b9dd0"
+        }
+      ],
+      "requestId": "acceptance-cee7e7d7-06ad-4057-a4a4-0dd1a5c3465d",
+      "status": "current",
+      "createdAt": "2026-09-01T02:42:47.310Z",
+      "contentPath": "artifacts/fullStory-V1/fullStory-V1-r1.json"
+    },
+    {
+      "artifactId": "animationPlan:V1",
+      "artifactType": "animationPlan",
+      "revision": "animationPlan-V1-r1",
+      "contentDigest": "c5f079071665835e41b87fe50a71a6c92e07131727f1ba877c680ee94c257d42",
+      "dependencies": [
+        {
+          "artifactId": "creativeBrief",
+          "revision": "creativeBrief-r1",
+          "contentDigest": "cfedafa751de45968ca1527ee2e6f86822c47ae41f14e988cd185fc0bb34702f"
+        },
+        {
+          "artifactId": "fullStory:V1",
+          "revision": "fullStory-V1-r1",
+          "contentDigest": "d1a0dea323790fafd5f8162646ccd6d20a327ca21c946c35dfeebfe3576e8d88"
+        },
+        {
+          "artifactId": "referenceAnalysis",
+          "revision": "referenceAnalysis-r1",
+          "contentDigest": "e9fedc8aa4a4ddb94b0048d8f47cf5168adfee53ed6af89bfe8fa96ed7e84950"
+        },
+        {
+          "artifactId": "sourceScriptReconstruction",
+          "revision": "sourceScriptReconstruction-r1",
+          "contentDigest": "974d351ddab9efcfa2737803147ecdae7f5c09896611edea3f61a7799e37fa69"
+        },
+        {
+          "artifactId": "variant:V1",
+          "revision": "variant-V1-r1",
+          "contentDigest": "c3ce23bd0992eebd62b482857f632e5d045c0f712c7ac2bf728b6af3fb8418ef"
+        },
+        {
+          "artifactId": "visualGuardrails",
+          "revision": "visualGuardrails-r1",
+          "contentDigest": "698bc16a30a8f4e2dfea3b258cf73030e5b52a32ec466b974858e1720c9b9dd0"
+        }
+      ],
+      "requestId": "acceptance-49e752eb-7194-485f-9a29-71e37965c75f",
+      "status": "superseded",
+      "createdAt": "2026-09-01T02:42:47.322Z",
+      "contentPath": "artifacts/animationPlan-V1/animationPlan-V1-r1.json",
+      "mediaNamespace": "project-bf5b79d6-755a-4da8-a630-8132ec45e101/run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3/animationPlan-V1-r1-c5f079071665835e",
+      "supersededAt": "2026-09-01T02:42:47.334Z"
+    },
+    {
+      "artifactId": "animationPlan:V1",
+      "artifactType": "animationPlan",
+      "revision": "animationPlan-V1-r2",
+      "contentDigest": "026cdfb0204a47e5786dc5927c8af832d917884de97e0e22cebf25300cf2ba2b",
+      "dependencies": [
+        {
+          "artifactId": "creativeBrief",
+          "revision": "creativeBrief-r1",
+          "contentDigest": "cfedafa751de45968ca1527ee2e6f86822c47ae41f14e988cd185fc0bb34702f"
+        },
+        {
+          "artifactId": "fullStory:V1",
+          "revision": "fullStory-V1-r1",
+          "contentDigest": "d1a0dea323790fafd5f8162646ccd6d20a327ca21c946c35dfeebfe3576e8d88"
+        },
+        {
+          "artifactId": "referenceAnalysis",
+          "revision": "referenceAnalysis-r1",
+          "contentDigest": "e9fedc8aa4a4ddb94b0048d8f47cf5168adfee53ed6af89bfe8fa96ed7e84950"
+        },
+        {
+          "artifactId": "sourceScriptReconstruction",
+          "revision": "sourceScriptReconstruction-r1",
+          "contentDigest": "974d351ddab9efcfa2737803147ecdae7f5c09896611edea3f61a7799e37fa69"
+        },
+        {
+          "artifactId": "variant:V1",
+          "revision": "variant-V1-r1",
+          "contentDigest": "c3ce23bd0992eebd62b482857f632e5d045c0f712c7ac2bf728b6af3fb8418ef"
+        },
+        {
+          "artifactId": "visualGuardrails",
+          "revision": "visualGuardrails-r1",
+          "contentDigest": "698bc16a30a8f4e2dfea3b258cf73030e5b52a32ec466b974858e1720c9b9dd0"
+        }
+      ],
+      "requestId": "acceptance-7b311aa5-cd31-441f-8145-b440a6e8ba9c",
+      "status": "current",
+      "createdAt": "2026-09-01T02:42:47.334Z",
+      "contentPath": "artifacts/animationPlan-V1/animationPlan-V1-r2.json",
+      "mediaNamespace": "project-bf5b79d6-755a-4da8-a630-8132ec45e101/run-4fe86fa9-39fc-476c-9b3d-a384f7ac81d3/animationPlan-V1-r2-026cdfb0204a47e5"
+    },
+    {
+      "artifactId": "characterImages:V1:0",
+      "artifactType": "characterImages",
+      "revision": "characterImages-V1-0-r1",
+      "contentDigest": "2d589e2473f6e5fbcc54844cc860d0c71135d68386873ae42760cae7ca5e4f00",
+      "dependencies": [
+        {
+          "artifactId": "animationPlan:V1",
+          "revision": "animationPlan-V1-r2",
+          "contentDigest": "026cdfb0204a47e5786dc5927c8af832d917884de97e0e22cebf25300cf2ba2b"
+        }
+      ],
+      "requestId": "acceptance-92ba3bbf-67c7-4a7c-be1c-3575cdfc352a",
+      "status": "current",
+      "createdAt": "2026-09-01T02:42:47.349Z",
+      "contentPath": "artifacts/characterImages-V1-0/characterImages-V1-0-r1.json"
+    },
+    {
+      "artifactId": "shotVideo:V1:A01",
+      "artifactType": "shotVideo",
+      "revision": "shotVideo-V1-A01-r1",
+      "contentDigest": "2035fbc28330aa6f229394203edbacf5ee0875c4142beef94327102485dc6b16",
+      "dependencies": [
+        {
+          "artifactId": "animationPlan:V1",
+          "revision": "animationPlan-V1-r2",
+          "contentDigest": "026cdfb0204a47e5786dc5927c8af832d917884de97e0e22cebf25300cf2ba2b"
+        }
+      ],
+      "requestId": "acceptance-2e7de4fa-1ff5-4d32-a44b-785e75ab5f11",
+      "status": "superseded",
+      "createdAt": "2026-09-01T02:42:47.648Z",
+      "contentPath": "artifacts/shotVideo-V1-A01/shotVideo-V1-A01-r1.json",
+      "supersededAt": "2026-09-01T02:42:47.657Z"
+    },
+    {
+      "artifactId": "shotVideo:V1:A01",
+      "artifactType": "shotVideo",
+      "revision": "shotVideo-V1-A01-r2",
+      "contentDigest": "f9f155a17bdb414212a78c4aee50f6adbee07f6eea470130efd6bf6b6b504c4d",
+      "dependencies": [
+        {
+          "artifactId": "animationPlan:V1",
+          "revision": "animationPlan-V1-r2",
+          "contentDigest": "026cdfb0204a47e5786dc5927c8af832d917884de97e0e22cebf25300cf2ba2b"
+        }
+      ],
+      "requestId": "acceptance-cca45c8b-148b-4583-acf0-c3c85d32532f",
+      "status": "current",
+      "createdAt": "2026-09-01T02:42:47.657Z",
+      "contentPath": "artifacts/shotVideo-V1-A01/shotVideo-V1-A01-r2.json"
+    }
+  ],
+  "events": [
+    {
+      "type": "run.created",
+      "createdAt": "2026-09-01T02:42:47.240Z",
+      "gitCommit": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2",
+      "buildId": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2"
+    },
+    {
+      "type": "stage.running",
+      "stageId": "referenceAnalysis",
+      "requestId": "acceptance-830180cd-a2b4-499b-bae9-9254c79d1ba8",
+      "createdAt": "2026-09-01T02:42:47.247Z",
+      "gitCommit": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2",
+      "buildId": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2"
+    },
+    {
+      "type": "artifact.committed",
+      "artifactId": "referenceAnalysis",
+      "revision": "referenceAnalysis-r1",
+      "contentDigest": "e9fedc8aa4a4ddb94b0048d8f47cf5168adfee53ed6af89bfe8fa96ed7e84950",
+      "requestId": "acceptance-830180cd-a2b4-499b-bae9-9254c79d1ba8",
+      "staleArtifactIds": [],
+      "createdAt": "2026-09-01T02:42:47.253Z"
+    },
+    {
+      "type": "stage.running",
+      "stageId": "sourceScriptReconstruction",
+      "requestId": "acceptance-30909de3-d01f-495b-985d-3fa0f2f1ca23",
+      "createdAt": "2026-09-01T02:42:47.258Z",
+      "gitCommit": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2",
+      "buildId": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2"
+    },
+    {
+      "type": "artifact.committed",
+      "artifactId": "sourceScriptReconstruction",
+      "revision": "sourceScriptReconstruction-r1",
+      "contentDigest": "974d351ddab9efcfa2737803147ecdae7f5c09896611edea3f61a7799e37fa69",
+      "requestId": "acceptance-30909de3-d01f-495b-985d-3fa0f2f1ca23",
+      "staleArtifactIds": [],
+      "createdAt": "2026-09-01T02:42:47.263Z"
+    },
+    {
+      "type": "stage.running",
+      "stageId": "creativeBrief",
+      "requestId": "acceptance-227768d7-cc0b-4e02-becb-19b96f3b0902",
+      "createdAt": "2026-09-01T02:42:47.268Z",
+      "gitCommit": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2",
+      "buildId": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2"
+    },
+    {
+      "type": "artifact.committed",
+      "artifactId": "creativeBrief",
+      "revision": "creativeBrief-r1",
+      "contentDigest": "cfedafa751de45968ca1527ee2e6f86822c47ae41f14e988cd185fc0bb34702f",
+      "requestId": "acceptance-227768d7-cc0b-4e02-becb-19b96f3b0902",
+      "staleArtifactIds": [],
+      "createdAt": "2026-09-01T02:42:47.273Z"
+    },
+    {
+      "type": "stage.running",
+      "stageId": "visualGuardrails",
+      "requestId": "acceptance-63ed69cd-e4e5-4638-8ddd-394dfe629252",
+      "createdAt": "2026-09-01T02:42:47.278Z",
+      "gitCommit": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2",
+      "buildId": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2"
+    },
+    {
+      "type": "artifact.committed",
+      "artifactId": "visualGuardrails",
+      "revision": "visualGuardrails-r1",
+      "contentDigest": "698bc16a30a8f4e2dfea3b258cf73030e5b52a32ec466b974858e1720c9b9dd0",
+      "requestId": "acceptance-63ed69cd-e4e5-4638-8ddd-394dfe629252",
+      "staleArtifactIds": [],
+      "createdAt": "2026-09-01T02:42:47.283Z"
+    },
+    {
+      "type": "stage.running",
+      "stageId": "themeVariants",
+      "requestId": "acceptance-33c12cf3-c280-49a1-8a86-a8f9bdb51b5e",
+      "createdAt": "2026-09-01T02:42:47.287Z",
+      "gitCommit": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2",
+      "buildId": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2"
+    },
+    {
+      "type": "artifact.committed",
+      "artifactId": "themeVariants",
+      "revision": "themeVariants-r1",
+      "contentDigest": "7f16c79c2d5e98c08edfa316f62c8a2d42aada16546639e008e021aa018c804f",
+      "requestId": "acceptance-33c12cf3-c280-49a1-8a86-a8f9bdb51b5e",
+      "staleArtifactIds": [],
+      "createdAt": "2026-09-01T02:42:47.292Z"
+    },
+    {
+      "type": "artifact.committed",
+      "artifactId": "variant:V1",
+      "revision": "variant-V1-r1",
+      "contentDigest": "c3ce23bd0992eebd62b482857f632e5d045c0f712c7ac2bf728b6af3fb8418ef",
+      "requestId": "acceptance-20bf86e3-780e-4846-9a6e-f820f76a263e",
+      "staleArtifactIds": [],
+      "createdAt": "2026-09-01T02:42:47.297Z"
+    },
+    {
+      "type": "stage.running",
+      "stageId": "fullStory:V1",
+      "requestId": "acceptance-cee7e7d7-06ad-4057-a4a4-0dd1a5c3465d",
+      "createdAt": "2026-09-01T02:42:47.305Z",
+      "gitCommit": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2",
+      "buildId": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2"
+    },
+    {
+      "type": "artifact.committed",
+      "artifactId": "fullStory:V1",
+      "revision": "fullStory-V1-r1",
+      "contentDigest": "d1a0dea323790fafd5f8162646ccd6d20a327ca21c946c35dfeebfe3576e8d88",
+      "requestId": "acceptance-cee7e7d7-06ad-4057-a4a4-0dd1a5c3465d",
+      "staleArtifactIds": [],
+      "createdAt": "2026-09-01T02:42:47.310Z"
+    },
+    {
+      "type": "stage.running",
+      "stageId": "animationPlan:V1",
+      "requestId": "acceptance-49e752eb-7194-485f-9a29-71e37965c75f",
+      "createdAt": "2026-09-01T02:42:47.317Z",
+      "gitCommit": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2",
+      "buildId": "6024af5b0a1bc1c137d531d1f9304afba9e5cbd2"
+    },
+    {
+      "type": "artifact.committed",
+      "artifactId": "animationPlan:V1",
+      "revision": "animationPlan-V1-r1",
+      "contentDigest": "c5f079071665835e41b87fe50a71a6c92e07131727f1ba877c680ee94c257d42",
+      "requestId": "acceptance-49e752eb-7194-485f-9a29-71e37965c75f",
+      "staleArtifactIds": [],
+      "createdAt": "2026-09-01T02:42:47.322Z"
+    },
+    {
+      "type": "artifact.committed",
+      "artifactId": "animationPlan:V1",
+      "revision": "animationPlan-V1-r2",
+      "contentDigest": "026cdfb0204a47e5786dc5927c8af832d917884de97e0e22cebf25300cf2ba2b",
+      "requestId": "acceptance-7b311aa5-cd31-441f-8145-b440a6e8ba9c",
+      "staleArtifactIds": [],
+      "createdAt": "2026-09-01T02:42:47.334Z"
+    },
+    {
+      "type": "artifact.committed",
+      "artifactId": "characterImages:V1:0",
+      "revision": "characterImages-V1-0-r1",
+      "contentDigest": "2d589e2473f6e5fbcc54844cc860d0c71135d68386873ae42760cae7ca5e4f00",
+      "requestId": "acceptance-92ba3bbf-67c7-4a7c-be1c-3575cdfc352a",
+      "staleArtifactIds": [],
+      "createdAt": "2026-09-01T02:42:47.349Z"
+    },
+    {
+      "type": "artifact.committed",
+      "artifactId": "shotVideo:V1:A01",
+      "revision": "shotVideo-V1-A01-r1",
+      "contentDigest": "2035fbc28330aa6f229394203edbacf5ee0875c4142beef94327102485dc6b16",
+      "requestId": "acceptance-2e7de4fa-1ff5-4d32-a44b-785e75ab5f11",
+      "staleArtifactIds": [],
+      "createdAt": "2026-09-01T02:42:47.648Z"
+    },
+    {
+      "type": "artifact.committed",
+      "artifactId": "shotVideo:V1:A01",
+      "revision": "shotVideo-V1-A01-r2",
+      "contentDigest": "f9f155a17bdb414212a78c4aee50f6adbee07f6eea470130efd6bf6b6b504c4d",
+      "requestId": "acceptance-cca45c8b-148b-4583-acf0-c3c85d32532f",
+      "staleArtifactIds": [],
+      "createdAt": "2026-09-01T02:42:47.657Z"
+    }
+  ]
+}

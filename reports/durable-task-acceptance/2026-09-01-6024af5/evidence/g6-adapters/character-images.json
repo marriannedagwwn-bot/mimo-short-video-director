@@ -1,0 +1,27 @@
+{
+  "promptExact": {
+    "taskId": "task-2ecbd80a-89d6-4bd4-b2d3-43c4b82389c2",
+    "status": "completed",
+    "previewEqualsProviderPrompt": true,
+    "promptDigest": "59eeb92c57fad3ec3dad6ee85abc8dbb11edd4fa9ad6cb6764866fa4ba612161",
+    "taskLeaksPrompt": false,
+    "taskLeaksDataUrl": false,
+    "taskLeaksBase64": false
+  },
+  "partialSuccess": {
+    "taskId": "task-cfeb3184-657b-4709-a2c1-391e4ed4ee2b",
+    "status": "completed",
+    "expectedCount": 4,
+    "readyCount": 2,
+    "failedCount": 2,
+    "partialSuccess": true,
+    "artifactRevision": "characterImages-V1-0-r11",
+    "artifactReadyItems": 2,
+    "artifactLeakedProgressStatus": false
+  },
+  "sidecarLeakScan": {
+    "indexFiles": 5,
+    "tasks": 47,
+    "violationCount": 0
+  }
+}

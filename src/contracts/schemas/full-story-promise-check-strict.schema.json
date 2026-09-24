@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "internal://full-story-promise-check-strict",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "candidateId", "promises"],
+  "properties": {
+    "schemaVersion": { "const": "full-story-promise-check/2.0" },
+    "candidateId": { "$ref": "#/$defs/nonEmptyString" },
+    "promises": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/promise" }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "pattern": "\\S" },
+    "promise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "quote", "kind", "promise", "mustSee", "findings", "verdict"],
+      "properties": {
+        "source": { "enum": ["title", "oneLineHook"] },
+        "quote": { "$ref": "#/$defs/nonEmptyString" },
+        "kind": { "enum": ["promise", "not_a_promise"] },
+        "promise": { "$ref": "#/$defs/nonEmptyString" },
+        "mustSee": {
+          "type": "array",
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "findings": {
+          "type": "array",
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/finding" }
+        },
+        "verdict": { "enum": ["realized", "partially_realized", "not_realized", "not_a_promise"] }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mustSeeIndex", "found", "beat", "evidence", "why"],
+      "properties": {
+        "mustSeeIndex": { "type": "integer", "minimum": 0 },
+        "found": { "type": "boolean" },
+        "beat": { "type": "integer", "minimum": 0 },
+        "evidence": { "type": "string" },
+        "why": { "type": "string" }
+      }
+    }
+  }
+}

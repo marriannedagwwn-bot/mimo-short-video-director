@@ -1,0 +1,266 @@
+{
+  "promptSchemaVersion": "3.0",
+  "selectedVariantId": "V1",
+  "title": "围巾里的阳光",
+  "productionStrategy": {
+    "format": "direct_shot_video",
+    "targetAspectRatio": "16:9",
+    "targetRuntimeSeconds": 0,
+    "generationOrder": [
+      "角色/场景/资产锁定",
+      "直接视频镜头"
+    ],
+    "whyThisWorkflow": "采用 direct_shot_video 格式，先锁定全片共用的角色、场景与资产，确保视觉一致性，再进入逐镜生成阶段，避免首尾帧编译带来的额外复杂度。"
+  },
+  "visualBible": {
+    "overallStyle": "治愈系日系 2.5D 风格，融合新海诚光景的细腻光影与吉卜力工作室的温暖质感，画面柔和、色彩明亮，注重生活细节与情感氛围的营造。",
+    "animationStyle": "2.5D 动画，角色与前景采用手绘质感，背景带有轻微景深与空气感，动作流畅自然，表情细腻丰富。",
+    "colorPalette": [
+      "暖黄色夕阳",
+      "浅灰蓝色长发",
+      "深蓝色校服",
+      "米白色家居",
+      "柔和木色家具",
+      "浅蓝色芙芙猫毛发",
+      "暖橙色台灯光"
+    ],
+    "lighting": "以自然光为主，夕阳与清晨阳光营造温暖氛围；室内使用暖色调台灯补光，光线柔和，带有轻微光晕与丁达尔效应。",
+    "worldRules": [
+      "现实世界，无超自然元素（除小白子头顶光环作为视觉符号）",
+      "季节为深秋或初冬，室内温暖，窗外可见落叶或微凉天色",
+      "家居环境整洁温馨，带有生活痕迹与岁月感"
+    ],
+    "cameraLanguage": "以中景与近景为主，注重角色表情与手部动作细节；缓慢推拉与平移镜头营造沉浸感；特写用于道具与情感高潮时刻。",
+    "characterConsistencyRules": [
+      "小白子必须保持浅灰蓝色长直发、深蓝色校服套装、蓝色长围巾、头顶光环、无头饰",
+      "芙芙猫必须保持白色与浅蓝色相间蓬松卷发、头顶卷曲呆毛、猫耳、浅蓝色尾巴",
+      "奶奶保持慈祥老人形象，银灰短发，家居服装"
+    ]
+  },
+  "characterReferencePrompts": [
+    {
+      "characterName": "小白子",
+      "storyRole": "主角",
+      "identity": "与奶奶共同生活的学生",
+      "appearancePrompt": "浅灰蓝色长直发，带有刘海与两侧碎发；深蓝色校服西装外套、白衬衫、蓝领带、深蓝短裙；佩戴蓝色长围巾；头顶有一个光环；无头饰；人类少女形态。",
+      "consistencyTags": [
+        "浅灰蓝色长直发",
+        "深蓝色校服套装",
+        "蓝色长围巾",
+        "头顶光环",
+        "无头饰"
+      ],
+      "forbiddenChanges": [
+        "拟人动物外壳",
+        "原片儿童服装",
+        "头饰",
+        "发饰",
+        "帽子",
+        "发带"
+      ]
+    },
+    {
+      "characterName": "芙芙猫",
+      "storyRole": "固定搭档",
+      "identity": "小白子的宠物猫",
+      "appearancePrompt": "白色与浅蓝色相间的蓬松卷发，头顶卷曲呆毛，猫耳，浅蓝色尾巴的小猫；无拟人化肢体，保持猫咪形态。",
+      "consistencyTags": [
+        "白色与浅蓝色相间蓬松卷发",
+        "头顶卷曲呆毛",
+        "猫耳",
+        "浅蓝色尾巴"
+      ],
+      "forbiddenChanges": [
+        "拟人动物外壳",
+        "人类肢体",
+        "翅膀",
+        "兽爪"
+      ]
+    },
+    {
+      "characterName": "奶奶",
+      "storyRole": "被关爱对象",
+      "identity": "小白子的祖母",
+      "appearancePrompt": "银灰短发，慈祥面容，家居服装（米色针织开衫、深色长裙），佩戴老花镜（可选）。",
+      "consistencyTags": [
+        "银灰短发",
+        "慈祥面容",
+        "家居服装"
+      ],
+      "forbiddenChanges": [
+        "年轻化外貌",
+        "职业装束",
+        "夸张妆容"
+      ]
+    }
+  ],
+  "sceneReferencePrompts": [
+    {
+      "sceneId": "LOC01",
+      "sourceSceneIds": [
+        "S1"
+      ],
+      "sceneName": "客厅",
+      "storyFunction": "建立祖孙亲密关系，展示旧围巾的情感价值与物理状态，为后续行动提供动机。",
+      "environmentPrompt": "温馨家居客厅，夕阳透过窗户洒入，木质地板，窗边放置摇椅，墙上挂有家庭照片，角落有绿植，整体色调温暖柔和。",
+      "continuityAnchors": [
+        "夕阳暖光",
+        "摇椅",
+        "旧围巾"
+      ],
+      "relatedShotIds": []
+    },
+    {
+      "sceneId": "LOC02",
+      "sourceSceneIds": [
+        "S2",
+        "S3",
+        "S4",
+        "S5",
+        "S6"
+      ],
+      "sceneName": "卧室",
+      "storyFunction": "主角完成手工编织任务的主要场所，承载计划、挫折、坚持与成果展示。",
+      "environmentPrompt": "简洁温馨的学生卧室，木质衣柜、书桌、单人床，墙上贴有手绘图案，窗外天色从傍晚渐变为夜晚再到清晨，台灯提供暖色补光。",
+      "continuityAnchors": [
+        "衣柜顶层",
+        "书桌",
+        "台灯",
+        "窗外天色变化"
+      ],
+      "relatedShotIds": []
+    },
+    {
+      "sceneId": "LOC03",
+      "sourceSceneIds": [
+        "S7"
+      ],
+      "sceneName": "卧室（清晨）",
+      "storyFunction": "情绪兑现：奶奶的认可与祖孙情感流动完成闭环。",
+      "environmentPrompt": "清晨阳光照入卧室，光线明亮柔和，床头柜上放置新围巾与笑脸纸条，整体氛围温暖充满希望。",
+      "continuityAnchors": [
+        "清晨阳光",
+        "床头柜",
+        "新围巾",
+        "笑脸纸条"
+      ],
+      "relatedShotIds": []
+    }
+  ],
+  "assetPrompts": [
+    {
+      "assetName": "旧围巾",
+      "storyFunction": "情感载体，承载二十年的记忆与祖孙情感。",
+      "imagePrompt": "边缘起毛、有明显破洞的旧围巾，花纹复杂但磨损，颜色为深红与米色交织的传统图案。",
+      "consistencyTags": [
+        "边缘起毛",
+        "明显破洞",
+        "复杂花纹",
+        "磨损质感"
+      ],
+      "avoidSimilarityNote": "与原片旧衣服功能相似但形态不同，围巾具有可穿戴性与情感传承意义。"
+    },
+    {
+      "assetName": "放大镜",
+      "storyFunction": "工具道具，体现主角研究花纹的认真态度。",
+      "imagePrompt": "手持式放大镜，金属边框，木质手柄，镜片清晰，贴近织物时可看到放大的花纹细节。",
+      "consistencyTags": [
+        "金属边框",
+        "木质手柄",
+        "手持式"
+      ],
+      "avoidSimilarityNote": "原片无此道具，为手工创作任务新增。"
+    },
+    {
+      "assetName": "针线盒与毛线",
+      "storyFunction": "创作工具，推动手工编织任务。",
+      "imagePrompt": "复古铁质针线盒，表面有轻微锈迹，内装各色毛线团、编织针、剪刀；毛线颜色以深红、米色为主，另有蓝色毛线（来自小白子围巾）。",
+      "consistencyTags": [
+        "复古铁质针线盒",
+        "各色毛线团",
+        "编织针"
+      ],
+      "avoidSimilarityNote": "与原片纸箱、小车等功能不同，为手工创作专用。"
+    },
+    {
+      "assetName": "新围巾",
+      "storyFunction": "任务成果，承载主角的心意与成长。",
+      "imagePrompt": "手工编织的新围巾，保留核心图案并加入小白子设计的小花元素，颜色为深红、米色与蓝色交织，织物纹理清晰，光线可穿透。",
+      "consistencyTags": [
+        "手工编织质感",
+        "核心图案",
+        "小花元素",
+        "光线穿透"
+      ],
+      "avoidSimilarityNote": "与原片小红花奖励不同，为主角亲手创作的情感载体。"
+    },
+    {
+      "assetName": "笑脸纸条",
+      "storyFunction": "情感传递媒介，配合新围巾完成惊喜。",
+      "imagePrompt": "白色小纸条，上面用铅笔画着简单的笑脸图案，笔触稚嫩可爱。",
+      "consistencyTags": [
+        "白色纸条",
+        "铅笔画笑脸",
+        "稚嫩笔触"
+      ],
+      "avoidSimilarityNote": "原片无此道具，为情感传递新增。"
+    }
+  ],
+  "editPlan": {
+    "sequenceRhythm": "整体节奏舒缓温馨，前半段（S1-S3）节奏较慢，注重情感铺垫；中段（S4-S5）节奏略快，展现挫折与坚持；后段（S6-S7）节奏回归舒缓，完成情感兑现。",
+    "transitions": [
+      "淡入淡出",
+      "叠化（用于时间流逝）",
+      "硬切（用于动作连贯场景）"
+    ],
+    "subtitlePlan": "字幕简洁，仅用于奶奶的台词与小白子的简单人话（「谢谢」「再见」），字体为圆润手写体，颜色为白色带轻微阴影。",
+    "musicAndSfx": "本片不使用背景音乐；音效包括：编织针碰撞声、毛线滚动声、脚步声、门轻开声、风声（窗外）、猫打呼声。",
+    "hookAndEndingNotes": "开场以夕阳暖光与旧围巾特写吸引注意；结尾以清晨阳光与祖孙拥抱定格，留白情感余韵。"
+  },
+  "generationChecklist": [
+    {
+      "check": "角色外观一致性",
+      "passCriteria": "小白子、芙芙猫、奶奶在所有镜头中保持固定外观特征，无违规变化。"
+    },
+    {
+      "check": "场景连续性",
+      "passCriteria": "客厅与卧室场景在相关镜头中保持环境一致，天色变化符合剧情时间线。"
+    },
+    {
+      "check": "道具连续性",
+      "passCriteria": "旧围巾、新围巾、放大镜、针线盒、笑脸纸条在出现时保持视觉一致。"
+    },
+    {
+      "check": "对白规则",
+      "passCriteria": "小白子仅说「谢谢」「再见」等简单人话，复杂交流以「嗷呜～」「嗷～」配合动作表达。"
+    },
+    {
+      "check": "画幅比例",
+      "passCriteria": "所有镜头严格保持 16:9 画幅。"
+    }
+  ],
+  "modelAgnosticNotes": [
+    "本片不使用背景音乐，依赖环境音效与视觉节奏营造氛围。",
+    "小白子的「嗷呜～」表达需配合清晰的面部表情与肢体动作，确保观众理解情绪。",
+    "芙芙猫作为固定搭档，在卧室场景中自然出现，不抢戏但增加生活感。"
+  ],
+  "continuityAndSafetyCheck": {
+    "fixedCharacterLocked": "小白子外观边界已锁定：浅灰蓝色长直发、深蓝色校服套装、蓝色长围巾、头顶光环、无头饰；禁止拟人动物外壳、原片儿童服装、头饰。",
+    "positivePromptsAvoidSourceSurface": "正向提示词已避免直接复制原片表面表达，仅保留功能等价的结构与情感载体。",
+    "firstLastFrameContinuity": "当前模式不生产首尾帧，仍待直接视频镜头校验。",
+    "shotDurationControlled": "仍待逐镜校验。",
+    "readyForVideoGeneration": "基础锁定完成，仍待逐镜生成。"
+  },
+  "uncertainties": [
+    {
+      "field": "奶奶的具体家居服装细节",
+      "reason": "fullStory 未明确指定奶奶服装的具体颜色与款式，仅描述为家居服装。",
+      "safeFallback": "采用米色针织开衫与深色长裙作为默认家居服装，保持温馨慈祥形象。"
+    },
+    {
+      "field": "芙芙猫在 S1 客厅场景的具体位置",
+      "reason": "fullStory 描述芙芙猫蜷在奶奶脚边打盹，但未指定具体姿态细节。",
+      "safeFallback": "采用蜷缩姿态，位于摇椅旁地板上，保持自然猫咪形态。"
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "full-model-output-log/1.0",
+  "recordedAt": "2026-09-01T21:13:08.677Z",
+  "scope": "animationPlan",
+  "gitCommit": "unknown",
+  "buildId": "unknown",
+  "production": {
+    "verified": true,
+    "projectId": "project-5f8f4cad-6f27-49f9-958f-ae4847757ed8",
+    "runId": "run-b9c43cac-a9d6-4061-9f1f-a7d4fc9ea392",
+    "artifactId": "animationPlan:V1",
+    "productionRequestId": "request-9b2c4174-20d6-426b-b517-016a1962e7e8",
+    "variantId": "V1"
+  },
+  "attempt": {
+    "operationId": "animation-plan:20260901T211039706Z-362e8e5f-9220-4b80-9d4a-c23350c20d67",
+    "attemptId": "call:20260901T211039706Z-362e8e5f-9220-4b80-9d4a-c23350c20d67:3",
+    "callIndex": 2,
+    "stage": "",
+    "phase": "animation-shot-batch",
+    "sequence": 3,
+    "batchIndex": null,
+    "reason": "animation-shot-batch",
+    "status": "succeeded",
+    "category": "success",
+    "code": "MODEL_COMPLETION_ACCEPTED",
+    "validationStatus": "passed",
+    "errorName": "",
+    "diagnostics": [],
+    "retryable": false,
+    "startedAt": "2026-09-01T21:12:31.797Z",
+    "finishedAt": "2026-09-01T21:13:08.676Z",
+    "durationMs": 36880
+  },
+  "provider": {
+    "name": "Qwen",
+    "model": "qwen3.7-max",
+    "providerRequestId": "563bc05d-1287-90fe-a808-8273fc0125db",
+    "finishReason": "stop",
+    "usage": {
+      "prompt_tokens": 13295,
+      "completion_tokens": 3584,
+      "total_tokens": 16879
+    }
+  },
+  "output": {
+    "present": true,
+    "file": "model-output.txt",
+    "bytes": 5564,
+    "sha256": "cd7f2e40ca219764acda4412a0f5f9336641e3a011bf18f62f7ff7556a68b61f"
+  }
+}

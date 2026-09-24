@@ -1,0 +1,238 @@
+{
+  "promptSchemaVersion": "3.0",
+  "selectedVariantId": "V1",
+  "title": "围巾里的阳光",
+  "productionStrategy": {
+    "format": "direct_shot_video",
+    "targetAspectRatio": "16:9",
+    "targetRuntimeSeconds": 0,
+    "generationOrder": [
+      "角色/场景/资产锁定",
+      "直接视频镜头"
+    ],
+    "whyThisWorkflow": "采用直接视频镜头模式，跳过首尾帧编译，以日系2.5D新海诚光景搭配吉卜力工作室风格呈现治愈系祖孙情感故事，确保角色一致性与场景连贯性。"
+  },
+  "visualBible": {
+    "overallStyle": "日系2.5D动画，融合新海诚的细腻光影与吉卜力工作室的温暖质感，画面柔和通透，细节丰富但不繁杂。",
+    "animationStyle": "2.5D cel-shaded 动画，角色边缘柔和，动作流畅自然，表情细腻，注重微表情与肢体语言的情感表达。",
+    "colorPalette": [
+      "暖黄色夕阳",
+      "浅灰蓝色长发",
+      "深蓝色校服",
+      "米白色旧围巾",
+      "浅木色家具",
+      "柔和粉橘色晨光"
+    ],
+    "lighting": "自然光为主，夕阳与晨光营造温暖氛围，室内台灯光线柔和聚焦，突出手工编织的专注感。",
+    "worldRules": [
+      "现实世界设定，无超自然元素（除小白子头顶光环作为视觉符号）",
+      "季节为秋冬，室内温暖舒适",
+      "家居环境整洁温馨，带有生活痕迹"
+    ],
+    "cameraLanguage": "中近景为主，注重角色表情与手部动作特写，缓慢推拉镜头营造沉浸感，避免快速剪辑。",
+    "characterConsistencyRules": [
+      "小白子必须保持浅灰蓝色长直发、深蓝色校服套装、蓝色长围巾、头顶光环、无头饰",
+      "芙芙猫必须保持白色与浅蓝色相间蓬松卷发、头顶卷曲呆毛、猫耳、浅蓝色尾巴",
+      "奶奶形象温和慈祥，银发或灰白发，穿着居家舒适服装"
+    ]
+  },
+  "characterReferencePrompts": [
+    {
+      "characterName": "小白子",
+      "storyRole": "主角",
+      "identity": "与奶奶共同生活的学生",
+      "appearancePrompt": "浅灰蓝色长直发，带有刘海与两侧碎发，深蓝色校服西装外套、白衬衫、蓝领带、深蓝短裙，佩戴蓝色长围巾，头顶有一个柔和发光的光环，无头饰，人类少女形态。",
+      "consistencyTags": [
+        "浅灰蓝色长直发",
+        "深蓝色校服套装",
+        "蓝色长围巾",
+        "头顶光环",
+        "无头饰"
+      ],
+      "forbiddenChanges": [
+        "不得添加拟人动物外壳",
+        "不得添加原片儿童服装",
+        "不得添加任何头饰"
+      ]
+    },
+    {
+      "characterName": "芙芙猫",
+      "storyRole": "固定搭档",
+      "identity": "小白子的宠物猫",
+      "appearancePrompt": "白色与浅蓝色相间的蓬松卷发，头顶卷曲呆毛，猫耳，浅蓝色尾巴的小猫，体型娇小可爱。",
+      "consistencyTags": [
+        "白色与浅蓝色相间卷发",
+        "头顶卷曲呆毛",
+        "猫耳",
+        "浅蓝色尾巴"
+      ],
+      "forbiddenChanges": [
+        "不得添加拟人化肢体",
+        "不得改变毛色与尾巴颜色"
+      ]
+    },
+    {
+      "characterName": "奶奶",
+      "storyRole": "被关爱对象",
+      "identity": "小白子的祖母",
+      "appearancePrompt": "银灰色短发或盘发，面容慈祥，穿着米色或浅棕色居家针织衫与长裙，佩戴旧围巾（边缘起毛、有明显破洞）。",
+      "consistencyTags": [
+        "银灰色头发",
+        "慈祥面容",
+        "居家针织衫"
+      ],
+      "forbiddenChanges": [
+        "不得年轻化",
+        "不得添加夸张服饰"
+      ]
+    }
+  ],
+  "sceneReferencePrompts": [
+    {
+      "sceneId": "LOC01",
+      "sourceSceneIds": [
+        "S1"
+      ],
+      "sceneName": "客厅",
+      "storyFunction": "建立祖孙亲密关系，展示旧围巾的情感价值与物理状态",
+      "environmentPrompt": "温馨日式客厅，木质地板，窗边放置摇椅与矮桌，夕阳透过窗户洒入，光线柔和金黄，墙上挂有家庭照片，角落有绿植。",
+      "continuityAnchors": [
+        "摇椅位置固定",
+        "窗户朝向夕阳",
+        "旧围巾始终在奶奶脖子上"
+      ],
+      "relatedShotIds": []
+    },
+    {
+      "sceneId": "LOC02",
+      "sourceSceneIds": [
+        "S2",
+        "S3",
+        "S4",
+        "S5",
+        "S6"
+      ],
+      "sceneName": "卧室",
+      "storyFunction": "主角手工编织任务的主要发生地，展现努力、挫败与成长",
+      "environmentPrompt": "简洁温馨的学生卧室，木质衣柜、书桌、单人床，地板铺有浅色地毯，台灯提供暖光照明，窗外天色从傍晚渐变为夜晚再到清晨。",
+      "continuityAnchors": [
+        "衣柜位置固定",
+        "书桌与台灯位置固定",
+        "旧围巾与新围巾并排呈现"
+      ],
+      "relatedShotIds": []
+    },
+    {
+      "sceneId": "LOC03",
+      "sourceSceneIds": [
+        "S7"
+      ],
+      "sceneName": "卧室清晨",
+      "storyFunction": "情绪兑现，奶奶的认可与祖孙情感流动完成闭环",
+      "environmentPrompt": "清晨阳光照入卧室，光线柔和粉橘色，床头柜上叠放新围巾与笑脸纸条，整体氛围温暖宁静。",
+      "continuityAnchors": [
+        "床头柜位置固定",
+        "新围巾与纸条位置固定"
+      ],
+      "relatedShotIds": []
+    }
+  ],
+  "assetPrompts": [
+    {
+      "assetName": "旧围巾",
+      "storyFunction": "情感载体，承载二十年的记忆与祖孙情感",
+      "imagePrompt": "米白色针织围巾，边缘起毛，有明显破洞，花纹复杂但磨损，质感柔软陈旧。",
+      "consistencyTags": [
+        "米白色",
+        "边缘起毛",
+        "破洞",
+        "复杂花纹"
+      ],
+      "avoidSimilarityNote": "与原片旧衣服功能相似但形态不同，围巾具有可穿戴性与情感传承意义"
+    },
+    {
+      "assetName": "放大镜",
+      "storyFunction": "工具道具，体现主角研究花纹的认真态度",
+      "imagePrompt": "黄铜色边框圆形放大镜，手柄木质，镜片清晰，尺寸适中便于手持。",
+      "consistencyTags": [
+        "黄铜色边框",
+        "木质手柄",
+        "圆形镜片"
+      ],
+      "avoidSimilarityNote": "原片无此道具，为手工创作任务新增"
+    },
+    {
+      "assetName": "针线盒与毛线",
+      "storyFunction": "创作工具，推动手工编织任务",
+      "imagePrompt": "复古铁盒针线盒，表面有花纹，内含针线、剪刀、毛线团，毛线颜色以米白、浅蓝为主。",
+      "consistencyTags": [
+        "复古铁盒",
+        "米白毛线",
+        "浅蓝毛线"
+      ],
+      "avoidSimilarityNote": "与原片纸箱、小车等功能不同，为手工创作专用"
+    },
+    {
+      "assetName": "新围巾",
+      "storyFunction": "任务成果，承载主角的心意与成长",
+      "imagePrompt": "米白色针织围巾，保留核心图案并加入小花元素，织物质感细腻，光线可穿透。",
+      "consistencyTags": [
+        "米白色",
+        "小花元素",
+        "光线穿透"
+      ],
+      "avoidSimilarityNote": "与原片小红花奖励不同，为主角亲手创作的情感载体"
+    },
+    {
+      "assetName": "笑脸纸条",
+      "storyFunction": "情感传递媒介，配合新围巾完成惊喜",
+      "imagePrompt": "白色小纸条，手绘简单笑脸图案，线条稚拙可爱。",
+      "consistencyTags": [
+        "白色纸条",
+        "手绘笑脸"
+      ],
+      "avoidSimilarityNote": "原片无此道具，为情感传递新增"
+    }
+  ],
+  "editPlan": {
+    "sequenceRhythm": "节奏舒缓，以情感流动为主，前段温馨铺垫，中段专注与挫败交替，后段温暖升华。",
+    "transitions": [
+      "淡入淡出",
+      "柔和叠化"
+    ],
+    "subtitlePlan": "对白简短口语化，小白子台词限于「谢谢」「再见」及「嗷呜～」「嗷～」语气词，奶奶台词承担情感回应。",
+    "musicAndSfx": "本片不使用任何背景音乐，仅保留环境音效如织毛衣声、毛线滚动声、剪刀声、轻微脚步声。",
+    "hookAndEndingNotes": "开场以夕阳与旧围巾建立情感锚点，结尾以晨光与新围巾完成情感闭环，首尾呼应。"
+  },
+  "generationChecklist": [
+    {
+      "check": "角色外观边界",
+      "passCriteria": "小白子保持浅灰蓝色长直发、深蓝色校服、蓝色长围巾、头顶光环、无头饰"
+    },
+    {
+      "check": "场景连贯性",
+      "passCriteria": "客厅与卧室布局在各镜头中保持一致"
+    },
+    {
+      "check": "道具一致性",
+      "passCriteria": "旧围巾、新围巾、放大镜等道具形态与颜色在各镜头中保持一致"
+    },
+    {
+      "check": "光影逻辑",
+      "passCriteria": "夕阳、夜晚台灯、清晨晨光的时间线逻辑连贯"
+    }
+  ],
+  "modelAgnosticNotes": [
+    "本片为治愈系日常故事，避免夸张动作或戏剧化冲突",
+    "芙芙猫作为背景角色，动作以自然猫咪行为为主",
+    "奶奶台词简短，不承担剧情推进功能"
+  ],
+  "continuityAndSafetyCheck": {
+    "fixedCharacterLocked": "小白子外观边界已锁定，芙芙猫与奶奶形象已定义。",
+    "positivePromptsAvoidSourceSurface": "正向提示词已避免原片表面特征，仅保留功能参考。",
+    "firstLastFrameContinuity": "当前模式不生产首尾帧，仍待直接视频镜头校验。",
+    "shotDurationControlled": "仍待逐镜校验。",
+    "readyForVideoGeneration": "基础锁定完成，仍待逐镜生成。"
+  },
+  "uncertainties": []
+}

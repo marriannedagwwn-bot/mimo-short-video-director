@@ -1,0 +1,200 @@
+{
+  "contentType": "治愈系日常动画短片",
+  "targetAudience": "喜欢可爱动画、治愈系内容的年轻观众及家庭观众",
+  "coreEmotion": "温馨、善意传递与家庭温暖",
+  "storyEngine": {
+    "desire": "主角希望完成一件对他人有帮助的小事",
+    "obstacle": "任务过程中存在等待、体力或环境上的小挑战",
+    "escalation": "主角在完成任务的过程中展现出纯真与坚持，并获得外界善意反馈",
+    "turningMechanism": "主角将外界给予的认可或回报，主动转化为对重要关系对象的情感表达",
+    "payoff": "重要关系对象接收到主角的心意，情感在无声或简单互动中达到高潮"
+  },
+  "emotionStructure": [
+    {
+      "stage": "开端",
+      "function": "建立主角与重要关系对象的亲密互动，展现日常中的童趣与温情",
+      "targetEmotion": "温馨、愉快",
+      "intensity": 60
+    },
+    {
+      "stage": "发展",
+      "function": "主角踏上完成任务的旅途，展现善意行为与外界友善回应",
+      "targetEmotion": "期待、开心",
+      "intensity": 70
+    },
+    {
+      "stage": "高潮",
+      "function": "主角将获得的认可转赠给重要关系对象，情感升华",
+      "targetEmotion": "感动、温暖",
+      "intensity": 90
+    }
+  ],
+  "roleAndOccupationMapping": [
+    {
+      "sourceFunction": "主动发起并执行善意行为的核心行动者，具有童趣、善良、活泼特质，与长辈有深厚情感纽带",
+      "newRole": "小白子：浅灰蓝色长发，发型为长直发并带有刘海与两侧碎发；服装为深蓝色校服西装外套、白衬衫、蓝领带、深蓝短裙，佩戴蓝色长围巾；无头饰，但头顶有一个光环。",
+      "newOccupationOrIdentity": "学生，与奶奶共同生活的孙女",
+      "mappingLogic": "保留主动帮助他人的叙事功能，不继承原片咕嘎的拟人动物外壳、翅膀动作或快递员身份"
+    },
+    {
+      "sourceFunction": "陪伴主角、提供情感支持与日常照料的长辈角色",
+      "newRole": "奶奶",
+      "newOccupationOrIdentity": "慈祥的家庭长辈",
+      "mappingLogic": "保留祖孙关系中的关爱与被关爱功能，不继承原片竹椅、特定服装等视觉细节"
+    },
+    {
+      "sourceFunction": "外部善意给予者，对主角行为给予认可与鼓励",
+      "newRole": "志愿者阿姨",
+      "newOccupationOrIdentity": "社区回收站工作人员",
+      "mappingLogic": "保留给予奖励与正向反馈的剧作功能，不继承原片具体对话或外貌特征"
+    },
+    {
+      "sourceFunction": "主角的亲密伙伴，共同完成任务",
+      "newRole": "芙芙猫",
+      "newOccupationOrIdentity": "白色与浅蓝色相间的蓬松卷发，头顶卷曲呆毛，猫耳，浅蓝色尾巴的猫尾的小猫",
+      "mappingLogic": "保留陪伴与协作功能，将原片双主角结构转化为固定搭档组合，不继承糯糯的独立人格设定"
+    }
+  ],
+  "reusableHighValueBeats": [
+    {
+      "beat": "主角用充满童趣的方式完成准备工作",
+      "dramaticValue": "通过非常规、可爱的行为展现角色纯真特质，建立观众喜爱度",
+      "mustRetain": "主角以富有想象力的方式处理日常事务，体现角色独特性格",
+      "adaptableSurface": ["用身体压平衣服", "自称熨斗", "在地上打滚"],
+      "sourceSceneRefs": ["S1"]
+    },
+    {
+      "beat": "主角在等待期间自发进行简单游戏",
+      "dramaticValue": "展现儿童视角下的时间感知与自娱能力，增强真实感与可爱度",
+      "mustRetain": "等待过程中的自发童趣行为，体现角色天真特质",
+      "adaptableSurface": ["玩石子游戏", "粉笔画格子", "拨动石子"],
+      "sourceSceneRefs": ["S4"]
+    },
+    {
+      "beat": "主角因善举获得外部认可",
+      "dramaticValue": "善意行为得到正向反馈，强化观众对善行的认同感",
+      "mustRetain": "主角的关键行动必须产生足以推动后续剧情和情绪的回报",
+      "adaptableSurface": ["别上小红花", "口头表扬", "小礼物"],
+      "sourceSceneRefs": ["S5"]
+    },
+    {
+      "beat": "主角将获得的认可转赠给重要关系对象",
+      "dramaticValue": "将外部善意转化为家庭内部情感流动，实现主题升华",
+      "mustRetain": "结尾必须把前文积累的情绪转化为主角与重要关系对象之间可见的关系变化，且兑现强度不低于来源",
+      "adaptableSurface": ["摘下小红花别在奶奶身上", "递上奖励物", "拥抱"],
+      "sourceSceneRefs": ["S6"]
+    }
+  ],
+  "controlledRewriteVariables": [
+    {
+      "variable": "捐赠物品类型",
+      "sourceValue": "旧衣服",
+      "allowedDirections": ["书籍", "玩具", "手工制品", "食物"],
+      "mustChange": true,
+      "reason": "避免与原片视觉重复，同时保持捐赠行为的善意本质"
+    },
+    {
+      "variable": "准备工作的童趣方式",
+      "sourceValue": "用身体压平衣服并自称熨斗",
+      "allowedDirections": ["用脚踩平书页", "用尾巴卷玩具", "用光环照亮检查"],
+      "mustChange": true,
+      "reason": "需适配新角色身体特征与物品类型，避免照搬动作"
+    },
+    {
+      "variable": "等待期间的游戏",
+      "sourceValue": "粉笔画格子玩石子游戏",
+      "allowedDirections": ["跳房子", "翻花绳", "观察蚂蚁", "吹蒲公英"],
+      "mustChange": true,
+      "reason": "游戏形式可替换，但需保留自发童趣与专注感"
+    },
+    {
+      "variable": "外部认可形式",
+      "sourceValue": "小红花",
+      "allowedDirections": ["贴纸", "徽章", "手写感谢卡", "小星星印章"],
+      "mustChange": true,
+      "reason": "奖励物需视觉更新，但保留可转赠、可佩戴或可展示的属性"
+    },
+    {
+      "variable": "结尾共餐食物",
+      "sourceValue": "面条",
+      "allowedDirections": ["饭团", "热汤", "烤红薯", "布丁"],
+      "mustChange": true,
+      "reason": "食物可替换，但需保留热气腾腾或温暖感的生活化细节"
+    }
+  ],
+  "protectedExpressions": [
+    {
+      "expressionType": "角色身体特征",
+      "sourceExpression": "咕嘎的翅膀、糯糯的拟人动物外形",
+      "prohibition": "不得将翅膀、兽爪、肉垫、鸟喙等非人类结构赋予小白子或芙芙猫",
+      "safeAlternativePrinciple": "小白子仅保留光环与猫耳猫尾（来自fixedCharacter），芙芙猫仅保留猫耳与猫尾（来自fixedCharacter），其余动作以人类或猫系自然动作为准"
+    },
+    {
+      "expressionType": "角色服装",
+      "sourceExpression": "咕嘎和糯糯的 unspecified 儿童服装",
+      "prohibition": "不得给小白子添加原片未授权的服装、头饰或职业装束",
+      "safeAlternativePrinciple": "小白子服装严格限定为深蓝色校服西装外套、白衬衫、蓝领带、深蓝短裙、蓝色长围巾"
+    },
+    {
+      "expressionType": "道具视觉",
+      "sourceExpression": "竹椅、蓝色回收箱、粉笔画格子",
+      "prohibition": "不得原样复刻上述道具作为新片核心视觉元素",
+      "safeAlternativePrinciple": "可使用功能等效道具（如木椅、绿色回收箱、粉笔画跳房子格），但需改变颜色、材质或形态"
+    }
+  ],
+  "minimumTransformationRules": [
+    {
+      "dimension": "任务内容",
+      "minimumChange": "捐赠物品类型与准备方式必须与原片不同",
+      "acceptanceCheck": "新片中不得出现旧衣服、身体压平动作或咕嘎牌熨斗台词"
+    },
+    {
+      "dimension": "奖励物",
+      "minimumChange": "外部认可形式必须更换视觉载体",
+      "acceptanceCheck": "新片中不得出现红色花朵形状的胸针或别针"
+    },
+    {
+      "dimension": "结尾场景",
+      "minimumChange": "共餐食物与转赠动作需有视觉差异",
+      "acceptanceCheck": "新片中不得出现面条碗与摘下胸花别在他人衣襟的完全相同动作序列"
+    }
+  ],
+  "allowedNarrativeComponents": [
+    {
+      "component": "送达任务",
+      "howToReuseSafely": "【原片有】「咕嘎和糯糯拉着装满衣服的小车出门」「我们来捐衣服啦」，主角携带物品前往指定地点完成交付，可复用此结构但需更换物品类型与交付场景细节"
+    },
+    {
+      "component": "旅途结构",
+      "howToReuseSafely": "【原片有】「糯糯推着载满衣服的小车，咕嘎在前头拉车」「奶奶在门口送别」，从家到目的地的移动过程可保留，但交通工具、路线景观与送别方式需适配新角色与世界观"
+    },
+    {
+      "component": "情感媒介",
+      "howToReuseSafely": "【原片有】「阿姨给咕嘎和糯糯胸前各别上一朵小红花」「咕嘎和糯糯悄悄摘下自己的小红花」「俩孩子把小红花别到了奶奶身上」，外部奖励作为情感传递载体可复用，但媒介物形态与转赠动作需更新"
+    },
+    {
+      "component": "获得帮助",
+      "howToReuseSafely": "【原片有】「志愿者阿姨在回收站前的桌子旁写字」「阿姨抬头看到孩子们，笑容温暖地打招呼」，陌生人给予友善接待与等待期间的包容可复用，但职业身份与互动细节需调整"
+    },
+    {
+      "component": "被关爱对象",
+      "howToReuseSafely": "【原片有】「奶奶坐在竹椅上慈祥地看着孩子们笑」「三人围坐在院子里的木桌旁吃面条」，长辈作为情感回馈终点可复用，但共处场景与日常活动需更换"
+    },
+    {
+      "component": "天气或空间推动情绪",
+      "howToReuseSafely": "【原片有】「镜头拉远，展现夕阳余晖中三人吃饭的温馨画面」，利用黄昏光线强化温暖感可复用，但具体空间（院子/阳台/公园）与天气细节（微风/落叶/炊烟）可自由组合"
+    },
+    {
+      "component": "生活化或仪式化结尾",
+      "howToReuseSafely": "【原片有】「三人围坐在院子里的木桌旁吃面条」「奶奶先是一愣，随后笑得无比欣慰」，以日常共餐收尾并伴随情感顿悟可复用，但食物、餐具与表情节奏需重新设计"
+    }
+  ],
+  "nonNegotiableExperience": {
+    "samePositioning": "治愈系日常动画短片，通过可爱角色与温馨互动传递善意与家庭温暖",
+    "sameAudience": "喜欢可爱动画、治愈系内容的年轻观众及家庭观众",
+    "sameEmotion": "温馨、善意传递与家庭温暖",
+    "samePlotDriver": "主角完成善意行为后获得外部认可，并主动将该认可转化为对重要关系对象的情感回馈",
+    "sameBeatValue": "童趣准备行为建立角色魅力、等待游戏展现天真、外部奖励强化善行价值、转赠动作实现情感升华"
+  },
+  "creativeDistancePolicy": "只保留内容定位、目标受众、核心情绪体验、功能级因果驱动力、角色关系价值、高价值桥段的剧作功能与情绪兑现强度；具体任务内容、角色组合（除固定角色外）、奖励物形态、道具、对白、场面调度、事件顺序与结尾形式均可重新组合，不得仅替换人物或物件后照搬原片叙事骨架"
+}

@@ -31,6 +31,47 @@ async function commit(store, run, input) {
   });
 }
 
+test("workspace import records its owner before any Artifact and retains that identity after a partial import failure", async () => {
+  await withStore(async ({ store, rootDir }) => {
+    const run = await store.createRun({ projectId: "project-import-source" });
+    const selectedVariant = { id: "V1", title: "source" };
+    const fullStory = { selectedVariantId: "V1", sceneScript: [] };
+    const variant = await commit(store, run, { artifactId: "variant:V1", artifactType: "selectedVariant", content: selectedVariant });
+    await commit(store, run, { artifactId: "fullStory:V1", artifactType: "fullStory", content: fullStory, dependencies: [lineageRef(variant.lineage)] });
+    const sealed = await store.sealPackage({ ...run, payload: { packageType: "story-production-test-package", packageVersion: "3.0", selectedVariant, fullStory } });
+    const browserWorkspaceId = "33333333-3333-4333-8333-333333333333";
+    let callbackRun = null;
+    const successful = await store.importPackage(sealed, {
+      browserWorkspaceId,
+      onRunCreated: async (created) => {
+        callbackRun = created;
+        const beforeCommit = await store.readManifest(created.projectId, created.runId);
+        assert.equal(beforeCommit.metadata.browserWorkspaceId, browserWorkspaceId);
+        assert.deepEqual(beforeCommit.artifacts, []);
+      }
+    });
+    assert.equal(callbackRun.runId, successful.production.runId);
+    assert.equal(successful.production.metadata.browserWorkspaceId, browserWorkspaceId);
+    await assert.rejects(store.importPackage(sealed, { browserWorkspaceId: ".." }), (error) => error.code === "BROWSER_WORKSPACE_ID_INVALID");
+
+    const originalCommit = store.commitArtifact.bind(store);
+    let failedRun;
+    store.commitArtifact = async (input) => {
+      if (input.artifactType === "fullStory") {
+        failedRun = { projectId: input.projectId, runId: input.runId };
+        throw Object.assign(new Error("simulated import disk failure"), { code: "EIO" });
+      }
+      return originalCommit(input);
+    };
+    await assert.rejects(store.importPackage(sealed, { browserWorkspaceId }), (error) => error.code === "EIO");
+    const reopened = new ProductionStateStore({ rootDir });
+    const partial = await reopened.loadRun(failedRun);
+    assert.equal(partial.metadata.browserWorkspaceId, browserWorkspaceId);
+    assert.deepEqual(partial.latestArtifacts["variant:V1"].content, selectedVariant);
+    assert.equal(partial.latestArtifacts["fullStory:V1"], undefined);
+  });
+});
+
 test("persistent run checkpoints artifacts and restores them after a new store instance", async () => {
   await withStore(async ({ store, rootDir }) => {
     const run = await store.createRun({
@@ -58,19 +99,90 @@ test("persistent run checkpoints artifacts and restores them after a new store i
     assert.ok(loaded.checkpoint.sequence >= 2);
   });
 });
+
+test("stage.failed manifest 写入稳定诊断与 build identity 并剥离敏感字段", async (t) => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-production-failure-test-"));
+  t.after(() => fs.rm(rootDir, { recursive: true, force: true }));
+  const store = new ProductionStateStore({
+    rootDir,
+    gitCommit: "abcdef1234567890",
+    buildId: "production-test-build",
+    idFactory: () => "failure-run"
+  });
+  const run = await store.createRun({ projectId: "project-failure" });
+
+  await store.recordStage({
+    projectId: run.projectId,
+    runId: run.runId,
+    stageId: "animationPlan:V1",
+    status: "failed",
+    requestId: "request-animation-failure",
+    error: {
+      code: "OUTPUT_CONTRACT_INVALID",
+      category: "output-contract",
+      message: "模型失败 data:image/png;base64,QUJDREVGRw==",
+      diagnostics: [{
+        code: "DIRECT_SHOT_TEST_FAILURE",
+        jsonPointer: "/shotPlan/0/videoPrompt",
+        reason: "提示词与签发事实冲突",
+        prompt: "MUST_NOT_BE_LOGGED_PROMPT",
+        boundarySignature: "MUST_NOT_BE_LOGGED_SIGNATURE"
+      }]
+    }
+  });
+
+  const loaded = await store.loadRun(run);
+  const stage = loaded.stages["animationPlan:V1"];
+  assert.equal(loaded.gitCommit, "abcdef1234567890");
+  assert.equal(loaded.buildId, "production-test-build");
+  assert.equal(stage.error.code, "DIRECT_SHOT_TEST_FAILURE");
+  assert.equal(stage.error.stage, "animationPlan:V1");
+  assert.deepEqual(stage.error.diagnostics, [{
+    code: "DIRECT_SHOT_TEST_FAILURE",
+    jsonPointer: "/shotPlan/0/videoPrompt",
+    reason: "提示词与签发事实冲突"
+  }]);
+  const failedEvent = loaded.events.find((event) => event.type === "stage.failed");
+  assert.equal(failedEvent.code, "DIRECT_SHOT_TEST_FAILURE");
+  assert.equal(failedEvent.gitCommit, "abcdef1234567890");
+  assert.equal(failedEvent.buildId, "production-test-build");
+  const manifestText = await fs.readFile(
+    path.join(rootDir, run.projectId, run.runId, "manifest.json"),
+    "utf8"
+  );
+  assert.doesNotMatch(
+    manifestText,
+    /MUST_NOT_BE_LOGGED|data:image|boundarySignature|QUJDREVGRw/u
+  );
+});
 test("same-id upstream change stales Story, Plan and media, while key reordering is idempotent", async () => {
   await withStore(async ({ store }) => {
     const run = await store.createRun({ projectId: "project-stale" });
+    const originalCandidate = {
+      id: "V1",
+      title: "旧主题",
+      newTask: "送回修好的旧钟",
+      keyChoice: "先救下受困邻居再绕路",
+      climax: "闭馆前让旧钟重新报时",
+      characterSetup: { protagonist: "奶奶" }
+    };
     const variant = await commit(store, run, {
       artifactId: "variant:V1",
       artifactType: "selectedVariant",
-      content: { id: "V1", title: "旧主题", characterSetup: { protagonist: "奶奶" } }
+      content: originalCandidate
     });
     const reordered = await commit(store, run, {
       artifactId: "variant:V1",
       artifactType: "selectedVariant",
       expectedCurrentRevision: variant.lineage.revision,
-      content: { characterSetup: { protagonist: "奶奶" }, title: "旧主题", id: "V1" }
+      content: {
+        characterSetup: { protagonist: "奶奶" },
+        climax: "闭馆前让旧钟重新报时",
+        keyChoice: "先救下受困邻居再绕路",
+        newTask: "送回修好的旧钟",
+        title: "旧主题",
+        id: "V1"
+      }
     });
     assert.equal(reordered.reused, true);
 
@@ -98,7 +210,13 @@ test("same-id upstream change stales Story, Plan and media, while key reordering
       artifactId: "variant:V1",
       artifactType: "selectedVariant",
       expectedCurrentRevision: variant.lineage.revision,
-      content: { id: "V1", title: "新主题", characterSetup: { protagonist: "奶奶" } }
+      content: {
+        ...originalCandidate,
+        title: "新主题",
+        newTask: "修好并送回停摆的怀表",
+        keyChoice: "放弃近路，先把唯一电池留给求助者",
+        climax: "列车开走前让怀表重新走动"
+      }
     });
     assert.deepEqual(changed.staleArtifactIds, [
       "animationPlan:V1",
@@ -109,6 +227,17 @@ test("same-id upstream change stales Story, Plan and media, while key reordering
     assert.equal(loaded.latestArtifacts["fullStory:V1"].lineage.status, "stale");
     assert.equal(loaded.latestArtifacts["animationPlan:V1"].lineage.status, "stale");
     assert.equal(loaded.latestArtifacts["shotVideo:V1:S01"].lineage.status, "stale");
+
+    await assert.rejects(
+      commit(store, run, {
+        artifactId: "fullStory:V1",
+        artifactType: "fullStory",
+        expectedCurrentRevision: story.lineage.revision,
+        content: { selectedVariantId: "V1", sceneScript: [{ sceneId: "OLD" }] },
+        dependencies: [lineageRef(variant.lineage)]
+      }),
+      (error) => error.code === "ARTIFACT_DEPENDENCY_STALE"
+    );
 
     await assert.rejects(
       commit(store, run, {

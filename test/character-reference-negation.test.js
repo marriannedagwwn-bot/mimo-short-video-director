@@ -94,3 +94,80 @@ test("否定词表不会把普通禁止词变成必须带否定才可删", () =>
   assert.equal(text.replace(wrong, ""), text, "错误写法确实删不掉（记录该 bug 形态）");
   assert.equal(text.replace(right, ""), "小白子，狼耳，", "正确写法必须删得掉");
 });
+
+// 上面那组走的是 ensureAnimationPlanMatchesProfile。成片渲染链路走的是另一个函数
+// characterReferenceBoundaryMismatch（/api/generate-shot-video 与旧 v2 首尾帧图片
+// 都经由 ensureCharacterReferenceMatchesBoundary 硬失败），它此前同样不放行否定语境。
+// 真实回放：appearancePrompt 结尾写「无企鹅服装，无动物拟态服装」——模型在服从边界，
+// 却被判「混入全局边界禁止特征」，整条角色参考在渲染前被拦死。
+const renderGuardrails = Object.freeze({
+  fixedCharacterBoundary: {
+    schemaVersion: "2.0",
+    characterName: "小白子",
+    requiredTraits: [],
+    allowedTraits: [],
+    forbiddenTraits: [
+      { canonicalName: "企鹅服装", terms: ["企鹅服装", "企鹅服"], scope: "appearance" },
+      { canonicalName: "动物拟态服装", terms: ["动物拟态服装"], scope: "appearance" }
+    ],
+    boundaryDigest: "sha256:test-boundary"
+  }
+});
+
+function reference(appearancePrompt) {
+  return {
+    characterName: "小白子",
+    storyRole: "主角",
+    identity: "村里的热心帮手",
+    appearancePrompt,
+    consistencyTags: [],
+    // 这个字段的职责就是罗列禁止变化，本就不在扫描范围内。
+    forbiddenChanges: ["企鹅服装", "企鹅动作"]
+  };
+}
+
+test("成片渲染链路的角色参考检查同样放行否定约束", async () => {
+  const { characterReferenceBoundaryMismatch, ensureCharacterReferenceMatchesBoundary } =
+    await import("../src/validation.js");
+
+  assert.equal(
+    characterReferenceBoundaryMismatch(
+      reference("Q版少女体型，猫耳，银白色长发，蓝色围巾，无企鹅服装，无动物拟态服装"),
+      renderGuardrails
+    ),
+    ""
+  );
+  assert.doesNotThrow(() => ensureCharacterReferenceMatchesBoundary(
+    reference("Q版少女体型，猫耳，无企鹅服装，无动物拟态服装"),
+    renderGuardrails
+  ));
+  assert.equal(
+    characterReferenceBoundaryMismatch(reference("不得出现动物拟态服装"), renderGuardrails),
+    ""
+  );
+});
+
+test("成片渲染链路仍然拒绝真正的越界，否定放行不是免检", async () => {
+  const { characterReferenceBoundaryMismatch, ensureCharacterReferenceMatchesBoundary } =
+    await import("../src/validation.js");
+
+  // 正向穿着。
+  assert.match(
+    characterReferenceBoundaryMismatch(reference("Q版少女体型，穿着企鹅服装"), renderGuardrails),
+    /混入全局边界禁止特征：企鹅服装/u
+  );
+  // 先否定后转折又用上。
+  assert.match(
+    characterReferenceBoundaryMismatch(reference("不穿企鹅服装，但是套着企鹅服"), renderGuardrails),
+    /混入全局边界禁止特征/u
+  );
+  // 否定只在同一分句内生效，跨句不继承。
+  assert.match(
+    characterReferenceBoundaryMismatch(reference("无企鹅服装。她换上了企鹅服"), renderGuardrails),
+    /混入全局边界禁止特征/u
+  );
+  assert.throws(
+    () => ensureCharacterReferenceMatchesBoundary(reference("穿着企鹅服装"), renderGuardrails),
+    /混入全局边界禁止特征/u
+  );
+});

@@ -50,7 +50,7 @@ const rootInstructions = Object.freeze({
   "/characterBible/protagonist": "只允许 name、identity、traits、speechRules、signatureBehaviors。人物行为正文必须放入 signatureBehaviors 数组，绝不能作为 JSON 属性名；保留其余合法角色事实。",
   "/characterBible/careRecipient": "只允许 nameOrLabel、identity、explicitNeed、implicitNeed、relationshipToProtagonist；正文只能作为这些字段的值，不能作为属性名。",
   beatSheet: "只允许 beat、timeRange、storyAction、emotion、dramaticFunction、retainedValueFromBrief。剧情动作放 storyAction，情绪放 emotion，剧作作用放 dramaticFunction，保留的 Brief 价值放 retainedValueFromBrief；正文绝不能作为 JSON 属性名。",
-  sceneScript: "只允许 sceneId、timeRange、location、characters、visibleAction、dialogue、shotAndSound、emotionNode、dramaticFunction、shootingNotes。画面动作放 visibleAction，声画建议放 shotAndSound，拍摄注意事项放 shootingNotes；正文绝不能作为 JSON 属性名。",
+  sceneScript: "只允许 sceneId、timeRange、location、characters、offscreenSoundSources、visibleAction、dialogue、shotAndSound、emotionNode、dramaticFunction、shootingNotes。画面动作放 visibleAction，声画建议放 shotAndSound，拍摄注意事项放 shootingNotes；正文绝不能作为 JSON 属性名。",
   keyProps: "只允许 prop、storyFunction、visualUse、avoidSimilarityNote；正文只能作为字段值。",
   shootingPlan: "只允许 unit、setup、mustCapture、practicalNote；正文只能作为字段值。",
   retentionPlan: "只允许 moment、viewerQuestion、payoff、approxTime；正文只能作为字段值。",

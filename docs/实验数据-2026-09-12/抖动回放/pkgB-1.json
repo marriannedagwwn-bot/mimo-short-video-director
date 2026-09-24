@@ -1,0 +1,959 @@
+{
+  "metadata": {
+    "storyCandidateReview": {
+      "provider": "Qwen",
+      "model": "qwen3.7-max",
+      "providerCalls": 2,
+      "rejections": [
+        {
+          "attempt": 1,
+          "message": "storyCandidateReview 结构校验失败：/briefProblemsDetected/0 类型必须为 string",
+          "details": [
+            {
+              "code": "STORY_CANDIDATE_REVIEW_SCHEMA_TYPE",
+              "path": "/briefProblemsDetected/0",
+              "reason": "类型必须为 string",
+              "keyword": "type"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "usage": {
+    "calls": 2,
+    "promptTokens": 27590,
+    "completionTokens": 27283,
+    "totalTokens": 54873,
+    "costCny": 1.31,
+    "costKnown": true,
+    "byModel": [
+      {
+        "provider": "Qwen",
+        "model": "qwen3.7-max",
+        "calls": 2,
+        "promptTokens": 27590,
+        "completionTokens": 27283,
+        "totalTokens": 54873,
+        "costCny": 1.31
+      }
+    ]
+  },
+  "review": {
+    "schemaVersion": "story-candidate-review/1.0",
+    "sourceMechanisms": [
+      {
+        "id": "M1",
+        "mechanism": "童趣化的非标准任务参与。用充满想象力、不符合常规效率的身体动作去解决日常小问题或参与家务。",
+        "whereInSource": "S1 咕嘎用身体当熨斗压平衣服；S5 蹲在地上玩石子游戏。",
+        "requiresCause": false
+      },
+      {
+        "id": "M2",
+        "mechanism": "外部荣誉的情感反哺。将外界给予的实质性奖励或荣誉，主动转赠给默默关爱自己的长辈，完成情感的双向兑现。",
+        "whereInSource": "S8 孩子们悄悄摘下胸前的小红花，别在奶奶的衣服上。",
+        "requiresCause": true
+      }
+    ],
+    "candidateChecks": [
+      {
+        "candidateId": "V1",
+        "title": "泥坑里的毛线球",
+        "coreInteraction": {
+          "setback": "芙芙猫的毛线球掉进泥坑，树枝差点把球戳进泥里。",
+          "intervention": "小白子解下围巾当安全绳，脱下外套垫地，像企鹅一样滑下泥坑拿球。",
+          "response": "芙芙猫开心扑向毛线球，奶奶无奈笑并用毛巾擦泥点、披外套。",
+          "visibleChange": "小白子穿着宽大干外套蹭奶奶手臂，毛线球干干净净。"
+        },
+        "mechanismChecks": [
+          {
+            "sourceMechanismId": "M1",
+            "causeEvidence": "",
+            "actionEvidence": "beat 3 脱下外套垫地，像小企鹅一样在泥地上滑行去够毛线球。",
+            "beatIndexes": [
+              3
+            ],
+            "verdict": "depicted"
+          },
+          {
+            "sourceMechanismId": "M2",
+            "causeEvidence": "",
+            "actionEvidence": "动作链里没有转赠奖励或荣誉的动作。",
+            "beatIndexes": [],
+            "verdict": "not_depicted"
+          }
+        ],
+        "coherenceChecks": [],
+        "sourceScaffoldOverlap": {
+          "eventChain": [
+            {
+              "sourceEvent": "整理旧衣服并童趣化参与",
+              "candidateEvent": "发现毛线球掉进泥坑并童趣化滑下泥坑",
+              "beatIndexes": [
+                1,
+                2,
+                3
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "运送衣服并等待",
+              "candidateEvent": "爬出泥坑并跑回院子",
+              "beatIndexes": [
+                4,
+                5
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "获得小红花奖励",
+              "candidateEvent": "候选里没有对应事件",
+              "beatIndexes": [],
+              "linkage": "absent"
+            },
+            {
+              "sourceEvent": "将小红花转赠给奶奶",
+              "candidateEvent": "奶奶单向照顾小白子，擦泥点披外套",
+              "beatIndexes": [
+                6
+              ],
+              "linkage": "different"
+            }
+          ],
+          "taskType": "different",
+          "midSection": "different",
+          "rewardSource": "not_applicable",
+          "rewardHandling": "not_applicable",
+          "endingShape": "partial",
+          "score": 20,
+          "why": "仅保留了日常互动和长辈收尾的形状，核心事件链与因果顺序完全不同，没有换皮风险。"
+        },
+        "dimensions": [
+          {
+            "id": "openingHook",
+            "score": 7.5,
+            "evidence": "毛线球掉进泥坑且树枝差点把球戳深，给出了明确的视觉困境和继续看的理由。",
+            "evidenceRefs": [
+              "storyOutline[1]"
+            ]
+          },
+          {
+            "id": "causalLogic",
+            "score": 6,
+            "evidence": "滑下泥坑拿球逻辑成立，但缺乏情感反哺的因果链，结尾仅停留在单向被照顾。",
+            "evidenceRefs": [
+              "storyOutline[3]",
+              "storyOutline[6]"
+            ]
+          },
+          {
+            "id": "protagonistAgency",
+            "score": 8.5,
+            "evidence": "放弃树枝、解围巾、脱外套滑行，关键结果完全来自主角主动且具体的身体决定。",
+            "evidenceRefs": [
+              "storyOutline[2]",
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "characterSpecificity",
+            "score": 7,
+            "evidence": "像企鹅滑行和发出「嗷呜」声符合萌系设定，但光环和校服在泥坑场景中没有发挥专属作用。",
+            "evidenceRefs": [
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "storySpecificity",
+            "score": 6.5,
+            "evidence": "用外套垫泥地滑行是一个具体的记忆点，但整体「弄脏衣服被长辈照顾」的母题较为常见。",
+            "evidenceRefs": [
+              "storyOutline[3]",
+              "storyOutline[6]"
+            ]
+          },
+          {
+            "id": "originality",
+            "score": 5,
+            "evidence": "深层机制与同批其他候选高度一致，均为「夸张肢体替代工具解决小困境+温馨收尾」。",
+            "evidenceRefs": []
+          },
+          {
+            "id": "progression",
+            "score": 8,
+            "evidence": "从焦急到坚定，再到滑稽滑行，最后如释重负与温暖，情绪和动作有清晰的递进。",
+            "evidenceRefs": [
+              "storyOutline[1]",
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "emotionalPayoff",
+            "score": 5.5,
+            "evidence": "结尾奶奶擦泥点披外套很温馨，但缺失了原片核心的情感双向反哺，情绪回报偏弱。",
+            "evidenceRefs": [
+              "storyOutline[6]"
+            ]
+          },
+          {
+            "id": "visualMemorability",
+            "score": 7.5,
+            "evidence": "白衬衫沾满泥点与干净毛线球的对比，以及像企鹅滑行的画面，具有较强的视觉记忆点。",
+            "evidenceRefs": [
+              "storyOutline[3]",
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "productionFeasibility",
+            "score": 8,
+            "evidence": "场景集中在池边和院子，动作虽夸张但无复杂物理交互，2.5D动画实现难度适中。",
+            "evidenceRefs": []
+          },
+          {
+            "id": "dialogueAndNaturalness",
+            "score": 8.5,
+            "evidence": "奶奶的「泥猴子」吐槽和小白子的「嗷～」符合日常口语与萌系设定，自然不刻意。",
+            "evidenceRefs": [
+              "keyDialogueDirections"
+            ]
+          }
+        ],
+        "physicalAssumptions": [
+          {
+            "mechanism": "蓝色长围巾作为安全绳承重",
+            "confidence": "unlikely",
+            "necessaryAssumptions": [
+              "围巾材质足够坚韧且抗拉伸",
+              "打结方式在石栏杆上绝对牢固",
+              "石栏杆边缘光滑不会割断布料"
+            ],
+            "failureRisk": "围巾断裂或滑脱导致主角失去保护摔进泥坑。",
+            "beatIndexes": [
+              2,
+              4
+            ]
+          },
+          {
+            "mechanism": "西装外套垫在泥地上滑行",
+            "confidence": "conditional",
+            "necessaryAssumptions": [
+              "泥水润滑度足够高",
+              "外套面料防水或不易吸水泥泞"
+            ],
+            "failureRisk": "外套吸水变重导致滑行失败，主角卡在泥地中间。",
+            "beatIndexes": [
+              3
+            ]
+          }
+        ],
+        "strongestReason": "脱下校服外套垫在泥地上像企鹅一样滑行，是一个极具画面感且充满童真的具体动作。",
+        "dominantDefect": {
+          "type": "template_convergence",
+          "severity": "MAJOR",
+          "description": "与同批候选共享「夸张肢体替代工具+单向温馨收尾」的深层模板，且丢失了情感反哺高潮。"
+        },
+        "briefAlignment": {
+          "status": "WARN",
+          "conflict": "未执行简报中「将获得的奖励转赠给被关爱对象」的必须保留机制，情感高潮缺失。",
+          "suggestBriefChange": "将「获得小红花并转赠奶奶」这一具体桥段从 mustRetain 中移除，改为「通过具体动作实现情感的双向反哺」。"
+        },
+        "top3RevisionSuggestions": [
+          {
+            "kind": "add",
+            "suggestion": "在结尾增加小白子将干净的毛线球先递给奶奶，让奶奶摸一摸或绕线，再给猫，体现对奶奶陪伴的回馈。",
+            "replacesOrStrengthens": "结尾奶奶单向照顾的动作。",
+            "whyOnlyHere": "依赖本故事特有的毛线球道具和奶奶擦泥点的互动基础，完成情感闭环。"
+          },
+          {
+            "kind": "strengthen",
+            "suggestion": "强化 beat 2 围巾绑栏杆的细节，让小白子特意打了一个奶奶教过的死结，增加情感伏笔。",
+            "replacesOrStrengthens": "beat 2 绑安全绳的动作。",
+            "whyOnlyHere": "利用已有的围巾道具和奶奶角色，为后续的情感反哺提供前置因果。"
+          }
+        ],
+        "why": "滑泥坑的动作设计极具童趣，但结尾缺乏情感反哺导致情绪回报不足。",
+        "keepThis": "脱下深蓝色校服西装外套垫在泥地上，只穿白衬衫像小企鹅一样滑行的动作设计。",
+        "overallScore": 6.94,
+        "tier": "reject_or_regenerate",
+        "scoreBasedVerdict": "drop",
+        "verdictOverrideReasons": [],
+        "effectiveVerdict": "drop"
+      },
+      {
+        "candidateId": "V2",
+        "title": "床单迷宫与西瓜",
+        "coreInteraction": {
+          "setback": "大风吹来，晾衣绳上的床单眼看要被吹飞。",
+          "intervention": "小白子用木夹子把床单边缘夹在自己和猫衣服上，变成人形晾衣杆。",
+          "response": "奶奶赶来帮忙重新固定。",
+          "visibleChange": "三人加猫坐在干净床单上吃西瓜，奶奶擦嘴角。"
+        },
+        "mechanismChecks": [
+          {
+            "sourceMechanismId": "M1",
+            "causeEvidence": "",
+            "actionEvidence": "beat 2 用头顶光环顶出小帐篷；beat 4 把自己变成人形晾衣杆。",
+            "beatIndexes": [
+              2,
+              4
+            ],
+            "verdict": "depicted"
+          },
+          {
+            "sourceMechanismId": "M2",
+            "causeEvidence": "",
+            "actionEvidence": "动作链里没有转赠奖励或荣誉的动作。",
+            "beatIndexes": [],
+            "verdict": "not_depicted"
+          }
+        ],
+        "coherenceChecks": [],
+        "sourceScaffoldOverlap": {
+          "eventChain": [
+            {
+              "sourceEvent": "整理旧衣服并童趣化参与",
+              "candidateEvent": "晾床单并用光环顶帐篷",
+              "beatIndexes": [
+                1,
+                2
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "运送衣服并等待",
+              "candidateEvent": "大风吹来，变成人形晾衣杆",
+              "beatIndexes": [
+                3,
+                4
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "获得小红花奖励",
+              "candidateEvent": "候选里没有对应事件",
+              "beatIndexes": [],
+              "linkage": "absent"
+            },
+            {
+              "sourceEvent": "将小红花转赠给奶奶",
+              "candidateEvent": "坐在床单上吃西瓜，奶奶擦嘴角",
+              "beatIndexes": [
+                5
+              ],
+              "linkage": "different"
+            }
+          ],
+          "taskType": "different",
+          "midSection": "different",
+          "rewardSource": "not_applicable",
+          "rewardHandling": "not_applicable",
+          "endingShape": "partial",
+          "score": 20,
+          "why": "仅保留了家务参与和长辈收尾的形状，核心事件链与因果顺序完全不同，没有换皮风险。"
+        },
+        "dimensions": [
+          {
+            "id": "openingHook",
+            "score": 6.5,
+            "evidence": "帮奶奶晾床单是常规日常，缺乏强烈的视觉悬念，靠 oneLineHook 的文案吸引。",
+            "evidenceRefs": [
+              "storyOutline[1]"
+            ]
+          },
+          {
+            "id": "causalLogic",
+            "score": 5.5,
+            "evidence": "用夹子把床单夹在自己身上防风缺乏物理说服力，且最终靠奶奶赶来才解决。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "protagonistAgency",
+            "score": 7,
+            "evidence": "主动钻进床单和当人形晾衣杆体现了主动性，但危机解除依赖奶奶介入。",
+            "evidenceRefs": [
+              "storyOutline[2]",
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "characterSpecificity",
+            "score": 8.5,
+            "evidence": "利用头顶光环在床单上顶出小帐篷，完美发挥了固定角色的专属外观特征。",
+            "evidenceRefs": [
+              "storyOutline[2]"
+            ]
+          },
+          {
+            "id": "storySpecificity",
+            "score": 7.5,
+            "evidence": "床单迷宫和光环帐篷是专属视觉机制，但吃西瓜收尾较为通用。",
+            "evidenceRefs": [
+              "storyOutline[2]",
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "originality",
+            "score": 5,
+            "evidence": "深层机制与同批其他候选高度一致，均为「夸张肢体替代工具解决小困境+温馨收尾」。",
+            "evidenceRefs": []
+          },
+          {
+            "id": "progression",
+            "score": 7.5,
+            "evidence": "从宁静到愉悦，再到惊慌和轻松，情绪有起伏，但危机解决过快。",
+            "evidenceRefs": [
+              "storyOutline[1]",
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "emotionalPayoff",
+            "score": 5.5,
+            "evidence": "结尾吃西瓜和擦嘴角很生活化，但缺失了原片核心的情感双向反哺，情绪回报偏弱。",
+            "evidenceRefs": [
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "visualMemorability",
+            "score": 8.5,
+            "evidence": "光环在两层白床单间顶出一个个发光的小帐篷，具有极强的新海诚/吉卜力光影美感。",
+            "evidenceRefs": [
+              "storyOutline[2]"
+            ]
+          },
+          {
+            "id": "productionFeasibility",
+            "score": 7,
+            "evidence": "床单在风中的物理飘动和光影透视需要较高的动画算力，但场景简单。",
+            "evidenceRefs": [
+              "storyOutline[2]",
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "dialogueAndNaturalness",
+            "score": 8.5,
+            "evidence": "奶奶的「慢点吃」和小白子含糊的「嗷呜」非常符合夏日庭院的生活质感。",
+            "evidenceRefs": [
+              "keyDialogueDirections"
+            ]
+          }
+        ],
+        "physicalAssumptions": [
+          {
+            "mechanism": "木夹子夹住床单和衣服防风",
+            "confidence": "unlikely",
+            "necessaryAssumptions": [
+              "夹子咬合力极大",
+              "衣服布料不被撕裂",
+              "风力不超过夹子极限"
+            ],
+            "failureRisk": "狂风直接撕裂衣服或吹飞夹子，主角被带倒。",
+            "beatIndexes": [
+              4
+            ]
+          }
+        ],
+        "strongestReason": "用头顶的光环在两层刚洗好的床单之间顶出一个个发光的小帐篷，视觉极具美感且契合角色。",
+        "dominantDefect": {
+          "type": "template_convergence",
+          "severity": "MAJOR",
+          "description": "与同批候选共享「夸张肢体替代工具+单向温馨收尾」的深层模板，且丢失了情感反哺高潮。"
+        },
+        "briefAlignment": {
+          "status": "WARN",
+          "conflict": "未执行简报中「将获得的奖励转赠给被关爱对象」的必须保留机制，情感高潮缺失。",
+          "suggestBriefChange": "将「获得小红花并转赠奶奶」这一具体桥段从 mustRetain 中移除，改为「通过具体动作实现情感的双向反哺」。"
+        },
+        "top3RevisionSuggestions": [
+          {
+            "kind": "add",
+            "suggestion": "吃西瓜时，小白子将最甜的一块西瓜芯挖出来递给奶奶，完成情感反哺。",
+            "replacesOrStrengthens": "结尾单向吃西瓜和擦嘴角的动作。",
+            "whyOnlyHere": "依赖本故事特有的西瓜道具和草地野餐场景，实现双向奔赴。"
+          },
+          {
+            "kind": "replace",
+            "suggestion": "将 beat 4 的人形晾衣杆改为小白子用光环发光吸引奶奶注意，让奶奶及时赶来按住床单。",
+            "replacesOrStrengthens": "beat 4 用夹子夹衣服防风的动作。",
+            "whyOnlyHere": "解决物理不合理问题，同时利用已有的光环设定推动情节。"
+          }
+        ],
+        "why": "光环顶帐篷的视觉设计极佳，但防风逻辑薄弱且结尾缺乏情感反哺。",
+        "keepThis": "用头顶的光环在两层刚洗好的床单之间顶出一个个发光的小帐篷的视觉机制。",
+        "overallScore": 6.95,
+        "tier": "reject_or_regenerate",
+        "scoreBasedVerdict": "drop",
+        "verdictOverrideReasons": [],
+        "effectiveVerdict": "drop"
+      },
+      {
+        "candidateId": "V3",
+        "title": "风铃与飞机翅膀",
+        "coreInteraction": {
+          "setback": "志愿者够不到高处树枝，小白子站长椅还是差一点。",
+          "intervention": "小白子让猫踩肩膀，自己双臂像飞机翅膀摆动保持平衡，吹气解开挂绳。",
+          "response": "风铃挂上，发出清脆声音。",
+          "visibleChange": "两人坐长椅闭眼听风铃晃动脑袋。"
+        },
+        "mechanismChecks": [
+          {
+            "sourceMechanismId": "M1",
+            "causeEvidence": "",
+            "actionEvidence": "beat 3 双臂像飞机翅膀疯狂上下摆动；beat 4 鼓起腮帮子吹气。",
+            "beatIndexes": [
+              3,
+              4
+            ],
+            "verdict": "depicted"
+          },
+          {
+            "sourceMechanismId": "M2",
+            "causeEvidence": "",
+            "actionEvidence": "动作链里没有转赠奖励或荣誉的动作。",
+            "beatIndexes": [],
+            "verdict": "not_depicted"
+          }
+        ],
+        "coherenceChecks": [],
+        "sourceScaffoldOverlap": {
+          "eventChain": [
+            {
+              "sourceEvent": "整理旧衣服并童趣化参与",
+              "candidateEvent": "偶遇志愿者并童趣化挂风铃",
+              "beatIndexes": [
+                1,
+                2,
+                3
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "运送衣服并等待",
+              "candidateEvent": "吹气解开挂绳",
+              "beatIndexes": [
+                4
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "获得小红花奖励",
+              "candidateEvent": "候选里没有对应事件",
+              "beatIndexes": [],
+              "linkage": "absent"
+            },
+            {
+              "sourceEvent": "将小红花转赠给奶奶",
+              "candidateEvent": "坐长椅听风铃晃动脑袋",
+              "beatIndexes": [
+                5
+              ],
+              "linkage": "different"
+            }
+          ],
+          "taskType": "different",
+          "midSection": "different",
+          "rewardSource": "not_applicable",
+          "rewardHandling": "not_applicable",
+          "endingShape": "different",
+          "score": 15,
+          "why": "事件链完全不同，且结尾没有长辈参与，纯粹是环境反馈，没有换皮风险。"
+        },
+        "dimensions": [
+          {
+            "id": "openingHook",
+            "score": 6,
+            "evidence": "偶遇志愿者挂风铃是平淡的开场，缺乏强烈的视觉或情绪悬念。",
+            "evidenceRefs": [
+              "storyOutline[1]"
+            ]
+          },
+          {
+            "id": "causalLogic",
+            "score": 4.5,
+            "evidence": "吹气解开缠绕的细线严重违背物理常识，高潮解决依赖作者强行安排的巧合。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "protagonistAgency",
+            "score": 8,
+            "evidence": "主动搬长椅、让猫踩肩膀、摆动双臂，关键动作来自主角决定。",
+            "evidenceRefs": [
+              "storyOutline[2]",
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "characterSpecificity",
+            "score": 6.5,
+            "evidence": "飞机翅膀和嗷呜声符合萌系设定，但固定角色的光环和校服未发挥专属作用。",
+            "evidenceRefs": [
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "storySpecificity",
+            "score": 7,
+            "evidence": "飞机翅膀保持平衡和吹气解绳是专属动作，但吹气解绳缺乏可信度。",
+            "evidenceRefs": [
+              "storyOutline[3]",
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "originality",
+            "score": 5,
+            "evidence": "深层机制与同批其他候选高度一致，均为「夸张肢体替代工具解决小困境+温馨收尾」。",
+            "evidenceRefs": []
+          },
+          {
+            "id": "progression",
+            "score": 7,
+            "evidence": "从好奇到积极，再到紧张和惊喜，情绪有变化，但高潮解决过于轻易。",
+            "evidenceRefs": [
+              "storyOutline[1]",
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "emotionalPayoff",
+            "score": 6,
+            "evidence": "结尾听风铃晃动脑袋很治愈，但缺乏人物关系的深化和情感反哺。",
+            "evidenceRefs": [
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "visualMemorability",
+            "score": 7.5,
+            "evidence": "双臂像飞机翅膀疯狂摆动配合嗷呜声，具有滑稽可爱的视觉记忆点。",
+            "evidenceRefs": [
+              "storyOutline[3]"
+            ]
+          },
+          {
+            "id": "productionFeasibility",
+            "score": 8.5,
+            "evidence": "场景简单，动作夸张但无复杂物理交互，易于实现。",
+            "evidenceRefs": []
+          },
+          {
+            "id": "dialogueAndNaturalness",
+            "score": 8,
+            "evidence": "志愿者的感谢和小白子的再见符合日常逻辑，自然不刻意。",
+            "evidenceRefs": [
+              "keyDialogueDirections"
+            ]
+          }
+        ],
+        "physicalAssumptions": [
+          {
+            "mechanism": "吹气解开缠绕的细线",
+            "confidence": "unlikely",
+            "necessaryAssumptions": [
+              "气流方向极其精准",
+              "细线缠绕极松",
+              "风力配合"
+            ],
+            "failureRisk": "吹气毫无作用，细线依然缠绕，导致高潮动作失效。",
+            "beatIndexes": [
+              4
+            ]
+          }
+        ],
+        "strongestReason": "为了保持平衡，双臂像飞机翅膀一样疯狂上下摆动并发出引擎声，动作极具童趣和画面感。",
+        "dominantDefect": {
+          "type": "template_convergence",
+          "severity": "MAJOR",
+          "description": "与同批候选共享「夸张肢体替代工具+单向温馨收尾」的深层模板，且丢失了情感反哺高潮。"
+        },
+        "briefAlignment": {
+          "status": "WARN",
+          "conflict": "未执行简报中「将获得的奖励转赠给被关爱对象」的必须保留机制，且结尾无长辈参与。",
+          "suggestBriefChange": "将「获得小红花并转赠奶奶」这一具体桥段从 mustRetain 中移除，改为「通过具体动作实现情感的双向反哺」。"
+        },
+        "top3RevisionSuggestions": [
+          {
+            "kind": "replace",
+            "suggestion": "将 beat 4 吹气解绳改为小白子用头顶的光环轻轻勾住细线挑开，利用专属特征解决危机。",
+            "replacesOrStrengthens": "beat 4 吹气解开挂绳的动作。",
+            "whyOnlyHere": "解决物理不合理问题，同时回收角色设定的光环特征，增强专属性。"
+          },
+          {
+            "kind": "add",
+            "suggestion": "听风铃时，小白子用捡到的漂亮落叶做成书签递给志愿者阿姨，回馈她的感谢。",
+            "replacesOrStrengthens": "结尾单纯听风铃的动作。",
+            "whyOnlyHere": "依赖本故事树下场景和志愿者阿姨的互动基础，实现情感双向反馈。"
+          }
+        ],
+        "why": "飞机翅膀动作设计可爱，但吹气解绳违背物理常识且缺乏情感反哺。",
+        "keepThis": "站上长椅让猫踩肩膀，双臂像飞机翅膀一样疯狂上下摆动保持平衡的动作设计。",
+        "overallScore": 6.55,
+        "tier": "reject_or_regenerate",
+        "scoreBasedVerdict": "drop",
+        "verdictOverrideReasons": [],
+        "effectiveVerdict": "drop"
+      },
+      {
+        "candidateId": "V4",
+        "title": "螺旋桨与光斑",
+        "coreInteraction": {
+          "setback": "树荫太密，自然光斑细碎，流浪猫烦躁。",
+          "intervention": "小白子把光盘绑在围巾两端，像螺旋桨旋转制造光圈。",
+          "response": "转得太快摔倒，光盘反射光汇聚成大光斑，猫躺进去。",
+          "visibleChange": "小白子晕乎乎躺着，猫蹭脸颊。"
+        },
+        "mechanismChecks": [
+          {
+            "sourceMechanismId": "M1",
+            "causeEvidence": "",
+            "actionEvidence": "beat 4 把光盘绑在围巾两端，像直升机螺旋桨一样原地旋转。",
+            "beatIndexes": [
+              4
+            ],
+            "verdict": "depicted"
+          },
+          {
+            "sourceMechanismId": "M2",
+            "causeEvidence": "",
+            "actionEvidence": "动作链里没有转赠奖励或荣誉的动作。",
+            "beatIndexes": [],
+            "verdict": "not_depicted"
+          }
+        ],
+        "coherenceChecks": [],
+        "sourceScaffoldOverlap": {
+          "eventChain": [
+            {
+              "sourceEvent": "整理旧衣服并童趣化参与",
+              "candidateEvent": "观察流浪猫并童趣化制造光斑",
+              "beatIndexes": [
+                1,
+                2,
+                3,
+                4
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "运送衣服并等待",
+              "candidateEvent": "旋转摔倒，光斑汇聚",
+              "beatIndexes": [
+                5
+              ],
+              "linkage": "different"
+            },
+            {
+              "sourceEvent": "获得小红花奖励",
+              "candidateEvent": "候选里没有对应事件",
+              "beatIndexes": [],
+              "linkage": "absent"
+            },
+            {
+              "sourceEvent": "将小红花转赠给奶奶",
+              "candidateEvent": "晕乎乎躺着，猫蹭脸颊",
+              "beatIndexes": [
+                6
+              ],
+              "linkage": "different"
+            }
+          ],
+          "taskType": "different",
+          "midSection": "different",
+          "rewardSource": "not_applicable",
+          "rewardHandling": "not_applicable",
+          "endingShape": "different",
+          "score": 15,
+          "why": "事件链完全不同，且结尾无长辈参与，纯粹是动物反馈，没有换皮风险。"
+        },
+        "dimensions": [
+          {
+            "id": "openingHook",
+            "score": 7,
+            "evidence": "流浪猫想晒太阳却烦躁走来走去，给出了明确的视觉困境和同理心钩子。",
+            "evidenceRefs": [
+              "storyOutline[1]"
+            ]
+          },
+          {
+            "id": "causalLogic",
+            "score": 4,
+            "evidence": "摔倒后光盘角度刚好汇聚成大光斑属于作者强行安排的巧合，高潮靠运气解决。",
+            "evidenceRefs": [
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "protagonistAgency",
+            "score": 7.5,
+            "evidence": "主动找光盘、绑围巾、旋转制造光圈，体现了强烈的主动性，尽管结果靠巧合。",
+            "evidenceRefs": [
+              "storyOutline[3]",
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "characterSpecificity",
+            "score": 6.5,
+            "evidence": "螺旋桨旋转和嗷呜声符合萌系设定，但固定角色的光环和校服未发挥专属作用。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "storySpecificity",
+            "score": 8,
+            "evidence": "用废弃光盘和围巾做成螺旋桨制造光斑，是一个极具创意且专属的视觉机制。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "originality",
+            "score": 5,
+            "evidence": "深层机制与同批其他候选高度一致，均为「夸张肢体替代工具解决小困境+温馨收尾」。",
+            "evidenceRefs": []
+          },
+          {
+            "id": "progression",
+            "score": 7.5,
+            "evidence": "从关切到挫败，再到灵光一闪和惊喜，情绪递进清晰。",
+            "evidenceRefs": [
+              "storyOutline[1]",
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "emotionalPayoff",
+            "score": 6.5,
+            "evidence": "猫咪蹭脸颊很治愈，但缺乏人物关系的深化和情感反哺，且高潮靠巧合削弱了感动。",
+            "evidenceRefs": [
+              "storyOutline[6]"
+            ]
+          },
+          {
+            "id": "visualMemorability",
+            "score": 8.5,
+            "evidence": "绑着光盘的蓝色长围巾像螺旋桨一样旋转，反射出细碎光斑，视觉极具想象力。",
+            "evidenceRefs": [
+              "storyOutline[4]"
+            ]
+          },
+          {
+            "id": "productionFeasibility",
+            "score": 7.5,
+            "evidence": "光盘反射光的动态效果和旋转模糊需要一定特效支持，但场景简单。",
+            "evidenceRefs": [
+              "storyOutline[4]",
+              "storyOutline[5]"
+            ]
+          },
+          {
+            "id": "dialogueAndNaturalness",
+            "score": 8.5,
+            "evidence": "全程用「嗷呜」拟声词表达情绪，符合萌系设定，无生硬台词。",
+            "evidenceRefs": [
+              "keyDialogueDirections"
+            ]
+          }
+        ],
+        "physicalAssumptions": [
+          {
+            "mechanism": "旋转光盘制造连续光圈",
+            "confidence": "unlikely",
+            "necessaryAssumptions": [
+              "光盘反射率极高",
+              "旋转速度达到视觉暂留阈值",
+              "阳光角度完美"
+            ],
+            "failureRisk": "只能看到闪烁的刺眼光斑，无法形成温暖光圈，导致视觉机制失效。",
+            "beatIndexes": [
+              4
+            ]
+          },
+          {
+            "mechanism": "摔倒后光盘角度刚好汇聚光斑",
+            "confidence": "unlikely",
+            "necessaryAssumptions": [
+              "光盘落地角度完美",
+              "地面平整",
+              "阳光方向不变"
+            ],
+            "failureRisk": "摔倒后光斑散乱或射向天空，无法汇聚在猫身上，高潮动作失效。",
+            "beatIndexes": [
+              5
+            ]
+          }
+        ],
+        "strongestReason": "把废弃光盘绑在蓝色长围巾两端，像直升机螺旋桨一样原地旋转制造光斑，创意极佳。",
+        "dominantDefect": {
+          "type": "template_convergence",
+          "severity": "MAJOR",
+          "description": "与同批候选共享「夸张肢体替代工具+单向温馨收尾」的深层模板，且丢失了情感反哺高潮。"
+        },
+        "briefAlignment": {
+          "status": "WARN",
+          "conflict": "未执行简报中「将获得的奖励转赠给被关爱对象」的必须保留机制，且结尾无长辈参与。",
+          "suggestBriefChange": "将「获得小红花并转赠奶奶」这一具体桥段从 mustRetain 中移除，改为「通过具体动作实现情感的双向反哺」。"
+        },
+        "top3RevisionSuggestions": [
+          {
+            "kind": "replace",
+            "suggestion": "将 beat 5 摔倒巧合改为小白子主动蹲下，把围巾两端的光盘调整角度，手动汇聚光斑。",
+            "replacesOrStrengthens": "beat 5 转得太快头晕摔倒的动作。",
+            "whyOnlyHere": "解决高潮靠运气的问题，让结果来自主角的主动控制，增强因果逻辑。"
+          },
+          {
+            "kind": "add",
+            "suggestion": "小白子晕乎乎时，把绑着光盘的围巾解下来，披在流浪猫和芙芙猫身上当小被子。",
+            "replacesOrStrengthens": "结尾单纯躺着被猫蹭的动作。",
+            "whyOnlyHere": "依赖本故事特有的光盘围巾道具和流浪猫需要温暖的设定，实现情感反哺。"
+          }
+        ],
+        "why": "螺旋桨光斑创意极佳，但高潮靠摔倒巧合解决且缺乏情感反哺。",
+        "keepThis": "把废弃光盘绑在蓝色长围巾两端，像直升机螺旋桨一样原地旋转的视觉机制。",
+        "overallScore": 6.83,
+        "tier": "reject_or_regenerate",
+        "scoreBasedVerdict": "drop",
+        "verdictOverrideReasons": [],
+        "effectiveVerdict": "drop"
+      }
+    ],
+    "recommendedOrder": [
+      "V4",
+      "V1",
+      "V2",
+      "V3"
+    ],
+    "batchTemplateConvergence": {
+      "converged": true,
+      "sharedMechanism": "遇到日常小困境 -> 主角放弃常规工具，用夸张的肢体动作（滑行/人形杆/飞机翅膀/螺旋桨）和拟声词去解决 -> 意外或勉强成功 -> 结尾获得长辈照顾或自然环境的温馨反馈。",
+      "affectedCandidateIds": [
+        "V1",
+        "V2",
+        "V3",
+        "V4"
+      ],
+      "evidence": "四个候选完全共享同一套「夸张肢体替代工具」的解决结构和「日常温馨收尾」的情绪回报结构，且全部丢弃了原片最核心的「外部奖励转赠长辈」的情感升华机制，沦为同一模板的换皮。"
+    },
+    "briefProblemsDetected": [
+      "所有候选均忽略了简报中「将获得的奖励转赠给被关爱对象」的核心情感机制，说明简报将该具体桥段设为不可协商体验可能导致创作者为了避开原片情节而集体丢弃了情感高潮，建议将简报中的具体桥段改为「实现情感的双向反哺」这一抽象目标。"
+    ],
+    "summary": "这一批里最值得先发展的是 V4（螺旋桨与光斑），最该先改的是将高潮的摔倒巧合替换为主角主动控制光斑汇聚，并为所有候选补充情感反哺动作以修复模板化缺陷。",
+    "recommendedWinner": "",
+    "runnerUp": "",
+    "rejectOrRegenerate": [
+      "V4",
+      "V1",
+      "V2",
+      "V3"
+    ]
+  }
+}

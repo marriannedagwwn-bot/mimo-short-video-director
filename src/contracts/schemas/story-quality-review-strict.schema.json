@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "internal://story-quality-review-strict",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "selectedVariantId",
+    "summary",
+    "promisePreservation",
+    "issues"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "story-quality-review/2.0" },
+    "selectedVariantId": { "$ref": "#/$defs/nonEmptyString" },
+    "summary": { "$ref": "#/$defs/nonEmptyString" },
+    "promisePreservation": { "$ref": "#/$defs/promisePreservation" },
+    "issues": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/issue" }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "sceneIdList": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "promisePreservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "checks"],
+      "properties": {
+        "status": { "enum": ["PASS", "WARN", "FAIL"] },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/promiseCheck" }
+        }
+      }
+    },
+    "promiseCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["promise", "source", "status", "evidence"],
+      "properties": {
+        "promise": { "$ref": "#/$defs/nonEmptyString" },
+        "source": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "title",
+              "oneLineHook",
+              "logline",
+              "newTask",
+              "environmentPressure",
+              "keyChoice",
+              "climax",
+              "emotionalPayoff",
+              "keyDialogueDirections",
+              "characterSetup",
+              "novelty",
+              "visualPotential",
+              "storyOutline",
+              "fixedCharacter"
+            ]
+          }
+        },
+        "status": { "enum": ["PRESERVED", "WEAKENED", "MISSING", "CONTRADICTED"] },
+        "evidence": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issueId",
+        "type",
+        "severity",
+        "sceneIds",
+        "evidence",
+        "problem",
+        "viewerImpact",
+        "confidence",
+        "optionalSuggestion",
+        "evidenceRun"
+      ],
+      "properties": {
+        "issueId": { "$ref": "#/$defs/nonEmptyString" },
+        "type": {
+          "enum": [
+            "causal_logic",
+            "goal_method_conflict",
+            "setup_or_provenance",
+            "missing_reference_state",
+            "progression_or_state_delta",
+            "physical_or_world_logic",
+            "character_contract",
+            "pacing_and_action_density",
+            "ending_naturalness",
+            "dialogue_logic"
+          ]
+        },
+        "severity": { "enum": ["BLOCKER", "MAJOR", "MINOR"] },
+        "sceneIds": { "$ref": "#/$defs/sceneIdList" },
+        "evidence": { "$ref": "#/$defs/nonEmptyString" },
+        "problem": { "$ref": "#/$defs/nonEmptyString" },
+        "viewerImpact": { "$ref": "#/$defs/nonEmptyString" },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "optionalSuggestion": { "type": "string" },
+        "evidenceRun": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

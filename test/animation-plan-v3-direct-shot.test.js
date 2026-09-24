@@ -12,10 +12,10 @@ import {
   NO_BACKGROUND_MUSIC_SENTENCE,
   materializeGlobalCharacterBoundaryViews,
   normalizeBackgroundMusicMode,
-  parseSceneTimeRangeSeconds,
   pruneAnimationPlanNegativePrompts,
-  sceneMinimumShotCount
+  shotDialogueMissingFromVideoPrompt
 } from "../src/validation.js";
+import { deriveDirectShotSkeleton } from "../src/direct-shot-timeline.js";
 import { WorkflowService } from "../src/workflow.js";
 import { generateShotVideo, normalizeShotVideoAspectRatio, ShotVideoConfigError } from "../src/shot-video-generator.js";
 import { resolveVideoPromptProfile, VIDEO_PROMPT_PROFILE_IDS } from "../public/video-prompt-profiles.js";
@@ -64,9 +64,9 @@ function directShot() {
   };
 }
 
-// 这些用例验证的是 direct_shot 的字段契约与各类修复协议，不是镜头数下限。
-// 把每场脚本时长压到单镜上限以内，使「一场一镜」的既有 fixture 本身就满足
-// 新的每场镜头数下限，测试焦点保持不变。下限本身由专门的用例覆盖。
+// 这些用例验证的是 direct_shot 的字段契约与各类修复协议，不是镜头映射本身。
+// 把每场时长压到单镜上限以内，让「一场一镜」的既有 fixture 天然满足 3.1 的
+// 一对一映射，测试焦点保持不变。映射与拆分规则由专门的用例覆盖。
 function withSingleShotSceneTimeRanges(fullStory) {
   const story = structuredClone(fullStory);
   story.sceneScript = (Array.isArray(story.sceneScript) ? story.sceneScript : []).map((scene, index) => ({
@@ -161,7 +161,8 @@ function createPromptRewriteWorkflow(getSourcePlan) {
       return {
         videoPrompts: sourcePlan.shotPlan.map((shot) => ({
           shotId: shot.shotId,
-          videoPrompt: `温暖治愈的手绘动画质感。${shot.characterAction}。镜头按动作顺序执行 ${shot.cameraMotion}。在 ${shot.durationSeconds} 秒内完成后立即停止。`
+          // 台词原话必须跟着改写走：改写只换供应商表达，不授权丢掉对白内容。
+          videoPrompt: `温暖治愈的手绘动画质感。${shot.characterAction}。镜头按动作顺序执行 ${shot.cameraMotion}。${shot.dialogueOrSubtitle ? `${shot.dialogueOrSubtitle}；对白只作为声音。` : ""}在 ${shot.durationSeconds} 秒内完成后立即停止。`
         }))
       };
     }
@@ -312,36 +313,33 @@ test("direct batch 把完整动作链和内部摄影切换写入一条教程式 
     ...context,
     animationFoundation,
     sourceScenes: [sourceScene],
-    shotIdStartIndex: 1
+    shotIdStartIndex: 1,
+    directShotSkeleton: deriveDirectShotSkeleton({ sceneScript: [sourceScene] })
   });
 
-  // 拆镜表述必须是正向产出要求：有几个主要动作目标就产出几个 shot。
-  assert.match(prompt, /拆镜依据只有两个：location 变化，或 visibleAction 中人物的主要动作目标变化/u);
-  assert.match(prompt, /有几个主要动作目标就必须产出几个 shot/u);
-  assert.match(prompt, /把两个以上主要动作目标塞进同一条 shot 属于错误输出/u);
-  assert.match(prompt, /唯一正确的做法是增加 shot/u);
-  assert.match(prompt, /把多个动作压进 6 秒、加速带过或省略动作都属于错误输出/u);
-  // 禁令收敛成封闭的三类，不得再泛化成“默认别拆”。
-  assert.match(prompt, /只有以下三类变化不得触发拆镜/u);
-  assert.match(prompt, /① 景别、机位、构图、焦段、运镜或转场变化/u);
-  assert.match(prompt, /② 同一主要动作目标内部的动作动词或连续阶段/u);
-  assert.match(prompt, /③ 同一地点多人同步完成的同一个协作动作/u);
-  assert.match(prompt, /除这三类之外，主要动作目标变化必须拆镜/u);
-  assert.match(prompt, /同一个目标下的连续阶段（起步→加速→抵达）才合并为一条 shot/u);
+  // 3.1：一场就是一条业务镜头，模型没有任何数量自由度。
+  assert.match(prompt, /本批镜头骨架（服务端已按各场 timeRange 确定性签发，逐字照抄，不得增删改序）：S1（00:00-00:05，5 秒）→ 1 个镜头：A01 5 秒/u);
+  assert.match(prompt, /禁止拆分、合并、新增、遗漏、重排或改写时长/u);
+  assert.match(prompt, /一个场次就是一条业务镜头/u);
+  assert.match(prompt, /允许多个动作阶段、景别变化、特写插入、硬切和结尾宽景/u);
+  assert.match(prompt, /不得因此增加 shotPlan 条目/u);
   assert.match(prompt, /这些内部摄影段不得生成额外 shot/u);
   assert.match(prompt, /内部摄影变化允许但不强制/u);
-  // 每场镜头数下限与全片进度必须出现在提示词里。
-  assert.match(prompt, /本批镜头数下限（由各场 timeRange ÷ 6 秒单镜上限得出，硬性要求）：S1 脚本 5 秒 → 至少 1 个 shot/u);
-  assert.match(prompt, /这是硬性产出要求而不是建议值/u);
-  assert.match(prompt, /全片时长进度：/u);
+  // 长场次被均分时，动作链必须按时间先后完整分配到相邻镜头。
+  assert.match(prompt, /必须把该场 visibleAction 的动作链按时间先后完整分配到这几条相邻镜头/u);
   assert.match(prompt, /一条自包含、可直接交给 Seedance 2\.0 的中文自然语言提示词/u);
   assert.match(prompt, /视觉风格、物理光线与时段/u);
   assert.match(prompt, /严格依照 visibleAction 的顺序动作链与可见结果/u);
   assert.match(prompt, /内部摄影\/剪辑顺序/u);
   assert.match(prompt, /不得生成尚未绑定的 @图片、@视频或 @音频编号/u);
   assert.match(prompt, /acceptanceCriteria 必须在 1-3 条额度内覆盖主要动作链的完整顺序与可见终点/u);
-  assert.match(prompt, /投信后改为拿起水桶给菜地浇水，主要动作目标已变化/u);
+  assert.match(prompt, /不得.*因为动作目标变化就拆成两条 shot/u);
   assert.match(prompt, /中景跟随阿岚走近；投入录音带时硬切手部特写；最后切到阿岚放松肩膀的逆光近景/u);
+  // 旧的拆镜规则与追赶进度提示必须彻底消失。
+  assert.doesNotMatch(prompt, /主要动作目标/u);
+  assert.doesNotMatch(prompt, /镜头数下限/u);
+  assert.doesNotMatch(prompt, /全片时长进度/u);
+  assert.doesNotMatch(prompt, /4-6 秒整数/u);
   assert.doesNotMatch(prompt, /多个先后人物动作必须拆成相邻镜头/u);
   assert.doesNotMatch(prompt, /一个连续摄影方案/u);
   assert.doesNotMatch(prompt, /不得把硬切塞进同一 shot/u);
@@ -361,6 +359,28 @@ test("direct batch 把完整动作链和内部摄影切换写入一条教程式 
     { shotPlan: [oneActionShot] },
     { promptSchemaVersion: ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION }
   ));
+});
+
+test("direct batch 不再放整份 creativeBrief，与 Foundation 一致", () => {
+  const context = directContext();
+  // creative_brief/2.0 只剩原片主角的驱动结构与换角测试里的原片动作，而这一步要写 videoPrompt。
+  context.creativeBrief.batchPromptLeakSentinel = "BRIEF_BATCH_LEAK_SENTINEL";
+  context.creativeBrief.recastTest = { ...context.creativeBrief.recastTest, collapses: ["RECAST_BATCH_LEAK_SENTINEL"] };
+  const plan = mockAnimationPlan(context);
+  const { shotPlan: ignoredShotPlan, ...animationFoundation } = structuredClone(plan);
+  const sourceScene = structuredClone(context.fullStory.sceneScript[0]);
+  const prompt = animationShotBatchPrompt({
+    ...context,
+    animationFoundation,
+    sourceScenes: [sourceScene],
+    shotIdStartIndex: 1,
+    directShotSkeleton: deriveDirectShotSkeleton({ sceneScript: [sourceScene] })
+  });
+  assert.doesNotMatch(prompt, /\ncreativeBrief：/u);
+  assert.equal(prompt.includes("BRIEF_BATCH_LEAK_SENTINEL"), false);
+  assert.equal(prompt.includes("RECAST_BATCH_LEAK_SENTINEL"), false);
+  // 旧简报的原片表面表达仍以词表形式给出；新简报没有这部分，词表为空。
+  assert.match(prompt, /原片表面表达参考（允许按剧情使用，不得机械注入）：无/u);
 });
 
 test("v3 batch 只接受精确 direct 字段并拒绝端点字段或非空 image negatives", () => {
@@ -441,7 +461,7 @@ test("demo direct_shot 返回无端点的 3.0 plan 并标记 compiler disabled",
   const firstShot = result.animationPlan.shotPlan[0];
   assert.match(firstShot.videoPrompt, /2\.5D 动画/u);
   assert.match(firstShot.videoPrompt, /出发点/u);
-  assert.match(firstShot.videoPrompt, /在 4 秒内按上述顺序清楚完成动作/u);
+  assert.match(firstShot.videoPrompt, /在 5 秒内按上述顺序清楚完成动作/u);
   assert.match(firstShot.videoPrompt, /自然动作声/u);
   assert.match(firstShot.videoPrompt, /内部摄影段与前后镜头均保持/u);
   assert.equal(firstShot.acceptanceCriteria.length, 3);
@@ -537,25 +557,9 @@ test("direct_shot 六个镜头职责字段都可作为逐镜视频负面词证�
 });
 
 
-test("每场镜头数下限由 timeRange 确定性推出，不可解析时退回下限 1", () => {
-  assert.equal(parseSceneTimeRangeSeconds("00:15-00:33"), 18);
-  assert.equal(parseSceneTimeRangeSeconds("01:00-01:20"), 20);
-  // 非法或非正跨度一律返回 null，不猜测场次时长。
-  assert.equal(parseSceneTimeRangeSeconds("00:20-00:10"), null);
-  assert.equal(parseSceneTimeRangeSeconds("时长未知"), null);
-  assert.equal(parseSceneTimeRangeSeconds(""), null);
-
-  // 20 秒脚本 ÷ 6 秒单镜上限 → 至少 4 镜；正是旧行为只给 1 镜的那类场次。
-  assert.equal(sceneMinimumShotCount({ timeRange: "01:00-01:20" }, 6), 4);
-  assert.equal(sceneMinimumShotCount({ timeRange: "00:00-00:15" }, 6), 3);
-  assert.equal(sceneMinimumShotCount({ timeRange: "00:00-00:06" }, 6), 1);
-  // timeRange 不可解析、上限非法时退回既有契约下限 1，不失败也不推断。
-  assert.equal(sceneMinimumShotCount({ timeRange: "乱写" }, 6), 1);
-  assert.equal(sceneMinimumShotCount({}, 6), 1);
-  assert.equal(sceneMinimumShotCount({ timeRange: "00:00-00:20" }, 0), 1);
-});
-
-test("长场次在批次提示词里拿到与 timeRange 匹配的镜头数下限和全片进度", () => {
+// timeRange 解析与镜头骨架派生本身由 test/direct-shot-timeline.test.js 覆盖，
+// 这里只验证骨架如何进入批次提示词。
+test("长场次在批次提示词里拿到服务端签发的镜头骨架，而不是镜头数下限", () => {
   const context = directContext();
   const plan = mockAnimationPlan(context);
   const { shotPlan: ignoredShotPlan, ...animationFoundation } = structuredClone(plan);
@@ -567,48 +571,26 @@ test("长场次在批次提示词里拿到与 timeRange 匹配的镜头数下限
   const longScene = structuredClone(context.fullStory.sceneScript[0]);
   longScene.timeRange = "01:00-01:20";
   const shortScene = structuredClone(context.fullStory.sceneScript[1]);
-  shortScene.timeRange = "00:00-00:06";
+  shortScene.timeRange = "01:20-01:26";
+  const skeleton = deriveDirectShotSkeleton({ sceneScript: [longScene, shortScene] });
 
   const prompt = animationShotBatchPrompt({
     ...context,
     animationFoundation,
     sourceScenes: [longScene, shortScene],
-    shotIdStartIndex: 5,
-    runtimeBudget: {
-      plannedShotCount: 4,
-      plannedSeconds: 21,
-      scriptCompletedSeconds: 20,
-      batchScriptSeconds: 26,
-      scriptTotalSeconds: 60
-    }
+    shotIdStartIndex: 1,
+    directShotSkeleton: skeleton
   });
 
-  assert.match(prompt, /S1 脚本 20 秒 → 至少 4 个 shot/u);
-  assert.match(prompt, /S2 脚本 6 秒 → 至少 1 个 shot/u);
-  assert.match(prompt, /已产出 4 个 shot · 已用 21 秒 · 前面各场脚本合计 20 秒 · 本批脚本合计 26 秒 · 全片脚本合计 60 秒/u);
+  // 20 秒超过 15 秒单镜上限，均分成两段；6 秒场次保持一条镜头。
+  assert.match(prompt, /S1（01:00-01:20，20 秒）→ 2 个镜头：A01 10 秒（第 1\/2 段）、A02 10 秒（第 2\/2 段）/u);
+  assert.match(prompt, /S2（01:20-01:26，6 秒）→ 1 个镜头：A03 6 秒/u);
+  // 追赶镜头数量的进度提示与镜头数下限都已经删除。
+  assert.doesNotMatch(prompt, /镜头数下限/u);
+  assert.doesNotMatch(prompt, /全片时长进度/u);
+  assert.doesNotMatch(prompt, /主要动作目标/u);
 });
 
-test("timeRange 不可解析时提示词说明未知，并退回下限 1 不阻断", () => {
-  const context = directContext();
-  const plan = mockAnimationPlan(context);
-  const { shotPlan: ignoredShotPlan, ...animationFoundation } = structuredClone(plan);
-  animationFoundation.sceneReferencePrompts.forEach((scene, index) => {
-    scene.sourceSceneIds = [context.fullStory.sceneScript[index].sceneId];
-    scene.relatedShotIds = [];
-  });
-  const brokenScene = structuredClone(context.fullStory.sceneScript[0]);
-  brokenScene.timeRange = "未知";
-
-  const prompt = animationShotBatchPrompt({
-    ...context,
-    animationFoundation,
-    sourceScenes: [brokenScene],
-    shotIdStartIndex: 1
-  });
-
-  assert.match(prompt, /S1 timeRange 不可解析 → 至少 1 个 shot/u);
-  assert.match(prompt, /全片时长进度：未提供/u);
-});
 
 
 function foundationFor(context, { backgroundMusicMode = "none" } = {}) {
@@ -664,4 +646,66 @@ test("Foundation 提示词声明用户选择，并声明该字段由服务端签
 
   const open = animationFoundationPrompt({ ...context, backgroundMusicMode: "allowed" });
   assert.match(open, /用户选择的背景音乐：开启，允许使用背景音乐/u);
+});
+
+// dialogueOrSubtitle 是对白的唯一权威。视频模型直接生成人声，没写进 videoPrompt
+// 的台词不会被说出来——实测一份已签发 Plan 的 A05 就整句丢了奶奶的台词，而当时
+// 没有任何校验拦得住。判据是最长连续逐字命中而不是覆盖率：长文本里任意两个中文串
+// 都会偶然共享少量字符。187 条真实实词对白的分布是双峰的（run≤4 占 57%，run≥9
+// 占 35%，中间 5–8 只有 8.6%），阈值取谷底的 6。
+test("videoPrompt 丢掉 dialogueOrSubtitle 的台词原话时确定性失败", () => {
+  const missing = shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "奶奶：「这谷子要是淋了雨，今年冬天就没粥喝啦，幸好有人帮忙。」小白子：「嗷呜～」",
+    videoPrompt: "奶奶伸手摸摸小白子的猫耳，小白子「嗷呜～」叫着用头顶蹭奶奶的手心。"
+  });
+  assert.match(missing, /这谷子要是淋了雨/u);
+
+  // 只写「在说话」不写说了什么，同样不合格。
+  assert.notEqual(shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "伞匠奶奶：这把大红伞啊，标签上的字被雨打湿了，但我记得是村口面包店订的",
+    videoPrompt: "伞匠奶奶一边整理伞骨一边絮絮说着什么，小白子仰头认真听着。"
+  }), "");
+});
+
+test("原话已写入、拟声词与无对白都不误伤", () => {
+  // 原话逐字带上了：合规。
+  assert.equal(shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "奶奶：「这谷子要是淋了雨，今年冬天就没粥喝啦。」",
+    videoPrompt: "奶奶念叨着说：这谷子要是淋了雨，今年冬天就没粥喝啦，语气心疼。"
+  }), "");
+
+  // 拟声词与非语言发声按描述写是合法的，也短到无法区分引用与巧合，整条豁免。
+  assert.equal(shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "小白子：嗷呜～",
+    videoPrompt: "小白子发出欢快的叫声，猫耳竖起。"
+  }), "");
+
+  // 空对白不参与判定。
+  assert.equal(shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "",
+    videoPrompt: "固定镜头，空院子里雨水落进水缸。"
+  }), "");
+});
+
+// 真实回归：模型把「谢谢，再见」逐字写进了 videoPrompt，却让店员全程只是「站在
+// 门口目送」，那一句戏会哑。带「」时逐句判定，报错只点名真正丢的那句。
+test("对白自带「」时逐句判定，只报真正缺失的那一句", () => {
+  const missing = shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "便利店店员：「这小猫我们会帮忙找领养的，你放心」；小白子：「谢谢，再见」",
+    videoPrompt: "全景：便利店店员穿着制服站在门口，双臂怀抱小奶猫。切中景：小白子直起身，向店员挥手，"
+      + "嘴巴微张说出「谢谢，再见」，猫耳轻微抖动。店员怀抱小猫站在门口目送。"
+  });
+  assert.equal(missing, "这小猫我们会帮忙找领养的，你放心");
+
+  // 两句都带上就放行。
+  assert.equal(shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "店员：「这小猫我们会帮忙找领养的，你放心」；小白子：「谢谢，再见」",
+    videoPrompt: "店员说这小猫我们会帮忙找领养的，你放心。小白子挥手说出「谢谢，再见」。"
+  }), "");
+
+  // 逐句豁免同样按句长算：两句都是拟声词，整条放行。
+  assert.equal(shotDialogueMissingFromVideoPrompt({
+    dialogueOrSubtitle: "小白子：「嗷呜～」芙芙猫：「喵～」",
+    videoPrompt: "小白子发出欢快的叫声，芙芙猫跟着叫了一声。"
+  }), "");
 });

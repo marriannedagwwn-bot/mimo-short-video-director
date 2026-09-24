@@ -1,5 +1,9 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
 import { recordModelUsage } from "./token-usage.js";
+import { afterDurableProviderCall, beforeDurableProviderCall, durableTaskHeartbeat, durableProviderAbortSignal, throwIfDurableTaskAborted } from "./durable-task-context.js";
+import { SseStreamDegenerateError, SseStreamIncompleteError, readSseCompletion } from "./sse-stream.js";
+import { MIMO_OUTPUT_TOKEN_CEILING, growOutputTokenLimit } from "./output-token-ceilings.js";
+import { createStreamIdleTimer, resolveStreamIdleTimeoutMs } from "./stream-idle-timeout.js";
 
 export class ModelResponseError extends Error {
   constructor(message, raw = "", status = 0, metadata = {}) {
@@ -49,7 +53,9 @@ export class MimoClient {
     systemPrompt = null,
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
-    strictJson = false
+    strictJson = false,
+    onCompletion = null,
+    responseSchema = null
   } = {}) {
     return this.generateJsonWithMedia({
       prompt,
@@ -59,7 +65,9 @@ export class MimoClient {
       systemPrompt,
       requestTimeoutMs,
       jsonRetryAttempts,
-      strictJson
+      strictJson,
+      onCompletion,
+      responseSchema
     });
   }
 
@@ -73,7 +81,9 @@ export class MimoClient {
     onResolvedMediaMode = null,
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
-    strictJson = false
+    strictJson = false,
+    onCompletion = null,
+    responseSchema = null
   }) {
     const canUseVideo = Boolean(video?.dataUrl) && this.config.mediaMode !== "frames";
     try {
@@ -87,6 +97,8 @@ export class MimoClient {
         systemPrompt,
         requestTimeoutMs,
         strictJson,
+        onCompletion,
+        responseSchema,
         jsonRetryAttempts: jsonRetryAttempts === null && canUseVideo && this.config.mediaMode === "auto" && frames.length > 0
           ? 0
           : jsonRetryAttempts
@@ -109,7 +121,9 @@ export class MimoClient {
         systemPrompt,
         requestTimeoutMs,
         jsonRetryAttempts,
-        strictJson
+        strictJson,
+        onCompletion,
+        responseSchema
       });
       notifyResolvedMediaMode(onResolvedMediaMode, "frames");
       return result;
@@ -126,7 +140,9 @@ export class MimoClient {
     systemPrompt = null,
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
-    strictJson = false
+    strictJson = false,
+    onCompletion = null,
+    responseSchema = null
   }) {
     const retryAttempts = jsonRetryAttempts === null
       ? Number.isFinite(Number(this.config.jsonRetryAttempts)) ? Number(this.config.jsonRetryAttempts) : 2
@@ -144,10 +160,14 @@ export class MimoClient {
         model,
         maxCompletionTokens: activeMaxCompletionTokens,
         systemPrompt,
-        requestTimeoutMs
+        requestTimeoutMs,
+        responseSchema
       });
+      await notifyCompletion(onCompletion, completion);
       const content = completion.content;
+      assertCompletionNotContentFiltered(completion, "MiMo");
       try {
+        assertCompletionNotTruncated(completion, "MiMo");
         return strictJson
           ? parseStrictModelJson(content, "MiMo")
           : parseModelJson(content, "MiMo");
@@ -170,14 +190,28 @@ export class MimoClient {
     model = null,
     maxCompletionTokens = null,
     systemPrompt = null,
-    requestTimeoutMs = null
+    requestTimeoutMs = null,
+    responseSchema = null
   } = {}) {
     const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`;
     const body = buildRequestBody(
       this.config,
       { prompt, frames, video, useVideo },
-      { model, maxCompletionTokens, systemPrompt }
+      { model, maxCompletionTokens, systemPrompt, responseSchema }
     );
+    // 流式请求不设总时长上限，只判空闲：连续 streamIdleTimeoutMs 没收到任何数据才中断。
+    // requestTimeoutMs 在流式客户端上不再生效（参数保留给调用方的统一签名）。
+    const idleTimeoutMs = resolveStreamIdleTimeoutMs(this.config);
+    await beforeDurableProviderCall("model_provider_call", idleTimeoutMs);
+    const idle = createStreamIdleTimer(idleTimeoutMs);
+    try {
+      return await this.streamCompletion({ endpoint, body, idle });
+    } finally {
+      idle.clear();
+    }
+  }
+
+  async streamCompletion({ endpoint, body, idle }) {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -185,13 +219,22 @@ export class MimoClient {
         ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {})
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(requestTimeoutMs ?? this.config.requestTimeoutMs ?? 900_000)
+      signal: durableProviderAbortSignal(null, idle.signal)
+    }).catch((error) => {
+      throwIfDurableTaskAborted();
+      throw error;
     });
-    const raw = await response.text();
+    idle.touch();
     const headerRequestId = response.headers.get("x-request-id")
       || response.headers.get("request-id")
       || "";
     if (!response.ok) {
+      // HTTP 错误仍读普通响应体，不能作为 SSE 吞掉供应商错误原文。
+      const raw = await response.text().catch((error) => {
+        throwIfDurableTaskAborted();
+        throw error;
+      });
+      await afterDurableProviderCall("model_provider_response");
       throw new ModelResponseError(
         `MiMo 请求失败（${response.status}）`,
         raw,
@@ -204,30 +247,55 @@ export class MimoClient {
       );
     }
 
-    let envelope;
+    let lastHeartbeatAt = 0;
+    const onProgress = ({ contentLength, reasoningLength }) => {
+      idle.touch();
+      const now = Date.now();
+      if (now - lastHeartbeatAt < 10_000) return;
+      lastHeartbeatAt = now;
+      // 推理期间也续报进度；观测失败不改变传输结论。
+      Promise.resolve(durableTaskHeartbeat({ streamedChars: contentLength, reasoningChars: reasoningLength })).catch(() => {});
+    };
+    let stream;
     try {
-      envelope = JSON.parse(raw);
-    } catch {
-      throw new ModelResponseError(
-        "MiMo 返回了无法解析的响应包",
-        raw,
-        0,
-        {
-          provider: "MiMo",
-          code: "MODEL_ENVELOPE_INVALID",
-          requestId: headerRequestId
-        }
-      );
+      stream = await readSseCompletion(response.body, { onProgress });
+    } catch (error) {
+      // 仅记录实际收到的结构化用量；取消、断流或冻结复检失败也不能丢账。
+      recordModelUsage({ provider: "MiMo", model: body.model, usage: error?.partialUsage });
+      throwIfDurableTaskAborted();
+      await afterDurableProviderCall("model_provider_response");
+      if (idle.fired) throw streamIdleTimeoutError("MiMo", idle, error, headerRequestId);
+      // 必须排在「中途断开」之前：主动叫停的死循环同样带着 partialChunks，
+      // 顺序反了它会被当成网络中断、归为可重试的 transport。
+      if (error instanceof SseStreamDegenerateError) throw outputDegenerateError("MiMo", error, headerRequestId);
+      if (typeof error?.partialChunks === "number" && error.partialChunks > 0) {
+        throw new ModelResponseError(
+          `MiMo 流式传输在收到 ${error.partialContentLength} 字正文（${error.partialChunks} 个数据块）后中断：${error.message}`,
+          String(error.partialRaw || ""),
+          0,
+          { provider: "MiMo", code: "MODEL_STREAM_ABORTED", requestId: headerRequestId, usage: error.partialUsage }
+        );
+      }
+      if (error instanceof SseStreamIncompleteError) {
+        throw new ModelResponseError(
+          `MiMo ${error.message}`,
+          error.raw,
+          0,
+          { provider: "MiMo", code: "MODEL_STREAM_INCOMPLETE", requestId: headerRequestId, usage: error.partialUsage }
+        );
+      }
+      throw error;
     }
-    const choice = envelope.choices?.[0];
-    const content = choice?.message?.content;
-    const requestId = headerRequestId || String(envelope.id || "");
-    const usage = envelope.usage && typeof envelope.usage === "object"
-      ? envelope.usage
+    const raw = stream.raw;
+    const usage = stream.usage && typeof stream.usage === "object"
+      ? stream.usage
       : null;
-    // 记入当前请求的 token 记账作用域；作用域外是 no-op，异常内部吞掉。
+    // 已完成响应的用量先记账；随后冻结复检失败也不能抹掉已发生的消耗。
     recordModelUsage({ provider: "MiMo", model: body.model, usage });
-    const finishReason = String(choice?.finish_reason || "");
+    await afterDurableProviderCall("model_provider_response");
+    const content = stream.content;
+    const requestId = headerRequestId || String(stream.id || "");
+    const finishReason = String(stream.finishReason || "");
     if (typeof content !== "string") {
       throw new ModelResponseError(
         "MiMo 响应缺少 message.content",
@@ -247,6 +315,8 @@ export class MimoClient {
       finishReason,
       requestId,
       usage,
+      providerName: "MiMo",
+      model: body.model,
       raw
     };
   }
@@ -273,9 +343,7 @@ ${String(failedContent || "").slice(0, 800)}`;
 }
 
 function retryTokenLimit(value) {
-  const current = Number(value || 8192);
-  if (!Number.isFinite(current)) return 12288;
-  return Math.min(32768, Math.max(12288, Math.ceil(current * 1.5)));
+  return growOutputTokenLimit(value, { factor: 1.5, ceiling: MIMO_OUTPUT_TOKEN_CEILING });
 }
 
 function isRecoverableVideoJsonError(error) {
@@ -293,7 +361,9 @@ export function buildRequestBody(config, { prompt, frames = [], video = null, us
     max_completion_tokens: overrides.maxCompletionTokens ?? config.maxCompletionTokens ?? 8192,
     temperature: 0.3,
     top_p: 0.95,
-    stream: false,
+    // MiMo 原生 SSE 尾块包含 usage，无需依赖未文档化的 stream_options。
+    // https://mimo.mi.com/docs/en-US/api/chat/openai-api (实测 2026-09-22)
+    stream: true,
     thinking: { type: thinkingType },
     messages: [
       {
@@ -305,7 +375,19 @@ export function buildRequestBody(config, { prompt, frames = [], video = null, us
       { role: "user", content: [...visualContent, { type: "text", text: promptText }] }
     ]
   };
-  if (config.jsonMode) body.response_format = { type: "json_object" };
+  // json_schema 在 MiMo 官方文档里只写了 json_object，但 2026-09-24 实测接口接受并真的约束解码
+  // （多出的键、数组里的非对象、超出 maxItems 的项都会被挡住）。只在调用方给了 Schema 时发送；
+  // MIMO_JSON_SCHEMA=false 可以直接关掉。接口拒绝时照常报错，不自动退回 json_object。
+  // 见 docs/variants-mimo-format-2026-09-24.md。
+  if (overrides.responseSchema && config.jsonSchema !== false) {
+    const { name, schema } = overrides.responseSchema;
+    if (typeof name !== "string" || !name.trim() || !schema || typeof schema !== "object") {
+      throw new TypeError("responseSchema 必须是 {name, schema}");
+    }
+    body.response_format = { type: "json_schema", json_schema: { name, schema, strict: true } };
+  } else if (config.jsonMode) {
+    body.response_format = { type: "json_object" };
+  }
   return body;
 }
 
@@ -327,6 +409,91 @@ export function parseModelJson(content, providerName = "模型") {
     }
     throw new ModelResponseError(`${providerName} 未返回合法 JSON`, content.slice(0, 3000));
   }
+}
+
+// finish_reason 为 length 时输出被 max tokens 截断。必须在解析 JSON 之前判定：
+// 否则截断会被报成「未返回严格 JSON」，把额度问题伪装成模型格式错误。
+// 2026-09-23 实测 MiMo 候选阶段 16384 额度全部用在推理上、正文 0 字，
+// 用户看到的却是「MiMo 未返回严格 JSON」。
+export function assertCompletionNotTruncated(completion, providerName = "模型") {
+  if (completion?.finishReason !== "length") return;
+  const contentLength = typeof completion.content === "string" ? completion.content.length : 0;
+  const completionTokens = Number(completion.usage?.completion_tokens);
+  const budget = Number.isFinite(completionTokens) ? `，本次输出 ${completionTokens} token` : "";
+  const detail = contentLength === 0
+    ? "正文一个字都没写出来，额度很可能全部用在了推理上"
+    : `截断前写出 ${contentLength} 字正文`;
+  throw new ModelResponseError(
+    `${providerName} 输出因 token 上限被截断（${detail}${budget}）`,
+    typeof completion.raw === "string" ? completion.raw : "",
+    0,
+    {
+      provider: providerName,
+      code: "MODEL_OUTPUT_TRUNCATED",
+      requestId: completion.requestId,
+      finishReason: completion.finishReason,
+      usage: completion.usage
+    }
+  );
+}
+
+// finish_reason 为 content_filter 时是供应商内容审核拦截了输出，不是模型格式错误。
+// 必须在解析 JSON 之前判定：2026-09-23 MiMo 候选阶段推理 10534 token 后被审核拦截，
+// 正文只有一句「The request was rejected because it was considered high risk」，
+// 用户看到的却是「MiMo 未返回严格 JSON」。审核是非确定性的（同一提示词另两次都通过），
+// 但按 CLAUDE.md 不得自动重试——那等于在第三方安全闸门上「问到放行为止」，
+// 所以这里抛出的错误被分类为不可重试，由用户显式决定要不要再跑。
+export function assertCompletionNotContentFiltered(completion, providerName = "模型") {
+  if (completion?.finishReason !== "content_filter") return;
+  const providerText = typeof completion.content === "string" ? completion.content.trim().slice(0, 200) : "";
+  const completionTokens = Number(completion.usage?.completion_tokens);
+  const spent = Number.isFinite(completionTokens) ? `，本次已输出 ${completionTokens} token` : "";
+  throw new ModelResponseError(
+    `${providerName} 的内容审核拦截了这次输出（finish_reason=content_filter${spent}）${providerText ? `，供应商原文：${providerText}` : ""}。审核结果不稳定，同一提示词重试常能通过；系统不会自动重试`,
+    typeof completion.raw === "string" ? completion.raw : "",
+    0,
+    {
+      provider: providerName,
+      code: "MODEL_CONTENT_FILTERED",
+      requestId: completion.requestId,
+      finishReason: completion.finishReason,
+      usage: completion.usage
+    }
+  );
+}
+
+// 输出陷入逐字重复、被读取流程主动叫停后的统一错误（判定在 src/output-degeneration.js）。
+// 半截内容只进 detail 供排查，绝不当结果返回；用量只有中断前实际收到的（通常没有，不估算）。
+export function outputDegenerateError(providerName, cause, requestId = "") {
+  return new ModelResponseError(
+    `${providerName} ${cause.message}`,
+    String(cause?.partialRaw || ""),
+    0,
+    {
+      provider: providerName,
+      code: "MODEL_OUTPUT_DEGENERATE",
+      requestId,
+      usage: cause?.partialUsage
+    }
+  );
+}
+
+// 空闲超时触发后的统一错误：可重试的传输错误，消息说明多久没收到数据、此前收到多少。
+export function streamIdleTimeoutError(providerName, idle, cause, requestId = "") {
+  const seconds = Math.round(idle.timeoutMs / 1000);
+  const chunks = Number(cause?.partialChunks) || 0;
+  const contentLength = Number(cause?.partialContentLength) || 0;
+  return new ModelResponseError(
+    `${providerName} 流式传输连续 ${seconds} 秒没有收到任何数据，已中断（此前收到 ${contentLength} 字正文、${chunks} 个数据块）`,
+    String(cause?.partialRaw || ""),
+    0,
+    {
+      provider: providerName,
+      code: "MODEL_STREAM_IDLE_TIMEOUT",
+      requestId,
+      usage: cause?.partialUsage
+    }
+  );
 }
 
 export function parseStrictModelJson(content, providerName = "模型") {
@@ -353,4 +520,14 @@ export function parseSingleJsonObject(content, providerName = "模型") {
     );
   }
   return value;
+}
+
+// 只观测，不参与控制流：回调抛错或 reject 一律吞掉，日志 sidecar 不得改变模型调用的成败。
+async function notifyCompletion(onCompletion, completion) {
+  if (typeof onCompletion !== "function") return;
+  try {
+    await onCompletion(completion);
+  } catch {
+    // 观测失败必须 fail-open。
+  }
 }

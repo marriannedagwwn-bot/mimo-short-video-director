@@ -1,7 +1,45 @@
-import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
-import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "./mock.js";
+import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPromiseCheckRetryPrompt, fullStoryPromiseFindingsPrompt, fullStoryPromiseListPrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityEditorialPrompt, storyQualityPromisePrompt, storyQualityRepairPrompt, storyQualityRepairRetryPrompt, storyQualityReviewRetryPrompt, variantsCount, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { STORY_CANDIDATES_MODEL_SCHEMA_NAME, storyCandidatesModelSchema } from "./contracts/story-candidates-model-schema.js";
+import { STORY_CANDIDATE_REVIEW_MODEL_SCHEMA_NAME, storyCandidateReviewModelSchema } from "./contracts/story-candidate-review-model-schema.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
+import { isNarrativeFullStory } from "./full-story-contract.js";
+import { FULL_STORY_CAST_SCHEMA_VERSION } from "../public/full-story-format.js";
+import { STORYBOARD_PLAN_VERSION } from "../public/storyboard-plan.js";
+import { createStoryboardPlan, createSingleShotPrompt } from "./storyboard-workflow.js";
+import { fullStoryCharacterRegistryInput, mergeFullStoryCharacterRegistry, mockFullStoryCharacterRegistry } from "./full-story-character-registry.js";
+import { fullStoryCharacterRegistryPrompt, fullStoryRegisteredVoicesPrompt } from "./full-story-character-registry-prompt.js";
+import {
+  FULL_STORY_PRECHECK_SCHEMA_VERSION,
+  FULL_STORY_PROMISE_CHECK_STAGE,
+  assembleFullStoryPromiseCheck,
+  deriveFullStoryPrecheckRoute,
+  promiseCheckGaps,
+  singleCandidateThemeVariants
+} from "./full-story-precheck.js";
+import {
+  STORY_QUALITY_REVIEW_STAGE,
+  assembleStoryQualityReview,
+  buildStoryQualityCandidateProjection
+} from "./story-quality-review.js";
+import {
+  STORY_QUALITY_REPAIR_SCHEMA_VERSION,
+  STORY_QUALITY_REPAIR_STAGE,
+  assertOnlyStoryRepairFieldsChanged,
+  ensureStoryQualityRepairContract,
+  mergeStoryQualityRepairs,
+  selectStoryQualityRepairItems,
+  storyQualityKeptPromises,
+  storyQualityRepairMetadata
+} from "./story-quality-repair.js";
 import { AnimationPromptCompilerError, COMPILED_ANIMATION_SHOT_ALIAS_FIELDS, compileAnimationShotPrompts, normalizeAnimationShotPrompts, rebuildAnimationShotPrompts } from "./animation-prompt-compiler.js";
 import { compileCharacterFeatures } from "./character-feature-compiler.js";
+import {
+  ReviewContractError,
+  ensureReviewReportContract,
+  ensureRevisionContract,
+  revisionShotLoad,
+  revisionTargetShotIds
+} from "./animation-plan-review-validation.js";
 import { AttemptStore } from "./attempt-store.js";
 import {
   fullStoryPartialRepairPrompt,
@@ -20,6 +58,12 @@ import {
   planAnimationFoundationPartialRepair
 } from "./animation-foundation-partial-repair.js";
 import {
+  animationShotDialogueRepairPrompt,
+  mergeAnimationShotDialogueRepair,
+  planAnimationShotDialogueRepair
+} from "./animation-shot-dialogue-repair.js";
+import {
+  animationVideoPromptSemanticAuditDiagnostics,
   animationVideoPromptSemanticAuditCatalogPayload,
   createAnimationVideoPromptSemanticAuditCatalog,
   deriveAnimationVideoPromptSemanticAuditOverall,
@@ -30,10 +74,38 @@ import {
   mergeAnimationVideoPromptSemanticRepair,
   planAnimationVideoPromptSemanticRepair
 } from "./animation-video-prompt-semantic-repair.js";
-import { ModelCallCoordinator } from "./model-call-coordinator.js";
+import { randomUUID } from "node:crypto";
+import { ModelCallCoordinator, classifyAttemptError } from "./model-call-coordinator.js";
+import { ModelPipelineError } from "./model-errors.js";
+import {
+  assertOnlyCandidateRevisionFieldsChanged,
+  candidateBlockerDefect,
+  candidateCoherenceBreaks,
+  candidateScaffoldCopy,
+  candidateUnmigratedMechanisms,
+  ensureStoryCandidateRevisionContract,
+  findCandidate,
+  mergeStoryCandidateRevision
+} from "./story-candidate-revision.js";
 import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, animationMaxShotDurationSeconds, characterReferenceBoundaryMismatch, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, ensureCreativeBriefMatchesProfile, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, parseSceneTimeRangeSeconds, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText, sceneMinimumShotCount } from "./validation.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanDirectShotContract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, CREATIVE_BRIEF_SCHEMA_VERSION, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
+  deriveStoryCandidateProjections,
+  deriveFullStoryTargetDuration,
+  ensureFullStoryPromiseCheckCoversCandidate,
+  ensureFullStoryPromiseFindingsContract,
+  ensureFullStoryPromiseListContract,
+  ensureStoryCandidateReviewCoversCandidates,
+  ensureStoryQualityEditorialContract,
+  ensureStoryQualityPromiseContract,
+  ensureStoryQualityReviewCoversStory
+} from "./validation.js";
+import {
+  deriveDirectShotSkeleton,
+  directShotSkeletonForScenes,
+  directShotSkeletonRuntimeSeconds,
+  formatDirectShotSkeleton
+} from "./direct-shot-timeline.js";
 import { resolveVideoPromptProfile } from "../public/video-prompt-profiles.js";
 import { CharacterBoundaryError, createCharacterBoundaryKey, sealGlobalCharacterBoundary, verifyGlobalCharacterBoundary } from "./character-boundary.js";
 import {
@@ -46,6 +118,11 @@ import {
   verifyReferenceAnalysis
 } from "./reconstruction-grounding.js";
 import { isDeepStrictEqual } from "node:util";
+import {
+  createVariantSourceBaseline,
+  VARIANT_SOURCE_BASELINE_STAGE,
+  VARIANT_SOURCE_BASELINE_SYSTEM_PROMPT
+} from "./variant-source-baseline.js";
 
 const DEFAULT_ANIMATION_BATCH_SCENE_COUNT = 2;
 
@@ -73,7 +150,8 @@ export class WorkflowService {
     attemptStore = null,
     modelCallCoordinator = null,
     partialRepairDebugWriter = null,
-    fullModelOutputLogWriter = null
+    fullModelOutputLogWriter = null,
+    stageModelOutputLogWriters = null
   } = {}) {
     this.clients = normalizeClients(clients);
     if (client && !Object.keys(this.clients).length) this.clients.MiMo = client;
@@ -123,6 +201,10 @@ export class WorkflowService {
     this.fullModelOutputLogWriter = fullModelOutputLogWriter
       && typeof fullModelOutputLogWriter.recordAttempt === "function"
       ? fullModelOutputLogWriter
+      : null;
+    // 走 generateValidatedJson 的阶段各自一个 writer，键就是 stage id；没有配置就是 null。
+    this.stageModelOutputLogWriters = stageModelOutputLogWriters instanceof Map
+      ? stageModelOutputLogWriters
       : null;
   }
 
@@ -312,28 +394,1081 @@ export class WorkflowService {
     requireObject(input.sourceScriptReconstruction, "sourceScriptReconstruction");
     requireObject(input.creatorProfile || {}, "creatorProfile");
     const groundedInput = groundedStageInput(input, this.groundingKey);
-    // allowedNarrativeComponents 的【原片有】判定要回到上游逐字核对，因此把这两份上游一并交给校验器。
-    const briefUpstream = {
-      referenceAnalysis: input.referenceAnalysis,
-      sourceScriptReconstruction: input.sourceScriptReconstruction
-    };
-    if (!this.hasLiveClient) {
-      return ensureCreativeBriefMatchesProfile(
-        ensureOutputContract(mockBrief(groundedInput), "creativeBrief"),
-        input.creatorProfile,
-        briefUpstream
-      );
-    }
+    // creative_brief/2.0：只校验 storyEngine 与 recastTest 两项、拒绝多余顶层键，通过后由服务端盖版本号。
+    // 盖章放在校验之后，模型写了 schemaVersion 会被当成多余键拒绝，而不是被静默覆盖。
+    const signBrief = (value) => ({
+      schemaVersion: CREATIVE_BRIEF_SCHEMA_VERSION,
+      ...ensureOutputContract(value, "creativeBrief")
+    });
+    if (!this.hasLiveClient) return signBrief(mockBrief(groundedInput));
     const prompt = briefPrompt(groundedInput);
     return this.generateStageJson("brief", groundedInput, {
       prompt,
       retryContext: { stage: "creativeBrief", fixedCharacter: input.creatorProfile?.fixedCharacter || "" },
-      validate: (result) => ensureCreativeBriefMatchesProfile(
-        ensureOutputContract(result, "creativeBrief"),
-        input.creatorProfile,
-        briefUpstream
-      )
+      validate: signBrief
     });
+  }
+
+  /**
+   * 剧情体检：对已生成的 Full Story 做独立验收。
+   *
+   * **只出报告**——不修改剧情、不签发 Artifact、不进 lineage、不 stale 任何东西、
+   * 不阻断后续 Animation Plan。与 boundaryWarning 同规格，纯展示。
+   *
+   * **已知偏差**：默认沿用剧情阶段的 provider，也就是写这份剧情的那个模型——
+   * 自己批改自己会偏松（实测同一份剧情，作者模型自评 AI 可执行性 8.0、物理可信度 8.0，
+   * 外部模型读同一份给 6.8、6.8）。本来要默认换一家，但 10 份实测下来 MiMo 太松
+   * （2/62 处 vs 13/91 处）、DeepSeek 产不出严格 JSON（5/10 失败），都不胜任。
+   * 它是纯文本阶段（不在 requiresMediaModel 里），可按阶段 override 换任意一家。
+   */
+  async createStoryQualityReview(input) {
+    requireObject(input, "请求");
+    const fullStory = requireObject(input.fullStory, "fullStory");
+    // 体检的对象必须先是一份合法剧情，否则报告没有意义。
+    ensureOutputContract(fullStory, "fullStory");
+    const themeVariants = requireObject(input.themeVariants, "themeVariants");
+    const candidateId = requireText(input.candidateId || fullStory.selectedVariantId, "candidateId");
+    const candidate = buildStoryQualityCandidateProjection(
+      singleCandidateThemeVariants(themeVariants, candidateId).variants[0]
+    );
+    const fixedCharacter = String(input.creatorProfile?.fixedCharacter || "");
+
+    const assemble = (editorial, promise) => ensureStoryQualityReviewCoversStory(
+      ensureOutputContract(
+        assembleStoryQualityReview({ fullStory, editorial, promise, candidate }),
+        "storyQualityReview"
+      ),
+      fullStory
+    );
+    if (!this.hasLiveClient) {
+      const mock = mockStoryQualityReview(fullStory, candidate);
+      return { review: assemble(mock.editorial, mock.promise), metadata: promiseCheckMetadata({
+        provider: "demo", model: "demo", stageKey: STORY_QUALITY_REVIEW_STAGE
+      }) };
+    }
+    const settings = this.resolveStage(STORY_QUALITY_REVIEW_STAGE, input);
+    this.assertStageClient(settings, "剧情体检");
+
+    // 实数调用次数，不能从 rejections 反推：传输失败时它是空数组，供应商却确实被调用过。
+    let providerCalls = 0;
+    const rejections = [];
+    // 走 coordinator 拿不到 generateValidatedJson 自带的 recorder，必须自己接，
+    // 不接就**静默不写**侧车——两次调用的原文会永久丢失。
+    const outputLogWriter = this.stageModelOutputLogWriters?.get(STORY_QUALITY_REVIEW_STAGE) || null;
+    const recordAttempt = outputLogWriter?.enabled
+      ? (attempt) => outputLogWriter.recordAttempt(attempt)
+      : null;
+    const runStep = (prompt, validate) => this.modelCallCoordinator.runJson({
+      client: settings.client,
+      request: {
+        prompt,
+        model: settings.model,
+        maxCompletionTokens: settings.maxCompletionTokens,
+        requestTimeoutMs: settings.requestTimeoutMs
+      },
+      provider: settings.provider || "",
+      stage: STORY_QUALITY_REVIEW_STAGE,
+      maxProviderCalls: 2,
+      attemptObserver: async (attempt) => {
+        providerCalls += 1;
+        if (!recordAttempt) return;
+        try {
+          await recordAttempt(attempt);
+        } catch {
+          // 观测失败不改变结论。
+        }
+      },
+      retryTokenLimit,
+      retryPrompt: ({ originalPrompt }) => {
+        const last = rejections[rejections.length - 1];
+        return last?.details?.length
+          ? storyQualityReviewRetryPrompt({ originalPrompt, details: last.details })
+          : originalPrompt;
+      },
+      validate: (result) => {
+        try {
+          return validate(result);
+        } catch (error) {
+          if (error instanceof OutputContractError) {
+            rejections.push({
+              message: error.message,
+              details: Array.isArray(error.details) ? error.details : []
+            });
+          }
+          throw error;
+        }
+      }
+    });
+
+    let review;
+    try {
+      // 顺序不能换，而且第一步**看不到候选**——见 src/story-quality-review.js 顶部的实测依据。
+      const editorial = await runStep(
+        storyQualityEditorialPrompt({ fullStory, fixedCharacter }),
+        (result) => ensureStoryQualityEditorialContract(result, fullStory)
+      );
+      const promise = await runStep(
+        storyQualityPromisePrompt({ candidate, fullStory }),
+        (result) => ensureStoryQualityPromiseContract(result)
+      );
+      review = assemble(editorial, promise);
+    } catch (error) {
+      throw candidateReviewPipelineFailure(error, rejections);
+    }
+
+    return {
+      review,
+      metadata: promiseCheckMetadata({
+        provider: settings.provider || "",
+        model: settings.model || "",
+        providerCalls,
+        rejections,
+        stageKey: STORY_QUALITY_REVIEW_STAGE
+      })
+    };
+  }
+
+  /**
+   * 剧情体检之后的「按问题修改」：用户在体检报告里勾选要修的条目，这里另起一次调用
+   * 写局部修改，服务端逐字执行、逐条过签发校验链。**只出修订稿，不签发任何东西**——
+   * 与命题定向修订同规格，签发只发生在用户点「采纳」的那一刻，由浏览器走既有的
+   * fullStory 签发流程（新版本会递归 stale 这个变体的镜头计划与媒体）。
+   *
+   * 为什么是单独一次调用、而且看得见候选，实测依据见 src/story-quality-repair.js 顶部。
+   *
+   * 出错分两种，处理不同：
+   *   - 模型输出结构不对（条数、引用号、字段类型）——整份都用不上，带诊断重试一次，禁止第三次；
+   *   - 某一条执行不了（原文找不到、改完不合法、会删掉出镜角色）——**只拒那一条**、如实写明原因，
+   *     其余照常采用。不为单条失败整份重做：重做会让已经写对的那些条也跟着抖。
+   */
+  async createStoryQualityRepair(input) {
+    requireObject(input, "请求");
+    // fullStory 与 review 都是**请求输入**，不是本阶段的模型输出。原样上抛 OutputContractError
+    // 会变成 502「模型输出未通过校验」，让用户去查供应商——与命题修订那处同规格转成 400。
+    const asInputError = (error, label) => {
+      if (!(error instanceof OutputContractError)) throw error;
+      const inputError = new InputError(`${label}：${error.message}`);
+      inputError.details = error.details;
+      throw inputError;
+    };
+    const fullStory = requireObject(input.fullStory, "fullStory");
+    try {
+      ensureOutputContract(fullStory, "fullStory");
+    } catch (error) {
+      asInputError(error, "fullStory 不是一份合法剧情");
+    }
+    // 旧格式剧情还带 beatSheet 这第二份动作稿，只改 sceneScript 会让两份对不上；
+    // 那一路另有 Beat–Scene 复核的约束，不在这里顺手处理。
+    if (!isNarrativeFullStory(fullStory)) {
+      throw new InputError("按问题修改只支持 full_story/1.1 的剧情；旧格式请先重新生成完整剧情");
+    }
+    const review = requireObject(input.review, "review");
+    try {
+      ensureStoryQualityReviewCoversStory(ensureOutputContract(review, "storyQualityReview"), fullStory);
+    } catch (error) {
+      asInputError(error, "review 不是这份剧情的合法体检报告");
+    }
+    const items = selectStoryQualityRepairItems(review, input.selectedRefs);
+    const keptPromises = storyQualityKeptPromises(review);
+    const themeVariants = requireObject(input.themeVariants, "themeVariants");
+    const variant = singleCandidateThemeVariants(themeVariants, fullStory.selectedVariantId).variants[0];
+    const candidate = buildStoryQualityCandidateProjection(variant);
+
+    // 与 createFullStory 同一套验签、同一条校验链：修改后的剧情就是要被签发的那一份。
+    const profile = requireObject(input.creatorProfile, "creatorProfile");
+    requireText(profile.fixedCharacter, "固定角色");
+    const groundedInput = groundedStageInput(input, this.groundingKey);
+    const visualGuardrails = this.assertGlobalCharacterBoundary(groundedInput);
+    const validateStory = (story) => validateFullStoryForSigning(story, {
+      profile, creativeBrief: input.creativeBrief, variant, visualGuardrails
+    });
+    // 原稿自己必须先过，否则「改完不合法」无法归因到修改上。
+    let baseline;
+    try {
+      baseline = validateStory(structuredClone(fullStory));
+    } catch (error) {
+      asInputError(error, "这份剧情本身没有通过签发校验，无法在它上面修改");
+    }
+
+    const finalize = (repair) => {
+      ensureStoryQualityRepairContract(repair, items);
+      const merged = mergeStoryQualityRepairs({ fullStory: baseline, items, repair, validateStory });
+      assertOnlyStoryRepairFieldsChanged(baseline, merged.fullStory);
+      return merged;
+    };
+    const respond = (merged, metadata) => ({
+      schemaVersion: STORY_QUALITY_REPAIR_SCHEMA_VERSION,
+      selectedVariantId: String(fullStory.selectedVariantId || ""),
+      changed: merged.results.some((entry) => entry.status === "applied"),
+      results: merged.results,
+      fullStory: merged.fullStory,
+      metadata
+    });
+
+    if (!this.hasLiveClient) {
+      return respond(
+        finalize(mockStoryQualityRepair(baseline, items)),
+        storyQualityRepairMetadata({ provider: "demo", model: "demo" })
+      );
+    }
+    const settings = this.resolveStage(STORY_QUALITY_REPAIR_STAGE, input);
+    this.assertStageClient(settings, "剧情按问题修改");
+
+    // 实数调用次数，不能从 rejections 反推：传输失败时它是空数组，供应商却确实被调用过。
+    let providerCalls = 0;
+    const rejections = [];
+    // 走 coordinator 拿不到 generateValidatedJson 自带的 recorder，必须自己接，
+    // 不接就**静默不写**侧车。
+    const outputLogWriter = this.stageModelOutputLogWriters?.get(STORY_QUALITY_REPAIR_STAGE) || null;
+    const recordAttempt = outputLogWriter?.enabled
+      ? (attempt) => outputLogWriter.recordAttempt(attempt)
+      : null;
+    let merged;
+    try {
+      merged = await this.modelCallCoordinator.runJson({
+        client: settings.client,
+        request: {
+          prompt: storyQualityRepairPrompt({ fullStory: baseline, candidate, items, keptPromises }),
+          model: settings.model,
+          maxCompletionTokens: settings.maxCompletionTokens,
+          requestTimeoutMs: settings.requestTimeoutMs
+        },
+        provider: settings.provider || "",
+        stage: STORY_QUALITY_REPAIR_STAGE,
+        maxProviderCalls: 2,
+        attemptObserver: async (attempt) => {
+          providerCalls += 1;
+          if (!recordAttempt) return;
+          try {
+            await recordAttempt(attempt);
+          } catch {
+            // 观测失败不改变结论。
+          }
+        },
+        retryTokenLimit,
+        retryPrompt: ({ originalPrompt }) => {
+          const last = rejections[rejections.length - 1];
+          return last?.details?.length
+            ? storyQualityRepairRetryPrompt({ originalPrompt, details: last.details })
+            : originalPrompt;
+        },
+        validate: (result) => {
+          try {
+            return finalize(result);
+          } catch (error) {
+            if (error instanceof OutputContractError) {
+              rejections.push({
+                message: error.message,
+                details: Array.isArray(error.details) ? error.details : []
+              });
+            }
+            throw error;
+          }
+        }
+      });
+    } catch (error) {
+      throw candidateReviewPipelineFailure(error, rejections);
+    }
+    return respond(merged, storyQualityRepairMetadata({
+      provider: settings.provider || "",
+      model: settings.model || "",
+      providerCalls,
+      rejections
+    }));
+  }
+
+  /**
+   * 候选对照评审：主题变体生成之后的独立验收，**只出报告**——
+   * 不修改候选、不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、
+   * 不改变候选数量、不阻断后续 Full Story。与剧情体检同规格，纯展示，刷新页面即失。
+   *
+   * 它要暴露的是一类现有校验器全都查不到的问题：**候选声称保留了原片精华，
+   * 而动作链并不支持那个说法。** 所以送审投影里**刻意剥掉**了候选的自我评价字段
+   * （novelty / retainedValue / experienceFidelity / transformationProof /
+   * originalityRiskCheck），只留动作链——让故事自己证明自己，而不是让解释替它过关。
+   * 剥离由 buildStoryCandidateReviewProjection **按允许清单构造**，不是事后过滤。
+   *
+   * `verdict: "drop"` 只是报告里的一句话：**不删候选、不重新生成、不触发任何 stale**，
+   * 淘汰与否由用户看完报告自己决定。分布校验（narrativeMode 混合比例）因此不受影响。
+   *
+   * **已知偏差**：默认沿用候选阶段的 provider，也就是写这些候选的那个模型，
+   * 自己批自己会偏松（§2.13 在剧情体检上实测过同一现象：自评 8.0、外部模型 6.8）。
+   * 它是纯文本阶段（不在 requiresMediaModel 里），可按阶段 override 换任意一家。
+   */
+  async createStoryCandidateReview(input) {
+    requireObject(input, "请求");
+    const themeVariants = requireObject(input.themeVariants, "themeVariants");
+    // 评审对象必须先是一批合法候选，否则报告没有意义。**这个校验本身是对的**，
+    // 错的是它抛出的类型：themeVariants 是**请求输入**，不是本阶段的模型输出，而
+    // OutputContractError 的语义就是「模型输出不合契约」——原样上抛会变成 HTTP 502
+    // 加一句「模型输出未通过校验」，让用户去查模型、查供应商，而实际错在自己传的包。
+    //
+    // 实测：拿一份 2026-09-06 之前导出的生产包来评审，返回 502
+    // 「模型输出未通过校验：…/highValueBeatMapping/0/failureSignal 缺少必要字段」——
+    // failureSignal 与 transformationProof 的 {source, replacement} 都是那之后才加的必填字段。
+    // 代价是**在那之前导出的候选一律评审不了**，而评审恰恰是只出报告、不进 lineage、
+    // 不改任何东西的阶段，它最应该能读历史数据。
+    //
+    // 转成 InputError 才是如实的归属：错在客户端，400，并带上校验器给出的逐条诊断。
+    // 与 createAnimationPlanRevision 的 report 分支同规格（那里的 report 同样是请求输入）。
+    // **只改归属与状态码，不放宽校验**：缺新字段的旧候选仍然被拒，只是拒得诚实。
+    try {
+      ensureOutputContract(themeVariants, "themeVariants");
+    } catch (error) {
+      if (!(error instanceof OutputContractError)) throw error;
+      const inputError = new InputError(`themeVariants 不是一批合法候选：${error.message}`);
+      inputError.details = error.details;
+      throw inputError;
+    }
+    const sourceScriptReconstruction = requireObject(
+      input.sourceScriptReconstruction,
+      "sourceScriptReconstruction"
+    );
+    const candidates = Array.isArray(themeVariants.variants) ? themeVariants.variants : [];
+    const validate = (result) => ensureStoryCandidateReviewCoversCandidates(
+      ensureOutputContract(result, "storyCandidateReview"),
+      candidates
+    );
+    // metadata 是**外挂的一层**，不混进 review 对象本身。
+    // 第一版曾写成 { ...review, metadata }，理由是浏览器几乎不用改——而 storyCandidateReview
+    // 的 schema 是 additionalProperties: false，于是这份报告不再满足它自己的契约：
+    // 任何把它送回服务端的路径都会被拒，而命题定向修订正是第一条这样的路径
+    // （它要拿评审报告当输入）。调用元数据不属于模型输出契约，分开放才是对的。
+    if (!this.hasLiveClient) {
+      return {
+        review: validate(mockStoryCandidateReview(candidates)),
+        metadata: candidateReviewMetadata({ provider: "demo", model: "demo" })
+      };
+    }
+    const settings = this.resolveStage("storyCandidateReview", input);
+    this.assertStageClient(settings, "候选对照评审");
+
+    // 这一档此前走 generateStageJson → generateValidatedJson：**只发一次、fail closed**。
+    // 2026-09-10 的真实回放量出了代价——同一个模型、两份合法候选，一份一次写全
+    // recommendedOrder，另一份只写了 1 个 id，被既有闸门判失败，整份两千字报告
+    // （机制清单、逐候选核对、因果自洽全在里面）连同 ¥0.27 一起丢弃，而模型自己
+    // 不知道漏了什么。animation-plan-review 落地方案早就写过同一句：事前定规矩没用，
+    // 事后拿数字打回去重做有用，**修订必须设计成「允许第一次做错」**。
+    //
+    // 不能给 generateValidatedJson 加重试——它是九个阶段共用的单次调用路径。
+    // 所以这一档自己走 coordinator，形状与 createAnimationPlanRevision 逐条对齐。
+    let rejections = [];
+    // 实数调用次数。不能用 rejections 推断——传输失败时它仍是空数组，
+    // 但供应商确实被调用了两次，少报就等于把花掉的钱藏起来。
+    let providerCalls = 0;
+    // 走 coordinator 就拿不到 generateValidatedJson 那条路自带的 recorder：它挂在
+    // client.generateJson 的 onCompletion 上，而 coordinator 走 requestCompletion。
+    // 漏接的后果是**静默不写**，两次调用的原文全部丢失，所以按定向修订的既有写法
+    // 自己接 attemptObserver。
+    const reviewOutputLogWriter = this.stageModelOutputLogWriters?.get("storyCandidateReview") || null;
+    const recordReviewAttempt = reviewOutputLogWriter?.enabled
+      ? (attempt) => reviewOutputLogWriter.recordAttempt(attempt)
+      : null;
+
+    const request = {
+      // 三份上游都是**可选**的：缺哪一份就少一节判断依据，不阻断评审。
+      // 它们按允许清单投影（buildStoryCandidateReviewUpstream），
+      // 且**不改变原片事实基准**——机制清单与骨架对照仍然只认 sourceScriptReconstruction。
+      prompt: storyCandidateReviewPrompt(
+        candidates,
+        sourceScriptReconstruction,
+        input.visualGuardrails?.fixedCharacterBoundary || null,
+        {
+          creatorProfile: input.creatorProfile || null,
+          creativeBrief: input.creativeBrief || null,
+          referenceAnalysis: input.referenceAnalysis || null
+        }
+      ),
+      model: settings.model,
+      maxCompletionTokens: settings.maxCompletionTokens,
+      requestTimeoutMs: settings.requestTimeoutMs,
+      // 与候选阶段同一个做法：约束解码 Schema 从严格 Schema 派生，提示词文本不变、所有模型共用。
+      // 只有 MiMo 客户端会用它发 json_schema，千问与 DeepSeek 按参数名解构、照旧发 json_object。
+      // coordinator 重试沿用同一个 request，所以第二次调用同样带着它。
+      // 起因是 2026-09-24 展开前体检里 MiMo 开思考两次都在 candidateChecks 数组里写出孤立字符串
+      // "holisticPreferenceOrder:["——与候选阶段当天的结构失败同形，重试打回诊断也没用。
+      responseSchema: {
+        name: STORY_CANDIDATE_REVIEW_MODEL_SCHEMA_NAME,
+        schema: storyCandidateReviewModelSchema(candidates.length)
+      }
+    };
+
+    let review;
+    try {
+      review = await this.modelCallCoordinator.runJson({
+        client: settings.client,
+        request,
+        provider: settings.provider || "",
+        stage: "storyCandidateReview",
+        maxProviderCalls: 2,
+        // 计数与落盘组合在一起。落盘是 fail-open 的：writer 自己吞写入异常，
+        // 这里再兜一层意外抛出，绝不让观测改变本次评审的成败或调用预算。
+        attemptObserver: async (attempt) => {
+          providerCalls += 1;
+          if (!recordReviewAttempt) return;
+          try {
+            await recordReviewAttempt(attempt);
+          } catch {
+            // 观测失败不改变结论。
+          }
+        },
+        retryTokenLimit,
+        // 传输中断也吃这 2 次预算（实测失败率约三分之一，其中一类是几秒就断、
+        // 一个 token 都没烧）。没有诊断可打回时重发原提示词——只说「你错了」
+        // 而不说错在哪，第二次只会重复第一次。
+        // 截断与「被校验拦下」是两种完全不同的失败，重试话术也必须不同。
+        // 报告有 4 个候选 × 11 维，写超导致 finish=length 是本阶段最可能的运行时失败；
+        // 而原来的分支只认「有没有校验诊断」，截断时没有诊断 → 原样重发 → 第二次照样写超。
+        // coordinator 已经把它归成 MODEL_OUTPUT_TRUNCATED（model-call-coordinator.js:58），
+        // 这里只需要认出来并要求压缩；token 上限由 retryTokenLimit 自动抬 1.5 倍，两者叠加。
+        retryPrompt: ({ originalPrompt, issue, error }) => {
+          const code = String(issue?.code || error?.code || "");
+          if (code === "MODEL_OUTPUT_TRUNCATED") {
+            return storyCandidateReviewRetryPrompt({ originalPrompt, truncated: true });
+          }
+          const last = rejections[rejections.length - 1];
+          return last?.details?.length
+            ? storyCandidateReviewRetryPrompt({ originalPrompt, details: last.details })
+            : originalPrompt;
+        },
+        // **校验逐字不变**：这次改的是「错了之后怎么办」，不是「什么算错」。
+        // OutputContractError 本来就被 classifyAttemptError 判为可重试，
+        // 且 details 原样进 issue.diagnostics，所以这里不需要任何错误类型转换。
+        validate: (candidate) => {
+          try {
+            return validate(candidate);
+          } catch (error) {
+            if (error instanceof OutputContractError) {
+              rejections.push({
+                message: error.message,
+                details: Array.isArray(error.details) ? error.details : []
+              });
+            }
+            throw error;
+          }
+        }
+      });
+    } catch (error) {
+      throw candidateReviewPipelineFailure(error, rejections);
+    }
+
+    return {
+      review,
+      metadata: candidateReviewMetadata({
+        provider: settings.provider || "",
+        model: settings.model || "",
+        providerCalls,
+        rejections
+      })
+    };
+  }
+
+  /**
+   * 命题定向修订。对照评审只出报告、不改命题，这一档才是唯一会改动命题正文的地方——
+   * 但它同样**只出候选，不签发任何东西**：不写回 themeVariants、不进 lineage、不 stale。
+   * 签发只发生在用户在浏览器点「采纳」的那一刻。
+   *
+   * **驱动信号是 `coherenceChecks`，不是 `verdict`。** 依据是 2026-09-10 的实测：同一份命题
+   * 三次回放，`verdict` 与 `recommendedOrder` 每次都不同（2 pass/2 revise → 2 revise/2 drop
+   * → 2 revise/2 drop），而因果断裂稳定复现、锚到拍号、具体可执行。
+   *
+   * **一次只修一个命题**：最终只有一个会被展开成 Full Story，一次一个的输出短、失败率低、
+   * 对照预览也清楚。越权写入未授权的命题即 `CANDIDATE_REVISION_OUT_OF_SCOPE`。
+   */
+  async createStoryCandidateRevision(input) {
+    requireObject(input, "请求");
+    const themeVariants = requireObject(input.themeVariants, "themeVariants");
+    const review = requireObject(input.review, "review");
+    const candidateId = requireText(input.candidateId, "candidateId");
+    // scope: "root" = 由完整剧情的展开前体检触发，只修会被带进完整剧情的根问题。
+    // 不传 = 手动修订按钮，行为与提示词逐字不变。其它取值一律拒绝，不猜。
+    const scope = input.scope === undefined || input.scope === null || input.scope === ""
+      ? ""
+      : String(input.scope);
+    if (scope && scope !== "root") {
+      throw new InputError(`scope 只接受 root（展开前体检），收到的是「${scope}」`);
+    }
+    const root = scope === "root";
+    if (!root && input.promiseCheck !== undefined && input.promiseCheck !== null) {
+      throw new InputError("promiseCheck 只用于展开前体检触发的修订，必须同时传 scope: root");
+    }
+
+    // themeVariants 与 review 都是**请求输入**，不是本阶段的模型输出。
+    // 原样上抛 OutputContractError 会变成 502 加一句「模型输出未通过校验」，
+    // 让用户去查模型、查供应商，而实际错在自己传的包——与评审那处同规格转成 400。
+    const asInputError = (error, label) => {
+      const contractFailure = error instanceof OutputContractError || error instanceof ReviewContractError;
+      if (!contractFailure) throw error;
+      const inputError = new InputError(`${label}：${error.message}`);
+      inputError.details = error.details;
+      throw inputError;
+    };
+    try {
+      ensureOutputContract(themeVariants, "themeVariants");
+    } catch (error) {
+      asInputError(error, "themeVariants 不是一批合法命题");
+    }
+    // 评审报告必须是**这一批命题**的报告：拿另一批的报告来修订会当场失败，
+    // 不会静默按 candidateId 对齐。
+    //
+    // 唯一的例外来自展开前体检：它的评审只送了这一个候选，报告因此恰好一条。
+    // 只在 scope: root、且那一条正是目标命题时，才按这一个候选核对覆盖率；
+    // 合并与复验仍然用整批，narrativeMode 配比等整批闸门不受影响。
+    const allCandidates = Array.isArray(themeVariants.variants) ? themeVariants.variants : [];
+    const reviewChecks = Array.isArray(review.candidateChecks) ? review.candidateChecks : [];
+    const singleCandidateReview = root
+      && reviewChecks.length === 1
+      && String(reviewChecks[0]?.candidateId || "") === String(candidateId);
+    const reviewedCandidates = singleCandidateReview
+      ? allCandidates.filter((entry) => String(entry?.id || "") === String(candidateId))
+      : allCandidates;
+    try {
+      ensureStoryCandidateReviewCoversCandidates(
+        ensureOutputContract(review, "storyCandidateReview"),
+        reviewedCandidates
+      );
+    } catch (error) {
+      asInputError(error, "review 不是这一批命题的合法评审报告");
+    }
+
+    const candidate = findCandidate(themeVariants, candidateId);
+    if (!candidate) throw new InputError(`themeVariants 里没有命题 ${candidateId}`);
+    const coherenceBreaks = candidateCoherenceBreaks(review, candidateId);
+    // 第二个驱动信号：原片有、这个命题没接住的机制。与因果断裂并列，但修法不同——
+    // 接一条机制通常要加动作，而因果断裂明确不许加戏，两者混成一个列表模型就分不清了。
+    // 展开前体检不送它：那一类是创作取舍，而且会把故事往原片方向推，与换皮信号打架。
+    const unmigratedMechanisms = root ? [] : candidateUnmigratedMechanisms(review, candidateId);
+
+    // 展开前体检的三类根问题。每一类都与体检路由的一条理由一一对应：
+    // coherence_break → 因果断裂、promise_unrealized → 没演出来的承诺、
+    // scaffold_copy → 换皮环节、blocker_defect → 硬伤。路由说有、修订却收不到信号的
+    // 情况因此不会出现（提取器与派生降级理由共用同一个判定条件）。
+    let promiseGaps = [];
+    if (root) {
+      const promiseCheck = requireObject(input.promiseCheck, "promiseCheck");
+      try {
+        ensureFullStoryPromiseCheckCoversCandidate(
+          ensureOutputContract(promiseCheck, "fullStoryPromiseCheck"),
+          candidate
+        );
+      } catch (error) {
+        asInputError(error, "promiseCheck 不是这个命题的合法承诺核对");
+      }
+      promiseGaps = promiseCheckGaps(promiseCheck);
+    }
+    const scaffoldCopy = root ? candidateScaffoldCopy(review, candidateId) : null;
+    const blockerDefect = root ? candidateBlockerDefect(review, candidateId) : null;
+    if (root && !coherenceBreaks.length && !promiseGaps.length && !scaffoldCopy && !blockerDefect) {
+      throw new InputError("展开前体检没有报出任何根问题，不需要修订；请直接展开完整剧情");
+    }
+
+    // 固定角色边界照常验签并参与复验：修订改的是动作链，那正是可能混进禁止特征的地方。
+    const visualGuardrails = input.visualGuardrails ? this.assertGlobalCharacterBoundary(input) : null;
+    const finalize = (revision) => this.finalizeStoryCandidateRevision({
+      revision, themeVariants, candidateId, creatorProfile: input.creatorProfile, visualGuardrails
+    });
+
+    if (!this.hasLiveClient) {
+      return {
+        ...finalize(mockStoryCandidateRevision(candidate, coherenceBreaks, unmigratedMechanisms, {
+          promiseGaps, scaffoldCopy, blockerDefect
+        })),
+        metadata: candidateRevisionMetadata({ provider: "demo", model: "demo" })
+      };
+    }
+
+    const settings = this.resolveStage("storyCandidateRevision", input);
+    this.assertStageClient(settings, "命题定向修订");
+
+    const rejections = [];
+    // 实数调用次数。不能从 rejections 反推——传输失败时它仍是空数组，
+    // 但供应商确实被调用了两次，少报就等于把花掉的钱藏起来。
+    let providerCalls = 0;
+    const revisionOutputLogWriter = this.stageModelOutputLogWriters?.get("storyCandidateRevision") || null;
+    const recordRevisionAttempt = revisionOutputLogWriter?.enabled
+      ? (attempt) => revisionOutputLogWriter.recordAttempt(attempt)
+      : null;
+
+    let outcome;
+    try {
+      outcome = await this.modelCallCoordinator.runJson({
+        client: settings.client,
+        request: {
+          prompt: storyCandidateRevisionPrompt({
+            candidate,
+            coherenceBreaks,
+            unmigratedMechanisms,
+            promiseGaps,
+            scaffoldCopy,
+            blockerDefect,
+            scope,
+            targetDurationSeconds: input.targetDurationSeconds
+          }),
+          model: settings.model,
+          maxCompletionTokens: settings.maxCompletionTokens,
+          requestTimeoutMs: settings.requestTimeoutMs
+        },
+        provider: settings.provider || "",
+        stage: "storyCandidateRevision",
+        maxProviderCalls: 2,
+        attemptObserver: async (attempt) => {
+          providerCalls += 1;
+          if (!recordRevisionAttempt) return;
+          try {
+            await recordRevisionAttempt(attempt);
+          } catch {
+            // 观测失败不改变结论。
+          }
+        },
+        retryTokenLimit,
+        retryPrompt: ({ originalPrompt }) => {
+          const last = rejections[rejections.length - 1];
+          return last?.details?.length
+            ? storyCandidateRevisionRetryPrompt({ originalPrompt, details: last.details })
+            : originalPrompt;
+        },
+        validate: (result) => {
+          try {
+            return finalize(result);
+          } catch (error) {
+            const contractFailure = error instanceof ReviewContractError || error instanceof OutputContractError;
+            if (contractFailure) {
+              rejections.push({
+                message: error.message,
+                details: Array.isArray(error.details) ? error.details : []
+              });
+            }
+            // ReviewContractError 不在 classifyAttemptError 的分支里，会落到
+            // 「internal / retryable: false」的兜底，让本该重试的内容错误无法重试。
+            if (error instanceof ReviewContractError) throw reviewContractAsOutputContract(error);
+            throw error;
+          }
+        }
+      });
+    } catch (error) {
+      throw candidateReviewPipelineFailure(error, rejections);
+    }
+
+    return {
+      ...outcome,
+      metadata: candidateRevisionMetadata({
+        provider: settings.provider || "",
+        model: settings.model || "",
+        providerCalls,
+        rejections
+      })
+    };
+  }
+
+  /**
+   * 合并并从头复验。**采纳时签发的就是这份合并结果**，所以它必须在这里就通过整条生成侧
+   * 校验链，而不是等用户点了采纳、下游媒体已经作废之后才失败。
+   *
+   * 顺序不能换：`assertOnlyCandidateRevisionFieldsChanged` 必须跑在重新派生**之前**——
+   * 那一刻三个投影字段还是原值，正好可以证明模型没有绕过「派生字段不可写」。
+   * 之后 `deriveStoryCandidateProjections` 才按新的 action 重新派生它们。
+   */
+  finalizeStoryCandidateRevision({ revision, themeVariants, candidateId, creatorProfile, visualGuardrails }) {
+    ensureStoryCandidateRevisionContract(revision, themeVariants, candidateId);
+    const merged = mergeStoryCandidateRevision(themeVariants, revision);
+    assertOnlyCandidateRevisionFieldsChanged(themeVariants, merged, candidateId);
+    // 与 createVariants 的 finalize 同一条链，**只少一个 sourceBaseline.apply**：
+    // transformationProof 整个冻结、模型碰不到，所以没有 source 需要重新签发。
+    // 也不传 upstream——source 逐字未变，重跑一遍溯源核对是浪费，而且给模型看原片
+    // 会诱导它顺手重编故事去迁移机制（与「修订只带分镜、不带 fullStory」同源）。
+    const validated = ensureThemeVariantsMatchProfile(
+      ensureOutputContract(deriveStoryCandidateProjections(merged), "themeVariants"),
+      creatorProfile || {},
+      null,
+      visualGuardrails
+    );
+    return { candidateId, revision, themeVariants: validated };
+  }
+
+  /**
+   * 完整剧情的展开前体检（2026-09-16）。点「生成完整剧情」时先跑这一步。
+   *
+   * 两路并行：**原样**调用现有候选对照评审（只送这一个候选），再加一次承诺核对。
+   * 路由由两份结果确定性合成（见 deriveFullStoryPrecheckRoute）：有根问题就先修订候选、
+   * 由用户采纳后再展开；没有就直接展开。
+   *
+   * 只出报告，与评审同规格：不签发 Artifact、不进 lineage、不 stale、不阻断后续。
+   * 候选的修改只能由用户采纳后签发新版本，**绝不在已冻结的展开任务里偷换候选**。
+   *
+   * 任一路失败都整体报错，不拿半份结果路由——只看评审会漏掉「承诺没演出来」，
+   * 只看承诺核对会漏掉因果断裂与换皮，两种半截结论都会让人误以为候选没问题。
+   */
+  async createFullStoryPrecheck(input) {
+    requireObject(input, "请求");
+    const themeVariants = requireObject(input.themeVariants, "themeVariants");
+    const candidateId = requireText(input.candidateId, "candidateId");
+    const reviewThemeVariants = singleCandidateThemeVariants(themeVariants, candidateId);
+    const candidate = reviewThemeVariants.variants[0];
+
+    // 必须等两路都结束再决定成败：一路先失败就立即上抛，另一路还在后台计费，
+    // 它的用量会落到这次请求之外——等于把花掉的钱藏起来。
+    const [reviewOutcome, promiseOutcome] = await Promise.allSettled([
+      this.createStoryCandidateReview({ ...input, themeVariants: reviewThemeVariants }),
+      this.createFullStoryPromiseCheck({ ...input, candidate })
+    ]);
+    const failures = [
+      reviewOutcome.status === "rejected" ? { label: "候选评审", reason: reviewOutcome.reason } : null,
+      promiseOutcome.status === "rejected" ? { label: "承诺核对", reason: promiseOutcome.reason } : null
+    ].filter(Boolean);
+    if (failures.length) {
+      const [first, second] = failures;
+      // 两路都失败时两个原因都要说出来，只报一个会让人以为修好它就能过。
+      if (second && first.reason instanceof Error) {
+        try {
+          first.reason.message = `${first.reason.message}；另外${second.label}也失败了：${
+            second.reason instanceof Error ? second.reason.message : String(second.reason)
+          }`;
+        } catch {
+          // message 不可写时保持原样上抛，不因补充说明失败而改变错误本身。
+        }
+      }
+      throw first.reason;
+    }
+
+    const review = reviewOutcome.value.review;
+    const promiseCheck = promiseOutcome.value.promiseCheck;
+    const reviewCheck = Array.isArray(review?.candidateChecks) ? review.candidateChecks[0] || null : null;
+    const { route, reasons } = deriveFullStoryPrecheckRoute({ reviewCheck, promiseCheck });
+    return {
+      schemaVersion: FULL_STORY_PRECHECK_SCHEMA_VERSION,
+      candidateId,
+      route,
+      reasons,
+      review,
+      promiseCheck,
+      metadata: {
+        ...reviewOutcome.value.metadata,
+        ...promiseOutcome.value.metadata
+      }
+    };
+  }
+
+  /**
+   * 展开前承诺核对：标题和钩子许诺的东西，动作链有没有演出来。
+   *
+   * **两次顺序调用，第一次看不到动作链。** 这是 2026-09-16 第一版 A/B 实测出来的：
+   * 单次调用里动作链一直在上下文中，模型会照着动作链倒推期待，于是无论候选写成什么样
+   * 都判「已兑现」（同一个标题在两个候选上写出相反的 mustSee）。所以：
+   *   1. 盲写承诺清单：输入只有标题、钩子、叙事模式与主角名。
+   *   2. 逐条定位：拿冻结的清单去动作链里找，每一项给出拍号与逐字引用。
+   *   3. 判定由服务端从逐条结果派生，模型不写 verdict。
+   *
+   * 两次调用各自允许「第一次做错」：被确定性闸门拦下时只带诊断重做一次，禁止第三次，
+   * 与候选对照评审同规格。原文按本阶段 scope 自己接 attemptObserver 落盘。
+   * **沿用候选评审的模型设置**——两者同属「审这个候选」，不另起一个模型选项。
+   */
+  async createFullStoryPromiseCheck(input) {
+    requireObject(input, "请求");
+    const candidate = requireObject(input.candidate, "candidate");
+    if (!this.hasLiveClient) {
+      const mock = mockFullStoryPromiseCheck(candidate);
+      return {
+        promiseCheck: ensureFullStoryPromiseCheckCoversCandidate(
+          ensureOutputContract(mock, "fullStoryPromiseCheck"),
+          candidate
+        ),
+        metadata: promiseCheckMetadata({ provider: "demo", model: "demo" })
+      };
+    }
+    const settings = this.resolveStage("storyCandidateReview", input);
+    this.assertStageClient(settings, "展开前承诺核对");
+
+    // 实数调用次数，不能从 rejections 反推：传输失败时它是空数组，供应商却确实被调用过。
+    let providerCalls = 0;
+    const rejections = [];
+    const outputLogWriter = this.stageModelOutputLogWriters?.get(FULL_STORY_PROMISE_CHECK_STAGE) || null;
+    const recordAttempt = outputLogWriter?.enabled
+      ? (attempt) => outputLogWriter.recordAttempt(attempt)
+      : null;
+    const runStep = (prompt, validate) => this.modelCallCoordinator.runJson({
+      client: settings.client,
+      request: {
+        prompt,
+        model: settings.model,
+        maxCompletionTokens: settings.maxCompletionTokens,
+        requestTimeoutMs: settings.requestTimeoutMs
+      },
+      provider: settings.provider || "",
+      stage: FULL_STORY_PROMISE_CHECK_STAGE,
+      maxProviderCalls: 2,
+      attemptObserver: async (attempt) => {
+        providerCalls += 1;
+        if (!recordAttempt) return;
+        try {
+          await recordAttempt(attempt);
+        } catch {
+          // 观测失败不改变结论。
+        }
+      },
+      retryTokenLimit,
+      retryPrompt: ({ originalPrompt }) => {
+        const last = rejections[rejections.length - 1];
+        return last?.details?.length
+          ? fullStoryPromiseCheckRetryPrompt({ originalPrompt, details: last.details })
+          : originalPrompt;
+      },
+      validate: (result) => {
+        try {
+          return validate(result);
+        } catch (error) {
+          if (error instanceof OutputContractError) {
+            rejections.push({
+              message: error.message,
+              details: Array.isArray(error.details) ? error.details : []
+            });
+          }
+          throw error;
+        }
+      }
+    });
+
+    let promiseCheck;
+    try {
+      const promiseList = await runStep(
+        fullStoryPromiseListPrompt(candidate),
+        (result) => ensureFullStoryPromiseListContract(result, candidate)
+      );
+      const promiseFindings = await runStep(
+        fullStoryPromiseFindingsPrompt(candidate, promiseList),
+        (result) => ensureFullStoryPromiseFindingsContract(result, promiseList, candidate)
+      );
+      promiseCheck = ensureFullStoryPromiseCheckCoversCandidate(
+        ensureOutputContract(assembleFullStoryPromiseCheck(promiseList, promiseFindings), "fullStoryPromiseCheck"),
+        candidate
+      );
+    } catch (error) {
+      throw candidateReviewPipelineFailure(error, rejections);
+    }
+
+    return {
+      promiseCheck,
+      metadata: promiseCheckMetadata({
+        provider: settings.provider || "",
+        model: settings.model || "",
+        providerCalls,
+        rejections
+      })
+    };
+  }
+
+  /**
+   * 分镜终审。Animation Plan 生成之后的独立验收，只出报告：不修改 Plan、
+   * 不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、不阻断后续生产。
+   * 与剧情体检同规格，纯展示，刷新页面即失。
+   *
+   * 它检查的是现有校验器全都查不到的一类问题：**剧情声称的事，镜头里到底拍没拍**。
+   * 实测案例：剧情首句写「末班车的红色尾灯刚刚消失在路口转角」，而首镜 videoPrompt
+   * 从人物坐在长椅上开始，一帧车都没有——「末班车已走」只写进了 continuityNotes，
+   * 那是给生成器的备注，不会被拍出来。全片赖以成立的悬念从未建立。
+   *
+   * 评分只用于同一片子改前改后的纵向对比，**不作放行门槛**：实测两个模型对同一份
+   * Plan 总分只差 0.06，而逐个维度能差 ±1.0，这个数字没有分辨力。真正有用的是
+   * dominantDefect、issues 与 upgradePath 里的具体内容。
+   */
+  async createAnimationPlanReview(input) {
+    requireObject(input, "请求");
+    const animationPlan = requireObject(input.animationPlan, "animationPlan");
+    const fullStory = requireObject(input.fullStory, "fullStory");
+    // 被评审的两份必须先各自合法，否则报告没有意义。
+    ensureOutputContract(animationPlan, "animationPlan");
+    ensureOutputContract(fullStory, "fullStory");
+    // ReviewContractError 必须转成 OutputContractError。它不在 classifyAttemptError 的
+    // 分支表里，原样上抛会落进「internal / retryable: false」兜底：三张覆盖表数量对不上、
+    // 引用了不存在的镜头号这类**模型内容错误**，会变成一句 HTTP 500「服务器内部错误」，
+    // 用户完全看不出模型错在哪。实测 2026-09-07：净预算诊断被这样吞掉过一次。
+    // 修订路径早有同款转换器，终审这条路此前没接上。
+    const validate = (result) => {
+      const report = ensureOutputContract(result, "animationPlanReview");
+      try {
+        return ensureReviewReportContract(report, animationPlan);
+      } catch (error) {
+        if (!(error instanceof ReviewContractError)) throw error;
+        throw reviewContractAsOutputContract(error);
+      }
+    };
+    if (!this.hasLiveClient) return validate(mockAnimationPlanReview(animationPlan));
+    const settings = this.resolveStage("animationPlanReview", input);
+    this.assertStageClient(settings, "分镜终审");
+    return this.generateStageJson("animationPlanReview", input, {
+      prompt: animationPlanReviewPrompt(fullStory, animationPlan),
+      validate
+    });
+  }
+
+  /**
+   * 定向修订。按终审报告只改被点名的那几个镜头，**不签发任何东西**：
+   * 返回合并后的候选 Plan 供页面预览，用户确认后才由浏览器走既有的 Plan revision
+   * 签发流程。把「作废该变体全部已生成媒体」这个重代价推迟到确认那一刻——
+   * 实测修订第一次输出常常要被打回，自动签发会造成大量无谓的 revision 与媒体作废。
+   *
+   * **只发分镜，不发 fullStory**：问题已由终审定位，再给剧情只会让模型顺手重编故事。
+   *
+   * 预算两次 provider 调用。**第一次被拦是常规路径不是异常路径**：事前用提示词约束
+   * 「不许往挤的镜头加动作」三次加码全部无效（模型改口称「并入原有动作链，不增加
+   * 独立动作段」），因为「一个动作」没有客观定义，判定权在模型手里就永远有解释空间。
+   * 解法是要求显式台账 removedActions / addedActions、服务端只数长度；实测两个模型
+   * 第一次都被拦（删 2 加 7 / 删 2 加 4），带算术诊断重试后都一次通过，且结果更好。
+   */
+  async createAnimationPlanRevision(input) {
+    requireObject(input, "请求");
+    const animationPlan = requireObject(input.animationPlan, "animationPlan");
+    const report = requireObject(input.report, "report");
+    ensureOutputContract(animationPlan, "animationPlan");
+    // 修订的可写字段就是 direct_shot 的那七个；旧 v2 首尾帧 Plan 的字段完全不同，
+    // 不得借这条路径改写，明确失败而不是静默按 direct_shot 处理。
+    if (animationPlan.promptSchemaVersion !== ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
+      throw new InputError(
+        `定向修订只支持 direct_shot Plan（promptSchemaVersion ${ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION}）`
+      );
+    }
+    // 报告必须是**这一份 Plan** 的报告：ensureReviewReportContract 逐位核对三张覆盖表，
+    // 拿另一份 Plan 的报告来修订会当场失败，不会静默按 shotId 对齐。
+    //
+    // 这里的 report 是**请求输入**，不是本阶段的模型输出——与终审阶段正相反。
+    // ReviewContractError 不在 serializeServerError 的分支表里，原样上抛会变成
+    // 500「服务器内部错误」，用户看不出是自己传了不匹配的报告。转成 InputError 才是
+    // 如实的归属：错在客户端，400，并带上校验器数出来的具体不一致。
+    try {
+      ensureReviewReportContract(ensureOutputContract(report, "animationPlanReview"), animationPlan);
+    } catch (error) {
+      const contractFailure = error instanceof ReviewContractError || error instanceof OutputContractError;
+      if (!contractFailure) throw error;
+      const inputError = new InputError(`report 不是这份 animationPlan 的合法终审报告：${error.message}`);
+      inputError.details = error.details;
+      throw inputError;
+    }
+
+    const shotIds = animationPlan.shotPlan.map((shot) => String(shot?.shotId || ""));
+    const load = revisionShotLoad(report, shotIds);
+    const selection = resolveAnimationPlanRevisionSelection(input, report, shotIds);
+    const finalize = (revision) => this.finalizeAnimationPlanRevision({
+      revision,
+      animationPlan,
+      report,
+      targetShotIds: selection.targetShotIds
+    });
+
+    if (!this.hasLiveClient) {
+      const outcome = finalize(mockAnimationPlanRevision(animationPlan, report, selection.targetShotIds));
+      return { ...outcome, metadata: revisionMetadata({ provider: "demo", model: "demo" }) };
+    }
+
+    const settings = this.resolveStage("animationPlanRevision", input);
+    this.assertStageClient(settings, stageLabel("animationPlanRevision"));
+
+    // 第一次被拦时留下的状态：候选、诊断、要重做的镜头。
+    let rejected = null;
+    // 实数调用次数。不能用 rejected 推断——第一次是传输失败时它仍是 null，
+    // 但供应商确实被调用了两次，少报就等于把花掉的钱藏起来。
+    let providerCalls = 0;
+    // 纯观测 sidecar。本阶段不走 generateStageJson（那条路自带 recorder），
+    // 所以按 Full Story 的既有写法自己接 coordinator 的 attemptObserver：
+    // 两次 provider 调用各留一条记录，第一次被拦是常规路径，原文必须留下来。
+    // 与其余阶段一致不传 context，记录落在 unbound 路径。
+    const revisionOutputLogWriter = this.stageModelOutputLogWriters?.get("animationPlanRevision") || null;
+    const recordRevisionAttempt = revisionOutputLogWriter?.enabled
+      ? (attempt) => revisionOutputLogWriter.recordAttempt(attempt)
+      : null;
+    const outcome = await this.modelCallCoordinator.runJson({
+      client: settings.client,
+      request: {
+        prompt: animationPlanRevisionPrompt({
+          animationPlan,
+          report,
+          issues: selection.issues,
+          upgrades: selection.upgrades,
+          load,
+          targetShotIds: selection.targetShotIds
+        }),
+        model: settings.model,
+        maxCompletionTokens: settings.maxCompletionTokens,
+        requestTimeoutMs: settings.requestTimeoutMs
+      },
+      provider: settings.provider || "",
+      stage: "animationPlanRevision",
+      maxProviderCalls: 2,
+      // 计数与落盘组合在一起。落盘是 fail-open 的：writer 自己吞写入异常，
+      // 这里再兜一层意外抛出，绝不让观测改变本次修订的成败或调用预算。
+      attemptObserver: async (attempt) => {
+        providerCalls += 1;
+        if (!recordRevisionAttempt) return;
+        try {
+          await recordRevisionAttempt(attempt);
+        } catch {
+          // 观测失败不改变结论。
+        }
+      },
+      retryTokenLimit,
+      // 传输中断也在这 2 次预算内重试（实测失败率约三分之一，其中一类是几秒就断、
+      // 一个 token 都没烧）。没有候选可修时重发原提示词，不发重试提示词。
+      retryPrompt: ({ originalPrompt }) => (rejected
+        ? animationPlanRevisionRepairPrompt({
+          animationPlan,
+          previousRevision: rejected.candidate,
+          details: rejected.details,
+          blockedShotIds: rejected.blockedShotIds,
+          load
+        })
+        : originalPrompt),
+      validate: (candidate) => {
+        const isRepair = rejected !== null;
+        const revision = isRepair
+          ? mergeRevisionAttempts(rejected.candidate, candidate)
+          : candidate;
+        try {
+          return finalize(revision);
+        } catch (error) {
+          if (!(error instanceof ReviewContractError)) throw error;
+          if (!isRepair) {
+            rejected = {
+              candidate,
+              details: error.details,
+              blockedShotIds: blockedRevisionShotIds(
+                error.details, candidate, shotIds, selection.targetShotIds
+              )
+            };
+          }
+          // ReviewContractError 不在 classifyAttemptError 的分支里，会落到
+          // 「internal / retryable: false」的兜底，让本该重试的内容错误无法重试。
+          // 转成 OutputContractError 才能被判为可重试的 output-contract，
+          // 并把结构化 details 带进 diagnostics 供重试提示词使用。
+          throw reviewContractAsOutputContract(error);
+        }
+      }
+    });
+
+    return {
+      ...outcome,
+      metadata: revisionMetadata({
+        provider: settings.provider || "",
+        model: settings.model || "",
+        providerCalls,
+        firstAttemptRejection: rejected
+          ? { details: rejected.details, redoneShotIds: rejected.blockedShotIds }
+          : null
+      })
+    };
+  }
+
+  /**
+   * 合并并从头复验。修订结果本身过 ensureRevisionContract，合并后的整份 Plan 再过
+   * direct_shot 契约与背景音乐收尾句——**采纳时签发的是这份合并结果**，所以它必须
+   * 在这里就通过成片渲染前的确定性闸门（尤其是台词必须逐字出现在 videoPrompt），
+   * 而不是等到用户点了采纳、媒体已经作废之后才失败。
+   */
+  finalizeAnimationPlanRevision({ revision, animationPlan, report, targetShotIds }) {
+    assertRevisionStaysInScope(revision, targetShotIds);
+    ensureRevisionContract(revision, animationPlan, report);
+    const merged = mergeAnimationPlanRevision(animationPlan, revision);
+    assertOnlyRevisionFieldsChanged(animationPlan, merged);
+    ensureAnimationPlanDirectShotContract(merged, { path: "animationPlan" });
+    validateSeedanceBackgroundMusicSentence(merged, merged, 0);
+    return { animationPlan: merged, revision };
   }
 
   async createVariants(input) {
@@ -343,12 +1478,68 @@ export class WorkflowService {
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
     const visualGuardrails = this.assertGlobalCharacterBoundary(input);
-    const validatedInput = { ...input, visualGuardrails };
-    if (!this.hasLiveClient) return ensureThemeVariantsMatchProfile(ensureOutputContract(mockVariants(validatedInput), "themeVariants"), profile, input.creativeBrief, visualGuardrails);
-    const prompt = variantsPrompt(validatedInput);
-    return this.generateStageJson("variants", validatedInput, {
-      prompt,
-      validate: (result) => ensureThemeVariantsMatchProfile(ensureOutputContract(result, "themeVariants"), profile, input.creativeBrief, visualGuardrails)
+    const validatedInput = structuredClone({ ...input, visualGuardrails });
+    // transformationProof.changed*.source 声称的原片事实要回上游核对，因此把这两份
+    // 一并交给校验器。**刻意不含 creativeBrief**：2026-09-06 实测正是简报自己先写错
+    // （它的 mappingLogic 抄了提示词举例里的「快递员身份」），拿它当核对基准
+    // 等于给虚构盖章。上游只有这两份是原片事实的权威来源。
+    const variantsUpstream = (input.referenceAnalysis && input.sourceScriptReconstruction)
+      ? {
+        referenceAnalysis: validatedInput.referenceAnalysis,
+        sourceScriptReconstruction: validatedInput.sourceScriptReconstruction
+      }
+      : null;
+    // 原片提问与新角色/新剧情隔离。source 由私有冻结目录里的完整原文签发，
+    // 候选模型只写 replacement；仍只返回并提交一份 themeVariants。
+    const sourceBaseline = variantsUpstream ? createVariantSourceBaseline(variantsUpstream) : null;
+    const finalize = (result) => ensureThemeVariantsMatchProfile(
+      ensureOutputContract(deriveStoryCandidateProjections(
+        sourceBaseline ? sourceBaseline.apply(result) : result
+      ), "themeVariants"),
+      validatedInput.creatorProfile, validatedInput.creativeBrief, visualGuardrails, variantsUpstream
+    );
+    if (!this.hasLiveClient) {
+      sourceBaseline?.selectDemo();
+      return finalize(mockVariants(validatedInput));
+    }
+    if (!sourceBaseline) {
+      // 缺少两份原片上游的旧调用点保持原有单次生成契约。
+      return this.generateStageJson("variants", validatedInput, {
+        prompt: variantsPrompt(validatedInput), validate: finalize
+      });
+    }
+    // 两次调用共享创建时的 variants provider/model；不新建模型设置、Task 或重试。
+    const settings = this.resolveStage("variants", validatedInput);
+    this.assertStageClient(settings, stageLabel("variants"));
+    const requestSettings = {
+      client: settings.client,
+      model: settings.model,
+      provider: settings.provider || "",
+      maxCompletionTokens: settings.maxCompletionTokens,
+      requestTimeoutMs: settings.requestTimeoutMs
+    };
+    await this.generateValidatedJson({
+      ...requestSettings,
+      stage: VARIANT_SOURCE_BASELINE_STAGE,
+      systemPrompt: VARIANT_SOURCE_BASELINE_SYSTEM_PROMPT,
+      prompt: sourceBaseline.prompt(),
+      modelOutputLogWriter: this.stageModelOutputLogWriters?.get(VARIANT_SOURCE_BASELINE_STAGE) || null,
+      validate: (response) => sourceBaseline.acceptSelections(response)
+    });
+    return this.generateValidatedJson({
+      ...requestSettings,
+      stage: "variants",
+      prompt: variantsPrompt(validatedInput, { deriveSource: true }),
+      // 约束解码 Schema 从严格 Schema 派生；提示词文本不变、所有模型共用。只有 MiMo 客户端
+      // 会用它发 json_schema：千问（欠费无法验证）与 DeepSeek（官方只支持 json_object）
+      // 按参数名解构，会忽略这个参数、照旧发 json_object。解码约束只减少结构类失败，
+      // finalize 里的严格 Schema 与全部校验不变，仍是唯一裁决方。
+      responseSchema: {
+        name: STORY_CANDIDATES_MODEL_SCHEMA_NAME,
+        schema: storyCandidatesModelSchema(variantsCount(validatedInput))
+      },
+      modelOutputLogWriter: this.stageModelOutputLogWriters?.get("variants") || null,
+      validate: finalize
     });
   }
 
@@ -390,6 +1581,8 @@ export class WorkflowService {
 
   async createFullStory(input, { traceContext = null } = {}) {
     requireObject(input, "请求");
+    const completeCast = input.fullStorySchemaVersion === FULL_STORY_CAST_SCHEMA_VERSION;
+    if (input.fullStorySchemaVersion !== undefined && !completeCast && input.fullStorySchemaVersion !== "full_story/1.1") throw new InputError("不支持的 Full Story 生成版本");
     requireObject(input.creativeBrief, "creativeBrief");
     requireObject(input.variant, "variant");
     const profile = requireObject(input.creatorProfile, "creatorProfile");
@@ -399,16 +1592,18 @@ export class WorkflowService {
     const visualGuardrails = this.assertGlobalCharacterBoundary(groundedInput);
     const validatedInput = { ...groundedInput, visualGuardrails };
     const settings = this.resolveStage("fullStory", validatedInput);
-    if (!this.hasLiveClient) return ensureFullStoryMatchesProfile(ensureOutputContract(mockFullStory(validatedInput), "fullStory"), profile, input.creativeBrief, input.variant, visualGuardrails);
+    const validateFullStory = (result) => validateFullStoryForSigning(result, {
+      profile, creativeBrief: input.creativeBrief, variant: input.variant, visualGuardrails
+    });
+    if (!this.hasLiveClient) {
+      const story = validateFullStory(mockNarrativeFullStory(validatedInput));
+      if (!completeCast) return story;
+      const registryInput = fullStoryCharacterRegistryInput(story, profile);
+      return validateFullStory(mergeFullStoryCharacterRegistry(story, mockFullStoryCharacterRegistry(registryInput), registryInput));
+    }
     this.assertStageClient(settings, "完整剧情");
-    const prompt = fullStoryPrompt({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
-    const validateFullStory = (result) => ensureFullStoryMatchesProfile(
-      ensureOutputContract(result, "fullStory"),
-      profile,
-      input.creativeBrief,
-      input.variant,
-      visualGuardrails
-    );
+    const basePrompt = fullStoryPrompt({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
+    const prompt = completeCast ? fullStoryRegisteredVoicesPrompt(basePrompt) : basePrompt;
     const observeFullStoryAttempt = this.fullModelOutputLogWriter?.enabled
       ? (attempt) => this.fullModelOutputLogWriter.recordAttempt({
         ...attempt,
@@ -504,6 +1699,22 @@ export class WorkflowService {
       throw error;
     }
 
+    // full_story/1.1 has no second model-written beatSheet to reconcile.
+    // This is not a semantic review pass. Legacy replies still use the exact
+    // existing postpass and are never silently converted into the new shape.
+    if (completeCast) {
+      if (!isNarrativeFullStory(fullStory)) throw new OutputContractError("完整角色表只能承接本次生成的新版完整剧情，不能自动迁移旧剧情");
+      const registryInput = fullStoryCharacterRegistryInput(fullStory, profile);
+      return this.modelCallCoordinator.runJson({
+        client: settings.client,
+        request: { prompt: fullStoryCharacterRegistryPrompt(registryInput), model: settings.model, maxCompletionTokens: settings.maxCompletionTokens },
+        provider: settings.provider || "", stage: "fullStoryCharacterRegistry",
+        attemptObserver: observeFullStoryAttempt,
+        maxProviderCalls: 1, shouldRetry: () => false,
+        validate: response => validateFullStory(mergeFullStoryCharacterRegistry(fullStory, response, registryInput))
+      });
+    }
+    if (isNarrativeFullStory(fullStory)) return fullStory;
     const beatScenePostpassPlan = createFullStoryBeatScenePostpassPlan(fullStory);
     return this.modelCallCoordinator.runJson({
       client: settings.client,
@@ -536,29 +1747,50 @@ export class WorkflowService {
       ...options,
       client: settings.client,
       model: settings.model,
-      maxCompletionTokens: settings.maxCompletionTokens
+      maxCompletionTokens: settings.maxCompletionTokens,
+      requestTimeoutMs: settings.requestTimeoutMs,
+      stage,
+      provider: settings.provider || "",
+      modelOutputLogWriter: this.stageModelOutputLogWriters?.get(stage) || null
     });
   }
 
-  async generateValidatedJson({ client = this.client, prompt, systemPrompt = null, model = null, maxCompletionTokens = null, frames = [], video = null, validate, retryContext = null, onResolvedMediaMode = null }) {
+  async generateValidatedJson({ client = this.client, prompt, systemPrompt = null, model = null, maxCompletionTokens = null, requestTimeoutMs = null, frames = [], video = null, validate, retryContext = null, onResolvedMediaMode = null, stage = "", provider = "", modelOutputLogWriter = null, responseSchema = null }) {
+    // 纯观测 sidecar：只收集本次的模型原文，不改重试预算、控制流与任何错误语义。
+    const recorder = stageModelOutputRecorder(modelOutputLogWriter, { stage, provider, model });
     const request = {
       prompt,
       systemPrompt,
       model,
       maxCompletionTokens,
+      // 按阶段放宽的 timeout 必须真的送到 client。三家 client 的 generateJson 都收这个
+      // 参数，但在此之前没有任何阶段把 resolveStage 解析出来的值传下来，于是
+      // animationPlanReview 配的 1800000 完全没有生效，仍按全局 900000 被掐——
+      // 实测该阶段正常出字最长 941 秒，正落在被掐的区间里。
+      // 其余阶段的默认值是 null，传 null 与不传逐字等价，行为不变。
+      requestTimeoutMs,
       onResolvedMediaMode,
       jsonRetryAttempts: 0,
-      strictJson: true
+      strictJson: true,
+      ...(responseSchema ? { responseSchema } : {}),
+      ...(recorder ? { onCompletion: (completion) => recorder.observe(completion) } : {})
     };
-    const first = frames.length || video
-      ? await client.generateJsonWithMedia({ ...request, frames, video })
-      : await client.generateJson(request);
-    // A parsed candidate may only receive another content-model call through
-    // a stage adapter that signs exact targets and performs an atomic merge.
-    // Generic whole-artifact regeneration would grant the model unrelated
-    // write access and can leak the complete failed Artifact back into the
-    // correction prompt, so unsupported stages fail closed here.
-    return validate(first);
+    try {
+      const first = frames.length || video
+        ? await client.generateJsonWithMedia({ ...request, frames, video })
+        : await client.generateJson(request);
+      // A parsed candidate may only receive another content-model call through
+      // a stage adapter that signs exact targets and performs an atomic merge.
+      // Generic whole-artifact regeneration would grant the model unrelated
+      // write access and can leak the complete failed Artifact back into the
+      // correction prompt, so unsupported stages fail closed here.
+      const value = await validate(first);
+      await recorder?.flush({ status: "succeeded" });
+      return value;
+    } catch (error) {
+      await recorder?.flush({ status: "failed", error });
+      throw error;
+    }
   }
 
   async generateAnimationFoundationWithPartialRepair({
@@ -1000,16 +2232,32 @@ export class WorkflowService {
     policy
   }) {
     let validatedBatch;
+    let repairedCandidate = null;
     try {
       validatedBatch = validate(structuredClone(candidate));
     } catch (error) {
       if (!isRecoverableAnimationModelOutputError(error)) throw error;
-      return animationBatchAttemptFailure({
-        error,
+      // 只允许一次有界补写：把缺失的台词原话插回 videoPrompt。这是整个批次路径上
+      // 唯一的局部纠错，失败即 fail closed，绝不整批重写。
+      const repaired = await this.repairAnimationShotBatchDialogue({
+        client,
+        model,
+        maxCompletionTokens,
         candidate,
-        phase: "validation"
+        error,
+        validate
       });
+      if (!repaired) {
+        return animationBatchAttemptFailure({
+          error,
+          candidate,
+          phase: "validation"
+        });
+      }
+      validatedBatch = repaired.validatedBatch;
+      repairedCandidate = repaired.candidate;
     }
+    if (repairedCandidate) candidate = repairedCandidate;
 
     const review = await this.reviewAnimationShotBatch({
       client,
@@ -1024,6 +2272,50 @@ export class WorkflowService {
       phase: review.status === "protocol_failure" ? "action_state_review_protocol" : "action_state_review",
       kind: review.status === "protocol_failure" ? "audit_protocol" : "semantic"
     });
+  }
+
+  /**
+   * 一次有界的 videoPrompt 台词补写。返回 null 表示不可修复，调用方 fail closed。
+   *
+   * 预算严格一次模型调用：这里不接受第二次尝试，补写结果必须从头通过**完整**批次
+   * 校验（同一个 validate），不是只复查被改的那一条。任何环节失败都退回原始错误，
+   * 绝不把半修好的候选当成功。
+   */
+  async repairAnimationShotBatchDialogue({
+    client,
+    model,
+    maxCompletionTokens,
+    candidate,
+    error,
+    validate
+  }) {
+    let plan;
+    try {
+      plan = planAnimationShotDialogueRepair(candidate, error);
+    } catch {
+      return null;
+    }
+    if (!plan) return null;
+
+    let envelope;
+    try {
+      envelope = await client.generateJson({
+        prompt: animationShotDialogueRepairPrompt(plan),
+        model,
+        maxCompletionTokens: animationAuditTokenLimit(maxCompletionTokens)
+      });
+    } catch (repairError) {
+      if (!isRecoverableAnimationModelOutputError(repairError)) throw repairError;
+      return null;
+    }
+
+    try {
+      const merged = mergeAnimationShotDialogueRepair(candidate, envelope, plan);
+      return { candidate: merged, validatedBatch: validate(structuredClone(merged)) };
+    } catch (mergeError) {
+      if (!isRecoverableAnimationModelOutputError(mergeError)) throw mergeError;
+      return null;
+    }
   }
 
   async reviewAnimationShotBatch({ client, model, maxCompletionTokens, validatedBatch }) {
@@ -1067,8 +2359,14 @@ export class WorkflowService {
     return result.animationPlan;
   }
 
+  async createShotVideoPrompt(input) {
+    return createSingleShotPrompt(this, input);
+  }
+
   async createAnimationPlanWithMetadata(input) {
     requireObject(input, "请求");
+    if (input.animationPlanVersion === STORYBOARD_PLAN_VERSION) return createStoryboardPlan(this, input);
+    if (input.animationPlanVersion !== undefined && input.animationPlanVersion !== "3.0") throw new InputError("不支持的 Animation Plan 生成版本");
     requireObject(input.creativeBrief, "creativeBrief");
     requireObject(input.variant, "variant");
     requireObject(input.fullStory, "fullStory");
@@ -1094,13 +2392,18 @@ export class WorkflowService {
       input.variant,
       visualGuardrails
     );
+    // direct_shot 3.1：镜头骨架在任何模型调用之前从 Full Story 确定性派生。
+    // timeRange 不可解析、跨度非正、跨场次逆序或短于供应商下限时在这里 fail fast，
+    // 不签发 Plan，也不浪费一次 Foundation 调用。
+    const directShotSkeleton = directShotMode ? deriveDirectShotSkeleton(fullStory) : null;
     const validatedInput = {
       ...input,
       fullStory,
       visualGuardrails,
       targetAspectRatio,
       backgroundMusicMode,
-      ...(videoPromptProfile ? { videoPromptProfile } : {})
+      ...(videoPromptProfile ? { videoPromptProfile } : {}),
+      ...(directShotSkeleton ? { directShotSkeleton } : {})
     };
     const settings = this.resolveStage("animationPlan", validatedInput);
     const compilerSettings = this.resolveStage("staticFrameCompiler", validatedInput);
@@ -1172,6 +2475,11 @@ export class WorkflowService {
     for (let batchIndex = 0; batchIndex < sceneBatches.length; batchIndex += 1) {
       const batchScenes = sceneBatches[batchIndex];
       const shotIdStartIndex = shotPlan.length + 1;
+      // 3.1 下本批要产出哪几个镜头是确定的，模型没有数量自由度，
+      // 因此不再喂"已用秒数/脚本预算"这类追赶进度的提示信息。
+      const batchSkeleton = directShotSkeleton
+        ? directShotSkeletonForScenes(directShotSkeleton, batchScenes)
+        : null;
       const prompt = animationShotBatchPrompt({
         ...promptInput,
         animationFoundation: foundation,
@@ -1179,15 +2487,7 @@ export class WorkflowService {
         batchIndex,
         shotIdStartIndex,
         previousShotContext: animationContinuityContext(shotPlan.at(-1)),
-        // 分批生成时模型看不到全局进度：显式喂入已用秒数与脚本预算，
-        // 它才可能判断当前落后还是超前。纯提示信息，不参与校验。
-        runtimeBudget: {
-          plannedShotCount: shotPlan.length,
-          plannedSeconds: sumShotDurationSeconds(shotPlan),
-          scriptCompletedSeconds: sumSceneScriptSeconds(sceneBatches.slice(0, batchIndex).flat()),
-          batchScriptSeconds: sumSceneScriptSeconds(batchScenes),
-          scriptTotalSeconds: sumSceneScriptSeconds(sourceScenes)
-        }
+        ...(batchSkeleton ? { directShotSkeleton: batchSkeleton } : {})
       });
       const batchContext = {
         input: validatedInput,
@@ -1195,6 +2495,7 @@ export class WorkflowService {
         sourceScenes: batchScenes,
         batchIndex,
         shotIdStartIndex,
+        skeleton: batchSkeleton,
         previousShots: shotPlan
       };
       const batchResult = await this.generateAnimationShotBatch({
@@ -1216,12 +2517,26 @@ export class WorkflowService {
     }
 
     let animationPlan = validateAnimationPlanOutput(
-      mergeAnimationPlan(foundation, shotPlan, validatedInput),
+      mergeAnimationPlan(foundation, shotPlan, validatedInput, directShotSkeleton),
       validatedInput
     );
+    let initialVideoPromptSemanticAudit = null;
+    if (directShotMode) {
+      const semanticOutcome = await this.auditInitialAnimationVideoPromptSemantics({
+        ...validatedInput,
+        sourcePlan: animationPlan,
+        rewrittenPlan: animationPlan,
+        targetProfile: videoPromptProfile
+      });
+      animationPlan = semanticOutcome.animationPlan;
+      initialVideoPromptSemanticAudit = semanticOutcome.semanticAudit;
+    }
     const directShotMetadata = directShotMode
       ? {
-        ...disabledDirectShotCompilerMetadata(compilerSettings)
+        ...disabledDirectShotCompilerMetadata(compilerSettings),
+        ...(initialVideoPromptSemanticAudit
+          ? { videoPromptSemanticAudit: initialVideoPromptSemanticAudit }
+          : {})
       }
       : null;
     return {
@@ -1244,8 +2559,8 @@ export class WorkflowService {
   async auditInitialAnimationVideoPromptSemantics(input) {
     return this.auditAnimationVideoPromptSemanticsWithBoundedRepair(input, {
       auditMode: "initial",
-      stageLabel: "MiniMax H3 首次 Animation Plan 视频提示词语义审计",
-      failurePrefix: "MiniMax H3 首次视频提示词与镜头事实不一致"
+      stageLabel: "首次 Animation Plan 视频提示词语义审计",
+      failurePrefix: "首次视频提示词与镜头事实不一致"
     });
   }
 
@@ -1313,12 +2628,16 @@ export class WorkflowService {
       });
     } catch (error) {
       if (!(error instanceof OutputContractError)) throw error;
-      throw new InputError(`${failurePrefix}：${formatAnimationVideoPromptSemanticAuditFailure(firstAudit.audit)}；${error.message}`);
+      throw new InputError(
+        `${failurePrefix}：${formatAnimationVideoPromptSemanticAuditFailure(firstAudit.audit)}；${error.message}`,
+        animationVideoPromptSemanticAuditDiagnostics(firstAudit.audit)
+      );
     }
     if (!repairPlan) {
       throw new InputError(
         `${failurePrefix}：${formatAnimationVideoPromptSemanticAuditFailure(firstAudit.audit)}。`
-        + "审计发现结构化 shot 事实冲突，或未能签发唯一安全的 videoPrompt 修复目标；本次明确终止。"
+        + "审计发现结构化 shot 事实冲突，或未能签发唯一安全的 videoPrompt 修复目标；本次明确终止。",
+        animationVideoPromptSemanticAuditDiagnostics(firstAudit.audit)
       );
     }
 
@@ -1373,7 +2692,8 @@ export class WorkflowService {
       if (finalAudit.overall.verdict !== "pass") {
         throw new InputError(
           `${failurePrefix}：唯一一次有界 videoPrompt 修复复审仍未通过：`
-          + formatAnimationVideoPromptSemanticAuditFailure(finalAudit.audit)
+          + formatAnimationVideoPromptSemanticAuditFailure(finalAudit.audit),
+          animationVideoPromptSemanticAuditDiagnostics(finalAudit.audit)
         );
       }
       await this.recordPartialRepairDebugResult(debugSession, { status: "repaired" });
@@ -1571,6 +2891,25 @@ FULL_STORY_COMPLETION_RETRY_V1
 - 只输出 JSON。`;
 }
 
+/**
+ * 完整剧情签发前的校验链。**生成（createFullStory）与按问题修改（createStoryQualityRepair）
+ * 共用这一条**——修改后的剧情就是要被签发的那一份，两边各写一遍迟早出现
+ * 「生成时会拒、修改后却放行」的漂移。
+ *
+ * targetDurationSeconds 由服务端从 sceneScript 时间轴派生：先派生再校验，
+ * 模型声明的值一律被覆盖（可唯一推导，回显不构成新事实）。
+ */
+function validateFullStoryForSigning(result, { profile, creativeBrief, variant, visualGuardrails }) {
+  const story = ensureFullStoryMatchesProfile(
+    ensureOutputContract(deriveFullStoryTargetDuration(result), "fullStory"),
+    profile, creativeBrief, variant, visualGuardrails
+  );
+  // New stories have one action timeline. Confirm that the existing
+  // downstream can consume it before committing, without generating shots.
+  if (isNarrativeFullStory(story)) deriveDirectShotSkeleton(story);
+  return story;
+}
+
 function groundedStageInput(input, groundingKey) {
   const reconstruction = input.sourceScriptReconstruction;
   if (!reconstruction || typeof reconstruction !== "object" || Array.isArray(reconstruction) || !Object.keys(reconstruction).length) {
@@ -1601,6 +2940,59 @@ function groundedStageInput(input, groundingKey) {
   }
 }
 
+// 阶段模型输出观测：先把本次调用拿到的每条 completion 收下来，等阶段判定出来再一次性落盘。
+// 失败判定复用 classifyAttemptError，错误码不另建第二份映射。纯 sidecar：不改重试预算、
+// 不改控制流、不改错误语义，写盘异常一律吞掉（fail-open）。
+function stageModelOutputRecorder(writer, { stage = "", provider = "", model = null } = {}) {
+  if (!writer || typeof writer.recordAttempt !== "function" || !writer.enabled) return null;
+  const completions = [];
+  const operationId = `operation:${randomUUID()}`;
+  let previousAtMs = Date.now();
+  return {
+    observe(completion) {
+      const finishedAtMs = Date.now();
+      completions.push({ completion: completion || {}, startedAtMs: previousAtMs, finishedAtMs });
+      previousAtMs = finishedAtMs;
+    },
+    async flush({ status = "succeeded", error = null } = {}) {
+      if (!completions.length) return;
+      const issue = status === "failed" ? classifyAttemptError(error) : null;
+      for (let callIndex = 0; callIndex < completions.length; callIndex += 1) {
+        const { completion, startedAtMs, finishedAtMs } = completions[callIndex];
+        // 只有最后一条对应本次阶段判定；更早的 completion 已被 client 内部丢弃，不臆造结论。
+        const final = callIndex === completions.length - 1;
+        try {
+          await writer.recordAttempt({
+            operationId,
+            callIndex,
+            stage,
+            provider: completion.providerName || provider,
+            model: completion.model || model || "",
+            reason: callIndex === 0 ? "primary" : "client-retry",
+            status: final ? status : "superseded",
+            category: final && issue ? issue.category : "",
+            code: final ? (issue ? issue.code : "MODEL_COMPLETION_ACCEPTED") : "",
+            // 校验器的结构化 details 由 classifyAttemptError 原样带出；writer 只留
+            // code / jsonPointer / reason 并脱敏。漏传时 metadata 恒为空数组，失败定位只剩错误文案。
+            diagnostics: final && issue ? issue.diagnostics : [],
+            retryable: Boolean(final && issue?.retryable),
+            finishReason: String(completion.finishReason || ""),
+            providerRequestId: String(completion.requestId || ""),
+            usage: completion.usage || null,
+            content: typeof completion.content === "string" ? completion.content : "",
+            contentPresent: typeof completion.content === "string",
+            startedAt: new Date(startedAtMs).toISOString(),
+            finishedAt: new Date(finishedAtMs).toISOString(),
+            durationMs: Math.max(0, finishedAtMs - startedAtMs)
+          });
+        } catch {
+          // writer 自身已经吞掉写入异常，这里只兜住意外抛出。
+        }
+      }
+    }
+  };
+}
+
 function normalizeCharacterReference(result = {}, fallback = {}, input = {}) {
   const value = result.characterReference || result;
   const characterName = String(value.characterName || fallback.characterName || "").trim();
@@ -1620,9 +3012,34 @@ function normalizeCharacterReference(result = {}, fallback = {}, input = {}) {
     referenceImageNotes: String(value.referenceImageNotes || value.imageAnalysis || fallback.referenceImageNotes || "").trim()
   };
   // 人物参考精修是用户上传环节：边界偏差只随结果回传提醒，不阻断用户继续下一步。
-  // boundaryWarning 只用于展示，浏览器写回 Plan 前必须剥离，不进入 Artifact。
+  // boundaryWarning 与 referenceImageOverrideNotice 都只用于展示，浏览器写回 Plan 前必须剥离，不进入 Artifact。
+  // 配角以用户上传的参考图为准，覆盖了什么由模型如实回报；固定角色没有覆盖权，
+  // 那条路的唯一提醒通道仍是 boundaryWarning，模型即使写了覆盖说明也丢弃。
+  const fixedCharacterName = String(input.visualGuardrails?.fixedCharacterBoundary?.characterName || "").trim();
+  const referenceImageOverrideNotice = characterName === fixedCharacterName
+    ? ""
+    : String(value.referenceImageOverrideNotice || "").trim();
+  // 提醒只描述本次这一步，绝不从上一版角色参考沿用。
+  delete normalized.referenceImageOverrideNotice;
+  delete normalized.boundaryRestoreNotice;
+  // 精修可以按参考图改写外观，但不得因此丢掉全局必需角色事实——「穿着适合户外写生的村民
+  // 服装」被换成具体衣物时，identity 类的「村民」就没了，而判定是字面比对。缺哪条就在
+  // consistencyTags 尾部按签发顺序补它的 exact canonicalName：冻结 appearancePrompt，
+  // 不用同义词、不重排、不改写外观，与 Foundation 局部纠错同一条最小补写语义。
+  // 缺失清单来自与判定共用的扫描口径，不另建。只补非 appearance 事实：外观写错了
+  // 必须继续提醒并在渲染前硬失败，补标签不能顶替把长相写对。
+  const restoredRequiredTraits = characterReferenceRestorableMissingTraits(normalized, input.visualGuardrails);
+  if (restoredRequiredTraits.length) {
+    normalized.consistencyTags = [...normalized.consistencyTags, ...restoredRequiredTraits];
+  }
   const boundaryWarning = characterReferenceBoundaryMismatch(normalized, input.visualGuardrails);
-  return boundaryWarning ? { ...normalized, boundaryWarning: `模型输出未通过校验：${boundaryWarning}` } : normalized;
+  if (boundaryWarning) normalized.boundaryWarning = `模型输出未通过校验：${boundaryWarning}`;
+  if (referenceImageOverrideNotice) normalized.referenceImageOverrideNotice = referenceImageOverrideNotice;
+  // 服务端改了模型输出就必须说出来，不做静默修补。
+  if (restoredRequiredTraits.length) {
+    normalized.boundaryRestoreNotice = `模型改写外观时丢了全局必需角色事实，已按签发顺序补进一致性标签：${restoredRequiredTraits.join("、")}`;
+  }
+  return normalized;
 }
 
 function normalizeStringArray(value, fallback = []) {
@@ -1700,19 +3117,6 @@ function validateAnimationFoundationOutput(result, input = {}) {
   resolveExplicitAnimationPrimaryCharacterName(input, foundation, {
     path: "animationFoundation"
   });
-  if (expectedSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
-    // 一份提示词同时交给 Seedance 2.0 与 MiniMax H3，取两者交集：4–6 秒整数。
-    const expectedDurationRange = { min: 4, max: 6 };
-    const actualDurationRange = foundation.productionStrategy?.recommendedShotDurationSeconds || {};
-    if (
-      Number(actualDurationRange.min) !== expectedDurationRange.min
-      || Number(actualDurationRange.max) !== expectedDurationRange.max
-    ) {
-      throw new OutputContractError(
-        `animationFoundation.productionStrategy.recommendedShotDurationSeconds 必须为 ${expectedDurationRange.min}–${expectedDurationRange.max} 秒`
-      );
-    }
-  }
   const checked = ensureAnimationPlanMatchesProfile(
     { ...foundation, shotPlan: [] },
     input.creatorProfile,
@@ -1723,10 +3127,18 @@ function validateAnimationFoundationOutput(result, input = {}) {
   );
   const { shotPlan: ignoredShotPlan, ...validatedFoundation } = checked;
   if (expectedSchemaVersion !== ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) return validatedFoundation;
+  // 3.1 的镜头时长全部由 Full Story timeRange 派生，"建议单镜时长"这个字段
+  // 已经没有对应的事实，模型即使仍旧输出也一律剥掉，不留一个无人负责的旧字段。
+  const {
+    recommendedShotDurationSeconds: droppedShotDurationRecommendation,
+    ...validatedProductionStrategy
+  } = validatedFoundation.productionStrategy || {};
   return {
     ...validatedFoundation,
     productionStrategy: {
-      ...validatedFoundation.productionStrategy,
+      ...validatedProductionStrategy,
+      // 全片目标时长 = 骨架各镜时长之和 = 各场 timeRange 跨度之和。
+      targetRuntimeSeconds: directShotSkeletonRuntimeSeconds(input.directShotSkeleton),
       videoPromptProfile: structuredClone(input.videoPromptProfile),
       backgroundMusicMode: input.backgroundMusicMode || BACKGROUND_MUSIC_NONE
     }
@@ -2073,12 +3485,41 @@ function assertOnlyAnimationVideoPromptsChanged(sourcePlan, rewrittenPlan, targe
   }
 }
 
+// direct_shot 3.1 的镜头骨架是服务端从 Full Story 派生的唯一权威。
+// shotId / durationSeconds / storyPurpose / emotionalTarget / sceneId 由服务端
+// 确定性注入，这里只复核数量、顺序与 sourceSceneId 归属：
+// 它们一旦对不上，说明模型写错了镜头内容的归属，注入只会把错误藏起来。
+function assertDirectShotBatchMatchesSkeleton(shots, skeleton, { path = "animationShotBatch" } = {}) {
+  if (!Array.isArray(skeleton)) {
+    throw new OutputContractError(`${path} 缺少服务端签发的镜头骨架，无法校验一对一映射`);
+  }
+  const expectation = formatDirectShotSkeleton(skeleton);
+  if (shots.length !== skeleton.length) {
+    throw new OutputContractError(
+      `${path}.shotPlan 必须恰好输出 ${skeleton.length} 个镜头，实际 ${shots.length} 个。`
+      + `镜头数量由 Full Story 的 timeRange 确定性派生，不得拆分、合并、新增或遗漏。`
+      + `本批骨架：${expectation}`
+    );
+  }
+  shots.forEach((shot, index) => {
+    const expected = skeleton[index];
+    if (String(shot?.sourceSceneId || "").trim() !== expected.sourceSceneId) {
+      throw new OutputContractError(
+        `${path}.shotPlan[${index}].sourceSceneId 必须是 ${expected.sourceSceneId}，实际 ${shot?.sourceSceneId || "缺失"}。`
+        + `镜头顺序必须逐位对应骨架：${expectation}`
+      );
+    }
+  });
+  return shots;
+}
+
 function validateAnimationShotBatchOutput(result, {
   input,
   foundation,
   sourceScenes,
   batchIndex = null,
   shotIdStartIndex,
+  skeleton = null,
   previousShots = []
 }) {
   const sourceSceneIds = sourceScenes.map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean);
@@ -2137,7 +3578,6 @@ function validateAnimationShotBatchOutput(result, {
     if (shot.sceneId !== expectedSceneId) {
       throw new OutputContractError(`animationShotBatch.shotPlan[${index}].sceneId 必须使用 ${shot.sourceSceneId} 映射的场景参考 ${expectedSceneId || "未映射"}`);
     }
-    ensureShotDurationWithinFoundation(shot, index, foundation);
   });
 
   const covered = new Set(batch.shotPlan.map((shot) => shot.sourceSceneId));
@@ -2146,30 +3586,11 @@ function validateAnimationShotBatchOutput(result, {
     throw new OutputContractError(`animationShotBatch 未覆盖当前批次剧情场次：${missingScenes.join("、")}`);
   }
 
-  // 每场镜头数下限由该场 timeRange ÷ 单镜时长上限确定性推出。
-  // 低于下限说明该场的剧情动作被压进了太少的镜头，必须让模型重出，不得放行。
-  // 只作用于当前 direct_shot 主流程；旧 v2 兼容路径的镜头数语义不在本次授权范围内。
+  // 3.1：本批镜头由服务端骨架完全确定，模型没有数量、顺序或时长的自由度。
+  // 数量或场次归属对不上说明模型自行拆镜、合并或漏写，必须明确失败——
+  // 服务端只对可从 Full Story 唯一推导的字段做确定性注入，不掩盖内容错位。
   if (foundation?.promptSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
-  const maxShotDurationSeconds = animationMaxShotDurationSeconds(foundation);
-  const shotCountBySourceScene = batch.shotPlan.reduce((counts, shot) => {
-    const sceneId = String(shot?.sourceSceneId || "").trim();
-    counts.set(sceneId, (counts.get(sceneId) || 0) + 1);
-    return counts;
-  }, new Map());
-  sourceScenes.forEach((scene) => {
-    const sceneId = String(scene?.sceneId || "").trim();
-    if (!sceneId) return;
-    const minimumShots = sceneMinimumShotCount(scene, maxShotDurationSeconds);
-    const actualShots = shotCountBySourceScene.get(sceneId) || 0;
-    if (actualShots < minimumShots) {
-      const scriptSeconds = parseSceneTimeRangeSeconds(scene?.timeRange);
-      throw new OutputContractError(
-        `animationShotBatch 中 ${sceneId} 只产出 ${actualShots} 个 shot，`
-        + `脚本 timeRange ${scriptSeconds === null ? "未知" : `${scriptSeconds} 秒`} 要求至少 ${minimumShots} 个`
-        + `（单镜上限 ${maxShotDurationSeconds} 秒）。请按 visibleAction 的主要动作目标拆镜，不要把多个动作压进一条 shot。`
-      );
-    }
-  });
+    assertDirectShotBatchMatchesSkeleton(batch.shotPlan, skeleton);
   }
 
   const previousCount = previousShots.length;
@@ -2206,6 +3627,296 @@ function validateSeedanceBackgroundMusicSentence(batch, foundation, shotIndexOff
       + "逐字收尾（用户已关闭背景音乐）。"
     );
   });
+}
+
+// 定向修订里模型唯一可写的七个字段。与 ensureRevisionContract 的 WRITABLE 一致，
+// 合并按这份清单逐字段覆盖——服务端签发的六个字段因此**由构造保证**不可能被改动。
+const ANIMATION_PLAN_REVISION_WRITABLE_FIELDS = Object.freeze([
+  "videoPrompt", "cameraMotion", "characterAction", "dialogueOrSubtitle",
+  "soundDesign", "continuityNotes", "acceptanceCriteria"
+]);
+
+// 本次要改哪些问题与建议。默认用报告自己排的优先级；报告没排就全取。
+// 请求点名了不存在的 id 一律明确失败——静默忽略会让用户以为改了、实际没改。
+function resolveAnimationPlanRevisionSelection(input, report, shotIds) {
+  const allIssues = Array.isArray(report?.issues) ? report.issues : [];
+  const allUpgrades = Array.isArray(report?.upgradePath) ? report.upgradePath : [];
+  const brief = report?.revisionBrief || {};
+  const pick = (requested, fallback, pool, key, label) => {
+    if (requested !== undefined && requested !== null) {
+      if (!Array.isArray(requested)) throw new InputError(`${label} 必须是数组`);
+      const wanted = requested.map((id) => String(id || "").trim()).filter(Boolean);
+      const known = new Set(pool.map((item) => String(item?.[key] || "")));
+      const unknown = wanted.filter((id) => !known.has(id));
+      if (unknown.length) throw new InputError(`${label} 引用了报告里不存在的条目：${unknown.join("、")}`);
+      return pool.filter((item) => wanted.includes(String(item?.[key] || "")));
+    }
+    const defaults = (Array.isArray(fallback) ? fallback : []).map((id) => String(id || ""));
+    if (!defaults.length) return null;
+    return pool.filter((item) => defaults.includes(String(item?.[key] || "")));
+  };
+  let issues = pick(input.selectedIssueIds, brief.priorityIssueIds, allIssues, "issueId", "selectedIssueIds");
+  let upgrades = pick(input.selectedUpgradeIds, brief.priorityUpgradeIds, allUpgrades, "upgradeId", "selectedUpgradeIds");
+  // 报告没给优先级、请求也没点名时才全取；只要任意一侧有明确选择就不再自动扩大范围。
+  if (issues === null && upgrades === null) {
+    issues = allIssues;
+    upgrades = allUpgrades;
+  }
+  issues = issues || [];
+  upgrades = upgrades || [];
+  if (!issues.length && !upgrades.length) {
+    throw new InputError("本次修订没有选中任何问题或升级建议");
+  }
+  const targetShotIds = revisionTargetShotIds([...issues, ...upgrades], shotIds);
+  if (!targetShotIds.length) {
+    throw new InputError("选中的问题与升级建议没有指向任何存在的镜头，无法定向修订");
+  }
+  return { issues, upgrades, targetShotIds };
+}
+
+// 模型只被授权改本次点名的镜头。返回了范围外的镜头就是自行扩大写入范围，
+// 必须明确失败——那不是「顺手多改了一点」，是越权写入未经评审的镜头。
+function assertRevisionStaysInScope(revision, targetShotIds) {
+  const rows = Array.isArray(revision?.revisedShots) ? revision.revisedShots : [];
+  const allowed = new Set(targetShotIds);
+  const outside = rows
+    .map((row) => String(row?.shotId || ""))
+    .filter((id) => id && !allowed.has(id));
+  if (!outside.length) return revision;
+  throw new ReviewContractError(
+    `定向修订越界：本次只授权修改 ${targetShotIds.join("、")}，但结果包含 ${outside.join("、")}`,
+    outside.map((id) => ({
+      code: "REVISION_SHOT_OUT_OF_SCOPE",
+      path: `/revisedShots/${rows.findIndex((row) => String(row?.shotId || "") === id)}/shotId`,
+      reason: `${id} 不在本次授权修改的镜头内，只能修改 ${targetShotIds.join("、")}`
+    }))
+  );
+}
+
+// 只按可写字段逐个覆盖。不做整对象替换：那会让模型漏写的键消失、多写的键混进 Plan。
+function mergeAnimationPlanRevision(animationPlan, revision) {
+  const byId = new Map(
+    (Array.isArray(revision?.revisedShots) ? revision.revisedShots : [])
+      .map((row) => [String(row?.shotId || ""), row])
+  );
+  return {
+    ...structuredClone(animationPlan),
+    shotPlan: animationPlan.shotPlan.map((shot) => {
+      const row = byId.get(String(shot?.shotId || ""));
+      const merged = structuredClone(shot);
+      if (!row) return merged;
+      for (const field of ANIMATION_PLAN_REVISION_WRITABLE_FIELDS) {
+        if (row[field] !== undefined) merged[field] = structuredClone(row[field]);
+      }
+      return merged;
+    })
+  };
+}
+
+// 证明可写字段之外逐字节不变。合并由构造保证这一点，但 CLAUDE.md 第三节要求
+// 有界纠错必须**证明**目标之外没被改动，而不是相信构造。
+function assertOnlyRevisionFieldsChanged(sourcePlan, mergedPlan) {
+  const strip = (plan) => ({
+    ...plan,
+    shotPlan: plan.shotPlan.map((shot) => {
+      const rest = { ...shot };
+      for (const field of ANIMATION_PLAN_REVISION_WRITABLE_FIELDS) delete rest[field];
+      return rest;
+    })
+  });
+  if (JSON.stringify(strip(sourcePlan)) !== JSON.stringify(strip(mergedPlan))) {
+    throw new OutputContractError("定向修订改动了可写字段之外的内容，已拒绝合并");
+  }
+  const sourceKeys = sourcePlan.shotPlan.map((shot) => Object.keys(shot).sort().join(","));
+  const mergedKeys = mergedPlan.shotPlan.map((shot) => Object.keys(shot).sort().join(","));
+  if (JSON.stringify(sourceKeys) !== JSON.stringify(mergedKeys)) {
+    throw new OutputContractError("定向修订增删了镜头字段，已拒绝合并");
+  }
+  return mergedPlan;
+}
+
+// 重试只重做被拦的镜头，其余沿用上一次的输出：省 token，也避免动到已经通过的部分。
+function mergeRevisionAttempts(previousRevision, retryRevision) {
+  const rows = new Map(
+    (Array.isArray(previousRevision?.revisedShots) ? previousRevision.revisedShots : [])
+      .map((row) => [String(row?.shotId || ""), row])
+  );
+  for (const row of Array.isArray(retryRevision?.revisedShots) ? retryRevision.revisedShots : []) {
+    rows.set(String(row?.shotId || ""), row);
+  }
+  return { revisedShots: [...rows.values()] };
+}
+
+// 从结构化诊断里解析出要重做的镜头。三条路径都试：修订结果下标、正文里的镜头号、
+// 合并后 Plan 的 shotPlan 下标。一个都解析不出来时重做全部目标镜头——
+// 宁可多发一点上下文，也不能靠猜某个镜头没问题而把它排除在外。
+//
+// 结果**必须收敛到本次授权的镜头内**：越界诊断（REVISION_SHOT_OUT_OF_SCOPE）点名的
+// 恰恰是不该改的那些镜头，原样带进重试提示词等于把它们的原文发过去、请模型接着改。
+function blockedRevisionShotIds(details, candidate, shotIds, targetShotIds) {
+  const allowed = new Set(targetShotIds);
+  const resolved = resolveBlockedShotIds(details, candidate, shotIds).filter((id) => allowed.has(id));
+  return resolved.length ? resolved : [...targetShotIds];
+}
+
+function resolveBlockedShotIds(details, candidate, shotIds) {
+  const rows = Array.isArray(candidate?.revisedShots) ? candidate.revisedShots : [];
+  const known = new Set(shotIds);
+  const hit = new Set();
+  for (const detail of Array.isArray(details) ? details : []) {
+    const text = `${detail?.path || ""} ${detail?.reason || ""}`;
+    const revised = /\/revisedShots\/(\d+)/u.exec(String(detail?.path || ""));
+    if (revised) {
+      const id = String(rows[Number(revised[1])]?.shotId || "");
+      if (known.has(id)) hit.add(id);
+    }
+    const planIndex = /shotPlan\[(\d+)\]/u.exec(text);
+    if (planIndex && shotIds[Number(planIndex[1])]) hit.add(shotIds[Number(planIndex[1])]);
+    for (const match of text.matchAll(/A\d+/gu)) {
+      if (known.has(match[0])) hit.add(match[0]);
+    }
+  }
+  return shotIds.filter((id) => hit.has(id));
+}
+
+// ReviewContractError 不在 classifyAttemptError 的分支表里，会落到
+// 「internal / retryable: false」的兜底，把本该重试一次的内容错误变成不可重试。
+// 转成 OutputContractError 后被判为 output-contract、retryable，details 进 diagnostics。
+//
+// 两条路径共用：修订（validate 里合并后复验，走 coordinator，转换同时恢复了重试能力）
+// 与终审（validate 里覆盖率复验，走 generateValidatedJson，**只发一次、fail closed**，
+// 转换买到的是正确归属与能送到用户手里的结构化诊断，不是多一次机会）。
+function reviewContractAsOutputContract(error) {
+  const wrapped = new OutputContractError(error.message, error.details);
+  wrapped.code = error.code;
+  return wrapped;
+}
+
+/** 命题定向修订的调用元数据。与下面的评审那份同形，只是换一个 scope 键。 */
+function candidateRevisionMetadata({
+  provider = "",
+  model = "",
+  providerCalls = 1,
+  rejections = []
+} = {}) {
+  const list = Array.isArray(rejections) ? rejections : [];
+  return {
+    storyCandidateRevision: {
+      provider,
+      model,
+      providerCalls,
+      rejections: list.map((rejection, index) => ({
+        attempt: index + 1,
+        message: String(rejection?.message || ""),
+        details: Array.isArray(rejection?.details) ? rejection.details : []
+      }))
+    }
+  };
+}
+
+/**
+ * 候选对照评审的调用元数据。与定向修订的 revisionMetadata 同规格：
+ * **服务端拦过一次就必须说出来**，不能让用户以为模型一次就写对了。
+ *
+ * 与那边的一处不同：这里记的是 rejections **数组**而不是单个
+ * firstAttemptRejection。两次都被内容闸门拦下时两条都要在，否则就重演了
+ * 「契约写着把两次诊断如实报出、实现只报第二次」那个已登记的不符。
+ */
+function candidateReviewMetadata({
+  provider = "",
+  model = "",
+  providerCalls = 1,
+  rejections = []
+} = {}) {
+  const list = Array.isArray(rejections) ? rejections : [];
+  return {
+    storyCandidateReview: {
+      provider,
+      model,
+      providerCalls,
+      rejections: list.map((rejection, index) => ({
+        attempt: index + 1,
+        message: String(rejection?.message || ""),
+        details: Array.isArray(rejection?.details) ? rejection.details : []
+      }))
+    }
+  };
+}
+
+/** 承诺核对的调用元数据，与评审同形状：拦过一次就必须说出来。 */
+// stageKey 让剧情体检复用同一个工厂——两档都是「两次调用 + 允许第一次做错」，
+// 上报的四个字段完全一样，各写一份只会漂。浏览器按 metadata[stageKey] 取。
+function promiseCheckMetadata({
+  provider = "",
+  model = "",
+  providerCalls = 1,
+  rejections = [],
+  stageKey = "fullStoryPromiseCheck"
+} = {}) {
+  const list = Array.isArray(rejections) ? rejections : [];
+  return {
+    [stageKey]: {
+      provider,
+      model,
+      providerCalls,
+      rejections: list.map((rejection, index) => ({
+        attempt: index + 1,
+        message: String(rejection?.message || ""),
+        details: Array.isArray(rejection?.details) ? rejection.details : []
+      }))
+    }
+  };
+}
+
+/**
+ * 两次都失败时，把**每一次**的诊断都带进最终错误。
+ *
+ * coordinator 抛出的 ModelPipelineError 只带最后一次的 issue.diagnostics，
+ * attempts[] 虽有两条却不带各自的 diagnostics——用户看到的就只有第二次那几条，
+ * 完全不知道第一次错在哪、重试有没有改善。每条诊断加一个 attempt 序号
+ * （额外字段会进 ValidationDiagnostic.metadata 并被 toJSON 带出去）。
+ *
+ * 只在这一条路径上重建错误：其余字段（category / code / origin / httpStatus /
+ * retryable / attempts / cause）逐字照抄，不改变归属与状态码。
+ *
+ * 合并结果一定是 coordinator 那份的超集，所以只要记下过任何内容诊断就用合并版。
+ * 一次内容失败 + 一次传输失败也走这条路——否则那一次的内容诊断会被最后那次
+ * 没有诊断的传输失败盖掉。完全没有内容诊断（两次都是传输失败）时原样上抛。
+ */
+function candidateReviewPipelineFailure(error, rejections = []) {
+  const list = Array.isArray(rejections) ? rejections : [];
+  const diagnostics = list.flatMap((rejection, index) => (
+    (Array.isArray(rejection?.details) ? rejection.details : [])
+      .map((detail) => ({ ...detail, attempt: index + 1 }))
+  ));
+  if (!(error instanceof ModelPipelineError) || !diagnostics.length) return error;
+  return new ModelPipelineError(error.message, {
+    category: error.category,
+    code: error.code,
+    origin: error.origin,
+    httpStatus: error.httpStatus,
+    retryable: error.retryable,
+    diagnostics,
+    attempts: error.attempts,
+    cause: error.cause
+  });
+}
+
+function revisionMetadata({
+  provider = "",
+  model = "",
+  providerCalls = 1,
+  firstAttemptRejection = null
+} = {}) {
+  return {
+    animationPlanRevision: {
+      provider,
+      model,
+      providerCalls,
+      // 服务端拦过一次就必须说出来，不能让用户以为模型一次就写对了。
+      firstAttemptRejection
+    }
+  };
 }
 
 function resolveExplicitAnimationPrimaryCharacterName(input = {}, foundation = {}, {
@@ -2482,7 +4193,7 @@ function animationPrimaryCharacterFrameDiagnostic({
   };
 }
 
-function createAnimationShotBatchRepairContext({ foundation, shotIdStartIndex }) {
+function createAnimationShotBatchRepairContext({ foundation, shotIdStartIndex, skeleton = null }) {
   const mappedSceneIds = new Map();
   for (const scene of foundation?.sceneReferencePrompts || []) {
     const sceneId = String(scene?.sceneId || "").trim();
@@ -2499,7 +4210,8 @@ function createAnimationShotBatchRepairContext({ foundation, shotIdStartIndex })
 
   return Object.freeze({
     shotIdStartIndex: Number(shotIdStartIndex),
-    sceneIdBySourceScene: Object.freeze(sceneIdBySourceScene)
+    sceneIdBySourceScene: Object.freeze(sceneIdBySourceScene),
+    skeleton: Array.isArray(skeleton) ? Object.freeze([...skeleton]) : null
   });
 }
 
@@ -2515,14 +4227,27 @@ export function repairAnimationShotBatchStructure(candidate, immutableContext = 
 
   const sceneIdBySourceScene = new Map(immutableContext.sceneIdBySourceScene || []);
   const shotIdStartIndex = Number(immutableContext.shotIdStartIndex);
+  // 骨架长度对得上时，服务端独占的派生字段按位置确定性写回：
+  // 它们全部可以从 Full Story 唯一推导，模型回显错了不构成新事实。
+  // 长度对不上时一律不动，交给 validator 明确报错，避免把错位的内容重新贴标签。
+  const skeleton = Array.isArray(immutableContext.skeleton)
+    && immutableContext.skeleton.length === repaired.shotPlan.length
+    ? immutableContext.skeleton
+    : null;
   return {
     ...repaired,
     shotPlan: repaired.shotPlan.map((shot, index) => {
       if (!isPlainObject(shot)) return shot;
       const nextShot = structuredClone(shot);
+      const skeletonShot = skeleton ? skeleton[index] : null;
       const shotNumber = (Number.isFinite(shotIdStartIndex) ? shotIdStartIndex : 1) + index;
-      const shotId = `A${String(shotNumber).padStart(2, "0")}`;
+      const shotId = skeletonShot ? skeletonShot.shotId : `A${String(shotNumber).padStart(2, "0")}`;
       nextShot.shotId = shotId;
+      if (skeletonShot) {
+        nextShot.durationSeconds = skeletonShot.durationSeconds;
+        nextShot.storyPurpose = skeletonShot.storyPurpose;
+        nextShot.emotionalTarget = skeletonShot.emotionalTarget;
+      }
 
       const mappedSceneId = sceneIdBySourceScene.get(nextShot.sourceSceneId);
       if (mappedSceneId) {
@@ -2670,20 +4395,7 @@ function rewriteShotNegativePromptEvidence(negativePrompts = {}, shotId) {
   return rewritten;
 }
 
-function ensureShotDurationWithinFoundation(shot, index, foundation) {
-  const recommendation = foundation.productionStrategy?.recommendedShotDurationSeconds || {};
-  const minimum = Number(recommendation.min);
-  const maximum = Number(recommendation.max);
-  const duration = Number(shot.durationSeconds);
-  if (Number.isFinite(minimum) && duration < minimum) {
-    throw new OutputContractError(`animationShotBatch.shotPlan[${index}].durationSeconds 不得小于 ${minimum}`);
-  }
-  if (Number.isFinite(maximum) && duration > maximum) {
-    throw new OutputContractError(`animationShotBatch.shotPlan[${index}].durationSeconds 不得大于 ${maximum}`);
-  }
-}
-
-function mergeAnimationPlan(foundation, shotPlan, input = {}) {
+function mergeAnimationPlan(foundation, shotPlan, input = {}, skeleton = null) {
   const knownSceneIds = new Set((foundation.sceneReferencePrompts || []).map((scene) => String(scene?.sceneId || "").trim()));
   const knownSourceSceneIds = new Set((input.fullStory?.sceneScript || []).map((scene) => String(scene?.sceneId || "").trim()).filter(Boolean));
   const shotIds = new Set();
@@ -2707,11 +4419,39 @@ function mergeAnimationPlan(foundation, shotPlan, input = {}) {
     if (!relatedByScene.has(shot.sceneId)) relatedByScene.set(shot.sceneId, []);
     relatedByScene.get(shot.sceneId).push(shot.shotId);
   });
+  const directShotMode = foundation.promptSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION;
+  const plannedSeconds = sumShotDurationSeconds(shotPlan);
+  if (directShotMode) {
+    // 合并后再对整份 shotPlan 与完整骨架做一次逐位复核：分批生成时每批
+    // 只看得到自己那一段，全片的数量、顺序和总时长必须在这里最终确认。
+    assertDirectShotBatchMatchesSkeleton(shotPlan, skeleton, { path: "animationPlan" });
+    shotPlan.forEach((shot, index) => {
+      const expected = skeleton[index];
+      if (shot.shotId !== expected.shotId) {
+        throw new OutputContractError(
+          `animationPlan.shotPlan[${index}].shotId 必须是 ${expected.shotId}，实际 ${shot.shotId}`
+        );
+      }
+      if (Number(shot.durationSeconds) !== expected.durationSeconds) {
+        throw new OutputContractError(
+          `animationPlan.shotPlan[${index}].durationSeconds 必须是 ${expected.durationSeconds} 秒`
+          + `（由 ${expected.sourceSceneId} 的 timeRange ${expected.sceneTimeRange} 确定性派生），`
+          + `实际 ${shot.durationSeconds}`
+        );
+      }
+    });
+    const targetRuntimeSeconds = Number(foundation.productionStrategy?.targetRuntimeSeconds);
+    if (plannedSeconds !== targetRuntimeSeconds) {
+      throw new OutputContractError(
+        `animationPlan 镜头时长合计 ${plannedSeconds} 秒与 productionStrategy.targetRuntimeSeconds `
+        + `${targetRuntimeSeconds} 秒不一致`
+      );
+    }
+  }
   const recommendedDuration = foundation.productionStrategy?.recommendedShotDurationSeconds || {};
   const durationRange = Number.isFinite(Number(recommendedDuration.min)) && Number.isFinite(Number(recommendedDuration.max))
     ? `${recommendedDuration.min}–${recommendedDuration.max} 秒`
     : "建议时长范围";
-  const directShotMode = foundation.promptSchemaVersion === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION;
   return {
     ...foundation,
     sceneReferencePrompts: foundation.sceneReferencePrompts.map((scene) => {
@@ -2727,7 +4467,9 @@ function mergeAnimationPlan(foundation, shotPlan, input = {}) {
       firstLastFrameContinuity: directShotMode
         ? `当前直接视频模式不生产首尾帧；已合并 ${shotPlan.length} 个镜头并通过场景引用与连续性字段校验。`
         : `已合并 ${shotPlan.length} 个镜头，每镜均已通过首帧、尾帧、场景引用和连续性字段校验。`,
-      shotDurationControlled: `${shotPlan.length} 个镜头的时长均已通过 ${durationRange} 约束校验。`,
+      shotDurationControlled: directShotMode
+        ? `${shotPlan.length} 个镜头的时长均由 Full Story 场次 timeRange 确定性派生，合计 ${plannedSeconds} 秒。`
+        : `${shotPlan.length} 个镜头的时长均已通过 ${durationRange} 约束校验。`,
       readyForVideoGeneration: directShotMode
         ? "全部直接视频 shotPlan 已在服务端合并并通过最终契约校验，可进入视频生成。"
         : "全部逐镜 shotPlan 已在服务端合并并通过最终契约校验，可进入图片与视频生成。"
@@ -2740,19 +4482,6 @@ function sumShotDurationSeconds(shots) {
     const duration = Number(shot?.durationSeconds);
     return Number.isFinite(duration) ? total + duration : total;
   }, 0);
-}
-
-// 任意一场 timeRange 不可解析就返回 null：宁可不显示预算，也不给出半真的合计。
-function sumSceneScriptSeconds(scenes) {
-  const list = Array.isArray(scenes) ? scenes : [];
-  if (!list.length) return 0;
-  let total = 0;
-  for (const scene of list) {
-    const seconds = parseSceneTimeRangeSeconds(scene?.timeRange);
-    if (seconds === null) return null;
-    total += seconds;
-  }
-  return total;
 }
 
 function animationContinuityContext(shot) {
@@ -2886,7 +4615,24 @@ function normalizeStageDefaults(stageDefaults = null, fallback = {}) {
       maxCompletionTokens: fallback.staticFrameCompilerMaxCompletionTokens || 4096,
       requestTimeoutMs: fallback.staticFrameCompilerTimeoutMs || 300000
     },
-    characterReference: { provider, model: "", maxCompletionTokens: null }
+    characterReference: { provider, model: "", maxCompletionTokens: null },
+    // 剧情体检此前不在这张表里，于是任何不经服务端的调用都解析出 provider: ""，
+    // 在调模型**之前**就 InputError——这正是它长期没被真实调用过的一部分原因。
+    // 沿用剧情阶段的设置（写这份剧情的那个模型自己批自己会偏松，见方法头注释）。
+    // 只补这一项：storyCandidateReview / storyCandidateRevision / animationPlanReview /
+    // animationPlanRevision 同样缺，但那是独立改动，不顺手做。
+    storyQualityReview: {
+      provider: fallback.storyProvider || provider,
+      model: fallback.storyModel || "",
+      maxCompletionTokens: fallback.storyMaxCompletionTokens || null
+    },
+    // 按问题修改与剧情体检同规格：沿用剧情阶段的设置。新阶段一上线就登记，
+    // 不重演体检「漏在表外、调模型之前就 InputError」那一次。
+    storyQualityRepair: {
+      provider: fallback.storyProvider || provider,
+      model: fallback.storyModel || "",
+      maxCompletionTokens: fallback.storyMaxCompletionTokens || null
+    }
   };
   const merged = { ...defaults, ...(stageDefaults || {}) };
   return Object.fromEntries(Object.entries(merged).map(([stage, value]) => [stage, normalizeStageSetting(value, defaults[stage] || defaults.analysis)]));
@@ -2950,7 +4696,13 @@ function stageLabel(stage) {
     fullStory: "完整剧情",
     animationPlan: "动画镜头生产包",
     staticFrameCompiler: "Static Frame Compiler",
-    characterReference: "人物参考修正"
+    characterReference: "人物参考修正",
+    storyCandidateReview: "候选对照评审",
+    storyCandidateRevision: "命题定向修订",
+    storyQualityReview: "剧情体检",
+    storyQualityRepair: "剧情按问题修改",
+    animationPlanReview: "分镜终审",
+    animationPlanRevision: "分镜修订"
   })[stage] || stage;
 }
 

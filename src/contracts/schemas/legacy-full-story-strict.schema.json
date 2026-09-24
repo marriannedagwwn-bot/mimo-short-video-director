@@ -30,7 +30,7 @@
     "characterBible": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["protagonist", "careRecipient", "helpers"],
+      "required": ["protagonist", "helpers"],
       "properties": {
         "protagonist": {
           "type": "object",
@@ -128,6 +128,10 @@
           "timeRange": { "$ref": "#/$defs/nonEmptyString" },
           "location": { "type": "string" },
           "characters": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "offscreenSoundSources": {
             "type": "array",
             "items": { "type": "string" }
           },

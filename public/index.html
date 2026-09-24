@@ -48,6 +48,7 @@
       <div class="principles" aria-label="改编原则">
         <span>同定位</span><i></i><span>同受众</span><i></i><span>同情绪</span><i></i><span>同类驱动力</span><i></i><span>新表达</span>
       </div>
+      <button class="outline-button" id="importStoryPackageHome" type="button">导入已有完整剧情 JSON</button>
     </section>
 
     <section class="workspace-grid">
@@ -56,20 +57,24 @@
           <span class="step-number">01</span>
           <div><p class="label">REFERENCE</p><h2>上传参考视频</h2></div>
         </div>
-        <label class="dropzone" id="dropzone" for="videoInput">
-          <input id="videoInput" type="file" accept="video/*" hidden>
-          <span class="upload-icon">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
-          </span>
-          <strong id="uploadTitle">把视频拖到这里</strong>
-          <span id="uploadHint">或点击选择文件 · MP4 / MOV / WebM</span>
-        </label>
-        <div class="video-info hidden" id="videoInfo">
-          <video id="videoPreview" controls playsinline></video>
+        <div class="source-media">
+          <label class="dropzone" id="dropzone" for="videoInput">
+            <input id="videoInput" type="file" accept="video/*" hidden>
+            <span class="upload-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+            </span>
+            <strong id="uploadTitle">把视频拖到这里</strong>
+            <span id="uploadHint">或点击选择文件 · MP4 / MOV / WebM</span>
+          </label>
+          <div class="video-info hidden" id="videoInfo">
+            <video id="videoPreview" controls playsinline></video>
+          </div>
           <div class="file-meta">
             <div><strong id="fileName"></strong><span id="fileMeta"></span></div>
             <button class="text-button" id="replaceVideo" type="button">更换</button>
           </div>
+        </div>
+        <div class="timeline-sampling">
           <div class="frame-head"><span>时间轴采样</span><small id="frameStatus">等待抽帧</small></div>
           <div class="frames" id="frames"></div>
         </div>
@@ -86,15 +91,19 @@
         </div>
         <label class="field">
           <span>固定角色 <b>必填</b></span>
-          <textarea id="fixedCharacter" rows="5" placeholder="例：阿岚，28 岁社区修理师，寡言，习惯先动手后解释；标志动作是把工具按尺寸排齐。"></textarea>
+          <textarea id="fixedCharacter" rows="5" placeholder="填写角色名称，以及必须长期保持一致的身份、外观、性格、处事方式和习惯动作；不要写死某一集的剧情任务或功能。"></textarea>
         </label>
         <label class="field">
           <span>垂直赛道 <b>必填</b></span>
-          <input id="vertical" type="text" placeholder="例：家电维修 / 宠物救助 / 乡村美食">
+          <input id="vertical" type="text" placeholder="填写账号长期稳定的内容领域、题材边界与目标受众；不要写某一集的具体剧情。">
         </label>
         <label class="field">
           <span>创作限制 <small>可选</small></span>
           <textarea id="constraints" rows="3" placeholder="例：60 秒内；单人可拍；不出现儿童；预算 500 元以内。"></textarea>
+        </label>
+        <label class="field">
+          <span>角色表情规则 <small>可选</small></span>
+          <textarea id="characterExpressionRules" rows="3" placeholder="按角色分行填写“情绪 = 可见特征”；只描述表情与表演，不改变角色身份、外观或物种；下次生成动画镜头生产包时生效。"></textarea>
         </label>
         <label class="field inline-field">
           <span>主题变体数量</span>
@@ -112,14 +121,27 @@
             <option value="9:16">9:16 · 竖屏</option>
           </select>
         </label>
+        <label class="field inline-field">
+          <span>剧情时长</span>
+          <select id="storyDurationTarget"></select>
+        </label>
         <div class="promise-box">
           <span>导演约束</span>
           <p>人物、任务、道具、对白和视听表达重做；母题、结构功能和情绪价值不被误杀。</p>
         </div>
-        <button class="primary-button" id="runWorkflow" type="button" disabled>
-          <span>启动 AI 导演</span>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
-        </button>
+        <div class="director-controls" id="directorControls" role="group" aria-label="AI 导演运行控制">
+          <button class="primary-button" id="runWorkflow" type="button" disabled>
+            <span aria-live="polite">启动 AI 导演</span>
+            <svg id="directorStartArrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+          </button>
+          <button class="director-icon-button hidden" id="terminateDirector" type="button" aria-label="终止本次 AI 导演" title="终止本次 AI 导演" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          </button>
+          <button class="director-icon-button hidden" id="pauseDirector" type="button" aria-label="暂停当前阶段" title="暂停当前阶段" aria-describedby="directorControlHint" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg>
+          </button>
+        </div>
+        <p class="director-control-hint hidden" id="directorControlHint">暂停会断开当前请求；继续会重新执行当前阶段，可能再次计费。</p>
         <p class="error-message" id="errorMessage" role="alert"></p>
       </aside>
     </section>
@@ -127,16 +149,17 @@
     <section class="pipeline-section" id="resultsSection">
       <div class="pipeline-head">
         <div><p class="eyebrow">DIRECTOR PIPELINE</p><h2>从原片证据到新故事</h2></div>
-        <button class="outline-button hidden" id="exportButton" type="button">导出完整 JSON</button>
+        <div class="pipeline-head-meta">
+          <button class="outline-button hidden" id="exportButton" type="button">导出完整 JSON</button>
+        </div>
       </div>
       <ol class="pipeline" id="pipeline">
         <li data-stage="analysis"><span>1</span><div><strong>参考片分析</strong><small>定位、人物、节奏、情绪与完播理由</small></div><b>等待</b></li>
         <li data-stage="script"><span>2</span><div><strong>原片脚本还原</strong><small>分场、动作、镜头、转折与剧作功能</small></div><b>等待</b></li>
-        <li data-stage="brief"><span>3</span><div><strong>创意简报</strong><small>保留价值、受控变量与最低变换规则</small></div><b>等待</b></li>
+        <li data-stage="brief"><span>3</span><div><strong>创意简报</strong><small>原片的驱动结构与换角测试</small></div><b>等待</b></li>
         <li data-stage="guardrails"><span>4</span><div><strong>角色与表达边界</strong><small>正向边界、原片规避与台词规则分开处理</small></div><b>等待</b></li>
         <li data-stage="variants"><span>5</span><div><strong>主题变体</strong><small>适配固定角色和垂直赛道的新故事</small></div><b>等待</b></li>
       </ol>
-      <p class="story-status" id="pipelineUsage"></p>
 
       <div class="empty-results" id="emptyResults">
         <span class="empty-glyph">⌁</span>
@@ -170,18 +193,49 @@
         <div class="story-control-card">
           <div id="selectedVariantSummary" class="selected-variant-summary"></div>
           <p class="story-status" id="storyStatus"></p>
-          <button class="primary-button" id="generateFullStory" type="button">
-            <span>生成完整剧情</span>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
-          </button>
+          <div class="director-controls" id="fullStoryControls" role="group" aria-label="完整剧情生成控制">
+            <button class="primary-button" id="generateFullStory" type="button">
+              <span aria-live="polite">生成完整剧情</span>
+              <svg id="fullStoryStartArrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+            </button>
+            <button class="director-icon-button hidden" id="terminateFullStory" type="button" aria-label="终止本次完整剧情生成" title="终止本次完整剧情生成" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+            </button>
+            <button class="director-icon-button hidden" id="pauseFullStory" type="button" aria-label="暂停生成完整剧情" title="暂停生成完整剧情" aria-describedby="fullStoryControlHint" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg>
+            </button>
+          </div>
+          <p class="director-control-hint hidden" id="fullStoryControlHint">暂停会断开当前请求；继续会重新生成完整剧情，可能再次计费。终止会保留已有结果。</p>
           <p class="story-status" id="animationStatus"></p>
           <button class="outline-button animation-button" id="generateAnimationPlan" type="button" disabled>生成动画镜头生产包</button>
           <div class="story-export-actions">
             <button class="outline-button" id="exportStoryPackage" type="button" disabled>导出当前生产包 JSON</button>
-            <button class="outline-button" id="copyAnimationPack" type="button" disabled>复制动画生产包 Markdown</button>
+            <button class="outline-button shot-video-batch-start" id="startShotVideoBatch" type="button" disabled>批量生成全部镜头视频</button>
+          </div>
+          <div class="shot-video-batch-panel hidden" id="shotVideoBatchPanel" aria-live="polite">
+            <div class="shot-video-batch-summary">
+              <div>
+                <strong id="shotVideoBatchTitle">批量视频生成</strong>
+                <span id="shotVideoBatchStatus">等待开始</span>
+              </div>
+              <span id="shotVideoBatchCount">0 / 0</span>
+            </div>
+            <div class="shot-video-batch-track" aria-hidden="true"><span id="shotVideoBatchProgress"></span></div>
+            <div class="shot-video-batch-footer">
+              <div class="shot-video-batch-items" id="shotVideoBatchItems"></div>
+              <div class="shot-video-batch-controls">
+                <button class="batch-icon-button" id="pauseShotVideoBatch" type="button" aria-label="暂停批量生成" title="暂停批量生成">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg>
+                </button>
+                <button class="batch-icon-button terminate" id="terminateShotVideoBatch" type="button" aria-label="终止批量生成" title="终止批量生成">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
+      <article class="result-card story-result hidden" id="fullStoryPrecheckPanel" aria-live="polite"></article>
       <article class="result-card story-result hidden" id="fullStoryResult"></article>
       <article class="result-card story-result hidden" id="animationPlanResult"></article>
     </section>
@@ -217,7 +271,7 @@
             <input id="characterImageInput" type="file" accept="image/*" hidden>
             <span>上传参考图片</span>
             <strong id="characterImageDropTitle">点击或拖入图片</strong>
-            <small id="characterImageDropHint">即梦会参考这张图，但会移除水果摊，只生成角色全身图。</small>
+            <small id="characterImageDropHint">即梦会参考这张图，但只生成干净背景下的角色全身图。</small>
           </label>
           <div class="reference-image-preview hidden" id="characterImagePreviewWrap">
             <img id="characterImagePreview" alt="参考图片预览">
@@ -299,8 +353,8 @@
     <div class="modal-card shot-video-modal" role="dialog" aria-modal="true" aria-labelledby="shotVideoModalTitle">
       <div class="modal-head">
         <div>
-          <p class="eyebrow">KLING AI</p>
-          <h2 id="shotVideoModalTitle">用可灵 AI 生成镜头视频</h2>
+          <p class="eyebrow">VIDEO</p>
+          <h2 id="shotVideoModalTitle">生成镜头视频</h2>
         </div>
         <button class="icon-button" id="closeShotVideoModal" type="button" aria-label="关闭">×</button>
       </div>
@@ -334,7 +388,7 @@
             </label>
             <label class="shot-video-reference-toggle">
               <input id="shotVideoIncludeCharacterReferences" type="checkbox" checked>
-              <span>加入本镜头已有角色参考图</span>
+              <span>加入本镜头角色参考图与明确说话人的声音</span>
             </label>
             <label class="shot-video-reference-drop" id="shotVideoReferenceDrop" for="shotVideoReferenceInput">
               <span>添加全能参考素材</span>
@@ -345,17 +399,18 @@
           </div>
           <div class="shot-video-reference-list" id="shotVideoReferenceList"></div>
         </div>
-        <div class="modal-panel">
+        <div class="modal-panel shot-video-output-panel">
           <span class="block-label">视频提示词预览 · 可编辑</span>
           <textarea class="prompt-preview prompt-preview-editor shot-video-prompt-editor" id="shotVideoPromptPreview" rows="14"></textarea>
+          <button class="outline-button hidden" id="regenerateShotVideoPrompt" type="button">重新生成本镜提示词</button>
           <p class="story-status" id="shotVideoStatus"></p>
           <button class="primary-button" id="confirmGenerateShotVideo" type="button">
-            <span>用可灵 AI 生成</span>
+            <span>生成镜头视频</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
           </button>
+          <div class="generated-reference-results shot-video-results" id="shotVideoResults"></div>
         </div>
       </div>
-      <div class="generated-reference-results shot-video-results" id="shotVideoResults"></div>
     </div>
   </div>
 

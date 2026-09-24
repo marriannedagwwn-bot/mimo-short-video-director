@@ -8,7 +8,17 @@
         "run",
         "dev"
       ],
-      "port": 4173
+      "port": 4173,
+      "autoPort": true
+    },
+    {
+      "name": "demo",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "MIMO_BASE_URL= QWEN_BASE_URL= DEEPSEEK_BASE_URL= JIMENG_BASE_URL= QWEN_API_KEY= MIMO_API_KEY= DEEPSEEK_API_KEY= DASHSCOPE_API_KEY= PORT=4199 WORKFLOW_PRODUCTION_STATE_DIR=runtime/demo-runs exec node --use-env-proxy server.js"
+      ],
+      "port": 4199
     }
   ]
 }

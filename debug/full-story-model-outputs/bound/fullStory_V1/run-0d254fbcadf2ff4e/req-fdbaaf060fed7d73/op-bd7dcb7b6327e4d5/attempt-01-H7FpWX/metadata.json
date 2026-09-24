@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "full-model-output-log/1.0",
+  "recordedAt": "2026-09-01T20:46:14.576Z",
+  "scope": "fullStory",
+  "gitCommit": "unknown",
+  "buildId": "unknown",
+  "production": {
+    "verified": true,
+    "projectId": "project-5f8f4cad-6f27-49f9-958f-ae4847757ed8",
+    "runId": "run-b9c43cac-a9d6-4061-9f1f-a7d4fc9ea392",
+    "artifactId": "fullStory:V1",
+    "productionRequestId": "request-3822ce09-3848-452e-b20c-59604a4e18e8",
+    "variantId": "V1"
+  },
+  "attempt": {
+    "operationId": "operation:b47f566b-8977-447e-946a-e06f037c6851",
+    "attemptId": "attempt:2c88836d-1561-45d4-a35c-231effab7ad5",
+    "callIndex": 0,
+    "stage": "fullStory",
+    "phase": "primary",
+    "sequence": null,
+    "batchIndex": null,
+    "reason": "primary",
+    "status": "failed",
+    "category": "output-contract",
+    "code": "OUTPUT_CONTRACT_INVALID",
+    "validationStatus": "failed",
+    "errorName": "",
+    "diagnostics": [],
+    "retryable": true,
+    "startedAt": "2026-09-01T20:44:28.277Z",
+    "finishedAt": "2026-09-01T20:46:14.573Z",
+    "durationMs": 106296
+  },
+  "provider": {
+    "name": "Qwen",
+    "model": "qwen3.7-max",
+    "providerRequestId": "32b68ce6-a1d1-9e72-8a27-5610afef23a3",
+    "finishReason": "stop",
+    "usage": {
+      "prompt_tokens": 15478,
+      "completion_tokens": 8984,
+      "total_tokens": 24462
+    }
+  },
+  "output": {
+    "present": true,
+    "file": "model-output.txt",
+    "bytes": 19404,
+    "sha256": "0cb9735ba7f7e0b7d7755ec68e1211ba3d1c5879b836a10e6d8fd30764083184"
+  }
+}

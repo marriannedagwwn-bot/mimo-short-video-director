@@ -1,0 +1,7 @@
+{
+  "httpStatus": 409,
+  "code": "TASK_BROWSER_ARTIFACT_MISMATCH",
+  "providerCalls": 0,
+  "taskCreated": false,
+  "note": "A tampered creativeBrief browser copy was rejected during Task preparation before a Task or provider call was created."
+}

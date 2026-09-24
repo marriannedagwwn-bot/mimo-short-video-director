@@ -1,0 +1,207 @@
+{
+  "contentPositioning": {
+    "format": "人物关系驱动的情绪短故事",
+    "genre": "生活流暖心剧情",
+    "contentPromise": "通过一项具体任务，看见普通关系里的善意与牵挂",
+    "platformFit": "适合竖屏信息流，以明确任务钩子和情绪回报促成完播"
+  },
+  "targetAudience": {
+    "primary": "关注日常关系、家庭情感与普通人互助的泛生活受众",
+    "psychologicalNeeds": [
+      "情绪代偿",
+      "善意确认",
+      "关系共鸣"
+    ],
+    "watchingContext": "碎片时间观看，需要前 3 秒建立任务悬念"
+  },
+  "storySynopsis": "主角带着一项与关爱对象有关的任务出发，在环境阻力和他人帮助中推进，最终用一个克制的生活动作完成情绪兑现。",
+  "characters": [
+    {
+      "nameOrLabel": "主角",
+      "role": "行动承担者",
+      "traits": [
+        "克制",
+        "有责任感"
+      ],
+      "relationshipToProtagonist": "本人",
+      "evidence": [
+        "F1",
+        "F2"
+      ]
+    },
+    {
+      "nameOrLabel": "被关爱对象",
+      "role": "任务的情绪指向",
+      "traits": [
+        "需求未完全说出口"
+      ],
+      "relationshipToProtagonist": "重要关系人",
+      "evidence": [
+        "F7",
+        "F8"
+      ]
+    }
+  ],
+  "protagonistIdentity": {
+    "occupation": "画面证据不足，待确认",
+    "socialRole": "照料者/承诺履行者",
+    "currentSituation": "正在完成一项有时间或空间压力的任务",
+    "evidence": [
+      "F1",
+      "F3"
+    ]
+  },
+  "careRecipient": {
+    "identity": "重要关系人",
+    "explicitNeed": "收到任务所指向的物品或服务",
+    "implicitNeed": "被记得、被认真对待",
+    "relationship": "亲密或长期关系",
+    "evidence": [
+      "F7",
+      "F8"
+    ]
+  },
+  "dialogueStyle": {
+    "tone": "生活化、克制",
+    "sentencePattern": "短句为主",
+    "informationDensity": "低解释、高潜台词",
+    "subtext": "关心主要通过行动表达"
+  },
+  "shotRhythm": {
+    "openingHookSeconds": 3,
+    "averagePerceivedPace": "中快转中慢",
+    "rhythmDescription": "开场快速交代目标，中段用阻力加速，结尾停顿留出情绪回味",
+    "shotPatterns": [
+      "任务物特写",
+      "移动中景",
+      "反应近景",
+      "结尾静态停留"
+    ]
+  },
+  "emotionCurve": [
+    {
+      "phase": "钩子",
+      "timeRange": "00:00-00:03",
+      "emotion": "好奇",
+      "intensity": 48,
+      "trigger": "任务与时间压力被建立",
+      "evidence": [
+        "F1"
+      ]
+    },
+    {
+      "phase": "推进",
+      "timeRange": "00:03-00:25",
+      "emotion": "担心",
+      "intensity": 70,
+      "trigger": "环境阻力与关系信息逐步出现",
+      "evidence": [
+        "F2",
+        "F3",
+        "F4"
+      ]
+    },
+    {
+      "phase": "转折",
+      "timeRange": "00:25-00:36",
+      "emotion": "温暖",
+      "intensity": 82,
+      "trigger": "获得帮助或理解",
+      "evidence": [
+        "F5",
+        "F6"
+      ]
+    },
+    {
+      "phase": "兑现",
+      "timeRange": "00:36-00:44",
+      "emotion": "释然",
+      "intensity": 90,
+      "trigger": "生活化动作回应隐性需求",
+      "evidence": [
+        "F7",
+        "F8"
+      ]
+    }
+  ],
+  "retentionDrivers": [
+    {
+      "driver": "任务悬念",
+      "viewerQuestion": "他能否及时完成？",
+      "payoff": "任务完成同时揭示真正情感目的",
+      "evidence": [
+        "F1",
+        "F8"
+      ]
+    },
+    {
+      "driver": "关系延迟揭示",
+      "viewerQuestion": "他为何如此坚持？",
+      "payoff": "被关爱对象的隐性需求被看见",
+      "evidence": [
+        "F3",
+        "F7"
+      ]
+    }
+  ],
+  "whyWatchToEnd": "观众同时等待任务结果与关系真相，结尾小动作提供可感知但不过度煽情的回报。",
+  "analysisConfidence": 62,
+  "observedFacts": [
+    {
+      "factType": "visible_state",
+      "observation": "采样画面 F1 记录了 00:00 时刻的可见状态",
+      "importance": "core",
+      "evidenceRefs": [
+        {
+          "source": "frame",
+          "frameNumber": 1
+        }
+      ]
+    },
+    {
+      "factType": "visible_state",
+      "observation": "采样画面 F2 记录了 00:12 时刻的可见状态",
+      "importance": "supporting",
+      "evidenceRefs": [
+        {
+          "source": "frame",
+          "frameNumber": 2
+        }
+      ]
+    },
+    {
+      "factType": "visible_state",
+      "observation": "采样画面 F3 记录了 00:24 时刻的可见状态",
+      "importance": "supporting",
+      "evidenceRefs": [
+        {
+          "source": "frame",
+          "frameNumber": 3
+        }
+      ]
+    },
+    {
+      "factType": "visible_state",
+      "observation": "采样画面 F4 记录了 00:36 时刻的可见状态",
+      "importance": "core",
+      "evidenceRefs": [
+        {
+          "source": "frame",
+          "frameNumber": 4
+        }
+      ]
+    }
+  ],
+  "uncertainties": [
+    {
+      "field": "原声对白与准确职业",
+      "reason": "演示模式仅依据采样画面结构生成，未进行音频转写",
+      "neededEvidence": "接入 MiMo 并补充字幕或转写文本"
+    }
+  ],
+  "groundingSeal": {
+    "version": "1.0",
+    "contextDigest": "sha256:1aced75726df411509b35f96840e1580604abd04ee4000dcc80fca491949434f",
+    "signature": "hmac-sha256:3f389b53b4acf9faf905c5e7c605f12afb8b815a893b9d2f4717a6394fdafc70"
+  }
+}

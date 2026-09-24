@@ -1,3 +1,4 @@
+import { MIMO_OUTPUT_TOKEN_CEILING, QWEN_OUTPUT_TOKEN_CEILING } from "./output-token-ceilings.js";
 import fs from "node:fs";
 import path from "node:path";
 import { parseModelPrices } from "./token-usage.js";
@@ -21,6 +22,19 @@ export function loadEnv(file = path.resolve(".env")) {
 
 export function getConfig() {
   const serverRequestTimeoutMs = Math.round(clampNumber(process.env.SERVER_REQUEST_TIMEOUT_MS, 900000, 30000, 3600000));
+  const durableTaskGlobalConcurrency = optionalInteger(process.env.DURABLE_TASK_MAX_CONCURRENCY, 1, 64);
+  const durableTaskWorkflowConcurrency = Math.round(clampNumber(
+    process.env.DURABLE_TASK_WORKFLOW_CONCURRENCY,
+    durableTaskGlobalConcurrency || 2,
+    1,
+    64
+  ));
+  const durableTaskMediaConcurrency = Math.round(clampNumber(
+    process.env.DURABLE_TASK_MEDIA_CONCURRENCY,
+    durableTaskGlobalConcurrency || 4,
+    1,
+    64
+  ));
   const productionStateDirectory = path.resolve(
     process.env.WORKFLOW_PRODUCTION_STATE_DIR?.trim() || "runtime/production-runs"
   );
@@ -46,13 +60,19 @@ export function getConfig() {
   const videoFps = clampNumber(process.env.MIMO_VIDEO_FPS, 2, 0.1, 10);
   const requestedVideoResolution = process.env.MIMO_VIDEO_MEDIA_RESOLUTION?.trim().toLowerCase() || "default";
   const videoMediaResolution = ["default", "max"].includes(requestedVideoResolution) ? requestedVideoResolution : "default";
-  const maxCompletionTokens = Math.round(clampNumber(process.env.MIMO_MAX_COMPLETION_TOKENS, 8192, 512, 32768));
+  // 输出上限（2026-09-24）：流式的 MiMo / Qwen 放到各家实测接受的最大值，死循环改由
+  // src/output-degeneration.js 边收边查截停，上限只剩「不重复但极长」这一种情况的兜底。
+  // 数值与依据只有一份，在 src/output-token-ceilings.js。MiMo 的上限包含推理 token。
+  // DeepSeek 非流式、中途看不到内容，仍是 32768。
+  const maxCompletionTokens = Math.round(clampNumber(process.env.MIMO_MAX_COMPLETION_TOKENS, MIMO_OUTPUT_TOKEN_CEILING, 512, MIMO_OUTPUT_TOKEN_CEILING));
   const requestedThinking = process.env.MIMO_THINKING?.trim().toLowerCase() || "disabled";
   const thinking = ["disabled", "enabled"].includes(requestedThinking) ? requestedThinking : "disabled";
-  const storyMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_STORY_MAX_COMPLETION_TOKENS, 12288, 1024, 32768));
-  const animationMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_ANIMATION_MAX_COMPLETION_TOKENS, 12288, 1024, 32768));
+  const storyMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_STORY_MAX_COMPLETION_TOKENS, MIMO_OUTPUT_TOKEN_CEILING, 1024, MIMO_OUTPUT_TOKEN_CEILING));
+  const animationMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_ANIMATION_MAX_COMPLETION_TOKENS, MIMO_OUTPUT_TOKEN_CEILING, 1024, MIMO_OUTPUT_TOKEN_CEILING));
   const jsonRetryAttempts = Math.round(clampNumber(process.env.MIMO_JSON_RETRY_ATTEMPTS, 2, 0, 3));
   const mimoRequestTimeoutMs = Math.round(clampNumber(process.env.MIMO_REQUEST_TIMEOUT_MS, 900000, 30000, 900000));
+  // 流式客户端只判空闲，不设总时长：连续这么久没收到任何数据才中断（src/stream-idle-timeout.js）。
+  const mimoStreamIdleTimeoutMs = Math.round(clampNumber(process.env.MIMO_STREAM_IDLE_TIMEOUT_MS, 120000, 10000, 900000));
   const qwenBaseUrl = process.env.QWEN_BASE_URL?.trim() || "";
   const qwenBaseModel = process.env.QWEN_MODEL?.trim() || "qwen3.7-max";
   const qwenVisionFallbackModel = "qwen3.7-plus";
@@ -72,7 +92,7 @@ export function getConfig() {
   const qwenMinPixels = optionalInteger(process.env.QWEN_VIDEO_MIN_PIXELS, 4096, 16777216);
   const qwenMaxPixels = optionalInteger(process.env.QWEN_VIDEO_MAX_PIXELS, 4096, 2048000);
   const qwenTotalPixels = optionalInteger(process.env.QWEN_VIDEO_TOTAL_PIXELS, 4096, 819200000);
-  const qwenMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_MAX_COMPLETION_TOKENS, 16384, 1024, 65536));
+  const qwenMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_MAX_COMPLETION_TOKENS, QWEN_OUTPUT_TOKEN_CEILING, 1024, QWEN_OUTPUT_TOKEN_CEILING));
   const qwenAnalysisMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_ANALYSIS_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
   const qwenReconstructionMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_RECONSTRUCTION_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
   const qwenBriefMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_BRIEF_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
@@ -83,12 +103,13 @@ export function getConfig() {
   const qwenCharacterReferenceMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_CHARACTER_REFERENCE_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
   const qwenJsonRetryAttempts = Math.round(clampNumber(process.env.QWEN_JSON_RETRY_ATTEMPTS, 2, 0, 3));
   const qwenRequestTimeoutMs = Math.round(clampNumber(process.env.QWEN_REQUEST_TIMEOUT_MS, 900000, 30000, 900000));
+  const qwenStreamIdleTimeoutMs = Math.round(clampNumber(process.env.QWEN_STREAM_IDLE_TIMEOUT_MS, 120000, 10000, 900000));
   const qwenEnableThinkingValue = process.env.QWEN_ENABLE_THINKING?.trim().toLowerCase();
   const qwenEnableThinking = qwenEnableThinkingValue === "true" ? true : qwenEnableThinkingValue === "false" ? false : false;
   const deepseekBaseUrl = process.env.DEEPSEEK_BASE_URL?.trim() || "https://api.deepseek.com";
   const deepseekApiKey = process.env.DEEPSEEK_API_KEY?.trim() || "";
   const deepseekModel = process.env.DEEPSEEK_MODEL?.trim() || "deepseek-v4-flash";
-  const deepseekMaxCompletionTokens = Math.round(clampNumber(process.env.DEEPSEEK_MAX_COMPLETION_TOKENS, 16384, 1024, 65536));
+  const deepseekMaxCompletionTokens = Math.round(clampNumber(process.env.DEEPSEEK_MAX_COMPLETION_TOKENS, 32768, 1024, 65536));
   const deepseekJsonRetryAttempts = Math.round(clampNumber(process.env.DEEPSEEK_JSON_RETRY_ATTEMPTS, 2, 0, 3));
   const deepseekRequestTimeoutMs = Math.round(clampNumber(process.env.DEEPSEEK_REQUEST_TIMEOUT_MS, 900000, 30000, 900000));
   const requestedDeepseekThinking = process.env.DEEPSEEK_THINKING?.trim().toLowerCase() || "disabled";
@@ -131,6 +152,26 @@ export function getConfig() {
     port: Number(process.env.PORT || 4173),
     serverRequestTimeoutMs,
     modelPrices,
+    durableTasks: {
+      localStallMs: Math.round(clampNumber(process.env.DURABLE_TASK_LOCAL_STALL_MS, 300_000, 25, 3_600_000)),
+      providerGraceMs: Math.round(clampNumber(process.env.DURABLE_TASK_PROVIDER_GRACE_MS, 120_000, 0, 600_000)),
+      maxQueuedBytes: Math.round(clampNumber(
+        process.env.DURABLE_TASK_MAX_QUEUED_BYTES,
+        140 * 1024 * 1024,
+        1024,
+        2 * 1024 * 1024 * 1024
+      )),
+      pools: {
+        workflow: {
+          limit: durableTaskWorkflowConcurrency,
+          queueLimit: Math.round(clampNumber(process.env.DURABLE_TASK_WORKFLOW_QUEUE_LIMIT, 8, 0, 1_000))
+        },
+        media: {
+          limit: durableTaskMediaConcurrency,
+          queueLimit: Math.round(clampNumber(process.env.DURABLE_TASK_MEDIA_QUEUE_LIMIT, 8, 0, 1_000))
+        }
+      }
+    },
     workflowRuntime: {
       environment: workflowRuntimeEnvironment,
       signaturePolicy: workflowSignaturePolicy,
@@ -150,6 +191,8 @@ export function getConfig() {
       animationModel: process.env.MIMO_ANIMATION_MODEL?.trim() || process.env.MIMO_STORY_MODEL?.trim() || "mimo-v2.5-pro",
       characterReferenceModel: process.env.MIMO_CHARACTER_REFERENCE_MODEL?.trim() || process.env.MIMO_MODEL?.trim() || "mimo-v2.5",
       jsonMode: process.env.MIMO_JSON_MODE === "true",
+      // 调用方给了 Schema 时改发 json_schema 约束解码（文档外行为，实测可用），写 false 关闭。
+      jsonSchema: process.env.MIMO_JSON_SCHEMA?.trim().toLowerCase() !== "false",
       mediaMode,
       nativeVideoMaxBytes: Math.floor(nativeVideoMaxMb * 1024 * 1024),
       videoFps,
@@ -159,6 +202,7 @@ export function getConfig() {
       animationMaxCompletionTokens,
       jsonRetryAttempts,
       requestTimeoutMs: mimoRequestTimeoutMs,
+      streamIdleTimeoutMs: mimoStreamIdleTimeoutMs,
       thinking,
       enabled: Boolean(baseUrl)
     },
@@ -186,6 +230,7 @@ export function getConfig() {
       characterReferenceMaxCompletionTokens: qwenCharacterReferenceMaxCompletionTokens,
       jsonRetryAttempts: qwenJsonRetryAttempts,
       requestTimeoutMs: qwenRequestTimeoutMs,
+      streamIdleTimeoutMs: qwenStreamIdleTimeoutMs,
       enableThinking: qwenEnableThinking,
       jsonMode: process.env.QWEN_JSON_MODE === "true",
       mediaMode: qwenMediaMode,

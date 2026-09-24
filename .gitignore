@@ -1,12 +1,21 @@
 .env
 .DS_Store
 node_modules/
+.venv-faster-whisper/
 coverage/
 exports/
 public/generated-images/
 public/generated-videos/
 runtime-captures/
 runtime/production-runs/
+# 演示模式（.claude/launch.json 的 demo 配置）的一次性状态目录，不是生产数据。
+runtime/demo-runs/
+runtime/demo-runs-browser-workspaces/
+runtime/demo-runs-browser-workspaces-cleanup/
+runtime/production-runs-browser-workspaces/
+runtime/production-runs-browser-workspaces-cleanup/
+runtime/*.log
+frames/
 
 # Large local reference videos; keep them out of Git/Codex workspace snapshots.
 测试文件/*.mp4
@@ -19,3 +28,12 @@ runtime/production-runs/
 # Local Codex VPN tooling; never commit.
 .codex-ufi-vpn-manager/
 .codex-ufi-vpn-module/
+
+# .env 的手工备份。`.env` 那一行挡不住带后缀的副本，而这些备份里是全套真实
+# API 密钥（QWEN / MIMO / DEEPSEEK / MINIMAX / SEEDANCE / JIMENG / VIDEO_HTTP）——
+# 一次随手的 `git add -A` 就会把它们推到远端。
+.env.bak-*
+
+# 人工评分记录（问卷原始回答与评分结果）。它们是一次性的调查数据，不是仓库事实来源；
+# 评分方法论本身在 scripts/story-quality-evaluation.mjs 与其 fixture 里，那部分是跟踪的。
+评分系统/
