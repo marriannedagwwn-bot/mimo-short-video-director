@@ -429,3 +429,24 @@ test("newTask 与 environmentPressure 是必填字段，提示词不得再说任
   assert.doesNotMatch(source, /newTask（这个故事的任务是什么）/u);
   assert.match(source, /- newTask（主角在这个故事里做或参与的那件事；生活型写她参与了什么/u);
 });
+
+test("transformationProof：主流程只要 {replacement} 对象、不写对照句；旧调用点逐字保留原写法", () => {
+  // 2026-09-24：MiMo 把「记录……的改编」读成「写出原片到本片的对照」，45/45 个 replacement
+  // 都是「X 换成 Y」，其中一次把只有一个键的对象压成字符串整批被拒；同期千问 180 个为 0。
+  // deriveSource 只看有没有原片上游、不看模型，所有模型拿到的是同一份文本。
+  const input = { count: 4, creatorProfile, creativeBrief: {}, referenceAnalysis: {}, visualGuardrails: {} };
+  const derived = variantsPrompt(input, { deriveSource: true });
+  assert.match(derived, /原片事实参考（只供动作机制对照）：/u);
+  assert.doesNotMatch(derived, /transformationProof\.source 引用/u);
+  assert.match(derived, /每一项都必须是对象 \{"replacement":"…"\}，不能直接写成字符串/u);
+  assert.match(derived, /即使对象里只有 replacement 这一个键，也要保留这层花括号/u);
+  assert.match(derived, /不要写「原片的 X 换成 Y」「从 A 改成 B」这类对照句/u);
+  assert.doesNotMatch(derived, /本片改成什么/u);
+  assert.match(derived, /\*\*不要输出 source。\*\*/u);
+  assert.match(derived, /"changedCharacters":\{"replacement":""\}/u);
+
+  const legacy = variantsPrompt(input);
+  assert.match(legacy, /原片事实参考（只供动作机制对照与 transformationProof\.source 引用）：/u);
+  assert.match(legacy, /transformationProof 的每个 changed\* 都是一对 \{source, replacement\}/u);
+  assert.doesNotMatch(legacy, /不能直接写成字符串/u);
+});

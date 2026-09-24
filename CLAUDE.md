@@ -351,6 +351,8 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
 
 **它解决不了的事要说清楚**：选源不能修复原片上游转写含混、外观缺失或事实冲突，也**不能把「引用合法」宣称成「原片逐动作 / 逐字音频已验证」**。Full Story 的新片事实只承接候选正文与 `replacement`，`source` 不构成新增人物、事件、道具、对白或字幕卡的要求。
 
+**replacement 只写本片、必须是对象；`apply()` 报 Schema 码（2026-09-24）**：候选提示词的 deriveSource 分支（由「有没有两份原片上游」决定，**与模型无关**，所有模型拿到同一份文本）原来写「记录……的改编」「每项只输出 `{"replacement":"本片改成什么"}`」，并说原片事实「供 transformationProof.source 引用」，下文又说「不要输出 source」。MiMo `mimo-v2.6-pro` 开思考把它读成要写原片到本片的对照：45/45 个 replacement 是「X 换成 Y」，一次把只有一个键的对象压成字符串整批被拒；同期千问 180 个里是 0。现在明写：每项必须是对象、不能写成字符串，replacement 只写本片、不写对照句；去掉那句「供 source 引用」。缺上游的旧调用点逐字不变。同一份上游回放 MiMo：字符串 0/3、对照句 0/65（能解析的 3 次），**但 4 次仍全部失败**，原因在范围外：随机多出空键（`emotionalPayoffNote`）、数组里混进孤立字符串、照抄空输出模板多写一个候选、内容审核拦截。这些结构类失败随后由候选调用的 json_schema 约束解码消除（见 §2.7「候选调用的 MiMo JSON Schema 约束解码」，接入后同一上游回放 4/4 通过）。另外，`apply()` 的候选形状错误原本沿用 `SOURCE_BASELINE_SELECTION_INVALID`，看起来像是来源选取失败了；现在改报严格 Schema 在同一位置会报的码（`STORY_CANDIDATES_SCHEMA_TYPE / _REQUIRED / _EMPTY_STRING / _MIN_ITEMS`）并带 path，码名与 Schema 共用 `schemaErrorCode`。判定逻辑不变。数据见 `docs/variants-mimo-format-2026-09-24.md`。
+
 **`variantsPrompt` 的上游投影（2026-09-09）**：候选提示词现在按允许清单投影原片人物名称/特征、观察事实、场次动作/对白/道具，供机制对照与 `source` 引用，不带签章、摄影说明或媒体。**此前这些上游已经进了 workflow 与 validator，却从没进过实际候选提示词**——校验器在核对模型根本没看过的东西。
 
 同时收紧三处投影：Brief 正向投影去掉可能携带「获奖 → 转赠」链的 `emotionStructure.function`；`dramaticValue` 单列为来源价值解释，**不是每个新片的必备事件**，情绪曲线也不作逐拍模板；角色规则投影把 `stageInstructions` 输出为**空对象**，隔离上游模型写在阶段建议里的帮助/奖励/转赠模板。其余阶段仍消费原值，签发的角色事实与旧 Artifact 不变。**不对值做关键词分类。**
@@ -1099,6 +1101,13 @@ Plan revision 与新 media namespace 并递归 stale 该变体已生成的全部
 
 **尚未实测**：`.env` 的 `QWEN_JSON_MODE=true` 会让非 Zhipu 模型同时带 `stream: true` 与 `response_format`。这个组合是否被 dashscope 兼容模式支持没有核实过；若不支持，应改为流式时按模型跳过 `response_format`——本地严格 JSON 校验本来就在，不依赖 provider 的 JSON mode。
 
+
+**候选调用的 MiMo JSON Schema 约束解码（2026-09-24）**：MiMo 官方文档只写了 `json_object`（「只保证合法 JSON，结构由提示词决定」），但实测接口接受 `response_format: {type: "json_schema", json_schema: {name, schema, strict: true}}` 并真的约束解码：嵌套 `additionalProperties:false`、数组元素类型、`maxItems`、enum、`minimum`、`$ref/$defs`、`required` 都生效，流式、开思考都可用，字段顺序按 Schema 强制。候选阶段开思考时的三类结构失败（随机空键、数组里的孤立字符串、照抄空模板多写一个候选）输出都是合法 JSON，`json_object` 挡不住。
+- **只接了候选调用**（deriveSource 那一支）：`storyCandidatesModelSchema(count)`（`src/contracts/story-candidates-model-schema.js`）从服务端候选严格 Schema **派生**，不另写一份。变换：去掉 `pattern`、非空字符串改用 `minLength: 1`；`transformationProof` 各项只有 `replacement`；去掉服务端派生的 `keyChoice/climax/emotionalPayoff`；`variants` 锁成 `minItems = maxItems = count`（count 与提示词共用 `variantsCount`）；字段按提示词输出模板排序。严格 Schema 结构变了、变换找不到目标时直接抛错。
+- **`pattern` 不能发给 MiMo**：它被当成全串匹配，`pattern:"\\S"` 把 `"V1"` 截成 `"V"`，开思考时还吐出非法 JSON。全空白字符串仍由服务端严格 Schema 拦下。
+- 提示词文本不变，所有模型共用一份。`responseSchema` 是请求参数：MiMo 客户端发 json_schema；千问（欠费无法验证）与 DeepSeek（官方只支持 json_object）按参数名解构会忽略它，照旧发 `json_object`。选源调用、缺上游的旧调用点、其他阶段都不带。
+- `MIMO_JSON_SCHEMA=false` 退回 `json_object`（文档外行为，供应商可能不通知就改）。接口拒绝 Schema 时如实报错，**不自动退回**。服务端严格 Schema 与全部校验不变，仍是唯一裁决方。
+- 实测：接入前同一上游 MiMo 0/7，其中结构类失败 5 次；接入后 4/4 通过全部服务端校验、结构失败 0。**没有兜底的观察**：careRecipient 与 helper 使用率变高（16 个候选里 9/8 个，helper 7 个是固定搭档芙芙猫），careRecipient 9 个里 6 个是「独居老人」；样本小，分不清是否与约束有关。数据见 `docs/variants-mimo-format-2026-09-24.md`。
 
 DeepSeek **只允许**用于纯文本阶段：Brief、Variants、Legacy Full Story、Animation Plan、Static Frame Compiler（仅旧 v2 兼容路径）。
 

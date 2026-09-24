@@ -54,7 +54,8 @@ export class MimoClient {
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
     strictJson = false,
-    onCompletion = null
+    onCompletion = null,
+    responseSchema = null
   } = {}) {
     return this.generateJsonWithMedia({
       prompt,
@@ -65,7 +66,8 @@ export class MimoClient {
       requestTimeoutMs,
       jsonRetryAttempts,
       strictJson,
-      onCompletion
+      onCompletion,
+      responseSchema
     });
   }
 
@@ -80,7 +82,8 @@ export class MimoClient {
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
     strictJson = false,
-    onCompletion = null
+    onCompletion = null,
+    responseSchema = null
   }) {
     const canUseVideo = Boolean(video?.dataUrl) && this.config.mediaMode !== "frames";
     try {
@@ -95,6 +98,7 @@ export class MimoClient {
         requestTimeoutMs,
         strictJson,
         onCompletion,
+        responseSchema,
         jsonRetryAttempts: jsonRetryAttempts === null && canUseVideo && this.config.mediaMode === "auto" && frames.length > 0
           ? 0
           : jsonRetryAttempts
@@ -118,7 +122,8 @@ export class MimoClient {
         requestTimeoutMs,
         jsonRetryAttempts,
         strictJson,
-        onCompletion
+        onCompletion,
+        responseSchema
       });
       notifyResolvedMediaMode(onResolvedMediaMode, "frames");
       return result;
@@ -136,7 +141,8 @@ export class MimoClient {
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
     strictJson = false,
-    onCompletion = null
+    onCompletion = null,
+    responseSchema = null
   }) {
     const retryAttempts = jsonRetryAttempts === null
       ? Number.isFinite(Number(this.config.jsonRetryAttempts)) ? Number(this.config.jsonRetryAttempts) : 2
@@ -154,7 +160,8 @@ export class MimoClient {
         model,
         maxCompletionTokens: activeMaxCompletionTokens,
         systemPrompt,
-        requestTimeoutMs
+        requestTimeoutMs,
+        responseSchema
       });
       await notifyCompletion(onCompletion, completion);
       const content = completion.content;
@@ -183,13 +190,14 @@ export class MimoClient {
     model = null,
     maxCompletionTokens = null,
     systemPrompt = null,
-    requestTimeoutMs = null
+    requestTimeoutMs = null,
+    responseSchema = null
   } = {}) {
     const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`;
     const body = buildRequestBody(
       this.config,
       { prompt, frames, video, useVideo },
-      { model, maxCompletionTokens, systemPrompt }
+      { model, maxCompletionTokens, systemPrompt, responseSchema }
     );
     // 流式请求不设总时长上限，只判空闲：连续 streamIdleTimeoutMs 没收到任何数据才中断。
     // requestTimeoutMs 在流式客户端上不再生效（参数保留给调用方的统一签名）。
@@ -367,7 +375,19 @@ export function buildRequestBody(config, { prompt, frames = [], video = null, us
       { role: "user", content: [...visualContent, { type: "text", text: promptText }] }
     ]
   };
-  if (config.jsonMode) body.response_format = { type: "json_object" };
+  // json_schema 在 MiMo 官方文档里只写了 json_object，但 2026-09-24 实测接口接受并真的约束解码
+  // （多出的键、数组里的非对象、超出 maxItems 的项都会被挡住）。只在调用方给了 Schema 时发送；
+  // MIMO_JSON_SCHEMA=false 可以直接关掉。接口拒绝时照常报错，不自动退回 json_object。
+  // 见 docs/variants-mimo-format-2026-09-24.md。
+  if (overrides.responseSchema && config.jsonSchema !== false) {
+    const { name, schema } = overrides.responseSchema;
+    if (typeof name !== "string" || !name.trim() || !schema || typeof schema !== "object") {
+      throw new TypeError("responseSchema 必须是 {name, schema}");
+    }
+    body.response_format = { type: "json_schema", json_schema: { name, schema, strict: true } };
+  } else if (config.jsonMode) {
+    body.response_format = { type: "json_object" };
+  }
   return body;
 }
 

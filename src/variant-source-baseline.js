@@ -1,4 +1,5 @@
 import { InputError, OutputContractError } from "./validation.js";
+import { schemaErrorCode, STORY_CANDIDATES_SCHEMA_CODE_PREFIX } from "./contracts/contract-validator.js";
 
 export const VARIANT_SOURCE_BASELINE_STAGE = "variantSourceBaseline";
 export const VARIANT_SOURCE_BASELINE_SYSTEM_PROMPT =
@@ -95,24 +96,34 @@ export function createVariantSourceBaseline(upstream) {
 
   function apply(candidateBatch) {
     if (!sources) fail("来源基线尚未选定，不能填入候选", "SOURCE_BASELINE_NOT_SELECTED");
-    outputRecord(candidateBatch, "themeVariants");
-    if (!Array.isArray(candidateBatch.variants) || !candidateBatch.variants.length) {
-      fail("themeVariants.variants 必须是非空数组");
-    }
     // Check the whole target shape before cloning or applying anything. Missing
     // source is permitted for model output; missing pairs or replacements are not.
+    // 这里查的是候选模型的输出，不是来源选取：报严格 Schema 在同一位置会报的码并带 path，
+    // 否则失败会被标成 SOURCE_BASELINE_SELECTION_INVALID，看起来像来源选取那一步错了。
+    candidateRecord(candidateBatch, "themeVariants", "/");
+    if (!Array.isArray(candidateBatch.variants)) {
+      candidateFail("themeVariants.variants 必须是非空数组", "type", "/variants");
+    }
+    if (!candidateBatch.variants.length) {
+      candidateFail("themeVariants.variants 必须是非空数组", "minItems", "/variants");
+    }
     candidateBatch.variants.forEach((variant, index) => {
       const label = `themeVariants.variants[${index}]`;
-      outputRecord(variant, label);
-      outputRecord(variant.transformationProof, `${label}.transformationProof`);
+      const pointer = `/variants/${index}`;
+      candidateRecord(variant, label, pointer);
+      candidateRecord(variant.transformationProof, `${label}.transformationProof`, `${pointer}/transformationProof`);
       for (const field of VARIANT_SOURCE_FIELDS) {
+        const fieldPointer = `${pointer}/transformationProof/${field}`;
         if (!Object.hasOwn(variant.transformationProof, field)) {
-          fail(`${label}.transformationProof 缺少 ${field}`);
+          candidateFail(`${label}.transformationProof 缺少 ${field}`, "required", fieldPointer);
         }
         const pair = variant.transformationProof[field];
-        outputRecord(pair, `${label}.transformationProof.${field}`);
+        candidateRecord(pair, `${label}.transformationProof.${field}`, fieldPointer);
         if (typeof pair.replacement !== "string" || !pair.replacement.trim()) {
-          fail(`${label}.transformationProof.${field}.replacement 必须是非空字符串`);
+          const keyword = pair.replacement === undefined ? "required"
+            : typeof pair.replacement !== "string" ? "type" : "pattern";
+          candidateFail(`${label}.transformationProof.${field}.replacement 必须是非空字符串`, keyword,
+            `${fieldPointer}/replacement`);
         }
       }
     });
@@ -248,6 +259,18 @@ function invalidInput(message) {
 
 function fail(message, code = "SOURCE_BASELINE_SELECTION_INVALID") {
   throw new OutputContractError(message, [{ code, reason: message }]);
+}
+
+function candidateRecord(value, label, pointer) {
+  if (!isRecord(value)) candidateFail(`${label} 必须是对象`, value === undefined ? "required" : "type", pointer);
+}
+
+function candidateFail(message, keyword, path) {
+  throw new OutputContractError(message, [{
+    code: schemaErrorCode(keyword, STORY_CANDIDATES_SCHEMA_CODE_PREFIX),
+    path,
+    reason: message
+  }]);
 }
 
 function deepFreeze(value) {

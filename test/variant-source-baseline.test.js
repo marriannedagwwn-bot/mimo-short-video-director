@@ -265,7 +265,11 @@ for (const [label, mutate] of [
     const baseline = createVariantSourceBaseline(upstreamFixture());
     const response = selectionsFor(baseline);
     mutate(response);
-    assert.throws(() => baseline.acceptSelections(response), OutputContractError);
+    assert.throws(() => baseline.acceptSelections(response), (error) => {
+      assert.ok(error instanceof OutputContractError);
+      assert.equal(error.details[0].code, "SOURCE_BASELINE_SELECTION_INVALID");
+      return true;
+    });
     assert.throws(() => baseline.apply(candidateBatch()), /尚未选定/u);
   });
 }
@@ -313,22 +317,55 @@ test("props按全量原数组精确去重，不裁剪、不合并不同字节的
     "旧照片；布包；照相机； 旧照片 ");
 });
 
-for (const [label, mutate] of [
-  ["漏proof维度", (batch) => { delete batch.variants[0].transformationProof.changedDialogue; }],
-  ["proof不是对象", (batch) => { batch.variants[0].transformationProof = "文本"; }],
-  ["pair不是对象", (batch) => { batch.variants[0].transformationProof.changedTask = []; }],
-  ["漏replacement", (batch) => { delete batch.variants[0].transformationProof.changedTask.replacement; }],
-  ["replacement不是字符串", (batch) => { batch.variants[0].transformationProof.changedTask.replacement = {}; }],
-  ["replacement为空", (batch) => { batch.variants[0].transformationProof.changedTask.replacement = " "; }]
+// apply 查的是候选模型的输出形状：报严格 Schema 在同一位置会报的码并带 path，
+// 不得再冒充 SOURCE_BASELINE_SELECTION_INVALID（2026-09-24 两次真实失败都被这样标错）。
+const PROOF = "/variants/0/transformationProof";
+for (const [label, mutate, code, path] of [
+  ["漏proof维度", (batch) => { delete batch.variants[0].transformationProof.changedDialogue; },
+    "STORY_CANDIDATES_SCHEMA_REQUIRED", `${PROOF}/changedDialogue`],
+  ["漏proof", (batch) => { delete batch.variants[0].transformationProof; },
+    "STORY_CANDIDATES_SCHEMA_REQUIRED", PROOF],
+  ["proof不是对象", (batch) => { batch.variants[0].transformationProof = "文本"; },
+    "STORY_CANDIDATES_SCHEMA_TYPE", PROOF],
+  ["pair不是对象", (batch) => { batch.variants[0].transformationProof.changedTask = []; },
+    "STORY_CANDIDATES_SCHEMA_TYPE", `${PROOF}/changedTask`],
+  ["pair被压成字符串", (batch) => { batch.variants[0].transformationProof.changedCharacters = "主角换成小白子"; },
+    "STORY_CANDIDATES_SCHEMA_TYPE", `${PROOF}/changedCharacters`],
+  ["漏replacement", (batch) => { delete batch.variants[0].transformationProof.changedTask.replacement; },
+    "STORY_CANDIDATES_SCHEMA_REQUIRED", `${PROOF}/changedTask/replacement`],
+  ["replacement不是字符串", (batch) => { batch.variants[0].transformationProof.changedTask.replacement = {}; },
+    "STORY_CANDIDATES_SCHEMA_TYPE", `${PROOF}/changedTask/replacement`],
+  ["replacement为空", (batch) => { batch.variants[0].transformationProof.changedTask.replacement = " "; },
+    "STORY_CANDIDATES_SCHEMA_EMPTY_STRING", `${PROOF}/changedTask/replacement`],
+  ["候选不是对象", (batch) => { batch.variants.push("id_note_check_done_V1_{"); },
+    "STORY_CANDIDATES_SCHEMA_TYPE", "/variants/1"],
+  ["variants不是数组", (batch) => { batch.variants = {}; },
+    "STORY_CANDIDATES_SCHEMA_TYPE", "/variants"],
+  ["variants为空", (batch) => { batch.variants = []; },
+    "STORY_CANDIDATES_SCHEMA_MIN_ITEMS", "/variants"]
 ]) {
   test(`apply不修复${label}，原候选保持不变`, () => {
     const batch = candidateBatch();
     mutate(batch);
     const before = structuredClone(batch);
-    assert.throws(() => selectedBaseline().apply(batch), OutputContractError);
+    assert.throws(() => selectedBaseline().apply(batch), (error) => {
+      assert.ok(error instanceof OutputContractError);
+      assert.equal(error.details.length, 1);
+      assert.equal(error.details[0].code, code);
+      assert.equal(error.details[0].path, path);
+      return true;
+    });
     assert.deepEqual(batch, before);
   });
 }
+
+test("apply拒绝非对象候选批次时报Schema类型码", () => {
+  assert.throws(() => selectedBaseline().apply("不是对象"), (error) => {
+    assert.equal(error.details[0].code, "STORY_CANDIDATES_SCHEMA_TYPE");
+    assert.equal(error.details[0].path, "/");
+    return true;
+  });
+});
 
 test("model可省source，apply仅补source；额外键原样保留给最终strict schema拒绝", () => {
   const input = { creatorProfile: { fixedCharacter: "小白子，猫耳少女", vertical: "治愈日常" }, count: 1 };

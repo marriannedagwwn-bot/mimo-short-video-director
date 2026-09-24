@@ -154,3 +154,32 @@ test("Full Story excludes source comparisons and retains selected story facts", 
   assert.match(prompt, /当前候选 storyOutline\[\]\.action 是已选剧情的权威/u);
   assert.match(prompt, /必须保留原动作、参与者、物件用途、关键办法和结果承诺/u);
 });
+
+test("只有候选调用带约束解码 Schema；选源调用与旧调用点不带", async () => {
+  // 2026-09-24：候选调用对 MiMo 发 json_schema。Schema 作为请求参数交给客户端，提示词文本不变。
+  const calls = [];
+  let input;
+  const workflow = new WorkflowService({ clients: { Qwen: { generateJson: async (request) => {
+    calls.push(request);
+    return variantSourceResponse(request.prompt) || mockVariants(input);
+  } } } });
+  input = fixture(workflow);
+  await workflow.createVariants(input);
+  assert.equal(calls.length, 2);
+  assert.equal(Object.hasOwn(calls[0], "responseSchema"), false);
+  assert.equal(calls[1].responseSchema.name, "story_candidates");
+  assert.equal(calls[1].responseSchema.schema.properties.variants.minItems, input.count);
+  assert.equal(calls[1].responseSchema.schema.properties.variants.maxItems, input.count);
+  assert.equal(calls[1].prompt, variantsPrompt(input, { deriveSource: true }));
+
+  const legacyCalls = [];
+  let legacy;
+  const legacyWorkflow = new WorkflowService({ clients: { Qwen: { generateJson: async (request) => {
+    legacyCalls.push(request);
+    return mockVariants(legacy);
+  } } } });
+  legacy = fixture(legacyWorkflow, { legacy: true });
+  await legacyWorkflow.createVariants(legacy);
+  assert.equal(legacyCalls.length, 1);
+  assert.equal(Object.hasOwn(legacyCalls[0], "responseSchema"), false);
+});

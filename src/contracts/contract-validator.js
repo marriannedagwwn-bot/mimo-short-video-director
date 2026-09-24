@@ -71,9 +71,18 @@ export function validateFullStoryRegistryStrict(value) {
   return validateStrictContract(validateCastRegistry, value, { codePrefix: "FULL_STORY_CAST_SCHEMA", label: "角色事实表" });
 }
 
+// variant-source-baseline 在严格 Schema 之前先查候选形状，用同一个前缀和
+// schemaErrorCode 报码，两处的码名只有这一份。
+export const STORY_CANDIDATES_SCHEMA_CODE_PREFIX = "STORY_CANDIDATES_SCHEMA";
+
+// 给模型做约束解码的 Schema 从这份派生（story-candidates-model-schema.js），不另写一份。
+export function storyCandidatesStrictSchema() {
+  return structuredClone(storyCandidatesSchema);
+}
+
 export function validateStoryCandidatesStrict(value) {
   return validateStrictContract(validateStoryCandidates, value, {
-    codePrefix: "STORY_CANDIDATES_SCHEMA",
+    codePrefix: STORY_CANDIDATES_SCHEMA_CODE_PREFIX,
     label: "Story Candidates"
   });
 }
@@ -143,7 +152,7 @@ function schemaErrorPath(error) {
   return instancePath || "/";
 }
 
-function schemaErrorCode(keyword, codePrefix) {
+export function schemaErrorCode(keyword, codePrefix) {
   if (keyword === "required") return `${codePrefix}_REQUIRED`;
   if (keyword === "additionalProperties") return `${codePrefix}_UNKNOWN_FIELD`;
   if (keyword === "type") return `${codePrefix}_TYPE`;

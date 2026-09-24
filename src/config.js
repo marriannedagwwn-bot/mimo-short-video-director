@@ -191,6 +191,8 @@ export function getConfig() {
       animationModel: process.env.MIMO_ANIMATION_MODEL?.trim() || process.env.MIMO_STORY_MODEL?.trim() || "mimo-v2.5-pro",
       characterReferenceModel: process.env.MIMO_CHARACTER_REFERENCE_MODEL?.trim() || process.env.MIMO_MODEL?.trim() || "mimo-v2.5",
       jsonMode: process.env.MIMO_JSON_MODE === "true",
+      // 调用方给了 Schema 时改发 json_schema 约束解码（文档外行为，实测可用），写 false 关闭。
+      jsonSchema: process.env.MIMO_JSON_SCHEMA?.trim().toLowerCase() !== "false",
       mediaMode,
       nativeVideoMaxBytes: Math.floor(nativeVideoMaxMb * 1024 * 1024),
       videoFps,

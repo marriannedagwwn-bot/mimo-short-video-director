@@ -1,4 +1,5 @@
-import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPromiseCheckRetryPrompt, fullStoryPromiseFindingsPrompt, fullStoryPromiseListPrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityEditorialPrompt, storyQualityPromisePrompt, storyQualityRepairPrompt, storyQualityRepairRetryPrompt, storyQualityReviewRetryPrompt, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPromiseCheckRetryPrompt, fullStoryPromiseFindingsPrompt, fullStoryPromiseListPrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityEditorialPrompt, storyQualityPromisePrompt, storyQualityRepairPrompt, storyQualityRepairRetryPrompt, storyQualityReviewRetryPrompt, variantsCount, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
+import { STORY_CANDIDATES_MODEL_SCHEMA_NAME, storyCandidatesModelSchema } from "./contracts/story-candidates-model-schema.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { isNarrativeFullStory } from "./full-story-contract.js";
 import { FULL_STORY_CAST_SCHEMA_VERSION } from "../public/full-story-format.js";
@@ -1519,6 +1520,14 @@ export class WorkflowService {
       ...requestSettings,
       stage: "variants",
       prompt: variantsPrompt(validatedInput, { deriveSource: true }),
+      // 约束解码 Schema 从严格 Schema 派生；提示词文本不变、所有模型共用。只有 MiMo 客户端
+      // 会用它发 json_schema：千问（欠费无法验证）与 DeepSeek（官方只支持 json_object）
+      // 按参数名解构，会忽略这个参数、照旧发 json_object。解码约束只减少结构类失败，
+      // finalize 里的严格 Schema 与全部校验不变，仍是唯一裁决方。
+      responseSchema: {
+        name: STORY_CANDIDATES_MODEL_SCHEMA_NAME,
+        schema: storyCandidatesModelSchema(variantsCount(validatedInput))
+      },
       modelOutputLogWriter: this.stageModelOutputLogWriters?.get("variants") || null,
       validate: finalize
     });
@@ -1736,7 +1745,7 @@ export class WorkflowService {
     });
   }
 
-  async generateValidatedJson({ client = this.client, prompt, systemPrompt = null, model = null, maxCompletionTokens = null, requestTimeoutMs = null, frames = [], video = null, validate, retryContext = null, onResolvedMediaMode = null, stage = "", provider = "", modelOutputLogWriter = null }) {
+  async generateValidatedJson({ client = this.client, prompt, systemPrompt = null, model = null, maxCompletionTokens = null, requestTimeoutMs = null, frames = [], video = null, validate, retryContext = null, onResolvedMediaMode = null, stage = "", provider = "", modelOutputLogWriter = null, responseSchema = null }) {
     // 纯观测 sidecar：只收集本次的模型原文，不改重试预算、控制流与任何错误语义。
     const recorder = stageModelOutputRecorder(modelOutputLogWriter, { stage, provider, model });
     const request = {
@@ -1753,6 +1762,7 @@ export class WorkflowService {
       onResolvedMediaMode,
       jsonRetryAttempts: 0,
       strictJson: true,
+      ...(responseSchema ? { responseSchema } : {}),
       ...(recorder ? { onCompletion: (completion) => recorder.observe(completion) } : {})
     };
     try {
