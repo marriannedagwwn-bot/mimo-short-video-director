@@ -1048,9 +1048,10 @@ test("模型生成请求默认允许等待 15 分钟且支持环境变量覆盖"
   }
 });
 
-test("三家文本模型的输出上限默认统一为 32768", () => {
-  // 流式请求已不设总时长，上限是模型陷入重复输出时唯一的刹车，所以调大而不是取消。
-  // 在用的 7 个模型 2026-09-23 实测 32768 与 65536 都被接受。
+test("流式的 MiMo 与 Qwen 输出上限默认放到实测最大值，DeepSeek 仍是 32768", () => {
+  // 2026-09-24：死循环改由 src/output-degeneration.js 边收边查截停，上限不再是唯一的刹车，
+  // 所以 MiMo 放到 131072（页面提供的 5 个型号实测接受）、Qwen 放到 65536（09-23 实测接受）。
+  // DeepSeek 非流式、中途看不到内容，仍靠 32768 兜底。
   const keys = [
     "MIMO_MAX_COMPLETION_TOKENS", "MIMO_STORY_MAX_COMPLETION_TOKENS", "MIMO_ANIMATION_MAX_COMPLETION_TOKENS",
     "QWEN_MAX_COMPLETION_TOKENS", "QWEN_ANALYSIS_MAX_COMPLETION_TOKENS", "QWEN_RECONSTRUCTION_MAX_COMPLETION_TOKENS",
@@ -1062,12 +1063,19 @@ test("三家文本模型的输出上限默认统一为 32768", () => {
   try {
     for (const key of keys) delete process.env[key];
     const { mimo, qwen, deepseek } = getConfig();
-    for (const [label, value] of Object.entries({
-      "mimo": mimo.maxCompletionTokens, "mimo.story": mimo.storyMaxCompletionTokens, "mimo.animation": mimo.animationMaxCompletionTokens,
-      "qwen": qwen.maxCompletionTokens, "qwen.variants": qwen.variantsMaxCompletionTokens, "qwen.story": qwen.storyMaxCompletionTokens,
-      "qwen.animation": qwen.animationMaxCompletionTokens, "qwen.visual": qwen.visualMaxCompletionTokens,
-      "deepseek": deepseek.maxCompletionTokens
-    })) assert.equal(value, 32_768, label);
+    for (const [label, value, expected] of [
+      ["mimo", mimo.maxCompletionTokens, 131_072], ["mimo.story", mimo.storyMaxCompletionTokens, 131_072],
+      ["mimo.animation", mimo.animationMaxCompletionTokens, 131_072],
+      ["qwen", qwen.maxCompletionTokens, 65_536], ["qwen.variants", qwen.variantsMaxCompletionTokens, 65_536],
+      ["qwen.story", qwen.storyMaxCompletionTokens, 65_536], ["qwen.animation", qwen.animationMaxCompletionTokens, 65_536],
+      ["qwen.visual", qwen.visualMaxCompletionTokens, 65_536],
+      ["deepseek", deepseek.maxCompletionTokens, 32_768]
+    ]) assert.equal(value, expected, label);
+    // 环境变量仍可以往下调，但不能超过各家的实测上限。
+    process.env.MIMO_MAX_COMPLETION_TOKENS = "999999";
+    process.env.QWEN_MAX_COMPLETION_TOKENS = "16384";
+    assert.equal(getConfig().mimo.maxCompletionTokens, 131_072);
+    assert.equal(getConfig().qwen.maxCompletionTokens, 16_384);
   } finally {
     for (const key of keys) {
       if (previous[key] === undefined) delete process.env[key];

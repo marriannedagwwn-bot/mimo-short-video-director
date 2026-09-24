@@ -1,7 +1,8 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
 import { recordModelUsage } from "./token-usage.js";
 import { afterDurableProviderCall, beforeDurableProviderCall, durableTaskHeartbeat, durableProviderAbortSignal, throwIfDurableTaskAborted } from "./durable-task-context.js";
-import { SseStreamIncompleteError, readSseCompletion } from "./sse-stream.js";
+import { SseStreamDegenerateError, SseStreamIncompleteError, readSseCompletion } from "./sse-stream.js";
+import { MIMO_OUTPUT_TOKEN_CEILING, growOutputTokenLimit } from "./output-token-ceilings.js";
 import { createStreamIdleTimer, resolveStreamIdleTimeoutMs } from "./stream-idle-timeout.js";
 
 export class ModelResponseError extends Error {
@@ -256,6 +257,9 @@ export class MimoClient {
       throwIfDurableTaskAborted();
       await afterDurableProviderCall("model_provider_response");
       if (idle.fired) throw streamIdleTimeoutError("MiMo", idle, error, headerRequestId);
+      // 必须排在「中途断开」之前：主动叫停的死循环同样带着 partialChunks，
+      // 顺序反了它会被当成网络中断、归为可重试的 transport。
+      if (error instanceof SseStreamDegenerateError) throw outputDegenerateError("MiMo", error, headerRequestId);
       if (typeof error?.partialChunks === "number" && error.partialChunks > 0) {
         throw new ModelResponseError(
           `MiMo 流式传输在收到 ${error.partialContentLength} 字正文（${error.partialChunks} 个数据块）后中断：${error.message}`,
@@ -331,9 +335,7 @@ ${String(failedContent || "").slice(0, 800)}`;
 }
 
 function retryTokenLimit(value) {
-  const current = Number(value || 8192);
-  if (!Number.isFinite(current)) return 12288;
-  return Math.min(32768, Math.max(12288, Math.ceil(current * 1.5)));
+  return growOutputTokenLimit(value, { factor: 1.5, ceiling: MIMO_OUTPUT_TOKEN_CEILING });
 }
 
 function isRecoverableVideoJsonError(error) {
@@ -436,6 +438,22 @@ export function assertCompletionNotContentFiltered(completion, providerName = "�
       requestId: completion.requestId,
       finishReason: completion.finishReason,
       usage: completion.usage
+    }
+  );
+}
+
+// 输出陷入逐字重复、被读取流程主动叫停后的统一错误（判定在 src/output-degeneration.js）。
+// 半截内容只进 detail 供排查，绝不当结果返回；用量只有中断前实际收到的（通常没有，不估算）。
+export function outputDegenerateError(providerName, cause, requestId = "") {
+  return new ModelResponseError(
+    `${providerName} ${cause.message}`,
+    String(cause?.partialRaw || ""),
+    0,
+    {
+      provider: providerName,
+      code: "MODEL_OUTPUT_DEGENERATE",
+      requestId,
+      usage: cause?.partialUsage
     }
   );
 }

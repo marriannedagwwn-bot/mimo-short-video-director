@@ -234,7 +234,9 @@ test("截断走单独的重试分支：要求压缩措辞而不是原样重发",
     if (next === "__TRUNCATED__") return {parsed: undefined, content: "{\"viewingIntent\":", finishReason: "length", requestId: "", usage: null, raw: ""};
     return {parsed: next, content: JSON.stringify(next), finishReason: "stop", requestId: "", usage: null, raw: JSON.stringify(next)};
   }};
-  workflow.stageDefaults.animationPlan = {provider: "MiMo", model: "test"};
+  // 显式配一个上限，才能检验「重试抬额度」。没配上限时请求里就不写，客户端用它自己的默认
+  // （MiMo 131072），重试必须保持不写而不是填一个更小的数——那由 coordinator 的单元测试锁住。
+  workflow.stageDefaults.animationPlan = {provider: "MiMo", model: "test", maxCompletionTokens: 32768};
   const result = await workflow.createAnimationPlan(input);
 
   assert.equal(requests.length, 4);

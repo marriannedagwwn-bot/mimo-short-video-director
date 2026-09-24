@@ -159,7 +159,9 @@ test("onProgress 抛错不改变传输结论", async () => {
 });
 
 test("raw 超过上限时保留头尾并标注省略量", async () => {
-  const filler = "永".repeat(5000);
+  // 填充用不重复的字：同一个字重复 5000 次会被死循环检测（src/output-degeneration.js）正确地拦下，
+  // 而这条测的是 raw 保留头尾，不是检测器。
+  const filler = Array.from({ length: 5000 }, (_, index) => String.fromCharCode(0x4e00 + (index * 7) % 5000)).join("");
   const text = `data: {"choices":[{"delta":{"content":"${filler}"}}]}\n\n`
     + `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n${DONE}`;
   const result = await readSseCompletion(streamOfText(text), { maxRawChars: 400 });

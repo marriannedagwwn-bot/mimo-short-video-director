@@ -4,6 +4,7 @@ import { ModelResponseError, assertCompletionNotContentFiltered, parseSingleJson
 import { ModelPipelineError } from "./model-errors.js";
 import { OutputContractError } from "./validation.js";
 import { throwIfDurableTaskAborted } from "./durable-task-context.js";
+import { SHARED_OUTPUT_TOKEN_CEILING, growOutputTokenLimit } from "./output-token-ceilings.js";
 
 const DEFAULT_FULL_STORY_PROVIDER_CALLS = 2;
 
@@ -290,6 +291,20 @@ export function classifyAttemptError(error) {
     // 把一个本该重试的网络中断变成不可重试的协议错误。
     // 与 MODEL_STREAM_INCOMPLETE 同规格：连接被对端切断是传输故障，必须可重试。
     // 不单独分类会落到本分支末尾的兜底（status=0 → protocol 且 retryable false）。
+    // 输出陷入逐字重复、被读取流程主动叫停（src/output-degeneration.js）。与截断同口径：
+    // 是模型这一次的输出坏了，只在各阶段已有的重试预算内再试一次，不新增任何重试路径；
+    // 单独成类是为了和截断分开统计——截断专用的「要求压缩、抬额度」对它没有意义。
+    if (error.code === "MODEL_OUTPUT_DEGENERATE") {
+      return {
+        message: error.message,
+        category: "degeneration",
+        code: error.code,
+        origin: "model",
+        httpStatus: 502,
+        retryable: true,
+        diagnostics: []
+      };
+    }
     // 供应商内容审核拦截：不是格式错误，也不得自动重试（CLAUDE.md §2.6 同一原则）。
     if (error.code === "MODEL_CONTENT_FILTERED") {
       return {
@@ -384,8 +399,7 @@ export function classifyAttemptError(error) {
   };
 }
 
+// coordinator 不知道供应商是谁，只抬到三家都实测接受的 SHARED 上限；请求里没写上限时保持不写。
 function defaultRetryTokenLimit(value) {
-  const current = Number(value || 8192);
-  if (!Number.isFinite(current)) return 12288;
-  return Math.min(32768, Math.max(12288, Math.ceil(current * 1.5)));
+  return growOutputTokenLimit(value, { factor: 1.5, ceiling: SHARED_OUTPUT_TOKEN_CEILING });
 }

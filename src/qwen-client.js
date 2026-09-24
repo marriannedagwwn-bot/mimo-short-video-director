@@ -1,8 +1,9 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
-import { ModelResponseError, assertCompletionNotContentFiltered, assertCompletionNotTruncated, parseModelJson, parseStrictModelJson, streamIdleTimeoutError } from "./mimo-client.js";
+import { ModelResponseError, assertCompletionNotContentFiltered, assertCompletionNotTruncated, outputDegenerateError, parseModelJson, parseStrictModelJson, streamIdleTimeoutError } from "./mimo-client.js";
 import { recordModelUsage } from "./token-usage.js";
 import { afterDurableProviderCall, beforeDurableProviderCall, durableTaskHeartbeat, durableProviderAbortSignal, throwIfDurableTaskAborted } from "./durable-task-context.js";
-import { SseStreamIncompleteError, readSseCompletion } from "./sse-stream.js";
+import { SseStreamDegenerateError, SseStreamIncompleteError, readSseCompletion } from "./sse-stream.js";
+import { QWEN_OUTPUT_TOKEN_CEILING, growOutputTokenLimit } from "./output-token-ceilings.js";
 import { createStreamIdleTimer, resolveStreamIdleTimeoutMs } from "./stream-idle-timeout.js";
 
 export class QwenClient {
@@ -245,6 +246,8 @@ export class QwenClient {
       throwIfDurableTaskAborted();
       await afterDurableProviderCall("model_provider_response");
       if (idle.fired) throw streamIdleTimeoutError(providerName, idle, error, headerRequestId);
+      // 必须排在「中途断开」之前：主动叫停的死循环同样带着 partialChunks。
+      if (error instanceof SseStreamDegenerateError) throw outputDegenerateError(providerName, error, headerRequestId);
       // 连接被对端切断（undici 的 TypeError: terminated）时，已收到的内容挂在
       // error.partialRaw 上。把规模带进错误消息，让日志能区分「刚开始就断」与
       // 「快写完才断」——前者重试即可，后者说明该换策略（拆分请求或换模型）。
@@ -452,9 +455,7 @@ function isRecoverableVideoJsonError(error) {
 }
 
 function retryTokenLimit(value) {
-  const current = Number(value || 12288);
-  if (!Number.isFinite(current)) return 16384;
-  return Math.min(65536, Math.max(16384, Math.ceil(current * 1.35)));
+  return growOutputTokenLimit(value, { factor: 1.35, ceiling: QWEN_OUTPUT_TOKEN_CEILING });
 }
 
 // 只观测，不参与控制流：回调抛错或 reject 一律吞掉，日志 sidecar 不得改变模型调用的成败。
