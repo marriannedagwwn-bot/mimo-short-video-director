@@ -175,7 +175,7 @@ MiMo 请求参数默认为 `temperature=0.3`、`top_p=0.95`、`max_completion_to
 
 `MIMO_THINKING=disabled` 时，MiMo 用户消息末尾会追加 `/no_think`；改成 `MIMO_THINKING=enabled` 后，请求体会发送 `thinking={"type":"enabled"}`，并且不会再追加 `/no_think`。
 
-候选阶段的候选调用会给 MiMo 发 `response_format: {type: "json_schema", strict: true}`，由接口按 Schema 约束输出结构（多出的键、数组里的非对象、多写的候选都会在生成时被挡住）。这个 Schema 从服务端候选严格 Schema 派生，服务端校验不变。这是 MiMo 文档外、经实测可用的行为；如果供应商改了，设 `MIMO_JSON_SCHEMA=false` 即可退回 `json_object`。候选对照评审（含「生成完整剧情」前自动跑的展开前体检）用同一个做法，Schema 从评审严格 Schema 派生。其余阶段、千问与 DeepSeek 不受影响。详见 [docs/variants-mimo-format-2026-09-24.md](docs/variants-mimo-format-2026-09-24.md)。
+候选阶段的候选调用会给 MiMo 发 `response_format: {type: "json_schema", strict: true}`，由接口按 Schema 约束输出结构（多出的键、数组里的非对象、多写的候选都会在生成时被挡住）。这个 Schema 从服务端候选严格 Schema 派生，服务端校验不变。这是 MiMo 文档外、经实测可用的行为；如果供应商改了，设 `MIMO_JSON_SCHEMA=false` 即可退回 `json_object`。候选对照评审（含「生成完整剧情」前自动跑的展开前体检）与自主分镜 4.0 的「设计分镜」一步用同一个做法，Schema 分别从各自的严格 Schema 派生。其余阶段、千问与 DeepSeek 不受影响。详见 [docs/variants-mimo-format-2026-09-24.md](docs/variants-mimo-format-2026-09-24.md)。
 
 如果希望参考视频解析和后续文本阶段默认改用千问，继续增加：
 

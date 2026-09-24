@@ -11,9 +11,12 @@ import { storyboardReviewPrompt, validateStoryboardReview } from "./storyboard-r
 import { storyboardRevisionPrompt } from "./storyboard-revision-prompt.js";
 import { applyEditorial, revisionSystem } from "./storyboard-editorial.js";
 import { ensureStoryboardDesign, ensureStoryboardPlan, storyboardDesignFromPlan } from "./storyboard-contract.js";
+import { STORYBOARD_DESIGN_MODEL_SCHEMA_NAME, storyboardDesignModelSchema } from "./contracts/storyboard-design-model-schema.js";
 import { InputError, OutputContractError, ensureOutputContract, ensureFullStoryMatchesProfile, ensureCharacterReferenceMatchesBoundary,
   characterReferenceRestorableMissingTraits,
   normalizeBackgroundMusicMode, requireAnimationPlanAspectRatio, NO_BACKGROUND_MUSIC_SENTENCE } from "./validation.js";
+
+const STORYBOARD_DESIGN_RESPONSE_SCHEMA = { name: STORYBOARD_DESIGN_MODEL_SCHEMA_NAME, schema: storyboardDesignModelSchema() };
 
 export async function storyboardInput(workflow, input, telemetry = null) {
   const visualGuardrails = workflow.assertGlobalCharacterBoundary(input);
@@ -76,7 +79,7 @@ function storyboardPipelineFailure(error, rejections = []) {
   });
 }
 
-async function call(workflow, settings, stage, prompt, validate, { systemPrompt = storyboardSystem, telemetry = null } = {}) {
+async function call(workflow, settings, stage, prompt, validate, { systemPrompt = storyboardSystem, telemetry = null, responseSchema = null } = {}) {
   const rejections = [];
   const record = stageAttemptRecorder(workflow, stage);
   // 实数调用次数由 observer 计数，**不能从「有没有被拦」反推**——传输失败时供应商确实
@@ -85,7 +88,8 @@ async function call(workflow, settings, stage, prompt, validate, { systemPrompt 
   try {
     return await workflow.modelCallCoordinator.runJson({
       client: settings.client, provider: settings.provider, stage,
-      request: { prompt, systemPrompt, model: settings.model, maxCompletionTokens: settings.maxCompletionTokens, requestTimeoutMs: settings.requestTimeoutMs },
+      request: { prompt, systemPrompt, model: settings.model, maxCompletionTokens: settings.maxCompletionTokens, requestTimeoutMs: settings.requestTimeoutMs,
+        ...(responseSchema ? { responseSchema } : {}) },
       maxProviderCalls: STORYBOARD_PROVIDER_CALL_BUDGET,
       attemptObserver: async (attempt) => {
         providerCalls += 1;
@@ -135,7 +139,7 @@ export async function createStoryboardPlan(workflow, input) {
     guidance = ["演示模式：未进行真实 AI 分镜审查或修订。"];
   } else {
     workflow.assertStageClient(settings, "自主分镜");
-    design = await call(workflow, settings, "storyboardDesign", storyboardPrompt(projected), value => ensureStoryboardDesign(value, projected), { telemetry: calls });
+    design = await call(workflow, settings, "storyboardDesign", storyboardPrompt(projected), value => ensureStoryboardDesign(value, projected), { telemetry: calls, responseSchema: STORYBOARD_DESIGN_RESPONSE_SCHEMA });
     initialReview = await call(workflow, settings, "storyboardReview", storyboardReviewPrompt({ input: projected, plan: design }), value => validateStoryboardReview(value, { input: projected, plan: design }), { telemetry: calls });
     guidance.push(...initialReview.guidance);
     if (initialReview.items.length) {

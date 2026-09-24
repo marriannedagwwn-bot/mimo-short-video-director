@@ -267,3 +267,39 @@ characterReference 未沿用全局角色边界：缺少全局必需角色事实�
 它只保证**边界要求的非外观事实不会在组装角色参考时丢失**。模型把长相写错、
 或者把必需事实写成了另一个意思，都不在覆盖范围内——前者仍然硬失败，
 后者需要语义判断，**没有确定性兜底**。
+
+# 后续：设计分镜接入 MiMo JSON Schema 约束解码（2026-09-24）
+
+## 起因
+
+run-7336db89（《奶奶的录音》，V4，`full_story/1.2`）生成 Animation Plan 4.0，`storyboardDesign` 用 MiMo `mimo-v2.6-pro`（开思考、上限 65536）：
+
+| 次 | 耗时 | completion token | 结果 |
+|---|---|---|---|
+| 1 | 357 秒 | 13803 | 结构错：`locations` / `props` 写到顶层而不是 `visualDesign` 里 |
+| 2（带诊断重试） | 456 秒 | 17860 | 结构对了，但 `/shotPlan/2/beats/1/sourceSceneIds` 引用了片段之外的 S3（`STORYBOARD_BEAT_SOURCE_OUT_OF_SHOT`） |
+
+2 次预算用完，整份 Plan 失败。第一次那种错是 MiMo 开思考时的结构失败，与同日候选阶段、候选对照评审同一类；第二次是跨字段引用，约束解码管不到。第一次把唯一一次重试机会耗掉了。
+
+## 改动（代码由 Codex 按任务说明编写，审查、测试与回放由 Claude 完成）
+
+- `src/contracts/storyboard-design-model-schema.js`：`storyboardDesignModelSchema()` 从 `storyboardDesignSchema` 派生，`pattern:"\\S"` 改 `minLength: 1`；去掉未在 MiMo 上实测的 `uniqueItems` 与 `exclusiveMinimum`（只放宽模型那侧，服务端严格校验照样拦）；遍历整棵 Schema，出现已实测清单（type / properties / required / additionalProperties / items / minItems / maxItems / enum / minimum / maximum / minLength）之外的关键字、或别的 pattern 直接抛错；片段数由模型定，不锁。
+- `src/storyboard-workflow.js`：`call()` 增加可选 `responseSchema`，只有 `storyboardDesign` 及其重试带；角色事实、审阅、修订、终审、单镜写稿都不带。
+- 提示词、`storyboard-contract.js` 的校验与 `storyboardDesignSchema`、`STORYBOARD_PROVIDER_CALL_BUDGET`、客户端与 coordinator 均未改。
+- 新增 `test/storyboard-design-model-schema.test.js` 9 条，覆盖派生规则、未知关键字报错、各层字段顺序与提示词模板一致、真实失败形状被拒、放宽的约束仍由服务端拦、全流程六个阶段只有设计分镜及其重试带 Schema 且提示词逐字不变。本机 `node --test test/*.test.js`：1784 tests / 1778 pass / 0 fail / 6 skipped。（Codex 沙箱不允许监听端口，它那边有 82 个与本改动无关的 `listen EPERM` 失败，改动前后失败清单一致。）
+
+## 验证
+
+- 离线：失败那次第一份输出被派生 Schema 拒绝（顶层多出 `locations`/`props`、`visualDesign` 缺这两项），第二份通过派生 Schema（它只有跨字段错）。
+- 真实回放（同一份冻结输入：`fullStory-V4-r2`、`variant-V4-r1`、`visualGuardrails-r1`，16:9、无背景音乐；只调用设计分镜一步，请求与生产 `call()` 一致）×2 并发：
+
+| 次 | 结果 | 调用 | 耗时 | completion token | 片段 / 总长 |
+|---|---|---|---|---|---|
+| 1 | **通过** | 2：第一次被 `STORYBOARD_BEAT_SOURCE_OUT_OF_SHOT` 拦下（`/shotPlan/6/beats/1`），带诊断重试通过 | 945 秒 | 20496 + 12477 | 9 段 / 96 秒 |
+| 2 | **通过** | 1 | 590 秒 | 20587 | 11 段 / 111 秒 |
+
+MiMo 接受这份 Schema（没有 400）；结构错 0/3 次调用（改动前 1/2）。样本只有一份剧情、两次回放。
+
+## 反复出现、未处理：过渡拍的来源场次
+
+当天 MiMo 的 4 份设计里 2 份是同一形状：片段末尾的过渡拍已经开始演下一场（生产那次是 S3 第一句「抬眼望向门缝漏下的那道斜斜光柱」，回放那次是 S5 开头「把钉好扣子的旧蓝布衫递给老人」），beat 如实标了「本场 + 下一场」，片段自身的 `sourceSceneIds` 却只写本场。校验拦得对，不是误判。正解不唯一——给片段补上下一场，或把下一场从 beat 去掉——所以不能自动修。目前只靠带诊断重试救回；若它继续高频出现，要考虑在提示词里写明「beat 跨场时片段的 sourceSceneIds 也要包含那一场」，那是提示词改动，需要另行决定。
