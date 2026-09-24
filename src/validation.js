@@ -3455,10 +3455,19 @@ export function ensureFullStoryPromiseListContract(list, candidate) {
         `quote 必须逐字摘自候选的 ${source}「${text}」，不得概括或改写`
       );
     }
-    if (!String(entry?.promise || "").trim()) {
-      push("PROMISE_CHECK_LIST_INVALID", `/promises/${index}/promise`, "promise 必须写清楚观众因此期待看到什么");
-    }
     const kind = String(entry?.kind || "");
+    // 判定不分 kind：promise 一律不能为空（浏览器体检面板会逐条显示它）。只有理由按 kind 写——
+    // 这句会原样进重试提示词，对 not_a_promise 说「写清楚观众期待看到什么」自相矛盾，
+    // 2026-09-24 MiMo 重试时照样写空串，同形失败第二次。
+    if (!String(entry?.promise || "").trim()) {
+      push(
+        "PROMISE_CHECK_LIST_INVALID",
+        `/promises/${index}/promise`,
+        kind === "not_a_promise"
+          ? "判 not_a_promise 时 promise 也不能留空：写一句话说明这个标题为什么没有许诺看得见的东西"
+          : "promise 必须写清楚观众因此期待看到什么"
+      );
+    }
     if (kind !== "promise" && kind !== "not_a_promise") {
       push("PROMISE_CHECK_LIST_INVALID", `/promises/${index}/kind`, "kind 只能是 promise 或 not_a_promise");
       return;

@@ -2023,6 +2023,7 @@ ${JSON.stringify(projection)}
    - 只有承诺本身需要兑现：**角色是谁、叫什么名字、故事发生在哪，这些是设定不是承诺**，
      不要单独列成一条。
 4. kind：标题纯粹是名字或氛围、没有许诺任何看得见的东西时写 not_a_promise，并把 mustSee 写成空数组；
+   这时 promise **也不能留空**，改写一句话说明这个标题为什么没有许诺看得见的东西。
    其余一律写 promise。**oneLineHook 永远是承诺，不允许写 not_a_promise。**
 
 ## 守住这几条

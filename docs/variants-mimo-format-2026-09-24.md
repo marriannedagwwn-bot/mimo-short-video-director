@@ -113,3 +113,52 @@ deriveSource 分支原来写的是「仍分别记录人物、任务……的**�
 - MiMo 的结构性失败（空垃圾键、孤立字符串、空模板副本）已由候选调用的 json_schema 约束解码处理，见上一节；其他 MiMo 阶段仍发 `json_object`。
 - 接入后的回放只有 4 次、一个参考片，结论偏乐观；可选键使用率的变化需要更多数据判断。
 - 浏览器只覆盖 provider/model，所以候选阶段改用 MiMo 时，输出上限拿的是千问那一档的 65536，而不是 MiMo 自己的 131072。今天的调用都以 `stop` 正常结束，没有撞上限。
+
+## 候选对照评审（展开前体检）同样接入（同日晚）
+
+### 起因
+
+19:23 在 run-7336db89（同一部《奶奶的录音》）上点「生成完整剧情」，展开前体检里的候选对照评审（MiMo `mimo-v2.6-pro` 开思考，只评选中的 V4《门槛上的针眼》）两次调用都被拦下，体检整体报错：
+
+| 次 | 耗时 | completion token | 失败原因 |
+|---|---|---|---|
+| 1 | 454 秒 | 18813 | `candidateChecks` 写完 V4 后数组里多出孤立字符串 `"holisticPreferenceOrder:["`；另把 `dominantDefect.type` 写成 `contradiction`（那是 `coherenceChecks.kind` 的取值，不在缺陷枚举里） |
+| 2（带诊断重试） | 521 秒 | 19926 | 同一个孤立字符串，写完就收尾，顶层 `holisticPreferenceOrder` / `batchTemplateConvergence` / `briefProblemsDetected` / `summary` 全缺 |
+
+和候选阶段当天的第 2 种失败同形，重试把诊断交回去也没用。这两次在阶段侧车里的 `diagnostics` 是空数组，原因是另一个会话在修的记录器漏传（尚未合入），错误本身是用严格 Schema 离线重放出来的。
+
+### 接入方式
+
+与候选调用同一个做法，不改提示词、校验与重试预算：
+
+- `src/contracts/story-candidate-review-model-schema.js` 的 `storyCandidateReviewModelSchema(count)` 从评审严格 Schema 派生：`pattern` 改 `minLength: 1`；`schemaVersion` 的 `const` 没在 MiMo 上实测过，换成已实测生效的单值 `enum`；去掉服务端派生的报告级 `scoreOrder/recommendedWinner/runnerUp/rejectOrRegenerate` 与候选级 `overallScore/tier/scoreBasedVerdict/effectiveVerdict/verdictOverrideReasons`；`candidateChecks` 与 `holisticPreferenceOrder` 锁成 `minItems = maxItems = 候选数`；字段按提示词模板排序；严格 Schema 结构变了时直接抛错。
+- `createStoryCandidateReview` 把它作为 `responseSchema` 放进 coordinator 的 request，展开前体检与手动评审都走这里；coordinator 重试沿用同一个 request，第二次调用也带着。千问与 DeepSeek 忽略这个参数。
+- 覆盖率核验（机制 id 必须在清单里、拍号范围、偏好序是排列、标题回显）仍只在服务端做，约束解码管不到这些跨字段引用。
+
+离线核对：该阶段留存的全部 96 份输出里，能过严格 Schema 的 59 份全部能过模型 Schema，其余 37 份两边都拒——判定完全一致，模型 Schema 没有比严格 Schema 更严。
+
+### 回放（同一份输入，走开发服务器 `/api/full-story-precheck`，MiMo 开思考 ×2 并发）
+
+| 次 | 评审 | 评审调用 | 体检整体 |
+|---|---|---|---|
+| 1 | **通过**，1 次调用，381 秒，12677 token | 11 维齐全，路由 `revise`（`coherence_break` + 承诺未兑现），找出的第 3 拍人称矛盾与失败那次一致 | HTTP 200 |
+| 2 | **通过**，2 次调用：第一次被覆盖率核验拦下（引用了清单外的机制 id `M5`，不是结构问题），带诊断重试一次通过，488 秒，22747 token | — | HTTP 502，原因在承诺核对，见下 |
+
+- 评审的结构类失败 0/3 次调用（改动前 2/2）；2 次回放的评审都拿到合法报告。
+- 样本只有 2 次、一个候选，结论偏乐观。
+
+### 同一次回放暴露的另一个问题：承诺核对的 not_a_promise（已处理）
+
+回放 2 的承诺核对第一步两次都被拦：标题判成 `not_a_promise` 时，模型把 `promise` 写成空字符串，而校验器（`ensureFullStoryPromiseListContract`）要求每一条的 `promise` 都非空。这不是 MiMo 特有的：千问 qwen3.7-max 在 09-18 也以同样形状失败过 2 次；成功的那几次里，千问会在 `promise` 里写一句「标题只是物品名称，没有许诺具体事件」。它不经过约束解码，json_schema 管不到。
+
+根因有两处，都在我们这边：
+
+- 提示词对 `not_a_promise` 只说「把 mustSee 写成空数组」，没说 `promise` 该写什么，输出模板里又是 `"promise":""`。
+- 拒绝理由写的是「promise 必须写清楚观众因此期待看到什么」，这句原样进重试提示词。对一条刚判定「不构成承诺」的条目，它自相矛盾，所以重试照样写空。
+
+改动（判定不变，`promise` 一律不能为空，因为浏览器体检面板会逐条显示它）：
+
+- `fullStoryPromiseListPrompt` 第 4 条补一句：判 `not_a_promise` 时 `promise` 也不能留空，改写一句话说明这个标题为什么没有许诺看得见的东西。所有模型共用这一份。
+- 校验器的拒绝理由按 kind 写：`not_a_promise` 时说明要写什么，`promise` 时理由逐字不变。码与路径不变。
+
+验证：两份失败输出用新校验器重放仍被拒（判定不变），理由换成新的。同一个候选 V4，MiMo 开思考直接调用承诺核对 4 次：**4/4 通过、0 次被拦**；其中 2 次把标题判成 `not_a_promise`，两次都写出了说明（如「这是一个意象式/氛围式标题，本身没有许诺任何可核对的可见事件」）。改动前同一标题判 `not_a_promise` 的 2 次全部写空失败。样本只有一个标题。

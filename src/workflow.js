@@ -1,5 +1,6 @@
 import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPromiseCheckRetryPrompt, fullStoryPromiseFindingsPrompt, fullStoryPromiseListPrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityEditorialPrompt, storyQualityPromisePrompt, storyQualityRepairPrompt, storyQualityRepairRetryPrompt, storyQualityReviewRetryPrompt, variantsCount, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
 import { STORY_CANDIDATES_MODEL_SCHEMA_NAME, storyCandidatesModelSchema } from "./contracts/story-candidates-model-schema.js";
+import { STORY_CANDIDATE_REVIEW_MODEL_SCHEMA_NAME, storyCandidateReviewModelSchema } from "./contracts/story-candidate-review-model-schema.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { isNarrativeFullStory } from "./full-story-contract.js";
 import { FULL_STORY_CAST_SCHEMA_VERSION } from "../public/full-story-format.js";
@@ -780,7 +781,16 @@ export class WorkflowService {
       ),
       model: settings.model,
       maxCompletionTokens: settings.maxCompletionTokens,
-      requestTimeoutMs: settings.requestTimeoutMs
+      requestTimeoutMs: settings.requestTimeoutMs,
+      // 与候选阶段同一个做法：约束解码 Schema 从严格 Schema 派生，提示词文本不变、所有模型共用。
+      // 只有 MiMo 客户端会用它发 json_schema，千问与 DeepSeek 按参数名解构、照旧发 json_object。
+      // coordinator 重试沿用同一个 request，所以第二次调用同样带着它。
+      // 起因是 2026-09-24 展开前体检里 MiMo 开思考两次都在 candidateChecks 数组里写出孤立字符串
+      // "holisticPreferenceOrder:["——与候选阶段当天的结构失败同形，重试打回诊断也没用。
+      responseSchema: {
+        name: STORY_CANDIDATE_REVIEW_MODEL_SCHEMA_NAME,
+        schema: storyCandidateReviewModelSchema(candidates.length)
+      }
     };
 
     let review;

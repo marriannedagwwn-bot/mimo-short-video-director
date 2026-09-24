@@ -177,6 +177,45 @@ test("钩子不能判 not_a_promise，标题可以，而且标题这一档不必
   assert.doesNotThrow(() => ensureFullStoryPromiseListContract(title, target()));
 });
 
+// 2026-09-24：MiMo 把标题判成 not_a_promise 后写 promise: ""，两次都被拒（千问 09-18 也有两次）。
+// 提示词原来只说 mustSee 写空数组、没说 promise 写什么；拒绝理由又是「写清楚观众期待看到什么」，
+// 对不构成承诺的一条自相矛盾，重试照样写空。判定不变，只补提示词、按 kind 给理由。
+test("标题判 not_a_promise 时 promise 仍不能为空，理由按 kind 写、不再自相矛盾", () => {
+  const title = goodList();
+  title.promises[0] = { ...title.promises[0], kind: "not_a_promise", promise: "", mustSee: [] };
+  assert.throws(
+    () => ensureFullStoryPromiseListContract(title, target()),
+    (error) => {
+      assert.deepEqual(error.details.map((detail) => detail.code), ["PROMISE_CHECK_LIST_INVALID"]);
+      assert.equal(error.details[0].path, "/promises/0/promise");
+      assert.match(error.details[0].reason, /not_a_promise/u);
+      assert.match(error.details[0].reason, /为什么没有许诺/u);
+      assert.doesNotMatch(error.details[0].reason, /观众因此期待/u);
+      return true;
+    }
+  );
+
+  const promise = goodList();
+  promise.promises[1] = { ...promise.promises[1], promise: "  " };
+  assert.throws(
+    () => ensureFullStoryPromiseListContract(promise, target()),
+    (error) => {
+      assert.equal(error.details[0].path, "/promises/1/promise");
+      assert.match(error.details[0].reason, /观众因此期待看到什么/u);
+      return true;
+    }
+  );
+
+  const explained = goodList();
+  explained.promises[0] = { ...explained.promises[0], kind: "not_a_promise", promise: "标题只是一个名字，没有许诺看得见的事", mustSee: [] };
+  assert.doesNotThrow(() => ensureFullStoryPromiseListContract(explained, target()));
+});
+
+test("承诺清单提示词写明 not_a_promise 时 promise 该写什么", () => {
+  const prompt = fullStoryPromiseListPrompt(target());
+  assert.match(prompt, /not_a_promise，并把 mustSee 写成空数组；\s*这时 promise \*\*也不能留空\*\*，改写一句话说明这个标题为什么没有许诺看得见的东西/u);
+});
+
 test("标题与钩子各至少核对一条，承诺必须写 mustSee", () => {
   const onlyTitle = goodList({ promises: [goodList().promises[0], goodList().promises[0]] });
   assert.deepEqual(codes(() => ensureFullStoryPromiseListContract(onlyTitle, target())), ["PROMISE_CHECK_SOURCE_MISSING"]);

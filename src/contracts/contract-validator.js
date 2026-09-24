@@ -108,6 +108,11 @@ export function validateAnimationPlanReviewStrict(value) {
   });
 }
 
+// 给模型做约束解码的 Schema 从这份派生（story-candidate-review-model-schema.js），不另写一份。
+export function storyCandidateReviewStrictSchema() {
+  return structuredClone(storyCandidateReviewSchema);
+}
+
 export function validateStoryCandidateReviewStrict(value) {
   return validateStrictContract(validateStoryCandidateReview, value, {
     codePrefix: "STORY_CANDIDATE_REVIEW_SCHEMA",
