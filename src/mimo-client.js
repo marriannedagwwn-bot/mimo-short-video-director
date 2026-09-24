@@ -248,13 +248,13 @@ export class MimoClient {
     }
 
     let lastHeartbeatAt = 0;
-    const onProgress = ({ contentLength }) => {
+    const onProgress = ({ contentLength, reasoningLength }) => {
       idle.touch();
       const now = Date.now();
       if (now - lastHeartbeatAt < 10_000) return;
       lastHeartbeatAt = now;
       // 推理期间也续报进度；观测失败不改变传输结论。
-      Promise.resolve(durableTaskHeartbeat({ streamedChars: contentLength })).catch(() => {});
+      Promise.resolve(durableTaskHeartbeat({ streamedChars: contentLength, reasoningChars: reasoningLength })).catch(() => {});
     };
     let stream;
     try {

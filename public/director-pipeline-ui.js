@@ -1,4 +1,5 @@
 import { formatStageUsageSuffix } from "./token-usage-format.js";
+import { taskErrorMessage } from "./task-status-ui.js";
 
 function completedStages(task) {
   const value = Number(task?.progress?.completedStages);
@@ -138,7 +139,7 @@ export function directorTaskView(task = {}, { modelLabel = "" } = {}) {
   const message = task.status === "completed" ? formatDirectorCompletionStatus(task, usage)
     : active ? `${labels[controlState] || (task.status === "queued" ? "AI 导演任务排队中"
       : `AI 导演执行中 ${completedStages(task)}/5`)}${model}${usage}`
-      : `${terminal[task.status] || "AI 导演任务状态未知"}${task.error?.message && task.status !== "cancelled" ? `：${task.error.message}` : ""}${usage}`;
+      : `${terminal[task.status] || "AI 导演任务状态未知"}${task.error?.message && task.status !== "cancelled" ? `：${taskErrorMessage(task)}` : ""}${usage}`;
   return {
     active, controlState, message,
     tone: task.status === "completed" ? "ready" : active ? controlState === "paused" ? "warn" : "active"

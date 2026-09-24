@@ -266,7 +266,7 @@ function apiErrorMessage(payload, status, fallbackMessage, compilerStage) {
 }
 
 // 与服务端 providerErrorDisplayText 同形；浏览器侧不重新查表，只渲染已签发结果。
-function providerErrorText(providerError) {
+export function providerErrorText(providerError) {
   if (!isRecord(providerError)) return "";
   const title = displayScalar(providerError.title);
   const guidance = displayScalar(providerError.guidance);

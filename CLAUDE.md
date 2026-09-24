@@ -22,6 +22,8 @@ Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主�
 
 **Durable Task v1（2026-09-01）**：浏览器只创建、轮询和重新 attach；服务端 Runner 执行 provider 调用、校验与 Artifact commit。AI 导演是一个 `directorPipeline` 父任务和 Analyze、Reconstruct、Brief、Visual Guardrails、Variants 五个顺序子任务，父任务创建时原子 claim 五个目标。Task Store 是每个 Run 私有的 `tasks/index.json`，只保存执行状态、冻结 lineage、创建时 provider/model、progress、usage、结果 refs 与脱敏错误；Prompt、Data URL、Base64 和完整请求体禁止落盘，ProductionStateStore 的 current Artifact 仍是唯一业务事实。
 
+**进度与状态文字（2026-09-25）**：4.0 自主分镜在每个阶段开始前把 `step`（阶段 key）/ `stepIndex` / `stepMax` 写进 progress（经既有心跳在 Run 锁内合并，客户端字数心跳不会冲掉它），MiMo/Qwen 心跳另报 `reasoningChars`（只存推理字数，不存推理文字）；页面显示「第 n/m 步 设计分镜/审阅分镜/按问题修订/终审复查 · 推理中（已推理 N 字）| 已接收 N 字」。起因是 MiMo 开思考每步先推理几分钟、正文为 0，页面只剩「正在生成…」且每步从 0 开始，被当成死循环。每步写进度是 `await` 的：任务已取消或中止时会抛错、不再开始下一次计费调用。人物参考精修的状态文字原来写死「正在用 MiMo 分析」，而实际模型由「人物图修正」（`characterReference`）阶段设置决定、未改时服务端默认千问，现在按 `effectiveStageSetting("characterReference")` 显示；镜头视频弹窗的初始标题不再写死可灵。均由 Codex 在独立 worktree 编写，Claude 审查、合入。
+
 **浏览器工作区生命周期（2026-09-09）**：新的浏览器 Run 必须绑定服务端 `metadata.browserWorkspaceId`。源视频副本存在私有 BrowserWorkspaceStore，Run metadata 只记 URL 与 SHA-256；**Task Store 仍不保存视频、Prompt 或完整请求体**，这条与 Durable Task v1 逐字同规格。同一标签页刷新或服务重启会恢复副本并重新抽帧，**不自动重调 provider**；换视频前必须先清旧 Run、媒体与源副本。
 
 过期判定分三档，不要合并：连接断开有 60 秒宽限（5 秒 sweep）；后台页只要连接还在就**不因心跳节流判过期**；既无连接又无关闭通知时从最后一次心跳起 2 分钟兜底，停服期间的漏清在下次启动补。
@@ -1450,7 +1452,7 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：**
 - **匹配不到就返回 `null`**，调用方回退原文。编一句「可能是网络问题」比不解释更糟。
 - **码表只抄官方文档**，文件头标注每张表的出处 URL 与核对日期；供应商改表就更新这里，不得靠猜测补条目。
 
-接入点只有三处错误出口（视频 / 图片 / 文本），全部在 `src/server-error.js`。命中依据分 `code`（供应商业务码）与 `httpStatus`（按状态兜底）两种，展示标签必须如实标明是哪一种——按状态命中时不得把响应体里那个无关的 `code` 显示成来源。这三处的 `retryable` 跟随官方文档判定。
+接入点只有三处错误出口（视频 / 图片 / 文本），全部在 `src/server-error.js`。**后台任务失败时同样保留（2026-09-25）**：此前 Durable Task 的 `sanitizeTaskError` 只存 `code/category/message/details`，供应商原因在这一步丢掉，用户只看到「Qwen 请求失败（400）」而看不到「阿里云账户欠费」。现在任务错误多一个可选 `providerError`，由 HTTP 出口与任务共用的 `describeServerProviderError()` 识别（内部仍是同一份 `describeProviderError` 码表，不另写映射），经 Task Store 既有脱敏与限长后落盘；识别不出来就不写这个键，`code/category/message/retryable` 逐字不变，旧任务记录照常加载。浏览器的任务状态、导演、批量与 `waitForDurableTask` 抛出的错误都用 `taskErrorMessage()` 拼上 `providerErrorText()`。用今天欠费的千问账号真实请求核对过：识别为 `Arrearage` → 阿里云账户欠费，并带供应商原文。命中依据分 `code`（供应商业务码）与 `httpStatus`（按状态兜底）两种，展示标签必须如实标明是哪一种——按状态命中时不得把响应体里那个无关的 `code` 显示成来源。这三处的 `retryable` 跟随官方文档判定。
 
 **原文必须真的显示出来（2026-08-30）。** 按 `httpStatus` 兜底命中时，`guidance` 只能给通用建议（「检查请求参数是否符合该供应商的接口要求」），此时供应商原文是唯一可执行的信息，`providerErrorText`（`public/compiler-observability.js`）必须把 `providerError.providerMessage` 一并渲染。注意 `ModelResponseError` 分支（`src/server-error.js`）的响应体**没有 `detail` 字段**，原文只存在于 `providerMessage`——只渲染 `title`/`guidance` 会让唯一有用的那句消失。实测代价：kimi-k3 的「Parameter 'temperature'=0.3 is not supported」被吞掉，用户屏幕上只剩三句同义的「请求不合法」，只能靠翻 debug 目录才查得出来。
 

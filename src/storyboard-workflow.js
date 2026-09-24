@@ -1,7 +1,7 @@
 import { hasFullStoryCharacterRegistry } from "../public/full-story-format.js";
 import { STORYBOARD_PLAN_VERSION, SHOT_VIDEO_PROMPT_VERSION } from "../public/storyboard-plan.js";
 import { storyDurationWindow } from "../public/story-duration.js";
-import { currentDurableTaskContext } from "./durable-task-context.js";
+import { currentDurableTaskContext, durableTaskHeartbeat } from "./durable-task-context.js";
 import { fullStoryCharacterFacts } from "./full-story-contract.js";
 import { storyCharacterNames, fullStoryCharacterRegistryInput, mergeFullStoryCharacterRegistry, mockFullStoryCharacterRegistry } from "./full-story-character-registry.js";
 import { fullStoryCharacterRegistryPrompt } from "./full-story-character-registry-prompt.js";
@@ -18,7 +18,7 @@ import { InputError, OutputContractError, ensureOutputContract, ensureFullStoryM
 
 const STORYBOARD_DESIGN_RESPONSE_SCHEMA = { name: STORYBOARD_DESIGN_MODEL_SCHEMA_NAME, schema: storyboardDesignModelSchema() };
 
-export async function storyboardInput(workflow, input, telemetry = null) {
+export async function storyboardInput(workflow, input, telemetry = null, onStep = null) {
   const visualGuardrails = workflow.assertGlobalCharacterBoundary(input);
   const fullStory = ensureFullStoryMatchesProfile(ensureOutputContract(input.fullStory, "fullStory"), input.creatorProfile, input.creativeBrief, input.variant, visualGuardrails);
   let characterRegistry = fullStory.characterBible;
@@ -33,7 +33,7 @@ export async function storyboardInput(workflow, input, telemetry = null) {
       response = await call(workflow, settings, "storyboardCharacterFacts", fullStoryCharacterRegistryPrompt(registryInput), value => {
         mergeFullStoryCharacterRegistry(fullStory, value, registryInput);
         return value;
-      }, { telemetry });
+      }, { telemetry, onStep });
     } else response = mockFullStoryCharacterRegistry(registryInput);
     characterRegistry = mergeFullStoryCharacterRegistry(fullStory, response, registryInput).characterBible;
   }
@@ -79,7 +79,8 @@ function storyboardPipelineFailure(error, rejections = []) {
   });
 }
 
-async function call(workflow, settings, stage, prompt, validate, { systemPrompt = storyboardSystem, telemetry = null, responseSchema = null } = {}) {
+async function call(workflow, settings, stage, prompt, validate, { systemPrompt = storyboardSystem, telemetry = null, responseSchema = null, onStep = null } = {}) {
+  await onStep?.(stage);
   const rejections = [];
   const record = stageAttemptRecorder(workflow, stage);
   // 实数调用次数由 observer 计数，**不能从「有没有被拦」反推**——传输失败时供应商确实
@@ -131,7 +132,12 @@ async function call(workflow, settings, stage, prompt, validate, { systemPrompt 
 export async function createStoryboardPlan(workflow, input) {
   // 每个阶段的实际调用次数与被拦诊断都记在这里，最后如实进 metadata。
   const calls = [];
-  const { projected, visualGuardrails } = await storyboardInput(workflow, input, calls);
+  const stepMax = (hasFullStoryCharacterRegistry(input.fullStory) ? 0 : 1) + 4;
+  let stepIndex = 0;
+  // Heartbeats merge progress under the Run lock. Reset only this step's counts;
+  // provider heartbeats retain the stage and all other existing progress fields.
+  const onStep = (step) => durableTaskHeartbeat({ step, stepIndex: ++stepIndex, stepMax, streamedChars: 0, reasoningChars: 0 });
+  const { projected, visualGuardrails } = await storyboardInput(workflow, input, calls, onStep);
   const settings = workflow.resolveStage("animationPlan", input);
   let design, initialReview = null, finalReview = null, repairs = [], guidance = [];
   if (!workflow.hasLiveClient) {
@@ -139,8 +145,8 @@ export async function createStoryboardPlan(workflow, input) {
     guidance = ["演示模式：未进行真实 AI 分镜审查或修订。"];
   } else {
     workflow.assertStageClient(settings, "自主分镜");
-    design = await call(workflow, settings, "storyboardDesign", storyboardPrompt(projected), value => ensureStoryboardDesign(value, projected), { telemetry: calls, responseSchema: STORYBOARD_DESIGN_RESPONSE_SCHEMA });
-    initialReview = await call(workflow, settings, "storyboardReview", storyboardReviewPrompt({ input: projected, plan: design }), value => validateStoryboardReview(value, { input: projected, plan: design }), { telemetry: calls });
+    design = await call(workflow, settings, "storyboardDesign", storyboardPrompt(projected), value => ensureStoryboardDesign(value, projected), { telemetry: calls, responseSchema: STORYBOARD_DESIGN_RESPONSE_SCHEMA, onStep });
+    initialReview = await call(workflow, settings, "storyboardReview", storyboardReviewPrompt({ input: projected, plan: design }), value => validateStoryboardReview(value, { input: projected, plan: design }), { telemetry: calls, onStep });
     guidance.push(...initialReview.guidance);
     if (initialReview.items.length) {
       const context = { input: projected, plan: design, items: initialReview.items, keptContent: [
@@ -152,12 +158,12 @@ export async function createStoryboardPlan(workflow, input) {
         // 诊断带 code + 指针，否则这一档的重试只能原样重发。判据逐字未改。
         if (result.errors.length) throw new OutputContractError(result.errors.join("；"), result.errors.map(reason => ({ code: "STORYBOARD_REVISION_INVALID", path: "/repairs", reason })));
         return result;
-      }, { systemPrompt: revisionSystem, telemetry: calls });
+      }, { systemPrompt: revisionSystem, telemetry: calls, onStep });
       design = merged.result;
       repairs = merged.rows;
       guidance.push(...repairs.map(row => row.note));
       if (repairs.some(row => row.status === "applied")) {
-        finalReview = await call(workflow, settings, "storyboardReviewFinal", storyboardReviewPrompt({ input: projected, plan: design }), value => validateStoryboardReview(value, { input: projected, plan: design }), { telemetry: calls });
+        finalReview = await call(workflow, settings, "storyboardReviewFinal", storyboardReviewPrompt({ input: projected, plan: design }), value => validateStoryboardReview(value, { input: projected, plan: design }), { telemetry: calls, onStep });
         guidance.push(...finalReview.guidance);
       }
     }

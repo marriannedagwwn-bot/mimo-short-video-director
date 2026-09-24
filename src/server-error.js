@@ -53,7 +53,7 @@ export function serializeServerError(error, {
       // （ModelPipelineError 用 super(message, {cause}) 保留），所以这里不重新记
       // attempt——原文已经在 error.attempts 的 rawOutput 里，再记一条是重复。
       // 匹配不到码表就是 null，调用方回退原文。
-      providerError: pipelineProviderError(error)
+      providerError: describeServerProviderError(error)
     });
   }
 
@@ -126,11 +126,7 @@ export function serializeServerError(error, {
 
   if (error instanceof ShotVideoProviderError) {
     // detail 仍是供应商原文，一个字都不删；providerError 是额外的解释层。
-    const providerError = describeProviderError({
-      provider: error.provider,
-      httpStatus: error.status,
-      payload: error.message
-    });
+    const providerError = describeServerProviderError(error);
     return response(502, observabilityBody({
       error: "视频生成服务调用失败",
       detail: error.message,
@@ -157,11 +153,7 @@ export function serializeServerError(error, {
       provider: "Jimeng",
       code: "IMAGE_PROVIDER_ERROR"
     });
-    const providerError = describeProviderError({
-      provider: "Jimeng",
-      httpStatus: error.status,
-      payload: error.raw || error.message
-    });
+    const providerError = describeServerProviderError(error);
     return response(502, observabilityBody({
       error: "即梦图片生成服务调用失败",
       detail: error.message,
@@ -205,11 +197,7 @@ export function serializeServerError(error, {
       provider: String(error.provider || ""),
       code: "MODEL_RESPONSE_ERROR"
     });
-    const providerError = describeProviderError({
-      provider: error.provider || error.metadata?.provider,
-      httpStatus: error.status,
-      payload: error.raw
-    });
+    const providerError = describeServerProviderError(error);
     return response(502, observabilityBody({
       error: error.message,
       category: "provider",
@@ -318,6 +306,7 @@ function observabilityBody({
 }
 
 /**
+ * HTTP 出口与 Durable Task 共用同一份供应商识别，仅返回码表的展示字段。
  * 从 ModelPipelineError 的 cause 里取供应商原文并查码表。
  *
  * coordinator 把最后一次失败的原始错误作为 cause 传上来，所以只有当它确实是
@@ -325,13 +314,21 @@ function observabilityBody({
  * 这类没有供应商响应体的失败一律返回 null，调用方回退原文——**编一句「可能是
  * 网络问题」比不解释更糟**（§5.1）。
  */
-function pipelineProviderError(error) {
-  const cause = error?.cause;
-  if (!(cause instanceof ModelResponseError)) return null;
+export function describeServerProviderError(error) {
+  if (error instanceof ModelPipelineError) {
+    return error.cause instanceof ModelResponseError ? describeServerProviderError(error.cause) : null;
+  }
+  if (error instanceof ShotVideoProviderError) {
+    return describeProviderError({ provider: error.provider, httpStatus: error.status, payload: error.message });
+  }
+  if (error instanceof JimengImageProviderError) {
+    return describeProviderError({ provider: "Jimeng", httpStatus: error.status, payload: error.raw || error.message });
+  }
+  if (!(error instanceof ModelResponseError)) return null;
   return describeProviderError({
-    provider: cause.provider || cause.metadata?.provider,
-    httpStatus: cause.status,
-    payload: cause.raw
+    provider: error.provider || error.metadata?.provider,
+    httpStatus: error.status,
+    payload: error.raw
   });
 }
 

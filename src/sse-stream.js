@@ -54,7 +54,7 @@ function truncateRaw(raw, maxChars) {
  * @param {ReadableStream|AsyncIterable} body  Response.body
  * @param {object} options
  * @param {number} options.maxRawChars  raw 的保留上限
- * @param {(progress:{contentLength:number,chunks:number})=>void} options.onProgress
+ * @param {(progress:{contentLength:number,reasoningLength:number,chunks:number})=>void} options.onProgress
  *        每收到一个数据块调用一次，用于 Durable Task 心跳。异常一律吞掉——
  *        观测不得改变传输结论。
  * @param {boolean} options.detectDegeneration
@@ -90,7 +90,7 @@ export async function readSseCompletion(body, { maxRawChars = DEFAULT_MAX_RAW_CH
   const notify = () => {
     if (typeof onProgress !== "function") return;
     try {
-      onProgress({ contentLength: content.length, chunks });
+      onProgress({ contentLength: content.length, reasoningLength: reasoningContent.length, chunks });
     } catch {
       // 观测失败不得改变传输结论
     }

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { readSystemProxyError } from "./system-proxy.js";
+import { describeServerProviderError } from "./server-error.js";
 import {
   ProductionStateError,
   normalizeArtifactId,
@@ -361,13 +362,15 @@ function sanitizeTaskError(value) {
   const proxyFailure = readSystemProxyError(value);
   if (proxyFailure) return { ...proxyFailure, category: "transport", details: [] };
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const providerError = describeServerProviderError(value);
   return {
     code: String(source.code || "TASK_FAILED").replace(/[^A-Za-z0-9_.:/-]+/gu, "_").slice(0, 160),
     category: String(source.category || "unknown").replace(/[^A-Za-z0-9_.:/-]+/gu, "_").slice(0, 160),
     message: redactSensitiveText(source.message || "任务执行失败", 2_000),
     details: Array.isArray(source.details)
       ? source.details.slice(0, 100).map((item) => sanitizeTaskValue(item, 1))
-      : []
+      : [],
+    ...(providerError ? { providerError: sanitizeTaskValue(providerError, 1) } : {})
   };
 }
 

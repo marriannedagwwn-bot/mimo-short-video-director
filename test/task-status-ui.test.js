@@ -2,6 +2,80 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { taskStatusView, rememberTaskSnapshot, latestTaskForTarget, shotVideoBatchStatusText } from "../public/task-status-ui.js";
 import { loadAppUi, uiTask } from "./helpers/app-ui-harness.js";
+import { describeProviderError } from "../src/provider-error-codes.js";
+import { directorTaskView } from "../public/director-pipeline-ui.js";
+
+test("4.0 分镜逐步显示阶段中文名，尚无字数时明确显示推理中", () => {
+  const steps = { storyboardCharacterFacts: "整理角色事实", storyboardDesign: "设计分镜", storyboardReview: "审阅分镜",
+    storyboardRevision: "按问题修订", storyboardReviewFinal: "终审复查" };
+  for (const [index, [step, label]] of Object.entries(steps).entries()) {
+    const task = uiTask("animationPlan", "running", { progress: { step, stepIndex: index + 1, stepMax: 5, streamedChars: 0 } });
+    assert.equal(taskStatusView(task).message, `正在生成动画生产包 · 第 ${index + 1}/5 步 ${label} · 推理中…`);
+  }
+});
+
+test("4.0 分镜正文为零时显示推理计数，沿用模型后缀", () => {
+  const task = uiTask("animationPlan", "running", {
+    progress: { step: "storyboardDesign", stepIndex: 1, stepMax: 4, streamedChars: 0, reasoningChars: 123 }
+  });
+  assert.equal(taskStatusView(task, { modelLabel: "fixture-model" }).message,
+    "正在生成动画生产包 · fixture-model · 第 1/4 步 设计分镜 · 推理中（已推理 123 字）…");
+  task.progress.reasoningChars = 0;
+  assert.equal(taskStatusView(task).message, "正在生成动画生产包 · 第 1/4 步 设计分镜 · 推理中（已推理 0 字）…");
+});
+
+test("4.0 分镜正文大于零时显示正文计数，不再显示推理计数", () => {
+  const task = uiTask("animationPlan", "running", {
+    progress: { step: "storyboardReview", stepIndex: 3, stepMax: 5, streamedChars: 42, reasoningChars: 123 }
+  });
+  assert.equal(taskStatusView(task).message, "正在生成动画生产包 · 第 3/5 步 审阅分镜 · 已接收 42 字…");
+});
+
+test("无 step 的旧分镜、3.0、其它 kind 及排队文案逐字不变", () => {
+  for (const [kind, label] of [["animationPlan", "动画生产包"], ["fullStory", "完整剧情"]]) {
+    for (const streamedChars of [0, 32]) {
+      const progress = { streamedChars, reasoningChars: 123,
+        ...(kind === "fullStory" ? { step: "storyboardDesign", stepIndex: 1, stepMax: 4 } : {}) };
+      assert.equal(taskStatusView(uiTask(kind, "running", { progress }), { modelLabel: "fixture-model" }).message,
+        `正在生成${label} · fixture-model${streamedChars ? " · 已接收 32 字" : ""}…`);
+    }
+  }
+  assert.equal(taskStatusView(uiTask("animationPlan", "queued", { progress: { step: "storyboardDesign" } })).message,
+    "动画生产包任务正在排队…");
+});
+
+function arrearageTask(kind) {
+  return uiTask(kind, "failed", { error: { code: "MODEL_HTTP_ERROR", category: "provider", message: "Qwen 请求失败（400）", details: [],
+    providerError: describeProviderError({ provider: "Qwen", httpStatus: 400,
+      payload: { error: { code: "Arrearage", message: "Arrearage: account overdue" } } }) } });
+}
+
+test("后台失败经轮询抛错与刷新渲染都显示欠费原因、指引和供应商原文", async () => {
+  for (const kind of ["characterReferenceRefine", "animationPlan", "fullStory"]) {
+    const app = await loadAppUi({ story: true, plan: true });
+    const task = arrearageTask(kind);
+    await assert.rejects(app.waitForDurableTask(task), error => {
+      assert.match(error.message, /Qwen 请求失败（400）.*阿里云账户欠费.*阿里云控制台充值.*供应商原文：Arrearage/);
+      assert.equal(error.code, "MODEL_HTTP_ERROR");
+      assert.equal(error.category, "provider");
+      return true;
+    });
+    app.renderRoute();
+    app.renderStoryPage();
+    const status = kind === "fullStory" ? app.elements.storyStatus : app.elements.animationStatus;
+    assert.match(status.textContent, /阿里云账户欠费.*阿里云控制台充值.*供应商原文：Arrearage/);
+  }
+  assert.match(directorTaskView(arrearageTask("directorPipeline")).message, /阿里云账户欠费.*供应商原文：Arrearage/);
+  assert.match(shotVideoBatchStatusText(arrearageTask("shotVideoBatch")), /阿里云账户欠费.*供应商原文：Arrearage/);
+});
+
+test("旧失败任务不带 providerError 时轮询与终态文案逐字不变", async () => {
+  const task = uiTask("animationPlan", "failed", { error: { message: "旧错误原文" } });
+  const app = await loadAppUi();
+  await assert.rejects(app.waitForDurableTask(task), error => error.message === "旧错误原文");
+  assert.equal(taskStatusView(task).message, "旧错误原文");
+  assert.equal(shotVideoBatchStatusText({ ...task, kind: "shotVideoBatch" }), "旧错误原文");
+});
 
 for (const existing of [false, true]) for (const status of ["queued", "running"]) {
   test(`Full Story refresh and repeat render preserve ${status}; existing story=${existing}`, async () => {

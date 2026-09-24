@@ -52,6 +52,24 @@ test("reasoning_content 单独收集，绝不混进正文", async () => {
   assert.equal(result.reasoningContent, "我先想想用户要什么");
 });
 
+test("onProgress 分别累计推理和正文长度，只交出计数，兼容拆开的 UTF-8", async () => {
+  const text = `data: {"choices":[{"delta":{"reasoning_content":"先想"}}]}\n\n`
+    + `data: {"choices":[{"delta":{"reasoning_content":"再想"}}]}\n\n`
+    + `data: {"choices":[{"delta":{"content":"答案"}}]}\n\n`
+    + `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n${DONE}`;
+  const progress = [];
+  const result = await readSseCompletion(streamOfText(text, 1), { onProgress: value => progress.push(value) });
+  assert.equal(result.reasoningContent, "先想再想");
+  assert.equal(result.content, "答案");
+  assert.ok(progress.some(row => row.contentLength === 0 && row.reasoningLength === 2));
+  assert.ok(progress.some(row => row.contentLength === 0 && row.reasoningLength === 4));
+  assert.deepEqual(progress.at(-1), { contentLength: 2, reasoningLength: 4, chunks: 4 });
+  for (const row of progress) {
+    assert.deepEqual(Object.keys(row).sort(), ["chunks", "contentLength", "reasoningLength"]);
+    assert.ok(Object.values(row).every(Number.isInteger));
+  }
+});
+
 test("末块 usage、finish_reason 与 id 都被提取", async () => {
   const text = `data: {"id":"req-77","choices":[{"delta":{"content":"x"}}]}\n\n`
     + `data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}\n\n${DONE}`;

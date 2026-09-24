@@ -29,7 +29,7 @@ import {
 } from "./director-pipeline-ui.js";
 import { fullStoryControlView, fullStoryTaskView } from "./full-story-control-ui.js";
 import {
-  isActiveTask, latestTaskForTarget, rememberTaskSnapshot, taskStatusView, shotVideoBatchStatusText
+  isActiveTask, latestTaskForTarget, rememberTaskSnapshot, taskStatusView, shotVideoBatchStatusText, taskErrorMessage
 } from "./task-status-ui.js";
 import { compileShotNegativePrompt } from "./negative-prompts.js";
 import { buildShotFrameImagePrompt, compileShotFrameNegativePrompt } from "./shot-frame-prompt.js";
@@ -1125,7 +1125,7 @@ async function waitForDurableTask(initialTask, onProgress = null) {
   if (onProgress) await onProgress(task);
   assertWorkspaceCurrent(workspaceEpoch);
   if (task.status !== "completed") {
-    const error = new Error(task.error?.message || `任务以 ${task.status} 结束`);
+    const error = new Error(taskErrorMessage(task, `任务以 ${task.status} 结束`));
     error.code = task.error?.code || `TASK_${String(task.status || "failed").toUpperCase()}`;
     error.category = task.error?.category || "task";
     error.details = task.error?.details || [];
@@ -4500,7 +4500,9 @@ async function refineCharacterReferenceWithImage(indexValue, file) {
 
   const key = characterReferenceStatusKey(index);
   const planArtifactId = animationPlanArtifactId(variant.id);
-  state.characterReferenceStatuses[key] = { status: "running", message: "正在用 MiMo 分析人物参考图…" };
+  const setting = effectiveStageSetting("characterReference");
+  state.characterReferenceStatuses[key] = { status: "running", message: setting?.provider && setting?.model
+    ? `正在用 ${setting.provider} · ${setting.model} 分析人物参考图…` : "正在分析人物参考图…" };
   renderAnimationPlan(plan);
   setAnimationStatus(`正在分析 ${item.characterName || "角色"} 的人物参考图…`, "active");
 
@@ -4720,7 +4722,7 @@ function applyCharacterImageTaskProgress(task) {
   state.characterImageGeneration.count = expectedCount;
   const next = Array.from({ length: expectedCount }, (_, imageIndex) => ({
     status: isActiveTask(task) ? "loading" : "error", imageIndex,
-    ...(!isActiveTask(task) ? { error: task.error?.message || "任务已结束，未返回该图片。" } : {})
+    ...(!isActiveTask(task) ? { error: taskErrorMessage(task, "任务已结束，未返回该图片。") } : {})
   }));
   for (const result of task.progress?.results || []) {
     const index = Number(result.imageIndex) || 0;

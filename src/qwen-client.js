@@ -227,13 +227,13 @@ export class QwenClient {
     // 流读取期间定期更新 Durable Task 进度，让界面看得到「还在出字」。
     // 每收到一块数据都重置空闲计时器；心跳本身按 10 秒节流。
     let lastHeartbeatAt = 0;
-    const onProgress = ({ contentLength }) => {
+    const onProgress = ({ contentLength, reasoningLength }) => {
       idle.touch();
       const now = Date.now();
       if (now - lastHeartbeatAt < 10_000) return;
       lastHeartbeatAt = now;
       // fire-and-forget：观测失败不得改变传输结论
-      Promise.resolve(durableTaskHeartbeat({ streamedChars: contentLength })).catch(() => {});
+      Promise.resolve(durableTaskHeartbeat({ streamedChars: contentLength, reasoningChars: reasoningLength })).catch(() => {});
     };
 
     let stream;

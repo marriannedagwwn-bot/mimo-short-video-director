@@ -1,4 +1,10 @@
+import { providerErrorText } from "./compiler-observability.js";
+
 const ACTIVE = new Set(["queued", "running"]);
+const STORYBOARD_STEPS = Object.freeze({
+  storyboardCharacterFacts: "整理角色事实", storyboardDesign: "设计分镜",
+  storyboardReview: "审阅分镜", storyboardRevision: "按问题修订", storyboardReviewFinal: "终审复查"
+});
 const LABELS = Object.freeze({
   directorPipeline: "AI 导演", variants: "主题变体", fullStory: "完整剧情",
   animationPlan: "动画生产包", animationPromptRewrite: "视频提示词改写",
@@ -11,6 +17,12 @@ const TERMINAL_LABELS = Object.freeze({
 });
 
 export function isActiveTask(task) { return ACTIVE.has(task?.status); }
+
+export function taskErrorMessage(task, fallback = "") {
+  const message = task?.error?.message || fallback;
+  const explained = providerErrorText(task?.error?.providerError);
+  return explained ? `${message}：${explained}` : message;
+}
 
 // UI snapshots only. They never commit Artifacts or refresh frozen dependencies.
 export function rememberTaskSnapshot(snapshots, task) {
@@ -49,6 +61,12 @@ export function taskStatusView(task, { modelLabel = "" } = {}) {
     const chars = Number(task.progress?.streamedChars);
     const progress = Number.isFinite(chars) && chars > 0 ? ` · 已接收 ${Math.floor(chars)} 字` : "";
     message = `正在生成${label}${model}${progress}…`;
+    if (task.kind === "animationPlan" && task.progress?.step) {
+      const reasoning = Number(task.progress.reasoningChars);
+      const activity = Number.isFinite(chars) && chars > 0 ? `已接收 ${Math.floor(chars)} 字`
+        : `推理中${task.progress.reasoningChars != null && Number.isFinite(reasoning) && reasoning >= 0 ? `（已推理 ${Math.floor(reasoning)} 字）` : ""}`;
+      message = `正在生成${label}${model} · 第 ${task.progress.stepIndex}/${task.progress.stepMax} 步 ${STORYBOARD_STEPS[task.progress.step] || task.progress.step} · ${activity}…`;
+    }
     buttonLabel = `${label}生成中…`;
     if (task.kind === "animationPromptRewrite" || task.kind === "characterReferenceRefine") {
       message = `正在进行${label}${model}${progress}…`;
@@ -60,7 +78,7 @@ export function taskStatusView(task, { modelLabel = "" } = {}) {
       message = count ? `角色参考图已返回 ${ready}/${count} 张${model}…` : message;
     }
   } else {
-    message = task.error?.message || `${label}任务${TERMINAL_LABELS[task.status] || "状态未知"}${model}`;
+    message = taskErrorMessage(task, `${label}任务${TERMINAL_LABELS[task.status] || "状态未知"}${model}`);
   }
   if (task.kind === "shotVideoBatch" && task.progress?.controlState === "paused" && busy) {
     message = shotVideoBatchStatusText(task);
@@ -80,7 +98,7 @@ export function shotVideoBatchStatusText(task = {}, progress = task.progress || 
       return failed ? `已完成，${failed} 个镜头失败` : "全部镜头已完成";
     }
     if (task.status === "cancelled") return "已终止，完成片段已保留";
-    return task.error?.message || `批量任务${TERMINAL_LABELS[task.status] || "状态未知"}`;
+    return taskErrorMessage(task, `批量任务${TERMINAL_LABELS[task.status] || "状态未知"}`);
   }
   if (progress.controlState === "paused") return "已暂停，将在当前片段完成后停止提交";
   if (task.status === "queued") return "等待服务器媒体队列";
