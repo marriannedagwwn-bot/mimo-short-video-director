@@ -343,3 +343,76 @@ test("Coordinator reports finish_reason=content_filter as a non-retryable modera
   });
   assert.equal(calls, 1);
 });
+
+// 2026-09-24：走 coordinator 的阶段（候选评审、承诺核对、自主分镜……）失败时，阶段日志里的
+// diagnostics 恒为 []，每次都要离线重放才看得到被拦的原因。失败交给观测方的数据现在带上校验器的
+// 结构化 details；写入器只留 code / jsonPointer / reason 并脱敏。
+test("coordinator 被校验拦下时，阶段日志记下校验器的结构化诊断", async (t) => {
+  const fs = await import("node:fs/promises");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const { FullModelOutputLogWriter, MODEL_OUTPUT_LOG_SCOPES } = await import("../src/full-model-output-log.js");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "coordinator-diagnostics-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const writer = new FullModelOutputLogWriter({ scope: MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_DESIGN, outputRoot: root });
+  const details = [
+    {
+      code: "STORYBOARD_BEAT_SOURCE_OUT_OF_SHOT",
+      path: "/shotPlan/2/beats/1/sourceSceneIds",
+      reason: "beat 来源不属于本片段；本片段只允许 S2",
+      keyword: "不应落盘的额外字段"
+    }
+  ];
+  await assert.rejects(() => new ModelCallCoordinator().runJson({
+    client: { async requestCompletion() { return completion("{\"ok\":false}"); } },
+    request: { prompt: "PRIVATE_PROMPT", model: "storyboard-model" },
+    provider: "MiMo",
+    stage: "storyboardDesign",
+    maxProviderCalls: 1,
+    validate: () => { throw new OutputContractError("自主分镜校验失败", details); },
+    attemptObserver: (attempt) => writer.recordAttempt(attempt)
+  }));
+
+  const files = [];
+  const walk = async (dir) => {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (entry.name === "metadata.json") files.push(full);
+    }
+  };
+  await walk(root);
+  assert.equal(files.length, 1);
+  const metadata = JSON.parse(await fs.readFile(files[0], "utf8"));
+  assert.equal(metadata.attempt.status, "failed");
+  assert.equal(metadata.attempt.code, "OUTPUT_CONTRACT_INVALID");
+  assert.deepEqual(metadata.attempt.diagnostics, [{
+    code: "STORYBOARD_BEAT_SOURCE_OUT_OF_SHOT",
+    jsonPointer: "/shotPlan/2/beats/1/sourceSceneIds",
+    reason: "beat 来源不属于本片段；本片段只允许 S2"
+  }]);
+  assert.doesNotMatch(JSON.stringify(metadata), /PRIVATE_PROMPT|不应落盘的额外字段/u);
+});
+
+test("coordinator 成功与传输失败时交给观测方的 diagnostics 都是空数组", async () => {
+  const observed = [];
+  let calls = 0;
+  await new ModelCallCoordinator().runJson({
+    client: {
+      async requestCompletion() {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new TypeError("fetch failed"), { code: "ECONNRESET" });
+        return completion("{\"ok\":true}");
+      }
+    },
+    request: { prompt: "primary" },
+    maxProviderCalls: 2,
+    validate: (candidate) => candidate,
+    attemptObserver: (attempt) => observed.push(attempt)
+  });
+  assert.equal(observed.length, 2);
+  assert.equal(observed[0].status, "failed");
+  assert.deepEqual(observed[0].diagnostics, []);
+  assert.equal(observed[1].status, "succeeded");
+  assert.deepEqual(observed[1].diagnostics ?? [], []);
+});

@@ -4981,6 +4981,120 @@ test("创意简报校验失败时把模型原文与错误码写进阶段日志",
   assert.equal(records[0].content, rawContent);
 });
 
+test("阶段校验失败时把校验器的结构化 diagnostics 写进阶段日志", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "stage-model-output-diagnostics-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const creatorProfile = {
+    fixedCharacter: "小白子，Q版猫耳少女，形象类似猫娘，有猫耳和蓬松猫尾，学生/村民，村里的热心帮手",
+    vertical: "治愈/温情/日常",
+    constraints: ""
+  };
+  const invalidBrief = invalidBriefFixture();
+  const rawContent = JSON.stringify(invalidBrief);
+  const workflow = new WorkflowService({
+    client: {
+      async generateJson({ onCompletion }) {
+        await onCompletion({ content: rawContent, raw: rawContent, finishReason: "stop", requestId: "", usage: null });
+        return invalidBrief;
+      }
+    },
+    stageModelOutputLogWriters: new Map([[
+      MODEL_OUTPUT_LOG_SCOPES.BRIEF,
+      new FullModelOutputLogWriter({ scope: MODEL_OUTPUT_LOG_SCOPES.BRIEF, outputRoot: root })
+    ]])
+  });
+
+  let thrown = null;
+  await assert.rejects(
+    () => workflow.createBrief({ ...groundedUpstreamFixture(workflow), creatorProfile }),
+    (error) => {
+      thrown = error;
+      return error instanceof OutputContractError;
+    }
+  );
+  // 前提：真实校验器确实给出了带 JSON Pointer 的结构化 details，否则下面的断言证明不了什么。
+  assert.ok(thrown.details.length > 0);
+  assert.ok(thrown.details.every((detail) => String(detail.path || "").startsWith("/")));
+
+  const records = await readStageModelOutputRecords(root);
+  assert.equal(records.length, 1);
+  const { attempt } = records[0].metadata;
+  assert.equal(attempt.status, "failed");
+  // 顶层 code 仍是 classifyAttemptError 的分类，不被首条 diagnostic 顶替。
+  assert.equal(attempt.code, "OUTPUT_CONTRACT_INVALID");
+  assert.deepEqual(attempt.diagnostics, thrown.details.map((detail) => ({
+    code: detail.code,
+    jsonPointer: detail.path,
+    reason: detail.reason
+  })));
+});
+
+test("generateValidatedJson 失败时只有最后一条 completion 带 diagnostics，且只留 code/jsonPointer/reason", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "stage-model-output-diagnostics-shape-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const writer = new FullModelOutputLogWriter({ scope: MODEL_OUTPUT_LOG_SCOPES.VARIANTS, outputRoot: root });
+  const workflow = new WorkflowService({ client: {} });
+  const client = {
+    async generateJson({ onCompletion }) {
+      // client 内部的 JSON 重试：第一条已被丢弃，只有第二条交给阶段校验。
+      await onCompletion({ content: "{\"variants\":", raw: "", finishReason: "length", requestId: "provider-req-1", usage: null });
+      await onCompletion({ content: "{\"variants\":[]}", raw: "", finishReason: "stop", requestId: "provider-req-2", usage: null });
+      return { variants: [] };
+    }
+  };
+  const validationError = new OutputContractError("themeVariants Story Candidates 结构校验失败", [
+    {
+      code: "STORY_CANDIDATES_SCHEMA_UNKNOWN_FIELD",
+      path: "/variants/0/storyOutline/5/emotionalNote",
+      reason: "不允许出现字段 emotionalNote",
+      keyword: "additionalProperties"
+    },
+    {
+      code: "STORY_CANDIDATES_SCHEMA_REQUIRED",
+      path: "/variants/1",
+      reason: "缺少 storyOutline，参考图 data:image/png;base64,iVBORw0KGgoAAAANSUhEUg== 不应落盘",
+      prompt: "不应落盘的阶段提示词"
+    }
+  ]);
+
+  await assert.rejects(
+    () => workflow.generateValidatedJson({
+      client,
+      prompt: "不应落盘的阶段提示词",
+      stage: "variants",
+      modelOutputLogWriter: writer,
+      validate() {
+        throw validationError;
+      }
+    }),
+    // 观测不改变阶段结论：抛出的仍是校验器那个错误对象本身。
+    (error) => error === validationError
+  );
+
+  const records = (await readStageModelOutputRecords(root))
+    .sort((left, right) => left.metadata.attempt.callIndex - right.metadata.attempt.callIndex);
+  assert.equal(records.length, 2);
+  assert.equal(records[0].metadata.attempt.status, "superseded");
+  assert.deepEqual(records[0].metadata.attempt.diagnostics, []);
+  assert.equal(records[1].metadata.attempt.status, "failed");
+  assert.deepEqual(records[1].metadata.attempt.diagnostics, [
+    {
+      code: "STORY_CANDIDATES_SCHEMA_UNKNOWN_FIELD",
+      jsonPointer: "/variants/0/storyOutline/5/emotionalNote",
+      reason: "不允许出现字段 emotionalNote"
+    },
+    {
+      code: "STORY_CANDIDATES_SCHEMA_REQUIRED",
+      jsonPointer: "/variants/1",
+      reason: "缺少 storyOutline，参考图 [data-url-redacted] 不应落盘"
+    }
+  ]);
+  for (const record of records) {
+    const serialized = JSON.stringify(record.metadata);
+    assert.doesNotMatch(serialized, /不应落盘的阶段提示词|additionalProperties|base64/u);
+  }
+});
+
 test("阶段日志写入失败只告警，不改变阶段成败", async () => {
   const creatorProfile = {
     fixedCharacter: "小白子，狼耳少女，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",

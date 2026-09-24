@@ -131,7 +131,11 @@ export class ModelCallCoordinator {
           content: typeof completion?.content === "string" ? completion.content : "",
           contentPresent: typeof completion?.content === "string",
           providerRequestId: completion?.requestId || error?.requestId || "",
-          usage: completion?.usage || error?.usage || null
+          usage: completion?.usage || error?.usage || null,
+          // 校验器的结构化 details（classifyAttemptError 原样带出）。观测方都是 FullModelOutputLogWriter，
+          // 它只留 code / jsonPointer / reason 并脱敏。漏传时阶段日志的失败记录恒为 []，
+          // 2026-09-24 候选评审、承诺核对、自主分镜的失败都只能靠离线重放才看得到原因。
+          diagnostics: Array.isArray(issue.diagnostics) ? issue.diagnostics : []
         });
 
         const retryAllowed = typeof shouldRetry !== "function" || shouldRetry({

@@ -2972,6 +2972,9 @@ function stageModelOutputRecorder(writer, { stage = "", provider = "", model = n
             status: final ? status : "superseded",
             category: final && issue ? issue.category : "",
             code: final ? (issue ? issue.code : "MODEL_COMPLETION_ACCEPTED") : "",
+            // 校验器的结构化 details 由 classifyAttemptError 原样带出；writer 只留
+            // code / jsonPointer / reason 并脱敏。漏传时 metadata 恒为空数组，失败定位只剩错误文案。
+            diagnostics: final && issue ? issue.diagnostics : [],
             retryable: Boolean(final && issue?.retryable),
             finishReason: String(completion.finishReason || ""),
             providerRequestId: String(completion.requestId || ""),
