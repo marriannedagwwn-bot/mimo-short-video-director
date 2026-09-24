@@ -120,6 +120,15 @@ test("字段顺序保留严格 Schema 顺序，且与提示词输出模板各层
   }
 });
 
+test("设计提示词第 9 条要求 beat 来源包含在片段里，演到下一场时补进片段", async () => {
+  const { projected } = await fixture();
+  const rule = storyboardPrompt(projected).split("\n").find(line => /^9\.\s/u.test(line));
+  assert.ok(rule, "设计提示词必须有第 9 条");
+  assert.match(rule, /(?:每个|各个|所有)\s*beat[^。；]*sourceSceneIds[^。；]*(?:必须|须)[^。；]*片段[^。；]*sourceSceneIds/u);
+  assert.match(rule, /beat[^。；]*演到下一场[^。；]*(?:补|写|加入)[^。；]*片段[^。；]*sourceSceneIds/u);
+  assert.match(rule, /(?:不要|不得|不能)[^。；]*只[^。；]*beat/u);
+});
+
 test("片段数由模型自己决定，不锁 shotPlan 条数", async () => {
   const schema = storyboardDesignModelSchema();
   assert.equal(schema.properties.shotPlan.minItems, 1);
@@ -190,6 +199,45 @@ test("模型 Schema 放宽的去重、正数与跨字段引用约束仍由服务
     assert.equal(validate(value), true, JSON.stringify(validate.errors));
     assert.ok(storyboardValidationErrors(value, projected).some(row => row.code === code), code);
   }
+});
+
+test("beat 越界诊断保留码与路径，列明场次并给出补进片段和移出 beat 两种改法", async () => {
+  const { design, projected } = await fixture();
+  assert.deepEqual(storyboardValidationErrors(design, projected), []);
+  const shotIndex = design.shotPlan.findIndex(row => row.sourceSceneIds.length === 1 && row.sourceSceneIds[0] === "S2");
+  assert.ok(shotIndex >= 0, "夹具必须有只承接 S2 的片段");
+  design.shotPlan[shotIndex].beats[0].sourceSceneIds = ["S2", "S3"];
+  const errors = storyboardValidationErrors(design, projected);
+  assert.equal(errors.length, 1);
+  const [{ code, path, reason }] = errors;
+  assert.equal(code, "STORYBOARD_BEAT_SOURCE_OUT_OF_SHOT");
+  assert.equal(path, `/shotPlan/${shotIndex}/beats/0/sourceSceneIds`);
+  assert.match(reason, /beat[^；]*(?:不在|不属于)[^；]*片段[^；]*S3/u);
+  assert.match(reason, /本片段[^；]*(?:现有|已有)[^；]*S2/u);
+  assert.match(reason, /beat[^；]*确实演到[^；]*(?:补|加入)[^；]*片段[^；]*sourceSceneIds/u);
+  assert.match(reason, /(?:没|未)演到[^；]*(?:从|移出)[^；]*beat[^；]*sourceSceneIds[^；]*(?:去掉|删除|移除)/u);
+
+  const addedToShot = structuredClone(design);
+  addedToShot.shotPlan[shotIndex].sourceSceneIds.push("S3");
+  assert.deepEqual(storyboardValidationErrors(addedToShot, projected), []);
+  const removedFromBeat = structuredClone(design);
+  removedFromBeat.shotPlan[shotIndex].beats[0].sourceSceneIds = ["S2"];
+  assert.deepEqual(storyboardValidationErrors(removedFromBeat, projected), []);
+});
+
+test("beat 越界诊断用顿号分别列出全部越界场次和片段现有场次", async () => {
+  const { design, projected } = await fixture();
+  design.shotPlan[0].sourceSceneIds = ["S1", "S2"];
+  design.shotPlan[0].beats[0].sourceSceneIds = ["S1", "S3", "S4"];
+  const errors = storyboardValidationErrors(design, projected);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].code, "STORYBOARD_BEAT_SOURCE_OUT_OF_SHOT");
+  assert.equal(errors[0].path, "/shotPlan/0/beats/0/sourceSceneIds");
+  const [outside, current] = errors[0].reason.split("；");
+  assert.match(outside, /S3、S4/u);
+  assert.doesNotMatch(outside, /S1|S2/u);
+  assert.match(current, /S1、S2/u);
+  assert.doesNotMatch(current, /S3|S4/u);
 });
 
 test("只有分镜设计及其重试带 Schema，其他分镜阶段不带；提示词逐字不变", async () => {

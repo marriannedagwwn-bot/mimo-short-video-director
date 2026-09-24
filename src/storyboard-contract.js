@@ -67,7 +67,7 @@ export function storyboardValidationErrors(value,input = {}) {
     row.beats.forEach((entry,j) => {
       if(entry.startSeconds !== end || entry.endSeconds <= entry.startSeconds) fail(C.BEAT_TIME_DISCONTINUOUS,`/shotPlan/${i}/beats/${j}`,`时间不连续：本 beat 必须从 ${end} 秒开始且 endSeconds 大于 startSeconds，实际 ${entry.startSeconds}–${entry.endSeconds}`);
       end = entry.endSeconds;knownSources(entry.sourceSceneIds,`/shotPlan/${i}/beats/${j}/sourceSceneIds`);
-      if(entry.sourceSceneIds.some(id => !row.sourceSceneIds.includes(id))) fail(C.BEAT_SOURCE_OUT_OF_SHOT,`/shotPlan/${i}/beats/${j}/sourceSceneIds`,`beat 来源不属于本片段；本片段只允许 ${row.sourceSceneIds.join("、")}`);
+      if(entry.sourceSceneIds.some(id => !row.sourceSceneIds.includes(id))) fail(C.BEAT_SOURCE_OUT_OF_SHOT,`/shotPlan/${i}/beats/${j}/sourceSceneIds`,`beat 引用了不在本片段中的场次 ${entry.sourceSceneIds.filter(id => !row.sourceSceneIds.includes(id)).join("、")}；本片段现有场次 ${row.sourceSceneIds.join("、")}；若 beat 确实演到了该场，就将其补进本片段的 sourceSceneIds；若没演到，就从 beat 的 sourceSceneIds 中去掉。`);
       if(new Set(entry.characters).size !== entry.characters.length || entry.characters.some(name => !names.includes(name))) fail(C.BEAT_CHARACTER_UNREGISTERED,`/shotPlan/${i}/beats/${j}/characters`,`角色未登记或重复；可用角色只有 ${names.join("、")}`);
       for(const line of entry.dialogue) if(!names.includes(line.speaker) || (line.source === "onscreen" && !entry.characters.includes(line.speaker))) fail(C.DIALOGUE_SPEAKER_CONFLICT,`/shotPlan/${i}/beats/${j}/dialogue`,`说话人或声音来源冲突：${line.speaker} 必须是已登记角色，且 source 为 onscreen 时必须同时出现在本 beat 的 characters 里`);
     });
