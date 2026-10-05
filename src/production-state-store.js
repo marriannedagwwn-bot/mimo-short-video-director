@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { replaceFile } from "./atomic-file.js";
 import { loadOrCreatePersistentKey, PersistentKeyError } from "./persistent-key.js";
 import { ProductionRunCoordinator } from "./production-run-coordinator.js";
 import {
@@ -1231,5 +1232,6 @@ async function atomicWriteJson(file, value) {
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${randomUUID()}.tmp`;
   await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  await fs.rename(temporary, file);
+  // Windows 上覆盖正被并发读取的 manifest.json 会偶发 EPERM：短暂重试，最终失败时清掉临时文件（src/atomic-file.js）。
+  await replaceFile(temporary, file);
 }
