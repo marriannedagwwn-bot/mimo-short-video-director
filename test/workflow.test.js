@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { WorkflowService } from "../src/workflow.js";
 import { getConfig } from "../src/config.js";
+import { ANALYSIS_OUTPUT_TOKEN_DEFAULT } from "../src/output-token-ceilings.js";
 import { InputError, OutputContractError } from "../src/validation.js";
 import { CREATIVE_BRIEF_SCHEMA_VERSION, characterPromptBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile, extractFixedCharacterName, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms } from "../src/validation.js";
 import { buildRequestBody, MimoClient, ModelResponseError, parseModelJson } from "../src/mimo-client.js";
@@ -947,7 +948,7 @@ test("流式的 MiMo 与 Qwen 输出上限默认放到实测最大值，DeepSeek
     "QWEN_MAX_COMPLETION_TOKENS", "QWEN_ANALYSIS_MAX_COMPLETION_TOKENS", "QWEN_RECONSTRUCTION_MAX_COMPLETION_TOKENS",
     "QWEN_BRIEF_MAX_COMPLETION_TOKENS", "QWEN_VISUAL_MAX_COMPLETION_TOKENS", "QWEN_VARIANTS_MAX_COMPLETION_TOKENS",
     "QWEN_STORY_MAX_COMPLETION_TOKENS", "QWEN_ANIMATION_MAX_COMPLETION_TOKENS", "QWEN_CHARACTER_REFERENCE_MAX_COMPLETION_TOKENS",
-    "DEEPSEEK_MAX_COMPLETION_TOKENS"
+    "DEEPSEEK_MAX_COMPLETION_TOKENS", "MIMO_ANALYSIS_MAX_COMPLETION_TOKENS"
   ];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   try {
@@ -966,6 +967,43 @@ test("流式的 MiMo 与 Qwen 输出上限默认放到实测最大值，DeepSeek
     process.env.QWEN_MAX_COMPLETION_TOKENS = "16384";
     assert.equal(getConfig().mimo.maxCompletionTokens, 131_072);
     assert.equal(getConfig().qwen.maxCompletionTokens, 16_384);
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});
+
+test("参考片分析的输出上限单独默认 16384，不跟随全局上限，仍可用环境变量调整", () => {
+  // 2026-10-05：本机 20 次真实分析调用 completion 最多 6929 token；一次 mimo-v2.6-pro 在 65536 上限下
+  // 写了 18.3 万字、742 秒才因截断失败。依据见 src/output-token-ceilings.js。
+  const keys = [
+    "MIMO_MAX_COMPLETION_TOKENS", "MIMO_ANALYSIS_MAX_COMPLETION_TOKENS",
+    "QWEN_MAX_COMPLETION_TOKENS", "QWEN_ANALYSIS_MAX_COMPLETION_TOKENS"
+  ];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    const defaults = getConfig();
+    assert.equal(ANALYSIS_OUTPUT_TOKEN_DEFAULT, 16_384);
+    assert.equal(defaults.qwen.analysisMaxCompletionTokens, 16_384);
+    assert.equal(defaults.mimo.analysisMaxCompletionTokens, 16_384);
+    // 其它阶段仍跟随各家全局上限，没有被一起收紧。
+    assert.equal(defaults.qwen.reconstructionMaxCompletionTokens, 65_536);
+    assert.equal(defaults.mimo.maxCompletionTokens, 131_072);
+
+    // 全局上限变化不再带动分析阶段。
+    process.env.QWEN_MAX_COMPLETION_TOKENS = "8192";
+    process.env.MIMO_MAX_COMPLETION_TOKENS = "8192";
+    assert.equal(getConfig().qwen.analysisMaxCompletionTokens, 16_384);
+    assert.equal(getConfig().mimo.analysisMaxCompletionTokens, 16_384);
+
+    // 显式的阶段变量仍然生效，并受各家实测上限约束。
+    process.env.QWEN_ANALYSIS_MAX_COMPLETION_TOKENS = "32768";
+    process.env.MIMO_ANALYSIS_MAX_COMPLETION_TOKENS = "999999";
+    assert.equal(getConfig().qwen.analysisMaxCompletionTokens, 32_768);
+    assert.equal(getConfig().mimo.analysisMaxCompletionTokens, 131_072);
   } finally {
     for (const key of keys) {
       if (previous[key] === undefined) delete process.env[key];

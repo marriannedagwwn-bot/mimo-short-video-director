@@ -1,4 +1,8 @@
-import { MIMO_OUTPUT_TOKEN_CEILING, QWEN_OUTPUT_TOKEN_CEILING } from "./output-token-ceilings.js";
+import {
+  ANALYSIS_OUTPUT_TOKEN_DEFAULT,
+  MIMO_OUTPUT_TOKEN_CEILING,
+  QWEN_OUTPUT_TOKEN_CEILING
+} from "./output-token-ceilings.js";
 import fs from "node:fs";
 import path from "node:path";
 import { parseModelPrices } from "./token-usage.js";
@@ -69,6 +73,8 @@ export function getConfig() {
   const thinking = ["disabled", "enabled"].includes(requestedThinking) ? requestedThinking : "disabled";
   const storyMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_STORY_MAX_COMPLETION_TOKENS, MIMO_OUTPUT_TOKEN_CEILING, 1024, MIMO_OUTPUT_TOKEN_CEILING));
   const animationMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_ANIMATION_MAX_COMPLETION_TOKENS, MIMO_OUTPUT_TOKEN_CEILING, 1024, MIMO_OUTPUT_TOKEN_CEILING));
+  // 参考片分析单独收紧到 16384，依据见 src/output-token-ceilings.js。
+  const analysisMaxCompletionTokens = Math.round(clampNumber(process.env.MIMO_ANALYSIS_MAX_COMPLETION_TOKENS, ANALYSIS_OUTPUT_TOKEN_DEFAULT, 1024, MIMO_OUTPUT_TOKEN_CEILING));
   const jsonRetryAttempts = Math.round(clampNumber(process.env.MIMO_JSON_RETRY_ATTEMPTS, 2, 0, 3));
   const mimoRequestTimeoutMs = Math.round(clampNumber(process.env.MIMO_REQUEST_TIMEOUT_MS, 900000, 30000, 900000));
   // 流式客户端只判空闲，不设总时长：连续这么久没收到任何数据才中断（src/stream-idle-timeout.js）。
@@ -93,7 +99,8 @@ export function getConfig() {
   const qwenMaxPixels = optionalInteger(process.env.QWEN_VIDEO_MAX_PIXELS, 4096, 2048000);
   const qwenTotalPixels = optionalInteger(process.env.QWEN_VIDEO_TOTAL_PIXELS, 4096, 819200000);
   const qwenMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_MAX_COMPLETION_TOKENS, QWEN_OUTPUT_TOKEN_CEILING, 1024, QWEN_OUTPUT_TOKEN_CEILING));
-  const qwenAnalysisMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_ANALYSIS_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
+  // 参考片分析不跟随全局上限，单独默认 16384，依据见 src/output-token-ceilings.js。
+  const qwenAnalysisMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_ANALYSIS_MAX_COMPLETION_TOKENS, ANALYSIS_OUTPUT_TOKEN_DEFAULT, 1024, 65536));
   const qwenReconstructionMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_RECONSTRUCTION_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
   const qwenBriefMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_BRIEF_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
   const qwenVisualMaxCompletionTokens = Math.round(clampNumber(process.env.QWEN_VISUAL_MAX_COMPLETION_TOKENS, qwenMaxCompletionTokens, 1024, 65536));
@@ -186,6 +193,7 @@ export function getConfig() {
       videoFps,
       videoMediaResolution,
       maxCompletionTokens,
+      analysisMaxCompletionTokens,
       storyMaxCompletionTokens,
       animationMaxCompletionTokens,
       jsonRetryAttempts,
