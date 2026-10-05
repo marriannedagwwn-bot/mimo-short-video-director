@@ -16,6 +16,7 @@ import {
   MINIMAX_H3_MAX_TOTAL_ASSETS
 } from "../public/all-reference-limits.js";
 import { assertMiniMaxH3Duration } from "./minimax-h3-prompt.js";
+import { createUniqueDirectory } from "./unique-directory.js";
 import {
   buildReferenceManifestText,
   mediaFilenameSegment,
@@ -326,7 +327,8 @@ async function createShotVideoWorkDirectory(options) {
     if (error.code !== "EEXIST") throw error;
   }
   await requireWorkspaceMediaDirectory(workRoot, options.lifetimeFile);
-  return fs.mkdtemp(path.join(workRoot, "shot-video-"));
+  // Run 内路径较深；fs.mkdtemp 在 Windows 上 ~248 字符即失败，见 src/unique-directory.js。
+  return createUniqueDirectory(path.join(workRoot, "shot-video-"));
 }
 
 // 发给视频模型的提示词正文（参考素材清单之外的部分）。只剩全能参考，原来首尾帧模式下

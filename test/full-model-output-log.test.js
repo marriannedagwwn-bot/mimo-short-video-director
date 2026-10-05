@@ -182,6 +182,39 @@ test("同一 operation/callIndex 的并发观测使用独立 attempt 目录且�
   ]), new Set(["CONTENT_A", "CONTENT_B"]));
 });
 
+// 2026-10-05 回归：浏览器 Run 内 unbound 日志的 op 目录本身就有 252 字符，attempt 目录一过 ~248
+// 字符 fs.mkdtemp 就在 Windows 上失败，上层目录全建好、文件一个没写，一次 742 秒分析的原文全丢。
+// 这里把 outputRoot 加深到同等深度，要求 content 与 metadata 照常落盘、不产生告警。
+test("浏览器 Run 深度下 attempt 路径超过 260 字符仍照常写出 content 与 metadata", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "full-model-output-deep-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  let outputRoot = root;
+  for (let index = 0; outputRoot.length < 200; index += 1) {
+    outputRoot = path.join(outputRoot, `run-segment-${String(index).padStart(2, "0")}-abcdefghij`);
+  }
+  const warnings = [];
+  const writer = new FullModelOutputLogWriter({
+    outputRoot,
+    scope: MODEL_OUTPUT_LOG_SCOPES.ANALYSIS,
+    onWarning: (message) => warnings.push(message)
+  });
+  const result = await writer.recordAttempt({
+    context: {},
+    operationId: "operation:deep-analysis",
+    callIndex: 0,
+    status: "failed",
+    code: "MODEL_OUTPUT_TRUNCATED",
+    content: "超长路径下也必须留下的模型原文"
+  });
+  assert.deepEqual(warnings, []);
+  assert.ok(result, "深路径下 recordAttempt 不应 fail-open 放弃");
+  assert.ok(path.dirname(result.metadataPath).length > 260, `attempt 目录应超过 260 字符，实际 ${path.dirname(result.metadataPath).length}`);
+  assert.equal(await fs.readFile(result.outputPath, "utf8"), "超长路径下也必须留下的模型原文");
+  const metadata = JSON.parse(await fs.readFile(result.metadataPath, "utf8"));
+  assert.equal(metadata.attempt.code, "MODEL_OUTPUT_TRUNCATED");
+  assert.match(path.basename(path.dirname(result.metadataPath)), /^attempt-01-[A-Za-z0-9]{6}$/u);
+});
+
 test("Animation Plan writer 固定 scope，并拒绝把 Full Story trace 冒充为可信动画日志", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "animation-model-output-scope-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

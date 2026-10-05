@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { createUniqueDirectory } from "./unique-directory.js";
 
 export const FULL_MODEL_OUTPUT_LOG_SCHEMA_VERSION = "full-model-output-log/1.0";
 export const MODEL_OUTPUT_LOG_SCOPES = Object.freeze({
@@ -162,7 +163,8 @@ export class FullModelOutputLogWriter {
       };
 
       await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-      attemptDirectory = await fs.mkdtemp(path.join(directory, `${attemptName}-`));
+      // 不用 fs.mkdtemp：它在 Windows 上 ~248 字符就失败，而浏览器 Run 内的这一层目录本身就有 250 字符左右。
+      attemptDirectory = await createUniqueDirectory(path.join(directory, `${attemptName}-`));
       await fs.chmod(attemptDirectory, 0o700);
       const finalPath = path.join(attemptDirectory, metadataFilename);
       temporaryPath = path.join(
