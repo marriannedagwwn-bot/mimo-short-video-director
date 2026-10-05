@@ -112,7 +112,8 @@ await initializeSystemProxy({
 });
 `);
   const args = await makeArgs(directory);
-  const child = spawn(process.execPath, ["--import", preload, path.join(root, entry), ...args], {
+  // --import 只认 URL：Windows 的裸绝对路径（C:\…）会被当成 c: 协议直接报 ERR_UNSUPPORTED_ESM_URL_SCHEME。
+  const child = spawn(process.execPath, ["--import", pathToFileURL(preload).href, path.join(root, entry), ...args], {
     cwd: directory,
     env: {
       PATH: process.env.PATH, NODE_ENV: "test",

@@ -6,7 +6,7 @@ import path from "node:path";
 import http from "node:http";
 import net from "node:net";
 import { execFile, spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -56,7 +56,8 @@ async function fixture(t) {
   };
   const launch = (entry, args = [], extraEnv = {}) => {
     const reportPath = path.join(directory, `exit-${++launches}.json`);
-    const child = spawn(process.execPath, ["--use-env-proxy", "--import", preload, path.join(root, entry), ...args], {
+    // --import 只认 URL：Windows 的裸绝对路径（C:\…）会被当成 c: 协议直接报 ERR_UNSUPPORTED_ESM_URL_SCHEME。
+    const child = spawn(process.execPath, ["--use-env-proxy", "--import", pathToFileURL(preload).href, path.join(root, entry), ...args], {
       cwd: directory,
       env: {
         PATH: process.env.PATH,
@@ -265,7 +266,7 @@ test("native macOS worker initializes system routing itself without a preinitial
     provider: "Seedance", model: "doubao-seedance-2-0-260128", prompt: "local native entry fixture",
     inputArtifacts: [{ path: reference, mediaType: "image", role: "reference_image" }],
     parameters: { durationSeconds: 5, aspectRatio: "9:16", generationMode: "all_reference" } }));
-  await execFileAsync(process.execPath, ["--use-env-proxy", "--import", path.join(root, "test/fixtures/system-proxy-exit-report.mjs"),
+  await execFileAsync(process.execPath, ["--use-env-proxy", "--import", pathToFileURL(path.join(root, "test/fixtures/system-proxy-exit-report.mjs")).href,
     path.join(root, "workers/generic-http-worker.mjs"), "--config", config, "--request", request,
     "--output", output, "--receipt", receipt], {
     cwd: f.directory,
