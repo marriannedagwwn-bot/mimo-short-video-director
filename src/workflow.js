@@ -242,7 +242,12 @@ export class WorkflowService {
       const fallbackModel = String(defaults.model || "").trim();
       if (fallbackModel && !isKnownQwenTextOnlyModel(fallbackModel)) model = fallbackModel;
     }
-    const maxCompletionTokens = finiteNumber(override.maxCompletionTokens, defaults.maxCompletionTokens);
+    // 显式覆盖 > 实际供应商自己的阶段上限 > 默认供应商这一档。按阶段换供应商时浏览器只发
+    // {provider, model}，此前一律沿用默认供应商的上限（DeepSeek 因此收到 65536/131072，MiMo 被压到 65536）。
+    const maxCompletionTokens = finiteNumber(
+      override.maxCompletionTokens,
+      finiteNumber(defaults.maxCompletionTokensByProvider?.[provider], defaults.maxCompletionTokens)
+    );
     return {
       provider,
       model,
@@ -2424,12 +2429,21 @@ function normalizeStageDefaults(stageDefaults = null, fallback = {}) {
 }
 
 function normalizeStageSetting(value = {}, fallback = {}) {
-  return {
+  const setting = {
     provider: canonicalProvider(value.provider || fallback.provider),
     model: String(value.model || fallback.model || "").trim(),
     maxCompletionTokens: finiteNumber(value.maxCompletionTokens, fallback.maxCompletionTokens),
     requestTimeoutMs: finiteNumber(value.requestTimeoutMs, fallback.requestTimeoutMs)
   };
+  // 各家自己的阶段上限（src/stage-token-caps.js）。只在调用方给了时才带上，旧调用方的设置形状逐字不变。
+  const byProvider = {};
+  for (const [name, tokens] of Object.entries(value.maxCompletionTokensByProvider || {})) {
+    const provider = canonicalProvider(name);
+    const cap = finiteNumber(tokens);
+    if (provider && cap) byProvider[provider] = cap;
+  }
+  if (Object.keys(byProvider).length) setting.maxCompletionTokensByProvider = byProvider;
+  return setting;
 }
 
 function stageOverride(input = {}, stage) {

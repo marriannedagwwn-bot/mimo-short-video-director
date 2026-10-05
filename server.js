@@ -87,6 +87,7 @@ import { DurableTaskManager } from "./src/durable-task-manager.js";
 import { currentDurableTaskContext, runWithDurableTaskContext } from "./src/durable-task-context.js";
 import { readModelUsageFromError, runWithUsageAccounting } from "./src/token-usage.js";
 import { resolveBuildIdentity } from "./src/build-identity.js";
+import { withProviderTokenCaps } from "./src/stage-token-caps.js";
 import {
   PRODUCTION_REQUEST_HEADER_NAMES,
   productionRequestHeaders
@@ -2046,7 +2047,17 @@ server.listen(config.port, () => {
 
 function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {}) {
   const provider = resolveDefaultLlmProvider(config);
-  const source = provider === "Qwen" ? config.qwen : config.mimo;
+  // 按阶段换成别家时，上限取那一家自己的阶段配置，不沿用默认供应商这一档（src/stage-token-caps.js）。
+  // 同一张阶段表给每家各算一次，只取上限；模型名等其余字段仍只用默认供应商那份。
+  return withProviderTokenCaps(stageDefaultsFor(provider, config), {
+    Qwen: stageDefaultsFor("Qwen", config),
+    MiMo: stageDefaultsFor("MiMo", config),
+    DeepSeek: stageDefaultsFor("DeepSeek", config)
+  });
+}
+
+function stageDefaultsFor(provider, config) {
+  const source = provider === "Qwen" ? config.qwen : provider === "DeepSeek" ? config.deepseek : config.mimo;
   return {
     analysis: stageSetting(provider, source.analysisModel || source.videoModel || source.model, source.analysisMaxCompletionTokens || source.maxCompletionTokens),
     reconstruction: stageSetting(provider, source.reconstructionModel || source.videoModel || source.model, source.reconstructionMaxCompletionTokens || source.maxCompletionTokens),
