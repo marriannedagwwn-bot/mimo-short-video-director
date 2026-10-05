@@ -721,6 +721,10 @@ function clearVideoWorkspaceUi({ keepSource = false } = {}) {
   state.backgroundMusicDrafts = {};
   state.running = false;
   state.storyRunning = false;
+  // 体检进行中换了工作区时，体检流程看到 epoch 已变会直接返回、不复位这个标记；
+  // 漏掉它会让「生成完整剧情」此后永远静默不响应（2026-10-05 修复）。面板属于旧命题，一并清掉。
+  state.storyPrecheckRunning = false;
+  clearFullStoryPrecheck();
   state.animationRunning = false;
   state.variantsRegenerating = false;
   if (!keepSource) {
@@ -2850,6 +2854,8 @@ function renderStoryPage({ autoGenerate = false } = {}) {
   const variant = selectedVariant();
   renderSelectedVariantSummary(variant);
   renderStoryMusicControl();
+  // 展开前体检面板只在它所属的命题页上显示（另一个命题的面板隐藏，状态保留）。
+  syncFullStoryPrecheckVisibility();
   const existing = variant ? state.fullStories[variant.id] : null;
   const animationExisting = variant ? state.animationPlans[variant.id] : null;
   syncAnimationAspectRatioControls();
@@ -2960,25 +2966,53 @@ function clearFullStoryPrecheck() {
   fullStoryPrecheckState = null;
   fullStoryPrecheckFailure = null;
   elements.fullStoryPrecheck.innerHTML = "";
+  delete elements.fullStoryPrecheck.dataset.variantId;
   elements.fullStoryPrecheck.classList.add("hidden");
 }
 
-function renderFullStoryPrecheckPanel(html) {
+// 面板只属于一个命题，只在那个命题的页面上显示（2026-10-05 修复）。此前切换命题时面板原样留着，
+// 「采纳修订并展开」会签发 A 的修订、却为当前选中的 B 付费展开。切走时只隐藏、不丢状态：
+// 回到原命题仍能看到已经付费生成的修订稿。
+function renderFullStoryPrecheckPanel(html, variantId = fullStoryPrecheckState?.variantId || state.selectedVariantId) {
   elements.fullStoryPrecheck.innerHTML = html;
-  elements.fullStoryPrecheck.classList.remove("hidden");
+  elements.fullStoryPrecheck.dataset.variantId = String(variantId || "");
   bindFullStoryPrecheckActions(elements.fullStoryPrecheck);
+  syncFullStoryPrecheckVisibility();
+}
+
+function syncFullStoryPrecheckVisibility() {
+  const panel = elements.fullStoryPrecheck;
+  const visible = Boolean(panel.innerHTML) && panel.dataset.variantId === String(state.selectedVariantId || "");
+  panel.classList.toggle("hidden", !visible);
+}
+
+// 按面板上记的命题判断，而不是按体检状态：体检失败时状态已清空，但失败面板上的「重试体检」
+// 「按原候选展开」仍然只该作用于它自己那个命题。
+function precheckBelongsToSelectedVariant() {
+  const owner = elements.fullStoryPrecheck.dataset.variantId;
+  return Boolean(owner) && owner === String(state.selectedVariantId || "");
+}
+
+// 面板与当前命题不符时一律作废：不签发、不展开，宁可让用户对当前命题重新体检。
+function discardForeignPrecheck() {
+  clearFullStoryPrecheck();
+  setStoryStatus("这份展开前体检属于另一个命题，已作废；没有签发或展开任何东西，请对当前命题重新生成。", "warn");
 }
 
 function bindFullStoryPrecheckActions(root) {
   for (const button of root.querySelectorAll("[data-precheck-expand]")) {
     button.addEventListener("click", () => {
+      if (!precheckBelongsToSelectedVariant()) return discardForeignPrecheck();
       clearFullStoryPrecheck();
       // 用户明确选择按原候选展开，就照原候选展开——体检只出报告，不是闸门。
       void generateFullStory({ force: true });
     });
   }
   for (const button of root.querySelectorAll("[data-precheck-retry]")) {
-    button.addEventListener("click", () => void startFullStory({ force: true }));
+    button.addEventListener("click", () => {
+      if (!precheckBelongsToSelectedVariant()) return discardForeignPrecheck();
+      void startFullStory({ force: true });
+    });
   }
   for (const button of root.querySelectorAll("[data-precheck-adopt]")) {
     button.addEventListener("click", () => void adoptPrecheckRevisionAndExpand(button));
@@ -3064,7 +3098,8 @@ async function startFullStory({ force = false } = {}) {
     fullStoryPrecheckFailure = { id: `precheck:${variant.id}:${Date.now()}`, variantId: variant.id, message: error?.message || "未知原因" };
     // 失败前调用过的模型照样计费，必须显示出来，不能显示成没花钱。
     setStoryStatus(`展开前体检失败：${error?.message || "未知原因"}${closeUsage()}`, "error");
-    renderFullStoryPrecheckPanel(renderPrecheckFailure(error));
+    // 状态已清空，面板归属必须显式给出：用户中途切走时，这块失败面板仍属于原命题。
+    renderFullStoryPrecheckPanel(renderPrecheckFailure(error), variant.id);
   } finally {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     closeUsage();
@@ -3106,20 +3141,25 @@ async function requestPrecheckRevision(workspaceEpoch, closeUsage) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (fullStoryPrecheckState !== entry) return;
     entry.revision = { ...result, sourceThemeVariants: entry.sourceThemeVariants };
-    setStoryStatus(`修订稿已生成，还没有生效——看过差异后再决定。${closeUsage()}`, "warn");
+    // 用户这 1–3 分钟里可能已经切到别的命题：修订稿照样留给原命题（已经付费），只是不在别的命题页上显示。
+    const message = `修订稿已生成，还没有生效——看过差异后再决定。${closeUsage()}`;
+    if (entry.variantId === String(state.selectedVariantId || "")) setStoryStatus(message, "warn");
     renderFullStoryPrecheckPanel(
       renderPrecheckFindings(entry)
       + renderStoryCandidateRevision(entry.variantId, entry.revision, { withAdoptButton: false })
-      + renderPrecheckDecision()
+      + renderPrecheckDecision(),
+      entry.variantId
     );
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (fullStoryPrecheckState !== entry) return;
-    setStoryStatus(`修订失败：${error?.message || "未知原因"}${closeUsage()}`, "error");
+    const message = `修订失败：${error?.message || "未知原因"}${closeUsage()}`;
+    if (entry.variantId === String(state.selectedVariantId || "")) setStoryStatus(message, "error");
     renderFullStoryPrecheckPanel(
       renderPrecheckFindings(entry)
       + `<p class="story-review-status error">${escape(error?.message || "定向修订失败")}</p>`
-      + renderPrecheckDecision({ withoutAdopt: true })
+      + renderPrecheckDecision({ withoutAdopt: true }),
+      entry.variantId
     );
   }
 }
@@ -3129,6 +3169,10 @@ async function requestPrecheckRevision(workspaceEpoch, closeUsage) {
 async function adoptPrecheckRevisionAndExpand(button) {
   const entry = fullStoryPrecheckState;
   if (!entry?.revision || button.disabled) return;
+  // 修订稿必须属于当前命题才能签发（2026-10-05 修复：此前会签发 A 的修订、再为 B 付费展开）。
+  if (!precheckBelongsToSelectedVariant() || entry.variantId !== String(state.selectedVariantId || "")) {
+    return discardForeignPrecheck();
+  }
   const workspaceEpoch = browserWorkspace.epoch;
   button.disabled = true;
   const original = button.textContent;
@@ -3143,6 +3187,11 @@ async function adoptPrecheckRevisionAndExpand(button) {
       return;
     }
     clearFullStoryPrecheck();
+    // 签发期间用户切到了别的命题：修订已经生效，但不替用户展开另一个命题。
+    if (entry.variantId !== String(state.selectedVariantId || "")) {
+      setStoryStatus("修订已签发；当前选中的是另一个命题，没有自动展开。回到原命题后再点「生成完整剧情」。", "warn");
+      return;
+    }
     await generateFullStory({ force: true });
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;

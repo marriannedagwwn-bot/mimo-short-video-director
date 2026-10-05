@@ -784,6 +784,76 @@ test("采纳之后继续展开，且不会再体检第二次", async () => {
   assert.ok(calls.some((call) => call.url === "/api/tasks/create"));
 });
 
+// 2026-10-05 回归：体检面板不随所选命题走。用户在 V2 拿到修订稿后切到已有剧情的 V1，
+// 面板原样留在 V1 页上；点「采纳修订并展开」会签发 V2 的修订、再为 V1 付费展开。
+function reviseRoutes(app, extra = {}) {
+  return {
+    "/api/full-story-precheck": reviseResult(),
+    "/api/story-candidate-revision": () => ({ candidateId: "V2", themeVariants: revisedBatch(app),
+      revision: { candidateId: "V2", revisedBeats: [], changeSummary: "把一趟改成多趟。" }, metadata: {} }),
+    ...extra
+  };
+}
+
+test("切到另一个已有剧情的命题：体检面板隐藏但修订稿保留，回到原命题仍可见", async () => {
+  let app;
+  const loaded = await precheckApp({ story: true, routes: new Proxy({}, { get: (_t, url) => reviseRoutes(app)[url] }) });
+  app = loaded.app;
+  await app.startFullStory({ force: true });
+  assert.equal(app.elements.fullStoryPrecheck.classList.contains("hidden"), false);
+  assert.match(app.elements.fullStoryPrecheck.innerHTML, /data-precheck-adopt/u);
+  app.state.fullStories.V1 = app.fixture.fullStory;
+  app.navigateToStory("V1");
+  assert.equal(app.elements.fullStoryPrecheck.classList.contains("hidden"), true, "V2 的面板不许出现在 V1 页上");
+  app.navigateToStory("V2");
+  assert.equal(app.elements.fullStoryPrecheck.classList.contains("hidden"), false, "回到 V2 仍能看到已付费的修订稿");
+  assert.match(app.elements.fullStoryPrecheck.innerHTML, /data-precheck-adopt/u);
+});
+
+test("面板属于另一个命题时，采纳不签发任何东西、也不展开", async () => {
+  let app;
+  const loaded = await precheckApp({ story: true, routes: new Proxy({}, { get: (_t, url) => reviseRoutes(app)[url] }) });
+  app = loaded.app;
+  await app.startFullStory({ force: true });
+  const before = loaded.calls.length;
+  app.state.selectedVariantId = "V1";
+  await app.adoptPrecheckRevisionAndExpand({ disabled: false, textContent: "采纳修订并展开" });
+  assert.equal(loaded.calls.length, before, "不许发出签发或展开请求");
+  assert.equal(app.elements.fullStoryPrecheck.innerHTML, "");
+  assert.match(app.elements.storyStatus.textContent, /属于另一个命题/u);
+});
+
+test("签发修订期间切到别的命题：修订照常生效，但不替用户展开另一个命题", async () => {
+  let app;
+  const routes = () => reviseRoutes(app, {
+    "/api/production/artifact/commit": () => {
+      app.state.selectedVariantId = "V1";
+      return { lineage: { artifactId: "themeVariants", status: "current", revision: "r2",
+        contentDigest: "themeVariants-digest-2" }, staleArtifactIds: [] };
+    }
+  });
+  const loaded = await precheckApp({ story: true, routes: new Proxy({}, { get: (_t, url) => routes()[url] }) });
+  app = loaded.app;
+  await app.startFullStory({ force: true });
+  await app.adoptPrecheckRevisionAndExpand({ disabled: false, textContent: "采纳修订并展开" });
+  const urls = loaded.calls.map((call) => call.url);
+  assert.ok(urls.includes("/api/production/artifact/commit"), "修订照常签发");
+  assert.equal(urls.includes("/api/tasks/create"), false, "不许替用户展开另一个命题");
+  assert.match(app.elements.storyStatus.textContent, /没有自动展开/u);
+});
+
+test("换工作区时复位体检进行中标记并清掉旧面板，「生成完整剧情」不会因此永久失效", async () => {
+  let app;
+  const loaded = await precheckApp({ story: true, routes: new Proxy({}, { get: (_t, url) => reviseRoutes(app)[url] }) });
+  app = loaded.app;
+  await app.startFullStory({ force: true });
+  app.state.storyPrecheckRunning = true;
+  app.clearVideoWorkspaceUi({ keepSource: true });
+  assert.equal(app.state.storyPrecheckRunning, false);
+  assert.equal(app.elements.fullStoryPrecheck.innerHTML, "");
+  assert.equal(app.elements.fullStoryPrecheck.classList.contains("hidden"), true);
+});
+
 test("体检只挂在入口上，展开路径本身不体检", () => {
   // 两个入口（按钮与选中命题后的自动生成）都走 startFullStory；
   // generateFullStory 保持纯展开，采纳后的续跑与 durable task 恢复都直接走它。
