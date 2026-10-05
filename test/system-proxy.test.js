@@ -335,3 +335,24 @@ test("non-macOS keeps explicit environment proxy path and never reads macOS sett
   assert.equal(controller.status().mode, "environment");
   assert.equal((await controller.refresh()).mode, "environment");
 });
+
+test("环境代理模式按 HTTP(S)_PROXY 报告健康状态，不再一律报 direct", async () => {
+  // 2026-10-05 回归：Windows 实际走 HTTP_PROXY，/api/health 的 networkProxy 却报 http/https: direct。
+  // https 没配时回退 http，与 undici EnvHttpProxyAgent 一致。
+  for (const [env, expected] of [
+    [{ HTTP_PROXY: "http://127.0.0.1:7892" }, { http: "proxy", https: "proxy" }],
+    [{ https_proxy: "http://127.0.0.1:7892" }, { http: "direct", https: "proxy" }],
+    [{}, { http: "direct", https: "direct" }]
+  ]) {
+    const controller = await initializeSystemProxy({ platform: "win32", env, readSnapshot: () => { throw new Error("must not read macOS"); }, logger });
+    try {
+      const status = controller.status();
+      assert.equal(status.mode, "environment");
+      assert.equal(status.http, expected.http, JSON.stringify(env));
+      assert.equal(status.https, expected.https, JSON.stringify(env));
+      assert.equal(status.error, null);
+    } finally {
+      await controller.close();
+    }
+  }
+});

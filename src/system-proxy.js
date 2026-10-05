@@ -285,8 +285,8 @@ async function createSystemProxy({ platform = process.platform, readSnapshot = r
     status: () => ({
       platform,
       mode: closed ? "closed" : policy.mode,
-      http: policy.error ? "blocked" : policy.routes["http:"]?.kind || "direct",
-      https: policy.error ? "blocked" : policy.routes["https:"]?.kind || "direct",
+      http: policy.error ? "blocked" : policy.routes["http:"]?.kind || policy.environmentRoutes?.["http:"] || "direct",
+      https: policy.error ? "blocked" : policy.routes["https:"]?.kind || policy.environmentRoutes?.["https:"] || "direct",
       checkedAt,
       error: readSystemProxyError(policy.error) || (Object.values(policy.routes).some((route) => route?.kind === "socks") ? readSystemProxyError(proxyError("SYSTEM_PROXY_SOCKS_UNSUPPORTED")) : null)
     }),
@@ -314,12 +314,23 @@ async function createSystemProxy({ platform = process.platform, readSnapshot = r
     await refresh();
     if (pollIntervalMs > 0) { timer = setInterval(() => { void refresh(); }, pollIntervalMs); timer.unref(); }
   } else {
-    environmentAgent = new EnvHttpProxyAgent({ httpProxy: env.http_proxy || env.HTTP_PROXY || "", httpsProxy: env.https_proxy || env.HTTPS_PROXY || "", noProxy: env.no_proxy || env.NO_PROXY || "" });
+    const httpProxy = env.http_proxy || env.HTTP_PROXY || "";
+    const httpsProxy = env.https_proxy || env.HTTPS_PROXY || "";
+    environmentAgent = new EnvHttpProxyAgent({ httpProxy, httpsProxy, noProxy: env.no_proxy || env.NO_PROXY || "" });
     for (const [protocol, BaseAgent] of [["http:", http.Agent], ["https:", https.Agent]]) {
       directNative[protocol].destroy();
       directNative[protocol] = new BaseAgent({ keepAlive: true, timeout: 5_000, proxyEnv: env });
     }
-    policy = { routes: {}, bypass: () => false, mode: "environment", error: null };
+    // routes 在 environment 模式下恒为空（路由由 EnvHttpProxyAgent 决定），健康状态不能因此一律报 direct：
+    // 此前本机 Windows 实际走 HTTP_PROXY，/api/health 却报 direct（2026-10-05 修复）。按初始化时的环境变量报告，
+    // https 没配时回退 http，与 undici EnvHttpProxyAgent 的回退规则一致；NO_PROXY 的逐主机例外不在这个粗粒度状态里。
+    policy = {
+      routes: {},
+      environmentRoutes: { "http:": httpProxy ? "proxy" : "direct", "https:": httpsProxy || httpProxy ? "proxy" : "direct" },
+      bypass: () => false,
+      mode: "environment",
+      error: null
+    };
     checkedAt = new Date().toISOString();
     controller.refresh = async () => controller.status();
   }
