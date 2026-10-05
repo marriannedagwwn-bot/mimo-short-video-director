@@ -3760,6 +3760,23 @@ test("固定角色名提取把冒号当分隔符，「名字：描述」不会�
   assert.equal(extractFixedCharacterName("角色名：小白子，q 版狼耳少女"), "小白子");
 });
 
+test("取名标签只认第一段：描述里的「叫声」「叫奶奶」「大家都叫她」不是取名", () => {
+  // 2026-10-05 回归：标签词出现在描述后文时曾被当成取名标签，而 09-19 起提示词会让模型照写这个错名。
+  assert.equal(extractFixedCharacterName("小白子：q版狼耳少女，银白色长发，开心时会发出嗷呜的叫声"), "小白子");
+  assert.equal(extractFixedCharacterName("小白子：q版狼耳少女，喜欢叫奶奶陪她玩"), "小白子");
+  assert.equal(extractFixedCharacterName("小白子，狼耳少女，大家都叫她小白"), "小白子");
+  assert.equal(extractFixedCharacterName("小白子：名字是奶奶取的"), "小白子");
+  // 合法反例：标签写在第一段里的照旧按标签取名。
+  assert.equal(extractFixedCharacterName("她叫小白，狼耳少女"), "小白");
+  assert.equal(extractFixedCharacterName("名叫小白子，狼耳少女"), "小白子");
+  assert.equal(extractFixedCharacterName("姓名：小白子；狼耳少女"), "小白子");
+  // 提示词下发给模型的必须是这个正确的名字。
+  const creatorProfile = { ...colonProfileWithPartner, fixedCharacter: "小白子：q版狼耳少女，开心时会发出嗷呜的叫声" };
+  const rules = guardrailsRuleSection(visualGuardrailsPrompt({ creativeBrief: {}, creatorProfile }));
+  assert.ok(rules.includes("characterName 必须逐字写「小白子」"));
+  assert.equal(rules.includes("characterName 必须逐字写「声」"), false);
+});
+
 test("冒号写法的固定角色能通过 visualGuardrails 与 creativeBrief 的固定角色校验", () => {
   const creatorProfile = {
     fixedCharacter: "小白子：q 版狼耳少女，形象类似狼娘，有狐狸一样蓬松的尾巴；\n芙芙猫：浅蓝色蓬松卷发",

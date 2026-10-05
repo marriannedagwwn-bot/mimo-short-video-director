@@ -2713,12 +2713,17 @@ export function extractFixedCharacterName(fixedCharacter) {
   if (typeof fixedCharacter !== "string") return "";
   const text = fixedCharacter.trim();
   if (!text) return "";
-  const explicit = text.match(/(?:角色名|姓名|名字|名叫|叫|昵称)[:：为是叫\s]*([一-龥A-Za-z0-9_-]{1,16})/u);
-  if (explicit?.[1]) return stripNameWrapper(explicit[1]);
   // 冒号是「名字：描述」这种写法的分隔符，必须和逗号顿号同级——否则第一段会连描述一起被
   // 当成角色名（`小白子：q 版狼耳少女`），下游 includes/等值判定要么硬失败，要么靠模型
   // 原样回抄整段而以错误的方式通过。半角冒号一并处理，英文写法同理。
   const firstSegment = text.split(/[，,；;、。:：\n\r（(]/u)[0]?.trim() || "";
+  // 取名标签只认起点落在第一段里的（「角色名：小白子」「她叫小白，…」「名叫小白子，…」）。
+  // 描述后文里的「叫」「名字」只是描述：「…开心时会发出嗷呜的叫声」曾被取成「声」、
+  // 「喜欢叫奶奶陪她玩」取成「奶奶陪她玩」、「大家都叫她小白」取成「她小白」。
+  // 2026-09-19 起提示词让模型逐字照写这个名字，错名因此会通过校验并被签发（2026-10-05 修复）。
+  // 标签词表不增不减；本机 5 份历史设定按新规则取名逐字不变。
+  const explicit = text.match(/(?:角色名|姓名|名字|名叫|叫|昵称)[:：为是叫\s]*([一-龥A-Za-z0-9_-]{1,16})/u);
+  if (explicit?.[1] && explicit.index < firstSegment.length) return stripNameWrapper(explicit[1]);
   const spaceMatch = firstSegment.match(/^([一-龥A-Za-z0-9_-]{1,16})(?:\s|$)/u);
   return stripNameWrapper(spaceMatch?.[1] || firstSegment);
 }
