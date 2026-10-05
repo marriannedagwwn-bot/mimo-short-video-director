@@ -79,6 +79,32 @@ test("Animation Plan SSE 未结束不能记为日志成功，仍保留实际收�
   assert.equal(finalized[0].code, "MODEL_STREAM_INCOMPLETE");
 });
 
+test("Animation Plan SSE 复读被叫停时日志记成 degeneration，不和断网混成 transport", async () => {
+  // 2026-10-05 回归：副本读到复读叫停时曾被记成 MODEL_STREAM_ABORTED / transport。
+  const attempts = [];
+  const finalized = [];
+  const capture = new AnimationPromptCapture({ modelOutputLogWriter: {
+    enabled: true,
+    async recordAttempt(value) { attempts.push(value); return { id: "attempt" }; },
+    async finalizeAttempt(ref, value) { finalized.push(value); }
+  } });
+  const chunk = (text) => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
+  const wire = chunk('{"shots":[') + Array.from({ length: 600 }, () => chunk('":"",  ')).join("");
+  const capturedFetch = capture.wrapFetch(async () => new Response(wire, {
+    headers: { "content-type": "text/event-stream" }
+  }));
+  await assert.rejects(() => capture.run({ provider: "MiMo" }, async () => {
+    const response = await capturedFetch("https://provider.example/v1/chat/completions", {
+      method: "POST", body: JSON.stringify({ stream: true, messages: [] })
+    });
+    await readSseCompletion(response.body);
+  }), { name: "SseStreamDegenerateError" });
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].status, "failed");
+  assert.equal(finalized[0].code, "MODEL_OUTPUT_DEGENERATE");
+  assert.equal(finalized[0].category, "degeneration");
+});
+
 test("animation prompt capture 保存 wire-effective prompt 且不记录请求头或媒体", async (t) => {
   const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), "animation-prompt-capture-"));
   t.after(() => fs.rm(outputRoot, { recursive: true, force: true }));

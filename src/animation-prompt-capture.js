@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { SseStreamIncompleteError, readSseCompletion } from "./sse-stream.js";
+import { SseStreamDegenerateError, SseStreamIncompleteError, readSseCompletion } from "./sse-stream.js";
 
 const CAPTURE_VERSION = "animation-ai-prompt-capture-v1";
 const CHAT_COMPLETIONS_PATH = /\/chat\/completions\/?$/u;
@@ -346,6 +346,9 @@ async function safeCompletionProjection(response, { stream = false } = {}) {
         code: "MODEL_COMPLETION_RECEIVED"
       };
     } catch (error) {
+      // 副本读到的复读叫停与客户端判定同源（src/output-degeneration.js），必须与
+      // classifyAttemptError 同口径记成 degeneration，不能和断网混成 transport（2026-10-05 修复）。
+      const degenerate = error instanceof SseStreamDegenerateError;
       return {
         contentPresent: false,
         content: "",
@@ -353,8 +356,10 @@ async function safeCompletionProjection(response, { stream = false } = {}) {
         finishReason: "",
         usage: error?.partialUsage || null,
         status: "failed",
-        category: "transport",
-        code: error instanceof SseStreamIncompleteError ? "MODEL_STREAM_INCOMPLETE" : "MODEL_STREAM_ABORTED"
+        category: degenerate ? "degeneration" : "transport",
+        code: degenerate
+          ? "MODEL_OUTPUT_DEGENERATE"
+          : error instanceof SseStreamIncompleteError ? "MODEL_STREAM_INCOMPLETE" : "MODEL_STREAM_ABORTED"
       };
     }
   }
