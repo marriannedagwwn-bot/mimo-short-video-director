@@ -137,7 +137,7 @@ Full Story 两种格式当前只对一种可证明的内容错误启用唯一一
 
 页面「模型设置」中选择 MiMo 后，可在文本、图像理解和视频理解阶段选择 `mimo-v2.6-flash`、`mimo-v2.6-pro` 或 `mimo-v2.6-pro-ultraspeed`。V2.6 复用现有 `MIMO_API_KEY`、`MIMO_BASE_URL` 和 `/chat/completions` 适配器，无需增加独立接口或 Key；模型列表暂时请求失败时，三个模型仍可从内置选项中选择。UltraSpeed 的实际调用权限以账号为准，服务端报错原样保留，不会自动换模型。
 
-本次仅增加可选模型，已有默认模型与页面会话覆盖保持原值。要修改服务端 MiMo 默认值，可将下面示例中的 `MIMO_MODEL` 设为 `mimo-v2.6-flash`，`MIMO_STORY_MODEL` / `MIMO_ANIMATION_MODEL` 设为 `mimo-v2.6-pro`；已有阶段专属环境变量仍优先。Qwen 已配置时仍保持现有默认路由，页面按阶段选择 MiMo 才会覆盖它。`MIMO_THINKING`、JSON 模式、输出预算、用量记账和失败处理沿用现有行为；费用估算仍须在 `MODEL_PRICE_CNY_PER_MILLION` 中按确切新模型 ID 配置价格。
+本次仅增加可选模型，已有默认模型与页面会话覆盖保持原值。要修改服务端 MiMo 默认值，可将下面示例中的 `MIMO_MODEL` 设为 `mimo-v2.6-flash`，`MIMO_STORY_MODEL` / `MIMO_ANIMATION_MODEL` 设为 `mimo-v2.6-pro`；已有阶段专属环境变量仍优先。Qwen 已配置时仍保持现有默认路由，页面按阶段选择 MiMo 才会覆盖它；也可以在 `.env` 设 `DEFAULT_LLM_PROVIDER=MiMo`，让 MiMo 成为全部阶段的默认 provider（见下文）。`MIMO_THINKING`、JSON 模式、输出预算、用量记账和失败处理沿用现有行为；费用估算仍须在 `MODEL_PRICE_CNY_PER_MILLION` 中按确切新模型 ID 配置价格。
 
 接口与模态依据（2026-09-22 核对）：[官方 Chat Completions 文档](https://mimo.mi.com/docs/en-US/api/chat/openai-api)、[Flash 模型规格](https://mimo.mi.com/models/zh-CN/mimo-v2.6-flash)、[Pro 模型规格](https://mimo.mi.com/models/zh-CN/mimo-v2.6-pro)、[UltraSpeed 模型规格](https://mimo.mi.com/models/zh-CN/mimo-v2.6-pro-ultraspeed)。
 
@@ -218,7 +218,7 @@ MODEL_PRICE_CNY_PER_MILLION=qwen3.7-max=12/36,qwen3.7-plus=2/8,mimo-v2.5=1/2,mim
 模型 ID 必须与实际使用的 `*_MODEL` 完全一致：Qwen 是 `qwen3.7-max`/`qwen3.7-plus`，MiMo 是 `mimo-v2.5`/`mimo-v2.5-pro`，DeepSeek 是 `deepseek-v4-flash`/`deepseek-v4-pro`。分隔符半角 `,` 与全角 `，`、`、` 都接受，价格分隔 `/` 与全角 `／` 都接受。未配置单价的模型只显示 token 数、不显示金额——宁可不报，也不报一个可能过期的错数字。单条格式错误只会被跳过并告警，不影响启动。
 该统计只覆盖文本模型（Qwen / MiMo / DeepSeek）；即梦图片与镜头视频按张、按秒计费，暂不纳入。
 
-配置 `QWEN_API_KEY` 后，只要 Qwen 可用，参考片分析、脚本还原、创意简报、视觉规则、主题变体、完整剧情、动画生产包和人物参考修正默认都会调用 Qwen 对应阶段模型；未配置 Qwen 时自动回退为 MiMo。`qwen3.7-max` 是纯文本阶段的默认选择；会传入视频或图片的参考片分析、脚本还原、视觉规则和人物参考修正默认使用 `qwen3.7-plus`，也可以改成账号可用的 Qwen-VL / Qwen-Omni 模型。页面顶部“模型设置”按钮可以按阶段临时切换 provider 和模型名，覆盖值会随之后所有生成请求发送给后端，也会写入导出的生产包。角色图片仍由已配置的即梦图片服务生成；当前 `direct_shot` 不生成首尾帧图片，旧 v2 兼容路径才保留首尾帧能力。
+配置 `QWEN_API_KEY` 后，只要 Qwen 可用，参考片分析、脚本还原、创意简报、视觉规则、主题变体、完整剧情、动画生产包和人物参考修正默认都会调用 Qwen 对应阶段模型；未配置 Qwen 时自动回退为 MiMo。要在两家都配置时默认用 MiMo，设 `DEFAULT_LLM_PROVIDER=MiMo`（只接受 `Qwen` / `MiMo`，DeepSeek 不支持图片和视频输入，不能做默认）；指定的那家没配置时服务直接启动失败、不静默换成另一家，两家都没配置的演示模式不受影响。`qwen3.7-max` 是纯文本阶段的默认选择；会传入视频或图片的参考片分析、脚本还原、视觉规则和人物参考修正默认使用 `qwen3.7-plus`，也可以改成账号可用的 Qwen-VL / Qwen-Omni 模型。页面顶部“模型设置”按钮可以按阶段临时切换 provider 和模型名（模型是级联菜单：先选系列，例如 MiMo V2.5 / MiMo V2.6，悬停或点击后在右侧展开该系列的型号；只有一个系列的 provider 直接平铺），覆盖值会随之后所有生成请求发送给后端，也会写入导出的生产包。角色图片仍由已配置的即梦图片服务生成；当前 `direct_shot` 不生成首尾帧图片，旧 v2 兼容路径才保留首尾帧能力。
 
 ## 当前 Animation Plan 临时主流程
 

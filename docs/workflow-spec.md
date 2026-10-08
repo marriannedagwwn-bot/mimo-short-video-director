@@ -224,7 +224,7 @@ Prompt 中关于施动性、因果、人物质感、悬念、承诺和连贯性�
 - `experienceFidelity` 与 `transformationProof`：继续证明同定位、同受众、同情绪、同类驱动力、同款高价值桥段，并记录实际发生的具体改编；复用某个来源表达本身不构成失败。
 - `continuityAndSafetyCheck`：确认固定主角服从签发边界且剧情连续；不得把 `protectedExpressions` 的词面复用本身判为失败。
 
-完整剧情阶段可单独切换文本模型：默认路由由现有 Qwen/MiMo 配置决定；配置 `DEEPSEEK_API_KEY` 后，页面可以显式选择 `deepseek-v4-flash` 或 `deepseek-v4-pro`。DeepSeek 不自动接管默认路由，不允许用于任何带图片或视频输入的阶段。
+完整剧情阶段可单独切换文本模型：默认路由由现有 Qwen/MiMo 配置决定（`DEFAULT_LLM_PROVIDER` 可显式指定 Qwen 或 MiMo）；配置 `DEEPSEEK_API_KEY` 后，页面可以显式选择 `deepseek-v4-flash` 或 `deepseek-v4-pro`。DeepSeek 不自动接管默认路由，不允许用于任何带图片或视频输入的阶段。
 
 #### Legacy Full Story 有界子树纠错
 

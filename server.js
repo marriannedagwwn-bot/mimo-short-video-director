@@ -2,7 +2,7 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadEnv, getConfig } from "./src/config.js";
+import { loadEnv, getConfig, resolveDefaultLlmProvider } from "./src/config.js";
 import { initializeSystemProxy } from "./src/system-proxy.js";
 import { MimoClient } from "./src/mimo-client.js";
 import { QwenClient } from "./src/qwen-client.js";
@@ -2205,7 +2205,7 @@ server.listen(config.port, () => {
 });
 
 function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {}) {
-  const provider = qwenClient ? "Qwen" : "MiMo";
+  const provider = resolveDefaultLlmProvider(config);
   const source = provider === "Qwen" ? config.qwen : config.mimo;
   return {
     analysis: stageSetting(provider, source.analysisModel || source.videoModel || source.model, source.analysisMaxCompletionTokens || source.maxCompletionTokens),

@@ -700,7 +700,7 @@ DeepSeek 当前只允许用于纯文本阶段：
 - Visual Guardrails
 - Character Reference
 
-当前 DeepSeek 模型 ID 只登记 `deepseek-v4-flash` 和 `deepseek-v4-pro`。Flash 是页面首选项，Pro 只能显式选择；不得静默切换 provider/model。配置 `DEEPSEEK_API_KEY` 不改变现有 Qwen/MiMo 默认路由。
+当前 DeepSeek 模型 ID 只登记 `deepseek-v4-flash` 和 `deepseek-v4-pro`。Flash 是页面首选项，Pro 只能显式选择；不得静默切换 provider/model。配置 `DEEPSEEK_API_KEY` 不改变现有 Qwen/MiMo 默认路由。`DEFAULT_LLM_PROVIDER`（只接受 `Qwen` / `MiMo`）可显式指定默认路由，未设置时保持「配了 Qwen 就用 Qwen」；指定的那家未配置时启动失败，不静默换家（`resolveDefaultLlmProvider`，`src/config.js`）。
 
 ---
 

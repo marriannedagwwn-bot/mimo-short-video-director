@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadEnv, getConfig } from "./config.js";
+import { loadEnv, getConfig, resolveDefaultLlmProvider } from "./config.js";
 import { MimoClient, ModelResponseError } from "./mimo-client.js";
 import { QwenClient } from "./qwen-client.js";
 import { WorkflowService } from "./workflow.js";
@@ -79,8 +79,9 @@ export async function runVideoCommand(argv, { stdout = process.stdout, stderr = 
     const client = config.mimo.enabled ? new MimoClient(config.mimo) : null;
     const qwenClient = config.qwen.enabled ? new QwenClient(config.qwen) : null;
     await assertMimoState(client, config, options);
-    const stageDefaults = buildCommandStageDefaults(config, qwenClient ? "Qwen" : "MiMo");
-    const analysisMedia = qwenClient ? config.qwen : config.mimo;
+    const defaultProvider = resolveDefaultLlmProvider(config);
+    const stageDefaults = buildCommandStageDefaults(config, defaultProvider);
+    const analysisMedia = defaultProvider === "Qwen" ? config.qwen : config.mimo;
     const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const partialRepairDebugWriter = new PartialRepairDebugWriter({
       outputRoot: process.env.PARTIAL_REPAIR_DEBUG_DIR

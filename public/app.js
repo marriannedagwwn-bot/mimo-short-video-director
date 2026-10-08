@@ -458,6 +458,20 @@ function bindEvents() {
   elements.resetModelSettings.addEventListener("click", resetModelSettings);
   elements.saveModelSettings.addEventListener("click", saveModelSettings);
   elements.modelStageList.addEventListener("change", handleModelStageListChange);
+  elements.modelStageList.addEventListener("click", handleModelPickerTriggerClick);
+  elements.modelStageList.addEventListener("keydown", handleModelPickerTriggerKeydown);
+  document.addEventListener("pointerdown", (event) => {
+    if (!modelPicker.root) return;
+    const target = event.target;
+    if (modelPicker.root.contains(target) || modelPicker.submenu?.contains(target) || modelPicker.trigger?.contains(target)) return;
+    closeModelPicker();
+  }, true);
+  window.addEventListener("resize", () => closeModelPicker());
+  // 弹窗本身会滚动，菜单是 fixed 定位，滚动后会和按钮错位，所以直接收起；菜单自己的滚动不算。
+  window.addEventListener("scroll", (event) => {
+    if (!modelPicker.root || modelPicker.root.contains(event.target) || modelPicker.submenu?.contains(event.target)) return;
+    closeModelPicker();
+  }, true);
   elements.variants.addEventListener("click", (event) => {
     const button = event.target.closest("[data-story-variant]");
     if (button) navigateToStory(button.dataset.storyVariant);
@@ -6951,11 +6965,13 @@ function openModelSettings() {
   elements.modelSettingsModal.setAttribute("aria-hidden", "false");
 }
 function closeModelSettings() {
+  closeModelPicker();
   elements.modelSettingsModal.classList.add("hidden");
   elements.modelSettingsModal.setAttribute("aria-hidden", "true");
 }
 function renderModelSettings() {
   if (!elements.modelStageList) return;
+  closeModelPicker();
   const providers = availableModelProviders();
   elements.modelStageList.innerHTML = MODEL_STAGE_DEFS.map((stage) => {
     const current = effectiveStageSetting(stage.key);
@@ -6979,9 +6995,14 @@ function renderModelSettings() {
       <select data-model-provider="${escape(stage.key)}"${stage.providerLocked ? " disabled" : ""}>
         ${providerOptions.map((provider) => `<option value="${escape(provider)}"${provider === selectedProvider ? " selected" : ""}>${escape(provider)}</option>`).join("")}
       </select>
-      <select data-model-name="${escape(stage.key)}">
-        ${renderModelOptions(stage, selectedProvider, selectedModel, defaultSetting)}
-      </select>
+      <div class="model-picker">
+        <select data-model-name="${escape(stage.key)}">
+          ${renderModelOptions(stage, selectedProvider, selectedModel, defaultSetting)}
+        </select>
+        <button class="model-picker-trigger" type="button" data-model-picker-trigger aria-haspopup="menu" aria-expanded="false" aria-label="${escape(stage.label)}模型">
+          <span class="model-picker-value" data-model-picker-label>${escape(selectedModel)}</span><span class="model-picker-caret" aria-hidden="true"></span>
+        </button>
+      </div>
     </div>`;
   }).join("");
 }
@@ -6997,6 +7018,253 @@ function handleModelStageListChange(event) {
   const defaultSetting = normalizeStageSetting(stage.key, state.modelStages[stage.key] || {});
   const selectedModel = defaultSetting.provider === provider ? defaultSetting.model : providerDefaultModel(provider, stage.key);
   modelSelect.innerHTML = renderModelOptions(stage, provider, selectedModel, defaultSetting);
+  closeModelPicker();
+  syncModelPickerLabel(row);
+}
+// 模型级联菜单：第一级是系列（MiMo V2.5 / MiMo V2.6…），悬停或点击系列在右侧展开该系列的型号。
+// 隐藏的 <select data-model-name> 仍是唯一的取值来源，保存、校验逻辑不变；菜单只是它的另一张皮，
+// 每次打开都按 select 当前的选项现建。菜单挂在 body 上用 fixed 定位，因为弹窗卡片 overflow:auto 会把它裁掉。
+const MODEL_SERIES_OTHER_LABEL = "其他型号";
+const modelPicker = { root: null, submenu: null, trigger: null, select: null, groups: [], activeSeries: -1, hoverTimer: 0 };
+function modelSeriesLabel(provider, model) {
+  const id = String(model || "").trim();
+  let match;
+  // MiMo 的 /models 还会列出 ASR、TTS 语音模型，单独成组，不和对话模型混在同一个系列里。
+  if (provider === "MiMo" && (match = id.match(/^mimo-v(\d+(?:\.\d+)?)/iu))) {
+    return /-(?:asr|tts)(?:-|$)/iu.test(id) ? `MiMo V${match[1]} 语音` : `MiMo V${match[1]}`;
+  }
+  if (provider === "Qwen") {
+    if ((match = id.match(/^qwen(\d+(?:\.\d+)?)-/iu))) return `Qwen ${match[1]}`;
+    if (/^qwen-vl-/iu.test(id)) return "Qwen VL";
+    if (/^qwen-omni-/iu.test(id)) return "Qwen Omni";
+    if (/^qwen-(?:max|plus|turbo)/iu.test(id)) return "Qwen 通用";
+  }
+  if (provider === "DeepSeek" && (match = id.match(/^deepseek-v(\d+(?:\.\d+)?)/iu))) return `DeepSeek V${match[1]}`;
+  if (provider === "Jimeng" && (match = id.match(/seedream-(\d+)-(\d+)/iu))) return `Seedream ${match[1]}.${match[2]}`;
+  if (provider === "Seedance" && (match = id.match(/seedance-(\d+)-(\d+)/iu))) return `Seedance ${match[1]}.${match[2]}`;
+  if (provider === "Kling" && (match = id.match(/^kling-v(\d+)(?:-(\d+))?/iu))) return `Kling V${match[1]}${match[2] ? `.${match[2]}` : ""}`;
+  if (provider === "MiniMax" && (match = id.match(/^minimax-(h\d+)/iu))) return `MiniMax ${match[1].toUpperCase()}`;
+  return MODEL_SERIES_OTHER_LABEL;
+}
+// 系列按目录里最靠前的成员排序，组内同理；目录外（接口列出来的）型号排在后面，「其他型号」永远垫底。
+function modelSeriesGroups(provider, stageKey, models = []) {
+  const catalog = modelCatalogFor(provider, stageKey);
+  const ranked = uniqueModels(models)
+    .map((model, index) => ({ model, rank: catalog.includes(model) ? catalog.indexOf(model) : catalog.length + index }))
+    .sort((a, b) => a.rank - b.rank);
+  const groups = new Map();
+  for (const { model } of ranked) {
+    const label = modelSeriesLabel(provider, model);
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label).push(model);
+  }
+  return [...groups]
+    .map(([label, items]) => ({ label, models: items }))
+    .sort((a, b) => Number(a.label === MODEL_SERIES_OTHER_LABEL) - Number(b.label === MODEL_SERIES_OTHER_LABEL));
+}
+// 只有一个系列，或每个系列都只有一个型号时，二级菜单只会多点一下，直接平铺。
+function modelSeriesNeedsCascade(groups = []) {
+  return groups.length > 1 && groups.some((group) => group.models.length > 1);
+}
+function renderModelPickerItems(models, current) {
+  return models.map((model) => `<button class="model-picker-item" type="button" role="menuitemradio" aria-checked="${model === current}" data-model-value="${escape(model)}"><span class="model-picker-check" aria-hidden="true">${model === current ? "✓" : ""}</span><span>${escape(model)}</span><span></span></button>`).join("");
+}
+function syncModelPickerLabel(row) {
+  const select = row?.querySelector("[data-model-name]");
+  const label = row?.querySelector("[data-model-picker-label]");
+  if (select && label) label.textContent = select.value;
+}
+function handleModelPickerTriggerClick(event) {
+  const trigger = event.target.closest("[data-model-picker-trigger]");
+  if (!trigger) return;
+  if (modelPicker.trigger === trigger) {
+    closeModelPicker();
+    return;
+  }
+  // event.detail 为 0 表示由回车/空格触发：键盘打开时把焦点送进菜单。
+  openModelPicker(trigger, { focus: event.detail === 0 });
+}
+function handleModelPickerTriggerKeydown(event) {
+  const trigger = event.target.closest("[data-model-picker-trigger]");
+  if (!trigger || (event.key !== "ArrowDown" && event.key !== "ArrowUp")) return;
+  event.preventDefault();
+  if (modelPicker.trigger !== trigger) openModelPicker(trigger, { focus: true });
+  else focusModelPickerItem(modelPicker.root, 0);
+}
+function openModelPicker(trigger, { focus = false } = {}) {
+  closeModelPicker();
+  const row = trigger.closest("[data-model-stage]");
+  const select = row?.querySelector("[data-model-name]");
+  if (!row || !select) return;
+  const provider = row.querySelector("[data-model-provider]")?.value || "";
+  const models = [...select.options].map((option) => option.value);
+  if (!models.length) return;
+  const groups = modelSeriesGroups(provider, row.dataset.modelStage, models);
+  const cascade = modelSeriesNeedsCascade(groups);
+  const root = createModelPickerMenu();
+  root.innerHTML = cascade
+    ? groups.map((group, index) => `<button class="model-picker-item model-picker-series${group.models.includes(select.value) ? " current" : ""}" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" data-model-series-index="${index}"><span class="model-picker-check" aria-hidden="true">${group.models.includes(select.value) ? "•" : ""}</span><span>${escape(group.label)}</span><span class="model-picker-chevron" aria-hidden="true">›</span></button>`).join("")
+    : renderModelPickerItems(groups.flatMap((group) => group.models), select.value);
+  Object.assign(modelPicker, { root, trigger, select, groups: cascade ? groups : [], activeSeries: -1 });
+  trigger.setAttribute("aria-expanded", "true");
+  positionModelPickerMenu(root, trigger.getBoundingClientRect());
+  if (focus) {
+    const items = modelPickerItems(root);
+    const current = items.findIndex((item) => item.classList.contains("current") || item.getAttribute("aria-checked") === "true");
+    focusModelPickerItem(root, Math.max(0, current));
+  }
+}
+function createModelPickerMenu(extraClass = "") {
+  const menu = document.createElement("div");
+  menu.className = `model-picker-menu${extraClass ? ` ${extraClass}` : ""}`;
+  menu.setAttribute("role", "menu");
+  menu.addEventListener("click", handleModelPickerMenuClick);
+  menu.addEventListener("mouseover", handleModelPickerMenuHover);
+  menu.addEventListener("keydown", handleModelPickerMenuKeydown);
+  document.body.append(menu);
+  return menu;
+}
+function openModelPickerSeries(index, { focus = false } = {}) {
+  clearTimeout(modelPicker.hoverTimer);
+  const group = modelPicker.groups[index];
+  const anchor = modelPicker.root?.querySelector(`[data-model-series-index="${index}"]`);
+  if (!group || !anchor) return;
+  if (modelPicker.activeSeries !== index) {
+    modelPicker.submenu?.remove();
+    for (const item of modelPicker.root.querySelectorAll("[data-model-series-index]")) {
+      item.classList.toggle("open", item === anchor);
+      item.setAttribute("aria-expanded", String(item === anchor));
+    }
+    const submenu = createModelPickerMenu("model-picker-submenu");
+    submenu.innerHTML = renderModelPickerItems(group.models, modelPicker.select.value);
+    modelPicker.submenu = submenu;
+    modelPicker.activeSeries = index;
+    positionModelPickerSubmenu(submenu, anchor.getBoundingClientRect(), modelPicker.root.getBoundingClientRect());
+  }
+  if (focus) {
+    const current = group.models.indexOf(modelPicker.select.value);
+    focusModelPickerItem(modelPicker.submenu, Math.max(0, current));
+  }
+}
+function closeModelPickerSeries() {
+  clearTimeout(modelPicker.hoverTimer);
+  modelPicker.submenu?.remove();
+  modelPicker.submenu = null;
+  modelPicker.activeSeries = -1;
+  for (const item of modelPicker.root?.querySelectorAll("[data-model-series-index]") || []) {
+    item.classList.remove("open");
+    item.setAttribute("aria-expanded", "false");
+  }
+}
+function closeModelPicker() {
+  if (!modelPicker.root) return;
+  clearTimeout(modelPicker.hoverTimer);
+  modelPicker.submenu?.remove();
+  modelPicker.root.remove();
+  modelPicker.trigger?.setAttribute("aria-expanded", "false");
+  Object.assign(modelPicker, { root: null, submenu: null, trigger: null, select: null, groups: [], activeSeries: -1, hoverTimer: 0 });
+}
+function chooseModelPickerValue(value) {
+  const { select, trigger } = modelPicker;
+  if (!select) return;
+  select.value = value;
+  syncModelPickerLabel(select.closest("[data-model-stage]"));
+  closeModelPicker();
+  trigger?.focus();
+}
+function handleModelPickerMenuClick(event) {
+  const option = event.target.closest("[data-model-value]");
+  if (option) {
+    chooseModelPickerValue(option.dataset.modelValue);
+    return;
+  }
+  // 点击系列也能展开：触屏没有悬停。
+  const series = event.target.closest("[data-model-series-index]");
+  if (series) openModelPickerSeries(Number(series.dataset.modelSeriesIndex));
+}
+function handleModelPickerMenuHover(event) {
+  if (event.currentTarget === modelPicker.submenu) {
+    // 鼠标已经到了子菜单：取消斜穿其他系列时排下的切换。
+    clearTimeout(modelPicker.hoverTimer);
+    return;
+  }
+  const series = event.target.closest("[data-model-series-index]");
+  if (!series) return;
+  const index = Number(series.dataset.modelSeriesIndex);
+  clearTimeout(modelPicker.hoverTimer);
+  if (index === modelPicker.activeSeries) return;
+  // 已有子菜单时稍等一下再切换，鼠标斜着移向子菜单途中擦过别的系列不会把它换掉。
+  modelPicker.hoverTimer = setTimeout(() => openModelPickerSeries(index), modelPicker.submenu ? 140 : 0);
+}
+function handleModelPickerMenuKeydown(event) {
+  const menu = event.currentTarget;
+  const inSubmenu = menu === modelPicker.submenu;
+  const items = modelPickerItems(menu);
+  const index = items.indexOf(document.activeElement);
+  const series = event.target.closest("[data-model-series-index]");
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    focusModelPickerItem(menu, index < 0 ? 0 : (index + step + items.length) % items.length);
+  } else if (event.key === "Home" || event.key === "End") {
+    event.preventDefault();
+    focusModelPickerItem(menu, event.key === "Home" ? 0 : items.length - 1);
+  } else if (series && (event.key === "ArrowRight" || event.key === "Enter" || event.key === " ")) {
+    event.preventDefault();
+    openModelPickerSeries(Number(series.dataset.modelSeriesIndex), { focus: true });
+  } else if (inSubmenu && event.key === "ArrowLeft") {
+    event.preventDefault();
+    const active = modelPicker.activeSeries;
+    closeModelPickerSeries();
+    focusModelPickerItem(modelPicker.root, active);
+  } else if (event.key === "Escape") {
+    // 先收菜单，不让同一次 Escape 冒泡到 window 把整个模型设置弹窗也关掉。
+    event.preventDefault();
+    event.stopPropagation();
+    if (inSubmenu) {
+      const active = modelPicker.activeSeries;
+      closeModelPickerSeries();
+      focusModelPickerItem(modelPicker.root, active);
+    } else {
+      const trigger = modelPicker.trigger;
+      closeModelPicker();
+      trigger?.focus();
+    }
+  } else if (event.key === "Tab") {
+    closeModelPicker();
+  }
+}
+function modelPickerItems(menu) {
+  return menu ? [...menu.querySelectorAll(".model-picker-item")] : [];
+}
+function focusModelPickerItem(menu, index) {
+  modelPickerItems(menu)[index]?.focus();
+}
+function positionModelPickerMenu(menu, anchorRect) {
+  const gap = 4;
+  const margin = 8;
+  menu.style.minWidth = `${Math.round(anchorRect.width)}px`;
+  const { width, height } = menu.getBoundingClientRect();
+  const left = Math.min(anchorRect.left, window.innerWidth - width - margin);
+  let top = anchorRect.bottom + gap;
+  if (top + height > window.innerHeight - margin && anchorRect.top - gap - height >= margin) top = anchorRect.top - gap - height;
+  menu.style.left = `${Math.max(margin, left)}px`;
+  menu.style.top = `${Math.max(margin, Math.min(top, window.innerHeight - height - margin))}px`;
+}
+// 子菜单贴着父菜单右缘展开（与 macOS 一致，略微叠一点）；右边放不下就翻到左边，两边都放不下（窄屏）就盖在父菜单上。
+function positionModelPickerSubmenu(menu, anchorRect, parentRect) {
+  const margin = 8;
+  const overlap = 3;
+  const { width, height } = menu.getBoundingClientRect();
+  let left = parentRect.right - overlap;
+  if (left + width > window.innerWidth - margin) {
+    left = parentRect.left - width + overlap;
+    if (left < margin) left = Math.max(margin, Math.min(parentRect.left + 16, window.innerWidth - width - margin));
+  }
+  // 子菜单第一项与系列项对齐：减掉菜单的内边距与边框。
+  const top = Math.min(anchorRect.top - 6, window.innerHeight - height - margin);
+  menu.style.left = `${Math.round(left)}px`;
+  menu.style.top = `${Math.round(Math.max(margin, top))}px`;
 }
 async function saveModelSettings() {
   const next = {};

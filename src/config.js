@@ -152,6 +152,8 @@ export function getConfig() {
     port: Number(process.env.PORT || 4173),
     serverRequestTimeoutMs,
     modelPrices,
+    // 默认工作流 provider，由 resolveDefaultLlmProvider() 裁决；留空保持「配了 Qwen 就用 Qwen」。
+    defaultLlmProvider: process.env.DEFAULT_LLM_PROVIDER?.trim() || "",
     durableTasks: {
       localStallMs: Math.round(clampNumber(process.env.DURABLE_TASK_LOCAL_STALL_MS, 300_000, 25, 3_600_000)),
       providerGraceMs: Math.round(clampNumber(process.env.DURABLE_TASK_PROVIDER_GRACE_MS, 120_000, 0, 600_000)),
@@ -282,6 +284,26 @@ export function getConfig() {
       enabled: Boolean(jimengBaseUrl && jimengApiKey)
     }
   };
+}
+
+// 默认阶段路由用哪一家：未设置 DEFAULT_LLM_PROVIDER 时保持原行为（配了 Qwen 就用 Qwen，否则 MiMo）。
+// 显式指定的那家没配置就直接启动失败，不静默换成另一家（CLAUDE.md §2.7「不得静默切换 provider」）。
+// 两家都没配置时是演示模式，没有真实 provider 可选，偏好不生效，沿用原来的 MiMo 标签。
+// DeepSeek 不能做默认：默认路由覆盖需要图片/视频输入的阶段，而 DeepSeek 只接纯文本。
+export function resolveDefaultLlmProvider(config) {
+  const fallback = config.qwen?.enabled ? "Qwen" : "MiMo";
+  const requested = String(config.defaultLlmProvider || "").trim();
+  if (!requested) return fallback;
+  const provider = normalizeCompilerProvider(requested);
+  if (provider !== "Qwen" && provider !== "MiMo") {
+    throw new Error(`DEFAULT_LLM_PROVIDER 只能是 Qwen 或 MiMo，收到「${requested}」。DeepSeek 不接受图片和视频输入，不能作为默认 provider。`);
+  }
+  if (!config.qwen?.enabled && !config.mimo?.enabled) return fallback;
+  if (!config[provider === "Qwen" ? "qwen" : "mimo"]?.enabled) {
+    const missing = provider === "Qwen" ? "QWEN_BASE_URL 或 QWEN_API_KEY" : "MIMO_BASE_URL";
+    throw new Error(`DEFAULT_LLM_PROVIDER=${provider}，但 ${provider} 没有配置（缺少 ${missing}）。补全配置，或删掉 DEFAULT_LLM_PROVIDER 恢复原默认路由。`);
+  }
+  return provider;
 }
 
 function clampNumber(value, fallback, minimum, maximum) {
