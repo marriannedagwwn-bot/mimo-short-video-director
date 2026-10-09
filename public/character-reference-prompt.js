@@ -8,6 +8,12 @@
 // 之所以要把 visualBible 传进来：videoPrompt 197/197 都写了全片风格色调、
 // 188/197 写了光线，而给它当视觉锚点的这张角色图此前完全不知道全片是什么调子。
 // visualBible 缺失时对应行整体省略，不编造光线或风格。
+//
+// 4.0 分镜没有 visualBible，画风来自分镜里服务端签发的 productionStrategy.artStyle
+// （public/character-art-style.js），在「风格与色调」那一格写成「画风：……」；为空就省略。
+// 第一行随有没有上传参考图变化：没上传时不能说「参考我上传的这张图片」。
+
+import { normalizeCharacterArtStyle } from "./character-art-style.js";
 
 const REFERENCE_SHEET_POSE = "人物站立，全身入镜，姿态自然，表情中性平和。";
 const REFERENCE_SHEET_BACKGROUND = "画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。";
@@ -32,7 +38,10 @@ function visualBibleStyleLine(visualBible = {}) {
 export function buildCharacterReferenceImagePrompt({
   characterReference = {},
   count = 1,
-  visualBible = null
+  visualBible = null,
+  // 不传时按「已上传参考图」处理，与改动前逐字相同；调用方都应显式传入。
+  withReferenceImage = true,
+  artStyle = ""
 } = {}) {
   const appearance = String(
     characterReference?.appearancePrompt
@@ -45,15 +54,17 @@ export function buildCharacterReferenceImagePrompt({
   const bible = visualBible && typeof visualBible === "object" ? visualBible : {};
   const lighting = String(bible.lighting || "").trim();
   const styleLine = visualBibleStyleLine(bible);
+  const style = normalizeCharacterArtStyle(artStyle);
   const total = Number(count) || 1;
 
   return [
-    "参考我上传的这张图片，生成一张角色参考图。",
+    withReferenceImage ? "参考我上传的这张图片，生成一张角色参考图。" : "生成一张角色参考图。",
     lighting ? `光线：${lighting}` : "",
     `角色外观：${appearance}`,
     REFERENCE_SHEET_POSE,
     REFERENCE_SHEET_BACKGROUND,
     styleLine,
+    style ? `画风：${style}` : "",
     REFERENCE_SHEET_FRAMING,
     total > 1
       ? `本次需要输出 ${total} 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。`

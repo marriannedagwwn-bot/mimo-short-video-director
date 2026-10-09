@@ -68,6 +68,7 @@ import {
 import { loadOrCreatePersistentKey } from "./src/persistent-key.js";
 import { STORY_DURATION_MAX_SECONDS, STORY_DURATION_MIN_SECONDS, isValidStoryDurationSeconds } from "./public/story-duration.js";
 import { CHARACTER_EXPRESSION_RULES_MAX_CHARS, isValidCharacterExpressionRules } from "./public/character-expression-rules.js";
+import { CHARACTER_ART_STYLE_MAX_CHARS, isValidCharacterArtStyle } from "./public/character-art-style.js";
 import { FULL_STORY_CAST_SCHEMA_VERSION } from "./public/full-story-format.js";
 import {
   STORY_ENTRY_MODE,
@@ -359,6 +360,7 @@ const routes = {
     if (body?.characterExpressionRules !== undefined && !isValidCharacterExpressionRules(body.characterExpressionRules)) {
       throw new InputError(`characterExpressionRules 必须是不超过 ${CHARACTER_EXPRESSION_RULES_MAX_CHARS} 字符的字符串`);
     }
+    assertCharacterArtStyleInput(body);
     return animationPromptCapture.run({
     route: "/api/animation-plan",
     variantId: body?.variant?.id,
@@ -1026,6 +1028,7 @@ function animationPlanTaskDefinition({ projectId, runId, input }) {
         fullStory: artifacts[`fullStory:${variantId}`],
         creatorProfile: input.creatorProfile,
         characterExpressionRules: input.characterExpressionRules,
+        artStyle: input.artStyle,
         animationPlanMode: input.animationPlanMode || "direct_shot",
         animationPlanVersion: input.animationPlanVersion,
         targetAspectRatio: input.targetAspectRatio,
@@ -1254,7 +1257,10 @@ function characterReferenceImagesTaskDefinition({ projectId, runId, input }) {
       assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry: planEntry });
       const count = Math.max(1, Math.min(config.jimeng.maxImages, Math.round(Number(input.count) || 1)));
       const prompt = String(input.prompt || "").trim()
-        || buildCharacterReferenceImagePrompt(characterReference, count, planEntry.content?.visualBible || null);
+        || buildCharacterReferenceImagePrompt(characterReference, count, planEntry.content?.visualBible || null, {
+          withReferenceImage: Boolean(input.referenceImageDataUrl),
+          artStyle: planEntry.content?.productionStrategy?.artStyle
+        });
       return {
         input: {
           count,
@@ -3024,6 +3030,15 @@ function assertNoCandidateCopies(input = {}) {
   });
 }
 
+// 角色画风（2026-10-09）：分镜请求里的 artStyle。只拦类型错误与超长，不裁决画风写得好不好；
+// 空串表示不指定。视频入口与剧情入口的分镜路由共用这一处。
+function assertCharacterArtStyleInput(body) {
+  if (body?.artStyle !== undefined && !isValidCharacterArtStyle(body.artStyle)) {
+    throw new InputError(`artStyle 必须是不超过 ${CHARACTER_ART_STYLE_MAX_CHARS} 字符的字符串`);
+  }
+  return true;
+}
+
 // 剧情 Run 只有 V1 这一个故事位，fullStory / animationPlan 都挂在它上面。
 function assertStoryEntrySlot(variantId) {
   if (variantId === STORY_ENTRY_VARIANT_ID) return true;
@@ -3126,6 +3141,7 @@ function storyEntryAnimationPlanInput(run, input, variantId) {
     fullStory: artifacts[`fullStory:${variantId}`],
     creatorProfile: entry.creatorProfile,
     characterExpressionRules: input.characterExpressionRules,
+    artStyle: input.artStyle,
     animationPlanMode: input.animationPlanMode || "direct_shot",
     animationPlanVersion: input.animationPlanVersion,
     targetAspectRatio: input.targetAspectRatio,
@@ -3190,6 +3206,7 @@ async function storyEntryAnimationPlan(body, { request, storyEntry }) {
   if (body?.characterExpressionRules !== undefined && !isValidCharacterExpressionRules(body.characterExpressionRules)) {
     throw new InputError(`characterExpressionRules 必须是不超过 ${CHARACTER_EXPRESSION_RULES_MAX_CHARS} 字符的字符串`);
   }
+  assertCharacterArtStyleInput(body);
   return animationPromptCapture.run({
     route: "/api/animation-plan",
     variantId: STORY_ENTRY_VARIANT_ID,
@@ -3412,7 +3429,11 @@ async function streamCharacterReferenceImages(request, response) {
       || buildCharacterReferenceImagePrompt(
         body.characterReference,
         count,
-        body.animationPlan?.visualBible || body.visualBible || null
+        body.animationPlan?.visualBible || body.visualBible || null,
+        {
+          withReferenceImage: Boolean(body.referenceImageDataUrl),
+          artStyle: body.animationPlan?.productionStrategy?.artStyle
+        }
       );
     // 角色参考图是用户可改写提示词的环节：边界偏差只提醒，不阻断本次生成。
     // 成片渲染链路（/api/generate-shot-video、旧 v2 首尾帧）仍然硬失败。
@@ -3508,7 +3529,10 @@ async function legacyCharacterImageTaskInput(body) {
     roleIndex,
     count,
     prompt: String(body.prompt || "").trim()
-      || buildCharacterReferenceImagePrompt(characterReference, count, plan.visualBible || null)
+      || buildCharacterReferenceImagePrompt(characterReference, count, plan.visualBible || null, {
+        withReferenceImage: Boolean(body.referenceImageDataUrl),
+        artStyle: plan.productionStrategy?.artStyle
+      })
   };
 }
 

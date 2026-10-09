@@ -92,15 +92,30 @@ test("真实 HTTP / Durable Task：粘贴完整故事 → 角色边界 → 可�
       assert.equal(rejected.json.code, "STORY_ENTRY_INPUT_INVALID");
     }
 
-    // 4.0 分镜：只依赖原文、角色边界和可翻拍镜头。
+    // 角色画风超过 200 字：分镜任务在调用模型之前就失败，不烧一次调用，也不留下分镜。
+    const requestsBeforeLongStyle = requests.length;
+    const longStyle = await api("/api/tasks/create", { ...run, kind: "animationPlan", input: {
+      variantId: "V1", creatorProfile, animationPlanVersion: "4.0", animationPlanMode: "direct_shot", targetAspectRatio: "16:9", backgroundMusicEnabled: false,
+      artStyle: "画".repeat(201)
+    } });
+    const longStyleTask = await wait(longStyle.task, run);
+    assert.equal(longStyleTask.status, "failed");
+    assert.match(longStyleTask.error.message, /artStyle 必须是不超过 200 字符的字符串/u);
+    assert.equal(requests.length, requestsBeforeLongStyle);
+    state = await api("/api/production/run/load", { ...run, includeContent: true });
+    assert.equal(state.latestArtifacts["animationPlan:V1"], undefined);
+
+    // 4.0 分镜：只依赖原文、角色边界和可翻拍镜头；页面带来的角色画风由服务端写进分镜。
     const plan = await api("/api/tasks/create", { ...run, kind: "animationPlan", input: {
-      variantId: "V1", creatorProfile, animationPlanVersion: "4.0", animationPlanMode: "direct_shot", targetAspectRatio: "16:9", backgroundMusicEnabled: false
+      variantId: "V1", creatorProfile, animationPlanVersion: "4.0", animationPlanMode: "direct_shot", targetAspectRatio: "16:9", backgroundMusicEnabled: false,
+      artStyle: "二维日系动画"
     } });
     const planTask = await wait(plan.task, run);
     assert.equal(planTask.status, "completed", JSON.stringify(planTask.error));
     state = await api("/api/production/run/load", { ...run, includeContent: true });
     const planEntry = state.latestArtifacts["animationPlan:V1"];
     assert.equal(planEntry.content.promptSchemaVersion, "4.0");
+    assert.equal(planEntry.content.productionStrategy.artStyle, "二维日系动画");
     assert.deepEqual(dependencyIds(planEntry), ["fullStory:V1", "storySource", "visualGuardrails"]);
     const designPrompt = requests.find((request) => request.messages.some((row) => row.role === "user" && row.content.includes("任务：将完整 Full Story")));
     assert.ok(designPrompt.messages.find((row) => row.role === "user").content.includes("对白不可改"), "粘贴原文的 Run 锁定分镜台词");
@@ -117,6 +132,9 @@ test("真实 HTTP / Durable Task：粘贴完整故事 → 角色边界 → 可�
       planRevision: planEntry.lineage.revision, planDigest: planEntry.lineage.contentDigest, mediaNamespace: planEntry.lineage.mediaNamespace };
     const shotPrompt = await api("/api/tasks/create", { ...run, kind: "shotVideoPrompt", input: { variantId: "V1", shotId: "A01", productionContext, videoProvider: "Seedance", videoModel: "doubao-seedance-2-0-260128" } });
     assert.equal((await wait(shotPrompt.task, run)).status, "completed");
+    state = await api("/api/production/run/load", { ...run, includeContent: true });
+    const writtenShotPrompt = Object.entries(state.latestArtifacts).find(([artifactId]) => artifactId.startsWith("shotVideoPrompt:V1"))?.[1];
+    assert.ok(writtenShotPrompt.content.videoPrompt.includes("二维日系动画"), "单镜提示词逐字带上分镜的画风");
 
     // 角色参考图：没有候选也能出图（候选内容出图时本来就不用）；请求带候选副本则拒绝。
     const imagesWithCandidate = await post("/api/tasks/create", { ...run, kind: "characterReferenceImages", input: {
@@ -133,6 +151,18 @@ test("真实 HTTP / Durable Task：粘贴完整故事 → 角色边界 → 可�
     assert.equal(runtime.imageRequests.length, 1);
     state = await api("/api/production/run/load", { ...run, includeContent: true });
     assert.equal(state.latestArtifacts["characterImages:V1:0"].content.results.length, 1);
+
+    // 不上传图片、也不带提示词：服务端用同一份模板按文字设定出图，即梦请求里没有 image 字段，带上分镜的画风。
+    const textOnly = await api("/api/tasks/create", { ...run, kind: "characterReferenceImages", input: {
+      variantId: "V1", roleIndex: 0, count: 1, creatorProfile, productionContext
+    } });
+    const textOnlyTask = await wait(textOnly.task, run);
+    assert.equal(textOnlyTask.status, "completed", JSON.stringify(textOnlyTask.error));
+    const textOnlyRequest = runtime.imageRequests.at(-1);
+    assert.equal(runtime.imageRequests.length, 2);
+    assert.equal(Object.hasOwn(textOnlyRequest, "image"), false);
+    assert.equal(textOnlyRequest.prompt.split("\n")[0], "生成一张角色参考图。");
+    assert.ok(textOnlyRequest.prompt.includes("画风：二维日系动画"));
 
     // 人物精修：同样按剧情入口的摘要验边界，写回新的分镜版本，依赖里仍没有候选。
     const refine = await api("/api/tasks/create", { ...run, kind: "characterReferenceRefine", input: {

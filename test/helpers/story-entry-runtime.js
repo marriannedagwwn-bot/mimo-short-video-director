@@ -79,7 +79,11 @@ export async function createStoryEntryRuntime({ storyMode = "fullStoryText" } = 
     else if (text.includes("任务：整理本次 Full Story")) value = mockFullStoryCharacterRegistry(fullStoryCharacterRegistryInput(rawFullStory, creatorProfile));
     else if (text.includes("任务：将完整 Full Story")) value = storyboardDesignFromPlan(plan);
     else if (text.includes("你是分镜修稿编辑")) value = { strengths: [], guidance: ["协议测试的合成意见，未进行真实模型评审"], items: [] };
-    else if (text.includes("你是单镜视频提示词撰写者")) value = { videoPrompt: video.videoPrompt };
+    else if (text.includes("你是单镜视频提示词撰写者")) {
+      // 分镜签发了画风时，提示词会要求逐字写出它（服务端有确定性校验），假模型照做。
+      const artStyle = /画风：全片统一为「([^」]+)」/u.exec(text)?.[1];
+      value = { videoPrompt: `${artStyle ? `画风：${artStyle}。\n` : ""}${video.videoPrompt}` };
+    }
     else if (text.includes("你现在会看到一张用户上传的人物参考图")) {
       const reference = plan.characterReferencePrompts[0];
       value = {

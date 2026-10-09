@@ -97,7 +97,9 @@ export function ensureStoryboardPlan(value,input = {}) {
   const strategy = value.productionStrategy;
   if(!strategy || !["16:9","9:16"].includes(strategy.targetAspectRatio) || !["none","allowed"].includes(strategy.backgroundMusicMode)
     || !Array.isArray(strategy.characterNames) || !Array.isArray(strategy.sourceSceneIds)
-    || typeof strategy.visualStyle !== "string" || typeof strategy.characterExpressionRules !== "string") throw new OutputContractError("新版 Animation Plan 制作参数无效");
+    || typeof strategy.visualStyle !== "string" || typeof strategy.characterExpressionRules !== "string"
+    // 角色画风（2026-10-09）：之前签发的分镜没有这个键，照常可用；有就必须是字符串（空串 = 不指定）。
+    || (strategy.artStyle !== undefined && typeof strategy.artStyle !== "string")) throw new OutputContractError("新版 Animation Plan 制作参数无效");
   for(const key of ["selectedVariantId","title"]) if(typeof value[key] !== "string" || !value[key].trim()) throw new OutputContractError(`Animation Plan ${key} 不能为空`);
   if(strategy.format !== "storyboard_video" || !Number.isInteger(strategy.targetRuntimeSeconds) || strategy.targetRuntimeSeconds <= 0
     || new Set(strategy.characterNames).size !== strategy.characterNames.length || new Set(strategy.sourceSceneIds).size !== strategy.sourceSceneIds.length

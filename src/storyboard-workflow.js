@@ -16,6 +16,7 @@ import { STORYBOARD_DESIGN_MODEL_SCHEMA_NAME, storyboardDesignModelSchema } from
 import { InputError, OutputContractError, ensureOutputContract, ensureFullStoryMatchesProfile, ensureCharacterReferenceMatchesBoundary,
   characterReferenceRestorableMissingTraits,
   normalizeBackgroundMusicMode, requireAnimationPlanAspectRatio, NO_BACKGROUND_MUSIC_SENTENCE } from "./validation.js";
+import { normalizeCharacterArtStyle } from "../public/character-art-style.js";
 
 const STORYBOARD_DESIGN_RESPONSE_SCHEMA = { name: STORYBOARD_DESIGN_MODEL_SCHEMA_NAME, schema: storyboardDesignModelSchema() };
 
@@ -45,7 +46,9 @@ export async function storyboardInput(workflow, input, telemetry = null, onStep 
     targetDurationSeconds: fullStory.targetDurationSeconds, durationWindow: storyDurationWindow(fullStory.targetDurationSeconds),
     targetAspectRatio: requireAnimationPlanAspectRatio(input.targetAspectRatio || "16:9"),
     visualStyle: String(input.creatorProfile?.vertical || ""), characterExpressionRules: String(input.characterExpressionRules || ""),
-    backgroundMusicMode: normalizeBackgroundMusicMode(input.backgroundMusicEnabled)
+    backgroundMusicMode: normalizeBackgroundMusicMode(input.backgroundMusicEnabled),
+    // 角色画风只在填了时才进提示词参数，不填时整份 projected（和它序列化进的提示词）与之前逐字相同。
+    ...(normalizeCharacterArtStyle(input.artStyle) ? { artStyle: normalizeCharacterArtStyle(input.artStyle) } : {})
   };
   if (!projected.durationWindow) throw new InputError("完整剧情时长不能作为新版分镜目标");
   return { projected, visualGuardrails };
@@ -207,6 +210,8 @@ export async function createStoryboardPlan(workflow, input, { storyEntry = null 
     promptSchemaVersion: STORYBOARD_PLAN_VERSION, selectedVariantId: projected.fullStory.selectedVariantId, title: projected.fullStory.title,
     productionStrategy: { format: "storyboard_video", targetAspectRatio: projected.targetAspectRatio, targetRuntimeSeconds: projected.targetDurationSeconds,
       backgroundMusicMode: projected.backgroundMusicMode, visualStyle: projected.visualStyle, characterExpressionRules: projected.characterExpressionRules,
+      // 服务端按请求签发，模型写不到；空串表示这一份分镜没有指定画风。
+      artStyle: projected.artStyle || "",
       sourceSceneIds: projected.fullStory.sceneScript.map(scene => scene.sceneId), characterNames: storyCharacterNames(projected.fullStory) },
     ...design, shotPlan: design.shotPlan.map((shot, i) => ({ shotId: `A${String(i + 1).padStart(2, "0")}`, ...shot })),
     characterReferencePrompts, characterRegistry: projected.characterRegistry,
@@ -236,7 +241,9 @@ export function singleShotPromptInput(plan, shotId, target) {
     visualDesign: design.visualDesign,
     characterReferences: plan.characterReferencePrompts.map(({ characterName, storyRole, identity, appearancePrompt, consistencyTags, forbiddenChanges }) => ({ characterName, storyRole, identity, appearancePrompt, consistencyTags, forbiddenChanges })),
     targetAspectRatio: plan.productionStrategy.targetAspectRatio, visualStyle: plan.productionStrategy.visualStyle,
-    characterExpressionRules: plan.productionStrategy.characterExpressionRules, backgroundMusicMode: plan.productionStrategy.backgroundMusicMode, target
+    characterExpressionRules: plan.productionStrategy.characterExpressionRules, backgroundMusicMode: plan.productionStrategy.backgroundMusicMode, target,
+    // 旧分镜没有画风，单镜提示词的输入与之前逐字相同。
+    ...(normalizeCharacterArtStyle(plan.productionStrategy.artStyle) ? { artStyle: normalizeCharacterArtStyle(plan.productionStrategy.artStyle) } : {})
   };
 }
 
@@ -246,7 +253,7 @@ export async function createSingleShotPrompt(workflow, input) {
   const settings = workflow.resolveStage("animationPlan", input);
   let result;
   if (!workflow.hasLiveClient) {
-    result = { videoPrompt: projected.shot.beats.map(beat => `${beat.startSeconds}–${beat.endSeconds}秒：${beat.framing} ${beat.camera} ${beat.visibleAction} ${beat.dialogue.map(line => `${line.speaker}：${line.text}`).join("；")} ${beat.soundDesign}`).join("\n") + (projected.backgroundMusicMode === "none" ? `\n${NO_BACKGROUND_MUSIC_SENTENCE}` : "") };
+    result = { videoPrompt: (projected.artStyle ? `画风：${projected.artStyle}。\n` : "") + projected.shot.beats.map(beat => `${beat.startSeconds}–${beat.endSeconds}秒：${beat.framing} ${beat.camera} ${beat.visibleAction} ${beat.dialogue.map(line => `${line.speaker}：${line.text}`).join("；")} ${beat.soundDesign}`).join("\n") + (projected.backgroundMusicMode === "none" ? `\n${NO_BACKGROUND_MUSIC_SENTENCE}` : "") };
   } else {
     workflow.assertStageClient(settings, "单镜视频提示词");
     result = await call(workflow, settings, "shotVideoPrompt", shotPrompt(projected), value => {
@@ -256,6 +263,9 @@ export async function createSingleShotPrompt(workflow, input) {
       if (!value || Object.keys(value).join(",") !== "videoPrompt" || typeof value.videoPrompt !== "string" || !value.videoPrompt.trim()) fail("SHOT_PROMPT_STRUCTURE_INVALID", "单镜提示词结构无效：只允许一个非空字符串键 videoPrompt");
       for (const beat of projected.shot.beats) for (const line of beat.dialogue) if (!value.videoPrompt.includes(line.text)) fail("SHOT_PROMPT_DIALOGUE_MISSING", `单镜提示词未逐字保留对白：${line.text}`);
       if (projected.backgroundMusicMode === "none" && !value.videoPrompt.endsWith(NO_BACKGROUND_MUSIC_SENTENCE)) fail("SHOT_PROMPT_BACKGROUND_MUSIC_SENTENCE", `关闭背景音乐时，单镜提示词必须以这句话逐字收尾：${NO_BACKGROUND_MUSIC_SENTENCE}`);
+      // 画风只在分镜签发了它时校验：每个镜头都要逐字写出同一个画风，否则没有角色参考图约束的
+      // 空镜和场景会自己挑风格，和角色对不上。
+      if (projected.artStyle && !value.videoPrompt.includes(projected.artStyle)) fail("SHOT_PROMPT_ART_STYLE_MISSING", `单镜提示词必须逐字写出分镜的画风：${projected.artStyle}`);
       return value;
     });
   }

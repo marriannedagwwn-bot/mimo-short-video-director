@@ -76,6 +76,7 @@ import {
   storyOutlineTotalSeconds
 } from "./story-duration.js";
 import { CHARACTER_EXPRESSION_RULES_STORAGE_KEY } from "./character-expression-rules.js";
+import { CHARACTER_ART_STYLE_PRESETS, CHARACTER_ART_STYLE_STORAGE_KEY, DEFAULT_CHARACTER_ART_STYLE, normalizeCharacterArtStyle } from "./character-art-style.js";
 import {
   createBrowserWorkspaceClient, creationPreferences, CREATION_PREFERENCES_STORAGE_KEY
 } from "./browser-workspace-client.js";
@@ -250,7 +251,7 @@ const elements = {
   input: $("#videoInput"), dropzone: $("#dropzone"), uploadTitle: $("#uploadTitle"), uploadHint: $("#uploadHint"),
   videoInfo: $("#videoInfo"), preview: $("#videoPreview"), fileName: $("#fileName"), fileMeta: $("#fileMeta"),
   frames: $("#frames"), frameStatus: $("#frameStatus"), replace: $("#replaceVideo"), transcript: $("#transcript"),
-  fixedCharacter: $("#fixedCharacter"), vertical: $("#vertical"), constraints: $("#constraints"), characterExpressionRules: $("#characterExpressionRules"), variantCount: $("#variantCount"),
+  fixedCharacter: $("#fixedCharacter"), vertical: $("#vertical"), constraints: $("#constraints"), characterArtStyle: $("#characterArtStyle"), characterArtStylePresets: $("#characterArtStylePresets"), variantCount: $("#variantCount"),
   run: $("#runWorkflow"), error: $("#errorMessage"), modelState: $("#modelState"),
   entryModeVideo: $("#entryModeVideo"), entryModeStory: $("#entryModeStory"),
   storyModeFullText: $("#storyModeFullText"), storyModeCharacterOnly: $("#storyModeCharacterOnly"),
@@ -285,7 +286,7 @@ const elements = {
   characterImageDrop: $("#characterImageDrop"), characterImageInput: $("#characterImageInput"),
   characterImageDropTitle: $("#characterImageDropTitle"), characterImageDropHint: $("#characterImageDropHint"),
   characterImagePreviewWrap: $("#characterImagePreviewWrap"), characterImagePreview: $("#characterImagePreview"),
-  replaceCharacterImage: $("#replaceCharacterImage"), characterImagePromptPreview: $("#characterImagePromptPreview"),
+  replaceCharacterImage: $("#replaceCharacterImage"), removeCharacterImage: $("#removeCharacterImage"), characterImagePromptPreview: $("#characterImagePromptPreview"),
   characterImageStatus: $("#characterImageStatus"), generateCharacterImages: $("#generateCharacterImages"),
   characterImageResults: $("#characterImageResults"),
   shotFrameImageModal: $("#shotFrameImageModal"), closeShotFrameImageModal: $("#closeShotFrameImageModal"),
@@ -408,12 +409,15 @@ async function init() {
   // Historical unscoped Runs are never silently adopted or deleted by this tab.
   localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
   localStorage.removeItem("directorModelOverrides");
+  // 「角色表情规则」那一栏已由「角色画风」接替（2026-10-09），旧存档不再有人读，删掉，
+  // 长期设置仍是七项。
+  localStorage.removeItem(CHARACTER_EXPRESSION_RULES_STORAGE_KEY);
   restoreProfile();
-  restoreCharacterExpressionRules();
+  restoreCharacterArtStyle();
   restoreCreationPreferences();
   applyEntryModeUi();
   elements.frames.innerHTML = skeletonFrames(10);
-  elements.characterExpressionRules.addEventListener("input", saveCharacterExpressionRules);
+  elements.characterArtStyle.addEventListener("input", saveCharacterArtStyle);
   bindEvents();
   validateReady();
   // Run/Task 恢复不依赖供应商健康检查。图片或视频 provider 的 /models
@@ -642,6 +646,11 @@ function bindEvents() {
     event.target.value = "";
   });
   elements.replaceCharacterImage.addEventListener("click", () => elements.characterImageInput.click());
+  elements.removeCharacterImage.addEventListener("click", () => {
+    resetCharacterImageReference();
+    renderCharacterImagePromptPreview();
+    setCharacterImageStatus("已移除参考图，将只按文字设定出图。", "ready");
+  });
   elements.generateCharacterImages.addEventListener("click", generateCharacterReferenceImages);
   ["dragenter", "dragover"].forEach((name) => elements.characterImageDrop.addEventListener(name, (event) => { event.preventDefault(); elements.characterImageDrop.classList.add("dragging"); }));
   ["dragleave", "drop"].forEach((name) => elements.characterImageDrop.addEventListener(name, (event) => { event.preventDefault(); elements.characterImageDrop.classList.remove("dragging"); }));
@@ -803,8 +812,7 @@ function clearVideoWorkspaceUi({ keepSource = false } = {}) {
     elements.generatedImagePreview, elements.shotVideoBatchPanel, elements.export,
     elements.resultStack]) element.classList.add("hidden");
   elements.generatedImagePreviewImage.removeAttribute("src");
-  elements.characterImagePreview.removeAttribute("src");
-  elements.characterImageInput.value = "";
+  resetCharacterImageReference();
   elements.characterImagePromptPreview.value = "";
   elements.shotFrameImagePromptPreview.value = "";
   elements.shotVideoPromptPreview.value = "";
@@ -3858,8 +3866,9 @@ async function generateAnimationPlan({ force = false } = {}) {
         ...candidateCopy(variant),
         fullStory,
         creatorProfile: profile(),
-        // 只进 Foundation 与逐镜提示词，不写入 Artifact、不进 digest、不 stale 任何东西。
-        characterExpressionRules: characterExpressionRules(),
+        // 角色画风：服务端写进分镜的 productionStrategy.artStyle，之后单镜提示词与角色参考图都按它来。
+        // 「角色表情规则」那一栏已由它接替，页面不再发 characterExpressionRules。
+        artStyle: characterArtStyle(),
         animationPlanMode,
         animationPlanVersion: STORYBOARD_PLAN_VERSION,
         targetAspectRatio,
@@ -5070,7 +5079,7 @@ function openCharacterImageGenerator() {
       ? "已重新接管服务端角色参考图任务…"
       : state.characterImageGeneration.results.some((item) => item.status === "ready")
         ? "已恢复上次生成的角色参考图，可继续预览或设为人物参考图。"
-        : state.imageProviderConfigured ? "上传一张参考图片后即可生成。" : "未检测到 JIMENG_API_KEY，生成时会提示配置错误。",
+        : state.imageProviderConfigured ? "可以直接按文字设定生成，也可以先上传一张参考图片。" : "未检测到 JIMENG_API_KEY，生成时会提示配置错误。",
     state.characterImageGeneration.running
       ? "active"
       : state.characterImageGeneration.results.some((item) => item.status === "ready")
@@ -5104,6 +5113,8 @@ async function setCharacterImageReferenceFile(file) {
     elements.characterImagePreviewWrap.classList.remove("hidden");
     elements.characterImageDropTitle.textContent = file.name;
     elements.characterImageDropHint.textContent = "已载入参考图。生成时会参考它，但会移除无关背景。";
+    // 提示词第一行要随之变成「参考我上传的这张图片」：预览就是实际发送的。
+    renderCharacterImagePromptPreview();
     setCharacterImageStatus("参考图片已载入。", "ready");
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
@@ -5114,12 +5125,30 @@ async function setCharacterImageReferenceFile(file) {
 function renderCharacterImagePromptPreview() {
   const count = Number(elements.characterImageCount.value) || state.characterImageGeneration.count || 1;
   // 与服务端回退路径共用同一份模板：用户在这里看到并可编辑的，就是实际发送的。
+  const plan = currentCharacterImagePlan();
   const prompt = buildCharacterReferenceImagePrompt({
     characterReference: currentCharacterImageReference() || {},
     count,
-    visualBible: currentCharacterImagePlan()?.visualBible || null
+    visualBible: plan?.visualBible || null,
+    // 上传是可选的：没上传时第一行不能说「参考我上传的这张图片」。
+    withReferenceImage: Boolean(state.characterImageGeneration.referenceImageDataUrl),
+    // 4.0 分镜签发的角色画风；旧分镜没有就省略这一行。
+    artStyle: plan?.productionStrategy?.artStyle || ""
   });
-  elements.characterImagePromptPreview.value = prompt || "当前角色没有可用的角色参考提示词。";
+  // 没有可用提示词时只给占位提示，不把提示文字当成提示词值——否则它会被当成提示词发出去。
+  elements.characterImagePromptPreview.placeholder = "当前角色没有可用的角色参考提示词。";
+  elements.characterImagePromptPreview.value = prompt || "";
+}
+
+// 参考图是可选的：「移除参考图」、页面重置和导入测试包都走这里，界面回到「只按文字出图」。
+function resetCharacterImageReference() {
+  state.characterImageGeneration.referenceImageDataUrl = "";
+  state.characterImageGeneration.referenceImageName = "";
+  elements.characterImagePreview.removeAttribute("src");
+  elements.characterImagePreviewWrap.classList.add("hidden");
+  elements.characterImageInput.value = "";
+  elements.characterImageDropTitle.textContent = "点击或拖入图片";
+  elements.characterImageDropHint.textContent = "可以不上传，直接按文字设定出图；上传后即梦会参考这张图，只生成干净背景下的角色全身图。";
 }
 
 async function generateCharacterReferenceImages() {
@@ -5127,7 +5156,6 @@ async function generateCharacterReferenceImages() {
   if (state.characterImageGeneration.running) return;
   const item = currentCharacterImageReference();
   if (!item) return setCharacterImageStatus("请选择要生成参考图的角色。", "error");
-  if (!state.characterImageGeneration.referenceImageDataUrl) return setCharacterImageStatus("请先上传一张参考图片。", "error");
   const count = Math.max(1, Math.min(6, Number(elements.characterImageCount.value) || 1));
   const prompt = elements.characterImagePromptPreview.value.trim();
   if (!prompt) return setCharacterImageStatus("生成提示词不能为空。", "error");
@@ -5151,8 +5179,11 @@ async function generateCharacterReferenceImages() {
       roleIndex,
       count,
       prompt,
-      referenceImageDataUrl: state.characterImageGeneration.referenceImageDataUrl,
-      referenceImageName: state.characterImageGeneration.referenceImageName,
+      // 上传是可选的：没上传就不带这两个键，服务端与即梦都按文字设定出图（不发 image 字段）。
+      ...(state.characterImageGeneration.referenceImageDataUrl ? {
+        referenceImageDataUrl: state.characterImageGeneration.referenceImageDataUrl,
+        referenceImageName: state.characterImageGeneration.referenceImageName
+      } : {}),
       characterReference: stripReferenceImageData(item),
       creatorProfile: profile(),
       ...videoUpstreamCopies(),
@@ -5315,7 +5346,8 @@ async function useGeneratedCharacterReference(resultIndexValue) {
       referenceImageAdded: true,
       referenceImageName: result.filename || `jimeng-reference-${Number(resultIndexValue) + 1}.png`,
       referenceImageDataUrl: imageDataUrl,
-      referenceImageNotes: `由 ${state.imageProvider} ${modelName(result.model || state.imageModel)} 根据上传参考图生成；已要求干净背景，保留站立全身角色。`
+      // 上传参考图是可选的，这张图可能是按文字设定出的：说明只写确定的事。
+      referenceImageNotes: `由 ${state.imageProvider} ${modelName(result.model || state.imageModel)} 生成；已要求干净背景，保留站立全身角色。`
     };
     updatedPlan.characterReferencePrompts[roleIndex] = updated;
     const syncedShots = syncShotCharacterReference(updatedPlan, previousInPlan, updated);
@@ -8146,16 +8178,21 @@ function saveProfile() { localStorage.setItem("directorProfile", JSON.stringify(
 // 角色表情规则单独存。**绝不能并进 directorProfile**：那是 profile() 的存档，而
 // profile() 整体进 character-boundary 的 sourceDigest，混进去会让「改一句表情」
 // 作废全局角色边界并要求重跑整条工作流。表情是表演表现，不是角色身份事实。
-function characterExpressionRules() { return elements.characterExpressionRules.value.trim(); }
-function saveCharacterExpressionRules() {
-  try { localStorage.setItem(CHARACTER_EXPRESSION_RULES_STORAGE_KEY, elements.characterExpressionRules.value); } catch {}
+// 角色画风（2026-10-09，接替「角色表情规则」那一栏）：生成分镜时随请求发给服务端，服务端写进
+// 分镜的 productionStrategy.artStyle。它不进 creatorProfile，改它不会作废角色边界，只影响下一次
+// 生成的分镜。
+function characterArtStyle() { return normalizeCharacterArtStyle(elements.characterArtStyle.value); }
+function saveCharacterArtStyle() {
+  try { localStorage.setItem(CHARACTER_ART_STYLE_STORAGE_KEY, elements.characterArtStyle.value); } catch {}
 }
-function restoreCharacterExpressionRules() {
+function restoreCharacterArtStyle() {
+  elements.characterArtStylePresets.innerHTML = CHARACTER_ART_STYLE_PRESETS.map((value) => `<option value="${escape(value)}"></option>`).join("");
   // catch 只兜 localStorage 本身不可用（隐私模式、站点数据被禁），不兜代码错误——
-  // 第一版把整段包进 try 里，常量的 TDZ ReferenceError 被静默吞掉，刷新后文本框一直是空的。
+  // 表情规则那一版曾把整段包进 try 里，常量的 TDZ ReferenceError 被静默吞掉，刷新后文本框一直是空的。
   let saved = null;
-  try { saved = localStorage.getItem(CHARACTER_EXPRESSION_RULES_STORAGE_KEY); } catch { return; }
-  if (typeof saved === "string") elements.characterExpressionRules.value = saved;
+  try { saved = localStorage.getItem(CHARACTER_ART_STYLE_STORAGE_KEY); } catch { saved = null; }
+  // 第一次用、没有存档时填默认画风；用户清空后存的是空串，表示不指定，照样尊重。
+  elements.characterArtStyle.value = typeof saved === "string" ? saved : DEFAULT_CHARACTER_ART_STYLE;
 }
 function restoreProfile() { try { const data = JSON.parse(localStorage.getItem("directorProfile")); if (data) { elements.fixedCharacter.value = data.fixedCharacter || ""; elements.vertical.value = data.vertical || ""; elements.constraints.value = data.constraints || ""; } } catch {} }
 
@@ -8798,8 +8835,7 @@ function restoreStoryPackage(payload, production) {
   state.output.animationPlans = state.animationPlans;
   state.output.animationPlanMetadata = state.animationPlanMetadata;
   state.characterImageGeneration.results = [];
-  state.characterImageGeneration.referenceImageDataUrl = "";
-  state.characterImageGeneration.referenceImageName = "";
+  resetCharacterImageReference();
   state.shotVideoGeneration.referenceAssets = [];
   renderCurrentMainOutputs();
   elements.export.classList.remove("hidden");

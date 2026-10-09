@@ -123,8 +123,10 @@
           <textarea id="constraints" rows="3" placeholder="例：60 秒内；单人可拍；不出现儿童；预算 500 元以内。"></textarea>
         </label>
         <label class="field">
-          <span>角色表情规则 <small>可选</small></span>
-          <textarea id="characterExpressionRules" rows="3" placeholder="按角色分行填写“情绪 = 可见特征”；只描述表情与表演，不改变角色身份、外观或物种；下次生成动画镜头生产包时生效。"></textarea>
+          <span>角色画风 <small>可选</small></span>
+          <input id="characterArtStyle" type="text" list="characterArtStylePresets" maxlength="200" placeholder="写一句全片统一的画风，可以从下拉里选，也可以自己写；清空就是不指定。">
+          <datalist id="characterArtStylePresets"></datalist>
+          <small class="field-hint">写进下一次生成的分镜，角色参考图和每个镜头都按这个画风来；已生成的分镜不受影响。</small>
         </label>
         <label class="field inline-field video-only">
           <span>主题变体数量</span>
@@ -297,13 +299,14 @@
           </label>
           <label class="reference-image-drop" id="characterImageDrop" for="characterImageInput">
             <input id="characterImageInput" type="file" accept="image/*" hidden>
-            <span>上传参考图片</span>
+            <span>上传参考图片（可选）</span>
             <strong id="characterImageDropTitle">点击或拖入图片</strong>
-            <small id="characterImageDropHint">即梦会参考这张图，但只生成干净背景下的角色全身图。</small>
+            <small id="characterImageDropHint">可以不上传，直接按文字设定出图；上传后即梦会参考这张图，只生成干净背景下的角色全身图。</small>
           </label>
           <div class="reference-image-preview hidden" id="characterImagePreviewWrap">
             <img id="characterImagePreview" alt="参考图片预览">
             <button class="text-button" id="replaceCharacterImage" type="button">更换参考图片</button>
+            <button class="text-button" id="removeCharacterImage" type="button">移除参考图，只按文字出图</button>
           </div>
         </div>
         <div class="modal-panel">

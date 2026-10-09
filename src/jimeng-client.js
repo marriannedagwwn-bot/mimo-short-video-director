@@ -82,8 +82,9 @@ export class JimengImageClient {
   }
 }
 
-export function buildCharacterReferenceImagePrompt(characterReference = {}, count = 1, visualBible = null) {
-  const prompt = buildSharedCharacterReferenceImagePrompt({ characterReference, count, visualBible });
+// options：{ withReferenceImage, artStyle }。不传时按「已上传参考图」、无画风处理，与改动前逐字相同。
+export function buildCharacterReferenceImagePrompt(characterReference = {}, count = 1, visualBible = null, options = {}) {
+  const prompt = buildSharedCharacterReferenceImagePrompt({ characterReference, count, visualBible, ...options });
   if (!prompt) throw new InputError("角色参考提示词为空，无法生成参考图。");
   return prompt;
 }
@@ -98,8 +99,14 @@ export function buildShotFrameImagePrompt(input = {}) {
 
 export function buildJimengImageRequestBody(config = {}, input = {}) {
   const count = clampInteger(input.count, 1, config.maxImages || 6);
+  const referenceImages = Array.isArray(input.referenceImageDataUrls)
+    ? input.referenceImageDataUrls.filter(Boolean)
+    : input.referenceImageDataUrl ? [input.referenceImageDataUrl] : [];
   const prompt = input.prompt
-    || buildCharacterReferenceImagePrompt(input.characterReference, count, input.visualBible);
+    || buildCharacterReferenceImagePrompt(input.characterReference, count, input.visualBible, {
+      withReferenceImage: referenceImages.length > 0,
+      artStyle: input.artStyle
+    });
   const body = {
     model: input.model || config.model,
     prompt,
@@ -110,9 +117,6 @@ export function buildJimengImageRequestBody(config = {}, input = {}) {
     sequential_image_generation: count > 1 ? "auto" : "disabled",
     output_format: config.outputFormat || "png"
   };
-  const referenceImages = Array.isArray(input.referenceImageDataUrls)
-    ? input.referenceImageDataUrls.filter(Boolean)
-    : input.referenceImageDataUrl ? [input.referenceImageDataUrl] : [];
   if (referenceImages.length) {
     if (config.imageField === "image") body.image = referenceImages.length === 1 ? referenceImages[0] : referenceImages;
     else body.images = referenceImages;

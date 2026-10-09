@@ -46,7 +46,8 @@ class Element {
 
 export async function loadAppUi({ story = false, plan = false, createElement,
   fetch = async () => { throw new Error("Unexpected network request in UI regression"); },
-  windowSetTimeout = setTimeout, confirm = () => false } = {}) {
+  windowSetTimeout = setTimeout, confirm = () => false,
+  storage = { getItem: () => null, setItem() {}, removeItem() {} } } = {}) {
   let source = await readFile(new URL("../../public/app.js", import.meta.url), "utf8");
   const bindings = {};
   for (const match of source.matchAll(/import\s*\{([^}]+)\}\s*from\s*"([^"]+)";/g)) {
@@ -60,7 +61,6 @@ export async function loadAppUi({ story = false, plan = false, createElement,
     return nodes.get(selector);
   }, querySelectorAll: () => [], addEventListener() {}, body: new Element("body"),
   createElement: createElement || ((tag) => new Element(tag)) };
-  const storage = { getItem: () => null, setItem() {}, removeItem() {} };
   const location = { pathname: "/story/V2", origin: "http://localhost" };
   const history = { pushState(_state, _title, path) { location.pathname = path; },
     replaceState(_state, _title, path) { location.pathname = path; } };
@@ -90,7 +90,9 @@ export async function loadAppUi({ story = false, plan = false, createElement,
     isStoryEntryMode, applyEntryModeUi, videoUpstreamCopies, globalCharacterBoundaryContext, restoreRunMetadata,
     renderStoryDurationOptions, renderStoryPipelineTaskStatus, refreshStoryDialogueCheck, updateStoryExportActions,
     ensureSelectedVariantArtifact, storyEntryRunLabel, handleStorySourceInput, handleStoryModeChange, handleProfileInput,
-    handleBackgroundMusicToggle, generateAnimationPlan, selectedVariant, isStorySourceRun, setAnimationRunning };`, context);
+    handleBackgroundMusicToggle, generateAnimationPlan, selectedVariant, isStorySourceRun, setAnimationRunning,
+    renderCharacterImagePromptPreview, generateCharacterReferenceImages, resetCharacterImageReference,
+    restoreCharacterArtStyle, saveCharacterArtStyle, characterArtStyle };`, context);
   const app = context.app;
   const fixture = uiFixture({ story, plan });
   Object.assign(app.state, { selectedVariantId: "V2", output: { themeVariants: fixture.themeVariants },

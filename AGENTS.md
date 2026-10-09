@@ -44,7 +44,7 @@ AI 短视频生产工作流系统。
 
 **任务进度与失败原因（2026-09-25）**：4.0 自主分镜每个阶段开始前把 `step`/`stepIndex`/`stepMax` 写进 Durable Task progress（经既有心跳在 Run 锁内合并），MiMo/Qwen 心跳另报 `reasoningChars`（只存推理字数、不存推理文字），页面显示「第 n/m 步 阶段名 · 推理中（已推理 N 字）| 已接收 N 字」；无 step 的任务文案不变。任务错误新增可选 `providerError`，由 HTTP 出口与 Task Store 共用的 `describeServerProviderError()` 识别（同一份码表），经既有脱敏限长落盘、识别不出就省略，`code/category/message/retryable` 不变；浏览器各任务失败文字用 `taskErrorMessage()` 拼上 `providerErrorText()`。欠费千问真实请求核对为「阿里云账户欠费」并带原文。人物参考精修与镜头视频弹窗不再写死供应商名，精修按 `characterReference` 阶段实际设置显示。
 
-**浏览器工作区生命周期（2026-09-09）**：新的浏览器 Run 必须绑定服务端 `metadata.browserWorkspaceId`。原视频副本在私有 BrowserWorkspaceStore 持久化，Run metadata 记录其 URL 和 SHA-256；Task Store 仍不保存视频、Prompt 或完整请求体。同一标签页刷新/服务重启恢复副本并重新抽帧，不自动重调 provider；更换视频必须先清旧 Run/媒体/应用源副本。pagehide 或页面生命周期连接断开有 60 秒刷新宽限期，5 秒 sweep 清理；后台页连接仍在时不因心跳节流过期，无连接也无关闭通知时最后心跳起 2 分钟兜底，停服期间下次启动补清。sessionStorage 保存 workspace ID，每文档 pageId 与 source generation 分别阻止旧关闭通知和旧输入回写；不再恢复旧 localStorage Run 指针。长期保存仅创作宇宙七项设置（角色、赛道、限制、表情、候选数量、画幅、时长），模型覆盖只存 sessionStorage。表情和三个生成偏好不得并入 creatorProfile。清理须核对页面归属，scheduler → Run 锁撤销任务后删源副本、Run、其命名空间媒体及 Run 内 Debug；迟到 Runner/worker 不得重建已清数据。已有无页面归属历史 Run、用户原文件、主动导出文件、签名密钥不能由此清理。详见 `docs/production-lineage-state.md` 的浏览器工作区生命周期。
+**浏览器工作区生命周期（2026-09-09）**：新的浏览器 Run 必须绑定服务端 `metadata.browserWorkspaceId`。原视频副本在私有 BrowserWorkspaceStore 持久化，Run metadata 记录其 URL 和 SHA-256；Task Store 仍不保存视频、Prompt 或完整请求体。同一标签页刷新/服务重启恢复副本并重新抽帧，不自动重调 provider；更换视频必须先清旧 Run/媒体/应用源副本。pagehide 或页面生命周期连接断开有 60 秒刷新宽限期，5 秒 sweep 清理；后台页连接仍在时不因心跳节流过期，无连接也无关闭通知时最后心跳起 2 分钟兜底，停服期间下次启动补清。sessionStorage 保存 workspace ID，每文档 pageId 与 source generation 分别阻止旧关闭通知和旧输入回写；不再恢复旧 localStorage Run 指针。长期保存仅创作宇宙七项设置（角色、赛道、限制、画风、候选数量、画幅、时长；2026-10-09 起画风接替原来的表情规则），模型覆盖只存 sessionStorage。画风和三个生成偏好不得并入 creatorProfile。清理须核对页面归属，scheduler → Run 锁撤销任务后删源副本、Run、其命名空间媒体及 Run 内 Debug；迟到 Runner/worker 不得重建已清数据。已有无页面归属历史 Run、用户原文件、主动导出文件、签名密钥不能由此清理。详见 `docs/production-lineage-state.md` 的浏览器工作区生命周期。
 
 **Full Story 单一正文格式（2026-09-14）**：当前生成默认要求显式 `schemaVersion: "full_story/1.1"`，独立严格 Schema 只保留 `selectedVariantId/title/oneLinePremise/targetDurationSeconds/shootingSynopsis/characterBible/sceneScript/keyProps/dialogueStyleGuide/uncertainties` 与版本键。`sceneScript` 是唯一完整动作稿；删除 `beatSheet/retentionPlan/experienceFidelity/transformationProof/continuityAndSafetyCheck/shootingPlan`，`keyProps` 不再写 `avoidSimilarityNote`，不得自动删旧输出字段来过新版校验。至少一场；`shootingNotes` 必填字符串、允许空，其余场次字段、出镜/对白/角色注册合同保持严格。生成 Prompt 取消六场、身体大动作与无关生活细节配额，按已选候选动作与共同体验收尾，外观不授予新能力。镜头指导不属于本阶段职责，但模型是否遵守须看真实原文，不能靠字段声明认定合格。
 
@@ -195,7 +195,19 @@ Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Art
 
 Animation Plan 的 `targetAspectRatio` 当前只允许 `9:16` 或 `16:9`。首次生成时必须锁入 `productionStrategy.targetAspectRatio` 并与 Foundation 输出一致；已有 Plan 切换画幅时以用户选择更新计划级输出事实，不调用模型、不重写 shot，但必须签发新 Plan revision/media namespace，使旧画幅媒体 stale。后续视频生成从当前签发 Plan 读取；不得向 direct-shot 的 exact shot 字段增加 `aspectRatio`。页面的计划总长由 `shotPlan[].durationSeconds` 合计派生；3.1 起 `targetRuntimeSeconds` 由服务端注入为同一个合计值，两者定义上相等，偏差恒为 0。浏览器把画幅控件放在「设定创作宇宙」面板（#animationAspectRatio），它只是新 Plan 的默认值（全局默认为 16:9）：写进 state.animationAspectRatioDefault，取值优先级为「该变体草稿 → 该变体已签发 Plan → 全局默认」；拨动它不触碰任何已签发 Plan，不签发 revision、不 stale 媒体。已生成的 Plan 卡片里画幅是纯展示 data-cell，不再提供就地切换的下拉框，因此当前浏览器不暴露「已有 Plan 就地切换画幅」这条路径，要换画幅只能重新生成 Plan；上述切换画幅契约描述的仍是该操作一旦发生时必须满足的语义，withAnimationPlanAspectRatio()（public/animation-plan-settings.js）与其单元测试保留，随时可重新接回 UI。
 
-### 角色表情规则
+### 角色画风（2026-10-09）
+
+「设定创作宇宙」面板的 `#characterArtStyle`，接替原来「角色表情规则」那一栏。它是全片统一的画面风格，默认「二维日系动画」，下拉里有几个预设，也可以自己写，清空就是不指定。起因是 4.0 分镜此前没有任何画风：分镜里唯一的「风格」字段 `productionStrategy.visualStyle` 照抄垂直赛道，角色参考图提示词只认 3.0 才有的 `visualBible`，于是 4.0 出图完全不写画风，固定角色写「八岁女孩……」时出了写实照片，被 Seedance 2.0 当真人拒收（`docs/待解决项.md` 第 17 条）。
+
+- **来源与签发**：页面在生成 4.0 分镜时把它作为请求字段 `artStyle` 发出；两条分镜输入链（视频 Run、剧情 Run）都透传，两个分镜路由都校验（只拦类型与 200 字上限）。服务端把它写进 `productionStrategy.artStyle`，模型写不到；空串表示这一份分镜没有指定画风。判定与默认值、预设、上限在 `public/character-art-style.js`，浏览器与服务端共用一份。
+- **三个使用方，只在画风非空时出现**：分镜设计、审阅、修订（画风进入制作参数，设计提示词多一句「visualDesign 按这个画风写，不写成真人照片」）；单镜视频提示词（必须逐字写出画风，`SHOT_PROMPT_ART_STYLE_MISSING` 确定性校验，写漏触发既有的一次带诊断重试，演示模式同样遵守）；角色参考图提示词（「风格与色调」那一格写「画风：……」）。画风为空时三处提示词与之前逐字相同。
+- **已签发的分镜保持签发时的画风**：改这一栏只影响下一次生成的分镜，不触碰已签发 Plan、不 stale 任何东西。画风之前签发的分镜没有 `artStyle` 键，照常通过 `ensureStoryboardPlan`、照常写单镜提示词。
+- **不得并入 `creatorProfile`**（与原来的表情规则同一理由）：它不是角色身份事实，改它不该作废全局角色边界。浏览器使用独立的 localStorage key `directorCharacterArtStyle`。
+- **分镜卡**：「画风」一格显示 `artStyle`；原来写着「风格」、其实显示垂直赛道的那一格改叫「赛道」。
+
+### 角色表情规则（2026-10-09 起退出页面）
+
+2026-10-09 起页面上这一栏由「角色画风」接替：页面不再发 `characterExpressionRules`，新的 4.0 分镜里这个字段写空串，浏览器启动时删掉旧存档 `directorCharacterExpressionRules`。**服务端继续接受这个字段**（兼容旧请求、已签发分镜与 3.0 旧路径），以下契约对仍带它的请求照旧成立。
 
 「设定创作宇宙」面板的 `#characterExpressionRules` 是用户手写的「情绪 = 可见特征」映射（例：`芙芙猫：开心=眯眼、嘴呈 w 形、耳朵朝前`）。与 `targetDurationSeconds` 同规格：**只作为目标进入提示词，不写入任何 Artifact、不参与派生、不进 digest、不 stale 任何已签发内容**。改它不触碰已签发 Plan，也不征求同意，下次生成 Animation Plan 时才生效。判定与 1000 字符上限在 `public/character-expression-rules.js`，浏览器与服务端共用一份；请求侧只拒绝类型错误与超长，不裁决内容质量。
 
@@ -223,7 +235,7 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：�
 
 `all_reference` 模式下，服务端在 `shot.videoPrompt` 之前确定性拼接一段**运行时参考素材清单**（`buildReferenceManifestText()`，`src/shot-video-continuity.js`），说明每张素材各是什么：参考图以 `reference_image` 发送时不携带任何文字身份，模型无从分辨哪张是角色参考、哪张是上一镜抽帧。清单前置而不是后置，以保证 `backgroundMusicMode: none` 的禁配乐句仍然是整条提示词的最后一句。抽帧成组时清单必须点名末帧：五张按 `t = 时长×i/4` 均匀采样，只有最后一张是上一镜结束时的状态，清单确定性写明「其中参考图N 是上一镜的最后一帧，本镜必须从它的状态与位置继续，其余几张只说明这一镜经过了什么，不代表本镜的起始位置」（末帧编号取自分组区间末位，不需要推断）；不点名的实测代价是下一镜复用了上一镜**起点**的构图，角色在空间上倒退整整一镜。抽帧**不承接角色外观与服装，也不整批承接位置关系**（位置只由末帧那一张给出）：它只承接「场景、道具与光线」，并在本次确实带了角色参考图时追加「角色的长相与服装一律以角色参考图为准，不要沿用抽帧里的角色外观」（没带角色参考图则不追加，避免指向不存在的素材）。原措辞让抽帧与角色参考图两句都声称管服装，等于把冲突写进规则——实测上一镜把服装画错后，该错误被抽帧当成事实传给下一镜，模型在同一镜内两次换装。上一镜是待核实的产出，角色参考图是签发权威，冲突时以后者为准。这只消除清单自相矛盾一项；抽帧同时携带外观与构图且通道上无法分离，「不要复制构图与动作」只是文本约束，抽帧数量的取舍仍未决。清单只允许使用受控来源枚举、Plan 权威的 `sourceCharacterName`（由 `resolveAuthoritativeShotVideoReferenceAssets` 按已签发 `characterReferencePrompts[].referenceImageDataUrl` 唯一匹配后覆写）、lineage 解析出的 `sourceShotId` 与帧数；**禁止写入 `upload` 素材的 `name`/`logicalName`**，那是原始用户文件名，是这条链路上唯一的注入面，上传素材一律只写「用户上传的参考素材」——安全性来自构造而不是事后校验。它不是 Plan 字段、不改 Schema、不签发 revision、不 stale 媒体、不调用模型：`sourceVideoPrompt` 保留 Plan 原值，`effectiveVideoPrompt` 与新增回执字段 `referenceManifest` 记录本次实际发送内容，`first_last_frame` 路径逐字不变。这里不得补 `ensureCharacterPromptMatchesBoundary`——视频提示词天然多角色，走 `promptScope: "multi_character"`，而该分支在 `src/validation.js` 中无条件短路返回空串，加上去只是一个看起来像闸门的空操作。
 
-`/api/generate-character-reference-images` 送给图像模型的提示词由 `public/character-reference-prompt.js` 单份构建，浏览器预览框与服务端回退共用同一份——用户看到并可编辑的必须逐字等于实际发送的。字段顺序按 `docs/video-prompt-guide.md` 模板 1：光线 → 角色外观 → 姿态表情 → 干净背景 → 风格色调 → 景别/取景/机位；风格与光线取自当前 Plan 的 `visualBible`，缺失时整行省略且不编造，`cameraLanguage` 属于镜头语言不得搬入。此前该端点完全拿不到 `visualBible`，角色图在不知道全片风格的情况下生成，却又要作为视频的视觉锚点。
+`/api/generate-character-reference-images` 送给图像模型的提示词由 `public/character-reference-prompt.js` 单份构建，浏览器预览框与服务端回退共用同一份——用户看到并可编辑的必须逐字等于实际发送的。字段顺序按 `docs/video-prompt-guide.md` 模板 1：光线 → 角色外观 → 姿态表情 → 干净背景 → 风格色调 → 景别/取景/机位；风格与光线取自当前 Plan 的 `visualBible`，缺失时整行省略且不编造，`cameraLanguage` 属于镜头语言不得搬入。此前该端点完全拿不到 `visualBible`，角色图在不知道全片风格的情况下生成，却又要作为视频的视觉锚点。4.0 分镜没有 `visualBible`，画风取分镜签发的 `productionStrategy.artStyle`，写在「风格与色调」那一格（「画风：……」），为空就省略。2026-10-09 起上传参考图是可选的（两个入口都是）：第一行随有没有上传变化，没上传时是「生成一张角色参考图。」，不能说「参考我上传的这张图片」；没上传时请求不带图片字段，即梦请求不带 `image`，按文字设定出图。「设为人物参考图」写进 Plan 的 `referenceImageNotes` 只写确定的事（由哪个模型生成），不再一律写「根据上传参考图生成」。
 
 使用上一镜抽帧生成的后镜 `shotVideo` Artifact 必须同时依赖当前 Animation Plan 与上一镜 `shotVideo` 的精确 revision/digest；上一镜重生成或切换候选必须递归使下游视频 stale。切换后镜自身候选时必须保留既有媒体依赖。浏览器中的 `shotVideoResults` 与旧 v2 `shotFrameResults` 都必须按 variant + shotId 隔离，禁止只用 `A01` 作为状态键；单个媒体 stale 只能移除对应结果，不能清空其他 current 媒体。
 

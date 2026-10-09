@@ -30,7 +30,7 @@ Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主�
 
 过期判定分三档，不要合并：连接断开有 60 秒宽限（5 秒 sweep）；后台页只要连接还在就**不因心跳节流判过期**；既无连接又无关闭通知时从最后一次心跳起 2 分钟兜底，停服期间的漏清在下次启动补。
 
-存储位置是硬约束：workspace ID 与模型覆盖只进 `sessionStorage`；**长期只存创作宇宙七项设置**（角色、赛道、限制、表情、候选数量、画幅、时长）；旧的 `localStorage` Run 指针不再恢复。**表情与三个生成偏好不得并入 `creatorProfile`**——理由见 §2.5：`creatorProfile` 恰好三个字段且整体进 `sourceDigest`，并进去会让改一个下拉就作废全局角色边界。
+存储位置是硬约束：workspace ID 与模型覆盖只进 `sessionStorage`；**长期只存创作宇宙七项设置**（角色、赛道、限制、画风、候选数量、画幅、时长；2026-10-09 起画风接替原来的表情规则）；旧的 `localStorage` Run 指针不再恢复。**画风与三个生成偏好不得并入 `creatorProfile`**——理由见 §2.5：`creatorProfile` 恰好三个字段且整体进 `sourceDigest`，并进去会让改一个下拉就作废全局角色边界。
 
 清理必须核对页面归属，顺序是 scheduler → Run 锁撤销任务 → 删源副本、Run、其命名空间媒体与 Run 内 Debug；迟到的 Runner/worker **不得重建已清数据**。**四类东西永远不由它清**：无页面归属的历史 Run、用户原文件、主动导出文件、签名密钥。详见 `docs/production-lineage-state.md`。
 
@@ -183,7 +183,9 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
 - **画幅只在生成前选择。** 浏览器把画幅控件放在「设定创作宇宙」面板（`#animationAspectRatio`），它只是**新 Plan 的默认值**（全局默认 `16:9`）：写进 `state.animationAspectRatioDefault`，取值优先级为「该变体草稿 → 该变体已签发 Plan → 全局默认」。拨动它**不触碰任何已签发 Plan**——不签发 revision、不 stale 媒体。已生成的 Plan 卡片里画幅是**纯展示**（`data-cell`），不再提供就地切换的下拉框。
 - 因此当前浏览器**不暴露**「已有 Plan 就地切换画幅」这条路径；要换画幅只能重新生成 Plan。上面那条契约描述的仍是该操作一旦发生时必须满足的语义，`withAnimationPlanAspectRatio()`（`public/animation-plan-settings.js`）与其单元测试保留，随时可重新接回 UI。
 
-**角色表情规则（2026-08-31）**：「设定创作宇宙」面板的 `#characterExpressionRules`，用户手写的「情绪 = 可见特征」映射。与 `targetDurationSeconds` 同规格：**只进提示词，不写入任何 Artifact、不参与派生、不进 digest、不 stale 任何东西**；改它不触碰已签发 Plan，也不弹窗征求同意，下次生成 Plan 时才生效。判定与上限在 `public/character-expression-rules.js`（1000 字符），浏览器与服务端共用一份；请求侧只拦类型错误与超长，不裁决内容。
+**角色画风（2026-10-09，接替角色表情规则那一栏）**：「设定创作宇宙」面板的 `#characterArtStyle`，全片统一的画面风格，默认「二维日系动画」，清空就是不指定。生成 4.0 分镜时作为请求字段 `artStyle` 发出，两条分镜输入链都透传、两个分镜路由都校验（类型与 200 字上限），服务端写进 `productionStrategy.artStyle`，模型写不到。三个使用方只在画风非空时出现：分镜设计/审阅/修订（制作参数 + 一句「按这个画风写，不写成真人照片」）、单镜视频提示词（必须逐字写出画风，`SHOT_PROMPT_ART_STYLE_MISSING` 确定性校验，写漏走既有的一次带诊断重试）、角色参考图提示词（「画风：……」一行）；为空时三处提示词逐字不变。已签发分镜保持签发时的画风，改这一栏只影响下一次生成；旧分镜没有 `artStyle` 键照常可用。不得并入 `creatorProfile`，浏览器用独立 key `directorCharacterArtStyle`。判定只有一份，在 `public/character-art-style.js`。起因与做法见 `docs/待解决项.md` 第 17 条。
+
+**角色表情规则（2026-08-31；2026-10-09 起退出页面）**：页面上这一栏已由角色画风接替，页面不再发 `characterExpressionRules`（新 4.0 分镜里写空串），浏览器启动时删掉旧存档；**服务端继续接受它**，以下契约对仍带它的请求照旧成立。「设定创作宇宙」面板原来的 `#characterExpressionRules`，用户手写的「情绪 = 可见特征」映射。与 `targetDurationSeconds` 同规格：**只进提示词，不写入任何 Artifact、不参与派生、不进 digest、不 stale 任何东西**；改它不触碰已签发 Plan，也不弹窗征求同意，下次生成 Plan 时才生效。判定与上限在 `public/character-expression-rules.js`（1000 字符），浏览器与服务端共用一份；请求侧只拦类型错误与超长，不裁决内容。
 
 **禁止把它并进 `creatorProfile`。** `creatorProfile` 恰好三个字段且整体进 `character-boundary.js` 的 `sourceDigest`，`handleProfileInput` 在它变动时作废全局角色边界并要求重跑整条工作流。表情是**表演表现**，不该承受那个代价；发色那类**身份事实**则相反，就该写进 `fixedCharacter` 并承受重跑。浏览器侧同理：它存在独立的 `directorCharacterExpressionRules` key，不进 `directorProfile`。
 
@@ -1138,7 +1140,7 @@ DeepSeek 模型 ID 只登记 `deepseek-v4-flash`（页面首选）与 `deepseek-
   **演示数据同一处漂移了三份**：`mockVisualGuardrails` / `mockFullStory` / `mockAnimationPlan` 各自按逗号切名字、不认冒号，「名字：描述」写法在演示模式第一步就被拦；现在都改调 `extractFixedCharacterName`，并用一条跑通整条演示链的测试锁住。
   **已知局限**：「固定角色」一栏只登记一个角色，写两个名字时边界只围绕取出的那一个；多固定角色属于 Character Registry / Cast，未实现。模型照不照做**没有新增的确定性兜底**，兜底仍是那条逐字比较；这一阶段仍是单次调用、被拦不重试。
   **真实回放过了事先登记的线**：同一份上游、同一个模型，《累了就歇会》改前 4/4 失败、改后 **6/6 通过**（线是 ≥5/6），回归《打枣》《一份长途》4/4；芙芙猫外观被签成小白子特征 **0/10**，搭档条目来源标成固定角色一栏 0/10（改前同批通过的 3 份 3/3 标错）。只有 3 个参考片、1 份创作设定，且《累了就歇会》本身是设计样本。数据与局限见 `docs/待解决项.md` 第 15 条。
-- **角色参考图提示词接入 `visualBible`。** `/api/generate-character-reference-images` 送给图像模型的提示词由 `public/character-reference-prompt.js` **单份**构建，浏览器预览框与服务端回退共用它——用户看到并可编辑的必须逐字等于实际发送的。字段顺序按 `docs/video-prompt-guide.md` 模板 1：光线 → 角色外观 → 姿态表情 → 干净背景 → 风格色调 → 景别/取景/机位。风格与光线取自当前 Plan 的 `visualBible`（`overallStyle`/`animationStyle`/`colorPalette`/`lighting`），**缺失时整行省略，不编造**。`cameraLanguage` 是镜头语言，不属于角色参考图的取景说明，不得搬入。
+- **角色参考图提示词接入 `visualBible`。** `/api/generate-character-reference-images` 送给图像模型的提示词由 `public/character-reference-prompt.js` **单份**构建，浏览器预览框与服务端回退共用它——用户看到并可编辑的必须逐字等于实际发送的。字段顺序按 `docs/video-prompt-guide.md` 模板 1：光线 → 角色外观 → 姿态表情 → 干净背景 → 风格色调 → 景别/取景/机位。风格与光线取自当前 Plan 的 `visualBible`（`overallStyle`/`animationStyle`/`colorPalette`/`lighting`），**缺失时整行省略，不编造**。4.0 分镜没有 `visualBible`，画风取签发的 `productionStrategy.artStyle`，写成「画风：……」一行，为空就省略。**上传参考图是可选的（2026-10-09，两个入口）**：第一行随有没有上传变化，没上传时是「生成一张角色参考图。」；没上传时请求不带图片字段、即梦请求不带 `image`；预览为空时只用 placeholder，不把提示文字当提示词值；「设为人物参考图」的 `referenceImageNotes` 不再一律写「根据上传参考图生成」。`cameraLanguage` 是镜头语言，不属于角色参考图的取景说明，不得搬入。
   依据：`videoPrompt` 197/197 写了全片风格色调、188/197 写了光线，而给它当视觉锚点的角色图此前完全不知道全片调子，直接冲突「角色一致性」这个验收方向。
 - **执行力度分两档，事实来源不变。** 角色参考阶段——`/api/refine-character-reference` 的精修结果、`/api/generate-character-reference-images` 的 `characterReference` 与用户可编辑 prompt——遇到边界偏差**只提醒不阻断**：服务端仍按边界完整判定，把偏差原文放进响应 `boundaryWarning` 或 `boundary-warning` 流事件，浏览器以 `warn` 色展示并照常完成本次操作，用户不必重新上传。依据是本节已有的「用户明确肯定/否定 > 已签发模型推断」。`boundaryWarning` **只用于展示**，浏览器写回 Plan 前必须剥离，不进入 Artifact。成片渲染链路（`/api/generate-shot-video`、`shot-video-generator` 的 `effectiveVideoPrompt`、旧 v2 首尾帧 `/api/generate-shot-frame-image`）**仍然硬失败**：`ensureCharacterReferenceMatchesBoundary` / `ensureCharacterPromptMatchesBoundary` 逐字保留抛错语义，只提醒的那三处改调同一判定的收集器 `characterReferenceBoundaryMismatch` / `characterPromptBoundaryMismatch`（返回空串即合规）。判定规则只有一份，禁止另建第二套词表。
 - **已核实的实现细节，别按字面理解上一条**：`characterPromptBoundaryMismatch`（`src/validation.js`）在 `promptScope === "multi_character"` 时**无条件短路返回空串**，不做任何词条匹配。而两条成片渲染链路——`/api/generate-shot-video`（`server.js`）与旧 v2 `/api/generate-shot-frame-image`——传的**都是** `multi_character`。因此这两处对**提示词正文**的扫描实际不生效；真正在渲染前硬失败的是 `ensureCharacterReferenceMatchesBoundary` 对结构化角色参考的判定（那是另一个函数，没有该短路）。

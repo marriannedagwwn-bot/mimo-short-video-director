@@ -32,7 +32,7 @@ export function renderStoryboard(data, { escape: e, block, cell, resultHeader, r
     ${retryNote(metadata, e)}
     ${boundaryRestoreNote(metadata, e)}
     <div class="summary-strip">${e(data.viewingIntent)}</div>
-    <div class="data-grid">${cell("画幅", strategy.targetAspectRatio)}${cell("时长", `${data.shotPlan.reduce((n,s) => n+s.durationSeconds,0)} 秒 · ${data.shotPlan.length} 段`)}${cell("风格", strategy.visualStyle)}${cell("背景音乐", strategy.backgroundMusicMode === "none" ? "关闭" : "允许")}</div>
+    <div class="data-grid">${cell("画幅", strategy.targetAspectRatio)}${cell("时长", `${data.shotPlan.reduce((n,s) => n+s.durationSeconds,0)} 秒 · ${data.shotPlan.length} 段`)}${cell("赛道", strategy.visualStyle)}${cell("画风", strategy.artStyle || "未指定")}${cell("背景音乐", strategy.backgroundMusicMode === "none" ? "关闭" : "允许")}</div>
     ${block("角色设定与参考图", renderCharacters(data.characterReferencePrompts))}
     ${block("角色事实与本片设计", data.visualDesign.characters.map(row => {
       const known = data.characterRegistry.supportingCharacters.find(item => item.name === row.name);
