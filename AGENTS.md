@@ -34,6 +34,8 @@ AI 短视频生产工作流系统。
 
 # 1. 当前架构事实（必须遵守）
 
+**从剧情开始（2026-10-09，第一期）**：首页新增第二个入口，Run 元数据 `entryMode: "story"`（缺省即参考视频 Run，旧 Run 不回填）。用户粘贴完整故事（`storyMode: "fullStoryText"`，严格按原文）或只给固定角色设定（`"characterOnly"`，原创一个）。`POST /api/production/run/story/start` 按 v3 导入的顺序建 Run（校验 → 清空本页视频与旧 Run → createRun → 服务端提交 `storySource` → 绑定工作区），`storySource` 是用户原文唯一的存放处：浏览器通用提交口拒收（`STORY_SOURCE_SERVER_ONLY`），Run 元数据一次写定 `storySourceDigest`，各任务读取时核对（`STORY_SOURCE_TAMPERED`）；原文不进 Task Store、浏览器存储或 `creatorProfile`。`storyPipeline` 父任务（与 `directorPipeline` 并列、互不复用，无暂停/终止）跑两步：只看文字的角色边界（复用 `visualGuardrails` 阶段设置，`sourceSimilarityRules` 必须为空）→ 单个故事候选（复用 `variants` 阶段设置），最后由服务端签发 `variant:V1`。角色边界 `sourceDigest` 剧情 Run 用第 2 版（固定角色设定三项 + `storySource`，版本号写进哈希输入），参考视频那一版逐字节不变；候选用从视频版严格 Schema 派生的一份（去掉四个对照原片的字段、恰好一个、id 由服务端签发）。完整剧情、4.0 分镜、人物精修、角色参考图与镜头视频按 Run 元数据分支依赖与边界校验，视频 Run 行为不变；剧情 Run 上的参考视频专用任务一律 409 `TASK_ENTRY_MODE_MISMATCH`，只支持 4.0 分镜，不支持展开前体检、候选评审/修订、按问题修改与 v3 包导出。粘贴原文模式下完整剧情提示词以原文为唯一依据、台词只能逐字取自原文，4.0 分镜锁定台词；另有只读的台词核对（`/api/production/story-entry/dialogue-check`，只提示不拦截）。完整契约与已知缺口见 `docs/story-entry-phase1-2026-10-09.md`。
+
 **Animation Plan 自主分镜 4.0（2026-09-21，工作区接入，真实验收尚未闭环）**：浏览器明确发送 `animationPlanVersion: "4.0"`，旧 API 无版本保留 direct_shot 3.0。新版以完整原 Full Story、角色事实、画幅/时长/风格/表情/音乐参数生成完整 beats，AI 自定片段与时间、可合并相邻场次；每段整数 4–15 秒、总长沿用共享时长窗口。旧 Full Story 不要求重新生成，不修改正文或重签，只由模型抽取缺失配角事实进入 Plan 的 `characterRegistry`。新生成 Full Story 的浏览器请求为 `full_story/1.2`，正文生成后只整理角色表，未知外观仍交给分镜；旧 1.1/无版本数据不迁移。完整上游冻结和验签仍在，创作 Prompt 不送 Brief/候选/原片叙事。
 
 新版先生成设计，再由 AI 审阅并至多一轮按问题修订，保留修订/引导说明；合理简写不改，模型语义意见不阻断继续，字段/时间/引用/签名仍严格。Plan 没有 `videoPrompt`，点击单镜按钮才创建 `shotVideoPrompt` Durable Task，独立 Artifact `shotVideoPrompt:<variantId>:<shotId>` 依赖 current Plan，绑定 digest 与视频/写稿模型配置。Task Store 仍不保存 Prompt；窗口支持缓存、编辑与重新生成，用户确认前不调视频。只有 continuous 默认请求上一镜抽帧；旧媒体接口需要的字符串只读投影，不回写为第二份分镜。新版批量视频和手动终审界面暂不开放；旧版阅读、媒体与审查保持原行为。结构失败当前直接报错：真实回放最后一段 20 秒被拒绝，是否增加一次模型结构修复正在等用户选择，不能自行缩短时间或改写分镜。详见 `docs/animation-storyboard-implementation-2026-09-21.md`；本段优先于后文描述旧 direct_shot 默认路径的历史规则。
@@ -109,6 +111,16 @@ Full Story full_story/1.1（兼容旧格式）
 Animation Plan direct_shot（promptSchemaVersion 3.0）
  ↓
 Video Generation
+
+「从剧情开始」的 Run（2026-10-09）走另一条前段，后段复用上面的完整剧情、4.0 分镜与视频生成：
+
+storySource（用户原文或只有角色设定）
+ ↓
+Visual Guardrails（只看固定角色设定，sourceDigest 第 2 版）
+ ↓
+单个故事候选（themeVariants，恰好一个，id = V1）→ 服务端签发 variant:V1
+ ↓
+Full Story full_story/1.2 → Animation Plan 4.0 → Video Generation
 
 上述业务 JSON 之外，Production Lineage v1 作为服务端 sidecar 运行：每次浏览器主流程创建独立 project/run；各成功阶段提交 Artifact revision、content digest、实际上游 dependencies、Stage 状态与 Checkpoint。它不改变模型字段含义，也不是第二份角色或剧情事实来源。
 
@@ -733,6 +745,8 @@ DeepSeek 当前只允许用于纯文本阶段：
 
 冲突优先级：用户明确肯定/否定 > 已签发模型推断。无法消解的冲突必须阻断，不能选择任一方静默覆盖。用户或权威上游数据改变后，旧边界必须失效并重新生成。
 
+**`sourceDigest` 有两版（2026-10-09）。** 参考视频 Run 沿用最初那一版：哈希输入是固定角色设定三项 + 原片分析 + 脚本还原 + 创意简报，函数体逐字不变，由 golden 测试锁定。「从剧情开始」的 Run 用 `story_source/2`：固定角色设定三项 + `storySource`，并把版本号写进哈希输入——两版键集合不相交，互相验证必失败。用哪一版只由服务端按 Run 元数据决定（`workflow.assertGlobalCharacterBoundary(input, { storyEntry })`，`storyEntry` 从不取自请求体）；媒体阶段在剧情 Run 上一律取 Run 里的固定角色设定与 current `visualGuardrails` 校验（`verifyBoundaryForMedia`）。
+
 ## 当前模型内容纠错边界
 
 当前主流程中，任何已经解析为候选对象的模型内容错误都不得通过“把完整失败 Artifact 发回模型并要求整包重写”恢复。只有 validator 输出稳定 `code + RFC 6901 JSON Pointer + reason`，候选完整、目标已存在、事实来源唯一且对应 stage adapter 明确授权时，才允许签发一次有界局部纠错。没有可信 diagnostics、没有唯一权威、整个对象/数组项丢失、候选非对象或 adapter 不支持时必须 fail closed；不得解析人类错误消息猜 path，也不得自动扩大可写范围。
@@ -1177,6 +1191,8 @@ timestamp
 - validation
 
 v3 包导入时必须验证上述字段和 parent lineage，并建立隔离的新 Run；禁止与现态静默混合。包内旧媒体结果不得直接恢复。它仍不是包含批量执行、供应商状态和完整 canonical provenance 的 Production Package。
+
+v3 包的签发、校验与导入都按参考视频那条链写死了 Artifact 集合。「从剧情开始」的 Run 暂不支持导出：`sealPackage` 明确返回 409 `PRODUCTION_PACKAGE_ENTRY_MODE_UNSUPPORTED`，页面禁用两个导出按钮并说明原因；「导出完整 JSON」仍是普通创意 JSON。
 
 
 禁止：

@@ -1,7 +1,11 @@
 // 候选阶段发给模型做约束解码的 Schema（response_format: json_schema）。
 // 从服务端严格 Schema 派生，不另写一份：严格 Schema 与全部校验仍是唯一裁决方，
 // 这里只做模型那一侧必需的几处变换。依据与实测见 docs/variants-mimo-format-2026-09-24.md。
-import { storyCandidatesStrictSchema } from "./contract-validator.js";
+import {
+  STORY_ENTRY_REMOVED_CANDIDATE_FIELDS,
+  storyCandidatesStrictSchema,
+  storyEntryCandidatesStrictSchema
+} from "./contract-validator.js";
 import { VARIANT_SOURCE_FIELDS } from "../variant-source-baseline.js";
 
 export const STORY_CANDIDATES_MODEL_SCHEMA_NAME = "story_candidates";
@@ -79,6 +83,47 @@ export function storyCandidatesModelSchema(count, strictSchema = storyCandidates
   if (variants.type !== "array" || variants.items?.$ref !== "#/$defs/storyCandidate") fail("properties.variants 不再是候选数组");
   variants.minItems = count;
   variants.maxItems = count;
+  return schema;
+}
+
+// 「从剧情开始」候选的约束解码 Schema。模型侧变换与上面相同（nonEmptyString 改 minLength、
+// 去掉服务端派生的三个投影），另外去掉 id：剧情入口只有一个候选，id 由服务端签发 V1，
+// 模型能写的面越小越好。来源字段在严格 Schema 里已经不存在，这里不用再处理。
+export const STORY_ENTRY_CANDIDATES_MODEL_SCHEMA_NAME = "story_entry_candidate";
+const STORY_ENTRY_SERVER_SIGNED_FIELDS = Object.freeze(["id", ...SERVER_DERIVED_FIELDS]);
+export const STORY_ENTRY_CANDIDATE_MODEL_FIELD_ORDER = Object.freeze(STORY_CANDIDATE_MODEL_FIELD_ORDER
+  .filter((field) => field !== "id" && !STORY_ENTRY_REMOVED_CANDIDATE_FIELDS.includes(field)));
+
+export function storyEntryCandidatesModelSchema(strictSchema = storyEntryCandidatesStrictSchema()) {
+  const schema = structuredClone(strictSchema);
+  delete schema.$schema;
+  delete schema.$id;
+  const defs = requireRecord(schema.$defs, "$defs");
+  requireRecord(defs.nonEmptyString, "$defs.nonEmptyString");
+  defs.nonEmptyString = { type: "string", minLength: 1 };
+
+  const candidate = requireRecord(defs.storyCandidate, "$defs.storyCandidate");
+  const properties = requireRecord(candidate.properties, "$defs.storyCandidate.properties");
+  for (const field of STORY_ENTRY_SERVER_SIGNED_FIELDS) {
+    if (!Object.hasOwn(properties, field) || !candidate.required?.includes(field)) {
+      fail(`剧情入口严格 Schema 里找不到服务端签发字段 ${field}`);
+    }
+    delete properties[field];
+  }
+  candidate.required = candidate.required.filter((field) => !STORY_ENTRY_SERVER_SIGNED_FIELDS.includes(field));
+
+  const remaining = Object.keys(properties);
+  const missing = STORY_ENTRY_CANDIDATE_MODEL_FIELD_ORDER.filter((field) => !remaining.includes(field));
+  const extra = remaining.filter((field) => !STORY_ENTRY_CANDIDATE_MODEL_FIELD_ORDER.includes(field));
+  if (missing.length || extra.length) {
+    fail(`剧情入口候选字段与 STORY_ENTRY_CANDIDATE_MODEL_FIELD_ORDER 不一致：缺 ${missing.join("、") || "无"}；多 ${extra.join("、") || "无"}`);
+  }
+  candidate.properties = Object.fromEntries(STORY_ENTRY_CANDIDATE_MODEL_FIELD_ORDER.map((field) => [field, properties[field]]));
+
+  const variants = requireRecord(schema.properties?.variants, "properties.variants");
+  if (variants.type !== "array" || variants.items?.$ref !== "#/$defs/storyCandidate") fail("properties.variants 不再是候选数组");
+  variants.minItems = 1;
+  variants.maxItems = 1;
   return schema;
 }
 

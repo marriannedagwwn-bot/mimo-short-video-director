@@ -52,17 +52,21 @@ export function resolveStoryDurationTarget(selection, context = {}) {
     if (Number.isInteger(preset) && STORY_DURATION_PRESETS.includes(preset)) return preset;
     return STORY_DURATION_FALLBACK_SECONDS;
   }
+  if (context.entryMode === "story") return STORY_DURATION_FALLBACK_SECONDS;
   return resolveSourceDurationSeconds(context) ?? STORY_DURATION_FALLBACK_SECONDS;
 }
 
 // 下拉选项。「与原片对齐」的标签带上实际秒数，让用户在生成前就知道会得到多长。
+// 「从剧情开始」没有原片：选这一项实际按 60 秒走，标签直接说出来，不让用户以为对齐了什么。
 export function storyDurationOptions(context = {}) {
-  const sourceSeconds = resolveSourceDurationSeconds(context);
+  const sourceSeconds = context.entryMode === "story" ? null : resolveSourceDurationSeconds(context);
   return [
     {
       value: STORY_DURATION_SOURCE,
       seconds: sourceSeconds ?? STORY_DURATION_FALLBACK_SECONDS,
-      label: sourceSeconds ? `与原片对齐 · ${sourceSeconds} 秒` : "与原片对齐"
+      label: context.entryMode === "story"
+        ? `与原片对齐（剧情入口没有原片，按 ${STORY_DURATION_FALLBACK_SECONDS} 秒）`
+        : sourceSeconds ? `与原片对齐 · ${sourceSeconds} 秒` : "与原片对齐"
     },
     ...STORY_DURATION_PRESETS.map((seconds) => ({ value: String(seconds), seconds, label: `${seconds} 秒` }))
   ];

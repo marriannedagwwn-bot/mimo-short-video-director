@@ -71,7 +71,7 @@ function characterExpressionRulesText(input) {
 - 规则没有覆盖到的情绪照常自由发挥，不要为了套用规则而改变剧情要求的情绪。`;
 }
 
-const JSON_ONLY = `
+export const JSON_ONLY = `
 只输出一个合法 JSON 对象，不要 Markdown 代码块，不要解释。不得输出思维过程。
 字符串值内部不得出现半角双引号 "。需要引用词句时用「」或单引号 '…'；上游文本里的全角引号“”必须原样保留，不得改写成半角双引号——未转义的半角双引号会当场闭合字符串，让整份输出作废。
 无法从证据确认的信息必须写入 uncertainties，不要把猜测包装成事实。所有数组即使为空也必须保留。`;
@@ -3484,7 +3484,7 @@ function formatTime(seconds) {
   return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
 
-function formatVisualGuardrailsForPrompt(
+export function formatVisualGuardrailsForPrompt(
   visualGuardrails,
   {
     includeFixedCharacterBoundary = true,
@@ -3509,7 +3509,7 @@ function formatVisualGuardrailsForPrompt(
   });
 }
 
-function globalCharacterBoundaryText(visualGuardrails) {
+export function globalCharacterBoundaryText(visualGuardrails) {
   const boundary = visualGuardrails?.fixedCharacterBoundary;
   return boundary && typeof boundary === "object"
     ? JSON.stringify(boundary)

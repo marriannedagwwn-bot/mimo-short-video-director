@@ -70,6 +70,25 @@ referenceAnalysis + reconstruction + brief + guardrails
               └─ shotVideo:<variantId>:<nextShotId>（仅显式使用上一镜抽帧时）
 ```
 
+「从剧情开始」的 Run（2026-10-09，元数据 `entryMode: "story"`）没有参考视频那三份上游，依赖图换成：
+
+```text
+storySource（服务端在开 Run 时提交，浏览器通用提交口拒收）
+  └─ visualGuardrails（sourceDigest 第 2 版）
+      └─ themeVariants（恰好一个候选）
+          └─ variant:V1（由 storyPipeline 父任务签发）
+
+storySource + guardrails + themeVariants + variant:V1
+      └─ fullStory:V1
+
+storySource + guardrails + variant:V1 + full story
+      └─ animationPlan:V1（只支持 4.0）
+          ├─ characterImages:V1:<roleIndex>
+          └─ shotVideo:V1:<shotId>
+```
+
+依赖清单由服务端在任务 `prepare` 里按 Run 元数据决定（`resolveDependencies` 返回剧情链的精确 revision/digest），不听浏览器的；视频 Run 仍按原清单冻结。
+
 依赖记录的是实际 revision/digest，不只是 `variant.id` 或 `shotId`。上游提交新 revision 后，仍引用旧 revision 的所有下游 Artifact 会递归变为 `stale`。
 
 Legacy Full Story 子树纠错和 Animation 的 `artifact_partial_repair/1.0` 有界纠错都发生在目标 Artifact 提交之前。repair plan 的 `baseDigest` 只绑定本次 operation 的首次候选，`authorityDigest` 只证明本次局部调用使用的最小权威投影未变化；当前进程还以不可由模型序列化返回的私有身份绑定实际签发计划。三者都不是 Production Lineage revision、持久化签名、Artifact 内容 digest 或第二份剧情/角色事实。Full Story 当前只签发 protagonist `name` 可由验签固定角色边界唯一恢复的安全子集；未知正文、配角身份错误、场次人物与动作/对白冲突、没有签发值来源的必填剧情字段在提交前直接失败。首次失败候选、repair plan、模型 replacement 与失败的合并结果都不签发 revision，也不应使既有下游 stale。
@@ -216,7 +235,11 @@ Node 启动 reconciliation 会检查 active Task：current Artifact 已由同一
 
 长期保存白名单为固定角色、垂直赛道、创作限制、角色表情规则、候选数量、目标画幅和剧情时长。后三项与表情规则独立于 `creatorProfile`，不进入角色边界 digest；模型覆盖只在 sessionStorage 保存。升级时移除旧自动恢复指针，不将没有可信页面归属的历史 Run 纳入清理，也不删除用户选取的原始文件、外部导出文件或全局签名密钥。
 
+「从剧情开始」（2026-10-09）沿用同一套归属与清理：`POST /api/production/run/story/start` 先校验输入，再 `resetSource`（清掉本页视频副本与旧 Run、generation 前进），然后建带 `browserWorkspaceId` 的 Run、由服务端提交 `storySource`、绑定工作区，建好 Run 之后任何一步失败都按导入路径清理。Run 元数据一次写定 `entryMode`、`storyMode`、`storySourceDigest` 与 `creatorProfile`；剧情 Run 没有源视频，恢复时不提示「导入包未包含原视频」。故事草稿不进任何浏览器存储：开始之前刷新会丢草稿，开始之后从 `storySource` 回填。
+
 ## 7. v3 测试/规划包
+
+「从剧情开始」的 Run 暂不支持 v3 包：签发、校验与导入都按参考视频那条链写死了 Artifact 集合，`sealPackage` 明确返回 409 `PRODUCTION_PACKAGE_ENTRY_MODE_UNSUPPORTED`。
 
 导出流程由服务端确认选中 Variant、Full Story 和可选 Animation Plan 都是当前 Artifact，且 parent lineage 一致，然后添加：
 

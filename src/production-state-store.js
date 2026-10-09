@@ -20,6 +20,7 @@ import {
   signPackageDigest,
   verifyPackageSignature
 } from "./production-lineage.js";
+import { isStoryEntryMetadata } from "../public/story-entry.js";
 
 const RUN_MANIFEST_TYPE = "mimo-production-run";
 const RUN_MANIFEST_VERSION = "1.0";
@@ -217,6 +218,14 @@ export class ProductionStateStore {
     const safeRunId = safeIdentifier(runId, "runId");
     const unsignedPackage = await this.withRunLock(safeProjectId, safeRunId, async () => {
       const manifest = await this.readManifest(safeProjectId, safeRunId);
+      // v3 包的签发、校验与导入都按参考视频那条链写死了 Artifact 集合；「从剧情开始」的 Run
+      // 没有那几份上游，硬签会得到一个导不回来的包。明确拒绝，不静默签一份残缺包。
+      if (isStoryEntryMetadata(manifest.metadata)) {
+        throw new ProductionStateError("「从剧情开始」的 Run 暂不支持导出测试/规划包。", {
+          code: "PRODUCTION_PACKAGE_ENTRY_MODE_UNSUPPORTED",
+          httpStatus: 409
+        });
+      }
       const source = requirePackagePayload(payload);
       const variant = requireObject(source.selectedVariant, "selectedVariant");
       const variantId = safeIdentifier(variant.id, "selectedVariant.id");

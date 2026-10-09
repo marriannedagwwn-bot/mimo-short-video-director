@@ -121,6 +121,23 @@ export function createBrowserWorkspaceClient({ storage, fetch: request, sendBeac
         return token === epoch ? imported : null;
       });
     },
+    // 「从剧情开始」：服务端会清空本页的视频和旧 Run，再建一个没有源视频的剧情 Run。
+    // 与导入包同样会改变工作区 generation，所以照导入的写法走串行队列并采纳新 generation。
+    startStoryRun(payload, token) {
+      return enqueue(async () => {
+        await start();
+        if (token !== epoch) return null;
+        const started = await json("/api/production/run/story/start", {
+          ...payload,
+          workspaceId: workspace.id,
+          workspaceGeneration: workspace.generation,
+          workspacePageId: pageId
+        });
+        if (!started.workspace) throw new Error("服务端没有返回剧情 Run 所属的页面工作区。");
+        adopt(started.workspace);
+        return token === epoch ? started : null;
+      });
+    },
     resetRun(token) {
       return enqueue(async () => {
         await start();

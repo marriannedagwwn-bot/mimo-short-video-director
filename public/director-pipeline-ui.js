@@ -148,3 +148,29 @@ export function directorTaskView(task = {}, { modelLabel = "" } = {}) {
       : task.status === "completed" ? "done" : task.status === "failed" ? "error" : "stopped"
   };
 }
+
+// 「从剧情开始」的两步流水线（角色边界 → 故事候选）。与 AI 导演分开写：那边的「n/5」、
+// 暂停与终止都属于参考视频那条链；这条链第一期不支持暂停或终止。
+export function storyPipelineTaskView(task = {}) {
+  const active = ["queued", "running"].includes(task.status);
+  const total = Math.max(1, Math.floor(Number(task.progress?.totalStages) || 2));
+  const usage = formatStageUsageSuffix(task.usage, {
+    label: active ? "已确认消耗" : task.status === "completed" ? "本次消耗" : "结束前已消耗"
+  });
+  const terminal = {
+    failed: "剧情准备失败", interrupted: "剧情准备已中断",
+    conflicted: "剧情准备因依赖变化停止", abandoned: "剧情准备已放弃", cancelled: "剧情准备已取消"
+  };
+  const reused = Number(task.progress?.reusedStages) || 0;
+  const message = task.status === "completed"
+    ? `剧情准备完成${reused > 0 ? ` · 复用 ${reused} 个已有步骤` : ""}${usage}`
+    : active
+      ? `${task.status === "queued" ? "剧情准备排队中" : `剧情准备中 ${completedStages(task)}/${total}`}${usage}`
+      : `${terminal[task.status] || "剧情准备状态未知"}${task.error?.message ? `：${taskErrorMessage(task)}` : ""}${usage}`;
+  return {
+    active,
+    message,
+    tone: task.status === "completed" ? "ready" : active ? "active" : task.status === "failed" ? "error" : "warn",
+    stageStatus: active ? "active" : task.status === "completed" ? "done" : task.status === "failed" ? "error" : "stopped"
+  };
+}

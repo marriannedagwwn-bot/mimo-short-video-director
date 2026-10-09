@@ -5,7 +5,8 @@ import { currentDurableTaskContext, durableTaskHeartbeat } from "./durable-task-
 import { fullStoryCharacterFacts } from "./full-story-contract.js";
 import { storyCharacterNames, fullStoryCharacterRegistryInput, mergeFullStoryCharacterRegistry, mockFullStoryCharacterRegistry } from "./full-story-character-registry.js";
 import { fullStoryCharacterRegistryPrompt } from "./full-story-character-registry-prompt.js";
-import { storyboardPrompt, storyboardRetryPrompt, storyboardSystem, shotPrompt } from "./storyboard-prompts.js";
+import { STORYBOARD_LOCKED_DIALOGUE_KEPT_CONTENT, storyboardPrompt, storyboardPromptWithLockedDialogue, storyboardRetryPrompt, storyboardSystem, shotPrompt } from "./storyboard-prompts.js";
+import { STORY_MODE_FULL_TEXT } from "../public/story-entry.js";
 import { ModelPipelineError } from "./model-errors.js";
 import { storyboardReviewPrompt, validateStoryboardReview } from "./storyboard-review.js";
 import { storyboardRevisionPrompt } from "./storyboard-revision-prompt.js";
@@ -18,8 +19,10 @@ import { InputError, OutputContractError, ensureOutputContract, ensureFullStoryM
 
 const STORYBOARD_DESIGN_RESPONSE_SCHEMA = { name: STORYBOARD_DESIGN_MODEL_SCHEMA_NAME, schema: storyboardDesignModelSchema() };
 
-export async function storyboardInput(workflow, input, telemetry = null, onStep = null) {
-  const visualGuardrails = workflow.assertGlobalCharacterBoundary(input);
+// storyEntry 只由服务端在剧情入口的 Run 上传入，用来按剧情入口的摘要验角色边界；
+// projected 不因它多出任何键（整份 projected 会原样序列化进分镜提示词）。
+export async function storyboardInput(workflow, input, telemetry = null, onStep = null, { storyEntry = null } = {}) {
+  const visualGuardrails = workflow.assertGlobalCharacterBoundary(input, { storyEntry });
   const fullStory = ensureFullStoryMatchesProfile(ensureOutputContract(input.fullStory, "fullStory"), input.creatorProfile, input.creativeBrief, input.variant, visualGuardrails);
   let characterRegistry = fullStory.characterBible;
   if (!hasFullStoryCharacterRegistry(fullStory)) {
@@ -129,7 +132,7 @@ async function call(workflow, settings, stage, prompt, validate, { systemPrompt 
   }
 }
 
-export async function createStoryboardPlan(workflow, input) {
+export async function createStoryboardPlan(workflow, input, { storyEntry = null } = {}) {
   // 每个阶段的实际调用次数与被拦诊断都记在这里，最后如实进 metadata。
   const calls = [];
   const stepMax = (hasFullStoryCharacterRegistry(input.fullStory) ? 0 : 1) + 4;
@@ -137,7 +140,9 @@ export async function createStoryboardPlan(workflow, input) {
   // Heartbeats merge progress under the Run lock. Reset only this step's counts;
   // provider heartbeats retain the stage and all other existing progress fields.
   const onStep = (step) => durableTaskHeartbeat({ step, stepIndex: ++stepIndex, stepMax, streamedChars: 0, reasoningChars: 0 });
-  const { projected, visualGuardrails } = await storyboardInput(workflow, input, calls, onStep);
+  const { projected, visualGuardrails } = await storyboardInput(workflow, input, calls, onStep, { storyEntry });
+  // 粘贴完整故事的 Run：Full Story 的台词逐字来自用户原文，分镜设计与修订都不得改动。
+  const dialogueLocked = storyEntry?.storySource?.storyMode === STORY_MODE_FULL_TEXT;
   const settings = workflow.resolveStage("animationPlan", input);
   let design, initialReview = null, finalReview = null, repairs = [], guidance = [];
   if (!workflow.hasLiveClient) {
@@ -145,13 +150,14 @@ export async function createStoryboardPlan(workflow, input) {
     guidance = ["演示模式：未进行真实 AI 分镜审查或修订。"];
   } else {
     workflow.assertStageClient(settings, "自主分镜");
-    design = await call(workflow, settings, "storyboardDesign", storyboardPrompt(projected), value => ensureStoryboardDesign(value, projected), { telemetry: calls, responseSchema: STORYBOARD_DESIGN_RESPONSE_SCHEMA, onStep });
+    design = await call(workflow, settings, "storyboardDesign", (dialogueLocked ? storyboardPromptWithLockedDialogue : storyboardPrompt)(projected), value => ensureStoryboardDesign(value, projected), { telemetry: calls, responseSchema: STORYBOARD_DESIGN_RESPONSE_SCHEMA, onStep });
     initialReview = await call(workflow, settings, "storyboardReview", storyboardReviewPrompt({ input: projected, plan: design }), value => validateStoryboardReview(value, { input: projected, plan: design }), { telemetry: calls, onStep });
     guidance.push(...initialReview.guidance);
     if (initialReview.items.length) {
       const context = { input: projected, plan: design, items: initialReview.items, keptContent: [
         "核心目标、关键选择、主要因果、角色身份关系与结局不变；保留已经成立的观看关系。",
-        "不得改变片段时长、beat结构、角色名单、说话人与来源；合理简写只给引导。", ...initialReview.strengths
+        "不得改变片段时长、beat结构、角色名单、说话人与来源；合理简写只给引导。",
+        ...(dialogueLocked ? [STORYBOARD_LOCKED_DIALOGUE_KEPT_CONTENT] : []), ...initialReview.strengths
       ] };
       const merged = await call(workflow, settings, "storyboardRevision", storyboardRevisionPrompt(context), value => {
         const result = applyEditorial(value, context);

@@ -250,6 +250,21 @@ export function mockVariants(input) {
   })) };
 }
 
+// 「从剧情开始」演示模式的单个候选：取 mockVariants 的第一个，去掉四个对照原片的字段，
+// id 交给服务端签发。mock 必须自己就能通过剧情入口的真实契约校验。
+export function mockStoryEntryCandidates(input) {
+  const [candidate] = mockVariants({ ...input, count: 1 }).variants;
+  const {
+    id: _id,
+    highValueBeatMapping: _highValueBeatMapping,
+    transformationProof: _transformationProof,
+    experienceFidelity: _experienceFidelity,
+    originalityRiskCheck: _originalityRiskCheck,
+    ...storyFields
+  } = candidate;
+  return { variants: [storyFields] };
+}
+
 export function mockFullStory(input) {
   const variant = input.variant || {};
   const fixed = input.creatorProfile?.fixedCharacter || variant.characterSetup?.protagonist || "固定主角";

@@ -3,6 +3,8 @@ import {
   validateNarrativeFullStoryStrict,
   validateStoryCandidateStrict,
   validateStoryCandidatesStrict,
+  validateStoryEntryCandidateStrict,
+  validateStoryEntryCandidatesStrict,
   validateAnimationPlanReviewStrict,
   validateStoryCandidateReviewStrict,
   validateStoryQualityReviewStrict,
@@ -2335,8 +2337,31 @@ function citationClauseCovered(clause, upstreamTexts, threshold) {
 }
 
 export function ensureStoryCandidateContract(candidate, { path = "storyCandidate" } = {}) {
-  const label = String(path || "storyCandidate");
-  const schemaResult = validateStoryCandidateStrict(candidate);
+  return ensureCandidateAgainstSchema(candidate, String(path || "storyCandidate"), validateStoryCandidateStrict);
+}
+
+// 「从剧情开始」的单个原创候选。严格 Schema 换成派生的那份（没有对照原片的四个字段、
+// 恰好一个候选），拍号连续、派生投影、关键选择拍早于高潮拍这些结构校验与视频入口
+// 是同一份函数。只有已经确认是剧情 Run 的服务端路径调用它，候选本身不带来源标记。
+export function ensureStoryEntryCandidateContract(candidate, { path = "storyEntryCandidate" } = {}) {
+  return ensureCandidateAgainstSchema(candidate, String(path || "storyEntryCandidate"), validateStoryEntryCandidateStrict);
+}
+
+export function ensureStoryEntryCandidatesContract(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new OutputContractError("themeVariants 必须是对象");
+  const schemaResult = validateStoryEntryCandidatesStrict(value);
+  if (!schemaResult.ok) {
+    throw new OutputContractError(
+      `剧情入口故事候选结构校验失败：${schemaResult.diagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,
+      schemaResult.diagnostics
+    );
+  }
+  validateStoryCandidateSetStructure(value.variants);
+  return value;
+}
+
+function ensureCandidateAgainstSchema(candidate, label, validateSchema) {
+  const schemaResult = validateSchema(candidate);
   if (!schemaResult.ok) {
     throw new OutputContractError(
       `${label} 结构校验失败：${schemaResult.diagnostics.map((detail) => `${detail.path} ${detail.reason}`).join("；")}`,

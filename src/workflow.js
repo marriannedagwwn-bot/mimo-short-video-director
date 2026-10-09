@@ -1,7 +1,9 @@
 import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPromiseCheckRetryPrompt, fullStoryPromiseFindingsPrompt, fullStoryPromiseListPrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityEditorialPrompt, storyQualityPromisePrompt, storyQualityRepairPrompt, storyQualityRepairRetryPrompt, storyQualityReviewRetryPrompt, variantsCount, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
-import { STORY_CANDIDATES_MODEL_SCHEMA_NAME, storyCandidatesModelSchema } from "./contracts/story-candidates-model-schema.js";
+import { STORY_CANDIDATES_MODEL_SCHEMA_NAME, STORY_ENTRY_CANDIDATES_MODEL_SCHEMA_NAME, storyCandidatesModelSchema, storyEntryCandidatesModelSchema } from "./contracts/story-candidates-model-schema.js";
+import { STORY_ENTRY_SYSTEM_PROMPT, storyEntryCandidatePrompt, storyEntryFullStoryPrompt, storyEntryVisualGuardrailsPrompt } from "./story-entry-prompts.js";
+import { STORY_ENTRY_VARIANT_ID, normalizeStorySource } from "../public/story-entry.js";
 import { STORY_CANDIDATE_REVIEW_MODEL_SCHEMA_NAME, storyCandidateReviewModelSchema } from "./contracts/story-candidate-review-model-schema.js";
-import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryEntryCandidates, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { isNarrativeFullStory } from "./full-story-contract.js";
 import { FULL_STORY_CAST_SCHEMA_VERSION } from "../public/full-story-format.js";
 import { STORYBOARD_PLAN_VERSION } from "../public/storyboard-plan.js";
@@ -91,6 +93,7 @@ import { ModelResponseError } from "./mimo-client.js";
 import { STATIC_FRAME_COMPILER_VERSION, StaticFrameCompilerCandidateError, compileStaticFrames } from "./static-frame-compiler.js";
 import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, ANIMATION_DIRECT_SHOT_MODE, InputError, OutputContractError, BACKGROUND_MUSIC_NONE, NO_BACKGROUND_MUSIC_SENTENCE, animationFrameCameraFields, characterReferenceBoundaryMismatch, characterReferenceRestorableMissingTraits, ensureAnimationFoundationContract, ensureAnimationPlanMatchesProfile, ensureAnimationPlanV2Contract, ensureAnimationPlanDirectShotContract, ensureAnimationPlanVideoPromptProfile, ensureAnimationShotBatchContract, CREATIVE_BRIEF_SCHEMA_VERSION, ensureFullStoryMatchesProfile, ensureOutputContract, ensureThemeVariantsMatchProfile, ensureVisualGuardrailsMatchesProfile, hasExplicitStandardNameSuffix, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms, normalizeBackgroundMusicMode, pruneAnimationPlanNegativePrompts, requireAnimationPlanAspectRatio, requireFrames, requireObject, requireText,
   deriveStoryCandidateProjections,
+  ensureStoryEntryCandidatesContract,
   deriveFullStoryTargetDuration,
   ensureFullStoryPromiseCheckCoversCandidate,
   ensureFullStoryPromiseFindingsContract,
@@ -107,7 +110,7 @@ import {
   formatDirectShotSkeleton
 } from "./direct-shot-timeline.js";
 import { resolveVideoPromptProfile } from "../public/video-prompt-profiles.js";
-import { CharacterBoundaryError, createCharacterBoundaryKey, sealGlobalCharacterBoundary, verifyGlobalCharacterBoundary } from "./character-boundary.js";
+import { CHARACTER_BOUNDARY_SOURCE_STORY, CharacterBoundaryError, createCharacterBoundaryKey, sealGlobalCharacterBoundary, verifyGlobalCharacterBoundary } from "./character-boundary.js";
 import {
   ReconstructionGroundingError,
   createGroundingKey,
@@ -1552,23 +1555,11 @@ export class WorkflowService {
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
     const groundedInput = groundedStageInput(input, this.groundingKey);
-    const finalize = (result) => {
-      const raw = ensureOutputContract(normalizeGlobalCharacterBoundaryTerms(result), "visualGuardrails");
-      const modelSealFields = ["sourceDigest", "boundaryDigest", "boundarySignature"]
-        .filter((field) => Object.prototype.hasOwnProperty.call(raw.fixedCharacterBoundary || {}, field));
-      if (modelSealFields.length) {
-        throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary 的签发字段只能由服务端生成：${modelSealFields.join("、")}`);
-      }
-      if (raw.allowedPositiveTraits.length || raw.positivePromptBoundary.length) {
-        throw new OutputContractError("visualGuardrails.allowedPositiveTraits 与 positivePromptBoundary 必须由服务端从全局角色边界派生，模型必须返回空数组");
-      }
-      const sealed = sealGlobalCharacterBoundary(
-        materializeGlobalCharacterBoundaryViews(raw, profile),
-        groundedInput,
-        this.characterBoundaryKey
-      );
-      return ensureVisualGuardrailsMatchesProfile(ensureOutputContract(sealed, "visualGuardrails"), profile);
-    };
+    const finalize = (result) => finalizeVisualGuardrails(result, {
+      profile,
+      sealInput: groundedInput,
+      key: this.characterBoundaryKey
+    });
     if (!this.hasLiveClient) return finalize(mockVisualGuardrails(groundedInput));
     const prompt = visualGuardrailsPrompt(groundedInput);
     return this.generateStageJson("visualGuardrails", groundedInput, {
@@ -1579,17 +1570,90 @@ export class WorkflowService {
     });
   }
 
-  async createFullStory(input, { traceContext = null } = {}) {
+  // 「从剧情开始」的角色边界：没有参考视频，只看固定角色设定。与视频入口共用同一个阶段
+  // 设置（visualGuardrails，仍禁 DeepSeek）、同一套落定校验；只多一条 sourceSimilarityRules
+  // 必须为空，签发时用剧情入口的 v2 摘要。只在服务端内部调用，不注册 HTTP 路由。
+  async createStoryEntryVisualGuardrails(input, { storyEntry } = {}) {
+    requireObject(input, "请求");
+    const entry = requireStoryEntry(storyEntry);
+    const profile = requireObject(input.creatorProfile, "creatorProfile");
+    requireText(profile.fixedCharacter, "固定角色");
+    requireText(profile.vertical, "垂直赛道");
+    const finalize = (result) => finalizeVisualGuardrails(result, {
+      profile,
+      sealInput: { creatorProfile: profile, storySource: entry.storySource },
+      key: this.characterBoundaryKey,
+      sealOptions: { source: CHARACTER_BOUNDARY_SOURCE_STORY },
+      rejectSourceSimilarityRules: true
+    });
+    if (!this.hasLiveClient) return finalize(mockVisualGuardrails({ creatorProfile: profile }));
+    return this.generateStageJson("visualGuardrails", { ...input, creatorProfile: profile }, {
+      prompt: storyEntryVisualGuardrailsPrompt({ creatorProfile: profile }),
+      systemPrompt: STORY_ENTRY_SYSTEM_PROMPT,
+      validate: finalize
+    });
+  }
+
+  // 「从剧情开始」的单个故事候选。粘贴原文时只做结构整理，只给角色设定时原创一个。
+  // id 由服务端签发 V1，三个投影由拍号派生，严格 Schema 换成没有对照原片字段的那份；
+  // 只有一个候选，所以视频入口的叙事路径配比与结构分化检查本来就不会触发。
+  async createStoryEntryCandidate(input, { storyEntry } = {}) {
+    requireObject(input, "请求");
+    const entry = requireStoryEntry(storyEntry);
+    const profile = requireObject(input.creatorProfile, "creatorProfile");
+    requireText(profile.fixedCharacter, "固定角色");
+    requireText(profile.vertical, "垂直赛道");
+    const visualGuardrails = this.assertGlobalCharacterBoundary(input, { storyEntry: entry });
+    const validatedInput = structuredClone({ ...input, visualGuardrails, storySource: entry.storySource });
+    const finalize = (result) => {
+      const variants = result && typeof result === "object" && !Array.isArray(result) ? result.variants : null;
+      if (!Array.isArray(variants) || variants.length !== 1 || !variants[0] || typeof variants[0] !== "object" || Array.isArray(variants[0])) {
+        throw new OutputContractError("剧情入口必须恰好输出一个故事候选对象", [{
+          code: "STORY_ENTRY_CANDIDATE_COUNT",
+          path: "/variants",
+          reason: `需要恰好 1 个候选对象，收到 ${Array.isArray(variants) ? variants.length : "非数组"}`
+        }]);
+      }
+      // 模型写了 id 也一律覆盖：剧情入口只有一个候选，id 是服务端常量。
+      const { id: _modelId, ...candidate } = variants[0];
+      const signed = deriveStoryCandidateProjections({ ...result, variants: [{ id: STORY_ENTRY_VARIANT_ID, ...candidate }] });
+      return ensureThemeVariantsMatchProfile(
+        ensureStoryEntryCandidatesContract(signed),
+        profile,
+        null,
+        visualGuardrails
+      );
+    };
+    if (!this.hasLiveClient) return finalize(mockStoryEntryCandidates(validatedInput));
+    return this.generateStageJson("variants", validatedInput, {
+      prompt: storyEntryCandidatePrompt(validatedInput),
+      systemPrompt: STORY_ENTRY_SYSTEM_PROMPT,
+      responseSchema: {
+        name: STORY_ENTRY_CANDIDATES_MODEL_SCHEMA_NAME,
+        schema: storyEntryCandidatesModelSchema()
+      },
+      validate: finalize
+    });
+  }
+
+  async createFullStory(input, { traceContext = null, storyEntry = null } = {}) {
     requireObject(input, "请求");
     const completeCast = input.fullStorySchemaVersion === FULL_STORY_CAST_SCHEMA_VERSION;
     if (input.fullStorySchemaVersion !== undefined && !completeCast && input.fullStorySchemaVersion !== "full_story/1.1") throw new InputError("不支持的 Full Story 生成版本");
-    requireObject(input.creativeBrief, "creativeBrief");
+    // 剧情入口没有原片分析、脚本还原和创意简报，所以不要求简报、不走签名的脚本还原；
+    // 是不是剧情入口只看服务端传进来的 storyEntry，不看请求体里少了哪几份上游。
+    const entry = storyEntry ? requireStoryEntry(storyEntry) : null;
+    if (!entry) requireObject(input.creativeBrief, "creativeBrief");
     requireObject(input.variant, "variant");
     const profile = requireObject(input.creatorProfile, "creatorProfile");
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
-    const groundedInput = groundedStageInput(input, this.groundingKey);
-    const visualGuardrails = this.assertGlobalCharacterBoundary(groundedInput);
+    const groundedInput = entry
+      ? { ...input, storySource: entry.storySource }
+      : groundedStageInput(input, this.groundingKey);
+    const visualGuardrails = this.assertGlobalCharacterBoundary(groundedInput, { storyEntry: entry });
+    // 剧情入口的每次调用都显式换掉客户端默认的「受控改编」系统消息。
+    const systemPromptOverride = entry ? { systemPrompt: STORY_ENTRY_SYSTEM_PROMPT } : {};
     const validatedInput = { ...groundedInput, visualGuardrails };
     const settings = this.resolveStage("fullStory", validatedInput);
     const validateFullStory = (result) => validateFullStoryForSigning(result, {
@@ -1602,7 +1666,7 @@ export class WorkflowService {
       return validateFullStory(mergeFullStoryCharacterRegistry(story, mockFullStoryCharacterRegistry(registryInput), registryInput));
     }
     this.assertStageClient(settings, "完整剧情");
-    const basePrompt = fullStoryPrompt({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
+    const basePrompt = (entry ? storyEntryFullStoryPrompt : fullStoryPrompt)({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
     const prompt = completeCast ? fullStoryRegisteredVoicesPrompt(basePrompt) : basePrompt;
     const observeFullStoryAttempt = this.fullModelOutputLogWriter?.enabled
       ? (attempt) => this.fullModelOutputLogWriter.recordAttempt({
@@ -1621,7 +1685,8 @@ export class WorkflowService {
         request: {
           prompt,
           model: settings.model,
-          maxCompletionTokens: settings.maxCompletionTokens
+          maxCompletionTokens: settings.maxCompletionTokens,
+          ...systemPromptOverride
         },
         provider: settings.provider || "",
         stage: "fullStory",
@@ -1707,7 +1772,7 @@ export class WorkflowService {
       const registryInput = fullStoryCharacterRegistryInput(fullStory, profile);
       return this.modelCallCoordinator.runJson({
         client: settings.client,
-        request: { prompt: fullStoryCharacterRegistryPrompt(registryInput), model: settings.model, maxCompletionTokens: settings.maxCompletionTokens },
+        request: { prompt: fullStoryCharacterRegistryPrompt(registryInput), model: settings.model, maxCompletionTokens: settings.maxCompletionTokens, ...systemPromptOverride },
         provider: settings.provider || "", stage: "fullStoryCharacterRegistry",
         attemptObserver: observeFullStoryAttempt,
         maxProviderCalls: 1, shouldRetry: () => false,
@@ -2363,9 +2428,11 @@ export class WorkflowService {
     return createSingleShotPrompt(this, input);
   }
 
-  async createAnimationPlanWithMetadata(input) {
+  async createAnimationPlanWithMetadata(input, { storyEntry = null } = {}) {
     requireObject(input, "请求");
-    if (input.animationPlanVersion === STORYBOARD_PLAN_VERSION) return createStoryboardPlan(this, input);
+    if (input.animationPlanVersion === STORYBOARD_PLAN_VERSION) return createStoryboardPlan(this, input, { storyEntry });
+    // 剧情入口只走 4.0 自主分镜：3.0 的镜头批次提示词要读整份候选和创意简报，剧情入口没有。
+    if (storyEntry) throw new InputError("「从剧情开始」的 Run 只支持 4.0 自主分镜");
     if (input.animationPlanVersion !== undefined && input.animationPlanVersion !== "3.0") throw new InputError("不支持的 Animation Plan 生成版本");
     requireObject(input.creativeBrief, "creativeBrief");
     requireObject(input.variant, "variant");
@@ -2820,10 +2887,10 @@ export class WorkflowService {
     });
   }
 
-  async refineCharacterReference(input) {
+  async refineCharacterReference(input, { storyEntry = null } = {}) {
     requireObject(input, "请求");
     const characterReference = requireObject(input.characterReference, "characterReference");
-    const visualGuardrails = this.assertGlobalCharacterBoundary(input);
+    const visualGuardrails = this.assertGlobalCharacterBoundary(input, { storyEntry });
     const imageDataUrl = requireText(input.imageDataUrl, "人物参考图", { max: 16 * 1024 * 1024 });
     if (!imageDataUrl.startsWith("data:image/")) throw new InputError("人物参考图必须是图片 data URL");
     const validatedInput = { ...input, visualGuardrails };
@@ -2842,15 +2909,25 @@ export class WorkflowService {
     });
   }
 
-  assertGlobalCharacterBoundary(input = {}) {
+  // storyEntry 只由服务端从 Run 元数据与 storySource Artifact 构造，从不取自请求体。
+  // 给了它就按剧情入口的 v2 摘要验（固定角色设定 + storySource），否则走参考视频那一版。
+  assertGlobalCharacterBoundary(input = {}, { storyEntry = null } = {}) {
     requireObject(input.visualGuardrails, "visualGuardrails");
+    const entry = storyEntry ? requireStoryEntry(storyEntry) : null;
     try {
-      const verified = verifyGlobalCharacterBoundary(
-        input.visualGuardrails,
-        input,
-        this.characterBoundaryKey,
-        { requireSignature: this.characterBoundarySignatureRequired }
-      );
+      const verified = entry
+        ? verifyGlobalCharacterBoundary(
+          input.visualGuardrails,
+          { creatorProfile: input.creatorProfile, storySource: entry.storySource },
+          this.characterBoundaryKey,
+          { requireSignature: this.characterBoundarySignatureRequired, source: CHARACTER_BOUNDARY_SOURCE_STORY }
+        )
+        : verifyGlobalCharacterBoundary(
+          input.visualGuardrails,
+          input,
+          this.characterBoundaryKey,
+          { requireSignature: this.characterBoundarySignatureRequired }
+        );
       const materialized = materializeGlobalCharacterBoundaryViews(verified, input.creatorProfile || {});
       return ensureVisualGuardrailsMatchesProfile(ensureOutputContract(materialized, "visualGuardrails"), input.creatorProfile || {});
     } catch (error) {
@@ -2899,6 +2976,48 @@ FULL_STORY_COMPLETION_RETRY_V1
  * targetDurationSeconds 由服务端从 sceneScript 时间轴派生：先派生再校验，
  * 模型声明的值一律被覆盖（可唯一推导，回显不构成新事实）。
  */
+// 剧情入口的上下文只由服务端构造（Run 元数据 + storySource Artifact），workflow 只复核形状。
+function requireStoryEntry(storyEntry) {
+  if (!storyEntry || typeof storyEntry !== "object" || Array.isArray(storyEntry)) {
+    throw new InputError("剧情入口缺少服务端构造的 storyEntry");
+  }
+  let storySource;
+  try {
+    storySource = normalizeStorySource(storyEntry.storySource);
+  } catch (error) {
+    throw new InputError(error.message);
+  }
+  return { storyMode: storySource.storyMode, storySource };
+}
+
+// 角色边界阶段的落定校验。参考视频入口与剧情入口共用这一份：模型不得自己写签发字段、
+// 两个派生数组必须为空，签发后再按固定角色设定复核。剧情入口另外要求 sourceSimilarityRules 为空。
+function finalizeVisualGuardrails(result, { profile, sealInput, key, sealOptions = undefined, rejectSourceSimilarityRules = false }) {
+  const raw = ensureOutputContract(normalizeGlobalCharacterBoundaryTerms(result), "visualGuardrails");
+  const modelSealFields = ["sourceDigest", "boundaryDigest", "boundarySignature"]
+    .filter((field) => Object.prototype.hasOwnProperty.call(raw.fixedCharacterBoundary || {}, field));
+  if (modelSealFields.length) {
+    throw new OutputContractError(`visualGuardrails.fixedCharacterBoundary 的签发字段只能由服务端生成：${modelSealFields.join("、")}`);
+  }
+  if (raw.allowedPositiveTraits.length || raw.positivePromptBoundary.length) {
+    throw new OutputContractError("visualGuardrails.allowedPositiveTraits 与 positivePromptBoundary 必须由服务端从全局角色边界派生，模型必须返回空数组");
+  }
+  if (rejectSourceSimilarityRules && raw.sourceSimilarityRules.length) {
+    throw new OutputContractError("「从剧情开始」没有参考视频，visualGuardrails.sourceSimilarityRules 必须是空数组", [{
+      code: "STORY_ENTRY_SOURCE_SIMILARITY_RULES_FORBIDDEN",
+      path: "/sourceSimilarityRules",
+      reason: `没有参考视频可对照，收到 ${raw.sourceSimilarityRules.length} 条`
+    }]);
+  }
+  const sealed = sealGlobalCharacterBoundary(
+    materializeGlobalCharacterBoundaryViews(raw, profile),
+    sealInput,
+    key,
+    sealOptions
+  );
+  return ensureVisualGuardrailsMatchesProfile(ensureOutputContract(sealed, "visualGuardrails"), profile);
+}
+
 function validateFullStoryForSigning(result, { profile, creativeBrief, variant, visualGuardrails }) {
   const story = ensureFullStoryMatchesProfile(
     ensureOutputContract(deriveFullStoryTargetDuration(result), "fullStory"),

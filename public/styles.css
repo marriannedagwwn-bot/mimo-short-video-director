@@ -726,3 +726,33 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
 .recast-list.collapses li { color: var(--ink); }
 .recast-list.survives li { color: var(--muted); }
 @media (max-width: 640px) { .recast-split { grid-template-columns: 1fr; } }
+
+/* 「从剧情开始」入口：body.story-entry-mode 决定显示哪一套；两套共用同一张卡片和阶段列表。 */
+body.story-entry-mode .video-only { display: none !important; }
+body:not(.story-entry-mode) .story-only { display: none !important; }
+body.story-entry-mode .pipeline li[data-stage="analysis"],
+body.story-entry-mode .pipeline li[data-stage="script"],
+body.story-entry-mode .pipeline li[data-stage="brief"] { display: none; }
+.pipeline li > span i { font-style: normal; }
+.entry-switch, .story-mode-switch { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.story-mode-switch { margin: 4px 0 14px; }
+.entry-switch label, .story-mode-switch label { position: relative; cursor: pointer; }
+.entry-switch input, .story-mode-switch input { position: absolute; opacity: 0; pointer-events: none; }
+.entry-switch span, .story-mode-switch span { display: inline-flex; align-items: center; padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.45); font-size: 12px; color: var(--muted); transition: border-color .15s, color .15s, background .15s; }
+.entry-switch input:checked + span, .story-mode-switch input:checked + span { border-color: var(--ink); background: var(--ink); color: #fff; }
+.entry-switch input:focus-visible + span, .story-mode-switch input:focus-visible + span { outline: 3px solid var(--accent); outline-offset: 2px; }
+.entry-switch label:hover span, .story-mode-switch label:hover span { border-color: var(--accent); }
+.entry-switch input:disabled + span, .story-mode-switch input:disabled + span { opacity: .5; cursor: not-allowed; }
+.story-entry-panel textarea { min-height: 220px; line-height: 1.7; }
+#storySourceCounter.over-limit { color: #b42318; font-weight: 700; }
+.story-entry-hint { margin: 8px 0 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.story-dialogue-check { padding: 18px 22px; }
+.story-dialogue-check h3 { margin: 0 0 8px; font-size: 14px; }
+.story-dialogue-check p { margin: 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.story-dialogue-check.warn { border-color: rgba(213,164,58,.6); background: rgba(255,246,222,.7); }
+.story-dialogue-check ul { margin: 10px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.7; }
+.story-dialogue-check li span { color: var(--muted); }
+@media (max-width: 640px) {
+  .entry-switch span, .story-mode-switch span { padding: 7px 11px; }
+  .story-entry-panel textarea { min-height: 180px; }
+}

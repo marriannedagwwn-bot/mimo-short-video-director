@@ -18,6 +18,8 @@ Analyze → Reconstruct → Brief → Visual Guardrails → Story Candidates (`t
        → Video Generation
 ```
 
+**从剧情开始（2026-10-09，第一期）**：第二个入口，Run 元数据 `entryMode: "story"`。用户原文（或只有固定角色设定）由服务端写入 `storySource`，它是原文唯一的存放处（浏览器通用提交口拒收，元数据一次写定 `storySourceDigest` 并在每次读取时核对）。`storyPipeline` 父任务：只看文字的角色边界 → 单个故事候选 → 服务端签发 `variant:V1`；之后复用完整剧情、4.0 分镜、角色参考图与镜头视频，依赖与边界校验按 Run 元数据分支，**视频 Run 行为不变**。三条硬约束：①角色边界 `sourceDigest` 剧情 Run 用 `story_source/2`，参考视频那一版逐字节不变（golden 测试）；②原创候选的严格 Schema 从视频版派生，只去掉四个对照原片的字段，**不得放宽视频版 Schema**；③剧情入口的提示词只能在既有提示词上做逐字锚点替换或另写新提示词，视频版提示词不动。台词核对只提示不拦截。详见 `docs/story-entry-phase1-2026-10-09.md`。
+
 Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主流程创建独立 project/run，各成功阶段提交 Artifact revision、content digest、上游 dependencies、Stage 状态与 Checkpoint。**它不改变模型字段含义，不是第二份剧情或角色事实来源。**
 
 **Durable Task v1（2026-09-01）**：浏览器只创建、轮询和重新 attach；服务端 Runner 执行 provider 调用、校验与 Artifact commit。AI 导演是一个 `directorPipeline` 父任务和 Analyze、Reconstruct、Brief、Visual Guardrails、Variants 五个顺序子任务，父任务创建时原子 claim 五个目标。Task Store 是每个 Run 私有的 `tasks/index.json`，只保存执行状态、冻结 lineage、创建时 provider/model、progress、usage、结果 refs 与脱敏错误；Prompt、Data URL、Base64 和完整请求体禁止落盘，ProductionStateStore 的 current Artifact 仍是唯一业务事实。
@@ -1489,6 +1491,8 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：**
 v3 包必须包含：schema version、digest、signature、production lineage、validation。导入时必须验证上述字段与 parent lineage 并建立**隔离的新 Run**；禁止与现态静默混合，包内旧媒体结果不得直接恢复。
 
 它仍**不是**包含批量执行、供应商状态和完整 canonical provenance 的 Production Package。**禁止把普通 JSON 描述为"可信生产包"。**
+
+「从剧情开始」的 Run 暂不支持 v3 包导出：`sealPackage` 明确返回 `PRODUCTION_PACKAGE_ENTRY_MODE_UNSUPPORTED`，不签一份导不回来的残缺包。
 
 ---
 

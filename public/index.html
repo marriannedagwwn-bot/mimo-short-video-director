@@ -53,11 +53,30 @@
 
     <section class="workspace-grid">
       <div class="card upload-card">
-        <div class="section-head">
+        <div class="entry-switch" role="radiogroup" aria-label="从哪里开始">
+          <label><input type="radio" name="entryMode" id="entryModeVideo" value="video" checked><span>从参考视频开始</span></label>
+          <label><input type="radio" name="entryMode" id="entryModeStory" value="story"><span>从剧情开始</span></label>
+        </div>
+        <div class="section-head video-only">
           <span class="step-number">01</span>
           <div><p class="label">REFERENCE</p><h2>上传参考视频</h2></div>
         </div>
-        <div class="source-media">
+        <div class="section-head story-only">
+          <span class="step-number">01</span>
+          <div><p class="label">STORY</p><h2>从剧情开始</h2></div>
+        </div>
+        <div class="story-entry-panel story-only" id="storyEntryPanel">
+          <div class="story-mode-switch" role="radiogroup" aria-label="剧情从哪里来">
+            <label><input type="radio" name="storyMode" id="storyModeFullText" value="fullStoryText" checked><span>粘贴完整故事</span></label>
+            <label><input type="radio" name="storyMode" id="storyModeCharacterOnly" value="characterOnly"><span>只给角色设定，让它写一个</span></label>
+          </div>
+          <label class="field" id="storySourceField">
+            <span>故事正文 <small id="storySourceCounter">0 / 5000</small></span>
+            <textarea id="storySourceText" rows="12" placeholder="粘贴完整故事。情节、人物、结局和台词都严格按原文，系统只补分场时间、画面动作和镜头设计；原文没写台词的地方不新增台词。"></textarea>
+          </label>
+          <p class="story-entry-hint">故事的主角就是右侧的「固定角色」。角色的名字、长相、身份和性格请写在固定角色里。</p>
+        </div>
+        <div class="source-media video-only">
           <label class="dropzone" id="dropzone" for="videoInput">
             <input id="videoInput" type="file" accept="video/*" hidden>
             <span class="upload-icon">
@@ -74,11 +93,11 @@
             <button class="text-button" id="replaceVideo" type="button">更换</button>
           </div>
         </div>
-        <div class="timeline-sampling">
+        <div class="timeline-sampling video-only">
           <div class="frame-head"><span>时间轴采样</span><small id="frameStatus">等待抽帧</small></div>
           <div class="frames" id="frames"></div>
         </div>
-        <label class="field transcript-field">
+        <label class="field transcript-field video-only">
           <span>字幕 / 对白补充 <small>可选，但能明显提高脚本还原精度</small></span>
           <textarea id="transcript" rows="4" placeholder="粘贴字幕、对白或无法从画面判断的背景信息…"></textarea>
         </label>
@@ -105,7 +124,7 @@
           <span>角色表情规则 <small>可选</small></span>
           <textarea id="characterExpressionRules" rows="3" placeholder="按角色分行填写“情绪 = 可见特征”；只描述表情与表演，不改变角色身份、外观或物种；下次生成动画镜头生产包时生效。"></textarea>
         </label>
-        <label class="field inline-field">
+        <label class="field inline-field video-only">
           <span>主题变体数量</span>
           <select id="variantCount">
             <option value="3">3 个</option>
@@ -125,9 +144,13 @@
           <span>剧情时长</span>
           <select id="storyDurationTarget"></select>
         </label>
-        <div class="promise-box">
+        <div class="promise-box video-only">
           <span>导演约束</span>
           <p>人物、任务、道具、对白和视听表达重做；母题、结构功能和情绪价值不被误杀。</p>
+        </div>
+        <div class="promise-box story-only">
+          <span>剧情约束</span>
+          <p>粘贴的故事严格按原文：情节、人物、结局和台词不改；只给角色设定时，系统写一个原创故事。</p>
         </div>
         <div class="director-controls" id="directorControls" role="group" aria-label="AI 导演运行控制">
           <button class="primary-button" id="runWorkflow" type="button" disabled>
@@ -148,7 +171,7 @@
 
     <section class="pipeline-section" id="resultsSection">
       <div class="pipeline-head">
-        <div><p class="eyebrow">DIRECTOR PIPELINE</p><h2>从原片证据到新故事</h2></div>
+        <div><p class="eyebrow">DIRECTOR PIPELINE</p><h2><span class="video-only">从原片证据到新故事</span><span class="story-only">从剧情到可拍的故事</span></h2></div>
         <div class="pipeline-head-meta">
           <button class="outline-button hidden" id="exportButton" type="button">导出完整 JSON</button>
         </div>
@@ -157,13 +180,14 @@
         <li data-stage="analysis"><span>1</span><div><strong>参考片分析</strong><small>定位、人物、节奏、情绪与完播理由</small></div><b>等待</b></li>
         <li data-stage="script"><span>2</span><div><strong>原片脚本还原</strong><small>分场、动作、镜头、转折与剧作功能</small></div><b>等待</b></li>
         <li data-stage="brief"><span>3</span><div><strong>创意简报</strong><small>原片的驱动结构与换角测试</small></div><b>等待</b></li>
-        <li data-stage="guardrails"><span>4</span><div><strong>角色与表达边界</strong><small>正向边界、原片规避与台词规则分开处理</small></div><b>等待</b></li>
-        <li data-stage="variants"><span>5</span><div><strong>主题变体</strong><small>适配固定角色和垂直赛道的新故事</small></div><b>等待</b></li>
+        <li data-stage="guardrails"><span><i class="video-only">4</i><i class="story-only">1</i></span><div><strong>角色与表达边界</strong><small><span class="video-only">正向边界、原片规避与台词规则分开处理</span><span class="story-only">固定角色的身份、外观与台词规则</span></small></div><b>等待</b></li>
+        <li data-stage="variants"><span><i class="video-only">5</i><i class="story-only">2</i></span><div><strong><span class="video-only">主题变体</span><span class="story-only">故事候选</span></strong><small><span class="video-only">适配固定角色和垂直赛道的新故事</span><span class="story-only">按原文整理成一个故事，或按角色设定原创一个</span></small></div><b>等待</b></li>
       </ol>
 
       <div class="empty-results" id="emptyResults">
         <span class="empty-glyph">⌁</span>
-        <p>上传一条参考视频并设定角色，分析结果会在这里逐层展开。</p>
+        <p class="video-only">上传一条参考视频并设定角色，分析结果会在这里逐层展开。</p>
+        <p class="story-only">粘贴完整故事，或只填好固定角色，结果会在这里展开。</p>
       </div>
       <div class="result-stack hidden" id="resultStack">
         <article class="result-card" id="analysisResult"></article>
@@ -177,12 +201,12 @@
 
   <main class="story-page hidden" id="storyPage">
     <section class="story-shell">
-      <button class="text-button back-button" id="backToResults" type="button">← 返回主题变体</button>
+      <button class="text-button back-button" id="backToResults" type="button"><span class="video-only">← 返回主题变体</span><span class="story-only">← 返回故事</span></button>
       <div class="story-hero-card">
         <div>
-          <p class="eyebrow">SELECTED VARIANT → FULL STORY</p>
-          <h1>把主题变体扩写成<br><em>可拍完整剧情。</em></h1>
-          <p class="hero-copy">这一页只基于你选中的主题变体继续创作，调用 <span id="storyModelName">完整剧情模型</span>，输出可进入拍摄筹备的剧情、分场、对白、道具和拍摄要点。</p>
+          <p class="eyebrow"><span class="video-only">SELECTED VARIANT → FULL STORY</span><span class="story-only">YOUR STORY → FULL STORY</span></p>
+          <h1><span class="video-only">把主题变体扩写成</span><span class="story-only">把你的故事展开成</span><br><em>可拍完整剧情。</em></h1>
+          <p class="hero-copy"><span class="video-only">这一页只基于你选中的主题变体继续创作</span><span class="story-only">这一页只基于你的故事继续创作</span>，调用 <span id="storyModelName">完整剧情模型</span>，输出可进入拍摄筹备的剧情、分场、对白、道具和拍摄要点。</p>
           <div class="story-package-tools">
             <button class="outline-button" id="importStoryPackage" type="button">导入测试包 JSON</button>
             <button class="outline-button" id="exportStoryTestPackage" type="button" disabled>导出测试包 JSON</button>
@@ -236,6 +260,7 @@
         </div>
       </div>
       <article class="result-card story-result hidden" id="fullStoryPrecheckPanel" aria-live="polite"></article>
+      <article class="result-card story-result story-dialogue-check hidden" id="storyDialogueCheck" aria-live="polite"></article>
       <article class="result-card story-result hidden" id="fullStoryResult"></article>
       <article class="result-card story-result hidden" id="animationPlanResult"></article>
     </section>

@@ -2,6 +2,7 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { loadEnv, getConfig, resolveDefaultLlmProvider } from "./src/config.js";
 import { initializeSystemProxy } from "./src/system-proxy.js";
 import { MimoClient } from "./src/mimo-client.js";
@@ -14,8 +15,8 @@ import { buildShotFrameMultiImagePrompt } from "./public/shot-frame-multi-image-
 import { computeDependencyHash, computePromptHash } from "./src/frame-dependency.js";
 import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./src/frame-reference-request.js";
 import { WorkflowService } from "./src/workflow.js";
-import { isStoryboardPlan, storyboardPromptArtifactId } from "./public/storyboard-plan.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, characterPromptBoundaryMismatch, characterReferenceBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, ensureStoryCandidateContract, ensureThemeVariantsMatchProfile, InputError, requireAnimationPlanAspectRatio } from "./src/validation.js";
+import { STORYBOARD_PLAN_VERSION, isStoryboardPlan, storyboardPromptArtifactId } from "./public/storyboard-plan.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, characterPromptBoundaryMismatch, characterReferenceBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, ensureStoryCandidateContract, ensureStoryEntryCandidateContract, ensureThemeVariantsMatchProfile, extractFixedCharacterName, InputError, requireAnimationPlanAspectRatio } from "./src/validation.js";
 import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
 import { resolveAuthoritativeShotVideoInput, resolveAuthoritativeShotVideoReferenceAssets, resolvePreviousShotFrameReference } from "./src/shot-video-continuity.js";
 import {
@@ -67,6 +68,18 @@ import {
 import { loadOrCreatePersistentKey } from "./src/persistent-key.js";
 import { STORY_DURATION_MAX_SECONDS, STORY_DURATION_MIN_SECONDS, isValidStoryDurationSeconds } from "./public/story-duration.js";
 import { CHARACTER_EXPRESSION_RULES_MAX_CHARS, isValidCharacterExpressionRules } from "./public/character-expression-rules.js";
+import {
+  STORY_ENTRY_MODE,
+  STORY_ENTRY_VARIANT_ID,
+  STORY_MODE_FULL_TEXT,
+  STORY_SOURCE_ARTIFACT_ID,
+  STORY_SOURCE_ARTIFACT_TYPE,
+  StoryEntryInputError,
+  isStoryEntryMetadata,
+  normalizeStoryEntryCreatorProfile,
+  normalizeStorySource
+} from "./public/story-entry.js";
+import { storyEntryDialogueFaithfulness } from "./src/story-entry-dialogue-check.js";
 import { ProductionStateStore } from "./src/production-state-store.js";
 import { createProductionPackageDownloadHandler } from "./src/production-package-download.js";
 import { BrowserWorkspaceStore, BrowserWorkspaceError } from "./src/browser-workspace-store.js";
@@ -413,7 +426,7 @@ const routes = {
         productionMedia.planEntry.content?.productionStrategy?.videoPromptProfile || null
       )
     };
-    const visualGuardrails = workflow.assertGlobalCharacterBoundary(body);
+    const visualGuardrails = verifyBoundaryForMedia(productionMedia, body);
     ensureCharacterReferencesMatchBoundary(request.characterReferences, visualGuardrails, request.shot);
     const setting = shotVideoRequestSetting(body);
     ensureCharacterPromptMatchesBoundary(shotVideoGenerationPromptText(request), visualGuardrails, {
@@ -577,6 +590,7 @@ function taskDefinitionForRequest(body = {}) {
     }
     return directorPipelineTaskDefinition({ projectId, runId, input });
   }
+  if (kind === "storyPipeline") return storyPipelineTaskDefinition({ projectId, runId, input });
   if (["analyze", "reconstruct", "brief", "visualGuardrails"].includes(kind)) {
     const stage = DIRECTOR_PIPELINE_STAGES.find((item) => item.taskKind === kind);
     return pipelineStageTaskDefinition({ projectId, runId, raw: input, stage });
@@ -607,6 +621,7 @@ function directorPipelineTaskDefinition({ projectId, runId, input }) {
     targetArtifactIds: DIRECTOR_PIPELINE_STAGES.map((stage) => stage.artifactId),
     modelSnapshot: modelSnapshotFor(input, DIRECTOR_PIPELINE_STAGES.map((stage) => stage.key)),
     prepare: async ({ run }) => {
+      assertRunEntryMode(run, "video");
       const expectedSourceDigest = String(run.metadata?.sourceVideoDigest || "").trim().toLowerCase();
       const actualSourceDigest = String(input.sourceVideoDigest || "").trim().toLowerCase();
       const requiresSourceMedia = ["referenceAnalysis", "sourceScriptReconstruction", "visualGuardrails"]
@@ -686,6 +701,7 @@ function pipelineStageTaskDefinition({ projectId, runId, raw, stage }) {
     modelStages: [stage.key],
     rawInput: raw,
     prepareInput: (run) => {
+      assertRunEntryMode(run, "video");
       assertCompatibleArtifactCopies(run, raw, [
         ["referenceAnalysis", "referenceAnalysis"],
         ["sourceScriptReconstruction", "sourceScriptReconstruction"],
@@ -695,6 +711,167 @@ function pipelineStageTaskDefinition({ projectId, runId, raw, stage }) {
       return stage.buildInput(raw, currentArtifactContents(run));
     },
     invoke: (trustedInput, request) => routes[stage.route](trustedInput, { request })
+  });
+}
+
+// 「从剧情开始」的两步：角色边界 → 单个故事候选，之后由父任务签发选中记录 variant:V1。
+// 与 DIRECTOR_PIPELINE_STAGES 并列、互不复用：AI 导演那条链的五个目标、「n/5」进度、
+// 需要源视频的判断和 standaloneVariantsTaskDefinition 取最后一项的写法都保持原样。
+// 两个子任务只能经由父任务创建，taskDefinitionForRequest 不接受它们的 kind。
+const STORY_PIPELINE_STAGES = Object.freeze([
+  {
+    key: "visualGuardrails",
+    taskKind: "storyVisualGuardrails",
+    artifactId: "visualGuardrails",
+    artifactType: "visualGuardrails",
+    dependencyIds: [STORY_SOURCE_ARTIFACT_ID],
+    buildInput: (raw, entry) => ({
+      creatorProfile: entry.creatorProfile,
+      modelOverrides: raw.modelOverrides
+    }),
+    invoke: (input, storyEntry) => workflow.createStoryEntryVisualGuardrails(input, { storyEntry })
+  },
+  {
+    key: "variants",
+    taskKind: "storyCandidate",
+    artifactId: "themeVariants",
+    artifactType: "themeVariants",
+    dependencyIds: [STORY_SOURCE_ARTIFACT_ID, "visualGuardrails"],
+    buildInput: (raw, entry, artifacts) => ({
+      creatorProfile: entry.creatorProfile,
+      visualGuardrails: artifacts.visualGuardrails,
+      targetDurationSeconds: raw.targetDurationSeconds,
+      modelOverrides: raw.modelOverrides
+    }),
+    invoke: (input, storyEntry) => workflow.createStoryEntryCandidate(input, { storyEntry })
+  }
+]);
+const STORY_PIPELINE_SELECTION_ARTIFACT_ID = `variant:${STORY_ENTRY_VARIANT_ID}`;
+const STORY_PIPELINE_TARGET_IDS = Object.freeze([
+  ...STORY_PIPELINE_STAGES.map((stage) => stage.artifactId),
+  STORY_PIPELINE_SELECTION_ARTIFACT_ID
+]);
+
+function storyPipelineTaskDefinition({ projectId, runId, input }) {
+  const inputDigest = contentDigest(nonArtifactInputDigestSource(input));
+  const modelStages = STORY_PIPELINE_STAGES.map((stage) => stage.key);
+  const totalStages = STORY_PIPELINE_STAGES.length;
+  return {
+    projectId,
+    runId,
+    kind: "storyPipeline",
+    pool: "workflow",
+    targetArtifactIds: [...STORY_PIPELINE_TARGET_IDS],
+    dependencyIds: [STORY_SOURCE_ARTIFACT_ID],
+    modelSnapshot: modelSnapshotFor(input, modelStages),
+    prepare: async ({ run }) => {
+      const entry = trustedStoryEntryContext(run);
+      assertStoryEntryProfileCopy(input, entry);
+      if (input.targetDurationSeconds !== undefined && !isValidStoryDurationSeconds(input.targetDurationSeconds)) {
+        throw new InputError(`targetDurationSeconds 必须是 ${STORY_DURATION_MIN_SECONDS}-${STORY_DURATION_MAX_SECONDS} 之间的整数秒`);
+      }
+      return {
+        input: structuredClone(input),
+        inputDigest,
+        targetArtifactIds: [...STORY_PIPELINE_TARGET_IDS],
+        dependencyIds: [STORY_SOURCE_ARTIFACT_ID],
+        modelSnapshot: modelSnapshotFor(input, modelStages),
+        progress: { completedStages: 0, totalStages }
+      };
+    },
+    execute: async (raw, context) => {
+      const completed = [];
+      const usages = [];
+      let reusedStages = 0;
+      for (const stage of STORY_PIPELINE_STAGES) {
+        const snapshot = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
+        const existing = snapshot.latestArtifacts?.[stage.artifactId];
+        if (existing?.lineage?.status === "current") {
+          completed.push(lineageRef(existing.lineage));
+          reusedStages += 1;
+          await context.heartbeat({
+            reusedStages,
+            completedStages: completed.length,
+            totalStages,
+            currentStage: stage.artifactId,
+            reusedCurrentArtifact: true
+          });
+          continue;
+        }
+        await context.heartbeat({ completedStages: completed.length, totalStages, currentStage: stage.artifactId });
+        const child = await context.runChild(storyPipelineStageTaskDefinition({ projectId, runId, raw, stage }));
+        completed.push(...(child.resultArtifactRefs || []));
+        if (child.usage) usages.push(child.usage);
+        await context.heartbeat({ completedStages: completed.length, totalStages, currentStage: stage.artifactId });
+      }
+      // 剧情入口只有一个候选：由服务端直接签发选中记录，浏览器不再提交 variant:V1。
+      // 已经是同一份内容、同一个上游时不重复提交，免得把已经展开的完整剧情无故标成过期。
+      const run = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
+      const variants = requireCurrentArtifact(run, "themeVariants");
+      const candidates = variants.content?.variants;
+      const candidate = Array.isArray(candidates) && candidates.length === 1 ? candidates[0] : null;
+      if (!candidate || candidate.id !== STORY_ENTRY_VARIANT_ID) {
+        throw new ProductionStateError(`剧情入口的故事候选必须恰好一个、id 为 ${STORY_ENTRY_VARIANT_ID}。`, {
+          code: "STORY_ENTRY_CANDIDATE_INVALID",
+          httpStatus: 409
+        });
+      }
+      const variantsRef = lineageRef(variants.lineage);
+      const selection = run.latestArtifacts?.[STORY_PIPELINE_SELECTION_ARTIFACT_ID];
+      const selectionCurrent = selection?.lineage?.status === "current"
+        && selection.lineage.contentDigest === contentDigest(candidate)
+        && sameLineageRefs(selection.lineage.dependencies, [variantsRef]);
+      if (selectionCurrent) {
+        completed.push(lineageRef(selection.lineage));
+      } else {
+        // 不调 assertFrozenContextCurrent：它会核对父任务的全部目标，而 visualGuardrails 与
+        // themeVariants 刚被本任务自己的子步骤提交过。提交口在 Run 锁内只核对 variant:V1 这一个
+        // 目标与冻结依赖（storySource），并要求 themeVariants 仍是上面读到的这一版。
+        const committed = await context.commitArtifact({
+          artifactId: STORY_PIPELINE_SELECTION_ARTIFACT_ID,
+          artifactType: "selectedVariant",
+          content: candidate,
+          dependencies: [variantsRef]
+        });
+        completed.push(lineageRef(committed.lineage));
+      }
+      const finalRun = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
+      return {
+        resultArtifactRefs: completed,
+        usage: mergeTaskUsages(usages),
+        progress: { completedStages: totalStages, totalStages, reusedStages },
+        compatibilityResult: Object.fromEntries(STORY_PIPELINE_TARGET_IDS.map((artifactId) => [
+          artifactId,
+          finalRun.latestArtifacts?.[artifactId]?.content
+        ]))
+      };
+    }
+  };
+}
+
+function storyPipelineStageTaskDefinition({ projectId, runId, raw, stage }) {
+  return artifactRouteTaskDefinition({
+    projectId,
+    runId,
+    kind: stage.taskKind,
+    pool: "workflow",
+    artifactId: stage.artifactId,
+    artifactType: stage.artifactType,
+    dependencyIds: stage.dependencyIds,
+    modelStages: [stage.key],
+    rawInput: raw,
+    prepareInput: (run) => {
+      const entry = trustedStoryEntryContext(run);
+      const artifacts = currentArtifactContents(run, stage.dependencyIds);
+      return {
+        ...stage.buildInput(raw, entry, artifacts),
+        __storyEntry: { storyMode: entry.storyMode, storySource: entry.storySource }
+      };
+    },
+    invoke: (trustedInput) => {
+      const { __storyEntry, ...input } = trustedInput;
+      return stage.invoke(input, __storyEntry);
+    }
   });
 }
 
@@ -725,6 +902,7 @@ function fullStoryTaskDefinition({ projectId, runId, input }) {
     modelStages: ["fullStory"],
     rawInput: input,
     prepareInput: (run) => {
+      if (isStoryEntryRun(run)) return storyEntryFullStoryInput(run, input, variantId);
       assertCompatibleArtifactCopies(run, input, [
         ["referenceAnalysis", "referenceAnalysis"],
         ["sourceScriptReconstruction", "sourceScriptReconstruction"],
@@ -750,7 +928,16 @@ function fullStoryTaskDefinition({ projectId, runId, input }) {
         modelOverrides: input.modelOverrides
       };
     },
-    invoke: (trustedInput, request) => routes["/api/full-story"](trustedInput, { request })
+    // 剧情 Run 的依赖由 prepare 从 Run 元数据决定（storySource 链）；视频 Run 返回 null，
+    // 仍按上面的 dependencyIds 冻结，行为不变。
+    resolveDependencies: (trustedInput) => trustedInput.__storyEntry ? trustedInput.__dependencies : null,
+    invoke: (trustedInput, request) => {
+      if (trustedInput.__storyEntry) {
+        const { __storyEntry, __dependencies: _dependencies, ...routeInput } = trustedInput;
+        return storyEntryFullStory(routeInput, { request, storyEntry: __storyEntry });
+      }
+      return routes["/api/full-story"](trustedInput, { request });
+    }
   });
 }
 
@@ -778,6 +965,7 @@ function animationPlanTaskDefinition({ projectId, runId, input }) {
     createMediaNamespace: true,
     contentForArtifact: (value) => normalizeAnimationPlanTaskResponse(value).animationPlan,
     prepareInput: (run) => {
+      if (isStoryEntryRun(run)) return storyEntryAnimationPlanInput(run, input, variantId);
       assertCompatibleArtifactCopies(run, input, [
         ["referenceAnalysis", "referenceAnalysis"],
         ["sourceScriptReconstruction", "sourceScriptReconstruction"],
@@ -805,7 +993,14 @@ function animationPlanTaskDefinition({ projectId, runId, input }) {
         modelOverrides: input.modelOverrides
       };
     },
-    invoke: (trustedInput, request) => routes["/api/animation-plan"](trustedInput, { request })
+    resolveDependencies: (trustedInput) => trustedInput.__storyEntry ? trustedInput.__dependencies : null,
+    invoke: (trustedInput, request) => {
+      if (trustedInput.__storyEntry) {
+        const { __storyEntry, __dependencies: _dependencies, ...routeInput } = trustedInput;
+        return storyEntryAnimationPlan(routeInput, { request, storyEntry: __storyEntry });
+      }
+      return routes["/api/animation-plan"](trustedInput, { request });
+    }
   });
 }
 
@@ -830,6 +1025,7 @@ function animationPromptRewriteTaskDefinition({ projectId, runId, input }) {
     createMediaNamespace: true,
     contentForArtifact: (value) => normalizeAnimationPlanTaskResponse(value).animationPlan,
     prepareInput: (run) => {
+      assertRunEntryMode(run, "video");
       const plan = requireCurrentArtifact(run, artifactId);
       assertCompatibleArtifactCopies(run, input, [
         ["creativeBrief", "creativeBrief"],
@@ -878,6 +1074,9 @@ function characterReferenceRefineTaskDefinition({ projectId, runId, input }) {
     rawInput: input,
     createMediaNamespace: true,
     prepareInput: (run) => {
+      // 剧情 Run 没有原片分析、脚本还原和创意简报；角色边界按剧情入口的摘要验，固定角色设定取 Run 元数据。
+      const entry = isStoryEntryRun(run) ? trustedStoryEntryContext(run) : null;
+      if (entry) assertNoVideoUpstreamCopies(input);
       const planEntry = requireCurrentArtifact(run, artifactId);
       const plan = structuredClone(planEntry.content);
       const characterReference = plan.characterReferencePrompts?.[roleIndex];
@@ -915,7 +1114,7 @@ function characterReferenceRefineTaskDefinition({ projectId, runId, input }) {
         imageName: String(input.imageName || "reference.png"),
         imageDataUrl: input.imageDataUrl,
         characterReference: safeCharacterReference,
-        creatorProfile: input.creatorProfile,
+        creatorProfile: entry ? entry.creatorProfile : input.creatorProfile,
         referenceAnalysis: artifacts.referenceAnalysis,
         sourceScriptReconstruction: artifacts.sourceScriptReconstruction,
         creativeBrief: artifacts.creativeBrief,
@@ -928,6 +1127,7 @@ function characterReferenceRefineTaskDefinition({ projectId, runId, input }) {
           visualBible: plan.visualBible
         },
         modelOverrides: input.modelOverrides,
+        ...(entry ? { __storyEntry: { storyMode: entry.storyMode, storySource: entry.storySource } } : {}),
         __plan: plan,
         __roleIndex: roleIndex,
         __dependencies: planEntry.lineage.dependencies || []
@@ -960,7 +1160,8 @@ function characterReferenceRefineTaskDefinition({ projectId, runId, input }) {
       return updatedPlan;
     },
     invoke: (trustedInput) => {
-      const { __plan, __roleIndex, __dependencies, ...routeInput } = trustedInput;
+      const { __plan, __roleIndex, __dependencies, __storyEntry, ...routeInput } = trustedInput;
+      if (__storyEntry) return workflow.refineCharacterReference(routeInput, { storyEntry: __storyEntry });
       return routes["/api/refine-character-reference"](routeInput);
     }
   });
@@ -981,6 +1182,8 @@ function characterReferenceImagesTaskDefinition({ projectId, runId, input }) {
     dependencyIds: [planArtifactId],
     modelSnapshot: { imageGeneration: { provider: "Jimeng", model: imageModel } },
     prepare: async ({ run }) => {
+      const entry = isStoryEntryRun(run) ? trustedStoryEntryContext(run) : null;
+      if (entry) assertNoVideoUpstreamCopies(input);
       const planEntry = requireCurrentArtifact(run, planArtifactId);
       const characterReference = planEntry.content?.characterReferencePrompts?.[roleIndex];
       if (!characterReference) {
@@ -1014,10 +1217,12 @@ function characterReferenceImagesTaskDefinition({ projectId, runId, input }) {
           promptDigest: contentDigest(prompt),
           referenceImageDataUrl: input.referenceImageDataUrl,
           characterReference: stripReferenceImageData(characterReference),
-          creatorProfile: input.creatorProfile,
-          referenceAnalysis: requireCurrentArtifact(run, "referenceAnalysis").content,
-          sourceScriptReconstruction: requireCurrentArtifact(run, "sourceScriptReconstruction").content,
-          creativeBrief: requireCurrentArtifact(run, "creativeBrief").content,
+          creatorProfile: entry ? entry.creatorProfile : input.creatorProfile,
+          ...(entry ? {} : {
+            referenceAnalysis: requireCurrentArtifact(run, "referenceAnalysis").content,
+            sourceScriptReconstruction: requireCurrentArtifact(run, "sourceScriptReconstruction").content,
+            creativeBrief: requireCurrentArtifact(run, "creativeBrief").content
+          }),
           visualGuardrails: requireCurrentArtifact(run, "visualGuardrails").content,
           selectedVariant: requireCurrentArtifact(run, `variant:${variantId}`).content,
           productionContext: productionContextForLineage(projectId, runId, planEntry.lineage),
@@ -1044,7 +1249,7 @@ function characterReferenceImagesTaskDefinition({ projectId, runId, input }) {
 async function executeCharacterReferenceImagesTask(input, context) {
   if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
   const productionMedia = await resolveProductionMediaContext({ productionContext: input.productionContext }, { required: true });
-  const visualGuardrails = workflow.assertGlobalCharacterBoundary(input);
+  const visualGuardrails = verifyBoundaryForMedia(productionMedia, input);
   const boundaryWarnings = [
     characterReferenceBoundaryMismatch(input.characterReference, visualGuardrails),
     characterPromptBoundaryMismatch(input.prompt, visualGuardrails, {
@@ -1517,6 +1722,7 @@ function shotFrameTaskDefinition({ projectId, runId, input }) {
     modelStages: [],
     rawInput: input,
     prepareInput: (run) => {
+      assertRunEntryMode(run, "video");
       const planEntry = requireCurrentArtifact(run, planArtifactId);
       assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry: planEntry });
       const authoritativeShot = (planEntry.content?.shotPlan || [])
@@ -2520,6 +2726,12 @@ async function handleProductionStateRequest(pathname, body = {}) {
     if (workspace) await attachBrowserWorkspaceRun(workspace, run, body.workspacePageId);
     return run;
   }
+  if (pathname === "/api/production/run/story/start") {
+    return startStoryEntryRun(body);
+  }
+  if (pathname === "/api/production/story-entry/dialogue-check") {
+    return storyEntryDialogueCheck(body);
+  }
   if (pathname === "/api/production/run/load") {
     return productionStateStore.loadRun({
       projectId: body.projectId,
@@ -2531,6 +2743,14 @@ async function handleProductionStateRequest(pathname, body = {}) {
     return productionStateStore.recordStage(body);
   }
   if (pathname === "/api/production/artifact/commit") {
+    // 用户故事原文只能由服务端在开 Run 时写入；浏览器的通用提交口不能改它，否则
+    // 签发过的角色边界和整条剧情链会被一份没校验过的文本顶掉。
+    if (normalizeArtifactId(body.artifactId) === STORY_SOURCE_ARTIFACT_ID) {
+      throw new ProductionStateError("storySource 只能由服务端在开始剧情入口时写入。", {
+        code: "STORY_SOURCE_SERVER_ONLY",
+        httpStatus: 403
+      });
+    }
     return productionStateStore.commitArtifact(body);
   }
   if (pathname === "/api/production/package/seal") {
@@ -2583,6 +2803,312 @@ async function handleProductionStateRequest(pathname, body = {}) {
     code: "PRODUCTION_ROUTE_NOT_FOUND",
     httpStatus: 404
   });
+}
+
+// 「从剧情开始」：没有参考视频。顺序照 v3 导入——先把输入校验完，再清空当前页面的视频
+// 和旧 Run，然后建 Run、由服务端提交 storySource、绑定工作区；建好 Run 之后任何一步
+// 失败都清掉它，不留半个剧情 Run。Run 元数据只写一次，之后所有任务都从这里判断入口。
+async function startStoryEntryRun(body = {}) {
+  let creatorProfile;
+  let storySource;
+  try {
+    creatorProfile = normalizeStoryEntryCreatorProfile(body.metadata?.creatorProfile);
+    storySource = normalizeStorySource(body.storySource);
+  } catch (error) {
+    if (error instanceof StoryEntryInputError) {
+      throw new ProductionStateError(error.message, { code: error.code, httpStatus: 400, details: error.details });
+    }
+    throw error;
+  }
+  // 粘贴完整故事时，原文里应能找到固定角色的名字。找不到就先问用户：确认后系统把故事主角
+  // 当作固定角色（候选会改用固定角色的名字），这是「严格按原文」唯一允许的改动。
+  if (storySource.storyMode === STORY_MODE_FULL_TEXT && body.acknowledgeProtagonistName !== true) {
+    const fixedName = extractFixedCharacterName(creatorProfile.fixedCharacter);
+    if (fixedName && !storySource.storyText.includes(fixedName)) {
+      throw new ProductionStateError(
+        `故事原文里没有出现固定角色「${fixedName}」。继续的话，系统会把故事主角当作${fixedName}，主角在原文里的其他称呼会改成「${fixedName}」。`,
+        { code: "STORY_ENTRY_PROTAGONIST_NAME_MISSING", httpStatus: 409, details: [{ characterName: fixedName }] }
+      );
+    }
+  }
+  let workspace = body.workspaceId
+    ? await browserWorkspaceStore.inspect(body.workspaceId, {
+      expectedGeneration: requiredWorkspaceGeneration(body.workspaceGeneration),
+      pageId: requiredWorkspacePageId(body.workspacePageId)
+    })
+    : null;
+  if (workspace) {
+    workspace = await browserWorkspaceStore.resetSource(workspace.id, {
+      expectedGeneration: workspace.generation, pageId: body.workspacePageId
+    });
+  }
+  let createdRun = null;
+  let committed;
+  try {
+    createdRun = await productionStateStore.createRun({
+      projectId: body.projectId,
+      metadata: {
+        entryMode: STORY_ENTRY_MODE,
+        storyMode: storySource.storyMode,
+        storySourceDigest: contentDigest(storySource),
+        creatorProfile,
+        ...(workspace ? { browserWorkspaceId: workspace.id } : {}),
+        startedBy: "browser-story-entry"
+      }
+    });
+    committed = await productionStateStore.commitArtifact({
+      projectId: createdRun.projectId,
+      runId: createdRun.runId,
+      artifactId: STORY_SOURCE_ARTIFACT_ID,
+      artifactType: STORY_SOURCE_ARTIFACT_TYPE,
+      content: storySource,
+      dependencies: [],
+      requestId: `story-start-${randomUUID()}`,
+      expectedCurrentRevision: null
+    });
+  } catch (error) {
+    if (workspace && createdRun) {
+      await browserWorkspaceCleanup.cleanup({ projectId: createdRun.projectId, runId: createdRun.runId, workspaceId: workspace.id });
+    }
+    throw error;
+  }
+  const run = await productionStateStore.loadRun({ projectId: createdRun.projectId, runId: createdRun.runId, includeContent: false });
+  const result = {
+    production: {
+      ...run,
+      latestArtifacts: undefined,
+      artifacts: { [STORY_SOURCE_ARTIFACT_ID]: committed.lineage }
+    },
+    storySource
+  };
+  if (!workspace) return result;
+  await attachBrowserWorkspaceRun(workspace, createdRun, body.workspacePageId);
+  result.workspace = await browserWorkspaceStore.inspect(workspace.id, {
+    expectedGeneration: workspace.generation, pageId: body.workspacePageId
+  });
+  return result;
+}
+
+// 只读的台词核对：现算现给，不写 Artifact、不进 Task Store、不落盘。
+async function storyEntryDialogueCheck(body = {}) {
+  const run = await productionStateStore.loadRun({ projectId: body.projectId, runId: body.runId, includeContent: true });
+  const entry = trustedStoryEntryContext(run);
+  const variantId = safeIdentifier(body.variantId || STORY_ENTRY_VARIANT_ID, "variantId");
+  const currentContent = (artifactId) => {
+    const item = run.latestArtifacts?.[artifactId];
+    return item?.lineage?.status === "current" ? item.content : null;
+  };
+  return storyEntryDialogueFaithfulness({
+    storySource: entry.storySource,
+    fullStory: currentContent(`fullStory:${variantId}`),
+    animationPlan: currentContent(`animationPlan:${variantId}`)
+  });
+}
+
+function isStoryEntryRun(run) {
+  return isStoryEntryMetadata(run?.metadata);
+}
+
+// 视频入口的任务在剧情 Run 上调用（或反过来）一律明确拒绝，不让它们拿着缺失的上游去碰运气。
+function assertRunEntryMode(run, expected) {
+  const actual = isStoryEntryRun(run) ? STORY_ENTRY_MODE : "video";
+  if (actual === expected) return true;
+  throw new ProductionStateError(actual === STORY_ENTRY_MODE
+    ? "这是「从剧情开始」的 Run，没有参考视频，不能运行参考视频专用的步骤。"
+    : "这个 Run 是从参考视频开始的，不能运行「从剧情开始」的步骤。", {
+    code: "TASK_ENTRY_MODE_MISMATCH",
+    httpStatus: 409,
+    details: [{ expected, actual }]
+  });
+}
+
+// 剧情入口的可信上下文：故事原文只取服务端在开 Run 时提交的 storySource，并核对它与
+// Run 元数据里一次写定的摘要一致；固定角色设定也取元数据里那一份，不取请求体。
+function trustedStoryEntryContext(run) {
+  assertRunEntryMode(run, STORY_ENTRY_MODE);
+  const entry = run.latestArtifacts?.[STORY_SOURCE_ARTIFACT_ID];
+  if (!entry?.lineage || entry.lineage.status !== "current") {
+    throw new ProductionStateError("剧情入口缺少 current storySource。", { code: "TASK_DEPENDENCY_MISSING", httpStatus: 409 });
+  }
+  let storySource;
+  try {
+    storySource = normalizeStorySource(entry.content);
+  } catch (error) {
+    throw new ProductionStateError(`storySource 内容无效：${error.message}`, { code: "STORY_SOURCE_INVALID", httpStatus: 409 });
+  }
+  if (entry.lineage.contentDigest !== String(run.metadata?.storySourceDigest || "")) {
+    throw new ProductionStateError("storySource 与 Run 创建时记录的摘要不一致。", { code: "STORY_SOURCE_TAMPERED", httpStatus: 409 });
+  }
+  return {
+    storyMode: storySource.storyMode,
+    storySource,
+    creatorProfile: normalizeStoryEntryCreatorProfile(run.metadata?.creatorProfile)
+  };
+}
+
+// 剧情 Run 的请求体不该带参考视频那三份上游；页面给了非空副本说明它拿错了 Run，直接拒绝。
+// null 视为没给（旧页面状态里缺失的上游就是 null）。
+function assertNoVideoUpstreamCopies(input = {}) {
+  const present = ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief"]
+    .filter((key) => input?.[key] !== undefined && input?.[key] !== null);
+  if (!present.length) return true;
+  throw new ProductionStateError(`「从剧情开始」的 Run 没有参考视频上游，请求不应携带：${present.join("、")}`, {
+    code: "STORY_ENTRY_INPUT_INVALID",
+    httpStatus: 400,
+    details: present.map((key) => ({ key }))
+  });
+}
+
+// 页面带了 creatorProfile 时，它必须就是开 Run 时写进元数据的那一份；剧情 Run 的
+// 下游一律用元数据里的设定，不用请求体。
+function assertStoryEntryProfileCopy(input = {}, entry) {
+  if (!Object.prototype.hasOwnProperty.call(input || {}, "creatorProfile")) return true;
+  let copy;
+  try {
+    copy = normalizeStoryEntryCreatorProfile(input.creatorProfile);
+  } catch (error) {
+    throw new ProductionStateError(`creatorProfile 无效：${error.message}`, { code: "STORY_ENTRY_INPUT_INVALID", httpStatus: 400 });
+  }
+  return assertCompatibleValueCopy(entry.creatorProfile, copy, "creatorProfile");
+}
+
+function storyEntryDependencyRefs(run, artifactIds) {
+  return artifactIds.map((artifactId) => lineageRef(requireCurrentArtifact(run, artifactId).lineage));
+}
+
+function storyEntryContextPayload(entry) {
+  return { storyMode: entry.storyMode, storySource: entry.storySource };
+}
+
+function storyEntryFullStoryInput(run, input, variantId) {
+  const entry = trustedStoryEntryContext(run);
+  assertNoVideoUpstreamCopies(input);
+  assertStoryEntryProfileCopy(input, entry);
+  const dependencyIds = [STORY_SOURCE_ARTIFACT_ID, "visualGuardrails", "themeVariants", `variant:${variantId}`];
+  assertCompatibleArtifactCopies(run, input, [
+    ["visualGuardrails", "visualGuardrails"],
+    ["themeVariants", "themeVariants"],
+    ["variant", `variant:${variantId}`]
+  ]);
+  assertCompatibleLineageCopy(run, `variant:${variantId}`, input.candidateBinding, "candidateBinding");
+  const artifacts = currentArtifactContents(run, dependencyIds);
+  return {
+    visualGuardrails: artifacts.visualGuardrails,
+    themeVariants: artifacts.themeVariants,
+    variant: artifacts[`variant:${variantId}`],
+    candidateBinding: lineageRef(requireCurrentArtifact(run, `variant:${variantId}`).lineage),
+    creatorProfile: entry.creatorProfile,
+    targetDurationSeconds: input.targetDurationSeconds,
+    fullStorySchemaVersion: input.fullStorySchemaVersion,
+    modelOverrides: input.modelOverrides,
+    __storyEntry: storyEntryContextPayload(entry),
+    __dependencies: storyEntryDependencyRefs(run, dependencyIds)
+  };
+}
+
+function storyEntryAnimationPlanInput(run, input, variantId) {
+  const entry = trustedStoryEntryContext(run);
+  assertNoVideoUpstreamCopies(input);
+  assertStoryEntryProfileCopy(input, entry);
+  if (input.animationPlanVersion !== STORYBOARD_PLAN_VERSION) {
+    throw new ProductionStateError("「从剧情开始」的 Run 只支持 4.0 自主分镜。", {
+      code: "STORY_ENTRY_PLAN_VERSION_UNSUPPORTED",
+      httpStatus: 400
+    });
+  }
+  const dependencyIds = [STORY_SOURCE_ARTIFACT_ID, "visualGuardrails", `variant:${variantId}`, `fullStory:${variantId}`];
+  assertCompatibleArtifactCopies(run, input, [
+    ["visualGuardrails", "visualGuardrails"],
+    ["variant", `variant:${variantId}`],
+    ["fullStory", `fullStory:${variantId}`]
+  ]);
+  const artifacts = currentArtifactContents(run, dependencyIds);
+  return {
+    visualGuardrails: artifacts.visualGuardrails,
+    variant: artifacts[`variant:${variantId}`],
+    fullStory: artifacts[`fullStory:${variantId}`],
+    creatorProfile: entry.creatorProfile,
+    characterExpressionRules: input.characterExpressionRules,
+    animationPlanMode: input.animationPlanMode || "direct_shot",
+    animationPlanVersion: input.animationPlanVersion,
+    targetAspectRatio: input.targetAspectRatio,
+    backgroundMusicEnabled: input.backgroundMusicEnabled,
+    videoPromptTarget: input.videoPromptTarget,
+    includeCompilerMetadata: input.includeCompilerMetadata !== false,
+    modelOverrides: input.modelOverrides,
+    __storyEntry: storyEntryContextPayload(entry),
+    __dependencies: storyEntryDependencyRefs(run, dependencyIds)
+  };
+}
+
+// 剧情入口的完整剧情。与 /api/full-story 路由同一套候选绑定与前后复核，只是候选按剧情入口
+// 的严格 Schema 校验，并把 storyEntry 交给 workflow（它决定提示词与角色边界摘要）。
+// 不注册成 HTTP 路由：只能经由 fullStory 任务、在服务端确认是剧情 Run 之后调用。
+async function storyEntryFullStory(body, { request, storyEntry }) {
+  if (body?.targetDurationSeconds !== undefined && !isValidStoryDurationSeconds(body.targetDurationSeconds)) {
+    throw new InputError(
+      `targetDurationSeconds 必须是 ${STORY_DURATION_MIN_SECONDS}-${STORY_DURATION_MAX_SECONDS} 之间的整数秒`
+    );
+  }
+  const validateBoundCandidate = (candidate) => {
+    ensureStoryEntryCandidateContract(candidate, { path: "selectedCandidate" });
+    ensureThemeVariantsMatchProfile({ variants: [candidate] }, body?.creatorProfile, null, body?.visualGuardrails);
+    return candidate;
+  };
+  const candidateBinding = await resolveFullStoryCandidateBinding({
+    headers: request?.headers || {},
+    body,
+    loadRun: (input) => productionStateStore.loadRun(input),
+    validateCandidate: validateBoundCandidate
+  });
+  const result = await workflow.createFullStory(candidateBinding.input, {
+    traceContext: await fullStoryModelOutputTrace(request, candidateBinding.input),
+    storyEntry
+  });
+  await assertFullStoryCandidateBindingCurrent(candidateBinding, {
+    loadRun: (input) => productionStateStore.loadRun(input),
+    validateCandidate: validateBoundCandidate
+  });
+  return result;
+}
+
+// 剧情入口的 4.0 分镜。与 /api/animation-plan 路由同一份输入检查与提示词采集外壳。
+async function storyEntryAnimationPlan(body, { request, storyEntry }) {
+  if (body?.characterExpressionRules !== undefined && !isValidCharacterExpressionRules(body.characterExpressionRules)) {
+    throw new InputError(`characterExpressionRules 必须是不超过 ${CHARACTER_EXPRESSION_RULES_MAX_CHARS} 字符的字符串`);
+  }
+  return animationPromptCapture.run({
+    route: "/api/animation-plan",
+    variantId: body?.variant?.id,
+    animationPlanMode: body?.animationPlanMode,
+    provider: String(body?.modelOverrides?.animationPlan?.provider || stageDefaults.animationPlan.provider || ""),
+    traceContext: await animationPlanModelOutputTrace(request, body)
+  }, () => workflow.createAnimationPlanWithMetadata(body, { storyEntry }));
+}
+
+// 媒体阶段的角色边界校验。参考视频 Run 逐字沿用原来的调用（请求体里经过 digest 复核的副本）；
+// 剧情 Run 一律取服务端 Run 里的固定角色设定与 current visualGuardrails，按剧情入口的摘要验。
+function verifyBoundaryForMedia(productionMedia, body) {
+  if (!productionMedia?.storyEntry) return workflow.assertGlobalCharacterBoundary(body);
+  const guardrails = productionMedia.latestArtifacts?.visualGuardrails;
+  if (guardrails?.lineage?.status !== "current") {
+    throw new ProductionStateError("缺少 current Artifact：visualGuardrails", { code: "TASK_DEPENDENCY_MISSING", httpStatus: 409 });
+  }
+  return workflow.assertGlobalCharacterBoundary(
+    { creatorProfile: productionMedia.storyEntry.creatorProfile, visualGuardrails: guardrails.content },
+    { storyEntry: storyEntryContextPayload(productionMedia.storyEntry) }
+  );
+}
+
+function sameLineageRefs(left, right) {
+  const normalize = (items) => (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      artifactId: String(item?.artifactId || ""),
+      revision: String(item?.revision || ""),
+      contentDigest: String(item?.contentDigest || "")
+    }))
+    .sort((a, b) => a.artifactId.localeCompare(b.artifactId));
+  return contentDigest(normalize(left)) === contentDigest(normalize(right));
 }
 
 async function attachBrowserWorkspaceRun(workspace, run, pageId) {
@@ -2676,7 +3202,9 @@ async function resolveProductionMediaContext(body = {}, { required = false } = {
     workspaceMediaLifetime,
     videoPublicBasePath: `/generated-videos/${publicNamespace}`,
     filenamePrefix: `${safeIdentifier(planRevision, "planRevision")}-${planDigest.slice(0, 12)}`,
-    planAspectRatio
+    planAspectRatio,
+    // 剧情 Run 才有；媒体阶段据此按剧情入口的摘要验角色边界（verifyBoundaryForMedia）。
+    storyEntry: isStoryEntryRun(run) ? trustedStoryEntryContext(run) : null
   };
 }
 

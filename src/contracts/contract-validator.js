@@ -53,6 +53,45 @@ const validateStoryCandidate = ajv.compile({
   $defs: storyCandidatesSchema.$defs
 });
 
+// 「从剧情开始」的候选没有参考视频可对照。从上面那份严格 Schema 派生，只去掉四个
+// 对照原片的字段、恰好一个候选——不另写一份 JSON，共享字段就不会漂移，视频入口的
+// Schema 一个字不动。派生前先确认四个字段都在：基础 Schema 改了结构，模块加载时
+// 就失败，不会静默派生出一份缺口 Schema。两份 Schema 都是 additionalProperties:false，
+// 所以互相不接受对方的候选。
+export const STORY_ENTRY_REMOVED_CANDIDATE_FIELDS = Object.freeze([
+  "highValueBeatMapping",
+  "transformationProof",
+  "experienceFidelity",
+  "originalityRiskCheck"
+]);
+const storyEntryCandidatesSchema = deriveStoryEntryCandidatesSchema(storyCandidatesSchema);
+const validateStoryEntryCandidates = ajv.compile(storyEntryCandidatesSchema);
+const validateStoryEntryCandidate = ajv.compile({
+  $schema: storyEntryCandidatesSchema.$schema,
+  $id: "internal://story-entry-candidate-strict",
+  ...storyEntryCandidatesSchema.$defs.storyCandidate,
+  $defs: storyEntryCandidatesSchema.$defs
+});
+
+function deriveStoryEntryCandidatesSchema(base) {
+  const schema = structuredClone(base);
+  schema.$id = "internal://story-entry-candidates-strict";
+  const candidate = schema.$defs?.storyCandidate;
+  for (const field of STORY_ENTRY_REMOVED_CANDIDATE_FIELDS) {
+    if (!candidate?.properties?.[field] || !candidate.required?.includes(field)) {
+      throw new Error(`派生剧情入口候选 Schema 失败：基础 Schema 里找不到必填字段 ${field}`);
+    }
+    delete candidate.properties[field];
+    candidate.required = candidate.required.filter((key) => key !== field);
+  }
+  // 唯一引用它的 transformationProof 已删；还有别处引用的话 ajv 编译会直接报错。
+  if (!schema.$defs.sourceReplacementPair) throw new Error("派生剧情入口候选 Schema 失败：基础 Schema 里找不到 sourceReplacementPair");
+  delete schema.$defs.sourceReplacementPair;
+  if (schema.properties?.variants?.type !== "array") throw new Error("派生剧情入口候选 Schema 失败：variants 不再是数组");
+  schema.properties.variants = { ...schema.properties.variants, minItems: 1, maxItems: 1 };
+  return schema;
+}
+
 export function validateLegacyFullStoryStrict(value) {
   return validateStrictContract(validateFullStory, value, {
     codePrefix: "FULL_STORY_SCHEMA",
@@ -91,6 +130,24 @@ export function validateStoryCandidateStrict(value) {
   return validateStrictContract(validateStoryCandidate, value, {
     codePrefix: "STORY_CANDIDATE_SCHEMA",
     label: "Story Candidate"
+  });
+}
+
+export function storyEntryCandidatesStrictSchema() {
+  return structuredClone(storyEntryCandidatesSchema);
+}
+
+export function validateStoryEntryCandidatesStrict(value) {
+  return validateStrictContract(validateStoryEntryCandidates, value, {
+    codePrefix: "STORY_ENTRY_CANDIDATES_SCHEMA",
+    label: "Story Entry Candidate"
+  });
+}
+
+export function validateStoryEntryCandidateStrict(value) {
+  return validateStrictContract(validateStoryEntryCandidate, value, {
+    codePrefix: "STORY_ENTRY_CANDIDATE_SCHEMA",
+    label: "Story Entry Candidate"
   });
 }
 
