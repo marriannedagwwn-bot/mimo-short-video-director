@@ -70,7 +70,9 @@ referenceAnalysis + reconstruction + brief + guardrails
               └─ shotVideo:<variantId>:<nextShotId>（仅显式使用上一镜抽帧时）
 ```
 
-「从剧情开始」的 Run（2026-10-09，元数据 `entryMode: "story"`）没有参考视频那三份上游，依赖图换成：
+「从剧情开始」的 Run（2026-10-09，元数据 `entryMode: "story"`）没有参考视频那三份上游，依赖图按 `storyMode` 分两种。
+
+只给角色设定（`characterOnly`）：
 
 ```text
 storySource（服务端在开 Run 时提交，浏览器通用提交口拒收）
@@ -82,6 +84,21 @@ storySource + guardrails + themeVariants + variant:V1
       └─ fullStory:V1
 
 storySource + guardrails + variant:V1 + full story
+      └─ animationPlan:V1（只支持 4.0）
+          ├─ characterImages:V1:<roleIndex>
+          └─ shotVideo:V1:<shotId>
+```
+
+粘贴完整故事（`fullStoryText`）不生成候选，没有 `themeVariants` 与 `variant:V1`；`V1` 是故事位，`fullStory:V1` 由 storyPipeline 第二步（或分场页「重新拆分」）按原文直接拆出：
+
+```text
+storySource
+  └─ visualGuardrails（sourceDigest 第 2 版）
+
+storySource + guardrails
+      └─ fullStory:V1（可翻拍镜头，selectedVariantId 由服务端写成 V1）
+
+storySource + guardrails + full story
       └─ animationPlan:V1（只支持 4.0）
           ├─ characterImages:V1:<roleIndex>
           └─ shotVideo:V1:<shotId>

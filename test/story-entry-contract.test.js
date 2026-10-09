@@ -32,12 +32,25 @@ import {
 import {
   CHARACTER_BOUNDARY_SHARED_RULES,
   STORY_ENTRY_SYSTEM_PROMPT,
+  STORY_SCENE_SCRIPT_CARE_RECIPIENT_SHAPE,
+  STORY_SCENE_SCRIPT_MARKER,
   storyEntryCandidatePrompt,
   storyEntryFullStoryPrompt,
+  storySceneScriptPrompt,
   storyEntryVisualGuardrailsPrompt
 } from "../src/story-entry-prompts.js";
-import { SYSTEM_PROMPT, fullStoryPrompt, visualGuardrailsPrompt } from "../src/prompts.js";
-import { PromptAnchorError, replaceExactlyOnce, replaceLineContainingExactlyOnce, replaceSectionExactlyOnce } from "../src/prompt-anchors.js";
+import { JSON_ONLY, SYSTEM_PROMPT, fullStoryPrompt, visualGuardrailsPrompt } from "../src/prompts.js";
+import {
+  PromptAnchorError,
+  extractLineContainingExactlyOnce,
+  extractSectionExactlyOnce,
+  replaceExactlyOnce,
+  replaceLineContainingExactlyOnce,
+  replaceSectionExactlyOnce
+} from "../src/prompt-anchors.js";
+import { mockNarrativeFullStory } from "../src/mock.js";
+import { fullStoryCharacterRegistryInput, mockFullStoryCharacterRegistry } from "../src/full-story-character-registry.js";
+import legacyFullStorySchema from "../src/contracts/schemas/legacy-full-story-strict.schema.json" with { type: "json" };
 import { storyboardPrompt, storyboardPromptWithLockedDialogue } from "../src/storyboard-prompts.js";
 import { storyEntryDialogueFaithfulness } from "../src/story-entry-dialogue-check.js";
 import { WorkflowService } from "../src/workflow.js";
@@ -189,16 +202,19 @@ test("剧情入口的提示词不提原片，也不用「受控改编」的系�
   const variant = signedStoryCandidate().variants[0];
   const prompts = {
     guardrails: storyEntryVisualGuardrailsPrompt({ creatorProfile: profile }),
-    candidateText: storyEntryCandidatePrompt({ creatorProfile: profile, visualGuardrails: vg, storySource: fullTextSource, targetDurationSeconds: 60 }),
     candidateCharacter: storyEntryCandidatePrompt({ creatorProfile: profile, visualGuardrails: vg, storySource: characterOnlySource, targetDurationSeconds: 60 }),
-    fullStoryText: storyEntryFullStoryPrompt({ creatorProfile: profile, visualGuardrails: vg, variant, storySource: fullTextSource, targetDurationSeconds: 60 }),
-    fullStoryCharacter: storyEntryFullStoryPrompt({ creatorProfile: profile, visualGuardrails: vg, variant, storySource: characterOnlySource, targetDurationSeconds: 60 })
+    fullStoryCharacter: storyEntryFullStoryPrompt({ creatorProfile: profile, visualGuardrails: vg, variant, storySource: characterOnlySource, targetDurationSeconds: 60 }),
+    sceneScript: storySceneScriptPrompt({ creatorProfile: profile, visualGuardrails: vg, storySource: fullTextSource, targetDurationSeconds: 60 })
   };
   for (const [name, prompt] of Object.entries(prompts)) {
     assert.equal(prompt.includes("原片"), false, `${name} 不应出现原片`);
     assert.equal(prompt.includes(SYSTEM_PROMPT), false, `${name} 不应带受控改编系统提示`);
     assert.ok(prompt.startsWith(STORY_ENTRY_SYSTEM_PROMPT), name);
   }
+  // 粘贴完整故事没有候选：候选与「只给角色设定」的完整剧情提示词遇到它直接报错，拆场提示词也只认它。
+  assert.throws(() => storyEntryCandidatePrompt({ creatorProfile: profile, visualGuardrails: vg, storySource: fullTextSource }), /不生成故事候选/);
+  assert.throws(() => storyEntryFullStoryPrompt({ creatorProfile: profile, visualGuardrails: vg, variant, storySource: fullTextSource }), /按原文拆场/);
+  assert.throws(() => storySceneScriptPrompt({ creatorProfile: profile, visualGuardrails: vg, storySource: characterOnlySource }), /粘贴完整故事/);
   // 视频版完整剧情提示词仍是原样：带受控改编系统提示和原片表述。
   const video = fullStoryPrompt({ creatorProfile: profile, visualGuardrails: vg, variant, targetDurationSeconds: 60 });
   assert.ok(video.startsWith(SYSTEM_PROMPT));
@@ -212,19 +228,27 @@ test("剧情入口的提示词不提原片，也不用「受控改编」的系�
     - "原片的片尾卡和署名也不是本片素材。".length);
 });
 
-test("粘贴原文时：完整剧情提示词带原文、原文高于候选、台词只能逐字取自原文", () => {
+test("按原文拆场：提示词只有原文没有候选，主角改名与台词逐字，共用规则逐字取自视频版", () => {
   const vg = mockVisualGuardrails({ creatorProfile: profile });
-  const variant = signedStoryCandidate().variants[0];
-  const prompt = storyEntryFullStoryPrompt({ creatorProfile: profile, visualGuardrails: vg, variant, storySource: fullTextSource, targetDurationSeconds: 75 });
+  const prompt = storySceneScriptPrompt({ creatorProfile: profile, visualGuardrails: vg, storySource: fullTextSource, targetDurationSeconds: 75 });
+  assert.ok(prompt.includes(STORY_SCENE_SCRIPT_MARKER));
   assert.ok(prompt.includes(`用户故事原文（本片唯一的剧情依据）：${JSON.stringify(fullTextSource.storyText)}`));
-  assert.ok(prompt.includes("**用户故事原文高于候选。**"));
+  assert.equal(prompt.includes("候选"), false);
+  assert.equal(prompt.replaceAll("selectedVariantId", "").includes("Variant"), false);
+  assert.ok(prompt.includes("一律改用「小满」——这是全片唯一允许改动的字"));
   assert.ok(prompt.includes("**台词只能逐字取自用户故事原文。**"));
-  assert.equal(prompt.includes("- 台词由本场实际交流需要生成"), false);
-  assert.equal(prompt.includes("有正常语言能力的角色可以提问、邀请"), false, "鼓励补写对白的那段被换掉");
   assert.ok(prompt.includes("本片目标约 75 秒，但时长服从原文"));
-  assert.ok(prompt.includes("冲突时以完整演出原文为准。"));
-  const characterOnly = storyEntryFullStoryPrompt({ creatorProfile: profile, visualGuardrails: vg, variant, storySource: characterOnlySource, targetDurationSeconds: 75 });
-  assert.equal(characterOnly.includes("用户故事原文"), false);
+  assert.ok(prompt.includes('selectedVariantId 固定写 "V1"'));
+  // 共用规则不另抄一份：场次合同、时间轴写法、字段职责与输出结构逐字来自视频版完整剧情提示词。
+  const video = fullStoryPrompt({ creatorProfile: profile, visualGuardrails: vg, variant: {}, targetDurationSeconds: 75 });
+  assert.ok(prompt.includes(extractSectionExactlyOnce(video, "场次合同：\n", "\n\n输出 fullStory，")));
+  assert.ok(prompt.includes(extractLineContainingExactlyOnce(video, "- timeRange 使用 mm:ss-mm:ss")));
+  assert.ok(prompt.includes(extractLineContainingExactlyOnce(video, "- sceneScript 写事情怎样发生；shotAndSound 只补环境声音")));
+  assert.ok(prompt.includes(extractSectionExactlyOnce(video, "输出 fullStory，严格使用以下结构", "keyProps 只写")));
+  assert.ok(prompt.endsWith(JSON_ONLY));
+  // 被照料角色的形状与严格 Schema 是同一组字段。
+  const shape = JSON.parse(`{${STORY_SCENE_SCRIPT_CARE_RECIPIENT_SHAPE}}`).careRecipient;
+  assert.deepEqual(Object.keys(shape).sort(), [...legacyFullStorySchema.properties.characterBible.properties.careRecipient.required].sort());
 });
 
 test("锚点替换：锚点缺失或出现多次都直接报错，不发出半新半旧的提示词", () => {
@@ -235,6 +259,12 @@ test("锚点替换：锚点缺失或出现多次都直接报错，不发出半�
   assert.throws(() => replaceLineContainingExactlyOnce("锚\n锚", "锚", "x"), PromptAnchorError);
   assert.equal(replaceSectionExactlyOnce("头[开]中间[尾]后", "[开]", "[尾]", "新"), "头新[尾]后");
   assert.throws(() => replaceSectionExactlyOnce("[尾][开]", "[开]", "[尾]", "新"), PromptAnchorError);
+  // 逐字截取同样只认唯一的锚点。
+  assert.equal(extractLineContainingExactlyOnce("a\nb 锚\nc", "锚"), "b 锚");
+  assert.throws(() => extractLineContainingExactlyOnce("锚\n锚", "锚"), PromptAnchorError);
+  assert.throws(() => extractLineContainingExactlyOnce("a", "锚"), PromptAnchorError);
+  assert.equal(extractSectionExactlyOnce("头[开]中间[尾]后", "[开]", "[尾]"), "[开]中间");
+  assert.throws(() => extractSectionExactlyOnce("[开]中间", "[开]", "[尾]"), PromptAnchorError);
 });
 
 test("4.0 分镜：粘贴原文的 Run 锁定台词，视频版提示词不变", () => {
@@ -321,13 +351,40 @@ test("剧情入口候选：模型写的 id 被覆盖成 V1，三个投影由拍�
   await assert.rejects(() => ok.workflow.createStoryEntryCandidate({ creatorProfile: profile, visualGuardrails: videoBoundary }, { storyEntry }), /故事原文/);
 });
 
-test("剧情入口完整剧情：不要求创意简报和签名的脚本还原；视频入口仍然要求", async () => {
+test("剧情入口完整剧情：粘贴完整故事不要候选、V1 是故事位；只给角色设定照旧要候选；视频入口仍要创意简报", async () => {
   const workflow = new WorkflowService({ characterBoundaryKey: KEY });
   const storyEntry = { storyMode: "fullStoryText", storySource: fullTextSource };
   const visualGuardrails = await workflow.createStoryEntryVisualGuardrails({ creatorProfile: profile }, { storyEntry });
-  const themeVariants = await workflow.createStoryEntryCandidate({ creatorProfile: profile, visualGuardrails, targetDurationSeconds: 60 }, { storyEntry });
-  const input = { creatorProfile: profile, visualGuardrails, themeVariants, variant: themeVariants.variants[0], fullStorySchemaVersion: "full_story/1.2", targetDurationSeconds: 60 };
+  const input = { creatorProfile: profile, visualGuardrails, fullStorySchemaVersion: "full_story/1.2", targetDurationSeconds: 60 };
   const story = await workflow.createFullStory(input, { storyEntry });
   assert.equal(story.selectedVariantId, "V1");
+  await assert.rejects(() => workflow.createFullStory({ ...input, variant: { id: "V1" } }, { storyEntry }), /没有故事候选/);
+  await assert.rejects(() => workflow.createStoryEntryCandidate({ creatorProfile: profile, visualGuardrails }, { storyEntry }), /不生成故事候选/);
+
+  const characterEntry = { storyMode: "characterOnly", storySource: characterOnlySource };
+  const characterGuardrails = await workflow.createStoryEntryVisualGuardrails({ creatorProfile: profile }, { storyEntry: characterEntry });
+  const themeVariants = await workflow.createStoryEntryCandidate({ creatorProfile: profile, visualGuardrails: characterGuardrails, targetDurationSeconds: 60 }, { storyEntry: characterEntry });
+  const characterInput = { ...input, visualGuardrails: characterGuardrails };
+  const characterStory = await workflow.createFullStory({ ...characterInput, themeVariants, variant: themeVariants.variants[0] }, { storyEntry: characterEntry });
+  assert.equal(characterStory.selectedVariantId, "V1");
+  await assert.rejects(() => workflow.createFullStory(characterInput, { storyEntry: characterEntry }), /variant/);
   await assert.rejects(() => workflow.createFullStory(input), /creativeBrief/);
+});
+
+test("按原文拆场的真实调用：用拆场提示词与剧情入口系统提示，模型回显的 selectedVariantId 不作数", async () => {
+  const storyEntry = { storyMode: "fullStoryText", storySource: fullTextSource };
+  const boundary = storyEntryWorkflow([rawGuardrails()]);
+  const visualGuardrails = await boundary.workflow.createStoryEntryVisualGuardrails({ creatorProfile: profile }, { storyEntry });
+  const raw = { ...mockNarrativeFullStory({ creatorProfile: profile, visualGuardrails, storySource: fullTextSource, targetDurationSeconds: 60 }), selectedVariantId: "V7" };
+  const registry = mockFullStoryCharacterRegistry(fullStoryCharacterRegistryInput(raw, profile));
+  const live = storyEntryWorkflow([raw, registry]);
+  const story = await live.workflow.createFullStory(
+    { creatorProfile: profile, visualGuardrails, fullStorySchemaVersion: "full_story/1.2", targetDurationSeconds: 60 },
+    { storyEntry }
+  );
+  assert.equal(story.selectedVariantId, "V1");
+  assert.equal(live.calls.length, 2);
+  assert.ok(live.calls[0].prompt.includes(STORY_SCENE_SCRIPT_MARKER));
+  assert.ok(live.calls[0].prompt.includes(JSON.stringify(fullTextSource.storyText)));
+  assert.equal(live.calls[0].systemPrompt, STORY_ENTRY_SYSTEM_PROMPT);
 });

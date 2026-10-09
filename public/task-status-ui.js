@@ -47,9 +47,10 @@ export function latestTaskForTarget(snapshots, { kinds, artifactId, rootOnly = f
       || String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")))[0] || null;
 }
 
-export function taskStatusView(task, { modelLabel = "" } = {}) {
+// kindLabel 让页面按入口换叫法（剧情入口的 animationPlan 叫「分镜」等）；不传时沿用 LABELS。
+export function taskStatusView(task, { modelLabel = "", kindLabel = "" } = {}) {
   if (!task) return null;
-  const label = LABELS[task.kind] || "任务";
+  const label = kindLabel || LABELS[task.kind] || "任务";
   const model = modelLabel ? ` · ${modelLabel}` : "";
   const busy = isActiveTask(task);
   let message;

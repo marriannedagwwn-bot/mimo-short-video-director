@@ -15,7 +15,9 @@ export const STORY_MODE_FULL_TEXT = "fullStoryText";
 export const STORY_MODE_CHARACTER_ONLY = "characterOnly";
 export const STORY_SOURCE_MODES = Object.freeze([STORY_MODE_FULL_TEXT, STORY_MODE_CHARACTER_ONLY]);
 export const STORY_SOURCE_TEXT_MAX_CHARS = 5000;
-// 剧情入口只出一个候选，id 由服务端签发，不让模型写。
+// 「只给角色设定」只出一个候选，id 由服务端签发，不让模型写。
+// 「粘贴完整故事」不生成候选，V1 是「故事位」：指用户原文这一个故事，fullStory:V1 /
+// animationPlan:V1 / 页面地址 /story/V1 都挂在它上面，fullStory.selectedVariantId 由服务端写成它。
 export const STORY_ENTRY_VARIANT_ID = "V1";
 // 与 src/validation.js requireText 的默认上限同一个数。
 export const STORY_ENTRY_PROFILE_FIELD_MAX_CHARS = 12000;
@@ -101,4 +103,10 @@ export function normalizeStoryEntryCreatorProfile(value) {
 
 export function isStoryEntryMetadata(metadata) {
   return metadata?.entryMode === STORY_ENTRY_MODE;
+}
+
+// 「粘贴完整故事」的剧情 Run：没有故事候选，原文直接拆成可翻拍镜头（fullStory:V1）。
+// 只认服务端一次写定的 Run 元数据，不认请求体或页面状态。
+export function isStorySourceDirect(metadata) {
+  return isStoryEntryMetadata(metadata) && metadata?.storyMode === STORY_MODE_FULL_TEXT;
 }

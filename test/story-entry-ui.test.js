@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadAppUi } from "./helpers/app-ui-harness.js";
+import { loadAppUi, uiFixture } from "./helpers/app-ui-harness.js";
 import { mockStoryEntryCandidates } from "../src/mock.js";
 import { deriveStoryCandidateProjections } from "../src/validation.js";
 import { storyPipelineTaskView } from "../public/director-pipeline-ui.js";
@@ -8,6 +8,9 @@ import { storyPipelineTaskView } from "../public/director-pipeline-ui.js";
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const profile = { fixedCharacter: "小满，八岁女孩", vertical: "治愈日常", constraints: "" };
 const storySource = { schemaVersion: "story_source/1.0", storyMode: "fullStoryText", storyText: "雨天，小满捡到一只小猫。小满说：“别怕。”" };
+const characterOnlySource = { schemaVersion: "story_source/1.0", storyMode: "characterOnly" };
+// 粘贴完整故事的可翻拍镜头：fullStory:V1，V1 是故事位。
+const sceneScriptStory = () => ({ ...uiFixture().fullStory, selectedVariantId: "V1", title: "雨天的小猫" });
 const current = (content, artifactId) => ({ lineage: { artifactId, status: "current", revision: `${artifactId}-r1`, contentDigest: "d".repeat(64), dependencies: [] }, content });
 
 function storyThemeVariants() {
@@ -27,29 +30,80 @@ function recordingFetch(responses = {}) {
   return { fetch, requests };
 }
 
-test("剧情 Run 恢复：入口切到剧情、原文回填，候选卡没有换一批、对照原片体检和相似风险", async () => {
+test("粘贴完整故事的 Run 恢复：没有候选也选中故事位 V1，首页是可翻拍镜头入口卡，不是候选卡", async () => {
   const app = await loadAppUi();
   app.restoreRunMetadata({ entryMode: "story", storyMode: "fullStoryText", creatorProfile: profile });
   assert.equal(app.isStoryEntryMode(), true);
   assert.ok(app.document.body.className.includes("story-entry-mode"));
-  const themeVariants = storyThemeVariants();
+  assert.ok(app.document.body.className.includes("story-source-mode"));
+  const story = sceneScriptStory();
   app.restoreRunArtifacts({
     storySource: current(storySource, "storySource"),
-    themeVariants: current(themeVariants, "themeVariants"),
-    "variant:V1": current(themeVariants.variants[0], "variant:V1")
+    "fullStory:V1": current(story, "fullStory:V1")
   });
   assert.equal(app.elements.storySourceText.value, storySource.storyText);
   assert.deepEqual(plain(app.state.output.storySource), storySource);
   assert.equal(app.state.selectedVariantId, "V1");
+  assert.equal(app.selectedVariant().storySourceSlot, true);
   const card = app.elements.variants.innerHTML;
-  assert.ok(card.includes("按原文整理的故事"));
+  assert.ok(card.includes("可翻拍镜头"));
+  assert.ok(card.includes("查看可翻拍镜头"));
+  assert.ok(card.includes(`${story.sceneScript.length} 场`));
+  for (const absent of ["进入完整剧情", "配乐", "剧情型", "生活型", "按原文整理的故事"]) assert.equal(card.includes(absent), false, absent);
+  // 拆好之前按钮叫「继续拆镜头」，拆好之后叫「重新开始拆镜头」。
+  assert.equal(app.storyEntryRunLabel(null), "继续拆镜头");
+  app.state.production.artifacts["fullStory:V1"] = { artifactId: "fullStory:V1", status: "current" };
+  assert.equal(app.storyEntryRunLabel(null), "重新开始拆镜头");
+});
+
+test("只给角色设定的 Run 恢复：仍是候选卡，没有换一批、对照原片体检和相似风险", async () => {
+  const app = await loadAppUi();
+  app.restoreRunMetadata({ entryMode: "story", storyMode: "characterOnly", creatorProfile: profile });
+  assert.equal(app.document.body.className.includes("story-source-mode"), false);
+  const themeVariants = storyThemeVariants();
+  app.restoreRunArtifacts({
+    storySource: current(characterOnlySource, "storySource"),
+    themeVariants: current(themeVariants, "themeVariants"),
+    "variant:V1": current(themeVariants.variants[0], "variant:V1")
+  });
+  assert.equal(app.state.selectedVariantId, "V1");
+  assert.equal(app.selectedVariant().storySourceSlot, undefined);
+  const card = app.elements.variants.innerHTML;
+  assert.ok(card.includes("按角色设定写出的故事"));
+  assert.ok(card.includes("进入完整剧情"));
   assert.equal(card.includes("data-regenerate-variants"), false);
   assert.equal(card.includes("对照原片体检候选"), false);
   assert.equal(card.includes("相似风险"), false);
+  assert.equal(app.storyEntryRunLabel(null), "继续剧情准备");
   // 参考视频 Run 恢复时回到视频入口。
   app.restoreRunMetadata({ creatorProfile: profile });
   assert.equal(app.isStoryEntryMode(), false);
   assert.equal(app.document.body.className.includes("story-entry-mode"), false);
+});
+
+test("粘贴完整故事的分场页：左边是原文，按钮叫重新拆分，没有检查剧情硬伤，配乐开关在分镜按钮旁", async () => {
+  const app = await loadAppUi();
+  app.restoreRunMetadata({ entryMode: "story", storyMode: "fullStoryText", creatorProfile: profile });
+  app.restoreRunArtifacts({ storySource: current(storySource, "storySource"), "fullStory:V1": current(sceneScriptStory(), "fullStory:V1") });
+  app.renderStoryPage();
+  app.renderFullStoryControls();
+  app.setAnimationRunning(false);
+  const summary = app.elements.selectedVariantSummary.innerHTML;
+  assert.ok(summary.includes("你的故事（原文）"));
+  assert.ok(summary.includes("雨天，小满捡到一只小猫。"));
+  assert.ok(app.elements.fullStory.innerHTML.includes("可翻拍镜头（按原文分场）"));
+  assert.equal(app.elements.fullStory.innerHTML.includes("data-story-review"), false);
+  assert.ok(app.elements.storyMusicControl.innerHTML.includes('data-background-music="V1"'));
+  assert.match(app.elements.storyGenerate.querySelector("span").textContent, /重新拆分镜头/);
+  assert.match(app.elements.animationGenerate.textContent, /^生成分镜 · /);
+  assert.match(app.elements.storyStatus.textContent, /已生成可翻拍镜头/);
+  // 生成分镜期间配乐开关不能拨，结束后恢复。
+  app.state.animationRunning = true;
+  app.setAnimationRunning(true);
+  assert.match(app.elements.storyMusicControl.innerHTML, / disabled/);
+  app.state.animationRunning = false;
+  app.setAnimationRunning(false);
+  assert.equal(app.elements.storyMusicControl.innerHTML.includes(" disabled"), false);
 });
 
 test("剧情入口的请求体不带参考视频那三份上游（整个键都不出现）", async () => {
@@ -66,10 +120,11 @@ test("剧情入口的请求体不带参考视频那三份上游（整个键都�
   }
 });
 
-test("剧情入口展开完整剧情：不请求展开前体检，不由页面提交选中记录，请求体不带原片上游", async () => {
+test("只给角色设定：展开完整剧情不请求展开前体检，不由页面提交选中记录，请求体不带原片上游", async () => {
   const { fetch, requests } = recordingFetch();
   const app = await loadAppUi({ fetch });
   app.state.entryMode = "story";
+  app.state.storyMode = "characterOnly";
   app.state.output.referenceAnalysis = { format: "残留的视频上游" };
   app.state.production.artifacts["variant:V2"] = { artifactId: "variant:V2", status: "current", revision: "variant-V2-r1", contentDigest: "e".repeat(64), dependencies: [] };
   await app.startFullStory({ force: true });
@@ -84,9 +139,46 @@ test("剧情入口展开完整剧情：不请求展开前体检，不由页面�
   assert.equal(created.body.input.candidateBinding.revision, "variant-V2-r1");
 });
 
+test("粘贴完整故事：拆分镜头与生成分镜的请求只带故事位，不带候选与原片上游，也不由页面提交选中记录", async () => {
+  const { fetch, requests } = recordingFetch();
+  const app = await loadAppUi({ fetch });
+  app.restoreRunMetadata({ entryMode: "story", storyMode: "fullStoryText", creatorProfile: profile });
+  app.restoreRunArtifacts({ storySource: current(storySource, "storySource"), "fullStory:V1": current(sceneScriptStory(), "fullStory:V1") });
+  app.state.output.referenceAnalysis = { format: "残留的视频上游" };
+  await app.startFullStory({ force: true });
+  await app.generateAnimationPlan({ force: true });
+  const created = requests.filter((request) => request.path === "/api/tasks/create");
+  assert.deepEqual(created.map((request) => request.body.kind), ["fullStory", "animationPlan"]);
+  for (const request of created) {
+    assert.equal(request.body.input.variantId, "V1");
+    for (const key of ["variant", "themeVariants", "candidateBinding", "selectedVariant", "referenceAnalysis", "sourceScriptReconstruction", "creativeBrief"]) {
+      assert.equal(Object.hasOwn(request.body.input, key), false, `${request.body.kind}.${key}`);
+    }
+  }
+  assert.equal(requests.some((request) => request.path === "/api/full-story-precheck"), false);
+  assert.equal(requests.some((request) => request.path === "/api/production/artifact/commit"), false);
+});
+
+test("配乐开关：已有分镜时确认后会重新生成分镜（此前传错参数，只重画不重生）", async () => {
+  const { fetch, requests } = recordingFetch();
+  const app = await loadAppUi({ fetch, story: true, plan: true, confirm: () => true });
+  app.state.entryMode = "story";
+  app.state.storyMode = "characterOnly";
+  app.state.production.artifacts["variant:V2"] = { artifactId: "variant:V2", status: "current", revision: "variant-V2-r1", contentDigest: "e".repeat(64), dependencies: [] };
+  // 已有一份「无配乐」的分镜：拨开关必须重新生成整份分镜。
+  const plan = app.state.animationPlans.V2;
+  app.state.animationPlans.V2 = { ...plan, productionStrategy: { ...plan.productionStrategy, backgroundMusicMode: "none" } };
+  await app.handleBackgroundMusicToggle("V2", true);
+  const created = requests.find((request) => request.path === "/api/tasks/create");
+  assert.ok(created, "拨开关并确认后真的发起了重新生成");
+  assert.equal(created.body.kind, "animationPlan");
+  assert.equal(created.body.input.backgroundMusicEnabled, true);
+});
+
 test("剧情入口：选中记录没签发时，页面要求先完成剧情准备，而不是自己提交", async () => {
   const app = await loadAppUi();
   app.state.entryMode = "story";
+  app.state.storyMode = "characterOnly";
   await assert.rejects(() => app.ensureSelectedVariantArtifact({ id: "V1" }), /继续剧情准备/);
 });
 
@@ -102,9 +194,17 @@ test("剧情入口禁用生产包导出，时长选项写明没有原片时按 6
   assert.ok(app.elements.storyDurationTarget.innerHTML.includes("剧情入口没有原片，按 60 秒"));
 });
 
-test("剧情准备进度：两步阶段随任务进度更新，按钮文字跟着入口变化", async () => {
+test("剧情准备进度：两步阶段随任务进度更新；粘贴完整故事叫「拆镜头」，第二步是可翻拍镜头", async () => {
   const app = await loadAppUi();
   app.state.entryMode = "story";
+  app.state.storyMode = "fullStoryText";
+  const splitting = { taskId: "task-split", kind: "storyPipeline", status: "running", progress: { completedStages: 1, totalStages: 2, currentStage: "fullStory:V1" }, targetArtifactIds: [] };
+  app.renderStoryPipelineTaskStatus(splitting);
+  assert.equal(app.document.querySelector('[data-stage="guardrails"]').className, "done");
+  assert.equal(app.document.querySelector('[data-stage="variants"]').className, "active");
+  assert.equal(app.storyEntryRunLabel(splitting), "拆镜头中…");
+  assert.equal(app.storyEntryRunLabel({ ...splitting, status: "queued" }), "拆镜头排队中…");
+  app.state.storyMode = "characterOnly";
   const running = { taskId: "task-story", kind: "storyPipeline", status: "running", progress: { completedStages: 1, totalStages: 2, currentStage: "themeVariants" }, targetArtifactIds: [] };
   app.renderStoryPipelineTaskStatus(running);
   assert.equal(app.document.querySelector('[data-stage="guardrails"]').className, "done");
@@ -178,11 +278,15 @@ test("台词核对：只在粘贴原文的剧情 Run 上请求，列出原文里
   await app.refreshStoryDialogueCheck();
   assert.equal(requests.length, 0, "参考视频 Run 不请求台词核对");
   app.state.entryMode = "story";
+  app.state.storyMode = "fullStoryText";
   app.state.output.storySource = storySource;
+  app.state.selectedVariantId = "V1";
+  app.state.fullStories.V1 = sceneScriptStory();
   await app.refreshStoryDialogueCheck();
   assert.equal(requests.length, 1);
-  assert.deepEqual(requests[0].body.variantId, "V2");
+  assert.deepEqual(requests[0].body.variantId, "V1");
   assert.ok(app.elements.storyDialogueCheck.innerHTML.includes("1 句在原文里找不到"));
+  assert.ok(app.elements.storyDialogueCheck.innerHTML.includes("可翻拍镜头 S2"));
   assert.ok(app.elements.storyDialogueCheck.innerHTML.includes("你饿不饿？"));
   assert.ok(app.elements.storyDialogueCheck.className.includes("warn"));
 });

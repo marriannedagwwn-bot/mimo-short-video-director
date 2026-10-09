@@ -18,7 +18,7 @@ Analyze → Reconstruct → Brief → Visual Guardrails → Story Candidates (`t
        → Video Generation
 ```
 
-**从剧情开始（2026-10-09，第一期）**：第二个入口，Run 元数据 `entryMode: "story"`。用户原文（或只有固定角色设定）由服务端写入 `storySource`，它是原文唯一的存放处（浏览器通用提交口拒收，元数据一次写定 `storySourceDigest` 并在每次读取时核对）。`storyPipeline` 父任务：只看文字的角色边界 → 单个故事候选 → 服务端签发 `variant:V1`；之后复用完整剧情、4.0 分镜、角色参考图与镜头视频，依赖与边界校验按 Run 元数据分支，**视频 Run 行为不变**。三条硬约束：①角色边界 `sourceDigest` 剧情 Run 用 `story_source/2`，参考视频那一版逐字节不变（golden 测试）；②原创候选的严格 Schema 从视频版派生，只去掉四个对照原片的字段，**不得放宽视频版 Schema**；③剧情入口的提示词只能在既有提示词上做逐字锚点替换或另写新提示词，视频版提示词不动。台词核对只提示不拦截。详见 `docs/story-entry-phase1-2026-10-09.md`。
+**从剧情开始（2026-10-09，第一期）**：第二个入口，Run 元数据 `entryMode: "story"`。用户原文（或只有固定角色设定）由服务端写入 `storySource`，它是原文唯一的存放处（浏览器通用提交口拒收，元数据一次写定 `storySourceDigest` 并在每次读取时核对）。`storyPipeline` 父任务按 `storyMode` 跑两步：只看文字的角色边界 → 第二步。只给角色设定时第二步是单个故事候选，再由服务端签发 `variant:V1`；**粘贴完整故事不生成候选**，第二步直接按原文拆出可翻拍镜头 `fullStory:V1`，`V1` 是「故事位」（`fullStory.selectedVariantId` 由服务端写定），请求体出现任何候选副本一律 400。之后复用 4.0 分镜、角色参考图与镜头视频，依赖与边界校验按 Run 元数据分支，**视频 Run 行为不变**。三条硬约束：①角色边界 `sourceDigest` 剧情 Run 用 `story_source/2`，参考视频那一版逐字节不变（golden 测试）；②原创候选的严格 Schema 从视频版派生，只去掉四个对照原片的字段，**不得放宽视频版 Schema**；③剧情入口的提示词只能在既有提示词上做逐字锚点替换、逐字截取（按原文拆场的共用规则从视频版完整剧情提示词截取）或另写新提示词，视频版提示词不动（golden 测试）。台词核对只提示不拦截。详见 `docs/story-entry-phase1-2026-10-09.md`。
 
 Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主流程创建独立 project/run，各成功阶段提交 Artifact revision、content digest、上游 dependencies、Stage 状态与 Checkpoint。**它不改变模型字段含义，不是第二份剧情或角色事实来源。**
 

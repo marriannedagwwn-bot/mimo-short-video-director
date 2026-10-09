@@ -1,7 +1,7 @@
 import { ANALYSIS_SYSTEM_PROMPT, ANIMATION_VIDEO_PROMPT_SEMANTIC_AUDIT_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, animationActionStateAuditPrompt, animationFoundationPrompt, animationPlanReviewPrompt, animationPlanRevisionPrompt, animationPlanRevisionRepairPrompt, animationShotBatchPatchPrompt, animationShotBatchPrompt, animationVideoPromptRewritePrompt, animationVideoPromptRewriteSemanticAuditPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPromiseCheckRetryPrompt, fullStoryPromiseFindingsPrompt, fullStoryPromiseListPrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityEditorialPrompt, storyQualityPromisePrompt, storyQualityRepairPrompt, storyQualityRepairRetryPrompt, storyQualityReviewRetryPrompt, variantsCount, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
 import { STORY_CANDIDATES_MODEL_SCHEMA_NAME, STORY_ENTRY_CANDIDATES_MODEL_SCHEMA_NAME, storyCandidatesModelSchema, storyEntryCandidatesModelSchema } from "./contracts/story-candidates-model-schema.js";
-import { STORY_ENTRY_SYSTEM_PROMPT, storyEntryCandidatePrompt, storyEntryFullStoryPrompt, storyEntryVisualGuardrailsPrompt } from "./story-entry-prompts.js";
-import { STORY_ENTRY_VARIANT_ID, normalizeStorySource } from "../public/story-entry.js";
+import { STORY_ENTRY_SYSTEM_PROMPT, storyEntryCandidatePrompt, storyEntryFullStoryPrompt, storySceneScriptPrompt, storyEntryVisualGuardrailsPrompt } from "./story-entry-prompts.js";
+import { STORY_ENTRY_VARIANT_ID, STORY_MODE_FULL_TEXT, normalizeStorySource } from "../public/story-entry.js";
 import { STORY_CANDIDATE_REVIEW_MODEL_SCHEMA_NAME, storyCandidateReviewModelSchema } from "./contracts/story-candidate-review-model-schema.js";
 import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryEntryCandidates, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
 import { isNarrativeFullStory } from "./full-story-contract.js";
@@ -1594,12 +1594,16 @@ export class WorkflowService {
     });
   }
 
-  // 「从剧情开始」的单个故事候选。粘贴原文时只做结构整理，只给角色设定时原创一个。
+  // 「只给角色设定」的单个故事候选：系统原创一个，先给用户看。「粘贴完整故事」没有候选，
+  // 原文直接拆成可翻拍镜头（createFullStory 的按原文拆场分支）。
   // id 由服务端签发 V1，三个投影由拍号派生，严格 Schema 换成没有对照原片字段的那份；
   // 只有一个候选，所以视频入口的叙事路径配比与结构分化检查本来就不会触发。
   async createStoryEntryCandidate(input, { storyEntry } = {}) {
     requireObject(input, "请求");
     const entry = requireStoryEntry(storyEntry);
+    if (entry.storyMode === STORY_MODE_FULL_TEXT) {
+      throw new InputError("「粘贴完整故事」的 Run 不生成故事候选，原文直接拆成可翻拍镜头");
+    }
     const profile = requireObject(input.creatorProfile, "creatorProfile");
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
@@ -1644,7 +1648,17 @@ export class WorkflowService {
     // 是不是剧情入口只看服务端传进来的 storyEntry，不看请求体里少了哪几份上游。
     const entry = storyEntry ? requireStoryEntry(storyEntry) : null;
     if (!entry) requireObject(input.creativeBrief, "creativeBrief");
-    requireObject(input.variant, "variant");
+    // 「粘贴完整故事」没有故事候选：原文直接拆成可翻拍镜头。V1 是故事位，不是候选编号。
+    const fromStorySource = entry?.storyMode === STORY_MODE_FULL_TEXT;
+    if (fromStorySource) {
+      const candidateKeys = ["variant", "themeVariants", "candidateBinding"].filter((key) => input[key] !== undefined);
+      if (candidateKeys.length) {
+        throw new InputError(`「粘贴完整故事」的 Run 没有故事候选，请求里不能带 ${candidateKeys.join("、")}`);
+      }
+    } else {
+      requireObject(input.variant, "variant");
+    }
+    const storySlotId = fromStorySource ? STORY_ENTRY_VARIANT_ID : String(input.variant?.id || "");
     const profile = requireObject(input.creatorProfile, "creatorProfile");
     requireText(profile.fixedCharacter, "固定角色");
     requireText(profile.vertical, "垂直赛道");
@@ -1656,7 +1670,13 @@ export class WorkflowService {
     const systemPromptOverride = entry ? { systemPrompt: STORY_ENTRY_SYSTEM_PROMPT } : {};
     const validatedInput = { ...groundedInput, visualGuardrails };
     const settings = this.resolveStage("fullStory", validatedInput);
-    const validateFullStory = (result) => validateFullStoryForSigning(result, {
+    // 故事位的 selectedVariantId 由服务端写定，与 targetDurationSeconds 由时间轴派生同规格：模型回显不作数。
+    const withStorySlot = (result) => (
+      fromStorySource && result && typeof result === "object" && !Array.isArray(result)
+        ? { ...result, selectedVariantId: STORY_ENTRY_VARIANT_ID }
+        : result
+    );
+    const validateFullStory = (result) => validateFullStoryForSigning(withStorySlot(result), {
       profile, creativeBrief: input.creativeBrief, variant: input.variant, visualGuardrails
     });
     if (!this.hasLiveClient) {
@@ -1666,14 +1686,15 @@ export class WorkflowService {
       return validateFullStory(mergeFullStoryCharacterRegistry(story, mockFullStoryCharacterRegistry(registryInput), registryInput));
     }
     this.assertStageClient(settings, "完整剧情");
-    const basePrompt = (entry ? storyEntryFullStoryPrompt : fullStoryPrompt)({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
+    const promptFor = fromStorySource ? storySceneScriptPrompt : entry ? storyEntryFullStoryPrompt : fullStoryPrompt;
+    const basePrompt = promptFor({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
     const prompt = completeCast ? fullStoryRegisteredVoicesPrompt(basePrompt) : basePrompt;
     const observeFullStoryAttempt = this.fullModelOutputLogWriter?.enabled
       ? (attempt) => this.fullModelOutputLogWriter.recordAttempt({
         ...attempt,
         context: {
           ...(traceContext && typeof traceContext === "object" ? traceContext : {}),
-          variantId: String(validatedInput.variant?.id || "")
+          variantId: storySlotId
         }
       })
       : null;
@@ -1733,7 +1754,7 @@ export class WorkflowService {
                 stage: "fullStory",
                 provider: settings.provider,
                 model: settings.model,
-                variantId: validatedInput.variant?.id,
+                variantId: storySlotId || undefined,
                 originalError: error,
                 repairPlan
               });

@@ -733,6 +733,12 @@ body:not(.story-entry-mode) .story-only { display: none !important; }
 body.story-entry-mode .pipeline li[data-stage="analysis"],
 body.story-entry-mode .pipeline li[data-stage="script"],
 body.story-entry-mode .pipeline li[data-stage="brief"] { display: none; }
+/* 剧情入口里再分两种：粘贴完整故事（body.story-source-mode，原文直接拆成可翻拍镜头）与只给角色设定。 */
+body:not(.story-source-mode) .story-source-only { display: none !important; }
+body.story-source-mode .not-story-source { display: none !important; }
+.story-source-original { max-height: 260px; overflow-y: auto; margin: 8px 0 6px; white-space: pre-wrap; font-size: 13px; line-height: 1.7; }
+.story-source-note { display: block; font-size: 11px; color: var(--muted); }
+.story-music-control { display: flex; justify-content: flex-end; margin: 4px 0 8px; }
 .pipeline li > span i { font-style: normal; }
 .entry-switch, .story-mode-switch { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
 .story-mode-switch { margin: 4px 0 14px; }

@@ -34,7 +34,7 @@ AI 短视频生产工作流系统。
 
 # 1. 当前架构事实（必须遵守）
 
-**从剧情开始（2026-10-09，第一期）**：首页新增第二个入口，Run 元数据 `entryMode: "story"`（缺省即参考视频 Run，旧 Run 不回填）。用户粘贴完整故事（`storyMode: "fullStoryText"`，严格按原文）或只给固定角色设定（`"characterOnly"`，原创一个）。`POST /api/production/run/story/start` 按 v3 导入的顺序建 Run（校验 → 清空本页视频与旧 Run → createRun → 服务端提交 `storySource` → 绑定工作区），`storySource` 是用户原文唯一的存放处：浏览器通用提交口拒收（`STORY_SOURCE_SERVER_ONLY`），Run 元数据一次写定 `storySourceDigest`，各任务读取时核对（`STORY_SOURCE_TAMPERED`）；原文不进 Task Store、浏览器存储或 `creatorProfile`。`storyPipeline` 父任务（与 `directorPipeline` 并列、互不复用，无暂停/终止）跑两步：只看文字的角色边界（复用 `visualGuardrails` 阶段设置，`sourceSimilarityRules` 必须为空）→ 单个故事候选（复用 `variants` 阶段设置），最后由服务端签发 `variant:V1`。角色边界 `sourceDigest` 剧情 Run 用第 2 版（固定角色设定三项 + `storySource`，版本号写进哈希输入），参考视频那一版逐字节不变；候选用从视频版严格 Schema 派生的一份（去掉四个对照原片的字段、恰好一个、id 由服务端签发）。完整剧情、4.0 分镜、人物精修、角色参考图与镜头视频按 Run 元数据分支依赖与边界校验，视频 Run 行为不变；剧情 Run 上的参考视频专用任务一律 409 `TASK_ENTRY_MODE_MISMATCH`，只支持 4.0 分镜，不支持展开前体检、候选评审/修订、按问题修改与 v3 包导出。粘贴原文模式下完整剧情提示词以原文为唯一依据、台词只能逐字取自原文，4.0 分镜锁定台词；另有只读的台词核对（`/api/production/story-entry/dialogue-check`，只提示不拦截）。完整契约与已知缺口见 `docs/story-entry-phase1-2026-10-09.md`。
+**从剧情开始（2026-10-09，第一期）**：首页新增第二个入口，Run 元数据 `entryMode: "story"`（缺省即参考视频 Run，旧 Run 不回填）。用户粘贴完整故事（`storyMode: "fullStoryText"`，严格按原文）或只给固定角色设定（`"characterOnly"`，原创一个）。`POST /api/production/run/story/start` 按 v3 导入的顺序建 Run（校验 → 清空本页视频与旧 Run → createRun → 服务端提交 `storySource` → 绑定工作区），`storySource` 是用户原文唯一的存放处：浏览器通用提交口拒收（`STORY_SOURCE_SERVER_ONLY`），Run 元数据一次写定 `storySourceDigest`，各任务读取时核对（`STORY_SOURCE_TAMPERED`）；原文不进 Task Store、浏览器存储或 `creatorProfile`。`storyPipeline` 父任务（与 `directorPipeline` 并列、互不复用，无暂停/终止）按 Run 元数据里的 `storyMode` 跑两步，第一步都是只看文字的角色边界（复用 `visualGuardrails` 阶段设置，`sourceSimilarityRules` 必须为空）。只给角色设定时第二步是单个故事候选（复用 `variants` 阶段设置），之后由服务端签发 `variant:V1`。**粘贴完整故事不生成候选**（2026-10-09 补充，起因是用户反馈「给了剧情就不要再改一遍」）：第二步直接按原文拆出可翻拍镜头 `fullStory:V1`（子任务 `storySceneScript`，复用 `fullStory` 阶段设置，与分场页「重新拆分」的独立 `fullStory` 任务调同一个函数）；这类 Run 里 `V1` 是「故事位」而不是候选编号，`fullStory.selectedVariantId` 由服务端写成 `V1`（与 `targetDurationSeconds` 由时间轴派生同规格），完整剧情、分镜、角色图与人物精修的请求体出现 `variant` / `themeVariants` / `candidateBinding` / `selectedVariant` 任一副本一律 400 `STORY_ENTRY_INPUT_INVALID`。角色边界 `sourceDigest` 剧情 Run 用第 2 版（固定角色设定三项 + `storySource`，版本号写进哈希输入），参考视频那一版逐字节不变；候选（只给角色设定）用从视频版严格 Schema 派生的一份（去掉四个对照原片的字段、恰好一个、id 由服务端签发）。完整剧情、4.0 分镜、人物精修、角色参考图与镜头视频按 Run 元数据分支依赖与边界校验，视频 Run 行为不变；剧情 Run 上的参考视频专用任务一律 409 `TASK_ENTRY_MODE_MISMATCH`，只支持 4.0 分镜，不支持展开前体检、候选评审/修订、按问题修改与 v3 包导出。粘贴原文模式用新的按原文拆场提示词（`storySceneScriptPrompt`）：原文是唯一依据、提示词里没有候选，主角改名（原文称呼与固定角色名不同时改成固定角色名，唯一允许改的字）与台词只能逐字取自原文的规则都在其中；与完整剧情共用的规则（场次合同、输出结构、角色与道具之分、外观不等于能力、时间轴写法）在运行时从视频版 `fullStoryPrompt` 按锚点逐字截取，锚点对不上直接抛错，视频版提示词由 golden 测试锁定逐字不变；4.0 分镜锁定台词；粘贴原文的 Run 不提供「检查剧情硬伤」（它拿候选核对承诺）；另有只读的台词核对（`/api/production/story-entry/dialogue-check`，只提示不拦截）。完整契约与已知缺口见 `docs/story-entry-phase1-2026-10-09.md`。
 
 **Animation Plan 自主分镜 4.0（2026-09-21，工作区接入，真实验收尚未闭环）**：浏览器明确发送 `animationPlanVersion: "4.0"`，旧 API 无版本保留 direct_shot 3.0。新版以完整原 Full Story、角色事实、画幅/时长/风格/表情/音乐参数生成完整 beats，AI 自定片段与时间、可合并相邻场次；每段整数 4–15 秒、总长沿用共享时长窗口。旧 Full Story 不要求重新生成，不修改正文或重签，只由模型抽取缺失配角事实进入 Plan 的 `characterRegistry`。新生成 Full Story 的浏览器请求为 `full_story/1.2`，正文生成后只整理角色表，未知外观仍交给分镜；旧 1.1/无版本数据不迁移。完整上游冻结和验签仍在，创作 Prompt 不送 Brief/候选/原片叙事。
 
@@ -112,15 +112,16 @@ Animation Plan direct_shot（promptSchemaVersion 3.0）
  ↓
 Video Generation
 
-「从剧情开始」的 Run（2026-10-09）走另一条前段，后段复用上面的完整剧情、4.0 分镜与视频生成：
+「从剧情开始」的 Run（2026-10-09）走另一条前段，后段复用上面的 4.0 分镜与视频生成：
 
 storySource（用户原文或只有角色设定）
  ↓
 Visual Guardrails（只看固定角色设定，sourceDigest 第 2 版）
  ↓
-单个故事候选（themeVariants，恰好一个，id = V1）→ 服务端签发 variant:V1
+粘贴完整故事：按原文拆出可翻拍镜头 fullStory:V1（full_story/1.2，没有候选，V1 是故事位）
+只给角色设定：单个故事候选（themeVariants，恰好一个，id = V1）→ 服务端签发 variant:V1 → Full Story full_story/1.2
  ↓
-Full Story full_story/1.2 → Animation Plan 4.0 → Video Generation
+Animation Plan 4.0 → Video Generation
 
 上述业务 JSON 之外，Production Lineage v1 作为服务端 sidecar 运行：每次浏览器主流程创建独立 project/run；各成功阶段提交 Artifact revision、content digest、实际上游 dependencies、Stage 状态与 Checkpoint。它不改变模型字段含义，也不是第二份角色或剧情事实来源。
 

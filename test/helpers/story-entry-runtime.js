@@ -8,6 +8,7 @@ import { mockNarrativeFullStory, mockStoryEntryCandidates, mockVisualGuardrails 
 import { storyboardDesignFromPlan } from "../../src/storyboard-contract.js";
 import { fullStoryCharacterRegistryInput, mockFullStoryCharacterRegistry } from "../../src/full-story-character-registry.js";
 import { STORY_SOURCE_SCHEMA_VERSION } from "../../public/story-entry.js";
+import { STORY_SCENE_SCRIPT_MARKER } from "../../src/story-entry-prompts.js";
 
 // 1×1 透明 PNG，只用来走通图片落盘路径。
 const FIXTURE_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
@@ -21,6 +22,7 @@ export const STORY_ENTRY_FIXTURE_TEXT = "雨夜，阿岚在社区修理铺里听
 
 // 协议夹具：这里没有任何真实模型结果。假模型服务按提示词里的标记返回演示模式的同一份输出，
 // 服务端照真实路径跑剧情入口：开 Run → storyPipeline → 完整剧情 → 4.0 分镜 → 单镜提示词。
+// 粘贴完整故事没有候选：storyPipeline 的第二步直接按原文拆出可翻拍镜头（fullStory:V1）。
 export async function createStoryEntryRuntime({ storyMode = "fullStoryText" } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-story-entry-runtime-"));
   const workflow = new WorkflowService();
@@ -31,13 +33,19 @@ export async function createStoryEntryRuntime({ storyMode = "fullStoryText" } = 
   const storyEntry = { storyMode, storySource };
   // 演示模式在进程内把同一条链跑一遍，得到假模型要返回的内容，以及服务端应该签出的结果。
   const visualGuardrails = await workflow.createStoryEntryVisualGuardrails({ creatorProfile }, { storyEntry });
-  const themeVariants = await workflow.createStoryEntryCandidate({ creatorProfile, visualGuardrails, targetDurationSeconds: 60 }, { storyEntry });
-  const variant = themeVariants.variants[0];
-  const fullStoryInput = { creatorProfile, visualGuardrails, themeVariants, variant, fullStorySchemaVersion: "full_story/1.2", targetDurationSeconds: 60 };
+  const fromStorySource = storyMode === "fullStoryText";
+  const themeVariants = fromStorySource
+    ? null
+    : await workflow.createStoryEntryCandidate({ creatorProfile, visualGuardrails, targetDurationSeconds: 60 }, { storyEntry });
+  const variant = themeVariants ? themeVariants.variants[0] : null;
+  const fullStoryInput = {
+    creatorProfile, visualGuardrails, fullStorySchemaVersion: "full_story/1.2", targetDurationSeconds: 60,
+    ...(variant ? { themeVariants, variant } : {})
+  };
   const fullStory = await workflow.createFullStory(fullStoryInput, { storyEntry });
   const rawFullStory = mockNarrativeFullStory({ ...fullStoryInput, storySource, visualGuardrails });
   const planResult = await workflow.createAnimationPlanWithMetadata({
-    creatorProfile, visualGuardrails, variant, fullStory,
+    creatorProfile, visualGuardrails, fullStory, ...(variant ? { variant } : {}),
     animationPlanVersion: "4.0", animationPlanMode: "direct_shot", targetAspectRatio: "16:9", backgroundMusicEnabled: false
   }, { storyEntry });
   const plan = planResult.animationPlan;
@@ -66,8 +74,8 @@ export async function createStoryEntryRuntime({ storyMode = "fullStoryText" } = 
     const text = typeof prompt === "string" ? prompt : JSON.stringify(prompt);
     let value;
     if (text.includes("本次没有参考视频，只有用户自己预设的固定角色内容")) value = mockVisualGuardrails({ creatorProfile });
-    else if (text.includes("把用户提供的故事原文整理成一个故事候选") || text.includes("原创一个可以实际拍摄的短视频故事候选")) value = mockStoryEntryCandidates({ creatorProfile, targetDurationSeconds: 60 });
-    else if (text.includes("你现在进入 AI 导演的“完整剧情”阶段")) value = rawFullStory;
+    else if (text.includes("原创一个可以实际拍摄的短视频故事候选")) value = mockStoryEntryCandidates({ creatorProfile, targetDurationSeconds: 60 });
+    else if (text.includes(STORY_SCENE_SCRIPT_MARKER) || text.includes("你现在进入 AI 导演的“完整剧情”阶段")) value = rawFullStory;
     else if (text.includes("任务：整理本次 Full Story")) value = mockFullStoryCharacterRegistry(fullStoryCharacterRegistryInput(rawFullStory, creatorProfile));
     else if (text.includes("任务：将完整 Full Story")) value = storyboardDesignFromPlan(plan);
     else if (text.includes("你是分镜修稿编辑")) value = { strengths: [], guidance: ["协议测试的合成意见，未进行真实模型评审"], items: [] };

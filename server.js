@@ -68,9 +68,11 @@ import {
 import { loadOrCreatePersistentKey } from "./src/persistent-key.js";
 import { STORY_DURATION_MAX_SECONDS, STORY_DURATION_MIN_SECONDS, isValidStoryDurationSeconds } from "./public/story-duration.js";
 import { CHARACTER_EXPRESSION_RULES_MAX_CHARS, isValidCharacterExpressionRules } from "./public/character-expression-rules.js";
+import { FULL_STORY_CAST_SCHEMA_VERSION } from "./public/full-story-format.js";
 import {
   STORY_ENTRY_MODE,
   STORY_ENTRY_VARIANT_ID,
+  STORY_MODE_CHARACTER_ONLY,
   STORY_MODE_FULL_TEXT,
   STORY_SOURCE_ARTIFACT_ID,
   STORY_SOURCE_ARTIFACT_TYPE,
@@ -277,22 +279,23 @@ async function browserWorkspaceDebugRoot(kind, fallback) {
   }
 }
 
-async function fullStoryModelOutputTrace(request, body = {}) {
+// variantId 默认取请求里的候选 id；「从剧情开始」的 Run 由调用方传故事位 V1。
+async function fullStoryModelOutputTrace(request, body = {}, variantId = body?.variant?.id) {
   if (!fullModelOutputLogWriter.enabled) return null;
   const result = await resolveFullStoryModelOutputTrace({
     headers: request?.headers || {},
-    variantId: body?.variant?.id,
+    variantId,
     loadRun: (input) => productionStateStore.loadRun(input)
   });
   if (result.warning) console.warn(result.warning);
   return result.context;
 }
 
-async function animationPlanModelOutputTrace(request, body = {}) {
+async function animationPlanModelOutputTrace(request, body = {}, variantId = body?.variant?.id) {
   if (!animationModelOutputLogWriter.enabled) return null;
   const result = await resolveAnimationPlanModelOutputTrace({
     headers: request?.headers || {},
-    variantId: body?.variant?.id,
+    variantId,
     loadRun: (input) => productionStateStore.loadRun(input)
   });
   if (result.warning) console.warn(result.warning);
@@ -714,76 +717,111 @@ function pipelineStageTaskDefinition({ projectId, runId, raw, stage }) {
   });
 }
 
-// 「从剧情开始」的两步：角色边界 → 单个故事候选，之后由父任务签发选中记录 variant:V1。
+// 「从剧情开始」的两步，按 Run 元数据里的 storyMode 选：
+// - 只给角色设定：角色边界 → 单个故事候选，之后由父任务签发选中记录 variant:V1；
+// - 粘贴完整故事：角色边界 → 可翻拍镜头（原文直接拆场，写 fullStory:V1），没有候选这一步。
 // 与 DIRECTOR_PIPELINE_STAGES 并列、互不复用：AI 导演那条链的五个目标、「n/5」进度、
 // 需要源视频的判断和 standaloneVariantsTaskDefinition 取最后一项的写法都保持原样。
-// 两个子任务只能经由父任务创建，taskDefinitionForRequest 不接受它们的 kind。
-const STORY_PIPELINE_STAGES = Object.freeze([
-  {
-    key: "visualGuardrails",
-    taskKind: "storyVisualGuardrails",
-    artifactId: "visualGuardrails",
-    artifactType: "visualGuardrails",
-    dependencyIds: [STORY_SOURCE_ARTIFACT_ID],
-    buildInput: (raw, entry) => ({
-      creatorProfile: entry.creatorProfile,
-      modelOverrides: raw.modelOverrides
-    }),
-    invoke: (input, storyEntry) => workflow.createStoryEntryVisualGuardrails(input, { storyEntry })
-  },
-  {
-    key: "variants",
-    taskKind: "storyCandidate",
-    artifactId: "themeVariants",
-    artifactType: "themeVariants",
-    dependencyIds: [STORY_SOURCE_ARTIFACT_ID, "visualGuardrails"],
-    buildInput: (raw, entry, artifacts) => ({
-      creatorProfile: entry.creatorProfile,
-      visualGuardrails: artifacts.visualGuardrails,
-      targetDurationSeconds: raw.targetDurationSeconds,
-      modelOverrides: raw.modelOverrides
-    }),
-    invoke: (input, storyEntry) => workflow.createStoryEntryCandidate(input, { storyEntry })
-  }
-]);
+// 子任务只能经由父任务创建，taskDefinitionForRequest 不接受它们的 kind。
+const STORY_PIPELINE_GUARDRAILS_STAGE = Object.freeze({
+  key: "visualGuardrails",
+  taskKind: "storyVisualGuardrails",
+  artifactId: "visualGuardrails",
+  artifactType: "visualGuardrails",
+  dependencyIds: [STORY_SOURCE_ARTIFACT_ID],
+  buildInput: (raw, entry) => ({
+    creatorProfile: entry.creatorProfile,
+    modelOverrides: raw.modelOverrides
+  }),
+  invoke: (input, storyEntry) => workflow.createStoryEntryVisualGuardrails(input, { storyEntry })
+});
+const STORY_PIPELINE_CANDIDATE_STAGE = Object.freeze({
+  key: "variants",
+  taskKind: "storyCandidate",
+  artifactId: "themeVariants",
+  artifactType: "themeVariants",
+  dependencyIds: [STORY_SOURCE_ARTIFACT_ID, "visualGuardrails"],
+  buildInput: (raw, entry, artifacts) => ({
+    creatorProfile: entry.creatorProfile,
+    visualGuardrails: artifacts.visualGuardrails,
+    targetDurationSeconds: raw.targetDurationSeconds,
+    modelOverrides: raw.modelOverrides
+  }),
+  invoke: (input, storyEntry) => workflow.createStoryEntryCandidate(input, { storyEntry })
+});
+// 与分场页「重新拆分」（独立的 fullStory 任务）调同一个函数，只有一份实现。
+const STORY_PIPELINE_SCENE_SCRIPT_STAGE = Object.freeze({
+  key: "fullStory",
+  taskKind: "storySceneScript",
+  artifactId: `fullStory:${STORY_ENTRY_VARIANT_ID}`,
+  artifactType: "fullStory",
+  dependencyIds: [STORY_SOURCE_ARTIFACT_ID, "visualGuardrails"],
+  buildInput: (raw, entry, artifacts) => ({
+    creatorProfile: entry.creatorProfile,
+    visualGuardrails: artifacts.visualGuardrails,
+    targetDurationSeconds: raw.targetDurationSeconds,
+    // 与页面「生成完整剧情」请求同一个版本：带完整角色表。
+    fullStorySchemaVersion: FULL_STORY_CAST_SCHEMA_VERSION,
+    modelOverrides: raw.modelOverrides
+  }),
+  invoke: (input, storyEntry, request) => storyEntrySourceFullStory(input, { request, storyEntry })
+});
 const STORY_PIPELINE_SELECTION_ARTIFACT_ID = `variant:${STORY_ENTRY_VARIANT_ID}`;
-const STORY_PIPELINE_TARGET_IDS = Object.freeze([
-  ...STORY_PIPELINE_STAGES.map((stage) => stage.artifactId),
-  STORY_PIPELINE_SELECTION_ARTIFACT_ID
-]);
+
+function storyPipelinePlan(storyMode) {
+  const fromStorySource = storyMode === STORY_MODE_FULL_TEXT;
+  const stages = fromStorySource
+    ? [STORY_PIPELINE_GUARDRAILS_STAGE, STORY_PIPELINE_SCENE_SCRIPT_STAGE]
+    : [STORY_PIPELINE_GUARDRAILS_STAGE, STORY_PIPELINE_CANDIDATE_STAGE];
+  return {
+    stages,
+    // 只有「只给角色设定」有候选，才需要签发选中记录。
+    signsSelection: !fromStorySource,
+    targetArtifactIds: [
+      ...stages.map((stage) => stage.artifactId),
+      ...(fromStorySource ? [] : [STORY_PIPELINE_SELECTION_ARTIFACT_ID])
+    ],
+    modelStages: stages.map((stage) => stage.key)
+  };
+}
 
 function storyPipelineTaskDefinition({ projectId, runId, input }) {
   const inputDigest = contentDigest(nonArtifactInputDigestSource(input));
-  const modelStages = STORY_PIPELINE_STAGES.map((stage) => stage.key);
-  const totalStages = STORY_PIPELINE_STAGES.length;
+  // 建任务时还没读 Run；真正的步骤、目标与模型快照在 prepare 里按 Run 元数据决定，
+  // 任务管理器以 prepare 返回的为准。这里先按「只给角色设定」填一份占位。
+  const placeholder = storyPipelinePlan(STORY_MODE_CHARACTER_ONLY);
   return {
     projectId,
     runId,
     kind: "storyPipeline",
     pool: "workflow",
-    targetArtifactIds: [...STORY_PIPELINE_TARGET_IDS],
+    targetArtifactIds: [...placeholder.targetArtifactIds],
     dependencyIds: [STORY_SOURCE_ARTIFACT_ID],
-    modelSnapshot: modelSnapshotFor(input, modelStages),
+    modelSnapshot: modelSnapshotFor(input, placeholder.modelStages),
     prepare: async ({ run }) => {
       const entry = trustedStoryEntryContext(run);
       assertStoryEntryProfileCopy(input, entry);
       if (input.targetDurationSeconds !== undefined && !isValidStoryDurationSeconds(input.targetDurationSeconds)) {
         throw new InputError(`targetDurationSeconds 必须是 ${STORY_DURATION_MIN_SECONDS}-${STORY_DURATION_MAX_SECONDS} 之间的整数秒`);
       }
+      const plan = storyPipelinePlan(entry.storyMode);
       return {
         input: structuredClone(input),
         inputDigest,
-        targetArtifactIds: [...STORY_PIPELINE_TARGET_IDS],
+        targetArtifactIds: [...plan.targetArtifactIds],
         dependencyIds: [STORY_SOURCE_ARTIFACT_ID],
-        modelSnapshot: modelSnapshotFor(input, modelStages),
-        progress: { completedStages: 0, totalStages }
+        modelSnapshot: modelSnapshotFor(input, plan.modelStages),
+        progress: { completedStages: 0, totalStages: plan.stages.length }
       };
     },
     execute: async (raw, context) => {
+      const initialRun = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
+      const plan = storyPipelinePlan(trustedStoryEntryContext(initialRun).storyMode);
+      const totalStages = plan.stages.length;
       const completed = [];
       const usages = [];
       let reusedStages = 0;
-      for (const stage of STORY_PIPELINE_STAGES) {
+      for (const stage of plan.stages) {
         const snapshot = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
         const existing = snapshot.latestArtifacts?.[stage.artifactId];
         if (existing?.lineage?.status === "current") {
@@ -804,43 +842,45 @@ function storyPipelineTaskDefinition({ projectId, runId, input }) {
         if (child.usage) usages.push(child.usage);
         await context.heartbeat({ completedStages: completed.length, totalStages, currentStage: stage.artifactId });
       }
-      // 剧情入口只有一个候选：由服务端直接签发选中记录，浏览器不再提交 variant:V1。
-      // 已经是同一份内容、同一个上游时不重复提交，免得把已经展开的完整剧情无故标成过期。
-      const run = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
-      const variants = requireCurrentArtifact(run, "themeVariants");
-      const candidates = variants.content?.variants;
-      const candidate = Array.isArray(candidates) && candidates.length === 1 ? candidates[0] : null;
-      if (!candidate || candidate.id !== STORY_ENTRY_VARIANT_ID) {
-        throw new ProductionStateError(`剧情入口的故事候选必须恰好一个、id 为 ${STORY_ENTRY_VARIANT_ID}。`, {
-          code: "STORY_ENTRY_CANDIDATE_INVALID",
-          httpStatus: 409
-        });
-      }
-      const variantsRef = lineageRef(variants.lineage);
-      const selection = run.latestArtifacts?.[STORY_PIPELINE_SELECTION_ARTIFACT_ID];
-      const selectionCurrent = selection?.lineage?.status === "current"
-        && selection.lineage.contentDigest === contentDigest(candidate)
-        && sameLineageRefs(selection.lineage.dependencies, [variantsRef]);
-      if (selectionCurrent) {
-        completed.push(lineageRef(selection.lineage));
-      } else {
-        // 不调 assertFrozenContextCurrent：它会核对父任务的全部目标，而 visualGuardrails 与
-        // themeVariants 刚被本任务自己的子步骤提交过。提交口在 Run 锁内只核对 variant:V1 这一个
-        // 目标与冻结依赖（storySource），并要求 themeVariants 仍是上面读到的这一版。
-        const committed = await context.commitArtifact({
-          artifactId: STORY_PIPELINE_SELECTION_ARTIFACT_ID,
-          artifactType: "selectedVariant",
-          content: candidate,
-          dependencies: [variantsRef]
-        });
-        completed.push(lineageRef(committed.lineage));
+      if (plan.signsSelection) {
+        // 「只给角色设定」只有一个候选：由服务端直接签发选中记录，浏览器不再提交 variant:V1。
+        // 已经是同一份内容、同一个上游时不重复提交，免得把已经展开的完整剧情无故标成过期。
+        const run = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
+        const variants = requireCurrentArtifact(run, "themeVariants");
+        const candidates = variants.content?.variants;
+        const candidate = Array.isArray(candidates) && candidates.length === 1 ? candidates[0] : null;
+        if (!candidate || candidate.id !== STORY_ENTRY_VARIANT_ID) {
+          throw new ProductionStateError(`剧情入口的故事候选必须恰好一个、id 为 ${STORY_ENTRY_VARIANT_ID}。`, {
+            code: "STORY_ENTRY_CANDIDATE_INVALID",
+            httpStatus: 409
+          });
+        }
+        const variantsRef = lineageRef(variants.lineage);
+        const selection = run.latestArtifacts?.[STORY_PIPELINE_SELECTION_ARTIFACT_ID];
+        const selectionCurrent = selection?.lineage?.status === "current"
+          && selection.lineage.contentDigest === contentDigest(candidate)
+          && sameLineageRefs(selection.lineage.dependencies, [variantsRef]);
+        if (selectionCurrent) {
+          completed.push(lineageRef(selection.lineage));
+        } else {
+          // 不调 assertFrozenContextCurrent：它会核对父任务的全部目标，而 visualGuardrails 与
+          // themeVariants 刚被本任务自己的子步骤提交过。提交口在 Run 锁内只核对 variant:V1 这一个
+          // 目标与冻结依赖（storySource），并要求 themeVariants 仍是上面读到的这一版。
+          const committed = await context.commitArtifact({
+            artifactId: STORY_PIPELINE_SELECTION_ARTIFACT_ID,
+            artifactType: "selectedVariant",
+            content: candidate,
+            dependencies: [variantsRef]
+          });
+          completed.push(lineageRef(committed.lineage));
+        }
       }
       const finalRun = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
       return {
         resultArtifactRefs: completed,
         usage: mergeTaskUsages(usages),
         progress: { completedStages: totalStages, totalStages, reusedStages },
-        compatibilityResult: Object.fromEntries(STORY_PIPELINE_TARGET_IDS.map((artifactId) => [
+        compatibilityResult: Object.fromEntries(plan.targetArtifactIds.map((artifactId) => [
           artifactId,
           finalRun.latestArtifacts?.[artifactId]?.content
         ]))
@@ -868,9 +908,9 @@ function storyPipelineStageTaskDefinition({ projectId, runId, raw, stage }) {
         __storyEntry: { storyMode: entry.storyMode, storySource: entry.storySource }
       };
     },
-    invoke: (trustedInput) => {
+    invoke: (trustedInput, request) => {
       const { __storyEntry, ...input } = trustedInput;
-      return stage.invoke(input, __storyEntry);
+      return stage.invoke(input, __storyEntry, request);
     }
   });
 }
@@ -934,7 +974,9 @@ function fullStoryTaskDefinition({ projectId, runId, input }) {
     invoke: (trustedInput, request) => {
       if (trustedInput.__storyEntry) {
         const { __storyEntry, __dependencies: _dependencies, ...routeInput } = trustedInput;
-        return storyEntryFullStory(routeInput, { request, storyEntry: __storyEntry });
+        return __storyEntry.storyMode === STORY_MODE_FULL_TEXT
+          ? storyEntrySourceFullStory(routeInput, { request, storyEntry: __storyEntry })
+          : storyEntryFullStory(routeInput, { request, storyEntry: __storyEntry });
       }
       return routes["/api/full-story"](trustedInput, { request });
     }
@@ -1075,8 +1117,10 @@ function characterReferenceRefineTaskDefinition({ projectId, runId, input }) {
     createMediaNamespace: true,
     prepareInput: (run) => {
       // 剧情 Run 没有原片分析、脚本还原和创意简报；角色边界按剧情入口的摘要验，固定角色设定取 Run 元数据。
+      // 粘贴完整故事的 Run 也没有候选，下面的 selectedVariant 取不到，精修提示词里那一行是 {}。
       const entry = isStoryEntryRun(run) ? trustedStoryEntryContext(run) : null;
       if (entry) assertNoVideoUpstreamCopies(input);
+      if (isStorySourceDirectEntry(entry)) assertNoCandidateCopies(input);
       const planEntry = requireCurrentArtifact(run, artifactId);
       const plan = structuredClone(planEntry.content);
       const characterReference = plan.characterReferencePrompts?.[roleIndex];
@@ -1184,6 +1228,7 @@ function characterReferenceImagesTaskDefinition({ projectId, runId, input }) {
     prepare: async ({ run }) => {
       const entry = isStoryEntryRun(run) ? trustedStoryEntryContext(run) : null;
       if (entry) assertNoVideoUpstreamCopies(input);
+      if (isStorySourceDirectEntry(entry)) assertNoCandidateCopies(input);
       const planEntry = requireCurrentArtifact(run, planArtifactId);
       const characterReference = planEntry.content?.characterReferencePrompts?.[roleIndex];
       if (!characterReference) {
@@ -1224,7 +1269,10 @@ function characterReferenceImagesTaskDefinition({ projectId, runId, input }) {
             creativeBrief: requireCurrentArtifact(run, "creativeBrief").content
           }),
           visualGuardrails: requireCurrentArtifact(run, "visualGuardrails").content,
-          selectedVariant: requireCurrentArtifact(run, `variant:${variantId}`).content,
+          // 出图时用不到候选内容；粘贴完整故事的 Run 没有候选，其余 Run 照旧要求它存在。
+          ...(isStorySourceDirectEntry(entry) ? {} : {
+            selectedVariant: requireCurrentArtifact(run, `variant:${variantId}`).content
+          }),
           productionContext: productionContextForLineage(projectId, runId, planEntry.lineage),
           imageModel,
           artifactId,
@@ -2959,6 +3007,33 @@ function assertNoVideoUpstreamCopies(input = {}) {
   });
 }
 
+// 「粘贴完整故事」的 Run 没有故事候选，原文直接拆成可翻拍镜头。只认可信的 Run 元数据。
+function isStorySourceDirectEntry(entry) {
+  return entry?.storyMode === STORY_MODE_FULL_TEXT;
+}
+
+// 这类 Run 的请求里出现任何候选副本，说明页面拿错了 Run；直接拒绝，也不让页面伪造一个候选来凑依赖。
+function assertNoCandidateCopies(input = {}) {
+  const present = ["variant", "themeVariants", "candidateBinding", "selectedVariant"]
+    .filter((key) => input?.[key] !== undefined && input?.[key] !== null);
+  if (!present.length) return true;
+  throw new ProductionStateError(`「粘贴完整故事」的 Run 没有故事候选，请求不应携带：${present.join("、")}`, {
+    code: "STORY_ENTRY_INPUT_INVALID",
+    httpStatus: 400,
+    details: present.map((key) => ({ key }))
+  });
+}
+
+// 剧情 Run 只有 V1 这一个故事位，fullStory / animationPlan 都挂在它上面。
+function assertStoryEntrySlot(variantId) {
+  if (variantId === STORY_ENTRY_VARIANT_ID) return true;
+  throw new ProductionStateError(`「从剧情开始」的 Run 只有故事位 ${STORY_ENTRY_VARIANT_ID}，收到 ${variantId}。`, {
+    code: "STORY_ENTRY_INPUT_INVALID",
+    httpStatus: 400,
+    details: [{ key: "variantId", value: variantId }]
+  });
+}
+
 // 页面带了 creatorProfile 时，它必须就是开 Run 时写进元数据的那一份；剧情 Run 的
 // 下游一律用元数据里的设定，不用请求体。
 function assertStoryEntryProfileCopy(input = {}, entry) {
@@ -2984,6 +3059,22 @@ function storyEntryFullStoryInput(run, input, variantId) {
   const entry = trustedStoryEntryContext(run);
   assertNoVideoUpstreamCopies(input);
   assertStoryEntryProfileCopy(input, entry);
+  assertStoryEntrySlot(variantId);
+  if (isStorySourceDirectEntry(entry)) {
+    // 粘贴完整故事：没有候选，原文直接拆成可翻拍镜头，只依赖原文与角色边界。
+    assertNoCandidateCopies(input);
+    const sourceDependencyIds = [STORY_SOURCE_ARTIFACT_ID, "visualGuardrails"];
+    assertCompatibleArtifactCopies(run, input, [["visualGuardrails", "visualGuardrails"]]);
+    return {
+      visualGuardrails: currentArtifactContents(run, sourceDependencyIds).visualGuardrails,
+      creatorProfile: entry.creatorProfile,
+      targetDurationSeconds: input.targetDurationSeconds,
+      fullStorySchemaVersion: input.fullStorySchemaVersion,
+      modelOverrides: input.modelOverrides,
+      __storyEntry: storyEntryContextPayload(entry),
+      __dependencies: storyEntryDependencyRefs(run, sourceDependencyIds)
+    };
+  }
   const dependencyIds = [STORY_SOURCE_ARTIFACT_ID, "visualGuardrails", "themeVariants", `variant:${variantId}`];
   assertCompatibleArtifactCopies(run, input, [
     ["visualGuardrails", "visualGuardrails"],
@@ -3016,16 +3107,22 @@ function storyEntryAnimationPlanInput(run, input, variantId) {
       httpStatus: 400
     });
   }
-  const dependencyIds = [STORY_SOURCE_ARTIFACT_ID, "visualGuardrails", `variant:${variantId}`, `fullStory:${variantId}`];
+  assertStoryEntrySlot(variantId);
+  // 粘贴完整故事没有候选：分镜只依赖原文、角色边界和可翻拍镜头。
+  const fromStorySource = isStorySourceDirectEntry(entry);
+  if (fromStorySource) assertNoCandidateCopies(input);
+  const dependencyIds = fromStorySource
+    ? [STORY_SOURCE_ARTIFACT_ID, "visualGuardrails", `fullStory:${variantId}`]
+    : [STORY_SOURCE_ARTIFACT_ID, "visualGuardrails", `variant:${variantId}`, `fullStory:${variantId}`];
   assertCompatibleArtifactCopies(run, input, [
     ["visualGuardrails", "visualGuardrails"],
-    ["variant", `variant:${variantId}`],
+    ...(fromStorySource ? [] : [["variant", `variant:${variantId}`]]),
     ["fullStory", `fullStory:${variantId}`]
   ]);
   const artifacts = currentArtifactContents(run, dependencyIds);
   return {
     visualGuardrails: artifacts.visualGuardrails,
-    variant: artifacts[`variant:${variantId}`],
+    ...(fromStorySource ? {} : { variant: artifacts[`variant:${variantId}`] }),
     fullStory: artifacts[`fullStory:${variantId}`],
     creatorProfile: entry.creatorProfile,
     characterExpressionRules: input.characterExpressionRules,
@@ -3072,17 +3169,33 @@ async function storyEntryFullStory(body, { request, storyEntry }) {
   return result;
 }
 
+// 「粘贴完整故事」的可翻拍镜头（fullStory:V1）：原文直接拆场。没有候选，所以没有候选绑定的
+// 前后复核；storySource 与 visualGuardrails 由任务管理器按冻结依赖在调用前后复检。
+// 剧情准备的第 ② 步与分场页「重新拆分」用的独立 fullStory 任务都走这一个函数。
+async function storyEntrySourceFullStory(body, { request, storyEntry }) {
+  if (body?.targetDurationSeconds !== undefined && !isValidStoryDurationSeconds(body.targetDurationSeconds)) {
+    throw new InputError(
+      `targetDurationSeconds 必须是 ${STORY_DURATION_MIN_SECONDS}-${STORY_DURATION_MAX_SECONDS} 之间的整数秒`
+    );
+  }
+  return workflow.createFullStory(body, {
+    traceContext: await fullStoryModelOutputTrace(request, body, STORY_ENTRY_VARIANT_ID),
+    storyEntry
+  });
+}
+
 // 剧情入口的 4.0 分镜。与 /api/animation-plan 路由同一份输入检查与提示词采集外壳。
+// 剧情 Run 只有 V1 这一个故事位，采集与调试侧车的标签都用它（粘贴原文的 Run 没有候选可取 id）。
 async function storyEntryAnimationPlan(body, { request, storyEntry }) {
   if (body?.characterExpressionRules !== undefined && !isValidCharacterExpressionRules(body.characterExpressionRules)) {
     throw new InputError(`characterExpressionRules 必须是不超过 ${CHARACTER_EXPRESSION_RULES_MAX_CHARS} 字符的字符串`);
   }
   return animationPromptCapture.run({
     route: "/api/animation-plan",
-    variantId: body?.variant?.id,
+    variantId: STORY_ENTRY_VARIANT_ID,
     animationPlanMode: body?.animationPlanMode,
     provider: String(body?.modelOverrides?.animationPlan?.provider || stageDefaults.animationPlan.provider || ""),
-    traceContext: await animationPlanModelOutputTrace(request, body)
+    traceContext: await animationPlanModelOutputTrace(request, body, STORY_ENTRY_VARIANT_ID)
   }, () => workflow.createAnimationPlanWithMetadata(body, { storyEntry }));
 }
 

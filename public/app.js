@@ -270,6 +270,7 @@ const elements = {
   fullStoryControls: $("#fullStoryControls"), fullStoryStartArrow: $("#fullStoryStartArrow"),
   terminateFullStory: $("#terminateFullStory"), pauseFullStory: $("#pauseFullStory"), fullStoryControlHint: $("#fullStoryControlHint"),
   animationGenerate: $("#generateAnimationPlan"), animationStatus: $("#animationStatus"), animationPlan: $("#animationPlanResult"),
+  storyMusicControl: $("#storyMusicControl"),
   animationAspectRatio: $("#animationAspectRatio"),
   storyDurationTarget: $("#storyDurationTarget"),
   exportStoryPackage: $("#exportStoryPackage"), startShotVideoBatch: $("#startShotVideoBatch"),
@@ -539,6 +540,11 @@ function bindEvents() {
     if (useButton) useGeneratedCharacterReference(useButton.dataset.useGeneratedReference);
   });
   elements.variants.addEventListener("change", (event) => {
+    const toggle = event.target.closest("[data-background-music]");
+    if (toggle) handleBackgroundMusicToggle(toggle.dataset.backgroundMusic, toggle.checked);
+  });
+  // 粘贴完整故事没有候选卡，配乐开关放在分场页的「生成分镜」旁边。
+  elements.storyMusicControl.addEventListener("change", (event) => {
     const toggle = event.target.closest("[data-background-music]");
     if (toggle) handleBackgroundMusicToggle(toggle.dataset.backgroundMusic, toggle.checked);
   });
@@ -1085,12 +1091,61 @@ async function runWorkflow() {
 // ---------------------------------------------------------------------------
 // 「从剧情开始」（2026-10-09）
 //
-// 没有参考视频：服务端先建一个剧情 Run 并写入 storySource，再跑两步（角色边界 → 单个故事候选），
-// 最后由服务端签发选中记录 variant:V1。之后的完整剧情、4.0 分镜、角色参考图和镜头视频沿用
-// 原有页面与任务，只是请求体不带参考视频那三份上游。故事原文只存在服务端的 storySource 里。
+// 没有参考视频：服务端先建一个剧情 Run 并写入 storySource，再跑两步。
+// - 只给角色设定：角色边界 → 单个故事候选，最后由服务端签发选中记录 variant:V1；
+// - 粘贴完整故事：角色边界 → 可翻拍镜头（原文直接拆场，fullStory:V1），没有候选这一步，
+//   V1 是「故事位」。
+// 之后的 4.0 分镜、角色参考图和镜头视频沿用原有页面与任务，只是请求体不带参考视频那三份上游。
+// 故事原文只存在服务端的 storySource 里。
 
 function isStoryEntryMode() {
   return state.entryMode === STORY_ENTRY_MODE;
+}
+
+// 「粘贴完整故事」的剧情 Run：没有故事候选，原文直接拆成可翻拍镜头。
+function isStorySourceRun() {
+  return isStoryEntryMode() && state.storyMode === STORY_MODE_FULL_TEXT;
+}
+
+// 故事位：只在页面内部代替「选中的候选」，让只认 id 的地方照常工作。它不是候选，
+// 从不当成候选发给服务端（见 candidateCopy）。
+function storySourceSlot() {
+  return {
+    id: STORY_ENTRY_VARIANT_ID,
+    title: state.fullStories[STORY_ENTRY_VARIANT_ID]?.title || "你的故事",
+    storySourceSlot: true
+  };
+}
+
+// 请求体里的候选副本：故事位只发 variantId；其余照旧发候选，由服务端逐字核对。
+function candidateCopy(variant, key = "variant") {
+  return variant?.storySourceSlot ? { variantId: variant.id } : { [key]: variant };
+}
+
+// 页面叫法：剧情入口的 4.0 计划叫「分镜」，粘贴完整故事的 fullStory 叫「可翻拍镜头」；
+// 参考视频入口的文字一律不变。
+function planLabel() { return isStoryEntryMode() ? "分镜" : "动画镜头生产包"; }
+function planShortLabel() { return isStoryEntryMode() ? "分镜" : "动画生产包"; }
+function fullStoryLabel() { return isStorySourceRun() ? "可翻拍镜头" : "完整剧情"; }
+
+function storyPipelineLabels() {
+  return isStorySourceRun()
+    ? { start: "开始拆镜头", queued: "拆镜头排队中…", running: "拆镜头中…", continue: "继续拆镜头", restart: "重新开始拆镜头", failed: "拆镜头失败", interrupted: "拆镜头未能继续", noun: "拆镜头" }
+    : { start: "开始剧情准备", queued: "剧情准备排队中…", running: "剧情准备中…", continue: "继续剧情准备", restart: "重新开始剧情准备", failed: "剧情准备失败", interrupted: "剧情准备未能继续", noun: "剧情准备" };
+}
+
+// 剧情准备走完的标志：粘贴完整故事是可翻拍镜头，只给角色设定是服务端签发的选中记录。
+function storyPipelineDoneArtifactId() {
+  return isStorySourceRun() ? `fullStory:${STORY_ENTRY_VARIANT_ID}` : `variant:${STORY_ENTRY_VARIANT_ID}`;
+}
+
+// 任务状态里的叫法：剧情入口的 animationPlan 叫「分镜」、storyPipeline 叫「拆镜头 / 剧情准备」；
+// 其余返回空串，沿用 task-status-ui.js 的默认叫法。
+function storyEntryTaskKindLabel(kind) {
+  if (!isStoryEntryMode()) return "";
+  if (kind === "animationPlan") return planShortLabel();
+  if (kind === "storyPipeline") return storyPipelineLabels().noun;
+  return "";
 }
 
 // 参考视频那三份上游的浏览器副本。剧情 Run 没有它们，请求体里整个键都不能出现
@@ -1119,6 +1174,7 @@ function updateStorySourceCounter() {
 function applyEntryModeUi() {
   const storyEntry = isStoryEntryMode();
   document.body.classList.toggle("story-entry-mode", storyEntry);
+  document.body.classList.toggle("story-source-mode", isStorySourceRun());
   elements.entryModeStory.checked = storyEntry;
   elements.entryModeVideo.checked = !storyEntry;
   elements.storyModeFullText.checked = state.storyMode === STORY_MODE_FULL_TEXT;
@@ -1149,9 +1205,14 @@ async function handleEntryModeChange(mode) {
 async function handleStoryModeChange(mode) {
   const next = mode === STORY_MODE_CHARACTER_ONLY ? STORY_MODE_CHARACTER_ONLY : STORY_MODE_FULL_TEXT;
   if (next === state.storyMode) return;
+  const previous = state.storyMode;
   state.storyMode = next;
   applyEntryModeUi();
-  await invalidateIfStorySourceChanged();
+  // 两种模式的 Run 结构不同（有没有候选）：没能作废旧 Run 时，模式也要退回去，不能和 Run 对不上。
+  if (await invalidateIfStorySourceChanged() === false) {
+    state.storyMode = previous;
+    applyEntryModeUi();
+  }
   validateReady();
 }
 
@@ -1162,21 +1223,23 @@ async function handleStorySourceInput() {
 }
 
 // 剧情 Run 已经按开始时的原文签过角色边界；原文或模式一改，就和固定角色设定被修改一样作废 Run。
+// 返回值：没有需要作废的 Run 时是 undefined，否则是作废是否成功。
 async function invalidateIfStorySourceChanged() {
-  if (!isStoryEntryMode() || !state.production.runId || !state.output.storySource || state.running) return;
+  if (!isStoryEntryMode() || !state.production.runId || !state.output.storySource || state.running) return undefined;
   let draft = null;
   try { draft = normalizeStorySource(currentStorySourceDraft()); } catch { draft = null; }
-  if (draft && JSON.stringify(draft) === JSON.stringify(state.output.storySource)) return;
-  await invalidateGlobalCharacterBoundary("故事原文或剧情模式已修改；当前剧情 Run 已失效，请重新开始。");
+  if (draft && JSON.stringify(draft) === JSON.stringify(state.output.storySource)) return undefined;
+  return invalidateGlobalCharacterBoundary("故事原文或剧情模式已修改；当前剧情 Run 已失效，请重新开始。");
 }
 
 function storyEntryRunLabel(task) {
-  if (isActiveTask(task)) return task.status === "queued" ? "剧情准备排队中…" : "剧情准备中…";
+  const labels = storyPipelineLabels();
+  if (isActiveTask(task)) return task.status === "queued" ? labels.queued : labels.running;
   if (state.running) return "正在开始…";
-  if (!state.production.runId || !state.output.storySource) return "开始剧情准备";
-  return state.production.artifacts?.[`variant:${STORY_ENTRY_VARIANT_ID}`]?.status === "current"
-    ? "重新开始剧情准备"
-    : "继续剧情准备";
+  if (!state.production.runId || !state.output.storySource) return labels.start;
+  return state.production.artifacts?.[storyPipelineDoneArtifactId()]?.status === "current"
+    ? labels.restart
+    : labels.continue;
 }
 
 async function runStoryEntryWorkflow() {
@@ -1206,13 +1269,13 @@ async function runStoryEntryWorkflow() {
       await abandonProductionTasks(active);
     }
     if (!task) {
-      // 同一个剧情 Run 停在半路（选中记录还没签发）时继续它；否则开新的剧情 Run。
+      // 同一个剧情 Run 停在半路（可翻拍镜头或选中记录还没出来）时继续它；否则开新的剧情 Run。
       const continuing = Boolean(state.production.runId && state.output.storySource
         && JSON.stringify(state.output.storySource) === JSON.stringify(storySource)
-        && state.production.artifacts?.[`variant:${STORY_ENTRY_VARIANT_ID}`]?.status !== "current");
+        && state.production.artifacts?.[storyPipelineDoneArtifactId()]?.status !== "current");
       if (!continuing) {
         if (state.file || state.production.runId) {
-          const confirmed = window.confirm("开始剧情准备会清空当前页面已上传的视频和已有的生成结果。继续吗？");
+          const confirmed = window.confirm(`${storyPipelineLabels().start}会清空当前页面已上传的视频和已有的生成结果。继续吗？`);
           if (!confirmed) throw new Error("已保留当前页面内容，没有开始新的剧情 Run。");
         }
         const started = await startStoryEntryRun(creatorProfile, storySource, workspaceEpoch);
@@ -1235,7 +1298,9 @@ async function runStoryEntryWorkflow() {
     assertWorkspaceCurrent(workspaceEpoch);
     renderStoryPipelineTaskStatus(completed);
     elements.export.classList.remove("hidden");
-    elements.variants.scrollIntoView({ behavior: "smooth", block: "start" });
+    // 粘贴完整故事：拆好就直接进分场页给用户看；只给角色设定：先看首页的故事候选。
+    if (isStorySourceRun() && state.fullStories[STORY_ENTRY_VARIANT_ID]) navigateToStory(STORY_ENTRY_VARIANT_ID);
+    else elements.variants.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (isTaskCapacityError(error)) {
@@ -1243,7 +1308,7 @@ async function runStoryEntryWorkflow() {
       return;
     }
     if (error.task) renderStoryPipelineTaskStatus(error.task);
-    showError(error.message || "剧情准备失败", error.task && error.task.status !== "failed" ? "notice" : "error");
+    showError(error.message || storyPipelineLabels().failed, error.task && error.task.status !== "failed" ? "notice" : "error");
   } finally {
     if (browserWorkspace.isCurrent(workspaceEpoch)) {
       state.running = false;
@@ -1292,7 +1357,12 @@ function renderStoryPipelineTaskStatus(task) {
   task = state.taskSnapshots[task.taskId] || task;
   state.directorTaskId = task.taskId;
   const order = ["guardrails", "variants"];
-  const artifactToStage = { visualGuardrails: "guardrails", themeVariants: "variants" };
+  // 第二步在页面上占同一格：只给角色设定是故事候选，粘贴完整故事是可翻拍镜头。
+  const artifactToStage = {
+    visualGuardrails: "guardrails",
+    themeVariants: "variants",
+    [`fullStory:${STORY_ENTRY_VARIANT_ID}`]: "variants"
+  };
   const view = storyPipelineTaskView(task);
   const completed = task.status === "completed" ? order.length : Number(task.progress?.completedStages) || 0;
   order.forEach((stage, index) => setStage(stage, index < completed ? "done" : ""));
@@ -1311,7 +1381,7 @@ async function attachRestoredStoryPipeline(task) {
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (error.task) renderStoryPipelineTaskStatus(error.task);
-    showError(error.message || "剧情准备未能继续", "notice");
+    showError(error.message || storyPipelineLabels().interrupted, "notice");
   } finally {
     if (browserWorkspace.isCurrent(workspaceEpoch)) {
       state.running = false;
@@ -1358,14 +1428,15 @@ function renderStoryDialogueCheck(report) {
     return;
   }
   const missing = Array.isArray(report.missing) ? report.missing : [];
-  const where = (item) => (item.artifact === "animationPlan" ? `分镜 ${item.location}` : `完整剧情 ${item.location}`);
+  // 台词核对只在粘贴完整故事的 Run 上出现，那里 fullStory 叫「可翻拍镜头」。
+  const where = (item) => (item.artifact === "animationPlan" ? `分镜 ${item.location}` : `可翻拍镜头 ${item.location}`);
   panel.className = `result-card story-result story-dialogue-check${missing.length ? " warn" : ""}`;
   panel.innerHTML = missing.length
     ? `<h3>台词核对：${missing.length} 句在原文里找不到</h3>
-      <p>只是提示，不拦截。这些台词可能被改写或新增了；需要的话可以重新生成完整剧情或分镜。比对时忽略标点和空格。</p>
+      <p>只是提示，不拦截。这些台词可能被改写或新增了；需要的话可以重新拆分镜头或重新生成分镜。比对时忽略标点和空格。</p>
       <ul>${missing.map((item) => `<li><span>${escape(where(item))}</span> · ${escape(item.speaker || "未标注")}：${escape(item.text)}</li>`).join("")}</ul>`
     : `<h3>台词核对：${escape(report.checked)} 句台词都能在原文里找到</h3>
-      <p>完整剧情${state.output.animationPlan ? "和分镜" : ""}里的台词去掉标点后都与原文一致。</p>`;
+      <p>可翻拍镜头${state.output.animationPlan ? "和分镜" : ""}里的台词去掉标点后都与原文一致。</p>`;
 }
 
 async function requestProductionArtifact({
@@ -2134,6 +2205,22 @@ function renderVariants(data) {
   if (reviewButton) reviewButton.addEventListener("click", () => runStoryCandidateReview(data, reviewButton));
 }
 
+// 粘贴完整故事：首页没有候选卡，只有一张通往分场页的入口卡。
+function renderStorySourceShots(fullStory) {
+  const scenes = Array.isArray(fullStory?.sceneScript) ? fullStory.sceneScript : [];
+  const seconds = Number(fullStory?.targetDurationSeconds) || 0;
+  elements.variants.innerHTML = `${resultHeader("SHOTS", "可翻拍镜头", "", "")}
+    <div class="variant-grid"><div class="variant">
+      <div class="variant-top">
+        <div><span class="variant-number">${escape(STORY_ENTRY_VARIANT_ID)} · 你的故事</span><h4>${escape(fullStory?.title || "你的故事")}</h4></div>
+        <div class="variant-top-meta"><span class="duration-badge">${escape(scenes.length)} 场 · 约 ${escape(seconds)} 秒</span></div>
+      </div>
+      <p class="variant-logline">已按原文拆好分场：时间、地点、画面动作、声音和原台词。情节、人物、结局和台词都按原文。</p>
+      <button class="outline-button variant-story-button" type="button" data-story-variant="${escape(STORY_ENTRY_VARIANT_ID)}">查看可翻拍镜头 →</button>
+    </div></div>`;
+  reveal(elements.variants);
+}
+
 // 候选对照评审：手动触发，只出报告。不改候选、不签发 Artifact、不改变候选数量、
 // 不 stale 任何东西、不阻断后续阶段。报告不落盘，刷新页面即失。
 async function runStoryCandidateReview(themeVariants, button) {
@@ -2793,12 +2880,12 @@ async function handleBackgroundMusicToggle(variantId, enabled) {
   // 没有 Plan：只是记录选择，等生成时使用。
   if (!plan || !currentMode) {
     state.backgroundMusicDrafts[variantId] = enabled;
-    renderVariants(state.output.themeVariants);
+    renderBackgroundMusicControls();
     return;
   }
   if ((currentMode !== "none") === enabled) {
     state.backgroundMusicDrafts[variantId] = enabled;
-    renderVariants(state.output.themeVariants);
+    renderBackgroundMusicControls();
     return;
   }
   // 已有 Plan：切换必须重生整包，不能只改提示词末尾。明确征求同意。
@@ -2807,20 +2894,41 @@ async function handleBackgroundMusicToggle(variantId, enabled) {
     + `新 Plan 会签发新的 revision 和媒体目录，该变体已生成的镜头视频将全部失效。\n\n是否继续？`
   );
   if (!confirmed) {
-    renderVariants(state.output.themeVariants);
+    renderBackgroundMusicControls();
     return;
   }
   state.backgroundMusicDrafts[variantId] = enabled;
-  renderVariants(state.output.themeVariants);
+  renderBackgroundMusicControls();
   state.selectedVariantId = variantId;
-  await generateAnimationPlan(true);
+  await generateAnimationPlan({ force: true });
+}
+
+// 配乐开关在哪：候选卡上（参考视频入口、只给角色设定），或分场页上（粘贴完整故事没有候选卡）。
+function renderBackgroundMusicControls() {
+  if (isStorySourceRun()) renderStoryMusicControl();
+  else renderVariants(state.output.themeVariants);
+}
+
+function renderStoryMusicControl() {
+  const container = elements.storyMusicControl;
+  if (!isStorySourceRun()) {
+    container.innerHTML = "";
+    return;
+  }
+  const enabled = backgroundMusicEnabled(STORY_ENTRY_VARIANT_ID);
+  container.innerHTML = `<label class="variant-switch" title="${enabled ? "开启：允许为分镜生成背景音乐" : "关闭：成片只保留现场环境声与动作声"}">
+      <input type="checkbox" data-background-music="${escape(STORY_ENTRY_VARIANT_ID)}" aria-label="分镜的背景音乐"${enabled ? " checked" : ""}${state.animationRunning ? " disabled" : ""}>
+      <span class="variant-switch-track" aria-hidden="true"></span>
+      <span class="variant-switch-label">配乐</span>
+    </label>`;
 }
 
 function navigateToStory(variantId) {
   if (!variantId) return;
   state.selectedVariantId = variantId;
   history.pushState({ storyVariantId: variantId }, "", `/story/${encodeURIComponent(variantId)}`);
-  renderStoryPage({ autoGenerate: true });
+  // 粘贴完整故事的可翻拍镜头由「开始拆镜头」那一步生成，进分场页不自动发起计费调用。
+  renderStoryPage({ autoGenerate: !isStorySourceRun() });
 }
 
 function backToMainResults() {
@@ -2853,21 +2961,22 @@ function renderStoryPage({ autoGenerate = false } = {}) {
   window.scrollTo({ top: 0, behavior: "instant" });
   const variant = selectedVariant();
   renderSelectedVariantSummary(variant);
+  renderStoryMusicControl();
   const existing = variant ? state.fullStories[variant.id] : null;
   const animationExisting = variant ? state.animationPlans[variant.id] : null;
   syncAnimationAspectRatioControls(animationExisting);
   if (existing) {
     renderFullStory(existing);
-    setStoryStatus(`已生成完整剧情 · ${storyModelLabel()}`, "ready");
+    setStoryStatus(`已生成${fullStoryLabel()} · ${storyModelLabel()}`, "ready");
     elements.animationGenerate.disabled = state.animationRunning;
     updateStoryExportActions();
     if (animationExisting) {
       renderAnimationPlan(animationExisting);
-      setAnimationStatus(`已生成动画生产包 · ${animationModelLabel()}`, "ready");
+      setAnimationStatus(`已生成${planShortLabel()} · ${animationModelLabel()}`, "ready");
     } else {
       elements.animationPlan.classList.add("hidden");
       elements.animationPlan.innerHTML = "";
-      setAnimationStatus("可以继续生成动画镜头生产包。", "");
+      setAnimationStatus(`可以继续生成${planLabel()}。`, "");
     }
   } else {
     elements.fullStory.classList.add("hidden");
@@ -2877,11 +2986,15 @@ function renderStoryPage({ autoGenerate = false } = {}) {
     setAnimationStatus("", "");
     elements.animationGenerate.disabled = true;
     updateStoryExportActions();
-    if (variant) {
+    if (variant?.storySourceSlot) {
+      setStoryStatus("还没有可翻拍镜头。点下面的按钮按原文拆分，或回到首页点「继续拆镜头」。", "");
+    } else if (variant) {
       setStoryStatus("准备生成完整剧情。", "");
       if (autoGenerate) startFullStory();
     } else {
-      setStoryStatus("当前页面没有可用主题变体。请先返回工作台，完成视频分析并选择一个主题变体。", "error");
+      setStoryStatus(isStoryEntryMode()
+        ? "这个页面没有对应的故事。请返回首页重新开始。"
+        : "当前页面没有可用主题变体。请先返回工作台，完成视频分析并选择一个主题变体。", "error");
     }
   }
   elements.storyGenerate.disabled = !variant || state.storyRunning;
@@ -2893,6 +3006,16 @@ function renderStoryPage({ autoGenerate = false } = {}) {
 function renderSelectedVariantSummary(variant) {
   if (!variant) {
     elements.selectedVariantSummary.innerHTML = `<div class="warning-box"><b>缺少选中主题。</b> 当前浏览器状态里没有主题变体结果，无法继续生成完整剧情。</div>`;
+    return;
+  }
+  // 粘贴完整故事：左侧显示用户原文本身，而不是一张由模型整理出来的候选摘要。
+  if (variant.storySourceSlot) {
+    const text = state.output.storySource?.storyText || "";
+    elements.selectedVariantSummary.innerHTML = `
+      <span class="variant-number">${escape(variant.id)} · 你的故事</span>
+      <h3>你的故事（原文）</h3>
+      <p class="story-source-original">${escape(text)}</p>
+      <small class="story-source-note">共 ${escape(storyTextLength(text))} 字 · 情节、人物、结局和台词都按原文</small>`;
     return;
   }
   elements.selectedVariantSummary.innerHTML = `
@@ -2975,7 +3098,12 @@ async function startFullStory({ force = false } = {}) {
   if (state.storyRunning || state.storyPrecheckRunning) return;
   if (activeTaskForKinds(["fullStory"], { rootOnly: true })) return;
   // 展开前体检要对照原片脚本还原，剧情入口没有原片：直接展开。
-  if (isStoryEntryMode()) return generateFullStory({ force });
+  if (isStoryEntryMode()) {
+    // 重新拆分会让下游的分镜和镜头视频过期；先问一句，与拨配乐开关同规格。
+    if (variant.storySourceSlot && state.fullStories[variant.id] && state.animationPlans[variant.id]
+      && !window.confirm("重新拆分会让已经生成的分镜和镜头视频失效，需要重新生成。继续吗？")) return undefined;
+    return generateFullStory({ force });
+  }
 
   const sourceThemeVariants = state.output?.themeVariants;
   if (!sourceThemeVariants) return generateFullStory({ force });
@@ -3214,7 +3342,7 @@ async function generateFullStory({ force = false } = {}) {
   state.storyRunning = true;
   setStoryRunning(true);
   beginStageUsage();
-  setStoryStatus(`正在调用 ${storyModelLabel()} 生成完整剧情…`, "active");
+  setStoryStatus(`正在调用 ${storyModelLabel()} ${variant.storySourceSlot ? "按原文拆分镜头" : "生成完整剧情"}…`, "active");
   try {
     const candidateLineage = await ensureSelectedVariantArtifact(variant);
     assertWorkspaceCurrent(workspaceEpoch);
@@ -3224,9 +3352,12 @@ async function generateFullStory({ force = false } = {}) {
         fullStorySchemaVersion: "full_story/1.2",
         ...videoUpstreamCopies(),
         visualGuardrails: state.output.visualGuardrails,
-        themeVariants: state.output.themeVariants,
-        variant,
-        candidateBinding: lineageDependency(candidateLineage),
+        // 粘贴完整故事没有候选：只告诉服务端故事位，原文由服务端从 storySource 取。
+        ...(variant.storySourceSlot ? { variantId: variant.id } : {
+          themeVariants: state.output.themeVariants,
+          variant,
+          candidateBinding: lineageDependency(candidateLineage)
+        }),
         creatorProfile: profile(),
         // 只是给模型的目标；Artifact 里的 targetDurationSeconds 仍由服务端从
         // sceneScript 时间轴派生，模型没打准时页面显示的也是派生出的真实值。
@@ -3250,14 +3381,14 @@ async function generateFullStory({ force = false } = {}) {
     state.output.fullStory = fullStory;
     renderFullStory(fullStory);
     void refreshStoryDialogueCheck();
-    setStoryStatus(`完整剧情已生成 · ${persistedTaskModelLabel(`fullStory:${variant.id}`, "fullStory", storyModelLabel())}${formatStageUsageSuffix(endStageUsage())}`, "ready");
+    setStoryStatus(`${fullStoryLabel()}已生成 · ${persistedTaskModelLabel(`fullStory:${variant.id}`, "fullStory", storyModelLabel())}${formatStageUsageSuffix(endStageUsage())}`, "ready");
     elements.animationGenerate.disabled = false;
-    setAnimationStatus("可以继续生成动画镜头生产包。", "");
+    setAnimationStatus(`可以继续生成${planLabel()}。`, "");
     updateStoryExportActions();
     elements.export.classList.remove("hidden");
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
-    renderFullStoryTaskError(error, "完整剧情生成失败", variant.id);
+    renderFullStoryTaskError(error, `${fullStoryLabel()}生成失败`, variant.id);
   } finally {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     endStageUsage();
@@ -3280,7 +3411,10 @@ function renderFullStory(data) {
         .map((w) => `<span class="shape-warning" title="${escape(w.detail)}">${escape(w.label)}</span>`)
         .join("")}</div>`
     : "";
-  elements.fullStory.innerHTML = `${resultHeader("FULL STORY", data.title || "完整剧情", `${escape(data.targetDurationSeconds || 60)} 秒`)}
+  // 粘贴完整故事的 fullStory 是按原文拆出的可翻拍镜头：换叫法，并且不提供「检查剧情硬伤」
+  // （它要拿故事候选核对承诺，这类 Run 没有候选）。
+  const storySource = isStorySourceRun();
+  elements.fullStory.innerHTML = `${resultHeader(storySource ? "SHOTS" : "FULL STORY", data.title || fullStoryLabel(), `${escape(data.targetDurationSeconds || 60)} 秒`)}
     <div class="summary-strip">${escape(data.oneLinePremise || data.shootingSynopsis)}</div>
     ${shapeStrip}
     <div class="data-grid">
@@ -3291,7 +3425,7 @@ function renderFullStory(data) {
     ${block("剧情梗概", `<p class="long-copy">${escape(data.shootingSynopsis)}</p>`)}
     ${data.characterBible?.supportingCharacters ? block("完整配角设定", data.characterBible.supportingCharacters.map(row => `<p><b>${escape(row.name)}</b> · ${escape(row.identity)}<br>${escape(row.appearanceFacts.join("；") || "外观未指定，分镜阶段设计")}<br>${escape([row.relationshipToProtagonist, row.storyRole, ...row.personalityFacts, ...row.speechRules].filter(Boolean).join("；"))}</p>`).join("")) : ""}
     ${narrativeStory ? "" : block("剧情节拍", `<div class="beat-list">${(data.beatSheet || []).map((beat) => `<div class="beat"><strong>${escape(beat.timeRange)} · ${escape(beat.emotion)}</strong><p>${escape(beat.storyAction)}<br><b>功能：</b>${escape(beat.dramaticFunction)}<br><b>保留价值：</b>${escape(beat.retainedValueFromBrief)}</p></div>`).join("")}</div>`)}
-    ${block("可拍分场剧本", `<div class="timeline">${(data.sceneScript || []).map((scene) => `<div class="scene">
+    ${block(storySource ? "可翻拍镜头（按原文分场）" : "可拍分场剧本", `<div class="timeline">${(data.sceneScript || []).map((scene) => `<div class="scene">
       <span class="scene-id">${escape(scene.sceneId)}</span>
       <div class="scene-head"><strong>${escape(scene.location)}</strong><span>${escape(scene.timeRange)}</span></div>
       <p><b>人物：</b>${escape((scene.characters || []).join("、"))}</p>
@@ -3309,11 +3443,11 @@ function renderFullStory(data) {
     </div>`)}
     ${narrativeStory ? "" : `<div class="warning-box"><b>连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>`}
     ${uncertainties(data.uncertainties)}
-    <div class="story-review">
+    ${storySource ? "" : `<div class="story-review">
       <button type="button" class="outline-button" data-story-review>检查剧情硬伤</button>
       <span class="story-review-hint">核对候选承诺有没有演出来，并做编辑诊断。可以勾选问题生成局部修改——看过对照、点「采纳」之前不会改动剧情。</span>
       <div class="story-review-body" data-story-review-body></div>
-    </div>`;
+    </div>`}`;
   reveal(elements.fullStory);
   const button = elements.fullStory.querySelector("[data-story-review]");
   if (button) button.addEventListener("click", () => runStoryQualityReview(data, button));
@@ -3700,7 +3834,7 @@ async function generateAnimationPlan({ force = false } = {}) {
   const variant = selectedVariant();
   if (!variant) return setAnimationStatus("请先选择一个主题变体。", "error");
   const fullStory = state.fullStories[variant.id] || state.output.fullStory;
-  if (!fullStory) return setAnimationStatus("请先生成完整剧情，再生成动画生产包。", "error");
+  if (!fullStory) return setAnimationStatus(`请先生成${fullStoryLabel()}，再生成${planShortLabel()}。`, "error");
   const targetAspectRatio = selectedAnimationAspectRatio(variant.id);
   if (!force && state.animationPlans[variant.id]) {
     renderAnimationPlan(state.animationPlans[variant.id]);
@@ -3709,7 +3843,9 @@ async function generateAnimationPlan({ force = false } = {}) {
   state.animationRunning = true;
   setAnimationRunning(true);
   beginStageUsage();
-  setAnimationStatus(`正在调用 ${animationModelLabel()} 生成直接视频镜头生产包…`, "active");
+  setAnimationStatus(isStoryEntryMode()
+    ? `正在调用 ${animationModelLabel()} 生成分镜…`
+    : `正在调用 ${animationModelLabel()} 生成直接视频镜头生产包…`, "active");
   try {
     const animationPlanMode = "direct_shot";
     const previousPrivateSidecars = state.animationPlanMetadata[variant.id]?.privateSidecars;
@@ -3719,7 +3855,7 @@ async function generateAnimationPlan({ force = false } = {}) {
       requestBody: {
         ...videoUpstreamCopies(),
         visualGuardrails: state.output.visualGuardrails,
-        variant,
+        ...candidateCopy(variant),
         fullStory,
         creatorProfile: profile(),
         // 只进 Foundation 与逐镜提示词，不写入 Artifact、不进 digest、不 stale 任何东西。
@@ -3739,7 +3875,7 @@ async function generateAnimationPlan({ force = false } = {}) {
       dependencyIds: [
         ...(isStoryEntryMode() ? ["storySource"] : ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief"]),
         "visualGuardrails",
-        `variant:${variant.id}`,
+        ...(variant.storySourceSlot ? [] : [`variant:${variant.id}`]),
         `fullStory:${variant.id}`
       ],
       createMediaNamespace: true,
@@ -3756,13 +3892,13 @@ async function generateAnimationPlan({ force = false } = {}) {
     state.animationAspectRatioDrafts[variant.id] = normalizeAnimationPlanAspectRatio(animationPlan.productionStrategy?.targetAspectRatio);
     renderAnimationPlan(animationPlan, metadata);
     void refreshStoryDialogueCheck();
-    setAnimationStatus(`动画生产包已生成 · ${state.animationAspectRatioDrafts[variant.id]} · ${persistedTaskModelLabel(`animationPlan:${variant.id}`, "animationPlan", animationModelLabel())}${formatStageUsageSuffix(endStageUsage())}`, "ready");
+    setAnimationStatus(`${planShortLabel()}已生成 · ${state.animationAspectRatioDrafts[variant.id]} · ${persistedTaskModelLabel(`animationPlan:${variant.id}`, "animationPlan", animationModelLabel())}${formatStageUsageSuffix(endStageUsage())}`, "ready");
     updateStoryExportActions();
     elements.export.classList.remove("hidden");
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setAnimationStatus(
-      isTaskCapacityError(error) ? taskCapacityMessage(error) : `${error.message || "动画生产包生成失败"}${failedStageUsageSuffix()}`,
+      isTaskCapacityError(error) ? taskCapacityMessage(error) : `${error.message || `${planShortLabel()}生成失败`}${failedStageUsageSuffix()}`,
       isTaskCapacityError(error) ? "warn" : "error"
     );
     const compilerFailure = renderCompilerFailureDetails(error);
@@ -3780,6 +3916,8 @@ async function generateAnimationPlan({ force = false } = {}) {
 
 async function ensureSelectedVariantArtifact(variant) {
   if (!variant?.id) throw new Error("选中主题缺少 id。");
+  // 粘贴完整故事的故事位不是候选，没有选中记录要核对或提交。
+  if (variant.storySourceSlot) return null;
   const artifactId = `variant:${variant.id}`;
   if (isStoryEntryMode()) {
     // 剧情入口的选中记录由服务端在剧情准备的最后一步签发，页面不自己提交。
@@ -4862,7 +5000,7 @@ async function refineCharacterReferenceWithImage(indexValue, file) {
       creatorProfile: profile(),
       ...videoUpstreamCopies(),
       visualGuardrails: state.output.visualGuardrails,
-      selectedVariant: variant,
+      ...candidateCopy(variant, "selectedVariant"),
       fullStory: currentFullStory(),
       animationPlan: {
         title: plan.title,
@@ -5019,7 +5157,7 @@ async function generateCharacterReferenceImages() {
       creatorProfile: profile(),
       ...videoUpstreamCopies(),
       visualGuardrails: state.output.visualGuardrails,
-      selectedVariant: variant,
+      ...candidateCopy(variant, "selectedVariant"),
       productionContext
     }));
     const task = await waitForDurableTask(created.task, (current) => {
@@ -6993,16 +7131,21 @@ function renderFullStoryControls({ running = state.storyRunning } = {}) {
   const starting = Boolean(variant && request?.variantId === variant.id && !request.taskId);
   const task = starting ? null : selectedFullStoryTask();
   const active = activeTaskForKinds(["fullStory"], { rootOnly: true });
+  const noun = fullStoryLabel();
   const view = fullStoryControlView(task, {
     starting,
     pendingAction: state.storyControlRequests[task?.taskId]?.action || "",
-    idleLabel: `用 ${storyModelLabel()} 生成完整剧情`
+    // 粘贴完整故事：这一步是按原文拆分镜头，拆过之后叫「重新拆分」。
+    idleLabel: variant?.storySourceSlot
+      ? `用 ${storyModelLabel()} ${state.fullStories[variant.id] ? "重新拆分镜头" : "按原文拆分镜头"}`
+      : `用 ${storyModelLabel()} 生成完整剧情`,
+    noun
   });
   let label = view.label;
   if (!view.visible && active) {
-    label = `${durableTaskTargetContext(active).variantId} · ${fullStoryControlView(active).label}`;
+    label = `${durableTaskTargetContext(active).variantId} · ${fullStoryControlView(active, { noun }).label}`;
   } else if (!view.visible && request && running) {
-    label = `${request.variantId} · 正在启动完整剧情…`;
+    label = `${request.variantId} · 正在启动${noun}…`;
   }
   elements.fullStoryControls.classList.toggle("active", view.visible);
   elements.storyGenerate.classList.toggle("running", view.visible);
@@ -7076,11 +7219,13 @@ function setAnimationRunning(running) {
   const draft = selectedAnimationAspectRatio(variant?.id);
   const currentRatio = normalizeAnimationPlanAspectRatio(plan?.productionStrategy?.targetAspectRatio);
   elements.animationGenerate.textContent = running
-    ? `正在生成 ${draft} 动画生产包…`
+    ? `正在生成 ${draft} ${planShortLabel()}…`
     : plan && draft !== currentRatio
-      ? `按 ${draft} 重新生成动画镜头生产包`
-      : `生成动画镜头生产包 · ${draft}`;
+      ? `按 ${draft} 重新生成${planLabel()}`
+      : `生成${planLabel()} · ${draft}`;
   elements.animationGenerate.disabled = running || !variant || !fullStory;
+  // 分场页上的配乐开关：生成分镜期间不能拨，免得界面显示的和正在生成的那份不一致。
+  renderStoryMusicControl();
   updateStoryExportActions();
 }
 function setStoryStatus(message, tone = "") {
@@ -7142,8 +7287,8 @@ function taskForUi(options) {
 function taskUiView(task) {
   const modelLabel = [...new Set(Object.values(task.modelSnapshot || {})
     .map((item) => modelDisplayLabel(item.provider, item.model)).filter(Boolean))].join(" / ");
-  if (task.kind === "fullStory") return fullStoryTaskView(task, { modelLabel });
-  const view = taskStatusView(task, { modelLabel });
+  if (task.kind === "fullStory") return fullStoryTaskView(task, { modelLabel, noun: fullStoryLabel() });
+  const view = taskStatusView(task, { modelLabel, kindLabel: storyEntryTaskKindLabel(task.kind) });
   if (!view.busy) view.message += formatStageUsageSuffix(task.usage);
   return view;
 }
@@ -8353,7 +8498,10 @@ function restoreRunArtifacts(latestArtifacts = {}, { selectedVariantId = null } 
   state.output.animationPlans = state.animationPlans;
   const selectionStillAvailable = selectedVariantId && state.output.themeVariants?.variants
     .some((variant) => String(variant.id) === String(selectedVariantId));
-  state.selectedVariantId = selectionStillAvailable ? selectedVariantId : resolveRestoredVariantId(latestArtifacts);
+  // 粘贴完整故事的 Run 没有候选：选中的就是故事位，依据是服务端签发的 storySource，不靠默认值。
+  state.selectedVariantId = storySource?.storyMode === STORY_MODE_FULL_TEXT
+    ? STORY_ENTRY_VARIANT_ID
+    : selectionStillAvailable ? selectedVariantId : resolveRestoredVariantId(latestArtifacts);
   if (state.selectedVariantId) {
     state.output.fullStory = state.fullStories[state.selectedVariantId] || null;
     state.output.animationPlan = state.animationPlans[state.selectedVariantId] || null;
@@ -8367,7 +8515,10 @@ function renderCurrentMainOutputs() {
     [state.output.sourceScriptReconstruction, renderScript, "script"],
     [state.output.creativeBrief, renderBrief, "brief"],
     [state.output.visualGuardrails, renderVisualGuardrails, "guardrails"],
-    [state.output.themeVariants, renderVariants, "variants"]
+    // 粘贴完整故事没有候选卡：第二格是可翻拍镜头的入口卡。
+    isStorySourceRun()
+      ? [state.fullStories[STORY_ENTRY_VARIANT_ID], renderStorySourceShots, "variants"]
+      : [state.output.themeVariants, renderVariants, "variants"]
   ];
   resetPipeline();
   for (const element of [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants]) {
@@ -8390,7 +8541,11 @@ function renderCurrentMainOutputs() {
   }
   syncDirectorTaskStatus();
 }
-function selectedVariant() { return (state.output.themeVariants?.variants || []).find((variant) => String(variant.id) === String(state.selectedVariantId)); }
+function selectedVariant() {
+  // 粘贴完整故事的 Run 没有候选：选中的是故事位 V1（只在页面内部用，见 storySourceSlot）。
+  if (isStorySourceRun()) return String(state.selectedVariantId) === STORY_ENTRY_VARIANT_ID ? storySourceSlot() : undefined;
+  return (state.output.themeVariants?.variants || []).find((variant) => String(variant.id) === String(state.selectedVariantId));
+}
 function currentFullStory() {
   const variant = selectedVariant();
   return variant ? state.fullStories[variant.id] || state.output.fullStory || null : state.output.fullStory || null;
