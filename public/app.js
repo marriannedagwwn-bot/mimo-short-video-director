@@ -77,6 +77,9 @@ import {
 } from "./story-duration.js";
 import { CHARACTER_EXPRESSION_RULES_STORAGE_KEY } from "./character-expression-rules.js";
 import { CHARACTER_ART_STYLE_PRESETS, CHARACTER_ART_STYLE_STORAGE_KEY, DEFAULT_CHARACTER_ART_STYLE, normalizeCharacterArtStyle } from "./character-art-style.js";
+import { deriveDirectorProgress, directorAgentChosenVariant } from "./director-agent-progress.js";
+import { createDirectorAgentController } from "./director-agent-controller.js";
+import { renderDirectorAgentMessages, renderDirectorAgentStatus } from "./director-agent-panel.js";
 import {
   createBrowserWorkspaceClient, creationPreferences, CREATION_PREFERENCES_STORAGE_KEY
 } from "./browser-workspace-client.js";
@@ -260,6 +263,10 @@ const elements = {
   directorControls: $("#directorControls"), directorStartArrow: $("#directorStartArrow"),
   terminateDirector: $("#terminateDirector"), pauseDirector: $("#pauseDirector"), directorControlHint: $("#directorControlHint"),
   openModelSettings: $("#openModelSettings"), modelSettingsModal: $("#modelSettingsModal"), closeModelSettings: $("#closeModelSettings"),
+  directorAgentPanel: $("#directorAgentPanel"), directorAgentToggle: $("#directorAgentToggle"), closeDirectorAgent: $("#closeDirectorAgent"),
+  directorAgentEntry: $("#directorAgentEntry"), directorAgentSteps: $("#directorAgentSteps"), directorAgentBusy: $("#directorAgentBusy"),
+  directorAgentMessages: $("#directorAgentMessages"), directorAgentComposer: $("#directorAgentComposer"),
+  directorAgentInput: $("#directorAgentInput"), directorAgentSend: $("#directorAgentSend"),
   modelStageList: $("#modelStageList"), resetModelSettings: $("#resetModelSettings"), saveModelSettings: $("#saveModelSettings"),
   modelSettingsStatus: $("#modelSettingsStatus"),
   empty: $("#emptyResults"), resultStack: $("#resultStack"), export: $("#exportButton"),
@@ -350,6 +357,8 @@ const MODEL_STAGE_DEFS = [
   { key: "animationPlan", label: "动画生产包", hint: "首尾帧、镜头与视频提示词", capability: "文本模型", capabilityKind: "text" },
   { key: "animationPlanReview", label: "分镜终审", hint: "对照剧情核查镜头，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "animationPlanRevision", label: "定向修订", hint: "按终审报告只改被点名的镜头", capability: "文本模型", capabilityKind: "text", optional: true },
+  // 导演助手（2026-10-09）：理解对话栏里打的字，只提议下一步；每次调用都关闭思考。用户点对话栏才调用。
+  { key: "directorAgent", label: "导演助手", hint: "理解对话栏里打的字，只提议下一步（思考关闭）", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "staticFrameCompiler", label: "静态帧编译器", hint: "叙事语言到静态视觉语言的语义合法化", capability: "文本模型", capabilityKind: "text" },
   { key: "characterReference", label: "人物图修正", hint: "根据上传图片修正角色描述", capability: "视觉模型", capabilityKind: "vision" },
   { key: "imageGeneration", label: "图片生成", hint: "角色参考图、镜头首尾帧图片", capability: "图片生成", capabilityKind: "image", providerLocked: true, optional: true },
@@ -403,6 +412,14 @@ const MODEL_OPTION_CATALOG = {
   }
 };
 
+// 导演助手（2026-10-09）的对话状态。必须声明在 init() 调用之前：init 的同步部分会经由
+// resetDirectorClientState 等钩子用到它们，声明在后面就是暂时性死区。对话只在页面内存里，刷新即清空。
+const directorAgent = createDirectorAgentController();
+let directorAgentRefreshTimer = null;
+let directorAgentStarted = false;
+let directorAgentMessagesSignature = "";
+let directorAgentLastMessageId = "";
+
 init();
 
 async function init() {
@@ -419,6 +436,7 @@ async function init() {
   elements.frames.innerHTML = skeletonFrames(10);
   elements.characterArtStyle.addEventListener("input", saveCharacterArtStyle);
   bindEvents();
+  bindDirectorAgentEvents();
   validateReady();
   // Run/Task 恢复不依赖供应商健康检查。图片或视频 provider 的 /models
   // 即使很慢，也不能阻塞刷新后的 Durable Task 重新接管。
@@ -456,6 +474,7 @@ async function init() {
   }
   await restorePromise;
   renderRoute();
+  startDirectorAgent();
 }
 
 function bindEvents() {
@@ -1250,6 +1269,14 @@ function storyEntryRunLabel(task) {
     : labels.continue;
 }
 
+// 同一个剧情 Run 停在半路（可翻拍镜头或选中记录还没出来）、原文也没改时继续它；否则开新的剧情 Run。
+// runStoryEntryWorkflow 与导演助手共用这一处判断。
+function storyEntryContinuing(storySource) {
+  return Boolean(state.production.runId && state.output.storySource
+    && JSON.stringify(state.output.storySource) === JSON.stringify(storySource)
+    && state.production.artifacts?.[storyPipelineDoneArtifactId()]?.status !== "current");
+}
+
 async function runStoryEntryWorkflow() {
   let workspaceEpoch = browserWorkspace.epoch;
   if (state.running || sourceLoading || !browserWorkspace.workspace) return;
@@ -1277,10 +1304,7 @@ async function runStoryEntryWorkflow() {
       await abandonProductionTasks(active);
     }
     if (!task) {
-      // 同一个剧情 Run 停在半路（可翻拍镜头或选中记录还没出来）时继续它；否则开新的剧情 Run。
-      const continuing = Boolean(state.production.runId && state.output.storySource
-        && JSON.stringify(state.output.storySource) === JSON.stringify(storySource)
-        && state.production.artifacts?.[storyPipelineDoneArtifactId()]?.status !== "current");
+      const continuing = storyEntryContinuing(storySource);
       if (!continuing) {
         if (state.file || state.production.runId) {
           const confirmed = window.confirm(`${storyPipelineLabels().start}会清空当前页面已上传的视频和已有的生成结果。继续吗？`);
@@ -1599,6 +1623,7 @@ async function reloadActiveProductionRun(expectedProduction = state.production, 
   state.production = productionStateFromRun(run);
   restoreRunArtifacts(run.latestArtifacts || {}, { selectedVariantId: preserveSelectedVariant ? state.selectedVariantId : null });
   persistActiveProductionRun();
+  scheduleDirectorAgentRefresh();
   return run;
 }
 
@@ -1753,6 +1778,7 @@ function resetDirectorClientState() {
   localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
   state.selectedVariantId = null;
   resetStoryPackageStatus();
+  scheduleDirectorAgentRefresh();
 }
 
 async function sourceFileSha256(file) {
@@ -1815,6 +1841,7 @@ function acceptProductionCommit(result = {}) {
   if (result.checkpoint) state.production.checkpoint = result.checkpoint;
   applyStaleProductionArtifacts(result.staleArtifactIds || []);
   persistActiveProductionRun();
+  scheduleDirectorAgentRefresh();
 }
 
 function applyStaleProductionArtifacts(artifactIds = []) {
@@ -2960,6 +2987,7 @@ function renderMainPage() {
   resetStoryPackageStatus();
   elements.storyPage.classList.add("hidden");
   elements.mainPage.classList.remove("hidden");
+  scheduleDirectorAgentRefresh();
 }
 
 function renderStoryPage({ autoGenerate = false } = {}) {
@@ -3009,6 +3037,7 @@ function renderStoryPage({ autoGenerate = false } = {}) {
   syncStoryTaskStatus({ includeTerminal: true });
   updateStoryExportActions();
   void refreshStoryDialogueCheck();
+  scheduleDirectorAgentRefresh();
 }
 
 function renderSelectedVariantSummary(variant) {
@@ -3065,10 +3094,14 @@ function renderStoryDurationOptions() {
 // 通过线。**它不保证判得对**——承诺清单写得准不准、定位读得对不对都需要语义判断，
 // 没有确定性兜底；评审那一路本身也会整次失败（6 次里 2 次），这是体检可用率的上限。
 let fullStoryPrecheckState = null;
+// 体检失败的原因。原来只写进体检面板的 HTML，导演助手读不到；与 fullStoryPrecheckState 同规格，
+// 只活在页面上，新的一次体检或「按原候选展开」时清掉。
+let fullStoryPrecheckFailure = null;
 
 // 体检与修订都只活在页面上：不进 Artifact、不进 lineage、刷新即失，与评审同规格。
 function clearFullStoryPrecheck() {
   fullStoryPrecheckState = null;
+  fullStoryPrecheckFailure = null;
   elements.fullStoryPrecheck.innerHTML = "";
   elements.fullStoryPrecheck.classList.add("hidden");
 }
@@ -3169,6 +3202,7 @@ async function startFullStory({ force = false } = {}) {
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     fullStoryPrecheckState = null;
+    fullStoryPrecheckFailure = { id: `precheck:${variant.id}:${Date.now()}`, variantId: variant.id, message: error?.message || "未知原因" };
     // 失败前调用过的模型照样计费，必须显示出来，不能显示成没花钱。
     setStoryStatus(`展开前体检失败：${error?.message || "未知原因"}${closeUsage()}`, "error");
     renderFullStoryPrecheckPanel(renderPrecheckFailure(error));
@@ -7281,6 +7315,7 @@ function updateTaskSnapshot(task, { render = true } = {}) {
     syncShotFrameTaskStatus();
     syncShotVideoTaskStatus();
   }
+  scheduleDirectorAgentRefresh();
 }
 
 function applyTaskMediaStatus(task, { render = false } = {}) {
@@ -8103,13 +8138,25 @@ function modelName(model) { return String(model || "").split("/").pop(); }
 function validateReady() {
   if (sourceLoading || !browserWorkspace.workspace) { elements.run.disabled = true; return; }
   if (state.running) return;
+  elements.run.disabled = !setupReadiness().ready;
+}
+
+// 「开始」按钮能不能点，以及不能点的原因。validateReady 与导演助手共用这一处判断（不碰按钮）。
+function setupReadiness() {
+  if (sourceLoading || !browserWorkspace.workspace) return { ready: false, reason: "页面还在恢复上一次的进度。" };
+  const missingProfile = [
+    elements.fixedCharacter.value.trim() ? "" : "固定角色",
+    elements.vertical.value.trim() ? "" : "垂直赛道"
+  ].filter(Boolean);
+  const profileReason = missingProfile.length ? `先在左边填好${missingProfile.join("和")}。` : "";
   if (isStoryEntryMode()) {
     // 剧情入口不需要视频：固定角色、垂直赛道填好，故事草稿合法（只给角色设定时不要正文）即可开始。
-    let storyReady = false;
-    try { normalizeStorySource(currentStorySourceDraft()); storyReady = true; } catch { storyReady = false; }
+    let storyReason = "";
+    try { normalizeStorySource(currentStorySourceDraft()); } catch (error) { storyReason = error.message || "故事原文不合法。"; }
     const task = state.taskSnapshots[state.directorTaskId];
-    elements.run.disabled = isActiveTask(task) || !(storyReady && elements.fixedCharacter.value.trim() && elements.vertical.value.trim());
-    return;
+    if (isActiveTask(task)) return { ready: false, reason: `${storyPipelineLabels().noun}正在进行。` };
+    if (storyReason || profileReason) return { ready: false, reason: profileReason || storyReason };
+    return { ready: true, reason: "" };
   }
   const resumableWithoutMedia = Boolean(
     state.production.runId
@@ -8118,9 +8165,11 @@ function validateReady() {
     && state.production.artifacts?.visualGuardrails?.status === "current"
     && state.production.artifacts?.themeVariants?.status !== "current"
   );
-  elements.run.disabled = !((state.frames.length >= 3 || resumableWithoutMedia)
-    && elements.fixedCharacter.value.trim()
-    && elements.vertical.value.trim());
+  if (!(state.frames.length >= 3 || resumableWithoutMedia)) {
+    return { ready: false, reason: state.production.runId ? "要继续这个 Run，需要重新上传同一个参考视频。" : "先上传参考视频。" };
+  }
+  if (profileReason) return { ready: false, reason: profileReason };
+  return { ready: true, reason: "" };
 }
 function showError(message, tone = "error") {
   elements.error.textContent = message;
@@ -9109,3 +9158,456 @@ function formatDialogue(items = []) {
 function formatBytes(bytes) { if (!bytes) return "0 B"; const unit = Math.min(3, Math.floor(Math.log(bytes) / Math.log(1024))); return `${(bytes / (1024 ** unit)).toFixed(unit ? 1 : 0)} ${["B", "KB", "MB", "GB"][unit]}`; }
 function formatTime(seconds) { const value = Math.max(0, Math.floor(Number(seconds) || 0)); return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`; }
 function skeletonFrames(count) { return Array.from({ length: count }, () => `<div class="frame"></div>`).join(""); }
+
+// ---- 导演助手（2026-10-09）----
+// 页面右侧的对话栏：按进度提议下一步，用户点卡片上的「确认执行」才执行，执行的就是页面上
+// 原有按钮背后的同一段代码。「能做哪几步」只由 public/director-agent-progress.js 算；
+// 模型只把用户打的字对到其中一步。设计与边界见 docs/director-agent-chat-2026-10-09.md。
+
+// 从页面状态取出导演助手需要的事实：只有状态、计数、版本号和固定标签，
+// 不读故事原文、提示词或计划里的图片数据。
+function directorAgentFacts() {
+  const storyEntry = isStoryEntryMode();
+  const storySlot = isStorySourceRun();
+  const artifacts = state.production.artifacts || {};
+  const pipelineKind = storyEntry ? "storyPipeline" : "directorPipeline";
+  const pipelineLabel = storyEntry ? storyPipelineLabels().noun : "AI 导演";
+  const pipelineTask = taskForUi({ kinds: [pipelineKind], rootOnly: true });
+  const pipelineActive = activeTaskForKinds([pipelineKind], { rootOnly: true });
+  const candidatesCurrent = artifacts.themeVariants?.status === "current";
+  const candidates = storySlot || !candidatesCurrent ? [] : (state.output.themeVariants?.variants || [])
+    .map((variant) => ({ id: String(variant.id), title: String(variant.title || "") }));
+  const base = {
+    // init 全部完成（含读完模型设置）之前不算恢复完：那时的镜头视频模型等还是默认值，按它提议会提错。
+    restored: directorAgentStarted && !sourceLoading && Boolean(browserWorkspace.workspace),
+    epoch: browserWorkspace.epoch,
+    entryMode: storyEntry ? "story" : "video",
+    storyMode: state.storyMode,
+    runId: state.production.runId || "",
+    route: elements.storyPage.classList.contains("hidden") ? "main" : "story",
+    storySlot,
+    storySlotId: STORY_ENTRY_VARIANT_ID,
+    selectedVariantId: state.selectedVariantId ? String(state.selectedVariantId) : "",
+    candidates,
+    candidatesRevision: artifacts.themeVariants?.revision || "",
+    storiesByVariant: storySlot
+      ? { [STORY_ENTRY_VARIANT_ID]: Boolean(state.fullStories[STORY_ENTRY_VARIANT_ID]) }
+      : Object.fromEntries(candidates.map((candidate) => [candidate.id, Boolean(state.fullStories[candidate.id])])),
+    pipeline: {
+      done: storyEntry
+        ? artifacts[storyPipelineDoneArtifactId()]?.status === "current"
+        : candidatesCurrent,
+      busy: state.running || Boolean(pipelineActive),
+      paused: pipelineActive?.progress?.controlState === "paused",
+      failure: directorAgentFailure(pipelineTask, pipelineLabel)
+    }
+  };
+  const variantId = directorAgentChosenVariant(base)?.id || "";
+  const story = variantId ? state.fullStories[variantId] : null;
+  const plan = variantId ? state.animationPlans[variantId] : null;
+  const storyTask = variantId ? taskForUi({ kinds: ["fullStory"], artifactId: `fullStory:${variantId}`, rootOnly: true }) : null;
+  const planTask = variantId ? taskForUi({ kinds: ["animationPlan"], artifactId: `animationPlan:${variantId}` }) : null;
+  const planFacts = directorAgentPlanFacts(variantId, plan);
+  const failures = [base.pipeline.failure];
+  if (!storyEntry) failures.push(directorAgentFailure(taskForUi({ kinds: ["variants"], artifactId: "themeVariants", rootOnly: true }), "换一批故事候选"));
+  if (variantId) {
+    failures.push(directorAgentFailure(storyTask, fullStoryLabel()), directorAgentFailure(planTask, planShortLabel()));
+    for (const role of planFacts?.roles || []) {
+      failures.push(directorAgentFailure(taskForUi({ kinds: ["characterReferenceImages"], artifactId: `characterImages:${variantId}:${role.index}` }),
+        `「${role.name || `角色 ${role.index + 1}`}」的角色参考图`));
+    }
+    for (const shot of planFacts?.shots || []) {
+      failures.push(
+        directorAgentFailure(taskForUi({ kinds: ["shotVideoPrompt"], artifactId: storyboardPromptArtifactId(variantId, shot.shotId) }), `镜头 ${shot.shotId} 的提示词`),
+        directorAgentFailure(taskForUi({ kinds: ["shotVideo"], artifactId: `shotVideo:${variantId}:${shot.shotId}` }), `镜头 ${shot.shotId} 的视频`)
+      );
+    }
+  }
+  let storyContinuing = false;
+  if (storyEntry) {
+    try { storyContinuing = storyEntryContinuing(normalizeStorySource(currentStorySourceDraft())); } catch { storyContinuing = false; }
+  }
+  const labels = storyPipelineLabels();
+  const stageLabel = (stage) => {
+    const setting = effectiveStageSetting(stage);
+    return modelDisplayLabel(setting.provider, setting.model);
+  };
+  const distinctLabels = (stages) => [...new Set(stages.map(stageLabel).filter(Boolean))].join("、");
+  const video = shotVideoSetting();
+  const precheckFailure = fullStoryPrecheckFailure && fullStoryPrecheckFailure.variantId === variantId ? fullStoryPrecheckFailure : null;
+  return {
+    ...base,
+    chosenVariantId: variantId,
+    modalOpen: Boolean(state.characterImageGeneration.open || state.shotVideoGeneration.open || state.shotFrameImageGeneration.open)
+      || !elements.modelSettingsModal.classList.contains("hidden"),
+    setup: setupReadiness(),
+    storyContinuing,
+    labels: { pipelineStart: labels.start, pipelineContinue: labels.continue },
+    candidatesBusy: state.variantsRegenerating || Boolean(activeTaskForKinds(["variants"], { rootOnly: true })),
+    hasDownstream: Object.keys(state.fullStories).length > 0 || Object.keys(state.animationPlans).length > 0,
+    story: story ? {
+      exists: true,
+      revision: artifacts[`fullStory:${variantId}`]?.revision || "",
+      sceneCount: Array.isArray(story.sceneScript) ? story.sceneScript.length : 0,
+      seconds: Number(story.targetDurationSeconds) || 0
+    } : { exists: false },
+    storyTaskId: storyTask?.status === "completed" ? storyTask.taskId : "",
+    storyBusy: state.storyRunning || state.storyPrecheckRunning || Boolean(activeTaskForKinds(["fullStory"], { rootOnly: true })),
+    storyFailure: directorAgentFailure(storyTask, fullStoryLabel()),
+    precheck: {
+      awaitingDecision: Boolean(fullStoryPrecheckState && fullStoryPrecheckState.route !== "expand"
+        && fullStoryPrecheckState.variantId === variantId && !state.storyPrecheckRunning),
+      passStillValid: Boolean(variantId && state.output.themeVariants && precheckPassStillValid(variantId, state.output.themeVariants)),
+      failure: precheckFailure ? { id: precheckFailure.id, text: precheckFailure.message } : null
+    },
+    plan: planFacts,
+    planTaskId: planTask?.status === "completed" ? planTask.taskId : "",
+    planBusy: state.animationRunning || Boolean(activeTaskForKinds(["animationPlan"])),
+    planFailure: directorAgentFailure(planTask, planShortLabel()),
+    imagesBusy: state.characterImageGeneration.running || Boolean(activeTaskForKinds(["characterReferenceImages"])),
+    videoBusy: state.shotVideoGeneration.running || Boolean(activeTaskForKinds(["shotVideo", "shotVideoBatch", "shotVideoPrompt"])),
+    busyText: directorAgentBusyText(pipelineKind, pipelineLabel),
+    failures: failures.filter(Boolean),
+    nextPlanSettings: {
+      aspectRatio: variantId ? selectedAnimationAspectRatio(variantId) : state.animationAspectRatioDefault,
+      artStyle: characterArtStyle(),
+      musicOn: variantId ? backgroundMusicEnabled(variantId) : false
+    },
+    models: {
+      pipeline: storyEntry
+        ? distinctLabels(["visualGuardrails", storySlot ? "fullStory" : "variants"])
+        : distinctLabels(["analysis", "reconstruction", "brief", "visualGuardrails", "variants"]),
+      candidates: stageLabel("variants"),
+      story: storyEntry ? stageLabel("fullStory") : distinctLabels(["storyCandidateReview", "fullStory"]),
+      plan: stageLabel("animationPlan"),
+      image: stageLabel("imageGeneration"),
+      video: modelDisplayLabel(video.provider, video.model),
+      videoSupportsStoryboard: shotVideoModeSupported(video.provider, "all_reference")
+    },
+    usage: {
+      pipeline: directorAgentLastUsage(pipelineKind),
+      variants: directorAgentLastUsage("variants"),
+      fullStory: directorAgentLastUsage("fullStory"),
+      plan: directorAgentLastUsage("animationPlan")
+    }
+  };
+}
+
+function directorAgentPlanFacts(variantId, plan) {
+  if (!variantId || !plan) return null;
+  const artifactId = animationPlanArtifactId(variantId);
+  const productionContext = planProductionContext(state.production, artifactId);
+  const target = shotVideoSetting();
+  const writer = effectiveStageSetting("animationPlan");
+  const shots = (plan.shotPlan || []).map((shot) => {
+    const shotId = String(shot.shotId || "");
+    const cached = state.shotVideoPrompts?.[storyboardPromptArtifactId(variantId, shotId)];
+    return {
+      shotId,
+      seconds: Number(shot.durationSeconds) || 0,
+      hasVideo: state.production.artifacts?.[`shotVideo:${variantId}:${shotId}`]?.status === "current",
+      promptCached: Boolean(productionContext && storyboardPromptMatches(cached, {
+        planDigest: productionContext.planDigest, provider: target.provider, model: target.model,
+        textProvider: writer.provider, textModel: writer.model
+      }))
+    };
+  });
+  return {
+    revision: state.production.artifacts?.[artifactId]?.revision || "",
+    isStoryboard: isStoryboardPlan(plan),
+    hasProductionContext: Boolean(productionContext),
+    shots,
+    roles: (plan.characterReferencePrompts || []).map((item, index) => ({
+      index,
+      name: String(item.characterName || ""),
+      hasImage: Boolean(item.referenceImageAdded || item.referenceImageDataUrl)
+    })),
+    seconds: shots.reduce((sum, shot) => sum + shot.seconds, 0),
+    aspectRatio: normalizeAnimationPlanAspectRatio(plan.productionStrategy?.targetAspectRatio),
+    artStyle: String(plan.productionStrategy?.artStyle || "")
+  };
+}
+
+// 失败只认 taskForUi 给出的那一个：依赖已经换过的旧失败不算当前状态。供应商原文只显示在页面上，
+// 不发给模型（发给模型的进度说明只写「没有成功」）。
+function directorAgentFailure(task, label) {
+  if (!task || !["failed", "interrupted", "conflicted"].includes(task.status)) return null;
+  const error = task.error || {};
+  return {
+    id: task.taskId,
+    label,
+    text: taskErrorMessage(task, `${label}${task.status === "interrupted" ? "被中断了" : "没有完成"}`),
+    contentFiltered: error.code === "MODEL_CONTENT_FILTERED" || error.category === "content-filter"
+  };
+}
+
+function directorAgentBusyText(pipelineKind, pipelineLabel) {
+  for (const kind of [pipelineKind, "variants", "fullStory", "animationPlan", "animationPromptRewrite", "characterReferenceRefine",
+    "characterReferenceImages", "shotVideoPrompt", "shotVideo", "shotVideoBatch", "shotFrameImage"]) {
+    const task = activeTaskForKinds([kind], { rootOnly: true });
+    if (!task) continue;
+    if (task.progress?.controlState === "paused") {
+      return `${kind === pipelineKind ? pipelineLabel : "任务"}已暂停：在页面上点继续按钮接着跑。`;
+    }
+    return taskUiView(task).message;
+  }
+  if (state.running) return isStoryEntryMode() ? `正在开始${storyPipelineLabels().noun}…` : "正在开始 AI 导演…";
+  if (state.storyPrecheckRunning) return "正在做展开前体检…";
+  if (state.storyRunning) return `正在生成${fullStoryLabel()}…`;
+  if (state.variantsRegenerating) return "正在换一批故事候选…";
+  if (state.animationRunning) return `正在生成${planShortLabel()}…`;
+  if (state.animationPromptRewriting) return "正在改写视频提示词…";
+  if (state.characterImageGeneration.running) return "正在生成角色参考图…";
+  if (state.shotVideoGeneration.running) return "正在生成镜头视频…";
+  return "";
+}
+
+// 这个 Run 里上一次完成的同类任务的用量（只看主任务，子任务的用量已经算进主任务里）。
+function directorAgentLastUsage(kind) {
+  const task = Object.values(state.taskSnapshots)
+    .filter((item) => item.kind === kind && !item.parentTaskId && item.status === "completed" && item.usage)
+    .sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")))[0];
+  return task?.usage || null;
+}
+
+function directorAgentProgressNow() {
+  return deriveDirectorProgress(directorAgentFacts());
+}
+
+function refreshDirectorAgentNow() {
+  const facts = directorAgentFacts();
+  const progress = deriveDirectorProgress(facts);
+  directorAgent.observe(facts, progress);
+  renderDirectorAgent(progress);
+  return progress;
+}
+
+// 页面状态变化的地方都会调它；合并成一次刷新，免得一次操作里刷十几遍。
+function scheduleDirectorAgentRefresh() {
+  if (directorAgentRefreshTimer) return;
+  directorAgentRefreshTimer = setTimeout(() => {
+    directorAgentRefreshTimer = null;
+    refreshDirectorAgentNow();
+  }, 0);
+}
+
+function renderDirectorAgent(progress = directorAgentProgressNow()) {
+  renderDirectorAgentStatus({
+    entry: elements.directorAgentEntry,
+    steps: elements.directorAgentSteps,
+    busy: elements.directorAgentBusy
+  }, progress);
+  const messages = directorAgent.messages;
+  const signature = JSON.stringify([directorAgent.pendingTurn, messages.map((message) => [message.id, message.card?.state || "", message.card?.stateText || ""])]);
+  if (signature !== directorAgentMessagesSignature) {
+    directorAgentMessagesSignature = signature;
+    const lastId = messages.at(-1)?.id || "";
+    const scrollToEnd = lastId !== directorAgentLastMessageId || directorAgent.pendingTurn;
+    directorAgentLastMessageId = lastId;
+    renderDirectorAgentMessages({ messages: elements.directorAgentMessages, send: elements.directorAgentSend },
+      { messages, pendingTurn: directorAgent.pendingTurn }, { scrollToEnd });
+  }
+  // 页面恢复完之前、或上一句还在等回复时不能发。
+  elements.directorAgentSend.disabled = directorAgent.pendingTurn || !directorAgentStarted;
+}
+
+// 展开状态不保存：长期存储只能放创作宇宙那七项设置。
+function setDirectorAgentOpen(open) {
+  elements.directorAgentPanel.classList.toggle("hidden", !open);
+  document.body.classList.toggle("director-agent-open", open);
+  elements.directorAgentToggle.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function bindDirectorAgentEvents() {
+  // 页面恢复完之前不能发消息（startDirectorAgent 之后由 renderDirectorAgent 打开）。
+  elements.directorAgentSend.disabled = true;
+  elements.directorAgentToggle.addEventListener("click", () => {
+    setDirectorAgentOpen(elements.directorAgentPanel.classList.contains("hidden"));
+  });
+  elements.closeDirectorAgent.addEventListener("click", () => setDirectorAgentOpen(false));
+  elements.directorAgentPanel.addEventListener("click", (event) => {
+    const target = event.target.closest?.("[data-agent-confirm], [data-agent-dismiss], [data-agent-chip], [data-agent-quick]");
+    if (!target) return;
+    if (target.dataset.agentConfirm) return void confirmDirectorAgentCard(target.dataset.agentConfirm);
+    if (target.dataset.agentDismiss) return dismissDirectorAgentCard(target.dataset.agentDismiss);
+    if (target.dataset.agentChip) return directorAgentChoose(target.dataset.agentChip);
+    if (target.dataset.agentQuick) return directorAgentQuick(target.dataset.agentQuick);
+  });
+  elements.directorAgentComposer.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitDirectorAgentInput();
+  });
+  elements.directorAgentInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      void submitDirectorAgentInput();
+    }
+  });
+}
+
+// 页面恢复完之后启动：宽屏默认展开，按当前进度打招呼；之后每 1.5 秒兜底刷新一次
+// （展开前体检、按钮状态这类不经过任务轮询的变化靠它接住）。
+function startDirectorAgent() {
+  if (directorAgentStarted) return;
+  directorAgentStarted = true;
+  if ((window.innerWidth || 0) >= 1280) setDirectorAgentOpen(true);
+  refreshDirectorAgentNow();
+  window.setInterval(() => scheduleDirectorAgentRefresh(), 1500);
+}
+
+function directorAgentQuick(kind) {
+  if (!directorAgentStarted) return;
+  const progress = directorAgentProgressNow();
+  if (kind === "next") directorAgent.showNext(progress);
+  else directorAgent.showStatus(progress);
+  renderDirectorAgent(progress);
+}
+
+function directorAgentChoose(key) {
+  if (!directorAgentStarted) return;
+  const progress = directorAgentProgressNow();
+  directorAgent.showChoice(key, progress);
+  renderDirectorAgent(progress);
+}
+
+async function submitDirectorAgentInput() {
+  const text = elements.directorAgentInput.value;
+  // 页面还没恢复完（模型设置还没读到）时不发：那时的进度说明是错的。
+  if (!directorAgentStarted || !text.trim() || directorAgent.pendingTurn) return;
+  elements.directorAgentInput.value = "";
+  await sendDirectorAgentMessage(text);
+}
+
+// 用户打的字交给模型理解。只在用户发消息时调用模型；打开页面、步骤完成都不调用。
+async function sendDirectorAgentMessage(text) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const payload = directorAgent.beginTurn(text, directorAgentProgressNow());
+  if (!payload) return;
+  renderDirectorAgent();
+  try {
+    const response = await requestDirectorAgentTurn(payload);
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    directorAgent.finishTurn({ turn: response.result.turn, usage: response.usage }, directorAgentProgressNow());
+  } catch (error) {
+    directorAgent.failTurn(error, error?.usage || null);
+  }
+  renderDirectorAgent();
+}
+
+// 不走 api()：api() 会把用量记进正在进行的那一步（例如一次体检或分镜），
+// 一条对话的花费就混进了那一步的合计。这里单独请求，并把这条消息自己的用量带回来显示。
+async function requestDirectorAgentTurn(body) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const response = await fetch("/api/director-agent/turn", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(withModelOverrides(body))
+  });
+  const data = await response.json().catch(() => ({}));
+  assertWorkspaceCurrent(workspaceEpoch);
+  if (!response.ok || !data.ok) {
+    const error = createApiRequestError(data, response.status, `请求失败（${response.status}）`);
+    error.usage = data.usage || null;
+    throw error;
+  }
+  return { result: data.result, usage: data.usage || null };
+}
+
+function dismissDirectorAgentCard(messageId) {
+  const message = directorAgent.card(messageId);
+  if (message?.card.state !== "pending") return;
+  directorAgent.markCard(messageId, "dismissed", "先不做。需要时点「下一步」。");
+  renderDirectorAgent();
+}
+
+// 点「确认执行」：按现在的页面状态重新算一遍；动作已经不在清单里、或它依赖的东西变了，卡片作废。
+async function confirmDirectorAgentCard(messageId) {
+  if (!directorAgentStarted) return;
+  const message = directorAgent.card(messageId);
+  if (message?.card.state !== "pending") return;
+  const progress = directorAgentProgressNow();
+  const action = progress.actions.find((item) => item.key === message.card.key);
+  if (!action || action.guard !== message.card.guard) {
+    directorAgent.markCard(messageId, "void", action ? "进度或设置变了，这张卡作废了。" : "这一步现在不能做了，这张卡作废了。");
+    directorAgent.showNext(progress);
+    renderDirectorAgent(progress);
+    return;
+  }
+  directorAgent.markCard(messageId, "executing", "正在执行…");
+  renderDirectorAgent(progress);
+  let outcome;
+  try {
+    outcome = executeDirectorAgentAction(action);
+  } catch (error) {
+    outcome = { started: false, text: `没有开始：${error?.message || "未知原因"}` };
+  }
+  directorAgent.markCard(messageId, outcome.started ? "done" : "failed", outcome.text);
+  refreshDirectorAgentNow();
+}
+
+// 执行器：调页面上原有按钮背后的同一个函数。长任务不 await（AI 导演要跑完整条流水线才返回），
+// 调用后马上看对应的「正在运行」标记：函数如果什么都没做就直接返回，如实说「没有开始」并引用页面提示。
+function executeDirectorAgentAction(action) {
+  const [variantId, second] = action.params;
+  const run = (promise) => {
+    Promise.resolve(promise).catch(() => {});
+  };
+  const started = (text) => ({ started: true, text });
+  const notStarted = (element) => ({
+    started: false,
+    text: `没有开始${element?.textContent?.trim() ? `：${element.textContent.trim()}` : "。"}`
+  });
+  switch (action.id) {
+    case "startPipeline":
+      run(runWorkflow());
+      return state.running ? started("已开始，进度会同步显示在这里和页面上。") : notStarted(elements.error);
+    case "regenerateCandidates":
+      if (!elements.storyPage.classList.contains("hidden")) backToMainResults();
+      run(regenerateThemeVariants());
+      return state.variantsRegenerating ? started("已开始换一批故事候选。") : notStarted(elements.error);
+    case "chooseCandidate":
+      navigateToStory(variantId);
+      return state.storyPrecheckRunning || state.storyRunning || state.fullStories[variantId]
+        ? started("已打开分场页并开始展开。")
+        : notStarted(elements.storyStatus);
+    case "openStoryPage":
+      showDirectorAgentStoryPage(variantId);
+      return started("已打开分场页。");
+    case "generateFullStory":
+      showDirectorAgentStoryPage(variantId);
+      run(startFullStory());
+      return state.storyPrecheckRunning || state.storyRunning ? started("已开始。") : notStarted(elements.storyStatus);
+    case "generateStoryboard":
+      showDirectorAgentStoryPage(variantId);
+      run(generateAnimationPlan({ force: false }));
+      return state.animationRunning ? started("已开始生成分镜。") : notStarted(elements.animationStatus);
+    case "openCharacterImages":
+      showDirectorAgentStoryPage(variantId);
+      state.characterImageGeneration.selectedIndex = Number(second) || 0;
+      openCharacterImageGenerator();
+      return state.characterImageGeneration.open
+        ? started("已打开出图弹窗：选好张数后点生成；挑一张满意的点「设为人物参考图」。")
+        : notStarted(elements.animationStatus);
+    case "openShotVideo":
+      showDirectorAgentStoryPage(variantId);
+      run(openShotVideoGenerator(second));
+      return state.shotVideoGeneration.open
+        ? started("已打开镜头弹窗：生成模式请选「全能参考」，看过提示词再点生成。")
+        : notStarted(elements.animationStatus);
+    case "openModelSettings":
+      openModelSettings();
+      return started("已打开模型设置：把「镜头视频」换成 Seedance 2.0 或 MiniMax H3，再点应用。");
+    default:
+      return { started: false, text: "没有开始：不认识的动作。" };
+  }
+}
+
+// 只跳到分场页、不自动生成（navigateToStory 会在没有剧情时自动展开，那是「选这个故事」的行为）。
+function showDirectorAgentStoryPage(variantId) {
+  const path = `/story/${encodeURIComponent(variantId)}`;
+  if (location.pathname === path && String(state.selectedVariantId) === String(variantId)
+    && !elements.storyPage.classList.contains("hidden")) return;
+  state.selectedVariantId = variantId;
+  history.pushState({ storyVariantId: variantId }, "", path);
+  renderStoryPage({ autoGenerate: false });
+}

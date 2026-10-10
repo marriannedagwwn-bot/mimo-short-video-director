@@ -12,6 +12,7 @@ import { FULL_STORY_SCHEMA_VERSION, NARRATIVE_FULL_STORY_FIELDS } from "./full-s
 // 维度清单只有一份：mock 少写一个维度就会被 CANDIDATE_REVIEW_DIMENSION_MISSING 拦下，
 // 这正是我们要的——demo 与 live 走同一条校验链。
 import { CANDIDATE_REVIEW_DIMENSION_WEIGHTS } from "../public/story-review-metrics.js";
+import { DIRECTOR_AGENT_NO_ACTION } from "../public/director-agent-actions.js";
 
 export function mockAnalysis(input) {
   const duration = Math.max(1, Math.round(input.metadata?.duration || 45));
@@ -1415,5 +1416,16 @@ export function mockStoryCandidateRevision(candidate, coherenceBreaks = [], unmi
     changeSummary: noted.length
       ? `demo 模式不调用模型，未实际处理${noted.join("、")}。`
       : "demo 模式不调用模型，评审也没有报出任何问题。"
+  };
+}
+
+// 导演助手（2026-10-09）的演示回复：不调用模型。有「系统建议的下一步」就提它，
+// 没有就照抄进度里的等待说明；与真实回复走同一个校验器（编号必须在清单里）。
+export function mockDirectorAgentTurn(progress) {
+  const next = progress.actions.find((action) => action.key === progress.nextKey);
+  if (next) return { actionKey: next.key, reply: `（演示模式，没有调用模型）建议下一步：${next.label}。` };
+  return {
+    actionKey: DIRECTOR_AGENT_NO_ACTION,
+    reply: `（演示模式，没有调用模型）${progress.waitingFor || progress.busy || "现在没有可以执行的动作。"}`
   };
 }

@@ -4,6 +4,7 @@ import { afterDurableProviderCall, beforeDurableProviderCall, durableTaskHeartbe
 import { SseStreamDegenerateError, SseStreamIncompleteError, readSseCompletion } from "./sse-stream.js";
 import { MIMO_OUTPUT_TOKEN_CEILING, growOutputTokenLimit } from "./output-token-ceilings.js";
 import { createStreamIdleTimer, resolveStreamIdleTimeoutMs } from "./stream-idle-timeout.js";
+import { resolveThinkingOverride } from "./thinking-override.js";
 
 export class ModelResponseError extends Error {
   constructor(message, raw = "", status = 0, metadata = {}) {
@@ -191,13 +192,14 @@ export class MimoClient {
     maxCompletionTokens = null,
     systemPrompt = null,
     requestTimeoutMs = null,
-    responseSchema = null
+    responseSchema = null,
+    thinking = null
   } = {}) {
     const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`;
     const body = buildRequestBody(
       this.config,
       { prompt, frames, video, useVideo },
-      { model, maxCompletionTokens, systemPrompt, responseSchema }
+      { model, maxCompletionTokens, systemPrompt, responseSchema, thinking }
     );
     // 流式请求不设总时长上限，只判空闲：连续 streamIdleTimeoutMs 没收到任何数据才中断。
     // requestTimeoutMs 在流式客户端上不再生效（参数保留给调用方的统一签名）。
@@ -354,7 +356,8 @@ export function buildRequestBody(config, { prompt, frames = [], video = null, us
   const visualContent = useVideo && video?.dataUrl
     ? [{ type: "video_url", video_url: { url: video.dataUrl }, fps: config.videoFps ?? 2, media_resolution: config.videoMediaResolution || "default" }]
     : frames.map((frame) => ({ type: "image_url", image_url: { url: frame.dataUrl } }));
-  const thinkingType = config.thinking || "disabled";
+  // 单次请求可以覆盖全局思考开关（src/thinking-override.js，只有导演助手会传）；不传照旧。
+  const thinkingType = resolveThinkingOverride(overrides.thinking) || config.thinking || "disabled";
   const promptText = thinkingType === "enabled" ? prompt : `${prompt}\n/no_think`;
   const body = {
     model: overrides.model || config.model,

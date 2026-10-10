@@ -1,6 +1,7 @@
 import { SYSTEM_PROMPT } from "./prompts.js";
 import { ModelResponseError, assertCompletionNotContentFiltered, assertCompletionNotTruncated, parseModelJson, parseStrictModelJson } from "./mimo-client.js";
 import { recordModelUsage } from "./token-usage.js";
+import { resolveThinkingOverride } from "./thinking-override.js";
 import { afterDurableProviderCall, beforeDurableProviderCall, durableProviderAbortSignal, throwIfDurableTaskAborted } from "./durable-task-context.js";
 
 export class DeepSeekClient {
@@ -111,13 +112,14 @@ export class DeepSeekClient {
     model = null,
     maxCompletionTokens = null,
     systemPrompt = null,
-    requestTimeoutMs = null
+    requestTimeoutMs = null,
+    thinking = null
   } = {}) {
     const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`;
     const body = buildDeepSeekRequestBody(
       this.config,
       { prompt },
-      { model, maxCompletionTokens, systemPrompt }
+      { model, maxCompletionTokens, systemPrompt, thinking }
     );
     const effectiveTimeoutMs = requestTimeoutMs ?? this.config.requestTimeoutMs ?? 900_000;
     await beforeDurableProviderCall("model_provider_call", effectiveTimeoutMs);
@@ -211,7 +213,8 @@ export function buildDeepSeekRequestBody(config, { prompt }, overrides = {}) {
     temperature: config.temperature ?? 1,
     top_p: config.topP ?? 1,
     stream: false,
-    thinking: { type: config.thinking || "disabled" },
+    // 单次请求可以覆盖全局思考开关（src/thinking-override.js，只有导演助手会传）；不传照旧。
+    thinking: { type: resolveThinkingOverride(overrides.thinking) || config.thinking || "disabled" },
     messages: [
       {
         role: "system",

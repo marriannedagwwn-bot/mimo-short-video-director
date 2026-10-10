@@ -162,7 +162,9 @@ const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
   MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_REVIEW,
   MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_REVISION,
   MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_REVIEW_FINAL,
-  MODEL_OUTPUT_LOG_SCOPES.SHOT_VIDEO_PROMPT
+  MODEL_OUTPUT_LOG_SCOPES.SHOT_VIDEO_PROMPT,
+  // 导演助手（2026-10-09）同样走 coordinator，由 workflow 接 attemptObserver。
+  MODEL_OUTPUT_LOG_SCOPES.DIRECTOR_AGENT
 ];
 const stageModelOutputLogRoot = await resolvePrivateModelOutputLogRoot({
   workspaceRoot: root,
@@ -402,6 +404,9 @@ const routes = {
   // 候选要改，只能由用户在页面上采纳修订、签发新版本之后再展开。
   "/api/full-story-precheck": (body) => workflow.createFullStoryPrecheck(body),
   "/api/animation-plan-review": (body) => workflow.createAnimationPlanReview(body),
+  // 导演助手（2026-10-09）：理解对话栏里打的字。只出建议——模型从页面送来的动作清单里选一个编号，
+  // 不签发任何东西、不执行任何东西；执行只在用户点卡片上的「确认执行」之后，由页面调原有按钮。
+  "/api/director-agent/turn": (body) => workflow.createDirectorAgentTurn(body),
   // 定向修订：按终审报告只改被点名的镜头。**不签发任何东西**——返回合并后的候选 Plan
   // 供页面预览，用户点「采纳」时才由浏览器走既有的 Plan revision 签发流程。
   "/api/animation-plan-revision": (body) => workflow.createAnimationPlanRevision(body),
@@ -2543,7 +2548,10 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
       source.storyModel || source.model,
       source.storyMaxCompletionTokens || source.maxCompletionTokens,
       1800000
-    )
+    ),
+    // 导演助手（2026-10-09）：沿用默认文本模型。输出只有一个动作编号加一两句话，
+    // 调用时一律关闭思考（src/thinking-override.js），8192 足够。
+    directorAgent: stageSetting(provider, source.model, 8192)
   };
 }
 

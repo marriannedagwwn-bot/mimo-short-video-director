@@ -32,6 +32,10 @@ const fullStoryPromiseCheckSchema = JSON.parse(fs.readFileSync(
   new URL("./schemas/full-story-promise-check-strict.schema.json", import.meta.url),
   "utf8"
 ));
+const directorAgentTurnSchema = JSON.parse(fs.readFileSync(
+  new URL("./schemas/director-agent-turn-strict.schema.json", import.meta.url),
+  "utf8"
+));
 const ajv = new Ajv2020({
   allErrors: true,
   strict: true,
@@ -46,6 +50,7 @@ const validateStoryQualityReview = ajv.compile(storyQualityReviewSchema);
 const validateAnimationPlanReview = ajv.compile(animationPlanReviewSchema);
 const validateStoryCandidateReview = ajv.compile(storyCandidateReviewSchema);
 const validateFullStoryPromiseCheck = ajv.compile(fullStoryPromiseCheckSchema);
+const validateDirectorAgentTurn = ajv.compile(directorAgentTurnSchema);
 const validateStoryCandidate = ajv.compile({
   $schema: storyCandidatesSchema.$schema,
   $id: "internal://story-candidate-strict",
@@ -181,6 +186,18 @@ export function validateFullStoryPromiseCheckStrict(value) {
   return validateStrictContract(validateFullStoryPromiseCheck, value, {
     codePrefix: "FULL_STORY_PROMISE_CHECK_SCHEMA",
     label: "Full Story Promise Check"
+  });
+}
+
+// 导演助手一轮回复。给模型做约束解码的 Schema 从这份派生（director-agent-turn-model-schema.js）。
+export function directorAgentTurnStrictSchema() {
+  return structuredClone(directorAgentTurnSchema);
+}
+
+export function validateDirectorAgentTurnStrict(value) {
+  return validateStrictContract(validateDirectorAgentTurn, value, {
+    codePrefix: "DIRECTOR_AGENT_TURN_SCHEMA",
+    label: "Director Agent Turn"
   });
 }
 

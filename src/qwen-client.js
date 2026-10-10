@@ -5,6 +5,7 @@ import { afterDurableProviderCall, beforeDurableProviderCall, durableTaskHeartbe
 import { SseStreamDegenerateError, SseStreamIncompleteError, readSseCompletion } from "./sse-stream.js";
 import { QWEN_OUTPUT_TOKEN_CEILING, growOutputTokenLimit } from "./output-token-ceilings.js";
 import { createStreamIdleTimer, resolveStreamIdleTimeoutMs } from "./stream-idle-timeout.js";
+import { resolveThinkingOverride } from "./thinking-override.js";
 
 export class QwenClient {
   constructor(config) {
@@ -167,13 +168,14 @@ export class QwenClient {
     model = null,
     maxCompletionTokens = null,
     systemPrompt = null,
-    requestTimeoutMs = null
+    requestTimeoutMs = null,
+    thinking = null
   } = {}) {
     const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`;
     const body = buildQwenRequestBody(
       this.config,
       { prompt, frames, video, useVideo },
-      { model, maxCompletionTokens, systemPrompt }
+      { model, maxCompletionTokens, systemPrompt, thinking }
     );
     const providerName = qwenCompatibleProviderName(body.model);
     // 流式请求不设总时长上限，只判空闲：连续 streamIdleTimeoutMs 没收到任何数据才中断。
@@ -367,12 +369,24 @@ export function buildQwenRequestBody(config, { prompt, frames = [], video = null
       { role: "user", content: userContent }
     ]
   };
+  // 单次请求可以覆盖全局思考开关（src/thinking-override.js，只有导演助手会传）；不传照旧。
+  const thinkingOverride = resolveThinkingOverride(overrides.thinking);
   if (isZhipuGlm53Model(model)) {
     // GLM 5.3/5.3-Flash cannot disable thinking and defaults to max reasoning.
     // This client only performs JSON workflow calls, so low reasoning preserves
     // enough of the output budget for the final answer.
+    // 调用方明确要求关闭时如实报错，不静默照开：静默照开等于让调用方以为关掉了。
+    // 用带码的 ModelResponseError 而不是 TypeError：后者在协调器里会被当成网络故障重试。
+    if (thinkingOverride === "disabled") {
+      throw new ModelResponseError(`${model} 不能关闭思考，请换一个能关闭思考的模型。`, "", 0, {
+        provider: "Zhipu",
+        code: "MODEL_THINKING_UNSUPPORTED"
+      });
+    }
     body.enable_thinking = true;
     body.reasoning_effort = "low";
+  } else if (thinkingOverride) {
+    body.enable_thinking = thinkingOverride === "enabled";
   } else if (typeof config.enableThinking === "boolean") {
     body.enable_thinking = config.enableThinking;
   }

@@ -18,6 +18,7 @@
     <div class="topbar-actions">
       <div class="model-state" id="modelState"><span class="pulse"></span><span>正在检查模型</span></div>
       <button class="model-settings-button" id="openModelSettings" type="button">模型设置</button>
+      <button class="model-settings-button director-agent-toggle" id="directorAgentToggle" type="button" aria-controls="directorAgentPanel" aria-expanded="false">导演助手</button>
     </div>
   </header>
 
@@ -454,6 +455,29 @@
   </div>
 
   <footer><span>母题导演台 · MVP</span><span>结构保真，表达原创</span></footer>
+
+  <!-- 导演助手（2026-10-09）：按进度提议下一步，点「确认执行」才执行；对话只在页面内存里，刷新即清空。 -->
+  <aside class="director-agent hidden" id="directorAgentPanel" aria-label="导演助手">
+    <div class="director-agent-head">
+      <div>
+        <p class="eyebrow">DIRECTOR AGENT</p>
+        <h2>导演助手</h2>
+        <p class="director-agent-entry" id="directorAgentEntry"></p>
+      </div>
+      <button class="icon-button" id="closeDirectorAgent" type="button" aria-label="收起导演助手">×</button>
+    </div>
+    <ol class="director-agent-steps" id="directorAgentSteps"></ol>
+    <p class="director-agent-busy hidden" id="directorAgentBusy"></p>
+    <div class="director-agent-messages" id="directorAgentMessages" aria-live="polite"></div>
+    <div class="director-agent-quick">
+      <button class="outline-button" type="button" data-agent-quick="next">下一步</button>
+      <button class="outline-button" type="button" data-agent-quick="status">现在到哪了</button>
+    </div>
+    <form class="director-agent-composer" id="directorAgentComposer">
+      <textarea id="directorAgentInput" rows="2" maxlength="500" placeholder="跟导演助手说，比如「下一步做什么」「先出主角的参考图」。每发一条会调用一次文本模型。"></textarea>
+      <button class="director-agent-send" id="directorAgentSend" type="submit">发送</button>
+    </form>
+  </aside>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

@@ -92,7 +92,13 @@ export async function loadAppUi({ story = false, plan = false, createElement,
     ensureSelectedVariantArtifact, storyEntryRunLabel, handleStorySourceInput, handleStoryModeChange, handleProfileInput,
     handleBackgroundMusicToggle, generateAnimationPlan, selectedVariant, isStorySourceRun, setAnimationRunning,
     renderCharacterImagePromptPreview, generateCharacterReferenceImages, resetCharacterImageReference,
-    restoreCharacterArtStyle, saveCharacterArtStyle, characterArtStyle };`, context);
+    restoreCharacterArtStyle, saveCharacterArtStyle, characterArtStyle,
+    directorAgent, directorAgentFacts, directorAgentProgressNow, refreshDirectorAgentNow, executeDirectorAgentAction,
+    confirmDirectorAgentCard, dismissDirectorAgentCard, sendDirectorAgentMessage, submitDirectorAgentInput, directorAgentQuick, directorAgentChoose,
+    setDirectorAgentOpen, showDirectorAgentStoryPage, setupReadiness, validateReady, storyEntryContinuing,
+    beginStageUsage, endStageUsage, browserWorkspaceForTest: browserWorkspace,
+    setSourceLoadingForTest: (value) => { sourceLoading = value; },
+    setDirectorAgentStartedForTest: (value) => { directorAgentStarted = value; } };`, context);
   const app = context.app;
   const fixture = uiFixture({ story, plan });
   Object.assign(app.state, { selectedVariantId: "V2", output: { themeVariants: fixture.themeVariants },

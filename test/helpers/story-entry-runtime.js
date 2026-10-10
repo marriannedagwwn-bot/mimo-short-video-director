@@ -9,6 +9,7 @@ import { storyboardDesignFromPlan } from "../../src/storyboard-contract.js";
 import { fullStoryCharacterRegistryInput, mockFullStoryCharacterRegistry } from "../../src/full-story-character-registry.js";
 import { STORY_SOURCE_SCHEMA_VERSION } from "../../public/story-entry.js";
 import { STORY_SCENE_SCRIPT_MARKER } from "../../src/story-entry-prompts.js";
+import { DIRECTOR_AGENT_PROMPT_MARKER } from "../../src/director-agent-prompts.js";
 
 // 1×1 透明 PNG，只用来走通图片落盘路径。
 const FIXTURE_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
@@ -83,6 +84,11 @@ export async function createStoryEntryRuntime({ storyMode = "fullStoryText" } = 
       // 分镜签发了画风时，提示词会要求逐字写出它（服务端有确定性校验），假模型照做。
       const artStyle = /画风：全片统一为「([^」]+)」/u.exec(text)?.[1];
       value = { videoPrompt: `${artStyle ? `画风：${artStyle}。\n` : ""}${video.videoPrompt}` };
+    }
+    else if (text.includes(DIRECTOR_AGENT_PROMPT_MARKER)) {
+      // 导演助手：照提示词里标着「系统建议的下一步」的编号回答；没有就写 none。
+      const suggested = /^- (\S+)：.*← 系统建议的下一步$/mu.exec(text)?.[1];
+      value = { actionKey: suggested || "none", reply: "协议测试的导演助手回复。" };
     }
     else if (text.includes("你现在会看到一张用户上传的人物参考图")) {
       const reference = plan.characterReferencePrompts[0];

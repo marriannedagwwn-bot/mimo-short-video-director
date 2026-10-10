@@ -3,7 +3,7 @@ import { STORY_CANDIDATES_MODEL_SCHEMA_NAME, STORY_ENTRY_CANDIDATES_MODEL_SCHEMA
 import { STORY_ENTRY_SYSTEM_PROMPT, storyEntryCandidatePrompt, storyEntryFullStoryPrompt, storySceneScriptPrompt, storyEntryVisualGuardrailsPrompt } from "./story-entry-prompts.js";
 import { STORY_ENTRY_VARIANT_ID, STORY_MODE_FULL_TEXT, normalizeStorySource } from "../public/story-entry.js";
 import { STORY_CANDIDATE_REVIEW_MODEL_SCHEMA_NAME, storyCandidateReviewModelSchema } from "./contracts/story-candidate-review-model-schema.js";
-import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryEntryCandidates, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails } from "./mock.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryEntryCandidates, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails, mockDirectorAgentTurn } from "./mock.js";
 import { isNarrativeFullStory } from "./full-story-contract.js";
 import { FULL_STORY_CAST_SCHEMA_VERSION } from "../public/full-story-format.js";
 import { STORYBOARD_PLAN_VERSION } from "../public/storyboard-plan.js";
@@ -79,6 +79,10 @@ import {
 import { randomUUID } from "node:crypto";
 import { ModelCallCoordinator, classifyAttemptError } from "./model-call-coordinator.js";
 import { ModelPipelineError } from "./model-errors.js";
+import { DIRECTOR_AGENT_STAGE, ensureDirectorAgentTurnContract, normalizeDirectorAgentTurnInput } from "./director-agent.js";
+import { DIRECTOR_AGENT_SYSTEM_PROMPT, directorAgentRetryPrompt, directorAgentTurnPrompt } from "./director-agent-prompts.js";
+import { DIRECTOR_AGENT_TURN_MODEL_SCHEMA_NAME, directorAgentTurnModelSchema } from "./contracts/director-agent-turn-model-schema.js";
+import { isZhipuGlm53Model } from "./qwen-client.js";
 import {
   assertOnlyCandidateRevisionFieldsChanged,
   candidateBlockerDefect,
@@ -527,6 +531,94 @@ export class WorkflowService {
         providerCalls,
         rejections,
         stageKey: STORY_QUALITY_REVIEW_STAGE
+      })
+    };
+  }
+
+  /**
+   * 导演助手的一轮回复（2026-10-09，设计见 docs/director-agent-chat-2026-10-09.md）。
+   * 只出建议：模型从页面送来的动作清单里选一个编号（或 none）再写一句回复，不签发任何东西、
+   * 不执行任何东西——执行只在用户点卡片上的「确认执行」之后，由页面调原有按钮的同一段代码。
+   *
+   * 每次都关闭思考（src/thinking-override.js）：全局开着思考时一条对话要推理很久。
+   * 走 coordinator，最多 2 次调用、禁止第三次；第二次仍不对就如实报错。审核拦截不重试。
+   */
+  async createDirectorAgentTurn(input) {
+    const turn = normalizeDirectorAgentTurnInput(input);
+    const offeredKeys = turn.progress.actions.map((action) => action.key);
+    const validate = (result) => ensureDirectorAgentTurnContract(result, offeredKeys);
+    if (!this.hasLiveClient) {
+      // 演示模式没有调用模型，调用次数如实写 0。
+      return { turn: validate(mockDirectorAgentTurn(turn.progress)), metadata: promiseCheckMetadata({
+        provider: "demo", model: "demo", providerCalls: 0, stageKey: DIRECTOR_AGENT_STAGE
+      }) };
+    }
+    const settings = this.resolveStage(DIRECTOR_AGENT_STAGE, input);
+    this.assertStageClient(settings, "导演助手");
+    // GLM-5.3 关不掉思考：在调用之前就说清楚，不让客户端在协调器里报一个看不懂的错。
+    if (settings.provider === "Qwen" && isZhipuGlm53Model(settings.model)) {
+      throw new InputError(`导演助手每次都要关闭思考，${settings.model} 不能关闭思考；请在模型设置里给「导演助手」换一个模型。`);
+    }
+
+    // 实数调用次数，不能从 rejections 反推：传输失败时它是空数组，供应商却确实被调用过。
+    let providerCalls = 0;
+    const rejections = [];
+    // 走 coordinator 拿不到 generateValidatedJson 自带的 recorder，必须自己接，不接就静默不写侧车。
+    const outputLogWriter = this.stageModelOutputLogWriters?.get(DIRECTOR_AGENT_STAGE) || null;
+    const recordAttempt = outputLogWriter?.enabled ? (attempt) => outputLogWriter.recordAttempt(attempt) : null;
+    let result;
+    try {
+      result = await this.modelCallCoordinator.runJson({
+        client: settings.client,
+        request: {
+          prompt: directorAgentTurnPrompt(turn),
+          systemPrompt: DIRECTOR_AGENT_SYSTEM_PROMPT,
+          model: settings.model,
+          maxCompletionTokens: settings.maxCompletionTokens,
+          requestTimeoutMs: settings.requestTimeoutMs,
+          thinking: "disabled",
+          // 只有 MiMo 用它做约束解码；千问与 DeepSeek 忽略。枚举就是这一轮的动作清单加 none。
+          responseSchema: { name: DIRECTOR_AGENT_TURN_MODEL_SCHEMA_NAME, schema: directorAgentTurnModelSchema(offeredKeys) }
+        },
+        provider: settings.provider || "",
+        stage: DIRECTOR_AGENT_STAGE,
+        maxProviderCalls: 2,
+        attemptObserver: async (attempt) => {
+          providerCalls += 1;
+          if (!recordAttempt) return;
+          try {
+            await recordAttempt(attempt);
+          } catch {
+            // 观测失败不改变结论。
+          }
+        },
+        retryTokenLimit,
+        retryPrompt: ({ originalPrompt }) => {
+          const last = rejections[rejections.length - 1];
+          return last?.details?.length ? directorAgentRetryPrompt({ originalPrompt, details: last.details }) : originalPrompt;
+        },
+        validate: (candidate) => {
+          try {
+            return validate(candidate);
+          } catch (error) {
+            if (error instanceof OutputContractError) {
+              rejections.push({ message: error.message, details: Array.isArray(error.details) ? error.details : [] });
+            }
+            throw error;
+          }
+        }
+      });
+    } catch (error) {
+      throw candidateReviewPipelineFailure(error, rejections);
+    }
+    return {
+      turn: result,
+      metadata: promiseCheckMetadata({
+        provider: settings.provider || "",
+        model: settings.model || "",
+        providerCalls,
+        rejections,
+        stageKey: DIRECTOR_AGENT_STAGE
       })
     };
   }
@@ -4772,7 +4864,10 @@ function normalizeStageDefaults(stageDefaults = null, fallback = {}) {
       provider: fallback.storyProvider || provider,
       model: fallback.storyModel || "",
       maxCompletionTokens: fallback.storyMaxCompletionTokens || null
-    }
+    },
+    // 导演助手（2026-10-09）：沿用默认文本模型。输出只有一个动作编号加一两句话，
+    // 调用时一律关闭思考，8192 足够。新阶段一上线就登记，不重演体检「漏在表外」那一次。
+    directorAgent: { provider, model: "", maxCompletionTokens: 8192 }
   };
   const merged = { ...defaults, ...(stageDefaults || {}) };
   return Object.fromEntries(Object.entries(merged).map(([stage, value]) => [stage, normalizeStageSetting(value, defaults[stage] || defaults.analysis)]));
@@ -4842,7 +4937,8 @@ function stageLabel(stage) {
     storyQualityReview: "剧情体检",
     storyQualityRepair: "剧情按问题修改",
     animationPlanReview: "分镜终审",
-    animationPlanRevision: "分镜修订"
+    animationPlanRevision: "分镜修订",
+    directorAgent: "导演助手"
   })[stage] || stage;
 }
 

@@ -762,3 +762,56 @@ body.story-source-mode .not-story-source { display: none !important; }
   .entry-switch span, .story-mode-switch span { padding: 7px 11px; }
   .story-entry-panel textarea { min-height: 180px; }
 }
+
+/* 导演助手（2026-10-09）：固定在右侧的对话栏。层级 30 低于弹窗（40），弹窗总在它上面。
+   宽屏推开页面内容，窄屏是盖在页面上的抽屉，手机是底部面板。 */
+.director-agent-toggle { white-space: nowrap; }
+.director-agent-toggle[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+.director-agent { position: fixed; z-index: 30; top: 0; right: 0; bottom: 0; width: 380px; display: flex; flex-direction: column; gap: 10px; padding: 18px 18px 16px; border-left: 1px solid var(--line); background: #fbf9f4; box-shadow: -18px 0 48px rgba(56, 45, 31, .08); }
+.director-agent-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.director-agent-head .eyebrow { margin-bottom: 6px; }
+.director-agent-head h2 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: 22px; font-weight: 500; }
+.director-agent-entry { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+.director-agent-steps { margin: 0; padding: 10px 12px; list-style: none; display: grid; gap: 6px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.6); }
+.agent-step { display: grid; grid-template-columns: 10px auto 1fr; align-items: center; gap: 8px; font-size: 12px; }
+.agent-step small { justify-self: end; color: var(--muted); font-size: 11px; text-align: right; }
+.agent-step-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+.agent-step-done .agent-step-dot { background: var(--green); }
+.agent-step-running .agent-step-dot, .agent-step-paused .agent-step-dot { background: #d5a43a; }
+.agent-step-failed .agent-step-dot { background: #c23b22; }
+.agent-step-waiting .agent-step-dot { background: var(--accent); }
+.director-agent-busy { margin: 0; padding: 8px 12px; border-radius: 10px; background: #fff7e2; font-size: 12px; line-height: 1.5; color: #7a5a12; }
+.director-agent-messages { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 2px; }
+.agent-message { max-width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.78); font-size: 13px; line-height: 1.6; }
+.agent-message p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-message-who { display: block; font-size: 11px; color: var(--muted); }
+.agent-message-user { align-self: flex-end; max-width: 88%; border-color: var(--ink); background: var(--ink); color: #fff; }
+.agent-message-user .agent-message-who { color: rgba(255,255,255,.62); }
+.agent-message-agent { border-color: rgba(87, 70, 160, .2); background: #f6f4fd; }
+.agent-message-error { border-color: rgba(194, 59, 34, .28); background: #fdeeea; }
+.agent-message-meta { font-size: 11px; color: var(--muted); }
+.agent-card { margin-top: 8px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 12px; background: #fff; }
+.agent-card strong { display: block; font-size: 13px; }
+.agent-card ul { margin: 6px 0 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
+.agent-card-warning { color: #c23b22; font-size: 12px; }
+.agent-card-actions { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.agent-card-confirm { height: 34px; padding: 0 14px; border: 0; border-radius: 10px; background: var(--ink); color: #fff; cursor: pointer; font-size: 12px; font-weight: 650; }
+.agent-card-confirm:hover { background: var(--accent); }
+.agent-card-state { font-size: 12px; color: var(--muted); }
+.agent-card:not(.agent-card-pending) { border-color: var(--line); }
+.agent-card-void, .agent-card-superseded, .agent-card-dismissed { opacity: .62; }
+.agent-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.agent-chips .outline-button { padding: 7px 10px; text-align: left; }
+.director-agent-quick { display: flex; gap: 8px; }
+.director-agent-quick .outline-button { padding: 7px 12px; }
+.director-agent-composer { display: flex; align-items: flex-end; gap: 8px; }
+.director-agent-composer textarea { flex: 1; min-height: 44px; max-height: 140px; resize: vertical; padding: 9px 11px; border: 1px solid var(--line); border-radius: 12px; background: #fff; font-size: 13px; }
+.director-agent-send { height: 44px; padding: 0 16px; border: 0; border-radius: 12px; background: var(--ink); color: #fff; cursor: pointer; font-size: 13px; font-weight: 650; }
+.director-agent-send:disabled { opacity: .4; cursor: not-allowed; }
+@media (min-width: 1280px) {
+  body.director-agent-open { padding-right: 380px; }
+}
+@media (max-width: 640px) {
+  .director-agent-toggle { padding: 0 9px; }
+  .director-agent { top: auto; left: 0; width: 100%; height: 72vh; border-left: 0; border-top: 1px solid var(--line); border-radius: 18px 18px 0 0; box-shadow: 0 -18px 48px rgba(56, 45, 31, .14); }
+}

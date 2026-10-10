@@ -30,7 +30,9 @@ export const MODEL_OUTPUT_LOG_SCOPES = Object.freeze({
   STORYBOARD_REVIEW: "storyboardReview",
   STORYBOARD_REVISION: "storyboardRevision",
   STORYBOARD_REVIEW_FINAL: "storyboardReviewFinal",
-  SHOT_VIDEO_PROMPT: "shotVideoPrompt"
+  SHOT_VIDEO_PROMPT: "shotVideoPrompt",
+  // 导演助手（2026-10-09）走 coordinator，由 workflow.createDirectorAgentTurn 自己接 attemptObserver。
+  DIRECTOR_AGENT: "directorAgent"
 });
 
 export async function resolvePrivateModelOutputLogRoot({

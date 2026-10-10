@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "internal://director-agent-turn-strict",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["actionKey", "reply"],
+  "properties": {
+    "actionKey": { "type": "string", "pattern": "\\S", "maxLength": 100 },
+    "reply": { "type": "string", "pattern": "\\S", "maxLength": 300 }
+  }
+}
