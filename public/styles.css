@@ -411,6 +411,8 @@ h1 em { color: var(--accent); font-style: normal; }
 .shot-frame-control-row { display: grid; grid-template-columns: 1fr; gap: 12px; margin: 0 0 16px; }
 .shot-frame-control-row .field { margin: 0; }
 .shot-frame-reference-mode-hint { margin: -5px 0 12px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.shot-video-resolution-hint { margin: -5px 0 12px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.shot-video-resolution-hint.warn { color: #b54708; }
 .shot-frame-reference-list { margin: 0; display: grid; gap: 10px; }
 .shot-frame-reference-list > p { margin: 0; padding: 10px 12px; border: 1px dashed rgba(29,27,24,.18); border-radius: 12px; color: var(--muted); background: rgba(255,255,255,.42); font-size: 11px; line-height: 1.6; }
 .shot-frame-reference-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }

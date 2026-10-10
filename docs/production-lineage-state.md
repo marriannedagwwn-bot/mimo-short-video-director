@@ -142,7 +142,7 @@ Durable Task 创建时，服务端在共享的 per-Run Coordinator 临界区内�
 - `expectedCurrentRevision`
 - 完整上游 dependency revisions
 - dependency content digests
-- 创建时的 provider/model 快照与非 Artifact 输入摘要
+- 创建时的 provider/model 快照（镜头视频另记这次用的分辨率，2026-10-10）与非 Artifact 输入摘要
 
 每次实际 provider 调用前只比较 current revision/digest 与冻结值，不重新取内容。调用前已变化时，Task 在付费调用前变为 `conflicted`；调用期间变化时，provider 返回后的复检或锁内 commit guard 使其变为 `conflicted`，不提交结果。`ARTIFACT_REVISION_CONFLICT` 与 `ARTIFACT_DEPENDENCY_STALE` 也归入同一终态。
 
@@ -176,7 +176,7 @@ Qwen、MiMo、DeepSeek 使用任务 AbortSignal 与原 provider timeout 的组�
 
 每个子尝试只记录实际收到的结构化 usage；SSE 断流前已经收到的 usage 仍计账，未收到的不根据字符数估算。fetch 派发点记录 `calls`，guard 后但 fetch 前取消不算已派发。`reportedCalls`、`unreportedCalls` 和 `usageComplete` 区分已知/未知；存在未知时 `costCny=null/costKnown=false`，页面显示已确认 token 和“次请求未返回用量”。父任务按全部子尝试汇总（包括暂停产生的 interrupted 子任务），成功继续不会覆盖此前用量，也不会重复累计同一条回报。
 
-`shotVideoBatch` 是当前进程内的 Plan 级顺序父任务。创建时一次 claim 当前 Variant 的全部 `shotVideo:<variantId>:<shotId>` 目标，冻结 current Animation Plan lineage、启动时的镜头视频 provider/model 和全能参考配置；每镜复用既有 `shotVideo` Runner 独立提交 Artifact，父任务只持久化调度进度和脱敏结果引用，不复制 Prompt 或媒体正文。已存在且 current 的镜头视频标为 `reused`，其余镜头在创建时先逐镜预检参考素材上限（角色参考图与上一镜抽帧共用 9 图上限、每镜语音 ≤3 段且总时长 ≤15 秒），任一镜超限即拒绝创建并一次列全，不产生供应商调用；通过预检后按 Plan 顺序生成，运行期单镜参考素材问题只失败该镜、不中止整批；每个子任务完成后立即刷新父任务 progress，因此浏览器刷新后可从 `tasks/index.json` 重新 attach，并从 current Artifact 恢复已完成视频。
+`shotVideoBatch` 是当前进程内的 Plan 级顺序父任务。创建时一次 claim 当前 Variant 的全部 `shotVideo:<variantId>:<shotId>` 目标，冻结 current Animation Plan lineage、启动时的镜头视频 provider/model、全能参考配置和这次选的分辨率（选了才有，原样交给每一镜）；每镜复用既有 `shotVideo` Runner 独立提交 Artifact，父任务只持久化调度进度和脱敏结果引用，不复制 Prompt 或媒体正文。已存在且 current 的镜头视频标为 `reused`，其余镜头在创建时先逐镜预检参考素材上限（角色参考图与上一镜抽帧共用 9 图上限、每镜语音 ≤3 段且总时长 ≤15 秒），任一镜超限即拒绝创建并一次列全，不产生供应商调用；通过预检后按 Plan 顺序生成，运行期单镜参考素材问题只失败该镜、不中止整批；每个子任务完成后立即刷新父任务 progress，因此浏览器刷新后可从 `tasks/index.json` 重新 attach，并从 current Artifact 恢复已完成视频。
 
 批量控制只允许 `pause | resume | terminate`。暂停保持父任务 `running` 和全部 claims，只在镜头边界阻止下一次 provider 提交；正在轮询或下载的当前镜头不会被强停。终止把父子任务标为 `cancelled`、释放 claims 并禁止迟到结果 commit，但已经提交给供应商的请求可能继续运行和计费。它不是跨进程 batch queue：Node 重启后仍按 Durable Task v1 规则变为 `interrupted`，不会从远端 task id 接管或自动续跑。
 

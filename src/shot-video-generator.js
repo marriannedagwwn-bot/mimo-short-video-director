@@ -39,9 +39,11 @@ import {
   isShotVideoModelAllowed,
   normalizeShotVideoGenerationMode,
   normalizeShotVideoProvider,
+  resolveShotVideoRequestResolution,
   resolveShotVideoSetting,
   shotVideoRuntimeConfig
 } from "./shot-video-providers.js";
+import { ProductionStateError } from "./production-lineage.js";
 import { afterDurableProviderCall, beforeDurableProviderCall } from "./durable-task-context.js";
 import { assertWorkspaceMediaLifetime, requireWorkspaceMediaDirectory } from "./workspace-media-lifetime.js";
 
@@ -148,6 +150,17 @@ export async function generateShotVideo(options = {}) {
     throw new ShotVideoConfigError("未配置首尾帧图片生成服务。请设置 VIDEO_HTTP_IMAGE_ENDPOINT / VIDEO_HTTP_ENDPOINT，或设置 VIDEO_HTTP_CONFIG 指向 provider.json；如果已在外部生成图片，也可以传入 startFrameDataUrl 和 endFrameDataUrl。");
   }
   if (generationMode === "all_reference") assertAllReferenceRequestSize(options);
+  // 分辨率（2026-10-10）：服务端建任务前已经校验过一次；这里在建工作目录、调用供应商之前，
+  // 按实际读到的供应商配置文件再核对一次（直接调用本函数的路径、只有配置文件知道默认值的情况）。
+  // 只有用户这次明确选了才写进发给 worker 的请求；没选时请求逐字不变，由 worker 按配置决定。
+  const resolution = resolveShotVideoRequestResolution({
+    provider: videoProvider,
+    model: videoModel,
+    input: options,
+    fileConfig: configPath ? config : null,
+    configPath,
+    createError: (message, details) => new ProductionStateError(message, details)
+  });
 
   const outputRoot = options.outputRoot || path.resolve("public/generated-videos");
   const publicBasePath = options.publicBasePath || "/generated-videos";
@@ -246,6 +259,7 @@ export async function generateShotVideo(options = {}) {
         aspectRatio,
         prompt: effectiveVideoPrompt,
         videoPromptProfile: options.videoPromptProfile,
+        resolution: resolution.explicit ? resolution.value : ""
       });
       const providerTimeoutMs = Number(providerRuntime.pollTimeoutMs || config.pollTimeoutMs || 900_000);
       await beforeDurableProviderCall(`video_provider_candidate_${index + 1}`, providerTimeoutMs);
@@ -254,7 +268,7 @@ export async function generateShotVideo(options = {}) {
         candidateIndex: index,
         candidateCount: count
       });
-      const measuredDurationSeconds = await assertUsableVideoOutput(outputPath, {
+      const measured = await assertUsableVideoOutput(outputPath, {
         outputProbe: options.videoOutputProbe,
         skipFfprobeForInjectedWorker: Boolean(options.workerRunner) && !options.videoOutputProbe
       });
@@ -269,7 +283,13 @@ export async function generateShotVideo(options = {}) {
         // 这里只负责让偏差不再是静默的：数值如实上报，是否、如何对齐成片总长
         // 属于契约决定（容差多少、失败还是告警、以谁为准），不在这里替它选。
         plannedDurationSeconds: Number(shot.durationSeconds) || 0,
-        measuredDurationSeconds,
+        measuredDurationSeconds: measured.durationSeconds,
+        // 分辨率（2026-10-10）：实际发给供应商的值取自 worker 回执（就是请求体里那个），
+        // 实测宽高来自 ffprobe，量不到记 0。两者对不上只并列记录、不判失败：
+        // 「2K」这类叫法对应多少像素没有权威换算（与上面的时长同一态度）。
+        resolution: typeof receipt?.resolution === "string" ? receipt.resolution : "",
+        measuredWidth: measured.width,
+        measuredHeight: measured.height,
         provider: videoProvider,
         model: videoModel,
         taskId: request.taskId,
@@ -288,6 +308,7 @@ export async function generateShotVideo(options = {}) {
       provider: videoProvider,
       model: videoModel,
       generationMode,
+      resolution: firstVideo.resolution || "",
       startFrameUrl: frames?.start?.url || "",
       startFramePath: frames?.start?.path || "",
       endFrameUrl: frames?.end?.url || "",
@@ -491,7 +512,9 @@ function buildShotVideoRequest(shot = {}, context = {}) {
       continuityNotes: shot.continuityNotes || "",
       candidateIndex,
       candidateCount,
-      generationMode
+      generationMode,
+      // 只在用户这次明确选了分辨率时才有这个键（2026-10-10），没选时请求 JSON 与之前逐字相同。
+      ...(context.resolution ? { resolution: context.resolution } : {})
     },
     acceptanceCriteria: shot.acceptanceCriteria || [],
     rawJob: shot
@@ -540,21 +563,52 @@ async function assertUsableVideoOutput(outputPath, { outputProbe, skipFfprobeFor
   } finally {
     await file.close();
   }
-  // 返回实测时长供调用方如实记录。注入的 outputProbe 若给出有限正数就采用它，
-  // 否则视为「这条链路测不出时长」返回 0——0 表示未测得，不表示时长为零。
+  // 返回实测时长与宽高供调用方如实记录。注入的 outputProbe 可以只给时长（数字），也可以给
+  // { durationSeconds, width, height }；取不到的项视为「这条链路测不出」记 0——0 表示未测得，不表示为零。
   if (typeof outputProbe === "function") {
-    const probed = Number(await outputProbe(outputPath));
-    return Number.isFinite(probed) && probed > 0 ? probed : 0;
+    const probed = await outputProbe(outputPath);
+    if (probed && typeof probed === "object") {
+      return {
+        durationSeconds: positiveNumberOrZero(probed.durationSeconds),
+        width: Math.round(positiveNumberOrZero(probed.width)),
+        height: Math.round(positiveNumberOrZero(probed.height))
+      };
+    }
+    return { durationSeconds: positiveNumberOrZero(probed), width: 0, height: 0 };
   }
   if (!skipFfprobeForInjectedWorker) return probePlayableVideoOutput(outputPath);
-  return 0;
+  return { durationSeconds: 0, width: 0, height: 0 };
+}
+
+function positiveNumberOrZero(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+// ffprobe 输出里取时长与画面宽高（2026-10-10 起多取宽高，用来如实记录实测分辨率）。
+// 缺视频流、时长无效仍然失败；宽高取不到记 0，不判失败。宽高是编码尺寸，不按旋转元数据换算。
+export function parseVideoProbeMetadata(metadata = {}) {
+  const streams = Array.isArray(metadata?.streams) ? metadata.streams : [];
+  const videoStreams = streams.filter((stream) => stream?.codec_type === "video");
+  if (!videoStreams.length) throw new Error("缺少视频流");
+  const durationSeconds = videoStreams
+    .map((stream) => Number(stream.duration))
+    .find((value) => Number.isFinite(value) && value > 0)
+    || Number(metadata.format?.duration);
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) throw new Error("视频时长无效");
+  const sized = videoStreams.find((stream) => Number(stream.width) > 0 && Number(stream.height) > 0);
+  return {
+    durationSeconds,
+    width: sized ? Math.round(Number(sized.width)) : 0,
+    height: sized ? Math.round(Number(sized.height)) : 0
+  };
 }
 
 async function probePlayableVideoOutput(outputPath) {
   try {
     const { stdout } = await execFileAsync("ffprobe", [
       "-v", "error",
-      "-show_entries", "format=duration,format_name:stream=codec_type,duration",
+      "-show_entries", "format=duration,format_name:stream=codec_type,duration,width,height",
       "-of", "json",
       outputPath
     ], {
@@ -562,16 +616,7 @@ async function probePlayableVideoOutput(outputPath) {
       maxBuffer: 1024 * 1024,
       killSignal: "SIGKILL"
     });
-    const metadata = JSON.parse(String(stdout || "{}"));
-    const streams = Array.isArray(metadata.streams) ? metadata.streams : [];
-    if (!streams.some((stream) => stream.codec_type === "video")) throw new Error("缺少视频流");
-    const duration = streams
-      .filter((stream) => stream.codec_type === "video")
-      .map((stream) => Number(stream.duration))
-      .find((value) => Number.isFinite(value) && value > 0)
-      || Number(metadata.format?.duration);
-    if (!Number.isFinite(duration) || duration <= 0) throw new Error("视频时长无效");
-    return duration;
+    return parseVideoProbeMetadata(JSON.parse(String(stdout || "{}")));
   } catch (error) {
     throw new ShotVideoProviderError(`视频生成服务返回的文件无法通过 ffprobe 播放性校验：${error.message || "无有效视频流"}。`);
   }

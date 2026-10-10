@@ -47,7 +47,9 @@ class Element {
 export async function loadAppUi({ story = false, plan = false, createElement,
   fetch = async () => { throw new Error("Unexpected network request in UI regression"); },
   windowSetTimeout = setTimeout, confirm = () => false,
-  storage = { getItem: () => null, setItem() {}, removeItem() {} } } = {}) {
+  storage = { getItem: () => null, setItem() {}, removeItem() {} },
+  // 需要分清两种存储时分别传；不传就和以前一样共用 storage。
+  sessionStorage: sessionStorageOverride, localStorage: localStorageOverride } = {}) {
   let source = await readFile(new URL("../../public/app.js", import.meta.url), "utf8");
   const bindings = {};
   for (const match of source.matchAll(/import\s*\{([^}]+)\}\s*from\s*"([^"]+)";/g)) {
@@ -66,7 +68,7 @@ export async function loadAppUi({ story = false, plan = false, createElement,
     replaceState(_state, _title, path) { location.pathname = path; } };
   const context = vm.createContext({ ...bindings, document,
     window: { scrollTo() {}, setTimeout: windowSetTimeout, CSS: { escape: (s) => s }, location, confirm },
-    location, history, sessionStorage: storage, localStorage: storage,
+    location, history, sessionStorage: sessionStorageOverride || storage, localStorage: localStorageOverride || storage,
     navigator: {}, structuredClone, crypto, URL, URLSearchParams, Blob, File, console,
     fetch, setTimeout, clearTimeout });
   vm.runInContext(`${source}\nglobalThis.app = { state, elements, renderRoute, renderStoryPage, renderAnimationPlan,
@@ -97,6 +99,9 @@ export async function loadAppUi({ story = false, plan = false, createElement,
     confirmDirectorAgentCard, dismissDirectorAgentCard, sendDirectorAgentMessage, submitDirectorAgentInput, directorAgentQuick, directorAgentChoose,
     setDirectorAgentOpen, showDirectorAgentStoryPage, setupReadiness, validateReady, storyEntryContinuing,
     beginStageUsage, endStageUsage, browserWorkspaceForTest: browserWorkspace, selectedStoryPackage,
+    shotVideoSetting, shotVideoResolutionState, shotVideoResolutionRequestFields, renderShotVideoResolutionControl,
+    handleShotVideoResolutionChange, renderShotVideoBatchLabel, shotVideoResolutionText, startShotVideoBatch,
+    generateShotVideo, renderShotVideoModalResults, setShotVideoGeneratorRunning, updateShotVideoProviderUi, taskUiView,
     setSourceLoadingForTest: (value) => { sourceLoading = value; },
     setDirectorAgentStartedForTest: (value) => { directorAgentStarted = value; } };`, context);
   const app = context.app;

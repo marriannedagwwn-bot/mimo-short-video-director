@@ -11,6 +11,12 @@ import {
   normalizeShotVideoProvider,
   shotVideoRuntimeConfig
 } from "../src/shot-video-providers.js";
+import {
+  canonicalShotVideoResolution,
+  isShotVideoResolutionOption,
+  shotVideoCodeDefaultResolution,
+  shotVideoResolutionOptions
+} from "../public/shot-video-resolutions.js";
 
 // 这些常量必须声明在下面那句顶层 `if (isMainModule()) await main();` **之前**。
 // worker 以子进程运行时，main() 在模块求值到第 55 行时就把整个请求跑完了，此时
@@ -18,12 +24,12 @@ import {
 // 实测代价：把数组字面量从函数内提成模块常量后，子进程路径每次都抛
 // "Cannot access 'MINIMAX_RESOLUTIONS' before initialization"，而 import 调用
 // （测试与实验用的路径）因为整个模块先求值完，完全正常，于是掩盖了整整两个提交。
+// （分辨率清单 2026-10-10 起改从 public/shot-video-resolutions.js 导入：import 在模块体执行前
+// 就已完成，不受这个限制。新增的模块级 const 仍然必须写在 await main() 之前。）
 
 // MiniMax 有两个平级的 API 区域，端点路径与请求体完全一致，只是签发的 API Key
 // 各自只在本区域有效：api.minimaxi.com（国内）与 api.minimax.io（国际）。
 const MINIMAX_API_HOSTNAMES = Object.freeze(["api.minimaxi.com", "api.minimax.io"]);
-// 官方 H3 只有这两档输出，取值区分大小写地写进请求体。
-const MINIMAX_RESOLUTIONS = Object.freeze(["768P", "2K"]);
 const MINIMAX_RATIOS = Object.freeze(["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"]);
 // MiniMax 的参考音频白名单只有 WAV 和 MP3（官方 video-generation v2 文档，2026-09-02 核对），
 // 而它是从 data URL 的 MIME **子类型**反推扩展名的：audio/mpeg 会被读成 ".mpeg" 当场拒绝——
@@ -154,6 +160,8 @@ async function executeRequest(request, options, config) {
     outputPath: options.output,
     endpoint: redactUrl(endpoint),
     model: context.model,
+    // 实际发给供应商的分辨率（2026-10-10）；请求体里没有这个参数时为空串。
+    resolution: providerBodyResolution(body),
     audioRequested: miniMaxH3Video
       || body.generate_audio === true
       || body.settings?.audio === "native"
@@ -718,7 +726,9 @@ function buildModelArkContentGenerationBody(context, config, negativePromptDeliv
     generate_audio: config.generateAudio !== false,
     return_last_frame: config.returnLastFrame === true
   };
-  body.resolution = normalizeSeedanceResolution(config.resolution, body.model);
+  body.resolution = resolveBodyResolution({
+    provider: "Seedance", model: body.model, label: "Seedance", envName: "SEEDANCE_VIDEO_RESOLUTION", parameters, config
+  });
   if (config.serviceTier) {
     if (config.serviceTier !== "default") throw new Error("Seedance 2.0 仅支持 service_tier=default。");
     body.service_tier = config.serviceTier;
@@ -767,7 +777,9 @@ function buildMiniMaxH3VideoBody(context, config, negativePromptDelivery = {}) {
   return {
     model: context.model || config.model || "MiniMax-H3",
     content,
-    resolution: normalizeMiniMaxResolution(config.resolution),
+    resolution: resolveBodyResolution({
+      provider: "MiniMax", model: "MiniMax-H3", label: "MiniMax H3", envName: "MINIMAX_VIDEO_RESOLUTION", parameters, config
+    }),
     duration: normalizeMiniMaxDuration(duration),
     ratio: context.request.capability === "all_reference_video_generation"
       ? normalizeMiniMaxRatio(parameters.aspectRatio || config.ratio)
@@ -840,7 +852,9 @@ function buildKlingV3ImageToVideoBody(context, config) {
     settings: {
       multi_shot: config.multiShot === true,
       audio: config.audio === "off" ? "off" : "native",
-      resolution: normalizeKlingV3Resolution(config.resolution),
+      resolution: resolveBodyResolution({
+        provider: "Kling", model: "kling-v3", label: "Kling 3.0", envName: "KLING_VIDEO_RESOLUTION", parameters, config
+      }),
       duration: normalizeKlingV3Duration(parameters.durationSeconds || config.duration)
     },
     options: {
@@ -857,6 +871,9 @@ function buildKlingImageToVideoBody(context, config, negativePromptDelivery = {}
   const endFrame = firstArtifactImagePayload(artifacts[1]);
   if (!startFrame && !endFrame) throw new Error("Kling 图生视频任务需要首帧或尾帧图片。");
   const parameters = context.request.parameters || {};
+  if (Object.hasOwn(parameters, "resolution")) {
+    throw new Error("Kling v2.1 图生视频没有分辨率参数，请求里不能带 resolution；不会忽略它照常生成。");
+  }
   const hasTail = Boolean(endFrame);
   const body = {
     model_name: context.model || config.model || "kling-v2-1",
@@ -892,11 +909,6 @@ function normalizeKlingV3Duration(value) {
   return Math.min(15, Math.max(3, seconds));
 }
 
-function normalizeKlingV3Resolution(value) {
-  const resolution = String(value || "720p").trim().toLowerCase();
-  return ["720p", "1080p", "4k"].includes(resolution) ? resolution : "720p";
-}
-
 // -1 是 Ark 的"由模型自行决定时长"，只有在请求没有给出镜头时长时才可能出现。
 // 其余情况一律按供应商公开的 4–15 秒整数硬校验：Plan 的时长是权威事实，
 // 静默 clamp 会让一个 3 秒的镜头变成 4 秒的成片，属于隐蔽改写。
@@ -916,14 +928,6 @@ function normalizeSeedanceRatio(value) {
     : "adaptive";
 }
 
-function normalizeSeedanceResolution(value, model) {
-  const resolution = String(value || "720p").trim().toLowerCase();
-  const allowed = /-(?:fast|mini)-/iu.test(String(model || ""))
-    ? ["480p", "720p"]
-    : ["480p", "720p", "1080p", "4k"];
-  return allowed.includes(resolution) ? resolution : "720p";
-}
-
 function normalizeMiniMaxDuration(value) {
   const seconds = Number(value);
   if (!Number.isInteger(seconds) || seconds < 4 || seconds > 15) {
@@ -933,25 +937,45 @@ function normalizeMiniMaxDuration(value) {
 }
 
 /**
- * 未配置时用默认值是缺省；**已显式配置却非法时必须明确失败**。
+ * 分辨率（2026-10-10 起三家共用这一个函数，清单只在 public/shot-video-resolutions.js 一份）。
  *
- * 这两个函数原本一律静默回退（`1080K` → `2K`、任意错值 → `adaptive`），
- * `.env` 里那个 `MINIMAX_VIDEO_RESOLUTION=1080K` 就这样被悄悄改成了 2K——
- * 计费与产出都和用户以为的不是一回事。CLAUDE.md 五、第 4 条：失败时返回
- * 默认值是错的，明确报错才是对的。
+ * 这次请求选了（parameters.resolution）就严格按请求：必须逐字是这个模型清单里的写法。
+ * 没选就用配置值（供应商配置文件 > 环境变量，大小写不敏感），没配用代码默认值。
+ * 未配置时用默认值是缺省；**已显式配置或选择却非法时必须明确失败**。
+ *
+ * 原来的写法一律静默回退：MiniMax 的 `.env` 里那个 `MINIMAX_VIDEO_RESOLUTION=1080K` 被悄悄改成了 2K，
+ * Seedance、可灵的任意错值被悄悄改成 720p——计费与产出都和用户以为的不是一回事。
+ * CLAUDE.md 五、第 4 条：失败时返回默认值是错的，明确报错才是对的。
  */
-function normalizeMiniMaxResolution(value) {
-  const configured = String(value ?? "").trim();
-  if (!configured) return "2K";
-  const resolution = configured.toUpperCase();
-  if (!MINIMAX_RESOLUTIONS.includes(resolution)) {
+function resolveBodyResolution({ provider, model, label, envName, parameters = {}, config = {} }) {
+  const options = shotVideoResolutionOptions(provider, model);
+  if (Object.hasOwn(parameters, "resolution")) {
+    const requested = parameters.resolution;
+    if (!isShotVideoResolutionOption(provider, model, requested)) {
+      throw new Error(`${label} resolution 只支持 ${options.join(" 或 ")}，本次请求为“${String(requested)}”；不会静默改写分辨率。`);
+    }
+    return requested;
+  }
+  const configured = String(config.resolution ?? "").trim();
+  if (!configured) return shotVideoCodeDefaultResolution(provider, model);
+  const resolution = canonicalShotVideoResolution(provider, model, configured);
+  if (!resolution) {
     throw new Error(
-      `MiniMax H3 resolution 只支持 ${MINIMAX_RESOLUTIONS.join(" 或 ")}，当前配置为“${configured}”；请修正 MINIMAX_VIDEO_RESOLUTION，不会静默改写分辨率。`
+      `${label} resolution 只支持 ${options.join(" 或 ")}，当前配置为“${configured}”；请修正 ${envName}，不会静默改写分辨率。`
     );
   }
   return resolution;
 }
 
+function providerBodyResolution(body = {}) {
+  const value = body?.resolution ?? body?.settings?.resolution;
+  return typeof value === "string" ? value : "";
+}
+
+/**
+ * MiniMax H3 画幅：未配置时用默认值是缺省；**已显式配置却非法时必须明确失败**
+ * （原来任意错值静默回退成 adaptive）。
+ */
 function normalizeMiniMaxRatio(value) {
   const configured = String(value ?? "").trim();
   if (!configured) return "adaptive";

@@ -1,3 +1,10 @@
+import {
+  canonicalShotVideoResolution,
+  isShotVideoResolutionOption,
+  shotVideoCodeDefaultResolution,
+  shotVideoResolutionOptions
+} from "../public/shot-video-resolutions.js";
+
 export const KLING_VIDEO_MODELS = Object.freeze([
   "kling-v3",
   "kling-v2-1"
@@ -115,7 +122,7 @@ export function shotVideoRuntimeConfig(provider, env = process.env, requestedMod
       pollIntervalMs: clean(env.MINIMAX_VIDEO_POLL_INTERVAL_MS),
       pollTimeoutMs: clean(env.MINIMAX_VIDEO_POLL_TIMEOUT_MS),
       pollEndpointTemplate: clean(env.MINIMAX_VIDEO_POLL_ENDPOINT_TEMPLATE),
-      resolution: clean(env.MINIMAX_VIDEO_RESOLUTION) || "2K",
+      resolution: clean(env.MINIMAX_VIDEO_RESOLUTION) || shotVideoCodeDefaultResolution("MiniMax", model),
       duration: clean(env.MINIMAX_VIDEO_DURATION),
       ratio: clean(env.MINIMAX_VIDEO_ASPECT_RATIO),
       watermark: booleanEnv(env.MINIMAX_WATERMARK, false),
@@ -136,7 +143,7 @@ export function shotVideoRuntimeConfig(provider, env = process.env, requestedMod
       timeoutMs: clean(env.SEEDANCE_VIDEO_TIMEOUT_MS),
       pollIntervalMs: clean(env.SEEDANCE_VIDEO_POLL_INTERVAL_MS),
       pollTimeoutMs: clean(env.SEEDANCE_VIDEO_POLL_TIMEOUT_MS),
-      resolution: clean(env.SEEDANCE_VIDEO_RESOLUTION) || "720p",
+      resolution: clean(env.SEEDANCE_VIDEO_RESOLUTION) || shotVideoCodeDefaultResolution("Seedance", model),
       duration: clean(env.SEEDANCE_VIDEO_DURATION),
       ratio: clean(env.SEEDANCE_VIDEO_ASPECT_RATIO),
       generateAudio: booleanEnv(env.SEEDANCE_GENERATE_AUDIO, true),
@@ -176,7 +183,7 @@ export function shotVideoRuntimeConfig(provider, env = process.env, requestedMod
       aspectRatio: clean(env.KLING_VIDEO_ASPECT_RATIO || env.VIDEO_HTTP_VIDEO_ASPECT_RATIO),
       sound: clean(env.KLING_VIDEO_SOUND || env.VIDEO_HTTP_VIDEO_SOUND),
       audio: isV3 ? clean(env.KLING_V3_AUDIO || env.KLING_VIDEO_AUDIO) || "native" : "",
-      resolution: clean(env.KLING_VIDEO_RESOLUTION) || "720p",
+      resolution: clean(env.KLING_VIDEO_RESOLUTION) || shotVideoCodeDefaultResolution("Kling", model),
       multiShot: booleanEnv(env.KLING_VIDEO_MULTI_SHOT, false),
       cfgScale: clean(env.KLING_CFG_SCALE || env.VIDEO_HTTP_CFG_SCALE),
       promptMaxChars: clean(env.KLING_PROMPT_MAX_CHARS || env.VIDEO_HTTP_PROMPT_MAX_CHARS),
@@ -196,6 +203,78 @@ export function shotVideoRuntimeConfig(provider, env = process.env, requestedMod
   };
 }
 
+// 分辨率从哪个环境变量读（2026-10-10）。
+export const SHOT_VIDEO_RESOLUTION_ENV_NAMES = Object.freeze({
+  Seedance: "SEEDANCE_VIDEO_RESOLUTION",
+  Kling: "KLING_VIDEO_RESOLUTION",
+  MiniMax: "MINIMAX_VIDEO_RESOLUTION"
+});
+
+// 某个视频模型在「没选分辨率」时会用哪个值、从哪来（2026-10-10）。优先级与 worker 合并配置的顺序一致：
+// 供应商配置文件 > 环境变量 > 代码默认值。只知道配置文件路径、还没读到文件时报 config_file 且值留空，
+// 要等生成时读到文件才知道。值对不上这个模型的清单时给出 error，不替换成别的值。
+export function shotVideoConfiguredResolution(provider, model, { env = process.env, fileConfig = null, configPath = "" } = {}) {
+  const normalized = normalizeShotVideoProvider(provider);
+  const options = shotVideoResolutionOptions(normalized, model);
+  if (!options.length) return { value: "", source: "unsupported", error: "" };
+  const envName = SHOT_VIDEO_RESOLUTION_ENV_NAMES[normalized];
+  let raw;
+  let source;
+  let origin;
+  if (fileConfig && Object.hasOwn(fileConfig, "resolution")) {
+    // 配置文件里写了空值，与 worker 一样按没写处理：用代码默认值。
+    if (!clean(fileConfig.resolution)) return { value: shotVideoCodeDefaultResolution(normalized, model), source: "code_default", error: "" };
+    raw = fileConfig.resolution;
+    source = "config_file";
+    origin = "供应商配置文件里的 resolution";
+  } else if (!fileConfig && clean(configPath)) {
+    return { value: "", source: "config_file", error: "" };
+  } else if (clean(env?.[envName])) {
+    raw = env[envName];
+    source = "env";
+    origin = envName;
+  } else {
+    return { value: shotVideoCodeDefaultResolution(normalized, model), source: "code_default", error: "" };
+  }
+  const value = canonicalShotVideoResolution(normalized, model, raw);
+  if (value) return { value, source, error: "" };
+  return { value: "", source, error: `${origin}=${clean(raw)} 不适用于 ${model}（只支持 ${options.join(" / ")}）` };
+}
+
+// 校验一次镜头视频请求的分辨率（2026-10-10）。请求带了 resolution 就必须逐字是这个模型清单里的写法；
+// 没带就用配置值，配置值对不上这个模型时同样报错，不悄悄换成别的值。错误由调用方给的 createError 构造
+// （服务端用 ProductionStateError），带上 code 与 httpStatus 400。
+export function resolveShotVideoRequestResolution({
+  provider,
+  model,
+  input = {},
+  env = process.env,
+  fileConfig = null,
+  configPath = "",
+  createError = (message, details) => Object.assign(new Error(message), details)
+} = {}) {
+  const normalized = normalizeShotVideoProvider(provider) || clean(provider);
+  const options = shotVideoResolutionOptions(normalized, model);
+  const fail = (message, code) => {
+    throw createError(message, { code, httpStatus: 400 });
+  };
+  if (input && Object.hasOwn(input, "resolution")) {
+    const requested = input.resolution;
+    if (!options.length) {
+      fail(`${clean(model) || normalized || "当前视频模型"} 没有分辨率参数，请求里不能带 resolution（收到「${String(requested)}」）。`, "SHOT_VIDEO_RESOLUTION_UNSUPPORTED");
+    }
+    if (!isShotVideoResolutionOption(normalized, model, requested)) {
+      fail(`${clean(model) || normalized} 的分辨率只支持 ${options.join(" / ")}，本次请求为「${String(requested)}」；不会改写分辨率。`, "SHOT_VIDEO_RESOLUTION_INVALID");
+    }
+    return { value: requested, explicit: true, source: "request" };
+  }
+  const configured = shotVideoConfiguredResolution(normalized, model, { env, fileConfig, configPath });
+  if (configured.error) {
+    fail(`没有选分辨率，而服务端配置的默认值 ${configured.error}；请在弹窗里明确选择分辨率，或修正配置。`, "SHOT_VIDEO_RESOLUTION_DEFAULT_INVALID");
+  }
+  return { value: configured.value, explicit: false, source: configured.source };
+}
+
 export function shotVideoProviderCatalog(env = process.env) {
   return Object.fromEntries(SHOT_VIDEO_PROVIDERS.map((provider) => {
     const runtime = shotVideoRuntimeConfig(provider, env);
@@ -210,7 +289,12 @@ export function shotVideoProviderCatalog(env = process.env) {
       modelIds: [...modelIds],
       reachable: directConfigured,
       modelAvailable: modelIds.includes(runtime.model) || isShotVideoModelAllowed(provider, runtime.model),
-      status: directConfigured ? 200 : 0
+      status: directConfigured ? 200 : 0,
+      // 每个模型没选分辨率时用的值与来源（2026-10-10），页面据此显示默认值；配错时带 error，不替换。
+      resolutionDefaults: Object.fromEntries(modelIds.map((modelId) => [modelId, shotVideoConfiguredResolution(provider, modelId, {
+        env,
+        configPath: shotVideoRuntimeConfig(provider, env, modelId).configPath
+      })]))
     }];
   }));
 }

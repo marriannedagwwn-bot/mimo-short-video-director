@@ -13,7 +13,8 @@ const listen = server => new Promise(resolve=>server.listen(0,"127.0.0.1",()=>re
 const pause = ms => new Promise(resolve=>setTimeout(resolve,ms));
 
 // Explicit protocol fixture. No story in this harness is a real-model result.
-export async function createStoryboardRuntime() {
+// env：额外覆盖服务端的环境变量（设成空串就是钉死为空，服务端读 .env 时不会再填）。
+export async function createStoryboardRuntime({ env: envOverrides = {} } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(),"mimo-storyboard-runtime-"));
   const workflow = new WorkflowService();
   const input = {frames:Array.from({length:3},(_,timestamp)=>({timestamp,dataUrl:"data:image/jpeg;base64,AA=="})),
@@ -61,7 +62,8 @@ export async function createStoryboardRuntime() {
     PORT:String(port),QWEN_BASE_URL:`http://127.0.0.1:${providerPort}/v1`,QWEN_API_KEY:"protocol-fixture-key",QWEN_ANIMATION_MODEL:"qwen3.7-max",
     MIMO_BASE_URL:"",DEFAULT_LLM_PROVIDER:"",DEEPSEEK_API_KEY:"",JIMENG_API_KEY:"",MINIMAX_API_KEY:"",SEEDANCE_API_KEY:"",KLING_API_KEY:"",KLING_ACCESS_KEY:"",KLING_SECRET_KEY:"",
     WORKFLOW_PRODUCTION_STATE_DIR:path.join(root,"state"),WORKFLOW_GROUNDING_KEY:workflow.groundingKey.toString("hex"),WORKFLOW_CHARACTER_BOUNDARY_KEY:workflow.characterBoundaryKey.toString("hex"),
-    FULL_STORY_MODEL_OUTPUT_LOG_DIR:path.join(root,"logs/story"),ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR:path.join(root,"logs/plan"),STAGE_MODEL_OUTPUT_LOG_DIR:path.join(root,"logs/stages"),PARTIAL_REPAIR_DEBUG_DIR:path.join(root,"logs/repair")
+    FULL_STORY_MODEL_OUTPUT_LOG_DIR:path.join(root,"logs/story"),ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR:path.join(root,"logs/plan"),STAGE_MODEL_OUTPUT_LOG_DIR:path.join(root,"logs/stages"),PARTIAL_REPAIR_DEBUG_DIR:path.join(root,"logs/repair"),
+    ...envOverrides
   },stdio:["ignore","pipe","pipe"]});
   let logs="";child.stdout.on("data",chunk=>logs+=chunk);child.stderr.on("data",chunk=>logs+=chunk);
   const base=`http://127.0.0.1:${port}`;

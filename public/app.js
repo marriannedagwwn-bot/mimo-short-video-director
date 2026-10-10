@@ -60,6 +60,11 @@ import {
   ALL_REFERENCE_MEDIA_TOTAL_SECONDS
 } from "./all-reference-limits.js";
 import {
+  SHOT_VIDEO_RESOLUTION_STORAGE_KEY,
+  isShotVideoResolutionOption,
+  shotVideoResolutionOptions
+} from "./shot-video-resolutions.js";
+import {
   buildFrameReferenceManifest,
   canReusePreviousEndFrameAsStart,
   resolveFrameReferenceMode,
@@ -311,6 +316,8 @@ const elements = {
   shotVideoEyebrow: $("#shotVideoModal .eyebrow"),
   shotVideoModalTitle: $("#shotVideoModalTitle"), shotVideoMeta: $("#shotVideoMeta"),
   shotVideoReferenceList: $("#shotVideoReferenceList"), shotVideoCount: $("#shotVideoCount"),
+  shotVideoResolutionField: $("#shotVideoResolutionField"), shotVideoResolution: $("#shotVideoResolution"),
+  shotVideoResolutionHint: $("#shotVideoResolutionHint"),
   shotVideoGenerationMode: $("#shotVideoGenerationMode"),
   shotVideoAllReferenceControls: $("#shotVideoAllReferenceControls"),
   shotVideoIncludePreviousShotFrames: $("#shotVideoIncludePreviousShotFrames"),
@@ -606,6 +613,7 @@ function bindEvents() {
   elements.shotVideoCount.addEventListener("change", () => {
     state.shotVideoGeneration.count = Number(elements.shotVideoCount.value) || 1;
   });
+  elements.shotVideoResolution.addEventListener("change", handleShotVideoResolutionChange);
   elements.shotVideoIncludePreviousShotFrames.addEventListener("change", () => {
     state.shotVideoGeneration.includePreviousShotFrames = elements.shotVideoIncludePreviousShotFrames.checked;
     updateShotVideoGeneratorPreview({ preservePrompt: true });
@@ -6019,6 +6027,7 @@ async function updateShotVideoGeneratorPreview(options = {}) {
   elements.shotVideoIncludePreviousShotFrames.disabled = state.shotVideoGeneration.running || !previousReference.available;
   const count = Math.max(1, Math.min(4, Number(state.shotVideoGeneration.count) || Number(elements.shotVideoCount.value) || 1));
   elements.shotVideoCount.value = String(count);
+  renderShotVideoResolutionControl();
   elements.shotVideoModalTitle.textContent = `用 ${shotVideoProviderLabel()} 生成 ${shot.shotId || "镜头"} 视频`;
   const promptProfileUi = videoPromptProfileUiState(plan, shotVideoSetting());
   const promptProfileStatus = storyboard ? "按当前模型单独编写本镜提示词" : promptProfileUi.status === "matched"
@@ -6267,6 +6276,8 @@ async function confirmGenerateShotVideo() {
   const validation = await evaluateShotVideoReferences(shotId);
   if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
   if (!validation.ok) return setShotVideoStatus(validation.message, "error");
+  const resolution = shotVideoResolutionState();
+  if (!resolution.ready) return setShotVideoStatus(shotVideoResolutionNotReadyText(resolution), "error");
   const count = Math.max(1, Math.min(4, Number(elements.shotVideoCount.value) || 1));
   state.shotVideoGeneration.count = count;
   setShotVideoGeneratorRunning(true);
@@ -6291,6 +6302,7 @@ async function confirmGenerateShotVideo() {
 function setShotVideoGeneratorRunning(running) {
   state.shotVideoGeneration.running = running;
   elements.shotVideoCount.disabled = running;
+  elements.shotVideoResolution.disabled = running;
   elements.shotVideoGenerationMode.disabled = running;
   elements.shotVideoIncludePreviousShotFrames.disabled = running
     || !previousShotVideoReferenceContext(state.shotVideoGeneration.shotId).available;
@@ -6589,6 +6601,8 @@ async function startShotVideoBatch() {
       "error"
     );
   }
+  const resolution = shotVideoResolutionState(setting);
+  if (!resolution.ready) return setAnimationStatus(shotVideoResolutionNotReadyText(resolution), "error");
   try {
     const productionContext = currentPlanProductionContext(variant.id);
     state.shotVideoBatch = {
@@ -6615,6 +6629,7 @@ async function startShotVideoBatch() {
       generationMode: "all_reference",
       includePreviousShotFrames: true,
       count: 1,
+      ...shotVideoResolutionRequestFields(resolution),
       productionContext
     }));
     state.shotVideoBatch.taskId = created.task.taskId;
@@ -6689,7 +6704,7 @@ function renderShotVideoBatchProgress(task = {}) {
   const items = Array.isArray(progress.items) ? progress.items : [];
   const batchSetting = task.modelSnapshot?.shotVideo;
   const batchLabel = batchSetting?.model
-    ? modelDisplayLabel(batchSetting.provider, batchSetting.model)
+    ? [modelDisplayLabel(batchSetting.provider, batchSetting.model), batchSetting.resolution].filter(Boolean).join(" · ")
     : shotVideoProviderLabel();
   const totalShots = Number(progress.totalShots) || items.length;
   const completedShots = Number(progress.completedShots) || 0;
@@ -6802,6 +6817,7 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
       animationPromptSchemaVersion: plan.promptSchemaVersion || "",
       shotId: shot.shotId,
       promptOverride: promptOverride || "",
+      ...shotVideoResolutionRequestFields(),
       ...(generationMode === "all_reference"
         ? { referenceAssets }
         : { startFrameDataUrl, endFrameDataUrl }),
@@ -6902,7 +6918,7 @@ function renderShotVideoModalResults() {
   const selectedIndex = Number.isFinite(Number(stateItem.selectedIndex ?? stateItem.result?.selectedIndex)) ? Number(stateItem.selectedIndex ?? stateItem.result?.selectedIndex) : 0;
   elements.shotVideoResults.innerHTML = videos.map((video, index) => `<div class="generated-reference-card shot-video-candidate${index === selectedIndex ? " selected" : ""}">
     <video src="${escape(video.outputUrl || video.url || "")}" controls playsinline></video>
-    <small>候选 ${escape(index + 1)} · ${escape(shotVideoResultLabel(video, stateItem.result))} · ${escape(video.generatedAt || stateItem.result?.generatedAt || "")}</small>
+    <small>${escape([`候选 ${index + 1}`, shotVideoResultLabel(video, stateItem.result), shotVideoResolutionText(video), video.generatedAt || stateItem.result?.generatedAt || ""].filter(Boolean).join(" · "))}</small>
     <button class="outline-button" type="button" data-use-shot-video="${escape(shotId)}" data-candidate-index="${escape(index)}">${index === selectedIndex ? "已设为当前镜头视频" : "设为当前镜头视频"}</button>
   </div>`).join("");
 }
@@ -7356,7 +7372,7 @@ function taskForUi(options) {
 
 function taskUiView(task) {
   const modelLabel = [...new Set(Object.values(task.modelSnapshot || {})
-    .map((item) => modelDisplayLabel(item.provider, item.model)).filter(Boolean))].join(" / ");
+    .map((item) => [modelDisplayLabel(item.provider, item.model), item.resolution].filter(Boolean).join(" · ")).filter(Boolean))].join(" / ");
   if (task.kind === "fullStory") return fullStoryTaskView(task, { modelLabel, noun: fullStoryLabel() });
   const view = taskStatusView(task, { modelLabel, kindLabel: storyEntryTaskKindLabel(task.kind) });
   if (!view.busy) view.message += formatStageUsageSuffix(task.usage);
@@ -7497,6 +7513,116 @@ function shotVideoProviderLabel(provider = shotVideoSetting().provider) {
   const normalized = normalizeShotVideoProvider(provider);
   return SHOT_VIDEO_PROVIDER_LABELS[normalized] || normalized || "视频模型";
 }
+// ---- 镜头视频的生成分辨率（2026-10-10）----
+// 每个视频模型各记一份上次的选择，只存在这个标签页的 sessionStorage 里（与模型选择同一层，不长期保存）。
+// 选回服务端默认值就不记：请求里不带 resolution，由服务端按配置决定，与没选完全一样。
+function readShotVideoResolutionChoices() {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(SHOT_VIDEO_RESOLUTION_STORAGE_KEY) || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeShotVideoResolutionChoice(setting, value) {
+  const choices = readShotVideoResolutionChoices();
+  const key = `${normalizeShotVideoProvider(setting.provider)}:${setting.model || ""}`;
+  if (value) choices[key] = value;
+  else delete choices[key];
+  try {
+    sessionStorage.setItem(SHOT_VIDEO_RESOLUTION_STORAGE_KEY, JSON.stringify(choices));
+  } catch {
+    // 存不下只影响刷新后记不记得这次的选择，本次照常按页面上选的发送。
+  }
+}
+
+// 当前视频模型的分辨率：能选哪些、服务端默认值（来自 /api/health）、这个标签页选了什么、能不能直接生成。
+// 服务端配的默认值不适用于这个模型时不替换成别的值，要求先明确选一个（ready=false）。
+function shotVideoResolutionState(setting = shotVideoSetting()) {
+  const provider = normalizeShotVideoProvider(setting.provider);
+  const model = setting.model || "";
+  const options = shotVideoResolutionOptions(provider, model);
+  const defaultInfo = state.providers?.[provider]?.resolutionDefaults?.[model] || null;
+  if (!options.length) return { setting, options, defaultInfo, defaultValue: "", selected: "", explicit: false, ready: true };
+  const defaultValue = defaultInfo && !defaultInfo.error ? defaultInfo.value || "" : "";
+  const remembered = readShotVideoResolutionChoices()[`${provider}:${model}`];
+  const explicit = isShotVideoResolutionOption(provider, model, remembered) && remembered !== defaultValue;
+  return {
+    setting,
+    options,
+    defaultInfo,
+    defaultValue,
+    selected: explicit ? remembered : defaultValue,
+    explicit,
+    ready: explicit || !defaultInfo?.error
+  };
+}
+
+function shotVideoResolutionRequestFields(resolution = shotVideoResolutionState()) {
+  return resolution.explicit ? { resolution: resolution.selected } : {};
+}
+
+function shotVideoResolutionNotReadyText(resolution) {
+  return `请先在镜头视频弹窗里选一个生成分辨率：服务端配置的默认值不能用于 ${modelName(resolution.setting.model) || "当前视频模型"}（${resolution.defaultInfo?.error || "默认值无效"}）。`;
+}
+
+function renderShotVideoResolutionControl(resolution = shotVideoResolutionState()) {
+  const hint = elements.shotVideoResolutionHint;
+  if (!resolution.options.length) {
+    elements.shotVideoResolutionField.classList.add("hidden");
+    hint.textContent = "当前视频模型没有分辨率参数，本次请求不发送分辨率。";
+    hint.className = "shot-video-resolution-hint";
+    return resolution;
+  }
+  elements.shotVideoResolutionField.classList.remove("hidden");
+  const { options, defaultInfo, defaultValue, selected } = resolution;
+  const placeholder = defaultInfo?.error
+    ? `<option value="" disabled${selected ? "" : " selected"}>请选择分辨率</option>`
+    : defaultValue ? "" : `<option value=""${selected ? "" : " selected"}>默认（由服务端配置决定）</option>`;
+  elements.shotVideoResolution.innerHTML = placeholder + options.map((value) =>
+    `<option value="${escape(value)}"${value === selected ? " selected" : ""}>${escape(value)}${value === defaultValue ? "（默认）" : ""}</option>`).join("");
+  elements.shotVideoResolution.value = selected;
+  elements.shotVideoResolution.disabled = state.shotVideoGeneration.running;
+  if (!resolution.ready) {
+    hint.textContent = `服务端配置的默认分辨率不能用于这个模型：${defaultInfo.error}。请先选一个分辨率。`;
+    hint.className = "shot-video-resolution-hint warn";
+  } else {
+    hint.textContent = "分辨率越高，供应商收费越高、生成越慢。";
+    hint.className = "shot-video-resolution-hint";
+  }
+  return resolution;
+}
+
+// 只记下选择、刷新下拉框与批量按钮；不碰 4.0 分镜的单镜提示词（分辨率与提示词无关，不重写、不多调模型）。
+function handleShotVideoResolutionChange() {
+  const resolution = shotVideoResolutionState();
+  if (!resolution.options.length) return;
+  const provider = normalizeShotVideoProvider(resolution.setting.provider);
+  const value = elements.shotVideoResolution.value;
+  const valid = isShotVideoResolutionOption(provider, resolution.setting.model || "", value);
+  writeShotVideoResolutionChoice(resolution.setting, valid && value !== resolution.defaultValue ? value : "");
+  renderShotVideoResolutionControl();
+  renderShotVideoBatchLabel();
+}
+
+function renderShotVideoBatchLabel() {
+  const setting = shotVideoSetting();
+  const resolution = shotVideoResolutionState(setting);
+  const label = [shotVideoProviderLabel(setting.provider), resolution.selected].filter(Boolean).join(" · ");
+  elements.startShotVideoBatch.textContent = `用 ${label} 批量生成全部镜头视频`;
+}
+
+// 候选视频的分辨率：请求的值与 ffprobe 实测宽高并列，对不上也只是并列显示。
+function shotVideoResolutionText(video = {}) {
+  const requested = typeof video.resolution === "string" ? video.resolution : "";
+  const width = Number(video.measuredWidth) || 0;
+  const height = Number(video.measuredHeight) || 0;
+  const measured = width > 0 && height > 0 ? `实测 ${width}×${height}` : "";
+  if (requested && measured) return `${requested}（${measured}）`;
+  return requested || measured;
+}
+
 function shotVideoResultLabel(video = {}, result = {}) {
   const setting = shotVideoSetting();
   const provider = normalizeShotVideoProvider(video.provider || result.provider || setting.provider);
@@ -8123,7 +8249,7 @@ function updateShotVideoProviderUi() {
   elements.animationPlan.querySelectorAll("[data-generate-shot-video]").forEach((button) => {
     button.textContent = `用 ${label} 生成此镜头视频`;
   });
-  elements.startShotVideoBatch.textContent = `用 ${label} 批量生成全部镜头视频`;
+  renderShotVideoBatchLabel();
   if (state.shotVideoGeneration.open) {
     updateShotVideoGeneratorPreview({ preservePrompt: true });
   }

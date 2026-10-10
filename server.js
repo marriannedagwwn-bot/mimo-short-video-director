@@ -24,6 +24,7 @@ import {
   isShotVideoGenerationModeSupported,
   isShotVideoModelAllowed,
   normalizeShotVideoProvider,
+  resolveShotVideoRequestResolution,
   resolveShotVideoSetting,
   shotVideoDefaultSetting,
   shotVideoProviderCatalog,
@@ -1438,6 +1439,7 @@ function shotVideoTaskDefinition({ projectId, runId, input }) {
   const artifactId = shotVideoArtifactIdFor(variantId, shotId);
   const planArtifactId = `animationPlan:${variantId}`;
   const setting = shotVideoRequestSetting(input);
+  const resolution = shotVideoRequestResolution(input, setting);
   return artifactRouteTaskDefinition({
     projectId,
     runId,
@@ -1447,7 +1449,7 @@ function shotVideoTaskDefinition({ projectId, runId, input }) {
     artifactType: "shotVideo",
     dependencyIds: [],
     modelStages: [],
-    modelSnapshot: { shotVideo: { provider: setting.provider, model: setting.model } },
+    modelSnapshot: shotVideoModelSnapshot(setting, resolution),
     rawInput: input,
     prepareInput: (run) => {
       const planEntry = requireCurrentArtifact(run, planArtifactId);
@@ -1515,12 +1517,13 @@ function shotVideoBatchTaskDefinition({ projectId, runId, input }) {
       { code: "SHOT_VIDEO_BATCH_PROVIDER_UNSUPPORTED" }
     );
   }
+  const resolution = shotVideoRequestResolution(input, setting);
   return {
     projectId,
     runId,
     kind: "shotVideoBatch",
     pool: "media",
-    modelSnapshot: { shotVideo: { provider: setting.provider, model: setting.model } },
+    modelSnapshot: shotVideoModelSnapshot(setting, resolution),
     prepare: async ({ run }) => {
       const planEntry = requireCurrentArtifact(run, planArtifactId);
       assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry: planEntry });
@@ -1578,6 +1581,8 @@ function shotVideoBatchTaskDefinition({ projectId, runId, input }) {
           selectedVariantId: variantId,
           count: Math.max(1, Math.min(4, Number(input.count) || 1)),
           includePreviousShotFrames,
+          // 用户这次选的分辨率（2026-10-10），只在选了时才有这个键；每一镜原样带下去。
+          ...(Object.hasOwn(input, "resolution") ? { resolution: input.resolution } : {}),
           modelOverrides: plainObject(input.modelOverrides),
           productionContext: productionContextForLineage(projectId, runId, planEntry.lineage),
           plan: structuredClone(plan),
@@ -1590,7 +1595,7 @@ function shotVideoBatchTaskDefinition({ projectId, runId, input }) {
         },
         targetArtifactIds,
         frozenDependencies: [lineageRef(planEntry.lineage)],
-        modelSnapshot: { shotVideo: { provider: setting.provider, model: setting.model } },
+        modelSnapshot: shotVideoModelSnapshot(setting, resolution),
         progress: {
           controlState: "running",
           totalShots: shots.length,
@@ -1702,6 +1707,7 @@ function shotVideoBatchTaskDefinition({ projectId, runId, input }) {
               shotId,
               referenceAssets,
               productionContext: trusted.productionContext,
+              ...(Object.hasOwn(trusted, "resolution") ? { resolution: trusted.resolution } : {}),
               modelOverrides: trusted.modelOverrides
             }
           }));
@@ -2567,6 +2573,31 @@ function buildModelStages(stageDefaults, config) {
 function modelOverrideFor(body = {}, stage) {
   const value = body.modelOverrides?.[stage] || {};
   return typeof value === "object" ? String(value.model || "").trim() : "";
+}
+
+// 镜头视频的分辨率（2026-10-10）：在建任务之前校验，不合法就 400、不建任务、不调供应商。
+// 只知道供应商配置文件路径时默认值要等生成时读到文件才知道，由生成器再核对一次。
+function shotVideoRequestResolution(input = {}, setting = {}) {
+  const configPath = String(input.configPath || "").trim()
+    || (setting.provider ? shotVideoRuntimeConfig(setting.provider, process.env, setting.model).configPath : "");
+  return resolveShotVideoRequestResolution({
+    provider: setting.provider,
+    model: setting.model,
+    input,
+    configPath,
+    createError: (message, details) => new ProductionStateError(message, details)
+  });
+}
+
+// 任务的模型快照：创建时的供应商、模型，以及这次会用的分辨率（选了的，或已知的默认值）。
+function shotVideoModelSnapshot(setting, resolution) {
+  return {
+    shotVideo: {
+      provider: setting.provider,
+      model: setting.model,
+      ...(resolution?.value ? { resolution: resolution.value } : {})
+    }
+  };
 }
 
 function shotVideoRequestSetting(body = {}) {

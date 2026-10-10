@@ -404,6 +404,8 @@ MINIMAX_VIDEO_POLL_INTERVAL_MS=3000
 MINIMAX_VIDEO_POLL_TIMEOUT_MS=900000
 ```
 
+**生成分辨率（2026-10-10）**：镜头视频弹窗里可以按次选分辨率，只列当前视频模型支持的值（Seedance 2.0 标准版 480p / 720p / 1080p，fast、mini 480p / 720p，MiniMax H3 768P / 2K，可灵 v3 720p / 1080p；可灵 v2.1 没有这个参数；先不放 4k）。上面三个 `*_VIDEO_RESOLUTION` 是没选时的默认值，页面会标出「（默认）」；选择只记在这个标签页里，批量生成也用它。配了所选模型不支持的值会明确报错，不再悄悄改成 720p 或 2K。每条候选视频下面写出请求的分辨率与实测宽高，例如「1080p（实测 1920×1080）」。分辨率越高，供应商收费越高、生成越慢；页面不显示价格。
+
 首尾帧模式把镜头提示词、首帧和尾帧分别写入 `content` 的 `text`、`first_frame`、`last_frame`；全能参考模式把 Plan 中已签发的中文提示词与已冻结的 `reference_image`、`reference_video`、`reference_audio` 一并发送，固定不混入端点角色。MiniMax V2 API 只接受 4–15 秒整数，Seedance 2.0 同为 4–15 秒整数；项目不再另设 4–6 秒子集，Plan 的时长直接来自 Full Story `timeRange` 的派生结果。不合法时明确拒绝，不能自动钳制、补长或缩短——Seedance 侧过去的静默 clamp 已改为明确失败。首尾帧保持 `ratio=adaptive`，全能参考模式按当前 Animation Plan 显式发送 `9:16` 或 `16:9`。服务端通过 `GET /v2/query/video_generation/{task_id}` 轮询 `queued/running → succeeded/failed/cancelled`，成功后下载 `task.content.url`。H3 不提供独立负面提示词字段；系统只会把高优先级角色身份冲突转换成正向身份锁定，其余负面条目在回执中明确标记为未下发。接口依据：[创建视频生成任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create)、[查询任务](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-query)。
 
 旧可灵 2.1 仍保持兼容：
