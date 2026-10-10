@@ -8783,6 +8783,9 @@ async function importStoryTestPackage(file) {
 function restoreStoryPackage(payload, production) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("测试包 JSON 格式无效。");
   if (!production?.projectId || !production?.runId || !production?.artifacts) throw new Error("服务端没有返回隔离后的生产 Run。");
+  // 入口以导入后新 Run 的元数据为准，与刷新恢复同一个函数。首页停在「从剧情开始」时导入参考视频的
+  // 测试包，若不切回参考视频入口，故事会按剧情 Run 处理（只认故事位 V1），分场页显示不出来。
+  restoreRunMetadata(production.metadata || {});
   const variant = resolveImportedVariant(payload);
   if (!variant?.id) throw new Error("测试包缺少 selectedVariant 或主题变体 id。");
   const id = String(variant.id);
