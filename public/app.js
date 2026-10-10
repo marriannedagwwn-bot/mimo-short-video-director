@@ -417,6 +417,9 @@ const MODEL_OPTION_CATALOG = {
 const directorAgent = createDirectorAgentController();
 let directorAgentRefreshTimer = null;
 let directorAgentStarted = false;
+// 导入剧情包（2026-10-10）先设上新 Run、再从服务端读回内容；读回之前页面是半截的（新 Run 已设上，
+// 原文和剧情还没读回）。这段时间导演助手不观察，免得把半截状态报成「原文改过了」「刚拆好」。
+let storyRunImporting = false;
 let directorAgentMessagesSignature = "";
 let directorAgentLastMessageId = "";
 
@@ -8654,6 +8657,18 @@ function currentModelInfo() {
 function selectedStoryPackage() {
   const variant = selectedVariant();
   if (!variant) return null;
+  // 剧情 Run 签 3.1 包（2026-10-10）：原文、角色边界、候选、固定角色设定都由服务端从 Run 读出，
+  // 页面不发（发了会被拒）；页面内部的「故事位」也不是候选，不发。只发导出信息和剧情、分镜两份副本，
+  // 服务端用它们核对页面上看到的就是当前版本。
+  if (isStoryEntryMode()) {
+    return {
+      exportedAt: new Date().toISOString(),
+      mode: state.mode,
+      modelInfo: currentModelInfo(),
+      fullStory: state.fullStories[variant.id] || null,
+      animationPlan: state.animationPlans[variant.id] || null
+    };
+  }
   const animationMetadata = state.animationPlanMetadata[variant.id] || {};
   const staticFrameCompiler = animationMetadata.staticFrameCompiler;
   const characterFeatureCompiler = animationMetadata.characterFeatureCompiler;
@@ -8692,13 +8707,9 @@ function updateStoryExportActions() {
   const pack = selectedStoryPackage();
   const hasStory = Boolean(pack?.fullStory);
   const hasAnimation = Boolean(pack?.animationPlan);
-  // v3 测试/规划包按参考视频那条链签发，剧情 Run 暂不支持导出（服务端同样拒绝）。
-  const storyEntry = isStoryEntryMode();
-  elements.exportStoryPackage.disabled = !hasStory || storyEntry;
-  elements.exportStoryTestPackage.disabled = !hasStory || storyEntry;
-  for (const button of [elements.exportStoryPackage, elements.exportStoryTestPackage]) {
-    button.title = storyEntry ? "「从剧情开始」的 Run 暂不支持导出生产包" : "";
-  }
+  // 参考视频的 Run 签 3.0 包，剧情 Run 签 3.1 包（2026-10-10 起两种都能导出）。
+  elements.exportStoryPackage.disabled = !hasStory;
+  elements.exportStoryTestPackage.disabled = !hasStory;
   elements.startShotVideoBatch.disabled = !hasAnimation || Boolean(state.shotVideoBatch.taskId);
   elements.startShotVideoBatch.classList.toggle("hidden", isStoryboardPlan(state.output.animationPlan));
 }
@@ -8765,11 +8776,18 @@ async function importStoryTestPackage(file) {
     sourceLoading = false;
     let restored;
     try {
-      restored = restoreStoryPackage(imported.payload, imported.production);
+      // 按服务端返回的新 Run 元数据分支（不看包里的自述）：剧情 Run 走刷新恢复那条路。
+      restored = imported.production?.metadata?.entryMode === STORY_ENTRY_MODE
+        ? await restoreImportedStoryRun(imported)
+        : restoreStoryPackage(imported.payload, imported.production);
     } finally {
       // This accepted import synchronously establishes a new Run and page.
       // Its feedback belongs there, including a local restore error.
       reportStatus = createStoryPackageStatusReporter();
+    }
+    if (restored.storyEntry) {
+      reportStatus(`已校验并隔离导入剧情 Run：${restored.hasStory ? fullStoryLabel() : `未含${fullStoryLabel()}`}${restored.hasAnimation ? ` + ${planShortLabel()}` : ""}；图片和视频结果需要重新生成。`, "ready");
+      return;
     }
     showError("导入包未包含原视频；已清理此前上传的视频。重新选择视频会清除当前导入结果。", "notice");
     reportStatus(`已校验并隔离导入 ${restored.id}：${restored.hasStory ? "完整剧情" : "未含完整剧情"}${restored.hasAnimation ? " + 动画生产包" : ""}；旧媒体未混入。`, "ready");
@@ -8777,6 +8795,58 @@ async function importStoryTestPackage(file) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     reportStatus(error.message || "测试包导入失败", "error");
     if (elements.storyPage.classList.contains("hidden")) showError(error.message || "测试包导入失败");
+  }
+}
+
+// 导入包带来的模型选择：参考视频与剧情两种包共用。
+function applyImportedModelInfo(modelInfo) {
+  if (!modelInfo) return;
+  if (modelInfo.overrides && typeof modelInfo.overrides === "object") {
+    state.modelOverrides = sanitizeStoredModelOverrides(modelInfo.overrides);
+    sessionStorage.setItem("directorModelOverrides", JSON.stringify(state.modelOverrides));
+  } else {
+    state.storyProvider = modelInfo.storyProvider || state.storyProvider;
+    state.storyModel = modelInfo.storyModel || state.storyModel;
+    state.animationProvider = modelInfo.animationProvider || state.animationProvider;
+    state.animationModel = modelInfo.animationModel || state.animationModel;
+    state.staticFrameCompilerProvider = modelInfo.staticFrameCompilerProvider || state.staticFrameCompilerProvider;
+    state.staticFrameCompilerModel = modelInfo.staticFrameCompilerModel || state.staticFrameCompilerModel;
+  }
+  applyEffectiveModelState();
+  elements.storyModelName.textContent = modelDisplayLabel(state.storyProvider, state.storyModel);
+  renderModelSettings();
+}
+
+// 剧情 Run 的 3.1 包（2026-10-10）：页面走「刷新恢复」那条路——从服务端读回刚导入的 Run，
+// 不从包里的内容拼页面状态（两条路曾在原文、原文输入框、候选列表上不一致）。顺序照 startStoryEntryRun：
+// 先建生产状态，再按 Run 元数据设入口，最后读回各份产物（会把原文填回输入框、选中故事位 V1）。
+// 只渲染分场页、不自动生成：导入之后不该自己发起计费调用。
+async function restoreImportedStoryRun(imported) {
+  const production = imported.production;
+  storyRunImporting = true;
+  try {
+    state.production = productionStateFromRun({
+      projectId: production.projectId,
+      runId: production.runId,
+      lineageSchemaVersion: production.lineageSchemaVersion
+    });
+    persistActiveProductionRun();
+    restoreRunMetadata(production.metadata || {});
+    applyImportedModelInfo(imported.payload?.modelInfo);
+    await reloadActiveProductionRun(state.production);
+    state.selectedVariantId = STORY_ENTRY_VARIANT_ID;
+    history.replaceState({ storyVariantId: STORY_ENTRY_VARIANT_ID }, "", `/story/${STORY_ENTRY_VARIANT_ID}`);
+    renderStoryPage({ autoGenerate: false });
+    validateReady();
+    return {
+      storyEntry: true,
+      id: STORY_ENTRY_VARIANT_ID,
+      hasStory: Boolean(state.fullStories[STORY_ENTRY_VARIANT_ID]),
+      hasAnimation: Boolean(state.animationPlans[STORY_ENTRY_VARIANT_ID])
+    };
+  } finally {
+    storyRunImporting = false;
+    scheduleDirectorAgentRefresh();
   }
 }
 
@@ -8799,22 +8869,7 @@ function restoreStoryPackage(payload, production) {
     saveProfile();
     validateReady();
   }
-  if (payload.modelInfo) {
-    if (payload.modelInfo.overrides && typeof payload.modelInfo.overrides === "object") {
-      state.modelOverrides = sanitizeStoredModelOverrides(payload.modelInfo.overrides);
-      sessionStorage.setItem("directorModelOverrides", JSON.stringify(state.modelOverrides));
-    } else {
-      state.storyProvider = payload.modelInfo.storyProvider || state.storyProvider;
-      state.storyModel = payload.modelInfo.storyModel || state.storyModel;
-      state.animationProvider = payload.modelInfo.animationProvider || state.animationProvider;
-      state.animationModel = payload.modelInfo.animationModel || state.animationModel;
-      state.staticFrameCompilerProvider = payload.modelInfo.staticFrameCompilerProvider || state.staticFrameCompilerProvider;
-      state.staticFrameCompilerModel = payload.modelInfo.staticFrameCompilerModel || state.staticFrameCompilerModel;
-    }
-    applyEffectiveModelState();
-    elements.storyModelName.textContent = modelDisplayLabel(state.storyProvider, state.storyModel);
-    renderModelSettings();
-  }
+  applyImportedModelInfo(payload.modelInfo);
 
   state.production = {
     ...emptyProductionState(),
@@ -9182,7 +9237,7 @@ function directorAgentFacts() {
     .map((variant) => ({ id: String(variant.id), title: String(variant.title || "") }));
   const base = {
     // init 全部完成（含读完模型设置）之前不算恢复完：那时的镜头视频模型等还是默认值，按它提议会提错。
-    restored: directorAgentStarted && !sourceLoading && Boolean(browserWorkspace.workspace),
+    restored: directorAgentStarted && !sourceLoading && !storyRunImporting && Boolean(browserWorkspace.workspace),
     epoch: browserWorkspace.epoch,
     entryMode: storyEntry ? "story" : "video",
     storyMode: state.storyMode,

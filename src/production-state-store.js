@@ -7,6 +7,7 @@ import {
   PRODUCTION_LINEAGE_SCHEMA_VERSION,
   PRODUCTION_PACKAGE_TYPE,
   PRODUCTION_PACKAGE_VERSION,
+  PRODUCTION_STORY_PACKAGE_VERSION,
   ProductionStateError,
   contentDigest,
   createMediaNamespace,
@@ -20,7 +21,17 @@ import {
   signPackageDigest,
   verifyPackageSignature
 } from "./production-lineage.js";
-import { isStoryEntryMetadata } from "../public/story-entry.js";
+import {
+  STORY_ENTRY_MODE,
+  STORY_ENTRY_VARIANT_ID,
+  STORY_MODE_CHARACTER_ONLY,
+  STORY_MODE_FULL_TEXT,
+  StoryEntryInputError,
+  isStoryEntryMetadata,
+  normalizeStoryEntryCreatorProfile,
+  normalizeStorySource
+} from "../public/story-entry.js";
+import { STORYBOARD_PLAN_VERSION } from "../public/storyboard-plan.js";
 
 const RUN_MANIFEST_TYPE = "mimo-production-run";
 const RUN_MANIFEST_VERSION = "1.0";
@@ -218,13 +229,10 @@ export class ProductionStateStore {
     const safeRunId = safeIdentifier(runId, "runId");
     const unsignedPackage = await this.withRunLock(safeProjectId, safeRunId, async () => {
       const manifest = await this.readManifest(safeProjectId, safeRunId);
-      // v3 包的签发、校验与导入都按参考视频那条链写死了 Artifact 集合；「从剧情开始」的 Run
-      // 没有那几份上游，硬签会得到一个导不回来的包。明确拒绝，不静默签一份残缺包。
+      // 3.0 包只装参考视频那条链；「从剧情开始」的 Run 签 3.1 包（2026-10-10），内容由服务端从 Run
+      // 本身读出，见 assembleStoryPackageUnlocked。下面参考视频那段逐字不动（金标准测试锁住字节）。
       if (isStoryEntryMetadata(manifest.metadata)) {
-        throw new ProductionStateError("「从剧情开始」的 Run 暂不支持导出测试/规划包。", {
-          code: "PRODUCTION_PACKAGE_ENTRY_MODE_UNSUPPORTED",
-          httpStatus: 409
-        });
+        return this.assembleStoryPackageUnlocked(manifest, payload, { projectId: safeProjectId, runId: safeRunId });
       }
       const source = requirePackagePayload(payload);
       const variant = requireObject(source.selectedVariant, "selectedVariant");
@@ -269,9 +277,10 @@ export class ProductionStateStore {
 
   async validatePackage(value) {
     const payload = requirePackagePayload(value);
-    if (payload.packageType !== PRODUCTION_PACKAGE_TYPE || payload.packageVersion !== PRODUCTION_PACKAGE_VERSION) {
+    const supportedVersions = [PRODUCTION_PACKAGE_VERSION, PRODUCTION_STORY_PACKAGE_VERSION];
+    if (payload.packageType !== PRODUCTION_PACKAGE_TYPE || !supportedVersions.includes(payload.packageVersion)) {
       throw new ProductionStateError(
-        `只接受 ${PRODUCTION_PACKAGE_TYPE} v${PRODUCTION_PACKAGE_VERSION}，旧测试包必须重新导出`,
+        `只接受 ${PRODUCTION_PACKAGE_TYPE} v${PRODUCTION_PACKAGE_VERSION}（参考视频）或 v${PRODUCTION_STORY_PACKAGE_VERSION}（从剧情开始），旧测试包必须重新导出`,
         { code: "PRODUCTION_PACKAGE_VERSION_UNSUPPORTED" }
       );
     }
@@ -293,6 +302,10 @@ export class ProductionStateStore {
       throw new ProductionStateError("生产包 lineage schema 版本不受支持", {
         code: "PRODUCTION_LINEAGE_VERSION_UNSUPPORTED"
       });
+    }
+    // 摘要与签名之后才解析内容：3.1（从剧情开始）交给与签发时同一个校验函数。
+    if (payload.packageVersion === PRODUCTION_STORY_PACKAGE_VERSION) {
+      return { payload: structuredClone(payload), story: validateStoryPackageBody(payload) };
     }
     const artifacts = requireObject(lineage.artifacts, "productionLineage.artifacts");
     const selectedVariant = validatePackagedArtifact(
@@ -338,6 +351,7 @@ export class ProductionStateStore {
       });
     }
     const validated = await this.validatePackage(value);
+    if (validated.story) return this.importStoryPackageValidated(validated, { browserWorkspaceId, onRunCreated });
     const source = validated.payload;
     const created = await this.createRun({
       metadata: {
@@ -460,6 +474,152 @@ export class ProductionStateStore {
         ...importedRun,
         latestArtifacts: undefined,
         artifacts: lineages
+      },
+      discardedMedia: true
+    };
+  }
+
+  // 「从剧情开始」的 Run 签 3.1 包（2026-10-10），在 sealPackage 的 Run 锁内调用。
+  // 包里的原文、角色边界、候选、选中记录与固定角色设定一律由服务端从 Run 本身读出，不用浏览器的副本——
+  // 否则浏览器可以借「打包 → 导入」写进一份原文，绕过「原文只能由服务端写」（STORY_SOURCE_SERVER_ONLY）。
+  // 浏览器只给导出时间、模式、模型信息，以及剧情与分镜两份副本；副本只用来核对页面上看到的就是当前版本。
+  async assembleStoryPackageUnlocked(manifest, payload, { projectId, runId }) {
+    const source = requirePackagePayload(payload);
+    const unknown = Object.keys(source).filter((key) => !STORY_PACKAGE_BROWSER_KEYS.includes(key));
+    if (unknown.length) {
+      throw new ProductionStateError(
+        `剧情 Run 的测试包只接受页面发来的 ${STORY_PACKAGE_BROWSER_KEYS.join("、")}，多出：${unknown.join("、")}`,
+        { code: "PRODUCTION_PACKAGE_STORY_INPUT_INVALID", httpStatus: 400 }
+      );
+    }
+    if ((source.exportedAt !== undefined && typeof source.exportedAt !== "string")
+      || (source.mode !== undefined && typeof source.mode !== "string")
+      || (source.modelInfo !== undefined && (!source.modelInfo || typeof source.modelInfo !== "object" || Array.isArray(source.modelInfo)))) {
+      throw new ProductionStateError("剧情 Run 的测试包里 exportedAt、mode 必须是字符串，modelInfo 必须是对象", {
+        code: "PRODUCTION_PACKAGE_STORY_INPUT_INVALID",
+        httpStatus: 400
+      });
+    }
+    const fullStoryCopy = requireObject(source.fullStory, "fullStory");
+    const planCopy = source.animationPlan === undefined || source.animationPlan === null
+      ? null
+      : requireObject(source.animationPlan, "animationPlan");
+
+    // 与 server.js trustedStoryEntryContext 同一口径：原文必须是当前版本，摘要与建 Run 时写定的一致。
+    const metadata = manifest.metadata || {};
+    const storyMode = metadata.storyMode;
+    const graph = STORY_PACKAGE_GRAPH[storyMode];
+    if (!graph) {
+      throw new ProductionStateError("这个剧情 Run 的剧情模式无效，不能导出测试包", {
+        code: "PRODUCTION_PACKAGE_LINEAGE_UNSUPPORTED",
+        httpStatus: 409
+      });
+    }
+    const creatorProfile = storyEntryValue(() => normalizeStoryEntryCreatorProfile(metadata.creatorProfile),
+      "这个剧情 Run 的固定角色设定无效", 409);
+    const storySourceArtifact = currentArtifact(manifest, "storySource");
+    if (!storySourceArtifact || storySourceArtifact.status !== "current") {
+      throw new ProductionStateError("当前 Run 缺少有效 artifact：storySource", { code: "PACKAGE_ARTIFACT_NOT_CURRENT", httpStatus: 409 });
+    }
+    if (storySourceArtifact.contentDigest !== metadata.storySourceDigest) {
+      throw new ProductionStateError("故事原文与这个剧情 Run 开始时记下的摘要不一致，不能导出", {
+        code: "STORY_SOURCE_TAMPERED",
+        httpStatus: 409
+      });
+    }
+    // 页面上的副本必须就是当前版本。
+    this.requireCurrentArtifact(manifest, `fullStory:${STORY_ENTRY_VARIANT_ID}`, fullStoryCopy);
+    const plan = planCopy ? this.requireCurrentArtifact(manifest, `animationPlan:${STORY_ENTRY_VARIANT_ID}`, planCopy) : null;
+
+    const nodes = graph.filter((node) => !node.optional || plan);
+    const lineages = {};
+    const contents = {};
+    for (const node of nodes) {
+      const artifact = currentArtifact(manifest, node.artifactId);
+      if (!artifact || artifact.status !== "current") {
+        throw new ProductionStateError(`当前 Run 缺少有效 artifact：${node.artifactId}`, { code: "PACKAGE_ARTIFACT_NOT_CURRENT", httpStatus: 409 });
+      }
+      // 依赖必须和依赖图逐项完全相等。第一期最早那版造出的「粘贴完整故事」Run 带候选与选中记录，
+      // 在这里明确拒绝，不去改它的结构。
+      const expectedDependencies = node.dependsOn.map((key) => lineageRef(lineages[key]));
+      if (artifact.artifactType !== node.artifactType || !sameDependencies(artifact.dependencies || [], expectedDependencies)) {
+        throw new ProductionStateError(
+          `这个剧情 Run 的 ${node.artifactId} 与当前版本的依赖图不一致（可能是早期版本建的 Run），不能导出测试包；请重新开始拆镜头。`,
+          { code: "PRODUCTION_PACKAGE_LINEAGE_UNSUPPORTED", httpStatus: 409 }
+        );
+      }
+      lineages[node.key] = artifact;
+      contents[node.key] = await this.readArtifactContent(manifest, artifact);
+    }
+    const body = {
+      packageType: PRODUCTION_PACKAGE_TYPE,
+      packageVersion: PRODUCTION_STORY_PACKAGE_VERSION,
+      entryMode: STORY_ENTRY_MODE,
+      storyMode,
+      ...(source.exportedAt !== undefined ? { exportedAt: source.exportedAt } : {}),
+      ...(source.mode !== undefined ? { mode: source.mode } : {}),
+      ...(source.modelInfo !== undefined ? { modelInfo: structuredClone(source.modelInfo) } : {}),
+      storySource: contents.storySource,
+      storySourceDigest: storySourceArtifact.contentDigest,
+      creatorProfile,
+      ...Object.fromEntries(nodes.filter((node) => node.key !== "storySource").map((node) => [node.key, contents[node.key]])),
+      productionLineage: {
+        schemaVersion: PRODUCTION_LINEAGE_SCHEMA_VERSION,
+        projectId,
+        runId,
+        artifacts: Object.fromEntries(nodes.map((node) => [node.key, publicLineage(lineages[node.key])])),
+        mediaNamespace: plan?.mediaNamespace || ""
+      }
+    };
+    // 签发前跑与导入时同一个校验：签不出导入会拒的包。
+    validateStoryPackageBody(body);
+    return body;
+  }
+
+  // 导入 3.1 包：重建一个独立的剧情 Run。先写好元数据（入口、剧情模式、原文摘要、规整后的固定角色设定），
+  // 再按依赖图的顺序由服务端提交原文与各份产物，依赖关系与原 Run 完全一样，分镜签发新的媒体命名空间。
+  // 除了「开始拆镜头」（server.js startStoryEntryRun），这是唯一写原文的地方；包已经过本机签名校验。
+  // 提交的是规整后的原文与设定：摘要不变，键的顺序与页面比较的一致，不会被误判成「原文改过」。
+  async importStoryPackageValidated(validated, { browserWorkspaceId, onRunCreated } = {}) {
+    const { payload, story } = validated;
+    const created = await this.createRun({
+      metadata: {
+        entryMode: STORY_ENTRY_MODE,
+        storyMode: story.storyMode,
+        storySourceDigest: contentDigest(story.storySource),
+        creatorProfile: story.creatorProfile,
+        importedFromPackageDigest: payload.packageDigest,
+        ...(browserWorkspaceId ? { browserWorkspaceId } : {}),
+        startedBy: "package-import"
+      }
+    });
+    if (onRunCreated) await onRunCreated(structuredClone(created));
+    const lineages = {};
+    for (const node of story.nodes) {
+      const committed = await this.commitArtifact({
+        projectId: created.projectId,
+        runId: created.runId,
+        artifactId: node.artifactId,
+        artifactType: node.artifactType,
+        content: node.key === "storySource" ? story.storySource : payload[node.key],
+        dependencies: node.dependsOn.map((key) => lineageRef(lineages[key])),
+        requestId: `import-${this.idFactory()}`,
+        expectedCurrentRevision: null,
+        ...(node.key === "animationPlan" ? { createMediaNamespace: true } : {})
+      });
+      lineages[node.key] = committed.lineage;
+    }
+    const importedRun = await this.loadRun({
+      projectId: created.projectId,
+      runId: created.runId,
+      includeContent: false
+    });
+    return {
+      payload: structuredClone(payload),
+      production: {
+        ...importedRun,
+        latestArtifacts: undefined,
+        artifacts: Object.fromEntries(story.nodes.map((node) => [node.artifactId, lineages[node.key]]))
       },
       discardedMedia: true
     };
@@ -848,6 +1008,141 @@ function advanceCheckpoint(manifest, updatedAt) {
   const sequence = Math.max(0, Number(manifest.checkpoint?.sequence) || 0) + 1;
   manifest.checkpoint = { sequence, updatedAt };
   manifest.updatedAt = updatedAt;
+}
+
+// ---- 「从剧情开始」的 3.1 测试包（2026-10-10）----
+
+// 页面发来的字段白名单：其余（原文、角色边界、候选、设定……）一律由服务端从 Run 读出。
+const STORY_PACKAGE_BROWSER_KEYS = Object.freeze(["exportedAt", "mode", "modelInfo", "fullStory", "animationPlan"]);
+
+// 剧情 Run 的依赖图，唯一一份：签发、校验、导入都按它。与流水线实际提交的依赖一致
+// （server.js 的剧情入口阶段与 test/story-entry-server.test.js 断言同一张图）；动它要同步那几处。
+// key 同时是包里存放该产物内容的顶层字段名；animationPlan 可以没有（还没生成分镜时）。
+function storyPackageNode(key, artifactId, artifactType, dependsOn, optional = false) {
+  return Object.freeze({ key, artifactId, artifactType, dependsOn: Object.freeze(dependsOn), optional });
+}
+export const STORY_PACKAGE_GRAPH = Object.freeze({
+  [STORY_MODE_FULL_TEXT]: Object.freeze([
+    storyPackageNode("storySource", "storySource", "storySource", []),
+    storyPackageNode("visualGuardrails", "visualGuardrails", "visualGuardrails", ["storySource"]),
+    storyPackageNode("fullStory", `fullStory:${STORY_ENTRY_VARIANT_ID}`, "fullStory", ["storySource", "visualGuardrails"]),
+    storyPackageNode("animationPlan", `animationPlan:${STORY_ENTRY_VARIANT_ID}`, "animationPlan", ["storySource", "visualGuardrails", "fullStory"], true)
+  ]),
+  [STORY_MODE_CHARACTER_ONLY]: Object.freeze([
+    storyPackageNode("storySource", "storySource", "storySource", []),
+    storyPackageNode("visualGuardrails", "visualGuardrails", "visualGuardrails", ["storySource"]),
+    storyPackageNode("themeVariants", "themeVariants", "themeVariants", ["storySource", "visualGuardrails"]),
+    storyPackageNode("selectedVariant", `variant:${STORY_ENTRY_VARIANT_ID}`, "selectedVariant", ["themeVariants"]),
+    storyPackageNode("fullStory", `fullStory:${STORY_ENTRY_VARIANT_ID}`, "fullStory", ["storySource", "visualGuardrails", "themeVariants", "selectedVariant"]),
+    storyPackageNode("animationPlan", `animationPlan:${STORY_ENTRY_VARIANT_ID}`, "animationPlan", ["storySource", "visualGuardrails", "selectedVariant", "fullStory"], true)
+  ])
+});
+
+const STORY_PACKAGE_REQUIRED_KEYS = Object.freeze([
+  "packageType", "packageVersion", "entryMode", "storyMode", "storySource", "storySourceDigest",
+  "creatorProfile", "visualGuardrails", "fullStory", "productionLineage"
+]);
+const STORY_PACKAGE_OPTIONAL_KEYS = Object.freeze([
+  "exportedAt", "mode", "modelInfo", "animationPlan", "packageDigest", "packageSignature"
+]);
+const STORY_PACKAGE_MODE_KEYS = Object.freeze({
+  [STORY_MODE_FULL_TEXT]: Object.freeze([]),
+  [STORY_MODE_CHARACTER_ONLY]: Object.freeze(["themeVariants", "selectedVariant"])
+});
+
+function storyPackageError(message, code = "PRODUCTION_PACKAGE_STORY_INVALID") {
+  return new ProductionStateError(message, { code, httpStatus: 400 });
+}
+
+// 剧情入口的规整函数抛 StoryEntryInputError（没有 httpStatus，会变成 500），这里转成生产状态错误。
+function storyEntryValue(read, message, httpStatus = 400) {
+  try {
+    return read();
+  } catch (error) {
+    if (error instanceof StoryEntryInputError) {
+      throw new ProductionStateError(`${message}：${error.message}`, { code: "PRODUCTION_PACKAGE_STORY_INVALID", httpStatus });
+    }
+    throw error;
+  }
+}
+
+// 3.1 包的全部内容校验。签发前（assembleStoryPackageUnlocked）与导入时（validatePackage）用同一个函数。
+// 不重跑业务 Schema：本机签名是信任根，任务使用这些内容时会照常再校验（与 3.0 同规格）。
+export function validateStoryPackageBody(body) {
+  const value = requireObject(body, "生产包");
+  if (value.packageType !== PRODUCTION_PACKAGE_TYPE || value.packageVersion !== PRODUCTION_STORY_PACKAGE_VERSION) {
+    throw storyPackageError(`剧情 Run 的测试包必须是 ${PRODUCTION_PACKAGE_TYPE} v${PRODUCTION_STORY_PACKAGE_VERSION}`, "PRODUCTION_PACKAGE_VERSION_UNSUPPORTED");
+  }
+  if (value.entryMode !== STORY_ENTRY_MODE) {
+    throw storyPackageError(`v${PRODUCTION_STORY_PACKAGE_VERSION} 测试包必须带 entryMode: "${STORY_ENTRY_MODE}"`, "PRODUCTION_PACKAGE_ENTRY_MODE_UNSUPPORTED");
+  }
+  const storyMode = value.storyMode;
+  const graph = STORY_PACKAGE_GRAPH[storyMode];
+  if (!graph) throw storyPackageError("剧情 Run 的测试包 storyMode 无效");
+
+  const required = [...STORY_PACKAGE_REQUIRED_KEYS, ...STORY_PACKAGE_MODE_KEYS[storyMode]];
+  const allowed = new Set([...required, ...STORY_PACKAGE_OPTIONAL_KEYS]);
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length) throw storyPackageError(`剧情 Run 的测试包有未定义的字段：${unknown.join("、")}`);
+  const missing = required.filter((key) => !Object.hasOwn(value, key));
+  if (missing.length) throw storyPackageError(`剧情 Run 的测试包缺少字段：${missing.join("、")}`);
+
+  // 原文与固定角色设定：按建 Run 时同一套严格规则，且必须已经是规整后的样子。
+  const storySource = storyEntryValue(() => normalizeStorySource(value.storySource), "剧情 Run 的测试包里故事原文无效");
+  if (contentDigest(storySource) !== contentDigest(value.storySource) || storySource.storyMode !== storyMode) {
+    throw storyPackageError("剧情 Run 的测试包里故事原文与剧情模式不一致，或没有按规则规整");
+  }
+  if (value.storySourceDigest !== contentDigest(storySource)) {
+    throw storyPackageError("剧情 Run 的测试包里原文摘要与原文不一致", "STORY_SOURCE_TAMPERED");
+  }
+  const creatorProfile = storyEntryValue(() => normalizeStoryEntryCreatorProfile(value.creatorProfile),
+    "剧情 Run 的测试包里固定角色设定无效");
+  if (contentDigest(creatorProfile) !== contentDigest(value.creatorProfile)) {
+    throw storyPackageError("剧情 Run 的测试包里固定角色设定没有按规则规整");
+  }
+
+  // 每份产物：内容摘要、当前版本，以及上游依赖与依赖图逐项完全相等。
+  const lineage = requireObject(value.productionLineage, "productionLineage");
+  if (lineage.schemaVersion !== PRODUCTION_LINEAGE_SCHEMA_VERSION) {
+    throw storyPackageError("生产包 lineage schema 版本不受支持", "PRODUCTION_LINEAGE_VERSION_UNSUPPORTED");
+  }
+  const artifacts = requireObject(lineage.artifacts, "productionLineage.artifacts");
+  const hasPlan = value.animationPlan !== undefined && value.animationPlan !== null;
+  const nodes = graph.filter((node) => !node.optional || hasPlan);
+  const expectedKeys = nodes.map((node) => node.key).sort();
+  if (contentDigest(Object.keys(artifacts).sort()) !== contentDigest(expectedKeys)) {
+    throw storyPackageError(`剧情 Run 的测试包产物清单与依赖图不一致：应为 ${expectedKeys.join("、")}`, "PRODUCTION_PACKAGE_LINEAGE_UNSUPPORTED");
+  }
+  const normalized = {};
+  for (const node of nodes) {
+    const entry = validatePackagedArtifact(artifacts[node.key], value[node.key], node.key);
+    const expectedDependencies = node.dependsOn.map((key) => lineageRef(normalized[key]));
+    if (entry.artifactId !== node.artifactId || entry.artifactType !== node.artifactType
+      || !sameDependencies(entry.dependencies, expectedDependencies)) {
+      throw storyPackageError(`剧情 Run 的测试包里 ${node.artifactId} 与依赖图不一致`, "PRODUCTION_PACKAGE_LINEAGE_UNSUPPORTED");
+    }
+    normalized[node.key] = entry;
+  }
+
+  // 剧情与分镜都属于故事位 V1，分镜必须是 4.0。
+  if (String(value.fullStory?.selectedVariantId || "") !== STORY_ENTRY_VARIANT_ID) {
+    throw storyPackageError(`剧情 Run 的测试包里剧情必须属于故事位 ${STORY_ENTRY_VARIANT_ID}`, "PRODUCTION_PACKAGE_VARIANT_MISMATCH");
+  }
+  if (hasPlan && (String(value.animationPlan?.selectedVariantId || "") !== STORY_ENTRY_VARIANT_ID
+    || value.animationPlan?.promptSchemaVersion !== STORYBOARD_PLAN_VERSION)) {
+    throw storyPackageError(`剧情 Run 的测试包里分镜必须是故事位 ${STORY_ENTRY_VARIANT_ID} 的 ${STORYBOARD_PLAN_VERSION} 分镜`, "PRODUCTION_PACKAGE_PLAN_VARIANT_MISMATCH");
+  }
+  // 只给角色设定：恰好一个候选 V1，且与选中记录完全相同。否则导入后再跑剧情准备会重签选中记录，
+  // 把剧情和分镜判成过期（server.js 剧情入口流水线的「内容与依赖都一致才跳过」）。
+  if (storyMode === STORY_MODE_CHARACTER_ONLY) {
+    const variants = value.themeVariants?.variants;
+    if (!Array.isArray(variants) || variants.length !== 1 || String(variants[0]?.id || "") !== STORY_ENTRY_VARIANT_ID
+      || String(value.selectedVariant?.id || "") !== STORY_ENTRY_VARIANT_ID
+      || contentDigest(variants[0]) !== contentDigest(value.selectedVariant)) {
+      throw storyPackageError(`剧情 Run 的测试包里必须恰好一个候选 ${STORY_ENTRY_VARIANT_ID}，且与选中记录相同`, "PRODUCTION_PACKAGE_VARIANT_MISMATCH");
+    }
+  }
+  return { storyMode, storySource, creatorProfile, artifacts: normalized, nodes };
 }
 
 function validatePackagedArtifact(lineage, content, label) {

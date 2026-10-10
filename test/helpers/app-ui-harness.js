@@ -96,7 +96,7 @@ export async function loadAppUi({ story = false, plan = false, createElement,
     directorAgent, directorAgentFacts, directorAgentProgressNow, refreshDirectorAgentNow, executeDirectorAgentAction,
     confirmDirectorAgentCard, dismissDirectorAgentCard, sendDirectorAgentMessage, submitDirectorAgentInput, directorAgentQuick, directorAgentChoose,
     setDirectorAgentOpen, showDirectorAgentStoryPage, setupReadiness, validateReady, storyEntryContinuing,
-    beginStageUsage, endStageUsage, browserWorkspaceForTest: browserWorkspace,
+    beginStageUsage, endStageUsage, browserWorkspaceForTest: browserWorkspace, selectedStoryPackage,
     setSourceLoadingForTest: (value) => { sourceLoading = value; },
     setDirectorAgentStartedForTest: (value) => { directorAgentStarted = value; } };`, context);
   const app = context.app;

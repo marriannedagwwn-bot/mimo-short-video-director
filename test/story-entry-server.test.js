@@ -191,8 +191,60 @@ test("真实 HTTP / Durable Task：粘贴完整故事 → 角色边界 → 可�
       content: { ...storySource, storyText: "改过的故事" }, dependencies: [], requestId: "browser-overwrite", expectedCurrentRevision: state.latestArtifacts.storySource.lineage.revision });
     assert.equal(overwrite.status, 403);
     assert.equal(overwrite.json.code, "STORY_SOURCE_SERVER_ONLY");
-    const seal = await post("/api/production/package/seal", { ...run, payload: { fullStory: state.latestArtifacts["fullStory:V1"].content } });
-    assert.equal(seal.json.code, "PRODUCTION_PACKAGE_ENTRY_MODE_UNSUPPORTED");
+
+    // 测试包（2026-10-10 起剧情 Run 签 3.1 包）：打包 → 下载接口 → 导入成一个新的剧情 Run → 读回 → 在它上面接着干活。
+    // 导入不绑定工作区：导入到原 Run 所在的工作区会把原 Run 清掉，这里原 Run 后面还要用。
+    const sealed = await api("/api/production/package/seal", { ...run, payload: {
+      exportedAt: "2026-10-10T00:00:00.000Z", mode: "live", modelInfo: {},
+      fullStory: state.latestArtifacts["fullStory:V1"].content,
+      animationPlan: state.latestArtifacts["animationPlan:V1"].content
+    } });
+    assert.equal(sealed.packageVersion, "3.1");
+    assert.equal(sealed.entryMode, "story");
+    assert.deepEqual(sealed.storySource, state.latestArtifacts.storySource.content, "原文由服务端从 Run 读出");
+    const browserStory = await post("/api/production/package/seal", { ...run, payload: { fullStory: state.latestArtifacts["fullStory:V1"].content, storySource } });
+    assert.equal(browserStory.status, 400, "页面发来的原文一律不收");
+    assert.equal(browserStory.json.code, "PRODUCTION_PACKAGE_STORY_INPUT_INVALID");
+    const download = await fetch(`${runtime.base}/api/production/package/download`, { method: "POST", body: new URLSearchParams({ package: JSON.stringify(sealed), testPackage: "true" }) });
+    assert.equal(download.status, 200);
+    assert.deepEqual(await download.json(), sealed);
+    const imported = await api("/api/production/package/import", { package: sealed });
+    const importedRun = { projectId: imported.production.projectId, runId: imported.production.runId };
+    assert.notEqual(importedRun.runId, run.runId);
+    assert.equal(imported.production.metadata.entryMode, "story");
+    assert.equal(imported.production.metadata.startedBy, "package-import");
+    const importedState = await api("/api/production/run/load", { ...importedRun, includeContent: true });
+    for (const artifactId of ["storySource", "visualGuardrails", "fullStory:V1", "animationPlan:V1"]) {
+      assert.deepEqual(dependencyIds(importedState.latestArtifacts[artifactId]), dependencyIds(state.latestArtifacts[artifactId]), artifactId);
+      assert.deepEqual(importedState.latestArtifacts[artifactId].content, state.latestArtifacts[artifactId].content, artifactId);
+    }
+    // 在导入的 Run 上再跑剧情准备：全部复用，不调模型、各版本不变。
+    const requestsBeforeRerun = requests.length;
+    const rerun = await api("/api/tasks/create", { ...importedRun, kind: "storyPipeline", input: { creatorProfile, targetDurationSeconds: 60 } });
+    assert.equal((await wait(rerun.task, importedRun)).status, "completed");
+    assert.equal(requests.length, requestsBeforeRerun);
+    const afterRerun = await api("/api/production/run/load", { ...importedRun, includeContent: false });
+    for (const artifactId of ["storySource", "visualGuardrails", "fullStory:V1", "animationPlan:V1"]) {
+      assert.equal(afterRerun.latestArtifacts[artifactId].lineage.revision, importedState.latestArtifacts[artifactId].lineage.revision, artifactId);
+      assert.equal(afterRerun.latestArtifacts[artifactId].lineage.status, "current", artifactId);
+    }
+    // 台词核对照常可用；用导入的分镜按文字出一张角色图：一次出图请求、不调文本模型
+    // （证明新的媒体命名空间与角色边界签名都能用）。
+    const importedReport = await api("/api/production/story-entry/dialogue-check", { ...importedRun, variantId: "V1" });
+    assert.equal(importedReport.applicable, true);
+    const importedPlan = importedState.latestArtifacts["animationPlan:V1"].lineage;
+    const importedContext = { ...importedRun, planArtifactId: importedPlan.artifactId, planRevision: importedPlan.revision,
+      planDigest: importedPlan.contentDigest, mediaNamespace: importedPlan.mediaNamespace };
+    const imagesBeforeImport = runtime.imageRequests.length;
+    const importedImages = await api("/api/tasks/create", { ...importedRun, kind: "characterReferenceImages", input: {
+      variantId: "V1", roleIndex: 0, count: 1, creatorProfile, productionContext: importedContext
+    } });
+    const importedImagesTask = await wait(importedImages.task, importedRun);
+    assert.equal(importedImagesTask.status, "completed", JSON.stringify(importedImagesTask.error));
+    assert.equal(runtime.imageRequests.length, imagesBeforeImport + 1);
+    assert.equal(requests.length, requestsBeforeRerun);
+    const importedTasks = await fs.readFile(path.join(runtime.root, "state", importedRun.projectId, importedRun.runId, "tasks/index.json"), "utf8");
+    assert.equal(importedTasks.includes(STORY_ENTRY_FIXTURE_TEXT), false, "导入的 Run 的任务记录里也没有原文");
 
     // 原文不进 Task Store。
     const persisted = await fs.readFile(path.join(runtime.root, "state", run.projectId, run.runId, "tasks/index.json"), "utf8");
@@ -250,6 +302,35 @@ test("参考视频 Run 上不能跑剧情入口的流水线", async () => {
     const mismatch = await runtime.post("/api/tasks/create", { ...storyRun, kind: "storyPipeline", input: { creatorProfile: { ...runtime.creatorProfile, vertical: "科普" } } });
     assert.equal(mismatch.status, 409);
     assert.equal(mismatch.json.code, "TASK_BROWSER_ARTIFACT_MISMATCH");
+
+    // 测试包（3.1）：候选和选中记录由服务端从 Run 带出；导入后依赖图与原 Run 相同，再跑剧情准备全部复用。
+    const sealed = await runtime.api("/api/production/package/seal", { ...storyRun, payload: {
+      exportedAt: "2026-10-10T00:00:00.000Z", mode: "live", modelInfo: {},
+      fullStory: state.latestArtifacts["fullStory:V1"].content,
+      animationPlan: state.latestArtifacts["animationPlan:V1"].content
+    } });
+    assert.equal(sealed.packageVersion, "3.1");
+    assert.equal(sealed.storyMode, "characterOnly");
+    assert.deepEqual(sealed.themeVariants, state.latestArtifacts.themeVariants.content);
+    assert.deepEqual(sealed.selectedVariant, state.latestArtifacts["variant:V1"].content);
+    const imported = await runtime.api("/api/production/package/import", { package: sealed });
+    const importedRun = { projectId: imported.production.projectId, runId: imported.production.runId };
+    assert.equal(imported.production.metadata.storyMode, "characterOnly");
+    const graph = ["storySource", "visualGuardrails", "themeVariants", "variant:V1", "fullStory:V1", "animationPlan:V1"];
+    const importedState = await runtime.api("/api/production/run/load", { ...importedRun, includeContent: true });
+    for (const artifactId of graph) {
+      assert.deepEqual(dependencyIds(importedState.latestArtifacts[artifactId]), dependencyIds(state.latestArtifacts[artifactId]), artifactId);
+      assert.deepEqual(importedState.latestArtifacts[artifactId].content, state.latestArtifacts[artifactId].content, artifactId);
+    }
+    const requestsBeforeRerun = runtime.requests.length;
+    const rerun = await runtime.api("/api/tasks/create", { ...importedRun, kind: "storyPipeline", input: { creatorProfile: runtime.creatorProfile, targetDurationSeconds: 60 } });
+    assert.equal((await runtime.wait(rerun.task, importedRun)).status, "completed");
+    assert.equal(runtime.requests.length, requestsBeforeRerun, "候选与选中记录都复用，不调模型");
+    const afterRerun = await runtime.api("/api/production/run/load", { ...importedRun, includeContent: false });
+    for (const artifactId of graph) {
+      assert.equal(afterRerun.latestArtifacts[artifactId].lineage.revision, importedState.latestArtifacts[artifactId].lineage.revision, artifactId);
+      assert.equal(afterRerun.latestArtifacts[artifactId].lineage.status, "current", artifactId);
+    }
   } finally {
     await runtime.close();
   }

@@ -3,6 +3,11 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 export const PRODUCTION_LINEAGE_SCHEMA_VERSION = "1.0";
 export const PRODUCTION_PACKAGE_TYPE = "story-production-test-package";
 export const PRODUCTION_PACKAGE_VERSION = "3.0";
+// 「从剧情开始」的 Run 的测试包（2026-10-10）。它是剧情入口的包形状，不是 3.0 的升级版：
+// 3.0 只装参考视频那条链；剧情 Run 的包带原文、角色边界与故事位 V1 的产物，必带 entryMode:"story"。
+// 版本号不能省——旧程序若把「只给角色设定」的包当 3.0 读，会悄悄导入成一个坏掉的参考视频 Run；
+// 遇到 3.1 它会明确拒绝。
+export const PRODUCTION_STORY_PACKAGE_VERSION = "3.1";
 
 export class ProductionStateError extends Error {
   constructor(message, {

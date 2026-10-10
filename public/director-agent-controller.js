@@ -117,6 +117,14 @@ export function createDirectorAgentController({ maxMessages = 150 } = {}) {
           propose(progress);
           return true;
         }
+        // 原来没有 Run、换上来的 Run 已经有结果：只有导入测试包会这样（2026-10-10）。说一声再按进度提议，
+        // 不然页面已经换了内容、对话里还停在打招呼那句。刚开始跑的新 Run 还没有结果，照旧不说话，等那一步做完再报。
+        if (snapshot.hasRun && snapshot.pipelineDone) {
+          voidPendingCards("已经打开新的 Run，这张卡作废了");
+          push({ role: "system", text: "已经打开新的 Run。" });
+          propose(progress);
+          return true;
+        }
         return false;
       }
       const notes = diffMilestones(baseline, snapshot, facts);

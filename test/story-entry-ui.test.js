@@ -182,14 +182,21 @@ test("剧情入口：选中记录没签发时，页面要求先完成剧情准�
   await assert.rejects(() => app.ensureSelectedVariantArtifact({ id: "V1" }), /继续剧情准备/);
 });
 
-test("剧情入口禁用生产包导出，时长选项写明没有原片时按 60 秒", async () => {
+test("剧情入口也能导出生产包（2026-10-10 起签 3.1 包），时长选项写明没有原片时按 60 秒", async () => {
   const app = await loadAppUi({ story: true });
   app.updateStoryExportActions();
   assert.equal(app.elements.exportStoryPackage.disabled, false, "参考视频 Run 有剧情时可以导出");
   app.state.entryMode = "story";
+  app.state.storyMode = "fullStoryText";
+  app.state.selectedVariantId = "V1";
+  app.state.fullStories = {};
   app.updateStoryExportActions();
-  assert.equal(app.elements.exportStoryPackage.disabled, true);
-  assert.equal(app.elements.exportStoryTestPackage.disabled, true);
+  assert.equal(app.elements.exportStoryPackage.disabled, true, "还没有可翻拍镜头时不能导出");
+  app.state.fullStories = { V1: app.fixture.fullStory };
+  app.updateStoryExportActions();
+  assert.equal(app.elements.exportStoryPackage.disabled, false);
+  assert.equal(app.elements.exportStoryTestPackage.disabled, false);
+  assert.equal(app.elements.exportStoryPackage.title || "", "");
   app.renderStoryDurationOptions();
   assert.ok(app.elements.storyDurationTarget.innerHTML.includes("剧情入口没有原片，按 60 秒"));
 });

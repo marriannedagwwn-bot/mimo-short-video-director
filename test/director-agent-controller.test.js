@@ -179,6 +179,21 @@ test("从没有 Run 到刚建好 Run：静默重记基线，不打扰", () => {
   assert.equal(controller.messages.length, count);
 });
 
+test("原来没有 Run、换上来的 Run 已经有结果（导入测试包）：作废旧卡、说一声、按新进度提议，不当成刚做完再报", () => {
+  const controller = createDirectorAgentController();
+  observe(controller, facts({ runId: "", pipeline: { done: false }, story: { exists: false }, storiesByVariant: { V1: false }, hasDownstream: false }));
+  const before = controller.messages.filter((message) => message.card);
+  assert.ok(before.length, "还没开始时有一张「开始」的卡");
+  const imported = facts({ runId: "run-imported", plan: storyboard() });
+  observe(controller, imported);
+  assert.ok(texts(controller).includes("已经打开新的 Run。"));
+  for (const message of before) assert.equal(message.card.state, "void");
+  const last = controller.messages.at(-1);
+  assert.equal(last.card?.state, "pending");
+  assert.equal(last.card.key, deriveDirectorProgress(imported).next.key);
+  assert.equal(texts(controller).some((text) => /拆好了|分镜好了/u.test(text)), false, "导入进来的结果不是刚做完的");
+});
+
 test("发给模型：历史只含用户的话和导演助手的回复、有条数和长度上限；回复没到之前不能再发", () => {
   const controller = createDirectorAgentController();
   const progress = observe(controller, facts());

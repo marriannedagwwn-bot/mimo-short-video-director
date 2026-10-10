@@ -256,7 +256,7 @@ Node 启动 reconciliation 会检查 active Task：current Artifact 已由同一
 
 ## 7. v3 测试/规划包
 
-「从剧情开始」的 Run 暂不支持 v3 包：签发、校验与导入都按参考视频那条链写死了 Artifact 集合，`sealPackage` 明确返回 409 `PRODUCTION_PACKAGE_ENTRY_MODE_UNSUPPORTED`。
+参考视频的 Run 签 `3.0` 包，「从剧情开始」的 Run 签 `3.1` 包（2026-10-10，见本节末尾）。下面先说 3.0。
 
 导出流程由服务端确认选中 Variant、Full Story 和可选 Animation Plan 都是当前 Artifact，且 parent lineage 一致，然后添加：
 
@@ -281,3 +281,26 @@ Node 启动 reconciliation 会检查 active Task：current Artifact 已由同一
 导入沿用包签名密钥。导入必须依次验证 type、version、digest、HMAC、各 Artifact digest、Variant ID 和 parent lineage。验证成功后建立新的 project/run，重新签发本地 revisions；禁止与浏览器现态 merge，并清空包内媒体选择。
 
 因此 v3 文件是可验证的本地测试/规划包，但不是包含供应商任务状态、跨环境证书链、批量调度和完整 canonical provenance 的最终 Production Package。
+
+### 「从剧情开始」的 Run：3.1 包（2026-10-10）
+
+第一期（2026-10-09）没有接测试包：3.0 的签发、校验与导入按参考视频那条链写死了 Artifact 集合，剧情 Run 没有原片上游，「粘贴完整故事」连候选都没有，`sealPackage` 当时返回 409 `PRODUCTION_PACKAGE_ENTRY_MODE_UNSUPPORTED`。现在剧情 Run 签同一个包类型的 `packageVersion: "3.1"`，必带 `entryMode: "story"` 与 `storyMode`。
+
+- **版本号不能省。** 沿用 3.0 时，旧程序会把「只给角色设定」的包当成参考视频的包导入，得到一个坏掉的 Run 且不报错；用 3.1，旧程序会明确拒绝。参考视频的包仍是 3.0，签名的字节一个不变：`test/production-package-golden.test.js` 用固定密钥和固定内容锁住 `packageDigest`、`packageSignature`，以及导入后的产物、依赖与元数据键，改动前后都通过。
+- **包内容由服务端从 Run 本身取。** 原文 `storySource`、角色边界、候选与选中记录（只给角色设定时）、固定角色设定都从 Run 读出，不用浏览器的副本——否则等于借「打包 → 导入」写进一份原文，绕过「原文只能由服务端写」（`STORY_SOURCE_SERVER_ONLY`）。页面只发 `exportedAt`、`mode`、`modelInfo` 以及剧情、分镜两份副本；两份副本只用来核对页面上看到的就是当前版本（`requireCurrentArtifact`）。多发任何字段一律 400 `PRODUCTION_PACKAGE_STORY_INPUT_INVALID`；原文摘要与 Run 元数据的 `storySourceDigest` 对不上时 409 `STORY_SOURCE_TAMPERED`。
+- **依赖图只有一份**：`STORY_PACKAGE_GRAPH`（`src/production-state-store.js`）。每份产物的上游必须与它逐项完全相等，分镜可以没有：
+  - 粘贴完整故事：`storySource` → `visualGuardrails` → `fullStory:V1` → `animationPlan:V1`；
+  - 只给角色设定：`storySource` → `visualGuardrails` → `themeVariants` → `variant:V1` → `fullStory:V1` → `animationPlan:V1`。
+
+  第一期第一版造出的「粘贴完整故事」Run 带候选与选中记录，依赖图不同，导出时明确拒绝（409 `PRODUCTION_PACKAGE_LINEAGE_UNSUPPORTED`），不去改它的结构。
+- **签名之前和导入时用同一个函数做语义校验**（`validateStoryPackageBody`）。摘要与签名的检查仍排在最前面，之后检查：
+  - 顶层键恰好是规定的那些；
+  - 原文与固定角色设定按建 Run 时同一套严格规则检查，并与规整后的值逐字相等，原文摘要与原文一致；
+  - 每份产物核对内容摘要；剧情与分镜都属于故事位 V1，分镜必须是 4.0；
+  - 只给角色设定时恰好一个候选 V1，且与选中记录完全相同。否则导入后再跑剧情准备会重签选中记录，把剧情和分镜判成过期。
+
+  HMAC 是信任根，与 3.0 同规格，不重新跑业务 Schema；任务使用这些产物时会再校验。
+- **导入重建一个独立的剧情 Run。** 先写好 Run 元数据：`entryMode`、`storyMode`、`storySourceDigest`、规整后的 `creatorProfile`、`importedFromPackageDigest`、`startedBy: "package-import"`。再按依赖图的顺序由服务端提交原文和各份产物，依赖用新 Run 的版本重建，分镜签发新的媒体命名空间。**这是除「开始拆镜头 / 开始剧情准备」以外唯一写 `storySource` 的地方。** 角色边界不重签：下游任务照常按原规则核对，同一台机器上原样通过。在导入的 Run 上再跑剧情准备会全部复用、不调模型；与 3.0 一样不带图片和视频结果。
+- **页面导入剧情包后走「刷新恢复」那条路**：从服务端读回这个 Run（原文填回输入框、选中故事位 V1、进 `/story/V1`），不从包里的内容拼页面状态。参考视频的包仍走原来的路。在同一个标签页里导入会替换当前 Run，与参考视频的包相同。
+
+导出的文件里有用户的故事原文，导入时要靠它重建剧情 Run。下载接口（`src/production-package-download.js`）只校验并把签好的包原样回给浏览器存成文件，不在服务端留存。
