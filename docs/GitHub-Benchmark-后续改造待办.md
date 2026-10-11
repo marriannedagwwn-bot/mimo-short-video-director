@@ -4,7 +4,7 @@
 >
 > 基线提交：`6bb65dc feat: add recoverable production lineage`
 >
-> 适用主流程：Legacy Full Story → Animation Plan `direct_shot`（`promptSchemaVersion: "3.0"`）→ 视频生成
+> 适用主流程：Legacy Full Story → Animation Plan `direct_shot`（`promptSchemaVersion: "3.0"`）→ 视频生成。2026-10-11 起旧 2.0/3.0 分镜已删除，当前是 Animation Plan 4.0 自主分镜；下文按 3.0 写的条目已在原处加注，重启时须按 4.0 重新定义。
 
 本文档只记录 GitHub 同类项目 Benchmark 后仍值得实施或验证的工作。已经完成的 Production Lineage 基础只作为前置事实列出，不得重复实现。
 
@@ -68,7 +68,7 @@ T08 跨环境 Production Package 仅在部署需求成立后启动
 | P1 | T03 | 降低上下文重复与模型职责过载，需要 A/B 数据 |
 | P2 | T04、T05 | 提高付费媒体生成的可追踪性与恢复能力 |
 | P2 | T06 | 先做技术 QA，再 Prototype 视觉 QA 和候选排序 |
-| P2 Prototype | T07 | 有潜在连续性收益，但不得破坏 direct_shot 边界 |
+| P2 Prototype | T07 | 有潜在连续性收益，但不得破坏 4.0 分镜的片段与时长事实（原写 direct_shot 边界，3.0 已删除） |
 | P3 条件项 | T08 | 多机器、多人或正式交付出现后再做 |
 
 ## 3. 已完成基础
@@ -166,7 +166,7 @@ T08 跨环境 Production Package 仅在部署需求成立后启动
 - [AgentCine](https://github.com/pengchengneo/AgentCine/tree/2bb30b6ade98d90324ca5a0c6f0ea860f6a22875)：角色/地点资产 lock 和 reference image 注入。重点对照 [锁定后的资产 Registry](https://github.com/pengchengneo/AgentCine/blob/2bb30b6ade98d90324ca5a0c6f0ea860f6a22875/src/lib/agent-pipeline/asset-layer/registry.ts#L44-L83) 和 [按 exact name / alias 匹配参考图](https://github.com/pengchengneo/AgentCine/blob/2bb30b6ade98d90324ca5a0c6f0ea860f6a22875/src/lib/workers/handlers/image-task-handler-shared.ts#L141-L253)；
 - 当前项目：签名 `fixedCharacterBoundary` 是本轮对比中更严谨的角色事实源，应在其上补验证，而不是引入第二份 Character Bible。
 
-当前已确认事实：
+当前已确认事实（2026-10-11 注：下面按旧 3.0 写，3.0 已删除；`ensureAnimationPlanMatchesProfile()` 现在只剩 4.0 分支——核对分镜契约、`selectedVariantId` 与每条角色参考的边界；Foundation / Shot batch / 逐镜 `videoPrompt` 这些层已不存在）：
 
 - `ensureAnimationPlanMatchesProfile()` 已检查：`selectedVariantId`、固定角色名称是否出现、角色参考提示词是否包含 required traits、正向字段是否命中 forbidden terms。
 - 当前缺口不是“完全没有校验”，而是缺少完整的角色绑定和职责校验，例如：
@@ -184,20 +184,20 @@ T08 跨环境 Production Package 仅在部署需求成立后启动
 | 固定角色身份与禁止变化 | `fixedCharacterBoundary` |
 | 故事角色职责 | 已通过 T01 的 `fullStory.characterBible` |
 | 每场实际出镜角色 | 已通过 T01 的 `sceneScript[].characters` |
-| Shot 所属剧情场次 | `shot.sourceSceneId` |
-| Shot 边界 | 当前 direct_shot 3.1 的一对一映射：一场一镜，跨度 >15 秒时按 `ceil(跨度/15)` 均分 |
+| Shot 所属剧情场次 | `shot.sourceSceneIds`（4.0；原 3.0 为单值 `sourceSceneId`） |
+| Shot 边界 | 4.0 由分镜自定片段（4–15 秒、可合并相邻场次）；原 direct_shot 3.1 的一场一镜映射已删除 |
 | 版本归属 | Production Lineage dependency revisions |
 
 实施步骤：
 
 - [ ] 从真实失败数据建立 Animation Plan 角色漂移 fixture catalog；不得先修改 Prompt 再寻找理由。
 - [ ] 定义服务端生成的只读角色绑定投影，至少包含 canonical name / role / boundary digest / source scene presence。该投影不能由 Animation Plan 模型生成或修改。
-- [ ] 对 Animation Foundation、每批 Shot 和最终合并 Plan 分层校验；错误必须定位到具体 `shotId` 和字段路径。
+- [ ] 对 Animation Foundation、每批 Shot 和最终合并 Plan 分层校验；错误必须定位到具体 `shotId` 和字段路径。（4.0 没有 Foundation 与 Shot 批次，重启时按设计稿与最终 Plan 重定层次）
 - [ ] deterministic checks 至少覆盖：未登记主要角色、标准名称/别名冲突、角色职责交换、当前场不存在的角色被写成实际出镜、required/forbidden 边界在角色参考层的冲突。
 - [ ] 对自由文本中的身份等价、否定语境和隐式描述，仅在 deterministic 结果无法定案时运行窄 semantic auditor。Auditor 只输出 verdict、field path、evidence 和 reason，不得重写 Plan。
 - [ ] 定义三种结果：`pass`、`retryable_model_violation`、`blocked_ambiguous_conflict`。不得把无法判断的冲突自动当成 pass。
 - [ ] repair 只允许修复可由权威上游唯一推导的 ID、标准名称或引用；身份、物种、角色职责冲突必须 retry 或阻断。
-- [ ] 保持现有 direct_shot 字段职责；不得重新加入 `startFrame`、`endFrame`、`motion` 或本地 Prompt Compiler。
+- [ ] 不得重新加入 `startFrame`、`endFrame`、`motion` 或本地 Prompt Compiler（三者已于 2026-10-11 删除）。
 - [ ] 增加合法反例：negative prompt 中出现 forbidden term、短镜头不重复全部外观描述、地点所有者未出镜、对白提及场外人物、合法临时路人。
 - [ ] 增加失败样本：同名换物种、careRecipient 变 helper、主角被替换、新增主要角色、Reference 正确但 Shot 行为主体错误、跨 Scene 串角色。
 - [ ] 记录 validator/auditor/retry 的调用次数、token、错误类别和最终结果，为后续 A/B 提供数据。
@@ -205,7 +205,7 @@ T08 跨环境 Production Package 仅在部署需求成立后启动
 验收标准：
 
 - [ ] 能稳定拦截“Animation Plan 本身违反当前 fixedCharacterBoundary”，而不仅是拦截旧 Plan 串到新 Story。
-- [ ] 同一个错误不会在 Foundation、Shot batch、最终 Plan 三层重复触发多次付费 retry。
+- [ ] 同一个错误不会在多层校验（原写 Foundation、Shot batch、最终 Plan，前两层已删除）重复触发多次付费 retry。
 - [ ] Auditor 失败时不会删除 deterministic 错误，也不会自动放行。
 - [ ] 角色边界仍只有一份服务端事实源，不新增本地物种关键词字典或第二套边界。
 - [ ] 完整 Node 24 测试、真实失败包和合法反例通过。
@@ -266,10 +266,10 @@ Phase 1.1 已确认的三个边界：
 实施步骤：
 
 - [ ] 生成当前 Prompt 输入审计表：每个 Stage 实际读取哪些字段、字段 owner、是否重复、token 占比、是否存在同一事实的多份副本。
-- [ ] 明确 ownership：Brief 管保留价值；Full Story 管叙事和角色职责；Animation Foundation 管全局视觉/生产约束；Shot batch 只管已划定镜头的摄影、动作、声音和连续性表达。
+- [ ] 明确 ownership：Brief 管保留价值；Full Story 管叙事和角色职责；Animation Foundation 管全局视觉/生产约束；Shot batch 只管已划定镜头的摄影、动作、声音和连续性表达。（2026-10-11 注：Foundation 与 Shot batch 已随 3.0 删除；4.0 由一次分镜设计承担全片视觉与镜头，单镜提示词按需另写，ownership 须按 4.0 重写）
 - [ ] 设计服务端 deterministic context projection，而不是先引入 RAG。Projection 必须带 source artifact ID/revision/digest 和可追踪 evidence path。
-- [ ] Animation Foundation 只接收全局角色、场景、风格、生产限制和必要剧情摘要。
-- [ ] Shot batch 只接收当前 source scenes、冻结 Foundation、当前批次角色投影、前一镜 continuity context；不得重复传完整故事和所有无关角色。
+- [ ] Animation Foundation 只接收全局角色、场景、风格、生产限制和必要剧情摘要。（已删除，见上）
+- [ ] Shot batch 只接收当前 source scenes、冻结 Foundation、当前批次角色投影、前一镜 continuity context；不得重复传完整故事和所有无关角色。（已删除，见上）
 - [ ] 保持 `sourceSceneId`、Scene 顺序、Shot 数量事实源和完整证据路径可校验。
 - [ ] 对缺失 owner 字段 fail closed；不得用模型常识或旧 JSON 副本补默认值。
 - [ ] 为旧 Prompt 与新 Projection 做 A/B：输入 token、响应 token、契约通过率、retry 次数、角色错误率、镜头覆盖率、主观质量。
@@ -399,9 +399,9 @@ Phase 1.1 已确认的三个边界：
 
 - [Toonflow](https://github.com/HBAI-Ltd/Toonflow-app/tree/bc61ec7a1b5df31293b286981a5f4ad4635464ee)：区分可复用的稳定派生状态与一次性动作/表情，重点对照 [Base / Derived Asset 的边界](https://github.com/HBAI-Ltd/Toonflow-app/blob/bc61ec7a1b5df31293b286981a5f4ad4635464ee/data/skills/production_execution_derive_assets.md#L71-L100)；并提出动作、情绪、空间/视线和声音 bridge，重点对照 [Storyboard Continuity Bridge](https://github.com/HBAI-Ltd/Toonflow-app/blob/bc61ec7a1b5df31293b286981a5f4ad4635464ee/data/skills/production_execution_storyboard_table.md#L42-L71)；
 - [AgentCine](https://github.com/pengchengneo/AgentCine/tree/2bb30b6ade98d90324ca5a0c6f0ea860f6a22875)：摄影设计与表演设计按 panel ID 合并。重点对照 [Storyboard 分层编排和 deterministic merge](https://github.com/pengchengneo/AgentCine/blob/2bb30b6ade98d90324ca5a0c6f0ea860f6a22875/src/lib/novel-promotion/script-to-storyboard/orchestrator.ts#L264-L496)；
-- 当前项目：`direct_shot` 已有 `continuityNotes` 和 previous-shot context，但没有强类型的相邻镜头连续性 sidecar。
+- 当前项目：4.0 分镜每段有 `transitionIn` / `continuityOut`，`continuous` 时默认请求上一镜抽帧（原 `direct_shot` 的 `continuityNotes` 已于 2026-10-11 删除），但没有强类型的相邻镜头连续性 sidecar。
 
-该任务只能做 Prototype。它不得重新引入 v2 的 `startFrame`、`endFrame`、`motion` 或把新 sidecar 变成第二份 Story。
+该任务只能做 Prototype。它不得重新引入 v2 的 `startFrame`、`endFrame`、`motion`（已于 2026-10-11 删除）或把新 sidecar 变成第二份 Story。
 
 实施步骤：
 
@@ -415,7 +415,7 @@ Phase 1.1 已确认的三个边界：
 
 验收标准：
 
-- [ ] 不改变 direct_shot 拆镜规则、Shot 数量或 generationMode。
+- [ ] 不改变 4.0 分镜的片段划分、Shot 数量或 generationMode。
 - [ ] 不复制完整 Story/Plan，不成为另一份可漂移 canonical state。
 - [ ] 有量化或人工双评证据证明连续性收益后才允许进入主路径。
 - [ ] 完成或明确否决后，自动更新本任务状态与完成/否决记录；只有实际上线并满足验收时才勾选 `[x]`。
@@ -467,8 +467,8 @@ Phase 1.1 已确认的三个边界：
 - 多 Agent 自由编排作为业务状态机；
 - 用 Markdown 指令代替服务端 Schema 和 deterministic validation；
 - 通用 RAG / 长期 Memory 成为角色或剧情事实源；
-- 重新启用 Character Feature Compiler、Static Frame Compiler 或本地 Prompt Compiler 来补偿 direct_shot 上游表示；
-- 重新加入 `startFrame`、`endFrame`、`motion` 等 v2 端点字段；
+- 重新引入 Character Feature Compiler、Static Frame Compiler 或本地 Prompt Compiler（三者已于 2026-10-11 删除）；
+- 重新加入 `startFrame`、`endFrame`、`motion` 等 v2 端点字段或首尾帧视频模式（已于 2026-10-11 删除）；
 - 根据模型名、素材是否存在或字段缺失自动推断 generationMode；
 - permissive `jsonrepair`、删除未知字段、补默认摄影值后静默通过；
 - 新增本地物种/角色关键词白名单作为角色边界；

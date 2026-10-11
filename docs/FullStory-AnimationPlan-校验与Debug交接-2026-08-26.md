@@ -120,6 +120,8 @@ Full Story 的主要入口是 [`src/workflow.js`](../src/workflow.js) 中的 `cr
 
 ### 3.4 `timeRange` 与 direct_shot 时长
 
+> 2026-10-11 注：3.0 direct_shot 已删除。下表的时间轴检查现在只在 Full Story 签发前生效（`validateFullStoryForSigning` 调 `deriveDirectShotSkeleton`，可解析、跨度为正、不回退、每段不少于 4 秒），不再派生 Animation Plan 镜头；4.0 自主分镜自己决定片段与时长。
+
 | 校验 | 当前状态 | 实现目的 | 说明 |
 |---|---|---|---|
 | Full Story Schema 要求 `timeRange` 是非空字符串 | 生效 | 至少保证字段存在 | 不校验格式、跨度和顺序 |
@@ -147,6 +149,8 @@ Full Story 的主要入口是 [`src/workflow.js`](../src/workflow.js) 中的 `cr
 Beat–Scene 实现在 [`src/full-story-beat-scene-postpass.js`](../src/full-story-beat-scene-postpass.js)，局部姓名修复在 [`src/full-story-partial-repair.js`](../src/full-story-partial-repair.js)。
 
 ## 四、Animation Plan 校验规则
+
+> 历史记录：本节描述的 3.0 direct_shot（Foundation、Shot Batch、提示词方言、负面词、语义审计）已于 2026-10-11 随旧 2.0/3.0 分镜一起删除，现在只支持 4.0 自主分镜（见 `docs/animation-storyboard-implementation-2026-09-21.md`）。
 
 当前主流程是 `animationPlanMode: "direct_shot"`、`promptSchemaVersion: "3.0"`。入口、批次和最终合并位于 [`src/workflow.js`](../src/workflow.js)，合同主体位于 [`src/validation.js`](../src/validation.js)。
 
@@ -333,6 +337,8 @@ Beat–Scene postpass 的 36 次记录全部成功解析：
 
 ### 5.3 Animation Plan 历史数据
 
+> 历史记录：下表统计的 Foundation、shot batch、旧 shot prompt 与语义审计阶段已于 2026-10-11 删除。
+
 | 指标 | 数值 |
 |---|---:|
 | Animation 全量模型输出 metadata | 994 |
@@ -350,6 +356,8 @@ Beat–Scene postpass 的 36 次记录全部成功解析：
 `received=980` 不能解释为 980 次校验成功，只表示模型完成内容已收到并先写入 sidecar。
 
 ### 5.4 局部纠错历史
+
+> 历史记录：`animationFoundation`、`animationShotPrompt`、`animationVideoPromptSemanticRepair` 三类局部纠错已于 2026-10-11 随 3.0 分镜删除，现在只剩 Full Story 的 `full_story_partial_repair/1.0`。
 
 `debug/partial-repairs` 共 216 个 session：
 

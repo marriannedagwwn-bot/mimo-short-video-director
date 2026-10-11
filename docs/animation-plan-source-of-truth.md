@@ -1,5 +1,7 @@
 # Animation Plan Source-of-Truth Contract
 
+> 历史文档：本文描述的功能已于 2026-10-11 删除（不再支持旧 2.0/3.0 分镜），仅作历史记录。
+
 ## 0. 当前 `direct_shot` 临时主流程（已确认）
 
 - 当前主流程只在请求显式传入 `animationPlanMode: "direct_shot"` 时启用；输出必须携带 `promptSchemaVersion: "3.0"`，且 `productionStrategy.format` 为 `direct_shot_video`。
