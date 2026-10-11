@@ -240,28 +240,6 @@
           <button class="outline-button animation-button" id="generateAnimationPlan" type="button" disabled>生成动画镜头生产包</button>
           <div class="story-export-actions">
             <button class="outline-button" id="exportStoryPackage" type="button" disabled>导出当前生产包 JSON</button>
-            <button class="outline-button shot-video-batch-start" id="startShotVideoBatch" type="button" disabled>批量生成全部镜头视频</button>
-          </div>
-          <div class="shot-video-batch-panel hidden" id="shotVideoBatchPanel" aria-live="polite">
-            <div class="shot-video-batch-summary">
-              <div>
-                <strong id="shotVideoBatchTitle">批量视频生成</strong>
-                <span id="shotVideoBatchStatus">等待开始</span>
-              </div>
-              <span id="shotVideoBatchCount">0 / 0</span>
-            </div>
-            <div class="shot-video-batch-track" aria-hidden="true"><span id="shotVideoBatchProgress"></span></div>
-            <div class="shot-video-batch-footer">
-              <div class="shot-video-batch-items" id="shotVideoBatchItems"></div>
-              <div class="shot-video-batch-controls">
-                <button class="batch-icon-button" id="pauseShotVideoBatch" type="button" aria-label="暂停批量生成" title="暂停批量生成">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg>
-                </button>
-                <button class="batch-icon-button terminate" id="terminateShotVideoBatch" type="button" aria-label="终止批量生成" title="终止批量生成">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
-                </button>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -324,63 +302,6 @@
     </div>
   </div>
 
-  <div class="modal-backdrop hidden" id="shotFrameImageModal" aria-hidden="true">
-    <div class="modal-card shot-frame-image-modal" role="dialog" aria-modal="true" aria-labelledby="shotFrameImageModalTitle">
-      <div class="modal-head">
-        <div>
-          <p class="eyebrow">JIMENG 5.0 LITE</p>
-          <h2 id="shotFrameImageModalTitle">生成镜头帧图片</h2>
-        </div>
-        <button class="icon-button" id="closeShotFrameImageModal" type="button" aria-label="关闭">×</button>
-      </div>
-      <div class="modal-grid">
-        <div class="modal-panel">
-          <p class="modal-meta" id="shotFrameImageMeta"></p>
-          <div class="shot-frame-control-row">
-            <label class="field shot-frame-kind-field">
-              <span>生成类型</span>
-              <select id="shotFrameImageKind">
-                <option value="start">首帧</option>
-                <option value="end">尾帧</option>
-              </select>
-            </label>
-            <label class="field shot-frame-count-field">
-              <span>生成数量</span>
-              <select id="shotFrameImageCount">
-                <option value="1">1 张</option>
-                <option value="2">2 张</option>
-                <option value="3">3 张</option>
-                <option value="4" selected>4 张</option>
-                <option value="5">5 张</option>
-                <option value="6">6 张</option>
-              </select>
-            </label>
-            <label class="field shot-frame-reference-mode-field hidden" id="shotFrameReferenceModeField">
-              <span>尾帧参考策略</span>
-              <select id="shotFrameReferenceMode">
-                <option value="inherit">强继承</option>
-                <option value="transition">同场景变化</option>
-                <option value="independent">独立尾帧</option>
-              </select>
-            </label>
-          </div>
-          <p class="shot-frame-reference-mode-hint hidden" id="shotFrameReferenceModeHint"></p>
-          <div class="shot-frame-reference-list" id="shotFrameReferenceList"></div>
-        </div>
-        <div class="modal-panel">
-          <span class="block-label">生成提示词预览 · 可编辑</span>
-          <textarea class="prompt-preview prompt-preview-editor shot-frame-prompt-editor" id="shotFrameImagePromptPreview" rows="14"></textarea>
-          <p class="story-status" id="shotFrameImageStatus"></p>
-          <button class="primary-button" id="confirmGenerateShotFrameImage" type="button">
-            <span id="confirmGenerateShotFrameImageLabel">生成首帧</span>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
-          </button>
-        </div>
-      </div>
-      <div class="generated-reference-results shot-frame-image-results" id="shotFrameImageResults"></div>
-    </div>
-  </div>
-
   <div class="modal-backdrop hidden" id="shotVideoModal" aria-hidden="true">
     <div class="modal-card shot-video-modal" role="dialog" aria-modal="true" aria-labelledby="shotVideoModalTitle">
       <div class="modal-head">
@@ -393,13 +314,10 @@
       <div class="modal-grid">
         <div class="modal-panel">
           <p class="modal-meta" id="shotVideoMeta"></p>
-          <label class="field">
+          <div class="field">
             <span>生成模式</span>
-            <select id="shotVideoGenerationMode">
-              <option value="first_last_frame">首尾帧模式</option>
-              <option value="all_reference">全能参考模式</option>
-            </select>
-          </label>
+            <small class="field-hint">全能参考：图片、视频、音频只作参考，不锁定精确首尾帧。</small>
+          </div>
           <label class="field">
             <span>生成数量</span>
             <select id="shotVideoCount">
@@ -414,14 +332,10 @@
             <select id="shotVideoResolution"></select>
           </label>
           <p class="shot-video-resolution-hint" id="shotVideoResolutionHint"></p>
-          <div class="shot-video-all-reference-controls hidden" id="shotVideoAllReferenceControls">
+          <div class="shot-video-all-reference-controls" id="shotVideoAllReferenceControls">
             <label class="shot-video-reference-toggle">
               <input id="shotVideoIncludePreviousShotFrames" type="checkbox">
               <span>把上个镜头内容作为普通参考图</span>
-            </label>
-            <label class="shot-video-reference-toggle" id="shotVideoEndpointReferenceToggle">
-              <input id="shotVideoIncludeEndpointFrames" type="checkbox" checked>
-              <span>把已选首帧/尾帧作为普通参考图</span>
             </label>
             <label class="shot-video-reference-toggle">
               <input id="shotVideoIncludeCharacterReferences" type="checkbox" checked>
@@ -439,7 +353,7 @@
         <div class="modal-panel shot-video-output-panel">
           <span class="block-label">视频提示词预览 · 可编辑</span>
           <textarea class="prompt-preview prompt-preview-editor shot-video-prompt-editor" id="shotVideoPromptPreview" rows="14"></textarea>
-          <button class="outline-button hidden" id="regenerateShotVideoPrompt" type="button">重新生成本镜提示词</button>
+          <button class="outline-button" id="regenerateShotVideoPrompt" type="button">重新生成本镜提示词</button>
           <p class="story-status" id="shotVideoStatus"></p>
           <button class="primary-button" id="confirmGenerateShotVideo" type="button">
             <span>生成镜头视频</span>

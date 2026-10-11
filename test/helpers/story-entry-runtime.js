@@ -47,7 +47,7 @@ export async function createStoryEntryRuntime({ storyMode = "fullStoryText" } = 
   const rawFullStory = mockNarrativeFullStory({ ...fullStoryInput, storySource, visualGuardrails });
   const planResult = await workflow.createAnimationPlanWithMetadata({
     creatorProfile, visualGuardrails, fullStory, ...(variant ? { variant } : {}),
-    animationPlanVersion: "4.0", animationPlanMode: "direct_shot", targetAspectRatio: "16:9", backgroundMusicEnabled: false
+    animationPlanVersion: "4.0", targetAspectRatio: "16:9", backgroundMusicEnabled: false
   }, { storyEntry });
   const plan = planResult.animationPlan;
   const video = await workflow.createShotVideoPrompt({ plan, shotId: plan.shotPlan[0].shotId, planDigest: "fixture", target: { provider: "Seedance", model: "doubao-seedance-2-0-260128" } });

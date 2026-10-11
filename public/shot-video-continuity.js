@@ -13,10 +13,6 @@ export function shotVideoResultKey(variantId, shotId) {
   return `${String(variantId || "")}:${String(shotId || "")}`;
 }
 
-export function shotFrameResultKey(variantId, shotId, frameKind) {
-  return `${String(variantId || "")}:${String(shotId || "")}:${frameKind === "end" ? "end" : "start"}`;
-}
-
 export function mediaFilenameSegment(value) {
   return String(value || "item")
     .trim()
@@ -29,18 +25,14 @@ export function mediaFilenameSegment(value) {
 export function dropStaleMediaResults(mediaState = {}, artifactIdValue = "") {
   const artifactId = String(artifactIdValue || "");
   const videoResults = mediaState.shotVideoResults || {};
-  const frameResults = mediaState.shotFrameResults || {};
   if (artifactId.startsWith("animationPlan:")) {
     const prefix = `${artifactId.slice("animationPlan:".length)}:`;
     for (const key of Object.keys(videoResults)) if (key.startsWith(prefix)) delete videoResults[key];
-    for (const key of Object.keys(frameResults)) if (key.startsWith(prefix)) delete frameResults[key];
     return;
   }
   const parts = artifactId.split(":");
   if (parts[0] === "shotVideo" && parts.length >= 3) {
     delete videoResults[shotVideoResultKey(parts[1], parts.slice(2).join(":"))];
-  } else if (parts[0] === "shotFrame" && parts.length >= 4) {
-    delete frameResults[shotFrameResultKey(parts[1], parts.slice(2, -1).join(":"), parts.at(-1))];
   }
 }
 

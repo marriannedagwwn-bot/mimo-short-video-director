@@ -30,7 +30,9 @@ test("真实 HTTP / Durable Task：旧剧情生成新版分镜、单镜提示词
     const persisted=await fs.readFile(path.join(runtime.root,"state",run.projectId,run.runId,"tasks/index.json"),"utf8");
     assert.equal(persisted.includes(prompt.content.videoPrompt),false);
     assert.equal(persisted.includes("任务：将完整 Full Story"),false);
-    await assert.rejects(()=>api("/api/tasks/create",{...run,kind:"shotVideoBatch",input:{...promptInput}}),/逐镜/);
+    // 批量镜头视频任务已于 2026-10-11 随 3.0 分镜删除：建任务时按未知任务类型明确拒绝。
+    await assert.rejects(()=>api("/api/tasks/create",{...run,kind:"shotVideoBatch",input:{...promptInput}}),
+      error=>error.status===400&&error.response?.code==="TASK_KIND_UNSUPPORTED");
     runtime.holdPrompt();
     const delayed=await api("/api/tasks/create",{...run,kind:"shotVideoPrompt",input:{...promptInput,videoModel:"doubao-seedance-2-0-fast-260128"}});
     for(let i=0;i<100&&!runtime.promptPending();i++) await new Promise(resolve=>setTimeout(resolve,20));

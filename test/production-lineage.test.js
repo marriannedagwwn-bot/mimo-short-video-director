@@ -150,14 +150,13 @@ test("refresh recovery parses media and character-image Task targets without gue
     artifactId: "characterImages:V2:3",
     variantId: "V2",
     shotId: "",
-    frameKind: "",
     roleIndex: 3
   });
+  // 首尾帧出图已于 2026-10-11 删除：旧 Run 里的 shotFrame:* 目标不再解析成任何页面状态。
   assert.deepEqual(durableTaskTargetContext({ targetArtifactIds: ["shotFrame:V2:A01:end"] }), {
     artifactId: "shotFrame:V2:A01:end",
-    variantId: "V2",
-    shotId: "A01",
-    frameKind: "end",
+    variantId: "",
+    shotId: "",
     roleIndex: null
   });
   assert.equal(durableTaskTargetContext({ targetArtifactIds: ["shotVideo:V3:A02"] }).shotId, "A02");

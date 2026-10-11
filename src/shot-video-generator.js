@@ -5,7 +5,6 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { compileShotNegativePrompt } from "../public/negative-prompts.js";
 import {
   ALL_REFERENCE_MAX_AUDIOS,
   ALL_REFERENCE_MAX_IMAGES,
@@ -16,14 +15,6 @@ import {
   ALL_REFERENCE_MEDIA_TOTAL_SECONDS,
   MINIMAX_H3_MAX_TOTAL_ASSETS
 } from "../public/all-reference-limits.js";
-import {
-  assertVideoPromptProfile,
-  VIDEO_PROMPT_PROFILE_IDS
-} from "../public/video-prompt-profiles.js";
-import {
-  ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION,
-  ensureCharacterPromptMatchesBoundary
-} from "./validation.js";
 import { assertMiniMaxH3Duration } from "./minimax-h3-prompt.js";
 import {
   buildReferenceManifestText,
@@ -34,8 +25,6 @@ import {
 import {
   assertShotVideoDurationSupported,
   inferShotVideoProvider,
-  isNonDomesticKlingApiEndpoint,
-  isShotVideoGenerationModeSupported,
   isShotVideoModelAllowed,
   normalizeShotVideoGenerationMode,
   normalizeShotVideoProvider,
@@ -65,30 +54,37 @@ export function normalizeShotVideoAspectRatio(value, { defaultValue = "9:16" } =
 
 export async function generateShotVideo(options = {}) {
   const shot = options.shot || {};
+  // 只剩 Seedance 与 MiniMax。显式点名了别的供应商（例如已删除的可灵 / VideoHTTP）就明确失败，
+  // 不悄悄改用默认供应商。
+  const requestedProviderName = String(options.videoProvider || "").trim();
+  if (requestedProviderName && !normalizeShotVideoProvider(requestedProviderName)) {
+    throw new ShotVideoConfigError(`不支持镜头视频供应商“${requestedProviderName}”：只支持 Seedance 或 MiniMax。`);
+  }
   const requestedSetting = resolveShotVideoSetting({
     provider: options.videoProvider,
     model: options.videoModel
   });
   const requestedRuntime = shotVideoRuntimeConfig(requestedSetting.provider, process.env, requestedSetting.model);
-  const configPath = options.configPath
-    || requestedRuntime.configPath
-    || (requestedSetting.provider === "VideoHTTP" ? process.env.VIDEO_HTTP_CONFIG : "")
-    || "";
+  const configPath = options.configPath || requestedRuntime.configPath || "";
   const config = await loadProviderConfig(configPath);
   const explicitProvider = normalizeShotVideoProvider(options.videoProvider);
   const configProvider = inferShotVideoProvider({
     model: options.videoModel || config.videoModel || config.model,
     preset: config.providerPreset || config.preset
   });
-  const videoProvider = explicitProvider
-    || configProvider
-    || (options.configPath ? "VideoHTTP" : requestedSetting.provider);
+  // 原来「给了配置文件、认不出是哪家、也没指定供应商」会当成自定义 VideoHTTP；VideoHTTP 已删除，
+  // 这里明确失败，不拿默认供应商去套一份认不出的配置文件。
+  if (options.configPath && !explicitProvider && !configProvider) {
+    throw new ShotVideoConfigError(`供应商配置文件 ${options.configPath} 认不出是 Seedance 还是 MiniMax（看 videoModel / providerPreset），请求也没有指定供应商。`);
+  }
+  const videoProvider = explicitProvider || configProvider || requestedSetting.provider;
   const providerDefaultModel = shotVideoRuntimeConfig(videoProvider).model;
   const videoModel = String(
     options.videoModel
     || config.videoModel
     || config.model
-    || (videoProvider === "VideoHTTP" ? "" : providerDefaultModel || requestedSetting.model)
+    || providerDefaultModel
+    || requestedSetting.model
     || ""
   ).trim();
   const providerRuntime = shotVideoRuntimeConfig(videoProvider, process.env, videoModel);
@@ -110,29 +106,15 @@ export async function generateShotVideo(options = {}) {
       ErrorType: ShotVideoConfigError
     });
   }
-  if (
-    [ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, "4.0"].includes(String(options.animationPromptSchemaVersion || "").trim())
-    && generationMode === "first_last_frame"
-  ) {
+  // 只剩全能参考一种模式（2026-10-11 删除首尾帧 first_last_frame）。没带或带了别的模式都明确失败，
+  // 不静默改写成全能参考。
+  if (!generationMode) {
     throw new ShotVideoConfigError(
-      "promptSchemaVersion=3.0 的 direct_shot 镜头没有首尾端点，不能使用 first_last_frame；请显式选择受支持的 all_reference 模式并提供图片或视频参考。"
+      `镜头视频只支持全能参考（all_reference）模式，本次请求的 generationMode 为“${String(options.generationMode ?? "")}”；首尾帧（first_last_frame）模式已删除，不会改用其他模式。`
     );
   }
-  assertProviderProtocolCompatibility(videoProvider, videoModel, config);
-  if (videoProvider !== "VideoHTTP" && !isShotVideoModelAllowed(videoProvider, videoModel)) {
+  if (!isShotVideoModelAllowed(videoProvider, videoModel)) {
     throw new ShotVideoConfigError(`${videoProvider} 不支持视频模型“${videoModel}”。`);
-  }
-  if (!isShotVideoGenerationModeSupported(videoProvider, generationMode)) {
-    if (videoProvider === "Kling" && generationMode === "all_reference") {
-      throw new ShotVideoConfigError("当前可灵接入使用官方 image-to-video 首尾帧接口；尚未取得可验证的 Omni API 协议，不能使用全能参考模式。请选择 Seedance 2.0 或 MiniMax H3。");
-    }
-    throw new ShotVideoConfigError(`${videoProvider} 不支持${generationMode === "all_reference" ? "全能参考" : "首尾帧"}视频模式。`);
-  }
-  if (
-    continuityReferenceMode === SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
-    && generationMode !== "all_reference"
-  ) {
-    throw new ShotVideoConfigError("上一镜抽帧只能作为 all_reference 的普通参考图，不能用于首尾帧模式。");
   }
   if (
     continuityReferenceMode === SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
@@ -140,16 +122,13 @@ export async function generateShotVideo(options = {}) {
   ) {
     throw new ShotVideoConfigError("上一镜抽帧缺少当前 Plan 签发的受信视频来源。");
   }
-  if (videoProvider !== "VideoHTTP" && !providerAuthConfigured(config, providerRuntime)) {
+  if (!providerAuthConfigured(config, providerRuntime)) {
     throw new ShotVideoConfigError(`未配置 ${videoProvider} API Key。请设置对应 provider API Key，或在 provider config 中提供认证信息。`);
   }
-  if (!videoEndpointConfigured(config, providerRuntime, videoProvider, generationMode)) {
-    throw new ShotVideoConfigError(`未配置 ${videoProvider} ${generationMode === "all_reference" ? "全能参考" : "首尾帧"}视频生成服务。请设置对应 provider endpoint/API Key，或设置 provider config 指向有效 JSON。`);
+  if (!videoEndpointConfigured(config, providerRuntime)) {
+    throw new ShotVideoConfigError(`未配置 ${videoProvider} 全能参考视频生成服务。请设置对应 provider endpoint/API Key，或设置 provider config 指向有效 JSON。`);
   }
-  if (generationMode === "first_last_frame" && !hasBothInputFrames(options) && !imageEndpointConfigured(config)) {
-    throw new ShotVideoConfigError("未配置首尾帧图片生成服务。请设置 VIDEO_HTTP_IMAGE_ENDPOINT / VIDEO_HTTP_ENDPOINT，或设置 VIDEO_HTTP_CONFIG 指向 provider.json；如果已在外部生成图片，也可以传入 startFrameDataUrl 和 endFrameDataUrl。");
-  }
-  if (generationMode === "all_reference") assertAllReferenceRequestSize(options);
+  assertAllReferenceRequestSize(options);
   // 分辨率（2026-10-10）：服务端建任务前已经校验过一次；这里在建工作目录、调用供应商之前，
   // 按实际读到的供应商配置文件再核对一次（直接调用本函数的路径、只有配置文件知道默认值的情况）。
   // 只有用户这次明确选了才写进发给 worker 的请求；没选时请求逐字不变，由 worker 按配置决定。
@@ -192,45 +171,25 @@ export async function generateShotVideo(options = {}) {
     await assertCurrentOrDiscard();
     if (options.lifetimeFile) await requireWorkspaceMediaDirectory(outputRoot, options.lifetimeFile);
     else await fs.mkdir(outputRoot, { recursive: true });
-    const frames = generationMode === "first_last_frame"
-      ? await prepareFrameArtifacts({
-        shot,
-        options,
-        outputRoot,
-        publicBasePath,
+    const uploadedArtifacts = await prepareAllReferenceArtifacts(options.referenceAssets, workDir);
+    const continuityReference = continuityReferenceMode === SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
+      ? await preparePreviousShotFrameArtifacts({
+        reference: options.trustedPreviousShotReference,
         workDir,
-        configPath,
-        stamp,
-        filenamePrefix
+        extractor: options.previousShotFrameExtractor
       })
       : null;
-    let continuityReference = null;
-    const inputArtifacts = generationMode === "first_last_frame"
-      ? [frames.start, frames.end].map(({ url, receipt, ...artifact }) => artifact)
-      : await (async () => {
-        const uploadedArtifacts = await prepareAllReferenceArtifacts(options.referenceAssets, workDir);
-        continuityReference = continuityReferenceMode === SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
-          ? await preparePreviousShotFrameArtifacts({
-            reference: options.trustedPreviousShotReference,
-            workDir,
-            extractor: options.previousShotFrameExtractor
-          })
-          : null;
-        const combined = [
-          ...uploadedArtifacts,
-          ...(continuityReference?.artifacts || [])
-        ];
-        validateAllReferenceArtifacts(combined, {
-          maxTotal: miniMaxH3Runtime ? MINIMAX_H3_MAX_TOTAL_ASSETS : Number.POSITIVE_INFINITY
-        });
-        return combined;
-      })();
+    const inputArtifacts = [
+      ...uploadedArtifacts,
+      ...(continuityReference?.artifacts || [])
+    ];
+    validateAllReferenceArtifacts(inputArtifacts, {
+      maxTotal: miniMaxH3Runtime ? MINIMAX_H3_MAX_TOTAL_ASSETS : Number.POSITIVE_INFINITY
+    });
     // 参考素材清单前置：服务端已经知道每张素材是什么，不写进正文模型就无从分辨。
     // 放在正文之前而不是之后，是为了让 backgroundMusicMode=none 的禁配乐句仍然是
     // 整条提示词的最后一句（CLAUDE.md 2.4 的逐字收尾语义）。
-    const referenceManifest = generationMode === "all_reference"
-      ? buildReferenceManifestText(inputArtifacts)
-      : "";
+    const referenceManifest = buildReferenceManifestText(inputArtifacts);
     //
     // 清单的安全性来自构造而不是事后校验：文本只由受控来源枚举、Plan 权威的
     // sourceCharacterName 和 lineage 解析出的 sourceShotId 拼成，上传素材的原始
@@ -255,10 +214,8 @@ export async function generateShotVideo(options = {}) {
         candidateCount: count,
         provider: videoProvider,
         model: videoModel,
-        generationMode,
         aspectRatio,
         prompt: effectiveVideoPrompt,
-        videoPromptProfile: options.videoPromptProfile,
         resolution: resolution.explicit ? resolution.value : ""
       });
       const providerTimeoutMs = Number(providerRuntime.pollTimeoutMs || config.pollTimeoutMs || 900_000);
@@ -309,16 +266,11 @@ export async function generateShotVideo(options = {}) {
       model: videoModel,
       generationMode,
       resolution: firstVideo.resolution || "",
-      startFrameUrl: frames?.start?.url || "",
-      startFramePath: frames?.start?.path || "",
-      endFrameUrl: frames?.end?.url || "",
-      endFramePath: frames?.end?.path || "",
-      referenceSummary: generationMode === "all_reference" ? summarizeReferenceArtifacts(inputArtifacts) : null,
+      referenceSummary: summarizeReferenceArtifacts(inputArtifacts),
       referenceManifest,
       videoPromptSource: options.videoPromptSource === "runtime_override" ? "runtime_override" : "animation_plan",
       sourceVideoPrompt: String(shot.videoPrompt || ""),
       effectiveVideoPrompt,
-      promptReceipt: null,
       continuityReferenceReceipt: continuityReference
         ? {
           mode: SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES,
@@ -344,10 +296,6 @@ export async function generateShotVideo(options = {}) {
       count,
       actualCount: videos.length,
       videos,
-      frameReceipts: {
-        start: frames?.start?.receipt || {},
-        end: frames?.end?.receipt || {}
-      },
       receipt: firstVideo.receipt || {},
       generatedAt: new Date().toISOString()
     };
@@ -381,85 +329,11 @@ async function createShotVideoWorkDirectory(options) {
   return fs.mkdtemp(path.join(workRoot, "shot-video-"));
 }
 
+// 发给视频模型的提示词正文（参考素材清单之外的部分）。只剩全能参考，原来首尾帧模式下
+// 附加的 startFramePrompt / endFramePrompt 已随首尾帧删除。
 export function shotVideoGenerationPromptText(options = {}) {
   const shot = options.shot || {};
-  const prompts = [shot.videoPrompt];
-  if (normalizeShotVideoGenerationMode(options.generationMode) === "all_reference") {
-    return prompts.map((item) => String(item || "").trim()).filter(Boolean).join("\n");
-  }
-  if (!options.startFrameDataUrl) prompts.push(shot.startFramePrompt || framePromptFallback(shot, "start"));
-  if (!options.endFrameDataUrl) prompts.push(shot.endFramePrompt || framePromptFallback(shot, "end"));
-  return prompts.map((item) => String(item || "").trim()).filter(Boolean).join("\n");
-}
-
-async function prepareFrameArtifacts(context) {
-  const start = await prepareOneFrameArtifact({ ...context, frameKind: "start", dataUrl: context.options.startFrameDataUrl });
-  const end = await prepareOneFrameArtifact({ ...context, frameKind: "end", dataUrl: context.options.endFrameDataUrl });
-  return { start, end };
-}
-
-async function prepareOneFrameArtifact(context) {
-  const { shot, outputRoot, publicBasePath, frameKind, stamp, dataUrl, workDir, configPath } = context;
-  const shotId = safeSegment(shot.shotId || "shot");
-  const filenamePrefix = context.filenamePrefix || "";
-  const outputKey = `frames.${shotId}.${frameKind}`;
-  const prompt = frameKind === "start" ? shot.startFramePrompt : shot.endFramePrompt;
-
-  if (dataUrl) {
-    return writeDataUrlArtifact({
-      outputRoot,
-      publicBasePath,
-      outputKey,
-      basename: `${filenamePrefix}${shotId}-${frameKind}-${stamp}`,
-      dataUrl,
-      lifetimeFile: context.options.lifetimeFile
-    });
-  }
-
-  const outputPath = path.join(outputRoot, `${filenamePrefix}${shotId}-${frameKind}-${stamp}.png`);
-  const request = buildFrameRequest(shot, { frameKind, outputPath, outputKey, prompt });
-  const receipt = await runGenericWorker({ request, outputPath, workDir, configPath, workerRunner: context.options.workerRunner, lifetimeFile: context.options.lifetimeFile });
-  return {
-    outputKey,
-    path: outputPath,
-    status: "done",
-    missing: false,
-    url: `${publicBasePath}/${path.basename(outputPath)}`,
-    receipt
-  };
-}
-
-function buildFrameRequest(shot = {}, context = {}) {
-  const label = context.frameKind === "start" ? "START" : "END";
-  const negativePrompt = compileShotNegativePrompt(shot, "image");
-  return {
-    version: "1.0",
-    providerMode: "provider_agnostic",
-    taskId: `${shot.shotId || "SHOT"}-${label}-FRAME-PREVIEW`,
-    type: context.frameKind === "start" ? "start_frame_image" : "end_frame_image",
-    capability: "image_generation",
-    status: "ready",
-    inputType: "text_to_image",
-    outputKey: context.outputKey,
-    outputPath: context.outputPath,
-    prompt: context.prompt || framePromptFallback(shot, context.frameKind),
-    negativePromptEntries: negativePrompt.negativePromptEntries,
-    compiledNegativePrompt: negativePrompt.compiledNegativePrompt,
-    negativePrompt: negativePrompt.compiledNegativePrompt,
-    inputArtifacts: [],
-    parameters: {
-      aspectRatio: shot.aspectRatio || "9:16",
-      shotId: shot.shotId || "",
-      sourceSceneId: shot.sourceSceneId || "",
-      frameKind: context.frameKind,
-      cameraMotion: shot.cameraMotion || "",
-      characterAction: shot.characterAction || "",
-      dialogueOrSubtitle: shot.dialogueOrSubtitle || "",
-      continuityNotes: shot.continuityNotes || ""
-    },
-    acceptanceCriteria: shot.acceptanceCriteria || [],
-    rawJob: shot
-  };
+  return [shot.videoPrompt].map((item) => String(item || "").trim()).filter(Boolean).join("\n");
 }
 
 // Plan 的 durationSeconds 是唯一权威。缺失或非法时必须明确失败，
@@ -478,27 +352,19 @@ function buildShotVideoRequest(shot = {}, context = {}) {
   const candidateIndex = Number(context.candidateIndex) || 0;
   const candidateCount = Number(context.candidateCount) || 1;
   const candidateSuffix = candidateCount > 1 ? `-${candidateIndex + 1}` : "";
-  const negativePrompt = compileShotNegativePrompt(shot, "video");
-  const generationMode = normalizeShotVideoGenerationMode(context.generationMode);
-  const allReference = generationMode === "all_reference";
   return {
     version: "1.0",
     providerMode: "provider_agnostic",
     taskId: `${shot.shotId || "SHOT"}-VIDEO-PREVIEW${candidateSuffix}`,
-    type: allReference ? "all_reference_video" : "first_last_frame_video",
-    capability: allReference ? "all_reference_video_generation" : "first_last_frame_video_generation",
+    type: "all_reference_video",
+    capability: "all_reference_video_generation",
     status: "ready",
-    inputType: allReference ? "multimodal_reference_to_video" : "image_pair_to_video",
+    inputType: "multimodal_reference_to_video",
     outputKey: `preview.${safeSegment(shot.shotId || "shot")}`,
     outputPath: context.outputPath,
     provider: context.provider || "",
     model: context.model || "",
     prompt: Object.hasOwn(context, "prompt") ? String(context.prompt || "") : shot.videoPrompt || "",
-    ...(context.videoPromptProfile ? { videoPromptProfile: structuredClone(context.videoPromptProfile) } : {}),
-    ...(context.promptDialect ? { promptDialect: context.promptDialect } : {}),
-    negativePromptEntries: negativePrompt.negativePromptEntries,
-    compiledNegativePrompt: negativePrompt.compiledNegativePrompt,
-    negativePrompt: negativePrompt.compiledNegativePrompt,
     inputArtifacts: context.inputArtifacts || [],
     parameters: {
       aspectRatio: context.aspectRatio || "9:16",
@@ -512,7 +378,7 @@ function buildShotVideoRequest(shot = {}, context = {}) {
       continuityNotes: shot.continuityNotes || "",
       candidateIndex,
       candidateCount,
-      generationMode,
+      generationMode: "all_reference",
       // 只在用户这次明确选了分辨率时才有这个键（2026-10-10），没选时请求 JSON 与之前逐字相同。
       ...(context.resolution ? { resolution: context.resolution } : {})
     },
@@ -526,8 +392,6 @@ function buildShotVideoRequest(shot = {}, context = {}) {
  *
  * 这些路径都含 requestNonce，不可能撞上并发请求的产物；绝不扫描或 glob 目录。
  * 删除失败只吞掉：清理是尽力而为，不能改变 fail closed 的结论。
- * 旧 v2 首尾帧 PNG 不在覆盖内——它的文件名只有毫秒 stamp、不含 nonce，
- * 删除有误伤并发请求的风险，而 first_last_frame 本身已是弃置兼容路径。
  */
 async function discardStaleShotVideoOutputs(outputPaths = []) {
   for (const outputPath of outputPaths) {
@@ -622,23 +486,6 @@ async function probePlayableVideoOutput(outputPath) {
   }
 }
 
-async function writeDataUrlArtifact({ outputRoot, publicBasePath, outputKey, basename, dataUrl, lifetimeFile }) {
-  const match = String(dataUrl || "").match(/^data:([^;,]+);base64,(.+)$/u);
-  if (!match) throw new ShotVideoConfigError(`${basename} 不是有效的 base64 data URL`);
-  const [, mimeType, payload] = match;
-  if (lifetimeFile) await requireWorkspaceMediaDirectory(outputRoot, lifetimeFile);
-  else await fs.mkdir(outputRoot, { recursive: true });
-  const filePath = path.join(outputRoot, `${basename}${extensionForMime(mimeType)}`);
-  await fs.writeFile(filePath, Buffer.from(payload, "base64"));
-  return {
-    outputKey,
-    path: filePath,
-    status: "done",
-    missing: false,
-    url: `${publicBasePath}/${path.basename(filePath)}`
-  };
-}
-
 async function runGenericWorker({ request, outputPath, workDir, configPath, workerRunner = null, lifetimeFile = "" }) {
   const requestPath = path.join(workDir, `${safeSegment(request.taskId)}.request.json`);
   const receiptPath = path.join(workDir, `${safeSegment(request.taskId)}.receipt.json`);
@@ -686,36 +533,18 @@ async function loadProviderConfig(configPath) {
   }
 }
 
-function hasBothInputFrames(options = {}) {
-  return Boolean(options.startFrameDataUrl && options.endFrameDataUrl);
-}
-
 function clampVideoCount(value) {
   const number = Math.round(Number(value));
   if (!Number.isFinite(number)) return 1;
   return Math.min(4, Math.max(1, number));
 }
 
-function imageEndpointConfigured(config = {}) {
+function videoEndpointConfigured(config = {}, runtime = {}) {
   return Boolean(
-    config.endpoints?.image_generation
-    || config.imageEndpoint
-    || config.endpoint
-    || process.env.VIDEO_HTTP_IMAGE_ENDPOINT
-    || process.env.VIDEO_HTTP_ENDPOINT
-  );
-}
-
-function videoEndpointConfigured(config = {}, runtime = {}, provider = "", generationMode = "first_last_frame") {
-  const capability = normalizeShotVideoGenerationMode(generationMode) === "all_reference"
-    ? "all_reference_video_generation"
-    : "first_last_frame_video_generation";
-  return Boolean(
-    config.endpoints?.[capability]
+    config.endpoints?.all_reference_video_generation
     || config.videoEndpoint
     || config.endpoint
     || runtime.endpoint
-    || (provider === "VideoHTTP" && (process.env.VIDEO_HTTP_VIDEO_ENDPOINT || process.env.VIDEO_HTTP_ENDPOINT))
   );
 }
 
@@ -1027,29 +856,6 @@ function providerAuthConfigured(config = {}, runtime = {}) {
     || config.headers?.Authorization
     || config.headers?.authorization
   );
-}
-
-function assertProviderProtocolCompatibility(provider, model, config = {}) {
-  if (provider !== "Kling" || model !== "kling-v3") return;
-  const preset = String(config.providerPreset || config.preset || "").trim().toLowerCase();
-  const endpoint = String(config.videoEndpoint || config.endpoint || "").trim();
-  if (isNonDomesticKlingApiEndpoint(endpoint)) {
-    throw new ShotVideoConfigError("Kling 3.0 仅支持国内官方 API；请使用 api-beijing.klingai.com，并配置国内控制台签发的 KLING_API_KEY（兼容 KLING_V3_API_KEY）。");
-  }
-  if (["kling_image_to_video", "kling_image2video"].includes(preset) || /\/v1(?:\/|$)/u.test(endpoint)) {
-    throw new ShotVideoConfigError("Kling 3.0 国内新版接口不能复用 2.1/Legacy provider config；请配置国内 KLING_API_KEY（兼容 KLING_V3_API_KEY），并使用 api-beijing.klingai.com/image-to-video/kling-3.0。");
-  }
-}
-
-function framePromptFallback(shot = {}, frameKind = "start") {
-  const frameLabel = frameKind === "start" ? "首帧" : "尾帧";
-  return [
-    `为该镜头生成${frameLabel}关键帧。`,
-    shot.videoPrompt ? `视频动作：${shot.videoPrompt}` : "",
-    shot.characterAction ? `人物动作：${shot.characterAction}` : "",
-    shot.dialogueOrSubtitle ? `对白/字幕：${shot.dialogueOrSubtitle}` : "",
-    shot.continuityNotes ? `连续性：${shot.continuityNotes}` : ""
-  ].filter(Boolean).join("\n");
 }
 
 async function readJsonIfExists(filePath) {

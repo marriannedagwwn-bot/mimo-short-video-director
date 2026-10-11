@@ -1,5 +1,4 @@
 import { InputError } from "./validation.js";
-import { buildShotFrameImagePrompt as buildSharedShotFrameImagePrompt } from "../public/shot-frame-prompt.js";
 import { buildCharacterReferenceImagePrompt as buildSharedCharacterReferenceImagePrompt } from "../public/character-reference-prompt.js";
 import {
   afterDurableProviderCall,
@@ -48,7 +47,6 @@ export class JimengImageClient {
     }
     const endpoint = `${this.config.baseUrl.replace(/\/$/, "")}/images/generations`;
     const body = buildJimengImageRequestBody(this.config, input);
-    const requestReceipt = buildJimengImageRequestReceipt(body, input.negativePromptDelivery);
     const timeoutMs = this.config.timeoutMs || 300_000;
     await beforeDurableProviderCall("image_provider_call", timeoutMs);
     const response = await fetch(endpoint, {
@@ -70,7 +68,7 @@ export class JimengImageClient {
       const envelope = await response.json();
       await emitNonStreamingEnvelope(envelope, onEvent);
       await afterDurableProviderCall("image_provider_response");
-      return requestReceipt;
+      return;
     }
     if (!response.body) throw new JimengImageProviderError("即梦没有返回可读取的流式响应");
     await parseSseStream(response.body, async (event) => {
@@ -78,32 +76,22 @@ export class JimengImageClient {
       await onEvent(event);
     });
     await afterDurableProviderCall("image_provider_response");
-    return requestReceipt;
   }
 }
 
 // options：{ withReferenceImage, artStyle }。不传时按「已上传参考图」、无画风处理，与改动前逐字相同。
-export function buildCharacterReferenceImagePrompt(characterReference = {}, count = 1, visualBible = null, options = {}) {
-  const prompt = buildSharedCharacterReferenceImagePrompt({ characterReference, count, visualBible, ...options });
+export function buildCharacterReferenceImagePrompt(characterReference = {}, count = 1, options = {}) {
+  const prompt = buildSharedCharacterReferenceImagePrompt({ characterReference, count, ...options });
   if (!prompt) throw new InputError("角色参考提示词为空，无法生成参考图。");
   return prompt;
 }
 
-export function buildShotFrameImagePrompt(input = {}) {
-  try {
-    return buildSharedShotFrameImagePrompt(input);
-  } catch (error) {
-    throw new InputError(error.message || "镜头帧提示词为空，无法生成镜头图。");
-  }
-}
-
 export function buildJimengImageRequestBody(config = {}, input = {}) {
   const count = clampInteger(input.count, 1, config.maxImages || 6);
-  const referenceImages = Array.isArray(input.referenceImageDataUrls)
-    ? input.referenceImageDataUrls.filter(Boolean)
-    : input.referenceImageDataUrl ? [input.referenceImageDataUrl] : [];
+  // 两个角色参考图入口都只传一张参考图（或不传）；多图分支只服务已删除的首尾帧出图。
+  const referenceImages = input.referenceImageDataUrl ? [input.referenceImageDataUrl] : [];
   const prompt = input.prompt
-    || buildCharacterReferenceImagePrompt(input.characterReference, count, input.visualBible, {
+    || buildCharacterReferenceImagePrompt(input.characterReference, count, {
       withReferenceImage: referenceImages.length > 0,
       artStyle: input.artStyle
     });
@@ -118,43 +106,11 @@ export function buildJimengImageRequestBody(config = {}, input = {}) {
     output_format: config.outputFormat || "png"
   };
   if (referenceImages.length) {
-    if (config.imageField === "image") body.image = referenceImages.length === 1 ? referenceImages[0] : referenceImages;
+    if (config.imageField === "image") body.image = referenceImages[0];
     else body.images = referenceImages;
   }
   if (count > 1) body.sequential_image_generation_options = { max_images: count };
   return body;
-}
-
-export function buildJimengImageRequestReceipt(body = {}, delivery = null) {
-  const source = delivery && typeof delivery === "object" ? delivery : {};
-  const positiveConstraints = Array.isArray(source.positiveConstraints) ? source.positiveConstraints.filter(Boolean) : [];
-  const ignoredEntries = Array.isArray(source.ignoredEntries) ? source.ignoredEntries : [];
-  const negativePromptEntries = Array.isArray(source.negativePromptEntries) ? source.negativePromptEntries : [];
-  return {
-    negativePromptDelivery: {
-      supported: false,
-      appliedMode: positiveConstraints.length ? "positive_constraint" : "not_supported",
-      providerField: positiveConstraints.length ? "prompt" : "",
-      compiledNegativePrompt: String(source.compiledNegativePrompt || ""),
-      appliedText: positiveConstraints.join("\n"),
-      ignored: ignoredEntries.map((entry) => entry?.text || String(entry || "")).filter(Boolean),
-      providerIgnored: ignoredEntries.length > 0
-    },
-    requestPreview: redactJimengRequestPreview(body),
-    negativePromptEntries
-  };
-}
-
-function redactJimengRequestPreview(body = {}) {
-  const redact = (value) => {
-    if (Array.isArray(value)) return value.map(redact);
-    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redact(item)]));
-    if (typeof value !== "string") return value;
-    if (/^data:[^;,]+;base64,/u.test(value)) return "[REDACTED_DATA_URL]";
-    if (value.length > 512 && /^[A-Za-z0-9+/=_-]+$/u.test(value)) return "[REDACTED_BASE64]";
-    return value;
-  };
-  return redact(body);
 }
 
 async function parseSseStream(body, onEvent) {

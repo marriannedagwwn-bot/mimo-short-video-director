@@ -11,6 +11,8 @@ export function normalizeAnimationPlanAspectRatio(value, fallback = "9:16") {
   return isAnimationPlanAspectRatio(normalizedFallback) ? normalizedFallback : "9:16";
 }
 
+// 有意保留：「已有 Plan 就地切换画幅」的契约实现。当前页面不暴露这条路径（要换画幅只能重新生成），
+// 这个函数与它的单元测试留着，随时可以重新接回 UI。
 export function withAnimationPlanAspectRatio(plan, value) {
   const ratio = String(value || "").trim();
   if (!isAnimationPlanAspectRatio(ratio)) {
@@ -22,50 +24,4 @@ export function withAnimationPlanAspectRatio(plan, value) {
     targetAspectRatio: ratio
   };
   return updated;
-}
-
-// 3.1 起 direct_shot 的单镜时长由各场 timeRange 派生，Plan 里不再有
-// "建议单镜时长"这个字段。页面要显示区间就只能从实际 shotPlan 汇总，
-// 旧的 first_last_frame Plan 仍旧读它自己的 recommendedShotDurationSeconds。
-export function animationPlanShotDurationRange(plan = {}) {
-  const durations = (Array.isArray(plan?.shotPlan) ? plan.shotPlan : [])
-    .map((shot) => Number(shot?.durationSeconds))
-    .filter((duration) => Number.isFinite(duration) && duration > 0);
-  if (!durations.length) return null;
-  return { min: Math.min(...durations), max: Math.max(...durations) };
-}
-
-export function animationPlanRuntimeSummary(plan = {}) {
-  const shots = Array.isArray(plan?.shotPlan) ? plan.shotPlan : [];
-  const target = Number(plan?.productionStrategy?.targetRuntimeSeconds);
-  const targetSeconds = Number.isFinite(target) && target > 0 ? target : null;
-  if (!shots.length) {
-    return {
-      valid: false,
-      plannedSeconds: null,
-      targetSeconds,
-      deltaSeconds: null,
-      reason: "镜头计划为空"
-    };
-  }
-
-  const durations = shots.map((shot) => Number(shot?.durationSeconds));
-  if (durations.some((duration) => !Number.isFinite(duration) || duration <= 0)) {
-    return {
-      valid: false,
-      plannedSeconds: null,
-      targetSeconds,
-      deltaSeconds: null,
-      reason: "镜头时长数据不完整"
-    };
-  }
-
-  const plannedSeconds = durations.reduce((total, duration) => total + duration, 0);
-  return {
-    valid: true,
-    plannedSeconds,
-    targetSeconds,
-    deltaSeconds: targetSeconds === null ? null : plannedSeconds - targetSeconds,
-    reason: ""
-  };
 }

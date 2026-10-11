@@ -5,10 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { executeGenericHttpWorker } from "../../workers/generic-http-worker.mjs";
 
-// 三家镜头视频供应商的假服务：记下 worker 实际 POST 的原始请求体，按各家协议让 worker 走完。
+// 两家镜头视频供应商（Seedance、MiniMax）的假服务：记下 worker 实际 POST 的原始请求体，按各家协议让 worker 走完。
 // 供应商配置文件里固定住会受 .env 影响的字段；分辨率由调用方通过环境变量或 config 决定。
 
-const RESOLUTION_ENV = ["SEEDANCE_VIDEO_RESOLUTION", "MINIMAX_VIDEO_RESOLUTION", "KLING_VIDEO_RESOLUTION"];
+const RESOLUTION_ENV = ["SEEDANCE_VIDEO_RESOLUTION", "MINIMAX_VIDEO_RESOLUTION"];
 
 export function pinResolutionEnv(t, values) {
   const saved = Object.fromEntries(RESOLUTION_ENV.map((name) => [name, process.env[name]]));
@@ -132,57 +132,6 @@ export async function miniMaxPostedBody(t, { config = {}, parameters = {} } = {}
       prompt: "阿岚在雨夜的修理铺门口蹲下，把湿透的小猫抱进怀里。",
       inputArtifacts: [{ outputKey: "references.1", status: "done", path: imagePath, mediaType: "image", role: "reference_image" }],
       parameters: { aspectRatio: "16:9", durationSeconds: 5, generationMode: "all_reference", ...parameters }
-    },
-    output: path.join(root, "output.mp4"),
-    root
-  });
-  return { raw: provider.posted[0], receipt };
-}
-
-export async function klingV3PostedBody(t, { config = {}, parameters = {} } = {}) {
-  const provider = await fakeProvider(t, (request, response, base) => {
-    if (request.method === "POST" && request.url === "/image-to-video/kling-3.0") {
-      return json(response, { code: 0, data: { id: "golden-kling", status: "submitted" } });
-    }
-    if (request.url?.startsWith("/tasks?")) {
-      return json(response, { code: 0, data: [{ id: "golden-kling", status: "succeeded", outputs: [{ type: "video", url: `${base}/media/kling.mp4` }] }] });
-    }
-    if (request.url === "/media/kling.mp4") return media(response, "kling golden video");
-    response.writeHead(404);
-    response.end("not found");
-  });
-  const root = await workspace(t, "kling");
-  const startPath = path.join(root, "start.png");
-  const endPath = path.join(root, "end.png");
-  const configPath = path.join(root, "provider.json");
-  await fs.writeFile(startPath, Buffer.alloc(300, 1));
-  await fs.writeFile(endPath, "golden end image");
-  await fs.writeFile(configPath, JSON.stringify({
-    videoEndpoint: `${provider.base()}/image-to-video/kling-3.0`,
-    providerPreset: "kling_3_0_image_to_video",
-    videoModel: "kling-v3",
-    apiKey: "test-key",
-    pollIntervalMs: 1,
-    pollTimeoutMs: 1000,
-    audio: "native",
-    multiShot: false,
-    watermark: false,
-    ...config
-  }));
-  const receipt = await executeGenericHttpWorker({
-    config: configPath,
-    request: {
-      taskId: "Kling-golden",
-      capability: "first_last_frame_video_generation",
-      outputKey: "preview.golden",
-      provider: "Kling",
-      model: "kling-v3",
-      prompt: "阿岚在雨夜的修理铺门口蹲下，把湿透的小猫抱进怀里。",
-      inputArtifacts: [
-        { path: startPath, outputKey: "frames.golden.start", status: "done" },
-        { path: endPath, outputKey: "frames.golden.end", status: "done" }
-      ],
-      parameters: { aspectRatio: "9:16", durationSeconds: 5, ...parameters }
     },
     output: path.join(root, "output.mp4"),
     root

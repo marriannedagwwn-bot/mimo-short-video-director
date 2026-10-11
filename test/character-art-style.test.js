@@ -60,8 +60,8 @@ test("角色参考图提示词：没上传图片时第一行不提上传；画�
 test("角色参考图提示词：服务端回退与浏览器预览同一份模板", () => {
   for (const options of [{}, { withReferenceImage: false }, { withReferenceImage: false, artStyle: "水彩绘本" }, { withReferenceImage: true, artStyle: "三维卡通动画" }]) {
     assert.equal(
-      buildServerCharacterReferenceImagePrompt(characterReference, 2, null, options),
-      buildCharacterReferenceImagePrompt({ characterReference, count: 2, visualBible: null, ...options })
+      buildServerCharacterReferenceImagePrompt(characterReference, 2, options),
+      buildCharacterReferenceImagePrompt({ characterReference, count: 2, ...options })
     );
   }
 });

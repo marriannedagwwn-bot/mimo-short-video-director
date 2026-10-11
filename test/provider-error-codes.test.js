@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import {
   describeProviderError,
   extractProviderErrorSignal,
-  normalizeProviderName,
-  providerErrorDisplayText
+  normalizeProviderName
 } from "../src/provider-error-codes.js";
 import { serializeServerError } from "../src/server-error.js";
 import { ShotVideoProviderError } from "../src/shot-video-generator.js";
@@ -44,8 +43,6 @@ test("各供应商的官方错误码翻译成可执行提示", () => {
     ["Seedance", 'HTTP 403 : {"error":{"code":"AccountOverdueError"}}', "火山引擎账号欠费", false],
     ["Seedance", 'HTTP 429 : {"error":{"code":"ServerOverloaded"}}', "火山方舟服务资源紧张", true],
     ["Jimeng", 'HTTP 400 : {"error":{"code":"InvalidParameter"}}', "请求包含非法参数", false],
-    ["Kling", 'HTTP 429 : {"code":1101,"message":"arrears"}', "可灵账户欠费", false],
-    ["Kling", 'HTTP 429 : {"code":1303}', "并发或 QPS 超限", true],
     ["Qwen", '{"code":"InvalidApiKey"}', "API Key 填写错误", false],
     ["Qwen", '{"error":{"code":"Throttling.RateQuota"}}', "调用频率超限（RPM/TPM）", true]
   ];
@@ -68,9 +65,7 @@ test("没有专属码时按 HTTP 状态兜底，标签如实标明依据", () =>
   });
   assert.equal(deepseek.title, "DeepSeek 账户余额不足");
   assert.equal(deepseek.matchedBy, "httpStatus");
-  // 命中依据是状态码，就不能把响应体里那个无关的 code 显示成来源。
-  assert.match(providerErrorDisplayText(deepseek), /DeepSeek HTTP 402/u);
-  assert.doesNotMatch(providerErrorDisplayText(deepseek), /invalid_request_error/u);
+  assert.equal(deepseek.httpStatus, 402);
 
   // 小米 MiMo 官方同样按 HTTP 状态定义错误。
   const mimo = describeProviderError({ provider: "MiMo", httpStatus: 401, payload: "{}" });
@@ -94,14 +89,16 @@ test("匹配不到就返回 null，不许编一句安慰话", () => {
   assert.equal(describeProviderError({ provider: "Seedance", payload: "连接被重置" }), null);
   // 供应商都认不出来。
   assert.equal(describeProviderError({ provider: "某个没接过的厂商", httpStatus: 402, payload: "{}" }), null);
-  assert.equal(providerErrorDisplayText(null), "");
+  // 可灵码表随可灵供应商于 2026-10-11 删除：它的码不再被翻译，也不借用别家的表。
+  assert.equal(describeProviderError({ provider: "Kling", payload: 'HTTP 429 : {"code":1101,"message":"arrears"}' }), null);
 });
 
 test("供应商别名归一，未知名字不猜", () => {
   assert.equal(normalizeProviderName("minimax"), "MiniMax");
   assert.equal(normalizeProviderName("MiniMax-H3"), "MiniMax");
   assert.equal(normalizeProviderName("ark"), "Seedance");
-  assert.equal(normalizeProviderName("可灵"), "Kling");
+  assert.equal(normalizeProviderName("可灵"), "", "可灵已删除，不再归一");
+  assert.equal(normalizeProviderName("kling"), "");
   assert.equal(normalizeProviderName("dashscope"), "Qwen");
   assert.equal(normalizeProviderName("  "), "");
   assert.equal(normalizeProviderName("openai"), "");

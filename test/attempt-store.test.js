@@ -7,18 +7,22 @@ import {
   DEFAULT_ATTEMPT_RAW_TTL_MS
 } from "../src/attempt-store.js";
 
+// 只给测试用的读取口（getRawOutput / deleteRawOutput / stats 与两个淘汰计数器）已于 2026-10-11 删除，
+// 生产代码从没读过它们。下面的用例改为直接看存储里留下了什么（entries / totalBytes），
+// 留存期限、单条截断与容量淘汰的断言本身不变。
+function storedText(store, rawOutputRef) {
+  store.purgeExpired();
+  const entry = store.entries.get(rawOutputRef);
+  return entry ? entry.buffer.toString("utf8") : null;
+}
+
 test("AttemptStore defaults match the Phase 0 retention limits", () => {
   const store = new AttemptStore();
-  assert.deepEqual(store.stats(), {
-    entries: 0,
-    totalBytes: 0,
-    ttlMs: 30 * 60 * 1_000,
-    maxEntryBytes: 256 * 1_024,
-    maxTotalBytes: 50 * 1_024 * 1_024,
-    evictionPolicy: "expired-first-then-oldest-created",
-    evictedExpired: 0,
-    evictedCapacity: 0
-  });
+  assert.equal(store.entries.size, 0);
+  assert.equal(store.totalBytes, 0);
+  assert.equal(store.ttlMs, 30 * 60 * 1_000);
+  assert.equal(store.maxEntryBytes, 256 * 1_024);
+  assert.equal(store.maxTotalBytes, 50 * 1_024 * 1_024);
   assert.equal(DEFAULT_ATTEMPT_RAW_TTL_MS, 30 * 60 * 1_000);
   assert.equal(DEFAULT_ATTEMPT_RAW_MAX_ENTRY_BYTES, 256 * 1_024);
   assert.equal(DEFAULT_ATTEMPT_RAW_MAX_TOTAL_BYTES, 50 * 1_024 * 1_024);
@@ -37,7 +41,7 @@ test("AttemptStore stores raw output internally and returns only its reference i
     code: "INVALID_JSON"
   });
 
-  assert.equal(store.getRawOutput(record.rawOutputRef), "private completion");
+  assert.equal(storedText(store, record.rawOutputRef), "private completion");
   assert.equal(record.rawOutputBytes, Buffer.byteLength("private completion"));
   assert.equal(record.storedRawOutputBytes, record.rawOutputBytes);
   assert.equal(record.rawOutputTruncated, false);
@@ -54,10 +58,11 @@ test("AttemptStore expires entries at the configured TTL", () => {
   const stored = store.storeRawOutput("expires");
 
   currentTime = 1_099;
-  assert.equal(store.getRawOutput(stored.rawOutputRef), "expires");
+  assert.equal(storedText(store, stored.rawOutputRef), "expires");
   currentTime = 1_100;
-  assert.equal(store.getRawOutput(stored.rawOutputRef), null);
-  assert.equal(store.stats().evictedExpired, 1);
+  assert.equal(storedText(store, stored.rawOutputRef), null);
+  assert.equal(store.entries.size, 0);
+  assert.equal(store.totalBytes, 0);
 });
 
 test("AttemptStore truncates one entry at a valid UTF-8 boundary", () => {
@@ -71,7 +76,7 @@ test("AttemptStore truncates one entry at a valid UTF-8 boundary", () => {
   assert.equal(stored.rawOutputBytes, 6);
   assert.equal(stored.storedRawOutputBytes, 5);
   assert.equal(stored.rawOutputTruncated, true);
-  assert.equal(store.getRawOutput(stored.rawOutputRef), "😀a");
+  assert.equal(storedText(store, stored.rawOutputRef), "😀a");
 });
 
 test("AttemptStore evicts expired entries first and then oldest-created entries", () => {
@@ -88,15 +93,18 @@ test("AttemptStore evicts expired entries first and then oldest-created entries"
   currentTime = 10;
   const second = store.storeRawOutput("abcdefgh");
 
-  assert.equal(store.getRawOutput(first.rawOutputRef), null);
-  assert.equal(store.getRawOutput(second.rawOutputRef), "abcdefgh");
-  assert.equal(store.stats().evictedCapacity, 1);
+  // 容量不够时淘汰最早写入的那条。
+  assert.equal(storedText(store, first.rawOutputRef), null);
+  assert.equal(storedText(store, second.rawOutputRef), "abcdefgh");
+  assert.deepEqual([...store.entries.keys()], [second.rawOutputRef]);
+  assert.equal(store.totalBytes, 8);
 
+  // 写入新条目之前先清掉已过期的：second 是因过期被清，不是被 third 挤掉。
   currentTime = 110;
-  const third = store.storeRawOutput("ijklmnop");
-  assert.equal(store.getRawOutput(second.rawOutputRef), null);
-  assert.equal(store.getRawOutput(third.rawOutputRef), "ijklmnop");
-  assert.equal(store.stats().evictedExpired, 1);
+  const third = store.storeRawOutput("ijkl");
+  assert.equal(storedText(store, second.rawOutputRef), null);
+  assert.equal(storedText(store, third.rawOutputRef), "ijkl");
+  assert.equal(store.totalBytes, 4);
 });
 
 test("AttemptStore rejects invalid limits", () => {

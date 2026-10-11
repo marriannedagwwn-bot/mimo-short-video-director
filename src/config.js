@@ -116,20 +116,6 @@ export function getConfig() {
   const deepseekThinking = ["disabled", "enabled"].includes(requestedDeepseekThinking) ? requestedDeepseekThinking : "disabled";
   const deepseekTemperature = clampNumber(process.env.DEEPSEEK_TEMPERATURE, 1, 0, 2);
   const deepseekTopP = clampNumber(process.env.DEEPSEEK_TOP_P, 1, 0, 1);
-  const staticFrameCompilerProvider = normalizeCompilerProvider(process.env.STATIC_FRAME_COMPILER_PROVIDER);
-  const staticFrameCompilerModel = process.env.STATIC_FRAME_COMPILER_MODEL?.trim() || "";
-  const staticFrameCompilerMaxCompletionTokens = Math.round(clampNumber(
-    process.env.STATIC_FRAME_COMPILER_MAX_COMPLETION_TOKENS,
-    4096,
-    512,
-    65536
-  ));
-  const staticFrameCompilerRequestTimeoutMs = Math.round(clampNumber(
-    process.env.STATIC_FRAME_COMPILER_TIMEOUT_MS,
-    300000,
-    30000,
-    900000
-  ));
   const fullStoryV2CastConfirmationTtlMs = Math.round(clampNumber(
     process.env.FULL_STORY_V2_CAST_CONFIRMATION_TTL_MS,
     30 * 60 * 1000,
@@ -255,13 +241,6 @@ export function getConfig() {
       topP: deepseekTopP,
       jsonMode: process.env.DEEPSEEK_JSON_MODE !== "false",
       enabled: Boolean(deepseekBaseUrl && deepseekApiKey)
-    },
-    staticFrameCompiler: {
-      provider: staticFrameCompilerProvider,
-      model: staticFrameCompilerModel,
-      maxCompletionTokens: staticFrameCompilerMaxCompletionTokens,
-      requestTimeoutMs: staticFrameCompilerRequestTimeoutMs,
-      configured: Boolean(staticFrameCompilerProvider && staticFrameCompilerModel)
     },
     fullStoryV2Pipeline: {
       enabled: process.env.FULL_STORY_V2_PIPELINE_ENABLED === "true",

@@ -22,44 +22,19 @@ const trustedSchemaKeywords = Object.freeze({
   FULL_STORY_SCHEMA_EMPTY_STRING: "pattern"
 });
 
-// Scene Contract errors are intentionally excluded from the first bounded
-// repair profile. For example, a missing visible character can be "fixed" by
-// adding the character or by erasing the action/dialogue that mentions them;
-// the diagnostic alone cannot prove which side is authoritative.
-const repairableSceneCodes = new Set();
+// Scene Contract errors are intentionally excluded from the bounded repair
+// profile. For example, a missing visible character can be "fixed" by adding
+// the character or by erasing the action/dialogue that mentions them; the
+// diagnostic alone cannot prove which side is authoritative.
 
 const issuedFullStoryRepairPlans = new WeakSet();
 
-const objectRootFields = new Set([
-  "dialogueStyleGuide",
-  "experienceFidelity",
-  "transformationProof",
-  "continuityAndSafetyCheck"
-]);
-
-const itemRootFields = new Set([
-  "beatSheet",
-  "sceneScript",
-  "keyProps",
-  "shootingPlan",
-  "retentionPlan",
-  "uncertainties"
-]);
-
-const rootInstructions = Object.freeze({
-  "/characterBible/protagonist": "只允许 name、identity、traits、speechRules、signatureBehaviors。人物行为正文必须放入 signatureBehaviors 数组，绝不能作为 JSON 属性名；保留其余合法角色事实。",
-  "/characterBible/careRecipient": "只允许 nameOrLabel、identity、explicitNeed、implicitNeed、relationshipToProtagonist；正文只能作为这些字段的值，不能作为属性名。",
-  beatSheet: "只允许 beat、timeRange、storyAction、emotion、dramaticFunction、retainedValueFromBrief。剧情动作放 storyAction，情绪放 emotion，剧作作用放 dramaticFunction，保留的 Brief 价值放 retainedValueFromBrief；正文绝不能作为 JSON 属性名。",
-  sceneScript: "只允许 sceneId、timeRange、location、characters、offscreenSoundSources、visibleAction、dialogue、shotAndSound、emotionNode、dramaticFunction、shootingNotes。画面动作放 visibleAction，声画建议放 shotAndSound，拍摄注意事项放 shootingNotes；正文绝不能作为 JSON 属性名。",
-  keyProps: "只允许 prop、storyFunction、visualUse、avoidSimilarityNote；正文只能作为字段值。",
-  shootingPlan: "只允许 unit、setup、mustCapture、practicalNote；正文只能作为字段值。",
-  retentionPlan: "只允许 moment、viewerQuestion、payoff、approxTime；正文只能作为字段值。",
-  uncertainties: "只允许 field、reason、safeFallback；正文只能作为字段值。",
-  dialogueStyleGuide: "只允许 overallTone、protagonistSpeechRule、supportingCharactersSpeechRule、forbiddenDialoguePatterns。",
-  experienceFidelity: "只允许 positioning、audience、emotion、plotDriver、highValueBeats。",
-  transformationProof: "只允许 changedCharacters、changedTask、changedDetailsAndProps、changedDialogue、changedVisualExpression。",
-  continuityAndSafetyCheck: "只允许 fixedCharacterLocked、verticalFit、sourceSurfaceAvoided、protectedExpressionsAvoided、shootableWithinConstraints。"
-});
+// 唯一能签发计划的目标：protagonist.name 缺失 / 类型错 / 空串，且已签发的
+// fixedCharacterBoundary 给出唯一姓名（deriveTargetMutation）。诊断落在任何其他
+// 子树都不签发计划——此前那套多子树、字段迁移、删除非法字段的通用框架对所有输入
+// 都走不到签发，已删除（2026-10-11）。
+const PROTAGONIST_ROOT = "/characterBible/protagonist";
+const PROTAGONIST_NAME_INSTRUCTION = "只补齐或纠正 name；name 必须逐字等于 expectedFields.name，identity、traits、speechRules 与 signatureBehaviors 必须保持不变。";
 
 export function planFullStoryPartialRepair(candidate, error, context = {}) {
   if (!isRecord(candidate)) return null;
@@ -67,16 +42,11 @@ export function planFullStoryPartialRepair(candidate, error, context = {}) {
   if (!details) return null;
   const diagnostics = normalizeTrustedDiagnostics(details);
   if (!diagnostics) return null;
-  const roots = [];
   for (const detail of diagnostics) {
-    const pointer = detail.pointer;
-    if (!pointer) return null;
-    const root = repairRootForPointer(pointer, candidate);
-    if (!root || !readPointer(candidate, root).found) return null;
-    if (!roots.includes(root)) roots.push(root);
+    if (!isProtagonistPointer(detail.pointer)) return null;
   }
-  if (!roots.length || roots.length > 12) return null;
-  roots.sort(compareRepairRoots);
+  if (!readPointer(candidate, PROTAGONIST_ROOT).found) return null;
+  const roots = [PROTAGONIST_ROOT];
   const targetDrafts = roots.map((path) => buildRepairTarget(candidate, diagnostics, path, context));
   if (targetDrafts.some((target) => !target)) return null;
   const authority = buildRepairAuthority(candidate, context, roots);
@@ -218,9 +188,6 @@ function normalizeTrustedDiagnostic(detail) {
         || jsonPointer !== pathPointer) return null;
     }
     pointer = pathPointer;
-  } else if (repairableSceneCodes.has(code)) {
-    if (!jsonPointerDescriptor) return null;
-    pointer = canonicalPointer(jsonPointerDescriptor.value);
   } else {
     return null;
   }
@@ -262,21 +229,9 @@ function trustedOutputContractDetails(error) {
   return descriptor.value;
 }
 
-function repairRootForPointer(pointer, candidate) {
-  const tokens = pointerTokens(pointer);
-  if (!tokens.length) return "";
-  const [first, second] = tokens;
-  if (first === "characterBible" && ["protagonist", "careRecipient"].includes(second)) {
-    return pointerFromTokens(tokens.slice(0, 2));
-  }
-  if (first === "characterBible" && second === "helpers" && isArrayIndex(tokens[2])) {
-    return pointerFromTokens(tokens.slice(0, 3));
-  }
-  if (itemRootFields.has(first) && isArrayIndex(second)) {
-    return pointerFromTokens(tokens.slice(0, 2));
-  }
-  if (objectRootFields.has(first)) return pointerFromTokens([first]);
-  return "";
+function isProtagonistPointer(pointer) {
+  const [first, second] = pointerTokens(pointer);
+  return first === "characterBible" && second === "protagonist";
 }
 
 function buildRepairTarget(candidate, details, path, context) {
@@ -299,12 +254,12 @@ function buildRepairTarget(candidate, details, path, context) {
     directFields: Object.freeze(mutation.directFields),
     expectedFields: deepFreeze(mutation.expectedFields),
     relocationSources: Object.freeze(mutation.relocationSources),
-    instruction: repairInstruction(path)
+    instruction: PROTAGONIST_NAME_INSTRUCTION
   };
 }
 
 function deriveTargetMutation(path, current, details, context) {
-  if (!details.length || !isRecord(current) || path !== "/characterBible/protagonist") return null;
+  if (!details.length || !isRecord(current) || path !== PROTAGONIST_ROOT) return null;
   const fixedCharacterBoundary = context.visualGuardrails?.fixedCharacterBoundary;
   const fixedCharacterName = String(fixedCharacterBoundary?.characterName || "").trim();
   if (!fixedCharacterName || !String(fixedCharacterBoundary?.boundaryDigest || "").trim()) return null;
@@ -355,28 +310,21 @@ function buildRepairAuthority(candidate, context, targetPaths) {
   });
 }
 
+// 已签发计划只有 protagonist.name 一种：mutableFields = directFields = ["name"]，
+// expectedFields = { name: 签发姓名 }，removableFields 与 relocationSources 恒为空。
+// 所以这里只需要三条：未命中字段逐字保留、不得新增未授权字段、name 逐字等于签发值。
 function assertTargetMutationAuthorized(target, replacement) {
   if (!isRecord(replacement) || !isRecord(target.currentValue)) {
     throw new OutputContractError(`Full Story 局部修复 ${target.repairId} replacement 必须是完整对象`);
   }
   const mutable = new Set(target.mutableFields);
-  const removable = new Set(target.removableFields);
-  const direct = new Set(target.directFields);
   const expected = new Map(Object.entries(target.expectedFields || {}));
-  const relocationContents = target.relocationSources.map((source) => source.content);
   for (const [key, value] of Object.entries(target.currentValue)) {
-    if (mutable.has(key) || removable.has(key)) continue;
+    if (mutable.has(key)) continue;
     if (!Object.prototype.hasOwnProperty.call(replacement, key)
       || contentDigest(replacement[key]) !== contentDigest(value)) {
       throw new OutputContractError(
         `Full Story 局部修复 ${target.repairId} 越权改变未命中字段 ${key}`
-      );
-    }
-  }
-  for (const key of removable) {
-    if (Object.prototype.hasOwnProperty.call(replacement, key)) {
-      throw new OutputContractError(
-        `Full Story 局部修复 ${target.repairId} 必须删除诊断命中的非法字段 ${key}`
       );
     }
   }
@@ -393,53 +341,6 @@ function assertTargetMutationAuthorized(target, replacement) {
       || contentDigest(replacement[field]) !== contentDigest(expectedValue)) {
       throw new OutputContractError(
         `Full Story 局部修复 ${target.repairId} 的 ${field} 必须逐字等于签发权威值`
-      );
-    }
-  }
-  const mutableText = target.mutableFields
-    .filter((field) => Object.prototype.hasOwnProperty.call(replacement, field))
-    .map((field) => JSON.stringify(replacement[field]))
-    .join("\n");
-  for (const content of relocationContents) {
-    if (!mutableText.includes(content)) {
-      throw new OutputContractError(
-        `Full Story 局部修复 ${target.repairId} 丢失非法字段承载的正文：${content}`
-      );
-    }
-  }
-  const relocationChangedFields = [];
-  for (const field of target.mutableFields) {
-    if (!Object.prototype.hasOwnProperty.call(replacement, field)) continue;
-    if (expected.has(field)) continue;
-    const existed = Object.prototype.hasOwnProperty.call(target.currentValue, field);
-    if (existed && contentDigest(target.currentValue[field]) === contentDigest(replacement[field])) continue;
-    if (existed && !preservesExistingContent(target.currentValue[field], replacement[field])) {
-      throw new OutputContractError(
-        `Full Story 局部修复 ${target.repairId} 迁移正文时改写了 ${field} 的原有合法内容`
-      );
-    }
-    const changedText = JSON.stringify(replacement[field]);
-    if (!relocationContents.some((content) => changedText.includes(content))) {
-      throw new OutputContractError(
-        `Full Story 局部修复 ${target.repairId} 越权改变与非法正文无关的字段 ${field}`
-      );
-    }
-    relocationChangedFields.push({ field, text: changedText });
-  }
-  for (const field of direct) {
-    if (expected.has(field)) continue;
-    const destination = relocationChangedFields.find((entry) => entry.field === field);
-    if (!destination) {
-      throw new OutputContractError(
-        `Full Story 局部修复 ${target.repairId} 缺失字段 ${field} 必须由诊断命中的正文填充`
-      );
-    }
-  }
-  for (const content of relocationContents) {
-    const changedDestinations = relocationChangedFields.filter(({ text }) => text.includes(content));
-    if (changedDestinations.length !== 1) {
-      throw new OutputContractError(
-        `Full Story 局部修复 ${target.repairId} 必须把每段非法字段正文恰好迁入一个字段：${content}`
       );
     }
   }
@@ -479,56 +380,6 @@ function deepFreeze(value) {
   Object.freeze(value);
   for (const child of Object.values(value)) deepFreeze(child);
   return value;
-}
-
-function preservesExistingContent(previous, next) {
-  if (typeof previous === "string") return !previous || (typeof next === "string" && next.includes(previous));
-  if (Array.isArray(previous)) {
-    if (!Array.isArray(next)) return false;
-    let cursor = 0;
-    for (const item of next) {
-      if (cursor < previous.length && contentDigest(item) === contentDigest(previous[cursor])) cursor += 1;
-    }
-    return cursor === previous.length;
-  }
-  return contentDigest(previous) === contentDigest(next);
-}
-
-function repairInstruction(path) {
-  if (path === "/characterBible/protagonist") {
-    return "只补齐或纠正 name；name 必须逐字等于 expectedFields.name，identity、traits、speechRules 与 signatureBehaviors 必须保持不变。";
-  }
-  if (rootInstructions[path]) return rootInstructions[path];
-  if (/^\/characterBible\/helpers\/\d+$/u.test(path)) {
-    return "只允许 nameOrLabel、functionInStory、relationshipToProtagonist、helpingAction；正文只能作为字段值，不能作为属性名。";
-  }
-  const first = pointerTokens(path)[0];
-  return rootInstructions[first] || "只返回当前路径要求的完整合法值；正文不得作为属性名。";
-}
-
-function compareRepairRoots(left, right) {
-  const leftTokens = pointerTokens(left);
-  const rightTokens = pointerTokens(right);
-  const topOrder = [
-    "selectedVariantId", "title", "oneLinePremise", "targetDurationSeconds", "shootingSynopsis",
-    "characterBible", "beatSheet", "sceneScript", "keyProps", "shootingPlan", "dialogueStyleGuide",
-    "retentionPlan", "experienceFidelity", "transformationProof", "continuityAndSafetyCheck", "uncertainties"
-  ];
-  const order = topOrder.indexOf(leftTokens[0]) - topOrder.indexOf(rightTokens[0]);
-  if (order) return order;
-  const maximum = Math.max(leftTokens.length, rightTokens.length);
-  for (let index = 1; index < maximum; index += 1) {
-    const leftToken = leftTokens[index] ?? "";
-    const rightToken = rightTokens[index] ?? "";
-    if (isArrayIndex(leftToken) && isArrayIndex(rightToken)) {
-      const numeric = Number(leftToken) - Number(rightToken);
-      if (numeric) return numeric;
-    } else {
-      const lexical = leftToken.localeCompare(rightToken, "en");
-      if (lexical) return lexical;
-    }
-  }
-  return 0;
 }
 
 function pointerBelongsToRoot(pointer, root) {
@@ -603,10 +454,6 @@ function assertExactKeys(value, keys, path) {
   if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
     throw new OutputContractError(`${path} 只允许字段 ${keys.join("、")}`);
   }
-}
-
-function isArrayIndex(value) {
-  return /^(?:0|[1-9]\d*)$/u.test(String(value || ""));
 }
 
 function isRecord(value) {

@@ -18,17 +18,11 @@
 // 作废全局角色边界并要求重跑整条工作流。
 export const CHARACTER_EXPRESSION_RULES_STORAGE_KEY = "directorCharacterExpressionRules";
 
-// 上限是有意保守的：它注入的两个提示词本身已超过 30k 字符。
+// 上限是有意保守的：定这个数时它要注入两个本身已超过 30k 字符的 3.0 提示词（3.0 已于 2026-10-11 删除，上限不变）。
 export const CHARACTER_EXPRESSION_RULES_MAX_CHARS = 1000;
 
 // 请求侧校验：只拦明显非法的值（类型错误、超长），不裁决"这条表情规则写得好不好"。
 // 空字符串合法——等同于不设置。
 export function isValidCharacterExpressionRules(value) {
   return typeof value === "string" && value.length <= CHARACTER_EXPRESSION_RULES_MAX_CHARS;
-}
-
-// 注入前的归一：去掉首尾空白。空串表示未设置，调用方据此整段省略提示词文案，
-// 以保证不传时的提示词与历史逐字一致。
-export function normalizeCharacterExpressionRules(value) {
-  return typeof value === "string" ? value.trim() : "";
 }

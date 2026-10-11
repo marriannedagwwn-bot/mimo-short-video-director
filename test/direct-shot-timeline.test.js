@@ -1,12 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  deriveDirectShotSkeleton,
-  directShotSkeletonForScenes,
-  directShotSkeletonRuntimeSeconds,
-  formatDirectShotSkeleton
-} from "../src/direct-shot-timeline.js";
+import { deriveDirectShotSkeleton } from "../src/direct-shot-timeline.js";
 import { parseSceneTimeRangeBounds, parseSceneTimeRangeSeconds } from "../src/validation.js";
+
+// 骨架现在只作为 Full Story 签发前的时间轴检查（每场 ≥4 秒），3.0 用的批次切片、
+// 提示词投影与时长合计函数已随 3.0 分镜删除（2026-10-11），合计改在这里直接算。
+const skeletonRuntimeSeconds = (skeleton) => skeleton.reduce((total, shot) => total + shot.durationSeconds, 0);
 
 function scenes(...timeRanges) {
   return {
@@ -57,7 +56,7 @@ test("≤15 秒的场次严格一对一映射，不再二次拆镜", () => {
   // storyPurpose / emotionalTarget 分别由 dramaticFunction / emotionNode 注入。
   assert.deepEqual(skeleton.map((shot) => shot.storyPurpose), ["功能1", "功能2", "功能3", "功能4"]);
   assert.deepEqual(skeleton.map((shot) => shot.emotionalTarget), ["情绪1", "情绪2", "情绪3", "情绪4"]);
-  assert.equal(directShotSkeletonRuntimeSeconds(skeleton), 33);
+  assert.equal(skeletonRuntimeSeconds(skeleton), 33);
 });
 
 test(">15 秒的场次按 ceil(跨度/15) 均分，余数逐秒给靠前的镜头", () => {
@@ -128,21 +127,5 @@ test("场次之间允许留白，只禁止重叠与回退", () => {
   const skeleton = deriveDirectShotSkeleton(scenes("00:00-00:08", "00:12-00:20"));
   assert.deepEqual(skeleton.map((shot) => shot.durationSeconds), [8, 8]);
   // 留白不计入成片时长：总长是各镜时长之和，不是首尾时间差。
-  assert.equal(directShotSkeletonRuntimeSeconds(skeleton), 16);
-});
-
-test("批次切片保持全局顺序，提示词投影逐场列出镜头", () => {
-  const story = scenes("00:00-00:08", "00:08-00:28", "00:28-00:34");
-  const skeleton = deriveDirectShotSkeleton(story);
-  const slice = directShotSkeletonForScenes(skeleton, [story.sceneScript[1], story.sceneScript[2]]);
-
-  assert.deepEqual(slice.map((shot) => shot.shotId), ["A02", "A03", "A04"]);
-  assert.equal(
-    formatDirectShotSkeleton(slice),
-    "S2（00:08-00:28，20 秒）→ 2 个镜头：A02 10 秒（第 1/2 段）、A03 10 秒（第 2/2 段）"
-    + "；S3（00:28-00:34，6 秒）→ 1 个镜头：A04 6 秒"
-  );
-  assert.equal(formatDirectShotSkeleton([]), "空");
-  // 用 sceneId 字符串取切片与用场次对象取切片必须等价。
-  assert.deepEqual(directShotSkeletonForScenes(skeleton, ["S1"]), [skeleton[0]]);
+  assert.equal(skeletonRuntimeSeconds(skeleton), 16);
 });

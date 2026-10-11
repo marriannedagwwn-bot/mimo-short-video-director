@@ -1066,59 +1066,50 @@ test("release is idempotent and a late second finalize cannot change the termina
   }, { localStallMs: 5_000 });
 });
 
-test("shot video batch pause and resume are persisted without releasing its claims", async () => {
-  await withManager(async ({ productionStore, manager }) => {
-    const productionRun = await productionStore.createRun({ projectId: "project-video-batch-pause" });
-    const created = await manager.createTask({
-      ...productionRun,
-      kind: "shotVideoBatch",
-      pool: "media",
-      targetArtifactIds: ["shotVideo:V1:S01"],
-      progress: { controlState: "running", totalShots: 1 },
-      execute: async () => new Promise(() => {})
+// 镜头视频批量（shotVideoBatch）、首尾帧出图（shotFrameImage）与方言改写（animationPromptRewrite）
+// 三种任务已于 2026-10-11 删除。Task Store 不校验 kind：删除前留下的记录照常读出，重启对账照常
+// 把进行中的标成 interrupted 并释放占用，只是不能再暂停、继续或终止。
+test("已删除类型的旧任务记录照常读出，重启对账不报错，且不能再控制", async () => {
+  await withManager(async ({ coordinator, productionStore, taskStore, manager }) => {
+    const productionRun = await productionStore.createRun({ projectId: "project-legacy-task-kinds" });
+    const legacy = [
+      { taskId: "task-legacy-batch", kind: "shotVideoBatch", status: "running", pool: "media", targetArtifactIds: ["shotVideo:V1:A01"] },
+      { taskId: "task-legacy-frame", kind: "shotFrameImage", status: "running", pool: "media", targetArtifactIds: ["shotFrame:V1:A02:start"] },
+      { taskId: "task-legacy-rewrite", kind: "animationPromptRewrite", status: "completed", targetArtifactIds: ["animationPlan:V1"] }
+    ];
+    await coordinator.withRunLock(productionRun.projectId, productionRun.runId, async () => {
+      const index = await taskStore.readIndex(productionRun.projectId, productionRun.runId);
+      for (const record of legacy) {
+        taskStore.createTaskUnlocked(index, {
+          ...record,
+          requestId: `request-${record.taskId}`,
+          operationKey: contentDigest({ task: record.taskId })
+        });
+        // 已结束的任务在当时就释放了占用；只有进行中的才留着，等重启对账去释放。
+        if (record.status === "completed") taskStore.releaseClaimsUnlocked(index, record.taskId);
+      }
+      await taskStore.writeIndexUnlocked(index);
     });
-    await waitUntil(() => manager.getTaskById(created.task.taskId), (task) => task.status === "running");
-    const paused = await manager.controlTask({ ...productionRun, taskId: created.task.taskId, action: "pause" });
-    assert.equal(paused.status, "running");
-    assert.equal(paused.progress.controlState, "paused");
-    const resumed = await manager.controlTask({ ...productionRun, taskId: created.task.taskId, action: "resume" });
-    assert.equal(resumed.status, "running");
-    assert.equal(resumed.progress.controlState, "running");
-    assert.equal((await manager.getTaskById(created.task.taskId)).progress.controlState, "running");
-    await manager.releaseTask({ ...productionRun, taskId: created.task.taskId });
-  }, { localStallMs: 5_000 });
-});
 
-test("terminating a shot video batch is durable and rejects late completion", async () => {
-  await withManager(async ({ productionStore, manager }) => {
-    const productionRun = await productionStore.createRun({ projectId: "project-video-batch-terminate" });
-    const targetArtifactId = "shotVideo:V1:S01";
-    const created = await manager.createTask({
-      ...productionRun,
-      kind: "shotVideoBatch",
-      pool: "media",
-      targetArtifactIds: [targetArtifactId],
-      execute: async () => new Promise(() => {})
-    });
-    await waitUntil(() => manager.getTaskById(created.task.taskId), (task) => task.status === "running");
-    const terminated = await manager.controlTask({
-      ...productionRun,
-      taskId: created.task.taskId,
-      action: "terminate"
-    });
-    assert.equal(terminated.status, "cancelled");
-    assert.equal(terminated.error.code, "SHOT_VIDEO_BATCH_TERMINATED");
-    assert.equal(await manager.completeTask(created.task.taskId, {}), false);
-    const replacement = await manager.createTask({
-      ...productionRun,
-      kind: "shotVideo",
-      pool: "media",
-      targetArtifactIds: [targetArtifactId],
-      execute: async () => ({})
-    });
-    assert.equal(replacement.reused, false);
-    await manager.waitForTask({ ...productionRun, taskId: replacement.task.taskId });
-  }, { localStallMs: 5_000 });
+    for (const record of legacy) {
+      const task = await taskStore.getTask({ ...productionRun, taskId: record.taskId });
+      assert.equal(task.kind, record.kind);
+      assert.equal(task.status, record.status);
+    }
+    await assert.rejects(
+      () => manager.controlTask({ ...productionRun, taskId: "task-legacy-batch", action: "pause" }),
+      (error) => error.code === "TASK_CONTROL_UNSUPPORTED" && error.httpStatus === 409
+    );
+
+    const restarted = new DurableTaskManager({ productionStore, taskStore, coordinator });
+    await restarted.reconcileInterruptedTasks();
+    assert.equal((await restarted.getTaskById("task-legacy-batch")).status, "interrupted");
+    assert.equal((await restarted.getTaskById("task-legacy-frame")).status, "interrupted");
+    assert.equal((await restarted.getTaskById("task-legacy-rewrite")).status, "completed");
+    assert.equal((await restarted.getTaskById("task-legacy-batch")).kind, "shotVideoBatch");
+    assert.deepEqual((await taskStore.readIndex(productionRun.projectId, productionRun.runId)).claims, {});
+    assert.equal(restarted.runtimes.size, 0);
+  });
 });
 
 test("DURABLE_TASK_MAX_CONCURRENCY=1 configures real queued execution defaults", () => {

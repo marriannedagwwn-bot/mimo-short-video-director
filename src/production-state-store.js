@@ -31,7 +31,12 @@ import {
   normalizeStoryEntryCreatorProfile,
   normalizeStorySource
 } from "../public/story-entry.js";
-import { STORYBOARD_PLAN_VERSION } from "../public/storyboard-plan.js";
+import {
+  ANIMATION_PLAN_VERSION_UNSUPPORTED,
+  STORYBOARD_PLAN_VERSION,
+  legacyAnimationPlanMessage,
+  legacyAnimationPlanVersion
+} from "../public/storyboard-plan.js";
 
 const RUN_MANIFEST_TYPE = "mimo-production-run";
 const RUN_MANIFEST_VERSION = "1.0";
@@ -248,6 +253,9 @@ export class ProductionStateStore {
       if (animationPlan) {
         plan = this.requireCurrentArtifact(manifest, `animationPlan:${variantId}`, animationPlan);
         assertDependsOn(plan, story, "Animation Plan 没有绑定当前 Story revision");
+        // 旧 2.0/3.0 Plan 不再封装进测试包（导入端同样拒收，见 validatePackage）。
+        // 注意包版本 3.0 与 Plan 版本是两回事：包结构与签名算法不变。
+        assertPackagedAnimationPlanSupported(animationPlan);
       }
       return {
         ...structuredClone(source),
@@ -322,6 +330,9 @@ export class ProductionStateStore {
     }
     let animationPlan = null;
     if (payload.animationPlan) {
+      // 包里带的是旧 2.0/3.0 Plan：在建 Run 之前明确拒绝，不导入、不迁移。
+      // 包版本 "3.0" 只说明这是参考视频那条链的包形状，与 Plan 的 promptSchemaVersion 无关。
+      assertPackagedAnimationPlanSupported(payload.animationPlan);
       animationPlan = validatePackagedArtifact(
         artifacts.animationPlan,
         payload.animationPlan,
@@ -1143,6 +1154,17 @@ export function validateStoryPackageBody(body) {
     }
   }
   return { storyMode, storySource, creatorProfile, artifacts: normalized, nodes };
+}
+
+// 2026-10-11 起只支持 4.0 自主分镜：判定只用 public/storyboard-plan.js 那一份。
+function assertPackagedAnimationPlanSupported(plan) {
+  const version = legacyAnimationPlanVersion(plan);
+  if (!version) return;
+  throw new ProductionStateError(legacyAnimationPlanMessage(version), {
+    code: ANIMATION_PLAN_VERSION_UNSUPPORTED,
+    httpStatus: 400,
+    details: [{ promptSchemaVersion: version }]
+  });
 }
 
 function validatePackagedArtifact(lineage, content, label) {

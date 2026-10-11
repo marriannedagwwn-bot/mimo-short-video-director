@@ -10,10 +10,10 @@ import { ModelResponseError } from "./mimo-client.js";
 import { ModelPipelineError, sanitizePublicMetadata } from "./model-errors.js";
 import { describeProviderError } from "./provider-error-codes.js";
 import { ShotVideoConfigError, ShotVideoProviderError } from "./shot-video-generator.js";
-import { StaticFrameCompilerError } from "./static-frame-compiler.js";
 import { readSystemProxyError } from "./system-proxy.js";
 import { ProductionStateError } from "./production-lineage.js";
 import { InputError, OutputContractError } from "./validation.js";
+import { ANIMATION_PLAN_VERSION_UNSUPPORTED } from "../public/storyboard-plan.js";
 
 export function serializeServerError(error, {
   attemptStore = null
@@ -61,7 +61,8 @@ export function serializeServerError(error, {
     return response(400, observabilityBody({
       error: error.message,
       category: "input",
-      code: "INPUT_INVALID",
+      // 分镜版本守卫（只支持 4.0）带自己的码，与消费端 409 同一个码；其余输入错误照旧是 INPUT_INVALID。
+      code: error.code === ANIMATION_PLAN_VERSION_UNSUPPORTED ? ANIMATION_PLAN_VERSION_UNSUPPORTED : "INPUT_INVALID",
       origin: "client",
       details: sanitizePublicMetadata(error.details) || []
     }));
@@ -166,21 +167,6 @@ export function serializeServerError(error, {
     }));
   }
 
-  const compilerStage = inferCompilerErrorStage(error);
-  if (compilerStage) {
-    const status = compilerErrorStatus(error);
-    return response(status, observabilityBody({
-      error: error.message,
-      status,
-      stage: compilerStage,
-      category: compilerErrorCategory(error),
-      code: String(error.code || error.errorCode || "COMPILER_ERROR"),
-      origin: "model",
-      retryable: Boolean(error.retryable),
-      metadata: compilerErrorMetadata(error)
-    }));
-  }
-
   if (error instanceof OutputContractError) {
     return response(502, observabilityBody({
       error: `模型输出未通过校验：${error.message}`,
@@ -228,45 +214,6 @@ export function serializeServerError(error, {
     })),
     log: sanitizeErrorForLog(error)
   };
-}
-
-export function inferCompilerErrorStage(error = {}) {
-  if (error instanceof StaticFrameCompilerError) return "staticFrameCompiler";
-  for (const value of [
-    error.stage,
-    error.metadata?.stage,
-    error.details?.stage,
-    error.name,
-    error.constructor?.name
-  ]) {
-    const normalized = String(value || "").replace(/[\s_-]+/gu, "").toLowerCase();
-    if (normalized.includes("staticframecompiler")) return "staticFrameCompiler";
-    if (normalized.includes("characterfeaturecompiler")) return "characterFeatureCompiler";
-  }
-  return "";
-}
-
-export function compilerErrorCategory(error = {}) {
-  return String(error.category || error.details?.category || error.metadata?.category || "protocol");
-}
-
-export function compilerErrorMetadata(error = {}) {
-  if (error.metadata && typeof error.metadata === "object" && !Array.isArray(error.metadata)) {
-    return sanitizePublicMetadata(error.metadata);
-  }
-  if (error.details?.metadata && typeof error.details.metadata === "object" && !Array.isArray(error.details.metadata)) {
-    return sanitizePublicMetadata(error.details.metadata);
-  }
-  return null;
-}
-
-export function compilerErrorStatus(error = {}) {
-  const explicitStatus = Number(error.status || error.statusCode);
-  if (Number.isInteger(explicitStatus) && explicitStatus >= 400 && explicitStatus <= 599) return explicitStatus;
-  const category = compilerErrorCategory(error).toLowerCase();
-  if (category === "config" || category === "input") return 400;
-  if (category === "timeout") return 504;
-  return 502;
 }
 
 export function sanitizeErrorForLog(error = {}) {

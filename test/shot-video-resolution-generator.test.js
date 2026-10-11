@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { generateShotVideo, parseVideoProbeMetadata } from "../src/shot-video-generator.js";
+import { generateShotVideo, parseVideoProbeMetadata, ShotVideoConfigError } from "../src/shot-video-generator.js";
 import { executeGenericHttpWorker } from "../workers/generic-http-worker.mjs";
 import { pinResolutionEnv } from "./helpers/fake-video-providers.js";
 
@@ -81,7 +81,6 @@ test("明确选了分辨率：写进发给 worker 的请求，候选与结果记
     videoProvider: "Seedance",
     videoModel: "doubao-seedance-2-0-260128",
     generationMode: "all_reference",
-    animationPromptSchemaVersion: "3.0",
     aspectRatio: "16:9",
     resolution: "1080p",
     configPath: await seedanceConfig(root, provider.endpoint),
@@ -111,7 +110,6 @@ test("没选分辨率：发给 worker 的请求里没有这个键（与加选项
     videoProvider: "Seedance",
     videoModel: "doubao-seedance-2-0-260128",
     generationMode: "all_reference",
-    animationPromptSchemaVersion: "3.0",
     configPath: await seedanceConfig(root, provider.endpoint),
     referenceAssets: [imageAsset],
     workerRunner: realWorker(seen),
@@ -125,7 +123,7 @@ test("没选分辨率：发给 worker 的请求里没有这个键（与加选项
   assert.equal(result.videos[0].measuredHeight, 0);
 });
 
-test("不合法的分辨率在调用 worker 之前就被拒：不在清单里、模型没有这个参数、配置的默认值对不上", async (t) => {
+test("不合法的分辨率在调用 worker 之前就被拒：不在清单里、配置的默认值对不上", async (t) => {
   pinResolutionEnv(t, {});
   const root = await workspace(t);
   let workerCalls = 0;
@@ -133,7 +131,6 @@ test("不合法的分辨率在调用 worker 之前就被拒：不在清单里、
   const base = {
     outputRoot: path.join(root, "generated"),
     generationMode: "all_reference",
-    animationPromptSchemaVersion: "3.0",
     referenceAssets: [imageAsset],
     workerRunner,
     videoOutputProbe: async () => 5,
@@ -152,28 +149,31 @@ test("不合法的分辨率在调用 worker 之前就被拒：不在清单里、
     videoModel: "doubao-seedance-2-0-fast-260128",
     configPath: await seedanceConfig(root, "https://provider.invalid/api", { videoModel: "doubao-seedance-2-0-fast-260128", resolution: "1080p" })
   }), (error) => error.code === "SHOT_VIDEO_RESOLUTION_DEFAULT_INVALID" && /供应商配置文件里的 resolution=1080p/u.test(error.message));
-  const klingConfig = path.join(root, "kling.json");
-  await fs.writeFile(klingConfig, JSON.stringify({
-    videoEndpoint: "https://provider.invalid/v1/videos/image2video",
-    providerPreset: "kling_image_to_video",
-    videoModel: "kling-v2-1",
-    apiKey: "test-key"
-  }));
-  const frame = `data:image/png;base64,${Buffer.from("frame").toString("base64")}`;
-  await assert.rejects(generateShotVideo({
-    outputRoot: path.join(root, "generated"),
-    videoProvider: "Kling",
-    videoModel: "kling-v2-1",
-    generationMode: "first_last_frame",
-    resolution: "720p",
-    configPath: klingConfig,
-    startFrameDataUrl: frame,
-    endFrameDataUrl: frame,
-    workerRunner,
-    videoOutputProbe: async () => 5,
-    shot: { shotId: "A01", durationSeconds: 5, videoPrompt: "测试" }
-  }), (error) => error.code === "SHOT_VIDEO_RESOLUTION_UNSUPPORTED");
-  assert.equal(workerCalls, 0, "三种都在调用供应商之前拒绝");
+  assert.equal(workerCalls, 0, "两种都在调用供应商之前拒绝");
+});
+
+// 「模型没有分辨率参数」原来由可灵 v2.1 触发；可灵与自定义 VideoHTTP 已于 2026-10-11 删除，
+// 现在点名它们在分辨率校验之前就明确失败，不悄悄改用 Seedance / MiniMax 去生成。
+test("点名已删除的可灵或 VideoHTTP：在调用 worker 之前明确失败，不改用默认供应商", async (t) => {
+  pinResolutionEnv(t, {});
+  const root = await workspace(t);
+  let workerCalls = 0;
+  for (const videoProvider of ["Kling", "VideoHTTP"]) {
+    await assert.rejects(generateShotVideo({
+      outputRoot: path.join(root, "generated"),
+      videoProvider,
+      videoModel: "kling-v2-1",
+      generationMode: "all_reference",
+      resolution: "720p",
+      configPath: await seedanceConfig(root, "https://provider.invalid/api"),
+      referenceAssets: [imageAsset],
+      workerRunner: async () => { workerCalls += 1; },
+      videoOutputProbe: async () => 5,
+      shot: seedanceShot
+    }), (error) => error instanceof ShotVideoConfigError
+      && error.message === `不支持镜头视频供应商“${videoProvider}”：只支持 Seedance 或 MiniMax。`);
+  }
+  assert.equal(workerCalls, 0);
 });
 
 test("ffprobe 输出解析：取时长与宽高；宽高缺了记 0 不判失败；没有视频流或时长无效仍然失败", () => {

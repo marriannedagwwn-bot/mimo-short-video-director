@@ -9,8 +9,9 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   mockAnalysis, mockReconstruction, mockBrief, mockVisualGuardrails,
-  mockVariants, mockFullStory, mockNarrativeFullStory, mockAnimationPlan
+  mockVariants, mockFullStory, mockNarrativeFullStory
 } from "../src/mock.js";
+import { WorkflowService } from "../src/workflow.js";
 import { lineageRef } from "../src/production-lineage.js";
 import { FULL_STORY_BEAT_SCENE_POSTPASS_SCHEMA_VERSION } from "../src/full-story-beat-scene-postpass.js";
 import { variantSourceResponse } from "./helpers/variant-source-response.js";
@@ -31,6 +32,19 @@ const input = {
   transcript: "",
   modelOverrides: Object.fromEntries(stages.map((stage) => [stage, { provider: "Qwen", model: `${stage}-fixture` }]))
 };
+
+// 下游夹具用的合法 4.0 分镜（2026-10-11 起提交口只收 4.0）：演示模式按同一份输入签出。
+// 它只是要被递归 stale 的下游数据，不与本 Run 的剧情逐字对应。
+async function storyboardPlanFixture() {
+  const { modelOverrides: ignoredModelOverrides, ...demoInput } = input;
+  const workflow = new WorkflowService();
+  const upstream = await workflow.run(demoInput);
+  const variant = upstream.themeVariants.variants[0];
+  const fullStory = await workflow.createFullStory({ ...demoInput, ...upstream, variant });
+  return workflow.createAnimationPlan({
+    ...demoInput, ...upstream, variant, fullStory, animationPlanVersion: "4.0", targetAspectRatio: "16:9"
+  });
+}
 
 async function until(read, predicate, message, timeoutMs = 8000) {
   const end = Date.now() + timeoutMs;
@@ -208,9 +222,8 @@ async function fixture(t, { narrative = false, hold = true, restale = false } = 
   const story = await commit("fullStory:V1", "fullStory", originalStory, [
     ...upstreamIds.map((id) => lineageRef(current[id].lineage)), lineageRef(candidate.lineage)
   ]);
-  const plan = await commit("animationPlan:V1", "animationPlan", mockAnimationPlan({
-    ...storyInput, fullStory: originalStory, animationPlanMode: "direct_shot", targetAspectRatio: "16:9"
-  }), [lineageRef(candidate.lineage), lineageRef(story.lineage)], { createMediaNamespace: true });
+  const plan = await commit("animationPlan:V1", "animationPlan", await storyboardPlanFixture(),
+    [lineageRef(candidate.lineage), lineageRef(story.lineage)], { createMediaNamespace: true });
   await commit("shotVideo:V1:A01", "shotVideo", {
     result: { outputUrl: "/fixture/original-A01.mp4" }, selectedIndex: 0
   }, [lineageRef(plan.lineage)]);

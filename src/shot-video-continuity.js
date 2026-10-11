@@ -1,6 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { isStoryboardPlan, storyboardShotForVideo } from "../public/storyboard-plan.js";
+import {
+  ANIMATION_PLAN_VERSION_UNSUPPORTED,
+  legacyAnimationPlanMessage,
+  legacyAnimationPlanVersion,
+  storyboardShotForVideo
+} from "../public/storyboard-plan.js";
 import {
   mediaFilenameSegment,
   SHOT_VIDEO_CONTINUITY_NONE,
@@ -38,6 +43,15 @@ export function resolveAuthoritativeShotVideoInput({
   selectedVariantId
 } = {}) {
   const plan = planEntry?.content;
+  // 2026-10-11 起只支持 4.0 自主分镜：旧 2.0/3.0 Plan 不再当成镜头来源读取。
+  const legacyVersion = legacyAnimationPlanVersion(plan);
+  if (legacyVersion) {
+    throw new ProductionStateError(legacyAnimationPlanMessage(legacyVersion), {
+      code: ANIMATION_PLAN_VERSION_UNSUPPORTED,
+      httpStatus: 409,
+      details: [{ promptSchemaVersion: legacyVersion }]
+    });
+  }
   const shots = Array.isArray(plan?.shotPlan) ? plan.shotPlan : [];
   const shotId = String(currentShotId || "").trim();
   const matches = shots.filter((shot) => String(shot?.shotId || "") === shotId);
@@ -65,12 +79,14 @@ export function resolveAuthoritativeShotVideoInput({
     });
   }
   const override = String(promptOverride || "").trim();
-  if (isStoryboardPlan(plan) && !override) throw new ProductionStateError("请先生成并确认此镜头的视频提示词", { code: "SHOT_VIDEO_PROMPT_REQUIRED" });
-  const shot = structuredClone(isStoryboardPlan(plan) ? storyboardShotForVideo(matches[0]) : matches[0]);
-  if (override) shot.videoPrompt = override;
+  // 4.0 分镜本身没有 videoPrompt：每镜的视频提示词由单镜写稿单独生成并确认，随请求作为 promptOverride 带来。
+  if (!override) throw new ProductionStateError("请先生成并确认此镜头的视频提示词", { code: "SHOT_VIDEO_PROMPT_REQUIRED" });
+  const shot = structuredClone(storyboardShotForVideo(matches[0]));
+  shot.videoPrompt = override;
   return {
     shot,
-    promptSource: override ? "runtime_override" : "animation_plan",
+    // 上面已要求必须带 promptOverride，所以来源恒为 runtime_override（回执字段取值不变）。
+    promptSource: "runtime_override",
     promptSchemaVersion: authoritativeSchemaVersion,
     characterReferences: structuredClone(plan?.characterReferencePrompts || []),
     planVariantId
@@ -406,8 +422,8 @@ function manifestClause(artifact, label, { hasCharacterReference = false, endLab
     const subject = name ? `「${name}」` : "该角色";
     return `${label} 是${subject}的声音样本，${subject}在本镜确实会发声；只用它决定${subject}发声时的音色，不要把它当作背景音或环境声播放，也不要在${subject}不发声的时间里重复它`;
   }
-  if (source === "workflow_start_frame") return `${label} 是本镜已选的首帧画面，只作普通参考`;
-  if (source === "workflow_end_frame") return `${label} 是本镜已选的尾帧画面，只作普通参考`;
+  // 原来还有「本镜已选的首帧 / 尾帧画面」两种来源，已随首尾帧出图删除；
+  // 其余来源（含已删除的那两种）一律按用户上传素材描述，不写入任何文件名。
   return `${label} 是用户上传的参考素材`;
 }
 

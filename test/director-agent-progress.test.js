@@ -7,6 +7,7 @@ import {
   directorAgentProjection
 } from "../public/director-agent-progress.js";
 import { DIRECTOR_AGENT_ACTIONS, parseDirectorAgentActionKey } from "../public/director-agent-actions.js";
+import { legacyAnimationPlanMessage } from "../public/storyboard-plan.js";
 
 // 导演助手的进度规则（2026-10-09）：页面状态 → 步骤、下一步、可执行动作。
 // 事实对象的形状由 app.js 的 directorAgentFacts() 产出；这里手写最小事实，逐条锁住规则。
@@ -23,7 +24,7 @@ function merge(base, overrides) {
 
 const MODELS = {
   pipeline: "MiMo mimo-v2.6-pro", candidates: "MiMo mimo-v2.6-pro", story: "MiMo mimo-v2.6-pro",
-  plan: "MiMo mimo-v2.6-pro", image: "Jimeng doubao-seedream-5-0", video: "Seedance doubao-seedance-2-0", videoSupportsStoryboard: true
+  plan: "MiMo mimo-v2.6-pro", image: "Jimeng doubao-seedream-5-0", video: "Seedance doubao-seedance-2-0"
 };
 
 // 「粘贴完整故事」拆好了镜头、还没有分镜。
@@ -39,7 +40,7 @@ function storyFacts(overrides = {}) {
     story: { exists: true, revision: "fullStory-V1-r1", sceneCount: 5, seconds: 60 },
     storyTaskId: "", storyBusy: false, storyFailure: null,
     precheck: { awaitingDecision: false, passStillValid: false, failure: null },
-    plan: null, planTaskId: "", planBusy: false, planFailure: null, imagesBusy: false, videoBusy: false,
+    plan: null, legacyPlanVersion: "", planTaskId: "", planBusy: false, planFailure: null, imagesBusy: false, videoBusy: false,
     busyText: "", failures: [],
     nextPlanSettings: { aspectRatio: "16:9", artStyle: "二维日系动画", musicOn: false },
     models: MODELS,
@@ -61,7 +62,7 @@ function videoFacts(overrides = {}) {
 
 function storyboard(overrides = {}) {
   return {
-    revision: "animationPlan-V1-r1", isStoryboard: true, hasProductionContext: true,
+    revision: "animationPlan-V1-r1", hasProductionContext: true,
     shots: [
       { shotId: "A01", seconds: 13, hasVideo: false, promptCached: false },
       { shotId: "A02", seconds: 8, hasVideo: false, promptCached: true }
@@ -191,15 +192,16 @@ test("角色都有图：下一步是第一镜没有视频的镜头；提示词�
   assert.match(done.waitingFor, /每一镜都有视频了/u);
 });
 
-test("镜头视频模型写不了 4.0 单镜提示词（比如默认的可灵）时，先提打开模型设置", () => {
-  const facts = storyFacts({ plan: storyboard({ roles: [{ index: 0, name: "阿岚", hasImage: true }] }), models: { videoSupportsStoryboard: false, video: "Kling kling-v3" } });
-  const progress = deriveDirectorProgress(facts);
-  assert.equal(progress.next.key, "openModelSettings");
-  assert.equal(keys(progress).some((key) => key.startsWith("openShotVideo")), false);
-  assert.match(progress.next.details[0], /Kling kling-v3/u);
-  // 补充说明发给模型：它回答「为什么不能做第二镜」时要说对原因，而不是自己编一个。
-  assert.match(progress.notes[0], /镜头视频现在做不了：镜头视频模型是 Kling kling-v3/u);
-  assert.deepEqual(directorAgentProjection(progress).notes, progress.notes);
+test("镜头视频只剩 Seedance / MiniMax（2026-10-11）：不再有「打开模型设置换视频模型」这一步，词表里也没有这个动作", () => {
+  const progress = deriveDirectorProgress(storyFacts({ plan: storyboard({ roles: [{ index: 0, name: "阿岚", hasImage: true }] }),
+    models: { video: "MiniMax MiniMax-Hailuo-H3" } }));
+  assert.deepEqual(keys(progress), ["openShotVideo:V1:A01", "openShotVideo:V1:A02"]);
+  assert.equal(progress.next.key, "openShotVideo:V1:A01");
+  assert.deepEqual(progress.notes, []);
+  assert.equal(Object.hasOwn(DIRECTOR_AGENT_ACTIONS, "openModelSettings"), false);
+  assert.equal(parseDirectorAgentActionKey("openModelSettings"), null);
+  // 视频卡片不再提醒「生成模式请选全能参考」：弹窗里只剩全能参考一种模式。
+  assert.doesNotMatch(progress.next.cost.note, /生成模式/u);
 });
 
 test("补充说明：角色还没有参考图时说明先出图只是建议的顺序；都有图时不说", () => {
@@ -209,9 +211,38 @@ test("补充说明：角色还没有参考图时说明先出图只是建议的�
   assert.deepEqual(allImages.notes, []);
 });
 
-test("旧版 3.0 生产包和版本信息对不上的分镜：不提镜头动作", () => {
-  assert.match(deriveDirectorProgress(storyFacts({ plan: storyboard({ isStoryboard: false }) })).waitingFor, /旧版/u);
-  assert.match(deriveDirectorProgress(storyFacts({ plan: storyboard({ hasProductionContext: false }) })).waitingFor, /刷新/u);
+test("版本信息对不上的分镜：不提镜头动作", () => {
+  const progress = deriveDirectorProgress(storyFacts({ plan: storyboard({ hasProductionContext: false }) }));
+  assert.match(progress.waitingFor, /刷新/u);
+  assert.equal(progress.next, null);
+  assert.equal(keys(progress).some((key) => key.startsWith("openShotVideo") || key.startsWith("openCharacterImages")), false);
+});
+
+test("旧版分镜（2026-10-11 起不再支持）：按实际版本说明（进 notes），并提议重新生成分镜，不提出图或镜头动作", () => {
+  // app.js 遇到旧 Plan 时 plan 为空、legacyPlanVersion 是实际版本（legacyAnimationPlanVersion 的结果）。
+  // 有下一步时 waitingFor 照常为空（既有约定），按版本写的说明放进 notes。
+  for (const version of ["2.0", "3.0", "unversioned"]) {
+    const progress = deriveDirectorProgress(storyFacts({ legacyPlanVersion: version }));
+    assert.equal(progress.waitingFor, "");
+    assert.deepEqual(progress.notes, [legacyAnimationPlanMessage(version)]);
+    assert.equal(progress.next.key, "generateStoryboard:V1");
+    assert.equal(progress.next.label, "重新生成分镜");
+    assert.match(progress.next.modelLabel, /^重新生成分镜（/u);
+    assert.deepEqual(keys(progress), ["generateStoryboard:V1"]);
+    assert.equal(progress.steps.find((step) => step.key === "plan").status, "todo");
+  }
+  assert.match(deriveDirectorProgress(storyFacts({ legacyPlanVersion: "3.0" })).notes[0], /这是旧版 3\.0 分镜，已不再支持/u);
+  assert.match(deriveDirectorProgress(storyFacts({ legacyPlanVersion: "2.0" })).notes[0], /这是旧版 2\.0 分镜/u);
+  assert.match(deriveDirectorProgress(storyFacts({ legacyPlanVersion: "unversioned" })).notes[0], /这是无版本号的旧版分镜/u);
+  // 说明随进度一起发给模型。
+  const payload = directorAgentProjection(deriveDirectorProgress(storyFacts({ legacyPlanVersion: "3.0" })));
+  assert.deepEqual(payload.notes, [legacyAnimationPlanMessage("3.0")]);
+  assert.equal(payload.waitingFor, "");
+  // 没有旧分镜时照旧是「生成分镜」，不带任何旧版说明。
+  const fresh = deriveDirectorProgress(storyFacts());
+  assert.equal(fresh.next.label, "生成分镜");
+  assert.equal(fresh.waitingFor, "");
+  assert.deepEqual(fresh.notes, []);
 });
 
 test("当前故事：选中的候选；刷新后没有选中项时接着用已经有完整剧情的那个；故事位只在拆完之后", () => {

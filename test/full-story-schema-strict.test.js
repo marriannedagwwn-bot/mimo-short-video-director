@@ -134,16 +134,16 @@ test("Animation entry applies the same strict Full Story validator before any do
         providerCalls += 1;
         throw new Error("downstream provider must not run");
       }
-    },
-    staticFrameCompilerProvider: "MiMo",
-    staticFrameCompilerModel: "test-model"
+    }
   });
 
+  // 2026-10-11 起分镜只生成 4.0：带上版本号，校验链本身不变。
   await assert.rejects(
     () => workflow.createAnimationPlanWithMetadata(withGlobalCharacterBoundary(workflow, {
       ...context,
       creativeBrief,
-      fullStory: story
+      fullStory: story,
+      animationPlanVersion: "4.0"
     })),
     (error) => error instanceof OutputContractError
       && error.details.some((detail) => detail.path === "/sceneScript/2/dialogue/0/line")

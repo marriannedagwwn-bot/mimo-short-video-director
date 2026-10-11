@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createDirectorAgentController } from "../public/director-agent-controller.js";
 import { deriveDirectorProgress } from "../public/director-agent-progress.js";
 import { DIRECTOR_AGENT_LIMITS } from "../public/director-agent-actions.js";
+import { legacyAnimationPlanMessage } from "../public/storyboard-plan.js";
 
 // 导演助手的对话状态（2026-10-09）：只在页面内存里；「这一步做完了」看结果有没有进页面，
 // 不看任务状态。第一次观察只记基线，不把已完成的步骤再报一遍。
@@ -29,17 +30,17 @@ function facts(overrides = {}) {
     story: { exists: true, revision: "fullStory-V1-r1", sceneCount: 5, seconds: 60 },
     storyTaskId: "", storyBusy: false, storyFailure: null,
     precheck: { awaitingDecision: false, passStillValid: false, failure: null },
-    plan: null, planTaskId: "", planBusy: false, planFailure: null, imagesBusy: false, videoBusy: false,
+    plan: null, legacyPlanVersion: "", planTaskId: "", planBusy: false, planFailure: null, imagesBusy: false, videoBusy: false,
     busyText: "", failures: [],
     nextPlanSettings: { aspectRatio: "16:9", artStyle: "二维日系动画", musicOn: false },
-    models: { pipeline: "MiMo m", candidates: "MiMo m", story: "MiMo m", plan: "MiMo m", image: "Jimeng s", video: "Seedance v", videoSupportsStoryboard: true },
+    models: { pipeline: "MiMo m", candidates: "MiMo m", story: "MiMo m", plan: "MiMo m", image: "Jimeng s", video: "Seedance v" },
     usage: { pipeline: null, variants: null, fullStory: null, plan: null }
   }, overrides);
 }
 
 function storyboard(overrides = {}) {
   return {
-    revision: "animationPlan-V1-r1", isStoryboard: true, hasProductionContext: true,
+    revision: "animationPlan-V1-r1", hasProductionContext: true,
     shots: [{ shotId: "A01", seconds: 13, hasVideo: false, promptCached: false }, { shotId: "A02", seconds: 8, hasVideo: false, promptCached: false }],
     roles: [{ index: 0, name: "阿岚", hasImage: false }, { index: 1, name: "老周", hasImage: true }],
     seconds: 21, aspectRatio: "16:9", artStyle: "二维日系动画",
@@ -99,6 +100,19 @@ test("流水线拆完、剧情重新拆好、分镜生成好：各发一段只�
 
   observe(controller, facts({ plan: storyboard(), planTaskId: "task-plan" }));
   assert.ok(texts(controller).includes("分镜好了：2 镜，共 21 秒，16:9，画风 二维日系动画；1 个角色还没有参考图。"));
+  assert.equal(controller.messages.at(-1).card.key, "openCharacterImages:V1:0");
+});
+
+test("旧版分镜（2026-10-11 起不再支持）：打招呼时建议重新生成分镜并给出卡片（按版本写的说明只进 notes）；重新生成成 4.0 后报「分镜好了」", () => {
+  const controller = createDirectorAgentController();
+  observe(controller, facts({ legacyPlanVersion: "3.0", planTaskId: "task-old" }));
+  assert.ok(controller.messages[0].text.endsWith("下一步建议：重新生成分镜。"));
+  assert.equal(controller.messages[0].text.includes(legacyAnimationPlanMessage("3.0")), false);
+  assert.equal(controller.messages[1].card.key, "generateStoryboard:V1");
+  assert.equal(controller.messages[1].card.state, "pending");
+  observe(controller, facts({ plan: storyboard(), planTaskId: "task-plan" }));
+  assert.ok(texts(controller).includes("分镜好了：2 镜，共 21 秒，16:9，画风 二维日系动画；1 个角色还没有参考图。"));
+  assert.equal(controller.messages[1].card.state, "superseded");
   assert.equal(controller.messages.at(-1).card.key, "openCharacterImages:V1:0");
 });
 

@@ -190,7 +190,7 @@ test("real generic worker follows direct → proxy A → proxy B → direct for 
         assert.equal(request.method, "POST");
         assert.equal(requests.length, 1, "a paid submission must never be retried when proxy settings change");
         const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        assert.ok(body.prompt || body.rawRequest?.prompt);
+        assert.equal(body.content?.[0]?.text, "controlled network fixture");
         await worker.refresh(proxyA.port);
         json(response, { taskId: "fixture-task", status: "queued", pollUrl: `http://${hostname}:${providerPort}/poll` });
       } else if (request.url === "/poll" && requests.length === 2) {
@@ -215,10 +215,16 @@ test("real generic worker follows direct → proxy A → proxy B → direct for 
   const request = path.join(f.directory, "request.json");
   const output = path.join(f.directory, "video.mp4");
   const receipt = path.join(f.directory, "receipt.json");
+  const reference = path.join(f.directory, "reference.png");
+  await fs.writeFile(reference, "reference bytes");
+  // 镜头视频只剩 Seedance / MiniMax 全能参考（2026-10-11 删除首尾帧与自定义 VideoHTTP），假供应商按 Seedance 配置。
   await fs.writeFile(config, JSON.stringify({ videoEndpoint: `http://${hostname}:${providerPort}/generate`,
-    videoModel: "local-video", includeRawRequest: true, timeoutMs: 5000, pollIntervalMs: 30, pollTimeoutMs: 5000 }));
-  await fs.writeFile(request, JSON.stringify({ taskId: "local-task", capability: "first_last_frame_video_generation",
-    provider: "VideoHTTP", prompt: "controlled network fixture", inputArtifacts: [] }));
+    providerPreset: "modelark_content_generation", videoModel: "doubao-seedance-2-0-260128", apiKey: "fixture-key",
+    resolution: "720p", timeoutMs: 5000, pollIntervalMs: 30, pollTimeoutMs: 5000 }));
+  await fs.writeFile(request, JSON.stringify({ taskId: "local-task", capability: "all_reference_video_generation",
+    provider: "Seedance", model: "doubao-seedance-2-0-260128", prompt: "controlled network fixture",
+    inputArtifacts: [{ path: reference, mediaType: "image", role: "reference_image" }],
+    parameters: { durationSeconds: 5, aspectRatio: "9:16", generationMode: "all_reference" } }));
   worker = f.launch("workers/generic-http-worker.mjs", ["--config", config, "--request", request, "--output", output, "--receipt", receipt]);
   await worker.ready();
   await worker.assertCleanExit();
@@ -250,10 +256,15 @@ test("native macOS worker initializes system routing itself without a preinitial
   const output = path.join(f.directory, "native-video.mp4");
   const receipt = path.join(f.directory, "native-receipt.json");
   const report = path.join(f.directory, "native-exit.json");
+  const reference = path.join(f.directory, "native-reference.png");
+  await fs.writeFile(reference, "reference bytes");
   await fs.writeFile(config, JSON.stringify({ videoEndpoint: `http://127.0.0.1:${port}/generate`,
-    videoModel: "local-video", timeoutMs: 3000 }));
-  await fs.writeFile(request, JSON.stringify({ taskId: "native-worker", capability: "first_last_frame_video_generation",
-    provider: "VideoHTTP", prompt: "local native entry fixture", inputArtifacts: [] }));
+    providerPreset: "modelark_content_generation", videoModel: "doubao-seedance-2-0-260128", apiKey: "fixture-key",
+    resolution: "720p", timeoutMs: 3000 }));
+  await fs.writeFile(request, JSON.stringify({ taskId: "native-worker", capability: "all_reference_video_generation",
+    provider: "Seedance", model: "doubao-seedance-2-0-260128", prompt: "local native entry fixture",
+    inputArtifacts: [{ path: reference, mediaType: "image", role: "reference_image" }],
+    parameters: { durationSeconds: 5, aspectRatio: "9:16", generationMode: "all_reference" } }));
   await execFileAsync(process.execPath, ["--use-env-proxy", "--import", path.join(root, "test/fixtures/system-proxy-exit-report.mjs"),
     path.join(root, "workers/generic-http-worker.mjs"), "--config", config, "--request", request,
     "--output", output, "--receipt", receipt], {

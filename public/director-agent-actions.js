@@ -18,8 +18,7 @@ export const DIRECTOR_AGENT_ACTIONS = Object.freeze({
   generateFullStory: Object.freeze({ modelSelectable: true }),
   generateStoryboard: Object.freeze({ modelSelectable: true }),
   openCharacterImages: Object.freeze({ modelSelectable: true }),
-  openShotVideo: Object.freeze({ modelSelectable: true }),
-  openModelSettings: Object.freeze({ modelSelectable: true })
+  openShotVideo: Object.freeze({ modelSelectable: true })
 });
 
 // 模型选「什么都不做、只回答」时写的编号。

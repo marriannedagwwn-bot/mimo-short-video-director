@@ -103,11 +103,9 @@ export async function matchingCurrentArtifactLineage(production, {
 
 export function durableTaskTargetContext(task = {}) {
   const artifactId = String(task.targetArtifactIds?.[0] || "");
-  const context = { artifactId, variantId: "", shotId: "", frameKind: "", roleIndex: null };
+  const context = { artifactId, variantId: "", shotId: "", roleIndex: null };
   let match = /^characterImages:([^:]+):(\d+)$/u.exec(artifactId);
   if (match) return { ...context, variantId: match[1], roleIndex: Number(match[2]) };
-  match = /^shotFrame:([^:]+):(.+):(start|end)$/u.exec(artifactId);
-  if (match) return { ...context, variantId: match[1], shotId: match[2], frameKind: match[3] };
   match = /^shotVideo:([^:]+):(.+)$/u.exec(artifactId);
   if (match) return { ...context, variantId: match[1], shotId: match[2] };
   match = /^(?:fullStory|animationPlan|variant):([^:]+)$/u.exec(artifactId);

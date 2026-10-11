@@ -10,7 +10,6 @@ import {
   previousShotInPlan,
   selectedShotVideoCandidate,
   shouldIncludePreviousShotFrames,
-  shotFrameResultKey,
   shotVideoArtifactIdFor,
   shotVideoResultKey
 } from "../public/shot-video-continuity.js";
@@ -26,6 +25,13 @@ import {
   PREVIOUS_SHOT_REFERENCE_FRAME_COUNT,
   previousShotFrameTimestamps
 } from "../src/shot-video-generator.js";
+import {
+  ANIMATION_PLAN_VERSION_UNSUPPORTED,
+  legacyAnimationPlanMessage
+} from "../public/storyboard-plan.js";
+import { ProductionStateError } from "../src/production-lineage.js";
+import { ensureStoryboardPlan } from "../src/storyboard-contract.js";
+import { minimalStoryboardPlan } from "./helpers/minimal-storyboard-plan.js";
 
 const PLAN_DIGEST = "a".repeat(64);
 const VIDEO_DIGEST = "b".repeat(64);
@@ -36,51 +42,69 @@ test("上一镜视频可用时才默认加入普通参考图", () => {
   assert.equal(shouldIncludePreviousShotFrames({ requested: false, available: true }), false);
 });
 
-test("视频生成只从当前 Plan 解析 exact shot，运行时只允许显式覆盖 videoPrompt", () => {
-  const planEntry = {
-    content: {
-      promptSchemaVersion: "3.0",
-      characterReferencePrompts: [{ characterName: "小白子" }],
-      shotPlan: [{
-        shotId: "A02",
-        sourceSceneId: "S1",
-        sceneId: "LOC01",
-        durationSeconds: 5,
-        videoPrompt: "Plan 原始提示词",
-        characterAction: "Plan 权威动作"
-      }]
-    }
-  };
+test("视频生成只从当前 4.0 Plan 解析 exact shot，运行时只允许显式覆盖 videoPrompt", () => {
+  const plan = twoShotStoryboardPlan({ secondAction: "Plan 权威动作", secondTransition: "cut" });
+  assert.equal(ensureStoryboardPlan(plan), plan, "夹具是能过全量校验的 4.0 分镜");
+  const planEntry = { content: plan };
   const resolved = resolveAuthoritativeShotVideoInput({
     planArtifactId: "animationPlan:V1",
     planEntry,
     currentShotId: "A02",
     promptOverride: "用户在生成弹窗确认的临时提示词",
-    requestedSchemaVersion: "3.0",
+    requestedSchemaVersion: "4.0",
     selectedVariantId: "V1"
   });
   assert.equal(resolved.shot.videoPrompt, "用户在生成弹窗确认的临时提示词");
   assert.equal(resolved.shot.characterAction, "Plan 权威动作");
   assert.equal(resolved.shot.durationSeconds, 5);
   assert.equal(resolved.promptSource, "runtime_override");
-  assert.deepEqual(resolved.characterReferences, [{ characterName: "小白子" }]);
+  assert.equal(resolved.promptSchemaVersion, "4.0");
+  assert.deepEqual(resolved.characterReferences, plan.characterReferencePrompts);
+  assert.equal(resolved.characterReferences[0].characterName, "小白子");
+  assert.equal(Object.hasOwn(planEntry.content.shotPlan[1], "videoPrompt"), false, "运行时提示词不写回 Plan");
   assert.throws(() => resolveAuthoritativeShotVideoInput({
     planArtifactId: "animationPlan:V1",
     planEntry,
-    currentShotId: "A99"
+    currentShotId: "A99",
+    promptOverride: "已确认的提示词"
   }), /不在已签发 Animation Plan/u);
   assert.throws(() => resolveAuthoritativeShotVideoInput({
     planArtifactId: "animationPlan:V1",
     planEntry,
     currentShotId: "A02",
-    requestedSchemaVersion: "2.0"
+    promptOverride: "已确认的提示词",
+    requestedSchemaVersion: "3.0"
   }), /Prompt Schema/u);
   assert.throws(() => resolveAuthoritativeShotVideoInput({
     planArtifactId: "animationPlan:V1",
     planEntry,
     currentShotId: "A02",
+    promptOverride: "已确认的提示词",
     selectedVariantId: "V2"
   }), /主题变体/u);
+});
+
+// 2026-10-11 起只支持 4.0：旧 Run 里的 2.0 / 3.0 / 无版本 Plan 不再当成镜头来源，
+// 即使请求带了已确认的运行时提示词也不放行，统一 409 + ANIMATION_PLAN_VERSION_UNSUPPORTED。
+test("旧 2.0 / 3.0 / 无版本 Plan 不能作为镜头视频来源：409 + 版本错误码，带了提示词也不放行", () => {
+  for (const [content, version] of [
+    [{ promptSchemaVersion: "3.0", shotPlan: [{ shotId: "A02", durationSeconds: 5, videoPrompt: "旧 3.0 提示词" }] }, "3.0"],
+    [{ promptSchemaVersion: "2.0", shotPlan: [{ shotId: "A02", durationSeconds: 5, startFrame: {}, endFrame: {} }] }, "2.0"],
+    [{ shotPlan: [{ shotId: "A02", durationSeconds: 5 }] }, "unversioned"]
+  ]) {
+    assert.throws(() => resolveAuthoritativeShotVideoInput({
+      planArtifactId: "animationPlan:V1",
+      planEntry: { content },
+      currentShotId: "A02",
+      promptOverride: "已确认的提示词",
+      requestedSchemaVersion: content.promptSchemaVersion || "",
+      selectedVariantId: "V1"
+    }), (error) => error instanceof ProductionStateError
+      && error.code === ANIMATION_PLAN_VERSION_UNSUPPORTED
+      && error.httpStatus === 409
+      && error.message === legacyAnimationPlanMessage(version), version);
+  }
+  assert.equal(legacyAnimationPlanMessage("3.0"), "这是旧版 3.0 分镜，已不再支持（只支持 4.0 自主分镜）。请重新生成分镜。");
 });
 
 test("character_reference 只能绑定当前签发 Plan 的 exact 角色图，服务端保留来源不能伪造", () => {
@@ -192,7 +216,6 @@ test("上一业务镜头按当前 Plan 顺序解析，结果状态按 variant �
   assert.equal(previousShotInPlan({ shotPlan: [{ shotId: "A01" }, { shotId: "A01" }] }, "A01"), null);
   assert.equal(shotVideoArtifactIdFor("V1", "A01"), "shotVideo:V1:A01");
   assert.notEqual(shotVideoResultKey("V1", "A01"), shotVideoResultKey("V2", "A01"));
-  assert.notEqual(shotFrameResultKey("V1", "A01", "start"), shotFrameResultKey("V2", "A01", "start"));
   assert.equal(mediaFilenameSegment("animationPlan-V.1-r1"), "animationPlan-V_1-r1");
   // 抽帧数固定为 5 张，不再随时长变化；时长无效时才是 0。
   assert.equal(previousShotReferenceFrameCount(6.08), 5);
@@ -211,17 +234,12 @@ test("上一业务镜头按当前 Plan 顺序解析，结果状态按 variant �
       "V1:A01": { status: "ready" },
       "V1:A02": { status: "ready" },
       "V2:A01": { status: "ready" }
-    },
-    shotFrameResults: {
-      "V1:A01:start": { status: "ready" },
-      "V2:A01:start": { status: "ready" }
     }
   };
   dropStaleMediaResults(mediaState, "shotVideo:V1:A02");
   assert.deepEqual(Object.keys(mediaState.shotVideoResults).sort(), ["V1:A01", "V2:A01"]);
   dropStaleMediaResults(mediaState, "animationPlan:V1");
   assert.deepEqual(Object.keys(mediaState.shotVideoResults), ["V2:A01"]);
-  assert.deepEqual(Object.keys(mediaState.shotFrameResults), ["V2:A01:start"]);
 });
 
 test("服务端只从当前 Plan 的上一镜 current Artifact 解析受信视频", async (t) => {
@@ -637,12 +655,7 @@ async function continuityFixture({ variantId = "V1" } = {}) {
   };
   const planEntry = {
     lineage: planLineage,
-    content: {
-      shotPlan: [
-        { shotId: "A01", sourceSceneId: "S1", sceneId: "LOC01", durationSeconds: 6 },
-        { shotId: "A02", sourceSceneId: "S1", sceneId: "LOC01", durationSeconds: 5 }
-      ]
-    }
+    content: twoShotStoryboardPlan({ firstSeconds: 6, secondAction: "本镜动作", secondTransition: "continuous" })
   };
   const latestArtifacts = {
     [sourceArtifactId]: {
@@ -699,4 +712,23 @@ function trustedPreviousShotReference(sourcePath) {
       contentDigest: VIDEO_DIGEST
     }
   };
+}
+
+// 最小合法 4.0 自主分镜（test/helpers/minimal-storyboard-plan.js 那份扩成两个片段，同一场、同一角色），
+// 能过 ensureStoryboardPlan 全量校验。上一镜、本镜各一个 beat，覆盖各自整段时长。
+function twoShotStoryboardPlan({ firstSeconds = 5, secondSeconds = 5, secondAction, secondTransition }) {
+  const plan = minimalStoryboardPlan({ characterName: "小白子", durationSeconds: firstSeconds + secondSeconds });
+  const [template] = plan.shotPlan;
+  const shot = (shotId, seconds, transitionIn, visibleAction) => ({
+    ...structuredClone(template),
+    shotId,
+    durationSeconds: seconds,
+    transitionIn,
+    beats: [{ ...structuredClone(template.beats[0]), startSeconds: 0, endSeconds: seconds, visibleAction }]
+  });
+  plan.shotPlan = [
+    shot("A01", firstSeconds, { type: "start", description: "开场" }, "上一镜动作"),
+    shot("A02", secondSeconds, { type: secondTransition, description: "承接上一段" }, secondAction)
+  ];
+  return plan;
 }

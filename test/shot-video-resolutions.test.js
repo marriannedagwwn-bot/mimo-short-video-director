@@ -7,7 +7,6 @@ import {
   shotVideoResolutionOptions
 } from "../public/shot-video-resolutions.js";
 import {
-  KLING_VIDEO_MODELS,
   MINIMAX_VIDEO_MODELS,
   SEEDANCE_VIDEO_MODELS,
   resolveShotVideoRequestResolution,
@@ -17,20 +16,18 @@ import {
 } from "../src/shot-video-providers.js";
 
 // 镜头视频的生成分辨率（2026-10-10）：清单只有 public/shot-video-resolutions.js 一份，按用户的决定不放 4k。
+// 2026-10-11 删除可灵与自定义 VideoHTTP 后只剩 Seedance、MiniMax；这两个名字在下面只作为「不认识的供应商」出现。
 
 test("每个已登记的视频模型都有确定的清单；代码默认值在清单里；不放 4k", () => {
   const expected = {
     "doubao-seedance-2-0-260128": ["480p", "720p", "1080p"],
     "doubao-seedance-2-0-fast-260128": ["480p", "720p"],
     "doubao-seedance-2-0-mini-260615": ["480p", "720p"],
-    "MiniMax-H3": ["768P", "2K"],
-    "kling-v3": ["720p", "1080p"],
-    "kling-v2-1": []
+    "MiniMax-H3": ["768P", "2K"]
   };
   const registered = [
     ...SEEDANCE_VIDEO_MODELS.map((model) => ["Seedance", model]),
-    ...MINIMAX_VIDEO_MODELS.map((model) => ["MiniMax", model]),
-    ...KLING_VIDEO_MODELS.map((model) => ["Kling", model])
+    ...MINIMAX_VIDEO_MODELS.map((model) => ["MiniMax", model])
   ];
   assert.deepEqual(registered.map(([, model]) => model).sort(), Object.keys(expected).sort(), "新登记的模型要在这里写清楚分辨率清单");
   for (const [provider, model] of registered) {
@@ -42,6 +39,8 @@ test("每个已登记的视频模型都有确定的清单；代码默认值在�
     else assert.equal(fallback, "");
   }
   assert.deepEqual([...shotVideoResolutionOptions("VideoHTTP", "custom-model")], []);
+  assert.deepEqual([...shotVideoResolutionOptions("Kling", "kling-v3")], [], "可灵已删除，不再有分辨率清单");
+  assert.equal(shotVideoCodeDefaultResolution("Kling", "kling-v3"), "");
 });
 
 test("请求里的值严格比较（大小写也要对）；配置里的值大小写不敏感、还原成清单里的写法", () => {
@@ -55,7 +54,7 @@ test("请求里的值严格比较（大小写也要对）；配置里的值大�
   assert.equal(canonicalShotVideoResolution("Seedance", "doubao-seedance-2-0-260128", " 720P "), "720p");
   assert.equal(canonicalShotVideoResolution("MiniMax", "MiniMax-H3", "768p"), "768P");
   assert.equal(canonicalShotVideoResolution("Seedance", "doubao-seedance-2-0-260128", "4k"), "", "4k 已不在清单里");
-  assert.equal(canonicalShotVideoResolution("Kling", "kling-v2-1", "720p"), "", "没有分辨率参数的模型一律对不上");
+  assert.equal(canonicalShotVideoResolution("Kling", "kling-v2-1", "720p"), "", "没有分辨率清单的供应商一律对不上");
 });
 
 test("没选分辨率时的默认值与来源：环境变量、代码默认、配置文件、不支持；配错时给出错误，不替换", () => {
@@ -77,7 +76,8 @@ test("没选分辨率时的默认值与来源：环境变量、代码默认、�
   // 运行时配置的默认值与清单一致（原来写死的字面量换成了共享模块）。
   assert.equal(shotVideoRuntimeConfig("Seedance", {}).resolution, "720p");
   assert.equal(shotVideoRuntimeConfig("MiniMax", {}).resolution, "2K");
-  assert.equal(shotVideoRuntimeConfig("Kling", {}, "kling-v3").resolution, "720p");
+  // 已删除的供应商没有运行配置：明确报错，不回落成任何一家的默认值。
+  assert.throws(() => shotVideoRuntimeConfig("Kling", {}, "kling-v3"), /不支持镜头视频供应商「Kling」：只支持 Seedance 或 MiniMax/u);
 });
 
 test("/api/health 用的供应商目录给出每个模型的默认分辨率", () => {
@@ -85,8 +85,7 @@ test("/api/health 用的供应商目录给出每个模型的默认分辨率", ()
   assert.deepEqual(catalog.Seedance.resolutionDefaults["doubao-seedance-2-0-260128"], { value: "1080p", source: "env", error: "" });
   assert.match(catalog.Seedance.resolutionDefaults["doubao-seedance-2-0-fast-260128"].error, /不适用于/u);
   assert.deepEqual(catalog.MiniMax.resolutionDefaults["MiniMax-H3"], { value: "768P", source: "env", error: "" });
-  assert.deepEqual(catalog.Kling.resolutionDefaults["kling-v3"], { value: "720p", source: "code_default", error: "" });
-  assert.deepEqual(catalog.Kling.resolutionDefaults["kling-v2-1"], { value: "", source: "unsupported", error: "" });
+  assert.deepEqual(Object.keys(catalog), ["Seedance", "MiniMax"], "目录里只剩 Seedance 与 MiniMax");
 });
 
 test("校验一次请求：合法就用；不在清单、模型没有这个参数、默认值配错，各自报错（400）", () => {
