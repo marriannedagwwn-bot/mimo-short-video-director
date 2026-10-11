@@ -10,6 +10,7 @@ import { fullStoryCharacterRegistryInput, mockFullStoryCharacterRegistry } from 
 import { STORY_SOURCE_SCHEMA_VERSION } from "../../public/story-entry.js";
 import { STORY_SCENE_SCRIPT_MARKER } from "../../src/story-entry-prompts.js";
 import { DIRECTOR_AGENT_PROMPT_MARKER } from "../../src/director-agent-prompts.js";
+import { ONE_SENTENCE_EDIT_PROMPT_MARKER } from "../../src/one-sentence-edit-prompts.js";
 
 // 1×1 透明 PNG，只用来走通图片落盘路径。
 const FIXTURE_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
@@ -54,6 +55,8 @@ export async function createStoryEntryRuntime({ storyMode = "fullStoryText" } = 
 
   const requests = [];
   const imageRequests = [];
+  // 一句话修改：测试按顺序塞好假模型的回复（对象，或收到提示词后算出回复的函数）；用完再来就 400。
+  const oneSentenceEditReplies = [];
   const createdProjects = new Set();
   const provider = http.createServer(async (req, res) => {
     if (req.method === "GET") {
@@ -84,6 +87,10 @@ export async function createStoryEntryRuntime({ storyMode = "fullStoryText" } = 
       // 分镜签发了画风时，提示词会要求逐字写出它（服务端有确定性校验），假模型照做。
       const artStyle = /画风：全片统一为「([^」]+)」/u.exec(text)?.[1];
       value = { videoPrompt: `${artStyle ? `画风：${artStyle}。\n` : ""}${video.videoPrompt}` };
+    }
+    else if (text.includes(ONE_SENTENCE_EDIT_PROMPT_MARKER) && oneSentenceEditReplies.length) {
+      const next = oneSentenceEditReplies.shift();
+      value = typeof next === "function" ? next(text, body) : next;
     }
     else if (text.includes(DIRECTOR_AGENT_PROMPT_MARKER)) {
       // 导演助手：照提示词里标着「系统建议的下一步」的编号回答；没有就写 none。
@@ -161,7 +168,7 @@ export async function createStoryEntryRuntime({ storyMode = "fullStoryText" } = 
   };
   return {
     root, base, workflow, creatorProfile, storySource, storyEntry, visualGuardrails, themeVariants, variant, fullStory, plan, video,
-    requests, imageRequests, api, post, wait,
+    requests, imageRequests, oneSentenceEditReplies, api, post, wait,
     close: async () => {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));

@@ -1421,11 +1421,64 @@ export function mockStoryCandidateRevision(candidate, coherenceBreaks = [], unmi
 
 // 导演助手（2026-10-09）的演示回复：不调用模型。有「系统建议的下一步」就提它，
 // 没有就照抄进度里的等待说明；与真实回复走同一个校验器（编号必须在清单里）。
-export function mockDirectorAgentTurn(progress) {
+export function mockDirectorAgentTurn(progress, message = "") {
+  // 演示模式：用户说到「改」「删」时对上一句话修改的动作；点名了某一镜就优先只改那一镜的提示词。
+  if (/[改删]/u.test(message)) {
+    const edits = progress.actions.filter((action) => /^edit(?:Story|Storyboard|ShotPrompt):/u.test(action.key));
+    const shotId = message.match(/A\d{2}/u)?.[0];
+    const pick = (shotId && edits.find((action) => action.key.startsWith("editShotPrompt:") && action.key.endsWith(`:${shotId}`)))
+      || (shotId && edits.find((action) => action.key.startsWith("editStoryboard:")))
+      || edits.find((action) => action.key.startsWith("editStory:"))
+      || edits[0];
+    if (pick) return { actionKey: pick.key, reply: `（演示模式，没有调用模型）可以按你的话改：${pick.label}。确认后先出修改稿给你看。` };
+  }
   const next = progress.actions.find((action) => action.key === progress.nextKey);
   if (next) return { actionKey: next.key, reply: `（演示模式，没有调用模型）建议下一步：${next.label}。` };
   return {
     actionKey: DIRECTOR_AGENT_NO_ACTION,
     reply: `（演示模式，没有调用模型）${progress.waitingFor || progress.busy || "现在没有可以执行的动作。"}`
   };
+}
+
+// 一句话修改（2026-10-11）的演示输出：在被点名的位置末尾加一段占位文字，三类修改都能过真实的校验链，
+// 用来演示「修改稿 → 采纳 / 放弃」。说要加新东西时固定拒绝，用来演示拒绝的样子。
+const DEMO_EDIT_MARK = "（演示修改占位）";
+
+export function mockOneSentenceEdit({ target, base, instruction = "" }) {
+  if (/加(?:一|个|只|位|场)/u.test(instruction)) {
+    return {
+      decision: "decline",
+      patches: [],
+      note: "（演示模式，没有调用模型）加新角色、新场次这类修改做不到；演示里固定拒绝，用来展示拒绝的样子。"
+    };
+  }
+  const note = "（演示模式，没有调用模型）在被点名的位置末尾加了一段占位文字，用来演示修改稿与采纳。";
+  if (target === "story") {
+    const scenes = Array.isArray(base?.sceneScript) ? base.sceneScript : [];
+    const named = instruction.match(/S\d+/u)?.[0];
+    const scene = scenes.find((entry) => entry.sceneId === named) || scenes[0];
+    return {
+      decision: "edit",
+      note,
+      patches: [{ sceneId: scene.sceneId, field: "visibleAction", find: scene.visibleAction, replace: `${scene.visibleAction}${DEMO_EDIT_MARK}` }]
+    };
+  }
+  if (target === "storyboard") {
+    const named = instruction.match(/A\d{2}/u)?.[0];
+    const index = Math.max(0, base.shotPlan.findIndex((shot) => shot.shotId === named));
+    const text = base.shotPlan[index].beats[0].visibleAction;
+    return {
+      decision: "edit",
+      note,
+      patches: [{ path: ["shotPlan", String(index), "beats", "0", "visibleAction"], find: text, replace: `${text}${DEMO_EDIT_MARK}` }]
+    };
+  }
+  // 单镜提示词不许整段替换：挑一行只出现一次、又不是无配乐收尾句的，接在它后面。
+  const prompt = String(base?.videoPrompt || "");
+  const line = prompt.split("\n").find((entry) => entry.trim() && entry !== prompt
+    && entry !== NO_BACKGROUND_MUSIC_SENTENCE && prompt.indexOf(entry) === prompt.lastIndexOf(entry));
+  if (!line) {
+    return { decision: "decline", patches: [], note: "（演示模式，没有调用模型）这条提示词只有一段，演示里不做整段替换。" };
+  }
+  return { decision: "edit", note, patches: [{ find: line, replace: `${line}${DEMO_EDIT_MARK}` }] };
 }

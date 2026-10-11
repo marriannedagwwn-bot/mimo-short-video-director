@@ -707,6 +707,13 @@ footer { max-width: 1240px; margin: auto; padding: 24px 26px 34px; display: flex
 .revision-diff p { margin: 3px 0 0; }
 .revision-diff.revision-unchanged { opacity: .55; }
 .revision-same { color: var(--muted); }
+/* 一句话修改（2026-10-11）：修改稿显示在被改的东西上方，与命题修订同一套原文/改后并排。 */
+.one-sentence-edit { padding: 11px 13px; border-radius: 10px; background: #fff; border: 1px solid var(--line);
+  font-size: 11px; line-height: 1.7; }
+.one-sentence-edit .review-why { margin: 6px 0 0; }
+.one-sentence-edit-full { margin-top: 8px; }
+.one-sentence-edit-full pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; font: inherit; color: var(--ink); }
+.shot-prompt-edit-preview { margin-top: 8px; max-height: 320px; overflow: auto; }
 /* 展开前体检。路由理由与漏掉的承诺各自成列，漏项那一行要能一眼看到
    「许诺的是什么」与「动作链里实际写的是什么」并排——判得对不对只能靠人看。 */
 .precheck-reasons { margin: 8px 0 0; padding-left: 18px; color: #b54708;

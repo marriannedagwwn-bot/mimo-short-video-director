@@ -5,6 +5,7 @@
 // 下一步建议和全部可执行动作。模型（/api/director-agent/turn）只能从这里给出的动作里选，
 // 页面执行前还会用同一份规则再算一遍并核对 guard。设计见 docs/director-agent-chat-2026-10-09.md。
 import { DIRECTOR_AGENT_LIMITS, directorAgentActionKey, isModelSelectableDirectorAgentAction } from "./director-agent-actions.js";
+import { oneSentenceEditInvalidationLines } from "./one-sentence-edit-ui.js";
 
 // 各步骤最少调用几次文本模型。数字来自代码结构（这一步至少要发几次请求），是下限：
 // 带诊断的重试、审阅后的修订和终审都会多花；跑完后页面会显示实际用量。
@@ -24,7 +25,9 @@ export const DIRECTOR_AGENT_MIN_TEXT_CALLS = Object.freeze({
   // 4.0 分镜：设计 + 审阅；审阅报出问题时再修订、终审。
   animationPlan: 2,
   // 打开 4.0 镜头弹窗时还没写过这一镜的提示词。
-  shotVideoPrompt: 1
+  shotVideoPrompt: 1,
+  // 一句话修改：按原话写一份修改稿；结构不对或执行不了时带诊断重试一次。
+  oneSentenceEdit: 1
 });
 
 export const DIRECTOR_AGENT_ENTRY = Object.freeze({
@@ -53,6 +56,8 @@ export function deriveDirectorProgress(facts) {
   if (!facts.restored) return { ...base, waitingFor: "页面还在恢复上一次的进度。" };
   // 有步骤在跑、或有弹窗开着时不提任何可执行动作：避免并行发起付费任务，或在弹窗里改乱状态。
   if (base.busy) return base;
+  // 一句话修改的修改稿等用户决定时也不提别的：先采纳或放弃，免得在它下面又生成新东西。
+  if (facts.edit?.pending) return { ...base, ...pendingEditActions(facts) };
   if (facts.modalOpen) return { ...base, waitingFor: "有弹窗开着：先在弹窗里操作，或者把它关掉。" };
   return { ...base, ...buildActions(facts) };
 }
@@ -175,6 +180,11 @@ function buildActions(facts) {
   }
   if (facts.route !== "story" && facts.storiesByVariant[variant.id]) add(openStoryPageAction(facts, variant));
 
+  // 一句话修改：只在用户自己说要改什么时由模型对上，从不作为下一步、也不做成按钮。
+  const addStoryEdit = () => {
+    if (facts.edit?.storyEditable) add(editStoryAction(facts, variant));
+  };
+
   // 3. 完整剧情。
   if (!facts.story?.exists) {
     // 体检建议修订、等用户决定时不提：再点生成会丢掉修订稿，还要再付一次体检的钱。
@@ -186,8 +196,13 @@ function buildActions(facts) {
   }
 
   // 4. 分镜。
-  if (!facts.plan) return { actions, next: add(generateStoryboardAction(facts, variant)), waitingFor: "" };
+  if (!facts.plan) {
+    const next = add(generateStoryboardAction(facts, variant));
+    addStoryEdit();
+    return { actions, next, waitingFor: "" };
+  }
   if (!facts.plan.isStoryboard) {
+    addStoryEdit();
     return { actions, next: null, waitingFor: "这是旧版（3.0）动画生产包，镜头视频请在页面上生成。" };
   }
   if (!facts.plan.hasProductionContext) {
@@ -215,6 +230,15 @@ function buildActions(facts) {
     || actions.find((action) => action.id === "openModelSettings")
     || actions.find((action) => action.id === "openShotVideo")
     || null;
+
+  // 7. 一句话修改。点名某一镜时：已经有镜头视频，就只改这一镜的视频提示词（不让其他镜头的视频作废）；
+  // 还没有视频就改分镜。所以只在有视频时，给每个已写好提示词的镜头各一个「只改提示词」；
+  // 分镜在有视频时仍可改，卡片上写明会让几条视频作废。
+  addStoryEdit();
+  add(editStoryboardAction(facts, variant));
+  if (facts.plan.shots.some((shot) => shot.hasVideo)) {
+    for (const shot of facts.plan.shots.filter((item) => item.promptCached)) add(editShotPromptAction(facts, variant, shot));
+  }
   return {
     actions,
     next,
@@ -343,6 +367,79 @@ function openShotVideoAction(facts, variant, shot) {
     needsStoryPage: true,
     variantId: variant.id
   });
+}
+
+// ---- 一句话修改（2026-10-11）----
+
+function editCost(facts) {
+  return { kind: "text", minCalls: DIRECTOR_AGENT_MIN_TEXT_CALLS.oneSentenceEdit, model: facts.models.edit, lastUsage: facts.usage?.edit || null,
+    note: "先出修改稿给你看，点「采纳」才生效；做不到时会说明原因，不硬改" };
+}
+
+function editStoryAction(facts, variant) {
+  const invalidation = facts.edit.storyInvalidation || {};
+  const counts = invalidation.counts || {};
+  const noun = facts.storySlot ? "可翻拍镜头" : "完整剧情";
+  return action("editStory", [variant.id], {
+    label: facts.storySlot ? "按你的话修改可翻拍镜头" : "按你的话修改剧情",
+    modelLabel: `按用户的话修改${noun}（情节、动作、台词）${counts.animationPlan ? "；采纳后分镜要重新生成" : ""}`,
+    cost: editCost(facts),
+    details: [
+      `改的是：${noun}（${facts.story.sceneCount} 场）。场次、时间、地点和出镜角色不能改。`,
+      ...(facts.entryMode === "story" && facts.storyMode === "fullStoryText"
+        ? ["改过的台词会出现在台词核对的「在原文里找不到」里，这是预期的；你的原文本身不会变。"] : []),
+      ...oneSentenceEditInvalidationLines("story", invalidation)
+    ],
+    warning: counts.animationPlan
+      ? `采纳后分镜会作废，要重新生成分镜${counts.shotVideo ? `；已生成的 ${counts.shotVideo} 条镜头视频也一起作废` : ""}。`
+      : "",
+    guard: { ...commonGuard(facts), variantId: variant.id, storyRevision: facts.story.revision, model: facts.models.edit },
+    needsStoryPage: true,
+    variantId: variant.id
+  });
+}
+
+function editStoryboardAction(facts, variant) {
+  const invalidation = facts.edit?.storyboardInvalidation || {};
+  const videos = invalidation.counts?.shotVideo || 0;
+  return action("editStoryboard", [variant.id], {
+    label: "按你的话修改分镜",
+    modelLabel: `按用户的话修改分镜${videos ? `（已有 ${videos} 条镜头视频，采纳后全部作废）` : ""}`,
+    cost: editCost(facts),
+    details: [
+      `改的是：分镜（${facts.plan.shots.length} 镜）。镜头数、时长、出镜角色和角色外观不能改；完整剧情不跟着改。`,
+      ...oneSentenceEditInvalidationLines("storyboard", invalidation)
+    ],
+    warning: videos ? `已经有 ${videos} 条镜头视频：采纳后会全部作废。只想改某一镜的画面，说「只改 A0几 的提示词」更省。` : "",
+    guard: { ...commonGuard(facts), variantId: variant.id, planRevision: facts.plan.revision, model: facts.models.edit },
+    needsStoryPage: true,
+    variantId: variant.id
+  });
+}
+
+function editShotPromptAction(facts, variant, shot) {
+  return action("editShotPrompt", [variant.id, shot.shotId], {
+    label: `按你的话修改镜头 ${shot.shotId} 的视频提示词`,
+    modelLabel: `按用户的话只改镜头 ${shot.shotId} 的视频提示词（不改分镜）`,
+    cost: editCost(facts),
+    details: [
+      `改的是：镜头 ${shot.shotId} 的视频提示词，修改稿出在它的视频弹窗里。分镜不跟着改。`,
+      ...oneSentenceEditInvalidationLines("shotPrompt")
+    ],
+    guard: { ...commonGuard(facts), variantId: variant.id, planRevision: facts.plan.revision, shotId: shot.shotId,
+      promptRevision: shot.promptRevision || "", model: facts.models.edit, videoModel: facts.models.video },
+    needsStoryPage: true,
+    variantId: variant.id
+  });
+}
+
+// 修改稿等用户决定：不提别的动作。修改稿在分场页上而用户不在分场页时，给一个回分场页的按钮。
+function pendingEditActions(facts) {
+  const pending = facts.edit.pending;
+  const actions = pending.target !== "shotPrompt" && facts.route !== "story" && pending.variantId
+    ? [openStoryPageAction(facts, { id: pending.variantId })]
+    : [];
+  return { actions, next: null, waitingFor: `${pending.label}的修改稿在${pending.where}，等你采纳或放弃。` };
 }
 
 function openModelSettingsAction(facts) {

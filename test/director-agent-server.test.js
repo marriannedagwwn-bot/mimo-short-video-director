@@ -60,7 +60,8 @@ test("请求检查：一切超限或形状不对都在调用模型之前 400", (
   rejects(turnInput({ progress: { ...progress, actions: [...progress.actions, { key: "chooseCandidate:V1", label: "选 V1", cost: "text" }] } }), /不是导演助手可以选的动作/u);
   rejects(turnInput({ progress: { ...progress, actions: [progress.actions[0], progress.actions[0]] } }), /重复/u);
   rejects(turnInput({ progress: { ...progress, actions: [{ ...progress.actions[0], cost: "money" }] } }), /花费类型/u);
-  rejects(turnInput({ progress: { ...progress, actions: Array.from({ length: 41 }, (_, index) => ({ key: `openShotVideo:V1:A${index}`, label: "x", cost: "video" })) } }), /不超过 40 项/u);
+  // 一句话修改给每个写好提示词的镜头各一个动作（2026-10-11），上限从 40 提到 80。
+  rejects(turnInput({ progress: { ...progress, actions: Array.from({ length: 81 }, (_, index) => ({ key: `openShotVideo:V1:A${index}`, label: "x", cost: "video" })) } }), /不超过 80 项/u);
   rejects(turnInput({ progress: { ...progress, notes: ["a", "b", "c", "d"] } }), /notes 必须是不超过 3 项的数组/u);
   rejects(turnInput({ progress: { ...progress, notes: ["字".repeat(201)] } }), /不能超过 200 字/u);
   const ok = normalizeDirectorAgentTurnInput(turnInput({ message: "  继续  " }));
@@ -206,4 +207,35 @@ test("真实 HTTP：/api/director-agent/turn 只出建议，带用量信封；�
   } finally {
     await runtime.close();
   }
+});
+
+// ---- 一句话修改（2026-10-11，第三期）----
+
+test("一句话修改的动作：页面送来的清单里可以有；演示模式说到「改」「删」时对上修改，点名某一镜优先只改那一镜的提示词", async () => {
+  const editProgress = {
+    ...structuredClone(progress),
+    actions: [
+      ...progress.actions,
+      { key: "editStory:V1", label: "按用户的话修改可翻拍镜头（情节、动作、台词）", cost: "text" },
+      { key: "editStoryboard:V1", label: "按用户的话修改分镜", cost: "text" },
+      { key: "editShotPrompt:V1:A03", label: "按用户的话只改镜头 A03 的视频提示词（不改分镜）", cost: "text" }
+    ]
+  };
+  assert.equal(normalizeDirectorAgentTurnInput(turnInput({ progress: editProgress })).progress.actions.length, 5);
+  const workflow = new WorkflowService({ clients: {}, stageDefaults: {} });
+  const pick = async (message) => (await workflow.createDirectorAgentTurn(turnInput({ message, progress: editProgress }))).turn.actionKey;
+  assert.equal(await pick("A03 别让她回头，改一下"), "editShotPrompt:V1:A03");
+  assert.equal(await pick("把第二场改成雨夜"), "editStory:V1");
+  assert.equal(await pick("继续"), "generateStoryboard:V1");
+});
+
+test("导演助手的规则：修改对到「按用户的话修改」，点名某一镜先选只改提示词，没说改成什么就请用户说完整", async () => {
+  const { workflow, requests } = liveWorkflow([{ actionKey: "none", reply: "请把要改的内容说完整。" }]);
+  await workflow.createDirectorAgentTurn(turnInput({ message: "好的改吧" }));
+  const prompt = requests[0].prompt;
+  assert.match(prompt, /5\. 用户要改剧情、分镜、台词或某一镜的画面，从清单里选对应的「按用户的话修改……」编号。/u);
+  assert.match(prompt, /清单里有「只改镜头 A03 的视频提示词」就选它，没有才选修改分镜/u);
+  assert.match(prompt, /「好的改吧」「改一下」「再好一点」这类/u);
+  assert.doesNotMatch(prompt, /这些现在做不了，用户问到就直说：修改剧情/u, "旧的「不能改」那一条已经换掉");
+  assert.match(DIRECTOR_AGENT_SYSTEM_PROMPT, /由另一个步骤按他的原话写修改稿/u);
 });

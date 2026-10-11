@@ -23,8 +23,18 @@ function merge(base, overrides) {
 
 const MODELS = {
   pipeline: "MiMo mimo-v2.6-pro", candidates: "MiMo mimo-v2.6-pro", story: "MiMo mimo-v2.6-pro",
-  plan: "MiMo mimo-v2.6-pro", image: "Jimeng doubao-seedream-5-0", video: "Seedance doubao-seedance-2-0", videoSupportsStoryboard: true
+  plan: "MiMo mimo-v2.6-pro", image: "Jimeng doubao-seedream-5-0", video: "Seedance doubao-seedance-2-0", videoSupportsStoryboard: true,
+  edit: "MiMo mimo-v2.6-pro"
 };
+
+// 一句话修改的事实（2026-10-11），形状与 app.js 的 directorAgentEditFacts() 相同。
+const NO_EDIT_INVALIDATION = Object.freeze({
+  storyEditable: true,
+  storyInvalidation: { counts: { animationPlan: 0, shotVideoPrompt: 0, shotVideo: 0, characterImages: 0 }, roleImagesLost: 0 },
+  storyboardInvalidation: { counts: { shotVideoPrompt: 0, shotVideo: 0, characterImages: 0 }, roleImagesKept: 0 },
+  pending: null,
+  event: null
+});
 
 // 「粘贴完整故事」拆好了镜头、还没有分镜。
 function storyFacts(overrides = {}) {
@@ -43,7 +53,8 @@ function storyFacts(overrides = {}) {
     busyText: "", failures: [],
     nextPlanSettings: { aspectRatio: "16:9", artStyle: "二维日系动画", musicOn: false },
     models: MODELS,
-    usage: { pipeline: null, variants: null, fullStory: null, plan: null }
+    usage: { pipeline: null, variants: null, fullStory: null, plan: null, edit: null },
+    edit: structuredClone(NO_EDIT_INVALIDATION)
   }, overrides);
 }
 
@@ -168,7 +179,8 @@ test("有剧情、没分镜：下一步是生成分镜，卡片列出会写进�
 test("有分镜：角色参考图先于镜头视频；已有视频时出图卡片警告视频会作废", () => {
   const progress = deriveDirectorProgress(storyFacts({ plan: storyboard() }));
   assert.equal(progress.next.key, "openCharacterImages:V1:0");
-  assert.deepEqual(keys(progress), ["openCharacterImages:V1:0", "openShotVideo:V1:A01", "openShotVideo:V1:A02"]);
+  // 一句话修改的两个动作排在最后，从不作为下一步（2026-10-11）；还没有视频，不提「只改某一镜的提示词」。
+  assert.deepEqual(keys(progress), ["openCharacterImages:V1:0", "openShotVideo:V1:A01", "openShotVideo:V1:A02", "editStory:V1", "editStoryboard:V1"]);
   assert.equal(progress.next.cost.kind, "image");
   assert.equal(progress.next.warning, "");
   const withVideo = deriveDirectorProgress(storyFacts({ plan: storyboard({ shots: [{ shotId: "A01", seconds: 13, hasVideo: true, promptCached: true }, { shotId: "A02", seconds: 8, hasVideo: false, promptCached: false }] }) }));
@@ -228,7 +240,7 @@ test("发给模型的进度说明：只有模型能选的动作、固定标签�
   const projection = directorAgentProjection(progress);
   assert.equal(projection.entry, "粘贴完整故事");
   assert.equal(projection.nextKey, "openCharacterImages:V1:0");
-  assert.deepEqual(projection.actions.map((action) => action.cost), ["image", "video", "video"]);
+  assert.deepEqual(projection.actions.map((action) => action.cost), ["image", "video", "video", "text", "text"]);
   assert.equal(JSON.stringify(projection).includes("Arrearage"), false, "供应商报错原文不发给模型");
   for (const action of projection.actions) assert.ok(parseDirectorAgentActionKey(action.key));
   assert.deepEqual(Object.keys(projection).sort(), ["actions", "busy", "entry", "nextKey", "notes", "steps", "waitingFor"]);
@@ -256,4 +268,91 @@ test("每个动作都有 guard；卡片上显示的设置变了，guard 就变",
   assert.notEqual(before.guard, after.guard);
   const otherRun = deriveDirectorProgress(storyFacts({ runId: "run-2" })).next;
   assert.notEqual(before.guard, otherRun.guard);
+});
+
+// ---- 一句话修改（2026-10-11，第三期）----
+
+const editKeys = (progress) => keys(progress).filter((key) => key.startsWith("edit"));
+
+test("一句话修改的可用规则：有剧情能改剧情；有 4.0 分镜能改分镜；有镜头视频之后才给已写好提示词的镜头「只改提示词」", () => {
+  assert.deepEqual(editKeys(deriveDirectorProgress(storyFacts())), ["editStory:V1"]);
+  assert.deepEqual(editKeys(deriveDirectorProgress(storyFacts({ edit: { storyEditable: false } }))), [], "旧格式剧情不能改");
+  assert.deepEqual(editKeys(deriveDirectorProgress(videoFacts())), [], "还没有剧情");
+  assert.deepEqual(editKeys(deriveDirectorProgress(storyFacts({ plan: storyboard() }))), ["editStory:V1", "editStoryboard:V1"], "还没有视频：点名某一镜就改分镜");
+  const withVideo = storyFacts({ plan: storyboard({ shots: [
+    { shotId: "A01", seconds: 13, hasVideo: true, promptCached: false, promptRevision: "" },
+    { shotId: "A02", seconds: 8, hasVideo: false, promptCached: true, promptRevision: "shotVideoPrompt-V1-A02-r1" }
+  ] }) });
+  assert.deepEqual(editKeys(deriveDirectorProgress(withVideo)), ["editStory:V1", "editStoryboard:V1", "editShotPrompt:V1:A02"],
+    "有视频之后：只给提示词已写好（弹窗不用重写）的镜头");
+  assert.deepEqual(editKeys(deriveDirectorProgress(storyFacts({ plan: storyboard({ isStoryboard: false }) }))), ["editStory:V1"], "旧版 3.0 生产包只能改剧情");
+  assert.deepEqual(editKeys(deriveDirectorProgress(storyFacts({ plan: storyboard({ hasProductionContext: false }) }))), [], "版本信息对不上时不提");
+});
+
+test("一句话修改从不作为下一步；发给模型的清单里有，标签只有固定文字与计数", () => {
+  for (const facts of [storyFacts(), storyFacts({ plan: storyboard() }), storyFacts({ plan: storyboard({ roles: [{ index: 0, name: "阿岚", hasImage: true }],
+    shots: [{ shotId: "A01", seconds: 13, hasVideo: true, promptCached: true, promptRevision: "r1" }] }) })]) {
+    const progress = deriveDirectorProgress(facts);
+    assert.equal(String(progress.next?.key || "").startsWith("edit"), false);
+  }
+  const progress = deriveDirectorProgress(storyFacts({ plan: storyboard({ shots: [
+    { shotId: "A01", seconds: 13, hasVideo: true, promptCached: true, promptRevision: "r1" }
+  ] }), edit: { storyboardInvalidation: { counts: { shotVideo: 1 } } } }));
+  const projection = directorAgentProjection(progress);
+  const labels = Object.fromEntries(projection.actions.filter((action) => action.key.startsWith("edit")).map((action) => [action.key, action.label]));
+  assert.deepEqual(labels, {
+    "editStory:V1": "按用户的话修改可翻拍镜头（情节、动作、台词）",
+    "editStoryboard:V1": "按用户的话修改分镜（已有 1 条镜头视频，采纳后全部作废）",
+    "editShotPrompt:V1:A01": "按用户的话只改镜头 A01 的视频提示词（不改分镜）"
+  });
+  assert.ok(Object.values(DIRECTOR_AGENT_ACTIONS).filter((item) => item.editTarget).every((item) => item.modelSelectable));
+});
+
+test("一句话修改的卡片：写明改什么、采纳后作废几样；有视频时改分镜警告全部作废；guard 带基准版本", () => {
+  const facts = storyFacts({
+    plan: storyboard({ shots: [{ shotId: "A01", seconds: 13, hasVideo: true, promptCached: true, promptRevision: "shotVideoPrompt-V1-A01-r1" }] }),
+    edit: {
+      storyInvalidation: { counts: { animationPlan: 1, shotVideoPrompt: 1, shotVideo: 1, characterImages: 2 }, roleImagesLost: 1 },
+      storyboardInvalidation: { counts: { shotVideoPrompt: 1, shotVideo: 1, characterImages: 2 }, roleImagesKept: 1 }
+    }
+  });
+  const progress = deriveDirectorProgress(facts);
+  const find = (key) => progress.actions.find((action) => action.key === key);
+  const story = find("editStory:V1");
+  assert.equal(story.label, "按你的话修改可翻拍镜头");
+  assert.deepEqual([story.cost.kind, story.cost.minCalls, story.cost.model], ["text", DIRECTOR_AGENT_MIN_TEXT_CALLS.oneSentenceEdit, MODELS.edit]);
+  assert.match(story.details.join("\n"), /采纳后作废：分镜、1 张已设为人物参考图的图（存在分镜里）、1 条单镜提示词、1 条镜头视频、2 组角色候选图。/u);
+  assert.match(story.details.join("\n"), /要重新生成分镜。/u);
+  assert.match(story.details.join("\n"), /改过的台词会出现在台词核对的「在原文里找不到」里/u, "粘贴完整故事：台词核对会列出改过的台词");
+  assert.match(story.warning, /已生成的 1 条镜头视频也一起作废/u);
+  const board = find("editStoryboard:V1");
+  assert.match(board.details.join("\n"), /已设为人物参考图的 1 张图会保留。/u);
+  assert.match(board.warning, /已经有 1 条镜头视频：采纳后会全部作废/u);
+  const prompt = find("editShotPrompt:V1:A01");
+  assert.match(prompt.details.join("\n"), /采纳后什么都不作废/u);
+  assert.equal(JSON.parse(prompt.guard).promptRevision, "shotVideoPrompt-V1-A01-r1");
+  assert.equal(JSON.parse(story.guard).storyRevision, "fullStory-V1-r1");
+  // 提示词换了版本（比如重新写过），旧卡就对不上了。
+  const rewritten = deriveDirectorProgress(storyFacts({ plan: storyboard({ shots: [{ shotId: "A01", seconds: 13, hasVideo: true, promptCached: true, promptRevision: "shotVideoPrompt-V1-A01-r2" }] }) }));
+  assert.notEqual(rewritten.actions.find((action) => action.key === "editShotPrompt:V1:A01").guard, prompt.guard);
+  // 只给角色设定的入口：没有台词核对那一句。
+  const characterOnly = deriveDirectorProgress(storyFacts({ storyMode: "characterOnly", storySlot: false, candidates: [{ id: "V1", title: "雨天的纸箱" }] }))
+    .actions.find((action) => action.key === "editStory:V1");
+  assert.equal(characterOnly.label, "按你的话修改剧情");
+  assert.doesNotMatch(characterOnly.details.join("\n"), /台词核对/u);
+});
+
+test("修改稿等你决定时：不提别的动作，说明修改稿在哪；不在分场页时给一个回分场页的按钮", () => {
+  const pending = { target: "story", shotId: "", variantId: "V1", label: "剧情", where: "分场页上剧情的上方" };
+  const onPage = deriveDirectorProgress(storyFacts({ edit: { pending } }));
+  assert.deepEqual([onPage.actions, onPage.next], [[], null]);
+  assert.equal(onPage.waitingFor, "剧情的修改稿在分场页上剧情的上方，等你采纳或放弃。");
+  assert.deepEqual(keys(deriveDirectorProgress(storyFacts({ route: "main", edit: { pending } }))), ["openStoryPage:V1"]);
+  // 提示词的修改稿在弹窗里：弹窗开着也说修改稿在等决定，不说笼统的「有弹窗开着」。
+  const shot = deriveDirectorProgress(storyFacts({ modalOpen: true, edit: { pending: {
+    target: "shotPrompt", shotId: "A01", variantId: "V1", label: "镜头 A01 的视频提示词", where: "镜头 A01 的视频弹窗里"
+  } } }));
+  assert.equal(shot.waitingFor, "镜头 A01 的视频提示词的修改稿在镜头 A01 的视频弹窗里，等你采纳或放弃。");
+  assert.deepEqual(shot.actions, []);
+  assert.deepEqual(deriveDirectorProgress(storyFacts({ busyText: "正在按你的话写剧情的修改稿…", edit: { pending } })).actions, [], "写稿、签发期间什么都不提");
 });

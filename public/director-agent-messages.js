@@ -2,6 +2,7 @@
 // 只报状态和计数，不评价好坏（签发成功不等于合格，AGENTS.md「不能因签发成功称为合格产品」）。
 // 模型写的回复另外标成「AI 回复」，不经过这里。
 import { formatStageUsageSuffix } from "./token-usage-format.js";
+import { oneSentenceEditInvalidatedParts, oneSentenceEditTargetLabel } from "./one-sentence-edit-ui.js";
 
 const STATUS_TEXT = Object.freeze({
   done: "完成", running: "进行中", paused: "已暂停", failed: "没有成功", waiting: "等你决定", todo: "没开始"
@@ -109,6 +110,39 @@ export function precheckAwaitingText() {
 
 export function precheckFailureText(failure) {
   return `展开前体检没有跑完：${failure.text}。可以在页面上重试体检，或者按原候选展开。`;
+}
+
+// 一句话修改（2026-10-11）各个结果的总结。只报计数与位置；AI 写的说明只放在页面上的修改稿里。
+export function oneSentenceEditEventText(event) {
+  const label = oneSentenceEditTargetLabel(event.target, event.shotId, { storySlot: Boolean(event.storySlot) });
+  switch (event.type) {
+    case "ready": {
+      // 「处」与 AI 说明里的口径一致（几处替换）；一个字段里改了几处时，预览按字段列，所以两数都报。
+      const patches = Number(event.patches) || event.changes;
+      return patches === event.changes
+        ? `${label}的修改稿写好了：改了 ${event.changes} 处。`
+        : `${label}的修改稿写好了：改了 ${event.changes} 段文字，共 ${patches} 处替换。`;
+    }
+    case "declined":
+      return `这句话没有改成：AI 认为做不到或没说清楚，原因写在${event.where}。可以换个说法再说一次。`;
+    case "adopted": {
+      const parts = oneSentenceEditInvalidatedParts(event.target, event.invalidation);
+      const tail = event.target === "shotPrompt"
+        ? "这一镜已有的视频不会自动重做，要用新提示词就重新生成这一镜。"
+        : parts.length ? `作废了：${parts.join("、")}。` : "";
+      return `改好了：${label}签发了新版本。${tail}`;
+    }
+    case "discarded":
+      return `放弃了这份修改稿，${label}没有变。`;
+    case "expired":
+      return `${label}已经变了，这份修改稿作废了。要改的话请再说一次。`;
+    case "failed":
+      return `${label}的修改稿没有写出来：${event.error}。${event.contentFiltered
+        ? "这次是被内容审核拦下的。审核结果不稳定，同样的内容重试常能通过；要不要再说一次由你决定，系统不会自动重试。"
+        : "可以再说一次，会重新计费。"}`;
+    default:
+      return "";
+  }
 }
 
 function storyCounts(story) {

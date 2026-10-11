@@ -249,3 +249,81 @@ test("候选按钮：用户自己点了才出卡片；不在清单里的按钮�
   controller.showChoice("chooseCandidate:V7", progress);
   assert.match(controller.messages.at(-1).text, /不能用了/u);
 });
+
+// ---- 一句话修改（2026-10-11，第三期）----
+
+const EDIT = Object.freeze({
+  storyEditable: true,
+  storyInvalidation: { counts: { animationPlan: 0, shotVideoPrompt: 0, shotVideo: 0, characterImages: 0 }, roleImagesLost: 0 },
+  storyboardInvalidation: { counts: { shotVideoPrompt: 0, shotVideo: 0, characterImages: 0 }, roleImagesKept: 0 },
+  pending: null,
+  event: null
+});
+
+test("「按你的话修改」的卡片带用户这一句原话：原话不同出新卡，同一句只挪到最下面；别的动作不带原话", () => {
+  const controller = createDirectorAgentController();
+  const value = facts({ edit: structuredClone(EDIT), models: { edit: "MiMo m" } });
+  const progress = observe(controller, value);
+  controller.beginTurn("第二场改成下大雨", progress);
+  controller.finishTurn({ turn: { actionKey: "editStory:V1", reply: "可以按你的话改。" } }, progress);
+  const first = controller.messages.at(-1);
+  assert.equal(first.card.instruction, "第二场改成下大雨");
+  assert.equal(first.card.lines[0], "你说的：「第二场改成下大雨」");
+  assert.equal(first.card.title, "按你的话修改可翻拍镜头");
+
+  controller.beginTurn("还是改成下小雨吧", progress);
+  controller.finishTurn({ turn: { actionKey: "editStory:V1", reply: "可以。" } }, progress);
+  const second = controller.messages.at(-1);
+  assert.equal(second.card.instruction, "还是改成下小雨吧");
+  assert.deepEqual([first.card.state, first.card.stateText], ["superseded", "已被新的建议取代"]);
+  assert.equal(controller.messages.filter((message) => message.card?.state === "pending").length, 1);
+
+  // 原话很长：卡片只摘前 120 字，执行时用的是完整原话。
+  const long = `把第五场${"慢慢地".repeat(60)}`;
+  controller.beginTurn(long, progress);
+  controller.finishTurn({ turn: { actionKey: "editStory:V1", reply: "可以。" } }, progress);
+  const third = controller.messages.at(-1).card;
+  assert.equal(third.instruction, long.slice(0, DIRECTOR_AGENT_LIMITS.messageChars));
+  assert.ok(third.lines[0].length < 130);
+
+  controller.beginTurn("下一步做什么", progress);
+  controller.finishTurn({ turn: { actionKey: "generateStoryboard:V1", reply: "生成分镜。" } }, progress);
+  const plain = controller.messages.at(-1).card;
+  assert.equal(Object.hasOwn(plain, "instruction"), false);
+  assert.doesNotMatch(plain.lines[0], /你说的/u);
+});
+
+test("一句话修改的结果各报一句：写好、没改成、采纳、放弃、过期、失败；修改稿等决定时只说在等什么", () => {
+  const controller = createDirectorAgentController();
+  let value = facts({ edit: structuredClone(EDIT), models: { edit: "MiMo m" } });
+  observe(controller, value);
+  const event = (id, type, extra = {}) => ({ id, type, target: "story", shotId: "", where: "分场页上剧情的上方", ...extra });
+  const pending = { target: "story", shotId: "", variantId: "V1", label: "剧情", where: "分场页上剧情的上方" };
+  value = facts({ edit: { ...structuredClone(EDIT), pending, event: event("e1", "ready", { changes: 2, patches: 2 }) } });
+  observe(controller, value);
+  assert.deepEqual(texts(controller).slice(-2), ["剧情的修改稿写好了：改了 2 处。", "剧情的修改稿在分场页上剧情的上方，等你采纳或放弃。"]);
+  // 一个字段里改了几处：预览按字段列，所以两数都报，和 AI 说明里的「共几处」对得上（2026-10-11 真实运行发现）。
+  observe(controller, facts({ edit: { ...structuredClone(EDIT), pending, event: event("e1b", "ready", { changes: 3, patches: 5 }) } }));
+  assert.ok(texts(controller).includes("剧情的修改稿写好了：改了 3 段文字，共 5 处替换。"));
+  value = facts({ edit: { ...structuredClone(EDIT), event: event("e2", "adopted", { invalidation: { counts: { animationPlan: 1, shotVideoPrompt: 2 } } }) } });
+  observe(controller, value);
+  assert.ok(texts(controller).includes("改好了：剧情签发了新版本。作废了：分镜、2 条单镜提示词。"));
+  for (const [id, type, extra, expected] of [
+    ["e3", "declined", {}, "这句话没有改成：AI 认为做不到或没说清楚，原因写在分场页上剧情的上方。可以换个说法再说一次。"],
+    ["e4", "discarded", {}, "放弃了这份修改稿，剧情没有变。"],
+    ["e5", "expired", {}, "剧情已经变了，这份修改稿作废了。要改的话请再说一次。"],
+    ["e6", "failed", { error: "请求失败（502）", contentFiltered: false }, "剧情的修改稿没有写出来：请求失败（502）。可以再说一次，会重新计费。"]
+  ]) {
+    observe(controller, facts({ edit: { ...structuredClone(EDIT), event: event(id, type, extra) } }));
+    assert.ok(texts(controller).includes(expected), `${type}：${texts(controller).slice(-3).join(" | ")}`);
+  }
+  observe(controller, facts({ edit: { ...structuredClone(EDIT), event: event("e7", "failed", { error: "被拦下", contentFiltered: true }) } }));
+  assert.match(texts(controller).find((text) => text?.includes("没有写出来：被拦下")), /内容审核拦下的。审核结果不稳定/u);
+  // 同一个结果不重复报。
+  const count = controller.messages.length;
+  observe(controller, facts({ edit: { ...structuredClone(EDIT), event: event("e7", "failed", { error: "被拦下", contentFiltered: true }) } }));
+  assert.equal(controller.messages.length, count);
+  // 提示词：采纳后提醒已有视频不会自动重做。
+  observe(controller, facts({ edit: { ...structuredClone(EDIT), event: { id: "e8", type: "adopted", target: "shotPrompt", shotId: "A03", where: "镜头 A03 的视频弹窗里", invalidation: null } } }));
+  assert.ok(texts(controller).includes("改好了：镜头 A03 的视频提示词签发了新版本。这一镜已有的视频不会自动重做，要用新提示词就重新生成这一镜。"));
+});

@@ -85,6 +85,8 @@ import { CHARACTER_ART_STYLE_PRESETS, CHARACTER_ART_STYLE_STORAGE_KEY, DEFAULT_C
 import { deriveDirectorProgress, directorAgentChosenVariant } from "./director-agent-progress.js";
 import { createDirectorAgentController } from "./director-agent-controller.js";
 import { renderDirectorAgentMessages, renderDirectorAgentStatus } from "./director-agent-panel.js";
+import { directorAgentEditTarget } from "./director-agent-actions.js";
+import { oneSentenceEditConfirmText, oneSentenceEditTargetLabel, oneSentenceEditWhere, renderOneSentenceEditPreview } from "./one-sentence-edit-ui.js";
 import {
   createBrowserWorkspaceClient, creationPreferences, CREATION_PREFERENCES_STORAGE_KEY
 } from "./browser-workspace-client.js";
@@ -272,6 +274,7 @@ const elements = {
   directorAgentEntry: $("#directorAgentEntry"), directorAgentSteps: $("#directorAgentSteps"), directorAgentBusy: $("#directorAgentBusy"),
   directorAgentMessages: $("#directorAgentMessages"), directorAgentComposer: $("#directorAgentComposer"),
   directorAgentInput: $("#directorAgentInput"), directorAgentSend: $("#directorAgentSend"),
+  storyEditPreview: $("#storyEditPreview"), storyboardEditPreview: $("#storyboardEditPreview"), shotPromptEditPreview: $("#shotPromptEditPreview"),
   modelStageList: $("#modelStageList"), resetModelSettings: $("#resetModelSettings"), saveModelSettings: $("#saveModelSettings"),
   modelSettingsStatus: $("#modelSettingsStatus"),
   empty: $("#emptyResults"), resultStack: $("#resultStack"), export: $("#exportButton"),
@@ -364,6 +367,8 @@ const MODEL_STAGE_DEFS = [
   { key: "animationPlan", label: "动画生产包", hint: "首尾帧、镜头与视频提示词", capability: "文本模型", capabilityKind: "text" },
   { key: "animationPlanReview", label: "分镜终审", hint: "对照剧情核查镜头，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "animationPlanRevision", label: "定向修订", hint: "按终审报告只改被点名的镜头", capability: "文本模型", capabilityKind: "text", optional: true },
+  // 一句话修改（2026-10-11）：按你在导演助手里说的话写修改稿，只出修改稿，点「采纳」才生效。
+  { key: "oneSentenceEdit", label: "一句话修改", hint: "按你在导演助手里说的话写修改稿，只出修改稿", capability: "文本模型", capabilityKind: "text", optional: true },
   // 导演助手（2026-10-09）：理解对话栏里打的字，只提议下一步；每次调用都关闭思考。用户点对话栏才调用。
   { key: "directorAgent", label: "导演助手", hint: "理解对话栏里打的字，只提议下一步（思考关闭）", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "staticFrameCompiler", label: "静态帧编译器", hint: "叙事语言到静态视觉语言的语义合法化", capability: "文本模型", capabilityKind: "text" },
@@ -429,6 +434,14 @@ let directorAgentStarted = false;
 let storyRunImporting = false;
 let directorAgentMessagesSignature = "";
 let directorAgentLastMessageId = "";
+// 一句话修改（2026-10-11）：修改稿只放在页面内存里，不进任何浏览器存储，刷新即丢（已经花的那次调用不退）。
+// 同一时间只有一份：{ id, status: "writing" | "ready" | "failed", target, variantId, shotId, artifactId,
+// runId, baseRevision, instruction, result, error, usage, adopting }。
+let oneSentenceEdit = null;
+// 最近一次的结果（写好、没改成、采纳、放弃、过期、失败），导演助手据此报一句。
+let oneSentenceEditEvent = null;
+let oneSentenceEditLastUsage = null;
+let oneSentenceEditSequence = 0;
 
 init();
 
@@ -447,6 +460,7 @@ async function init() {
   elements.characterArtStyle.addEventListener("input", saveCharacterArtStyle);
   bindEvents();
   bindDirectorAgentEvents();
+  bindOneSentenceEditEvents();
   validateReady();
   // Run/Task 恢复不依赖供应商健康检查。图片或视频 provider 的 /models
   // 即使很慢，也不能阻塞刷新后的 Durable Task 重新接管。
@@ -644,7 +658,12 @@ function bindEvents() {
     if (files.length) await addShotVideoReferenceFiles(files);
   });
   elements.confirmGenerateShotVideo.addEventListener("click", confirmGenerateShotVideo);
-  $("#regenerateShotVideoPrompt").addEventListener("click", () => updateShotVideoGeneratorPreview({ regeneratePrompt: true }));
+  $("#regenerateShotVideoPrompt").addEventListener("click", () => {
+    if (oneSentenceEditBlocksShot(state.shotVideoGeneration.shotId)) {
+      return setShotVideoStatus("这一镜的提示词修改稿还没处理：先采纳或放弃，再重新生成提示词。", "error");
+    }
+    return updateShotVideoGeneratorPreview({ regeneratePrompt: true });
+  });
   elements.generatedImagePreview.addEventListener("click", (event) => {
     if (event.target === elements.generatedImagePreview) closeGeneratedImagePreview();
   });
@@ -3048,6 +3067,7 @@ function renderStoryPage({ autoGenerate = false } = {}) {
   syncStoryTaskStatus({ includeTerminal: true });
   updateStoryExportActions();
   void refreshStoryDialogueCheck();
+  renderOneSentenceEditHosts();
   scheduleDirectorAgentRefresh();
 }
 
@@ -3151,9 +3171,11 @@ async function startFullStory({ force = false } = {}) {
   if (activeTaskForKinds(["fullStory"], { rootOnly: true })) return;
   // 展开前体检要对照原片脚本还原，剧情入口没有原片：直接展开。
   if (isStoryEntryMode()) {
-    // 重新拆分会让下游的分镜和镜头视频过期；先问一句，与拨配乐开关同规格。
-    if (variant.storySourceSlot && state.fullStories[variant.id] && state.animationPlans[variant.id]
-      && !window.confirm("重新拆分会让已经生成的分镜和镜头视频失效，需要重新生成。继续吗？")) return undefined;
+    // 重新拆分按原文重来：用一句话改过的地方会被覆盖（2026-10-11），已有分镜时分镜和镜头视频也会过期。
+    // 只要已经拆过就先问一句，与拨配乐开关同规格。
+    if (variant.storySourceSlot && state.fullStories[variant.id] && !window.confirm(state.animationPlans[variant.id]
+      ? "重新拆分会按原文重新拆一遍：现在的可翻拍镜头（包括用一句话改过的地方）会被替换，已经生成的分镜和镜头视频也会失效，需要重新生成。继续吗？"
+      : "重新拆分会按原文重新拆一遍：现在的可翻拍镜头（包括用一句话改过的地方）会被替换。继续吗？")) return undefined;
     return generateFullStory({ force });
   }
 
@@ -5999,6 +6021,7 @@ async function openShotVideoGenerator(shotId) {
   if (!syncShotVideoTaskStatus()) setShotVideoGeneratorRunning(false);
   elements.shotVideoModal.classList.remove("hidden");
   elements.shotVideoModal.setAttribute("aria-hidden", "false");
+  renderOneSentenceEditHosts();
   setShotVideoStatus("正在校验视频参考素材…", "active");
   if (!await updateShotVideoGeneratorPreview()) return;
   renderShotVideoModalResults();
@@ -6256,16 +6279,32 @@ function currentVideoEndpointIdentity(shotId) {
 
 function closeShotVideoGenerator() {
   if (state.shotVideoGeneration.running) return setShotVideoStatus("镜头视频仍在生成中，完成后再关闭。", "active");
+  // 一句话修改：写稿和签发期间不能关；修改稿等着决定时，关掉就是放弃，先问一句。
+  const edit = oneSentenceEdit;
+  if (edit?.target === "shotPrompt" && edit.shotId === state.shotVideoGeneration.shotId) {
+    if (edit.status === "writing" || edit.adopting) return setShotVideoStatus("正在按你的话改这一镜的提示词，处理完再关闭。", "active");
+    if (oneSentenceEditPending()) {
+      if (!window.confirm("这一镜的提示词修改稿还没有采纳，关掉弹窗就是放弃它。确定关掉吗？")) return undefined;
+      discardOneSentenceEdit();
+    } else {
+      oneSentenceEdit = null;
+      scheduleDirectorAgentRefresh();
+    }
+  }
   state.shotVideoGeneration.open = false;
   state.shotVideoGeneration.validationRevision += 1;
   elements.shotVideoModal.classList.add("hidden");
   elements.shotVideoModal.setAttribute("aria-hidden", "true");
+  renderOneSentenceEditHosts();
 }
 
 async function confirmGenerateShotVideo() {
   const workspaceEpoch = browserWorkspace.epoch;
   if (syncShotVideoTaskStatus() && state.shotVideoGeneration.running) return;
   if (state.shotVideoGeneration.running) return;
+  if (oneSentenceEditBlocksShot(state.shotVideoGeneration.shotId)) {
+    return setShotVideoStatus("这一镜的提示词修改稿还没处理：先采纳或放弃，再生成视频。", "error");
+  }
   const prompt = elements.shotVideoPromptPreview.value.trim();
   if (!prompt) return setShotVideoStatus("视频提示词不能为空。", "error");
   const shotId = state.shotVideoGeneration.shotId;
@@ -9466,14 +9505,48 @@ function directorAgentFacts() {
       plan: stageLabel("animationPlan"),
       image: stageLabel("imageGeneration"),
       video: modelDisplayLabel(video.provider, video.model),
-      videoSupportsStoryboard: shotVideoModeSupported(video.provider, "all_reference")
+      videoSupportsStoryboard: shotVideoModeSupported(video.provider, "all_reference"),
+      edit: stageLabel("oneSentenceEdit")
     },
     usage: {
       pipeline: directorAgentLastUsage(pipelineKind),
       variants: directorAgentLastUsage("variants"),
       fullStory: directorAgentLastUsage("fullStory"),
-      plan: directorAgentLastUsage("animationPlan")
-    }
+      plan: directorAgentLastUsage("animationPlan"),
+      // 修改稿不是任务，用量只记在页面内存里（这个标签页上一次的修改稿）。
+      edit: oneSentenceEditLastUsage
+    },
+    edit: directorAgentEditFacts(variantId, story, plan)
+  };
+}
+
+// 一句话修改的事实：能不能改剧情、采纳后会作废几样东西（只数当前版本）、有没有修改稿在等决定。
+// 计数口径与服务端一致：改剧情作废分镜及其下游；改分镜作废单镜提示词、镜头视频与角色候选图，
+// 已设为人物参考图的图存在分镜里，改分镜时保留、改剧情时跟着分镜一起作废。
+function directorAgentEditFacts(variantId, story, plan) {
+  const artifacts = state.production.artifacts || {};
+  const current = Object.entries(artifacts).filter(([, entry]) => entry?.status === "current").map(([artifactId]) => artifactId);
+  const count = (kind) => current.filter((artifactId) => {
+    const [prefix, owner] = artifactId.split(":");
+    return prefix === kind && owner === variantId;
+  }).length;
+  const planCurrent = Boolean(variantId && artifacts[animationPlanArtifactId(variantId)]?.status === "current" && plan);
+  const roleImages = planCurrent ? (plan.characterReferencePrompts || [])
+    .filter((item) => typeof item?.referenceImageDataUrl === "string" && item.referenceImageDataUrl).length : 0;
+  const downstream = { shotVideoPrompt: count("shotVideoPrompt"), shotVideo: count("shotVideo"), characterImages: count("characterImages") };
+  const pending = oneSentenceEditPending();
+  return {
+    storyEditable: Boolean(story && isNarrativeFullStory(story)),
+    storyInvalidation: { counts: { animationPlan: planCurrent ? 1 : 0, ...downstream }, roleImagesLost: roleImages },
+    storyboardInvalidation: { counts: { ...downstream }, roleImagesKept: roleImages },
+    pending: pending ? {
+      target: pending.target,
+      shotId: pending.shotId,
+      variantId: pending.variantId,
+      label: oneSentenceEditTargetLabel(pending.target, pending.shotId, { storySlot: Boolean(pending.storySlot) }),
+      where: oneSentenceEditWhere(pending.target, pending.shotId, { storySlot: Boolean(pending.storySlot) })
+    } : null,
+    event: oneSentenceEditEvent
   };
 }
 
@@ -9490,6 +9563,7 @@ function directorAgentPlanFacts(variantId, plan) {
       shotId,
       seconds: Number(shot.durationSeconds) || 0,
       hasVideo: state.production.artifacts?.[`shotVideo:${variantId}:${shotId}`]?.status === "current",
+      promptRevision: state.production.artifacts?.[storyboardPromptArtifactId(variantId, shotId)]?.revision || "",
       promptCached: Boolean(productionContext && storyboardPromptMatches(cached, {
         planDigest: productionContext.planDigest, provider: target.provider, model: target.model,
         textProvider: writer.provider, textModel: writer.model
@@ -9526,6 +9600,12 @@ function directorAgentFailure(task, label) {
 }
 
 function directorAgentBusyText(pipelineKind, pipelineLabel) {
+  // 一句话修改是页面里的同步请求，写稿与签发期间不提别的动作。
+  const editLabel = oneSentenceEdit
+    ? oneSentenceEditTargetLabel(oneSentenceEdit.target, oneSentenceEdit.shotId, { storySlot: Boolean(oneSentenceEdit.storySlot) })
+    : "";
+  if (oneSentenceEdit?.status === "writing") return `正在按你的话写${editLabel}的修改稿…`;
+  if (oneSentenceEdit?.adopting) return `正在签发${editLabel}的修改…`;
   for (const kind of [pipelineKind, "variants", "fullStory", "animationPlan", "animationPromptRewrite", "characterReferenceRefine",
     "characterReferenceImages", "shotVideoPrompt", "shotVideo", "shotVideoBatch", "shotFrameImage"]) {
     const task = activeTaskForKinds([kind], { rootOnly: true });
@@ -9559,6 +9639,7 @@ function directorAgentProgressNow() {
 }
 
 function refreshDirectorAgentNow() {
+  expireStaleOneSentenceEdit();
   const facts = directorAgentFacts();
   const progress = deriveDirectorProgress(facts);
   directorAgent.observe(facts, progress);
@@ -9721,7 +9802,7 @@ async function confirmDirectorAgentCard(messageId) {
   renderDirectorAgent(progress);
   let outcome;
   try {
-    outcome = executeDirectorAgentAction(action);
+    outcome = executeDirectorAgentAction(action, message.card);
   } catch (error) {
     outcome = { started: false, text: `没有开始：${error?.message || "未知原因"}` };
   }
@@ -9731,7 +9812,7 @@ async function confirmDirectorAgentCard(messageId) {
 
 // 执行器：调页面上原有按钮背后的同一个函数。长任务不 await（AI 导演要跑完整条流水线才返回），
 // 调用后马上看对应的「正在运行」标记：函数如果什么都没做就直接返回，如实说「没有开始」并引用页面提示。
-function executeDirectorAgentAction(action) {
+function executeDirectorAgentAction(action, card = {}) {
   const [variantId, second] = action.params;
   const run = (promise) => {
     Promise.resolve(promise).catch(() => {});
@@ -9781,6 +9862,10 @@ function executeDirectorAgentAction(action) {
     case "openModelSettings":
       openModelSettings();
       return started("已打开模型设置：把「镜头视频」换成 Seedance 2.0 或 MiniMax H3，再点应用。");
+    case "editStory":
+    case "editStoryboard":
+    case "editShotPrompt":
+      return startOneSentenceEdit(action, card.instruction);
     default:
       return { started: false, text: "没有开始：不认识的动作。" };
   }
@@ -9794,4 +9879,256 @@ function showDirectorAgentStoryPage(variantId) {
   state.selectedVariantId = variantId;
   history.pushState({ storyVariantId: variantId }, "", path);
   renderStoryPage({ autoGenerate: false });
+}
+
+// ---- 一句话修改（2026-10-11，导演 Agent 第三期）----
+// 只在导演助手里说：卡片带用户的原话，确认后另起一次调用按原话写修改稿，修改稿显示在被改的东西所在的位置
+// （剧情与分镜在分场页上，单镜提示词在那一镜的视频弹窗里）。采纳由服务端拿当前版本重新应用同一组修改、
+// 核对结果摘要后签发，页面随后从服务端读回 Run。设计见 docs/one-sentence-edit-2026-10-11.md。
+
+function oneSentenceEditPending() {
+  return oneSentenceEdit?.status === "ready" && oneSentenceEdit.result?.decision === "edit" ? oneSentenceEdit : null;
+}
+
+function oneSentenceEditArtifactIdFor(target, variantId, shotId) {
+  if (target === "story") return `fullStory:${variantId}`;
+  if (target === "storyboard") return animationPlanArtifactId(variantId);
+  return storyboardPromptArtifactId(variantId, shotId);
+}
+
+function recordOneSentenceEditEvent(entry, type, extra = {}) {
+  const storySlot = Boolean(entry.storySlot);
+  oneSentenceEditEvent = {
+    id: `one-sentence-edit-event-${++oneSentenceEditSequence}`,
+    type,
+    target: entry.target,
+    shotId: entry.shotId || "",
+    storySlot,
+    where: oneSentenceEditWhere(entry.target, entry.shotId, { storySlot }),
+    ...extra
+  };
+}
+
+// 参考视频 Run 改剧情或分镜时，服务端要用固定角色设定核对角色边界的签名；剧情 Run 用开 Run 时那一份。
+function oneSentenceEditProfileField(target) {
+  return !isStoryEntryMode() && target !== "shotPrompt" ? { creatorProfile: profile() } : {};
+}
+
+function startOneSentenceEdit(action, instruction) {
+  const target = directorAgentEditTarget(action.id);
+  const [variantId, shotId = ""] = action.params;
+  const text = String(instruction || "").trim();
+  if (!target) return { started: false, text: "没有开始：不认识的修改。" };
+  if (!text) return { started: false, text: "没有开始：卡片上没有你的原话。请在对话栏里再说一次要怎么改。" };
+  if (oneSentenceEdit?.status === "writing" || oneSentenceEdit?.adopting || oneSentenceEditPending()) {
+    return { started: false, text: "没有开始：上一份修改稿还没处理完。" };
+  }
+  const artifactId = oneSentenceEditArtifactIdFor(target, variantId, shotId);
+  const current = state.production.artifacts?.[artifactId];
+  if (current?.status !== "current" || !current.revision) return { started: false, text: "没有开始：要改的东西现在没有当前版本。" };
+  showDirectorAgentStoryPage(variantId);
+  const storySlot = isStorySourceRun();
+  oneSentenceEdit = {
+    id: `one-sentence-edit-${++oneSentenceEditSequence}`,
+    status: "writing",
+    storySlot,
+    target,
+    variantId: String(variantId),
+    shotId: String(shotId),
+    artifactId,
+    runId: state.production.runId,
+    baseRevision: current.revision,
+    instruction: text,
+    result: null,
+    error: "",
+    usage: null,
+    adopting: false,
+    adoptError: ""
+  };
+  if (target === "shotPrompt") void openShotVideoGenerator(shotId);
+  renderOneSentenceEditHosts();
+  void requestOneSentenceEditDraft(oneSentenceEdit);
+  return { started: true, text: `已开始按你的话写修改稿，写好后显示在${oneSentenceEditWhere(target, shotId, { storySlot })}。` };
+}
+
+// 不走 api()：api() 会把用量记进正在进行的那一步，修改稿的花费单独显示在修改稿上。
+async function requestOneSentenceEditDraft(entry) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const body = withModelOverrides({
+    projectId: state.production.projectId,
+    runId: state.production.runId,
+    target: entry.target,
+    variantId: entry.variantId,
+    ...(entry.target === "shotPrompt" ? { shotId: entry.shotId } : {}),
+    baseRevision: entry.baseRevision,
+    instruction: entry.instruction,
+    ...oneSentenceEditProfileField(entry.target)
+  });
+  try {
+    const response = await fetch("/api/one-sentence-edit/draft", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!browserWorkspace.isCurrent(workspaceEpoch) || oneSentenceEdit !== entry) return;
+    entry.usage = data.usage || null;
+    if (data.usage) oneSentenceEditLastUsage = data.usage;
+    if (!response.ok || !data.ok) throw createApiRequestError(data, response.status, `请求失败（${response.status}）`);
+    entry.status = "ready";
+    entry.result = data.result;
+    if (data.result?.decision === "edit") {
+      recordOneSentenceEditEvent(entry, "ready", { changes: (data.result.changes || []).length, patches: (data.result.patches || []).length });
+    }
+    else recordOneSentenceEditEvent(entry, "declined");
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch) || oneSentenceEdit !== entry) return;
+    entry.status = "failed";
+    entry.error = error?.message || "未知原因";
+    recordOneSentenceEditEvent(entry, "failed", {
+      error: entry.error,
+      contentFiltered: error?.code === "MODEL_CONTENT_FILTERED" || error?.category === "content-filter"
+    });
+  }
+  renderOneSentenceEditHosts();
+  scheduleDirectorAgentRefresh();
+}
+
+function oneSentenceEditBaseCurrent(entry) {
+  const current = state.production.artifacts?.[entry.artifactId];
+  return state.production.runId === entry.runId && current?.status === "current" && current.revision === entry.baseRevision;
+}
+
+// 修改稿是针对当时那一版写的：那一版变了（重新生成、设为人物参考图、重新拆分……）就作废，
+// 绝不把基于旧内容的修改盖到新版本上。换了 Run 时悄悄丢掉（对话栏会说「已经换成新的 Run」）。
+function expireStaleOneSentenceEdit() {
+  const entry = oneSentenceEdit;
+  if (!entry || entry.adopting) return false;
+  if (state.production.runId !== entry.runId) {
+    oneSentenceEdit = null;
+    renderOneSentenceEditHosts();
+    return true;
+  }
+  if (!oneSentenceEditPending() || oneSentenceEditBaseCurrent(entry)) return false;
+  oneSentenceEdit = null;
+  recordOneSentenceEditEvent(entry, "expired");
+  renderOneSentenceEditHosts();
+  return true;
+}
+
+async function adoptOneSentenceEdit() {
+  const entry = oneSentenceEditPending();
+  if (!entry || entry.adopting) return;
+  const workspaceEpoch = browserWorkspace.epoch;
+  if (!oneSentenceEditBaseCurrent(entry)) {
+    expireStaleOneSentenceEdit();
+    scheduleDirectorAgentRefresh();
+    return;
+  }
+  const savedPrompt = String(state.shotVideoPrompts?.[entry.artifactId]?.videoPrompt || "");
+  const manualPromptEdited = entry.target === "shotPrompt" && state.shotVideoGeneration.open
+    && state.shotVideoGeneration.shotId === entry.shotId
+    && elements.shotVideoPromptPreview.value.trim() !== savedPrompt.trim();
+  const confirmText = oneSentenceEditConfirmText(entry.result, { manualPromptEdited, storySlot: Boolean(entry.storySlot) });
+  if (confirmText && !window.confirm(confirmText)) return;
+  entry.adopting = true;
+  entry.adoptError = "";
+  renderOneSentenceEditHosts();
+  scheduleDirectorAgentRefresh();
+  try {
+    const response = await fetch("/api/production/one-sentence-edit/adopt", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        projectId: state.production.projectId,
+        runId: state.production.runId,
+        target: entry.target,
+        variantId: entry.variantId,
+        ...(entry.target === "shotPrompt" ? { shotId: entry.shotId } : {}),
+        baseRevision: entry.baseRevision,
+        patches: entry.result.patches,
+        resultDigest: entry.result.resultDigest,
+        ...oneSentenceEditProfileField(entry.target)
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    assertWorkspaceCurrent(workspaceEpoch);
+    if (!response.ok || !data.ok) throw createApiRequestError(data, response.status, `请求失败（${response.status}）`);
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch) || oneSentenceEdit !== entry) return;
+    entry.adopting = false;
+    if (["ONE_SENTENCE_EDIT_BASE_CHANGED", "ONE_SENTENCE_EDIT_RESULT_MISMATCH"].includes(error?.code)) {
+      oneSentenceEdit = null;
+      recordOneSentenceEditEvent(entry, "expired");
+    } else {
+      entry.adoptError = error?.message || "未知原因";
+    }
+    renderOneSentenceEditHosts();
+    scheduleDirectorAgentRefresh();
+    return;
+  }
+  // 已经签发。从服务端读回 Run：新版本与被作废的下游都以服务端为准，不在页面上拼。
+  oneSentenceEdit = null;
+  recordOneSentenceEditEvent(entry, "adopted", { invalidation: entry.result.invalidation || null });
+  try {
+    await reloadActiveProductionRun(state.production, { preserveSelectedVariant: true });
+    assertWorkspaceCurrent(workspaceEpoch);
+    if (entry.target === "shotPrompt") {
+      const adopted = state.shotVideoPrompts?.[entry.artifactId];
+      if (adopted && state.shotVideoGeneration.open && state.shotVideoGeneration.shotId === entry.shotId) {
+        elements.shotVideoPromptPreview.value = adopted.videoPrompt;
+        setShotVideoStatus("已采纳修改，提示词换成了新版本。这一镜已有的视频不会自动重做。", "ready");
+      }
+    } else if (!elements.storyPage.classList.contains("hidden")) {
+      renderStoryPage({ autoGenerate: false });
+    }
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    showError(`修改已经签发，但页面没有读回新版本：${error?.message || "未知原因"}。请刷新页面。`);
+  }
+  renderOneSentenceEditHosts();
+  scheduleDirectorAgentRefresh();
+}
+
+// 放弃：什么都不变。没改成或失败的那一份只是收起来（结果已经报过一次）。
+function discardOneSentenceEdit() {
+  const entry = oneSentenceEdit;
+  if (!entry || entry.status === "writing" || entry.adopting) return;
+  const pending = Boolean(oneSentenceEditPending());
+  oneSentenceEdit = null;
+  if (pending) recordOneSentenceEditEvent(entry, "discarded");
+  renderOneSentenceEditHosts();
+  scheduleDirectorAgentRefresh();
+}
+
+// 这一镜的提示词正在改、或修改稿等着决定：弹窗里不能生成视频、不能重写提示词。
+function oneSentenceEditBlocksShot(shotId) {
+  const entry = oneSentenceEdit;
+  return Boolean(entry && entry.target === "shotPrompt" && entry.shotId === String(shotId)
+    && (entry.status === "writing" || entry.adopting || oneSentenceEditPending()));
+}
+
+function renderOneSentenceEditHosts() {
+  const entry = oneSentenceEdit;
+  const hosts = [["story", elements.storyEditPreview], ["storyboard", elements.storyboardEditPreview], ["shotPrompt", elements.shotPromptEditPreview]];
+  for (const [target, host] of hosts) {
+    if (!host) continue;
+    const visible = Boolean(entry && entry.target === target
+      && String(state.selectedVariantId || "") === entry.variantId
+      && (target !== "shotPrompt" || (state.shotVideoGeneration.open && state.shotVideoGeneration.shotId === entry.shotId)));
+    host.innerHTML = visible ? renderOneSentenceEditPreview(entry) : "";
+    host.classList.toggle("hidden", !visible);
+  }
+}
+
+function bindOneSentenceEditEvents() {
+  for (const host of [elements.storyEditPreview, elements.storyboardEditPreview, elements.shotPromptEditPreview]) {
+    if (!host) continue;
+    host.addEventListener("click", (event) => {
+      const button = event.target.closest?.("[data-one-sentence-action]");
+      if (!button || button.disabled) return;
+      if (button.dataset.oneSentenceAction === "adopt") void adoptOneSentenceEdit();
+      else if (button.dataset.oneSentenceAction === "discard") discardOneSentenceEdit();
+    });
+  }
 }

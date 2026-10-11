@@ -8,6 +8,7 @@ import { ProductionStateStore } from "../../src/production-state-store.js";
 import { lineageRef } from "../../src/production-lineage.js";
 import { storyboardDesignFromPlan } from "../../src/storyboard-contract.js";
 import { fullStoryCharacterRegistryInput, mockFullStoryCharacterRegistry } from "../../src/full-story-character-registry.js";
+import { ONE_SENTENCE_EDIT_PROMPT_MARKER } from "../../src/one-sentence-edit-prompts.js";
 
 const listen = server => new Promise(resolve=>server.listen(0,"127.0.0.1",()=>resolve(server.address().port)));
 const pause = ms => new Promise(resolve=>setTimeout(resolve,ms));
@@ -40,6 +41,8 @@ export async function createStoryboardRuntime({ env: envOverrides = {} } = {}) {
   const payload=await store.sealPackage({...run,payload:{...upstream,creatorProfile:input.creatorProfile,selectedVariant:variant,fullStory}});
   const packagePath=path.join(root,"protocol-fixture.json");await fs.writeFile(packagePath,JSON.stringify(payload));
   const requests=[];let releasePrompt=null, holdPrompt=false;
+  // 一句话修改：测试按顺序塞好假模型的回复（对象，或收到提示词后算出回复的函数）；用完再来就 400。
+  const oneSentenceEditReplies=[];
   const provider=http.createServer(async(req,res)=>{
     if(req.method==="GET") {res.writeHead(200,{"content-type":"application/json"});res.end(JSON.stringify({data:[{id:"qwen3.7-max"},{id:"qwen3.7-plus"}]}));return;}
     let raw="";for await(const chunk of req)raw+=chunk;
@@ -52,6 +55,9 @@ export async function createStoryboardRuntime({ env: envOverrides = {} } = {}) {
     else if(prompt.includes("你是单镜视频提示词撰写者")) {
       if(holdPrompt) await new Promise(resolve=>releasePrompt=resolve);
       value={videoPrompt:video.videoPrompt};
+    } else if(prompt.includes(ONE_SENTENCE_EDIT_PROMPT_MARKER) && oneSentenceEditReplies.length) {
+      const next=oneSentenceEditReplies.shift();
+      value=typeof next==="function"?next(prompt,body):next;
     } else {res.writeHead(400);res.end(JSON.stringify({error:{message:"Unexpected fixture prompt"}}));return;}
     res.writeHead(200,{"content-type":"text/event-stream"});
     res.end(`data: ${JSON.stringify({choices:[{delta:{content:JSON.stringify(value)},finish_reason:"stop"}],usage:{prompt_tokens:1,completion_tokens:1,total_tokens:2}})}\n\ndata: [DONE]\n\n`);
@@ -70,7 +76,7 @@ export async function createStoryboardRuntime({ env: envOverrides = {} } = {}) {
   for(let i=0;i<100;i++){if(child.exitCode!==null)throw new Error(logs);try{if((await fetch(base)).ok)break;}catch{}await pause(50);if(i===99)throw new Error("Fixture server startup timed out");}
   const api=async(route,body)=>{const response=await fetch(base+route,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});const json=await response.json();if(!response.ok||!json.ok)throw Object.assign(new Error(json.error||JSON.stringify(json)),{response:json,status:response.status});return json.result;};
   const wait=async(task)=>{for(let i=0;i<120;i++){const r=await fetch(`${base}/api/tasks/${task.taskId}?projectId=${run.projectId}&runId=${run.runId}`);const current=(await r.json()).result;if(!["queued","running"].includes(current.status))return current;await pause(50);}throw new Error("Task did not finish");};
-  return {root,base,packagePath,run,variant,fullStory,plan,input,refs,requests,api,wait,store,
+  return {root,base,packagePath,run,variant,fullStory,plan,input,refs,requests,oneSentenceEditReplies,api,wait,store,
     holdPrompt:()=>{holdPrompt=true;},promptPending:()=>Boolean(releasePrompt),releasePrompt:()=>{holdPrompt=false;releasePrompt?.();releasePrompt=null;},
     close:async()=>{releasePrompt?.();child.kill("SIGTERM");await new Promise(resolve=>child.once("exit",resolve));provider.closeAllConnections();await new Promise(resolve=>provider.close(resolve));await fs.rm(root,{recursive:true,force:true});},
     logs:()=>logs};

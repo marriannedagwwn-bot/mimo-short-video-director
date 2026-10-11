@@ -16,7 +16,8 @@ import { computeDependencyHash, computePromptHash } from "./src/frame-dependency
 import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./src/frame-reference-request.js";
 import { WorkflowService } from "./src/workflow.js";
 import { STORYBOARD_PLAN_VERSION, isStoryboardPlan, storyboardPromptArtifactId } from "./public/storyboard-plan.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, characterPromptBoundaryMismatch, characterReferenceBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, ensureStoryCandidateContract, ensureStoryEntryCandidateContract, ensureThemeVariantsMatchProfile, extractFixedCharacterName, InputError, requireAnimationPlanAspectRatio } from "./src/validation.js";
+import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, characterPromptBoundaryMismatch, characterReferenceBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, ensureStoryCandidateContract, ensureStoryEntryCandidateContract, ensureThemeVariantsMatchProfile, extractFixedCharacterName, InputError, OutputContractError, requireAnimationPlanAspectRatio } from "./src/validation.js";
+import { ONE_SENTENCE_EDIT_TARGETS, chosenRoleImageCount, oneSentenceEditDependents, oneSentenceEditInvalidation } from "./src/one-sentence-edit.js";
 import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
 import { resolveAuthoritativeShotVideoInput, resolveAuthoritativeShotVideoReferenceAssets, resolvePreviousShotFrameReference } from "./src/shot-video-continuity.js";
 import {
@@ -164,6 +165,8 @@ const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
   MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_REVISION,
   MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_REVIEW_FINAL,
   MODEL_OUTPUT_LOG_SCOPES.SHOT_VIDEO_PROMPT,
+  // 一句话修改（2026-10-11）同样走 coordinator，由 workflow 接 attemptObserver。
+  MODEL_OUTPUT_LOG_SCOPES.ONE_SENTENCE_EDIT,
   // 导演助手（2026-10-09）同样走 coordinator，由 workflow 接 attemptObserver。
   MODEL_OUTPUT_LOG_SCOPES.DIRECTOR_AGENT
 ];
@@ -408,6 +411,10 @@ const routes = {
   // 导演助手（2026-10-09）：理解对话栏里打的字。只出建议——模型从页面送来的动作清单里选一个编号，
   // 不签发任何东西、不执行任何东西；执行只在用户点卡片上的「确认执行」之后，由页面调原有按钮。
   "/api/director-agent/turn": (body) => workflow.createDirectorAgentTurn(body),
+  // 一句话修改（2026-10-11）：按用户在导演助手里说的原话写修改稿。**只出修改稿，不签发任何东西**；
+  // 被改的那一份与它的上游由服务端从 Run 里读当前版本，请求里不收任何副本。采纳走
+  // /api/production/one-sentence-edit/adopt，由服务端重新应用、核对摘要后签发。
+  "/api/one-sentence-edit/draft": (body) => oneSentenceEditDraft(body),
   // 定向修订：按终审报告只改被点名的镜头。**不签发任何东西**——返回合并后的候选 Plan
   // 供页面预览，用户点「采纳」时才由浏览器走既有的 Plan revision 签发流程。
   "/api/animation-plan-revision": (body) => workflow.createAnimationPlanRevision(body),
@@ -2555,6 +2562,13 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
       source.storyMaxCompletionTokens || source.maxCompletionTokens,
       1800000
     ),
+    // 一句话修改（2026-10-11）：沿用默认文本模型，不改思考设置。输出只有几处替换，
+    // 但开思考的模型推理段可能很长，与按问题修改同规格把上限抬到 ≥32768，截断会让整份修改稿作废。
+    oneSentenceEdit: stageSetting(
+      provider,
+      source.model,
+      Math.max(Number(source.maxCompletionTokens) || 0, 32768)
+    ),
     // 导演助手（2026-10-09）：沿用默认文本模型。输出只有一个动作编号加一两句话，
     // 调用时一律关闭思考（src/thinking-override.js），8192 足够。
     directorAgent: stageSetting(provider, source.model, 8192)
@@ -2824,6 +2838,9 @@ async function handleProductionStateRequest(pathname, body = {}) {
   }
   if (pathname === "/api/production/story-entry/dialogue-check") {
     return storyEntryDialogueCheck(body);
+  }
+  if (pathname === "/api/production/one-sentence-edit/adopt") {
+    return adoptOneSentenceEdit(body);
   }
   if (pathname === "/api/production/run/load") {
     return productionStateStore.loadRun({
@@ -3190,6 +3207,220 @@ function storyEntryAnimationPlanInput(run, input, variantId) {
     modelOverrides: input.modelOverrides,
     __storyEntry: storyEntryContextPayload(entry),
     __dependencies: storyEntryDependencyRefs(run, dependencyIds)
+  };
+}
+
+// ---- 一句话修改（2026-10-11，导演 Agent 第三期）----
+// 修改稿（/api/one-sentence-edit/draft）与采纳（/api/production/one-sentence-edit/adopt）共用一份上下文：
+// 被改的那一份与它的上游一律由服务端从 Run 里读当前版本。请求里只收坐标、修改对象、基准版本，
+// 以及参考视频 Run 的固定角色设定（核对角色边界签名要用）；出现剧情、分镜、提示词或任何上游副本就 400，
+// 不让借修改把一份没签过的内容带进来。
+const ONE_SENTENCE_EDIT_REQUEST_KEYS = Object.freeze({
+  draft: ["projectId", "runId", "target", "variantId", "shotId", "baseRevision", "instruction", "creatorProfile", "modelOverrides"],
+  adopt: ["projectId", "runId", "target", "variantId", "shotId", "baseRevision", "patches", "resultDigest", "creatorProfile"]
+});
+const ONE_SENTENCE_EDIT_LABELS = Object.freeze({ story: "剧情", storyboard: "分镜" });
+// 改剧情或分镜时，这些下游正在生成也算「正忙」：它们还没有当前版本，不在作废清单里，
+// 但写出来就是基于旧版本的，采纳会让它们白跑。
+const ONE_SENTENCE_EDIT_DOWNSTREAM_KINDS = Object.freeze(["animationPlan", "shotVideoPrompt", "shotVideo", "characterImages"]);
+
+function oneSentenceEditInputError(message, details = []) {
+  return new ProductionStateError(message, { code: "ONE_SENTENCE_EDIT_INPUT_INVALID", httpStatus: 400, details });
+}
+
+function oneSentenceEditBaseChanged(message, details = []) {
+  return new ProductionStateError(message, { code: "ONE_SENTENCE_EDIT_BASE_CHANGED", httpStatus: 409, details });
+}
+
+function oneSentenceEditArtifactId(target, variantId, shotId) {
+  if (target === "story") return `fullStory:${variantId}`;
+  if (target === "storyboard") return `animationPlan:${variantId}`;
+  return storyboardPromptArtifactId(variantId, shotId);
+}
+
+async function assertNoActiveOneSentenceEditTasks({ projectId, runId, run, target, artifactId, variantId, shotId }) {
+  const related = new Set([artifactId, ...oneSentenceEditDependents(run.latestArtifacts, artifactId)]);
+  if (target === "shotPrompt") {
+    related.add(shotVideoArtifactIdFor(variantId, shotId));
+    related.add(`animationPlan:${variantId}`);
+  }
+  const downstream = (id) => {
+    if (target === "shotPrompt") return false;
+    const [kind, owner] = String(id).split(":");
+    return ONE_SENTENCE_EDIT_DOWNSTREAM_KINDS.includes(kind) && owner === variantId;
+  };
+  const tasks = await durableTaskStore.listTasks({ projectId, runId, activeOnly: true });
+  const busy = tasks.find((task) => (task.targetArtifactIds || []).some((id) => related.has(id) || downstream(id)));
+  if (busy) {
+    throw new ProductionStateError(`有相关的步骤正在进行（${busy.kind}），等它结束再改`, {
+      code: "ONE_SENTENCE_EDIT_TASK_ACTIVE",
+      httpStatus: 409,
+      details: [{ taskId: busy.taskId, kind: busy.kind }]
+    });
+  }
+}
+
+async function prepareOneSentenceEdit(body, mode) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw oneSentenceEditInputError("请求必须是对象");
+  const allowed = ONE_SENTENCE_EDIT_REQUEST_KEYS[mode];
+  const unexpected = Object.keys(body).filter((key) => !allowed.includes(key));
+  if (unexpected.length) {
+    throw oneSentenceEditInputError(
+      `一句话修改的请求不能带 ${unexpected.join("、")}：剧情、分镜与提示词都由服务端从 Run 里读当前版本`,
+      unexpected.map((key) => ({ key }))
+    );
+  }
+  const target = body.target;
+  if (!ONE_SENTENCE_EDIT_TARGETS.includes(target)) {
+    throw oneSentenceEditInputError(`target 只能是 ${ONE_SENTENCE_EDIT_TARGETS.join("、")}`);
+  }
+  if (target !== "shotPrompt" && body.shotId !== undefined) throw oneSentenceEditInputError("只有改单镜提示词时才带 shotId");
+  const projectId = safeIdentifier(body.projectId, "projectId");
+  const runId = safeIdentifier(body.runId, "runId");
+  const variantId = safeIdentifier(body.variantId, "variantId");
+  const shotId = target === "shotPrompt" ? safeIdentifier(body.shotId, "shotId") : "";
+  const baseRevision = safeIdentifier(body.baseRevision, "baseRevision");
+  const artifactId = oneSentenceEditArtifactId(target, variantId, shotId);
+  const label = target === "shotPrompt" ? `${shotId} 的提示词` : ONE_SENTENCE_EDIT_LABELS[target];
+  const run = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
+  const current = run.latestArtifacts?.[artifactId];
+  if (!current?.lineage || current.lineage.status !== "current") {
+    throw oneSentenceEditBaseChanged(`${label}没有当前版本，不能修改`, [{ artifactId }]);
+  }
+  if (current.lineage.revision !== baseRevision) {
+    throw oneSentenceEditBaseChanged(`${label}已经更新（${baseRevision} → ${current.lineage.revision}），这份修改稿作废，请重新说一次`, [{
+      artifactId, expectedRevision: baseRevision, actualRevision: current.lineage.revision
+    }]);
+  }
+  await assertNoActiveOneSentenceEditTasks({ projectId, runId, run, target, artifactId, variantId, shotId });
+
+  const planId = `animationPlan:${variantId}`;
+  const storyId = `fullStory:${variantId}`;
+  let workflowInput;
+  let storyEntry = null;
+  if (target === "shotPrompt") {
+    // 提示词的校验只看分镜与这一镜（与写提示词时同一套），不涉及剧情和角色边界。
+    const plan = requireCurrentArtifact(run, planId);
+    if (current.content?.planDigest !== plan.lineage.contentDigest) {
+      throw oneSentenceEditBaseChanged(`${label}对应的不是当前分镜，请先在镜头视频弹窗里重新写提示词`, [{ artifactId }]);
+    }
+    workflowInput = { target, shotId, animationPlan: plan.content, shotPrompt: current.content };
+  } else if (isStoryEntryRun(run)) {
+    const entry = trustedStoryEntryContext(run);
+    assertStoryEntrySlot(variantId);
+    assertStoryEntryProfileCopy(body, entry);
+    const fromStorySource = isStorySourceDirectEntry(entry);
+    const ids = ["visualGuardrails", storyId, ...(fromStorySource ? [] : [`variant:${variantId}`]), ...(target === "storyboard" ? [planId] : [])];
+    const artifacts = currentArtifactContents(run, ids);
+    workflowInput = {
+      target,
+      creatorProfile: entry.creatorProfile,
+      visualGuardrails: artifacts.visualGuardrails,
+      fullStory: artifacts[storyId],
+      ...(fromStorySource ? {} : { variant: artifacts[`variant:${variantId}`] }),
+      ...(target === "storyboard" ? { animationPlan: artifacts[planId] } : {})
+    };
+    storyEntry = storyEntryContextPayload(entry);
+  } else {
+    assertRunEntryMode(run, "video");
+    if (!body.creatorProfile || typeof body.creatorProfile !== "object" || Array.isArray(body.creatorProfile)) {
+      throw oneSentenceEditInputError("参考视频的 Run 改剧情或分镜时要带 creatorProfile，用来核对角色边界的签名");
+    }
+    const ids = ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails", `variant:${variantId}`, storyId,
+      ...(target === "storyboard" ? [planId] : [])];
+    const artifacts = currentArtifactContents(run, ids);
+    workflowInput = {
+      target,
+      creatorProfile: body.creatorProfile,
+      referenceAnalysis: artifacts.referenceAnalysis,
+      sourceScriptReconstruction: artifacts.sourceScriptReconstruction,
+      creativeBrief: artifacts.creativeBrief,
+      visualGuardrails: artifacts.visualGuardrails,
+      variant: artifacts[`variant:${variantId}`],
+      fullStory: artifacts[storyId],
+      ...(target === "storyboard" ? { animationPlan: artifacts[planId] } : {})
+    };
+  }
+  if (target === "storyboard") {
+    // 分镜是当前版本时它依赖的剧情必然也是当前版本（新剧情会把分镜标成过期），这里再核对一次精确版本。
+    const storyRevision = requireCurrentArtifact(run, storyId).lineage.revision;
+    const dependency = (current.lineage.dependencies || []).find((ref) => ref?.artifactId === storyId);
+    if (dependency?.revision !== storyRevision) {
+      throw oneSentenceEditBaseChanged("分镜对应的不是当前剧情，请先重新生成分镜", [{ artifactId, storyRevision }]);
+    }
+  }
+  return { projectId, runId, target, variantId, shotId, artifactId, label, current, run, workflowInput, storyEntry };
+}
+
+function oneSentenceEditInvalidationFor({ run, target, variantId, artifactId }) {
+  const plan = run.latestArtifacts?.[`animationPlan:${variantId}`];
+  const roleImages = plan?.lineage?.status === "current" ? chosenRoleImageCount(plan.content) : 0;
+  return oneSentenceEditInvalidation(run.latestArtifacts, artifactId, {
+    roleImagesLost: target === "story" ? roleImages : 0,
+    roleImagesKept: target === "storyboard" ? roleImages : 0
+  });
+}
+
+// 只出修改稿，不签发任何东西。用户的原话只进这一次模型调用的提示词，不写进 Run、任务记录或日志以外的地方。
+async function oneSentenceEditDraft(body) {
+  const prepared = await prepareOneSentenceEdit(body, "draft");
+  const draft = await workflow.createOneSentenceEdit({
+    ...prepared.workflowInput,
+    instruction: body.instruction,
+    modelOverrides: body.modelOverrides
+  }, { storyEntry: prepared.storyEntry });
+  // 写稿可能要一两分钟：写完再核对一次基准版本，免得交出一份已经过期的修改稿。
+  const latest = await productionStateStore.loadRun({ projectId: prepared.projectId, runId: prepared.runId, includeContent: false });
+  const now = latest.latestArtifacts?.[prepared.artifactId]?.lineage;
+  if (now?.revision !== prepared.current.lineage.revision || now?.status !== "current") {
+    throw oneSentenceEditBaseChanged(`写修改稿期间${prepared.label}已经更新，这份修改稿作废，请重新说一次`, [{ artifactId: prepared.artifactId }]);
+  }
+  return {
+    ...draft,
+    artifactId: prepared.artifactId,
+    variantId: prepared.variantId,
+    baseRevision: prepared.current.lineage.revision,
+    invalidation: draft.decision === "edit" ? oneSentenceEditInvalidationFor(prepared) : null
+  };
+}
+
+// 采纳：服务端拿当前版本把同一组修改重新应用一遍、重新走签发校验，结果摘要必须等于修改稿上的那个，
+// 才以与上一版完全相同的依赖签发新版本（剧情 Run 因此仍能导出 3.1 测试包）。分镜签发新的媒体命名空间。
+async function adoptOneSentenceEdit(body) {
+  const prepared = await prepareOneSentenceEdit(body, "adopt");
+  const resultDigest = String(body.resultDigest || "");
+  if (!/^[0-9a-f]{64}$/u.test(resultDigest)) throw oneSentenceEditInputError("resultDigest 必须是修改稿上的 64 位摘要");
+  let applied;
+  try {
+    applied = workflow.applyOneSentenceEditPatches({ ...prepared.workflowInput, patches: body.patches }, { storyEntry: prepared.storyEntry });
+  } catch (error) {
+    if (!(error instanceof OutputContractError)) throw error;
+    throw new ProductionStateError(`这份修改稿在当前版本上执行不了：${error.message}`, {
+      code: "ONE_SENTENCE_EDIT_RESULT_MISMATCH", httpStatus: 409, details: error.details
+    });
+  }
+  if (applied.resultDigest !== resultDigest) {
+    throw new ProductionStateError("重新应用修改得到的结果与修改稿不一致，这份修改稿作废，请重新说一次", {
+      code: "ONE_SENTENCE_EDIT_RESULT_MISMATCH", httpStatus: 409,
+      details: [{ artifactId: prepared.artifactId, expectedDigest: resultDigest, actualDigest: applied.resultDigest }]
+    });
+  }
+  const committed = await productionStateStore.commitArtifact({
+    projectId: prepared.projectId,
+    runId: prepared.runId,
+    artifactId: prepared.artifactId,
+    artifactType: prepared.current.lineage.artifactType,
+    requestId: `one-sentence-edit-${randomUUID()}`,
+    content: applied.content,
+    dependencies: prepared.current.lineage.dependencies || [],
+    expectedCurrentRevision: prepared.current.lineage.revision,
+    ...(prepared.target === "storyboard" ? { createMediaNamespace: true } : {})
+  });
+  return {
+    target: prepared.target,
+    artifactId: prepared.artifactId,
+    lineage: committed.lineage,
+    staleArtifactIds: committed.staleArtifactIds || []
   };
 }
 

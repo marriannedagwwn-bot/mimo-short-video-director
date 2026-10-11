@@ -8,7 +8,8 @@
 // 以及哪些任务的结果已经是当前版本（taskForUi 只在结果进了页面之后才返回完成的任务）。
 import {
   DIRECTOR_AGENT_LIMITS,
-  DIRECTOR_AGENT_NO_ACTION
+  DIRECTOR_AGENT_NO_ACTION,
+  directorAgentEditTarget
 } from "./director-agent-actions.js";
 import { directorAgentProjection } from "./director-agent-progress.js";
 import {
@@ -17,6 +18,7 @@ import {
   directorAgentGreeting,
   directorAgentWhereText,
   failureText,
+  oneSentenceEditEventText,
   pipelineDoneText,
   planDoneText,
   precheckAwaitingText,
@@ -28,12 +30,16 @@ import {
 import { formatStageUsageSuffix } from "./token-usage-format.js";
 
 const PENDING = "pending";
+// 卡片上引用用户原话的长度上限：原话本身最多 500 字，卡片只摘前面一段，执行时用的是完整原话。
+const INSTRUCTION_PREVIEW_CHARS = 120;
 
 export function createDirectorAgentController({ maxMessages = 150 } = {}) {
   const messages = [];
   let sequence = 0;
   let baseline = null;
   let pendingTurn = false;
+  // 这一轮用户说的原话：模型对上「按你的话修改」时，卡片带上它，确认后就按这句话写修改稿。
+  let turnMessage = "";
 
   function push(message) {
     const entry = { id: `agent-message-${++sequence}`, ...message };
@@ -53,9 +59,11 @@ export function createDirectorAgentController({ maxMessages = 150 } = {}) {
   // 同一时间只留一张待确认的卡：新卡出来，旧的待确认卡标成「已被新的建议取代」。
   // 同一个动作、核对项也没变时不重复发卡；但用户刚问过（打字或点「下一步」）而那张卡已经被
   // 后面的消息压在上面时，把它挪到最下面，免得用户往上翻才找得到「确认执行」。
-  function postCard(action, lead = "", { moveToEnd = false } = {}) {
+  // 「按你的话修改」的卡带着用户的原话：原话不同就是另一件事，出新卡。
+  function postCard(action, lead = "", { moveToEnd = false, instruction = "" } = {}) {
     const current = pendingCards().at(-1);
-    if (current && current.card.key === action.key && current.card.guard === action.guard) {
+    if (current && current.card.key === action.key && current.card.guard === action.guard
+      && (current.card.instruction || "") === instruction) {
       if (!moveToEnd || messages.at(-1) === current) return current;
       Object.assign(current.card, { state: "superseded", stateText: "已移到下面" });
     }
@@ -67,7 +75,12 @@ export function createDirectorAgentController({ maxMessages = 150 } = {}) {
         key: action.key,
         guard: action.guard,
         title: action.label,
-        lines: [...(action.details || []), ...directorAgentCostLines(action)],
+        ...(instruction ? { instruction } : {}),
+        lines: [
+          ...(instruction ? [`你说的：「${truncate(instruction, INSTRUCTION_PREVIEW_CHARS)}」`] : []),
+          ...(action.details || []),
+          ...directorAgentCostLines(action)
+        ],
         warning: action.warning || "",
         state: PENDING,
         stateText: ""
@@ -165,6 +178,7 @@ export function createDirectorAgentController({ maxMessages = 150 } = {}) {
         .map((entry) => ({ role: entry.role, text: truncate(entry.text, DIRECTOR_AGENT_LIMITS.historyChars) }));
       push({ role: "user", text: truncate(message, DIRECTOR_AGENT_LIMITS.messageChars) });
       pendingTurn = true;
+      turnMessage = truncate(message, DIRECTOR_AGENT_LIMITS.messageChars);
       return {
         message: truncate(message, DIRECTOR_AGENT_LIMITS.messageChars),
         history,
@@ -175,15 +189,18 @@ export function createDirectorAgentController({ maxMessages = 150 } = {}) {
     // 模型的回复。它选的编号按回复到达时的进度重新找：找不到就不出卡片，说清楚原因。
     finishTurn({ turn, usage = null } = {}, progress) {
       pendingTurn = false;
+      const instruction = turnMessage;
+      turnMessage = "";
       push({ role: "agent", text: turn.reply, meta: usageText(usage, "这条回复") });
       if (!turn.actionKey || turn.actionKey === DIRECTOR_AGENT_NO_ACTION) return null;
       const action = progress.actions.find((item) => item.key === turn.actionKey);
       if (!action) return push({ role: "system", text: "它提的这一步现在不能做了（进度刚刚变了）。点「下一步」看看现在能做什么。" });
-      return postCard(action, "", { moveToEnd: true });
+      return postCard(action, "", { moveToEnd: true, instruction: directorAgentEditTarget(action.id) ? instruction : "" });
     },
 
     failTurn(error, usage = null) {
       pendingTurn = false;
+      turnMessage = "";
       const spent = usageText(usage, "失败前");
       return push({
         role: "error",
@@ -221,7 +238,8 @@ export function milestones(facts) {
     shotsWithVideo: plan ? plan.shots.filter((shot) => shot.hasVideo).map((shot) => shot.shotId) : [],
     failures: (facts.failures || []).map((failure) => failure.id),
     precheckAwaiting: Boolean(facts.precheck?.awaitingDecision),
-    precheckFailure: facts.precheck?.failure?.id || ""
+    precheckFailure: facts.precheck?.failure?.id || "",
+    editEvent: facts.edit?.event?.id || ""
   };
 }
 
@@ -247,6 +265,8 @@ function diffMilestones(previous, next, facts) {
   }
   if (!previous.precheckAwaiting && next.precheckAwaiting) notes.push(precheckAwaitingText());
   if (next.precheckFailure && next.precheckFailure !== previous.precheckFailure) notes.push(precheckFailureText(facts.precheck.failure));
+  // 一句话修改：修改稿写好、没改成、采纳、放弃、过期、失败，各报一句。
+  if (next.editEvent && next.editEvent !== previous.editEvent) notes.push(oneSentenceEditEventText(facts.edit.event));
   return notes;
 }
 

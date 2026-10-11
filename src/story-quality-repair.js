@@ -96,14 +96,22 @@ function onScreenPresence(scene, name) {
  *     脚步声和台词之后，她还登记在 characters 里，下游会把一个已经不在戏里的人渲染进画面。
  *     增删出镜角色要改 characters，那不是文字替换能做的事。
  */
-export function applyStoryRepairPatches(story, patches) {
+//
+// 「一句话修改」（2026-10-11）复用这一个执行器，通过第三个参数放宽：一次最多几处（maxPatches）、
+// 每场能改哪些字段（fields），以及不写场次时能改的全片字段（storyFields）。**不传就与原来逐字相同**，
+// 「按问题修改」的行为不变。
+export function applyStoryRepairPatches(story, patches, {
+  maxPatches = STORY_REPAIR_MAX_PATCHES,
+  fields = STORY_REPAIR_PATCH_FIELDS,
+  storyFields = []
+} = {}) {
   if (!Array.isArray(patches) || !patches.length) {
     throw new StoryRepairPatchError("STORY_REPAIR_NO_PATCH", "这一条没有附修改");
   }
-  if (patches.length > STORY_REPAIR_MAX_PATCHES) {
+  if (patches.length > maxPatches) {
     throw new StoryRepairPatchError(
       "STORY_REPAIR_PATCH_TOO_MANY",
-      `一条问题最多 ${STORY_REPAIR_MAX_PATCHES} 处修改，这一条写了 ${patches.length} 处`
+      `一条问题最多 ${maxPatches} 处修改，这一条写了 ${patches.length} 处`
     );
   }
   const draft = structuredClone(story);
@@ -111,21 +119,31 @@ export function applyStoryRepairPatches(story, patches) {
   patches.forEach((patch, index) => {
     const at = `第 ${index + 1} 处修改`;
     const sceneId = String(patch?.sceneId || "").trim();
+    const field = String(patch?.field || "");
+    // 全片字段：不写场次，只认调用方明确放行的那几个。
+    if (!sceneId && storyFields.length) {
+      if (!storyFields.includes(field)) {
+        throw new StoryRepairPatchError(
+          "STORY_REPAIR_FIELD_NOT_ALLOWED",
+          `${at}：不写场次时只能改 ${storyFields.join("、")}，不能改「${field}」`
+        );
+      }
+      const find = requirePatchText(at, patch);
+      const text = String(draft[field] || "");
+      const count = occurrences(text, find);
+      if (count !== 1) throw notExactlyOnce(at, "全片", field, count);
+      draft[field] = text.replace(find, () => patch.replace);
+      return;
+    }
     const scene = scenes.find((entry) => String(entry?.sceneId || "") === sceneId);
     if (!scene) throw new StoryRepairPatchError("STORY_REPAIR_SCENE_NOT_FOUND", `${at}：剧情里没有场次「${sceneId}」`);
-    const field = String(patch?.field || "");
-    if (!STORY_REPAIR_PATCH_FIELDS.includes(field)) {
+    if (!fields.includes(field)) {
       throw new StoryRepairPatchError(
         "STORY_REPAIR_FIELD_NOT_ALLOWED",
-        `${at}：只能改 ${STORY_REPAIR_PATCH_FIELDS.join("、")}，不能改「${field}」`
+        `${at}：只能改 ${fields.join("、")}，不能改「${field}」`
       );
     }
-    const find = typeof patch?.find === "string" ? patch.find : "";
-    if (!find) throw new StoryRepairPatchError("STORY_REPAIR_FIND_EMPTY", `${at}：没有写要替换的原文`);
-    if (typeof patch.replace !== "string") {
-      throw new StoryRepairPatchError("STORY_REPAIR_REPLACE_INVALID", `${at}：replace 必须是字符串`);
-    }
-    if (patch.replace === find) throw new StoryRepairPatchError("STORY_REPAIR_NO_CHANGE", `${at}：替换前后一字不差`);
+    const find = requirePatchText(at, patch);
 
     if (field === "dialogue") {
       const lines = Array.isArray(scene.dialogue) ? scene.dialogue : [];
@@ -170,6 +188,16 @@ export function applyStoryRepairPatches(story, patches) {
     }
   }
   return draft;
+}
+
+function requirePatchText(at, patch) {
+  const find = typeof patch?.find === "string" ? patch.find : "";
+  if (!find) throw new StoryRepairPatchError("STORY_REPAIR_FIND_EMPTY", `${at}：没有写要替换的原文`);
+  if (typeof patch.replace !== "string") {
+    throw new StoryRepairPatchError("STORY_REPAIR_REPLACE_INVALID", `${at}：replace 必须是字符串`);
+  }
+  if (patch.replace === find) throw new StoryRepairPatchError("STORY_REPAIR_NO_CHANGE", `${at}：替换前后一字不差`);
+  return find;
 }
 
 function notExactlyOnce(at, sceneId, field, count) {
@@ -326,13 +354,16 @@ function appliesToOriginal(story, patches) {
  * 台词可以被删整句，所以 dialogue 只要求：留下的每一句按原顺序是原来某一句，
  * 说话人与表演说明逐字不变，只有台词正文能变。
  */
-export function assertOnlyStoryRepairFieldsChanged(before, after) {
+//
+// 「一句话修改」放宽了可写字段，通过第三个参数告诉这里哪些字段允许变；不传就与原来逐字相同。
+export function assertOnlyStoryRepairFieldsChanged(before, after, {
+  sceneFields = STORY_REPAIR_PATCH_FIELDS,
+  storyFields = []
+} = {}) {
+  const omit = (value, keys) => Object.fromEntries(Object.entries(value || {}).filter(([key]) => !keys.includes(key)));
   const frame = (story) => JSON.stringify({
-    ...story,
-    sceneScript: (story.sceneScript || []).map((scene) => {
-      const { visibleAction: _action, shotAndSound: _sound, dialogue: _dialogue, ...rest } = scene;
-      return rest;
-    })
+    ...omit(story, storyFields),
+    sceneScript: (story.sceneScript || []).map((scene) => omit(scene, sceneFields))
   });
   const problems = [];
   if (frame(before) !== frame(after)) problems.push("可写字段之外的内容变了");

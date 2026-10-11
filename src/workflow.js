@@ -3,11 +3,27 @@ import { STORY_CANDIDATES_MODEL_SCHEMA_NAME, STORY_ENTRY_CANDIDATES_MODEL_SCHEMA
 import { STORY_ENTRY_SYSTEM_PROMPT, storyEntryCandidatePrompt, storyEntryFullStoryPrompt, storySceneScriptPrompt, storyEntryVisualGuardrailsPrompt } from "./story-entry-prompts.js";
 import { STORY_ENTRY_VARIANT_ID, STORY_MODE_FULL_TEXT, normalizeStorySource } from "../public/story-entry.js";
 import { STORY_CANDIDATE_REVIEW_MODEL_SCHEMA_NAME, storyCandidateReviewModelSchema } from "./contracts/story-candidate-review-model-schema.js";
-import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryEntryCandidates, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails, mockDirectorAgentTurn } from "./mock.js";
-import { isNarrativeFullStory } from "./full-story-contract.js";
+import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockAnimationPlanReview, mockAnimationPlanRevision, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryEntryCandidates, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails, mockDirectorAgentTurn, mockOneSentenceEdit } from "./mock.js";
+import { fullStoryCharacterFacts, isNarrativeFullStory } from "./full-story-contract.js";
 import { FULL_STORY_CAST_SCHEMA_VERSION } from "../public/full-story-format.js";
-import { STORYBOARD_PLAN_VERSION } from "../public/storyboard-plan.js";
-import { createStoryboardPlan, createSingleShotPrompt } from "./storyboard-workflow.js";
+import { SHOT_VIDEO_PROMPT_VERSION, STORYBOARD_PLAN_VERSION, isStoryboardPlan } from "../public/storyboard-plan.js";
+import { createStoryboardPlan, createSingleShotPrompt, shotVideoPromptViolations, singleShotPromptInput } from "./storyboard-workflow.js";
+import {
+  ONE_SENTENCE_EDIT_INSTRUCTION_MAX_CHARS,
+  ONE_SENTENCE_EDIT_SCHEMA_VERSION,
+  ONE_SENTENCE_EDIT_STAGE,
+  ONE_SENTENCE_EDIT_TARGETS,
+  applyOneSentenceEdit,
+  ensureOneSentenceEditContract,
+  oneSentenceEditMetadata
+} from "./one-sentence-edit.js";
+import {
+  ONE_SENTENCE_EDIT_SYSTEM_PROMPT,
+  oneSentenceEditRetryPrompt,
+  oneSentenceShotPromptEditPrompt,
+  oneSentenceStoryEditPrompt,
+  oneSentenceStoryboardEditPrompt
+} from "./one-sentence-edit-prompts.js";
 import { fullStoryCharacterRegistryInput, mergeFullStoryCharacterRegistry, mockFullStoryCharacterRegistry } from "./full-story-character-registry.js";
 import { fullStoryCharacterRegistryPrompt, fullStoryRegisteredVoicesPrompt } from "./full-story-character-registry-prompt.js";
 import {
@@ -549,7 +565,7 @@ export class WorkflowService {
     const validate = (result) => ensureDirectorAgentTurnContract(result, offeredKeys);
     if (!this.hasLiveClient) {
       // 演示模式没有调用模型，调用次数如实写 0。
-      return { turn: validate(mockDirectorAgentTurn(turn.progress)), metadata: promiseCheckMetadata({
+      return { turn: validate(mockDirectorAgentTurn(turn.progress, turn.message)), metadata: promiseCheckMetadata({
         provider: "demo", model: "demo", providerCalls: 0, stageKey: DIRECTOR_AGENT_STAGE
       }) };
     }
@@ -770,6 +786,236 @@ export class WorkflowService {
       providerCalls,
       rejections
     }));
+  }
+
+  /**
+   * 一句话修改（2026-10-11）的校验上下文。被改的那一份与它的上游都由服务端从 Run 里读出、
+   * 原样交进来；这里重新验签角色边界，并先让当前版本自己过一遍签发校验——
+   * 原稿过不了，「改完不合法」就无法归因到修改上，所以在调模型之前就拒绝。
+   *
+   * 三类修改各自的签发校验与生成时同一套：剧情走 validateFullStoryForSigning，
+   * 4.0 分镜走 ensureAnimationPlanMatchesProfile（分镜校验 + 候选一致 + 人物参考的角色边界），
+   * 单镜提示词走 shotVideoPromptViolations。
+   */
+  oneSentenceEditContext(input, { storyEntry = null } = {}) {
+    requireObject(input, "请求");
+    const target = input.target;
+    if (!ONE_SENTENCE_EDIT_TARGETS.includes(target)) {
+      throw new InputError(`一句话修改的对象只能是 ${ONE_SENTENCE_EDIT_TARGETS.join("、")}`);
+    }
+    const asBaselineError = (error, label) => {
+      if (!(error instanceof OutputContractError)) throw error;
+      const inputError = new InputError(`${label}，一句话修改不能在它上面改：${error.message}`);
+      inputError.details = error.details;
+      throw inputError;
+    };
+    if (target === "shotPrompt") {
+      const plan = requireObject(input.animationPlan, "animationPlan");
+      if (!isStoryboardPlan(plan)) throw new InputError("只有 4.0 自主分镜的单镜提示词能用一句话修改");
+      const shotPrompt = requireObject(input.shotPrompt, "shotPrompt");
+      const shotId = requireText(input.shotId, "shotId");
+      if (shotPrompt.schemaVersion !== SHOT_VIDEO_PROMPT_VERSION || shotPrompt.shotId !== shotId
+        || typeof shotPrompt.videoPrompt !== "string") {
+        throw new InputError(`${shotId} 的单镜提示词结构无效`);
+      }
+      let projected;
+      try {
+        projected = singleShotPromptInput(plan, shotId, shotPrompt.target);
+      } catch (error) {
+        asBaselineError(error, "当前分镜没有通过校验");
+      }
+      const [baselineIssue] = shotVideoPromptViolations({ videoPrompt: shotPrompt.videoPrompt }, projected);
+      if (baselineIssue) {
+        asBaselineError(new OutputContractError(baselineIssue.reason, [baselineIssue]), `${shotId} 现在的提示词本身没有通过校验`);
+      }
+      return {
+        target,
+        shotId,
+        base: structuredClone(shotPrompt),
+        projected,
+        characterNames: [...(plan.productionStrategy?.characterNames || [])]
+      };
+    }
+
+    const entry = storyEntry ? requireStoryEntry(storyEntry) : null;
+    const profile = requireObject(input.creatorProfile, "creatorProfile");
+    requireText(profile.fixedCharacter, "固定角色");
+    // 与生成同一套验签：剧情 Run 用原文核对角色边界，参考视频 Run 先验脚本还原的签名。
+    const groundedInput = entry
+      ? { ...input, storySource: entry.storySource }
+      : groundedStageInput(input, this.groundingKey);
+    const visualGuardrails = this.assertGlobalCharacterBoundary(groundedInput, { storyEntry: entry });
+    // 「粘贴完整故事」没有候选：故事位由服务端写定，与 createFullStory 同规格。
+    const fromStorySource = entry?.storyMode === STORY_MODE_FULL_TEXT;
+    const variant = fromStorySource ? null : requireObject(input.variant, "variant");
+    const fullStory = requireObject(input.fullStory, "fullStory");
+    if (!isNarrativeFullStory(fullStory)) {
+      throw new InputError("一句话修改只支持 full_story/1.1 的剧情；旧格式请先重新生成完整剧情");
+    }
+    const validateStory = (story) => validateFullStoryForSigning(
+      fromStorySource ? { ...story, selectedVariantId: STORY_ENTRY_VARIANT_ID } : story,
+      { profile, creativeBrief: input.creativeBrief, variant: variant || undefined, visualGuardrails }
+    );
+    if (target === "story") {
+      let base;
+      try {
+        base = validateStory(structuredClone(fullStory));
+      } catch (error) {
+        asBaselineError(error, "当前剧情本身没有通过签发校验");
+      }
+      return { target, base, validateStory, characterFacts: fullStoryCharacterFacts(visualGuardrails) };
+    }
+    const plan = requireObject(input.animationPlan, "animationPlan");
+    if (!isStoryboardPlan(plan)) throw new InputError("一句话修改只支持 4.0 自主分镜");
+    const validatePlan = (value) => ensureAnimationPlanMatchesProfile(
+      value, profile, input.creativeBrief, variant, visualGuardrails, { fullStory }
+    );
+    let base;
+    try {
+      base = validatePlan(structuredClone(plan));
+    } catch (error) {
+      asBaselineError(error, "当前分镜本身没有通过签发校验");
+    }
+    return {
+      target,
+      base,
+      validatePlan,
+      validationInput: { fullStory, targetDurationSeconds: fullStory.targetDurationSeconds }
+    };
+  }
+
+  /**
+   * 一句话修改：按用户在导演助手里说的原话，对剧情、4.0 分镜或某一镜的视频提示词写局部修改。
+   * **只出修改稿，不签发任何东西**——签发只在用户点「采纳」时由服务端重新应用同一组修改、
+   * 核对结果摘要之后进行（server.js 的 /api/production/one-sentence-edit/adopt）。
+   *
+   * 模型只写「在某个字段里找到唯一一段原文 → 换成什么」，原文由服务端逐字替换；做不到的写 decline。
+   * 结构错或执行不了（原文找不到、改完不合法）都带诊断重试一次，禁止第三次；审核拦截不重试。
+   * 用户的原话只进这一次的提示词，不进任务记录、产物或日志以外的任何地方。
+   */
+  async createOneSentenceEdit(input, { storyEntry = null } = {}) {
+    requireObject(input, "请求");
+    const instruction = typeof input.instruction === "string" ? input.instruction.trim() : "";
+    if (!instruction) throw new InputError("instruction 不能为空：要说清楚想怎么改");
+    if (instruction.length > ONE_SENTENCE_EDIT_INSTRUCTION_MAX_CHARS) {
+      throw new InputError(`instruction 不能超过 ${ONE_SENTENCE_EDIT_INSTRUCTION_MAX_CHARS} 字`);
+    }
+    const context = this.oneSentenceEditContext(input, { storyEntry });
+    const finalize = (output) => {
+      const contract = ensureOneSentenceEditContract(output, context.target);
+      if (contract.decision === "decline") {
+        return { decision: "decline", patches: [], note: contract.note, changes: [], resultDigest: "" };
+      }
+      const applied = applyOneSentenceEdit(context, contract.patches);
+      return {
+        decision: "edit",
+        patches: contract.patches,
+        note: contract.note,
+        changes: applied.changes,
+        resultDigest: applied.resultDigest,
+        // 提示词不长，整段给用户看；剧情与分镜只列改动，页面上本来就有原文。
+        ...(context.target === "shotPrompt" ? { afterText: applied.afterText } : {})
+      };
+    };
+    const respond = (draft, metadata) => ({
+      schemaVersion: ONE_SENTENCE_EDIT_SCHEMA_VERSION,
+      target: context.target,
+      ...(context.shotId ? { shotId: context.shotId } : {}),
+      ...draft,
+      metadata
+    });
+
+    if (!this.hasLiveClient) {
+      // 演示模式没有调用模型，调用次数如实写 0。
+      return respond(
+        finalize(mockOneSentenceEdit({ ...context, instruction })),
+        oneSentenceEditMetadata({ provider: "demo", model: "demo", providerCalls: 0 })
+      );
+    }
+    const settings = this.resolveStage(ONE_SENTENCE_EDIT_STAGE, input);
+    this.assertStageClient(settings, stageLabel(ONE_SENTENCE_EDIT_STAGE));
+    const prompt = context.target === "story"
+      ? oneSentenceStoryEditPrompt({ instruction, fullStory: context.base, characterFacts: context.characterFacts })
+      : context.target === "storyboard"
+        ? oneSentenceStoryboardEditPrompt({ instruction, plan: context.base })
+        : oneSentenceShotPromptEditPrompt({
+          instruction,
+          shotId: context.shotId,
+          videoPrompt: context.base.videoPrompt,
+          projected: context.projected,
+          characterNames: context.characterNames
+        });
+
+    // 实数调用次数，不能从 rejections 反推：传输失败时它是空数组，供应商却确实被调用过。
+    let providerCalls = 0;
+    const rejections = [];
+    // 走 coordinator 拿不到 generateValidatedJson 自带的 recorder，必须自己接，不接就静默不写侧车。
+    const outputLogWriter = this.stageModelOutputLogWriters?.get(ONE_SENTENCE_EDIT_STAGE) || null;
+    const recordAttempt = outputLogWriter?.enabled ? (attempt) => outputLogWriter.recordAttempt(attempt) : null;
+    let draft;
+    try {
+      draft = await this.modelCallCoordinator.runJson({
+        client: settings.client,
+        request: {
+          prompt,
+          // 显式换掉客户端默认的「受控改编」系统消息：这里不是改编原片，是按用户的话修稿。
+          systemPrompt: ONE_SENTENCE_EDIT_SYSTEM_PROMPT,
+          model: settings.model,
+          maxCompletionTokens: settings.maxCompletionTokens,
+          requestTimeoutMs: settings.requestTimeoutMs
+        },
+        provider: settings.provider || "",
+        stage: ONE_SENTENCE_EDIT_STAGE,
+        maxProviderCalls: 2,
+        attemptObserver: async (attempt) => {
+          providerCalls += 1;
+          if (!recordAttempt) return;
+          try {
+            await recordAttempt(attempt);
+          } catch {
+            // 观测失败不改变结论。
+          }
+        },
+        retryTokenLimit,
+        retryPrompt: ({ originalPrompt }) => {
+          const last = rejections[rejections.length - 1];
+          return last?.details?.length ? oneSentenceEditRetryPrompt({ originalPrompt, details: last.details }) : originalPrompt;
+        },
+        validate: (candidate) => {
+          try {
+            return finalize(candidate);
+          } catch (error) {
+            if (error instanceof OutputContractError) {
+              rejections.push({ message: error.message, details: Array.isArray(error.details) ? error.details : [] });
+            }
+            throw error;
+          }
+        }
+      });
+    } catch (error) {
+      throw candidateReviewPipelineFailure(error, rejections);
+    }
+    return respond(draft, oneSentenceEditMetadata({
+      provider: settings.provider || "",
+      model: settings.model || "",
+      providerCalls,
+      rejections
+    }));
+  }
+
+  /**
+   * 采纳一句话修改：不调用模型。拿当前版本把同一组修改重新应用一遍、重新校验，
+   * 返回要签发的内容与它的摘要；服务端核对摘要等于修改稿上的那个才签发。
+   */
+  applyOneSentenceEditPatches(input, { storyEntry = null } = {}) {
+    requireObject(input, "请求");
+    const context = this.oneSentenceEditContext(input, { storyEntry });
+    const contract = ensureOneSentenceEditContract(
+      { decision: "edit", patches: input.patches, note: "采纳修改稿" },
+      context.target
+    );
+    const applied = applyOneSentenceEdit(context, contract.patches);
+    return { content: applied.content, resultDigest: applied.resultDigest, changes: applied.changes };
   }
 
   /**
@@ -4865,6 +5111,8 @@ function normalizeStageDefaults(stageDefaults = null, fallback = {}) {
       model: fallback.storyModel || "",
       maxCompletionTokens: fallback.storyMaxCompletionTokens || null
     },
+    // 一句话修改（2026-10-11）：沿用默认文本模型，不改思考设置；上限与按问题修改同规格。
+    oneSentenceEdit: { provider, model: "", maxCompletionTokens: 32768 },
     // 导演助手（2026-10-09）：沿用默认文本模型。输出只有一个动作编号加一两句话，
     // 调用时一律关闭思考，8192 足够。新阶段一上线就登记，不重演体检「漏在表外」那一次。
     directorAgent: { provider, model: "", maxCompletionTokens: 8192 }
@@ -4938,6 +5186,7 @@ function stageLabel(stage) {
     storyQualityRepair: "剧情按问题修改",
     animationPlanReview: "分镜终审",
     animationPlanRevision: "分镜修订",
+    oneSentenceEdit: "一句话修改",
     directorAgent: "导演助手"
   })[stage] || stage;
 }

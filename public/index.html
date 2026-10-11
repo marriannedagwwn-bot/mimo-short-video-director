@@ -267,7 +267,10 @@
       </div>
       <article class="result-card story-result hidden" id="fullStoryPrecheckPanel" aria-live="polite"></article>
       <article class="result-card story-result story-dialogue-check hidden" id="storyDialogueCheck" aria-live="polite"></article>
+      <!-- 一句话修改（2026-10-11）：导演助手里说的修改，修改稿显示在被改的东西上方，点「采纳」才生效。 -->
+      <article class="result-card story-result hidden" id="storyEditPreview" aria-live="polite"></article>
       <article class="result-card story-result hidden" id="fullStoryResult"></article>
+      <article class="result-card story-result hidden" id="storyboardEditPreview" aria-live="polite"></article>
       <article class="result-card story-result hidden" id="animationPlanResult"></article>
     </section>
   </main>
@@ -439,6 +442,7 @@
         <div class="modal-panel shot-video-output-panel">
           <span class="block-label">视频提示词预览 · 可编辑</span>
           <textarea class="prompt-preview prompt-preview-editor shot-video-prompt-editor" id="shotVideoPromptPreview" rows="14"></textarea>
+          <div class="shot-prompt-edit-preview hidden" id="shotPromptEditPreview" aria-live="polite"></div>
           <button class="outline-button hidden" id="regenerateShotVideoPrompt" type="button">重新生成本镜提示词</button>
           <p class="story-status" id="shotVideoStatus"></p>
           <button class="primary-button" id="confirmGenerateShotVideo" type="button">

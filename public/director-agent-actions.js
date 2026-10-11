@@ -19,7 +19,12 @@ export const DIRECTOR_AGENT_ACTIONS = Object.freeze({
   generateStoryboard: Object.freeze({ modelSelectable: true }),
   openCharacterImages: Object.freeze({ modelSelectable: true }),
   openShotVideo: Object.freeze({ modelSelectable: true }),
-  openModelSettings: Object.freeze({ modelSelectable: true })
+  openModelSettings: Object.freeze({ modelSelectable: true }),
+  // 一句话修改（2026-10-11，第三期）：模型能选，但从不作为「下一步」主动提出、也不做成按钮——
+  // 只在用户自己说要改什么时由模型对上。卡片带用户的原话，确认后另起一次调用按原话写修改稿。
+  editStory: Object.freeze({ modelSelectable: true, editTarget: "story" }),
+  editStoryboard: Object.freeze({ modelSelectable: true, editTarget: "storyboard" }),
+  editShotPrompt: Object.freeze({ modelSelectable: true, editTarget: "shotPrompt" })
 });
 
 // 模型选「什么都不做、只回答」时写的编号。
@@ -38,7 +43,8 @@ export const DIRECTOR_AGENT_LIMITS = Object.freeze({
   steps: 12,
   stepLabelChars: 20,
   stepDetailChars: 80,
-  actions: 40,
+  // 一句话修改为每个写好提示词的镜头各提供一个动作（2026-10-11），40 在镜头多时会把后面的截掉。
+  actions: 80,
   actionLabelChars: 80,
   statusTextChars: 200,
   notes: 3
@@ -63,4 +69,9 @@ export function parseDirectorAgentActionKey(key) {
 export function isModelSelectableDirectorAgentAction(key) {
   const parsed = parseDirectorAgentActionKey(key);
   return Boolean(parsed && DIRECTOR_AGENT_ACTIONS[parsed.id].modelSelectable);
+}
+
+// 一句话修改的三个动作改的是哪一类：story / storyboard / shotPrompt；不是修改动作返回空串。
+export function directorAgentEditTarget(id) {
+  return Object.hasOwn(DIRECTOR_AGENT_ACTIONS, id) ? DIRECTOR_AGENT_ACTIONS[id].editTarget || "" : "";
 }

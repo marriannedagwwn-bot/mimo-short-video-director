@@ -409,8 +409,9 @@ test("接线源码锁：路由、侧车 scope、阶段默认值、签发校验�
   const workflowJs = fs.readFileSync(new URL("../src/workflow.js", import.meta.url), "utf8");
   assert.match(workflowJs, /storyQualityRepair: \{\s*\n\s*provider: fallback\.storyProvider/u);
   // 生成与修改共用同一条签发校验链，两边各写一遍迟早漂移。
-  assert.equal((workflowJs.match(/validateFullStoryForSigning\(/gu) || []).length, 3,
-    "一处定义 + createFullStory + createStoryQualityRepair");
+  // 一句话修改（2026-10-11）改剧情同样走这一条。
+  assert.equal((workflowJs.match(/validateFullStoryForSigning\(/gu) || []).length, 4,
+    "一处定义 + createFullStory + createStoryQualityRepair + oneSentenceEditContext");
 
   const appJs = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
   assert.match(appJs, /key: "storyQualityRepair"/u, "模型设置面板的 override 白名单必须登记新阶段");

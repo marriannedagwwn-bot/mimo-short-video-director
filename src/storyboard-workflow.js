@@ -247,6 +247,25 @@ export function singleShotPromptInput(plan, shotId, target) {
   };
 }
 
+/**
+ * 单镜视频提示词的判据，按原来的先后顺序列出全部问题（生成时只报第一条，与原来逐字相同）。
+ * 生成（createSingleShotPrompt）与一句话修改（2026-10-11）共用这一份，两边不会各说各话。
+ * value 是 { videoPrompt }；projected 来自 singleShotPromptInput。
+ */
+export function shotVideoPromptViolations(value, projected) {
+  const issue = (code, reason) => ({ code, path: "/videoPrompt", reason });
+  if (!value || Object.keys(value).join(",") !== "videoPrompt" || typeof value.videoPrompt !== "string" || !value.videoPrompt.trim()) {
+    return [issue("SHOT_PROMPT_STRUCTURE_INVALID", "单镜提示词结构无效：只允许一个非空字符串键 videoPrompt")];
+  }
+  const issues = [];
+  for (const beat of projected.shot.beats) for (const line of beat.dialogue) if (!value.videoPrompt.includes(line.text)) issues.push(issue("SHOT_PROMPT_DIALOGUE_MISSING", `单镜提示词未逐字保留对白：${line.text}`));
+  if (projected.backgroundMusicMode === "none" && !value.videoPrompt.endsWith(NO_BACKGROUND_MUSIC_SENTENCE)) issues.push(issue("SHOT_PROMPT_BACKGROUND_MUSIC_SENTENCE", `关闭背景音乐时，单镜提示词必须以这句话逐字收尾：${NO_BACKGROUND_MUSIC_SENTENCE}`));
+  // 画风只在分镜签发了它时校验：每个镜头都要逐字写出同一个画风，否则没有角色参考图约束的
+  // 空镜和场景会自己挑风格，和角色对不上。
+  if (projected.artStyle && !value.videoPrompt.includes(projected.artStyle)) issues.push(issue("SHOT_PROMPT_ART_STYLE_MISSING", `单镜提示词必须逐字写出分镜的画风：${projected.artStyle}`));
+  return issues;
+}
+
 export async function createSingleShotPrompt(workflow, input) {
   const { plan, shotId, planDigest, target } = input;
   const projected = singleShotPromptInput(plan, shotId, target);
@@ -258,14 +277,9 @@ export async function createSingleShotPrompt(workflow, input) {
     workflow.assertStageClient(settings, "单镜视频提示词");
     result = await call(workflow, settings, "shotVideoPrompt", shotPrompt(projected), value => {
       // 三条判据逐字未改，只是让它们带上 code + 指针：漏写一句台词正是重试救得回来的那一类，
-      // 而没有结构化诊断的重试只能原样重发。
-      const fail = (code, reason) => { throw new OutputContractError(reason, [{ code, path: "/videoPrompt", reason }]); };
-      if (!value || Object.keys(value).join(",") !== "videoPrompt" || typeof value.videoPrompt !== "string" || !value.videoPrompt.trim()) fail("SHOT_PROMPT_STRUCTURE_INVALID", "单镜提示词结构无效：只允许一个非空字符串键 videoPrompt");
-      for (const beat of projected.shot.beats) for (const line of beat.dialogue) if (!value.videoPrompt.includes(line.text)) fail("SHOT_PROMPT_DIALOGUE_MISSING", `单镜提示词未逐字保留对白：${line.text}`);
-      if (projected.backgroundMusicMode === "none" && !value.videoPrompt.endsWith(NO_BACKGROUND_MUSIC_SENTENCE)) fail("SHOT_PROMPT_BACKGROUND_MUSIC_SENTENCE", `关闭背景音乐时，单镜提示词必须以这句话逐字收尾：${NO_BACKGROUND_MUSIC_SENTENCE}`);
-      // 画风只在分镜签发了它时校验：每个镜头都要逐字写出同一个画风，否则没有角色参考图约束的
-      // 空镜和场景会自己挑风格，和角色对不上。
-      if (projected.artStyle && !value.videoPrompt.includes(projected.artStyle)) fail("SHOT_PROMPT_ART_STYLE_MISSING", `单镜提示词必须逐字写出分镜的画风：${projected.artStyle}`);
+      // 而没有结构化诊断的重试只能原样重发。判据写在 shotVideoPromptViolations，一句话修改共用。
+      const [first] = shotVideoPromptViolations(value, projected);
+      if (first) throw new OutputContractError(first.reason, [first]);
       return value;
     });
   }

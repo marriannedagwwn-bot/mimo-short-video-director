@@ -102,6 +102,10 @@ export async function loadAppUi({ story = false, plan = false, createElement,
     shotVideoSetting, shotVideoResolutionState, shotVideoResolutionRequestFields, renderShotVideoResolutionControl,
     handleShotVideoResolutionChange, renderShotVideoBatchLabel, shotVideoResolutionText, startShotVideoBatch,
     generateShotVideo, renderShotVideoModalResults, setShotVideoGeneratorRunning, updateShotVideoProviderUi, taskUiView,
+    startOneSentenceEdit, adoptOneSentenceEdit, discardOneSentenceEdit, renderOneSentenceEditHosts, expireStaleOneSentenceEdit,
+    closeShotVideoGenerator, confirmGenerateShotVideo,
+    oneSentenceEditForTest: () => oneSentenceEdit, oneSentenceEditEventForTest: () => oneSentenceEditEvent,
+    setOneSentenceEditForTest: (value) => { oneSentenceEdit = value; },
     setSourceLoadingForTest: (value) => { sourceLoading = value; },
     setDirectorAgentStartedForTest: (value) => { directorAgentStarted = value; } };`, context);
   const app = context.app;

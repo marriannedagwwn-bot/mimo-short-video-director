@@ -141,11 +141,16 @@ test("只给角色设定：展开完整剧情不请求展开前体检，不由�
 
 test("粘贴完整故事：拆分镜头与生成分镜的请求只带故事位，不带候选与原片上游，也不由页面提交选中记录", async () => {
   const { fetch, requests } = recordingFetch();
-  const app = await loadAppUi({ fetch });
+  // 已经拆过时「重新拆分」先问一句（2026-10-11 起没有分镜也问：用一句话改过的地方会被覆盖）。
+  const confirms = [];
+  const app = await loadAppUi({ fetch, confirm: (text) => { confirms.push(text); return true; } });
   app.restoreRunMetadata({ entryMode: "story", storyMode: "fullStoryText", creatorProfile: profile });
   app.restoreRunArtifacts({ storySource: current(storySource, "storySource"), "fullStory:V1": current(sceneScriptStory(), "fullStory:V1") });
   app.state.output.referenceAnalysis = { format: "残留的视频上游" };
   await app.startFullStory({ force: true });
+  assert.equal(confirms.length, 1);
+  assert.match(confirms[0], /包括用一句话改过的地方/u);
+  assert.doesNotMatch(confirms[0], /分镜和镜头视频也会失效/u, "还没有分镜时不说分镜会失效");
   await app.generateAnimationPlan({ force: true });
   const created = requests.filter((request) => request.path === "/api/tasks/create");
   assert.deepEqual(created.map((request) => request.body.kind), ["fullStory", "animationPlan"]);
