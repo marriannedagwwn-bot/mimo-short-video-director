@@ -7,6 +7,7 @@
 //   - 单镜提示词：这一镜的提示词、分段与台词，以及必须逐字保留的几项。
 // 举例一律用占位写法，不给可以照抄的具体内容。
 import { NO_BACKGROUND_MUSIC_SENTENCE } from "./validation.js";
+import { storyboardShotCharacterNames } from "../public/storyboard-plan.js";
 import {
   ONE_SENTENCE_EDIT_MAX_PATCHES,
   ONE_SENTENCE_EDIT_NOTE_MAX_CHARS,
@@ -173,8 +174,10 @@ ${outputSection(`{"path": ["shotPlan", "3", "beats", "0", "visibleAction"], "fin
 
 export function oneSentenceShotPromptEditPrompt({ instruction, shotId, videoPrompt, projected, characterNames = [] }) {
   const dialogue = projected.shot.beats.flatMap((beat) => beat.dialogue.map((line) => line.text));
+  // 与 shotVideoPromptViolations 逐项对应：台词、出镜角色名、画风、无配乐收尾句。
   const keep = [
     ...dialogue.map((text) => `台词原话：${text}`),
+    ...storyboardShotCharacterNames(projected.shot).map((name) => `角色名：${name}`),
     ...(projected.artStyle ? [`画风：${projected.artStyle}`] : []),
     ...(projected.backgroundMusicMode === "none" ? [`最后一句必须仍是：${NO_BACKGROUND_MUSIC_SENTENCE}`] : [])
   ];
@@ -185,6 +188,8 @@ export function oneSentenceShotPromptEditPrompt({ instruction, shotId, videoProm
 ${commonRules({ cannot: [
     "改这一镜的时长，或者把它拆成几镜、和别的镜头合并；",
     "加一个分镜里这一镜没有的角色；",
+    "让这一镜出镜的角色从提示词里消失（要删角色请改分镜）；",
+    "写 @图片、参考图N 之类的素材编号（附哪些素材、编号是几由生成视频时的素材清单决定）；",
     "加一句这一镜没有的台词，或者改动、删掉下面「必须逐字保留」里的任何一项。"
   ] })}
 
@@ -194,7 +199,7 @@ ${patchRules(`每一处修改：{"find":"提示词里逐字复制的原文","rep
 - 改完和这一镜的分镜不一致时，在 note 里说一句（分镜里还写着原来的样子）。`)}
 
 ## 必须逐字保留（改完之后提示词里仍要一字不差地出现）
-${keep.length ? keep.map((line) => `- ${line}`).join("\n") : "- （这一镜没有必须保留的台词、画风或收尾句）"}
+${keep.length ? keep.map((line) => `- ${line}`).join("\n") : "- （这一镜没有必须保留的台词、角色名、画风或收尾句）"}
 
 ## 这一镜的分镜（只用来对照，不能改）
 ${JSON.stringify({ shotId, characterNames, ...projected.shot })}

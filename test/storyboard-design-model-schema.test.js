@@ -12,6 +12,7 @@ import { fullStoryCharacterRegistryInput, mockFullStoryCharacterRegistry } from 
 import { catalog } from "../src/storyboard-editorial-utils.js";
 import { NO_BACKGROUND_MUSIC_SENTENCE } from "../src/validation.js";
 import { WorkflowService } from "../src/workflow.js";
+import { storyboardShotCharacterNames } from "../public/storyboard-plan.js";
 
 // 2026-09-24：MiMo 把 locations / props 放在顶层，耗掉了分镜设计的一次调用预算。
 // 约束解码只减少这类结构失败；跨字段引用仍由服务端判定，预算留给带诊断重试。
@@ -256,7 +257,9 @@ test("只有分镜设计及其重试带 Schema，其他分镜阶段不带；提�
     broken, design, report,
     { repairs: [{ ref: "I1", disposition: "revise", patches: [{ path: evidence.path, find: evidence.value, replace: replacement }], note: "写清动作终点，保留原动作" }] },
     { strengths: ["保留已有动作"], guidance: [], items: [] },
-    { videoPrompt: design.shotPlan[0].beats.flatMap(beat => beat.dialogue.map(line => line.text)).join("；") + NO_BACKGROUND_MUSIC_SENTENCE }
+    // 单镜提示词要写出出镜角色名（2026-10-12），否则会触发重试、超出这里预置的调用次数。
+    { videoPrompt: `${storyboardShotCharacterNames(design.shotPlan[0]).join("、")}。`
+      + design.shotPlan[0].beats.flatMap(beat => beat.dialogue.map(line => line.text)).join("；") + NO_BACKGROUND_MUSIC_SENTENCE }
   ];
   const requests = [];
   workflow.clients.MiMo = { async generateJson(request) {

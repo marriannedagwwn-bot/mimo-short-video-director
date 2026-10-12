@@ -150,6 +150,10 @@ test("单镜提示词：演示模式把画风写在开头；真实调用漏写�
   assert.equal(requests.length, 2);
   assert.ok(requests[0].prompt.includes("提示词里必须逐字写出「二维日系动画」"));
   assert.match(requests[1].prompt, /SHOT_PROMPT_ART_STYLE_MISSING/u);
+  // 单镜写稿用自己的重试（2026-10-12）：不再叫模型「调整片段怎么分、beat 怎么切」。
+  assert.ok(requests[1].prompt.includes("## 上一次的输出被确定性校验拦下了"));
+  assert.ok(requests[1].prompt.includes("这一步只是翻译分镜"));
+  assert.equal(requests[1].prompt.includes("片段怎么分"), false);
   assert.ok(live.videoPrompt.includes("二维日系动画"));
 });
 

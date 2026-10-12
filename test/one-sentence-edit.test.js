@@ -19,6 +19,7 @@ import {
   ONE_SENTENCE_EDIT_SYSTEM_PROMPT
 } from "../src/one-sentence-edit-prompts.js";
 import { STORY_REPAIR_MAX_PATCHES, applyStoryRepairPatches } from "../src/story-quality-repair.js";
+import { shotVideoPromptViolations, singleShotPromptInput } from "../src/storyboard-workflow.js";
 
 // 一句话修改（2026-10-11，导演 Agent 第三期）：模型只写「在某个字段里找到唯一一段原文 → 换成什么」，
 // 原文由服务端逐字替换；剧情、4.0 分镜、单镜提示词各自过签发时的同一套校验，做不到的写 decline。
@@ -241,6 +242,12 @@ test("单镜提示词：不能整段重写；台词、画风、无配乐收尾�
   rejectsWith(() => applyOneSentenceEdit(shotPrompt(), [{ find: "二维日系动画", replace: "水彩绘本" }]), "SHOT_PROMPT_ART_STYLE_MISSING");
   rejectsWith(() => applyOneSentenceEdit(shotPrompt(), [{ find: NO_BACKGROUND_MUSIC_SENTENCE, replace: "配一段轻快的钢琴。" }]), "SHOT_PROMPT_BACKGROUND_MUSIC_SENTENCE");
   rejectsWith(() => applyOneSentenceEdit(shotPrompt(), [{ find: "不存在的片段", replace: "x" }]), "ONE_SENTENCE_EDIT_FIND_NOT_FOUND");
+  // 2026-10-12 共用判据多的两条：素材编号要拒；出镜角色名被换成代词也要拒（名字在正文里不止一处，
+  // patch 写不出「全换掉」，所以直接对判据断言）。
+  rejectsWith(() => applyOneSentenceEdit(shotPrompt(), [{ find: "固定机位", replace: "固定机位，参考@图片1" }]), "SHOT_PROMPT_UNBOUND_REFERENCE_TOKEN");
+  const projected = singleShotPromptInput(fixture.plan, "A01", fixture.shotPrompt.target);
+  const codes = shotVideoPromptViolations({ videoPrompt: text.replaceAll("阿岚", "她") }, projected).map((entry) => entry.code);
+  assert.deepEqual(codes, ["SHOT_PROMPT_CHARACTER_NAME_MISSING"]);
 });
 
 // ---- 采纳后会作废什么 ----
@@ -391,6 +398,9 @@ test("分镜与提示词的修改提示词：不送完整剧情和参考图数�
   const shotText = prompt.requests[0].prompt;
   assert.ok(shotText.includes("## 修改对象：A01 的视频提示词"));
   assert.ok(shotText.includes("- 台词原话：我现在去。"));
+  assert.ok(shotText.includes("- 角色名：阿岚"));
+  assert.ok(shotText.includes("让这一镜出镜的角色从提示词里消失（要删角色请改分镜）"));
+  assert.ok(shotText.includes("写 @图片、参考图N 之类的素材编号"));
   assert.ok(shotText.includes("- 画风：二维日系动画"));
   assert.ok(shotText.includes(`- 最后一句必须仍是：${NO_BACKGROUND_MUSIC_SENTENCE}`));
   assert.ok(shotText.includes(`<<<\n${fixture.shotPrompt.videoPrompt}\n>>>`));
@@ -410,6 +420,11 @@ test("调用之前就拒：话为空或太长、当前版本自己过不了签�
   broken.videoPrompt = broken.videoPrompt.replace("二维日系动画", "水彩");
   await reject({ target: "shotPrompt", instruction: "镜头慢一点", shotId: "A01", animationPlan: structuredClone(fixture.plan), shotPrompt: broken },
     /A01 现在的提示词本身没有通过校验，一句话修改不能在它上面改/u, null);
+  // 旧规则写的提示词可能没写出出镜角色名：改之前就拒，并指出重新生成这一镜的提示词这条路。
+  const nameless = structuredClone(fixture.shotPrompt);
+  nameless.videoPrompt = nameless.videoPrompt.replaceAll("阿岚", "她");
+  await reject({ target: "shotPrompt", instruction: "镜头慢一点", shotId: "A01", animationPlan: structuredClone(fixture.plan), shotPrompt: nameless },
+    /A01 现在的提示词本身没有通过校验，一句话修改不能在它上面改：单镜提示词没有写出出镜角色的登记名「阿岚」[\s\S]*可以先重新生成这一镜的提示词/u, null);
   const legacy = structuredClone(fixture.fullStory);
   delete legacy.schemaVersion;
   await reject(storyInput(fixture, { fullStory: legacy }), /只支持 full_story\/1\.1/u);

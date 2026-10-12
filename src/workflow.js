@@ -826,7 +826,10 @@ export class WorkflowService {
       }
       const [baselineIssue] = shotVideoPromptViolations({ videoPrompt: shotPrompt.videoPrompt }, projected);
       if (baselineIssue) {
-        asBaselineError(new OutputContractError(baselineIssue.reason, [baselineIssue]), `${shotId} 现在的提示词本身没有通过校验`);
+        // 2026-10-12 判据多了出镜角色名与素材编号两条，旧规则写的提示词可能过不了；
+        // 重新生成这一镜的提示词就是按新规则写，所以把这条路说出来。
+        asBaselineError(new OutputContractError(`${baselineIssue.reason}。可以先重新生成这一镜的提示词，再用一句话修改`, [baselineIssue]),
+          `${shotId} 现在的提示词本身没有通过校验`);
       }
       return {
         target,
