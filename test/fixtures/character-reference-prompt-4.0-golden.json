@@ -1,0 +1,520 @@
+{
+ "note": "由 HEAD（ba4c500，删除旧分镜之前）的 public/character-reference-prompt.js 与 src/jimeng-client.js 对 4.0 输入（没有 visualBible）算出；锁住删除 visualBible 分支后角色参考图提示词与即梦请求体逐字不变。",
+ "refs": {
+  "appearance": {
+   "characterName": "小白子",
+   "appearancePrompt": "小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。"
+  },
+  "identityOnly": {
+   "characterName": "老周",
+   "identity": "老周，六十岁的修车师傅，灰色工装。"
+  },
+  "nameOnly": {
+   "characterName": "芙芙猫"
+  }
+ },
+ "configs": {
+  "image": {
+   "model": "doubao-seedream-5-0-260128",
+   "size": "1728x2304",
+   "outputFormat": "png",
+   "imageField": "image",
+   "maxImages": 6,
+   "watermark": false
+  },
+  "images": {
+   "model": "doubao-seedream-5-0-260128",
+   "imageField": "images",
+   "maxImages": 4,
+   "watermark": true
+  }
+ },
+ "prompts": [
+  {
+   "refKey": "appearance",
+   "count": 1,
+   "options": {
+    "withReferenceImage": true
+   },
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 1,
+   "options": {
+    "withReferenceImage": true,
+    "artStyle": ""
+   },
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 1,
+   "options": {
+    "withReferenceImage": true,
+    "artStyle": "二维日系动画"
+   },
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：二维日系动画\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 1,
+   "options": {
+    "withReferenceImage": true,
+    "artStyle": "  水彩\n绘本   风格 "
+   },
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：水彩 绘本 风格\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 1,
+   "options": {
+    "withReferenceImage": false
+   },
+   "expected": "生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 1,
+   "options": {
+    "withReferenceImage": false,
+    "artStyle": ""
+   },
+   "expected": "生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 1,
+   "options": {
+    "withReferenceImage": false,
+    "artStyle": "二维日系动画"
+   },
+   "expected": "生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：二维日系动画\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 1,
+   "options": {
+    "withReferenceImage": false,
+    "artStyle": "  水彩\n绘本   风格 "
+   },
+   "expected": "生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：水彩 绘本 风格\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 1,
+   "options": {},
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 1,
+   "options": {
+    "artStyle": ""
+   },
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 1,
+   "options": {
+    "artStyle": "二维日系动画"
+   },
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：二维日系动画\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 1,
+   "options": {
+    "artStyle": "  水彩\n绘本   风格 "
+   },
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：水彩 绘本 风格\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 3,
+   "options": {
+    "withReferenceImage": true
+   },
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 3,
+   "options": {
+    "withReferenceImage": true,
+    "artStyle": ""
+   },
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 3,
+   "options": {
+    "withReferenceImage": true,
+    "artStyle": "二维日系动画"
+   },
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：二维日系动画\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 3,
+   "options": {
+    "withReferenceImage": true,
+    "artStyle": "  水彩\n绘本   风格 "
+   },
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：水彩 绘本 风格\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 3,
+   "options": {
+    "withReferenceImage": false
+   },
+   "expected": "生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 3,
+   "options": {
+    "withReferenceImage": false,
+    "artStyle": ""
+   },
+   "expected": "生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 3,
+   "options": {
+    "withReferenceImage": false,
+    "artStyle": "二维日系动画"
+   },
+   "expected": "生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：二维日系动画\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 3,
+   "options": {
+    "withReferenceImage": false,
+    "artStyle": "  水彩\n绘本   风格 "
+   },
+   "expected": "生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：水彩 绘本 风格\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 3,
+   "options": {},
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 3,
+   "options": {
+    "artStyle": ""
+   },
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 3,
+   "options": {
+    "artStyle": "二维日系动画"
+   },
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：二维日系动画\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。"
+  },
+  {
+   "refKey": "appearance",
+   "count": 3,
+   "options": {
+    "artStyle": "  水彩\n绘本   风格 "
+   },
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：水彩 绘本 风格\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。"
+  },
+  {
+   "refKey": "identityOnly",
+   "count": 1,
+   "options": {},
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：老周，六十岁的修车师傅，灰色工装。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。"
+  },
+  {
+   "refKey": "identityOnly",
+   "count": 3,
+   "options": {
+    "withReferenceImage": false,
+    "artStyle": "二维日系动画"
+   },
+   "expected": "生成一张角色参考图。\n角色外观：老周，六十岁的修车师傅，灰色工装。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：二维日系动画\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。"
+  },
+  {
+   "refKey": "nameOnly",
+   "count": 1,
+   "options": {},
+   "expected": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：芙芙猫\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。"
+  },
+  {
+   "refKey": "nameOnly",
+   "count": 3,
+   "options": {
+    "withReferenceImage": false,
+    "artStyle": "二维日系动画"
+   },
+   "expected": "生成一张角色参考图。\n角色外观：芙芙猫\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：二维日系动画\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。"
+  }
+ ],
+ "bodies": [
+  {
+   "configKey": "image",
+   "refKey": "appearance",
+   "input": {
+    "count": 1,
+    "image": false
+   },
+   "expected": {
+    "model": "doubao-seedream-5-0-260128",
+    "prompt": "生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。",
+    "size": "1728x2304",
+    "stream": true,
+    "response_format": "b64_json",
+    "watermark": false,
+    "sequential_image_generation": "disabled",
+    "output_format": "png"
+   }
+  },
+  {
+   "configKey": "image",
+   "refKey": "appearance",
+   "input": {
+    "count": 1,
+    "image": true
+   },
+   "expected": {
+    "model": "doubao-seedream-5-0-260128",
+    "prompt": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。",
+    "size": "1728x2304",
+    "stream": true,
+    "response_format": "b64_json",
+    "watermark": false,
+    "sequential_image_generation": "disabled",
+    "output_format": "png",
+    "image": "data:image/png;base64,AA=="
+   }
+  },
+  {
+   "configKey": "image",
+   "refKey": "appearance",
+   "input": {
+    "count": 3,
+    "image": false,
+    "artStyle": "二维日系动画"
+   },
+   "expected": {
+    "model": "doubao-seedream-5-0-260128",
+    "prompt": "生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：二维日系动画\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。",
+    "size": "1728x2304",
+    "stream": true,
+    "response_format": "b64_json",
+    "watermark": false,
+    "sequential_image_generation": "auto",
+    "output_format": "png",
+    "sequential_image_generation_options": {
+     "max_images": 3
+    }
+   }
+  },
+  {
+   "configKey": "image",
+   "refKey": "appearance",
+   "input": {
+    "count": 3,
+    "image": true,
+    "artStyle": "二维日系动画"
+   },
+   "expected": {
+    "model": "doubao-seedream-5-0-260128",
+    "prompt": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：二维日系动画\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。",
+    "size": "1728x2304",
+    "stream": true,
+    "response_format": "b64_json",
+    "watermark": false,
+    "sequential_image_generation": "auto",
+    "output_format": "png",
+    "image": "data:image/png;base64,AA==",
+    "sequential_image_generation_options": {
+     "max_images": 3
+    }
+   }
+  },
+  {
+   "configKey": "image",
+   "refKey": "identityOnly",
+   "input": {
+    "count": 1,
+    "image": true,
+    "artStyle": "水彩绘本"
+   },
+   "expected": {
+    "model": "doubao-seedream-5-0-260128",
+    "prompt": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：老周，六十岁的修车师傅，灰色工装。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：水彩绘本\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。",
+    "size": "1728x2304",
+    "stream": true,
+    "response_format": "b64_json",
+    "watermark": false,
+    "sequential_image_generation": "disabled",
+    "output_format": "png",
+    "image": "data:image/png;base64,AA=="
+   }
+  },
+  {
+   "configKey": "image",
+   "refKey": "nameOnly",
+   "input": {
+    "count": 2,
+    "image": false,
+    "artStyle": ""
+   },
+   "expected": {
+    "model": "doubao-seedream-5-0-260128",
+    "prompt": "生成一张角色参考图。\n角色外观：芙芙猫\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 2 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。",
+    "size": "1728x2304",
+    "stream": true,
+    "response_format": "b64_json",
+    "watermark": false,
+    "sequential_image_generation": "auto",
+    "output_format": "png",
+    "sequential_image_generation_options": {
+     "max_images": 2
+    }
+   }
+  },
+  {
+   "configKey": "images",
+   "refKey": "appearance",
+   "input": {
+    "count": 1,
+    "image": false
+   },
+   "expected": {
+    "model": "doubao-seedream-5-0-260128",
+    "prompt": "生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。",
+    "size": "1728x2304",
+    "stream": true,
+    "response_format": "b64_json",
+    "watermark": true,
+    "sequential_image_generation": "disabled",
+    "output_format": "png"
+   }
+  },
+  {
+   "configKey": "images",
+   "refKey": "appearance",
+   "input": {
+    "count": 1,
+    "image": true
+   },
+   "expected": {
+    "model": "doubao-seedream-5-0-260128",
+    "prompt": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。",
+    "size": "1728x2304",
+    "stream": true,
+    "response_format": "b64_json",
+    "watermark": true,
+    "sequential_image_generation": "disabled",
+    "output_format": "png",
+    "images": [
+     "data:image/png;base64,AA=="
+    ]
+   }
+  },
+  {
+   "configKey": "images",
+   "refKey": "appearance",
+   "input": {
+    "count": 3,
+    "image": false,
+    "artStyle": "二维日系动画"
+   },
+   "expected": {
+    "model": "doubao-seedream-5-0-260128",
+    "prompt": "生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：二维日系动画\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。",
+    "size": "1728x2304",
+    "stream": true,
+    "response_format": "b64_json",
+    "watermark": true,
+    "sequential_image_generation": "auto",
+    "output_format": "png",
+    "sequential_image_generation_options": {
+     "max_images": 3
+    }
+   }
+  },
+  {
+   "configKey": "images",
+   "refKey": "appearance",
+   "input": {
+    "count": 3,
+    "image": true,
+    "artStyle": "二维日系动画"
+   },
+   "expected": {
+    "model": "doubao-seedream-5-0-260128",
+    "prompt": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：小白子，q版狼耳少女，蓝色眼睛，浅蓝色连衣裙。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：二维日系动画\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 3 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。",
+    "size": "1728x2304",
+    "stream": true,
+    "response_format": "b64_json",
+    "watermark": true,
+    "sequential_image_generation": "auto",
+    "output_format": "png",
+    "images": [
+     "data:image/png;base64,AA=="
+    ],
+    "sequential_image_generation_options": {
+     "max_images": 3
+    }
+   }
+  },
+  {
+   "configKey": "images",
+   "refKey": "identityOnly",
+   "input": {
+    "count": 1,
+    "image": true,
+    "artStyle": "水彩绘本"
+   },
+   "expected": {
+    "model": "doubao-seedream-5-0-260128",
+    "prompt": "参考我上传的这张图片，生成一张角色参考图。\n角色外观：老周，六十岁的修车师傅，灰色工装。\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n画风：水彩绘本\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。",
+    "size": "1728x2304",
+    "stream": true,
+    "response_format": "b64_json",
+    "watermark": true,
+    "sequential_image_generation": "disabled",
+    "output_format": "png",
+    "images": [
+     "data:image/png;base64,AA=="
+    ]
+   }
+  },
+  {
+   "configKey": "images",
+   "refKey": "nameOnly",
+   "input": {
+    "count": 2,
+    "image": false,
+    "artStyle": ""
+   },
+   "expected": {
+    "model": "doubao-seedream-5-0-260128",
+    "prompt": "生成一张角色参考图。\n角色外观：芙芙猫\n人物站立，全身入镜，姿态自然，表情中性平和。\n画面只保留人物主体，干净浅色背景；不要出现其他人物、道具、场景细节或任何与角色无关的背景杂物。\n全身景别，头顶到脚完整入镜，正面平视，人物居中，适合作为后续动画的角色参考图。\n本次需要输出 2 张候选图，每张都保持同一个角色设定，但姿态和细节可以轻微变化。",
+    "size": "1728x2304",
+    "stream": true,
+    "response_format": "b64_json",
+    "watermark": true,
+    "sequential_image_generation": "auto",
+    "output_format": "png",
+    "sequential_image_generation_options": {
+     "max_images": 2
+    }
+   }
+  }
+ ]
+}

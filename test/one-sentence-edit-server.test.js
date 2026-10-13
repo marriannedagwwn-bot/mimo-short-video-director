@@ -6,6 +6,8 @@ import { createStoryboardRuntime } from "./helpers/storyboard-runtime.js";
 import { ONE_SENTENCE_EDIT_PROMPT_MARKER, ONE_SENTENCE_EDIT_SYSTEM_PROMPT } from "../src/one-sentence-edit-prompts.js";
 import { MODEL_OUTPUT_LOG_SCOPES } from "../src/full-model-output-log.js";
 import { ONE_SENTENCE_EDIT_STAGE } from "../src/one-sentence-edit.js";
+import { lineageRef } from "../src/production-lineage.js";
+import { ANIMATION_PLAN_VERSION_UNSUPPORTED, SHOT_VIDEO_PROMPT_VERSION, legacyAnimationPlanMessage } from "../public/storyboard-plan.js";
 
 // 一句话修改的真实 HTTP（2026-10-11）：修改稿接口只出修改稿；采纳接口由服务端重新应用同一组修改、
 // 核对摘要、以与上一版完全相同的依赖签发。假模型服务只按测试塞好的回复答，没有真实模型结果。
@@ -57,7 +59,7 @@ test("剧情 Run：剧情、分镜、单镜提示词各走一遍「修改稿 →
 
     // 2. 生成分镜、写 A01 的提示词，再改分镜：作废那条提示词，签发新的媒体命名空间。
     const planTask = await api("/api/tasks/create", { ...run, kind: "animationPlan", input: {
-      variantId: "V1", creatorProfile, animationPlanVersion: "4.0", animationPlanMode: "direct_shot", targetAspectRatio: "16:9", backgroundMusicEnabled: false, artStyle: "二维日系动画"
+      variantId: "V1", creatorProfile, animationPlanVersion: "4.0", targetAspectRatio: "16:9", backgroundMusicEnabled: false, artStyle: "二维日系动画"
     } });
     assert.equal((await wait(planTask.task, run)).status, "completed");
     state = await api("/api/production/run/load", { ...run, includeContent: true });
@@ -241,6 +243,58 @@ test("参考视频 Run：改剧情要带固定角色设定核对边界签名；�
     state = await api("/api/production/run/load", { ...run, includeContent: true });
     assert.deepEqual(dependencyRefs(state.latestArtifacts[storyId]), dependencyRefs(story));
     assert.equal(state.latestArtifacts[`animationPlan:${variant.id}`].lineage.status, "stale");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("旧 2.0/3.0/无版本分镜：改分镜、改单镜提示词的修改稿与采纳都 409 ANIMATION_PLAN_VERSION_UNSUPPORTED（与其它读 Plan 的路由同一道守卫），不调模型、不签发", async () => {
+  const runtime = await createStoryboardRuntime();
+  try {
+    const { store, variant, input, requests } = runtime;
+    const run = { projectId: runtime.run.projectId, runId: runtime.run.runId };
+    const post = async (route, body) => {
+      const response = await fetch(runtime.base + route, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      return { status: response.status, json: await response.json() };
+    };
+    const loaded = await store.loadRun({ ...run, includeContent: true });
+    const storyRef = lineageRef(loaded.latestArtifacts[`fullStory:${variant.id}`].lineage);
+    const planId = `animationPlan:${variant.id}`;
+    const promptId = `shotVideoPrompt:${variant.id}:A01`;
+    let planRevision = null;
+    let promptRevision = null;
+    for (const [version, content] of [
+      ["3.0", { promptSchemaVersion: "3.0", shotPlan: [{ shotId: "A01" }] }],
+      ["2.0", { promptSchemaVersion: "2.0", shotPlan: [{ shotId: "A01", startFrame: {}, endFrame: {} }] }],
+      ["unversioned", { shotPlan: [{ shotId: "A01" }] }]
+    ]) {
+      // 绕过提交口直接写进状态库，模拟删除之前就存在的旧 Run（状态库本身不按 Plan 版本拒收）。
+      const plan = await store.commitArtifact({ ...run, artifactId: planId, artifactType: "animationPlan",
+        content: { ...content, selectedVariantId: variant.id }, dependencies: [storyRef], requestId: `legacy-ose-plan-${version.replace(".", "-")}`,
+        expectedCurrentRevision: planRevision, createMediaNamespace: true });
+      planRevision = plan.lineage.revision;
+      const prompt = await store.commitArtifact({ ...run, artifactId: promptId, artifactType: "shotVideoPrompt",
+        content: { schemaVersion: SHOT_VIDEO_PROMPT_VERSION, shotId: "A01", planDigest: plan.lineage.contentDigest, videoPrompt: "测试" },
+        dependencies: [lineageRef(plan.lineage)], requestId: `legacy-ose-prompt-${version.replace(".", "-")}`, expectedCurrentRevision: promptRevision });
+      promptRevision = prompt.lineage.revision;
+      const storyboard = { ...run, target: "storyboard", variantId: variant.id, baseRevision: planRevision, creatorProfile: input.creatorProfile };
+      const shotPrompt = { ...run, target: "shotPrompt", variantId: variant.id, shotId: "A01", baseRevision: promptRevision };
+      for (const [route, body] of [
+        ["/api/one-sentence-edit/draft", { ...storyboard, instruction: "A01 慢一点" }],
+        ["/api/production/one-sentence-edit/adopt", { ...storyboard, patches: [], resultDigest: "0".repeat(64) }],
+        ["/api/one-sentence-edit/draft", { ...shotPrompt, instruction: "A01 镜头推近" }],
+        ["/api/production/one-sentence-edit/adopt", { ...shotPrompt, patches: [], resultDigest: "0".repeat(64) }]
+      ]) {
+        const response = await post(route, body);
+        const label = `${version} ${body.target} ${route}`;
+        assert.deepEqual([response.status, response.json.code], [409, ANIMATION_PLAN_VERSION_UNSUPPORTED], `${label}: ${JSON.stringify(response.json)}`);
+        assert.equal(response.json.error, legacyAnimationPlanMessage(version), label);
+      }
+      const after = await store.loadRun({ ...run, includeContent: false });
+      assert.equal(after.latestArtifacts[planId].lineage.revision, planRevision, `${version}：被拒的采纳不签发分镜`);
+      assert.equal(after.latestArtifacts[promptId].lineage.revision, promptRevision, `${version}：被拒的采纳不签发提示词`);
+    }
+    assert.equal(requests.filter((request) => JSON.stringify(request).includes(ONE_SENTENCE_EDIT_PROMPT_MARKER)).length, 0, "旧分镜上一次都不调用模型");
   } finally {
     await runtime.close();
   }

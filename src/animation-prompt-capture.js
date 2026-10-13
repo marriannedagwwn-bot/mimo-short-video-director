@@ -80,7 +80,6 @@ export class AnimationPromptCapture {
       startedAt,
       sequence: 0,
       promptCount: 0,
-      promptPhaseCounts: new Map(),
       modelOutputAttempts: [],
       pendingModelOutputs: [],
       traceContext: modelOutputTraceContext(metadata.traceContext, metadata.variantId),
@@ -165,7 +164,7 @@ export class AnimationPromptCapture {
       0
     );
     const sequence = ++context.sequence;
-    const label = classifyPromptPhase(classifyPrompt(userPrompt), context.promptPhaseCounts);
+    const label = classifyPrompt(userPrompt);
     const call = {
       sequence,
       label,
@@ -286,16 +285,12 @@ export class AnimationPromptCapture {
           diagnostics: []
         };
       } else if (next && validationRetryTransition(next.call.label)) {
-        const diagnostics = semanticAuditDiagnosticsFromCompletion(
-          attempt.call.label,
-          attempt.projection.content
-        );
         result = {
           validationStatus: "failed",
-          errorName: diagnostics.length ? "SemanticAuditFailure" : "OutputContractError",
+          errorName: "OutputContractError",
           category: "output-contract",
-          code: diagnostics[0]?.code || "OUTPUT_CONTRACT_INVALID",
-          diagnostics
+          code: "OUTPUT_CONTRACT_INVALID",
+          diagnostics: []
         };
       } else if (index === attempts.length - 1 && status === "failed") {
         result = modelOutputFailure(error);
@@ -430,79 +425,16 @@ function nonTextPartCount(content) {
   return content.filter((part) => part?.type !== "text").length;
 }
 
+// 旧 3.0 分镜的 Foundation / 镜头批次 / 语义审计与修复 / 局部纠错 / 动作状态审计
+// 已于 2026-10-11 删除，它们的提示词标记不再出现；现在只区分客户端 JSON 重试与普通调用。
 function classifyPrompt(prompt) {
   const value = String(prompt || "");
   if (/上一次(?: Qwen| DeepSeek|模型)?输出不是完整合法 JSON/u.test(value)) return "provider-json-retry";
-  if (value.includes("ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2")) {
-    return "animation-video-prompt-initial-semantic-audit";
-  }
-  if (value.includes("ANIMATION_VIDEO_PROMPT_REWRITE_SEMANTIC_AUDIT_V2")) {
-    return "animation-video-prompt-rewrite-semantic-audit";
-  }
-  if (value.includes("ANIMATION_VIDEO_PROMPT_SEMANTIC_REPAIR_V1")) {
-    return "animation-video-prompt-semantic-repair";
-  }
-  if (value.includes("ARTIFACT_PARTIAL_REPAIR_V1")) {
-    if (value.includes("videoPrompt")) return "animation-shot-prompt-partial-repair";
-    if (value.includes("characterReferencePrompts")) return "animation-foundation-partial-repair";
-    return "animation-artifact-partial-repair";
-  }
-  if (value.includes("ANIMATION_SHOT_BATCH_RETRY_V1")) return "animation-shot-batch-second-pass";
-  if (value.includes("直接视频镜头基础锁定")) {
-    return value.includes("上一次输出已经是 JSON")
-      ? "animation-foundation-validation-retry"
-      : "animation-foundation";
-  }
-  if (value.includes("直接视频镜头批次")) return "animation-shot-batch";
-  if (value.includes("ACTION_STATE_SEMANTIC_AUDIT_V1")) return "animation-action-state-audit";
   return "animation-model-call";
 }
 
-function classifyPromptPhase(label, phaseCounts) {
-  const occurrence = (phaseCounts.get(label) || 0) + 1;
-  phaseCounts.set(label, occurrence);
-  if (
-    occurrence > 1
-    && [
-      "animation-video-prompt-initial-semantic-audit",
-      "animation-video-prompt-rewrite-semantic-audit"
-    ].includes(label)
-  ) {
-    return label.replace(/-semantic-audit$/u, "-semantic-re-audit");
-  }
-  return label;
-}
-
 function validationRetryTransition(nextLabel) {
-  return [
-    "provider-json-retry",
-    "animation-foundation-validation-retry",
-    "animation-foundation-partial-repair",
-    "animation-shot-batch-second-pass",
-    "animation-shot-prompt-partial-repair",
-    "animation-artifact-partial-repair",
-    "animation-video-prompt-semantic-repair"
-  ].includes(String(nextLabel || ""));
-}
-
-function semanticAuditDiagnosticsFromCompletion(label, content) {
-  if (!String(label || "").includes("semantic-audit")) return [];
-  let value;
-  try {
-    value = JSON.parse(String(content || ""));
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(value?.shots)) return [];
-  return value.shots.flatMap((shot, shotIndex) => (
-    Array.isArray(shot?.issues) ? shot.issues.map((issue) => ({
-      code: String(issue?.relation || "ANIMATION_VIDEO_PROMPT_SEMANTIC_CONFLICT"),
-      jsonPointer: `/shotPlan/${shotIndex}/${escapeJsonPointerToken(issue?.field)}`,
-      reason: redactSensitiveDiagnosticText(
-        issue?.productionImpact || issue?.relation || "视频提示词语义审计未通过"
-      )
-    })) : []
-  ));
+  return String(nextLabel || "") === "provider-json-retry";
 }
 
 function modelOutputFailure(error) {
@@ -523,10 +455,6 @@ function modelOutputFailure(error) {
     code: String(diagnostics[0]?.code || error?.code || "OUTPUT_CONTRACT_INVALID"),
     diagnostics
   };
-}
-
-function escapeJsonPointerToken(value) {
-  return String(value || "").replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
 function redactSensitiveDiagnosticText(value) {

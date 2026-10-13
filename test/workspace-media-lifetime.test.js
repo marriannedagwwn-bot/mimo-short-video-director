@@ -10,6 +10,7 @@ import { generateShotVideo } from "../src/shot-video-generator.js";
 
 const execFileAsync = promisify(execFile);
 const MEDIA = Buffer.alloc(600, 7);
+const REFERENCE_DATA_URL = `data:image/png;base64,${Buffer.from("reference bytes").toString("base64")}`;
 
 async function fixture(t, handleProvider) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-workspace-media-"));
@@ -21,6 +22,7 @@ async function fixture(t, handleProvider) {
   const request = path.join(workRoot, "request.json");
   const receipt = path.join(workRoot, "receipt.json");
   const config = path.join(root, "provider.json");
+  const referenceImage = path.join(root, "reference.png");
   const f = { root, runDir, outputRoot, workRoot, lifetimeFile, output, request, receipt, config };
   const server = http.createServer((req, res) => {
     void handleProvider(req, res, f).catch((error) => {
@@ -37,8 +39,18 @@ async function fixture(t, handleProvider) {
   f.url = `http://127.0.0.1:${server.address().port}`;
   await Promise.all([fs.mkdir(workRoot, { recursive: true }), fs.mkdir(outputRoot, { recursive: true })]);
   await fs.writeFile(lifetimeFile, "{}");
-  await fs.writeFile(config, JSON.stringify({ videoEndpoint: `${f.url}/generate`, videoModel: "local-video", includeRawRequest: true, timeoutMs: 5000 }));
-  await fs.writeFile(request, JSON.stringify({ taskId: "test", capability: "first_last_frame_video_generation", prompt: "local fixture", inputArtifacts: [] }));
+  await fs.writeFile(referenceImage, "reference bytes");
+  // 镜头视频只剩 Seedance / MiniMax 的全能参考（2026-10-11 删除首尾帧与自定义 VideoHTTP）：
+  // 假供应商按 Seedance 配置接请求；分辨率写进配置文件，不受本机环境变量影响。
+  await fs.writeFile(config, JSON.stringify({
+    videoEndpoint: `${f.url}/generate`, providerPreset: "modelark_content_generation",
+    videoModel: "doubao-seedance-2-0-260128", apiKey: "fixture-key", resolution: "720p", timeoutMs: 5000
+  }));
+  await fs.writeFile(request, JSON.stringify({
+    taskId: "test", capability: "all_reference_video_generation", provider: "Seedance", model: "doubao-seedance-2-0-260128",
+    prompt: "local fixture", inputArtifacts: [{ path: referenceImage, mediaType: "image", role: "reference_image" }],
+    parameters: { durationSeconds: 5, aspectRatio: "9:16", generationMode: "all_reference" }
+  }));
   f.runWorker = () => execFileAsync(process.execPath, [
     path.resolve("workers/generic-http-worker.mjs"), "--config", config,
     "--request", request, "--output", output, "--receipt", receipt,
@@ -71,10 +83,12 @@ test("real worker writes an open workspace and never sends its local lifetime co
   await f.runWorker();
   assert.deepEqual(await fs.readFile(f.output), MEDIA);
   assert.ok(JSON.parse(await fs.readFile(f.receipt, "utf8")).provider);
-  assert.ok(body.rawRequest);
-  assert.equal(Object.hasOwn(body.rawRequest, "lifetimeFile"), false);
-  assert.equal(Object.hasOwn(body.rawRequest, "workspaceLifetimeFile"), false);
+  // 原来借自定义 VideoHTTP 的 rawRequest 回显检查；VideoHTTP 删除后直接检查供应商实际收到的请求体。
+  assert.ok(Array.isArray(body.content), "供应商收到的是 Seedance 全能参考请求体");
+  assert.equal(Object.hasOwn(body, "lifetimeFile"), false);
+  assert.equal(Object.hasOwn(body, "workspaceLifetimeFile"), false);
   assert.equal(JSON.stringify(body).includes(f.lifetimeFile), false);
+  assert.equal(JSON.stringify(body).includes("manifest.json"), false);
 });
 
 test("standalone worker cannot recreate a closed Run or media tree after its provider returns", async (t) => {
@@ -139,16 +153,15 @@ test("workspace generator keeps requests and references in its private Run and e
   const result = await generateShotVideo({
     configPath: f.config, outputRoot: f.outputRoot,
     workRoot: f.workRoot, lifetimeFile: f.lifetimeFile,
-    videoProvider: "VideoHTTP", videoModel: "local-video",
-    generationMode: "first_last_frame",
-    startFrameDataUrl: "data:image/png;base64,aW1hZ2U=",
-    endFrameDataUrl: "data:image/png;base64,aW1hZ2U=",
+    videoProvider: "Seedance", videoModel: "doubao-seedance-2-0-260128",
+    generationMode: "all_reference",
+    referenceAssets: [{ mediaType: "image", name: "reference.png", dataUrl: REFERENCE_DATA_URL }],
     shot: { shotId: "A01", durationSeconds: 5, videoPrompt: "local fixture" },
     videoOutputProbe: async () => 5
   });
   assert.equal(calls, 1);
   assert.deepEqual(await fs.readFile(result.outputPath), MEDIA);
-  assert.equal(Object.hasOwn(body.rawRequest, "lifetimeFile"), false);
+  assert.equal(JSON.stringify(body).includes(f.lifetimeFile), false);
   await absent(path.join(f.workRoot, temporaryNames[0]));
 });
 
@@ -159,8 +172,8 @@ test("a closed workspace generator makes zero provider calls and does not recrea
   await assert.rejects(generateShotVideo({
     configPath: f.config, outputRoot: f.outputRoot,
     workRoot: f.workRoot, lifetimeFile: f.lifetimeFile,
-    videoProvider: "VideoHTTP", videoModel: "local-video", generationMode: "first_last_frame",
-    startFrameDataUrl: "data:image/png;base64,aW1hZ2U=", endFrameDataUrl: "data:image/png;base64,aW1hZ2U=",
+    videoProvider: "Seedance", videoModel: "doubao-seedance-2-0-260128", generationMode: "all_reference",
+    referenceAssets: [{ mediaType: "image", name: "reference.png", dataUrl: REFERENCE_DATA_URL }],
     shot: { shotId: "A01", durationSeconds: 5, videoPrompt: "local fixture" }
   }), (error) => error.code === "BROWSER_WORKSPACE_MEDIA_CLOSED");
   assert.equal(calls, 0);

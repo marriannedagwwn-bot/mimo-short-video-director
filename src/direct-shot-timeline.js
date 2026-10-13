@@ -5,11 +5,10 @@ import {
   parseSceneTimeRangeBounds
 } from "./validation.js";
 
-// direct_shot 3.1：fullStory.sceneScript[] 的每一项就是最终业务镜头。
-// Animation Plan 不再拆镜，镜头骨架由本文件从 Full Story 确定性派生，
-// 模型只负责往骨架里填 videoPrompt / cameraMotion / characterAction /
-// dialogueOrSubtitle / soundDesign / continuityNotes / negativePrompts /
-// acceptanceCriteria 八个创作字段。
+// Full Story 时间轴检查：从 fullStory.sceneScript[] 的 timeRange 确定性派生镜头骨架，
+// 签发完整剧情前用它确认每场可拍（timeRange 可解析、按顺序推进、每段不短于供应商 4 秒下限）。
+// 旧 3.0 direct_shot 分镜生成曾用这份骨架拆镜填写，2026-10-11 已随旧分镜删除；
+// 这里只保留派生与检查本身，规则逐字不变。
 
 // 唯一的拆镜条件：单场跨度超过 DIRECT_SHOT_MAX_DURATION_SECONDS 时按 ceil 均分。
 // 边界常量由 validation.js 统一签发，这里不另立第二份。
@@ -122,39 +121,4 @@ export function deriveDirectShotSkeleton(fullStory) {
   });
 
   return Object.freeze(skeleton);
-}
-
-export function directShotSkeletonRuntimeSeconds(skeleton) {
-  return (Array.isArray(skeleton) ? skeleton : [])
-    .reduce((total, entry) => total + Number(entry?.durationSeconds || 0), 0);
-}
-
-/** 取某一批 source scenes 对应的骨架切片，顺序与骨架全局顺序一致。 */
-export function directShotSkeletonForScenes(skeleton, sourceScenes) {
-  const wanted = new Set(
-    (Array.isArray(sourceScenes) ? sourceScenes : [])
-      .map((scene) => String((typeof scene === "string" ? scene : scene?.sceneId) || "").trim())
-      .filter(Boolean)
-  );
-  return (Array.isArray(skeleton) ? skeleton : []).filter((entry) => wanted.has(entry.sourceSceneId));
-}
-
-/** 骨架的人类可读投影，用于批次 Prompt 与错误消息。 */
-export function formatDirectShotSkeleton(skeleton) {
-  const entries = Array.isArray(skeleton) ? skeleton : [];
-  if (!entries.length) return "空";
-  const bySourceScene = new Map();
-  for (const entry of entries) {
-    if (!bySourceScene.has(entry.sourceSceneId)) bySourceScene.set(entry.sourceSceneId, []);
-    bySourceScene.get(entry.sourceSceneId).push(entry);
-  }
-  return [...bySourceScene.entries()].map(([sourceSceneId, shots]) => {
-    const head = `${sourceSceneId}（${shots[0].sceneTimeRange}，${shots[0].sceneSpanSeconds} 秒）→ ${shots.length} 个镜头：`;
-    const body = shots.map((shot) => (
-      shot.partCount > 1
-        ? `${shot.shotId} ${shot.durationSeconds} 秒（第 ${shot.partIndex + 1}/${shot.partCount} 段）`
-        : `${shot.shotId} ${shot.durationSeconds} 秒`
-    )).join("、");
-    return head + body;
-  }).join("；");
 }

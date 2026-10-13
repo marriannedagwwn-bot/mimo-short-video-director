@@ -1,7 +1,7 @@
 import Ajv from "ajv/dist/2020.js";
 // 单镜时长上下限只有一份，在零依赖的 shot-duration-limits.js（供应商能力交集，AGENTS.md §2.3）。
 // 提示词的预算行与这里的硬闸门共用它：两边各写一次必然漂移，结果就是模型被要求做 A、
-// 却按 B 被拒（§2.14 已为同型情况定过规矩）。
+// 却按 B 被拒（已删除的分镜定向修订为同型情况定过规矩，见历史文档 docs/animation-plan-revision-实施计划.md）。
 import { DIRECT_SHOT_MAX_DURATION_SECONDS, DIRECT_SHOT_MIN_DURATION_SECONDS } from "./shot-duration-limits.js";
 import { OutputContractError } from "./validation.js";
 import { storyDurationWindow } from "../public/story-duration.js";

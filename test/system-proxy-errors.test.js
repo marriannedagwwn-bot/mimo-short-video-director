@@ -141,13 +141,18 @@ test("real video worker stderr keeps the safe Chinese proxy diagnosis visible in
   const f = await isolatedEntry(t, "workers/generic-http-worker.mjs", {}, async (directory) => {
     const config = path.join(directory, "provider.json");
     const request = path.join(directory, "request.json");
+    const reference = path.join(directory, "reference.png");
+    await fs.writeFile(reference, "reference bytes");
+    // 镜头视频只剩 Seedance / MiniMax 全能参考（2026-10-11 删除首尾帧与自定义 VideoHTTP）。
     await fs.writeFile(config, JSON.stringify({
-      videoEndpoint: "https://controlled-provider.invalid/generate", videoModel: "fixture",
-      timeoutMs: 1000, includeRawRequest: true
+      videoEndpoint: "https://controlled-provider.invalid/generate", providerPreset: "modelark_content_generation",
+      videoModel: "doubao-seedance-2-0-260128", apiKey: "fixture-key", resolution: "720p", timeoutMs: 1000
     }));
     await fs.writeFile(request, JSON.stringify({
-      taskId: "task-fixture", capability: "first_last_frame_video_generation",
-      provider: "VideoHTTP", prompt: "local diagnosis fixture", inputArtifacts: []
+      taskId: "task-fixture", capability: "all_reference_video_generation",
+      provider: "Seedance", model: "doubao-seedance-2-0-260128", prompt: "local diagnosis fixture",
+      inputArtifacts: [{ path: reference, mediaType: "image", role: "reference_image" }],
+      parameters: { durationSeconds: 5, aspectRatio: "9:16", generationMode: "all_reference" }
     }));
     return ["--config", config, "--request", request, "--output", path.join(directory, "output.mp4"), "--receipt", path.join(directory, "receipt.json")];
   });

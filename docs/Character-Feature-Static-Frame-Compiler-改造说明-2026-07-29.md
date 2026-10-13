@@ -1,5 +1,7 @@
 # Character Feature Compiler 与 Static Frame Compiler 改造说明
 
+> 历史文档：本文描述的功能已于 2026-10-11 删除（不再支持旧 2.0/3.0 分镜），仅作历史记录。
+
 日期：2026-07-29
 状态：Character Feature 部分仍有效；第 4 节起的 Static Frame v2 说明已由
 [`Static-Frame-Grounded-Field-Organizer-v3-2026-08-04.md`](./Static-Frame-Grounded-Field-Organizer-v3-2026-08-04.md)

@@ -40,6 +40,8 @@ test("可配置阶段没有写死 MiMo 分析或可灵视频初始标签，即�
   assert.doesNotMatch(html, /用可灵 AI 生成/);
   assert.doesNotMatch(html, />KLING AI</);
   assert.match(app, /effectiveStageSetting\("characterReference"\)/);
-  assert.match(app, /正在用即梦生成/);
+  // 出图固定走即梦：首尾帧出图（原来的「正在用即梦生成…首帧/尾帧」）已于 2026-10-11 删除，
+  // 剩下的即梦固定文案在角色参考图这条路上。
+  assert.match(app, /已使用即梦生成的人物参考图/);
   assert.match(app, /shotVideoModalTitle\.textContent = `用 \$\{shotVideoProviderLabel\(\)\}/);
 });

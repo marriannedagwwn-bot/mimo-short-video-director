@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { taskStatusView, rememberTaskSnapshot, latestTaskForTarget, shotVideoBatchStatusText } from "../public/task-status-ui.js";
+import { taskStatusView, rememberTaskSnapshot, latestTaskForTarget } from "../public/task-status-ui.js";
 import { loadAppUi, uiTask } from "./helpers/app-ui-harness.js";
 import { describeProviderError } from "../src/provider-error-codes.js";
 import { directorTaskView } from "../public/director-pipeline-ui.js";
@@ -66,7 +66,6 @@ test("后台失败经轮询抛错与刷新渲染都显示欠费原因、指引�
     assert.match(status.textContent, /阿里云账户欠费.*阿里云控制台充值.*供应商原文：Arrearage/);
   }
   assert.match(directorTaskView(arrearageTask("directorPipeline")).message, /阿里云账户欠费.*供应商原文：Arrearage/);
-  assert.match(shotVideoBatchStatusText(arrearageTask("shotVideoBatch")), /阿里云账户欠费.*供应商原文：Arrearage/);
 });
 
 test("旧失败任务不带 providerError 时轮询与终态文案逐字不变", async () => {
@@ -74,7 +73,6 @@ test("旧失败任务不带 providerError 时轮询与终态文案逐字不变",
   const app = await loadAppUi();
   await assert.rejects(app.waitForDurableTask(task), error => error.message === "旧错误原文");
   assert.equal(taskStatusView(task).message, "旧错误原文");
-  assert.equal(shotVideoBatchStatusText({ ...task, kind: "shotVideoBatch" }), "旧错误原文");
 });
 
 for (const existing of [false, true]) for (const status of ["queued", "running"]) {
@@ -92,7 +90,7 @@ for (const existing of [false, true]) for (const status of ["queued", "running"]
   });
 }
 
-for (const kind of ["animationPlan", "animationPromptRewrite", "characterReferenceRefine"]) {
+for (const kind of ["animationPlan", "characterReferenceRefine"]) {
   test(`${kind} restores the actual operation above an already generated Plan`, async () => {
     const app = await loadAppUi({ story: true, plan: true });
     const task = uiTask(kind);
@@ -124,32 +122,34 @@ test("active task for another variant displays its target and cannot be submitte
   assert.equal(app.elements.storyGenerate.disabled, true);
 });
 
-for (const kind of ["characterReferenceImages", "shotFrameImage", "shotVideo"]) {
+// 4.0 分镜打开镜头弹窗时先取本镜提示词（要有当前 Plan 的 lineage）。这里放一份已经写好、与当前
+// Plan digest 和模型设置都对得上的提示词，弹窗就不用为它发请求。
+function withWrittenShotPrompt(app, shotId) {
+  const target = { provider: "Seedance", model: "doubao-seedance-2-0-260128" };
+  const writer = { provider: "MiMo", model: "mimo-v2.5" };
+  const planDigest = "d".repeat(64);
+  Object.assign(app.state.modelStages, { shotVideo: target, animationPlan: writer });
+  app.state.production.artifacts["animationPlan:V2"] = { artifactId: "animationPlan:V2", status: "current",
+    revision: "animationPlan-V2-r1", contentDigest: planDigest, mediaNamespace: "project/run/animationPlan-V2-r1" };
+  app.state.shotVideoPrompts = { [`shotVideoPrompt:V2:${shotId}`]: { schemaVersion: "shot_video_prompt/1.0", shotId, planDigest,
+    target, writer, videoPrompt: "固定主角确认工具柄内侧的交代。" } };
+}
+
+for (const kind of ["characterReferenceImages", "shotVideo"]) {
   test(`${kind} dialog opening keeps restored queued state despite missing browser-only input`, async () => {
     const app = await loadAppUi({ story: true, plan: true });
+    if (kind === "shotVideo") withWrittenShotPrompt(app, "A01");
     app.updateTaskSnapshot(uiTask(kind, "queued"), { render: false });
     app.markRestoredTaskRunning(uiTask(kind, "queued"));
     if (kind === "characterReferenceImages") app.openCharacterImageGenerator();
-    else if (kind === "shotFrameImage") await app.openShotFrameImageGenerator("A01", "start");
     else await app.openShotVideoGenerator("A01");
     const [button, status] = kind === "characterReferenceImages" ? [app.elements.generateCharacterImages, app.elements.characterImageStatus]
-      : kind === "shotFrameImage" ? [app.elements.confirmGenerateShotFrameImage, app.elements.shotFrameImageStatus]
-        : [app.elements.confirmGenerateShotVideo, app.elements.shotVideoStatus];
+      : [app.elements.confirmGenerateShotVideo, app.elements.shotVideoStatus];
     assert.equal(button.disabled, true);
     assert.match(status.textContent, /排队/);
     assert.equal(status.className, "story-status active");
   });
 }
-
-test("active batch ownership blocks duplicate single-shot generation even after its child completes", async () => {
-  const app = await loadAppUi({ story: true, plan: true });
-  app.updateTaskSnapshot(uiTask("shotVideo", "completed"), { render: false });
-  app.updateTaskSnapshot(uiTask("shotVideoBatch", "running", { progress: { controlState: "paused" } }), { render: false });
-  await app.openShotVideoGenerator("A01");
-  assert.equal(app.elements.confirmGenerateShotVideo.disabled, true);
-  assert.match(app.elements.shotVideoStatus.textContent, /属于批量任务.*已暂停/);
-  assert.equal(app.elements.confirmGenerateShotVideo.querySelector("span").textContent, "批量任务已暂停");
-});
 
 test("reopening character images keeps the task's frozen count and reports returned progress", async () => {
   const app = await loadAppUi({ story: true, plan: true });
@@ -160,18 +160,6 @@ test("reopening character images keeps the task's frozen count and reports retur
   app.openCharacterImageGenerator();
   assert.equal(app.elements.characterImageCount.value, "4");
   assert.match(app.elements.characterImageStatus.textContent, /1\/4 张/);
-});
-
-test("a stopped batch unlocks an open video dialog while keeping missing-reference validation", async () => {
-  const app = await loadAppUi({ story: true, plan: true });
-  app.updateTaskSnapshot(uiTask("shotVideoBatch", "running", { progress: { controlState: "paused" } }), { render: false });
-  await app.openShotVideoGenerator("A01");
-  app.updateTaskSnapshot(uiTask("shotVideoBatch", "interrupted", { error: { message: "批量任务因服务重启中断" } }));
-  await app.updateShotVideoGeneratorPreview();
-  assert.equal(app.elements.closeShotVideoModal.disabled, false);
-  assert.equal(app.elements.shotVideoCount.disabled, false);
-  assert.equal(app.elements.confirmGenerateShotVideo.disabled, true);
-  assert.match(app.elements.shotVideoStatus.textContent, /批量任务因服务重启中断/);
 });
 
 test("director artifact re-render retains the active stage and standalone variants progress", async () => {
@@ -229,8 +217,7 @@ test("completed task is shown only for its exact current result revision", async
 });
 
 for (const status of ["completed", "failed", "conflicted", "interrupted", "abandoned", "cancelled"]) {
-  test(`${status} releases busy presentation and batch never falls back to preparing another shot`, () => {
+  test(`${status} releases busy presentation`, () => {
     assert.equal(taskStatusView(uiTask("fullStory", status)).busy, false);
-    assert.doesNotMatch(shotVideoBatchStatusText(uiTask("shotVideoBatch", status)), /准备下一镜|正在生成|等待服务器/);
   });
 }

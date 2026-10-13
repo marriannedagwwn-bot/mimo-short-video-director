@@ -886,53 +886,16 @@ export class DurableTaskManager {
     const safeTaskId = safeIdentifier(taskId, "taskId");
     const task = await this.taskStore.getTask({ projectId: safeProjectId, runId: safeRunId, taskId: safeTaskId });
     if (DURABLE_TASK_TERMINAL_STATUSES.includes(task.status)) return task;
-    if (!["shotVideoBatch", "directorPipeline", "fullStory"].includes(task.kind) || task.parentTaskId) {
-      throw new ProductionStateError("只有 AI 导演、完整剧情和镜头视频批量任务支持暂停、继续和终止", {
+    // 镜头视频批量任务（shotVideoBatch）已于 2026-10-11 随 3.0 分镜删除；它的暂停/继续/终止分支一并删去。
+    // 旧的批量任务记录照常可读，只是不能再控制（重启时进行中的任务本来就会被标为 interrupted）。
+    if (!["directorPipeline", "fullStory"].includes(task.kind) || task.parentTaskId) {
+      throw new ProductionStateError("只有 AI 导演和完整剧情任务支持暂停、继续和终止", {
         code: "TASK_CONTROL_UNSUPPORTED",
         httpStatus: 409
       });
     }
     const normalizedAction = String(action || "").trim().toLowerCase();
-    if (["directorPipeline", "fullStory"].includes(task.kind)) return this.controlDirectorTask(task, normalizedAction);
-    if (normalizedAction === "terminate") {
-      return this.finishControlledTask({
-        projectId: safeProjectId,
-        runId: safeRunId,
-        taskId: safeTaskId,
-        status: "cancelled",
-        reason: {
-          code: "SHOT_VIDEO_BATCH_TERMINATED",
-          category: "control-plane",
-          message: "镜头视频批量任务已终止；已提交给供应商的当前片段可能仍在执行并产生费用。"
-        }
-      });
-    }
-    if (!["pause", "resume"].includes(normalizedAction)) {
-      throw new ProductionStateError("任务控制 action 只允许 pause、resume 或 terminate", {
-        code: "TASK_CONTROL_ACTION_INVALID",
-        httpStatus: 400
-      });
-    }
-    const now = this.timestamp();
-    const controlState = normalizedAction === "pause" ? "paused" : "running";
-    await this.updateTaskAtomic(safeProjectId, safeRunId, safeTaskId, (index, current) => {
-      if (!DURABLE_TASK_ACTIVE_STATUSES.includes(current.status)) return false;
-      this.taskStore.updateTaskUnlocked(index, safeTaskId, {
-        phase: controlState,
-        progress: mergeProgress(current.progress, {
-          controlState,
-          controlUpdatedAt: now
-        }),
-        lastProgressAt: now
-      }, { activeOnly: true });
-      this.taskStore.appendEventUnlocked(index, {
-        type: `task.control.${normalizedAction}`,
-        taskId: safeTaskId,
-        createdAt: now
-      });
-      return true;
-    });
-    return this.taskStore.getTask({ projectId: safeProjectId, runId: safeRunId, taskId: safeTaskId });
+    return this.controlDirectorTask(task, normalizedAction);
   }
 
   async finishControlledTask({ projectId, runId, taskId, status, reason } = {}) {

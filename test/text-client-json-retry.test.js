@@ -1,86 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getConfig } from "../src/config.js";
 import { MimoClient, ModelResponseError } from "../src/mimo-client.js";
 import { QwenClient } from "../src/qwen-client.js";
 import { DeepSeekClient } from "../src/deepseek-client.js";
 import { sseResponse } from "./helpers/sse-response.js";
 
-const COMPILER_ENV_KEYS = [
-  "STATIC_FRAME_COMPILER_PROVIDER",
-  "STATIC_FRAME_COMPILER_MODEL",
-  "STATIC_FRAME_COMPILER_MAX_COMPLETION_TOKENS",
-  "STATIC_FRAME_COMPILER_TIMEOUT_MS",
-  "QWEN_MODEL",
-  "QWEN_ANIMATION_MODEL",
-  "MIMO_MODEL",
-  "MIMO_ANIMATION_MODEL"
-];
-
-function preserveEnvironment(keys, callback) {
-  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
-  try {
-    for (const key of keys) delete process.env[key];
-    return callback();
-  } finally {
-    for (const key of keys) {
-      if (previous[key] === undefined) delete process.env[key];
-      else process.env[key] = previous[key];
-    }
-  }
-}
-
-test("Static Frame Compiler 配置默认独立且不回退 animationPlan 路由", () => {
-  preserveEnvironment(COMPILER_ENV_KEYS, () => {
-    process.env.QWEN_MODEL = "qwen-base-existing";
-    process.env.QWEN_ANIMATION_MODEL = "qwen-animation-existing";
-    process.env.MIMO_MODEL = "mimo-base-existing";
-    process.env.MIMO_ANIMATION_MODEL = "mimo-animation-existing";
-
-    const config = getConfig();
-
-    assert.deepEqual(config.staticFrameCompiler, {
-      provider: "",
-      model: "",
-      maxCompletionTokens: 4096,
-      requestTimeoutMs: 300_000,
-      configured: false
-    });
-  });
-});
-
-test("Static Frame Compiler 显式配置被规范化并保持独立模型参数", () => {
-  preserveEnvironment(COMPILER_ENV_KEYS, () => {
-    process.env.STATIC_FRAME_COMPILER_PROVIDER = " qWeN ";
-    process.env.STATIC_FRAME_COMPILER_MODEL = " compiler-only-model ";
-    process.env.STATIC_FRAME_COMPILER_MAX_COMPLETION_TOKENS = "8192";
-    process.env.STATIC_FRAME_COMPILER_TIMEOUT_MS = "456789";
-    process.env.QWEN_ANIMATION_MODEL = "animation-model-must-not-leak";
-
-    const qwenConfig = getConfig();
-    assert.deepEqual(qwenConfig.staticFrameCompiler, {
-      provider: "Qwen",
-      model: "compiler-only-model",
-      maxCompletionTokens: 8192,
-      requestTimeoutMs: 456_789,
-      configured: true
-    });
-
-    process.env.STATIC_FRAME_COMPILER_PROVIDER = "MIMO";
-    process.env.STATIC_FRAME_COMPILER_MODEL = "mimo-compiler-only";
-    const mimoConfig = getConfig();
-    assert.equal(mimoConfig.staticFrameCompiler.provider, "MiMo");
-    assert.equal(mimoConfig.staticFrameCompiler.model, "mimo-compiler-only");
-    assert.equal(mimoConfig.staticFrameCompiler.configured, true);
-
-    process.env.STATIC_FRAME_COMPILER_PROVIDER = "deepseek";
-    process.env.STATIC_FRAME_COMPILER_MODEL = "deepseek-v4-flash";
-    const deepseekConfig = getConfig();
-    assert.equal(deepseekConfig.staticFrameCompiler.provider, "DeepSeek");
-    assert.equal(deepseekConfig.staticFrameCompiler.model, "deepseek-v4-flash");
-    assert.equal(deepseekConfig.staticFrameCompiler.configured, true);
-  });
-});
+// 三家文本客户端在调用方显式传 jsonRetryAttempts: 0 时只发一次请求。用例原在
+// test/static-frame-compiler-config.test.js（Static Frame Compiler 用这个参数关掉客户端内重试），
+// 编译器已于 2026-10-11 删除，客户端行为仍在用，用例原样挪到这里。
 
 test("Qwen、MiMo 与 DeepSeek 显式禁用 JSON 内容重试；只有非流式的 DeepSeek 使用单次请求的总 timeout", async () => {
   const originalFetch = globalThis.fetch;

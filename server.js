@@ -8,20 +8,21 @@ import { initializeSystemProxy } from "./src/system-proxy.js";
 import { MimoClient } from "./src/mimo-client.js";
 import { QwenClient } from "./src/qwen-client.js";
 import { DeepSeekClient } from "./src/deepseek-client.js";
-import { JimengImageClient, JimengImageConfigError, JimengImageProviderError, buildCharacterReferenceImagePrompt, buildShotFrameImagePrompt } from "./src/jimeng-client.js";
-import { buildFrameReferenceModeText, compileShotFrameNegativePrompt } from "./public/shot-frame-prompt.js";
-import { buildFrameReferenceManifest } from "./public/shot-reference-images.js";
-import { buildShotFrameMultiImagePrompt } from "./public/shot-frame-multi-image-prompt.js";
-import { computeDependencyHash, computePromptHash } from "./src/frame-dependency.js";
-import { assertFrameDependencyHash, normalizeEndpointReferenceImages } from "./src/frame-reference-request.js";
+import { JimengImageClient, JimengImageConfigError, JimengImageProviderError, buildCharacterReferenceImagePrompt } from "./src/jimeng-client.js";
 import { WorkflowService } from "./src/workflow.js";
-import { STORYBOARD_PLAN_VERSION, isStoryboardPlan, storyboardPromptArtifactId } from "./public/storyboard-plan.js";
-import { ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION, characterPromptBoundaryMismatch, characterReferenceBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFrameReferenceModeCompatibility, ensureStoryCandidateContract, ensureStoryEntryCandidateContract, ensureThemeVariantsMatchProfile, extractFixedCharacterName, InputError, OutputContractError, requireAnimationPlanAspectRatio } from "./src/validation.js";
+import {
+  ANIMATION_PLAN_VERSION_UNSUPPORTED,
+  STORYBOARD_PLAN_VERSION,
+  isStoryboardPlan,
+  legacyAnimationPlanMessage,
+  legacyAnimationPlanVersion,
+  storyboardPromptArtifactId
+} from "./public/storyboard-plan.js";
+import { characterPromptBoundaryMismatch, characterReferenceBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureStoryCandidateContract, ensureStoryEntryCandidateContract, ensureThemeVariantsMatchProfile, extractFixedCharacterName, InputError, OutputContractError, requireAnimationPlanAspectRatio } from "./src/validation.js";
 import { ONE_SENTENCE_EDIT_TARGETS, chosenRoleImageCount, oneSentenceEditDependents, oneSentenceEditInvalidation } from "./src/one-sentence-edit.js";
-import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError, ShotVideoProviderError } from "./src/shot-video-generator.js";
+import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError } from "./src/shot-video-generator.js";
 import { resolveAuthoritativeShotVideoInput, resolveAuthoritativeShotVideoReferenceAssets, resolvePreviousShotFrameReference } from "./src/shot-video-continuity.js";
 import {
-  inferShotVideoProvider,
   isShotVideoGenerationModeSupported,
   isShotVideoModelAllowed,
   normalizeShotVideoProvider,
@@ -31,14 +32,6 @@ import {
   shotVideoProviderCatalog,
   shotVideoRuntimeConfig
 } from "./src/shot-video-providers.js";
-import {
-  buildShotVideoBatchReferenceAssets,
-  createShotVideoBatchItems,
-  requireShotVideoBatchAspectRatio,
-  shotVideoBatchReferenceIssues,
-  updateShotVideoBatchItem,
-  waitForShotVideoBatchControl
-} from "./src/shot-video-batch.js";
 import { AttemptStore } from "./src/attempt-store.js";
 import {
   CAST_CONFIRMATION_API_PATH,
@@ -46,12 +39,8 @@ import {
   handleCastApiRequest
 } from "./src/cast-api.js";
 import { CastOrchestrationService } from "./src/cast-orchestration.js";
-import {
-  compilerErrorMetadata,
-  compilerErrorStatus,
-  inferCompilerErrorStage,
-  serializeServerError
-} from "./src/server-error.js";
+import { serializeServerError } from "./src/server-error.js";
+import { sanitizePublicMetadata } from "./src/model-errors.js";
 import { AnimationPromptCapture } from "./src/animation-prompt-capture.js";
 import { PartialRepairDebugWriter } from "./src/partial-repair-debug.js";
 import {
@@ -102,14 +91,7 @@ import {
   PRODUCTION_REQUEST_HEADER_NAMES,
   productionRequestHeaders
 } from "./public/production-lineage-client.js";
-import {
-  PREVIOUS_SHOT_REFERENCE_FRAME_COUNT,
-  SHOT_VIDEO_CONTINUITY_NONE,
-  SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES,
-  shouldIncludePreviousShotFrames,
-  shotVideoArtifactIdFor
-} from "./public/shot-video-continuity.js";
-import { syncShotCharacterReference } from "./public/character-reference-sync.js";
+import { shotVideoArtifactIdFor } from "./public/shot-video-continuity.js";
 
 loadEnv();
 const systemProxy = await initializeSystemProxy();
@@ -141,8 +123,7 @@ const animationModelOutputLogWriter = scopeBrowserWorkspaceDebugWriter(new FullM
 }), (fallback) => browserWorkspaceDebugRoot("animation-plan", fallback));
 // 这些阶段共用一个 root，按 stage 各建一个 writer；
 // 不配置 STAGE_MODEL_OUTPUT_LOG_DIR 就完全不写。
-// 普通阶段走 generateStageJson；原片来源提取复用 variants 配置但单独记日志；
-// animationPlanRevision 走 modelCallCoordinator，由 workflow 接 attemptObserver。
+// 普通阶段走 generateStageJson；原片来源提取复用 variants 配置但单独记日志。
 const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
   MODEL_OUTPUT_LOG_SCOPES.ANALYSIS,
   MODEL_OUTPUT_LOG_SCOPES.RECONSTRUCTION,
@@ -155,8 +136,6 @@ const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
   MODEL_OUTPUT_LOG_SCOPES.STORY_CANDIDATE_REVISION,
   MODEL_OUTPUT_LOG_SCOPES.STORY_QUALITY_REVIEW,
   MODEL_OUTPUT_LOG_SCOPES.STORY_QUALITY_REPAIR,
-  MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVIEW,
-  MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVISION,
   MODEL_OUTPUT_LOG_SCOPES.FULL_STORY_PROMISE_CHECK,
   // 自主分镜 4.0 的六个阶段同样走 coordinator，由 storyboard-workflow.js 接 attemptObserver。
   MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_CHARACTER_FACTS,
@@ -360,8 +339,8 @@ const routes = {
     return result;
   },
   "/api/animation-plan": async (body, { request } = {}) => {
-    // 用户在「设定创作宇宙」写的角色表情规则。与 targetDurationSeconds 同规格：
-    // 只进 Foundation 与逐镜提示词，不写入 Artifact、不参与派生、不进 digest。
+    // 角色表情规则：页面 2026-10-09 起不再发送（由角色画风接替），服务端照旧接受；
+    // 4.0 分镜把它原样记进 productionStrategy.characterExpressionRules。
     // 这里只拦明显非法的值，不裁决「这条规则写得好不好」。
     if (body?.characterExpressionRules !== undefined && !isValidCharacterExpressionRules(body.characterExpressionRules)) {
       throw new InputError(`characterExpressionRules 必须是不超过 ${CHARACTER_EXPRESSION_RULES_MAX_CHARS} 字符的字符串`);
@@ -370,27 +349,11 @@ const routes = {
     return animationPromptCapture.run({
     route: "/api/animation-plan",
     variantId: body?.variant?.id,
-    animationPlanMode: body?.animationPlanMode,
     provider: String(body?.modelOverrides?.animationPlan?.provider || stageDefaults.animationPlan.provider || ""),
     traceContext: await animationPlanModelOutputTrace(request, body)
   }, () => body?.includeCompilerMetadata
       ? workflow.createAnimationPlanWithMetadata(body)
       : workflow.createAnimationPlan(body));
-  },
-  "/api/animation-plan/video-prompts/rewrite": async (body, { request } = {}) => {
-    const productionMedia = await resolveProductionMediaContext(body, { required: true });
-    return animationPromptCapture.run({
-      route: "/api/animation-plan/video-prompts/rewrite",
-      variantId: body?.variant?.id,
-      animationPlanMode: "direct_shot",
-      provider: String(body?.modelOverrides?.animationPlan?.provider || stageDefaults.animationPlan.provider || ""),
-      traceContext: await animationPlanModelOutputTrace(request, body)
-    }, () => workflow.rewriteAnimationPlanVideoPrompts({
-      ...body,
-      // The browser may display an older copy while this request is in flight.
-      // Only the current signed Artifact is authorized as rewrite source.
-      animationPlan: productionMedia.planEntry.content
-    }));
   },
   // 剧情体检：只出报告。不签发 Artifact、不进 lineage、不 stale 任何东西、不阻断后续阶段。
   "/api/story-quality-review": (body) => workflow.createStoryQualityReview(body),
@@ -407,7 +370,6 @@ const routes = {
   // 确定性地给出「先修订候选」还是「直接展开」。与评审同规格，只出报告、不签发任何东西；
   // 候选要改，只能由用户在页面上采纳修订、签发新版本之后再展开。
   "/api/full-story-precheck": (body) => workflow.createFullStoryPrecheck(body),
-  "/api/animation-plan-review": (body) => workflow.createAnimationPlanReview(body),
   // 导演助手（2026-10-09）：理解对话栏里打的字。只出建议——模型从页面送来的动作清单里选一个编号，
   // 不签发任何东西、不执行任何东西；执行只在用户点卡片上的「确认执行」之后，由页面调原有按钮。
   "/api/director-agent/turn": (body) => workflow.createDirectorAgentTurn(body),
@@ -415,9 +377,6 @@ const routes = {
   // 被改的那一份与它的上游由服务端从 Run 里读当前版本，请求里不收任何副本。采纳走
   // /api/production/one-sentence-edit/adopt，由服务端重新应用、核对摘要后签发。
   "/api/one-sentence-edit/draft": (body) => oneSentenceEditDraft(body),
-  // 定向修订：按终审报告只改被点名的镜头。**不签发任何东西**——返回合并后的候选 Plan
-  // 供页面预览，用户点「采纳」时才由浏览器走既有的 Plan revision 签发流程。
-  "/api/animation-plan-revision": (body) => workflow.createAnimationPlanRevision(body),
   "/api/refine-character-reference": (body) => workflow.refineCharacterReference(body),
   "/api/generate-shot-video": async (body) => {
     const productionMedia = await resolveProductionMediaContext(body, { required: true });
@@ -438,11 +397,7 @@ const routes = {
         productionMedia.planEntry.content,
         authoritativeInput.shot
       ),
-      animationPromptSchemaVersion: authoritativeInput.promptSchemaVersion,
-      videoPromptSource: authoritativeInput.promptSource,
-      videoPromptProfile: structuredClone(
-        productionMedia.planEntry.content?.productionStrategy?.videoPromptProfile || null
-      )
+      videoPromptSource: authoritativeInput.promptSource
     };
     const visualGuardrails = verifyBoundaryForMedia(productionMedia, body);
     ensureCharacterReferencesMatchBoundary(request.characterReferences, visualGuardrails, request.shot);
@@ -617,12 +572,11 @@ function taskDefinitionForRequest(body = {}) {
   if (kind === "fullStory") return fullStoryTaskDefinition({ projectId, runId, input });
   if (kind === "animationPlan") return animationPlanTaskDefinition({ projectId, runId, input });
   if (kind === "shotVideoPrompt") return shotVideoPromptTaskDefinition({ projectId, runId, input });
-  if (kind === "animationPromptRewrite") return animationPromptRewriteTaskDefinition({ projectId, runId, input });
   if (kind === "characterReferenceRefine") return characterReferenceRefineTaskDefinition({ projectId, runId, input });
   if (kind === "characterReferenceImages") return characterReferenceImagesTaskDefinition({ projectId, runId, input });
-  if (kind === "shotVideoBatch") return shotVideoBatchTaskDefinition({ projectId, runId, input });
   if (kind === "shotVideo") return shotVideoTaskDefinition({ projectId, runId, input });
-  if (kind === "shotFrameImage") return shotFrameTaskDefinition({ projectId, runId, input });
+  // 旧的 shotVideoBatch / shotFrameImage / animationPromptRewrite 已于 2026-10-11 随旧 2.0/3.0 分镜删除：
+  // 建新任务一律落到下面的 TASK_KIND_UNSUPPORTED；Task Store 不校验 kind，旧任务记录照常读出。
   throw new ProductionStateError(`不支持 Durable Task kind：${kind || "(空)"}`, {
     code: "TASK_KIND_UNSUPPORTED",
     httpStatus: 400
@@ -1017,7 +971,7 @@ function animationPlanTaskDefinition({ projectId, runId, input }) {
     artifactId,
     artifactType: "animationPlan",
     dependencyIds,
-    modelStages: ["animationPlan", "staticFrameCompiler"],
+    modelStages: ["animationPlan"],
     rawInput: input,
     createMediaNamespace: true,
     contentForArtifact: (value) => normalizeAnimationPlanTaskResponse(value).animationPlan,
@@ -1042,11 +996,9 @@ function animationPlanTaskDefinition({ projectId, runId, input }) {
         creatorProfile: input.creatorProfile,
         characterExpressionRules: input.characterExpressionRules,
         artStyle: input.artStyle,
-        animationPlanMode: input.animationPlanMode || "direct_shot",
         animationPlanVersion: input.animationPlanVersion,
         targetAspectRatio: input.targetAspectRatio,
         backgroundMusicEnabled: input.backgroundMusicEnabled,
-        videoPromptTarget: input.videoPromptTarget,
         includeCompilerMetadata: input.includeCompilerMetadata !== false,
         modelOverrides: input.modelOverrides
       };
@@ -1058,60 +1010,6 @@ function animationPlanTaskDefinition({ projectId, runId, input }) {
         return storyEntryAnimationPlan(routeInput, { request, storyEntry: __storyEntry });
       }
       return routes["/api/animation-plan"](trustedInput, { request });
-    }
-  });
-}
-
-function animationPromptRewriteTaskDefinition({ projectId, runId, input }) {
-  const variantId = safeIdentifier(input.variantId || input.variant?.id, "variantId");
-  const artifactId = `animationPlan:${variantId}`;
-  const currentPlan = input.productionContext?.planArtifactId || artifactId;
-  if (normalizeArtifactId(currentPlan) !== artifactId) {
-    throw new ProductionStateError("提示词重写目标与 Variant 不一致", { code: "TASK_TARGET_MISMATCH", httpStatus: 409 });
-  }
-  return artifactRouteTaskDefinition({
-    projectId,
-    runId,
-    kind: "animationPromptRewrite",
-    pool: "workflow",
-    artifactId,
-    artifactType: "animationPlan",
-    dependencyIds: [],
-    preserveTargetDependencies: true,
-    modelStages: ["animationPlan"],
-    rawInput: input,
-    createMediaNamespace: true,
-    contentForArtifact: (value) => normalizeAnimationPlanTaskResponse(value).animationPlan,
-    prepareInput: (run) => {
-      assertRunEntryMode(run, "video");
-      const plan = requireCurrentArtifact(run, artifactId);
-      assertCompatibleArtifactCopies(run, input, [
-        ["creativeBrief", "creativeBrief"],
-        ["variant", `variant:${variantId}`],
-        ["fullStory", `fullStory:${variantId}`],
-        ["visualGuardrails", "visualGuardrails"]
-      ]);
-      assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry: plan });
-      const dependencies = plan.lineage.dependencies || [];
-      const artifacts = currentArtifactContents(run);
-      return {
-        creatorProfile: input.creatorProfile,
-        creativeBrief: artifacts.creativeBrief,
-        variant: artifacts[`variant:${variantId}`],
-        fullStory: artifacts[`fullStory:${variantId}`],
-        visualGuardrails: artifacts.visualGuardrails,
-        fixedCharacterBoundary: artifacts.visualGuardrails?.fixedCharacterBoundary,
-        animationPlanMode: "direct_shot",
-        videoPromptTarget: input.videoPromptTarget,
-        productionContext: productionContextForLineage(projectId, runId, plan.lineage),
-        modelOverrides: input.modelOverrides,
-        __dependencies: dependencies
-      };
-    },
-    resolveDependencies: (trustedInput) => trustedInput.__dependencies,
-    invoke: (trustedInput, request) => {
-      const { __dependencies, ...routeInput } = trustedInput;
-      return routes["/api/animation-plan/video-prompts/rewrite"](routeInput, { request });
     }
   });
 }
@@ -1138,6 +1036,7 @@ function characterReferenceRefineTaskDefinition({ projectId, runId, input }) {
       if (entry) assertNoVideoUpstreamCopies(input);
       if (isStorySourceDirectEntry(entry)) assertNoCandidateCopies(input);
       const planEntry = requireCurrentArtifact(run, artifactId);
+      assertSupportedAnimationPlan(planEntry.content);
       const plan = structuredClone(planEntry.content);
       const characterReference = plan.characterReferencePrompts?.[roleIndex];
       if (!characterReference) {
@@ -1164,8 +1063,7 @@ function characterReferenceRefineTaskDefinition({ projectId, runId, input }) {
       if (Object.prototype.hasOwnProperty.call(input, "animationPlan")) {
         assertCompatibleValueCopy({
           title: plan.title,
-          productionStrategy: plan.productionStrategy,
-          visualBible: plan.visualBible
+          productionStrategy: plan.productionStrategy
         }, input.animationPlan, "animationPlan partial copy");
       }
       const artifacts = currentArtifactContents(run);
@@ -1183,8 +1081,7 @@ function characterReferenceRefineTaskDefinition({ projectId, runId, input }) {
         fullStory: artifacts[`fullStory:${variantId}`],
         animationPlan: {
           title: plan.title,
-          productionStrategy: plan.productionStrategy,
-          visualBible: plan.visualBible
+          productionStrategy: plan.productionStrategy
         },
         modelOverrides: input.modelOverrides,
         ...(entry ? { __storyEntry: { storyMode: entry.storyMode, storySource: entry.storySource } } : {}),
@@ -1208,15 +1105,16 @@ function characterReferenceRefineTaskDefinition({ projectId, runId, input }) {
       } = refined || {};
       const updatedPlan = structuredClone(trustedInput.__plan);
       const previous = updatedPlan.characterReferencePrompts[trustedInput.__roleIndex];
-      const updated = {
+      // 原来这里还把新外观同步进各镜的 startFramePrompt/endFramePrompt/videoPrompt/characterAction/
+      // continuityNotes（syncShotCharacterReference，模块已删）。4.0 分镜的镜头行受严格 Schema 约束，
+      // 没有这五个键，那次同步对 4.0 一直是空操作；旧 Plan 在上面 prepareInput 就已 409。
+      updatedPlan.characterReferencePrompts[trustedInput.__roleIndex] = {
         ...previous,
         ...refinedFields,
         referenceImageAdded: true,
         referenceImageName: trustedInput.imageName,
         referenceImageDataUrl: trustedInput.imageDataUrl
       };
-      updatedPlan.characterReferencePrompts[trustedInput.__roleIndex] = updated;
-      syncShotCharacterReference(updatedPlan, previous, updated);
       return updatedPlan;
     },
     invoke: (trustedInput) => {
@@ -1246,6 +1144,7 @@ function characterReferenceImagesTaskDefinition({ projectId, runId, input }) {
       if (entry) assertNoVideoUpstreamCopies(input);
       if (isStorySourceDirectEntry(entry)) assertNoCandidateCopies(input);
       const planEntry = requireCurrentArtifact(run, planArtifactId);
+      assertSupportedAnimationPlan(planEntry.content);
       const characterReference = planEntry.content?.characterReferencePrompts?.[roleIndex];
       if (!characterReference) {
         throw new ProductionStateError("Animation Plan 中没有对应角色参考项", {
@@ -1270,7 +1169,7 @@ function characterReferenceImagesTaskDefinition({ projectId, runId, input }) {
       assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry: planEntry });
       const count = Math.max(1, Math.min(config.jimeng.maxImages, Math.round(Number(input.count) || 1)));
       const prompt = String(input.prompt || "").trim()
-        || buildCharacterReferenceImagePrompt(characterReference, count, planEntry.content?.visualBible || null, {
+        || buildCharacterReferenceImagePrompt(characterReference, count, {
           withReferenceImage: Boolean(input.referenceImageDataUrl),
           artStyle: planEntry.content?.productionStrategy?.artStyle
         });
@@ -1432,6 +1331,7 @@ function shotVideoPromptTaskDefinition({ projectId, runId, input }) {
     prepareInput: (run) => {
       const entry = requireCurrentArtifact(run, planArtifactId);
       assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry });
+      assertSupportedAnimationPlan(entry.content);
       if (!isStoryboardPlan(entry.content)) throw new InputError("只有新版自主分镜需要单独生成镜头提示词");
       return { plan: structuredClone(entry.content), shotId, planDigest: entry.lineage.contentDigest,
         target: { provider: target.provider, model: target.model }, modelOverrides: input.modelOverrides };
@@ -1460,6 +1360,7 @@ function shotVideoTaskDefinition({ projectId, runId, input }) {
     rawInput: input,
     prepareInput: (run) => {
       const planEntry = requireCurrentArtifact(run, planArtifactId);
+      assertSupportedAnimationPlan(planEntry.content);
       assertCompatibleArtifactCopies(run, input, [
         ["referenceAnalysis", "referenceAnalysis"],
         ["sourceScriptReconstruction", "sourceScriptReconstruction"],
@@ -1511,333 +1412,6 @@ function shotVideoTaskDefinition({ projectId, runId, input }) {
       const { __dependencies, ...routeInput } = trustedInput;
       return routes["/api/generate-shot-video"](routeInput);
     }
-  });
-}
-
-function shotVideoBatchTaskDefinition({ projectId, runId, input }) {
-  const variantId = safeIdentifier(input.variantId || input.selectedVariantId, "variantId");
-  const planArtifactId = `animationPlan:${variantId}`;
-  const setting = shotVideoRequestSetting(input);
-  if (!isShotVideoGenerationModeSupported(setting.provider, "all_reference")) {
-    throw new ProductionStateError(
-      `${setting.provider} 不支持全能参考批量生成；请将镜头视频供应商切换为 Seedance 或 MiniMax。`,
-      { code: "SHOT_VIDEO_BATCH_PROVIDER_UNSUPPORTED" }
-    );
-  }
-  const resolution = shotVideoRequestResolution(input, setting);
-  return {
-    projectId,
-    runId,
-    kind: "shotVideoBatch",
-    pool: "media",
-    modelSnapshot: shotVideoModelSnapshot(setting, resolution),
-    prepare: async ({ run }) => {
-      const planEntry = requireCurrentArtifact(run, planArtifactId);
-      assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry: planEntry });
-      const plan = planEntry.content || {};
-      if (isStoryboardPlan(plan)) throw new InputError("新版分镜请逐镜生成并确认视频提示词，暂不支持批量生成视频");
-      const shots = Array.isArray(plan.shotPlan) ? plan.shotPlan.filter(Boolean) : [];
-      if (!shots.length) {
-        throw new ProductionStateError("当前 Animation Plan 没有可批量生成的视频镜头", {
-          code: "SHOT_VIDEO_BATCH_EMPTY"
-        });
-      }
-      const shotIds = shots.map((shot) => safeIdentifier(shot.shotId, "shotId"));
-      if (new Set(shotIds).size !== shotIds.length) {
-        throw new ProductionStateError("Animation Plan 中存在重复 shotId，不能批量生成", {
-          code: "SHOT_VIDEO_BATCH_DUPLICATE_SHOT"
-        });
-      }
-      const targetArtifactIds = shotIds.map((shotId) => shotVideoArtifactIdFor(variantId, shotId));
-      const isReady = (shot) => run.latestArtifacts?.[shotVideoArtifactIdFor(variantId, shot.shotId)]?.lineage?.status === "current";
-      const items = createShotVideoBatchItems(shots, isReady);
-      // 批前预检：逐个待办镜头核对参考素材会不会超出供应商上限，命中就一次列全并拒绝开工。
-      //
-      // 此前这里只检查首个待办镜头「至少有一项视觉参考」，于是第 7 镜的音频超限要等到
-      // 前 6 镜都付过费之后才暴露——而且那种失败还会把整批带走（见 execute 里的隔离注释）。
-      //
-      // 抽帧张数按 happy path 投影：includePreviousShotFrames 打开时，除首镜外每一镜都会
-      // 拿到上一镜的抽帧。**已知的保守性**：如果实际运行时上一镜失败了，那一镜不会有抽帧、
-      // 图片数更少、本来可能通过，这里仍然会拦住它。这是「拒绝开工」这个选择自带的代价，
-      // 不是缺陷——不接受这个代价就得改成「预标记 failed 后照常开工」。
-      const includePreviousShotFrames = input.includePreviousShotFrames !== false;
-      const referenceIssues = [];
-      for (const [index, shot] of shots.entries()) {
-        if (items[index]?.status === "completed") continue;
-        referenceIssues.push(...shotVideoBatchReferenceIssues(shot, plan.characterReferencePrompts || [], {
-          continuityFrameCount: includePreviousShotFrames && index > 0
-            ? PREVIOUS_SHOT_REFERENCE_FRAME_COUNT
-            : 0
-        }));
-      }
-      if (referenceIssues.length) {
-        throw new ProductionStateError(
-          `以下镜头的参考素材超出全能参考上限，批量生成不会开始：\n${referenceIssues.map((issue) => `· ${issue.message}`).join("\n")}`,
-          { code: referenceIssues[0].code }
-        );
-      }
-      const artifacts = currentArtifactContents(run, [
-        "referenceAnalysis",
-        "sourceScriptReconstruction",
-        "creativeBrief",
-        "visualGuardrails"
-      ]);
-      return {
-        input: {
-          variantId,
-          selectedVariantId: variantId,
-          count: Math.max(1, Math.min(4, Number(input.count) || 1)),
-          includePreviousShotFrames,
-          // 用户这次选的分辨率（2026-10-10），只在选了时才有这个键；每一镜原样带下去。
-          ...(Object.hasOwn(input, "resolution") ? { resolution: input.resolution } : {}),
-          modelOverrides: plainObject(input.modelOverrides),
-          productionContext: productionContextForLineage(projectId, runId, planEntry.lineage),
-          plan: structuredClone(plan),
-          shots: structuredClone(shots),
-          creatorProfile: plainObject(run.metadata?.creatorProfile),
-          referenceAnalysis: artifacts.referenceAnalysis,
-          sourceScriptReconstruction: artifacts.sourceScriptReconstruction,
-          creativeBrief: artifacts.creativeBrief,
-          visualGuardrails: artifacts.visualGuardrails
-        },
-        targetArtifactIds,
-        frozenDependencies: [lineageRef(planEntry.lineage)],
-        modelSnapshot: shotVideoModelSnapshot(setting, resolution),
-        progress: {
-          controlState: "running",
-          totalShots: shots.length,
-          completedShots: items.filter((item) => item.status === "completed").length,
-          generatedShots: 0,
-          failedShots: 0,
-          currentShotId: "",
-          items
-        }
-      };
-    },
-    execute: async (trusted, context) => {
-      let task = await context.getTask();
-      let items = Array.isArray(task.progress?.items)
-        ? task.progress.items
-        : createShotVideoBatchItems(trusted.shots);
-      const resultArtifactRefs = [];
-      let generatedShots = Number(task.progress?.generatedShots) || 0;
-      let failedShots = Number(task.progress?.failedShots) || 0;
-      let completedShots = items.filter((item) => item.status === "completed").length;
-      for (let index = 0; index < trusted.shots.length; index += 1) {
-        await waitForShotVideoBatchControl(context);
-        const shot = trusted.shots[index];
-        const shotId = String(shot.shotId);
-        const artifactId = shotVideoArtifactIdFor(trusted.variantId, shotId);
-        const snapshot = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
-        const existing = snapshot.latestArtifacts?.[artifactId];
-        if (existing?.lineage?.status === "current") {
-          if (!resultArtifactRefs.some((item) => item.artifactId === artifactId)) {
-            resultArtifactRefs.push(lineageRef(existing.lineage));
-          }
-          items = updateShotVideoBatchItem(items, shotId, {
-            status: "completed",
-            message: items[index]?.status === "completed" ? "已存在当前视频结果" : "视频已生成"
-          });
-          completedShots = items.filter((item) => item.status === "completed").length;
-          await context.heartbeat({ completedShots, generatedShots, failedShots, currentShotId: "", items });
-          continue;
-        }
-        const previousArtifactId = index > 0
-          ? shotVideoArtifactIdFor(trusted.variantId, trusted.shots[index - 1].shotId)
-          : "";
-        const previousReady = previousArtifactId
-          && snapshot.latestArtifacts?.[previousArtifactId]?.lineage?.status === "current";
-        // 单镜参考素材问题必须只失败这一镜。这行原本在下面那个 try 之外，抛出的
-        // ProductionStateError 会直接冒出 execute，把整批判 failed——而同一类问题发生在
-        // runChild 里只会标记该镜 failed 然后继续。同一种故障两种后果，这里补齐。
-        // 批前预检正常情况下已经拦住了这些，剩下的是冻结输入与预检投影不一致的兜底。
-        let referenceAssets;
-        try {
-          referenceAssets = buildShotVideoBatchReferenceAssets(
-            shot,
-            trusted.plan.characterReferencePrompts || []
-          );
-        } catch (error) {
-          if (isFatalShotVideoBatchError(error)) throw error;
-          failedShots += 1;
-          items = updateShotVideoBatchItem(items, shotId, {
-            status: "failed",
-            message: error.message || "参考素材不符合全能参考上限"
-          });
-          await context.heartbeat({ completedShots, generatedShots, failedShots, currentShotId: "", items });
-          continue;
-        }
-        const hasVisualReference = referenceAssets.some((asset) => ["image", "video"].includes(asset.mediaType));
-        if (!hasVisualReference && !(trusted.includePreviousShotFrames && previousReady)) {
-          failedShots += 1;
-          items = updateShotVideoBatchItem(items, shotId, {
-            status: "failed",
-            message: "缺少角色参考图或可复用的上一镜视频"
-          });
-          await context.heartbeat({ completedShots, generatedShots, failedShots, currentShotId: "", items });
-          continue;
-        }
-        items = updateShotVideoBatchItem(items, shotId, {
-          status: "running",
-          message: `正在用 ${setting.provider} ${setting.model} 生成`
-        });
-        await context.heartbeat({
-          completedShots,
-          generatedShots,
-          failedShots,
-          currentShotId: shotId,
-          currentShotIndex: index,
-          items
-        });
-        try {
-          const child = await context.runChild(shotVideoTaskDefinition({
-            projectId,
-            runId,
-            input: {
-              creatorProfile: trusted.creatorProfile,
-              referenceAnalysis: trusted.referenceAnalysis,
-              sourceScriptReconstruction: trusted.sourceScriptReconstruction,
-              creativeBrief: trusted.creativeBrief,
-              visualGuardrails: trusted.visualGuardrails,
-              variantId: trusted.variantId,
-              selectedVariantId: trusted.variantId,
-              count: trusted.count,
-              generationMode: "all_reference",
-              continuityReferenceMode: shouldIncludePreviousShotFrames({
-                requested: trusted.includePreviousShotFrames,
-                available: previousReady
-              })
-                ? SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
-                : SHOT_VIDEO_CONTINUITY_NONE,
-              aspectRatio: requireShotVideoBatchAspectRatio(trusted.plan),
-              animationPromptSchemaVersion: trusted.plan.promptSchemaVersion || "",
-              shotId,
-              referenceAssets,
-              productionContext: trusted.productionContext,
-              ...(Object.hasOwn(trusted, "resolution") ? { resolution: trusted.resolution } : {}),
-              modelOverrides: trusted.modelOverrides
-            }
-          }));
-          resultArtifactRefs.push(...(child.resultArtifactRefs || []));
-          generatedShots += 1;
-          completedShots += 1;
-          items = updateShotVideoBatchItem(items, shotId, {
-            status: "completed",
-            message: `已生成 ${trusted.count} 条视频候选`,
-            taskId: child.taskId
-          });
-        } catch (error) {
-          if (isFatalShotVideoBatchError(error)) throw error;
-          failedShots += 1;
-          items = updateShotVideoBatchItem(items, shotId, {
-            status: "failed",
-            message: error.message || "视频生成失败"
-          });
-        }
-        await context.heartbeat({
-          completedShots,
-          generatedShots,
-          failedShots,
-          currentShotId: "",
-          currentShotIndex: index,
-          items
-        });
-      }
-      task = await context.getTask();
-      return {
-        resultArtifactRefs,
-        usage: task.usage || null,
-        progress: {
-          controlState: "running",
-          batchStatus: failedShots ? "partial" : "completed",
-          totalShots: trusted.shots.length,
-          completedShots,
-          generatedShots,
-          failedShots,
-          currentShotId: "",
-          items
-        }
-      };
-    }
-  };
-}
-
-function isFatalShotVideoBatchError(error) {
-  return [
-    "SHOT_VIDEO_BATCH_TERMINATED",
-    "TASK_OWNERSHIP_LOST",
-    "TASK_FROZEN_CONTEXT_CONFLICT",
-    "ARTIFACT_REVISION_CONFLICT",
-    "ARTIFACT_DEPENDENCY_STALE",
-    "MEDIA_PLAN_ASPECT_RATIO_MISMATCH",
-    "SHOT_VIDEO_CURRENT_SHOT_NOT_IN_PLAN",
-    "SHOT_VIDEO_PLAN_SCHEMA_MISMATCH",
-    "SHOT_VIDEO_PLAN_VARIANT_MISMATCH"
-  ].includes(error?.code);
-}
-
-function shotFrameTaskDefinition({ projectId, runId, input }) {
-  const variantId = safeIdentifier(input.variantId || input.selectedVariantId, "variantId");
-  const shotId = safeIdentifier(input.shotId || input.shot?.shotId, "shotId");
-  const frameKind = input.frameKind === "end" ? "end" : "start";
-  const artifactId = `shotFrame:${variantId}:${shotId}:${frameKind}`;
-  const planArtifactId = `animationPlan:${variantId}`;
-  const imageModel = modelOverrideFor(input, "imageGeneration") || config.jimeng.model;
-  return artifactRouteTaskDefinition({
-    projectId,
-    runId,
-    kind: "shotFrameImage",
-    pool: "media",
-    artifactId,
-    artifactType: "shotFrame",
-    dependencyIds: [planArtifactId],
-    modelStages: [],
-    rawInput: input,
-    prepareInput: (run) => {
-      assertRunEntryMode(run, "video");
-      const planEntry = requireCurrentArtifact(run, planArtifactId);
-      assertCompatibleProductionContext(input.productionContext, { projectId, runId, entry: planEntry });
-      const authoritativeShot = (planEntry.content?.shotPlan || [])
-        .find((shot) => String(shot.shotId || "") === shotId);
-      if (!authoritativeShot) {
-        throw new ProductionStateError("当前 Animation Plan 中没有目标 shot", {
-          code: "MEDIA_PLAN_SHOT_MISSING",
-          httpStatus: 409
-        });
-      }
-      return {
-        ...input,
-        selectedVariantId: variantId,
-        frameKind,
-        shot: structuredClone(authoritativeShot),
-        visualBible: structuredClone(planEntry.content?.visualBible || {}),
-        animationPromptSchemaVersion: String(planEntry.content?.promptSchemaVersion || ""),
-        productionContext: productionContextForLineage(projectId, runId, planEntry.lineage)
-      };
-    },
-    contentForArtifact: async (result) => {
-      const images = Array.isArray(result.images) && result.images.length ? result.images : [result];
-      const persisted = await Promise.all(images.map(async (image) => ({
-        ...image,
-        dataUrl: await generatedPublicUrlToDataUrl(image.url)
-      })));
-      const normalized = {
-        ...result,
-        images: persisted,
-        selectedIndex: -1,
-        url: "",
-        dataUrl: ""
-      };
-      return {
-        status: input.autoSelectFirst ? "ready" : "pending",
-        frameKind,
-        result: normalized,
-        selectedIndex: input.autoSelectFirst ? 0 : -1,
-        message: `已生成 ${persisted.length} 张候选图，请选择一张添加到镜头。`
-      };
-    },
-    invoke: (trustedInput) => generateShotFrameImage(trustedInput),
-    modelSnapshot: { imageGeneration: { provider: "Jimeng", model: imageModel } }
   });
 }
 
@@ -2144,10 +1718,8 @@ function legacyTaskRequest(pathname, body, request) {
     "/api/variants": "variants",
     "/api/full-story": "fullStory",
     "/api/animation-plan": "animationPlan",
-    "/api/animation-plan/video-prompts/rewrite": "animationPromptRewrite",
     "/api/refine-character-reference": "characterReferenceRefine",
-    "/api/generate-shot-video": "shotVideo",
-    "/api/generate-shot-frame-image": "shotFrameImage"
+    "/api/generate-shot-video": "shotVideo"
   };
   const kind = kindByPath[pathname];
   if (!kind) return null;
@@ -2290,8 +1862,7 @@ const server = http.createServer(async (request, response) => {
           serverRequestMs: config.serverRequestTimeoutMs,
           qwenGenerationMs: config.qwen.requestTimeoutMs,
           mimoGenerationMs: config.mimo.requestTimeoutMs,
-          deepseekGenerationMs: config.deepseek.requestTimeoutMs,
-          staticFrameCompilerMs: config.staticFrameCompiler.requestTimeoutMs
+          deepseekGenerationMs: config.deepseek.requestTimeoutMs
         }
       });
     }
@@ -2352,15 +1923,6 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === "POST" && url.pathname === "/api/generate-character-reference-images") {
       return streamCharacterReferenceImages(request, response);
-    }
-    if (request.method === "POST" && url.pathname === "/api/generate-shot-frame-image") {
-      const body = await readJson(request);
-      const durable = await runLegacyDurableTask(url.pathname, body, request);
-      if (durable) {
-        return json(response, 200, { ok: true, mode: workflow.mode, result: durable.result, usage: durable.usage });
-      }
-      const result = await generateShotFrameImage(body);
-      return json(response, 200, { ok: true, mode: workflow.mode, result });
     }
     if (request.method === "POST" && url.pathname.startsWith("/api/production/")) {
       const body = await readJson(request, { limit: 70 * 1024 * 1024 });
@@ -2477,7 +2039,7 @@ server.listen(config.port, () => {
   if (!config.workflowRuntime.characterBoundarySignatureRequired) {
     console.log("全局角色边界签名：测试包模式（保留 sourceDigest / boundaryDigest 校验）");
   }
-  console.log(`运行模式：${workflow.mode === "live" ? `${stageDefaults.analysis.provider} (${stageDefaults.analysis.model}) / 剧情 ${stageDefaults.fullStory.provider} ${stageDefaults.fullStory.model} / 动画 ${stageDefaults.animationPlan.provider} ${stageDefaults.animationPlan.model} / 静态帧编译 ${stageDefaults.staticFrameCompiler.provider || "未配置"} ${stageDefaults.staticFrameCompiler.model || ""}` : "演示数据（配置 .env 后接入模型服务）"}`);
+  console.log(`运行模式：${workflow.mode === "live" ? `${stageDefaults.analysis.provider} (${stageDefaults.analysis.model}) / 剧情 ${stageDefaults.fullStory.provider} ${stageDefaults.fullStory.model} / 动画 ${stageDefaults.animationPlan.provider} ${stageDefaults.animationPlan.model}` : "演示数据（配置 .env 后接入模型服务）"}`);
   // Qwen 与 MiMo 是流式，只判空闲、不设总时长；只有非流式的 DeepSeek 有总超时。
   console.log(`生成请求超时：连续 ${Math.round(config.qwen.streamIdleTimeoutMs / 1000)} 秒无数据（Qwen）/ 连续 ${Math.round(config.mimo.streamIdleTimeoutMs / 1000)} 秒无数据（MiMo）/ 总时长 ${Math.round(config.deepseek.requestTimeoutMs / 60000)} 分钟（DeepSeek）`);
 });
@@ -2500,7 +2062,7 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
     // 加逐候选的建议与批次块，输出体量远超其它文本阶段。全局默认 16384 实测
     // 在只有 2 个占位候选时就烧掉 3.4k–4.0k，真候选很容易撞上限——表现是
     // finish=length、JSON 不完整、整份报告作废（与 §2.10 记过的截断同型代价）。
-    // 与分镜终审单独放宽 requestTimeoutMs 同规格：只动这一个阶段，不碰全局默认。
+    // 只动这一个阶段，不碰全局默认（原分镜终审单独放宽 requestTimeoutMs 也是这个做法，该阶段已删除）。
     storyCandidateReview: stageSetting(
       provider,
       source.variantsModel || source.model,
@@ -2510,12 +2072,6 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
     storyCandidateRevision: stageSetting(provider, source.variantsModel || source.model, source.variantsMaxCompletionTokens || source.maxCompletionTokens),
     fullStory: stageSetting(provider, source.storyModel || source.model, source.storyMaxCompletionTokens || source.maxCompletionTokens),
     animationPlan: stageSetting(provider, source.animationModel || source.storyModel || source.model, source.animationMaxCompletionTokens || source.maxCompletionTokens),
-    staticFrameCompiler: stageSetting(
-      config.staticFrameCompiler.provider,
-      config.staticFrameCompiler.model,
-      config.staticFrameCompiler.maxCompletionTokens,
-      config.staticFrameCompiler.requestTimeoutMs
-    ),
     characterReference: stageSetting(provider, source.characterReferenceModel || source.videoModel || source.model, source.characterReferenceMaxCompletionTokens || source.maxCompletionTokens),
     // 剧情体检沿用剧情阶段的 provider。它是纯文本阶段（不在 requiresMediaModel 里），
     // 用户随时可以按阶段 override 换成别家。
@@ -2543,24 +2099,6 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
       provider,
       source.storyModel || source.model,
       Math.max(Number(source.storyMaxCompletionTokens || source.maxCompletionTokens) || 0, 32768)
-    ),
-    // 分镜终审同样沿用剧情 provider，但 **必须单独放宽 timeout**：
-    // 实测这个阶段正常出字最长 941 秒，而全局默认 900000 会在它成功前 41 秒把它掐死
-    // ——那次失败完全是我们自己造成的，与上游无关。
-    // 不动全局默认值：现有阶段实测最长 234 秒，900 秒有 3.8 倍余量。
-    animationPlanReview: stageSetting(
-      provider,
-      source.storyModel || source.model,
-      source.storyMaxCompletionTokens || source.maxCompletionTokens,
-      1800000
-    ),
-    // 定向修订与终审同规格：沿用剧情 provider，timeout 同样放宽到 1800000
-    // （实测修订耗时 233–775 秒，且与终审一样存在几百秒才断的传输失败）。
-    animationPlanRevision: stageSetting(
-      provider,
-      source.storyModel || source.model,
-      source.storyMaxCompletionTokens || source.maxCompletionTokens,
-      1800000
     ),
     // 一句话修改（2026-10-11）：沿用默认文本模型，不改思考设置。输出只有几处替换，
     // 但开思考的模型推理段可能很长，与按问题修改同规格把上限抬到 ≥32768，截断会让整份修改稿作废。
@@ -2617,67 +2155,50 @@ function shotVideoModelSnapshot(setting, resolution) {
 function shotVideoRequestSetting(body = {}) {
   const rawOverride = body.modelOverrides?.shotVideo;
   if (rawOverride !== undefined && (!rawOverride || typeof rawOverride !== "object" || Array.isArray(rawOverride))) {
-    throw new ShotVideoConfigError("首尾帧视频模型覆盖必须同时包含 provider 和 model。");
+    throw new ShotVideoConfigError("镜头视频模型覆盖必须同时包含 provider 和 model。");
   }
   const overrideProvider = String(rawOverride?.provider || "").trim();
   const overrideModel = String(rawOverride?.model || "").trim();
   if (rawOverride !== undefined && (!overrideProvider || !overrideModel)) {
-    throw new ShotVideoConfigError("首尾帧视频模型覆盖必须同时包含 provider 和 model。");
+    throw new ShotVideoConfigError("镜头视频模型覆盖必须同时包含 provider 和 model。");
   }
 
   const requestedProvider = overrideProvider || String(body.videoProvider || "").trim();
   const requestedModel = overrideModel || String(body.videoModel || "").trim();
   const normalizedProvider = normalizeShotVideoProvider(requestedProvider);
   if (requestedProvider && !normalizedProvider) {
-    throw new ShotVideoConfigError(`不支持首尾帧视频提供商“${requestedProvider}”。`);
+    throw new ShotVideoConfigError(`不支持镜头视频供应商“${requestedProvider}”：只支持 Seedance 或 MiniMax（可灵与自定义 VideoHTTP 已于 2026-10-11 删除）。`);
   }
-
-  // Keep an explicitly configured legacy generic worker route intact. Named
-  // providers still go through the strict provider/model compatibility check.
-  if (body.configPath && !requestedProvider) {
-    return { provider: "", model: requestedModel };
-  }
-  if (normalizedProvider === "VideoHTTP") {
-    const inferredProvider = inferShotVideoProvider({ model: requestedModel });
-    if (inferredProvider) {
-      if (!isShotVideoModelAllowed(inferredProvider, requestedModel)) {
-        throw new ShotVideoConfigError(`${inferredProvider} 不支持首尾帧视频模型“${requestedModel}”。`);
-      }
-      return { provider: inferredProvider, model: requestedModel };
-    }
-    return { provider: "VideoHTTP", model: requestedModel };
+  // 原来「只给 configPath、不给供应商」会走按配置文件推断的通用 worker 路由（只服务自定义 VideoHTTP），
+  // 已随 VideoHTTP 删除。这里明确拒绝，不悄悄改用默认供应商去读那份配置文件。
+  if (String(body.configPath || "").trim() && !requestedProvider) {
+    throw new ShotVideoConfigError("指定供应商配置文件（configPath）时必须同时指定镜头视频供应商（Seedance 或 MiniMax）。");
   }
 
   const setting = resolveShotVideoSetting({
     provider: requestedProvider,
     model: requestedModel
   });
-  if (setting.provider === "VideoHTTP") return setting;
-  if (!["Kling", "Seedance", "MiniMax"].includes(setting.provider)) {
-    throw new ShotVideoConfigError(`不支持首尾帧视频提供商“${setting.provider || requestedProvider}”。`);
+  if (!["Seedance", "MiniMax"].includes(setting.provider)) {
+    throw new ShotVideoConfigError(`不支持镜头视频供应商“${setting.provider || requestedProvider}”：只支持 Seedance 或 MiniMax。`);
   }
   if (!isShotVideoModelAllowed(setting.provider, setting.model)) {
-    throw new ShotVideoConfigError(`${setting.provider} 不支持首尾帧视频模型“${setting.model}”。`);
+    throw new ShotVideoConfigError(`${setting.provider} 不支持镜头视频模型“${setting.model}”。`);
   }
   return setting;
 }
 
-function videoHttpModel() {
-  return process.env.VIDEO_HTTP_VIDEO_MODEL?.trim() || process.env.VIDEO_HTTP_MODEL?.trim() || "";
-}
-
-function stageSetting(provider, model, maxCompletionTokens, requestTimeoutMs = null) {
+// requestTimeoutMs 恒为 null：原来只有已删除的静态帧编译器、分镜终审与定向修订三个阶段单独放宽过它。
+// 字段保留，workflow 读 override.requestTimeoutMs 的通路不变。
+function stageSetting(provider, model, maxCompletionTokens) {
   const tokenNumber = maxCompletionTokens === null || maxCompletionTokens === undefined || maxCompletionTokens === ""
     ? null
     : Number(maxCompletionTokens);
-  const timeoutNumber = requestTimeoutMs === null || requestTimeoutMs === undefined || requestTimeoutMs === ""
-    ? null
-    : Number(requestTimeoutMs);
   return {
     provider,
     model,
     maxCompletionTokens: Number.isFinite(tokenNumber) ? Math.round(tokenNumber) : null,
-    requestTimeoutMs: Number.isFinite(timeoutNumber) ? Math.round(timeoutNumber) : null
+    requestTimeoutMs: null
   };
 }
 
@@ -2700,17 +2221,6 @@ async function healthByProvider(clients, config) {
       modelIds: Array.isArray(health.modelIds) ? health.modelIds : []
     }];
   }));
-  const shotVideoProviders = shotVideoProviderCatalog();
-  const defaultShotVideo = shotVideoDefaultSetting();
-  const genericVideoRuntime = shotVideoRuntimeConfig("VideoHTTP");
-  const genericVideoConfigured = Boolean(genericVideoRuntime.configPath || genericVideoRuntime.endpoint);
-  const genericVideoHealth = {
-    configured: genericVideoConfigured,
-    defaultModel: genericVideoRuntime.model,
-    reachable: Boolean(genericVideoRuntime.endpoint),
-    modelAvailable: Boolean(genericVideoRuntime.model),
-    status: genericVideoRuntime.endpoint ? 200 : 0
-  };
   return {
     ...Object.fromEntries(entries),
     Jimeng: {
@@ -2720,13 +2230,8 @@ async function healthByProvider(clients, config) {
       modelAvailable: config.jimeng.enabled,
       status: 0
     },
-    ...shotVideoProviders,
-    VideoHTTP: {
-      ...genericVideoHealth,
-      defaultModel: defaultShotVideo.provider === "VideoHTTP"
-        ? defaultShotVideo.model || genericVideoRuntime.model
-        : videoHttpModel()
-    }
+    // 镜头视频只剩 Seedance 与 MiniMax（2026-10-11 删除可灵与自定义 VideoHTTP）。
+    ...shotVideoProviderCatalog()
   };
 }
 
@@ -2796,8 +2301,7 @@ function taskRequestBodyLimit(kind) {
     "directorPipeline",
     "characterReferenceImages",
     "characterReferenceRefine",
-    "shotVideo",
-    "shotFrameImage"
+    "shotVideo"
   ].includes(String(kind || "").trim())
     ? 70 * 1024 * 1024
     : 32 * 1024 * 1024;
@@ -2861,6 +2365,7 @@ async function handleProductionStateRequest(pathname, body = {}) {
         httpStatus: 403
       });
     }
+    assertBrowserCommittableArtifact(body);
     return productionStateStore.commitArtifact(body);
   }
   if (pathname === "/api/production/package/seal") {
@@ -3013,6 +2518,44 @@ async function storyEntryDialogueCheck(body = {}) {
     fullStory: currentContent(`fullStory:${variantId}`),
     animationPlan: currentContent(`animationPlan:${variantId}`)
   });
+}
+
+// 2026-10-11 起只支持 4.0 自主分镜。读 Plan 的任务与路由遇到旧 2.0（首尾帧）/3.0（direct_shot）
+// Plan 一律 409，照实报出版本，不当成 4.0 读取、不静默降级；重新生成 4.0 分镜（animationPlan 任务）
+// 不读当前 Plan，不受这道守卫影响。判定只有一份，在 public/storyboard-plan.js。
+function assertSupportedAnimationPlan(plan) {
+  const version = legacyAnimationPlanVersion(plan);
+  if (!version) return plan;
+  throw new ProductionStateError(legacyAnimationPlanMessage(version), {
+    code: ANIMATION_PLAN_VERSION_UNSUPPORTED,
+    httpStatus: 409,
+    details: [{ promptSchemaVersion: version }]
+  });
+}
+
+// 浏览器通用提交口：拒收旧版 Animation Plan（与上面的消费守卫同一口径），也拒收新的首尾帧
+// 出图产物 shotFrame:*（首尾帧出图已删除；磁盘上已有的旧产物不动、不读）。
+function assertBrowserCommittableArtifact(body = {}) {
+  const artifactId = normalizeArtifactId(body.artifactId);
+  const artifactType = String(body.artifactType || "").trim();
+  if (artifactId.startsWith("shotFrame:") || artifactType === "shotFrame") {
+    throw new ProductionStateError("首尾帧出图已于 2026-10-11 删除，不再接受 shotFrame 产物。", {
+      code: "SHOT_FRAME_ARTIFACT_UNSUPPORTED",
+      httpStatus: 400,
+      details: [{ artifactId, artifactType }]
+    });
+  }
+  if (artifactType !== "animationPlan" && !artifactId.startsWith("animationPlan:")) return true;
+  const content = body.content;
+  if (!content || typeof content !== "object" || Array.isArray(content)) {
+    throw new ProductionStateError(`Animation Plan 内容必须是 ${STORYBOARD_PLAN_VERSION} 自主分镜对象。`, {
+      code: ANIMATION_PLAN_VERSION_UNSUPPORTED,
+      httpStatus: 400,
+      details: [{ artifactId }]
+    });
+  }
+  assertSupportedAnimationPlan(content);
+  return true;
 }
 
 function isStoryEntryRun(run) {
@@ -3198,11 +2741,9 @@ function storyEntryAnimationPlanInput(run, input, variantId) {
     creatorProfile: entry.creatorProfile,
     characterExpressionRules: input.characterExpressionRules,
     artStyle: input.artStyle,
-    animationPlanMode: input.animationPlanMode || "direct_shot",
     animationPlanVersion: input.animationPlanVersion,
     targetAspectRatio: input.targetAspectRatio,
     backgroundMusicEnabled: input.backgroundMusicEnabled,
-    videoPromptTarget: input.videoPromptTarget,
     includeCompilerMetadata: input.includeCompilerMetadata !== false,
     modelOverrides: input.modelOverrides,
     __storyEntry: storyEntryContextPayload(entry),
@@ -3292,6 +2833,9 @@ async function prepareOneSentenceEdit(body, mode) {
       artifactId, expectedRevision: baseRevision, actualRevision: current.lineage.revision
     }]);
   }
+  // 改分镜读的就是当前 Plan：与其它读 Plan 的路由同一道版本守卫，旧 2.0/3.0 Plan 在这里 409。
+  // 改剧情不读 Plan（只会让它过期），与重新生成分镜一样不受这道守卫影响。
+  if (target === "storyboard") assertSupportedAnimationPlan(current.content);
   await assertNoActiveOneSentenceEditTasks({ projectId, runId, run, target, artifactId, variantId, shotId });
 
   const planId = `animationPlan:${variantId}`;
@@ -3301,6 +2845,7 @@ async function prepareOneSentenceEdit(body, mode) {
   if (target === "shotPrompt") {
     // 提示词的校验只看分镜与这一镜（与写提示词时同一套），不涉及剧情和角色边界。
     const plan = requireCurrentArtifact(run, planId);
+    assertSupportedAnimationPlan(plan.content);
     if (current.content?.planDigest !== plan.lineage.contentDigest) {
       throw oneSentenceEditBaseChanged(`${label}对应的不是当前分镜，请先在镜头视频弹窗里重新写提示词`, [{ artifactId }]);
     }
@@ -3480,7 +3025,6 @@ async function storyEntryAnimationPlan(body, { request, storyEntry }) {
   return animationPromptCapture.run({
     route: "/api/animation-plan",
     variantId: STORY_ENTRY_VARIANT_ID,
-    animationPlanMode: body?.animationPlanMode,
     provider: String(body?.modelOverrides?.animationPlan?.provider || stageDefaults.animationPlan.provider || ""),
     traceContext: await animationPlanModelOutputTrace(request, body, STORY_ENTRY_VARIANT_ID)
   }, () => workflow.createAnimationPlanWithMetadata(body, { storyEntry }));
@@ -3565,6 +3109,8 @@ async function resolveProductionMediaContext(body = {}, { required = false } = {
       }]
     });
   }
+  // 镜头视频与角色参考图都从这里取 Plan：旧 2.0/3.0 Plan 在动任何媒体之前就 409。
+  assertSupportedAnimationPlan(currentEntry.content);
   const namespaceSegments = mediaNamespace.split("/").map((segment) => safeIdentifier(segment, "mediaNamespace"));
   if (namespaceSegments.length !== 3) {
     throw new ProductionStateError("mediaNamespace 格式无效", {
@@ -3630,31 +3176,6 @@ function stripReferenceImageData(value = {}) {
   return copy;
 }
 
-async function generatedPublicUrlToDataUrl(urlValue) {
-  const url = new URL(String(urlValue || ""), "http://localhost");
-  if (!url.pathname.startsWith("/generated-images/")) {
-    throw new ProductionStateError("生成图片 URL 不属于受信输出目录", {
-      code: "GENERATED_IMAGE_PATH_INVALID",
-      httpStatus: 500
-    });
-  }
-  const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
-  const file = path.resolve(publicDir, relative);
-  const allowedRoot = path.resolve(publicDir, "generated-images");
-  if (file !== allowedRoot && !file.startsWith(`${allowedRoot}${path.sep}`)) {
-    throw new ProductionStateError("生成图片路径越界", {
-      code: "GENERATED_IMAGE_PATH_INVALID",
-      httpStatus: 500
-    });
-  }
-  const data = await fs.readFile(file);
-  const extension = path.extname(file).toLowerCase();
-  const mimeType = extension === ".png" ? "image/png"
-    : extension === ".webp" ? "image/webp"
-      : "image/jpeg";
-  return `data:${mimeType};base64,${data.toString("base64")}`;
-}
-
 async function streamCharacterReferenceImages(request, response) {
   response.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -3693,20 +3214,19 @@ async function streamCharacterReferenceImages(request, response) {
     if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
     const count = Math.max(1, Math.min(config.jimeng.maxImages, Math.round(Number(body.count) || 1)));
     const imageModel = modelOverrideFor(body, "imageGeneration") || config.jimeng.model;
-    // 浏览器正常总会送 prompt（用户可编辑）；这里是它为空时的回退，同样要带上
-    // 全片视觉锁定，否则角色图会在不知道全片风格的情况下生成。
+    // 浏览器正常总会送 prompt（用户可编辑）；这里是它为空时的回退，画风取 4.0 分镜签发的
+    // productionStrategy.artStyle（与浏览器预览同一份模板）。
     const prompt = String(body.prompt || "").trim()
       || buildCharacterReferenceImagePrompt(
         body.characterReference,
         count,
-        body.animationPlan?.visualBible || body.visualBible || null,
         {
           withReferenceImage: Boolean(body.referenceImageDataUrl),
           artStyle: body.animationPlan?.productionStrategy?.artStyle
         }
       );
     // 角色参考图是用户可改写提示词的环节：边界偏差只提醒，不阻断本次生成。
-    // 成片渲染链路（/api/generate-shot-video、旧 v2 首尾帧）仍然硬失败。
+    // 成片渲染链路（/api/generate-shot-video）仍然硬失败。
     const boundaryWarnings = [
       characterReferenceBoundaryMismatch(body.characterReference, visualGuardrails),
       characterPromptBoundaryMismatch(prompt, visualGuardrails, {
@@ -3782,7 +3302,8 @@ async function legacyCharacterImageTaskInput(body) {
     "variantId"
   );
   const run = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
-  const plan = requireCurrentArtifact(run, planArtifactId).content;
+  // 读任何 Plan 字段（角色参考项、画风）之前先拦旧版分镜：旧 Plan 一律 409，不因角色对不上先报 400。
+  const plan = assertSupportedAnimationPlan(requireCurrentArtifact(run, planArtifactId).content);
   let roleIndex = Number(body.roleIndex);
   if (!Number.isInteger(roleIndex) || roleIndex < 0) {
     const characterName = String(body.characterReference?.characterName || "").trim();
@@ -3799,7 +3320,7 @@ async function legacyCharacterImageTaskInput(body) {
     roleIndex,
     count,
     prompt: String(body.prompt || "").trim()
-      || buildCharacterReferenceImagePrompt(characterReference, count, plan.visualBible || null, {
+      || buildCharacterReferenceImagePrompt(characterReference, count, {
         withReferenceImage: Boolean(body.referenceImageDataUrl),
         artStyle: plan.productionStrategy?.artStyle
       })
@@ -3850,159 +3371,6 @@ async function streamDurableCharacterImageTask(initialTask, send, response, prom
   });
 }
 
-async function generateShotFrameImage(body = {}) {
-  const visualGuardrails = workflow.assertGlobalCharacterBoundary(body);
-  if (String(body.animationPromptSchemaVersion || "").trim() === ANIMATION_DIRECT_PROMPT_SCHEMA_VERSION) {
-    // 暂时弃置，后续优化或删除：direct_shot 禁止进入旧首尾帧图片生成路径，旧 v2 实现保留在下方。
-    throw new InputError("promptSchemaVersion=3.0 的 direct_shot 镜头不生成首尾帧");
-  }
-  if (!jimengClient) throw new JimengImageConfigError("未配置即梦文生图服务。请在 .env 中设置 JIMENG_API_KEY。");
-  const frameKind = body.frameKind === "end" ? "end" : "start";
-  const shot = body.shot || {};
-  ensureCharacterReferencesMatchBoundary(body.characterReferences, visualGuardrails, shot);
-  const frameReferenceMode = String(body.frameReferenceMode || "").trim();
-  if (frameReferenceMode && frameKind !== "end") {
-    throw new InputError("frameReferenceMode 只允许用于尾帧生成");
-  }
-  const endpointReferences = normalizeEndpointReferenceImages(body.referenceImages, {
-    frameKind,
-    frameReferenceMode,
-    shotId: shot.shotId
-  });
-  if (frameReferenceMode) {
-    ensureFrameReferenceModeCompatibility(shot, frameReferenceMode, {
-      hasStartFrame: endpointReferences.length === 1,
-      hasStartFrameReference: endpointReferences.length === 1
-    });
-  }
-  let manifest;
-  try {
-    manifest = await buildFrameReferenceManifest({
-      frameKind: frameReferenceMode ? frameKind : "start",
-      frameReferenceMode: frameReferenceMode || undefined,
-      endpointReference: endpointReferences[0] || null,
-      characterReferences: body.characterReferences,
-      maxProviderImages: 6
-    });
-  } catch (error) {
-    if (error instanceof InputError) throw error;
-    throw new InputError(error.message || "参考图清单无效");
-  }
-  const negativePromptDelivery = compileShotFrameNegativePrompt(shot);
-  const basePrompt = String(body.prompt || "").trim() || buildShotFrameImagePrompt({
-    frameKind,
-    shot,
-    visualBible: body.visualBible,
-    characterReferences: body.characterReferences,
-    sceneReference: body.sceneReference,
-    referenceManifest: manifest,
-    frameReferenceMode
-  });
-  const prompt = appendMissingLines(basePrompt, [
-    ...frameReferenceManifestPromptLines(manifest, frameReferenceMode, {
-      shot,
-      frameKind,
-      sceneReference: body.sceneReference
-    }),
-    ...negativePromptDelivery.positiveConstraints
-  ]);
-  let authoritativeDependencyHash = "";
-  try {
-    authoritativeDependencyHash = frameReferenceMode
-      ? await computeDependencyHash({
-        startImageDataUrl: manifest.endpointReference?.dataUrl || "",
-        endState: shot.endFrame,
-        referenceImages: manifest.additionalReferences,
-        frameReferenceMode
-      })
-      : "";
-  } catch (error) {
-    throw new InputError(error.message || "尾帧依赖哈希无法计算");
-  }
-  if (frameReferenceMode) assertFrameDependencyHash(body.dependencyHash, authoritativeDependencyHash);
-  const count = clampFrameImageCount(body.count);
-  const providerPrompt = buildShotFrameMultiImagePrompt(prompt, count);
-  ensureCharacterPromptMatchesBoundary(providerPrompt, visualGuardrails, {
-    requireRequiredTraits: false,
-    promptScope: "multi_character"
-  });
-  const authoritativePromptHash = frameReferenceMode ? await computePromptHash(providerPrompt) : "";
-  const imageModel = modelOverrideFor(body, "imageGeneration") || config.jimeng.model;
-  const productionMedia = await resolveProductionMediaContext(body, { required: false });
-  const uploadedReferences = manifest.providerImages.map((item) => item.dataUrl);
-  const images = [];
-  const requestReceipt = await jimengClient.generateImagesStream({
-    count,
-    prompt: providerPrompt,
-    referenceImageDataUrls: uploadedReferences,
-    model: imageModel,
-    negativePromptDelivery
-  }, async (event) => {
-    if (event.type === "image_generation.partial_succeeded") {
-      images.push(await persistGeneratedImage(event, {
-        characterName: `${shot.shotId || "shot"}-${frameKind}-frame`
-      }, productionMedia));
-    }
-    if (event.type === "image_generation.partial_failed") {
-      throw new JimengImageProviderError(event.error?.message || event.error?.code || "镜头帧图片生成失败", JSON.stringify(event.error || {}));
-    }
-    if (event.error) throw new JimengImageProviderError(event.error?.message || "镜头帧图片生成失败", JSON.stringify(event.error || {}));
-  });
-  const image = images[0];
-  if (!image) throw new JimengImageProviderError("即梦没有返回可用的镜头帧图片");
-  if (images.length !== count) {
-    throw new JimengImageProviderError(
-      `镜头帧图片数量不足：请求 ${count} 张，实际返回 ${images.length} 张`,
-      JSON.stringify({ requested: count, actual: images.length })
-    );
-  }
-  return {
-    frameKind,
-    shotId: shot.shotId || "",
-    prompt,
-    providerPrompt,
-    model: imageModel,
-    url: image.url,
-    filename: image.filename,
-    size: image.size || "",
-    count,
-    actualCount: images.length,
-    images: images.map((item) => ({
-      url: item.url,
-      filename: item.filename,
-      size: item.size || "",
-      model: imageModel,
-      referenceImageCount: uploadedReferences.length,
-      ...(frameReferenceMode ? {
-        frameReferenceMode,
-        dependencyHash: authoritativeDependencyHash,
-        promptHash: authoritativePromptHash,
-        usedStartFrameReference: Boolean(manifest.endpointReference?.usedByProvider)
-      } : {})
-    })),
-    referenceImageCount: uploadedReferences.length,
-    referenceImageManifest: manifest.providerImages.map(({ index, token, role, contentHash, characterName = "", sourceShotId = "" }) => ({
-      index,
-      token,
-      role,
-      contentHash,
-      characterName,
-      sourceShotId
-    })),
-    ...(frameReferenceMode ? {
-      frameReferenceMode,
-      dependencyHash: authoritativeDependencyHash,
-      promptHash: authoritativePromptHash,
-      usedStartFrameReference: Boolean(manifest.endpointReference?.usedByProvider),
-      clientPromptHashMatched: !body.promptHash || body.promptHash === authoritativePromptHash
-    } : {}),
-    negativePromptDelivery: requestReceipt?.negativePromptDelivery || {},
-    requestPreview: requestReceipt?.requestPreview || {},
-    generatedAt: new Date().toISOString()
-  };
-}
-
-
 function ensureCharacterReferencesMatchBoundary(characterReferences, visualGuardrails, shot = {}) {
   const references = Array.isArray(characterReferences) ? characterReferences : [];
   const boundaryName = String(visualGuardrails?.fixedCharacterBoundary?.characterName || "").trim();
@@ -4014,40 +3382,11 @@ function ensureCharacterReferencesMatchBoundary(characterReferences, visualGuard
   references.forEach((reference) => ensureCharacterReferenceMatchesBoundary(reference, visualGuardrails));
 }
 
+// 原来还先看 v2 的 startFrame/endFrame 结构化角色与首尾帧提示词。4.0 镜头行受严格 Schema 约束，
+// 没有这四个键（投影出的视频镜头同样没有），所以对 4.0 只剩下面两项，结果不变。
 function shotShowsCharacter(shot, characterName) {
-  const structuredNames = [
-    ...(shot?.startFrame?.characters || []),
-    ...(shot?.endFrame?.characters || [])
-  ].map((character) => String(character?.name || "").trim());
-  if (structuredNames.length) return structuredNames.includes(characterName);
-  return [shot?.startFramePrompt, shot?.endFramePrompt, shot?.videoPrompt, shot?.characterAction]
+  return [shot?.videoPrompt, shot?.characterAction]
     .some((value) => String(value || "").includes(characterName));
-}
-
-function frameReferenceManifestPromptLines(manifest = {}, frameReferenceMode = "", context = {}) {
-  const bindings = Array.isArray(manifest.promptBindings) ? manifest.promptBindings : [];
-  const lines = bindings.map((binding) => `${binding.token}：${binding.description}`);
-  const modeText = buildFrameReferenceModeText({
-    shot: context.shot,
-    frameKind: context.frameKind,
-    frameReferenceMode,
-    referenceManifest: manifest,
-    sceneReference: context.sceneReference
-  });
-  return [...lines, ...String(modeText || "").split("\n").map((line) => line.trim()).filter(Boolean)];
-}
-
-function appendMissingLines(prompt, lines = []) {
-  const additions = (Array.isArray(lines) ? lines : [])
-    .map((line) => String(line || "").trim())
-    .filter((line) => line && !String(prompt || "").includes(line));
-  return additions.length ? [String(prompt || "").trim(), ...additions].filter(Boolean).join("\n") : String(prompt || "").trim();
-}
-
-function clampFrameImageCount(value) {
-  const number = Math.round(Number(value));
-  if (!Number.isFinite(number)) return 1;
-  return Math.min(6, Math.max(1, number));
 }
 
 async function persistGeneratedImage(event, characterReference = {}, productionMedia = null) {
@@ -4115,9 +3454,11 @@ function json(response, status, body) {
 
 function streamErrorPayload(error = {}, fallbackMessage, extra = {}) {
   const source = error && typeof error === "object" ? error : {};
-  const stage = inferCompilerErrorStage(source) || String(source.stage || "");
+  // 原来先用 inferCompilerErrorStage 识别编译器错误；三个编译器已删除，能走到这里的错误都只剩
+  // 自带的 stage。状态码与 metadata 的判定照搬原来 server-error.js 里那两个函数，逐字不变。
+  const stage = String(source.stage || "");
   const status = streamErrorStatus(source, stage);
-  const metadata = compilerErrorMetadata(source);
+  const metadata = streamErrorMetadata(source);
   return {
     type: "error",
     ...extra,
@@ -4130,11 +3471,16 @@ function streamErrorPayload(error = {}, fallbackMessage, extra = {}) {
   };
 }
 
-function streamErrorStatus(error = {}, compilerStage = "") {
+function streamErrorStatus(error = {}, stage = "") {
   const explicitStatus = Number(error.status || error.statusCode);
   if (Number.isInteger(explicitStatus) && explicitStatus >= 400 && explicitStatus <= 599) return explicitStatus;
   if (error instanceof ProductionStateError) return error.httpStatus;
-  if (compilerStage) return compilerErrorStatus(error);
+  if (stage) {
+    const category = String(error.category || error.details?.category || error.metadata?.category || "protocol").toLowerCase();
+    if (category === "config" || category === "input") return 400;
+    if (category === "timeout") return 504;
+    return 502;
+  }
   if (
     error instanceof InputError
     || error instanceof JimengImageConfigError
@@ -4142,6 +3488,16 @@ function streamErrorStatus(error = {}, compilerStage = "") {
   ) return 400;
   if (error.name === "AbortError" || error.name === "TimeoutError") return 504;
   return 502;
+}
+
+function streamErrorMetadata(error = {}) {
+  if (error.metadata && typeof error.metadata === "object" && !Array.isArray(error.metadata)) {
+    return sanitizePublicMetadata(error.metadata);
+  }
+  if (error.details?.metadata && typeof error.details.metadata === "object" && !Array.isArray(error.details.metadata)) {
+    return sanitizePublicMetadata(error.details.metadata);
+  }
+  return null;
 }
 
 function mime(extension) {

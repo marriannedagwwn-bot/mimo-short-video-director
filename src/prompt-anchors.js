@@ -43,14 +43,6 @@ function lineIndexContainingExactlyOnce(lines, needle, label) {
   return hits[0];
 }
 
-// 整行替换：找到唯一包含 needle 的那一行，把整行换成 replacementLine。
-// 用于行内有动态插值（例如目标时长）、无法逐字写出完整锚点的情况。
-export function replaceLineContainingExactlyOnce(text, needle, replacementLine, label = "提示词") {
-  const lines = String(text).split("\n");
-  lines[lineIndexContainingExactlyOnce(lines, needle, label)] = String(replacementLine);
-  return lines.join("\n");
-}
-
 // 逐字截出唯一包含 needle 的那一行（不含换行符）。
 export function extractLineContainingExactlyOnce(text, needle, label = "提示词") {
   const lines = String(text).split("\n");
@@ -69,13 +61,6 @@ function sectionBounds(source, startAnchor, endAnchor, label) {
   const end = source.indexOf(endAnchor);
   if (end <= start) throw new PromptAnchorError(`${label}：段落结束锚点必须在开始锚点之后`);
   return { start, end };
-}
-
-// 把 startAnchor（含）到 endAnchor（不含）之间的整段换掉。
-export function replaceSectionExactlyOnce(text, startAnchor, endAnchor, replacement, label = "提示词") {
-  const source = String(text);
-  const { start, end } = sectionBounds(source, startAnchor, endAnchor, label);
-  return source.slice(0, start) + String(replacement) + source.slice(end);
 }
 
 // 逐字截出 startAnchor（含）到 endAnchor（不含）之间的整段。

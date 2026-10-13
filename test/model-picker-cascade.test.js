@@ -57,9 +57,11 @@ test("providers with a single series, or only one model per series, stay a flat 
   assert.equal(app.modelSeriesNeedsCascade(app.modelSeriesGroups("Seedance", "shotVideo", [
     "doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615"
   ])), false);
-  const kling = app.modelSeriesGroups("Kling", "shotVideo", ["kling-v3", "kling-v2-1"]);
-  assert.deepEqual(plain(kling).map((group) => group.label), ["Kling V3", "Kling V2.1"]);
-  assert.equal(app.modelSeriesNeedsCascade(kling), false);
+  assert.equal(app.modelSeriesNeedsCascade(app.modelSeriesGroups("MiniMax", "shotVideo", ["MiniMax-H3"])), false);
+  // 每个系列都只有一个型号。原来用可灵 V3 / V2.1 举例，可灵已于 2026-10-11 删除。
+  const oneEach = app.modelSeriesGroups("Qwen", "analysis", ["qwen-vl-max-latest", "qwen-omni-turbo-latest"]);
+  assert.deepEqual(plain(oneEach).map((group) => group.label), ["Qwen VL", "Qwen Omni"]);
+  assert.equal(app.modelSeriesNeedsCascade(oneEach), false);
 });
 
 test("every stage renders a picker trigger showing the selected model next to the hidden select", async () => {

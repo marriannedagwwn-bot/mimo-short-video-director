@@ -50,7 +50,7 @@ async function storySlotApp(options = {}) {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-test("从真实页面状态取数：参考视频入口的候选、选中的故事、旧版生产包都认得出来", async () => {
+test("从真实页面状态取数：参考视频入口的候选、选中的故事、4.0 分镜与旧版分镜都认得出来", async () => {
   const app = await readyApp({ story: true, plan: true });
   app.state.production.artifacts = {
     themeVariants: currentLineage("themeVariants"),
@@ -64,12 +64,30 @@ test("从真实页面状态取数：参考视频入口的候选、选中的故�
   assert.equal(facts.chosenVariantId, "V2");
   assert.equal(facts.pipeline.done, true);
   assert.equal(facts.story.exists, true);
-  assert.equal(facts.plan.isStoryboard, false);
-  // 默认镜头视频模型是可灵，写不了 4.0 单镜提示词。
-  assert.equal(facts.models.videoSupportsStoryboard, false);
-  const progress = app.directorAgentProgressNow();
-  assert.match(progress.waitingFor, /旧版/u);
+  // 夹具里是 4.0 分镜：照常当成分镜读出镜头与角色，没有旧版版本号。
+  assert.equal(facts.legacyPlanVersion, "");
+  assert.deepEqual(facts.plan.shots.map((shot) => shot.shotId), app.fixture.animationPlan.shotPlan.map((shot) => shot.shotId));
+  assert.deepEqual(facts.plan.roles.map((role) => role.name), app.fixture.animationPlan.characterReferencePrompts.map((row) => row.characterName));
+  // 镜头视频只剩 Seedance / MiniMax，没选过时兜底 Seedance（2026-10-11 之前兜底是可灵）。
+  assert.match(facts.models.video, /^Seedance/u);
+  assert.equal(Object.hasOwn(facts.models, "videoSupportsStoryboard"), false);
   assert.equal(JSON.stringify(facts).includes("data:image"), false, "不读计划里的图片数据");
+
+  // 旧版分镜（2.0/3.0，2026-10-11 起不再支持）：不当成分镜，只报实际版本，文案按版本写。
+  app.state.animationPlans.V2 = { promptSchemaVersion: "3.0", selectedVariantId: "V2", productionStrategy: { targetAspectRatio: "9:16" },
+    shotPlan: [{ shotId: "A01" }], characterReferencePrompts: [{ characterName: "固定主角", referenceImageDataUrl: "data:image/png;base64,AA==" }] };
+  const legacy = app.directorAgentFacts();
+  assert.equal(legacy.plan, null);
+  assert.equal(legacy.legacyPlanVersion, "3.0");
+  assert.equal(JSON.stringify(legacy).includes("data:image"), false, "不读旧计划里的图片数据");
+  const progress = app.directorAgentProgressNow();
+  // 有下一步时 waitingFor 照常为空，按版本写的说明进 notes。
+  assert.equal(progress.waitingFor, "");
+  assert.deepEqual(progress.notes, ["这是旧版 3.0 分镜，已不再支持（只支持 4.0 自主分镜）。请重新生成分镜。"]);
+  assert.equal(progress.next.key, "generateStoryboard:V2");
+  assert.equal(progress.next.label, "重新生成分镜");
+  app.state.animationPlans.V2 = { ...app.state.animationPlans.V2, promptSchemaVersion: "2.0" };
+  assert.match(app.directorAgentProgressNow().notes[0], /^这是旧版 2\.0 分镜/u);
 });
 
 test("4.0 分镜：角色先于镜头；没有出过参考图的角色、没有视频的镜头都在清单里", async () => {

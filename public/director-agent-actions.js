@@ -19,7 +19,6 @@ export const DIRECTOR_AGENT_ACTIONS = Object.freeze({
   generateStoryboard: Object.freeze({ modelSelectable: true }),
   openCharacterImages: Object.freeze({ modelSelectable: true }),
   openShotVideo: Object.freeze({ modelSelectable: true }),
-  openModelSettings: Object.freeze({ modelSelectable: true }),
   // 一句话修改（2026-10-11，第三期）：模型能选，但从不作为「下一步」主动提出、也不做成按钮——
   // 只在用户自己说要改什么时由模型对上。卡片带用户的原话，确认后另起一次调用按原话写修改稿。
   editStory: Object.freeze({ modelSelectable: true, editTarget: "story" }),

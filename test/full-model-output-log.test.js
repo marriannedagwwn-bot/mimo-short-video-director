@@ -248,10 +248,10 @@ test("日志目录不可写时 fail-open 并只产生脱敏告警", async (t) =>
 });
 
 
-// 2026-09-07：后三个是 2026-09-04 之后新增的阶段，此前一个都没注册 writer，
+// 2026-09-07：最后一个（连同已删除的分镜终审、定向修订）是 2026-09-04 之后新增的阶段，此前一个都没注册 writer，
 // 于是终审失败时模型原文永久丢失、只能靠反推。scope 取值必须逐字等于 stage 名——
 // writer map 按 scope 建、按 stage 查，对不上就静默不写，是最难发现的那种失效。
-test("阶段模型输出日志接受十个工作流 scope，非法 scope 仍拒绝", () => {
+test("阶段模型输出日志接受八个工作流 scope，非法 scope 仍拒绝", () => {
   for (const scope of [
     MODEL_OUTPUT_LOG_SCOPES.ANALYSIS,
     MODEL_OUTPUT_LOG_SCOPES.RECONSTRUCTION,
@@ -260,9 +260,7 @@ test("阶段模型输出日志接受十个工作流 scope，非法 scope 仍拒�
     MODEL_OUTPUT_LOG_SCOPES.VISUAL_GUARDRAILS,
     MODEL_OUTPUT_LOG_SCOPES.CHARACTER_REFERENCE,
     MODEL_OUTPUT_LOG_SCOPES.STORY_CANDIDATE_REVIEW,
-    MODEL_OUTPUT_LOG_SCOPES.STORY_QUALITY_REVIEW,
-    MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVIEW,
-    MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVISION
+    MODEL_OUTPUT_LOG_SCOPES.STORY_QUALITY_REVIEW
   ]) {
     const writer = new FullModelOutputLogWriter({ scope, outputRoot: "" });
     assert.equal(writer.scope, scope);
@@ -270,12 +268,17 @@ test("阶段模型输出日志接受十个工作流 scope，非法 scope 仍拒�
     assert.equal(writer.enabled, false);
   }
   assert.throws(() => new FullModelOutputLogWriter({ scope: "notAStage" }), TypeError);
+  // 分镜终审与定向修订已随旧 3.0 分镜删除（2026-10-11），它们的 scope 一并去掉，按非法 scope 拒绝。
+  for (const scope of ["animationPlanReview", "animationPlanRevision"]) {
+    assert.throws(() => new FullModelOutputLogWriter({ scope }), TypeError, scope);
+  }
 });
 
 // 这三个 scope 的取值就是 workflow 里的 stage 字符串。写错一个字母不会报错，
 // 只会让那个阶段永远查不到 writer——正是本次要修的失效模式，所以逐字锁住。
-test("三个新 scope 的取值逐字等于 stage 名", () => {
+// 另两个（animationPlanReview / animationPlanRevision）已随旧 3.0 分镜删除（2026-10-11）。
+test("新 scope 的取值逐字等于 stage 名", () => {
   assert.equal(MODEL_OUTPUT_LOG_SCOPES.STORY_QUALITY_REVIEW, "storyQualityReview");
-  assert.equal(MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVIEW, "animationPlanReview");
-  assert.equal(MODEL_OUTPUT_LOG_SCOPES.ANIMATION_PLAN_REVISION, "animationPlanRevision");
+  assert.equal(Object.hasOwn(MODEL_OUTPUT_LOG_SCOPES, "ANIMATION_PLAN_REVIEW"), false);
+  assert.equal(Object.hasOwn(MODEL_OUTPUT_LOG_SCOPES, "ANIMATION_PLAN_REVISION"), false);
 });

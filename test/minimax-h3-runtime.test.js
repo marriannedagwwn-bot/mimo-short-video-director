@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { executeGenericHttpWorker } from "../workers/generic-http-worker.mjs";
-import { describeProviderError, providerErrorDisplayText } from "../src/provider-error-codes.js";
+import { describeProviderError } from "../src/provider-error-codes.js";
 
 // MiniMax H3 仍是镜头视频供应商，只是不再有专属提示词方言。
 // 这里覆盖的是供应商运行时限额：时长、Prompt 长度、混合参考数量。
@@ -286,8 +286,10 @@ test("输出内容审核拦截能查到官方码表并给出可执行提示", as
     assert.match(error.message, /output new_sensitive/u);   // 原文保留
     const described = describeProviderError({ provider: "MiniMax", payload: error.message });
     assert.equal(described?.code, "1027");
-    assert.match(providerErrorDisplayText(described), /输出内容涉敏被拦截/u);
-    assert.match(providerErrorDisplayText(described), /换一个表述重新生成/u);
+    // 原来经 providerErrorDisplayText（只有测试在用，2026-10-11 删除）拼成一句再匹配；
+    // 页面实际显示的那句由 public/compiler-observability.js 的 providerErrorText 用同样两段拼出。
+    assert.match(described.title, /输出内容涉敏被拦截/u);
+    assert.match(described.guidance, /换一个表述重新生成/u);
     return true;
   });
 });

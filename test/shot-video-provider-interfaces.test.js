@@ -1,15 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  assertNoRemovedVideoHttpConfig,
   isShotVideoGenerationModeSupported,
   isShotVideoModelAllowed,
-  KLING_CN_V3_ENDPOINT,
   MINIMAX_H3_ENDPOINT,
   MINIMAX_VIDEO_MODELS,
+  normalizeShotVideoGenerationMode,
+  normalizeShotVideoProvider,
   SEEDANCE_VIDEO_MODELS,
   shotVideoDefaultSetting,
   shotVideoProviderCatalog,
@@ -21,112 +25,8 @@ const closeServer = (server) => new Promise((resolve, reject) => {
   server.close((error) => error ? reject(error) : resolve());
 });
 
-test("Kling 3.0 国内官方 API 使用新版首尾帧、Bearer API Key 和 tasks 轮询协议", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "kling-v3-interface-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  let postedBody = null;
-  let pollRequestUrl = "";
-  let authorization = "";
-  const provider = http.createServer(async (request, response) => {
-    if (request.method === "POST" && request.url === "/image-to-video/kling-3.0") {
-      const chunks = [];
-      for await (const chunk of request) chunks.push(chunk);
-      postedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      authorization = request.headers.authorization || "";
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({
-        code: 0,
-        data: { id: "kling-v3-task", status: "submitted" }
-      }));
-      return;
-    }
-    if (request.method === "GET" && request.url?.startsWith("/tasks?")) {
-      pollRequestUrl = request.url;
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({
-        code: 0,
-        data: [{
-          id: "kling-v3-task",
-          status: "succeeded",
-          outputs: [{
-            type: "video",
-            url: `http://127.0.0.1:${provider.address().port}/media/kling-v3.mp4`
-          }]
-        }]
-      }));
-      return;
-    }
-    if (request.url === "/media/kling-v3.mp4") {
-      response.writeHead(200, { "content-type": "video/mp4" });
-      response.end("kling v3 video bytes");
-      return;
-    }
-    response.writeHead(404);
-    response.end("not found");
-  });
-  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
-  t.after(() => closeServer(provider));
-
-  const port = provider.address().port;
-  const configPath = path.join(root, "provider.json");
-  const startPath = path.join(root, "start.png");
-  const endPath = path.join(root, "end.png");
-  const outputPath = path.join(root, "output.mp4");
-  const startFrameBytes = Buffer.alloc(300, 1);
-  await Promise.all([
-    fs.writeFile(startPath, startFrameBytes),
-    fs.writeFile(endPath, "end image bytes"),
-    fs.writeFile(configPath, JSON.stringify({
-      videoEndpoint: `http://127.0.0.1:${port}/image-to-video/kling-3.0`,
-      providerPreset: "kling_3_0_image_to_video",
-      videoModel: "kling-v3",
-      apiKey: "test-key",
-      pollIntervalMs: 1,
-      pollTimeoutMs: 1000,
-      resolution: "1080p",
-      audio: "native",
-      multiShot: false
-    }))
-  ]);
-
-  const receipt = await executeGenericHttpWorker({
-    config: configPath,
-    request: videoRequest({
-      provider: "Kling",
-      model: "kling-v3",
-      startPath,
-      endPath,
-      durationSeconds: 12
-    }),
-    output: outputPath,
-    root
-  });
-
-  assert.equal(postedBody.contents[0].type, "prompt");
-  assert.equal(postedBody.contents[1].type, "first_frame");
-  assert.equal(postedBody.contents[2].type, "last_frame");
-  assert.equal(postedBody.contents[1].url, startFrameBytes.toString("base64"));
-  assert.deepEqual(postedBody.settings, {
-    multi_shot: false,
-    audio: "native",
-    resolution: "1080p",
-    duration: 12
-  });
-  assert.deepEqual(postedBody.options, { watermark_info: { enabled: false } });
-  assert.equal(Object.hasOwn(postedBody, "model_name"), false);
-  assert.equal(Object.hasOwn(postedBody, "negative_prompt"), false);
-  assert.equal(Object.hasOwn(postedBody, "aspect_ratio"), false);
-  assert.equal(authorization, "Bearer test-key");
-  assert.equal(pollRequestUrl, "/tasks?task_ids=kling-v3-task");
-  assert.equal(await fs.readFile(outputPath, "utf8"), "kling v3 video bytes");
-  assert.equal(receipt.videoProvider, "Kling");
-  assert.equal(receipt.providerTaskId, "kling-v3-task");
-  assert.equal(receipt.audioRequested, true);
-  assert.equal(receipt.negativePromptDelivery.appliedMode, "not_supported");
-  assert.match(receipt.requestPreview.body.contents[1].url, /^\[REDACTED_BASE64 length=\d+\]$/u);
-});
-
-test("Seedance 2.0 使用方舟首尾帧角色、默认音画同生和完整终态", async (t) => {
+// 2026-10-11 删除首尾帧模式后，Seedance 的方舟任务轮询、默认音画同生与终态处理由全能参考请求覆盖。
+test("Seedance 2.0 全能参考走方舟任务轮询、默认音画同生和完整终态", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "seedance-v2-interface-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   let postedBody = null;
@@ -163,12 +63,10 @@ test("Seedance 2.0 使用方舟首尾帧角色、默认音画同生和完整终�
 
   const port = provider.address().port;
   const configPath = path.join(root, "provider.json");
-  const startPath = path.join(root, "start.png");
-  const endPath = path.join(root, "end.png");
+  const imagePath = path.join(root, "character.png");
   const outputPath = path.join(root, "output.mp4");
   await Promise.all([
-    fs.writeFile(startPath, "start image bytes"),
-    fs.writeFile(endPath, "end image bytes"),
+    fs.writeFile(imagePath, "character image bytes"),
     fs.writeFile(configPath, JSON.stringify({
       videoEndpoint: `http://127.0.0.1:${port}/api/v3/contents/generations/tasks`,
       providerPreset: "modelark_content_generation",
@@ -182,21 +80,20 @@ test("Seedance 2.0 使用方舟首尾帧角色、默认音画同生和完整终�
 
   const receipt = await executeGenericHttpWorker({
     config: configPath,
-    request: videoRequest({
+    request: allReferenceVideoRequest({
       provider: "Seedance",
       model: "doubao-seedance-2-0-260128",
-      startPath,
-      endPath,
-      durationSeconds: 6
+      durationSeconds: 6,
+      artifacts: [{ path: imagePath, mediaType: "image", role: "reference_image" }]
     }),
     output: outputPath,
     root
   });
 
   assert.equal(postedBody.model, "doubao-seedance-2-0-260128");
-  assert.equal(postedBody.content[0].type, "text");
-  assert.equal(postedBody.content[1].role, "first_frame");
-  assert.equal(postedBody.content[2].role, "last_frame");
+  assert.deepEqual(postedBody.content.map((item) => item.role || item.type), ["text", "reference_image"]);
+  assert.equal(postedBody.content[0].text, "参考人物身份、动作节奏和声音氛围生成新镜头。");
+  assert.equal(postedBody.content.some((item) => ["first_frame", "last_frame"].includes(item.role)), false);
   assert.equal(postedBody.generate_audio, true);
   assert.equal(postedBody.duration, 6);
   assert.equal(postedBody.resolution, "720p");
@@ -219,22 +116,18 @@ test("Seedance 越界时长明确失败，不再静默 clamp 到 4 秒", async (
     apiKey: "seedance-key",
     providerPreset: "modelark_content_generation"
   }));
-  const startPath = path.join(root, "start.png");
-  const endPath = path.join(root, "end.png");
-  await Promise.all([
-    fs.writeFile(startPath, Buffer.from("start")),
-    fs.writeFile(endPath, Buffer.from("end"))
-  ]);
+  const imagePath = path.join(root, "character.png");
+  await fs.writeFile(imagePath, Buffer.from("image"));
+  const artifacts = [{ path: imagePath, mediaType: "image", role: "reference_image" }];
 
   // 3 秒低于 Seedance 的 4 秒下限：旧行为悄悄补成 4 秒，现在必须明确失败。
   await assert.rejects(() => executeGenericHttpWorker({
     config: configPath,
-    request: videoRequest({
+    request: allReferenceVideoRequest({
       provider: "Seedance",
       model: "doubao-seedance-2-0-260128",
-      startPath,
-      endPath,
-      durationSeconds: 3
+      durationSeconds: 3,
+      artifacts
     }),
     output: path.join(root, "out.mp4"),
     root
@@ -242,12 +135,11 @@ test("Seedance 越界时长明确失败，不再静默 clamp 到 4 秒", async (
 
   await assert.rejects(() => executeGenericHttpWorker({
     config: configPath,
-    request: videoRequest({
+    request: allReferenceVideoRequest({
       provider: "Seedance",
       model: "doubao-seedance-2-0-260128",
-      startPath,
-      endPath,
-      durationSeconds: 16
+      durationSeconds: 16,
+      artifacts
     }),
     output: path.join(root, "out.mp4"),
     root
@@ -316,7 +208,7 @@ test("Seedance 2.0 全能参考使用 reference_image/video/audio 且不混入�
   assert.equal(
     postedBody.content[0].text,
     tutorialStyleVideoPrompt,
-    "direct_shot.videoPrompt 必须作为一条完整提示词原样进入 Seedance"
+    "镜头视频提示词必须作为一条完整提示词原样进入 Seedance"
   );
   assert.equal(postedBody.content.some((item) => ["first_frame", "last_frame"].includes(item.role)), false);
   assert.match(postedBody.content[1].image_url.url, /^data:image\/png;base64,/u);
@@ -352,11 +244,9 @@ test("Seedance expired/cancelled 都是终态，且当前官方三个 Model ID �
   t.after(() => closeServer(provider));
 
   const configPath = path.join(root, "provider.json");
-  const startPath = path.join(root, "start.png");
-  const endPath = path.join(root, "end.png");
+  const imagePath = path.join(root, "character.png");
   await Promise.all([
-    fs.writeFile(startPath, "start image bytes"),
-    fs.writeFile(endPath, "end image bytes"),
+    fs.writeFile(imagePath, "character image bytes"),
     fs.writeFile(configPath, JSON.stringify({
       videoEndpoint: `http://127.0.0.1:${provider.address().port}/api/v3/contents/generations/tasks`,
       providerPreset: "modelark_content_generation",
@@ -369,18 +259,18 @@ test("Seedance expired/cancelled 都是终态，且当前官方三个 Model ID �
 
   await assert.rejects(() => executeGenericHttpWorker({
     config: configPath,
-    request: videoRequest({
+    request: allReferenceVideoRequest({
       provider: "Seedance",
       model: "doubao-seedance-2-0-260128",
-      startPath,
-      endPath
+      artifacts: [{ path: imagePath, mediaType: "image", role: "reference_image" }]
     }),
     output: path.join(root, "output.mp4"),
     root
   }), /供应商任务失败：expired/u);
 });
 
-test("MiniMax H3 使用 V2 多模态首尾帧、Bearer 鉴权和 task.content.url 轮询协议", async (t) => {
+// 2026-10-11 删除首尾帧模式后，MiniMax H3 的 V2 接口、Bearer 鉴权与 task.content.url 轮询由全能参考请求覆盖。
+test("MiniMax H3 全能参考使用 V2 多模态接口、Bearer 鉴权和 task.content.url 轮询协议", async (t) => {
   assert.deepEqual(MINIMAX_VIDEO_MODELS, ["MiniMax-H3"]);
   assert.equal(isShotVideoModelAllowed("MiniMax", "MiniMax-H3"), true);
   assert.equal(isShotVideoModelAllowed("MiniMax", "MiniMax-Hailuo-2.3"), false);
@@ -435,12 +325,10 @@ test("MiniMax H3 使用 V2 多模态首尾帧、Bearer 鉴权和 task.content.ur
 
   const port = provider.address().port;
   const configPath = path.join(root, "provider.json");
-  const startPath = path.join(root, "start.png");
-  const endPath = path.join(root, "end.png");
+  const imagePath = path.join(root, "character.png");
   const outputPath = path.join(root, "output.mp4");
   await Promise.all([
-    fs.writeFile(startPath, "start image bytes"),
-    fs.writeFile(endPath, "end image bytes"),
+    fs.writeFile(imagePath, "character image bytes"),
     fs.writeFile(configPath, JSON.stringify({
       videoEndpoint: `http://127.0.0.1:${port}/v2/video_generation`,
       providerPreset: "minimax_h3_video_generation",
@@ -453,46 +341,25 @@ test("MiniMax H3 使用 V2 多模态首尾帧、Bearer 鉴权和 task.content.ur
     }))
   ]);
 
-  const request = videoRequest({
-    provider: "MiniMax",
-    model: "MiniMax-H3",
-    startPath,
-    endPath,
-    durationSeconds: 4
-  });
-  request.negativePromptEntries = [
-    {
-      text: "猫耳",
-      enabled: true,
-      reasonCode: "explicit_identity_conflict",
-      priority: "high"
-    },
-    {
-      text: "不要出现额外人物",
-      enabled: true,
-      reasonCode: "identity_conflict",
-      priority: "medium"
-    }
-  ];
-  request.compiledNegativePrompt = "猫耳；不要出现额外人物";
   const receipt = await executeGenericHttpWorker({
     config: configPath,
-    request,
+    request: allReferenceVideoRequest({
+      provider: "MiniMax",
+      model: "MiniMax-H3",
+      durationSeconds: 4,
+      artifacts: [{ path: imagePath, mediaType: "image", role: "reference_image" }]
+    }),
     output: outputPath,
     root
   });
 
   assert.equal(postedBody.model, "MiniMax-H3");
-  assert.equal(postedBody.content[0].type, "text");
-  assert.match(postedBody.content[0].text, /固定角色身份锁定/u);
-  assert.doesNotMatch(postedBody.content[0].text, /猫耳|额外人物/u);
-  assert.equal(postedBody.content[1].role, "first_frame");
-  assert.equal(postedBody.content[2].role, "last_frame");
+  assert.deepEqual(postedBody.content.map((item) => item.role || item.type), ["text", "reference_image"]);
+  assert.equal(postedBody.content[0].text, "参考人物身份、动作节奏和声音氛围生成新镜头。", "提示词原样发送，不追加任何约束句");
   assert.match(postedBody.content[1].image_url.url, /^data:image\/png;base64,/u);
-  assert.match(postedBody.content[2].image_url.url, /^data:image\/png;base64,/u);
   assert.equal(postedBody.duration, 4);
   assert.equal(postedBody.resolution, "2K");
-  assert.equal(postedBody.ratio, "adaptive");
+  assert.equal(postedBody.ratio, "9:16");
   assert.equal(postedBody.aigc_watermark, false);
   assert.equal(Object.hasOwn(postedBody, "negative_prompt"), false);
   assert.equal(authorization, "Bearer test-key");
@@ -502,8 +369,7 @@ test("MiniMax H3 使用 V2 多模态首尾帧、Bearer 鉴权和 task.content.ur
   assert.equal(receipt.providerTaskId, "minimax-h3-task");
   assert.equal(receipt.audioRequested, true);
   assert.equal(receipt.audioOutputMode, "native");
-  assert.equal(receipt.negativePromptDelivery.appliedMode, "positive_constraint");
-  assert.deepEqual(receipt.negativePromptDelivery.ignored.map((item) => item.text), ["不要出现额外人物"]);
+  assert.equal(Object.hasOwn(receipt, "negativePromptDelivery"), false, "负面词体系已删除，回执不再带下发结果");
   assert.match(receipt.requestPreview.body.content[1].image_url.url, /^\[REDACTED_DATA_URL length=\d+\]$/u);
 });
 
@@ -570,159 +436,219 @@ test("MiniMax H3 全能参考允许单张参考图并拒绝仅音频输入", asy
   }), /不能只输入音频/u);
 });
 
-test("Kling 3.0 锁定国内官方 endpoint，不继承海外、Legacy endpoint、token 或 provider config", () => {
-  const runtime = shotVideoRuntimeConfig("Kling", {
-    KLING_V3_ENDPOINT: "https://api-singapore.klingai.com/image-to-video/kling-3.0",
-    KLING_VIDEO_ENDPOINT: "https://api-singapore.klingai.com",
-    KLING_API_KEY: "domestic-api-key",
-    KLING_V3_API_KEY: "model-specific-key",
-    VIDEO_HTTP_VIDEO_ENDPOINT: "https://legacy.example.com/v1",
-    VIDEO_HTTP_API_KEY: "legacy-token",
-    VIDEO_HTTP_CONFIG: "/legacy/provider.json",
-    VIDEO_HTTP_VIDEO_MODEL: "kling-v2-1"
-  }, "kling-v3");
+// ---- 2026-10-11：镜头视频只剩 Seedance 与 MiniMax 的全能参考 ----
+// 可灵（Kling v3 / v2.1）与自定义 VideoHTTP 只支持首尾帧，随首尾帧模式一起删除。
+// 这里锁住「删掉的东西不会被悄悄接住」：默认兜底 Seedance，点名已删除的供应商、首尾帧能力都明确失败。
 
-  assert.equal(runtime.endpoint, KLING_CN_V3_ENDPOINT);
-  assert.equal(runtime.apiKey, "domestic-api-key");
-  assert.equal(runtime.configPath, "");
-  assert.equal(runtime.providerPreset, "kling_3_0_image_to_video");
-  assert.equal(runtime.audio, "native");
+test("没有显式配置时镜头视频兜底 Seedance；目录与供应商名里不再有可灵和 VideoHTTP", () => {
+  const seedanceDefault = { provider: "Seedance", model: "doubao-seedance-2-0-260128" };
+  assert.deepEqual(shotVideoDefaultSetting({}), seedanceDefault);
+  // 原来只配了可灵的旧环境变量时兜底是可灵；这些变量已不再读取，兜底改为 Seedance。
+  // （VIDEO_HTTP_CONFIG 不在此列：它还会改变 Seedance / MiniMax 的请求体，见下一条，明确失败。）
+  assert.deepEqual(shotVideoDefaultSetting({ KLING_API_KEY: "kling-key", KLING_VIDEO_MODEL: "kling-v3" }), seedanceDefault);
+  assert.deepEqual(Object.keys(shotVideoProviderCatalog({})), ["Seedance", "MiniMax"]);
+  for (const name of ["Kling", "kling", "可灵", "VideoHTTP", "videohttp"]) assert.equal(normalizeShotVideoProvider(name), "", name);
+  assert.equal(isShotVideoModelAllowed("Kling", "kling-v3"), false);
+  assert.equal(isShotVideoModelAllowed("VideoHTTP", "custom-video-model"), false);
 });
 
-test("Kling 3.0 provider config 明确拒绝新加坡 endpoint", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "kling-v3-overseas-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const configPath = path.join(root, "provider.json");
-  await fs.writeFile(configPath, JSON.stringify({
-    videoEndpoint: "https://api-singapore.klingai.com/image-to-video/kling-3.0",
-    providerPreset: "kling_3_0_image_to_video",
-    videoModel: "kling-v3",
-    apiKey: "overseas-key"
-  }));
+const REMOVED_PROVIDER_HINT = "可灵（Kling）与自定义 VideoHTTP 已于 2026-10-11 删除，请把 .env 里的 SHOT_VIDEO_PROVIDER 改成 Seedance 或 MiniMax";
 
-  await assert.rejects(() => executeGenericHttpWorker({
-    config: configPath,
-    request: videoRequest({
-      provider: "Kling",
-      model: "kling-v3",
-      startPath: path.join(root, "start.png"),
-      endPath: path.join(root, "end.png")
-    }),
-    output: path.join(root, "output.mp4"),
-    root
-  }), /仅支持国内官方 api-beijing\.klingai\.com/u);
+test("SHOT_VIDEO_PROVIDER 还写着已删除的 Kling / VideoHTTP 时明确失败，不悄悄改用 Seedance", () => {
+  for (const name of ["Kling", "VideoHTTP"]) {
+    assert.throws(
+      () => shotVideoDefaultSetting({ SHOT_VIDEO_PROVIDER: name }),
+      (error) => error.message === `SHOT_VIDEO_PROVIDER=${name} 不受支持：${REMOVED_PROVIDER_HINT}。`
+    );
+    assert.throws(
+      () => shotVideoRuntimeConfig(name, {}),
+      new RegExp(`不支持镜头视频供应商「${name}」：只支持 Seedance 或 MiniMax`, "u")
+    );
+  }
+  assert.deepEqual(shotVideoDefaultSetting({ SHOT_VIDEO_PROVIDER: "MiniMax" }), { provider: "MiniMax", model: "MiniMax-H3" });
 });
 
-test("旧 provider.json-only 路由保持 generic，未校验配置文件不谎报 reachable", () => {
-  assert.deepEqual(shotVideoDefaultSetting({
-    VIDEO_HTTP_CONFIG: "/custom/provider.json"
-  }), {
-    provider: "VideoHTTP",
-    model: ""
+// 起服务时 server.js 在模块顶层就算默认模型阶段（buildModelStages → shotVideoDefaultSetting），
+// 所以 .env 里还写着已删除的供应商会让启动直接失败，与 DEFAULT_LLM_PROVIDER 指定的那家没配置时同规格。
+// 在空的临时目录里起子进程：不读任何 .env、不继承凭据，端口预留，失败前不会开始监听。
+async function startServerExpectingFailure(t, env) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "removed-shot-video-provider-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const reserved = http.createServer();
+  await new Promise((resolve) => reserved.listen(0, "127.0.0.1", resolve));
+  const port = reserved.address().port;
+  await closeServer(reserved);
+  let output = "";
+  const child = spawn(process.execPath, [fileURLToPath(new URL("../server.js", import.meta.url))], {
+    cwd: directory,
+    env: {
+      PATH: process.env.PATH,
+      PORT: String(port),
+      NODE_ENV: "test",
+      WORKFLOW_PRODUCTION_STATE_DIR: path.join(directory, "production"),
+      ...env
+    },
+    stdio: ["ignore", "pipe", "pipe"]
   });
+  child.stdout.on("data", (chunk) => { output += chunk; });
+  child.stderr.on("data", (chunk) => { output += chunk; });
+  const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+  const code = await new Promise((resolve) => child.once("exit", resolve));
+  clearTimeout(timer);
+  return { code, output };
+}
 
-  const kling = shotVideoProviderCatalog({
-    KLING_V3_CONFIG: "/unverified/kling-v3.json",
-    KLING_VIDEO_MODEL: "kling-v3"
-  }).Kling;
-  assert.equal(kling.configured, true);
-  assert.equal(kling.reachable, false);
-  assert.equal(kling.status, 0);
+test("服务启动：SHOT_VIDEO_PROVIDER 写着已删除的可灵 / VideoHTTP 时启动失败，并说明要改成 Seedance 或 MiniMax", async (t) => {
+  for (const name of ["Kling", "VideoHTTP"]) {
+    const { code, output } = await startServerExpectingFailure(t, { SHOT_VIDEO_PROVIDER: name });
+    assert.notEqual(code, 0, output);
+    assert.ok(output.includes(`SHOT_VIDEO_PROVIDER=${name} 不受支持：${REMOVED_PROVIDER_HINT}。`), output);
+    assert.equal(output.includes("http://localhost:"), false, "失败前不得开始监听");
+  }
 });
 
-test("自定义 HTTP 的同名 v2 路径不会被误判为 MiniMax H3", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "custom-v2-video-generation-"));
+// 原来没给 Seedance / MiniMax 单独配置文件时，worker 会改读 VIDEO_HTTP_CONFIG 并把它合并进这两家的请求
+// （例如 watermark、generateAudio），没写 SHOT_VIDEO_PROVIDER 时默认供应商也会变成 VideoHTTP。
+// 不再读取它之后，悄悄忽略会让请求体与配置不符，所以启动、默认值与 worker 都明确失败。
+test("VIDEO_HTTP_CONFIG 还配着时明确失败：启动、默认值与 worker 都不悄悄忽略它", async (t) => {
+  const message = /VIDEO_HTTP_CONFIG 只用于已删除的自定义 VideoHTTP 供应商，已不再读取：可灵（Kling）与自定义 VideoHTTP 已于 2026-10-11 删除。请从 \.env 删掉 VIDEO_HTTP_CONFIG；Seedance \/ MiniMax 的配置文件请写在 SEEDANCE_VIDEO_CONFIG \/ MINIMAX_VIDEO_CONFIG。/u;
+  assert.doesNotThrow(() => assertNoRemovedVideoHttpConfig({}));
+  assert.doesNotThrow(() => assertNoRemovedVideoHttpConfig({ VIDEO_HTTP_CONFIG: "  " }));
+  for (const env of [
+    { VIDEO_HTTP_CONFIG: "/custom/provider.json" },
+    { VIDEO_HTTP_CONFIG: "/custom/provider.json", SHOT_VIDEO_PROVIDER: "Seedance", SEEDANCE_API_KEY: "k" },
+    { VIDEO_HTTP_CONFIG: "/custom/provider.json", MINIMAX_API_KEY: "k" }
+  ]) {
+    assert.throws(() => shotVideoDefaultSetting(env), message, JSON.stringify(env));
+  }
+
+  const startup = await startServerExpectingFailure(t, { VIDEO_HTTP_CONFIG: "/custom/provider.json" });
+  assert.notEqual(startup.code, 0, startup.output);
+  assert.match(startup.output, message);
+
+  // worker：只用环境变量配了 Seedance、没传 --config 时，原来会读 VIDEO_HTTP_CONFIG。现在在任何供应商调用之前失败。
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "video-http-config-worker-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  let postedBody = null;
-  const provider = http.createServer(async (request, response) => {
-    if (request.method === "POST" && request.url === "/v2/video_generation") {
-      const chunks = [];
-      for await (const chunk of request) chunks.push(chunk);
-      postedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({
-        mediaUrl: `http://127.0.0.1:${provider.address().port}/media/custom.mp4`
-      }));
-      return;
-    }
-    if (request.url === "/media/custom.mp4") {
-      response.writeHead(200, { "content-type": "video/mp4" });
-      response.end("custom video bytes");
-      return;
-    }
-    response.writeHead(404);
-    response.end("not found");
+  let providerCalls = 0;
+  const provider = http.createServer((request, response) => {
+    providerCalls += 1;
+    response.writeHead(500);
+    response.end();
   });
   await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
   t.after(() => closeServer(provider));
+  const legacyConfigPath = path.join(root, "videohttp.json");
+  await fs.writeFile(legacyConfigPath, JSON.stringify({ watermark: true, generateAudio: false }));
+  const imagePath = path.join(root, "reference.png");
+  await fs.writeFile(imagePath, Buffer.from("89504e470d0a1a0a", "hex"));
+  const saved = Object.fromEntries(["VIDEO_HTTP_CONFIG", "SEEDANCE_API_KEY", "SEEDANCE_VIDEO_ENDPOINT"].map((key) => [key, process.env[key]]));
+  t.after(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  process.env.VIDEO_HTTP_CONFIG = legacyConfigPath;
+  process.env.SEEDANCE_API_KEY = "seedance-key";
+  process.env.SEEDANCE_VIDEO_ENDPOINT = `http://127.0.0.1:${provider.address().port}/api/v3/contents/generations/tasks`;
+  await assert.rejects(() => executeGenericHttpWorker({
+    request: allReferenceVideoRequest({
+      provider: "Seedance",
+      model: "doubao-seedance-2-0-260128",
+      artifacts: [{ path: imagePath, mediaType: "image", role: "reference_image" }]
+    }),
+    output: path.join(root, "out.mp4"),
+    root
+  }), message);
+  assert.equal(providerCalls, 0);
+});
 
-  const configPath = path.join(root, "provider.json");
-  const startPath = path.join(root, "start.png");
-  const endPath = path.join(root, "end.png");
-  const outputPath = path.join(root, "output.mp4");
+test("generationMode 只认全能参考：first_last_frame、空值与未知值都不回落成任何默认模式", () => {
+  for (const value of ["all_reference", "all-reference", "reference", "r2v", " ALL_REFERENCE "]) {
+    assert.equal(normalizeShotVideoGenerationMode(value), "all_reference", value);
+  }
+  for (const value of ["first_last_frame", "", undefined, null, "image_to_video"]) {
+    assert.equal(normalizeShotVideoGenerationMode(value), null, String(value));
+  }
+  assert.equal(isShotVideoGenerationModeSupported("Seedance", "first_last_frame"), false);
+  assert.equal(isShotVideoGenerationModeSupported("MiniMax", ""), false);
+});
+
+test("worker 不接受已删除的供应商、首尾帧能力与自定义请求体模板，在发请求之前就明确失败", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "worker-removed-routes-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  let providerRequests = 0;
+  const provider = http.createServer((request, response) => {
+    providerRequests += 1;
+    response.writeHead(500);
+    response.end("不应收到任何请求");
+  });
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  t.after(() => closeServer(provider));
+  const base = `http://127.0.0.1:${provider.address().port}`;
+  const imagePath = path.join(root, "character.png");
+  const seedanceConfig = path.join(root, "seedance.json");
+  const templateConfig = path.join(root, "template.json");
+  const customConfig = path.join(root, "custom.json");
   await Promise.all([
-    fs.writeFile(startPath, "start image bytes"),
-    fs.writeFile(endPath, "end image bytes"),
-    fs.writeFile(configPath, JSON.stringify({
-      videoEndpoint: `http://127.0.0.1:${provider.address().port}/v2/video_generation`,
+    fs.writeFile(imagePath, "character image bytes"),
+    fs.writeFile(seedanceConfig, JSON.stringify({
+      videoEndpoint: `${base}/api/v3/contents/generations/tasks`,
+      providerPreset: "modelark_content_generation",
+      videoModel: "doubao-seedance-2-0-260128",
+      apiKey: "test-key"
+    })),
+    fs.writeFile(templateConfig, JSON.stringify({
+      videoEndpoint: `${base}/api/v3/contents/generations/tasks`,
+      providerPreset: "modelark_content_generation",
+      videoModel: "doubao-seedance-2-0-260128",
+      apiKey: "test-key",
+      bodyTemplate: { prompt: "{{prompt}}" }
+    })),
+    // 原来会当成自定义 VideoHTTP 的配置：同名 /v2/video_generation 路径但不在 MiniMax 官方域名下。
+    fs.writeFile(customConfig, JSON.stringify({
+      videoEndpoint: `${base}/v2/video_generation`,
       videoModel: "custom-video-model"
     }))
   ]);
-
-  await executeGenericHttpWorker({
-    config: configPath,
-    request: videoRequest({
-      provider: "VideoHTTP",
-      model: "custom-video-model",
-      startPath,
-      endPath
-    }),
-    output: outputPath,
+  const artifacts = [{ path: imagePath, mediaType: "image", role: "reference_image" }];
+  const run = (config, request) => executeGenericHttpWorker({
+    config,
+    request,
+    output: path.join(root, "output.mp4"),
     root
   });
 
-  assert.equal(postedBody.taskId, "VideoHTTP-test");
-  assert.equal(Object.hasOwn(postedBody, "content"), false);
-  assert.equal(await fs.readFile(outputPath, "utf8"), "custom video bytes");
+  for (const name of ["Kling", "VideoHTTP"]) {
+    await assert.rejects(
+      () => run(seedanceConfig, allReferenceVideoRequest({ provider: name, model: "kling-v3", artifacts })),
+      new RegExp(`不支持镜头视频供应商「${name}」：worker 只支持 Seedance 或 MiniMax`, "u")
+    );
+  }
+  await assert.rejects(
+    () => run(seedanceConfig, {
+      ...allReferenceVideoRequest({ provider: "Seedance", model: "doubao-seedance-2-0-260128", artifacts }),
+      capability: "first_last_frame_video_generation"
+    }),
+    /worker 只支持 all_reference_video_generation（Seedance 2\.0 \/ MiniMax H3 全能参考），本次请求为 first_last_frame_video_generation；首尾帧等其他能力已删除/u
+  );
+  await assert.rejects(
+    () => run(templateConfig, allReferenceVideoRequest({ provider: "Seedance", model: "doubao-seedance-2-0-260128", artifacts })),
+    /bodyTemplate \/ bodyTemplates 只用于已删除的自定义 VideoHTTP 供应商/u
+  );
+  await assert.rejects(
+    () => run(customConfig, { ...allReferenceVideoRequest({ provider: "", model: "", artifacts }) }),
+    /worker 请求没有指定供应商，配置里的 videoModel \/ providerPreset 也认不出是 Seedance 还是 MiniMax/u
+  );
+  assert.equal(providerRequests, 0, "被拒的请求一个都没有发到供应商");
 });
-
-function videoRequest({
-  provider,
-  model,
-  startPath,
-  endPath,
-  durationSeconds = 5
-}) {
-  return {
-    taskId: `${provider}-test`,
-    capability: "first_last_frame_video_generation",
-    outputKey: "preview.test",
-    provider,
-    model,
-    prompt: "女孩看向镜头并说：你好。",
-    negativePromptEntries: [{
-      text: "不要出现额外人物",
-      enabled: true,
-      reasonCode: "identity_conflict",
-      priority: "medium"
-    }],
-    compiledNegativePrompt: "不要出现额外人物",
-    inputArtifacts: [
-      { path: startPath, outputKey: "frames.test.start", status: "done" },
-      { path: endPath, outputKey: "frames.test.end", status: "done" }
-    ],
-    parameters: {
-      aspectRatio: "9:16",
-      durationSeconds
-    }
-  };
-}
 
 function allReferenceVideoRequest({
   provider,
   model,
   artifacts,
   aspectRatio = "9:16",
+  durationSeconds = 5,
   prompt = "参考人物身份、动作节奏和声音氛围生成新镜头。"
 }) {
   return {
@@ -739,7 +665,7 @@ function allReferenceVideoRequest({
     })),
     parameters: {
       aspectRatio,
-      durationSeconds: 5,
+      durationSeconds,
       generationMode: "all_reference"
     }
   };

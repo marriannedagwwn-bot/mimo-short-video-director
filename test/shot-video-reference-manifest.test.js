@@ -7,7 +7,7 @@ import {
   buildReferenceManifestText,
   SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
 } from "../src/shot-video-continuity.js";
-import { generateShotVideo } from "../src/shot-video-generator.js";
+import { generateShotVideo, ShotVideoConfigError } from "../src/shot-video-generator.js";
 
 const VIDEO_DIGEST = "b".repeat(64);
 const NO_MUSIC_SENTENCE = "全片无背景音乐，只保留现场环境声与动作声。";
@@ -34,14 +34,6 @@ test("参考素材清单按媒体类型编号，并把连续同源素材合并�
   assert.match(manifest, /参考视频1 是用户上传的参考素材/u);
   assert.equal(manifest.startsWith("本次提供的参考素材："), true);
   assert.equal(manifest.endsWith("。"), true);
-
-  // 首尾帧作为普通参考时有独立措辞，不会被说成上一镜抽帧。
-  const endpoints = buildReferenceManifestText([
-    image({ source: "workflow_start_frame" }),
-    image({ source: "workflow_end_frame" })
-  ]);
-  assert.match(endpoints, /参考图1 是本镜已选的首帧画面/u);
-  assert.match(endpoints, /参考图2 是本镜已选的尾帧画面/u);
 
   // 未知媒体类型不参与编号，也不产生条目。
   assert.equal(buildReferenceManifestText([{ mediaType: "model", source: "upload" }]), "");
@@ -164,8 +156,10 @@ test("all_reference 生成把清单前置到 videoPrompt，且不改写 Plan 原
   assert.equal(providerRequest.prompt, result.effectiveVideoPrompt);
 });
 
-test("first_last_frame 路径不生成清单，提示词逐字等于 Plan 原值", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-manifest-flf-"));
+// 2026-10-11 删除首尾帧（first_last_frame）模式后，镜头视频只剩全能参考。请求带了别的模式或没带模式，
+// 都要在建工作目录、调用 worker 之前明确失败，不悄悄改写成全能参考去生成。
+test("镜头视频只接受全能参考：first_last_frame 或缺省模式在调用 worker 之前明确失败", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-mode-guard-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const configPath = path.join(root, "provider.json");
   await fs.writeFile(configPath, JSON.stringify({
@@ -175,33 +169,29 @@ test("first_last_frame 路径不生成清单，提示词逐字等于 Plan 原值
     apiKey: "test-key"
   }));
   const dataUrl = `data:image/png;base64,${Buffer.from("frame").toString("base64")}`;
-  let providerRequest = null;
-  const result = await generateShotVideo({
+  let workerCalls = 0;
+  const base = {
     configPath,
     outputRoot: path.join(root, "generated-videos"),
     publicBasePath: "/generated-videos/test",
     videoProvider: "Seedance",
     videoModel: "doubao-seedance-2-0-260128",
-    generationMode: "first_last_frame",
-    startFrameDataUrl: dataUrl,
-    endFrameDataUrl: dataUrl,
-    workerRunner: async ({ request, output, receipt }) => {
-      providerRequest = JSON.parse(await fs.readFile(request, "utf8"));
-      await fs.writeFile(output, Buffer.alloc(600, 3));
-      await fs.writeFile(receipt, JSON.stringify({ ok: true }));
-    },
+    referenceAssets: [{ mediaType: "image", name: "ref.png", dataUrl, source: "upload" }],
+    workerRunner: async () => { workerCalls += 1; },
     videoOutputProbe: async () => {},
-    shot: {
-      shotId: "A02",
-      durationSeconds: 5,
-      videoPrompt: "小白子从画左走到画右。",
-      startFramePrompt: "起幅",
-      endFramePrompt: "落幅"
-    }
-  });
-  assert.equal(result.referenceManifest, "");
-  assert.equal(result.effectiveVideoPrompt, "小白子从画左走到画右。");
-  assert.equal(providerRequest.prompt, "小白子从画左走到画右。");
+    shot: { shotId: "A02", durationSeconds: 5, videoPrompt: "小白子从画左走到画右。" }
+  };
+  for (const generationMode of ["first_last_frame", "", undefined]) {
+    await assert.rejects(
+      () => generateShotVideo({ ...base, generationMode, startFrameDataUrl: dataUrl, endFrameDataUrl: dataUrl }),
+      (error) => error instanceof ShotVideoConfigError
+        && /镜头视频只支持全能参考（all_reference）模式/u.test(error.message)
+        && /不会改用其他模式/u.test(error.message),
+      String(generationMode)
+    );
+  }
+  assert.equal(workerCalls, 0, "被拒的请求不得调用 worker");
+  await assert.rejects(fs.access(path.join(root, "generated-videos")), "被拒的请求不建输出目录");
 });
 
 // 实测 MiniMax H3 请求 5 秒稳定产出 5.167 秒（9/9 完全一致），请求 4 秒得 4.458 秒。
@@ -218,7 +208,6 @@ test("成片实际时长与 Plan 要求时长并列上报，偏差不再静默�
     videoProvider: "MiniMax",
     videoModel: "MiniMax-H3",
     generationMode: "all_reference",
-    animationPromptSchemaVersion: "3.0",
     configPath: await (async () => {
       const configPath = path.join(root, "provider.json");
       await fs.writeFile(configPath, JSON.stringify({

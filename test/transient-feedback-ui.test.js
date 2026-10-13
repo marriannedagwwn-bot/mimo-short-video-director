@@ -50,22 +50,6 @@ for (const action of ["saveModelSettings", "resetModelSettings"]) {
   });
 }
 
-test("reopening model settings retains a still-running prompt rewrite and its disabled actions", async () => {
-  const app = await loadAppUi({ story: true, plan: true });
-  app.state.animationPromptRewriting = true;
-  app.elements.saveModelSettings.disabled = true;
-  app.elements.resetModelSettings.disabled = true;
-  app.setModelSettingsStatus("正在重写当前视频提示词…", "active");
-  const plan = app.state.animationPlans.V2;
-  app.closeModelSettings();
-  app.openModelSettings();
-  assert.equal(app.elements.modelSettingsStatus.textContent, "正在重写当前视频提示词…");
-  assert.equal(app.elements.modelSettingsStatus.className, "story-status active");
-  assert.equal(app.elements.saveModelSettings.disabled, true);
-  assert.equal(app.elements.resetModelSettings.disabled, true);
-  assert.equal(app.state.animationPlans.V2, plan);
-});
-
 test("a package confirmation survives repeat rendering of the same Story context", async () => {
   const app = await loadAppUi({ story: true, plan: true });
   app.renderStoryPage();

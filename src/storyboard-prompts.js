@@ -1,5 +1,5 @@
 // 时长预算行与 storyboard-contract.js 的硬闸门共用同一份常量。
-// 提示词里再写一遍字面量必然漂移，模型会被要求做 A、却按 B 被拒（AGENTS.md §2.14）。
+// 提示词里再写一遍字面量必然漂移，模型会被要求做 A、却按 B 被拒（已删除的分镜定向修订记过这个教训，见历史文档 docs/animation-plan-revision-实施计划.md）。
 import { DIRECT_SHOT_MAX_DURATION_SECONDS, DIRECT_SHOT_MIN_DURATION_SECONDS } from "./shot-duration-limits.js";
 import { replaceExactlyOnce } from "./prompt-anchors.js";
 

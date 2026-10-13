@@ -16,7 +16,6 @@
 // - MiniMax：https://platform.minimaxi.com/docs/api-reference/errorcode
 //            https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create
 // - 火山方舟 Ark（Seedance / 即梦共用）：https://www.volcengine.com/docs/82379/1359411
-// - 可灵 Kling：https://www.klingai.com/document-api/api/get-started/error-codes
 // - 阿里云百炼 DashScope（Qwen）：https://help.aliyun.com/zh/model-studio/error-code
 // - DeepSeek：https://api-docs.deepseek.com/quick_start/error_codes
 // - 小米 MiMo：https://mimo.mi.com/docs/zh-CN/api/guidance/error-codes
@@ -25,7 +24,6 @@ export const PROVIDER_ERROR_DOC_URLS = Object.freeze({
   MiniMax: "https://platform.minimaxi.com/docs/api-reference/errorcode",
   Seedance: "https://www.volcengine.com/docs/82379/1359411",
   Jimeng: "https://www.volcengine.com/docs/82379/1359411",
-  Kling: "https://www.klingai.com/document-api/api/get-started/error-codes",
   Qwen: "https://help.aliyun.com/zh/model-studio/error-code",
   DeepSeek: "https://api-docs.deepseek.com/quick_start/error_codes",
   MiMo: "https://mimo.mi.com/docs/zh-CN/api/guidance/error-codes"
@@ -77,31 +75,6 @@ const ARK_CODES = Object.freeze({
   ModelLoadingError: entry("模型正在加载", "稍等片刻再重试。", true),
   ServerOverloaded: entry("火山方舟服务资源紧张", "稍后重试。", true),
   InternalServiceError: entry("火山方舟内部错误", "稍后重试；持续失败请联系火山引擎支持。", true)
-});
-
-// 可灵：HTTP 状态码 + 业务码共同定位，业务码是数字。
-const KLING_CODES = Object.freeze({
-  1000: entry("身份验证失败", "检查可灵 AccessKey / SecretKey 配置。"),
-  1001: entry("Authorization 为空", "请求没有携带鉴权头，检查可灵密钥配置。"),
-  1002: entry("Authorization 值非法", "检查可灵 JWT 的签发算法与密钥是否正确。"),
-  1003: entry("Authorization 未到生效时间", "检查签发 JWT 时的 nbf 与本机时钟是否同步。"),
-  1004: entry("Authorization 已过期", "重新签发可灵 JWT；令牌有效期很短，需要每次调用前生成。"),
-  1100: entry("可灵账户异常", "前往可灵控制台确认账户状态。"),
-  1101: entry("可灵账户欠费", "前往可灵控制台充值后重试。"),
-  1102: entry("资源包已用完或已过期", "在可灵控制台续购资源包后重试。"),
-  1103: entry("无权限访问该资源", "确认当前账号已开通所调用的模型或能力。"),
-  1200: entry("请求参数非法", "对照可灵接口文档检查参数。"),
-  1201: entry("参数取值错误", "检查参数名与取值是否符合可灵接口文档。"),
-  1202: entry("请求方法无效", "检查调用的 HTTP method 是否正确。"),
-  1203: entry("请求的资源不存在", "检查任务 ID 或接口路径是否正确。"),
-  1300: entry("触发平台策略", "内容或调用方式触发了可灵平台策略，检查后重试。"),
-  1301: entry("触发内容安全策略", "调整提示词中可能触发内容安全的表述后重试。"),
-  1302: entry("API 请求过快", "降低请求频率后重试。", true),
-  1303: entry("并发或 QPS 超限", "降低并发数后重试。", true),
-  1304: entry("触发 IP 白名单策略", "在可灵控制台把当前出口 IP 加入白名单。"),
-  5000: entry("可灵服务器内部错误", "稍后重试。", true),
-  5001: entry("可灵服务暂时不可用", "稍后重试。", true),
-  5002: entry("可灵服务内部超时", "稍后重试。", true)
 });
 
 // 阿里云百炼 DashScope（Qwen 走 compatible-mode，两种码都可能出现）。
@@ -169,7 +142,6 @@ const PROVIDER_CODE_TABLES = Object.freeze({
   MiniMax: MINIMAX_CODES,
   Seedance: ARK_CODES,
   Jimeng: ARK_CODES,
-  Kling: KLING_CODES,
   Qwen: DASHSCOPE_CODES,
   DeepSeek: Object.freeze({}),
   MiMo: Object.freeze({})
@@ -188,8 +160,6 @@ const PROVIDER_ALIASES = Object.freeze({
   doubao: "Seedance",
   jimeng: "Jimeng",
   即梦: "Jimeng",
-  kling: "Kling",
-  可灵: "Kling",
   qwen: "Qwen",
   dashscope: "Qwen",
   deepseek: "DeepSeek",
@@ -229,7 +199,7 @@ export function extractProviderErrorSignal(payload) {
   const nested = body.error && typeof body.error === "object" ? body.error : null;
   const source = nested || body;
   // MiniMax v2 用 error.type；Ark / DashScope / OpenAI 兼容用 error.code。
-  // 数字型 code（可灵、MiniMax base_resp）统一转成字符串再查表。
+  // 数字型 code（MiniMax base_resp）统一转成字符串再查表。
   const rawCode = firstNonEmpty([source.code, source.type, source.error_code, source.errorCode]);
   const message = firstNonEmpty([source.message, source.msg, source.status_msg, body.message]);
   const requestId = firstNonEmpty([
@@ -274,15 +244,6 @@ export function describeProviderError({ provider, httpStatus = 0, payload = null
     return build(providerName, "", status, statusTable[status], signal, "httpStatus");
   }
   return null;
-}
-
-/** 一句话展示文本：标题（供应商 + 命中依据）。处置建议。 */
-export function providerErrorDisplayText(description) {
-  if (!description) return "";
-  const label = description.matchedBy === "code" && description.code
-    ? `${description.provider} ${description.code}`
-    : `${description.provider}${description.httpStatus ? ` HTTP ${description.httpStatus}` : ""}`;
-  return `${description.title}（${label}）。${description.guidance}`;
 }
 
 function build(provider, code, httpStatus, description, signal, matchedBy) {

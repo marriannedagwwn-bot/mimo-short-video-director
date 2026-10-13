@@ -17,8 +17,9 @@ AI 短视频生产工作流系统。
 → 创意重构
 → Visual Guardrails
 → Story
-→ Animation Plan（direct_shot）
-→ 视频生成
+→ Animation Plan 4.0（自主分镜）
+→ 角色参考图与单镜提示词
+→ 视频生成（全能参考）
 → 导出生产数据
 
 当前系统重点是保证：
@@ -40,9 +41,9 @@ AI 短视频生产工作流系统。
 
 **一句话修改（2026-10-11，导演 Agent 第三期）**：在导演助手里说一句话（「第 3 场改成雨停了」「A04 别让她回头」），对剧情、4.0 分镜或某一镜的视频提示词写局部修改。导演助手的模型只把这句话对到三个修改动作之一（`editStory` / `editStoryboard` / `editShotPrompt`：模型能选，但从不作为下一步、不做成按钮；至少一镜有视频之后，点名某一镜只改它的提示词，免得别的镜头视频作废），卡片带用户这一句原话。`POST /api/one-sentence-edit/draft` 另起一次调用按原话写修改稿，**只出修改稿、不签发**：被改的那一份与它的上游由服务端从 Run 读当前版本，请求里出现任何副本 400、基准版本变了 409、相关任务在跑 409；当前版本自己过不了签发校验就在调模型之前拒绝。模型只写「在某个字段里找到唯一一段原文 → 换成什么」（`{decision: edit|decline, patches(≤6), note}`），原文由服务端逐字替换：剧情复用「按问题修改」的执行器（可选参数放宽为还能改情绪节点、剧情功能与两份梗概，不传时行为逐字不变）并走 `validateFullStoryForSigning`；分镜复用 `applyEditorial` 的可改清单再去掉角色外观；提示词不许整段替换，改完必须仍逐字含这一镜的台词、画风与无配乐收尾句（`shotVideoPromptViolations`，与写提示词共用一份判据）。做不到的（加场、加人、改时长、新增台词、话没说清楚）写 decline。结构错或执行不了带诊断重试一次、禁止第三次，审核拦截不重试。采纳走 `POST /api/production/one-sentence-edit/adopt`：服务端拿当前版本重新应用同一组修改，结果摘要必须等于修改稿上的（否则 409），再以**与上一版完全相同的依赖**签发（分镜另签媒体命名空间），剧情 Run 因此仍能导出 3.1 包；原文永远不动。作废：改剧情→分镜及其下游；改分镜→单镜提示词、镜头视频与角色候选图（已设为人物参考图的图在分镜里，保留）；改提示词→什么都不作废。新阶段 `oneSentenceEdit`（可选、默认文本模型、上限 ≥32768、不改思考设置）。修改稿与原话只在页面内存里，不进 Task Store、Artifact 或浏览器存储。「粘贴完整故事」的 Run 也能改情节和台词，改过的台词会出现在台词核对的「在原文里找不到」里。改得对不对没有确定性兜底（待解决项第 22 条）。详见 `docs/one-sentence-edit-2026-10-11.md`。
 
-**Animation Plan 自主分镜 4.0（2026-09-21，工作区接入，真实验收尚未闭环）**：浏览器明确发送 `animationPlanVersion: "4.0"`，旧 API 无版本保留 direct_shot 3.0。新版以完整原 Full Story、角色事实、画幅/时长/风格/表情/音乐参数生成完整 beats，AI 自定片段与时间、可合并相邻场次；每段整数 4–15 秒、总长沿用共享时长窗口。旧 Full Story 不要求重新生成，不修改正文或重签，只由模型抽取缺失配角事实进入 Plan 的 `characterRegistry`。新生成 Full Story 的浏览器请求为 `full_story/1.2`，正文生成后只整理角色表，未知外观仍交给分镜；旧 1.1/无版本数据不迁移。完整上游冻结和验签仍在，创作 Prompt 不送 Brief/候选/原片叙事。
+**Animation Plan 自主分镜 4.0（2026-09-21，工作区接入，真实验收尚未闭环）**：请求必须带 `animationPlanVersion: "4.0"`，缺省或其他版本一律 400（2026-10-11 起旧 2.0/3.0 已删除，见「已删除的功能（2026-10-11）」）。新版以完整原 Full Story、角色事实、画幅/时长/风格/表情/音乐参数生成完整 beats，AI 自定片段与时间、可合并相邻场次；每段整数 4–15 秒、总长沿用共享时长窗口。旧 Full Story 不要求重新生成，不修改正文或重签，只由模型抽取缺失配角事实进入 Plan 的 `characterRegistry`。新生成 Full Story 的浏览器请求为 `full_story/1.2`，正文生成后只整理角色表，未知外观仍交给分镜；旧 1.1/无版本数据不迁移。完整上游冻结和验签仍在，创作 Prompt 不送 Brief/候选/原片叙事。
 
-新版先生成设计，再由 AI 审阅并至多一轮按问题修订，保留修订/引导说明；合理简写不改，模型语义意见不阻断继续，字段/时间/引用/签名仍严格。Plan 没有 `videoPrompt`，点击单镜按钮才创建 `shotVideoPrompt` Durable Task，独立 Artifact `shotVideoPrompt:<variantId>:<shotId>` 依赖 current Plan，绑定 digest 与视频/写稿模型配置。Task Store 仍不保存 Prompt；窗口支持缓存、编辑与重新生成，用户确认前不调视频。只有 continuous 默认请求上一镜抽帧；旧媒体接口需要的字符串只读投影，不回写为第二份分镜。新版批量视频和手动终审界面暂不开放；旧版阅读、媒体与审查保持原行为。结构失败当前直接报错：真实回放最后一段 20 秒被拒绝，是否增加一次模型结构修复正在等用户选择，不能自行缩短时间或改写分镜。详见 `docs/animation-storyboard-implementation-2026-09-21.md`；本段优先于后文描述旧 direct_shot 默认路径的历史规则。
+新版先生成设计，再由 AI 审阅并至多一轮按问题修订，保留修订/引导说明；合理简写不改，模型语义意见不阻断继续，字段/时间/引用/签名仍严格。Plan 没有 `videoPrompt`，点击单镜按钮才创建 `shotVideoPrompt` Durable Task，独立 Artifact `shotVideoPrompt:<variantId>:<shotId>` 依赖 current Plan，绑定 digest 与视频/写稿模型配置。Task Store 仍不保存 Prompt；窗口支持缓存、编辑与重新生成，用户确认前不调视频。只有 continuous 默认请求上一镜抽帧；旧媒体接口需要的字符串只读投影，不回写为第二份分镜。4.0 没有批量视频与手动终审界面。每步被校验拦下时带诊断重试一次（2026-09-22 起，每步最多 2 次 provider 调用），不能自行缩短时间或改写分镜。详见 `docs/animation-storyboard-implementation-2026-09-21.md`。
 
 **本机出网代理（2026-09-10）**：macOS 服务、`bin/run-video.js` 和 `workers/generic-http-worker.mjs` 在实际请求前统一初始化 `src/system-proxy.js`。以 `scutil --proxy` 当前有效配置为权威，每 2 秒刷新；不固化地址/端口，也不让继承的大小写 HTTP(S)/ALL/NO_PROXY 覆盖系统状态。全局 fetch dispatcher 保持稳定，后续 dispatch 根据 HTTP/HTTPS 独立开关、系统例外和回环绕过选择连接器；更新不重启 Node、不重复提交、不主动中止在途请求。需要 SOCKS 的路由、PAC/自动发现、读取失败和非法启用配置明确阻断相应外部请求，禁止静默猜测或降级。非 macOS 保留环境代理。该层只改变传输路径，不改变 provider/model、Prompt、任务状态或计费语义。说明与证据见 `docs/system-proxy-follow-2026-09-10.md`。
 
@@ -96,6 +97,36 @@ AI 短视频生产工作流系统。
 对白范围补充：`keyDialogueDirections` 是候选期台词草案，不再进入 FullStory 输入；候选 `storyOutline` 的全部动作与原 Artifact 保持不变。FullStory 按动作、人物已知信息与用户明确对白限制生成交流，已签发 FullStory 台词仍由 Animation Plan 逐字承接。检查说话动机和信息前提，不禁止所有自然亲密反应，也不靠关键词判断自然度。实际 B4 仍出现结尾点题与未尝先评价味道，属于未通过的质量验收；不能因签发成功称为合格产品。
 
 
+## 已删除的功能（2026-10-11）
+
+用户 2026-10-11 决定：**不再支持旧 2.0（v2 首尾帧，`startFrame`/`endFrame`）与 3.0（`direct_shot`，`promptSchemaVersion: "3.0"`）Animation Plan**，只保留 4.0 自主分镜。**下列功能都已删除，不得重新引入**；真有需要，先拿出新的失败数据并取得明确的架构决定。
+
+**遇到旧 Plan 时**（判定只有一份：`public/storyboard-plan.js` 的 `legacyAnimationPlanVersion()` / `legacyAnimationPlanMessage()` / `ANIMATION_PLAN_VERSION_UNSUPPORTED`，不得另写判定）：
+
+| 位置 | 行为 |
+| --- | --- |
+| 生成（`createAnimationPlanWithMetadata`） | 只接受 `animationPlanVersion: "4.0"`，缺省或其他值 `InputError`（HTTP 400） |
+| 契约（`ensureOutputContract(_, "animationPlan")`） | 非 4.0 抛 `OutputContractError`。这是函数级契约，目前没有生产调用者（4.0 生成直接用 `ensureStoryboardPlan`），线上生效的拦截是本表的生成、服务端消费与提交口 |
+| 服务端消费（镜头视频、单镜提示词、角色参考精修与出图、一句话修改的改分镜与改单镜提示词等读 Plan 的任务与路由） | HTTP 409 |
+| 通用提交口 `/api/production/artifact/commit` | 拒收非 4.0 的 `animationPlan`，也拒收新的 `shotFrame:*` 产物 |
+| 测试包 | `sealPackage` 拒绝封装；`validatePackage` 在建 Run 之前拒绝导入（`ProductionStateError` 400） |
+| 页面 | 显示「这是旧版 X 分镜，已不再支持（只支持 4.0 自主分镜）。请重新生成分镜。」与「重新生成分镜」按钮；旧 Run 的 `shotFrame:*` 留在磁盘、不再读取 |
+
+错误码：参考视频 Run 的生成、契约、服务端消费、提交口拒收旧 `animationPlan`、3.0 测试包的封装与导入，都是 `ANIMATION_PLAN_VERSION_UNSUPPORTED`。三处例外：剧情 Run 生成分镜时版本不是 4.0，先被剧情入口拦下（400 `STORY_ENTRY_PLAN_VERSION_UNSUPPORTED`）；剧情 Run 的 3.1 测试包里分镜不是 4.0（400 `PRODUCTION_PACKAGE_PLAN_VARIANT_MISMATCH`）；提交新的 `shotFrame:*` 产物（400 `SHOT_FRAME_ARTIFACT_UNSUPPORTED`）。不迁移、不自动升级，也不当成 4.0 读取。旧任务记录照常读出；创建已删除类型的任务得到 `TASK_KIND_UNSUPPORTED`，请求已删除的路由得到未知路由的 404。
+
+**删除的模块与能力**：
+
+- 三个弃置编译器：Character Feature Compiler、Static Frame Compiler（含 Grounding）、本地 Prompt Compiler，以及它们的配置（`STATIC_FRAME_COMPILER_*`）、模型阶段 `staticFrameCompiler` 与页面。
+- 首尾帧：`first_last_frame` 视频模式、首尾帧出图（`/api/generate-shot-frame-image`、任务 `shotFrameImage`）。
+- 只支持首尾帧的可灵（Kling v3、v2.1）与自定义 VideoHTTP 视频供应商；镜头视频只剩 Seedance 2.0 与 MiniMax H3。
+- 3.0 生成链：Foundation 与镜头批次生成、逐镜语义审计与修复、台词补写、Foundation 局部纠错（`artifact_partial_repair/1.0`）。
+- 3.0 终审与定向修订（`/api/animation-plan-review`、`/api/animation-plan-revision`）、批量视频（任务 `shotVideoBatch`）、方言改写（`/api/animation-plan/video-prompts/rewrite`、任务 `animationPromptRewrite`，含 `minimax_h3` 退役 Profile 与 Plan 级 `videoPromptProfile`）。
+- 负面词体系（逐镜 `negativePrompts`）与 `character-reference-sync`（设为人物参考图后改写镜头提示词）。
+
+**升级注意**：`.env` 里 `SHOT_VIDEO_PROVIDER` 还写着 `Kling` / `VideoHTTP`，或者还配着 `VIDEO_HTTP_CONFIG` 时，服务启动明确失败（与 `DEFAULT_LLM_PROVIDER` 指定的那家没配置时同规格，不悄悄改用 Seedance），报错写明「可灵（Kling）与自定义 VideoHTTP 已于 2026-10-11 删除，请把 .env 里的 SHOT_VIDEO_PROVIDER 改成 Seedance 或 MiniMax」；`VIDEO_HTTP_CONFIG` 原来会被 worker 合并进 Seedance / MiniMax 的请求体，所以同样不得悄悄忽略（`src/shot-video-providers.js` 的 `assertNoRemovedVideoHttpConfig`，启动与 worker 各查一次）。
+
+历史设计与实测记录在带「历史文档」横幅的 `docs/animation-plan-source-of-truth.md`、`docs/animation-plan-review-落地方案.md`、`docs/animation-plan-revision-实施计划.md`、`docs/Character-Feature-Static-Frame-Compiler-改造说明-2026-07-29.md`、`docs/negative-prompt-refactor-examples.md` 等文件里，只作历史参考。
+
 ## 当前主流程
 
 当前运行流程：
@@ -110,13 +141,13 @@ Visual Guardrails
  ↓
 Story Candidates（`themeVariants` wire name）
  ↓
-Full Story full_story/1.1（兼容旧格式）
+Full Story（浏览器请求 full_story/1.2；1.1 与无版本旧格式照常读取）
  ↓
-Animation Plan direct_shot（promptSchemaVersion 3.0）
+Animation Plan 4.0 自主分镜
  ↓
-Video Generation
+角色参考图 → 单镜提示词 → Video Generation（全能参考）
 
-「从剧情开始」的 Run（2026-10-09）走另一条前段，后段复用上面的 4.0 分镜与视频生成：
+「从剧情开始」的 Run（2026-10-09）走另一条前段，后段复用上面的 4.0 分镜、角色参考图、单镜提示词与视频生成：
 
 storySource（用户原文或只有角色设定）
  ↓
@@ -129,21 +160,19 @@ Animation Plan 4.0 → Video Generation
 
 上述业务 JSON 之外，Production Lineage v1 作为服务端 sidecar 运行：每次浏览器主流程创建独立 project/run；各成功阶段提交 Artifact revision、content digest、实际上游 dependencies、Stage 状态与 Checkpoint。它不改变模型字段含义，也不是第二份角色或剧情事实来源。
 
-**Durable Task v1（2026-09-01）**：浏览器主流程不再持有长 provider workflow 或提交模型 Artifact。服务端把 AI 导演表示为一个 `directorPipeline` 父任务和 Analyze、Reconstruct、Brief、Visual Guardrails、Variants 五个顺序子任务；Full Story、Animation Plan、人物精修、角色图片、旧 v2 镜头帧和 shotVideo 也由同一 Task Manager 执行、校验并 commit。Task Store 位于每个 Run 的私有 `tasks/index.json`，只保存执行状态、冻结 lineage refs、创建时的 provider/model（镜头视频另记这次用的分辨率，2026-10-10）、progress、usage、结果 Artifact refs 和脱敏错误；禁止保存 Prompt、Data URL、Base64、完整请求体或第二份业务内容。ProductionStateStore 的 current Artifact 仍是唯一业务权威。
+**Durable Task v1（2026-09-01）**：浏览器主流程不再持有长 provider workflow 或提交模型 Artifact。服务端把 AI 导演表示为一个 `directorPipeline` 父任务和 Analyze、Reconstruct、Brief、Visual Guardrails、Variants 五个顺序子任务；Full Story、Animation Plan、人物精修、角色图片、单镜提示词 shotVideoPrompt 和 shotVideo 也由同一 Task Manager 执行、校验并 commit。Task Store 位于每个 Run 的私有 `tasks/index.json`，只保存执行状态、冻结 lineage refs、创建时的 provider/model（镜头视频另记这次用的分辨率，2026-10-10）、progress、usage、结果 Artifact refs 和脱敏错误；禁止保存 Prompt、Data URL、Base64、完整请求体或第二份业务内容。ProductionStateStore 的 current Artifact 仍是唯一业务权威。
 
 Task 状态只有 `queued | running | completed | failed | conflicted | interrupted | abandoned | cancelled`。`conflicted` 只由 provider 前/后或 commit 前冻结 revision/digest 变化以及 `ARTIFACT_REVISION_CONFLICT` / `ARTIFACT_DEPENDENCY_STALE` 产生；冻结后绝不自动刷新成新 current 内容。**目标的期望版本是 `latest` 指向的那一版、不论是否已 stale**——与状态库提交门 `commitArtifactUnlocked`、完整剧情展开前复核和浏览器同一口径，Task Manager 的创建冻结、调用前复检与锁内提交前复检三处共用 `targetLatestRevision()`；运行中目标被上游弄 stale 由冻结依赖复检拦截。2026-09-18 之前 stale 目标被冻结成 `null`，任何已失效目标经 Durable Task 重新生成都必然冲突（完整剧情在调模型前被拒，其余阶段在调用做完、提交时被拒），实际路径是采纳展开前体检的候选修订后再展开，详见 `docs/production-lineage-state.md` §4。所有写目标在创建时原子 claim，`directorPipeline` 一次 claim 五个目标；未 claim 的既有浏览器快速提交和 import 保持可用，有 claim 时只允许 active owner/child commit。相同 operation 复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`；release/watchdog/restart 后迟到 Runner 不能回写。`abandoned` 和 `cancelled` 都不是远端取消，远端调用仍可能计费。
 
 Durable Task 没有总墙钟 deadline。provider 调用的无进展 watchdog 使用该 provider 自身 request/poll timeout + 120 秒（流式的 Qwen/MiMo 没有总时长，这里的 timeout 是空闲超时，默认 120 秒），本地校验/合并/commit 使用 300 秒，并在 provider 返回、图片流事件、候选和阶段进展时续期。workflow/text 池为 2 running / 8 queued，media 池为 4 running / 8 queued，全局 queued 请求体预算默认 140MB；超过容量返回 `TASK_CAPACITY_EXCEEDED`，不伪造失败 Task。
 
-**AI 导演 Run 控制（2026-09-10）**：`directorPipeline` 根任务支持既有 `/api/tasks/:id/control` 的 `pause | resume | terminate`。暂停先写 `progress.controlState=pausing` 阻止新调用与提交，再在 Run 锁外 abort 当前 Qwen/MiMo/DeepSeek HTTP/SSE 连接；当前子任务以 `interrupted/DIRECTOR_STAGE_PAUSED` 收尾后父任务进入 `paused`，不释放五个 claims、不自动重调、不新增 Task status。未派发的 queued 父任务可直接 paused；已运行的暂停父任务保留当前进程输入和 workflow 槽位，暂停期间不计 watchdog。继续复用父 taskId 与创建时输入/模型，新子 taskId/requestId 重新执行首个未完成阶段，已签发 current 阶段保持 revision/digest。中断前那次请求可能已经计费，继续可能再次计费，禁止称为供应商原请求续传。终止写 `terminating`、断开当前连接，父子 active 任务最终 `cancelled` 并释放 claims，保留 Run 和已完成 Artifact；不得宣称远端计算或计费已确认停止。control 的 controller/gate 必须在锁内捕获后锁外操作，防止连续 pause/resume 误伤新请求或遗失唤醒。页面清理撤销任务后也须在锁外唤醒暂停 Runner，不能遗留池槽位。刷新恢复 paused；Node 重启仍按 v1 变 interrupted，不自动调模型。用量只计供应商实际返回的结构化 usage，`calls` 在 fetch 派发点计数，`reportedCalls/unreportedCalls/usageComplete` 明确标识未知；父任务按所有子尝试汇总，不能覆盖成最后一次继续的用量或重复累加。`shotVideoBatch` 的镜头边界暂停语义不变。
+**AI 导演 Run 控制（2026-09-10）**：`directorPipeline` 根任务支持既有 `/api/tasks/:id/control` 的 `pause | resume | terminate`。暂停先写 `progress.controlState=pausing` 阻止新调用与提交，再在 Run 锁外 abort 当前 Qwen/MiMo/DeepSeek HTTP/SSE 连接；当前子任务以 `interrupted/DIRECTOR_STAGE_PAUSED` 收尾后父任务进入 `paused`，不释放五个 claims、不自动重调、不新增 Task status。未派发的 queued 父任务可直接 paused；已运行的暂停父任务保留当前进程输入和 workflow 槽位，暂停期间不计 watchdog。继续复用父 taskId 与创建时输入/模型，新子 taskId/requestId 重新执行首个未完成阶段，已签发 current 阶段保持 revision/digest。中断前那次请求可能已经计费，继续可能再次计费，禁止称为供应商原请求续传。终止写 `terminating`、断开当前连接，父子 active 任务最终 `cancelled` 并释放 claims，保留 Run 和已完成 Artifact；不得宣称远端计算或计费已确认停止。control 的 controller/gate 必须在锁内捕获后锁外操作，防止连续 pause/resume 误伤新请求或遗失唤醒。页面清理撤销任务后也须在锁外唤醒暂停 Runner，不能遗留池槽位。刷新恢复 paused；Node 重启仍按 v1 变 interrupted，不自动调模型。用量只计供应商实际返回的结构化 usage，`calls` 在 fetch 派发点计数，`reportedCalls/unreportedCalls/usageComplete` 明确标识未知；父任务按所有子尝试汇总，不能覆盖成最后一次继续的用量或重复累加。
 
 **完整剧情任务控制（2026-09-10）**：`fullStory` 根任务通过同一 control 接口支持暂停、继续和终止，页面沿用 AI 导演的左终止、右暂停/继续按钮与 44px 点击区、32px 悬停背景。暂停中断当前 HTTP/SSE，保留创建时输入、模型、全部冻结依赖、目标 expected revision 和 claim；继续保持同一 taskId，以新的 requestId 重新执行整个 Full Story operation（新版包含初轮与实际必要的有界修复；旧格式还包含 Beat–Scene postpass），不是续传或只重做 postpass。各次尝试的已知 usage 和未返回用量的实际调用累计保留；旧尝试的迟到回调不得写入新尝试。终止保留此前已签发 Story、Plan、媒体和 Run。commit 与 control 由同一 Run 锁裁决：本次 request 已提交成功时，控制不再改变执行状态，也不重调模型。刷新重新 attach paused，不自动继续；Node 重启仍按 v1 interrupted/reconciliation 规则。页面控制必须绑定当前候选的 root Full Story task，切换候选不能控制另一个候选或被其迟到响应切回。
 
 per-Run Coordinator 是显式不可重入 FIFO 锁。持锁代码只能调用 `commitArtifactUnlocked`、`recordStageUnlocked`、`loadRunUnlocked` 和 Task Store unlocked 方法，禁止从锁内调用公开的 `commitArtifact()` / `recordStage()` / `loadRun()`；临界区内禁止 provider、网络、FFmpeg 或模型校验。`readCurrentLineageSnapshot`、Task GET 和 atomic manifest snapshot 的 `loadRun` 必须锁外读取；provider 返回后仍保留复检与锁内 commit guard。
 
 刷新/HTTP 断线只移除等待者，Runner 在同一 Node 进程继续。Node 重启时，大型请求体和 provider 执行上下文没有持久化：已由同 requestId 成功提交的任务可 reconciliation 为 completed，其余 queued/running 必须标 `interrupted` 并释放 claim，绝不自动重调 provider。继续 Analyze/Reconstruct/Visual Guardrails 时必须重新上传 SHA-256 与 Run metadata 中 `sourceVideoDigest` 相同的原文件；Brief/Variants 可直接复用 current 上游。T04 quarantine、T05 provider task-id 接管/重启恢复、lease 和正式跨进程 batch queue 仍未实现，禁止把 Durable Task v1 描述成完成了它们。
-
-`shotVideoBatch` 是受控的当前进程内顺序父任务：创建时一次 claim 当前 Plan 的全部 `shotVideo:<variantId>:<shotId>`，固定使用启动时 Seedance 2.0 或 MiniMax H3 的 `all_reference` 配置（含这次选的分辨率，冻结进任务输入并原样交给每一镜），并为每镜调用既有 `shotVideo` 子 Runner。角色参考图只能来自已签发 Plan；已存在 current 视频可复用。父任务将 `controlState`、逐镜状态、usage 和 Artifact refs 持久化到 `tasks/index.json`，每镜完成即 commit 并更新 progress，刷新页面必须重新 attach。`pause` 只在镜头边界阻止下一次提交，当前 provider 调用继续；`terminate` 标记父子任务 `cancelled`、释放 claims 并禁止迟到 commit，但不能撤回已提交远端请求。创建时先逐镜预检参考素材上限——角色参考图与上一镜抽帧**共用同一个 9 图上限**（抽帧张数按 happy path 投影，首镜为 0）、每镜语音 ≤3 段且单段 2–15 秒、总时长 ≤15 秒——任一待办镜头超限即拒绝创建任务并一次列全全部问题，不产生任何供应商调用；上限只有一份，取自 `public/all-reference-limits.js`。运行期单镜参考素材问题只失败该镜，不得中止整批。该能力不得描述为跨 Node 重启恢复的正式 batch queue，也不得静默切到尚未优化的 `first_last_frame`。
 
 Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Artifact stale。模型请求开始时冻结依赖 revision，返回时同时经过浏览器 request token 与服务端 `expectedCurrentRevision`/dependency 校验。Animation Plan 每个 revision 签发独立 media namespace。
 
@@ -161,7 +190,7 @@ Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Art
 
 分布要求有确定性校验（数枚举值是纯算术，不含语义判断）：`validateVariantNarrativeModeMix()` 与 `validateVariantStructuralDivergence` 并列在 `ensureThemeVariantsMatchProfile` 里，`count >= 4` 时至少 2 个 `slice_of_life`，`count < 4` 时至少 1 个，诊断码 `STORY_CANDIDATE_NARRATIVE_MODE_MIX`。**校验只能数自报标签的个数，无法核实一个候选真的是生活片段**——那需要语义判断，是本方案已知的最大弱点，只能靠真实回放与人工评分观察，**不得靠加词表补救**。`narrativeMode` **不进入 Full Story 提示词**：它是候选期的创作路径声明，展开阶段只承接选中候选实际写出的内容。候选卡在「相似风险」旁展示**剧情型 / 生活型**徽章供用户按口味挑选。
 
-**结构自由度（2026-08-28）**：`storyOutline` 由「恰好 6 拍 + 固定相位词表『钩子、障碍、关键选择、后果、高潮、兑现』+ `keyChoice`/`climax`/`emotionalPayoff` 钉死在 Beat 3/5/6」改为 5–7 拍、`phase` 由候选自己命名（**禁止**套用那套固定词表，也不得全组共用同一串 `phase`）。关键选择拍与高潮拍落在第几拍由候选自己的因果结构决定，只保留因果序约束：关键选择拍 < 高潮拍 < 最后一拍。Prompt 另要求两拍之间隔一拍写该选择的直接后果、且高潮拍不得首次引入决定性人物、物品、地点、线索或能力，这两条只作生成约束，不由校验器硬裁。拍数本身即为一种合法的结构分化。**关键拍号与服务端派生投影（2026-08-28，取代逐字投影校验）**：`keyChoice` / `climax` / `emotionalPayoff` **由服务端从 `storyOutline` 确定性派生**，模型只输出两个整数拍号 `keyChoiceBeat` / `climaxBeat`；`emotionalPayoff` 恒取最后一拍，不需要拍号。模型回显这三个字符串时**一律无条件覆盖**，与 direct_shot 的「回显不构成新事实」同规格。
+**结构自由度（2026-08-28）**：`storyOutline` 由「恰好 6 拍 + 固定相位词表『钩子、障碍、关键选择、后果、高潮、兑现』+ `keyChoice`/`climax`/`emotionalPayoff` 钉死在 Beat 3/5/6」改为 5–7 拍、`phase` 由候选自己命名（**禁止**套用那套固定词表，也不得全组共用同一串 `phase`）。关键选择拍与高潮拍落在第几拍由候选自己的因果结构决定，只保留因果序约束：关键选择拍 < 高潮拍 < 最后一拍。Prompt 另要求两拍之间隔一拍写该选择的直接后果、且高潮拍不得首次引入决定性人物、物品、地点、线索或能力，这两条只作生成约束，不由校验器硬裁。拍数本身即为一种合法的结构分化。**关键拍号与服务端派生投影（2026-08-28，取代逐字投影校验）**：`keyChoice` / `climax` / `emotionalPayoff` **由服务端从 `storyOutline` 确定性派生**，模型只输出两个整数拍号 `keyChoiceBeat` / `climaxBeat`；`emotionalPayoff` 恒取最后一拍，不需要拍号。模型回显这三个字符串时**一律无条件覆盖**——能从上游唯一推导的值，回显不构成新事实。
 
 此前要求模型自己在一份两万字符的 JSON 的两个远距离位置逐字重复同一个长句，实测不可靠：debug 侧车记录的真实调用中合规率两极分布（多次 0/12），加强措辞后仍出现 2/12 与 9/12 两次硬失败。失败模式是模型在**改写**而非复制——砍掉前置准备再把主语补回句首，让顶层成为能独立成句的摘要；而「顶层不得含准备」恰恰是 Prompt 自己的要求，两条规则互相冲突，调措辞救不了。派生把这类失败整类消除，同时让前置准备、时间标记可以自然留在拍内。
 
@@ -169,13 +198,13 @@ Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Art
 
 这条约束 Prompt 一直就写着，但此前**没有校验器**。放开固定拍号（原 Beat 3/5/6）后实测合规率从 60/60 掉到 31/48，某些上游甚至 0/12——顶层写压缩摘要、`storyOutline` 写另一件事，同一个候选出现两版剧情，下游 Full Story 无从判断哪个是事实。它是阻止候选内部多版本事实的唯一机制，因此补成确定性硬失败。
 
-**剧情时长目标进入候选阶段（2026-09-05）**：`storyOutline[].estimatedSeconds` 的合计**事实上决定成片长度**——Full Story 照它排 `sceneScript` 时间轴，Animation Plan 再按时间轴派生镜头。该字段本身没有代码消费者、没有校验器（strict schema 只有 `{ "type": "number" }`），唯一影响路径是随 `JSON.stringify(variant)` 整体注入 Full Story 提示词。此前候选阶段完全收不到用户选的时长目标（浏览器请求体、Durable `buildInput` 白名单、`variantsPrompt` 三处都没有），模型只能凭空估。实测代价：目标 65 秒，候选估成 12/15/18/15/20/15 = 95 秒，Full Story 六场 `timeRange` 跨度逐位照抄，成片 95 秒、镜头数翻倍——当时 `fullStoryPrompt` 同时写着「忠实承接 Variant 实际写出的内容」与「合计必须落在 55-75 秒内」，两条都是硬约束且未定义优先级，模型选了承接上游。这是提示词自相矛盾，不是模型没打准。
+**剧情时长目标进入候选阶段（2026-09-05）**：`storyOutline[].estimatedSeconds` 的合计**事实上决定成片长度**——Full Story 照它排 `sceneScript` 时间轴，当时的 3.0 分镜再按时间轴派生镜头。该字段本身没有代码消费者、没有校验器（strict schema 只有 `{ "type": "number" }`），唯一影响路径是随 `JSON.stringify(variant)` 整体注入 Full Story 提示词。此前候选阶段完全收不到用户选的时长目标（浏览器请求体、Durable `buildInput` 白名单、`variantsPrompt` 三处都没有），模型只能凭空估。实测代价：目标 65 秒，候选估成 12/15/18/15/20/15 = 95 秒，Full Story 六场 `timeRange` 跨度逐位照抄，成片 95 秒、镜头数翻倍——当时 `fullStoryPrompt` 同时写着「忠实承接 Variant 实际写出的内容」与「合计必须落在 55-75 秒内」，两条都是硬约束且未定义优先级，模型选了承接上游。这是提示词自相矛盾，不是模型没打准。
 
 修复三处缺一不可：`targetDurationSeconds` 传进 `/api/variants`（含 `server.js` 入口的 20–180 整数校验与 Durable `buildInput` 白名单——白名单是显式构造，漏掉会让任务队列路径静默丢字段）；`variantsPrompt` 要求合计落在窗口内并说明它决定成片长度；`fullStoryPrompt` 声明冲突优先级：**`estimatedSeconds` 不属于必须逐字承接的剧情内容**，`timeRange` 服从时长目标，允许按比例调整每拍长度但不得增删、合并、拆分或改写剧情动作。窗口比例（±15%）与取整方向只有一份，在 `public/story-duration.js` 的 `storyDurationWindow()`，两处提示词与变体卡片判色共用，禁止各自再写 `0.85` / `1.15`。**不加校验器**（与 Full Story 同规格：模型不听提示词是生成质量问题）；变体卡片的合计时长徽章是纯展示，不进 Artifact、不参与派生、不 stale 任何东西；不传目标时 `variantsPrompt` 与 `mockVariants` 逐字保持历史行为。已签发的旧候选 `estimatedSeconds` 不变，只能靠优先级声明兜底，同样没有确定性兜底。
 
 **那三处实际只做了两处，2026-09-09 修好（证据来自六份真实导出包）**：白名单读的是 `raw.targetDurationSeconds`，而浏览器送进 `directorPipeline` 的 `shared` 输入里**从来没有这个键**——一键 AI 导演的候选阶段因此从未收到过时长目标，只有手动点「换一批」那条路送到了，现象是「换一批有效、一键跑无效」。`variantsPrompt` 取不到目标时 `durationRule` 整段省略，**静默降级、没有任何报错**。实测：五个带 lineage 的 run 全部生成于 09-05 之后，候选 `estimatedSeconds` 合计 **20/20 落在窗口外**（原片 33 秒的写成 56-60 秒、原片 122 秒的写成 60-90 秒）；唯一 4/4 落在窗口内的那份没有 lineage、导出形状也不同，四个候选精确等于窗口下界——像是拿到指令后贴着下界写（路径不同是推断，未核实）。修复是 `public/app.js` 的 `runWorkflow()` 补上这个键，`test/story-duration.test.js` 用源码断言锁住三处调用点，撤掉修复即失败。三处都是对象字面量，漏掉任何一处都不会有运行时错误，只能靠测试守着。
 
-**同一批数据修正了上一段的一处措辞**：那句「候选 `estimatedSeconds` 的合计**事实上决定成片长度**」描述的是 ③ 落地**之前**的行为。③ 生效后 Full Story 服从时长目标——六份包里成片跨度 **6/6 精确等于 `Math.round(原片时长)`**（65/122/44/44/65/33），候选估的 46–90 秒被整体忽略。所以合计不再决定成片长度，但它**决定同一批动作要被塞进多长的时间**：60 秒大纲压进 33 秒、或摊到 122 秒，都是同一份动作链换了密度。压缩那一侧正是 `docs/待解决项.md` 第 1 条「单场动作过载」的上游——镜头骨架由场次 `timeRange` 确定性派生，定向修订在架构上救不了它。**这仍然不构成加校验器的理由**，与下一段一致：模型不听提示词是生成质量问题。
+**同一批数据修正了上一段的一处措辞**：那句「候选 `estimatedSeconds` 的合计**事实上决定成片长度**」描述的是 ③ 落地**之前**的行为。③ 生效后 Full Story 服从时长目标——六份包里成片跨度 **6/6 精确等于 `Math.round(原片时长)`**（65/122/44/44/65/33），候选估的 46–90 秒被整体忽略。所以合计不再决定成片长度，但它**决定同一批动作要被塞进多长的时间**：60 秒大纲压进 33 秒、或摊到 122 秒，都是同一份动作链换了密度。压缩那一侧正是 `docs/待解决项.md` 第 1 条「单场动作过载」的上游（旧 3.0 时镜头时长由场次 `timeRange` 锁死、定向修订救不了它；4.0 下是否仍存在见该条）。**这仍然不构成加校验器的理由**，与下一段一致：模型不听提示词是生成质量问题。
 
 每个 Candidate 必须有一个主要承担角色性格或人物关系质感的 Beat，但它仍必须改变关系、情绪、信息或后续选择条件；删除后必须损失角色弧、关系推进、情绪积累或后续因果之一。禁止恢复「完全不推进主线、删除后故事仍完整」的旧 Prompt 规则。
 
@@ -183,25 +212,19 @@ Variant 内容变化必须递归使旧 Full Story、Animation Plan 和媒体 Art
 
 状态恢复时，current Full Story 或 Animation Plan 可恢复其 `selectedVariantId`；没有下游时，只有 current `variant:<id>` 明确选择记录才能恢复。仅有 `themeVariants` 时 `selectedVariantId` 必须保持 `null`，禁止默认回退到 V1。离线质量基线只记录固定 fixture、九项人工评测维度、真实 token usage 和确定性 validation failure；不调用外部模型，不伪造主观分数。当前没有 Story Selection/Blueprint/Script Doctor/Production Package 4.0，也没有自动的 Targeted Rewrite——一句话修改（2026-10-11）是用户在导演助手里提出、看过修改稿点「采纳」才签发的局部修改，不是自动改写；Phase 2 只预留「已签发 Candidate 内容 + 精确 lineage reference」输入接缝。
 
-当前 `direct_shot` 必须由请求显式传入 `animationPlanMode: "direct_shot"`，且 `productionStrategy.format` 为 `direct_shot_video`。每个 shot 保留 `videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes` 以及镜头标识、时长、剧情目的、负面词和验收标准；禁止 `startFrame`、`endFrame`、`motion`、`startFramePrompt`、`endFramePrompt` 五个端点字段。
+**Animation Plan 只支持 4.0 自主分镜**（`STORYBOARD_PLAN_VERSION = "4.0"`，`src/storyboard-*.js`；旧 2.0/3.0 见「已删除的功能（2026-10-11）」）。请求必须带 `animationPlanVersion: "4.0"`，缺省或其他值在调用模型前 `InputError`（400，`code: ANIMATION_PLAN_VERSION_UNSUPPORTED`；剧情 Run 先被剧情入口拦下，400 `STORY_ENTRY_PLAN_VERSION_UNSUPPORTED`），`animationPlanMode` 不再读取；输出 `promptSchemaVersion: "4.0"`、`productionStrategy.format: "storyboard_video"`。输入是完整 Full Story、角色事实、画幅、时长窗口、赛道风格与画风/配乐/表情参数，完整上游照常冻结与验签，但不进分镜创作提示词；旧剧情缺配角事实时只为本次 Plan 整理一次（`storyboardCharacterFacts`），不改写、不重签 Full Story。模型自定片段与时间，可合并相邻场次；每段整数 4–15 秒（数字只有一份，在 `src/shot-duration-limits.js`，提示词与校验共用），总长落在共享时长窗口内。步骤是设计分镜 → 审阅分镜 → 按问题修订（审阅报出问题时）→ 终审复查（修订实际改动时），每步走 coordinator、最多 2 次 provider 调用（带诊断重试一次，不发回失败输出），禁止第三次；两次都被拦时两次诊断都在（`storyboardPipelineFailure`），`metadata.storyboard` 如实上报调用次数与被拦诊断。审阅的语义意见不阻断；字段、时间、引用、角色与签名仍严格。服务端签发 `shotId`（`A01`…连续编号）、`productionStrategy` 的全部字段（模型写不到）与 `characterReferencePrompts`，签发前由 `ensureStoryboardPlan` 全量校验。Plan 不含 `videoPrompt`：点某一镜的生成按钮才创建 `shotVideoPrompt` Durable Task，签发 `shotVideoPrompt:<variantId>:<shotId>`（依赖 current Plan，绑定 Plan digest 与视频/写稿模型配置，Task Store 不保存提示词正文）；单镜提示词有三条确定性校验——每句对白逐字出现（`SHOT_PROMPT_DIALOGUE_MISSING`）、关闭配乐时逐字收尾、签发了画风时逐字写出（`SHOT_PROMPT_ART_STYLE_MISSING`）。旧媒体接口需要的字符串（`characterAction` / `cameraMotion` / `dialogueOrSubtitle` 等）由 `storyboardShotForVideo()` 只读投影，不回写成第二份分镜。粘贴完整故事的 Run 锁定台词，分镜设计与修订都不得改动原文台词；用户在导演助手里的一句话修改除外：它可以改剧情与分镜里的台词，`storySource` 原文不动，改过的台词会出现在台词核对的「在原文里找不到」里（见上文「一句话修改」）。
 
-镜头标识不得混淆：`sourceSceneId`（常见 `S1`）是当前 Full Story 的剧情场次归属；`sceneId`（常见 `LOC01`）是 Foundation 场景视觉参考组；`shotId`（常见 `A01`）是当前 Plan revision 内的业务镜头顺序标识。`S1` 不是场地，`LOC01` 不保证精确物理地点或无缝连续，`A01` 也不能脱离 project/run/plan revision/digest 单独标识媒体。
+镜头与场次标识不得混淆：`shotId`（常见 `A01`）是当前 Plan revision 内的业务镜头顺序，不能脱离 project/run/plan revision/digest 单独标识媒体；`shotPlan[].sourceSceneIds` 是本片段承接的 Full Story 剧情场次（可以是相邻的多场），不是场地；`beats[].sourceSceneIds` 必须包含在所属片段的 `sourceSceneIds` 里（`STORYBOARD_BEAT_SOURCE_OUT_OF_SHOT`）；地点设计在 `visualDesign.locations[]`，4.0 没有 3.0 的 `sceneId`（`LOC01`）场景视觉参考组。每个剧情场次要么被某个片段承接，要么在 `adaptations` 里说明省略（`STORYBOARD_SCENE_NOT_CARRIED`）。
 
-当前 `direct_shot` 3.1 把 `fullStory.sceneScript[]` 的每一项直接定义为最终可翻拍业务镜头：Animation Plan 不再拆镜，只填内容。镜头骨架由 `deriveDirectShotSkeleton()`（`src/direct-shot-timeline.js`）从 Full Story 确定性派生，且发生在任何模型调用之前，是唯一权威。服务端独占并确定性签发 `shotId`（全局 `A01`、`A02`……）、`sourceSceneId`（= `sceneScript[i].sceneId`）、`sceneId`（Foundation `sourceSceneIds → LOC` 映射）、`durationSeconds`、`storyPurpose`（= `dramaticFunction`）、`emotionalTarget`（= `emotionNode`）六个字段；模型回显错了按骨架确定性覆盖，因为这些值全部可从 Full Story 唯一推导。模型只生成 `videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes`、`negativePrompts`、`acceptanceCriteria` 八个字段。唯一的拆镜条件是单场跨度超过 15 秒：按 `ceil(跨度 / 15)` 均分，余数逐秒给靠前的镜头（20 秒 → 10+10；17 秒 → 9+8；34 秒 → 12+11+11）。除此之外禁止拆分、合并、新增、遗漏、重排或改写时长，因此 `shotPlan.length === Σ ceil(span_i / 15)`，`span_i ≤ 15` 时严格 1:1。一条业务镜头内部允许多个动作阶段、景别变化、特写、硬切和结尾宽景，全部写进同一条 `videoPrompt`/`cameraMotion`，不得增加 `shotPlan[]`；动作目标变化不再是拆镜理由。长场次被均分时，该场 `visibleAction` 的动作链必须按时间先后完整分配到相邻镜头，不省略、不重复，段间靠 `continuityNotes` 承接。`shotAndSound` 与 `shootingNotes` 不是镜头数量的事实源。时间线校验全部明确失败、禁止退回默认值或猜测：`timeRange` 不可解析、跨度非正、跨场次起点早于上一场终点、任一段低于供应商 4 秒下限时抛 `OutputContractError`，诊断码分别是 `DIRECT_SHOT_SCENE_TIME_RANGE_INVALID`、`..._OUT_OF_ORDER`、`..._DURATION_BELOW_PROVIDER_MINIMUM`；场次之间允许留白，只禁重叠与回退。`parseSceneTimeRangeSeconds` 与 `parseSceneTimeRangeBounds` 共用唯一一份正则，秒位接受 `0–99`——`00:60` 在 mm:ss 下只可能是 60 秒，与 `01:00` 完全等价，按 `m*60+s` 折算是确定性算术而非推断。批次由 `assertDirectShotBatchMatchesSkeleton()` 复核数量与逐位 `sourceSceneId`，`mergeAnimationPlan` 对整份 `shotPlan` 再逐位复核（含 `shotId`、`durationSeconds`）并断言 `Σ durationSeconds === productionStrategy.targetRuntimeSeconds`；direct_shot 对已解析候选一律 fail closed，不整批重试。`targetRuntimeSeconds` 由服务端注入为骨架各镜时长之和，模型输出一律被覆盖；`recommendedShotDurationSeconds` 在 direct_shot 已删除（时长是派生事实，不存在「建议」），旧 v2 兼容路径保留。项目层面不再有 4–6 秒限制：合法时长就是 timeRange 派生结果，落在 Seedance 2.0 与 MiniMax H3 的能力交集 4–15 秒整数内。内部摄影变化允许但不强制，不能为了堆机位而压缩、跳过或改写 `visibleAction`。以上只作用于 direct_shot 主流程，旧 v2 兼容路径的镜头数与时长语义不变。
+**Full Story 时间轴检查**：镜头骨架只作为 Full Story 签发前的时间轴检查保留——`validateFullStoryForSigning` 对新版 Full Story（1.1/1.2）调用 `deriveDirectShotSkeleton()`（`src/direct-shot-timeline.js`），只检查、不生成镜头，结果也不进 4.0 分镜。全部明确失败、禁止退回默认值、猜测或钳制：`timeRange` 不可解析、跨度非正、起点早于上一场终点、单场跨度低于供应商 4 秒下限时抛 `OutputContractError`，诊断码分别是 `DIRECT_SHOT_SCENE_TIME_RANGE_INVALID`、`..._OUT_OF_ORDER`、`..._DURATION_BELOW_PROVIDER_MINIMUM`；场次之间允许留白，只禁重叠与回退。`parseSceneTimeRangeSeconds` 与 `parseSceneTimeRangeBounds` 共用唯一一份正则，秒位接受 `0–99`——`00:60` 在 mm:ss 下只可能是 60 秒，与 `01:00` 完全等价，按 `m*60+s` 折算是确定性算术而非推断。项目层面没有 4–6 秒限制；4–15 秒是 Seedance 2.0 与 MiniMax H3 的能力交集，已有值不合法必须拒绝，不能钳制、补长或缩短。单场动作塞得太满的问题见 `docs/待解决项.md` 第 1 条。
 
-`productionStrategy.videoPromptProfile` 是服务端签发的 Plan 级提示词方言/来源记录，严格包含 `schemaVersion/profileId/provider/model/guideVersion`；它不是运行时 provider/model 锁，模型不得输出、推断或修改。`direct_shot.videoPrompt` 必须是一条自包含、可直接交给视频模型的中文自然语言完整提示词，按“Foundation 风格与物理光线 → 地点环境 → 实际出镜主体与已锁定外观 → `visibleAction` 顺序动作链与可见结果 → 内部摄影/剪辑顺序 → 节奏、对白和声音 → 本镜头相关稳定约束与停止条件”组织。第 ⑤ 项必须逐拍写明该拍画面里出现的角色，写到的角色必须完整入画（含面部），不得只给手部、局部肢体或无头躯干；多角色同场时至少有一拍让他们同时完整同框。依据是 2026-08-30 双人对话镜头三臂实测：缺主体槽位时配角频繁退化成无头躯干加写实大手，双人同框仅 4/9，补上逐拍主体后升到 9/9 并追平 H3 原生六段方言——这也是不恢复原生方言的依据。该约束是 Prompt 生成约束，没有确定性校验兜底。 第 ⑥ 项的台词则有确定性校验兜底：`dialogueOrSubtitle` 是对白的唯一权威，其台词原话必须逐字写进 `videoPrompt`——视频模型直接生成人声，只写「某人在说话」不会让那句台词被说出来。`shotDialogueMissingFromVideoPrompt()`（`src/validation.js`）在 `ensureAnimationDirectShotContract` 中硬失败，诊断码 `DIRECT_SHOT_DIALOGUE_MISSING_FROM_VIDEO_PROMPT`。判据是最长连续逐字命中 ≥ 6 字而非覆盖率（长文本里任意两个中文串都会偶然共享字符），阈值取自 187 条实词对白双峰分布的谷底；不切句（501 条真实对白里 494 条没有「」，切句只能靠猜），话语正文短于 10 字整条豁免（拟声词与非语言发声按描述写合法）。 该失败有一次有界补写兜底：`animation_shot_dialogue_repair/1.0`（`src/animation-shot-dialogue-repair.js`）是第四个局部纠错协议，在批次校验失败分支上只触发一次，模型只返回要插入的那一两句（`insertion`）而不是改写后的完整 `videoPrompt`——原文由服务端按构造拼回（收尾句之前），模型碰不到；插入内容必须含缺失台词原话、长度不超过台词长度加 120 字、不得复述原提示词开头；目标之外逐字节不变，合并后从头重跑完整批次校验；任何环节失败即 fail closed，禁止第二次补写。目标不从错误消息解析路径，而是用与校验器同一个函数重新扫描候选。提示词方言只有一种：同一条 Seedance 中文自然语言提示词同时提交给 Seedance 2.0 与 MiniMax H3，运行时视频模型不再决定提示词写法。`profileId` 恒为 `seedance_2_0`，`provider`/`model` 只如实记录用户首次生成时选择的运行时视频模型，且不参与 mismatch 判定——因此切换视频模型不再触发「是否重写提示词」。旧 Plan 带已下线的 `profileId: "minimax_h3"` 时，`getVideoPromptProfileMismatch` 返回 `unsupported_current_profile`：Plan 仍可加载查看，但生成视频前必须重新生成 Plan；该降级只认这一对精确的 `profileId + guideVersion` 白名单，损坏或被篡改的 Profile 仍然硬失败，`assertVideoPromptProfile` 本身始终严格。Plan 阶段不得生成尚未绑定的 `@图片/@视频/@音频` 或 `<Subject/Picture/Video/Audio N>`。`cameraMotion` 应同步记录业务 shot 内完整的摄影与剪辑顺序；使用内部切换时，1–3 条 `acceptanceCriteria` 必须覆盖主要动作链顺序、可见终点和关键摄影切换，失败不得静默增加 shot 或删除动作。productionStrategy.backgroundMusicMode 是主题变体卡上背景音乐开关的签发结果，取值只有 none / allowed，默认 none；与 videoPromptProfile 同级，由服务端根据请求 backgroundMusicEnabled 签发，模型不得输出、推断或修改，回显即拒绝。none 时 videoPrompt 必须以「全片无背景音乐，只保留现场环境声与动作声。」逐字收尾；方言只有一种，两个视频供应商共用这条约束。关闭的只是背景音乐而不是现场声，soundDesign 照常写环境声、物理动作声与对白，且不对 soundDesign 做关键词禁用。批次与 Profile 改写路径都由 validateSeedanceBackgroundMusicSentence 校验，改写路径在语义审计之前执行——方言改写不授权顺手改变有无配乐；allowed 时两个校验都不施加。已有 Plan 时拨动开关必须重新生成整个 Animation Plan（与切换画幅不同，画幅不调用模型），签发新 Plan revision 与 media namespace 并递归 stale 该变体全部媒体，页面必须先明确征求同意，拒绝时开关回弹且不改 Plan、不 stale 媒体。Demo mock 按同一 backgroundMusicMode 产出合规提示词，不得出现 mock 通过而 live 失败的偏差。
+`productionStrategy.backgroundMusicMode` 取值只有 `none` / `allowed`，默认 `none`，由服务端根据请求 `backgroundMusicEnabled` 签发，模型写不到。`none` 时每条单镜提示词必须以「全片无背景音乐，只保留现场环境声与动作声。」逐字收尾（`SHOT_PROMPT_BACKGROUND_MUSIC_SENTENCE`），两个视频供应商共用这条约束；`allowed` 时不施加。关闭的只是背景音乐而不是现场声，beats 的 `soundDesign` 照常写环境声、物理动作声与对白，且不做关键词禁用。运行时参考素材清单拼在提示词之前，所以禁配乐句仍是整条提示词的最后一句。已有 Plan 时拨动开关必须重新生成整个 Animation Plan，签发新 Plan revision 与 media namespace 并递归 stale 该变体全部媒体，页面必须先明确征求同意，拒绝时开关回弹且不改 Plan、不 stale 媒体。演示模式的单镜提示词按同一 `backgroundMusicMode` 逐字收尾，不得出现 mock 通过而 live 失败的偏差。
 
-
-已有 Plan 后切换镜头视频模型时，页面先保留新的运行时选择，再比较目标 Profile 与已签发 `videoPromptProfile` 并询问是否重写；缺失 Profile 的旧 Plan 同样视为 mismatch，禁止从 Prompt 文本、provider 或模型名反推。拒绝时不修改 Plan、不签发 revision、不 stale 媒体，也不回滚新模型设置；确认时只能重写全部 `shotPlan[].videoPrompt` 并更新 Profile，其他字段必须逐字保留。改写结果通过完整契约校验后还必须经过下述证据绑定语义审计；若只发现 `video_prompt` 层实质冲突，可在提交前执行唯一一次有界 Prompt 修复和复审，其他字段仍逐字冻结。只有最终完整校验和审计都成功后才签发新 Plan revision/media namespace 并使旧媒体 stale，任何失败都保留旧 Plan current。合法反例：旧 Plan 含 3 秒镜头时，不能通过提示词改写把 `durationSeconds` 静默改成 4 秒；确认改写必须失败并要求完整重生 Plan，拒绝改写则 Plan 保持不变，但该 3 秒镜头也不得提交给任何供应商。3.1 起这类镜头在骨架派生阶段就已经被拦下。
-
-确认 Profile 改写必须使用已配置的实时文本模型；demo mock 不得伪造语义审计结果或生产 Profile。Foundation 与全部 shot 合并并通过完整契约校验后，必须另行执行逐镜、证据绑定的两层语义审计：先检查同镜结构化字段是否服从验签固定角色、Full Story 场次/道具用途和 Foundation 视觉锁，再在结构化事实通过时检查 videoPrompt。审计必须包含完整 `assetPrompts`；它只能以受信 ID 和逐字 excerpt 报告会改变实际成片的关系，不能因同义表述、没有重复已表达动作、缺少多余的段落结束时间或 Foundation 已授权的视觉细化而失败。结构化字段 fail 时 `videoPrompt` 必须停止评估且不得修 Prompt；只有全部结构化字段 pass、失败项都精确属于 `videoPrompt` 时，才可签发一次有界 Prompt 修复，原子合并后复审受影响镜头与相邻镜头，复审失败不得循环。通过回执只记录在 `metadata.videoPromptSemanticAudit`，不是第二份事实源。每镜时长由 Full Story 的 `timeRange` 确定性派生，取值落在 Seedance 2.0 与 MiniMax H3 的能力交集 4–15 秒整数内；已有值不合法时必须拒绝，不能钳制、补长或缩短。
-
-
-Animation Plan 的 `targetAspectRatio` 当前只允许 `9:16` 或 `16:9`。首次生成时必须锁入 `productionStrategy.targetAspectRatio` 并与 Foundation 输出一致；已有 Plan 切换画幅时以用户选择更新计划级输出事实，不调用模型、不重写 shot，但必须签发新 Plan revision/media namespace，使旧画幅媒体 stale。后续视频生成从当前签发 Plan 读取；不得向 direct-shot 的 exact shot 字段增加 `aspectRatio`。页面的计划总长由 `shotPlan[].durationSeconds` 合计派生；3.1 起 `targetRuntimeSeconds` 由服务端注入为同一个合计值，两者定义上相等，偏差恒为 0。浏览器把画幅控件放在「设定创作宇宙」面板（#animationAspectRatio），它只是新 Plan 的默认值（全局默认为 16:9）：写进 state.animationAspectRatioDefault，取值优先级为「该变体草稿 → 该变体已签发 Plan → 全局默认」；拨动它不触碰任何已签发 Plan，不签发 revision、不 stale 媒体。已生成的 Plan 卡片里画幅是纯展示 data-cell，不再提供就地切换的下拉框，因此当前浏览器不暴露「已有 Plan 就地切换画幅」这条路径，要换画幅只能重新生成 Plan；上述切换画幅契约描述的仍是该操作一旦发生时必须满足的语义，withAnimationPlanAspectRatio()（public/animation-plan-settings.js）与其单元测试保留，随时可重新接回 UI。
+Animation Plan 的 `targetAspectRatio` 只允许 `9:16` 或 `16:9`，生成时锁入 `productionStrategy.targetAspectRatio`；不得给镜头增加逐镜 `aspectRatio`。浏览器把画幅控件放在「设定创作宇宙」面板（#animationAspectRatio），它只是新 Plan 的默认值（全局默认为 16:9）：写进 state.animationAspectRatioDefault，取值优先级为「该变体草稿 → 该变体已签发 Plan → 全局默认」；拨动它不触碰任何已签发 Plan，不签发 revision、不 stale 媒体。已生成的 Plan 卡片里画幅是纯展示，要换画幅只能重新生成 Plan。withAnimationPlanAspectRatio()（public/animation-plan-settings.js）与其单元测试有意保留，随时可重新接回 UI；一旦接回，「已有 Plan 就地切换画幅」必须不调用模型、不重写 shot，但签发新 Plan revision/media namespace 并使旧画幅媒体 stale。
 
 ### 角色画风（2026-10-09）
 
-「设定创作宇宙」面板的 `#characterArtStyle`，接替原来「角色表情规则」那一栏。它是全片统一的画面风格，默认「二维日系动画」，下拉里有几个预设，也可以自己写，清空就是不指定。起因是 4.0 分镜此前没有任何画风：分镜里唯一的「风格」字段 `productionStrategy.visualStyle` 照抄垂直赛道，角色参考图提示词只认 3.0 才有的 `visualBible`，于是 4.0 出图完全不写画风，固定角色写「八岁女孩……」时出了写实照片，被 Seedance 2.0 当真人拒收（`docs/待解决项.md` 第 17 条）。
+「设定创作宇宙」面板的 `#characterArtStyle`，接替原来「角色表情规则」那一栏。它是全片统一的画面风格，默认「二维日系动画」，下拉里有几个预设，也可以自己写，清空就是不指定。起因是 4.0 分镜此前没有任何画风：分镜里唯一的「风格」字段 `productionStrategy.visualStyle` 照抄垂直赛道，角色参考图提示词只认已删除的 3.0 才有的 `visualBible`，于是 4.0 出图完全不写画风，固定角色写「八岁女孩……」时出了写实照片，被 Seedance 2.0 当真人拒收（`docs/待解决项.md` 第 17 条）。
 
 - **来源与签发**：页面在生成 4.0 分镜时把它作为请求字段 `artStyle` 发出；两条分镜输入链（视频 Run、剧情 Run）都透传，两个分镜路由都校验（只拦类型与 200 字上限）。服务端把它写进 `productionStrategy.artStyle`，模型写不到；空串表示这一份分镜没有指定画风。判定与默认值、预设、上限在 `public/character-art-style.js`，浏览器与服务端共用一份。
 - **三个使用方，只在画风非空时出现**：分镜设计、审阅、修订（画风进入制作参数，设计提示词多一句「visualDesign 按这个画风写，不写成真人照片」）；单镜视频提示词（必须逐字写出画风，`SHOT_PROMPT_ART_STYLE_MISSING` 确定性校验，写漏触发既有的一次带诊断重试，演示模式同样遵守）；角色参考图提示词（「风格与色调」那一格写「画风：……」）。画风为空时三处提示词与之前逐字相同。
@@ -211,37 +234,28 @@ Animation Plan 的 `targetAspectRatio` 当前只允许 `9:16` 或 `16:9`。首�
 
 ### 角色表情规则（2026-10-09 起退出页面）
 
-2026-10-09 起页面上这一栏由「角色画风」接替：页面不再发 `characterExpressionRules`，新的 4.0 分镜里这个字段写空串，浏览器启动时删掉旧存档 `directorCharacterExpressionRules`。**服务端继续接受这个字段**（兼容旧请求、已签发分镜与 3.0 旧路径），以下契约对仍带它的请求照旧成立。
-
-「设定创作宇宙」面板的 `#characterExpressionRules` 是用户手写的「情绪 = 可见特征」映射（例：`芙芙猫：开心=眯眼、嘴呈 w 形、耳朵朝前`）。与 `targetDurationSeconds` 同规格：**只作为目标进入提示词，不写入任何 Artifact、不参与派生、不进 digest、不 stale 任何已签发内容**。改它不触碰已签发 Plan，也不征求同意，下次生成 Animation Plan 时才生效。判定与 1000 字符上限在 `public/character-expression-rules.js`，浏览器与服务端共用一份；请求侧只拒绝类型错误与超长，不裁决内容质量。
+2026-10-09 起页面上这一栏由「角色画风」接替：页面不再发 `characterExpressionRules`，浏览器启动时删掉旧存档 `directorCharacterExpressionRules`。**服务端继续接受这个请求字段**：两个分镜路由只拒绝类型错误与超长（判定与 1000 字符上限在 `public/character-expression-rules.js`，浏览器与服务端共用一份），不裁决内容。4.0 把它原样写进 `productionStrategy.characterExpressionRules`（页面不发时是空串），并随冻结输入 JSON 进分镜设计/审阅/修订与单镜提示词，没有专门的注入句；原来 3.0 的两个专门注入面已随 3.0 删除。
 
 **不得并入 `creatorProfile`。** 那三个字段整体进 `src/character-boundary.js` 的 `sourceDigest`，任何变动都会作废全局角色边界并要求重跑整条工作流。表情是表演表现，不该承受该代价；发色一类身份事实则相反，应写进 `creatorProfile.fixedCharacter` 并承受重跑。浏览器侧同理使用独立的 localStorage key，不并入 `directorProfile`。
 
-**注入面只有两个**：`animationDirectFoundationPrompt` 与 `animationDirectShotBatchPrompt`；旧 v2 兼容路径逐字不注入。刻意排除 Full Story（它写的是 `emotionNode` 情绪节点，不是表情渲染）、`/api/refine-character-reference`（它改 `appearancePrompt`，而 `buildCharacterVisualAnchor` 只取首句、上限 180 字，塞入表情散文会顶掉外观事实）与角色参考图提示词（`REFERENCE_SHEET_POSE` 固定为「表情中性平和」，那是身份锚点）。
-
 该字段只约束表情与表演，**不得改变角色身份、外观或物种**，`fixedCharacterBoundary` 始终优先。此约束有确定性兜底：模型若据此写出命中禁止特征的外观事实，`ensureCharacterReferenceMatchesBoundary` 仍在成片渲染前硬失败。「模型有没有照着写表情」本身没有兜底，属于生成质量。
 
-Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：暂时弃置，后续优化或删除。旧 v2 代码保留兼容，但不参与当前 `direct_shot` 主流程。
+### 镜头视频（全能参考）
 
-视频生成存在两个显式模式：
+视频生成只有一种模式 `all_reference`：图片/视频/音频仅作为多模态参考，必须至少包含合法图片或视频，不能只输入音频，不得混用 `first_frame` / `last_frame`；视频弹窗默认就是它。模式只由请求 `generationMode` 决定，只接受 `all_reference`，其他值（包括已删除的 `first_last_frame`）明确失败，不静默改写，不得根据 provider、模型名或素材存在性推断。供应商只有 Seedance 2.0（标准、fast、mini）与 MiniMax H3，两者消费同一条单镜提示词，默认 Seedance；4.0 分镜没有负面词，视频请求不带负面提示词。H3 Context-IR 已随提示词方言一并下线且没有公开 API（官方仓库说明 H3-Context-IR 未开源），此前 worker 中的 `POST /v2/h3_context_ir` 打的是不存在的端点，相关能力、端点派生与请求体已全部删除，不得重新接入。镜头视频分辨率可按次选择（2026-10-10，请求字段 `resolution`，不是 Plan 字段、不进提示词与 `modelOverrides`）：清单只在 `public/shot-video-resolutions.js` 一份（Seedance 标准版 480p/720p/1080p、fast/mini 480p/720p、MiniMax H3 768P/2K；按用户决定不放 4k），优先级为这次请求选的 > 供应商配置文件 > `*_VIDEO_RESOLUTION` > 代码默认值；不合法在建任务前 400（`SHOT_VIDEO_RESOLUTION_INVALID` / `_UNSUPPORTED` / `_DEFAULT_INVALID`），生成器调供应商前再核对一次，配置值一律不得静默回退（原来 Seedance 配错会悄悄改成 720p，MiniMax 的 `1080K` 曾被悄悄改成 2K）；没选时发给 worker 与供应商的请求逐字节不变（golden 测试）；每条候选记 `resolution`（取自 worker 回执）与 ffprobe 实测 `measuredWidth`/`measuredHeight`，并列显示不判失败；默认值经 `/api/health` 的 `resolutionDefaults` 给页面，配错照实带 `error`；页面选择只存 sessionStorage（`directorShotVideoResolutions`）。MiniMax H3 的 `ratio` 只在未配置时走缺省 `adaptive`；显式配置了官方取值以外的值必须明确失败，不得静默回退成默认值。供应商轮询失败必须带回它自己给出的原因，并在人类可读摘要之后附结构化 `{"error":{...}}`，否则 `describeProviderError` 查不到官方码表、用户拿不到可执行提示；内容审核 `1027`（输出涉敏）是非确定性的，但**不得擅自加入自动重试**——那是在第三方安全闸门上循环重试，代码无法区分误判与真违规，是否重试由用户显式决定。成片实际时长与 Plan 要求时长并列记录在每条候选的 `plannedDurationSeconds` / `measuredDurationSeconds`（`0` 表示未测得），偏差既不静默也不硬失败：实测 H3 请求 5 秒稳定产出 5.167 秒，硬失败会让该供应商 100% 不可用；是否对齐成片总长仍是未决的契约问题。
 
-- `first_last_frame`：首尾帧是精确端点，Kling、Seedance、MiniMax H3 可用；无端点的 `direct_shot` 不可使用，必须明确失败。
-- `all_reference`：图片/视频/音频仅作为多模态参考，必须至少包含合法图片或视频，不能只输入音频；当前只允许 Seedance 2.0 与 MiniMax H3（两者消费同一条 Seedance 方言提示词），不得混用 `first_frame` / `last_frame`，不得把可灵 image-to-video 静默当作 Omni API。H3 Context-IR 已随提示词方言一并下线且没有公开 API（官方仓库说明 H3-Context-IR 未开源），此前 worker 中的 `POST /v2/h3_context_ir` 打的是不存在的端点，相关能力、端点派生与请求体已全部删除，不得重新接入。镜头视频分辨率可按次选择（2026-10-10，请求字段 `resolution`，不是 Plan 字段、不进提示词与 `modelOverrides`）：清单只在 `public/shot-video-resolutions.js` 一份（Seedance 标准版 480p/720p/1080p、fast/mini 480p/720p、MiniMax H3 768P/2K、可灵 v3 720p/1080p；可灵 v2.1 与 VideoHTTP 没有这个参数；按用户决定不放 4k），优先级为这次请求选的 > 供应商配置文件 > `*_VIDEO_RESOLUTION` > 代码默认值；不合法在建任务前 400（`SHOT_VIDEO_RESOLUTION_INVALID` / `_UNSUPPORTED` / `_DEFAULT_INVALID`），生成器调供应商前再核对一次，三家配置值一律不得静默回退（原来 Seedance、可灵配错会悄悄改成 720p，MiniMax 的 `1080K` 曾被悄悄改成 2K）；没选时发给 worker 与供应商的请求逐字节不变（golden 测试）；每条候选记 `resolution`（取自 worker 回执）与 ffprobe 实测 `measuredWidth`/`measuredHeight`，并列显示不判失败；默认值经 `/api/health` 的 `resolutionDefaults` 给页面，配错照实带 `error`；页面选择只存 sessionStorage（`directorShotVideoResolutions`）。MiniMax H3 的 `ratio` 只在未配置时走缺省 `adaptive`；显式配置了官方取值以外的值必须明确失败，不得静默回退成默认值。供应商轮询失败必须带回它自己给出的原因，并在人类可读摘要之后附结构化 `{"error":{...}}`，否则 `describeProviderError` 查不到官方码表、用户拿不到可执行提示；内容审核 `1027`（输出涉敏）是非确定性的，但**不得擅自加入自动重试**——那是在第三方安全闸门上循环重试，代码无法区分误判与真违规，是否重试由用户显式决定。成片实际时长与 Plan 要求时长并列记录在每条候选的 `plannedDurationSeconds` / `measuredDurationSeconds`（`0` 表示未测得），偏差既不静默也不硬失败：实测 H3 请求 5 秒稳定产出 5.167 秒，硬失败会让该供应商 100% 不可用；是否对齐成片总长仍是未决的契约问题。
-
-模式由请求 `generationMode` 决定，不得根据端点字段缺失、provider、模型名或素材存在性自动推断或降级。
-
-`all_reference` 可另行显式传入运行时 `continuityReferenceMode: "none" | "previous_shot_frames"`；它不得改变或推断 `generationMode`，也不是 `direct_shot` Schema 字段。启用 `previous_shot_frames` 时，上一镜只由当前 Plan `shotPlan[]` 的紧邻前项确定；服务端必须读取上一镜 current `shotVideo` Artifact 的已选候选，只接受当前 media namespace 内的受信 mp4，并用 FFmpeg 按 `t = 时长×i/4` 均匀截取 **5 张** JPEG（首帧、末帧和中间三等分点；末帧回退 0.1 秒以保证可解码）作为普通 `reference_image`。张数固定为 5，不随镜头时长变化：3.1 把单镜时长放宽到 4–15 秒后，每秒一帧会让超过 9 秒的镜头直接撞上 9 图上限，也会把角色参考图挤出共用额度。时间戳由 `previousShotFrameTimestamps()` 确定性计算并逐帧写进回执。实际抽帧与其他图片共同受 9 图上限约束，超限明确失败。该参考只增强一致性，不能覆盖当前 Full Story/Plan、`fixedCharacterBoundary` 或 Foundation 场景事实；跨地点、跨时段或上一镜漂移是关闭该开关的合法反例。
+`all_reference` 可另行显式传入运行时 `continuityReferenceMode: "none" | "previous_shot_frames"`；它不得改变或推断 `generationMode`，也不是 Plan 字段。4.0 只有 `transitionIn.type` 为 `continuous` 的片段默认请求上一镜抽帧（`storyboardUsesPreviousFrames()`），首段、硬切与时间省略不默认继承。启用 `previous_shot_frames` 时，上一镜只由当前 Plan `shotPlan[]` 的紧邻前项确定；服务端必须读取上一镜 current `shotVideo` Artifact 的已选候选，只接受当前 media namespace 内的受信 mp4，并用 FFmpeg 按 `t = 时长×i/4` 均匀截取 **5 张** JPEG（首帧、末帧和中间三等分点；末帧回退 0.1 秒以保证可解码）作为普通 `reference_image`。张数固定为 5，不随镜头时长变化：单镜可长达 15 秒，每秒一帧会让超过 9 秒的镜头直接撞上 9 图上限，也会把角色参考图挤出共用额度。时间戳由 `previousShotFrameTimestamps()` 确定性计算并逐帧写进回执。实际抽帧与其他图片共同受 9 图上限约束，超限明确失败；上限数字只有一份，在 `public/all-reference-limits.js`。该参考只增强一致性，不能覆盖当前 Full Story/Plan 或 `fixedCharacterBoundary`；跨地点、跨时段或上一镜漂移是关闭该开关的合法反例。
 
 
-角色参考声音（`characterReferencePrompts[].referenceAudioClips`）**只发给本镜的明确说话人**，不随出镜发送：判据是 `shot.dialogueOrSubtitle` 中 exact 角色名后紧跟冒号（允许一个表演括注），判定只有一份 `shotRelatedCharacterAudioClips()`，批量、单镜与服务端权威解析共用；服务端对非说话人的音频硬拒，诊断码 `SHOT_VIDEO_CHARACTER_AUDIO_REFERENCE_NOT_SPEAKER`（409）。角色参考图不受此约束。判定刻意偏向漏判——判不出说话人就不发。依据是 2026-09-03 A01 实测：芙芙猫在该镜无对白只出镜，样音仍被附带，成片整段背景持续喵叫，供应商把样音直接混进了成片而非提取音色。**MiniMax 侧没有把音色定向到某个主体的机制**（官方文档：`audio_url` 仅为多模态参考场景的参考音频），所以该角色确实说话的镜头里原音直接播放仍可能重演；参考素材清单的文案显式排除「当背景音铺满」「在不发声时重复」两种误用，但那是 Prompt 约束，没有确定性校验兜底。要「加工后的叫声」必须在本链路之外做独立的声音生成或替换步骤。格式上 MiniMax 只接受 WAV 与 MP3，单段 2–15 秒、每镜 ≤3 段、合计 ≤15 秒；MP3 的 `audio/mpeg` 会被它按 MIME 子类型读成 `.mpeg` 并以 2013 拒绝，因此只在 MiniMax 传输边界改写成 `audio/mp3`，Artifact 保留 IANA 正确的 `audio/mpeg`，字节不变。
+角色参考声音（`characterReferencePrompts[].referenceAudioClips`）**只发给本镜的明确说话人**，不随出镜发送：判据是 `shot.dialogueOrSubtitle` 中 exact 角色名后紧跟冒号（允许一个表演括注），判定只有一份 `shotRelatedCharacterAudioClips()`，单镜与服务端权威解析共用；服务端对非说话人的音频硬拒，诊断码 `SHOT_VIDEO_CHARACTER_AUDIO_REFERENCE_NOT_SPEAKER`（409）。角色参考图不受此约束。判定刻意偏向漏判——判不出说话人就不发。依据是 2026-09-03 A01 实测：芙芙猫在该镜无对白只出镜，样音仍被附带，成片整段背景持续喵叫，供应商把样音直接混进了成片而非提取音色。**MiniMax 侧没有把音色定向到某个主体的机制**（官方文档：`audio_url` 仅为多模态参考场景的参考音频），所以该角色确实说话的镜头里原音直接播放仍可能重演；参考素材清单的文案显式排除「当背景音铺满」「在不发声时重复」两种误用，但那是 Prompt 约束，没有确定性校验兜底。要「加工后的叫声」必须在本链路之外做独立的声音生成或替换步骤。格式上 MiniMax 只接受 WAV 与 MP3，单段 2–15 秒、每镜 ≤3 段、合计 ≤15 秒；MP3 的 `audio/mpeg` 会被它按 MIME 子类型读成 `.mpeg` 并以 2013 拒绝，因此只在 MiniMax 传输边界改写成 `audio/mp3`，Artifact 保留 IANA 正确的 `audio/mpeg`，字节不变。
 
-`POST /api/generate-shot-video` 必须始终绑定当前签发 Animation Plan，不能依据客户端自报 `animationPromptSchemaVersion` 降级为无 lineage 请求。服务端从 Plan 唯一解析 exact shot；只允许独立 `promptOverride` 覆盖本次媒体提示词，动作、时长、场景、声音、负面词和验收条件仍来自 Plan。输出文件名必须包含不可碰撞的请求 nonce，并在返回前通过 ffprobe 视频流/时长校验。生成期间还必须无条件复验生产上下文是否仍为 current——在任何供应商调用与文件写入之前、每条候选提交供应商之前、每条候选落盘并通过 ffprobe 之后、组装返回值之前各一次，覆盖全部视频供应商，不得按 provider、模型或提示词方言设门。任一次复验失败即 fail closed：删除本次请求已写入的全部候选 mp4，并把 `ProductionStateError`（409）原样上抛，不得包装成配置或供应商错误、不得保留产物、不得降级为成功返回。清理只针对本次调用自己算出的含 nonce 路径，旧 v2 首尾帧 PNG 不在覆盖内；只有过期触发清理，供应商错误与 ffprobe 失败维持既有语义。
+`POST /api/generate-shot-video` 必须始终绑定当前签发 Animation Plan，不接受无 lineage 的请求；Plan 不是 4.0 时 409（`ANIMATION_PLAN_VERSION_UNSUPPORTED`）。服务端从 Plan 唯一解析 exact shot；只允许独立 `promptOverride` 覆盖本次媒体提示词，动作、时长、场景、声音和验收条件仍来自 Plan。输出文件名必须包含不可碰撞的请求 nonce，并在返回前通过 ffprobe 视频流/时长校验。生成期间还必须无条件复验生产上下文是否仍为 current——在任何供应商调用与文件写入之前、每条候选提交供应商之前、每条候选落盘并通过 ffprobe 之后、组装返回值之前各一次，覆盖全部视频供应商，不得按 provider 或模型设门。任一次复验失败即 fail closed：删除本次请求已写入的全部候选 mp4，并把 `ProductionStateError`（409）原样上抛，不得包装成配置或供应商错误、不得保留产物、不得降级为成功返回。清理只针对本次调用自己算出的含 nonce 路径；只有过期触发清理，供应商错误与 ffprobe 失败维持既有语义。
 
-`all_reference` 模式下，服务端在 `shot.videoPrompt` 之前确定性拼接一段**运行时参考素材清单**（`buildReferenceManifestText()`，`src/shot-video-continuity.js`），说明每张素材各是什么：参考图以 `reference_image` 发送时不携带任何文字身份，模型无从分辨哪张是角色参考、哪张是上一镜抽帧。清单前置而不是后置，以保证 `backgroundMusicMode: none` 的禁配乐句仍然是整条提示词的最后一句。抽帧成组时清单必须点名末帧：五张按 `t = 时长×i/4` 均匀采样，只有最后一张是上一镜结束时的状态，清单确定性写明「其中参考图N 是上一镜的最后一帧，本镜必须从它的状态与位置继续，其余几张只说明这一镜经过了什么，不代表本镜的起始位置」（末帧编号取自分组区间末位，不需要推断）；不点名的实测代价是下一镜复用了上一镜**起点**的构图，角色在空间上倒退整整一镜。抽帧**不承接角色外观与服装，也不整批承接位置关系**（位置只由末帧那一张给出）：它只承接「场景、道具与光线」，并在本次确实带了角色参考图时追加「角色的长相与服装一律以角色参考图为准，不要沿用抽帧里的角色外观」（没带角色参考图则不追加，避免指向不存在的素材）。原措辞让抽帧与角色参考图两句都声称管服装，等于把冲突写进规则——实测上一镜把服装画错后，该错误被抽帧当成事实传给下一镜，模型在同一镜内两次换装。上一镜是待核实的产出，角色参考图是签发权威，冲突时以后者为准。这只消除清单自相矛盾一项；抽帧同时携带外观与构图且通道上无法分离，「不要复制构图与动作」只是文本约束，抽帧数量的取舍仍未决。清单只允许使用受控来源枚举、Plan 权威的 `sourceCharacterName`（由 `resolveAuthoritativeShotVideoReferenceAssets` 按已签发 `characterReferencePrompts[].referenceImageDataUrl` 唯一匹配后覆写）、lineage 解析出的 `sourceShotId` 与帧数；**禁止写入 `upload` 素材的 `name`/`logicalName`**，那是原始用户文件名，是这条链路上唯一的注入面，上传素材一律只写「用户上传的参考素材」——安全性来自构造而不是事后校验。它不是 Plan 字段、不改 Schema、不签发 revision、不 stale 媒体、不调用模型：`sourceVideoPrompt` 保留 Plan 原值，`effectiveVideoPrompt` 与新增回执字段 `referenceManifest` 记录本次实际发送内容，`first_last_frame` 路径逐字不变。这里不得补 `ensureCharacterPromptMatchesBoundary`——视频提示词天然多角色，走 `promptScope: "multi_character"`，而该分支在 `src/validation.js` 中无条件短路返回空串，加上去只是一个看起来像闸门的空操作。
+`all_reference` 模式下，服务端在本次视频提示词之前确定性拼接一段**运行时参考素材清单**（`buildReferenceManifestText()`，`src/shot-video-continuity.js`），说明每张素材各是什么：参考图以 `reference_image` 发送时不携带任何文字身份，模型无从分辨哪张是角色参考、哪张是上一镜抽帧。清单前置而不是后置，以保证 `backgroundMusicMode: none` 的禁配乐句仍然是整条提示词的最后一句。抽帧成组时清单必须点名末帧：五张按 `t = 时长×i/4` 均匀采样，只有最后一张是上一镜结束时的状态，清单确定性写明「其中参考图N 是上一镜的最后一帧，本镜必须从它的状态与位置继续，其余几张只说明这一镜经过了什么，不代表本镜的起始位置」（末帧编号取自分组区间末位，不需要推断）；不点名的实测代价是下一镜复用了上一镜**起点**的构图，角色在空间上倒退整整一镜。抽帧**不承接角色外观与服装，也不整批承接位置关系**（位置只由末帧那一张给出）：它只承接「场景、道具与光线」，并在本次确实带了角色参考图时追加「角色的长相与服装一律以角色参考图为准，不要沿用抽帧里的角色外观」（没带角色参考图则不追加，避免指向不存在的素材）。原措辞让抽帧与角色参考图两句都声称管服装，等于把冲突写进规则——实测上一镜把服装画错后，该错误被抽帧当成事实传给下一镜，模型在同一镜内两次换装。上一镜是待核实的产出，角色参考图是签发权威，冲突时以后者为准。这只消除清单自相矛盾一项；抽帧同时携带外观与构图且通道上无法分离，「不要复制构图与动作」只是文本约束，抽帧数量的取舍仍未决。清单只允许使用受控来源枚举、Plan 权威的 `sourceCharacterName`（由 `resolveAuthoritativeShotVideoReferenceAssets` 按已签发 `characterReferencePrompts[].referenceImageDataUrl` 唯一匹配后覆写）、lineage 解析出的 `sourceShotId` 与帧数；**禁止写入 `upload` 素材的 `name`/`logicalName`**，那是原始用户文件名，是这条链路上唯一的注入面，上传素材一律只写「用户上传的参考素材」——安全性来自构造而不是事后校验。它不是 Plan 字段、不改 Schema、不签发 revision、不 stale 媒体、不调用模型：`effectiveVideoPrompt` 与回执字段 `referenceManifest` 记录本次实际发送内容。这里不得补 `ensureCharacterPromptMatchesBoundary`——视频提示词天然多角色，走 `promptScope: "multi_character"`，而该分支在 `src/validation.js` 中无条件短路返回空串，加上去只是一个看起来像闸门的空操作。
 
-`/api/generate-character-reference-images` 送给图像模型的提示词由 `public/character-reference-prompt.js` 单份构建，浏览器预览框与服务端回退共用同一份——用户看到并可编辑的必须逐字等于实际发送的。字段顺序按 `docs/video-prompt-guide.md` 模板 1：光线 → 角色外观 → 姿态表情 → 干净背景 → 风格色调 → 景别/取景/机位；风格与光线取自当前 Plan 的 `visualBible`，缺失时整行省略且不编造，`cameraLanguage` 属于镜头语言不得搬入。此前该端点完全拿不到 `visualBible`，角色图在不知道全片风格的情况下生成，却又要作为视频的视觉锚点。4.0 分镜没有 `visualBible`，画风取分镜签发的 `productionStrategy.artStyle`，写在「风格与色调」那一格（「画风：……」），为空就省略。2026-10-09 起上传参考图是可选的（两个入口都是）：第一行随有没有上传变化，没上传时是「生成一张角色参考图。」，不能说「参考我上传的这张图片」；没上传时请求不带图片字段，即梦请求不带 `image`，按文字设定出图。「设为人物参考图」写进 Plan 的 `referenceImageNotes` 只写确定的事（由哪个模型生成），不再一律写「根据上传参考图生成」。
+`/api/generate-character-reference-images` 送给图像模型的提示词由 `public/character-reference-prompt.js` 单份构建，浏览器预览框与服务端回退共用同一份——用户看到并可编辑的必须逐字等于实际发送的。字段顺序按 `docs/video-prompt-guide.md` 模板 1：首行 → 角色外观 → 姿态表情 → 干净背景 → 画风（「风格与色调」那一格）→ 景别/取景/机位；4.0 分镜没有光线来源，不写光线行。画风取 4.0 分镜签发的 `productionStrategy.artStyle`，写在「风格与色调」那一格（「画风：……」），为空就省略、不编造；起因见 `docs/待解决项.md` 第 17 条（角色图不知道全片画风，写实图会被 Seedance 当成真人拒收）。2026-10-09 起上传参考图是可选的（两个入口都是）：第一行随有没有上传变化，没上传时是「生成一张角色参考图。」，不能说「参考我上传的这张图片」；没上传时请求不带图片字段，即梦请求不带 `image`，按文字设定出图。「设为人物参考图」写进 Plan 的 `referenceImageNotes` 只写确定的事（由哪个模型生成），不再一律写「根据上传参考图生成」。
 
-使用上一镜抽帧生成的后镜 `shotVideo` Artifact 必须同时依赖当前 Animation Plan 与上一镜 `shotVideo` 的精确 revision/digest；上一镜重生成或切换候选必须递归使下游视频 stale。切换后镜自身候选时必须保留既有媒体依赖。浏览器中的 `shotVideoResults` 与旧 v2 `shotFrameResults` 都必须按 variant + shotId 隔离，禁止只用 `A01` 作为状态键；单个媒体 stale 只能移除对应结果，不能清空其他 current 媒体。
+使用上一镜抽帧生成的后镜 `shotVideo` Artifact 必须同时依赖当前 Animation Plan 与上一镜 `shotVideo` 的精确 revision/digest；上一镜重生成或切换候选必须递归使下游视频 stale。切换后镜自身候选时必须保留既有媒体依赖。浏览器中的 `shotVideoResults` 必须按 variant + shotId 隔离，禁止只用 `A01` 作为状态键；单个媒体 stale 只能移除对应结果，不能清空其他 current 媒体。
 
 ---
 
@@ -258,7 +272,7 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：�
 - **校验器**：`ensureOutputContract(_, "creativeBrief")` 顶层只允许这两个键，多一个就 `CREATIVE_BRIEF_UNEXPECTED_FIELD`（与 `recastTest`「恰好三个键」同规格，模型写了 `schemaVersion` 同样算多余）。七项构件、受保护表达、角色映射的校验器与 `ensureCreativeBriefMatchesProfile` 已删除；引文覆盖率算法仍由候选溯源使用。
 - **消费者 · 候选**：定位、受众、情绪曲线与观看动力改由 `variantsSourcePositioningProjection` 直接从 `referenceAnalysis` 取——`format` / `genre` / `targetAudience.primary` / `psychologicalNeeds` / `emotionCurve[].{emotion,intensity}` / `retentionDrivers[].driver`。白名单按「内容是否天然带原片情节」取舍：`emotionCurve.phase` 与 `trigger`、`contentPromise`、`whyWatchToEnd`、`retentionDrivers.payoff` 一律不取（问句形态仍由 `sourceViewerQuestionForms` 单独给出）。`recastTest.collapses` 照旧从简报读。旧简报的 Run 走同一条路径，不做版本分支。`highValueBeatMapping.briefBeat` 写迁移的是哪一种原片机制（观看动力名称或 `collapses` 的一条），候选 schema 不变。
 - **消费者 · 角色边界**：`visualGuardrailsPrompt` 不再放简报，原片表面表达直接取原片分析与脚本还原。**同时由服务端给出一份确定性的候选短词表**（`sourceSurfaceCatalogText`：各场 `keyProps` 逐字原文、按原文去重、带第一次出现的 sourcePath），要求从候选里选时一条规则只写一个、原样抄。这是回放打回来的：09-19 那批 10/10 通过的输出里，`sourceSimilarityRules` 的证据 82%（47/57）引用的是简报 `protectedExpressions`——那份能原样抄的短词表才是这一阶段过「逐字绑定」闸门的主要来源；直接去掉后 5 次有效调用里 2 次写出原文没有的简称（证据写「企鹅连体衣」它写「企鹅装」）被拦下。补的是一份不经过模型的摘录，不回到简报；与候选溯源直接取 `keyProps` 同一个做法。人物 `traits` 不进这份表：真实数据里全是「可爱 / 活泼」这类性格词。**签名摘要 `computeCharacterBoundarySourceDigest` 仍包含整份简报**——拿掉它会让所有已有 Run 的边界当场失效，需要单独设计带版本的摘要，本次不做。
-- **消费者 · 其它**：候选评审只按旧有允许清单投影（新简报只有 `storyEngine` / `recastTest`，其余两项为 null / []），schema 不变；旧 3.0 分镜批次不再放整份简报（与 Foundation 一致）；旧 v2 兼容路径逐字不动；Full Story 1.1/1.2 与自主分镜 4.0 本来就不读简报。
+- **消费者 · 其它**：候选评审只按旧有允许清单投影（新简报只有 `storyEngine` / `recastTest`，其余两项为 null / []），schema 不变；Full Story 1.1/1.2 与自主分镜 4.0 本来就不读简报。
 - **浏览器**：简报卡改为「创意简报 · 原片解读」，只显示这两项并标明写的是原片；旧简报多出的字段只显示一行说明。旧卡片把 `mustRetain` 标成「必须保留」、把 `protectedExpressions` 标成「禁止直接复制」、给七项构件一律打 ✓，三处都与契约相反。
 
 旧简报只在生成路径被校验，下游只做 `requireObject`，所以照常加载、导入导出，不迁移、不重签。真实回放数据见 `docs/creative-brief-slim-2026-09-23.md`。
@@ -292,7 +306,7 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：�
 
 **只在生成路径生效。** `ensureOutputContract(_, "creativeBrief")` 全项目只在 `createBrief` 里调用两次；
 下游 variants / visualGuardrails / fullStory 都是裸 `requireObject`。所以 `turningMechanism` 仍是字符串的
-旧简报**不会被拒绝**，照常加载——与 §2.4 已下线方言「所有调用点都是生成路径」同型；
+旧简报**不会被拒绝**，照常加载（所有调用点都是生成路径）；
 简报卡的「理解转变」格因此写了两个分支，旧简报不会显示成空白。
 
 **真实回放（2026-09-10，从源视频重跑 analyze → reconstruct → brief）**：导出包**不能**直接回放
@@ -373,7 +387,7 @@ Character Feature Compiler、Static Frame Compiler、本地 Prompt Compiler：�
 
 **三、`highValueBeatMapping` 补 `failureSignal`。** 每条保留机制必须写出**证伪条件**：这条机制没迁移成功时会长成什么样（例：「结尾只靠夕阳、拥抱或台词宣布温暖」）。「温暖」「治愈」「关系改变」「重获希望」这类词单独出现不构成判据——它们描述结果，不描述观众看到什么。**只有 schema 形状校验，没有语义兜底。**
 
-**四、候选对照评审（`storyCandidateReview`）。** 与剧情体检、分镜终审同规格：**只出报告**，不修改候选、不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、**不改变候选数量**、不阻断后续 Full Story；手动触发 `POST /api/story-candidate-review`，刷新页面即失。
+**四、候选对照评审（`storyCandidateReview`）。** 与剧情体检同规格：**只出报告**，不修改候选、不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、**不改变候选数量**、不阻断后续 Full Story；手动触发 `POST /api/story-candidate-review`，刷新页面即失。
 
 它要暴露的是「候选声称保留了原片精华，而动作链并不支持那个说法」。所以送审投影**按允许清单构造**（`buildStoryCandidateReviewProjection`，安全性来自构造而非事后过滤）：只送 id、title、hook、logline、`narrativeMode`、`characterSetup`、`storyOutline` 的动作链、`keyDialogueDirections` 与 `failureSignal`；**刻意剥掉** `novelty`、`visualPotential`、`experienceFidelity`、`transformationProof`、`originalityRiskCheck`、`highValueBeatMapping[].retainedValue` 以及每拍的 `dramaticFunction`。送进去就等于让解释替故事过关。`failureSignal` 反而要送——它是证伪条件不是成功声明，**把「陷阱」给评审看、把「答案」藏起来**是有意的不对称。浏览器再把评审结论与候选自己的说辞并排显示：模型看不到那一栏，用户看得到。
 
@@ -457,7 +471,7 @@ Prompt、测试当天都动了，`public/app.js` 的 `renderStoryCandidateReview
 
 **⑦ 允许第一次做错：带诊断重试一次（2026-09-10）**。`createStoryCandidateReview` 从
 `generateStageJson` 改走 `modelCallCoordinator.runJson`，`maxProviderCalls: 2`，**禁止第三次**，
-形状与分镜定向修订逐条对齐——搬的就是那套结论：「事前在提示词里定规矩→没用（三次加码都没用）；
+形状照搬已删除的分镜定向修订的结论（历史文档 `docs/animation-plan-review-落地方案.md`）：「事前在提示词里定规矩→没用（三次加码都没用）；
 事后拿数字打回去重做→有用」，以及「**修订必须设计成「允许第一次做错」**」。候选这一档此前
 只搬了前两部分（提示词定规矩、确定性闸门）。
 
@@ -471,7 +485,7 @@ Prompt、测试当天都动了，`public/app.js` 的 `renderStoryCandidateReview
   `attemptObserver` 计数，不能从「有没有被拦」反推——传输失败时供应商确实被调用了两次而没有诊断。
 - **两次都被拦时两次诊断都在响应里**（每条带 `attempt` 序号）：coordinator 抛的
   `ModelPipelineError` 只带最后一次的 diagnostics，所以这条路径自己重建错误、合并两次，其余字段
-  逐字照抄。这正是定向修订那边已登记的一处契约与实现不符，评审这一档一开始就做对。
+  逐字照抄。已删除的分镜定向修订当年没做到这一点，评审这一档一开始就做对。
 - **走 coordinator 就拿不到 `generateValidatedJson` 自带的 recorder**，必须自己接 `attemptObserver`，
   否则静默不写、两次原文全部丢失。
 - 传输失败同样吃这 2 次预算；`requestTimeoutMs` 不动。**其余八个走 `generateValidatedJson` 的阶段
@@ -566,19 +580,19 @@ V4 被判 drop 的主因是三条机制全部 `not_depicted`，评审 summary �
 
 **A. 四个概念分开，候选级 `verdict` 不再由模型自报**：`11 维分数 → overallScore（加权）→ tier（五档）→ scoreBasedVerdict → 取最严 → effectiveVerdict + verdictOverrideReasons[]`，全部服务端派生。硬闸门三条：`coherenceChecks` 非空、`sourceScaffoldOverlap.score >= SOURCE_SCAFFOLD_COPY_SCORE`、`dominantDefect.severity === BLOCKER`（给模型一个显式一票否决口，不必靠压分）。**降级只改 `effectiveVerdict`，绝不改 `overallScore` 或 `tier`**——压分实现降级会把「故事很好但有一处硬问题」压成「故事不好」。报告因此能如实写成「9.2 分 / 最高档，但因果断裂未清 → 不放行」。**这条取代了 ⑤ 与 ⑨ 的两条 verdict 闸门**：它们从「拒收报告」变成降级理由，该类失败由构造消除（模型没有 verdict 可写错），代价是两个诊断码不再出现在 live——而它们本来就从未在 live 触发过。`recommendedWinner` / `runnerUp` / `rejectOrRegenerate` 同理改为派生，杜绝「判了淘汰却不在名单里」。
 
-**B. 十一维权重（合计 1.00）在 `public/story-review-metrics.js` 一份**，提示词、校验器、浏览器共用：openingHook .10 / causalLogic .10 / protagonistAgency .08 / characterSpecificity .12 / storySpecificity .10 / originality .10 / progression .10 / emotionalPayoff .10 / visualMemorability .10 / productionFeasibility .05 / dialogueAndNaturalness .05。闸门只查齐全、无未知、无重复、0–10。**这条与剧情体检、分镜终审已写进契约的「不打总分、不设门槛」正面冲突，是用户看到数据后仍明确选择的路线**：那两处的依据是 13 份综合分全部挤在 7.8–8.3（中位 8.2，参考片 8.4）、两个模型评同一份 Plan 总分只差 0.06 而单维差 ±1.0。候选阶段没有自己的数据，所以先落地再用真实回放判断；要量的清单见 `docs/候选评审判定修正-落地方案-2026-09-12.md`，攒够 10–20 个批次前**不要凭感觉调权重**。
+**B. 十一维权重（合计 1.00）在 `public/story-review-metrics.js` 一份**，提示词、校验器、浏览器共用：openingHook .10 / causalLogic .10 / protagonistAgency .08 / characterSpecificity .12 / storySpecificity .10 / originality .10 / progression .10 / emotionalPayoff .10 / visualMemorability .10 / productionFeasibility .05 / dialogueAndNaturalness .05。闸门只查齐全、无未知、无重复、0–10。**这条与剧情体检（以及已删除的分镜终审）写进契约的「不打总分、不设门槛」正面冲突，是用户看到数据后仍明确选择的路线**：那两处的依据是 13 份综合分全部挤在 7.8–8.3（中位 8.2，参考片 8.4）、两个模型评同一份 Plan 总分只差 0.06 而单维差 ±1.0。候选阶段没有自己的数据，所以先落地再用真实回放判断；要量的清单见 `docs/候选评审判定修正-落地方案-2026-09-12.md`，攒够 10–20 个批次前**不要凭感觉调权重**。
 
 **C–F**：`dominantDefect` 定死枚举（type = 十一个维度 id ∪ brief_overconstraint / template_convergence / none，severity = BLOCKER/MAJOR/MINOR/NONE，带 `none` 出口，不逼模型硬找毛病）；顶层 `batchTemplateConvergence` 检查整批是不是共用同一套深层机制（**集合属性**，逐个看每个都能声称原创，横着看才发现是同一个故事换四套布景；与生成阶段 `validateVariantStructuralDivergence` 的字面签名比对是两件事）；`briefAlignment` 单独输出**不进质量分**（算进去评审就会学成「谁最像简报谁分高」），冲突判 C 类时在 `suggestBriefChange` 里**建议改简报**而不是逼候选改回模板；`top3RevisionSuggestions` 遵循 REPLACE BEFORE ADD，**除 `remove` 外四种 kind 都必须写 `whyOnlyHere`**（模板化不只发生在新增：「把结尾替换成摸摸头」是 replace，照样是模板）。
 
 **G. 输入新增三份，按允许清单投影**：`creatorProfile`（硬事实）、`creativeBrief`（四项，**可以质疑的创作假设**）、`referenceAnalysis`（只送 retentionDrivers 与 dialogueStyle）。**简报不是原片事实**——机制清单与骨架对照的基准仍然只有 `sourceScriptReconstruction`。候选投影补送 `keyChoice` / `climax` / `emotionalPayoff`：它们由服务端从 `storyOutline` 按拍号确定性派生，保证与动作链逐字一致，**但拍号是模型选的，「这一拍真的是关键选择」仍要评审自己判断**。`creatorTasteProfile` 全项目零命中，本版不做（并进 `creatorProfile` 会作废全局角色边界）。
 
-**H. 输出体积**：4 候选 × 11 维 = 44 条证据，`storyCandidateReview` 因此在 `buildStageDefaults` 单独把 `maxCompletionTokens` 抬到 32768（与分镜终审单独放宽 timeout 同规格）；提示词给长度预算但**不做 schema maxLength**（超一字 fail closed 会白烧一次调用）；**截断走单独重试分支**（`MODEL_OUTPUT_TRUNCATED` 已由 coordinator 抛出，原来的 retryPrompt 只认校验诊断，截断时原样重发只会再写超）。预算仍是 2 次。
+**H. 输出体积**：4 候选 × 11 维 = 44 条证据，`storyCandidateReview` 因此在 `buildStageDefaults` 单独把 `maxCompletionTokens` 抬到 32768（只改这一档，不碰全局默认）；提示词给长度预算但**不做 schema maxLength**（超一字 fail closed 会白烧一次调用）；**截断走单独重试分支**（`MODEL_OUTPUT_TRUNCATED` 已由 coordinator 抛出，原来的 retryPrompt 只认校验诊断，截断时原样重发只会再写超）。预算仍是 2 次。
 
 **I. 首次真实回放当日补的三类漏判（2026-09-12，报告见 `docs/实验数据-2026-09-12/`）**：`ownership_or_authority`（`causalLogic` 另查一条世界规则——角色修改、拿走、赠送、销毁或长期占有一件物品时有没有处置权或谁许可过；**至今没有被清晰正面案例检验过**）；`setting_assumption`（候选偷偷引入上游从没建立过的背景事实，**确定性封顶 MAJOR**，`CANDIDATE_REVIEW_DEFECT_SEVERITY_CAP`——它是候选自己加的设定，不是对已签发角色事实的违反，而 BLOCKER 在这里有机械后果；封顶是政策决定不是推导）；`physicalAssumptions`（物理机制**不许二选一**，三档 established/conditional/unlikely，后两档必须写出依赖条件与失败风险，`CANDIDATE_REVIEW_ASSUMPTION_INCOMPLETE`）。第三条**明确有效**——实测把「下雨天用胶带贴湿落叶防水」从「物理上可行」翻转为 unlikely 并顺带报出一处因果断裂。**代价**：同一个包第二次回放总分极差从 2.72 缩到 1.33、九维极差变小、首选从 pass 掉到 revise，且能看出具体路径（V2 的 productionFeasibility 9→7 恰对应它被判 conditional 的那条机制）；**但单次对单次分不清是改动效果还是回放噪声，要分开需同一契约下重复回放取分布，不要因此回头调权重或删掉物理审视**。
 
 **J. 跨包回放命中了 `batchTemplateConvergence` 的一个带标准答案的已知正例（2026-09-12）**：「身体拟物」那一批（泥坑企鹅滑行／人形晾衣杆／飞机翅膀／螺旋桨），外部评审当时写出过期望输出「角色通过把身体想象成工具或交通工具来解决日常问题，V1–V4」，本阶段独立写出同一条机制、四个候选全中，并多找到一条对方没提的（四个都用同一个拟声词）。**目前最强的一次验证。** 同一次里四个全 `drop`，`recommendedWinner` 派生为空——「全批淘汰」分支第一次在 live 走到。**但同一次也暴露两个不得当成已解决的问题**：①简报判断方向在两个包之间**完全相反**（一个说放宽「外部奖励转赠长辈」，另一个说强制保留），后者还与它自己抓到的收敛结论有张力——**`briefAlignment` / `briefProblemsDetected` 目前不稳，不得当成改简报的依据**；②`recommendedOrder` 与派生总分**不一致**（推荐先做 6.83 分的 V1，而 V4 是 6.89），说明加权分与模型整体排名不是同一件事，**本版刻意不为此加闸门**，但要进统计。
 
-**K. 抖动测量（2026-09-12，两个包各 3 次，同契约同输入，约 ¥4.6，数据在 `docs/实验数据-2026-09-12/抖动回放/`）**：①**「分数收窄是改动造成的」不成立，已撤回**——同契约三次的批内极差本身在 1.33/2.06/1.72 浮动，旧契约那次 2.72 落在噪声内，不要为此调权重或删物理审视；②**加权分能可靠分出最好与最差，分不出中间次序**——有真实差异的包里最佳候选 3/3 排第一、sd 仅 0.09，中间两个 sd 0.45–0.46 且排序三次三样，**`recommendedOrder` 的第一名可用、中段不可用**；③**`briefAlignment` 明确不可用**——同一输入同一候选三次给出互相矛盾的合规判定（PASS/WARN 直接对调过），只能当线索给人看。同一轮里**重试路径第一次在 live 触发并成功**（`briefProblemsDetected[0]` 被写成对象 → schema 拦下 → 带诊断重做通过），根因是输出模板给的是空数组、没有元素示例，与 §2.14 `shotEvaluations[].issues` 同型，已补非空示例并加测试锁住。
+**K. 抖动测量（2026-09-12，两个包各 3 次，同契约同输入，约 ¥4.6，数据在 `docs/实验数据-2026-09-12/抖动回放/`）**：①**「分数收窄是改动造成的」不成立，已撤回**——同契约三次的批内极差本身在 1.33/2.06/1.72 浮动，旧契约那次 2.72 落在噪声内，不要为此调权重或删物理审视；②**加权分能可靠分出最好与最差，分不出中间次序**——有真实差异的包里最佳候选 3/3 排第一、sd 仅 0.09，中间两个 sd 0.45–0.46 且排序三次三样，**`recommendedOrder` 的第一名可用、中段不可用**；③**`briefAlignment` 明确不可用**——同一输入同一候选三次给出互相矛盾的合规判定（PASS/WARN 直接对调过），只能当线索给人看。同一轮里**重试路径第一次在 live 触发并成功**（`briefProblemsDetected[0]` 被写成对象 → schema 拦下 → 带诊断重做通过），根因是输出模板给的是空数组、没有元素示例，与已删除的分镜终审 `shotEvaluations[].issues` 同型，已补非空示例并加测试锁住。
 
 **L. 抖动数据到手后的三处定型（2026-09-12）**：①**两个「谁更好」的系统拆开命名，都不删也不强制对齐**——`recommendedOrder` 改名 `holisticPreferenceOrder`（模型的整体判断，仍走排列校验），另加服务端派生的 `scoreOrder`（加权分从高到低，同分按原顺序），**winner / runnerUp / rejectOrRegenerate 改从 `scoreOrder` 派生**；依据是加权分能可靠分出最好与最差（最佳 3/3 排第一、sd 0.09）而分不出中段（sd 0.45–0.46），winner 只取第一名正好落在可靠段。两份不一致**是有价值的观察不是错误**，提示词明说不必一致、不得为此回头改分数，页面在不一致时点出来；**不必去修中段不稳**——水平接近的创意本来就有审美随机性。②**`briefAlignment` 正式降级为编辑参考信息并完全隔离**：继续输出，但不参与分数/tier/verdict、不自动改简报、不作为定向修订的强制任务，有测试锁住「改它不改变任何派生结果」。③**`physicalAssumptions` 新增 `literalDependency`（required / optional / make_believe）**，与 `confidence` 是两个正交轴（前者问「故事需不需要它真成立」，后者问「现实里成不成立」）；**扣分只针对 `required` 且 confidence 不好的**，`make_believe` 不得因现实做不到而扣 `productionFeasibility` / `causalLogic`，只提醒镜头别拍成实的。起因是《罐装阳光》被判 conditional 后 productionFeasibility 9→7，说明模型把「不是现实物理」当成了质量问题，会误杀童真想象。**③ 没有新增闸门**——是否照此扣分需要语义判断。
 
@@ -592,7 +606,7 @@ V4 被判 drop 的主因是三条机制全部 `not_depicted`，评审 summary �
 
 ## 剧情体检 = FullStory 终审编辑（`story-quality-review/2.0`，2026-09-18）
 
-Full Story 生成之后的**独立验收，只出报告**：不修改剧情、不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、**不阻断后续 Animation Plan**。与 `boundaryWarning` 同规格，纯展示；刷新页面即失。手动触发，`POST /api/story-quality-review`。三层评审里它回答**「选中的故事有没有被展开坏」**——候选对照评审选哪个故事，分镜终审查镜头有没有实现坏。
+Full Story 生成之后的**独立验收，只出报告**：不修改剧情、不签发 Artifact、不进 lineage、不参与派生、不 stale 任何东西、**不阻断后续 Animation Plan**。与 `boundaryWarning` 同规格，纯展示；刷新页面即失。手动触发，`POST /api/story-quality-review`。三层评审里它回答**「选中的故事有没有被展开坏」**——候选对照评审选哪个故事，4.0 自主分镜自带的审阅查镜头有没有实现坏。
 
 **两次顺序调用，第一次看不到候选**：① 编辑诊断（只有 fullStory 与固定角色设定，输出十类 `issues`）；② 承诺核对（候选 + fullStory，只输出 `checks`）。依据是 2026-09-18 五轮离线 A/B（约 60 次真实调用）：两件事放进同一次调用时，被漏判的那句话每次都被同一次调用引用成「承诺已兑现」的证据；拆开后手段-目的冲突 1/2 → 2/2，`missing_reference_state` 0/36 → 2/2 且对已修好的版本 0/2。
 
@@ -616,7 +630,7 @@ Full Story 生成之后的**独立验收，只出报告**：不修改剧情、�
 
 ## 剧情按问题修改（`story-quality-repair/1.0`，2026-09-18）
 
-剧情体检之后的**修订稿**：用户在体检报告里勾选要修的条目（编辑诊断与没守住的承诺；引用号 `I1…` / `P1…` 由 `storyQualityRepairableItems` 按位置编，浏览器勾选框与服务端选择校验共用一份），`POST /api/story-quality-repair` 另起**一次**调用写局部修改。**只出修订稿，不签发任何东西**——与命题定向修订、分镜修订同规格：用户看过逐字对照、点「采纳」时才由浏览器走既有 fullStory 签发（依赖清单与生成剧情共用 `fullStoryDependencyIds`），新版本递归 stale 该变体的镜头计划与媒体。只支持 `full_story/1.1`（旧格式还有 beatSheet 这第二份动作稿）。
+剧情体检之后的**修订稿**：用户在体检报告里勾选要修的条目（编辑诊断与没守住的承诺；引用号 `I1…` / `P1…` 由 `storyQualityRepairableItems` 按位置编，浏览器勾选框与服务端选择校验共用一份），`POST /api/story-quality-repair` 另起**一次**调用写局部修改。**只出修订稿，不签发任何东西**——与命题定向修订同规格：用户看过逐字对照、点「采纳」时才由浏览器走既有 fullStory 签发（依赖清单与生成剧情共用 `fullStoryDependencyIds`），新版本递归 stale 该变体的镜头计划与媒体。只支持 `full_story/1.1`（旧格式还有 beatSheet 这第二份动作稿）。
 
 **体检本身不动；修改另起一次调用，而且看得见候选——与编辑诊断刻意相反。** 依据是 2026-09-18 两轮真实测试（5 份样本 × 2，记录见 `docs/story-quality-repair-ab-2026-09-18.md`）：第六轮让编辑诊断顺手附带修改，逐字执行与签发校验 30/30 通过、复检修好率 81%，但**打上的 32 条里 4 条把候选承诺改弱或改坏**（「双手扶着」→「双手松开」判 CONTRADICTED 等），另 1 条删光路人少女的出场、她却还登记在 `characters` 里——根因是编辑诊断刻意看不到候选（那是它诊断准的原因）。第七轮用同一批问题改成独立调用，输入候选与「现在守住的承诺」清单：承诺退化 4 → 1，修好率 85%，执行与校验 26/26，19% 的条目模型选择不改。
 
@@ -632,50 +646,6 @@ Full Story 生成之后的**独立验收，只出报告**：不修改剧情、�
 **没有确定性兜底、页面必须摆在采纳按钮前面的**：①删掉的是不是候选承诺过的细节——第七轮唯一那次退化是**明知故犯**（承诺就在清单里，为解决一条 MAJOR 的节奏问题删了「均匀」「石头」，`note` 如实写了删了什么）；②动作的执行者有没有被调换；③同一条问题两次决定会抖（同一处「完好的干花」一次拒改一次改）。按字面比对「删掉的字在不在候选原文里」会被常用词淹没，与已证伪的 `evidenceInCandidate` 阈值同类，**不做**。
 
 **毛病出在候选本身时它会拒改**（候选高潮原文就是「戳破并卷起」），那类问题要回到候选层（展开前体检 / 命题定向修订）解决；本版**不提供**「接受偏离候选、强制改」的出口。样本只有 5 份（4 份开发回归集 + 1 份盲样本），全过也是偏乐观的上界。首次生产路径真实调用（《糖浆泡泡糖葫芦》，36 秒、3419 completion tokens）：5 条里 3 条因候选冲突拒改、1 条把本场没登记的「路人小孩」写进可见动作被签发校验拦下、1 条（「透明」承诺）改成并采纳签发为 `fullStory-V2-r2`。
-
-## 分镜终审与定向修订（animationPlanReview / animationPlanRevision，2026-09-06）
-
-Animation Plan 之后的两段式验收，与剧情体检同规格：**只出报告、只出候选，不签发任何 Artifact**，不进 lineage、不参与派生、不阻断后续生产，刷新页面即失。手动触发，`POST /api/animation-plan-review` 与 `POST /api/animation-plan-revision`。
-
-查的是现有校验器查不到的一类问题：**剧情声称的事，镜头里到底拍没拍。** 实测：剧情首句写「末班车的红色尾灯刚刚消失在路口转角」，而首镜 videoPrompt 一帧车都没有——「末班车已走」只写进了 `continuityNotes`，那是给生成器的备注，不会被拍出来。
-
-**两个阶段的输入不同，这是有意的**：评审必须同时收到 `fullStory` 与 `animationPlan`（没有对照物就发现不了这类落差）；修订**只带分镜，不带 `fullStory`**（问题已定位，再给剧情只会让模型顺手重编故事）。
-
-**评分不作放行门槛**：实测两个模型评同一份 Plan 总分只差 0.06、单维差 ±1.0，这个数字没有分辨力。
-
-### 净预算
-
-**每一个被修订的镜头**，`removedActions[]` 条目数都必须 **>=** `addedActions[]`，诊断码 `REVISION_NET_ACTION_BUDGET_EXCEEDED`。服务端只数数组长度，不听模型自述。
-
-**2026-09-06 由「只约束被判过 pacing / ai_risk 的镜头」收紧为无例外的全局默认。** 依据是真实修订输出回放：A03 删 0 加 1、A07 删 3 加 4、A08 删 0 加 1 全部净增而旧规则一条都没拦住；这三镜的报告条目恰恰全是「要求加内容」，所以「只在没被要求加内容时才约束」的折中同样一个都拦不住。
-
-事前用提示词约束「不许往挤的镜头加动作」三次加码全部无效（模型最终改口称「均并入原有动作链，不增加独立动作段」），因为**「一个动作」没有客观定义**，判定权在模型手里就永远有解释空间。显式台账把判定权拿走。实测两个模型第一次都被拦（删 2 加 7 / 删 2 加 4），带算术诊断重试一次后都一次通过，且结果更好。
-
-**因此第一次被拦是常规路径。** 预算固定 2 次 provider 调用，第二次仍被拦即 fail closed，保留原 Plan 并如实报出两次诊断。**禁止第三次重试。**
-
-判定只有一份：`revisionShotLoad()` 同时供提示词的每镜预算行与校验器的硬闸门使用。同一镜同时被要求减负与加内容时判为**冲突镜头（只准替换）**——上一轮事故正是这个形状。镜头归属只认结构化的 `affectedPaths` / `evidencePaths`，仅当两者都解析不出镜头时才回退到 `problem` 正文里的镜头号。
-
-### 合并与复验
-
-模型只写七个字段（`videoPrompt`/`cameraMotion`/`characterAction`/`dialogueOrSubtitle`/`soundDesign`/`continuityNotes`/`acceptanceCriteria`）；六个签发字段出现即拒绝。合并按可写字段逐个覆盖，签发字段由构造保证不变，并另有断言证明可写字段之外逐字节不变。返回未授权镜头即 `REVISION_SHOT_OUT_OF_SCOPE`。
-
-合并结果必须**在签发之前**通过 `ensureAnimationPlanDirectShotContract` 与背景音乐收尾句校验——采纳时签发的就是这份合并结果。只支持 direct_shot Plan；旧 v2 首尾帧 Plan 明确失败。
-
-### 先预览，确认后签发
-
-修订返回后**不自动写回 Plan**。用户点「采纳」才签发新 Plan revision 与 media namespace、递归 stale 该变体已生成的全部媒体。实测修订第一次输出常常要被打回，自动签发会造成大量无谓的 revision 与媒体作废。采纳前复核 `sourcePlan` 与当前 Plan 是否仍逐字相同，不同即作废本次修订。
-
-### 没有确定性兜底的两条
-
-**执行者反转**（建议写「甲替乙」被写成「乙替甲」，方向一反建议就作废）只能靠人工在预览时看。
-
-**一换一但复杂度暴涨**：净预算数条目数不数复杂度。实测 A02 删 1 加 1 合规通过，而删的是一条很轻的背景强调、加的是一条明显更复杂的动作链——开这个方子的是终审自己（UP-04 的 `netActionBudget` 原文就是这么写的），修订只是照做。是否再数一层总字数、或约束终审不得开出「新增动作链」的方子，是未决的取舍。**不得改成让模型自报 `actionComplexity`（把判定权还给模型），也不得拿维度分数当门槛（单维分辨力最差，同一份 Plan 两个模型能差 ±1.0）。**
-
-### timeout
-
-两个阶段都配 `requestTimeoutMs: 1800000`（终审实测最长 941 秒，修订 233–775 秒）。此前 `resolveStage` 解析出的该值没有任何阶段传下去，终审配的 1800000 完全没生效；现已在 `generateStageJson` → `generateValidatedJson` → client 之间接通，其余阶段该值为 `null`、行为不变。不动全局默认值。
-
-**换模型兜底尚未实现**：落地方案已决定「评审允许换模型但必须写明」，两个阶段目前都还没做，不要按已实现推断。
 
 ---
 
@@ -696,13 +666,13 @@ Animation Plan 之后的两段式验收，与剧情体检同规格：**只出报
 - **流不完整必须失败，绝不返回半截内容。** 读到流结束但既没有 `[DONE]` 也没有任何 `finish_reason` 时抛 `MODEL_STREAM_INCOMPLETE`。返回半截内容会让残缺 JSON 被下游报成「JSON 格式错误」，把传输问题伪装成模型输出问题。
 - 该错误码在 `classifyAttemptError` 里**必须单独分类**为 `category: "transport"` + `retryable: true`。不单独分类会落到 `ModelResponseError` 的兜底分支（`status=0` → `protocol` 且 `retryable: false`），把可重试的网络中断变成不可重试的协议错误。
 - **禁止非流式自动回退。** 流式失败就如实报错——自动降级是第五节第 4 条的「失败时返回默认值」。
-- **流式请求只判空闲，不设总时长（2026-09-23）。** Qwen 与 MiMo 从发出请求起，**连续** `streamIdleTimeoutMs`（`QWEN_STREAM_IDLE_TIMEOUT_MS` / `MIMO_STREAM_IDLE_TIMEOUT_MS`，默认 120 秒）没有收到任何东西才中断；等响应头也按这个判，响应头、正文、`reasoning_content`、SSE 心跳注释都算「有数据」。`requestTimeoutMs`（全局与按阶段覆盖，含分镜终审/定向修订的 1800000）对这两家**不再生效**，只约束非流式的 DeepSeek——它等待期间本来就没有数据，区分不了「在算」与「挂了」。依据是 2026-09-22 MiMo 候选阶段：流一直活着、已收到 6929 个推理数据块，仍在 900 秒整被 `AbortSignal.timeout` 切断。生成总长度已由 max tokens 封顶，不需要墙钟再兜一次。等响应头超时仍是 `TimeoutError`（`MODEL_TIMEOUT`）；读流途中超时报 `MODEL_STREAM_IDLE_TIMEOUT`，与 `MODEL_STREAM_ABORTED` 同为可重试的 transport。计时器只有一份，在 `src/stream-idle-timeout.js`。Durable watchdog 在调用前按「空闲超时 + 120 秒宽限」排期（不少于 300 秒无进展窗口），读流期间每 10 秒心跳续期。
+- **流式请求只判空闲，不设总时长（2026-09-23）。** Qwen 与 MiMo 从发出请求起，**连续** `streamIdleTimeoutMs`（`QWEN_STREAM_IDLE_TIMEOUT_MS` / `MIMO_STREAM_IDLE_TIMEOUT_MS`，默认 120 秒）没有收到任何东西才中断；等响应头也按这个判，响应头、正文、`reasoning_content`、SSE 心跳注释都算「有数据」。`requestTimeoutMs`（全局与按阶段覆盖）对这两家**不再生效**，只约束非流式的 DeepSeek——它等待期间本来就没有数据，区分不了「在算」与「挂了」。依据是 2026-09-22 MiMo 候选阶段：流一直活着、已收到 6929 个推理数据块，仍在 900 秒整被 `AbortSignal.timeout` 切断。生成总长度已由 max tokens 封顶，不需要墙钟再兜一次。等响应头超时仍是 `TimeoutError`（`MODEL_TIMEOUT`）；读流途中超时报 `MODEL_STREAM_IDLE_TIMEOUT`，与 `MODEL_STREAM_ABORTED` 同为可重试的 transport。计时器只有一份，在 `src/stream-idle-timeout.js`。Durable watchdog 在调用前按「空闲超时 + 120 秒宽限」排期（不少于 300 秒无进展窗口），读流期间每 10 秒心跳续期。
 - **输出上限放到实测最大值，死循环改由边收边查截停（2026-09-24，取代 09-23 的「统一默认 32768、调大而不取消」）。** MiMo 全局、剧情、动画默认 131072（页面提供的 5 个型号 v2.5、v2.5-pro、v2.6-flash、v2.6-pro、v2.6-pro-ultraspeed 用极小请求实测全部接受，v2.6-pro 不带该参数时默认也是它），Qwen 全局与各阶段默认 65536（09-23 实测接受）；DeepSeek 非流式、中途看不到内容，仍是 32768。数值与依据只有一份，在 `src/output-token-ceilings.js`。09-23 那条的理由是「上限是模型陷入重复输出时唯一的刹车」，现在刹车换成了下一条的逐字重复检测，上限只剩「不重复但极长」这一种情况的兜底。起因：09-23 回放里 MiMo 开思考跑候选推理了 2.9 万 token 被 32768 截断、整次作废，那不是死循环，是本来就长。MiMo 的上限包含推理 token，千问看起来不含（未对照官方文档）。**重试抬额度一律「只抬不降、不超上限」**（`growOutputTokenLimit`）：此前 MiMo 客户端与 coordinator 的重试把结果夹在 32768，默认一抬高，重试反而会把上限压回去；请求里本来没写上限时重试也保持不写，让客户端默认生效（旧逻辑会把它变成 12288）。coordinator 不知道供应商是谁，只抬到三家都实测接受的 65536。
 - **流式输出陷入逐字重复时主动中断（2026-09-24）。** 共用的 `readSseCompletion` 对正文与推理各自每新增 1000 字检查一次最后 2000 字：末尾一段不超过 80 字符的单元首尾相接重复、连续覆盖不少于 60%，就关掉连接（`reader.cancel`，别让供应商继续吐、继续计费），抛 `MODEL_OUTPUT_DEGENERATE`，消息写明是正文还是推理、重复单元与次数；**绝不返回半截内容**。判定只有一份，在 `src/output-degeneration.js`，只看形状、不看内容好坏，不引入第二个模型。两个客户端都必须在「中途断开 → `MODEL_STREAM_ABORTED`」分支**之前**识别它，否则主动叫停的死循环会被当成网络中断。`classifyAttemptError` 归为 `category: "degeneration"`、`retryable: true`，与截断同口径：只在各阶段已有的重试预算内再试，不新增重试路径，截断专用的「要求压缩、抬额度」不对它生效。离线验证（`scripts/output-degeneration-replay.mjs`，扫 debug 全部 model-output）：08-30 那 12 份陷入重复的完整剧情 12/12 命中，而且都在读到第 2000 字时就判出（那批在约 490 字处就开始打转）；2184 份正常结束的输出误报 0。**它抓不到**：不逐字重复的「越想越长」、换着措辞兜圈子；推理流从来没有落盘，手里没有推理陷入循环的样本，对推理流是否有效没有验证过，那一侧仍靠上限兜底。死循环没法在真实模型上故意触发，这一路只有单元测试与离线回放证明有效。依据与回放见 `docs/output-degeneration-2026-09-24.md`。
 - **截断必须在解析 JSON 之前判定（2026-09-23）。** `finish_reason === "length"` 时三家 client 的 `generateJson` 一律抛 `MODEL_OUTPUT_TRUNCATED`（`assertCompletionNotTruncated`，`src/mimo-client.js` 一份），消息写出截断前的正文字数与 completion token 数。此前只有 Qwen 判了，MiMo 与 DeepSeek 把截断报成「未返回严格 JSON」：实测 MiMo 候选阶段 16384 额度全部用在推理上、正文 0 字，用户看到的却是 JSON 格式错误。
 - **内容审核拦截同样在解析 JSON 之前判定，且不自动重试（2026-09-23）。** `finish_reason === "content_filter"` 时三家 client 的 `generateJson` 与 `ModelCallCoordinator` 一律抛 `MODEL_CONTENT_FILTERED`（`assertCompletionNotContentFiltered`，`src/mimo-client.js` 一份），`classifyAttemptError` 归为 `category: "content-filter"`、`retryable: false`；client 内的 JSON 内容重试循环也不会碰它（判定放在 try 之外）。消息写明被审核拦截、已输出多少 token、供应商原文，并说明「审核结果不稳定，同一提示词重试常能通过；系统不会自动重试」。实测 MiMo 候选阶段推理 10534 token 后被拦，正文只有「The request was rejected because it was considered high risk」，此前被报成「未返回严格 JSON」并按可重试处理——那等于在第三方安全闸门上「问到放行为止」，与 §2.6 视频审核 `1027` 同一原则：是否再跑由用户显式决定。
 - `delta.reasoning_content` 单独收集，**绝不混进正文**；`usage` 只在最后一个数据块里返回，缺 `stream_options` 就拿不到 token 记账。
-- **`terminated` 的包装判据是「收到过任何数据块」，不是「收到过正文」（2026-09-07）。** 连接中途被对端切断时 qwen-client 把它包装成 `MODEL_STREAM_ABORTED`；判据原为 `partialContentLength > 0`，而上一条明写 `reasoning_content` 不算正文——qwen3.8-max 实测 **82% 的 completion token 是推理**（`reasoning_tokens` 23449 / `completion_tokens` 28466），于是推理期断线时正文长度仍是 0，裸 `TypeError` 漏出包装、一路冒到 HTTP 层变成不可重试的 500。实测两次终审失败（158 秒、649 秒）都是这个形状：流一直活着、模型一直在推理。判据改为 `partialChunks > 0`；分类器逐字未改。**只改包装条件，不改「流不完整必须失败」的结论**，半截内容仍绝不当结果返回。
+- **`terminated` 的包装判据是「收到过任何数据块」，不是「收到过正文」（2026-09-07）。** 连接中途被对端切断时 qwen-client 把它包装成 `MODEL_STREAM_ABORTED`；判据原为 `partialContentLength > 0`，而上一条明写 `reasoning_content` 不算正文——qwen3.8-max 实测 **82% 的 completion token 是推理**（`reasoning_tokens` 23449 / `completion_tokens` 28466），于是推理期断线时正文长度仍是 0，裸 `TypeError` 漏出包装、一路冒到 HTTP 层变成不可重试的 500。实测两次（已删除的）分镜终审失败（158 秒、649 秒）都是这个形状：流一直活着、模型一直在推理。判据改为 `partialChunks > 0`；分类器逐字未改。**只改包装条件，不改「流不完整必须失败」的结论**，半截内容仍绝不当结果返回。
 - 解码必须用 `TextDecoder` 的 `{ stream: true }`：一个汉字的 UTF-8 字节可能被拆到两个数据块，对每块单独解码会产生乱码。
 - 返回形状与非流式**逐字一致**的 7 个字段：`content` / `finishReason` / `requestId` / `usage` / `providerName` / `model` / `raw`。`providerName` 被 `model-call-coordinator` 与 `workflow` 用于错误归属，`model` 用于用量记账，漏掉会静默降级到回退值。
 - 测试 mock 必须发 SSE，判定只有一份在 `test/helpers/sse-response.js`。三个 client 共用同一个 baseUrl 的 mock 按请求自报的 `stream` 决定响应格式，与真实服务器一致。
@@ -722,7 +692,6 @@ DeepSeek 当前只允许用于纯文本阶段：
 - Variants
 - Legacy Full Story
 - Animation Plan
-- Static Frame Compiler（仅旧 v2 兼容路径）
 
 禁止将 DeepSeek 用于需要图片或视频输入的阶段：
 
@@ -745,17 +714,17 @@ DeepSeek 当前只允许用于纯文本阶段：
 
 上述 Creative Brief 来源字段与 `sourceSimilarityRules` 都只是原片表面表达的 provenance，不是 Variants、Legacy Full Story 或 Animation Plan 的正文禁词。原片道具、拟声词和角色组合允许按当前选定剧情出现在任意正向业务字段，包括 `visibleAction`、对白、声音以及 `videoPrompt`；但不得仅因它们存在于来源上下文就机械注入下游内容。`sourceSimilarityRules` 只在实际生成请求确实携带原片参考时，为 `reference_leak` 提供证据；不得据此扫描或拒绝无原片参考的正文。`dialogueRules` 只能来自用户明确约束，不得把原片对白或拟声词自动提升为对白规则。该放行不改变 `fixedCharacterBoundary` 的优先级：固定主角的签发身份与外观仍是硬边界，复用原片角色组合不授权改写固定主角。
 
-服务端签发的 `fixedCharacterBoundary` 是后续 Variants、Legacy Full Story、Animation Plan、人物参考精修、角色图、视频生成，以及旧 v2 兼容路径中 Character Feature Compiler 和首尾帧生成的唯一固定角色事实来源。后续阶段不得重新解析 `creatorProfile.fixedCharacter`、重新推断关键词或生成第二份角色边界。角色边界的**事实来源唯一，但执行力度分两档**：角色参考阶段（`/api/refine-character-reference` 的精修结果、`/api/generate-character-reference-images` 的 `characterReference` 与用户可编辑 prompt）遇到偏差只回传提醒不阻断，服务端仍完整判定并把偏差原文放进 `boundaryWarning` 或 `boundary-warning` 流事件，浏览器以警告色展示、照常完成本次操作，用户不必重新上传；依据是本节的「用户明确肯定/否定 > 已签发模型推断」。`boundaryWarning` 只用于展示，写回 Plan 前必须剥离，不进入 Artifact。人物参考精修允许按参考图改写 `appearancePrompt`，但不得因此丢掉全局必需角色事实——判定是字面比对，「穿着适合户外写生的村民服装」换成具体衣物后 identity 类的「村民」就没了。精修提示词必须逐条列出每条 `requiredTraits` 的可接受写法，并说明身份、性格、职业、剧情功能类事实写进 `identity` 或 `consistencyTags` 同样算数；服务端返回前用与判定共用的扫描口径补回缺失事实，只能在 `consistencyTags` 尾部按签发顺序追加 exact `canonicalName`，冻结 `appearancePrompt`，且**只覆盖非 `appearance` scope**：外观必需事实缺失是模型真把长相写错了，必须继续提醒并在成片渲染前硬失败。补写结果经展示用 `boundaryRestoreNotice` 如实回报，写回 Plan 前剥离。人物参考精修的**冲突优先级同样分两档**：`/api/refine-character-reference` 遇到参考图与文字设定冲突时，配角（非固定角色）以用户上传的参考图为准，按图改写 `appearancePrompt` / `consistencyTags` / `forbiddenChanges`，即使图中明显是另一种角色也照图改写，不得以「与当前角色不符」为由放弃采用；`characterName` 与 `storyRole` 承担的剧情功能不变，变的只是外观——依据是本节的「用户明确肯定/否定 > 已签发模型推断」，配角的文字设定本身是模型推断产物，上传图片则是用户的明确动作。固定角色仍以已签发 `fixedCharacterBoundary` 为准，参考图只能补充不冲突的细节，否则失败只会被推迟到成片渲染的 `ensureCharacterReferenceMatchesBoundary`。覆盖结果由模型写进 `referenceImageOverrideNotice`，与 `boundaryWarning` 同规格：只用于展示，写回 Plan 前必须剥离，不进入 Artifact；固定角色路径一律丢弃该字段。分档判定只用 `characterName` 与边界名的身份比较，不新建第二套词表。成片渲染链路（`/api/generate-shot-video`、`shot-video-generator` 的 `effectiveVideoPrompt`、旧 v2 首尾帧 `/api/generate-shot-frame-image`）仍然硬失败，`ensureCharacterReferenceMatchesBoundary` / `ensureCharacterPromptMatchesBoundary` 的抛错语义逐字不变；只提醒的三处改调同一判定的收集器 `characterReferenceBoundaryMismatch` / `characterPromptBoundaryMismatch`，判定规则只有一份，禁止另建第二套词表。
+服务端签发的 `fixedCharacterBoundary` 是后续 Variants、Legacy Full Story、Animation Plan、人物参考精修、角色图与视频生成的唯一固定角色事实来源。后续阶段不得重新解析 `creatorProfile.fixedCharacter`、重新推断关键词或生成第二份角色边界。角色边界的**事实来源唯一，但执行力度分两档**：角色参考阶段（`/api/refine-character-reference` 的精修结果、`/api/generate-character-reference-images` 的 `characterReference` 与用户可编辑 prompt）遇到偏差只回传提醒不阻断，服务端仍完整判定并把偏差原文放进 `boundaryWarning` 或 `boundary-warning` 流事件，浏览器以警告色展示、照常完成本次操作，用户不必重新上传；依据是本节的「用户明确肯定/否定 > 已签发模型推断」。`boundaryWarning` 只用于展示，写回 Plan 前必须剥离，不进入 Artifact。人物参考精修允许按参考图改写 `appearancePrompt`，但不得因此丢掉全局必需角色事实——判定是字面比对，「穿着适合户外写生的村民服装」换成具体衣物后 identity 类的「村民」就没了。精修提示词必须逐条列出每条 `requiredTraits` 的可接受写法，并说明身份、性格、职业、剧情功能类事实写进 `identity` 或 `consistencyTags` 同样算数；服务端返回前用与判定共用的扫描口径补回缺失事实，只能在 `consistencyTags` 尾部按签发顺序追加 exact `canonicalName`，冻结 `appearancePrompt`，且**只覆盖非 `appearance` scope**：外观必需事实缺失是模型真把长相写错了，必须继续提醒并在成片渲染前硬失败。补写结果经展示用 `boundaryRestoreNotice` 如实回报，写回 Plan 前剥离。人物参考精修的**冲突优先级同样分两档**：`/api/refine-character-reference` 遇到参考图与文字设定冲突时，配角（非固定角色）以用户上传的参考图为准，按图改写 `appearancePrompt` / `consistencyTags` / `forbiddenChanges`，即使图中明显是另一种角色也照图改写，不得以「与当前角色不符」为由放弃采用；`characterName` 与 `storyRole` 承担的剧情功能不变，变的只是外观——依据是本节的「用户明确肯定/否定 > 已签发模型推断」，配角的文字设定本身是模型推断产物，上传图片则是用户的明确动作。固定角色仍以已签发 `fixedCharacterBoundary` 为准，参考图只能补充不冲突的细节，否则失败只会被推迟到成片渲染的 `ensureCharacterReferenceMatchesBoundary`。覆盖结果由模型写进 `referenceImageOverrideNotice`，与 `boundaryWarning` 同规格：只用于展示，写回 Plan 前必须剥离，不进入 Artifact；固定角色路径一律丢弃该字段。分档判定只用 `characterName` 与边界名的身份比较，不新建第二套词表。成片渲染链路（`/api/generate-shot-video`、`shot-video-generator` 的 `effectiveVideoPrompt`）仍然硬失败，`ensureCharacterReferenceMatchesBoundary` / `ensureCharacterPromptMatchesBoundary` 的抛错语义逐字不变；只提醒的三处改调同一判定的收集器 `characterReferenceBoundaryMismatch` / `characterPromptBoundaryMismatch`，判定规则只有一份，禁止另建第二套词表。
 
 **边界不得同时要求与禁止同一特征，判定是单向子串包含（2026-09-06）。** `validateGlobalCharacterBoundary`（`src/validation.js`）对每个 required term `R` 与 forbidden term `F`，`R.includes(F)` 即硬失败，错误消息同时点名两端（`required「无头饰」包含 forbidden「头饰」`），只列一端时用户无法判断该改哪边。这条不变量此前就存在，但写成 `Set.has()` 的精确相等，而下游全部扫描器（`hasForbiddenOccurrence`、`findMissingGlobalCharacterTraits`）用的是 `text.indexOf` 子串——守卫与扫描器口径不一致，是 2026-09-05 Full Story 连续三次失败（约 7.6 万 token、6.2 分钟）的唯一共因：用户写「无头饰，但头顶有一个光环」，Guardrails 同时签出 requiredTrait「无头饰」与 forbiddenTrait「头饰」，Full Story 模型把那份 requiredTraits 清单几乎逐字抄进 `characterBible.protagonist.traits`（上游叫 requiredTraits，Story 字段就叫 traits），它是在服从边界。改后同一份数据在 `assertGlobalCharacterBoundary` 就失败，0 次 provider 调用、2 毫秒。
 
 判定**必须单向**：required 文本里必然出现 `R`，若 `F ⊆ R`，服从 required 就自动违反 forbidden，无解；反过来 `R ⊆ F` 完全合法——「猫耳少女」含 required「猫耳」而不含 forbidden「非猫耳动物器官」。回扫 95 份已签发边界，正方向碰撞 3 份（`无头饰⊃头饰`、`无兽尾⊃兽尾`、`浅灰蓝色长发⊃蓝色长发`），反方向碰撞 14 份且全部合法（`去除猫耳特征⊃猫耳`、`非嗷呜拟声词⊃嗷`），双向判定会误杀 15%。`allowedTraits` 方向碰撞为 0，不扩大范围。否定型（`无头饰⊃头饰`）在角色参考链路被 `allowNegativeContext: true` 救下、只在 strict 扫描致命，而正向型（`浅灰蓝色长发⊃蓝色长发`）没有任何兜底：边界把某个必需事实的可接受写法之一与禁止写法重叠，按边界自己认可的拼法写就在成片渲染前硬失败，此前静默通过只因模型碰巧选了另一个拼法。
 
-`visualGuardrailsPrompt` 配套加了两条生成约束：任何 requiredTrait 的 canonicalName 与 terms 都不得包含任一 forbiddenTrait 的写法；否定短语（「无 X」「没有 X」）只写进 `forbiddenTraits`，不写进 `requiredTraits`——禁止清单本身就表达「不得出现 X」。守卫是 fail closed，没有配套指引会变成反复拒绝而模型不知道怎么改。这不是降低校验标准，是让一条已被接受的契约按自己的语义生效，判定为纯字符串包含、不含语义判断。已签发的旧边界仍可加载查看，只在生成新的下游阶段被拒（所有调用点都是生成路径），与已下线提示词方言的处理同型。
+`visualGuardrailsPrompt` 配套加了两条生成约束：任何 requiredTrait 的 canonicalName 与 terms 都不得包含任一 forbiddenTrait 的写法；否定短语（「无 X」「没有 X」）只写进 `forbiddenTraits`，不写进 `requiredTraits`——禁止清单本身就表达「不得出现 X」。守卫是 fail closed，没有配套指引会变成反复拒绝而模型不知道怎么改。这不是降低校验标准，是让一条已被接受的契约按自己的语义生效，判定为纯字符串包含、不含语义判断。已签发的旧边界仍可加载查看，只在生成新的下游阶段被拒（所有调用点都是生成路径）。
 
 **`characterName` 能从用户输入唯一推导，提示词必须把它说出来（2026-09-19）。** `ensureVisualGuardrailsMatchesProfile` 要求 `fixedCharacterBoundary.characterName` 逐字等于 `extractFixedCharacterName(creatorProfile.fixedCharacter)`，而 `visualGuardrailsPrompt` 此前从没给出这个名字，也没说创作限制里的其它角色不属于这份边界，模型只能猜。实测《累了就歇会》（参考片是两个女孩并排躺着分橘子，创作限制里写着固定搭档「芙芙猫」）批量回放 5 次卡在这一步，5/5 把名字写成「小白子与芙芙猫」、`bodyForm` 写成「人类少女与小猫」，并把芙芙猫的卷发、猫耳、猫尾签成小白子的 requiredTraits，来源还标成 `creatorProfile.fixedCharacter`；同一批另外 3 次通过的边界也 3/3 把「芙芙猫搭档」标成出自固定角色一栏。这条检查拦得对，不得放宽成子集或包含匹配：放宽后那份边界会签发出去，下游角色参考与成片渲染会要求小白子长猫耳猫尾。
 
-现在提示词用同一个函数取名并逐字给出（取不出名字时不给——那时校验器也不核对名字）；写明创作限制、`creativeBrief` 与原片里的其它角色（固定搭档、宠物、家人、路人）不进 `characterName` / `canonicalDescription` / `bodyForm`，它们的外观与身体特征不进三份 traits；证据出自创作限制时 `sourcePath` 写 `creatorProfile.constraints`。规则只写抽象形状、不含任何具体角色名，名字是运行时插值。判定逐字不变，报错补上模型实际写的名字。演示数据的 `mockVisualGuardrails` / `mockFullStory` / `mockAnimationPlan` 此前各自按逗号切名字、不认冒号，「名字：描述」写法在演示模式第一步就被拦，现在都改调 `extractFixedCharacterName`，并由一条跑通整条演示链的测试锁住。已知局限：「固定角色」一栏只登记一个角色，写两个名字时边界只围绕取出的那一个，多固定角色属于 Character Registry / Cast，未实现；模型照不照做没有新增的确定性兜底，这一阶段仍是单次调用、被拦不重试。真实回放过了事先登记的线：同一份上游、同一个模型，《累了就歇会》改前 4/4 失败、改后 6/6 通过（线是 ≥5/6），回归《打枣》《一份长途》4/4；芙芙猫外观被签成小白子特征 0/10，搭档条目来源标成固定角色一栏 0/10。只有 3 个参考片、1 份创作设定，且《累了就歇会》本身是设计样本；数据与局限见 `docs/待解决项.md` 第 15 条。
+现在提示词用同一个函数取名并逐字给出（取不出名字时不给——那时校验器也不核对名字）；写明创作限制、`creativeBrief` 与原片里的其它角色（固定搭档、宠物、家人、路人）不进 `characterName` / `canonicalDescription` / `bodyForm`，它们的外观与身体特征不进三份 traits；证据出自创作限制时 `sourcePath` 写 `creatorProfile.constraints`。规则只写抽象形状、不含任何具体角色名，名字是运行时插值。判定逐字不变，报错补上模型实际写的名字。演示数据的 `mockVisualGuardrails` / `mockFullStory` / 当时的 `mockAnimationPlan`（已随 3.0 删除）此前各自按逗号切名字、不认冒号，「名字：描述」写法在演示模式第一步就被拦，现在都改调 `extractFixedCharacterName`，并由一条跑通整条演示链的测试锁住。已知局限：「固定角色」一栏只登记一个角色，写两个名字时边界只围绕取出的那一个，多固定角色属于 Character Registry / Cast，未实现；模型照不照做没有新增的确定性兜底，这一阶段仍是单次调用、被拦不重试。真实回放过了事先登记的线：同一份上游、同一个模型，《累了就歇会》改前 4/4 失败、改后 6/6 通过（线是 ≥5/6），回归《打枣》《一份长途》4/4；芙芙猫外观被签成小白子特征 0/10，搭档条目来源标成固定角色一栏 0/10。只有 3 个参考片、1 份创作设定，且《累了就歇会》本身是设计样本；数据与局限见 `docs/待解决项.md` 第 15 条。
 
 
 `groundingSeal` 与 `fixedCharacterBoundary.boundarySignature` 所用的两把密钥必须持久化在状态根目录（`.grounding-key` / `.character-boundary-key`，可由 `WORKFLOW_GROUNDING_KEY` / `WORKFLOW_CHARACTER_BOUNDARY_KEY` 覆盖），跨进程重启保持不变。缺失即生成，损坏、长度不足或环境变量非法一律硬失败，**禁止静默回退为随机生成**——换钥会让全部已落盘 Artifact 的签名作废。已落盘 Artifact 不得用新密钥重新签发。
@@ -770,11 +739,9 @@ DeepSeek 当前只允许用于纯文本阶段：
 
 当前主流程中，任何已经解析为候选对象的模型内容错误都不得通过“把完整失败 Artifact 发回模型并要求整包重写”恢复。只有 validator 输出稳定 `code + RFC 6901 JSON Pointer + reason`，候选完整、目标已存在、事实来源唯一且对应 stage adapter 明确授权时，才允许签发一次有界局部纠错。没有可信 diagnostics、没有唯一权威、整个对象/数组项丢失、候选非对象或 adapter 不支持时必须 fail closed；不得解析人类错误消息猜 path，也不得自动扩大可写范围。
 
-当前生产纠错由一个 Full Story 专用协议、两个确定性 Animation adapter 和一个语义 Prompt adapter 组成：Legacy Full Story 仅支持由签发固定角色边界唯一恢复 protagonist `name` 的安全子集，使用 `full_story_partial_repair/1.0`；Animation Foundation 固定角色安全子集使用 `artifact_partial_repair/1.0`；证据绑定审计确认全部结构化 shot facts 通过后，纯 `videoPrompt` 实质冲突可使用 `animation_video_prompt_semantic_repair/1.0`。服务端独占私有签发身份、`baseDigest`、authorityDigest、repairId、目标 path、mutablePointers 与 authority；模型取得的序列化计划不能作为可合并计划。第二次模型请求只发送目标 currentValue、diagnostics、修复说明和最小权威投影。模型只能返回等量、同序 `{repairId,replacement}`，不能返回 path、op、完整 Artifact 或额外字段。服务端必须在 clone 上原子合并，证明目标内未授权事实与全部目标外数据不变，重新投影并验证当前 authority，并从头执行该阶段完整 Schema、角色、剧情与跨字段校验。语义 Prompt 修复另允许且只允许一次相邻镜头复审；复审失败即终止，不得再次修复或整包 fallback。
+当前生产纠错只有一个 Full Story 专用协议：Legacy Full Story 仅支持由签发固定角色边界唯一恢复 protagonist `name` 的安全子集，使用 `full_story_partial_repair/1.0`（protagonist `name` 缺失/类型错误/空字符串且验签边界提供唯一姓名）。Animation Foundation 的 `artifact_partial_repair/1.0`、语义 Prompt 修复 `animation_video_prompt_semantic_repair/1.0` 与镜头台词补写 `animation_shot_dialogue_repair/1.0` 已随旧 3.0 分镜删除，不得重新引入；4.0 自主分镜不做局部纠错，只带诊断整体重做一次。服务端独占私有签发身份、`baseDigest`、authorityDigest、repairId、目标 path、mutablePointers 与 authority；模型取得的序列化计划不能作为可合并计划。第二次模型请求只发送目标 currentValue、diagnostics、修复说明和最小权威投影。模型只能返回等量、同序 `{repairId,replacement}`，不能返回 path、op、完整 Artifact 或额外字段。服务端必须在 clone 上原子合并，证明目标内未授权事实与全部目标外数据不变，重新投影并验证当前 authority，并从头执行该阶段完整 Schema、角色、剧情与跨字段校验。
 
-当前覆盖只包括：Legacy Full Story 中 protagonist `name` 缺失/类型错误/空字符串且验签边界提供唯一姓名；Animation Foundation 中唯一固定角色参考的 `requiredTraits` 缺失/禁止特征命中；以及审计 V2 证明结构化事实全部通过后的纯 `videoPrompt` 实质冲突。
-
-Foundation 仅缺必需事实时必须冻结 `appearancePrompt` 和已有 `consistencyTags`，只允许在标签尾部按签发顺序追加缺失 trait 的 exact `canonicalName`，不能用同义 term、重排或改写外观代替；禁止词诊断只授权实际命中的字段做最小删除，混合错误的缺失事实仍只能进入标签。判定禁止特征时必须放行否定语境：角色参考写「无翅膀、无企鹅服装」是给图像模型的否定约束，不构成使用该特征；执行删除时必须连同紧邻否定词一并剥离，否则正文会留下「无、无」这类孤儿否定，合法的最小删除将永远无法通过守卫。Full Story 的未知正文错位、配角姓名或身份错误、`characters` 与 `visibleAction`/`dialogue` 的跨字段冲突，以及没有签发值来源的必填剧情字段必须 fail closed，不能让模型通过猜字段、改名、删对白、删动作或另编剧情消除校验错误。语义 target 只允许完整替换已签发镜头的 `videoPrompt`，全部非 Prompt 字段及未命中镜头逐字冻结。结构化 `characterAction`、`cameraMotion`、`continuityNotes` 或其他 shot fact 本身与高层权威冲突时，不得借修 Prompt 掩盖，必须明确失败。其他已解析内容错误当前直接失败，不能宣称已被自动纠正；唯一的再取证例外是 `referenceAnalysis` 原生视频候选仅因 `VIDEO_EVIDENCE_TIME_INVALID` 失败且已有关键帧时，系统丢弃该候选并用既有 frames 重取一次，不发送失败 Artifact，也不属于 repair。网络、鉴权、429、timeout、lineage stale、签名失效同样不是内容 repair。旧 v2 首尾帧兼容路径不是当前 `direct_shot` 主流程，不能用其历史整批 retry 解释当前行为。
+Full Story 的未知正文错位、配角姓名或身份错误、`characters` 与 `visibleAction`/`dialogue` 的跨字段冲突，以及没有签发值来源的必填剧情字段必须 fail closed，不能让模型通过猜字段、改名、删对白、删动作或另编剧情消除校验错误。其他已解析内容错误当前直接失败，不能宣称已被自动纠正；唯一的再取证例外是 `referenceAnalysis` 原生视频候选仅因 `VIDEO_EVIDENCE_TIME_INVALID` 失败且已有关键帧时，系统丢弃该候选并用既有 frames 重取一次，不发送失败 Artifact，也不属于 repair。网络、鉴权、429、timeout、lineage stale、签名失效同样不是内容 repair。
 
 ### Legacy Full Story Beat–Scene 提交前复核
 
@@ -786,13 +753,13 @@ Legacy Full Story 另有一次与失败候选 repair 严格分离的 Beat–Scen
 
 复核返回 `blocked`、协议错误、供应商错误、越界 diff、非追加式改写或最终完整复验失败时必须 fail closed：不得保存原候选作为 fallback，不得发起第二轮复核，也不得扩大到整包重写。正常路径为 Full Story 初轮生成加一次复核，共 2 次 provider call；初轮若消耗唯一允许的 retry 或局部纠错调用，成功后再复核时整个 operation 最多 3 次，禁止第四次调用。append 合并在 clone 上完成，并从头重新执行 Full Story 全部校验；只有最终 unchanged 或合法追加后的 Story 提交一次 Artifact。初轮候选、复核响应和合并中间态都不是 Artifact、revision、Checkpoint 或第二份 Story 事实源。该 postpass 不扩展上述 partial-repair adapter，也不是 Full Story v2、Canonical Story 或通用 Auditor。
 
-每次服务端或 `run:video` 已成功签发 repair plan 后，必须在第二次 provider call 之前启动 `debug/partial-repairs/` 本地观测记录，并按触发、局部 Prompt、模型 replacement 投影、最终结果四阶段落盘。只允许写入命中 target 的 currentValue、结构化 diagnostics、最小 authority 与拒绝原因；禁止写入完整 Story/Foundation/Animation Plan、原始 HTTP 响应、Header、密钥、Cookie、Data URL 或 Base64 媒体。没有签发 plan 时不得创建记录。Debug 写入必须 fail-open 并只输出脱敏告警，不得改变 repair 的成功/失败、增加模型调用或回退保存 raw；这些文件不是 Artifact、Production Lineage、业务事实来源、恢复数据或导出包内容。
+每次服务端或 `run:video` 已成功签发 repair plan 后，必须在第二次 provider call 之前启动 `debug/partial-repairs/` 本地观测记录，并按触发、局部 Prompt、模型 replacement 投影、最终结果四阶段落盘。只允许写入命中 target 的 currentValue、结构化 diagnostics、最小 authority 与拒绝原因；禁止写入完整 Story/Animation Plan、原始 HTTP 响应、Header、密钥、Cookie、Data URL 或 Base64 媒体。没有签发 plan 时不得创建记录。Debug 写入必须 fail-open 并只输出脱敏告警，不得改变 repair 的成功/失败、增加模型调用或回退保存 raw；这些文件不是 Artifact、Production Lineage、业务事实来源、恢复数据或导出包内容。
 
 Full Story 另有一条与 partial-repair Debug 严格隔离的、服务端环境显式开启的全量模型输出日志。只有 `FULL_STORY_MODEL_OUTPUT_LOG_DIR` 为非空私有路径时，才允许把每次实时 Full Story primary、retry/repair 与 Beat–Scene postpass completion 的完整 `content` 按阶段原样落盘，并在日志 metadata 中保存明确的 `stage`；不得把请求 Prompt、HTTP 请求/响应包、Header、API Key、Cookie、Data URL 或 Base64 媒体一并保存。浏览器 Production token 只能通过旁路 Header 传递，服务端必须核对 current running stage 后分别记录 `productionRequestId` 与 `providerRequestId`，不得把 trace context 混入 Workflow input、Prompt、Full Story、Artifact 或导出包。目录位于 `public/` 时必须禁用。日志不截断模型 content，文件权限必须私有并原子写入；写入失败 fail-open，不得改变校验、repair、postpass、重试预算、lineage 或业务错误。为避开 Windows 长路径，目录可以使用 project/run、production request 与 operation 的稳定短摘要，但 `metadata.json` 必须保留完整标识；摘要不构成 lineage。该日志只是本机敏感观测 sidecar，不是第二份 Story、Production Lineage、恢复数据或事实来源。
 
-Animation Plan 原始 completion 使用独立的 `ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR` 与固定 `scope=animationPlan`。服务端必须在真实 `/chat/completions` 响应交给 JSON parser 前，从克隆响应中只提取 `choices[0].message.content`、finish reason、usage 数值和 provider requestId；不得保存或传递原始 HTTP envelope、请求 Prompt、Header、密钥或媒体。它必须覆盖首次 direct-shot Plan 的 Foundation、每批 shot、已实际调用的 H3 段落纠错、H3 语义 `videoPrompt` 修复、首次审计与复审，并以调用顺序/阶段标签区分；未发生的 repair 不得伪造记录。Production Header 只可在服务端核对 `animationPlan:<variantId>` current running stage、requestId 与 expected revision 后标记 verified；不匹配只能记为 unbound，不能搜索 Run 猜归属或阻断业务。输出观测失败必须 fail-open，不能改变 Response、provider 调用次数、validator、repair、Plan commit 或错误文字；日志仍不是 Artifact、事实源或恢复数据。
+Animation Plan 原始 completion 使用独立的 `ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR` 与固定 `scope=animationPlan`。服务端必须在真实 `/chat/completions` 响应交给 JSON parser 前，从克隆响应中只提取 `choices[0].message.content`、finish reason、usage 数值和 provider requestId；不得保存或传递原始 HTTP envelope、请求 Prompt、Header、密钥或媒体。它由 prompt capture 抓取分镜路由与单镜提示词路由里的每次调用（4.0 分镜各步与单镜提示词），按调用顺序记录；未发生的调用不得伪造记录。Production Header 只可在服务端核对 `animationPlan:<variantId>` current running stage、requestId 与 expected revision 后标记 verified；不匹配只能记为 unbound，不能搜索 Run 猜归属或阻断业务。输出观测失败必须 fail-open，不能改变 Response、provider 调用次数、validator、repair、Plan commit 或错误文字；日志仍不是 Artifact、事实源或恢复数据。
 
-十个阶段（Analyze、Reconstruct、创意简报、主题变体、候选对照评审、角色与表达边界、人物参考精修、剧情体检、分镜终审、定向修订）由第四套 sidecar `STAGE_MODEL_OUTPUT_LOG_DIR` 覆盖，按 stage 分 scope，成功与失败都记。前九个共用 `generateValidatedJson`，在 `STAGE_MODEL_OUTPUT_LOG_SCOPES` 注册即生效；**定向修订是唯一例外**——它走 `modelCallCoordinator`，由 `createAnimationPlanRevision` 自己接 `attemptObserver`，两次 provider 调用各留一条记录（第一次被净预算拦下是常规路径，原文必须留下）。剧情按问题修改（scope `storyQualityRepair`，2026-09-18）同样走 coordinator、由 `createStoryQualityRepair` 自己接 `attemptObserver`。 导演助手（scope `directorAgent`，2026-10-09）同样走 coordinator、由 `createDirectorAgentTurn` 自己接 `attemptObserver`。一句话修改（scope `oneSentenceEdit`，2026-10-11）同样走 coordinator、由 `createOneSentenceEdit` 自己接 `attemptObserver`。**scope 取值必须逐字等于 stage 名**：writer map 按 scope 建、按 stage 查，对不上就静默不写；2026-09-07 之前后三个阶段一个都没注册，导致终审 schema 失败时模型原文永久丢失，只能靠反推根因。原始 completion 由三个 client 的`requestJson` 通过可选 `onCompletion` 回调交出——回调只观测，抛错或 reject 一律吞掉，不得改变模型调用的成败；阶段判定复用已导出的 `classifyAttemptError`，错误 category/code 只保留一份来源，禁止另建映射。一次调用内 client 内部的 JSON 重试或视频退回逐帧各留一条记录，只有最后一条带本次阶段判定，更早的标记 `superseded`。这六个阶段在该层没有 lineage 上下文，记录一律落在 unbound 路径；`logContext` 的 verified 判定不得为此改动。其余约束（不写 Prompt/Header/密钥/媒体、私有权限、原子写、fail-open、不是 Artifact 或恢复数据）与前三套逐字一致。
+工作流各阶段由第四套 sidecar `STAGE_MODEL_OUTPUT_LOG_DIR` 覆盖，按 stage 分 scope，成功与失败都记；完整清单是 `server.js` 的 `STAGE_MODEL_OUTPUT_LOG_SCOPES`（参考视频链路各阶段、候选对照评审与命题修订、剧情体检与按问题修改、承诺核对、4.0 自主分镜六步 `storyboardCharacterFacts` / `storyboardDesign` / `storyboardReview` / `storyboardRevision` / `storyboardReviewFinal` / `shotVideoPrompt`、导演助手、一句话修改）。走 `generateValidatedJson` 的阶段在那里注册即生效；走 `modelCallCoordinator` 的阶段由调用方自己接 `attemptObserver`（自主分镜由 `storyboard-workflow.js` 的共用 `call()` 接，剧情按问题修改由 `createStoryQualityRepair` 接，导演助手由 `createDirectorAgentTurn` 接，一句话修改由 `createOneSentenceEdit` 接），每次 provider 调用各留一条记录。**scope 取值必须逐字等于 stage 名**：writer map 按 scope 建、按 stage 查，对不上就静默不写；2026-09-07 之前曾有阶段没注册，失败时模型原文永久丢失，只能靠反推根因。原始 completion 由三个 client 的`requestJson` 通过可选 `onCompletion` 回调交出——回调只观测，抛错或 reject 一律吞掉，不得改变模型调用的成败；阶段判定复用已导出的 `classifyAttemptError`，错误 category/code 只保留一份来源，禁止另建映射。一次调用内 client 内部的 JSON 重试或视频退回逐帧各留一条记录，只有最后一条带本次阶段判定，更早的标记 `superseded`。这些阶段在该层没有 lineage 上下文，记录一律落在 unbound 路径；`logContext` 的 verified 判定不得为此改动。其余约束（不写 Prompt/Header/密钥/媒体、私有权限、原子写、fail-open、不是 Artifact 或恢复数据）与前三套逐字一致。
 
 ---
 
@@ -1028,26 +995,21 @@ Prompt 级硬约束，**没有确定性校验兜底**——判断一句台词是
 
 ## Animation Plan
 
-当前主流程为显式 `animationPlanMode: "direct_shot"`，输出 `promptSchemaVersion: "3.0"`。shot 保留 `videoPrompt`、`cameraMotion`、`characterAction`、`dialogueOrSubtitle`、`soundDesign`、`continuityNotes` 等直接视频字段，禁止 `startFrame`、`endFrame`、`motion`、`startFramePrompt`、`endFramePrompt` 五个端点字段；`negativePrompts.image` 必须为 `[]`。
+只支持 4.0 自主分镜（契约见上文「当前主流程」与 `docs/animation-storyboard-implementation-2026-09-21.md`）；旧 2.0/3.0 不再支持，见「已删除的功能（2026-10-11）」。
 
-只有维护旧 v2 兼容路径、涉及 startFrame、endFrame、environment、motion、environmentChange、inherit 或 transition 的语义修改前，必须先阅读：
-
-`docs/animation-plan-source-of-truth.md`
-
-如果文档没有明确旧 v2 字段的事实来源和冲突优先级，
-不得自行补充解释或实施确定性修复。
 负责：
 
-直接视频渲染提示词
-角色动作、内部摄影/剪辑和声音设计
-镜头连续性与动画约束
+片段划分与时长
+beats 里的景别、机位、可见动作、对白与声音
+未指定的角色与地点外观设计
+镜头连续性
 
 不负责：
 
-拆镜（3.1 起镜头由 Full Story 场次确定性映射，Animation Plan 不再决定镜头数量）
 重新创作剧情
-修改角色身份
-改变故事主题
+修改核心因果与角色身份关系
+改变结局与故事主题
+写视频提示词（单镜提示词由 `shotVideoPrompt` 按需另写）
 
 ---
 
@@ -1103,9 +1065,9 @@ Full Story 输出必须满足：
 
 登记只豁免 `shotAndSound`，绝不豁免 `visibleAction`：实际参与本场的人物必须写进 `visibleAction`，所以无法靠登记声源隐藏一个出镜角色。同名同时出现在两个字段时抛 `FULL_STORY_SCENE_SOUND_SOURCE_ALSO_VISIBLE`，不自动选边；登记了却未被 `shotAndSound` 引用是合法的；名称精确性与 `characters` 共用同一份判定。该字段不在局部纠错可写范围内，postpass 必须逐字冻结；`dialogue[].speaker` 仍必须逐字存在于同场 `characters`。旧 Story 缺该字段时行为不变。
 
-`location` 只写本场实际发生的**可拍摄物理地点**，不是画风、光线或色调。`creatorProfile.vertical` 里的风格词不得流进 `location`：正确写法是「草地」，错误写法是「日系2.5D新海诚光景风格的草地」。视觉风格由下游 Animation Plan 的 `visualBible` 统一签发，在 Full Story 重复它会让每场地点看起来一模一样，反而丢掉地点本身的信息。
+`location` 只写本场实际发生的**可拍摄物理地点**，不是画风、光线或色调。`creatorProfile.vertical` 里的风格词不得流进 `location`：正确写法是「草地」，错误写法是「日系2.5D新海诚光景风格的草地」。视觉风格由下游 Animation Plan 统一设计（4.0 的 `visualDesign` 与签发的画风），在 Full Story 重复它会让每场地点看起来一模一样，反而丢掉地点本身的信息。
 
-**同类空间必须靠归属或方位区分开**，`location` 是唯一能承载这个信息的字段。Animation Foundation 被要求「相同地点应复用同一个 sceneId……不同地点不得错误合并」，而它判断「是不是同一个地点」的信号只有 `location` 与 `visibleAction`——后者按上面的规则不许写归属。两个不同的院子都写成「院子」，就会被合并成同一个 LOC、共用一套场景参考，渲染成同一个房间，**且没有任何校验器会报错**。回扫 124 份历史故事，62% 的 `location` 带归属称呼，剥掉后有 2.4% 出现真实碰撞（「院子」← 小白子家院子 / 小禾家院子；「门口」← 爷爷家门口 / 奶奶家门口）。
+**同类空间必须靠归属或方位区分开**，`location` 是唯一能承载这个信息的字段。下游分镜按它设计地点（4.0 的 `visualDesign.locations[]`），判断「是不是同一个地点」的信号只有 `location` 与 `visibleAction`——后者按上面的规则不许写归属。两个不同的院子都写成「院子」，就会被当成同一个地点、共用一套地点设计，渲染成同一个地方，**且没有任何校验器会报错**。回扫 124 份历史故事，62% 的 `location` 带归属称呼，剥掉后有 2.4% 出现真实碰撞（「院子」← 小白子家院子 / 小禾家院子；「门口」← 爷爷家门口 / 奶奶家门口）。
 
 该约束写在 `fullStoryPrompt` 硬约束里，**没有确定性校验兜底**——判断一个词属于地点还是画风需要语义判断，写死词表会误伤「日系村落」这类合法地名，而 Full Story 失败的代价很高。上游 `sourceScriptReconstruction.scenes[].location` 不受此约束影响，它本来就只写原片观察到的地点。
 
@@ -1209,7 +1171,7 @@ timestamp
 - production lineage
 - validation
 
-v3 包导入时必须验证上述字段和 parent lineage，并建立隔离的新 Run；禁止与现态静默混合。包内旧媒体结果不得直接恢复。它仍不是包含批量执行、供应商状态和完整 canonical provenance 的 Production Package。
+v3 包导入时必须验证上述字段和 parent lineage，并建立隔离的新 Run；禁止与现态静默混合。包内旧媒体结果不得直接恢复。包里的 `animationPlan` 必须是 4.0：封装与导入都拒绝旧分镜（参考视频的 3.0 包 `ANIMATION_PLAN_VERSION_UNSUPPORTED`，剧情的 3.1 包 `PRODUCTION_PACKAGE_PLAN_VARIANT_MISMATCH`，见「已删除的功能（2026-10-11）」）。它仍不是包含批量执行、供应商状态和完整 canonical provenance 的 Production Package。
 
 「从剧情开始」的 Run 签 `3.1` 包（2026-10-10；第一期曾明确返回 `PRODUCTION_PACKAGE_ENTRY_MODE_UNSUPPORTED`）：同一个包类型，必带 `entryMode: "story"` 与 `storyMode`；参考视频的包仍是 `3.0`，签名字节不变（golden 测试锁定）。版本号不能省——沿用 3.0 时旧程序会把「只给角色设定」的包当成参考视频的包导入、得到坏掉的 Run 且不报错。包里的原文、角色边界、候选、选中记录与固定角色设定一律由服务端从 Run 读出，页面只发 `exportedAt` / `mode` / `modelInfo` 与剧情、分镜两份副本（副本只用来核对是当前版本），多发任何字段 400 `PRODUCTION_PACKAGE_STORY_INPUT_INVALID`。每份产物的上游必须与唯一一份依赖图 `STORY_PACKAGE_GRAPH` 逐项完全相等，第一期第一版的「粘贴完整故事」Run（带候选）导出时 409 `PRODUCTION_PACKAGE_LINEAGE_UNSUPPORTED`；签名前与导入时共用 `validateStoryPackageBody`，「只给角色设定」必须恰好一个候选 V1 且与选中记录相同。导入先写 Run 元数据（入口、剧情模式、原文摘要、规整后的 `creatorProfile`、来源包摘要、`startedBy: "package-import"`），再由服务端按依赖图顺序提交原文与各份产物，分镜签发新的媒体命名空间，角色边界不重签；**这是除开 Run 以外唯一写 `storySource` 的地方**。页面导入剧情包后从服务端读回 Run（同刷新恢复），不从包内容拼状态。导出的文件里有故事原文。详见 `docs/production-lineage-state.md` §7。「导出完整 JSON」仍是普通创意 JSON。
 
@@ -1367,7 +1329,7 @@ Full Story Contract：
 - 持久化状态
 - 媒体生命周期
 
-已实现当前 Run 内的顺序 `shotVideoBatch` 与刷新恢复；尚未实现远端任务接管、跨进程批量队列、完整视觉 QA 和成片恢复。
+尚未实现远端任务接管、批量视频（4.0 没有；旧 3.0 的 Run 内顺序批量 `shotVideoBatch` 已于 2026-10-11 删除）、跨进程批量队列、完整视觉 QA 和成片恢复。
 
 GitHub Benchmark 后续改造必须以 `docs/GitHub-Benchmark-后续改造待办.md` 为执行清单。
 每完成一个实施步骤，执行者必须在同一次工作中自动勾选对应子项；只有验收标准全部满足时才能勾选父任务，并填写完成记录。
@@ -1402,6 +1364,6 @@ GitHub Benchmark 后续改造必须以 `docs/GitHub-Benchmark-后续改造待办
 
 本项目必须使用 node24 启动，禁止直接使用 25+版本直接运行，在项目运行时，如果修改了服务器相关的文件，自动重启服务器。
 
-供应商错误码提示（`src/provider-error-codes.js`）是纯展示层：把 MiniMax、火山方舟 Ark（Seedance 视频与即梦图片共用）、可灵、阿里云百炼 DashScope（Qwen）、DeepSeek 与小米 MiMo 的官方错误码翻译成可执行中文提示，不影响是否抛错、抛什么错、重试预算或 HTTP 状态码，也不参与任何业务校验。硬规则三条：供应商原文逐字保留在既有 `detail` 字段，解释只放进新增的 `providerError`，不得用友好文案顶替原文；匹配不到一律返回 `null` 让调用方回退原文，禁止编造安慰性描述；码表只抄官方文档，文件头标注出处 URL 与核对日期，不得靠猜测补条目。接入点只有 `src/server-error.js` 的三处错误出口（视频 / 图片 / 文本）。命中依据分供应商业务码与 HTTP 状态兜底两种，展示标签必须如实标明是哪一种；按状态命中时不得把响应体里无关的 `code` 显示成来源。这三处的 `retryable` 跟随官方文档判定。 按 HTTP 状态兜底命中时 `guidance` 只能给通用建议，供应商原文是唯一可执行的信息，`providerErrorText`（`public/compiler-observability.js`）必须一并渲染 `providerError.providerMessage`：`ModelResponseError` 分支（`src/server-error.js`）的响应体没有 `detail` 字段可回退，只渲染 `title`/`guidance` 会让唯一有用的那句消失（实测 kimi-k3 的「Parameter 'temperature'=0.3 is not supported」就是这样被吞掉的）。
+供应商错误码提示（`src/provider-error-codes.js`）是纯展示层：把 MiniMax、火山方舟 Ark（Seedance 视频与即梦图片共用）、阿里云百炼 DashScope（Qwen）、DeepSeek 与小米 MiMo 的官方错误码翻译成可执行中文提示，不影响是否抛错、抛什么错、重试预算或 HTTP 状态码，也不参与任何业务校验。硬规则三条：供应商原文逐字保留在既有 `detail` 字段，解释只放进新增的 `providerError`，不得用友好文案顶替原文；匹配不到一律返回 `null` 让调用方回退原文，禁止编造安慰性描述；码表只抄官方文档，文件头标注出处 URL 与核对日期，不得靠猜测补条目。接入点只有 `src/server-error.js` 的三处错误出口（视频 / 图片 / 文本）。命中依据分供应商业务码与 HTTP 状态兜底两种，展示标签必须如实标明是哪一种；按状态命中时不得把响应体里无关的 `code` 显示成来源。这三处的 `retryable` 跟随官方文档判定。 按 HTTP 状态兜底命中时 `guidance` 只能给通用建议，供应商原文是唯一可执行的信息，`providerErrorText`（`public/compiler-observability.js`）必须一并渲染 `providerError.providerMessage`：`ModelResponseError` 分支（`src/server-error.js`）的响应体没有 `detail` 字段可回退，只渲染 `title`/`guidance` 会让唯一有用的那句消失（实测 kimi-k3 的「Parameter 'temperature'=0.3 is not supported」就是这样被吞掉的）。
 
 同一规格适用于 `src/qwen-client.js` 的 `MODELS_REJECTING_TEMPERATURE`：只登记供应商实测返回的事实并标注来源与核对日期，**禁止按模型名前缀推断**（`kimi-k2.7-code` 实测接受 `temperature`）；命中时只摘掉 `temperature`，`top_p`/`response_format`/`max_tokens` 逐字保留；不在清单里的模型照常发送，供应商拒绝就如实抛错，不静默重试、不降级。

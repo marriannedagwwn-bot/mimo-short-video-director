@@ -2,7 +2,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
-import { syncShotCharacterReference } from "../public/character-reference-sync.js";
 
 const options = parseArgs(process.argv.slice(2));
 const baseUrl = String(options.baseUrl || "http://127.0.0.1:4173").replace(/\/$/u, "");
@@ -145,10 +144,10 @@ const animationInput = {
   fullStory,
   creatorProfile,
   characterExpressionRules: "验收猫：开心=耳朵朝前，眼睛弯起。",
-  animationPlanMode: "direct_shot",
+  // 只支持 4.0 自主分镜（2026-10-11 起旧 2.0/3.0 生成一律 400）。
+  animationPlanVersion: "4.0",
   targetAspectRatio: "16:9",
   backgroundMusicEnabled: false,
-  videoPromptTarget: { provider: "Seedance", model: "doubao-seedance-2-0-260128" },
   includeCompilerMetadata: true
 };
 if (mode === "durable") {
@@ -194,8 +193,7 @@ const refineInput = {
   fullStory,
   animationPlan: {
     title: plan.title,
-    productionStrategy: plan.productionStrategy,
-    visualBible: plan.visualBible
+    productionStrategy: plan.productionStrategy
   }
 };
 if (mode === "durable") {
@@ -218,7 +216,6 @@ if (mode === "durable") {
     referenceImageDataUrl: refineInput.imageDataUrl
   };
   updatedPlan.characterReferencePrompts[roleIndex] = updated;
-  syncShotCharacterReference(updatedPlan, previous, updated);
   await directCommit({
     artifactId: `animationPlan:${variantId}`,
     artifactType: "animationPlan",
@@ -266,6 +263,20 @@ if (mode === "durable") {
 
 const shot = plan.shotPlan?.[0];
 if (!shot?.shotId) throw new Error("Animation Plan 缺少镜头");
+const shotVideoTarget = { videoProvider: "Seedance", videoModel: "doubao-seedance-2-0-260128" };
+// 4.0 分镜本身没有 videoPrompt：与页面同一路径，先建 shotVideoPrompt 任务写这一镜的提示词，
+// 再把它作为 promptOverride 带进镜头视频请求（不带时服务端以 SHOT_VIDEO_PROMPT_REQUIRED 拒绝）。
+// 单镜写稿只有 Durable Task、没有旧的同步路由，所以两种模式都走任务。
+assertCompleted(await createAndWaitTask("shotVideoPrompt", {
+  variantId,
+  shotId: shot.shotId,
+  productionContext: productionContext(coordinates, planEntry.lineage),
+  ...shotVideoTarget
+}), "shotVideoPrompt");
+const shotPrompt = (await currentArtifact(`shotVideoPrompt:${variantId}:${shot.shotId}`)).content;
+if (typeof shotPrompt?.videoPrompt !== "string" || !shotPrompt.videoPrompt.trim()) {
+  throw new Error("shotVideoPrompt Artifact 缺少 videoPrompt");
+}
 const shotVideoInput = {
   creatorProfile,
   referenceAnalysis: artifacts.referenceAnalysis,
@@ -279,7 +290,7 @@ const shotVideoInput = {
   generationMode: "all_reference",
   continuityReferenceMode: "none",
   aspectRatio: plan.productionStrategy.targetAspectRatio,
-  animationPromptSchemaVersion: plan.promptSchemaVersion,
+  promptOverride: shotPrompt.videoPrompt,
   referenceAssets: [{
     mediaType: "image",
     name: "acceptance-upload.png",
@@ -289,8 +300,7 @@ const shotVideoInput = {
     source: "upload"
   }],
   productionContext: productionContext(coordinates, planEntry.lineage),
-  videoProvider: "Seedance",
-  videoModel: "doubao-seedance-2-0-260128"
+  ...shotVideoTarget
 };
 const shotArtifactId = `shotVideo:${variantId}:${shot.shotId}`;
 if (mode === "durable") {

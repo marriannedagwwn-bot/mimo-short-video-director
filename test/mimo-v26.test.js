@@ -7,7 +7,7 @@ import { WorkflowService } from "../src/workflow.js";
 const models = ["mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed"];
 const stages = ["analysis", "reconstruction", "visualGuardrails", "characterReference", "brief", "variants",
   "storyCandidateReview", "storyCandidateRevision", "fullStory", "storyQualityReview", "storyQualityRepair",
-  "animationPlan", "animationPlanReview", "animationPlanRevision", "staticFrameCompiler"];
+  "animationPlan"];
 
 test("MiMo V2.6 remains selectable in every LLM stage without a provider model listing", async () => {
   const app = await loadAppUi();

@@ -1,1 +1,1 @@
-export * from "../public/frame-dependency.js";
+export { canonicalize, sha256Hex } from "../public/frame-dependency.js";

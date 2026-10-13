@@ -12,21 +12,21 @@ import { InputError, OutputContractError } from "../src/validation.js";
 import { CREATIVE_BRIEF_SCHEMA_VERSION, characterPromptBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureFullStoryMatchesProfile, ensureOutputContract, ensureVisualGuardrailsMatchesProfile, extractFixedCharacterName, materializeGlobalCharacterBoundaryViews, normalizeGlobalCharacterBoundaryTerms } from "../src/validation.js";
 import { buildRequestBody, MimoClient, ModelResponseError, parseModelJson } from "../src/mimo-client.js";
 import { buildQwenRequestBody, isZhipuGlm53Model, modelAcceptsTemperature, qwenCompatibleProviderName, QwenClient } from "../src/qwen-client.js";
-import { JimengImageClient, buildCharacterReferenceImagePrompt, buildJimengImageRequestBody, buildShotFrameImagePrompt } from "../src/jimeng-client.js";
-import { RECONSTRUCTION_SYSTEM_PROMPT, SYSTEM_PROMPT, animationPlanPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "../src/prompts.js";
+import { JimengImageClient, buildCharacterReferenceImagePrompt, buildJimengImageRequestBody } from "../src/jimeng-client.js";
+import { RECONSTRUCTION_SYSTEM_PROMPT, SYSTEM_PROMPT, briefPrompt, characterReferenceRefinePrompt, fullStoryPrompt, reconstructionPrompt, variantsPrompt, visualGuardrailsPrompt } from "../src/prompts.js";
 import { parseRunVideoArgs } from "../src/run-video-command.js";
 import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError, ShotVideoProviderError } from "../src/shot-video-generator.js";
 import { executeGenericHttpWorker } from "../workers/generic-http-worker.mjs";
 import { mimeTypeFor, selectSampleTimestamps } from "../src/video-file.js";
-import { mockAnalysis, mockAnimationPlan, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "../src/mock.js";
-import { syncShotCharacterReference } from "../public/character-reference-sync.js";
-import { resolveVideoPromptProfile } from "../public/video-prompt-profiles.js";
-import { buildFrameReferenceManifest, shotRelatedCharacterReferences, uploadedReferenceImages } from "../public/shot-reference-images.js";
+import { mockAnalysis, mockBrief, mockFullStory, mockReconstruction, mockVariants, mockVisualGuardrails } from "../src/mock.js";
+import { shotRelatedCharacterReferences } from "../public/shot-reference-images.js";
 import { groundingContextDigest, sealReconstruction } from "../src/reconstruction-grounding.js";
 import { sealGlobalCharacterBoundary } from "../src/character-boundary.js";
 import { ModelCallCoordinator } from "../src/model-call-coordinator.js";
 import { FULL_STORY_BEAT_SCENE_POSTPASS_SCHEMA_VERSION } from "../src/full-story-beat-scene-postpass.js";
 import { FullModelOutputLogWriter, MODEL_OUTPUT_LOG_SCOPES } from "../src/full-model-output-log.js";
+import { storyboardDesignFromPlan } from "../src/storyboard-contract.js";
+import { fullStoryCharacterRegistryInput, mockFullStoryCharacterRegistry } from "../src/full-story-character-registry.js";
 
 const frames = Array.from({ length: 8 }, (_, index) => ({
   timestamp: index * 5,
@@ -42,8 +42,6 @@ const input = {
   creatorProfile: { fixedCharacter: "阿岚，社区修理师", vertical: "家电维修", constraints: "60 秒内" },
   count: 3
 };
-
-const TEST_STATIC_FRAME_COMPILER_MODEL = "static-frame-compiler-test";
 
 function isFullStoryBeatScenePostpassPrompt(prompt = "") {
   return String(prompt).includes(FULL_STORY_BEAT_SCENE_POSTPASS_SCHEMA_VERSION);
@@ -67,127 +65,6 @@ function fullStoryBeatScenePassResponse(story) {
     })),
     completions: []
   };
-}
-
-function animationWorkflow(options = {}) {
-  const provider = String(options.animationProvider || "MiMo");
-  return new WorkflowService({
-    ...options,
-    staticFrameCompilerProvider: provider,
-    staticFrameCompilerModel: TEST_STATIC_FRAME_COMPILER_MODEL
-  });
-}
-
-function stagedStaticFrameResponse(prompt = "") {
-  const marker = [
-    "不可变 Source Catalog（displayText 只读，不得回传）：\n",
-    "首次调用前签发的不可变 Source Catalog：\n",
-    "原始不可变 Source Catalog：\n"
-  ].find((candidate) => prompt.includes(candidate));
-  if (!marker) return null;
-  const catalog = JSON.parse(prompt.split(marker)[1]);
-  const response = {
-    targets: catalog.map((target) => ({
-      targetId: target.targetId,
-      evidenceSelections: (() => {
-        const segment = target.segments.find((item) => item.sourceField === target.fieldLabel)
-          || target.segments[0];
-        const span = segment?.spans.find((item) => item.unit === "source")
-          || segment?.spans.find((item) => item.unit === "clause")
-          || segment?.spans[0];
-        if (!segment || !span) return [];
-        return [{
-          segmentId: segment.segmentId,
-          spanIds: [span.spanId],
-          category: target.fieldLabel === "handPropState" ? "hand_prop_state" : "pose_body",
-          featureId: null
-        }];
-      })()
-    }))
-  };
-  if (prompt.includes("STATIC_FRAME_ORGANIZER_ENVELOPE_REPAIR_V3")) response.repairMode = "envelope_repair";
-  if (prompt.includes("STATIC_FRAME_FIELD_REORGANIZATION_V3")) response.repairMode = "evidence_reselection";
-  return response;
-}
-
-function stagedAnimationResponse(plan, prompt = "") {
-  if (prompt.includes("CHARACTER_FEATURE_COMPILER_V1")) {
-    const marker = "服务端签发输入：\n";
-    const payload = JSON.parse(String(prompt).split(marker)[1].split("\n\nCHARACTER_FEATURE_COMPILER_PROTOCOL_RETRY_V1")[0]);
-    const lockedByTarget = new Map(
-      (payload.lockedCharacterBoundaries || []).map((entry) => [entry.characterTargetId, entry.requiredAppearanceTraits || []])
-    );
-    const spansByTarget = new Map();
-    for (const segment of payload.sourceCatalog) {
-      spansByTarget.set(segment.characterTargetId, [
-        ...(spansByTarget.get(segment.characterTargetId) || []),
-        ...(segment.spans || [])
-      ]);
-    }
-    return {
-      characters: payload.characterTargets.map(({ characterTargetId }) => ({
-        characterTargetId,
-        features: (lockedByTarget.get(characterTargetId) || []).map((trait, index) => {
-          const spans = spansByTarget.get(characterTargetId) || [];
-          const evidenceSpan = spans.find((span) => [trait.canonicalName, ...(trait.terms || [])]
-            .some((term) => term && String(span.displayText || "").includes(term))) || spans[0];
-          return {
-            suggestedFeatureKey: `locked_feature_${index + 1}`,
-            canonicalName: trait.canonicalName,
-            terms: trait.terms,
-            featureKind: /尾/u.test(trait.canonicalName) ? "special_appendage" : "face_part",
-            semanticSubtype: /尾/u.test(trait.canonicalName) ? "tail" : "locked_appearance",
-            evidenceLevel: trait.evidenceLevel,
-            evidenceSpanIds: trait.evidenceLevel === "explicit" && evidenceSpan ? [evidenceSpan.spanId] : [],
-            inferenceSpanIds: trait.evidenceLevel === "inferred" && evidenceSpan ? [evidenceSpan.spanId] : []
-          };
-        })
-      }))
-    };
-  }
-  const staticFrameResponse = stagedStaticFrameResponse(prompt);
-  if (staticFrameResponse) return staticFrameResponse;
-  if (prompt.includes("ACTION_STATE_SEMANTIC_AUDIT_V1")) {
-    const marker = "待审核条目（每项严格只有 id、actionState、frameKind）：\n";
-    const items = JSON.parse(String(prompt).split(marker)[1].split("\n")[0]);
-    return {
-      results: items.map((item) => ({
-        id: item.id,
-        verdict: "pass",
-        reasonCode: "visible_state"
-      }))
-    };
-  }
-  if (prompt.includes("本阶段只生成可供所有镜头批次复用")) return animationFoundationFixture(plan);
-  const match = prompt.match(/本批允许的 sourceSceneId：([^\n]+)/u);
-  const sourceSceneIds = String(match?.[1] || "").split("、").map((item) => item.trim()).filter(Boolean);
-  const shotPlan = structuredClone(
-    plan.shotPlan.filter((shot) => sourceSceneIds.includes(String(shot.sourceSceneId)))
-  );
-  const mockNarrativeActionStates = new Set([
-    "关键肢体停在动作起始位置，与目标道具之间留有清晰距离",
-    "关键肢体停在动作终点位置，动作结果在画面中清晰可见"
-  ]);
-  shotPlan.forEach((shot) => {
-    for (const frameKind of ["startFrame", "endFrame"]) {
-      (shot[frameKind]?.characters || []).forEach((character) => {
-        if (mockNarrativeActionStates.has(character.actionState)) character.actionState = "";
-      });
-    }
-  });
-  return {
-    shotPlan
-  };
-}
-
-function animationFoundationFixture(plan) {
-  const copy = structuredClone(plan);
-  const { shotPlan, ...foundation } = copy;
-  foundation.sceneReferencePrompts.forEach((scene) => {
-    scene.relatedShotIds = [];
-    scene.sourceSceneIds = [...new Set(shotPlan.filter((shot) => shot.sceneId === scene.sceneId).map((shot) => shot.sourceSceneId))];
-  });
-  return foundation;
 }
 
 // creative_brief/2.0 下最常见的契约失败形状：模型把旧简报字段写回顶层。
@@ -431,16 +308,14 @@ test("演示模式按校验器同一规则取固定角色名，「名字：描�
   const fullStory = await workflow.createFullStory({ ...context, ...upstream, variant });
   assert.equal(fullStory.characterBible.protagonist.name, "小白子");
 
-  const videoPromptTarget = { provider: "Seedance", model: "doubao-seedance-2-0-260128" };
   const animationPlan = await workflow.createAnimationPlan({
     ...context,
     ...upstream,
     variant,
     fullStory,
-    animationPlanMode: "direct_shot",
-    videoPromptTarget,
-    videoPromptProfile: resolveVideoPromptProfile(videoPromptTarget)
+    animationPlanVersion: "4.0"
   });
+  assert.equal(animationPlan.promptSchemaVersion, "4.0");
   assert.ok(animationPlan.characterReferencePrompts.some((reference) => reference.characterName === "小白子"));
 });
 
@@ -867,6 +742,8 @@ test("完整剧情和动画生产包可切换到 Qwen，同时保留 MiMo 基础
   };
   const story = mockFullStory({ ...input, creativeBrief, variant });
   const calls = [];
+  // 4.0 自主分镜各步的预置响应，在下面用同一把签名密钥的演示模式算出来。
+  let storyboardResponses = null;
   const mimoClient = {
     async generateJson() {
       throw new Error("fullStory/animationPlan 不应调用 MiMo 基础客户端");
@@ -883,11 +760,13 @@ test("完整剧情和动画生产包可切换到 Qwen，同时保留 MiMo 基础
           ? fullStoryBeatScenePassResponse(story)
           : structuredClone(story);
       }
-      const plan = mockAnimationPlan({ ...input, creativeBrief, variant, fullStory: story });
-      return stagedAnimationResponse(plan, args.prompt);
+      if (args.prompt.includes("任务：整理本次 Full Story")) return structuredClone(storyboardResponses.registry);
+      if (args.prompt.includes("任务：将完整 Full Story")) return structuredClone(storyboardResponses.design);
+      if (args.prompt.includes("你是分镜修稿编辑")) return { strengths: ["保留已有动作"], guidance: [], items: [] };
+      throw new Error("未预置的分镜提示词");
     }
   };
-  const workflow = animationWorkflow({
+  const workflow = new WorkflowService({
     client: mimoClient,
     storyClient: qwenClient,
     storyProvider: "Qwen",
@@ -901,15 +780,26 @@ test("完整剧情和动画生产包可切换到 Qwen，同时保留 MiMo 基础
 
   const stageContext = globalBoundaryContext(workflow, { creativeBrief, variant });
   const fullStory = await workflow.createFullStory(stageContext);
-  const animationPlan = await workflow.createAnimationPlan({ ...stageContext, fullStory });
+  const planInput = { ...stageContext, fullStory, animationPlanVersion: "4.0" };
+  const demo = new WorkflowService({ groundingKey: workflow.groundingKey, characterBoundaryKey: workflow.characterBoundaryKey });
+  const demoPlan = await demo.createAnimationPlan(planInput);
+  storyboardResponses = {
+    registry: mockFullStoryCharacterRegistry(fullStoryCharacterRegistryInput(fullStory, stageContext.creatorProfile)),
+    design: storyboardDesignFromPlan(demoPlan)
+  };
+  const animationPlan = await workflow.createAnimationPlan(planInput);
 
   assert.equal(workflow.mode, "live");
   assert.equal(calls[0].model, "qwen3.7-max-story");
   assert.equal(calls[0].maxCompletionTokens, 16000);
   assert.equal(calls[1].model, "qwen3.7-max-story");
   assert.equal(calls[1].maxCompletionTokens, 16000);
-  assert.equal(calls[2].model, "qwen3.7-max-animation");
-  assert.equal(calls[2].maxCompletionTokens, 17000);
+  assert.ok(calls.length > 2);
+  for (const call of calls.slice(2)) {
+    assert.equal(call.model, "qwen3.7-max-animation");
+    assert.equal(call.maxCompletionTokens, 17000);
+  }
+  assert.equal(animationPlan.promptSchemaVersion, "4.0");
   assert.equal(fullStory.selectedVariantId, "V1");
   assert.equal(animationPlan.selectedVariantId, "V1");
 });
@@ -1254,46 +1144,6 @@ test("referenceAnalysis 视频时间连续越界时改用关键帧重新取证",
   assert.ok(result.observedFacts.every((fact) => (
     fact.evidenceRefs.every((reference) => reference.source === "frame")
   )));
-});
-
-test("完整剧情后可生成首尾帧动画生产包", async () => {
-  const creativeBrief = mockBrief({ ...input, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  const variant = {
-    id: "V1",
-    title: "最后一格电",
-    characterSetup: { protagonist: "阿岚，社区修理师", careRecipient: "独居老人", helper: "夜班便利店员" },
-    newTask: "修复并送回旧设备",
-    emotionalMedium: "一段旧录音",
-    environmentPressure: "暴雨停电",
-    endingRitual: "老人按下播放键"
-  };
-  const fullStory = mockFullStory({ ...input, creativeBrief, variant });
-  let captured;
-  const workflow = animationWorkflow({
-    animationModel: "mimo-v2.5-pro",
-    animationMaxCompletionTokens: 13000,
-    client: {
-      async generateJson(args) {
-        if (
-          !args.prompt.includes("ACTION_STATE_SEMANTIC_AUDIT_V1")
-          && !/STATIC_FRAME_(?:FIELD_ORGANIZATION|FIELD_REORGANIZATION|ORGANIZER_ENVELOPE_REPAIR)_V3/u.test(args.prompt)
-          && !args.prompt.includes("CHARACTER_FEATURE_COMPILER_V1")
-        ) captured = args;
-        return stagedAnimationResponse(mockAnimationPlan({ ...input, creativeBrief, variant, fullStory }), args.prompt);
-      }
-    }
-  });
-  const result = await workflow.createAnimationPlan(globalBoundaryContext(workflow, { creativeBrief, variant, fullStory }));
-  assert.equal(captured.model, "mimo-v2.5-pro");
-  assert.equal(captured.maxCompletionTokens, 13000);
-  assert.equal(result.productionStrategy.format, "first_last_frame_video");
-  assert.ok(result.sceneReferencePrompts.length >= 1);
-  assert.ok(result.sceneReferencePrompts[0].environmentPrompt);
-  assert.ok(result.shotPlan.length >= 6);
-  assert.ok(result.shotPlan[0].sceneId);
-  assert.ok(result.shotPlan[0].startFramePrompt);
-  assert.ok(result.shotPlan[0].endFramePrompt);
-  assert.ok(result.shotPlan[0].videoPrompt);
 });
 
 test("人物参考图可用 MiMo 修正角色参考提示词", async () => {
@@ -1716,182 +1566,6 @@ test("固定角色人物参考精修不接受参考图覆盖，也不沿用上�
   assert.match(result.appearancePrompt, /狼耳与狼尾/u);
 });
 
-test("人物参考图更新后同步镜头里的角色外观描述", () => {
-  const plan = {
-    characterReferencePrompts: [{
-      characterName: "小白子",
-      appearancePrompt: "狼耳少女小白子，双马尾，浅蓝背带裤。",
-      consistencyTags: ["狼耳少女", "双马尾"]
-    }],
-    shotPlan: [
-      {
-        shotId: "A01",
-        startFramePrompt: "清晨，村口小路起点。狼耳少女小白子（双马尾，浅蓝背带裤）正从一位村民叔叔手中接过一本画册。她双手捧着画册，眼睛发亮，表情郑重。特写，柔和的晨光。",
-        endFramePrompt: "小白子（双马尾，浅蓝背带裤）把画册抱在胸前，准备出发。",
-        videoPrompt: "小白子从首帧到尾帧只完成接过画册并抱稳的动作。",
-        characterAction: "小白子双手捧住画册。",
-        continuityNotes: "保持小白子旧服装不变。"
-      },
-      {
-        shotId: "A02",
-        startFramePrompt: "村民叔叔站在路边看着画册。",
-        endFramePrompt: "村民叔叔转身离开。",
-        videoPrompt: "镜头缓慢推进。",
-        characterAction: "村民叔叔挥手。",
-        continuityNotes: "无主角外观变化。"
-      }
-    ]
-  };
-  const updated = {
-    characterName: "小白子",
-    appearancePrompt: "参考图中的小白子，银灰色长发，灰白色狼耳，蓝色大眼睛，深色水手服外套，白色衬衫，蓝色领结，儿童比例，Q版动漫风格。",
-    consistencyTags: ["银灰色长发", "灰白色狼耳", "蓝色大眼睛", "深色水手服外套"]
-  };
-
-  const changed = syncShotCharacterReference(plan, plan.characterReferencePrompts[0], updated);
-
-  assert.equal(changed, 1);
-  assert.match(plan.shotPlan[0].startFramePrompt, /小白子（银灰色长发/);
-  assert.doesNotMatch(plan.shotPlan[0].startFramePrompt, /双马尾，浅蓝背带裤/);
-  assert.match(plan.shotPlan[0].endFramePrompt, /深色水手服外套/);
-  assert.match(plan.shotPlan[0].videoPrompt, /小白子（银灰色长发/);
-  assert.equal(plan.shotPlan[1].startFramePrompt, "村民叔叔站在路边看着画册。");
-});
-
-test("人物参考图同步不会把地点所有者写成出场角色", () => {
-  const plan = {
-    characterReferencePrompts: [{
-      characterName: "外婆",
-      appearancePrompt: "灰白头发，围裙，慈祥老人。"
-    }],
-    shotPlan: [
-      {
-        shotId: "A02",
-        startFramePrompt: "阳光明媚的外婆院子，近景平视。小白子双手抱着旧铁盒。",
-        endFramePrompt: "小白子身体转向画面右侧。",
-        videoPrompt: "小白子抱盒转身。"
-      },
-      {
-        shotId: "A03",
-        startFramePrompt: "外婆院子门口，外婆微笑着向小白子挥手。",
-        endFramePrompt: "外婆站在院门旁目送小白子。"
-      }
-    ]
-  };
-  const updated = {
-    characterName: "外婆",
-    appearancePrompt: "和蔼的老年女性，灰白头发盘起，穿着围裙。",
-    consistencyTags: ["灰白头发", "围裙"]
-  };
-
-  const changed = syncShotCharacterReference(plan, plan.characterReferencePrompts[0], updated);
-
-  assert.equal(changed, 1);
-  assert.equal(plan.shotPlan[0].startFramePrompt, "阳光明媚的外婆院子，近景平视。小白子双手抱着旧铁盒。");
-  assert.match(plan.shotPlan[1].startFramePrompt, /外婆院子门口，外婆（和蔼的老年女性/);
-  assert.doesNotMatch(plan.shotPlan[1].startFramePrompt, /外婆（和蔼的老年女性[^）]+）院子/);
-});
-
-test("v2 结构化镜头更新角色参考图时不会改写编译后的兼容 prompt", () => {
-  const plan = {
-    shotPlan: [{
-      shotId: "A01",
-      startFrame: { characters: [{ name: "小白子" }] },
-      endFrame: { characters: [{ name: "小白子" }] },
-      motion: { primaryAction: "小白子拿起玻璃片" },
-      startFramePrompt: "小白子站在木箱旁。",
-      endFramePrompt: "小白子举起玻璃片。",
-      videoPrompt: "小白子拿起玻璃片。",
-      characterAction: "小白子拿起玻璃片。",
-      continuityNotes: "保持角色一致。"
-    }]
-  };
-  const before = structuredClone(plan.shotPlan[0]);
-
-  const changed = syncShotCharacterReference(
-    plan,
-    { characterName: "小白子", appearancePrompt: "旧外观" },
-    { characterName: "小白子", appearancePrompt: "参考图中的新外观" }
-  );
-
-  assert.equal(changed, 0);
-  assert.deepEqual(plan.shotPlan[0], before);
-});
-
-test("单镜头首尾帧视频可通过通用 HTTP worker 传递逐镜负面词", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-http-"));
-  let receivedBody = null;
-  const provider = http.createServer(async (request, response) => {
-    const chunks = [];
-    for await (const chunk of request) chunks.push(chunk);
-    receivedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ data: { videoBase64: Buffer.from("shot video bytes").toString("base64") } }));
-  });
-  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
-  t.after(() => closeServer(provider));
-  const address = provider.address();
-  const configPath = path.join(root, "provider.json");
-  await fs.writeFile(configPath, JSON.stringify({
-    videoEndpoint: `http://127.0.0.1:${address.port}/videos`,
-    videoModel: "provider-video-model",
-    apiKey: "test-key"
-  }));
-  const frameDataUrl = `data:image/png;base64,${Buffer.from("frame image bytes").toString("base64")}`;
-
-  const result = await generateShotVideo({
-    workerRunner: executeGenericHttpWorker,
-    configPath,
-    outputRoot: path.join(root, "generated-videos"),
-    publicBasePath: "/generated-videos",
-    startFrameDataUrl: frameDataUrl,
-    endFrameDataUrl: frameDataUrl,
-    shot: {
-      shotId: "S01",
-      durationSeconds: 4,
-      startFramePrompt: "小白子抱着包裹准备出发",
-      endFramePrompt: "小白子把包裹交到老人手里",
-      videoPrompt: "小白子从首帧动作平稳过渡到尾帧",
-      negativePrompts: {
-        image: [],
-        video: [{
-          text: "交接过程中包裹变形",
-          appliesTo: "video",
-          triggerEvidence: [{ sourcePath: "animationPlan.shotPlan[S01].videoPrompt", evidence: "小白子完成包裹交接" }],
-          reasonCode: "temporal_consistency_failure",
-          priority: "medium",
-          enabled: true
-        }]
-      },
-      cameraMotion: "缓慢推进"
-    }
-  });
-
-  assert.equal(result.shotId, "S01");
-  assert.match(result.startFrameUrl, /^\/generated-videos\/S01-start-/u);
-  assert.match(result.endFrameUrl, /^\/generated-videos\/S01-end-/u);
-  assert.match(result.outputUrl, /^\/generated-videos\/S01-/u);
-  assert.equal(await fs.readFile(result.outputPath, "utf8"), "shot video bytes");
-  assert.equal(receivedBody.capability, "first_last_frame_video_generation");
-  assert.equal(receivedBody.model, "provider-video-model");
-  assert.equal(receivedBody.prompt, "小白子从首帧动作平稳过渡到尾帧");
-  assert.equal(receivedBody.negativePrompt, "交接过程中包裹变形");
-  assert.equal(receivedBody.parameters.cameraMotion, "缓慢推进");
-  assert.equal(receivedBody.inputArtifacts.length, 2);
-  assert.match(receivedBody.inputArtifacts[0].dataUrl, /^data:image\/png;base64,/u);
-  assert.deepEqual(result.receipt.negativePromptDelivery, {
-    supported: true,
-    appliedMode: "native_negative",
-    providerField: "negativePrompt",
-    compiledNegativePrompt: "交接过程中包裹变形",
-    appliedText: "交接过程中包裹变形",
-    providerIgnored: false,
-    ignored: []
-  });
-  assert.equal(result.receipt.requestPreview.body.negativePrompt, "交接过程中包裹变形");
-  assert.equal(result.receipt.requestPreview.headers.Authorization, "[REDACTED]");
-});
-
 test("单镜头全能参考模式不生成首尾帧，并把参考图作为 R2V 权威输入", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-r2v-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -1931,15 +1605,11 @@ test("单镜头全能参考模式不生成首尾帧，并把参考图作为 R2V 
     shot: {
       shotId: "S01-R2V",
       durationSeconds: 5,
-      startFramePrompt: "不应生成这个首帧",
-      endFramePrompt: "不应生成这个尾帧",
       videoPrompt: "参考角色身份生成挥手动作"
     }
   });
 
   assert.equal(result.generationMode, "all_reference");
-  assert.equal(result.startFrameUrl, "");
-  assert.equal(result.endFrameUrl, "");
   assert.deepEqual(result.referenceSummary, { image: 1, video: 0, audio: 0 });
   assert.deepEqual(receivedBody.content.map((item) => item.role || "text"), ["text", "reference_image"]);
   assert.equal(receivedBody.content.some((item) => ["first_frame", "last_frame"].includes(item.role)), false);
@@ -1947,110 +1617,29 @@ test("单镜头全能参考模式不生成首尾帧，并把参考图作为 R2V 
   assert.equal(await fs.readFile(result.outputPath, "utf8"), "r2v shot video bytes");
 });
 
-test("可灵全能参考模式明确失败，不静默降级为首尾帧", async () => {
-  await assert.rejects(() => generateShotVideo({
-    videoProvider: "Kling",
-    videoModel: "kling-v3",
-    generationMode: "all_reference",
-    referenceAssets: [{
-      mediaType: "image",
-      name: "reference.png",
-      dataUrl: "data:image/png;base64,AA=="
-    }],
-    shot: { shotId: "S-KLING-R2V", videoPrompt: "参考人物生成动作" }
-  }), /尚未取得可验证的 Omni API 协议/u);
-});
-
-test("单镜头首尾帧视频支持可灵 preset、轮询与 negative_prompt 真实传递", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-kling-"));
-  let postBody = null;
-  const provider = http.createServer(async (request, response) => {
-    if (request.method === "POST" && request.url === "/v1/videos/image2video") {
-      const chunks = [];
-      for await (const chunk of request) chunks.push(chunk);
-      postBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ code: 0, data: { task_id: "kling-task-1", task_status: "submitted" } }));
-      return;
-    }
-    if (request.method === "GET" && request.url === "/v1/videos/image2video/kling-task-1") {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({
-        code: 0,
-        data: {
-          task_id: "kling-task-1",
-          task_status: "succeed",
-          task_result: { videos: [{ url: `http://127.0.0.1:${provider.address().port}/media/kling.mp4` }] }
-        }
-      }));
-      return;
-    }
-    if (request.url === "/media/kling.mp4") {
-      response.writeHead(200, { "content-type": "video/mp4" });
-      response.end("kling video bytes");
-      return;
-    }
-    response.writeHead(404);
-    response.end("not found");
-  });
-  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
-  t.after(() => closeServer(provider));
-  const address = provider.address();
-  const configPath = path.join(root, "kling.json");
+// 镜头视频只剩 Seedance 与 MiniMax 的全能参考（2026-10-11 删除自定义 VideoHTTP 与首尾帧）。
+// 下面三条原来走自定义 VideoHTTP，现在改用 Seedance 的供应商配置文件与一张角色参考图。
+async function seedanceShotVideoConfig(root, port) {
+  const configPath = path.join(root, "provider.json");
   await fs.writeFile(configPath, JSON.stringify({
-    videoEndpoint: `http://127.0.0.1:${address.port}/v1`,
-    providerPreset: "kling_image_to_video",
-    videoModel: "kling-v2-1",
-    apiKey: "test-key",
-    pollIntervalMs: 1,
-    pollTimeoutMs: 1000
+    videoEndpoint: `http://127.0.0.1:${port}/api/v3/contents/generations/tasks`,
+    providerPreset: "modelark_content_generation",
+    videoModel: "doubao-seedance-2-0-260128",
+    apiKey: "test-key"
   }));
-  const startFrameDataUrl = `data:image/png;base64,${Buffer.from("start frame bytes").toString("base64")}`;
-  const endFrameDataUrl = `data:image/png;base64,${Buffer.from("end frame bytes").toString("base64")}`;
+  return configPath;
+}
 
-  const result = await generateShotVideo({
-    workerRunner: executeGenericHttpWorker,
-    configPath,
-    outputRoot: path.join(root, "generated-videos"),
-    publicBasePath: "/generated-videos",
-    startFrameDataUrl,
-    endFrameDataUrl,
-    shot: {
-      shotId: "S02",
-      durationSeconds: 4,
-      videoPrompt: "小白子平稳拿起玻璃幻灯片并举到夕阳前",
-      negativePrompts: {
-        image: [],
-        video: [{
-          text: "拿起过程中手指与透明玻璃片融合",
-          appliesTo: "video",
-          triggerEvidence: [{ sourcePath: "animationPlan.shotPlan[S02].videoPrompt", evidence: "小白子拿起透明玻璃片" }],
-          reasonCode: "shot_interaction_failure",
-          priority: "high",
-          enabled: true
-        }]
-      }
-    }
-  });
-
-  assert.equal(postBody.model_name, "kling-v2-1");
-  assert.equal(postBody.image, Buffer.from("start frame bytes").toString("base64"));
-  assert.equal(postBody.image_tail, Buffer.from("end frame bytes").toString("base64"));
-  assert.equal(postBody.prompt, "小白子平稳拿起玻璃幻灯片并举到夕阳前");
-  assert.equal(postBody.negative_prompt, "拿起过程中手指与透明玻璃片融合");
-  assert.equal(postBody.mode, "pro");
-  assert.equal(postBody.duration, "5");
-  assert.equal(await fs.readFile(result.outputPath, "utf8"), "kling video bytes");
-  assert.equal(result.receipt.providerTaskId, "kling-task-1");
-  assert.equal(result.receipt.resultKind, "url");
-  assert.equal(result.receipt.negativePromptDelivery.appliedMode, "native_negative");
-  assert.equal(result.receipt.negativePromptDelivery.providerField, "negative_prompt");
-  assert.equal(result.receipt.negativePromptDelivery.compiledNegativePrompt, "拿起过程中手指与透明玻璃片融合");
-  assert.equal(result.receipt.requestPreview.body.negative_prompt, "拿起过程中手指与透明玻璃片融合");
-});
+const seedanceReferenceAssets = () => [{
+  mediaType: "image",
+  name: "角色参考.png",
+  dataUrl: `data:image/png;base64,${Buffer.from("character reference bytes").toString("base64")}`,
+  source: "character_reference"
+}];
 
 test("单镜头视频生成可返回多个候选", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-count-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
   const videoBodies = [];
   const provider = http.createServer(async (request, response) => {
     const chunks = [];
@@ -2061,19 +1650,18 @@ test("单镜头视频生成可返回多个候选", async (t) => {
   });
   await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
   t.after(() => closeServer(provider));
-  const configPath = path.join(root, "provider.json");
-  await fs.writeFile(configPath, JSON.stringify({ videoEndpoint: `http://127.0.0.1:${provider.address().port}/videos` }));
-  const frameDataUrl = `data:image/png;base64,${Buffer.from("frame image bytes").toString("base64")}`;
+  const configPath = await seedanceShotVideoConfig(root, provider.address().port);
 
   const result = await generateShotVideo({
     workerRunner: executeGenericHttpWorker,
     configPath,
     outputRoot: path.join(root, "generated-videos"),
     publicBasePath: "/generated-videos",
+    videoProvider: "Seedance",
+    generationMode: "all_reference",
     count: 2,
-    startFrameDataUrl: frameDataUrl,
-    endFrameDataUrl: frameDataUrl,
-    shot: { shotId: "S03", durationSeconds: 4, videoPrompt: "从首帧过渡到尾帧" }
+    referenceAssets: seedanceReferenceAssets(),
+    shot: { shotId: "S03", durationSeconds: 4, videoPrompt: "阿岚拧紧收音机背板的螺丝" }
   });
 
   assert.equal(result.count, 2);
@@ -2083,13 +1671,16 @@ test("单镜头视频生成可返回多个候选", async (t) => {
   assert.match(result.videos[1].outputUrl, /-2\.mp4$/u);
   assert.equal(await fs.readFile(result.videos[0].outputPath, "utf8"), "shot video bytes 1");
   assert.equal(await fs.readFile(result.videos[1].outputPath, "utf8"), "shot video bytes 2");
-  assert.equal(videoBodies[0].parameters.candidateIndex, 0);
-  assert.equal(videoBodies[0].parameters.candidateCount, 2);
-  assert.equal(videoBodies[1].parameters.candidateIndex, 1);
+  assert.deepEqual(result.videos.map((video) => video.candidateIndex), [0, 1]);
+  // 每条候选各自一次供应商调用，请求体相同（同一条提示词与同一张参考图）。
+  assert.equal(videoBodies.length, 2);
+  assert.deepEqual(videoBodies[1], videoBodies[0]);
+  assert.deepEqual(videoBodies[0].content.map((item) => item.role || "text"), ["text", "reference_image"]);
 });
 
 test("单镜头视频生成不会把供应商纯文本确认当成 mp4", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "shot-video-text-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
   const provider = http.createServer(async (request, response) => {
     for await (const _chunk of request) {
       // drain request body
@@ -2099,30 +1690,36 @@ test("单镜头视频生成不会把供应商纯文本确认当成 mp4", async (
   });
   await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
   t.after(() => closeServer(provider));
-  const configPath = path.join(root, "provider.json");
-  await fs.writeFile(configPath, JSON.stringify({ videoEndpoint: `http://127.0.0.1:${provider.address().port}/videos` }));
-  const frameDataUrl = `data:image/png;base64,${Buffer.from("frame image bytes").toString("base64")}`;
+  const configPath = await seedanceShotVideoConfig(root, provider.address().port);
 
   await assert.rejects(() => generateShotVideo({
     workerRunner: executeGenericHttpWorker,
     configPath,
     outputRoot: path.join(root, "generated-videos"),
     publicBasePath: "/generated-videos",
-    startFrameDataUrl: frameDataUrl,
-    endFrameDataUrl: frameDataUrl,
+    videoProvider: "Seedance",
+    generationMode: "all_reference",
+    referenceAssets: seedanceReferenceAssets(),
     shot: { shotId: "S04", videoPrompt: "测试视频", durationSeconds: 5 }
   }), ShotVideoProviderError);
 });
 
 test("单镜头视频生成未配置供应商时给出明确错误", async () => {
-  const savedEnv = pickEnv(["VIDEO_HTTP_ENDPOINT", "VIDEO_HTTP_VIDEO_ENDPOINT", "VIDEO_HTTP_CONFIG"]);
-  delete process.env.VIDEO_HTTP_ENDPOINT;
-  delete process.env.VIDEO_HTTP_VIDEO_ENDPOINT;
-  delete process.env.VIDEO_HTTP_CONFIG;
+  const keys = [
+    "SHOT_VIDEO_PROVIDER", "SEEDANCE_VIDEO_CONFIG", "SEEDANCE_VIDEO_ENDPOINT", "SEEDANCE_BASE_URL",
+    "JIMENG_BASE_URL", "SEEDANCE_API_KEY", "JIMENG_API_KEY"
+  ];
+  const savedEnv = pickEnv(keys);
+  for (const key of keys) delete process.env[key];
   try {
     await assert.rejects(
-      () => generateShotVideo({ shot: { shotId: "S05", videoPrompt: "测试" } }),
-      ShotVideoConfigError
+      () => generateShotVideo({
+        videoProvider: "Seedance",
+        generationMode: "all_reference",
+        referenceAssets: seedanceReferenceAssets(),
+        shot: { shotId: "S05", videoPrompt: "测试", durationSeconds: 5 }
+      }),
+      (error) => error instanceof ShotVideoConfigError && /未配置 Seedance/u.test(error.message)
     );
   } finally {
     restoreEnv(savedEnv);
@@ -2457,11 +2054,6 @@ test("即梦角色参考图请求使用 5.0 Lite 流式图片生成参数", () =
   assert.equal(customBody.model, "custom-image-model");
   assert.equal(customBody.prompt, "用户编辑后的提示词");
   assert.equal(customBody.image, "data:image/png;base64,AA==");
-  const multiReferenceBody = buildJimengImageRequestBody(
-    { model: "doubao-seedream-5-0-260128", size: "1728x2304", outputFormat: "png", imageField: "image", maxImages: 6, watermark: false },
-    { referenceImageDataUrls: ["data:image/png;base64,AA==", "data:image/png;base64,BB=="], characterReference, count: 1, prompt: "多角色参考图" }
-  );
-  assert.deepEqual(multiReferenceBody.image, ["data:image/png;base64,AA==", "data:image/png;base64,BB=="]);
 });
 
 test("即梦图片客户端可解析流式 partial_succeeded 和 completed 事件", async (t) => {
@@ -2513,305 +2105,46 @@ test("即梦图片客户端可解析流式 partial_succeeded 和 completed 事�
   assert.equal(events[1].usage.generated_images, 1);
 });
 
-test("即梦首尾帧镜头图 prompt 合并视觉圣经、manifest 角色绑定和帧提示词", async () => {
-  const characterReferences = [{
-    characterName: "小白子",
-    appearancePrompt: "q版狼耳少女，蓝色眼睛",
-    consistencyTags: ["狼耳", "浅蓝服装"],
-    referenceImageDataUrl: "data:image/png;base64,AA=="
-  }];
-  const referenceManifest = await buildFrameReferenceManifest({
-    frameKind: "start",
-    characterReferences
-  });
-  const characterToken = referenceManifest.providerImages.find((item) => item.characterName === "小白子").token;
-  const prompt = buildShotFrameImagePrompt({
-    frameKind: "start",
-    visualBible: {
-      overallStyle: "Q版定格动画",
-      animationStyle: "柔和乡村童话",
-      colorPalette: ["米白", "浅蓝"],
-      lighting: "清晨柔光",
-      cameraLanguage: "低机位近景"
-    },
-    characterReferences,
-    referenceManifest,
-	    sceneReference: {
-	      sceneId: "LOC01",
-	      sceneName: "村口药铺门前",
-	      environmentPrompt: "户外村口药铺门前，木质门脸，青石路，清晨柔光。",
-	      continuityAnchors: ["户外", "村口药铺", "木质门脸", "青石路"],
-	      sceneContinuityRules: ["地点与室内外属性保持一致"]
-	    },
-	    shot: {
-      shotId: "S01",
-      startFramePrompt: "小白子站在村口，手里拿着草药包。",
-	      endFramePrompt: "小白子把草药包递给爷爷。",
-	      cameraMotion: "轻微推近",
-	      characterAction: "抱紧草药包",
-	      negativePrompts: {
-	        image: [{
-	          text: "手指与草药包融合",
-	          appliesTo: "image",
-	          triggerEvidence: [{ sourcePath: "animationPlan.shotPlan[S01].startFramePrompt", evidence: "手里拿着草药包" }],
-	          reasonCode: "shot_interaction_failure",
-	          priority: "high"
-	        }],
-	        video: []
-	      }
-    }
-  });
-  assert.match(prompt, /生成竖屏 9:16 动画短视频分镜首帧图/);
-	  assert.match(prompt, /整体风格：Q版定格动画/);
-	  assert.match(prompt, /场景参考（必须继承/);
-	  assert.match(prompt, /村口药铺门前/);
-	  assert.doesNotMatch(prompt, /地点与室内外属性保持一致/);
-  assert.ok(prompt.includes(`小白子：${characterToken}`));
-  assert.ok(prompt.includes(`${characterToken}：角色“小白子”的外观与身份参考`));
-  assert.doesNotMatch(prompt, /q版狼耳少女/);
-  assert.doesNotMatch(prompt, /一致性标签：狼耳/);
-  assert.match(prompt, /首帧画面提示词（人物身份和外观以参考图绑定为准/);
-  assert.ok(prompt.includes(`小白子（${characterToken}）站在村口`));
-  assert.match(prompt, /首帧是静态关键帧/);
-  assert.match(prompt, /只描述 StartState 的可见起点/);
-  assert.doesNotMatch(prompt, /视频镜头运动上下文/);
-  assert.doesNotMatch(prompt, /当前镜头单一动作目标/);
-  assert.doesNotMatch(prompt, /手指与草药包融合/);
-});
+// 原来这两条测的是首尾帧出图请求的参考图选择（已随首尾帧删除）。选择函数本身仍给 4.0 镜头视频用：
+// 只按 beats 里的 characters 精确取，不从文字里猜。
+function storyboardBeat(characters, visibleAction, location = "院子") {
+  return { startSeconds: 0, endSeconds: 4, sourceSceneIds: ["S1"], location, characters, framing: "中景", camera: "固定机位", visibleAction, dialogue: [], soundDesign: "" };
+}
 
-test("即梦首尾帧镜头图无参考图时才保留角色文字描述", () => {
-  const prompt = buildShotFrameImagePrompt({
-    frameKind: "end",
-    characterReferences: [{
-      characterName: "爷爷",
-      appearancePrompt: "穿深色棉袄的慈祥老人",
-      consistencyTags: ["灰白头发"]
-    }],
-    shot: {
-      startFramePrompt: "小白子站在门口。",
-      endFramePrompt: "爷爷接过草药包。"
-    }
-  });
-  assert.match(prompt, /未提供角色参考图/);
-  assert.match(prompt, /角色：爷爷/);
-  assert.match(prompt, /穿深色棉袄的慈祥老人/);
-});
-
-test("inherit 尾帧使用 manifest 首帧视觉基底且图片 Prompt 不包含动作过程", async () => {
-  const characterReferences = [{
-    characterName: "外婆",
-    appearancePrompt: "和蔼老人，穿围裙",
-    referenceImageDataUrl: "data:image/png;base64,AA=="
-  }, {
-    characterName: "小白子",
-    appearancePrompt: "Q版白发猫耳少女，蓝色眼睛",
-    referenceImageDataUrl: "data:image/png;base64,BB=="
-  }];
-  const referenceManifest = await buildFrameReferenceManifest({
-    frameKind: "end",
-    frameReferenceMode: "inherit",
-    endpointReference: {
-      dataUrl: "data:image/png;base64,CC==",
-      sourceShotId: "S01"
-    },
-    characterReferences
-  });
-  const startFrameToken = referenceManifest.providerImages.find((item) => item.role === "start_frame").token;
-  const grandmotherToken = referenceManifest.providerImages.find((item) => item.characterName === "外婆").token;
-  const prompt = buildShotFrameImagePrompt({
-    frameKind: "end",
-    frameReferenceMode: "inherit",
-    referenceManifest,
-    characterReferences,
-    sceneReference: {
-      sceneId: "LOC01",
-      sceneName: "外婆院子",
-      continuityAnchors: ["户外", "农家院落", "中景平视", "柔和光线"]
-    },
-    shot: {
-      shotId: "S01",
-      sceneId: "LOC01",
-      startFramePrompt: "阳光明媚的外婆（和蔼的老年女性，头发灰白盘起，穿着围裙）院子，中景平视。外婆微笑着递出一个复古旧铁盒。小白子站在对面，双手微抬准备接物。背景是温馨的农家院落与茂密绿植，光线柔和。",
-      endFramePrompt: "小白子双手稳稳抱住旧铁盒，身体微微前倾。外婆的手已收回。小白子面带笑容。"
-    }
-  });
-  assert.ok(prompt.includes(`${startFrameToken} 是当前镜头首帧视觉基底`));
-  assert.match(prompt, /保持首帧的场景结构、机位、景别、构图和光线/);
-  assert.match(prompt, /sceneId=LOC01/);
-  assert.doesNotMatch(prompt, /外婆微笑着递出|双手微抬准备接物|motion\.cameraMove/);
-  assert.ok(!prompt.includes(`外婆（${grandmotherToken}）院子`));
-});
-
-test("transition 尾帧采用 EndState 新机位且不把 motion 路径写进图片 Prompt", async () => {
-  const referenceManifest = await buildFrameReferenceManifest({
-    frameKind: "end",
-    frameReferenceMode: "transition",
-    endpointReference: {
-      dataUrl: "data:image/png;base64,AA==",
-      sourceShotId: "S01"
-    },
-    characterReferences: []
-  });
-  const prompt = buildShotFrameImagePrompt({
-    frameKind: "end",
-    frameReferenceMode: "transition",
-    referenceManifest,
-    sceneReference: {
-      sceneId: "LOC01",
-      sceneName: "夕阳下的木屋院子",
-      continuityAnchors: ["户外", "木屋院子", "夕阳"]
-    },
-    shot: {
-      shotId: "S01",
-      sceneId: "LOC01",
-      startFramePrompt: "夕阳下的木屋院子，中景平视，小白子站在木箱左侧。",
-      endFramePrompt: "夕阳下的木屋院子，右侧三分之二侧面近景，小白子举起玻璃片。",
-      motion: {
-        cameraMove: {
-          mode: "continuous",
-          technique: "缓慢环绕",
-          path: "从正面向右环绕至三分之二侧面",
-          speed: "slow",
-          motivation: "显出玻璃片透光"
-        }
-      }
-    }
-  });
-
-  assert.match(prompt, /采用 EndState 指定的新机位、构图、光线或同场景物体状态/);
-  assert.match(prompt, /不要求与首帧像素级一致/);
-  assert.doesNotMatch(prompt, /缓慢环绕|从正面向右环绕|motion\.cameraMove/);
-});
-
-test("有 manifest 角色绑定时会清理首尾帧画面提示词里的重复外观文字", async () => {
-  const characterReferences = [{
-    characterName: "小白子",
-    appearancePrompt: "Q版狼耳少女，灰白色狼耳朵和狼尾巴，黑色校园风外套。",
-    referenceImageDataUrl: "data:image/png;base64,AA=="
-  }];
-  const referenceManifest = await buildFrameReferenceManifest({
-    frameKind: "start",
-    characterReferences
-  });
-  const characterToken = referenceManifest.providerImages.find((item) => item.characterName === "小白子").token;
-  const prompt = buildShotFrameImagePrompt({
-    frameKind: "start",
-    referenceManifest,
-    characterReferences,
-    shot: {
-      startFramePrompt: "日系2.5D治愈动画风格，Q版狼耳少女小白子（日系2.5D治愈动画风格，Q版二头身比例，狼耳少女，有毛茸茸的灰白色狼耳朵和蓬松的灰白色狼尾巴）坐在木质书桌前，穿着浅黄色背带裙，头顶灰白色狼耳朵，身后有灰白色狼尾巴。她双手拿着一条织了一半的彩虹手链，眼神专注。",
-      endFramePrompt: "小白子抬头。"
-    }
-  });
-  assert.ok(prompt.includes(`小白子：${characterToken}`));
-  assert.ok(prompt.includes(`小白子（${characterToken}）坐在木质书桌前`));
-  assert.match(prompt, /彩虹手链/);
-  assert.doesNotMatch(prompt, /Q版狼耳少女小白子/);
-  assert.doesNotMatch(prompt, /浅黄色背带裙|灰白色狼耳朵|灰白色狼尾巴|黑色校园风外套/);
-});
-
-test("首尾帧镜头图不会把地点所有者映射成 manifest 角色", async () => {
-  const characterReferences = [{
-    characterName: "外婆",
-    appearancePrompt: "和蔼老人，穿围裙",
-    referenceImageDataUrl: "data:image/png;base64,AA=="
-  }, {
-    characterName: "小白子",
-    appearancePrompt: "Q版白发猫耳少女，蓝色眼睛",
-    referenceImageDataUrl: "data:image/png;base64,BB=="
-  }];
-  const referenceManifest = await buildFrameReferenceManifest({
-    frameKind: "start",
-    characterReferences
-  });
-  const grandmotherToken = referenceManifest.providerImages.find((item) => item.characterName === "外婆").token;
-  const protagonistToken = referenceManifest.providerImages.find((item) => item.characterName === "小白子").token;
-  const prompt = buildShotFrameImagePrompt({
-    frameKind: "start",
-    referenceManifest,
-    characterReferences,
-    shot: {
-      startFramePrompt: "阳光明媚的外婆（和蔼的老年女性，头发灰白盘起，穿着围裙）院子，近景平视。小白子（Q版少女，白色长发及腰，头顶猫耳）双手抱着旧铁盒在胸前，眼睛弯成月牙。",
-      endFramePrompt: "小白子身体转向画面右侧。"
-    }
-  });
-  assert.match(prompt, /外婆院子，近景平视/);
-  assert.ok(prompt.includes(`小白子（${protagonistToken}）双手抱着旧铁盒`));
-  assert.ok(!prompt.includes(`外婆（${grandmotherToken}）院子`));
-  assert.doesNotMatch(prompt, /头发灰白盘起|穿着围裙|头顶猫耳/);
-});
-
-test("首尾帧镜头图禁止把字幕或对白文字画进图片", () => {
-  const prompt = buildShotFrameImagePrompt({
-    frameKind: "start",
-    shot: {
-      startFramePrompt: "小白子站在村口，手里拿着草药包。",
-      endFramePrompt: "小白子走进院子。",
-      dialogueOrSubtitle: "字幕：小白子说“嗷呜，谢谢你”。",
-      negativePrompt: "不要现代城市"
-    }
-  });
-  assert.doesNotMatch(prompt, /情绪\/动作理解参考/);
-  assert.match(prompt, /画面禁止出现任何字幕、对白文字、旁白文字、中文、英文、标题、说明字、对白气泡/);
-  assert.match(prompt, /Logo、水印、UI 文本或边框/);
-  assert.doesNotMatch(prompt, /对白\/字幕信息：/);
-});
-
-test("首尾帧图片请求只上传当前镜头相关角色参考图", () => {
+test("镜头视频只取本镜 beats 里实际出镜角色的参考图", () => {
   const references = [
     { characterName: "小白子", storyRole: "主角", referenceImageDataUrl: "data:image/png;base64,AA==", appearancePrompt: "狼耳少女" },
     { characterName: "爷爷", storyRole: "被关爱对象", referenceImageDataUrl: "data:image/png;base64,BB==", appearancePrompt: "老人" },
     { characterName: "张老师", storyRole: "路人", referenceImageDataUrl: "data:image/png;base64,CC==", appearancePrompt: "老师" }
   ];
   const shot = {
-    startFramePrompt: "小白子抱着草药包走到爷爷家门口。",
-    endFramePrompt: "爷爷接过草药包，向小白子点头。"
+    beats: [
+      storyboardBeat(["小白子"], "小白子抱着草药包走到爷爷家门口。"),
+      storyboardBeat(["小白子", "爷爷"], "爷爷接过草药包，向小白子点头。")
+    ]
   };
   const related = shotRelatedCharacterReferences(shot, references);
-  const images = uploadedReferenceImages(related);
-  const body = buildJimengImageRequestBody(
-    { model: "doubao-seedream-5-0-260128", size: "1728x2304", outputFormat: "png", imageField: "image", maxImages: 6, watermark: false },
-    { referenceImageDataUrls: images.map((item) => item.referenceImageDataUrl), count: 4, prompt: "首帧图" }
-  );
   assert.deepEqual(related.map((item) => item.characterName), ["小白子", "爷爷"]);
-  assert.deepEqual(body.image, ["data:image/png;base64,AA==", "data:image/png;base64,BB=="]);
-  assert.equal(body.sequential_image_generation, "auto");
-  assert.deepEqual(body.sequential_image_generation_options, { max_images: 4 });
 });
 
-test("首尾帧图片请求不会因地点词上传地点所有者参考图", () => {
+test("镜头视频不会因地点词带上地点所有者的参考图", () => {
   const references = [
     { characterName: "外婆", storyRole: "委托者", referenceImageDataUrl: "data:image/png;base64,AA==", appearancePrompt: "老人" },
     { characterName: "小白子", storyRole: "主角", referenceImageDataUrl: "data:image/png;base64,BB==", appearancePrompt: "白发猫耳少女" }
   ];
   const shot = {
     storyPurpose: "强化主角接到任务后的开心情绪。",
-    startFramePrompt: "阳光明媚的外婆院子，近景平视。小白子双手抱着旧铁盒在胸前。",
-    endFramePrompt: "小白子身体转向画面右侧，准备出发。"
+    beats: [storyboardBeat(["小白子"], "阳光明媚的外婆院子里，小白子双手抱着旧铁盒在胸前。", "外婆院子")]
   };
   const related = shotRelatedCharacterReferences(shot, references);
   assert.deepEqual(related.map((item) => item.characterName), ["小白子"]);
 });
 
-test("v2 结构化镜头只选择 characters 中实际出镜的角色参考图", () => {
-  const references = [
-    { characterName: "小白子", referenceImageDataUrl: "data:image/png;base64,AA==" },
-    { characterName: "爷爷", referenceImageDataUrl: "data:image/png;base64,BB==" },
-    { characterName: "张老师", referenceImageDataUrl: "data:image/png;base64,CC==" }
-  ];
-  const shot = {
-    startFrame: { characters: [{ name: "小白子" }], environment: { sceneId: "LOC01" } },
-    endFrame: { characters: [{ name: "小白子" }], environment: { sceneId: "LOC01" } },
-    motion: { primaryAction: "她拿起玻璃幻灯片" }
-  };
-
-  assert.deepEqual(
-    shotRelatedCharacterReferences(shot, references).map((item) => item.characterName),
-    ["小白子"]
-  );
-  assert.deepEqual(
-    shotRelatedCharacterReferences({ ...shot, startFrame: { characters: [] }, endFrame: { characters: [] } }, references),
-    []
+test("不是 4.0 的镜头（没有 beats）明确报错，不从首尾帧文字里猜角色", () => {
+  const references = [{ characterName: "小白子", referenceImageDataUrl: "data:image/png;base64,AA==" }];
+  assert.throws(
+    () => shotRelatedCharacterReferences({ startFramePrompt: "小白子站在门口。", endFramePrompt: "小白子转身。" }, references),
+    TypeError
   );
 });
 
@@ -2997,7 +2330,11 @@ test("模型漏掉必要字段时拒绝把结果标记为成功", () => {
       && error.details.some((detail) => detail.code === "STORY_CANDIDATES_SCHEMA_MIN_ITEMS")
   );
   assert.throws(() => ensureOutputContract({ selectedVariantId: "V1" }, "fullStory"), /缺少必要字段/);
-  assert.throws(() => ensureOutputContract({ selectedVariantId: "V1" }, "animationPlan"), /缺少必要字段/);
+  // 没有 4.0 版本号的 Plan 在契约层就按旧版分镜拒绝（2026-10-11 起只支持 4.0）。
+  assert.throws(
+    () => ensureOutputContract({ selectedVariantId: "V1" }, "animationPlan"),
+    (error) => error instanceof OutputContractError && error.code === "ANIMATION_PLAN_VERSION_UNSUPPORTED"
+  );
 });
 
 test("fullStory 不完整时拒绝通过校验", () => {
@@ -4083,7 +3420,7 @@ test("Full Story 局部修复第二次仍失败时终止且不产生第三次请
   assert.equal(calls, 2);
 });
 
-test("动画入口在任何模型与 Compiler 调用前拒绝残缺 Full Story", async () => {
+test("4.0 分镜入口在任何模型调用前拒绝残缺 Full Story", async () => {
   const context = {
     creatorProfile: {
       fixedCharacter: "阿岚，社区修理师",
@@ -4118,11 +3455,9 @@ test("动画入口在任何模型与 Compiler 调用前拒绝残缺 Full Story",
     client: {
       async generateJson() {
         modelCalls += 1;
-        throw new Error("残缺 Full Story 不得调用任何模型或 Compiler");
+        throw new Error("残缺 Full Story 不得调用任何模型");
       }
-    },
-    staticFrameCompilerProvider: "MiMo",
-    staticFrameCompilerModel: TEST_STATIC_FRAME_COMPILER_MODEL
+    }
   });
 
   await assert.rejects(
@@ -4130,145 +3465,12 @@ test("动画入口在任何模型与 Compiler 调用前拒绝残缺 Full Story",
       ...context,
       creativeBrief,
       variant,
-      fullStory
+      fullStory,
+      animationPlanVersion: "4.0"
     })),
     /fullStory Scene Contract 校验失败/u
   );
   assert.equal(modelCalls, 0);
-});
-
-test("动画生产包正向场景允许按剧情复用原片表面形象", async () => {
-  const creatorProfile = {
-    fixedCharacter: "小白子，小女孩，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
-    vertical: "治愈/温情/日常",
-    constraints: "小白子用嗷或嗷呜表达情绪"
-  };
-  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  (creativeBrief.protectedExpressions ??= []).push({
-    expressionType: "视觉元素",
-    sourceExpression: "企鹅服",
-    prohibition: "禁止出现企鹅形象的服装或直接扮演企鹅。",
-    safeAlternativePrinciple: "只保留任务执行者、信使、善意连接者和萌系情感载体的剧作功能。"
-  });
-  const variant = {
-    id: "V1",
-    title: "雾中画境",
-    characterSetup: { protagonist: "小白子，小女孩", careRecipient: "小月", helper: "老张" },
-    newTask: "送画作",
-    emotionalMedium: "儿童画",
-    environmentPressure: "大雾",
-    endingRitual: "把儿童画摆正"
-  };
-  const fullStory = mockFullStory({
-    ...input,
-    creatorProfile: { ...creatorProfile, fixedCharacter: "小白子，q版狼耳少女，活泼可爱，懂事，学生/村民" },
-    creativeBrief,
-    variant
-  });
-  const leakedPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory });
-  const sourceSurface = "村口长椅上摆着无人穿着的企鹅服，翅膀造型袖套平整可见";
-  leakedPlan.shotPlan[0].startFrame.environment.foreground = sourceSurface;
-  leakedPlan.shotPlan[0].endFrame.environment.foreground = sourceSurface;
-  const workflow = animationWorkflow({
-    client: { async generateJson(args) { return stagedAnimationResponse(leakedPlan, args.prompt); } },
-    animationModel: "mimo-v2.5-pro"
-  });
-  const result = await workflow.createAnimationPlan(
-    globalBoundaryContext(workflow, { creativeBrief, creatorProfile, variant, fullStory })
-  );
-  assert.equal(result.shotPlan[0].startFrame.environment.foreground, sourceSurface);
-  assert.equal(result.shotPlan[0].endFrame.environment.foreground, sourceSurface);
-});
-
-test("Visual Guardrails 推断狼尾后下游直接沿用，并继续禁止兽爪肉垫", async () => {
-  const creatorProfile = {
-    fixedCharacter: "小白子，狼耳少女，儿童，活泼可爱，懂事，学生/村民，村里的热心帮手",
-    vertical: "治愈/温情/日常",
-    constraints: "小白子用嗷或嗷呜表达情绪"
-  };
-  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  const variant = {
-    id: "V1",
-    title: "风车的约定",
-    characterSetup: { protagonist: "小白子，狼耳少女", careRecipient: "邻居奶奶", helper: "拖拉机叔叔" },
-    newTask: "送风车",
-    emotionalMedium: "手工风车",
-    environmentPressure: "阵雨",
-    endingRitual: "一起把风车插在窗边"
-  };
-  const fullStory = mockFullStory({
-    ...input,
-    creatorProfile: { ...creatorProfile, fixedCharacter: "小白子，q版狼耳少女，活泼可爱，懂事，学生/村民" },
-    creativeBrief,
-    variant
-  });
-  const tailPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory });
-  tailPlan.characterReferencePrompts[0].appearancePrompt = "小白子，狼耳少女，带狼尾站在村口，保持人形双手。";
-  tailPlan.shotPlan[0].startFrame.characters[0].actionState = "小白子狼尾轻轻摇动，双手扶住风车。";
-  const workflow = animationWorkflow({
-    client: { async generateJson(args) { return stagedAnimationResponse(tailPlan, args.prompt); } },
-    animationModel: "qwen3.7-max"
-  });
-  await assert.doesNotReject(
-    () => workflow.createAnimationPlan(globalBoundaryContext(
-      workflow,
-      { creativeBrief, creatorProfile, variant, fullStory },
-      xiaobaiziBoundary()
-    ))
-  );
-
-  const clawPlan = structuredClone(tailPlan);
-  clawPlan.characterReferencePrompts[0].appearancePrompt = "小白子，狼耳少女，带狼尾和肉垫，狼爪轻轻扒着风车。";
-  const rejectingWorkflow = animationWorkflow({
-    client: { async generateJson(args) { return stagedAnimationResponse(clawPlan, args.prompt); } },
-    animationModel: "qwen3.7-max"
-  });
-  await assert.rejects(
-    () => rejectingWorkflow.createAnimationPlan(globalBoundaryContext(
-      rejectingWorkflow,
-      { creativeBrief, creatorProfile, variant, fullStory },
-      xiaobaiziBoundary()
-    )),
-    /兽爪|狼爪|肉垫|全局边界禁止特征/
-  );
-});
-
-test("用户明确否定尾巴时覆盖模型常识并阻止下游重新加入", async () => {
-  const creatorProfile = {
-    fixedCharacter: "小白子，q版狼耳少女，形象类似猫娘，但明确没有尾巴，活泼可爱，懂事，学生/村民",
-    vertical: "治愈/温情/日常",
-    constraints: "小白子用嗷或嗷呜表达情绪"
-  };
-  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  const variant = {
-    id: "V1",
-    title: "风车的约定",
-    characterSetup: { protagonist: "小白子，q版狼耳少女，无尾巴", careRecipient: "邻居奶奶", helper: "拖拉机叔叔" },
-    newTask: "送风车",
-    emotionalMedium: "手工风车",
-    environmentPressure: "阵雨",
-    endingRitual: "一起把风车插在窗边"
-  };
-  const fullStory = mockFullStory({
-    ...input,
-    creatorProfile: { ...creatorProfile, fixedCharacter: "小白子，q版狼耳少女，活泼可爱，懂事，学生/村民" },
-    creativeBrief,
-    variant
-  });
-  const tailPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory });
-  tailPlan.characterReferencePrompts[0].appearancePrompt = "小白子，q版狼耳少女，出现狼尾巴，穿浅蓝背带裙。";
-  const workflow = animationWorkflow({
-    client: { async generateJson(args) { return stagedAnimationResponse(tailPlan, args.prompt); } },
-    animationModel: "qwen3.7-max"
-  });
-  await assert.rejects(
-    () => workflow.createAnimationPlan(globalBoundaryContext(
-      workflow,
-      { creativeBrief, creatorProfile, variant, fullStory },
-      xiaobaiziBoundary({ tail: "forbidden" })
-    )),
-    /狼尾|狼尾巴|尾巴|全局边界禁止特征/
-  );
 });
 
 test("全局边界接受模型生成的新概念与同义词，不依赖本地物种词典", () => {
@@ -4461,48 +3663,6 @@ test("角色生成边界允许否定提及但仍拒绝正向或转折后的禁�
     { requireRequiredTraits: false }
   ), /猫耳|全局边界禁止特征/u);
 
-  const prompt = buildShotFrameImagePrompt({
-    frameKind: "start",
-    shot: {
-      shotId: "A01",
-      startFramePrompt: "小白子保持灰白色狼耳与狼尾，站在墙边。",
-      acceptanceCriteria: ["小白子狼耳保持灰白色毛茸茸形态，无猫耳变异"]
-    }
-  });
-  assert.doesNotMatch(prompt, /猫耳/u);
-  assert.doesNotThrow(() => ensureCharacterPromptMatchesBoundary(
-    prompt,
-    visualGuardrails,
-    { requireRequiredTraits: false }
-  ));
-
-  const videoPrompt = shotVideoGenerationPromptText({
-    shot: {
-      videoPrompt: "小白子保持狼耳与狼尾，抬手贴好信纸。",
-      acceptanceCriteria: ["无猫耳变异"],
-      negativePrompts: { video: [{ text: "猫耳" }] }
-    },
-    startFrameDataUrl: "data:image/png;base64,AA==",
-    endFrameDataUrl: "data:image/png;base64,AA=="
-  });
-  assert.doesNotMatch(videoPrompt, /猫耳/u);
-  assert.doesNotThrow(() => ensureCharacterPromptMatchesBoundary(
-    videoPrompt,
-    visualGuardrails,
-    { requireRequiredTraits: false }
-  ));
-  const videoPromptWithGeneratedFrames = shotVideoGenerationPromptText({
-    shot: {
-      videoPrompt: "小白子抬手贴好信纸。",
-      startFramePrompt: "小白子是猫耳少女，站在墙边。",
-      endFramePrompt: "小白子放下双手。"
-    }
-  });
-  assert.throws(() => ensureCharacterPromptMatchesBoundary(
-    videoPromptWithGeneratedFrames,
-    visualGuardrails,
-    { requireRequiredTraits: false }
-  ), /猫耳|全局边界禁止特征/u);
   const allReferenceVideoPrompt = shotVideoGenerationPromptText({
     generationMode: "all_reference",
     shot: {
@@ -4519,7 +3679,7 @@ test("角色生成边界允许否定提及但仍拒绝正向或转折后的禁�
   ));
 });
 
-test("Variants、Full Story 与旧 v2 Animation Prompt 都不机械注入来源规则", () => {
+test("Variants 与 Full Story Prompt 都不机械注入来源规则", () => {
   const creatorProfile = { fixedCharacter: "小白子，q版狼耳少女，有狼尾巴", vertical: "治愈日常", constraints: "" };
   const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
   const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief });
@@ -4531,11 +3691,9 @@ test("Variants、Full Story 与旧 v2 Animation Prompt 都不机械注入来源�
     appliesWhenReferenceUsed: true
   });
   const variant = { id: "V1", title: "风车", characterSetup: { protagonist: creatorProfile.fixedCharacter }, newTask: "送风车" };
-  const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant });
 
   const variantPrompt = variantsPrompt({ creativeBrief, visualGuardrails, creatorProfile, count: 2 });
   const storyPrompt = fullStoryPrompt({ creativeBrief, visualGuardrails, referenceAnalysis: {}, sourceScriptReconstruction: {}, variant, creatorProfile });
-  const animationPrompt = animationPlanPrompt({ creativeBrief, visualGuardrails, variant, fullStory, creatorProfile });
 
   assert.match(variantPrompt, /positivePromptBoundary/);
   assert.match(storyPrompt, /requiredTraits/);
@@ -4544,112 +3702,6 @@ test("Variants、Full Story 与旧 v2 Animation Prompt 都不机械注入来源�
     assert.doesNotMatch(prompt, /"sourceSimilarityRules"\s*:/u);
     assert.doesNotMatch(prompt, /彩虹披风/u);
   }
-  assert.match(animationPrompt, /positivePromptBoundary/);
-  assert.doesNotMatch(animationPrompt, /"sourceSimilarityRules"\s*:/u);
-  assert.doesNotMatch(animationPrompt, /彩虹披风/u);
-  assert.match(animationPrompt, /negativePrompts\.image/);
-  assert.match(animationPrompt, /triggerEvidence/);
-  assert.doesNotMatch(animationPrompt, /commonNegativePrompt/);
-});
-
-test("动画生产包仍按 fixedCharacterBoundary 拦截固定主角外观越界", async () => {
-  const creatorProfile = {
-    fixedCharacter: "小白子，q版狼耳少女，有狼尾巴，儿童",
-    vertical: "治愈/温情/日常",
-    constraints: ""
-  };
-  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief });
-  visualGuardrails.fixedCharacterBoundary = xiaobaiziBoundary();
-  const variant = {
-    id: "V1",
-    title: "风车的约定",
-    characterSetup: { protagonist: "小白子，q版狼耳少女，有狼尾巴", careRecipient: "邻居奶奶", helper: "拖拉机叔叔" },
-    newTask: "送风车",
-    emotionalMedium: "手工风车",
-    environmentPressure: "阵雨",
-    endingRitual: "一起把风车插在窗边"
-  };
-  const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant, visualGuardrails });
-  const leakedPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory, visualGuardrails });
-  leakedPlan.characterReferencePrompts[0].appearancePrompt += "，肩后长出翅膀";
-  const workflow = animationWorkflow({
-    client: { async generateJson(args) { return stagedAnimationResponse(leakedPlan, args.prompt); } },
-    animationModel: "qwen3.7-max"
-  });
-  const stageContext = {
-    ...input,
-    ...groundedUpstreamFixture(workflow),
-    creativeBrief,
-    creatorProfile,
-    variant,
-    fullStory
-  };
-
-  await assert.rejects(
-    () => workflow.createAnimationPlan(sealBoundaryContext(workflow, stageContext, visualGuardrails)),
-    /翅膀|角色参考提示词/
-  );
-});
-
-test("台词规则不会进入逐镜渲染负面提示词，混入时会被相关性裁剪", async () => {
-  const creatorProfile = {
-    fixedCharacter: "小白子，q版狼耳少女，有狼尾巴，儿童",
-    vertical: "治愈/温情/日常",
-    constraints: "主角只用嗷或嗷呜表达"
-  };
-  const creativeBrief = mockBrief({ ...input, creatorProfile, referenceAnalysis: {}, sourceScriptReconstruction: {} });
-  const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief });
-  visualGuardrails.dialogueRules.push({
-    text: "主角不得使用“咕嘎”。",
-    triggerEvidence: [{ sourcePath: "creatorProfile.constraints", evidence: "主角只用嗷或嗷呜表达" }]
-  });
-  visualGuardrails.dialogueRules.push({
-    text: "主角不得使用“阿巴”。",
-    triggerEvidence: [{ sourcePath: "creatorProfile.constraints", evidence: "主角只用嗷或嗷呜表达" }]
-  });
-  const variant = {
-    id: "V1",
-    title: "风车的约定",
-    characterSetup: { protagonist: "小白子，q版狼耳少女，有狼尾巴", careRecipient: "邻居奶奶", helper: "拖拉机叔叔" },
-    newTask: "送风车",
-    emotionalMedium: "手工风车",
-    environmentPressure: "阵雨",
-    endingRitual: "一起把风车插在窗边"
-  };
-  const fullStory = mockFullStory({ ...input, creatorProfile, creativeBrief, variant, visualGuardrails });
-  const leakedPlan = mockAnimationPlan({ ...input, creatorProfile, creativeBrief, variant, fullStory, visualGuardrails });
-  leakedPlan.shotPlan[0].negativePrompts.image.push({
-    text: "咕嘎",
-    appliesTo: "image",
-    triggerEvidence: [{ sourcePath: "creatorProfile.constraints", evidence: "主角只用嗷或嗷呜表达" }],
-    reasonCode: "explicit_identity_conflict",
-    priority: "high"
-  });
-  leakedPlan.shotPlan[0].negativePrompts.image.push({
-    text: "阿巴",
-    appliesTo: "image",
-    triggerEvidence: [{ sourcePath: "creatorProfile.constraints", evidence: "主角只用嗷或嗷呜表达" }],
-    reasonCode: "explicit_identity_conflict",
-    priority: "high"
-  });
-  const pruningWorkflow = animationWorkflow({
-    client: { async generateJson(args) { return stagedAnimationResponse(leakedPlan, args.prompt); } },
-    animationModel: "qwen3.7-max"
-  });
-  const stageContext = {
-    ...input,
-    ...groundedUpstreamFixture(pruningWorkflow),
-    creativeBrief,
-    creatorProfile,
-    variant,
-    fullStory
-  };
-  const result = await pruningWorkflow.createAnimationPlan(
-    sealBoundaryContext(pruningWorkflow, stageContext, visualGuardrails)
-  );
-  assert.deepEqual(result.shotPlan[0].negativePrompts.image, []);
-  assert.doesNotMatch(JSON.stringify(result.shotPlan.flatMap((shot) => Object.values(shot.negativePrompts))), /咕嘎|阿巴/u);
 });
 
 test("固定角色名提取把冒号当分隔符，「名字：描述」不会连描述一起当成角色名", () => {
@@ -4724,65 +3776,6 @@ test("完整剧情提示词要求围绕选中变体并锁定固定角色", () =>
   assert.match(prompt, /不支持 offscreen、voiceOver、narrator 或 isVisible/u);
   assert.match(prompt, /只能补充，不能替代这些结构字段/u);
   assert.match(prompt, /"characters":\["标准角色名"\]/u);
-});
-
-test("动画提示词要求输出首尾帧视频生产包", () => {
-  const creatorProfile = { fixedCharacter: "小白子，狼耳少女，小女孩，儿童", vertical: "治愈日常", constraints: "只用嗷呜表达" };
-  const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
-  visualGuardrails.fixedCharacterBoundary = xiaobaiziBoundary();
-  const prompt = animationPlanPrompt({
-    creativeBrief: {},
-    visualGuardrails,
-    variant: { id: "V2", title: "雨停之前" },
-    fullStory: { selectedVariantId: "V2", title: "雨停之前", sceneScript: [] },
-    creatorProfile
-  });
-  assert.match(prompt, /首尾帧 AI 视频生产包/);
-  assert.match(prompt, /"promptSchemaVersion":"2\.0"/);
-  assert.match(prompt, /"startFrame":\{/);
-  assert.match(prompt, /"endFrame":\{/);
-  assert.match(prompt, /"motion":\{/);
-  assert.doesNotMatch(prompt, /"startFramePrompt"\s*:/);
-  assert.doesNotMatch(prompt, /"endFramePrompt"\s*:/);
-  assert.doesNotMatch(prompt, /"videoPrompt"\s*:/);
-  assert.match(prompt, /默认 8–12 个镜头/);
-  assert.match(prompt, /三层简化结构/);
-  assert.match(prompt, /identity \/ scene lock/);
-  assert.match(prompt, /sceneReferencePrompts/);
-  assert.match(prompt, /negativePrompts\.image/);
-  assert.match(prompt, /negativePrompts\.video/);
-  assert.match(prompt, /两个负面数组都允许为空，不设置最少条目数/);
-  assert.match(prompt, /triggerEvidence/);
-  assert.match(prompt, /reasonCode/);
-  assert.doesNotMatch(prompt, /全局负面提示词，只写一次/);
-  assert.match(prompt, /拆镜头方案 B/);
-  assert.match(prompt, /中景互动镜头/);
-  assert.match(prompt, /表情强化镜头/);
-  assert.match(prompt, /静态冻结关键帧/);
-  assert.match(prompt, /startFrame\.environment\.sceneId 和 endFrame\.environment\.sceneId/);
-  assert.match(prompt, /timingBeats 必须有 1–4 条/);
-  assert.match(prompt, /cameraMove\.mode=locked/);
-  assert.match(prompt, /cameraMove\.mode=continuous/);
-  assert.match(prompt, /shot\.startFrame\/endFrame 只用角色名和 sceneId 承接全局锁定/);
-  assert.match(prompt, /固定角色外观边界/);
-  assert.match(prompt, /不得重新推断、删除、替换或新增固定角色事实/);
-  assert.match(prompt, /"canonicalName":"狼尾"/);
-});
-
-test("下游提示词同时携带全局必需与禁止事实，不再解析原始角色词", () => {
-  const creatorProfile = { fixedCharacter: "小白子，狼耳少女", vertical: "治愈日常", constraints: "" };
-  const visualGuardrails = mockVisualGuardrails({ ...input, creatorProfile, creativeBrief: {} });
-  visualGuardrails.fixedCharacterBoundary = xiaobaiziBoundary();
-  const prompt = animationPlanPrompt({
-    creativeBrief: {},
-    visualGuardrails,
-    variant: { id: "V1", title: "风车" },
-    fullStory: { selectedVariantId: "V1", title: "风车", sceneScript: [] },
-    creatorProfile
-  });
-  assert.match(prompt, /"canonicalName":"狼尾"/);
-  assert.match(prompt, /"canonicalName":"兽爪"/);
-  assert.match(prompt, /不得重新推断|不得再次生成或修改固定角色特征/);
 });
 
 test("本地视频命令解析角色、赛道、抽帧和变体数量", () => {

@@ -34,7 +34,7 @@ const fixturePromise = (async () => {
   const visualGuardrails = await workflow.createStoryEntryVisualGuardrails({ creatorProfile }, { storyEntry });
   const fullStory = await workflow.createFullStory({ creatorProfile, visualGuardrails, fullStorySchemaVersion: "full_story/1.2", targetDurationSeconds: 60 }, { storyEntry });
   const plan = (await workflow.createAnimationPlanWithMetadata({
-    creatorProfile, visualGuardrails, fullStory, animationPlanVersion: "4.0", animationPlanMode: "direct_shot",
+    creatorProfile, visualGuardrails, fullStory, animationPlanVersion: "4.0",
     targetAspectRatio: "16:9", backgroundMusicEnabled: false, artStyle: "二维日系动画"
   }, { storyEntry })).animationPlan;
   const shotPrompt = await workflow.createShotVideoPrompt({

@@ -1,13 +1,13 @@
 // 命题定向修订的契约与合并。
 //
-// 与分镜定向修订（`animation-plan-review-validation.js` 的 `ensureRevisionContract`）
+// 与分镜定向修订（原 `animation-plan-review-validation.js` 的 `ensureRevisionContract`，已随旧分镜删除）
 // 逐条同规格，**刻意不建 schema 文件**：那边也是纯 JS 判定。理由是这里要区分
 // 「写了一个不该写的字段」与「写了一个不认识的字段」，而 schema 的 additionalProperties
 // 只会给出「附加属性」这种看不出原因的消息；两套判定并存还会互相漂移。
 //
 // 它只负责三件事：核对模型有没有越权、把授权的改动合并回整批、证明其余部分逐字节不变。
 // **判定全是形状与字符串比较，零语义**——「这条修订改得对不对」需要语义判断，没有兜底。
-import { ReviewContractError } from "./animation-plan-review-validation.js";
+import { ReviewContractError } from "./review-contract-error.js";
 import { SOURCE_SCAFFOLD_COPY_SCORE } from "../public/story-review-metrics.js";
 
 /**

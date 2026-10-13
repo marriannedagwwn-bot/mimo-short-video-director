@@ -19,8 +19,6 @@ export const MODEL_OUTPUT_LOG_SCOPES = Object.freeze({
   STORY_CANDIDATE_REVISION: "storyCandidateRevision",
   STORY_QUALITY_REVIEW: "storyQualityReview",
   STORY_QUALITY_REPAIR: "storyQualityRepair",
-  ANIMATION_PLAN_REVIEW: "animationPlanReview",
-  ANIMATION_PLAN_REVISION: "animationPlanRevision",
   // 完整剧情的展开前承诺核对（src/full-story-precheck.js 的 FULL_STORY_PROMISE_CHECK_STAGE）。
   FULL_STORY_PROMISE_CHECK: "fullStoryPromiseCheck",
   // 自主分镜 4.0 的六个阶段。它们走 modelCallCoordinator，由 storyboard-workflow.js 的

@@ -134,9 +134,11 @@ test("真实调用：关闭思考、带系统提示词与枚举 Schema；选了�
 });
 
 test("补充说明原样进提示词，模型据此解释某一步为什么不在清单里", async () => {
-  const { workflow, requests } = liveWorkflow([{ actionKey: "none", reply: "要先换镜头视频模型。" }]);
-  await workflow.createDirectorAgentTurn(turnInput({ progress: { ...progress, notes: ["镜头视频现在做不了：镜头视频模型是 Kling kling-v3。"] } }));
-  assert.ok(requests[0].prompt.includes("## 补充说明（某一步为什么不在清单里、顺序是不是硬性要求，以这里为准）\n- 镜头视频现在做不了：镜头视频模型是 Kling kling-v3。"));
+  // 补充说明用页面现在真会写出的那一条（原来那条说的是已删除的可灵，2026-10-11 起不会再出现）。
+  const note = "先出角色参考图再做镜头视频只是建议的顺序，不是硬性要求：把新图设为人物参考图会签发新的分镜版本，已经生成的镜头视频会全部作废。";
+  const { workflow, requests } = liveWorkflow([{ actionKey: "none", reply: "可以先做镜头视频，只是之后换人物参考图会作废已有视频。" }]);
+  await workflow.createDirectorAgentTurn(turnInput({ progress: { ...progress, notes: [note] } }));
+  assert.ok(requests[0].prompt.includes(`## 补充说明（某一步为什么不在清单里、顺序是不是硬性要求，以这里为准）\n- ${note}`));
 });
 
 test("两次都选错：如实报错，两次的诊断都在，不拿确定性答案顶替；禁止第三次", async () => {

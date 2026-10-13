@@ -89,9 +89,9 @@ test("animation prompt capture 保存 wire-effective prompt 且不记录请求�
     return { ok: true, url };
   });
   const systemPrompt = "系统提示\n逐字保留";
-  const userPrompt = "直接视频镜头基础锁定\nUnicode：小白子\n/no_think";
+  const userPrompt = "任务：将完整 Full Story\nUnicode：小白子\n/no_think";
 
-  await capture.run({ variantId: "V2", animationPlanMode: "direct_shot" }, async () => {
+  await capture.run({ variantId: "V2" }, async () => {
     await capturedFetch("https://provider.example/v1/chat/completions", {
       method: "POST",
       headers: { authorization: "Bearer api-key-must-not-be-written" },
@@ -185,9 +185,10 @@ test("Animation Plan output-only 模式保存 exact completion 且不落 Prompt�
   const modelOutputRoot = await fs.mkdtemp(path.join(os.tmpdir(), "animation-model-output-"));
   t.after(() => fs.rm(modelOutputRoot, { recursive: true, force: true }));
   const rawContent = JSON.stringify({
+    viewingIntent: "integrated_multimodal_description: First action only.",
     shotPlan: [
-      { videoPrompt: "integrated_multimodal_description: [Shot 1] First action only." },
-      { videoPrompt: "integrated_multimodal_description: [Shot 1] Second action only." }
+      { beats: [{ visibleAction: "First action only." }] },
+      { beats: [{ visibleAction: "Second action only." }] }
     ]
   }, null, 2);
   const writer = new FullModelOutputLogWriter({
@@ -216,9 +217,8 @@ test("Animation Plan output-only 模式保存 exact completion 且不落 Prompt�
   });
 
   const response = await capture.run({
-    route: "/api/animation-plan/video-prompts/rewrite",
+    route: "/api/animation-plan",
     variantId: "V2",
-    animationPlanMode: "direct_shot",
     provider: "Qwen",
     traceContext: {
       verified: true,
@@ -235,7 +235,7 @@ test("Animation Plan output-only 模式保存 exact completion 且不落 Prompt�
       model: "qwen3.7-max",
       messages: [
         { role: "system", content: "SYSTEM_PROMPT_MUST_NOT_BE_LOGGED" },
-        { role: "user", content: "直接视频镜头批次\nUSER_PROMPT_MUST_NOT_BE_LOGGED" }
+        { role: "user", content: "任务：将完整 Full Story\nUSER_PROMPT_MUST_NOT_BE_LOGGED" }
       ]
     })
   }));
@@ -252,7 +252,7 @@ test("Animation Plan output-only 模式保存 exact completion 且不落 Prompt�
   assert.equal(metadata.production.verified, true);
   assert.equal(metadata.production.artifactId, "animationPlan:V2");
   assert.equal(metadata.production.productionRequestId, "production-request-a");
-  assert.equal(metadata.attempt.phase, "animation-shot-batch");
+  assert.equal(metadata.attempt.phase, "animation-model-call");
   assert.equal(metadata.attempt.sequence, 1);
   assert.equal(metadata.attempt.validationStatus, "passed");
   assert.equal(metadata.provider.name, "Qwen");
@@ -344,7 +344,9 @@ test("Animation Plan 输出日志写入失败不改变模型 Response", async ()
   assert.doesNotMatch(warnings[0], /PRIVATE_WRITE_FAILURE/u);
 });
 
-test("Animation Plan 原始输出按 Foundation、batch、H3 repair、首审与复审分别标记", async () => {
+// 旧 3.0 的阶段标记（Foundation、批次、局部纠错、语义审计与修复、方言改写复审）已随 3.0 分镜删除（2026-10-11）。
+// 4.0 自主分镜各步的提示词里没有这些标记：一律记为 animation-model-call，只有 JSON 重试单独标出。
+test("Animation Plan 原始输出：4.0 各步统一标 animation-model-call，JSON 重试单独标出", async () => {
   const observed = [];
   const capture = new AnimationPromptCapture({
     modelOutputLogWriter: {
@@ -358,16 +360,12 @@ test("Animation Plan 原始输出按 Foundation、batch、H3 repair、首审与�
     choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }]
   }), { status: 200 }));
   const prompts = [
-    "直接视频镜头基础锁定",
-    "ARTIFACT_PARTIAL_REPAIR_V1\ncharacterReferencePrompts",
-    "直接视频镜头批次",
-    "ARTIFACT_PARTIAL_REPAIR_V1\nvideoPrompt",
-    "ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2",
-    "ANIMATION_VIDEO_PROMPT_SEMANTIC_REPAIR_V1",
-    "ANIMATION_VIDEO_PROMPT_INITIAL_SEMANTIC_AUDIT_V2",
-    "ANIMATION_VIDEO_PROMPT_REWRITE_SEMANTIC_AUDIT_V2",
-    "ANIMATION_VIDEO_PROMPT_SEMANTIC_REPAIR_V1",
-    "ANIMATION_VIDEO_PROMPT_REWRITE_SEMANTIC_AUDIT_V2"
+    "任务：将完整 Full Story 设计成分镜",
+    "上一次模型输出不是完整合法 JSON，请重新输出",
+    "你是分镜修稿编辑",
+    "你是单镜视频提示词撰写者",
+    // 旧 3.0 的标记即使出现也不再单独分类。
+    "直接视频镜头批次"
   ];
   await capture.run({ variantId: "V2" }, async () => {
     for (const prompt of prompts) {
@@ -381,16 +379,11 @@ test("Animation Plan 原始输出按 Foundation、batch、H3 repair、首审与�
     }
   });
   assert.deepEqual(observed, [
-    { phase: "animation-foundation", sequence: 1 },
-    { phase: "animation-foundation-partial-repair", sequence: 2 },
-    { phase: "animation-shot-batch", sequence: 3 },
-    { phase: "animation-shot-prompt-partial-repair", sequence: 4 },
-    { phase: "animation-video-prompt-initial-semantic-audit", sequence: 5 },
-    { phase: "animation-video-prompt-semantic-repair", sequence: 6 },
-    { phase: "animation-video-prompt-initial-semantic-re-audit", sequence: 7 },
-    { phase: "animation-video-prompt-rewrite-semantic-audit", sequence: 8 },
-    { phase: "animation-video-prompt-semantic-repair", sequence: 9 },
-    { phase: "animation-video-prompt-rewrite-semantic-re-audit", sequence: 10 }
+    { phase: "animation-model-call", sequence: 1 },
+    { phase: "provider-json-retry", sequence: 2 },
+    { phase: "animation-model-call", sequence: 3 },
+    { phase: "animation-model-call", sequence: 4 },
+    { phase: "animation-model-call", sequence: 5 }
   ]);
 });
 

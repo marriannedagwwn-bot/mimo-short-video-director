@@ -136,8 +136,9 @@ test("server serializer preserves error:string and hides ModelResponseError raw 
   assert.equal(serialized.body.attempts.length, 1);
   assert.ok(serialized.body.attempts[0].rawOutputRef);
   assert.doesNotMatch(JSON.stringify(serialized.body), /apiKey|secret/u);
+  // 原文只留在有界的 AttemptStore 里（测试用的读取口 getRawOutput 已于 2026-10-11 删除，这里直接看存储）。
   assert.equal(
-    store.getRawOutput(serialized.body.attempts[0].rawOutputRef),
+    store.entries.get(serialized.body.attempts[0].rawOutputRef)?.buffer.toString("utf8"),
     "{\"apiKey\":\"secret\"}"
   );
 });

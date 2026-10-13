@@ -44,9 +44,7 @@ import {
   PromptAnchorError,
   extractLineContainingExactlyOnce,
   extractSectionExactlyOnce,
-  replaceExactlyOnce,
-  replaceLineContainingExactlyOnce,
-  replaceSectionExactlyOnce
+  replaceExactlyOnce
 } from "../src/prompt-anchors.js";
 import { mockNarrativeFullStory } from "../src/mock.js";
 import { fullStoryCharacterRegistryInput, mockFullStoryCharacterRegistry } from "../src/full-story-character-registry.js";
@@ -255,10 +253,8 @@ test("锚点替换：锚点缺失或出现多次都直接报错，不发出半�
   assert.equal(replaceExactlyOnce("甲乙丙", "乙", "丁"), "甲丁丙");
   assert.throws(() => replaceExactlyOnce("甲乙丙", "戊", "丁"), PromptAnchorError);
   assert.throws(() => replaceExactlyOnce("乙乙", "乙", "丁"), PromptAnchorError);
-  assert.equal(replaceLineContainingExactlyOnce("a\nb 锚\nc", "锚", "x"), "a\nx\nc");
-  assert.throws(() => replaceLineContainingExactlyOnce("锚\n锚", "锚", "x"), PromptAnchorError);
-  assert.equal(replaceSectionExactlyOnce("头[开]中间[尾]后", "[开]", "[尾]", "新"), "头新[尾]后");
-  assert.throws(() => replaceSectionExactlyOnce("[尾][开]", "[开]", "[尾]", "新"), PromptAnchorError);
+  // 按行、按段替换的两个函数（replaceLineContainingExactlyOnce / replaceSectionExactlyOnce）生产代码从没用过，
+  // 已于 2026-10-11 删除；剧情入口只用整句替换与下面的逐字截取。
   // 逐字截取同样只认唯一的锚点。
   assert.equal(extractLineContainingExactlyOnce("a\nb 锚\nc", "锚"), "b 锚");
   assert.throws(() => extractLineContainingExactlyOnce("锚\n锚", "锚"), PromptAnchorError);

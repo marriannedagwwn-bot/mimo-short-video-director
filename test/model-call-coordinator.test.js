@@ -177,7 +177,8 @@ test("Coordinator final error exposes only attempt references while raw outputs 
   assert.equal(caught.attempts.length, 2);
   assert.ok(caught.attempts.every((attempt) => attempt.rawOutputRef));
   assert.doesNotMatch(JSON.stringify(caught), /secret-provider-output/u);
-  assert.match(store.getRawOutput(caught.attempts[0].rawOutputRef), /secret-provider-output-1/u);
+  // 测试用的读取口 getRawOutput 已于 2026-10-11 删除，这里直接看有界存储里留下的原文。
+  assert.match(store.entries.get(caught.attempts[0].rawOutputRef)?.buffer.toString("utf8"), /secret-provider-output-1/u);
 });
 
 test("Coordinator compatibility adapter disables nested client JSON retries", async () => {

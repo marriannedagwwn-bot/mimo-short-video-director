@@ -20,8 +20,6 @@ export class AttemptStore {
     this.idFactory = typeof idFactory === "function" ? idFactory : () => randomUUID();
     this.entries = new Map();
     this.totalBytes = 0;
-    this.evictedExpired = 0;
-    this.evictedCapacity = 0;
   }
 
   recordAttempt({
@@ -68,52 +66,26 @@ export class AttemptStore {
     };
   }
 
-  getRawOutput(rawOutputRef) {
-    this.purgeExpired();
-    const entry = this.entries.get(String(rawOutputRef || ""));
-    return entry ? entry.buffer.toString("utf8") : null;
-  }
-
-  deleteRawOutput(rawOutputRef) {
-    return this.deleteEntry(String(rawOutputRef || ""), "manual");
-  }
-
   purgeExpired() {
     const currentTime = this.now();
     for (const [rawOutputRef, entry] of this.entries) {
       if (entry.expiresAtMs > currentTime) continue;
-      this.deleteEntry(rawOutputRef, "expired");
+      this.deleteEntry(rawOutputRef);
     }
-  }
-
-  stats() {
-    this.purgeExpired();
-    return {
-      entries: this.entries.size,
-      totalBytes: this.totalBytes,
-      ttlMs: this.ttlMs,
-      maxEntryBytes: this.maxEntryBytes,
-      maxTotalBytes: this.maxTotalBytes,
-      evictionPolicy: "expired-first-then-oldest-created",
-      evictedExpired: this.evictedExpired,
-      evictedCapacity: this.evictedCapacity
-    };
   }
 
   evictOldestUntilWithinLimit() {
     while (this.totalBytes > this.maxTotalBytes && this.entries.size) {
       const oldestRef = this.entries.keys().next().value;
-      this.deleteEntry(oldestRef, "capacity");
+      this.deleteEntry(oldestRef);
     }
   }
 
-  deleteEntry(rawOutputRef, reason) {
+  deleteEntry(rawOutputRef) {
     const entry = this.entries.get(rawOutputRef);
     if (!entry) return false;
     this.entries.delete(rawOutputRef);
     this.totalBytes = Math.max(0, this.totalBytes - entry.bytes);
-    if (reason === "expired") this.evictedExpired += 1;
-    if (reason === "capacity") this.evictedCapacity += 1;
     return true;
   }
 }

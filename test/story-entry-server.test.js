@@ -95,7 +95,7 @@ test("真实 HTTP / Durable Task：粘贴完整故事 → 角色边界 → 可�
     // 角色画风超过 200 字：分镜任务在调用模型之前就失败，不烧一次调用，也不留下分镜。
     const requestsBeforeLongStyle = requests.length;
     const longStyle = await api("/api/tasks/create", { ...run, kind: "animationPlan", input: {
-      variantId: "V1", creatorProfile, animationPlanVersion: "4.0", animationPlanMode: "direct_shot", targetAspectRatio: "16:9", backgroundMusicEnabled: false,
+      variantId: "V1", creatorProfile, animationPlanVersion: "4.0", targetAspectRatio: "16:9", backgroundMusicEnabled: false,
       artStyle: "画".repeat(201)
     } });
     const longStyleTask = await wait(longStyle.task, run);
@@ -107,7 +107,7 @@ test("真实 HTTP / Durable Task：粘贴完整故事 → 角色边界 → 可�
 
     // 4.0 分镜：只依赖原文、角色边界和可翻拍镜头；页面带来的角色画风由服务端写进分镜。
     const plan = await api("/api/tasks/create", { ...run, kind: "animationPlan", input: {
-      variantId: "V1", creatorProfile, animationPlanVersion: "4.0", animationPlanMode: "direct_shot", targetAspectRatio: "16:9", backgroundMusicEnabled: false,
+      variantId: "V1", creatorProfile, animationPlanVersion: "4.0", targetAspectRatio: "16:9", backgroundMusicEnabled: false,
       artStyle: "二维日系动画"
     } });
     const planTask = await wait(plan.task, run);
@@ -120,12 +120,16 @@ test("真实 HTTP / Durable Task：粘贴完整故事 → 角色边界 → 可�
     const designPrompt = requests.find((request) => request.messages.some((row) => row.role === "user" && row.content.includes("任务：将完整 Full Story")));
     assert.ok(designPrompt.messages.find((row) => row.role === "user").content.includes("对白不可改"), "粘贴原文的 Run 锁定分镜台词");
     const planWithCandidate = await post("/api/tasks/create", { ...run, kind: "animationPlan", input: {
-      variantId: "V1", creatorProfile, variant: { id: "V1" }, animationPlanVersion: "4.0", animationPlanMode: "direct_shot"
+      variantId: "V1", creatorProfile, variant: { id: "V1" }, animationPlanVersion: "4.0"
     } });
     assert.equal(planWithCandidate.status, 400);
     assert.equal(planWithCandidate.json.code, "STORY_ENTRY_INPUT_INVALID");
-    const v3Plan = await post("/api/tasks/create", { ...run, kind: "animationPlan", input: { variantId: "V1", creatorProfile, animationPlanMode: "direct_shot" } });
-    assert.equal(v3Plan.json.code, "STORY_ENTRY_PLAN_VERSION_UNSUPPORTED");
+    // 不带版本或带旧版本都在建任务前明确拒绝（剧情入口自己的守卫码），不回退到旧分镜。
+    for (const versionInput of [{}, { animationPlanVersion: "3.0" }]) {
+      const legacyPlan = await post("/api/tasks/create", { ...run, kind: "animationPlan", input: { variantId: "V1", creatorProfile, ...versionInput } });
+      assert.equal(legacyPlan.status, 400, JSON.stringify(versionInput));
+      assert.equal(legacyPlan.json.code, "STORY_ENTRY_PLAN_VERSION_UNSUPPORTED");
+    }
 
     // 单镜提示词沿用原路径，不受入口影响。
     const productionContext = { projectId: run.projectId, runId: run.runId, planArtifactId: planEntry.lineage.artifactId,
@@ -290,7 +294,7 @@ test("参考视频 Run 上不能跑剧情入口的流水线", async () => {
     } });
     assert.equal((await runtime.wait(story.task, storyRun)).status, "completed");
     const plan = await runtime.api("/api/tasks/create", { ...storyRun, kind: "animationPlan", input: {
-      variantId: "V1", creatorProfile: runtime.creatorProfile, animationPlanVersion: "4.0", animationPlanMode: "direct_shot", targetAspectRatio: "16:9", backgroundMusicEnabled: false
+      variantId: "V1", creatorProfile: runtime.creatorProfile, animationPlanVersion: "4.0", targetAspectRatio: "16:9", backgroundMusicEnabled: false
     } });
     assert.equal((await runtime.wait(plan.task, storyRun)).status, "completed");
     state = await runtime.api("/api/production/run/load", { ...storyRun, includeContent: true });

@@ -5,8 +5,9 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { createStoryboardRuntime } from "./helpers/storyboard-runtime.js";
 
-// 真实 HTTP（2026-10-10）：镜头视频与批量任务在建任务之前校验分辨率——不合法就 400、不建任务、不调供应商；
-// 合法的值记进任务的模型快照。测试服务器把三家视频供应商的密钥都清空了，不会产生任何付费调用。
+// 真实 HTTP（2026-10-10）：镜头视频任务在建任务之前校验分辨率——不合法就 400、不建任务、不调供应商；
+// 合法的值记进任务的模型快照。测试服务器把视频供应商的密钥都清空了，不会产生任何付费调用。
+// （批量任务 shotVideoBatch 与可灵已于 2026-10-11 删除，相应用例改为断言它们被明确拒绝。）
 
 const SEEDANCE = { provider: "Seedance", model: "doubao-seedance-2-0-260128" };
 const SEEDANCE_FAST = { provider: "Seedance", model: "doubao-seedance-2-0-fast-260128" };
@@ -25,8 +26,8 @@ async function post(runtime, body) {
   return { status: response.status, json: await response.json() };
 }
 
-test("镜头视频与批量：分辨率不合法时在建任务之前就 400；合法值与已知默认值记进模型快照", async () => {
-  const runtime = await createStoryboardRuntime({ env: { SEEDANCE_VIDEO_RESOLUTION: "", MINIMAX_VIDEO_RESOLUTION: "", KLING_VIDEO_RESOLUTION: "" } });
+test("镜头视频：分辨率不合法时在建任务之前就 400；合法值与已知默认值记进模型快照", async () => {
+  const runtime = await createStoryboardRuntime({ env: { SEEDANCE_VIDEO_RESOLUTION: "", MINIMAX_VIDEO_RESOLUTION: "" } });
   try {
     const { api, wait, run, variant } = runtime;
     const shotInput = (overrides) => ({ ...run, kind: "shotVideo", input: { variantId: variant.id, shotId: "A01", generationMode: "all_reference", ...overrides } });
@@ -37,13 +38,15 @@ test("镜头视频与批量：分辨率不合法时在建任务之前就 400；�
     assert.match(invalid.json.error, /只支持 480p \/ 720p，本次请求为「1080p」/u);
     const wrongCase = await post(runtime, shotInput({ modelOverrides: { shotVideo: SEEDANCE }, resolution: "1080P" }));
     assert.equal(wrongCase.json.code, "SHOT_VIDEO_RESOLUTION_INVALID");
-    const unsupported = await post(runtime, shotInput({ modelOverrides: { shotVideo: { provider: "Kling", model: "kling-v2-1" } }, resolution: "720p" }));
-    assert.equal(unsupported.status, 400);
-    assert.equal(unsupported.json.code, "SHOT_VIDEO_RESOLUTION_UNSUPPORTED");
-    // 批量：分辨率在建任务时就查，先于「新版分镜不支持批量」那条拒绝。
+    // 已删除的可灵：在分辨率校验之前就按不支持的供应商拒绝，不改用默认供应商。
+    const removedProvider = await post(runtime, shotInput({ modelOverrides: { shotVideo: { provider: "Kling", model: "kling-v2-1" } }, resolution: "720p" }));
+    assert.equal(removedProvider.status, 400);
+    assert.equal(removedProvider.json.code, "SHOT_VIDEO_CONFIG_INVALID");
+    assert.match(removedProvider.json.error, /不支持镜头视频供应商“Kling”：只支持 Seedance 或 MiniMax/u);
+    // 批量任务已删除：建任务时就是未知任务类型。
     const batch = await post(runtime, { ...run, kind: "shotVideoBatch", input: { variantId: variant.id, modelOverrides: { shotVideo: SEEDANCE }, resolution: "4k" } });
     assert.equal(batch.status, 400);
-    assert.equal(batch.json.code, "SHOT_VIDEO_RESOLUTION_INVALID");
+    assert.equal(batch.json.code, "TASK_KIND_UNSUPPORTED");
     assert.equal((await tasksOnDisk(runtime)).includes("\"shotVideo"), false, "被拒的请求没有建任何镜头视频任务");
 
     // 生成一份 4.0 分镜，再建两个合法的镜头视频任务：选了的值、没选时的已知默认值都记进快照。
@@ -70,7 +73,8 @@ test("镜头视频与批量：分辨率不合法时在建任务之前就 400；�
     const health = await (await fetch(`${runtime.base}/api/health`)).json();
     const providers = health.providers || health.result?.providers;
     assert.deepEqual(providers.Seedance.resolutionDefaults["doubao-seedance-2-0-260128"], { value: "720p", source: "code_default", error: "" });
-    assert.deepEqual(providers.Kling.resolutionDefaults["kling-v2-1"], { value: "", source: "unsupported", error: "" });
+    assert.equal(providers.Kling, undefined, "可灵已删除");
+    assert.equal(providers.VideoHTTP, undefined, "自定义 VideoHTTP 已删除");
   } finally {
     await runtime.close();
   }
@@ -94,13 +98,10 @@ test("服务端配的默认分辨率对不上所选模型：没选就 400，要�
   }
 });
 
-// 批量任务的两处字段清单都是对象字面量，漏掉一处不会有任何运行时错误（分辨率会被悄悄丢掉、按默认值生成），
-// 只能靠测试守着；server.js 不导出函数，这里与 test/story-duration.test.js 一样用源码断言锁住。
-test("批量任务把分辨率冻结进任务输入，并原样交给每一镜", () => {
-  const server = fs.readFileSync(new URL("../server.js", import.meta.url), "utf8");
+// 单镜视频请求的字段清单是对象字面量，漏掉分辨率不会有任何运行时错误（会被悄悄丢掉、按默认值生成），
+// 只能靠测试守着；与 test/story-duration.test.js 一样用源码断言锁住。
+// （原来还锁着批量任务 shotVideoBatch 的两处清单，批量任务已于 2026-10-11 删除。）
+test("单镜视频请求把所选分辨率原样带给服务端", () => {
   const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
-  assert.match(server, /includePreviousShotFrames,\n\s+\/\/ [^\n]*\n\s+\.\.\.\(Object\.hasOwn\(input, "resolution"\) \? \{ resolution: input\.resolution \} : \{\}\),\n\s+modelOverrides: plainObject\(input\.modelOverrides\)/u);
-  assert.match(server, /productionContext: trusted\.productionContext,\n\s+\.\.\.\(Object\.hasOwn\(trusted, "resolution"\) \? \{ resolution: trusted\.resolution \} : \{\}\),\n\s+modelOverrides: trusted\.modelOverrides/u);
-  assert.match(app, /count: 1,\n\s+\.\.\.shotVideoResolutionRequestFields\(resolution\),\n\s+productionContext\n/u);
   assert.match(app, /promptOverride: promptOverride \|\| "",\n\s+\.\.\.shotVideoResolutionRequestFields\(\),/u);
 });

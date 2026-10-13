@@ -7,9 +7,9 @@ const STORYBOARD_STEPS = Object.freeze({
 });
 const LABELS = Object.freeze({
   directorPipeline: "AI 导演", variants: "主题变体", fullStory: "完整剧情",
-  animationPlan: "动画生产包", animationPromptRewrite: "视频提示词改写",
+  animationPlan: "动画生产包",
   characterReferenceRefine: "人物参考精修", characterReferenceImages: "角色参考图",
-  shotFrameImage: "镜头帧图片", shotVideo: "镜头视频", shotVideoBatch: "批量镜头视频"
+  shotVideo: "镜头视频"
 });
 const TERMINAL_LABELS = Object.freeze({
   completed: "已完成", failed: "失败", conflicted: "因依赖变化停止",
@@ -69,7 +69,7 @@ export function taskStatusView(task, { modelLabel = "", kindLabel = "" } = {}) {
       message = `正在生成${label}${model} · 第 ${task.progress.stepIndex}/${task.progress.stepMax} 步 ${STORYBOARD_STEPS[task.progress.step] || task.progress.step} · ${activity}…`;
     }
     buttonLabel = `${label}生成中…`;
-    if (task.kind === "animationPromptRewrite" || task.kind === "characterReferenceRefine") {
+    if (task.kind === "characterReferenceRefine") {
       message = `正在进行${label}${model}${progress}…`;
       buttonLabel = `${label}进行中…`;
     }
@@ -81,28 +81,9 @@ export function taskStatusView(task, { modelLabel = "", kindLabel = "" } = {}) {
   } else {
     message = taskErrorMessage(task, `${label}任务${TERMINAL_LABELS[task.status] || "状态未知"}${model}`);
   }
-  if (task.kind === "shotVideoBatch" && task.progress?.controlState === "paused" && busy) {
-    message = shotVideoBatchStatusText(task);
-    buttonLabel = "批量任务已暂停";
-  }
   return {
     busy, buttonLabel, message,
     tone: busy ? "active" : task.status === "completed" ? "ready"
       : ["cancelled", "abandoned", "interrupted", "conflicted"].includes(task.status) ? "warn" : "error"
   };
-}
-
-export function shotVideoBatchStatusText(task = {}, progress = task.progress || {}) {
-  if (!isActiveTask(task)) {
-    if (task.status === "completed") {
-      const failed = Number(progress.failedShots) || 0;
-      return failed ? `已完成，${failed} 个镜头失败` : "全部镜头已完成";
-    }
-    if (task.status === "cancelled") return "已终止，完成片段已保留";
-    return taskErrorMessage(task, `批量任务${TERMINAL_LABELS[task.status] || "状态未知"}`);
-  }
-  if (progress.controlState === "paused") return "已暂停，将在当前片段完成后停止提交";
-  if (task.status === "queued") return "等待服务器媒体队列";
-  if (progress.currentShotId) return `正在生成 ${progress.currentShotId}`;
-  return "准备下一镜";
 }

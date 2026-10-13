@@ -707,7 +707,6 @@ async function runOne(entry, shared) {
       visualGuardrails: content(run, "visualGuardrails"),
       fullStory: finalStory,
       animationPlan: null,
-      shotFrameResults: {},
       shotVideoResults: {}
     };
     const sealed = (await requestJson("POST", "/api/production/package/seal", { projectId: ctx.projectId, runId: ctx.runId, payload })).result;
@@ -801,9 +800,7 @@ const shared = {
     storyProvider: health.storyProvider,
     storyModel: health.storyModel,
     animationProvider: health.animationProvider,
-    animationModel: health.animationModel,
-    staticFrameCompilerProvider: health.modelStages?.staticFrameCompiler?.provider,
-    staticFrameCompilerModel: health.modelStages?.staticFrameCompiler?.model
+    animationModel: health.animationModel
   },
   usedTitles: new Set()
 };

@@ -6,6 +6,7 @@
 // 页面执行前还会用同一份规则再算一遍并核对 guard。设计见 docs/director-agent-chat-2026-10-09.md。
 import { DIRECTOR_AGENT_LIMITS, directorAgentActionKey, isModelSelectableDirectorAgentAction } from "./director-agent-actions.js";
 import { oneSentenceEditInvalidationLines } from "./one-sentence-edit-ui.js";
+import { legacyAnimationPlanMessage } from "./storyboard-plan.js";
 
 // 各步骤最少调用几次文本模型。数字来自代码结构（这一步至少要发几次请求），是下限：
 // 带诊断的重试、审阅后的修订和终审都会多花；跑完后页面会显示实际用量。
@@ -195,15 +196,17 @@ function buildActions(facts) {
     return { actions, next: add(generateFullStoryAction(facts, variant)), waitingFor: "" };
   }
 
-  // 4. 分镜。
+  // 4. 分镜。旧版（2.0/3.0）分镜已不再支持：app.js 不把它当成分镜（plan 为空），这里同样提议生成，
+  // 按实际版本写的说明放进 notes（有 next 时 waitingFor 照常为空）。
   if (!facts.plan) {
     const next = add(generateStoryboardAction(facts, variant));
     addStoryEdit();
-    return { actions, next, waitingFor: "" };
-  }
-  if (!facts.plan.isStoryboard) {
-    addStoryEdit();
-    return { actions, next: null, waitingFor: "这是旧版（3.0）动画生产包，镜头视频请在页面上生成。" };
+    return {
+      actions,
+      next,
+      notes: facts.legacyPlanVersion ? [legacyAnimationPlanMessage(facts.legacyPlanVersion)] : [],
+      waitingFor: ""
+    };
   }
   if (!facts.plan.hasProductionContext) {
     return { actions, next: null, waitingFor: "分镜的版本信息对不上，请刷新页面后再继续。" };
@@ -212,22 +215,16 @@ function buildActions(facts) {
   // 5. 角色参考图先于镜头视频：「设为人物参考图」会签发新分镜版本，已生成的镜头视频会全部作废。
   for (const role of facts.plan.roles.filter((item) => !item.hasImage)) add(openCharacterImagesAction(facts, variant, role));
 
-  // 6. 镜头视频。4.0 的单镜提示词只支持全能参考模型。
+  // 6. 镜头视频。
   const notes = [];
   const pendingShots = facts.plan.shots.filter((shot) => !shot.hasVideo);
   const missingRoles = facts.plan.roles.some((role) => !role.hasImage);
-  if (pendingShots.length && !facts.models.videoSupportsStoryboard) {
-    add(openModelSettingsAction(facts));
-    notes.push(`镜头视频现在做不了：镜头视频模型是 ${facts.models.video}，它写不了 4.0 分镜的单镜提示词；要先在模型设置里换成 Seedance 2.0 或 MiniMax H3。`);
-  } else {
-    for (const shot of pendingShots) add(openShotVideoAction(facts, variant, shot));
-  }
+  for (const shot of pendingShots) add(openShotVideoAction(facts, variant, shot));
   if (pendingShots.length && missingRoles) {
     notes.push("先出角色参考图再做镜头视频只是建议的顺序，不是硬性要求：把新图设为人物参考图会签发新的分镜版本，已经生成的镜头视频会全部作废。");
   }
 
   const next = actions.find((action) => action.id === "openCharacterImages")
-    || actions.find((action) => action.id === "openModelSettings")
     || actions.find((action) => action.id === "openShotVideo")
     || null;
 
@@ -332,9 +329,10 @@ function generateFullStoryAction(facts, variant) {
 function generateStoryboardAction(facts, variant) {
   const settings = facts.nextPlanSettings;
   const style = settings.artStyle || "未指定";
+  const label = facts.legacyPlanVersion ? "重新生成分镜" : "生成分镜";
   return action("generateStoryboard", [variant.id], {
-    label: "生成分镜",
-    modelLabel: `生成分镜（${settings.aspectRatio}，${settings.musicOn ? "有" : "无"}背景音乐）`,
+    label,
+    modelLabel: `${label}（${settings.aspectRatio}，${settings.musicOn ? "有" : "无"}背景音乐）`,
     cost: { kind: "text", minCalls: DIRECTOR_AGENT_MIN_TEXT_CALLS.animationPlan, model: facts.models.plan, lastUsage: facts.usage.plan || null,
       note: "审阅报出问题时会再修订、终审" },
     details: [`画幅 ${settings.aspectRatio} · 画风 ${style} · ${settings.musicOn ? "有" : "无"}背景音乐`, "这些设置会写进分镜；要改的话先在页面上改好再确认。"],
@@ -362,7 +360,7 @@ function openShotVideoAction(facts, variant, shot) {
   return action("openShotVideo", [variant.id, shot.shotId], {
     label: `生成镜头 ${shot.shotId} 的视频`,
     cost: { kind: "video", model: facts.models.video, textCalls, textModel: facts.models.plan,
-      note: "在弹窗里确认后生成，按供应商计费；生成模式请选「全能参考」" },
+      note: "在弹窗里确认后生成，按供应商计费" },
     guard: { ...commonGuard(facts), variantId: variant.id, planRevision: facts.plan.revision, shotId: shot.shotId, hasVideo: shot.hasVideo, model: facts.models.video },
     needsStoryPage: true,
     variantId: variant.id
@@ -440,16 +438,6 @@ function pendingEditActions(facts) {
     ? [openStoryPageAction(facts, { id: pending.variantId })]
     : [];
   return { actions, next: null, waitingFor: `${pending.label}的修改稿在${pending.where}，等你采纳或放弃。` };
-}
-
-function openModelSettingsAction(facts) {
-  return action("openModelSettings", [], {
-    label: "打开模型设置，把「镜头视频」换成 Seedance 2.0 或 MiniMax H3",
-    modelLabel: "打开模型设置换镜头视频模型",
-    cost: { kind: "free" },
-    details: [`现在的镜头视频模型是 ${facts.models.video}，它写不了 4.0 分镜的单镜提示词。换模型只对这个标签页生效。`],
-    guard: { ...commonGuard(facts), model: facts.models.video }
-  });
 }
 
 // 发给 /api/director-agent/turn 的进度说明：只有状态、计数、固定标签和模型能选的动作。

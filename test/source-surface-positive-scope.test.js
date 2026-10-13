@@ -2,8 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mockFullStory, mockVisualGuardrails } from "../src/mock.js";
 import {
-  animationFoundationPrompt,
-  animationShotBatchPrompt,
   characterReferenceRefinePrompt,
   fullStoryPrompt,
   variantsPrompt,
@@ -17,6 +15,10 @@ import {
   ensureVisualGuardrailsMatchesProfile,
   materializeGlobalCharacterBoundaryViews
 } from "../src/validation.js";
+import { storyboardPrompt } from "../src/storyboard-prompts.js";
+import { fullStoryCharacterFacts } from "../src/full-story-contract.js";
+import { storyDurationWindow } from "../public/story-duration.js";
+import { minimalStoryboardPlan } from "./helpers/minimal-storyboard-plan.js";
 
 const creatorProfile = Object.freeze({
   fixedCharacter: "小白子，q版狼耳少女，活泼可爱，懂事，村里的热心帮手",
@@ -132,45 +134,24 @@ function safeStory() {
   return story;
 }
 
+// 2026-10-11 起只支持 4.0 自主分镜：原来这里是 3.0 direct_shot 镜头，现在换成最小合法 4.0 分镜。
 function safeAnimationPlan() {
-  return {
-    selectedVariantId: "V1",
-    title: "果园小眠",
-    visualBible: {
-      overallStyle: "温暖的2.5D动画",
-      animationStyle: "动作自然",
-      colorPalette: ["傍晚暖色"],
-      lighting: "柔和侧光",
-      cameraLanguage: "稳定中景",
-      worldRules: ["不得出现原片企鹅装角色组合"],
-      characterConsistencyRules: []
-    },
-    characterReferencePrompts: [{
-      characterName: "小白子",
-      storyRole: "热心帮手",
-      identity: "q版狼耳少女",
-      appearancePrompt: "小白子，q版狼耳少女，暖色日常造型",
-      consistencyTags: ["小白子", "狼耳"]
-    }],
-    sceneReferencePrompts: [],
-    assetPrompts: [],
-    shotPlan: [{
-      shotId: "A01",
-      sourceSceneId: "S1",
-      sceneId: "LOC01",
-      durationSeconds: 4,
-      storyPurpose: "表现小白子完成新任务",
-      emotionalTarget: "温暖",
-      videoPrompt: "小白子在果园把苹果放回篮子，并在旁边看见一颗蜂蜜糖。",
-      cameraMotion: "稳定中景后切手部特写",
-      characterAction: "小白子把苹果放回篮子",
-      dialogueOrSubtitle: "小白子：嗷呜！",
-      soundDesign: "果园风声与苹果滚动声",
-      continuityNotes: "不得出现原片绿色挎包、白毯子、橘子或雨伞",
-      negativePrompts: { image: [], video: [] },
-      acceptanceCriteria: ["不得出现原片角色组合或咕咕、耶～、咕嘎拟声词"]
-    }]
+  const plan = minimalStoryboardPlan({ title: "果园小眠", characterName: "小白子" });
+  plan.characterReferencePrompts[0] = {
+    characterName: "小白子",
+    storyRole: "热心帮手",
+    identity: "q版狼耳少女",
+    appearancePrompt: "小白子，q版狼耳少女，暖色日常造型",
+    consistencyTags: ["小白子", "狼耳"],
+    forbiddenChanges: []
   };
+  const beat = plan.shotPlan[0].beats[0];
+  beat.location = "果园";
+  beat.visibleAction = "小白子在果园把苹果放回篮子，并在旁边看见一颗蜂蜜糖。";
+  beat.dialogue = [{ speaker: "小白子", text: "嗷呜！", source: "onscreen", timing: "放下苹果后" }];
+  beat.soundDesign = "果园风声与苹果滚动声";
+  plan.visualDesign.locations[0].name = "果园";
+  return plan;
 }
 
 test("原片道具、拟声词和角色组合进入 Variant 正向字段时仍然放行", () => {
@@ -218,7 +199,7 @@ test("原片道具、拟声词和角色组合进入 Full Story 正向剧情时�
   ));
 });
 
-test("原片道具、拟声词和角色组合进入 Animation 视频、对白和声音字段时仍然放行", () => {
+test("原片道具、拟声词和角色组合进入 4.0 分镜的动作、对白和声音字段时仍然放行", () => {
   const variant = safeVariant();
   const plan = safeAnimationPlan();
   assert.doesNotThrow(() => ensureAnimationPlanMatchesProfile(
@@ -229,9 +210,10 @@ test("原片道具、拟声词和角色组合进入 Animation 视频、对白和
     visualGuardrails
   ));
 
-  plan.shotPlan[0].videoPrompt = "企鹅装角色把橘子放在绿色挎包旁，金发戴帽女孩盖上白毯子";
-  plan.shotPlan[0].dialogueOrSubtitle = "金发戴帽女孩：咕嘎；粉发女孩：耶～";
-  plan.shotPlan[0].soundDesign = "咕咕、咕嘎与白毯子落下的窸窣声";
+  const beat = plan.shotPlan[0].beats[0];
+  beat.visibleAction = "小白子把橘子放在绿色挎包旁，学着企鹅装角色的样子给金发戴帽女孩盖上白毯子";
+  beat.dialogue = [{ speaker: "小白子", text: "咕嘎；耶～", source: "onscreen", timing: "盖上毯子时" }];
+  beat.soundDesign = "咕咕、咕嘎与白毯子落下的窸窣声";
   assert.doesNotThrow(() => ensureAnimationPlanMatchesProfile(
     plan,
     creatorProfile,
@@ -344,33 +326,21 @@ test("来源拟声词不会被升级成 dialogueRules，正向生成 Prompt 也�
   });
   const variant = safeVariant();
   const story = safeStory();
-  const foundation = safeAnimationPlan();
-  foundation.productionStrategy = {
-    format: "direct_shot_video",
-    videoPromptProfile: { profileId: "seedance_2_0", provider: "Seedance", model: "doubao-seedance-2-0-pro" }
-  };
 
   const prompts = [
     variantsPrompt({ count: 1, creatorProfile, creativeBrief, visualGuardrails: guardrails }),
     fullStoryPrompt({ creatorProfile, creativeBrief, visualGuardrails: guardrails, variant }),
-    animationFoundationPrompt({
-      animationPlanMode: "direct_shot",
-      creatorProfile,
-      creativeBrief,
-      visualGuardrails: guardrails,
+    // 4.0 分镜设计提示词：冻结输入与 storyboardInput 投影的键一致，角色设定只经 fullStoryCharacterFacts 投影。
+    storyboardPrompt({
       fullStory: story,
-      videoPromptProfile: foundation.productionStrategy.videoPromptProfile
-    }),
-    animationShotBatchPrompt({
-      animationPlanMode: "direct_shot",
-      creatorProfile,
-      creativeBrief,
-      visualGuardrails: guardrails,
-      variant,
-      fullStory: story,
-      animationFoundation: foundation,
-      sourceScenes: [story.sceneScript[0]],
-      batchStartShotIndex: 0
+      characterRegistry: story.characterBible,
+      characterSettings: fullStoryCharacterFacts(guardrails),
+      targetDurationSeconds: 60,
+      durationWindow: storyDurationWindow(60),
+      targetAspectRatio: "16:9",
+      visualStyle: creatorProfile.vertical,
+      characterExpressionRules: "",
+      backgroundMusicMode: "none"
     })
   ];
   prompts.forEach((prompt) => {

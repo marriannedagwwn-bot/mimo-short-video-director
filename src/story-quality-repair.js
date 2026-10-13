@@ -12,7 +12,7 @@
 // 由浏览器走既有的 fullStory 签发流程；新版本会递归 stale 这个变体的镜头计划与媒体。
 //
 // 模型只写 {sceneId, field, find, replace}，**原文由服务端逐字替换**：它碰不到替换点以外的
-// 任何一个字。要求模型复述整段长文本，本仓库已有 0/12 的先例（§2.4 台词补写）。
+// 任何一个字。要求模型复述整段长文本，本仓库已有 0/12 的先例（已删除的 3.0 台词补写）。
 import { STORY_REPAIR_MAX_PATCHES, STORY_REPAIR_PATCH_FIELDS, storyQualityRepairableItems }
   from "../public/story-review-metrics.js";
 import { InputError, OutputContractError } from "./validation.js";

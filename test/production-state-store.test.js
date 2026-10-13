@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { ProductionStateStore } from "../src/production-state-store.js";
 import { lineageRef } from "../src/production-lineage.js";
+import { minimalStoryboardPlan } from "./helpers/minimal-storyboard-plan.js";
 
 async function withStore(run) {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-production-state-test-"));
@@ -195,7 +196,7 @@ test("same-id upstream change stales Story, Plan and media, while key reordering
     const plan = await commit(store, run, {
       artifactId: "animationPlan:V1",
       artifactType: "animationPlan",
-      content: { selectedVariantId: "V1", promptSchemaVersion: "3.0", shotPlan: [] },
+      content: minimalStoryboardPlan({ sceneId: "SC01", characterName: "奶奶" }),
       dependencies: [lineageRef(story.lineage)],
       createMediaNamespace: true
     });
@@ -354,7 +355,8 @@ test("signed v3 package validates lineage, rejects tampering and imports into an
     const run = await store.createRun({ projectId: "project-package" });
     const variantContent = { id: "V1", title: "主题", characterSetup: { protagonist: "奶奶" } };
     const storyContent = { selectedVariantId: "V1", sceneScript: [{ sceneId: "SC01" }] };
-    const planContent = { selectedVariantId: "V1", promptSchemaVersion: "3.0", shotPlan: [] };
+    // 包版本 3.0 与 Plan 版本无关；2026-10-11 起包里的 Plan 必须是 4.0（旧 Plan 拒绝封装与导入）。
+    const planContent = minimalStoryboardPlan({ title: "主题", sceneId: "SC01", characterName: "奶奶" });
     const variant = await commit(store, run, {
       artifactId: "variant:V1",
       artifactType: "selectedVariant",

@@ -3,8 +3,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 /**
  * 请求级 token 记账。
  *
- * 一次用户操作背后可能有十几次模型调用（Foundation + 每批 shot + 局部修复 +
- * 语义审计），调用点散落在 workflow、compiler、partial-repair 多个模块里。用
+ * 一次用户操作背后可能有多次模型调用（例如 4.0 分镜的设计、审阅、修订、终审各自带一次重试，
+ * 剧情体检的两次顺序调用），调用点散落在 workflow、storyboard-workflow 等多个模块里。用
  * AsyncLocalStorage 建立请求作用域，客户端在解析响应时把 usage 投进当前作用域，
  * 调用点一处都不用改，并发请求之间也不会串账。
  *
