@@ -7,7 +7,7 @@ import {
 } from "../src/contracts/storyboard-design-model-schema.js";
 import { storyboardDesignSchema, storyboardDesignFromPlan, storyboardValidationErrors } from "../src/storyboard-contract.js";
 import { storyboardInput, createStoryboardPlan, createSingleShotPrompt } from "../src/storyboard-workflow.js";
-import { storyboardPrompt, storyboardRetryPrompt, storyboardSystem } from "../src/storyboard-prompts.js";
+import { storyboardPrompt, storyboardPromptWithLockedDialogue, storyboardRetryPrompt, storyboardSystem } from "../src/storyboard-prompts.js";
 import { fullStoryCharacterRegistryInput, mockFullStoryCharacterRegistry } from "../src/full-story-character-registry.js";
 import { catalog } from "../src/storyboard-editorial-utils.js";
 import { NO_BACKGROUND_MUSIC_SENTENCE } from "../src/validation.js";
@@ -128,6 +128,25 @@ test("设计提示词第 9 条要求 beat 来源包含在片段里，演到下�
   assert.match(rule, /(?:每个|各个|所有)\s*beat[^。；]*sourceSceneIds[^。；]*(?:必须|须)[^。；]*片段[^。；]*sourceSceneIds/u);
   assert.match(rule, /beat[^。；]*演到下一场[^。；]*(?:补|写|加入)[^。；]*片段[^。；]*sourceSceneIds/u);
   assert.match(rule, /(?:不要|不得|不能)[^。；]*只[^。；]*beat/u);
+});
+
+// 2026-10-13：成片里人物进场方向乱、相邻片段方向接反，根因是分镜从不写进出画面的方向。
+test("设计提示词第 6 条要求写清进出画面与移动方向、压缩反复走位；第 8 条要求相邻片段方向接得上", async () => {
+  const { projected } = await fixture();
+  const lines = storyboardPrompt(projected).split("\n");
+  const rule6 = lines.find(line => /^6\.\s/u.test(line));
+  const rule8 = lines.find(line => /^8\.\s/u.test(line));
+  assert.ok(rule6 && rule8, "设计提示词必须有第 6、8 条");
+  for (const phrase of ["角色进出画面或在画面里移动时，写清从画面哪一侧进来、朝哪一侧或哪个位置去、停在哪里", "谁在前、谁在后、朝画面哪一侧跑", "压缩成观众一眼看得清的一段路线"]) {
+    assert.ok(rule6.includes(phrase), phrase);
+  }
+  for (const phrase of ["片段结束时还在移动的人，写明他在画面哪一侧、正朝哪个方向移动", "上一片段的人朝画面右侧跑出，下一片段就从画面左侧进来、继续朝右", "朝画面左侧跑出，下一片段就从画面右侧进来、继续朝左",
+    "追赶的一方跟在他们后面、从同一侧出现，不会出现在他们前方", "下一片段的 transitionIn 写明他们从画面哪一侧进来", "换到对面机位让方向反过来时，在 camera 里写明"]) {
+    assert.ok(rule8.includes(phrase), phrase);
+  }
+  // 锁台词版只换第 2 条那一句，方向要求原样保留。
+  const locked = storyboardPromptWithLockedDialogue(projected);
+  assert.ok(locked.includes(rule6) && locked.includes(rule8));
 });
 
 test("片段数由模型自己决定，不锁 shotPlan 条数", async () => {

@@ -183,7 +183,8 @@ test("视频入口的完整剧情、角色边界与 4.0 分镜提示词与改动
   assert.equal(sha(fullStoryPrompt({ creatorProfile: profile, visualGuardrails: vg, variant, targetDurationSeconds: 60 })), "664de9a52cc957abeda4497e0216132c799d7ba592723bd7613211d4fa42f056");
   assert.equal(sha(fullStoryPrompt({ creatorProfile: profile, visualGuardrails: vg, variant })), "1ca4695b91a3198a6125182a1e8c5ca544f44851472525f12e0090b929e7388f");
   assert.equal(sha(visualGuardrailsPrompt({ creatorProfile: profile, referenceAnalysis: {}, sourceScriptReconstruction: { scenes: [] } })), "c67aed18ee3699a3068f54946ffaf835920e70870ff1099b5658682d5389fb2c");
-  assert.equal(sha(storyboardPrompt({ durationWindow: { min: 51, max: 69 }, targetDurationSeconds: 60, targetAspectRatio: "16:9", fullStory: {} })), "e7428f562be38b85e6f45758f657d2b775737b4393598bd411eba580d123ef8f");
+  // 2026-10-13 有意修改：设计提示词第 6、8 条补了进出画面方向与相邻片段方向接续，按同一份输入重算。
+  assert.equal(sha(storyboardPrompt({ durationWindow: { min: 51, max: 69 }, targetDurationSeconds: 60, targetAspectRatio: "16:9", fullStory: {} })), "ebe293de68be26fb0175c9eea5991793cfdf48febd6d9e8568f2b8ee63e8dd5d");
 });
 
 test("角色边界的共用判断规则仍逐字出现在视频版提示词里（防漂移）", () => {

@@ -203,7 +203,9 @@ function renderSummary({ runs, plan, model, options, startedAt }) {
     lines.push(`### ${shot.shotId}（${shot.durationSeconds}s，${shot.transitionIn.type}，beats ${shot.beats.map((beat) => `${beat.startSeconds}–${beat.endSeconds}`).join(" / ")}）`, "");
     for (const arm of arms) {
       const run = runs.find((entry) => entry.arm === arm && entry.shotId === shot.shotId && entry.sample === 1);
-      lines.push(`**${arm === "old" ? "旧写法" : "新写法"}**${run?.error ? `（失败：${run.error}）` : `（${run.metrics.length} 字；判据：${run.metrics.codes.join("、") || "通过"}）`}`, "");
+      // 只跑一种写法、又没带 --reuse 时，另一种写法这一镜没有记录。
+      if (!run) { lines.push(`**${arm === "old" ? "旧写法" : "新写法"}**（本次没有这一镜的记录）`, ""); continue; }
+      lines.push(`**${arm === "old" ? "旧写法" : "新写法"}**${run.error ? `（失败：${run.error}）` : `（${run.metrics.length} 字；判据：${run.metrics.codes.join("、") || "通过"}）`}`, "");
       if (run && !run.error) lines.push("```text", run.videoPrompt, "```", "");
     }
   }
