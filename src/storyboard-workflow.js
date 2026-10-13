@@ -1,11 +1,11 @@
 import { hasFullStoryCharacterRegistry } from "../public/full-story-format.js";
-import { STORYBOARD_PLAN_VERSION, SHOT_VIDEO_PROMPT_VERSION } from "../public/storyboard-plan.js";
+import { STORYBOARD_PLAN_VERSION, SHOT_VIDEO_PROMPT_VERSION, storyboardShotCharacterNames } from "../public/storyboard-plan.js";
 import { storyDurationWindow } from "../public/story-duration.js";
 import { currentDurableTaskContext, durableTaskHeartbeat } from "./durable-task-context.js";
 import { fullStoryCharacterFacts } from "./full-story-contract.js";
 import { storyCharacterNames, fullStoryCharacterRegistryInput, mergeFullStoryCharacterRegistry, mockFullStoryCharacterRegistry } from "./full-story-character-registry.js";
 import { fullStoryCharacterRegistryPrompt } from "./full-story-character-registry-prompt.js";
-import { STORYBOARD_LOCKED_DIALOGUE_KEPT_CONTENT, storyboardPrompt, storyboardPromptWithLockedDialogue, storyboardRetryPrompt, storyboardSystem, shotPrompt } from "./storyboard-prompts.js";
+import { STORYBOARD_LOCKED_DIALOGUE_KEPT_CONTENT, storyboardPrompt, storyboardPromptWithLockedDialogue, storyboardRetryPrompt, storyboardSystem, shotPrompt, shotPromptRetryPrompt } from "./storyboard-prompts.js";
 import { STORY_MODE_FULL_TEXT } from "../public/story-entry.js";
 import { ModelPipelineError } from "./model-errors.js";
 import { storyboardReviewPrompt, validateStoryboardReview } from "./storyboard-review.js";
@@ -85,7 +85,7 @@ function storyboardPipelineFailure(error, rejections = []) {
   });
 }
 
-async function call(workflow, settings, stage, prompt, validate, { systemPrompt = storyboardSystem, telemetry = null, responseSchema = null, onStep = null } = {}) {
+async function call(workflow, settings, stage, prompt, validate, { systemPrompt = storyboardSystem, telemetry = null, responseSchema = null, onStep = null, retryPromptFor = storyboardRetryPrompt } = {}) {
   await onStep?.(stage);
   const rejections = [];
   const record = stageAttemptRecorder(workflow, stage);
@@ -107,11 +107,11 @@ async function call(workflow, settings, stage, prompt, validate, { systemPrompt 
         // 截断与「被校验拦下」是两种完全不同的失败。截断那一刻没有任何校验诊断，
         // 只认「有没有诊断」的分支会原样重发，第二次照样写超。
         if (String(issue?.code || error?.code || "") === "MODEL_OUTPUT_TRUNCATED") {
-          return storyboardRetryPrompt({ originalPrompt, truncated: true });
+          return retryPromptFor({ originalPrompt, truncated: true });
         }
         const last = rejections[rejections.length - 1];
         // 没有结构化诊断时退回原提示词：只说「你错了」不说错在哪，第二次只会重复第一次。
-        return last?.details?.length ? storyboardRetryPrompt({ originalPrompt, details: last.details }) : originalPrompt;
+        return last?.details?.length ? retryPromptFor({ originalPrompt, details: last.details }) : originalPrompt;
       },
       validate: (candidate) => {
         try { return validate(candidate); } catch (error) {
@@ -247,9 +247,25 @@ export function singleShotPromptInput(plan, shotId, target) {
   };
 }
 
+// 写稿时写出来的素材编号都是猜的：附哪几张、编号是几，要到生成视频那一刻才由素材清单
+// （buildReferenceManifestText）按本次实际附带的素材写定。只认编号写法，不认「图片」「视频」这类普通词。
+const SHOT_PROMPT_REFERENCE_TOKEN = /@\s*(?:图片|视频|音频)\s*\d*|参考(?:图|视频|音频)\s*\d+|图片\s*\d+|<\s*(?:Subject|Picture|Video|Audio)\s*\d+\s*>/giu;
+
+// 台词原话、画风、出镜角色名是同一份判据要求逐字写出的分镜内容，不是写稿猜的编号。它们本身含编号写法时
+// （用户台词「快看图片 3！」），写进去被判素材编号、不写被判漏写，两条判据互相矛盾、永远过不了。
+// 所以扫编号之前先把这类片段遮掉，只查其余文字。只遮本身含编号写法的片段：不含时扫描的文字与原来逐字相同。
+// 长的先遮，免得短片段先占掉长片段的一部分；遮成 \u0000（不是空白、不是数字），前后文字拼不出新的编号。
+function unboundReferenceTokens(videoPrompt, requiredFragments) {
+  const tokenLike = [...new Set(requiredFragments)].filter(fragment => fragment && fragment.match(SHOT_PROMPT_REFERENCE_TOKEN)).sort((a, b) => b.length - a.length);
+  const scanned = tokenLike.reduce((text, fragment) => text.replaceAll(fragment, "\u0000"), videoPrompt);
+  return [...new Set(scanned.match(SHOT_PROMPT_REFERENCE_TOKEN) || [])];
+}
+
 /**
- * 单镜视频提示词的判据，按原来的先后顺序列出全部问题（生成时只报第一条，与原来逐字相同）。
- * 生成（createSingleShotPrompt）与一句话修改（2026-10-11）共用这一份，两边不会各说各话。
+ * 单镜视频提示词的判据，按先后顺序列出全部问题。
+ * 生成（createSingleShotPrompt，2026-10-12 起一次报出全部）与一句话修改（2026-10-11）共用这一份，
+ * 两边不会各说各话；一句话修改改之前的那道检查只报第一条。2026-10-12 新加的两条
+ * （出镜角色名、素材编号）排在原有四条之后，已经不合格的旧提示词报出的第一条诊断不变。
  * value 是 { videoPrompt }；projected 来自 singleShotPromptInput。
  */
 export function shotVideoPromptViolations(value, projected) {
@@ -263,7 +279,25 @@ export function shotVideoPromptViolations(value, projected) {
   // 画风只在分镜签发了它时校验：每个镜头都要逐字写出同一个画风，否则没有角色参考图约束的
   // 空镜和场景会自己挑风格，和角色对不上。
   if (projected.artStyle && !value.videoPrompt.includes(projected.artStyle)) issues.push(issue("SHOT_PROMPT_ART_STYLE_MISSING", `单镜提示词必须逐字写出分镜的画风：${projected.artStyle}`));
+  // 出镜角色名必须原样写出：生成视频时按同一组名字挑角色参考图，素材清单再用这个名字把图对到人。
+  // 画外说话者不在 characters 里，不要求。名字是分镜里签发的事实，不是关键词表。
+  const characterNames = storyboardShotCharacterNames(projected.shot);
+  for (const name of characterNames) {
+    if (!value.videoPrompt.includes(name)) issues.push(issue("SHOT_PROMPT_CHARACTER_NAME_MISSING", `单镜提示词没有写出出镜角色的登记名「${name}」：生成视频时素材清单按这个名字把角色参考图对应到角色，必须原样写出`));
+  }
+  const requiredVerbatim = [...projected.shot.beats.flatMap(beat => beat.dialogue.map(line => line.text)), projected.artStyle || "", ...characterNames];
+  const tokens = unboundReferenceTokens(value.videoPrompt, requiredVerbatim);
+  if (tokens.length) issues.push(issue("SHOT_PROMPT_UNBOUND_REFERENCE_TOKEN", `单镜提示词不能写素材编号：${tokens.join("、")}——附哪些参考素材、编号是几由生成视频时的素材清单决定，角色只用登记名称呼`));
   return issues;
+}
+
+// 演示模式的单镜稿：沿用原来的逐 beat 一行（一句话修改的测试夹具依赖其中「固定机位」、每句台词、
+// 画风各出现一次），每个 beat 补一句「画面里：……」写出出镜角色名。测试替身会把它当模型回复送回，
+// 所以它必须天然过 shotVideoPromptViolations，生成后照样过一遍。
+function demoShotVideoPrompt(projected) {
+  return (projected.artStyle ? `画风：${projected.artStyle}。\n` : "")
+    + projected.shot.beats.map(beat => `${beat.startSeconds}–${beat.endSeconds}秒：${beat.characters.length ? `画面里：${beat.characters.join("、")}。` : ""}${beat.framing} ${beat.camera} ${beat.visibleAction} ${beat.dialogue.map(line => `${line.speaker}：${line.text}`).join("；")} ${beat.soundDesign}`).join("\n")
+    + (projected.backgroundMusicMode === "none" ? `\n${NO_BACKGROUND_MUSIC_SENTENCE}` : "");
 }
 
 export async function createSingleShotPrompt(workflow, input) {
@@ -272,16 +306,18 @@ export async function createSingleShotPrompt(workflow, input) {
   const settings = workflow.resolveStage("animationPlan", input);
   let result;
   if (!workflow.hasLiveClient) {
-    result = { videoPrompt: (projected.artStyle ? `画风：${projected.artStyle}。\n` : "") + projected.shot.beats.map(beat => `${beat.startSeconds}–${beat.endSeconds}秒：${beat.framing} ${beat.camera} ${beat.visibleAction} ${beat.dialogue.map(line => `${line.speaker}：${line.text}`).join("；")} ${beat.soundDesign}`).join("\n") + (projected.backgroundMusicMode === "none" ? `\n${NO_BACKGROUND_MUSIC_SENTENCE}` : "") };
+    result = { videoPrompt: demoShotVideoPrompt(projected) };
+    const [demoIssue] = shotVideoPromptViolations(result, projected);
+    if (demoIssue) throw new Error(`演示模式的单镜提示词没有通过校验：${demoIssue.reason}`);
   } else {
     workflow.assertStageClient(settings, "单镜视频提示词");
     result = await call(workflow, settings, "shotVideoPrompt", shotPrompt(projected), value => {
-      // 三条判据逐字未改，只是让它们带上 code + 指针：漏写一句台词正是重试救得回来的那一类，
-      // 而没有结构化诊断的重试只能原样重发。判据写在 shotVideoPromptViolations，一句话修改共用。
-      const [first] = shotVideoPromptViolations(value, projected);
-      if (first) throw new OutputContractError(first.reason, [first]);
+      // 一次报出全部问题（2026-10-12 起）：两次调用的预算里，第二次要能把漏写的台词、角色名一并补齐，
+      // 只报第一条时第二次可能补了这条又漏那条。判据写在 shotVideoPromptViolations，一句话修改共用。
+      const issues = shotVideoPromptViolations(value, projected);
+      if (issues.length) throw new OutputContractError(issues.map(entry => entry.reason).join("；"), issues);
       return value;
-    });
+    }, { retryPromptFor: shotPromptRetryPrompt });
   }
   return { schemaVersion: SHOT_VIDEO_PROMPT_VERSION, shotId, planDigest, target: structuredClone(target), writer: { provider: settings.provider, model: settings.model }, videoPrompt: result.videoPrompt };
 }
