@@ -2,6 +2,15 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "mimo-director-docs",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/qinfen/Documents/mimo-director/mimo-short-video-director && exec /Users/qinfen/.local/bin/node --use-env-proxy server.js"
+      ],
+      "port": 4173
+    },
+    {
       "name": "dev",
       "runtimeExecutable": "npm",
       "runtimeArgs": [
@@ -13,12 +22,30 @@
     },
     {
       "name": "demo",
-      "runtimeExecutable": "sh",
+      "runtimeExecutable": "/bin/sh",
       "runtimeArgs": [
         "-c",
-        "MIMO_BASE_URL= QWEN_BASE_URL= DEEPSEEK_BASE_URL= JIMENG_BASE_URL= QWEN_API_KEY= MIMO_API_KEY= DEEPSEEK_API_KEY= DASHSCOPE_API_KEY= PORT=4199 WORKFLOW_PRODUCTION_STATE_DIR=runtime/demo-runs exec node --use-env-proxy server.js"
+        "cd /Users/qinfen/Documents/mimo-director/mimo-short-video-director && MIMO_BASE_URL= QWEN_BASE_URL= DEEPSEEK_BASE_URL= JIMENG_BASE_URL= QWEN_API_KEY= MIMO_API_KEY= DEEPSEEK_API_KEY= DASHSCOPE_API_KEY= PORT=4199 WORKFLOW_PRODUCTION_STATE_DIR=runtime/demo-runs exec /Users/qinfen/.local/bin/node --use-env-proxy server.js"
       ],
       "port": 4199
+    },
+    {
+      "name": "real-check",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/qinfen/Documents/mimo-director/mimo-short-video-director && JIMENG_API_KEY= SEEDANCE_API_KEY= MINIMAX_API_KEY= KLING_V3_API_KEY= KLING_API_KEY= KLING_ACCESS_KEY= KLING_SECRET_KEY= VIDEO_HTTP_API_KEY= PORT=4188 WORKFLOW_PRODUCTION_STATE_DIR=runtime/demo-runs/real-check exec /Users/qinfen/.local/bin/node --use-env-proxy server.js"
+      ],
+      "port": 4188
+    },
+    {
+      "name": "film-check",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/qinfen/Documents/mimo-director/mimo-short-video-director && MINIMAX_API_KEY= KLING_V3_API_KEY= KLING_API_KEY= KLING_ACCESS_KEY= KLING_SECRET_KEY= VIDEO_HTTP_API_KEY= PORT=4194 WORKFLOW_PRODUCTION_STATE_DIR=runtime/demo-runs/film-check exec /Users/qinfen/.local/bin/node --env-file=/Users/qinfen/Documents/mimo-director/mimo-short-video-director/.env --use-env-proxy server.js"
+      ],
+      "port": 4194
     }
   ]
 }
