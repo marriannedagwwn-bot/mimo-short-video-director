@@ -38,6 +38,9 @@
 `ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR` 使用同样的私有目录结构，当前建议为 `debug/animation-plan-model-outputs`。分镜路由与单镜提示词路由里的每次真实模型响应按调用顺序保存；output-only 模式不会创建 Animation Prompt 抓取文件。4.0 自主分镜各步另按步骤名记在下一节的 `STAGE_MODEL_OUTPUT_LOG_DIR`。
 
 `model-output.txt` 是模型实际 completion content 的完整 UTF-8 文本；`metadata.json` 保存字节数、SHA-256、attempt 状态，以及彼此分离的 production/provider requestId。它不保存输入 Prompt、HTTP envelope、Header、密钥或媒体。正文可能包含完整失败剧情或镜头提示词，应视为敏感本机数据；不得提交、导出、恢复为 Story/Plan 或放进 `public/`。无模型正文的 timeout/transport attempt 只会有 metadata，不会伪造空输出文件。
+
+`attempt-NN-<unique>` 里的 `<unique>` 是 6 位随机后缀，由 `src/unique-directory.js` 独占创建（不用 `fs.mkdtemp`：未开长路径支持的 Windows 上它在路径约 248 字符时就失败，而浏览器 Run 内这一层目录本身已有 250 字符左右）。
+
 ## 工作流阶段全量模型输出
 
 `STAGE_MODEL_OUTPUT_LOG_DIR` 是第四套独立 sidecar，覆盖参考视频链路各阶段、候选对照评审与命题修订、剧情体检与按问题修改、承诺核对、4.0 自主分镜各步、单镜提示词、导演助手与一句话修改，完整清单是 `server.js` 的 `STAGE_MODEL_OUTPUT_LOG_SCOPES`。走 `generateValidatedJson` 的阶段在那里注册即生效；走 `modelCallCoordinator` 的阶段由调用方自己接 `attemptObserver`（自主分镜由 `storyboard-workflow.js` 的共用 `call()` 接，剧情按问题修改由 `createStoryQualityRepair` 接，导演助手由 `createDirectorAgentTurn` 接，一句话修改由 `createOneSentenceEdit` 接），每次 provider 调用各留一条记录。目录结构、权限与原子写与上一节完全一致，只是这些阶段在该层没有 Production Lineage 上下文，所以路径固定落在：

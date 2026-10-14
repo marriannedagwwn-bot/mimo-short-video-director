@@ -124,7 +124,7 @@ Animation Plan 使用独立的 `ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR`。它在真
 
 两类日志都不保存输入 Prompt、HTTP 请求/响应包、Header、API Key、Cookie、Data URL 或 Base64 媒体。目录必须位于非 `public/` 的本机私有路径，文件内容可能包含完整未通过校验的剧情或镜头提示词，应按敏感调试数据管理。未配置对应环境变量时完全禁用；读取、解析或写入日志失败只产生脱敏告警，不改变校验、重试次数、Artifact 提交或错误结论。日志不是 Production Lineage、事实来源、恢复数据或导出包内容，只能从启用后的下一次请求开始记录，不能追溯此前已丢失的响应。当前本机建议配置为：
 
-为兼容 Windows 路径长度限制，已绑定 Production 的目录名只保留可读 Artifact 名称，并把 project/run、production request 和 operation 标识写成短 SHA-256 摘要；完整标识仍逐字保存在同目录的 `metadata.json`，摘要只负责文件系统隔离，不参与业务 lineage。
+为兼容 Windows 路径长度限制，已绑定 Production 的目录名只保留可读 Artifact 名称，并把 project/run、production request 和 operation 标识写成短 SHA-256 摘要；完整标识仍逐字保存在同目录的 `metadata.json`，摘要只负责文件系统隔离，不参与业务 lineage。每次调用的 `attempt-*` 目录由 `src/unique-directory.js` 创建而不是 `fs.mkdtemp`：在未开启长路径支持的 Windows 上，`mkdtemp` 在路径约 248 字符时就会失败，而浏览器 Run 内的日志目录本身已有 250 字符左右，旧实现会因此静默丢掉整条日志。
 
 ```dotenv
 FULL_STORY_MODEL_OUTPUT_LOG_DIR=debug/full-story-model-outputs
@@ -205,7 +205,7 @@ MIMO_MEDIA_MODE=auto
 
 `MIMO_MEDIA_MODE=auto` 会优先通过 `video_url` 发送原生视频；请求中会按 MiMo V2.5 文档携带 `fps` 与 `media_resolution`，默认 `MIMO_VIDEO_FPS=2`、`MIMO_VIDEO_MEDIA_RESOLUTION=default`。若服务返回不支持媒体类型的 400/415/422，再自动回退为带时间戳关键帧。超过 `MIMO_NATIVE_VIDEO_MAX_MB` 的视频直接使用关键帧，避免 base64 请求占用过多内存。
 
-MiMo 请求参数默认为 `temperature=0.3`、`top_p=0.95`、`max_completion_tokens=131072`、`thinking=disabled`、`stream=true`。输出上限放到各家实测接受的最大值（MiMo 131072、Qwen 65536；非流式的 DeepSeek 仍是 32768），模型陷入逐字重复时由读取流程边收边查、当场中断，详见 [输出死循环检测](docs/output-degeneration-2026-09-24.md)。V2.5 / V2.6 的文本、图片、视频理解均通过共享 SSE 解析器接收，推理内容与正文分开，收到完整结束标志后才解析并校验业务 JSON；页面仍在阶段完成后显示结果，不逐字显示未校验正文。每 10 秒最多更新一次任务流进度；实际收到的结构化 token 用量在成功、断流、暂停或终止时均保留，未知用量不估算。流不完整或途中断开明确失败，不回退非流式。HTTP 错误原文及原有媒体兼容回退保持原行为。分镜输出日志通过并行读取响应副本观测 SSE，不阻塞客户端收流；日志只保存正文与供应商用量。[实现与验收记录](docs/mimo-streaming-2026-09-22.md)。如果没有配置 Qwen，参考片分析、脚本还原、creativeBrief、主题变体、完整剧情和动画生产包都会回退到 MiMo 的对应模型。
+MiMo 请求参数默认为 `temperature=0.3`、`top_p=0.95`、`max_completion_tokens=131072`、`thinking=disabled`、`stream=true`。输出上限放到各家实测接受的最大值（MiMo 131072、Qwen 65536；非流式的 DeepSeek 仍是 32768），参考片分析例外，单独默认 16384（`QWEN_ANALYSIS_MAX_COMPLETION_TOKENS` / `MIMO_ANALYSIS_MAX_COMPLETION_TOKENS` 可调，本机正常分析只输出 3–7 千 token）；在「模型设置」里按阶段换成别家时，上限取那一家自己的阶段配置，不沿用默认供应商那一档，模型陷入逐字重复时由读取流程边收边查、当场中断，详见 [输出死循环检测](docs/output-degeneration-2026-09-24.md)。V2.5 / V2.6 的文本、图片、视频理解均通过共享 SSE 解析器接收，推理内容与正文分开，收到完整结束标志后才解析并校验业务 JSON；页面仍在阶段完成后显示结果，不逐字显示未校验正文。每 10 秒最多更新一次任务流进度；实际收到的结构化 token 用量在成功、断流、暂停或终止时均保留，未知用量不估算。流不完整或途中断开明确失败，不回退非流式。HTTP 错误原文及原有媒体兼容回退保持原行为。分镜输出日志通过并行读取响应副本观测 SSE，不阻塞客户端收流；日志只保存正文与供应商用量。[实现与验收记录](docs/mimo-streaming-2026-09-22.md)。如果没有配置 Qwen，参考片分析、脚本还原、creativeBrief、主题变体、完整剧情和动画生产包都会回退到 MiMo 的对应模型。
 
 `MIMO_THINKING=disabled` 时，MiMo 用户消息末尾会追加 `/no_think`；改成 `MIMO_THINKING=enabled` 后，请求体会发送 `thinking={"type":"enabled"}`，并且不会再追加 `/no_think`。
 

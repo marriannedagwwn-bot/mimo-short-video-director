@@ -40,7 +40,7 @@ Production Lineage v1 作为服务端 sidecar 并行运行：每次浏览器主�
 
 清理必须核对页面归属，顺序是 scheduler → Run 锁撤销任务 → 删源副本、Run、其命名空间媒体与 Run 内 Debug；迟到的 Runner/worker **不得重建已清数据**。**四类东西永远不由它清**：无页面归属的历史 Run、用户原文件、主动导出文件、签名密钥。详见 `docs/production-lineage-state.md`。
 
-状态固定为 `queued | running | completed | failed | conflicted | interrupted | abandoned`。冻结后绝不自动换成新 current；每次 provider 调用前后及锁内 commit 都复验 revision/digest。**目标的期望版本是 `latest` 那一版、不论是否已 stale**（与状态库提交门同一口径，Task Manager 三处复检共用 `targetLatestRevision()`）；2026-09-18 之前 stale 目标被冻结成 `null`，任何已失效目标重新生成都必然冲突（详见 `docs/production-lineage-state.md` §4）。相同 active operation 复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`；只有相同 requestId、digest 与 dependencies 的重复 finalize 可复用 revision。任务没有总墙钟 deadline：provider watchdog 使用自身 timeout 加 120 秒（流式的 Qwen/MiMo 用空闲超时，见 §2.7），本地阶段使用 300 秒无进展窗口并随进度续期，超时为 `failed/TASK_STALLED`。`abandoned` 与 `interrupted` 都不表示远端取消，供应商调用可能已经计费。
+状态固定为 `queued | running | completed | failed | conflicted | interrupted | abandoned`。冻结后绝不自动换成新 current；每次 provider 调用前后及锁内 commit 都复验 revision/digest。**目标的期望版本是 `latest` 那一版、不论是否已 stale**（与状态库提交门同一口径，Task Manager 三处复检共用 `targetLatestRevision()`）；2026-09-18 之前 stale 目标被冻结成 `null`，任何已失效目标重新生成都必然冲突（详见 `docs/production-lineage-state.md` §4）。相同 active operation 复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`；只有相同 requestId、digest 与 dependencies 的重复 finalize 可复用 revision。任务没有总墙钟 deadline：provider watchdog 使用自身 timeout 加 120 秒（流式的 Qwen/MiMo 用空闲超时，见 §2.7），本地阶段使用 300 秒无进展窗口并随进度续期，超时为 `failed/TASK_STALLED`。`abandoned` 与 `interrupted` 都不表示远端取消，供应商调用可能已经计费。`tasks/index.json` 与 `manifest.json` 的原子替换走 `src/atomic-file.js` 的 `replaceFile`：只在 win32 对 `EPERM/EACCES/EBUSY` 退避重试约 2.3 秒，最终失败删掉临时文件、原样抛错（2026-10-05；此前 Windows 上并发读取或杀毒扫描会让写入直接失败并留下孤儿 `.tmp`，强制释放因此没生效、任务照跑照计费）。
 
 per-Run Coordinator 是不可重入 FIFO 锁。持锁路径只能调用 `commitArtifactUnlocked`、`recordStageUnlocked`、`loadRunUnlocked` 和 Task Store unlocked 方法；禁止从锁内调用对应公开方法，也禁止在临界区执行 provider、网络、FFmpeg 或模型校验。lineage snapshot、Task GET 与 atomic manifest load 均为锁外读。
 
@@ -87,7 +87,7 @@ Story Candidates 仍使用 `themeVariants.variants[]` wire shape，但必须通�
 
 - **必须使用 Node 24**（`.nvmrc` = `24`，`engines: ">=24 <25"`）。禁止直接用 25+ 运行。
 - **`npm start` / `npm run dev` 带 `--use-env-proxy`，不要删。** Node 的内置 `fetch` **默认不读 `HTTP_PROXY` / `HTTPS_PROXY` 环境变量**，而在需要代理才能出网的环境里，服务进程会直连各家 API 并超时——表现是所有阶段一起报「服务器内部错误」或 `TypeError: fetch failed`，而同一台机器上 `curl` 却完全正常（curl 自己读代理）。2026-09-04 实测：直连 `dashscope.aliyuncs.com` 超时 12 秒，加上该 flag 后立刻拿到正常响应。没有代理的环境上这个 flag 无害。
-  排查口诀：**`curl` 通而服务不通，先查代理**，别去翻供应商余额或改代码。
+  排查口诀：**`curl` 通而服务不通，先查代理**，别去翻供应商余额或改代码。非 macOS 走环境代理时，`/api/health` 的 `networkProxy` 按启动时的环境变量如实报 `proxy` / `direct`（2026-10-05 之前恒报 `direct`，与实际相反）。
 - 服务运行期间修改了服务端相关文件，需要自动重启服务器。
 - `npm test` 通过是**必要条件，不是充分条件**：它不能证明新引入的业务契约正确。
 
@@ -956,6 +956,8 @@ Full Story 生成之后的**独立验收，只出报告**：不修改剧情、�
 - **禁止非流式自动回退。** 流式失败就如实报错——自动降级是第五节第 4 条的「失败时返回默认值」。
 - **流式请求只判空闲，不设总时长（2026-09-23）。** Qwen 与 MiMo 从发出请求起，**连续** `streamIdleTimeoutMs`（`QWEN_STREAM_IDLE_TIMEOUT_MS` / `MIMO_STREAM_IDLE_TIMEOUT_MS`，默认 120 秒）没有收到任何东西才中断；等响应头也按这个判，响应头、正文、`reasoning_content`、SSE 心跳注释都算「有数据」。`requestTimeoutMs`（全局与按阶段覆盖）对这两家**不再生效**，只约束非流式的 DeepSeek——它等待期间本来就没有数据，区分不了「在算」与「挂了」。依据是 2026-09-22 MiMo 候选阶段：流一直活着、已收到 6929 个推理数据块，仍在 900 秒整被 `AbortSignal.timeout` 切断。生成总长度已由 max tokens 封顶，不需要墙钟再兜一次。等响应头超时仍是 `TimeoutError`（`MODEL_TIMEOUT`）；读流途中超时报 `MODEL_STREAM_IDLE_TIMEOUT`，与 `MODEL_STREAM_ABORTED` 同为可重试的 transport。计时器只有一份，在 `src/stream-idle-timeout.js`。Durable watchdog 在调用前按「空闲超时 + 120 秒宽限」排期（不少于 300 秒无进展窗口），读流期间每 10 秒心跳续期。
 - **输出上限放到实测最大值，死循环改由边收边查截停（2026-09-24，取代 09-23 的「统一默认 32768、调大而不取消」）。** MiMo 全局、剧情、动画默认 131072（页面提供的 5 个型号 v2.5、v2.5-pro、v2.6-flash、v2.6-pro、v2.6-pro-ultraspeed 用极小请求实测全部接受，v2.6-pro 不带该参数时默认也是它），Qwen 全局与各阶段默认 65536（09-23 实测接受）；DeepSeek 非流式、中途看不到内容，仍是 32768。数值与依据只有一份，在 `src/output-token-ceilings.js`。09-23 那条的理由是「上限是模型陷入重复输出时唯一的刹车」，现在刹车换成了下一条的逐字重复检测，上限只剩「不重复但极长」这一种情况的兜底。起因：09-23 回放里 MiMo 开思考跑候选推理了 2.9 万 token 被 32768 截断、整次作废，那不是死循环，是本来就长。MiMo 的上限包含推理 token，千问看起来不含（未对照官方文档）。**重试抬额度一律「只抬不降、不超上限」**（`growOutputTokenLimit`）：此前 MiMo 客户端与 coordinator 的重试把结果夹在 32768，默认一抬高，重试反而会把上限压回去；请求里本来没写上限时重试也保持不写，让客户端默认生效（旧逻辑会把它变成 12288）。coordinator 不知道供应商是谁，只抬到三家都实测接受的 65536。
+  - **例外：参考片分析单独默认 16384（2026-10-05）**：Qwen 与 MiMo 共用 `ANALYSIS_OUTPUT_TOKEN_DEFAULT`（`src/output-token-ceilings.js`），不跟随全局上限，`QWEN_ANALYSIS_MAX_COMPLETION_TOKENS` / `MIMO_ANALYSIS_MAX_COMPLETION_TOKENS` 可调。本机 20 次真实分析只输出 2854–6929 token；10-05 一次 `mimo-v2.6-pro` 在 65536 下写了 18.3 万字、742 秒后才截断失败，不是逐字重复，复读检测抓不到。分析走 `generateValidatedJson`（`jsonRetryAttempts: 0`），截断不重试，所以这是单次调用的硬上限。
+  - **按阶段换供应商时，上限取那一家自己的阶段配置（2026-10-05，用户选定）**：`buildStageDefaults` 用同一张阶段表（`stageDefaultsFor`）给 Qwen/MiMo/DeepSeek 各算一次，`src/stage-token-caps.js` 挂成 `maxCompletionTokensByProvider`，`resolveStage` 按「显式覆盖 > 实际供应商自己的阶段上限 > 默认值」取（任务快照同一函数）。此前浏览器按阶段只发 `{provider, model}`，换成 DeepSeek 实际收到 65536/131072、换成 MiMo 被压到 65536。代价：换成 MiMo 的阶段上限从 65536 抬到 131072，失控输出最坏多跑一倍时间。CLI 与测试不带该映射，行为不变。
 - **流式输出陷入逐字重复时主动中断（2026-09-24）。** 共用的 `readSseCompletion` 对正文与推理各自每新增 1000 字检查一次最后 2000 字：末尾一段不超过 80 字符的单元首尾相接重复、连续覆盖不少于 60%，就关掉连接（`reader.cancel`，别让供应商继续吐、继续计费），抛 `MODEL_OUTPUT_DEGENERATE`，消息写明是正文还是推理、重复单元与次数；**绝不返回半截内容**。判定只有一份，在 `src/output-degeneration.js`，只看形状、不看内容好坏，不引入第二个模型。两个客户端都必须在「中途断开 → `MODEL_STREAM_ABORTED`」分支**之前**识别它，否则主动叫停的死循环会被当成网络中断。`classifyAttemptError` 归为 `category: "degeneration"`、`retryable: true`，与截断同口径：只在各阶段已有的重试预算内再试，不新增重试路径，截断专用的「要求压缩、抬额度」不对它生效。离线验证（`scripts/output-degeneration-replay.mjs`，扫 debug 全部 model-output）：08-30 那 12 份陷入重复的完整剧情 12/12 命中，而且都在读到第 2000 字时就判出（那批在约 490 字处就开始打转）；2184 份正常结束的输出误报 0。**它抓不到**：不逐字重复的「越想越长」、换着措辞兜圈子；推理流从来没有落盘，手里没有推理陷入循环的样本，对推理流是否有效没有验证过，那一侧仍靠上限兜底。死循环没法在真实模型上故意触发，这一路只有单元测试与离线回放证明有效。依据与回放见 `docs/output-degeneration-2026-09-24.md`。
 - **截断必须在解析 JSON 之前判定（2026-09-23）。** `finish_reason === "length"` 时三家 client 的 `generateJson` 一律抛 `MODEL_OUTPUT_TRUNCATED`（`assertCompletionNotTruncated`，`src/mimo-client.js` 一份），消息写出截断前的正文字数与 completion token 数。此前只有 Qwen 判了，MiMo 与 DeepSeek 把截断报成「未返回严格 JSON」：实测 MiMo 候选阶段 16384 额度全部用在推理上、正文 0 字，用户看到的却是 JSON 格式错误。
 - **内容审核拦截同样在解析 JSON 之前判定，且不自动重试（2026-09-23）。** `finish_reason === "content_filter"` 时三家 client 的 `generateJson` 与 `ModelCallCoordinator` 一律抛 `MODEL_CONTENT_FILTERED`（`assertCompletionNotContentFiltered`，`src/mimo-client.js` 一份），`classifyAttemptError` 归为 `category: "content-filter"`、`retryable: false`；client 内的 JSON 内容重试循环也不会碰它（判定放在 try 之外）。消息写明被审核拦截、已输出多少 token、供应商原文，并说明「审核结果不稳定，同一提示词重试常能通过；系统不会自动重试」。实测 MiMo 候选阶段推理 10534 token 后被拦，正文只有「The request was rejected because it was considered high risk」，此前被报成「未返回严格 JSON」并按可重试处理——那等于在第三方安全闸门上「问到放行为止」，与 §2.6 视频审核 `1027` 同一原则：是否再跑由用户显式决定。
@@ -995,6 +997,7 @@ DeepSeek 模型 ID 只登记 `deepseek-v4-flash`（页面首选）与 `deepseek-
 - **`characterName` 能从用户输入唯一推导，提示词必须把它说出来（2026-09-19）。** `ensureVisualGuardrailsMatchesProfile` 要求 `fixedCharacterBoundary.characterName` 逐字等于 `extractFixedCharacterName(creatorProfile.fixedCharacter)`，而 `visualGuardrailsPrompt` 此前**从没给出这个名字**，也没说创作限制里的其它角色不属于这份边界，模型只能猜。实测《累了就歇会》（参考片是两个女孩并排躺着分橘子，创作限制里写着固定搭档「芙芙猫」）批量回放 5 次卡在这一步，**5/5** 把名字写成「小白子与芙芙猫」、`bodyForm` 写成「人类少女与小猫」，并把芙芙猫的卷发、猫耳、猫尾签成**小白子的 requiredTraits**，来源还标成 `creatorProfile.fixedCharacter`。同一批另外 3 次通过的边界也 3/3 把「芙芙猫搭档」标成出自固定角色一栏——这个模糊地带一直在，只是没撞上逐字比较。
   **这条检查拦得对，不得放宽成子集或包含匹配**：放宽后那份边界会签发出去，下游角色参考与成片渲染会要求小白子长猫耳猫尾。
   现在提示词用**同一个函数**取名并逐字给出（取不出名字时不给——那时校验器也不核对名字，编一个等于让模型照着不存在的要求写）；写明创作限制、`creativeBrief` 与原片里的其它角色（固定搭档、宠物、家人、路人）不进 `characterName` / `canonicalDescription` / `bodyForm`，它们的外观与身体特征不进三份 traits；证据出自创作限制时 `sourcePath` 写 `creatorProfile.constraints`。规则只写抽象形状、不含任何具体角色名（§2.12b ⑤ 的举例纪律），名字是运行时插值。判定逐字不变，报错补上模型实际写的名字（`characterName 写的是「小白子与芙芙猫」`）。
+  **取名标签只认第一段（2026-10-05 修复）**：`extractFixedCharacterName` 的标签（含单字「叫」）此前全文任何位置都算——「…开心时会发出嗷呜的叫声」取成「声」、「大家都叫她小白」取成「她小白」，而提示词让模型逐字照写，错名就通过逐字比较被签发。现在标签起点必须落在第一个分隔符之前，否则按「第一段即名字」；词表不变，当时本机 5 份历史设定取名逐字不变。
   **演示数据同一处漂移了三份**：`mockVisualGuardrails` / `mockFullStory` / 当时的 `mockAnimationPlan`（已随 3.0 删除）各自按逗号切名字、不认冒号，「名字：描述」写法在演示模式第一步就被拦；现在都改调 `extractFixedCharacterName`，并用一条跑通整条演示链的测试锁住。
   **已知局限**：「固定角色」一栏只登记一个角色，写两个名字时边界只围绕取出的那一个；多固定角色属于 Character Registry / Cast，未实现。模型照不照做**没有新增的确定性兜底**，兜底仍是那条逐字比较；这一阶段仍是单次调用、被拦不重试。
   **真实回放过了事先登记的线**：同一份上游、同一个模型，《累了就歇会》改前 4/4 失败、改后 **6/6 通过**（线是 ≥5/6），回归《打枣》《一份长途》4/4；芙芙猫外观被签成小白子特征 **0/10**，搭档条目来源标成固定角色一栏 0/10（改前同批通过的 3 份 3/3 标错）。只有 3 个参考片、1 份创作设定，且《累了就歇会》本身是设计样本。数据与局限见 `docs/待解决项.md` 第 15 条。
@@ -1042,6 +1045,8 @@ DeepSeek 模型 ID 只登记 `deepseek-v4-flash`（页面首选）与 `deepseek-
 `adoptThemeVariantsRevision` 一份，测试锁住两个入口都不许自己写 commit。
 **已判直接展开、命题又一字未变时不重复体检**（`precheckPassStillValid`）：展开失败后再点生成直接展开，
 候选一变（采纳修订、换一批）或页面刷新才重新体检——再跑一次没有新信息，只是重掷骰子、白付一次钱。
+
+**体检面板只属于一个命题（2026-10-05 修复）**：面板渲染时记下所属命题，`renderStoryPage` 只在那个命题页上显示（切走只隐藏、不丢已付费的修订稿）；「采纳修订并展开」「按原候选展开」「重试体检」先按**面板**核对归属（体检失败时状态已清空，只能看面板），不符即作废、不签发不展开；签发期间切走则修订照常生效、但不替用户展开另一个命题。此前在 V2 拿到修订稿后切到 V1，会签发 V2 的修订再为 V1 付费展开。换工作区时 `clearVideoWorkspaceUi` 一并复位 `storyPrecheckRunning` 并清掉旧面板，否则「生成完整剧情」会永久静默失效。
 
 **三版的实测轨迹，三条都不要重做**：①单次调用的承诺核对被证伪——同一个标题在两个候选上写出
 **相反**的期待（一边「多次往返」一边「同时携带」），因为期待是照着动作链倒推的；
@@ -1232,8 +1237,8 @@ Animation Foundation 的 `artifact_partial_repair/1.0`、语义 Prompt 修复 `a
 | 环境变量 | 内容 |
 | --- | --- |
 | `PARTIAL_REPAIR_DEBUG_DIR` | 已成功签发 repair plan 后的四阶段记录（trigger / prompt / response / result），单文件默认 ≤ 256 KiB |
-| `FULL_STORY_MODEL_OUTPUT_LOG_DIR` | Full Story primary / retry-repair / Beat–Scene postpass 的完整 completion `content`，metadata 含 `stage` |
-| `ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR` | 分镜路由与单镜提示词路由里的原始 completion（经 prompt capture 抓取），固定 `scope=animationPlan` |
+| `FULL_STORY_MODEL_OUTPUT_LOG_DIR` | Full Story primary / retry-repair / Beat–Scene postpass 的完整 completion `content`，metadata 含 `stage`；attempt 目录用 `createUniqueDirectory`（`src/unique-directory.js`）而不是 `fs.mkdtemp`——未开长路径支持的 Windows 上 `mkdtemp` 约 248 字符就失败，浏览器 Run 内这层目录本身约 250 字符，此前整条日志被静默丢掉 |
+| `ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR` | 分镜路由与单镜提示词路由里的原始 completion（经 prompt capture 抓取），固定 `scope=animationPlan`；读响应副本时复读叫停记为 `MODEL_OUTPUT_DEGENERATE / degeneration`，与 `classifyAttemptError` 同口径（2026-10-05 之前记成断流） |
 | `STAGE_MODEL_OUTPUT_LOG_DIR` | 工作流各阶段的原始 completion，按 stage 分 scope，完整清单是 `server.js` 的 `STAGE_MODEL_OUTPUT_LOG_SCOPES`：参考视频链路各阶段、候选对照评审与命题修订、剧情体检与按问题修改、承诺核对、4.0 自主分镜六步（`storyboardCharacterFacts` / `storyboardDesign` / `storyboardReview` / `storyboardRevision` / `storyboardReviewFinal` / `shotVideoPrompt`）、导演助手与一句话修改。成功与失败都记，失败判定复用 `classifyAttemptError`。走 `generateValidatedJson` 的阶段注册 scope 即生效；走 `modelCallCoordinator` 的阶段由调用方自己接 `attemptObserver`（自主分镜由 `storyboard-workflow.js` 的共用 `call()` 接，按问题修改由 `createStoryQualityRepair` 接，导演助手由 `createDirectorAgentTurn` 接，一句话修改由 `createOneSentenceEdit` 接），每次 provider 调用各留一条。**scope 取值必须逐字等于 stage 名**——writer map 按 scope 建、按 stage 查，对不上就静默不写（2026-09-07 之前曾有阶段没注册，失败时原文永久丢失） |
 
 统一约束（第四套与前三套逐字同规格）：
