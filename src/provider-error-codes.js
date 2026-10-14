@@ -12,18 +12,23 @@
 // 3. **码表只抄官方文档**：每张表都标注了出处 URL 与抓取日期。供应商改了
 //    码表就更新这里，不要靠猜测补条目。
 //
-// 码表出处（2026-08-23 核对）：
+// 码表出处（未另注日期的于 2026-08-23 核对）：
 // - MiniMax：https://platform.minimaxi.com/docs/api-reference/errorcode
 //            https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create
-// - 火山方舟 Ark（Seedance / 即梦共用）：https://www.volcengine.com/docs/82379/1359411
+// - 火山方舟 Ark（Seedance / 即梦共用）：https://www.volcengine.com/docs/82379/1299023
+//   （页面标题「错误码」；查询视频生成任务的接口文档 82379/1521309 也把 error.code
+//   指向这张表的「推理错误码」一节。此前这里写的 82379/1359411 是方舟「常见问题」页，
+//   上面没有错误码表。内容审核码于 2026-10-14 按此页核对，页面官方更新于 2026-10-08；
+//   其余条目沿用 2026-08-23 的抄录，2026-10-14 时此页已找不到 InvalidEndpoint.NotFound
+//   与 ModelLoadingError，这两条未改动。）
 // - 阿里云百炼 DashScope（Qwen）：https://help.aliyun.com/zh/model-studio/error-code
 // - DeepSeek：https://api-docs.deepseek.com/quick_start/error_codes
 // - 小米 MiMo：https://mimo.mi.com/docs/zh-CN/api/guidance/error-codes
 
 export const PROVIDER_ERROR_DOC_URLS = Object.freeze({
   MiniMax: "https://platform.minimaxi.com/docs/api-reference/errorcode",
-  Seedance: "https://www.volcengine.com/docs/82379/1359411",
-  Jimeng: "https://www.volcengine.com/docs/82379/1359411",
+  Seedance: "https://www.volcengine.com/docs/82379/1299023",
+  Jimeng: "https://www.volcengine.com/docs/82379/1299023",
   Qwen: "https://help.aliyun.com/zh/model-studio/error-code",
   DeepSeek: "https://api-docs.deepseek.com/quick_start/error_codes",
   MiMo: "https://mimo.mi.com/docs/zh-CN/api/guidance/error-codes"
@@ -58,11 +63,48 @@ const MINIMAX_CODES = Object.freeze({
   2056: entry("超出 Token Plan 资源限制", "资源包已用尽，前往 MiniMax 控制台续费或改用其他供应商。")
 });
 
+// 火山方舟 Ark 内容审核拦截的处理建议。官方「含义」一律是「请您更换（输入内容）后
+// 重试」——要改输入，不是原样再发，所以都不可重试；§2.6 也不允许对审核拦截自动重试，
+// 改完要不要重新生成由用户决定。
+const ARK_MODERATION_RERUN = "改完由你决定是否重新生成，系统不会自动重试。";
+const ARK_INPUT_TEXT_GUIDANCE = `改写提示词里可能触发审核的表述；${ARK_MODERATION_RERUN}`;
+const ARK_OUTPUT_GUIDANCE = `审核针对的是生成结果，请调整提示词或参考素材里可能让结果涉敏的内容；${ARK_MODERATION_RERUN}`;
+
 // 火山方舟 Ark：Seedance 视频与即梦图片共用同一套公共错误码。
 const ARK_CODES = Object.freeze({
   MissingParameter: entry("请求缺少必要参数", "对照火山方舟接口文档检查必填参数。"),
   InvalidParameter: entry("请求包含非法参数", "对照火山方舟接口文档检查参数取值范围。"),
   "InvalidEndpoint.ClosedEndpoint": entry("推理接入点已关闭或暂时不可用", "在火山方舟控制台确认接入点状态，或稍后重试。", true),
+
+  // 内容审核（2026-10-14 补）：官方表里 HTTP 400 的 *SensitiveContentDetected* 与
+  // *RiskDetection* 两组。标题取官方「含义」原句，前面点明是谁判定的（内容审核 /
+  // 火山引擎风险识别）。同表的 ContentSecurityDetectionError 没收：它是风险识别服务自身请求失败（Internal error），
+  // 不是内容被拦，文档也没给处理建议，照旧按 HTTP 400 兜底。
+  SensitiveContentDetected: entry("内容审核判定输入文本可能包含敏感信息", ARK_INPUT_TEXT_GUIDANCE),
+  "SensitiveContentDetected.SevereViolation": entry("内容审核判定输入文本可能包含严重违规相关信息", ARK_INPUT_TEXT_GUIDANCE),
+  "SensitiveContentDetected.Violence": entry("内容审核判定输入文本可能包含激进行为相关信息", ARK_INPUT_TEXT_GUIDANCE),
+  InputTextSensitiveContentDetected: entry("内容审核判定输入文本可能包含敏感信息", ARK_INPUT_TEXT_GUIDANCE),
+  InputImageSensitiveContentDetected: entry("内容审核判定输入图像可能包含敏感信息", `换掉或修改触发审核的参考图；${ARK_MODERATION_RERUN}`),
+  InputVideoSensitiveContentDetected: entry("内容审核判定输入视频可能包含敏感信息", `换掉触发审核的参考视频；${ARK_MODERATION_RERUN}`),
+  InputAudioSensitiveContentDetected: entry("内容审核判定输入音频可能包含敏感信息", `换掉触发审核的参考音频；${ARK_MODERATION_RERUN}`),
+  OutputTextSensitiveContentDetected: entry("内容审核判定生成的文字可能包含敏感信息", ARK_OUTPUT_GUIDANCE),
+  OutputImageSensitiveContentDetected: entry("内容审核判定生成的图像可能包含敏感信息", ARK_OUTPUT_GUIDANCE),
+  OutputVideoSensitiveContentDetected: entry("内容审核判定生成的视频可能包含敏感信息", ARK_OUTPUT_GUIDANCE),
+  OutputAudioSensitiveContentDetected: entry("内容审核判定生成的音频可能包含敏感信息", ARK_OUTPUT_GUIDANCE),
+  "InputTextSensitiveContentDetected.PolicyViolation": entry("内容审核判定输入文本可能涉及版权限制", `改写提示词里可能涉及版权的内容；${ARK_MODERATION_RERUN}`),
+  "InputImageSensitiveContentDetected.PolicyViolation": entry("内容审核判定输入图片可能涉及版权限制", `换掉可能涉及版权的参考图；${ARK_MODERATION_RERUN}`),
+  "InputVideoSensitiveContentDetected.PolicyViolation": entry("内容审核判定输入视频可能涉及版权限制", `换掉可能涉及版权的参考视频；${ARK_MODERATION_RERUN}`),
+  "InputAudioSensitiveContentDetected.PolicyViolation": entry("内容审核判定输入音频可能涉及版权限制", `换掉可能涉及版权的参考音频；${ARK_MODERATION_RERUN}`),
+  "OutputVideoSensitiveContentDetected.PolicyViolation": entry("内容审核判定生成的视频可能涉及版权限制", ARK_OUTPUT_GUIDANCE),
+  "OutputAudioSensitiveContentDetected.PolicyViolation": entry("内容审核判定生成的音频可能涉及版权限制", ARK_OUTPUT_GUIDANCE),
+  "InputImageSensitiveContentDetected.PrivacyInformation": entry("内容审核判定输入图片可能包含真人", `换成不含真人的参考图；${ARK_MODERATION_RERUN}`),
+  "InputVideoSensitiveContentDetected.PrivacyInformation": entry("内容审核判定输入视频可能包含真人", `换成不含真人的参考视频；${ARK_MODERATION_RERUN}`),
+  "OutputImageSensitiveContentDetected.DeepFake": entry("内容审核判定输出图片可能涉及伪造内容风险", `调整提示词里可能生成证件、凭证一类伪造内容的描述；${ARK_MODERATION_RERUN}`),
+  InputTextRiskDetection: entry("火山引擎风险识别判定输入文本可能包含敏感信息", ARK_INPUT_TEXT_GUIDANCE),
+  InputImageRiskDetection: entry("火山引擎风险识别判定输入图片可能包含敏感信息", `换掉或修改触发审核的参考图；${ARK_MODERATION_RERUN}`),
+  OutputTextRiskDetection: entry("火山引擎风险识别判定输出文本可能包含敏感信息", ARK_OUTPUT_GUIDANCE),
+  OutputImageRiskDetection: entry("火山引擎风险识别判定输出图片可能包含敏感信息", ARK_OUTPUT_GUIDANCE),
+
   AuthenticationError: entry("鉴权失败", "检查 SEEDANCE_API_KEY / JIMENG_API_KEY 是否正确、是否过期。"),
   AccountOverdueError: entry("火山引擎账号欠费", "前往火山引擎交易中心充值后重试。"),
   AccessDenied: entry("没有访问该资源的权限", "在火山方舟控制台确认该模型已开通、当前账号有调用权限。"),

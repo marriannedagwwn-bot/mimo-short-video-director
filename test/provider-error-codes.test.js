@@ -5,7 +5,8 @@ import {
   extractProviderErrorSignal,
   normalizeProviderName
 } from "../src/provider-error-codes.js";
-import { serializeServerError } from "../src/server-error.js";
+import { describeServerProviderError, serializeServerError } from "../src/server-error.js";
+import { taskErrorMessage } from "../public/task-status-ui.js";
 import { ShotVideoProviderError } from "../src/shot-video-generator.js";
 import { ModelResponseError } from "../src/mimo-client.js";
 import { ModelPipelineError } from "../src/model-errors.js";
@@ -54,6 +55,95 @@ test("各供应商的官方错误码翻译成可执行提示", () => {
     assert.ok(described.guidance, "每条提示都必须给出下一步动作");
     assert.ok(described.docUrl.startsWith("https://"), "必须能回溯到官方文档");
   }
+});
+
+// 2026-10-14 Run run-92a9dbe9 的 A04 连续三次被拒，task error.message 逐字如下。
+// 当时 ARK_CODES 没有审核码，按 HTTP 400 兜底成「请求不合法 / 检查请求参数」，把人引去查参数。
+const ARK_INPUT_TEXT_MODERATION_MESSAGE = "The request failed because the input text 'content[0]' may contain sensitive information."
+  + " Request id: 021791939784872e4d5e3acd6b6d5c09c835e2d36b9596c294da0";
+const ARK_INPUT_TEXT_MODERATION_RAW = `HTTP 400 Bad Request: {"error":{"code":"InputTextSensitiveContentDetected","message":${
+  JSON.stringify(ARK_INPUT_TEXT_MODERATION_MESSAGE)},"param":"","type":"BadRequest"}}`;
+
+test("Seedance 输入文本审核拦截按业务码识别成内容审核，供应商原文逐字保留", () => {
+  const described = describeProviderError({ provider: "Seedance", payload: ARK_INPUT_TEXT_MODERATION_RAW });
+  assert.equal(described.matchedBy, "code");
+  assert.equal(described.code, "InputTextSensitiveContentDetected");
+  assert.equal(described.httpStatus, 400);
+  assert.equal(described.title, "内容审核判定输入文本可能包含敏感信息");
+  // 官方含义是「请您更换后重试」——要改输入，原样再发不算，所以不可重试。
+  assert.equal(described.retryable, false);
+  assert.match(described.guidance, /改写提示词/u);
+  assert.match(described.guidance, /系统不会自动重试/u);
+  assert.doesNotMatch(described.guidance, /请求参数/u);
+  assert.equal(described.providerMessage, ARK_INPUT_TEXT_MODERATION_MESSAGE);
+  assert.equal(described.docUrl, "https://www.volcengine.com/docs/82379/1299023");
+});
+
+test("A04 那次拒绝在视频出口与任务状态上都显示为内容审核并带上原文", () => {
+  const error = new ShotVideoProviderError(ARK_INPUT_TEXT_MODERATION_RAW);
+  error.provider = "Seedance";
+
+  const { body } = serializeServerError(error);
+  assert.equal(body.detail, ARK_INPUT_TEXT_MODERATION_RAW);
+  assert.equal(body.providerError.code, "InputTextSensitiveContentDetected");
+  assert.equal(body.retryable, false);
+
+  // 后台任务落盘的 providerError 与 HTTP 出口共用同一份识别。
+  const task = { error: { code: "TASK_FAILED", message: ARK_INPUT_TEXT_MODERATION_RAW,
+    providerError: describeServerProviderError(error) } };
+  const shown = taskErrorMessage(task);
+  assert.match(shown, /内容审核判定输入文本可能包含敏感信息（Seedance InputTextSensitiveContentDetected）/u);
+  assert.ok(shown.includes(`供应商原文：${ARK_INPUT_TEXT_MODERATION_MESSAGE}`));
+  assert.doesNotMatch(shown, /检查请求参数/u);
+});
+
+// 逐字抄自 https://www.volcengine.com/docs/82379/1299023「推理错误码」（2026-10-14 核对），
+// 全部 HTTP 400 BadRequest。Seedance 与即梦共用这张表。
+const ARK_MODERATION_CODES = [
+  "SensitiveContentDetected",
+  "SensitiveContentDetected.SevereViolation",
+  "SensitiveContentDetected.Violence",
+  "InputTextSensitiveContentDetected",
+  "InputImageSensitiveContentDetected",
+  "InputVideoSensitiveContentDetected",
+  "InputAudioSensitiveContentDetected",
+  "OutputTextSensitiveContentDetected",
+  "OutputImageSensitiveContentDetected",
+  "OutputVideoSensitiveContentDetected",
+  "OutputAudioSensitiveContentDetected",
+  "InputTextSensitiveContentDetected.PolicyViolation",
+  "InputImageSensitiveContentDetected.PolicyViolation",
+  "InputVideoSensitiveContentDetected.PolicyViolation",
+  "InputAudioSensitiveContentDetected.PolicyViolation",
+  "OutputVideoSensitiveContentDetected.PolicyViolation",
+  "OutputAudioSensitiveContentDetected.PolicyViolation",
+  "InputImageSensitiveContentDetected.PrivacyInformation",
+  "InputVideoSensitiveContentDetected.PrivacyInformation",
+  "OutputImageSensitiveContentDetected.DeepFake",
+  "InputTextRiskDetection",
+  "InputImageRiskDetection",
+  "OutputTextRiskDetection",
+  "OutputImageRiskDetection"
+];
+
+test("火山方舟官方审核码全部按业务码命中，一律不可重试、不承诺重试能过", () => {
+  for (const provider of ["Seedance", "Jimeng"]) {
+    for (const code of ARK_MODERATION_CODES) {
+      const described = describeProviderError({ provider, payload: `HTTP 400 Bad Request: {"error":{"code":"${code}"}}` });
+      assert.ok(described, `${provider} ${code} 应该命中官方码`);
+      assert.equal(described.matchedBy, "code", `${code} 不该退回 HTTP 400 兜底`);
+      assert.match(described.title, /^(内容审核|火山引擎风险识别)判定/u);
+      assert.equal(described.retryable, false, `${code} 官方要求更换输入后再试，不可原样重试`);
+      assert.match(described.guidance, /改完由你决定是否重新生成，系统不会自动重试。$/u);
+    }
+  }
+  // 同表的 ContentSecurityDetectionError 是风险识别服务自身失败、不是内容被拦，
+  // 文档也没给处理建议，所以没收录，仍按 HTTP 400 兜底。
+  const securityServiceFailure = describeProviderError({
+    provider: "Seedance",
+    payload: 'HTTP 400 Bad Request: {"error":{"code":"ContentSecurityDetectionError","message":"Internal error."}}'
+  });
+  assert.equal(securityServiceFailure.matchedBy, "httpStatus");
 });
 
 test("没有专属码时按 HTTP 状态兜底，标签如实标明依据", () => {
