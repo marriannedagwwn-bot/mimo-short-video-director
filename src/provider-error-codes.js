@@ -18,9 +18,8 @@
 // - 火山方舟 Ark（Seedance / 即梦共用）：https://www.volcengine.com/docs/82379/1299023
 //   （页面标题「错误码」；查询视频生成任务的接口文档 82379/1521309 也把 error.code
 //   指向这张表的「推理错误码」一节。此前这里写的 82379/1359411 是方舟「常见问题」页，
-//   上面没有错误码表。内容审核码于 2026-10-14 按此页核对，页面官方更新于 2026-10-08；
-//   其余条目沿用 2026-08-23 的抄录，2026-10-14 时此页已找不到 InvalidEndpoint.NotFound
-//   与 ModelLoadingError，这两条未改动。）
+//   上面没有错误码表。2026-10-14 按此页核对，页面官方更新于 2026-10-08：补上内容审核码，
+//   删掉此页已经没有的 InvalidEndpoint.NotFound 与 ModelLoadingError。）
 // - 阿里云百炼 DashScope（Qwen）：https://help.aliyun.com/zh/model-studio/error-code
 // - DeepSeek：https://api-docs.deepseek.com/quick_start/error_codes
 // - 小米 MiMo：https://mimo.mi.com/docs/zh-CN/api/guidance/error-codes
@@ -108,13 +107,11 @@ const ARK_CODES = Object.freeze({
   AuthenticationError: entry("鉴权失败", "检查 SEEDANCE_API_KEY / JIMENG_API_KEY 是否正确、是否过期。"),
   AccountOverdueError: entry("火山引擎账号欠费", "前往火山引擎交易中心充值后重试。"),
   AccessDenied: entry("没有访问该资源的权限", "在火山方舟控制台确认该模型已开通、当前账号有调用权限。"),
-  "InvalidEndpoint.NotFound": entry("推理接入点不存在", "检查配置里的模型 ID 是否正确。"),
   "RateLimitExceeded.EndpointRPMExceeded": entry("接入点 RPM 超限", "降低请求频率后重试。", true),
   "RateLimitExceeded.EndpointTPMExceeded": entry("接入点 TPM 超限", "降低请求频率或缩短提示词后重试。", true),
   ModelAccountRpmRateLimitExceeded: entry("账户模型 RPM 超限", "降低请求频率后重试。", true),
   ModelAccountTpmRateLimitExceeded: entry("账户模型 TPM 超限", "降低请求频率或缩短提示词后重试。", true),
   QuotaExceeded: entry("免费试用额度已用完", "在火山方舟控制台开通付费额度后重试。"),
-  ModelLoadingError: entry("模型正在加载", "稍等片刻再重试。", true),
   ServerOverloaded: entry("火山方舟服务资源紧张", "稍后重试。", true),
   InternalServiceError: entry("火山方舟内部错误", "稍后重试；持续失败请联系火山引擎支持。", true)
 });

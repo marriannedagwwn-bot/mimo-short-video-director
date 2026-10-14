@@ -146,6 +146,17 @@ test("火山方舟官方审核码全部按业务码命中，一律不可重试�
   assert.equal(securityServiceFailure.matchedBy, "httpStatus");
 });
 
+test("官方表里已经没有的方舟码不再按业务码翻译", () => {
+  // 2026-10-14 核对 82379/1299023 时这两条已不在表里（接入点不存在现在是
+  // InvalidEndpointOrModel.NotFound），只能按 HTTP 状态兜底，没有状态就不解释。
+  for (const code of ["InvalidEndpoint.NotFound", "ModelLoadingError"]) {
+    assert.equal(describeProviderError({ provider: "Seedance", payload: `{"error":{"code":"${code}"}}` }), null);
+    const byStatus = describeProviderError({ provider: "Seedance", payload: `HTTP 404 Not Found: {"error":{"code":"${code}"}}` });
+    assert.equal(byStatus.matchedBy, "httpStatus");
+    assert.equal(byStatus.code, "");
+  }
+});
+
 test("没有专属码时按 HTTP 状态兜底，标签如实标明依据", () => {
   // DeepSeek 官方就是按 HTTP 状态定义错误的。
   const deepseek = describeProviderError({
