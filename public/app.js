@@ -3,6 +3,7 @@ import {
   storyboardPromptArtifactId, storyboardPromptMatches, storyboardUsesPreviousFrames
 } from "./storyboard-plan.js";
 import { renderStoryboard } from "./storyboard-render.js";
+import { dotList, factSheet } from "./fact-sheet.js";
 const storyboardPromptRequests = new Map();
 import { formatStageUsageSuffix, mergeStageUsage } from "./token-usage-format.js";
 import { storyPackageFilename } from "./export-filename.js";
@@ -17,6 +18,7 @@ import {
   CANDIDATE_REVIEW_TIERS,
   FULL_STORY_PRECHECK_REASON_LABELS,
   PROMISE_CHECK_STATUS_LABELS,
+  PROMISE_SOURCE_LABELS,
   SOURCE_SCAFFOLD_COPY_SCORE,
   STORY_QUALITY_ISSUE_TYPE_LABELS,
   candidateReviewHeadline,
@@ -1986,10 +1988,14 @@ function renderVisualGuardrails(data) {
   reveal(elements.guardrails);
 }
 
+// 边界条目的 scope / evidenceLevel 是枚举（取值见 src/validation.js 的两份 Set），只做展示翻译，认不出的照原样显示。
+const TRAIT_SCOPE_LABELS = { identity: "身份", appearance: "外观", personality: "性格", occupation: "职业", storyFunction: "剧情功能" };
+const TRAIT_EVIDENCE_LABELS = { explicit: "原文明确写出", inferred: "推断" };
+
 function renderBoundaryTraits(value = []) {
   const items = Array.isArray(value) ? value : [];
   if (!items.length) return `<div class="tag-row"><span class="tag">无</span></div>`;
-  return `<div class="rule-list">${items.map((item) => `<div class="rule"><strong>${escape(item.canonicalName || "未命名事实")}</strong><p>${escape(item.scope || "")} · ${escape(item.evidenceLevel || "")}<br>${escape(item.reason || "")}</p></div>`).join("")}</div>`;
+  return `<div class="rule-list">${items.map((item) => `<div class="rule"><strong>${escape(item.canonicalName || "未命名事实")}</strong><p>${escape(TRAIT_SCOPE_LABELS[item.scope] || item.scope || "")} · ${escape(TRAIT_EVIDENCE_LABELS[item.evidenceLevel] || item.evidenceLevel || "")}<br>${escape(item.reason || "")}</p></div>`).join("")}</div>`;
 }
 
 function renderAllowedPositiveTraits(value = []) {
@@ -1998,18 +2004,18 @@ function renderAllowedPositiveTraits(value = []) {
   return `<div class="tag-row">${items.map((item) => {
     if (typeof item === "string") return `<span class="tag">${escape(item)}</span>`;
     const text = item?.term || item?.text || item?.rule || "未命名特征";
-    return `<span class="tag">${escape(text)}${item?.scope ? ` · ${escape(item.scope)}` : ""}</span>`;
+    return `<span class="tag">${escape(text)}${item?.scope ? ` · ${escape(TRAIT_SCOPE_LABELS[item.scope] || item.scope)}` : ""}</span>`;
   }).join("")}</div>`;
 }
 
 function renderGuardrailRuleList(value, emptyText) {
   const items = normalizeRuleItems(value);
   if (!items.length) return `<div class="rule-list"><p class="long-copy">${escape(emptyText)}</p></div>`;
-  return `<div class="rule-list">${items.map((item) => {
+  return `<div class="rule-list stacked">${items.map((item) => {
     if (typeof item === "string") return `<div class="rule"><strong>${escape(item)}</strong></div>`;
     const title = firstRuleValue(item, ["text", "rule", "term", "name", "requirement", "boundary", "prohibition", "category"]) || "规则";
-    const details = ruleDetailPairs(item).map(([label, detail]) => `<b>${escape(label)}：</b>${escape(structuredValue(detail))}`).join("<br>");
-    return `<div class="rule"><strong>${escape(title)}</strong>${details ? `<p>${details}</p>` : ""}</div>`;
+    const details = ruleDetailPairs(item).map(([label, detail]) => `<dt>${escape(label)}</dt><dd>${escape(structuredValue(detail))}</dd>`).join("");
+    return `<div class="rule"><strong>${escape(title)}</strong>${details ? `<dl class="kv">${details}</dl>` : ""}</div>`;
   }).join("")}</div>`;
 }
 
@@ -2035,19 +2041,41 @@ function firstRuleValue(item, keys = []) {
 
 function ruleDetailPairs(item = {}) {
   const labels = {
-    scope: "范围", reason: "原因", source: "来源", triggerEvidence: "触发证据",
+    scope: "范围", reason: "原因", source: "来源", triggerEvidence: "触发证据", evidenceLevel: "证据", terms: "写法",
     priority: "优先级", appliesTo: "适用目标", severity: "级别", allowed: "允许",
     forbidden: "禁止", behavior: "行为", note: "说明", description: "说明"
   };
   const titleKeys = new Set(["text", "rule", "term", "name", "requirement", "boundary", "prohibition", "category"]);
   return Object.entries(item)
     .filter(([key, value]) => !titleKeys.has(key) && value !== null && value !== undefined && value !== "")
-    .map(([key, value]) => [labels[key] || key, value]);
+    .map(([key, value]) => [labels[key] || key,
+      key === "scope" ? TRAIT_SCOPE_LABELS[value] || value : key === "evidenceLevel" ? TRAIT_EVIDENCE_LABELS[value] || value : value]);
+}
+
+// 触发证据是 {sourcePath, evidence}：显示成「固定角色「原文」」，不再是 sourcePath=creatorProfile.fixedCharacter；evidence=…。
+// 路径前缀只翻译已知的几个上游，其余照原样显示，不猜。
+const EVIDENCE_SOURCE_LABELS = [
+  ["creatorProfile.fixedCharacter", "固定角色"], ["creatorProfile.constraints", "创作限制"], ["creatorProfile.vertical", "垂直赛道"],
+  ["sourceScriptReconstruction", "原片脚本还原"], ["referenceAnalysis", "参考片分析"], ["creativeBrief", "创意简报"], ["storySource", "故事原文"]
+];
+
+function evidenceSourceLabel(path) {
+  const text = String(path ?? "");
+  const hit = EVIDENCE_SOURCE_LABELS.find(([prefix]) => text === prefix || text.startsWith(`${prefix}.`) || text.startsWith(`${prefix}[`));
+  if (!hit) return text;
+  const rest = text.slice(hit[0].length).replace(/^\./, "");
+  return rest ? `${hit[1]}（${rest}）` : hit[1];
 }
 
 function structuredValue(value) {
   if (Array.isArray(value)) return value.map(structuredValue).filter(Boolean).join(" / ");
-  if (value && typeof value === "object") return Object.entries(value).map(([key, item]) => `${key}=${structuredValue(item)}`).join("；");
+  if (value && typeof value === "object") {
+    const keys = Object.keys(value);
+    if (keys.length && keys.every((key) => key === "sourcePath" || key === "evidence")) {
+      return `${evidenceSourceLabel(value.sourcePath)}${value.evidence ? `「${structuredValue(value.evidence)}」` : ""}`;
+    }
+    return Object.entries(value).map(([key, item]) => `${key}=${structuredValue(item)}`).join("；");
+  }
   return String(value ?? "");
 }
 
@@ -3234,7 +3262,7 @@ function renderPrecheckFindings(entry) {
   return `${resultHeader("PRECHECK", "展开前体检：建议先改这个命题", `${escape((entry.reasons || []).length)} 类问题`)}
     <div class="summary-strip">还没有签发任何东西。修订稿会并排显示，你点采纳才生效。</div>
     <ul class="precheck-reasons">${reasons}</ul>
-    ${gaps ? block("标题或钩子许诺了、动作链没演出来", `<div class="rule-list">${gaps}</div>`) : ""}
+    ${gaps ? block("标题或钩子许诺了、动作链没演出来", `<div class="rule-list stacked">${gaps}</div>`) : ""}
     ${breaks ? block("动作链的因果断裂", `<div class="rule-list">${breaks}</div>`) : ""}`;
 }
 
@@ -3373,17 +3401,30 @@ function renderFullStory(data) {
       ${cell("对白规则", data.dialogueStyleGuide?.protagonistSpeechRule || data.characterBible?.protagonist?.speechRules)}
     </div>
     ${block("剧情梗概", `<p class="long-copy">${escape(data.shootingSynopsis)}</p>`)}
-    ${data.characterBible?.supportingCharacters ? block("完整配角设定", data.characterBible.supportingCharacters.map(row => `<p><b>${escape(row.name)}</b> · ${escape(row.identity)}<br>${escape(row.appearanceFacts.join("；") || "外观未指定，分镜阶段设计")}<br>${escape([row.relationshipToProtagonist, row.storyRole, ...row.personalityFacts, ...row.speechRules].filter(Boolean).join("；"))}</p>`).join("")) : ""}
+    ${data.characterBible?.supportingCharacters ? block("完整配角设定", factSheet(data.characterBible.supportingCharacters.map((row) => ({
+      name: row.name, note: row.identity,
+      facts: [
+        { label: "与主角", html: escape(row.relationshipToProtagonist) },
+        { label: "剧情作用", html: escape(row.storyRole) },
+        dotList(row.appearanceFacts, escape)
+          ? { label: "外观", html: dotList(row.appearanceFacts, escape) }
+          : { label: "外观", html: "外观未指定，分镜阶段设计", tone: "muted" },
+        { label: "性格", html: dotList(row.personalityFacts, escape) },
+        { label: "说话", html: dotList(row.speechRules, escape) }
+      ]
+    })), escape)) : ""}
     ${narrativeStory ? "" : block("剧情节拍", `<div class="beat-list">${(data.beatSheet || []).map((beat) => `<div class="beat"><strong>${escape(beat.timeRange)} · ${escape(beat.emotion)}</strong><p>${escape(beat.storyAction)}<br><b>功能：</b>${escape(beat.dramaticFunction)}<br><b>保留价值：</b>${escape(beat.retainedValueFromBrief)}</p></div>`).join("")}</div>`)}
     ${block(storySource ? "可翻拍镜头（按原文分场）" : "可拍分场剧本", `<div class="timeline">${(data.sceneScript || []).map((scene) => `<div class="scene">
       <span class="scene-id">${escape(scene.sceneId)}</span>
       <div class="scene-head"><strong>${escape(scene.location)}</strong><span>${escape(scene.timeRange)}</span></div>
-      <p><b>人物：</b>${escape((scene.characters || []).join("、"))}</p>
-      <p><b>动作：</b>${escape(scene.visibleAction)}</p>
-      <p><b>对白：</b>${formatDialogue(scene.dialogue)}</p>
-      <p><b>${narrativeStory ? "声音" : "镜头/声音"}：</b>${escape(scene.shotAndSound)}</p>
-      <div class="scene-meta"><span>${escape(scene.emotionNode)}</span><span>${escape(scene.dramaticFunction)}</span></div>
-      <p><b>${narrativeStory ? "剧情备注" : "拍摄备注"}：</b>${escape(scene.shootingNotes)}</p>
+      <dl class="kv">
+        <dt>人物</dt><dd>${escape((scene.characters || []).join("、") || "无人出镜")}</dd>
+        <dt>动作</dt><dd>${escape(scene.visibleAction)}</dd>
+        <dt>对白</dt><dd>${formatDialogue(scene.dialogue)}</dd>
+        <dt>${narrativeStory ? "声音" : "镜头/声音"}</dt><dd>${escape(scene.shotAndSound)}</dd>
+        ${scene.shootingNotes ? `<dt>${narrativeStory ? "剧情备注" : "拍摄备注"}</dt><dd>${escape(scene.shootingNotes)}</dd>` : ""}
+      </dl>
+      <div class="scene-meta">${scene.emotionNode ? `<span><b>情绪</b>${escape(scene.emotionNode)}</span>` : ""}${scene.dramaticFunction ? `<span><b>剧情功能</b>${escape(scene.dramaticFunction)}</span>` : ""}</div>
     </div>`).join("")}</div>`)}
     ${block("关键道具", `<div class="rule-list">${(data.keyProps || []).map((item) => `<div class="rule"><strong>${escape(item.prop)}</strong><p>${escape(item.storyFunction)}<br>${escape(item.visualUse)}${narrativeStory ? "" : `<br><b>避相似：</b>${escape(item.avoidSimilarityNote)}`}</p></div>`).join("")}</div>`)}
     ${narrativeStory ? "" : block("拍摄计划", `<div class="rule-list">${(data.shootingPlan || []).map((item) => `<div class="rule"><strong>${escape(item.unit)}</strong><p>${escape(item.setup)}<br><b>必拍：</b>${escape(item.mustCapture)}<br><b>执行：</b>${escape(item.practicalNote)}</p></div>`).join("")}</div>`)}
@@ -3465,7 +3506,7 @@ function renderStoryQualityReview(review, metadata = null) {
   const brokenRows = checks.filter((check) => check.status !== "PRESERVED").map((check) => `
     <div class="review-check">
       <div class="review-check-head">
-        <span class="scene-id">${escape((check.source || []).join(" / "))}</span>
+        <span class="scene-id">${escape((check.source || []).map((field) => PROMISE_SOURCE_LABELS[field] || field).join(" / "))}</span>
         <span class="review-verdict verdict-${escape(check.status)}">${escape(PROMISE_CHECK_STATUS_LABELS[check.status] || check.status)}</span>
         ${pick(check)}
       </div>
@@ -3924,7 +3965,7 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
     return;
   }
   elements.animationPlan.innerHTML = renderStoryboard(data, { escape, block, cell, resultHeader,
-    renderCharacters: refs => renderCharacterReferencePrompts(refs) + `<button class="round-add-button" type="button" data-open-character-image-generator aria-label="生成角色参考图">+</button>`,
+    renderCharacters: refs => renderCharacterReferencePrompts(refs) + `<button class="outline-button add-character-image-button" type="button" data-open-character-image-generator>＋ 生成角色参考图</button>`,
     // 服务端拦过一次就必须说出来：六个分镜阶段各自允许「第一次做错」，
     // metadata.storyboard.calls 如实记着每个阶段的实际调用次数与被拦诊断。
     renderVideo: renderShotVideoResult, videoLabel: shotVideoProviderLabel(), metadata });
@@ -3958,29 +3999,36 @@ function shotVideoPlayableCandidates(shotId) {
 function renderCharacterReferencePrompts(items = []) {
   const refineTask = taskForUi({ kinds: ["characterReferenceRefine"], artifactId: `animationPlan:${state.selectedVariantId}` });
   const refineView = isActiveTask(refineTask) ? taskUiView(refineTask) : null;
-  return `<div class="rule-list">${items.map((item, index) => {
+  return `<div class="character-reference-list">${items.map((item, index) => {
     const key = characterReferenceStatusKey(index);
     const status = state.characterReferenceStatuses[key];
     const hasReference = Boolean(item.referenceImageAdded || item.referenceImageDataUrl);
+    // 缩略图直接用 Plan 里已有的参考图（只认 data:image/，那是「设为人物参考图」与精修写进去的唯一形状）。
+    const imageUrl = typeof item.referenceImageDataUrl === "string" && item.referenceImageDataUrl.startsWith("data:image/") ? item.referenceImageDataUrl : "";
     const audioClips = characterReferenceAudioClips(item);
     const audioStatus = state.characterAudioStatuses[characterAudioStatusKey(index)];
     const statusText = refineView?.message || status?.message || (hasReference ? "点击或拖入图片可更换人物参考图" : "点击或拖入人物参考图");
-    return `<div class="rule character-reference-card${hasReference ? " has-reference-image" : ""}" data-character-reference-card="${escape(index)}">
-      <div class="reference-card-top">
-        <strong>${escape(item.characterName)}<br><small>${escape(item.storyRole)}</small></strong>
-        <input class="hidden" type="file" accept=".mp3,.m4a,.wav,audio/mpeg,audio/mp4,audio/wav,audio/x-wav" multiple data-character-audio-input="${escape(index)}">
-        ${audioStatus?.message ? `<span class="character-audio-status ${escape(audioStatus.status || "")}">${escape(audioStatus.message)}</span>` : ""}
-        <button class="character-audio-upload-button" type="button" data-character-audio-upload="${escape(index)}"${audioStatus?.status === "running" ? " disabled" : ""}>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
-          <span>${audioClips.length ? "添加音色/叫声" : "上传音色/叫声"}</span>
-        </button>
-        ${hasReference ? `<span class="reference-image-badge">已添加人物参考图</span>` : ""}
-      </div>
-      <div class="character-reference-body">
-        <p>${escape(item.appearancePrompt)}<br><b>一致性标签：</b>${escape((item.consistencyTags || []).join(" / "))}<br><b>禁止变化：</b>${escape((item.forbiddenChanges || []).join(" / "))}${item.referenceImageNotes ? `<br><b>参考图吸收：</b>${escape(item.referenceImageNotes)}` : ""}</p>
+    return `<div class="character-reference-card${hasReference ? " has-reference-image" : ""}" data-character-reference-card="${escape(index)}">
+      <div class="character-reference-thumb">${imageUrl
+        ? `<img src="${escape(imageUrl)}" alt="${escape(item.characterName)} 的人物参考图">`
+        : `<span class="character-reference-thumb-empty">+<small>人物参考图</small></span>`}</div>
+      <div class="character-reference-main">
+        <div class="character-reference-title"><strong>${escape(item.characterName)}</strong>${item.storyRole ? `<span class="note">${escape(item.storyRole)}</span>` : ""}${hasReference && !imageUrl ? `<span class="reference-image-badge">已添加人物参考图</span>` : ""}</div>
+        <p class="character-reference-appearance">${escape(item.appearancePrompt)}</p>
+        <dl class="kv">
+          <dt>一致性标签</dt><dd>${dotList(item.consistencyTags, escape) || "无"}</dd>
+          <dt class="no">禁止变化</dt><dd>${dotList(item.forbiddenChanges, escape) || "无"}</dd>
+          ${item.referenceImageNotes ? `<dt>参考图吸收</dt><dd>${escape(item.referenceImageNotes)}</dd>` : ""}
+        </dl>
         <div class="character-reference-actions">
           <input class="hidden" type="file" accept="image/*" data-character-reference-input="${escape(index)}">
           <button class="character-reference-status ${escape(refineView ? "running" : status?.status || "idle")}" type="button" data-character-reference-upload="${escape(index)}"${refineView ? " disabled" : ""}>${escape(statusText)}</button>
+          <input class="hidden" type="file" accept=".mp3,.m4a,.wav,audio/mpeg,audio/mp4,audio/wav,audio/x-wav" multiple data-character-audio-input="${escape(index)}">
+          <button class="character-audio-upload-button" type="button" data-character-audio-upload="${escape(index)}"${audioStatus?.status === "running" ? " disabled" : ""}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+            <span>${audioClips.length ? "添加音色/叫声" : "上传音色/叫声"}</span>
+          </button>
+          ${audioStatus?.message ? `<span class="character-audio-status ${escape(audioStatus.status || "")}">${escape(audioStatus.message)}</span>` : ""}
         </div>
         ${renderCharacterReferenceAudioClips(audioClips, index)}
       </div>
@@ -5229,7 +5277,8 @@ function renderShotVideoResult(shotId) {
 }
 
 function resultHeader(kicker, title, badge = "", action = "") {
-  return `<div class="result-title"><div><p>${kicker}</p><h3>${title}</h3></div>${badge ? `<span class="confidence">${escape(badge)}</span>` : ""}${action}</div>`;
+  // 标题常是模型写的剧情/分镜标题，按文本转义，不当 HTML 拼。
+  return `<div class="result-title"><div><p>${kicker}</p><h3>${escape(title)}</h3></div>${badge ? `<span class="confidence">${escape(badge)}</span>` : ""}${action}</div>`;
 }
 function block(label, content) { return `<div class="result-block"><span class="block-label">${label}</span>${content}</div>`; }
 function cell(label, value) { return `<div class="data-cell"><span>${label}</span><strong>${escape(value || "待确认")}</strong></div>`; }

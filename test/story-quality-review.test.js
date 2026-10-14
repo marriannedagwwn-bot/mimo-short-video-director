@@ -9,6 +9,7 @@ import { storyQualityEditorialPrompt, storyQualityPromisePrompt } from "../src/p
 import {
   PROMISE_CHECK_STATUSES,
   PROMISE_SOURCE_FIELDS,
+  PROMISE_SOURCE_LABELS,
   STORY_QUALITY_ISSUE_TYPES,
   STORY_QUALITY_ISSUE_TYPE_LABELS,
   storyReviewHeadline,
@@ -97,6 +98,12 @@ test("schema 的三个枚举与共享常量逐项相等", () => {
   assert.deepEqual(schema.$defs.promiseCheck.properties.source.items.enum, [...PROMISE_SOURCE_FIELDS]);
   assert.deepEqual(schema.$defs.promiseCheck.properties.status.enum, [...PROMISE_CHECK_STATUSES]);
   assert.deepEqual(schema.$defs.issue.properties.type.enum, [...STORY_QUALITY_ISSUE_TYPES]);
+});
+
+test("承诺来源的中文名与字段枚举逐项对应", () => {
+  // 页面原来直接显示字段名（emotionalPayoff）；标签表与枚举各写一份，就靠这条测试不让它们漂开。
+  assert.deepEqual(Object.keys(PROMISE_SOURCE_LABELS).sort(), [...PROMISE_SOURCE_FIELDS].sort());
+  for (const label of Object.values(PROMISE_SOURCE_LABELS)) assert.match(label, /\p{Script=Han}/u);
 });
 
 // ---- 中间输出的校验器：必须在合成之前拦住，否则会静默丢数据 ----
@@ -381,6 +388,7 @@ test("浏览器：请求体带上候选，渲染出承诺块与诊断块", async
 
   assert.match(body.innerHTML, /候选承诺没守住的地方/u);
   assert.match(body.innerHTML, /做了相反的事/u, "承诺状态要出中文标签");
+  assert.doesNotMatch(body.innerHTML, /class="scene-id">[A-Za-z]/u, "承诺来源要出中文名，不显示字段名");
   assert.match(body.innerHTML, /编辑诊断/u);
   assert.match(body.innerHTML, /动作密度过载/u, "issue 类型要出中文标签");
   assert.match(body.innerHTML, /仅供参考，系统不会自动执行/u);

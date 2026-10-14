@@ -192,6 +192,13 @@ export const PROMISE_SOURCE_FIELDS = Object.freeze([
   "characterSetup", "novelty", "visualPotential", "storyOutline", "fixedCharacter"
 ]);
 
+/** 承诺来源的中文名，只用于展示：页面上原来直接显示字段名（emotionalPayoff）。与上面逐项对应。 */
+export const PROMISE_SOURCE_LABELS = Object.freeze({
+  title: "标题", oneLineHook: "一句话钩子", logline: "梗概", newTask: "任务", environmentPressure: "环境压力",
+  keyChoice: "关键选择", climax: "高潮", emotionalPayoff: "情绪回报", keyDialogueDirections: "关键台词方向",
+  characterSetup: "角色设定", novelty: "新颖性", visualPotential: "视觉潜力", storyOutline: "动作链", fixedCharacter: "固定角色"
+});
+
 /** 承诺逐条判定的四档。判成「没守住」的是 MISSING/CONTRADICTED，比 WEAKENED 重。 */
 export const PROMISE_CHECK_STATUSES = Object.freeze([
   "PRESERVED", "WEAKENED", "MISSING", "CONTRADICTED"
