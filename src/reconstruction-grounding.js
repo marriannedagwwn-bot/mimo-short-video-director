@@ -1,7 +1,9 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 const GROUNDING_SEAL_VERSION = "1.0";
-const observationFactKinds = new Set([
+// observedFacts 与 evidence 的判据只有这一份；参考片分析发给 MiMo 的约束解码 Schema
+// （src/contracts/reference-analysis-model-schema.js）直接引用这些常量，不另写一份。
+export const OBSERVATION_FACT_KINDS = Object.freeze([
   "visible_subject",
   "visible_action",
   "visible_object",
@@ -9,7 +11,12 @@ const observationFactKinds = new Set([
   "visible_state",
   "onscreen_text"
 ]);
-const observationImportance = new Set(["core", "supporting"]);
+export const OBSERVATION_IMPORTANCE = Object.freeze(["core", "supporting"]);
+export const OBSERVED_FACT_KEYS = Object.freeze(["factType", "observation", "importance", "evidenceRefs"]);
+export const FRAME_EVIDENCE_KEYS = Object.freeze(["source", "frameNumber"]);
+export const VIDEO_EVIDENCE_KEYS = Object.freeze(["source", "startSecond", "endSecond"]);
+const observationFactKinds = new Set(OBSERVATION_FACT_KINDS);
+const observationImportance = new Set(OBSERVATION_IMPORTANCE);
 
 export class ReconstructionGroundingError extends Error {
   constructor(message, code = "RECONSTRUCTION_GROUNDING_INVALID") {
@@ -102,7 +109,7 @@ export function verifyReconstructionSeal(value, key, { expectedContextDigest = n
 function normalizeReferenceObservation(item, index, input, options) {
   const path = `referenceAnalysis.observedFacts[${index}]`;
   assertObject(item, path);
-  assertExactKeys(item, ["factType", "observation", "importance", "evidenceRefs"], path);
+  assertExactKeys(item, OBSERVED_FACT_KEYS, path);
   if (!observationFactKinds.has(item.factType)) fail(`${path}.factType`, "枚举值无效");
   assertString(item.observation, `${path}.observation`);
   if (!observationImportance.has(item.importance)) fail(`${path}.importance`, "枚举值无效");
@@ -128,7 +135,7 @@ function normalizeObservationEvidence(reference, path, input, options) {
   assertAllowedEvidenceSource(reference.source, `${path}.source`, options.allowedEvidenceSources);
   const durationMs = mediaDurationMs(input.metadata);
   if (reference.source === "frame") {
-    assertExactKeys(reference, ["source", "frameNumber"], path);
+    assertExactKeys(reference, FRAME_EVIDENCE_KEYS, path);
     if (!Number.isInteger(reference.frameNumber) || reference.frameNumber < 1) {
       fail(`${path}.frameNumber`, "必须是正整数");
     }
@@ -139,7 +146,7 @@ function normalizeObservationEvidence(reference, path, input, options) {
     return { source: "frame", frameNumber: reference.frameNumber, timestampMs };
   }
   if (reference.source === "video") {
-    assertExactKeys(reference, ["source", "startSecond", "endSecond"], path, "VIDEO_EVIDENCE_TIME_INVALID");
+    assertExactKeys(reference, VIDEO_EVIDENCE_KEYS, path, "VIDEO_EVIDENCE_TIME_INVALID");
     if (!validVideo(input.video)) fail(`${path}.source`, "输入未提供有效原生视频");
     if (durationMs === null) fail(path, "原生视频 evidence 需要 metadata.duration");
     assertSecondPair(reference.startSecond, reference.endSecond, path);

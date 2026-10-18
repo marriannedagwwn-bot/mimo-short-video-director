@@ -86,8 +86,13 @@ export function requireText(value, name, { optional = false, max = 12000 } = {})
 export const CREATIVE_BRIEF_SCHEMA_VERSION = "creative_brief/2.0";
 export const CREATIVE_BRIEF_MODEL_FIELDS = Object.freeze(["storyEngine", "recastTest"]);
 
+// 参考片分析的顶层键与必须是数组的字段。参考片分析发给 MiMo 的约束解码 Schema
+// （src/contracts/reference-analysis-model-schema.js）引用这两份常量，不另写一份。
+export const REFERENCE_ANALYSIS_FIELDS = Object.freeze(["contentPositioning", "targetAudience", "storySynopsis", "characters", "protagonistIdentity", "careRecipient", "dialogueStyle", "shotRhythm", "emotionCurve", "retentionDrivers", "whyWatchToEnd", "analysisConfidence", "observedFacts", "uncertainties"]);
+export const REFERENCE_ANALYSIS_ARRAY_FIELDS = Object.freeze(["characters", "emotionCurve", "retentionDrivers", "observedFacts", "uncertainties"]);
+
 const outputContracts = {
-  referenceAnalysis: ["contentPositioning", "targetAudience", "storySynopsis", "characters", "protagonistIdentity", "careRecipient", "dialogueStyle", "shotRhythm", "emotionCurve", "retentionDrivers", "whyWatchToEnd", "analysisConfidence", "observedFacts", "uncertainties"],
+  referenceAnalysis: REFERENCE_ANALYSIS_FIELDS,
   sourceScriptReconstruction: ["scenes", "coreEventSequence", "relationshipPattern", "endingAction", "turningPoints", "uncertainties"],
   creativeBrief: CREATIVE_BRIEF_MODEL_FIELDS,
   visualGuardrails: ["fixedCharacterBoundary", "allowedPositiveTraits", "positivePromptBoundary", "sourceSimilarityRules", "dialogueRules", "stageInstructions", "rationale", "uncertainties"],
@@ -234,7 +239,7 @@ export function ensureOutputContract(value, contract) {
   const missing = requiredFields.filter((key) => !(key in value));
   if (missing.length) throw new OutputContractError(`${contract} 缺少必要字段：${missing.join("、")}`);
   const arrayFields = {
-    referenceAnalysis: ["characters", "emotionCurve", "retentionDrivers", "observedFacts", "uncertainties"],
+    referenceAnalysis: REFERENCE_ANALYSIS_ARRAY_FIELDS,
     sourceScriptReconstruction: ["scenes", "coreEventSequence", "turningPoints", "uncertainties"],
     visualGuardrails: ["allowedPositiveTraits", "positivePromptBoundary", "sourceSimilarityRules", "dialogueRules", "uncertainties"],
     themeVariants: ["variants"],

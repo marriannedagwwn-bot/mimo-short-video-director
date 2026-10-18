@@ -94,13 +94,26 @@ export const RECONSTRUCTION_SYSTEM_PROMPT = `你是视频事实还原与脚本�
 
 按现有证据最大限度覆盖开场、发展、转折与结尾。可以整理地点、人物、可见动作、对白大意、镜头设计、情绪节点、剧作功能、关键道具和事件关系，但不得把采样间隙、听不清的对白、无法确认的身份或动机伪装成事实；证据不足的信息必须写入 uncertainties。`;
 
+// 参考片分析这一次要求的 evidence 写法：提示词与发给 MiMo 的约束解码 Schema
+// （src/contracts/reference-analysis-model-schema.js）都从这里取，两边不会要求不同的写法。
+// 有原生视频时写秒级 video evidence，上限是时长向上取整（与服务端「时长加 1 秒容差」同一界限）；
+// 否则写 frame evidence，帧号不超过实际送进来的关键帧数。
+export function analysisEvidenceShape(input) {
+  if (input?.video?.dataUrl) {
+    const durationSeconds = Number(input.metadata?.duration);
+    const maxEndSecond = Number.isFinite(durationSeconds) && durationSeconds >= 0
+      ? Math.ceil(durationSeconds)
+      : 0;
+    return { source: "video", maxEndSecond };
+  }
+  return { source: "frame", frameCount: Array.isArray(input?.frames) ? input.frames.length : 0 };
+}
+
 export function analysisPrompt(input) {
   const timeline = input.frames.map((frame, index) => `画面 F${index + 1}：${formatTime(frame.timestamp)}`).join("；");
-  const durationSeconds = Number(input.metadata?.duration);
-  const hasNativeVideo = Boolean(input.video?.dataUrl);
-  const maximumWholeEndSecond = Number.isFinite(durationSeconds) && durationSeconds >= 0
-    ? Math.ceil(durationSeconds)
-    : 0;
+  const evidenceShape = analysisEvidenceShape(input);
+  const hasNativeVideo = evidenceShape.source === "video";
+  const maximumWholeEndSecond = hasNativeVideo ? evidenceShape.maxEndSecond : 0;
   const evidenceExample = hasNativeVideo
     ? '{"source":"video","startSecond":0,"endSecond":3}'
     : '{"source":"frame","frameNumber":1}';

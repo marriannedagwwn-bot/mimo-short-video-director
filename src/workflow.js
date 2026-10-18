@@ -3,6 +3,7 @@ import { STORY_CANDIDATES_MODEL_SCHEMA_NAME, STORY_ENTRY_CANDIDATES_MODEL_SCHEMA
 import { STORY_ENTRY_SYSTEM_PROMPT, storyEntryCandidatePrompt, storyEntryFullStoryPrompt, storySceneScriptPrompt, storyEntryVisualGuardrailsPrompt } from "./story-entry-prompts.js";
 import { STORY_ENTRY_VARIANT_ID, STORY_MODE_FULL_TEXT, normalizeStorySource } from "../public/story-entry.js";
 import { STORY_CANDIDATE_REVIEW_MODEL_SCHEMA_NAME, storyCandidateReviewModelSchema } from "./contracts/story-candidate-review-model-schema.js";
+import { REFERENCE_ANALYSIS_MODEL_SCHEMA_NAME, referenceAnalysisModelSchema } from "./contracts/reference-analysis-model-schema.js";
 import { mockAnalysis, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryEntryCandidates, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails, mockDirectorAgentTurn, mockOneSentenceEdit } from "./mock.js";
 import { fullStoryCharacterFacts, isNarrativeFullStory } from "./full-story-contract.js";
 import { FULL_STORY_CAST_SCHEMA_VERSION } from "../public/full-story-format.js";
@@ -289,6 +290,12 @@ export class WorkflowService {
     const runAnalysis = ({ promptInput, video }) => this.generateStageJson("analysis", input, {
         prompt: analysisPrompt(promptInput),
         systemPrompt: ANALYSIS_SYSTEM_PROMPT,
+        // 结构由约束解码钉住（只有 MiMo 客户端会发 json_schema，千问按参数名解构会忽略它）。
+        // 与提示词收同一份 promptInput，evidence 写法两边一致；改用抽帧重取时跟着换成 frame 写法。
+        responseSchema: {
+          name: REFERENCE_ANALYSIS_MODEL_SCHEMA_NAME,
+          schema: referenceAnalysisModelSchema(promptInput)
+        },
         frames: input.frames,
         video,
         onResolvedMediaMode: (mode) => {
