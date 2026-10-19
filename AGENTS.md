@@ -728,6 +728,7 @@ Full Story 生成之后的**独立验收，只出报告**：不修改剧情、�
 - Qwen
 - MiMo
 - DeepSeek
+- Claude（Anthropic，2026-10-19）
 
 DeepSeek 当前只允许用于纯文本阶段：
 
@@ -744,6 +745,8 @@ DeepSeek 当前只允许用于纯文本阶段：
 - Character Reference
 
 当前 DeepSeek 模型 ID 只登记 `deepseek-v4-flash` 和 `deepseek-v4-pro`。Flash 是页面首选项，Pro 只能显式选择；不得静默切换 provider/model。配置 `DEEPSEEK_API_KEY` 不改变现有 Qwen/MiMo 默认路由。`DEFAULT_LLM_PROVIDER`（只接受 `Qwen` / `MiMo`）可显式指定默认路由，未设置时保持「配了 Qwen 就用 Qwen」；指定的那家未配置时启动失败，不静默换家（`resolveDefaultLlmProvider`，`src/config.js`）。
+
+**Claude（Anthropic）纯文本接入（2026-10-19）**：第四家文本模型，客户端 `src/claude-client.js`，走官方 SDK `@anthropic-ai/sdk`（`package.json` 锁死 `0.131.0`），与 DeepSeek 同一档：**只用于纯文本阶段**，看图或视频的四个阶段由服务端阶段检查、客户端 `generateJsonWithMedia`（`MODEL_MEDIA_UNSUPPORTED`）、页面 `providerAllowedForStage`（纯文本供应商集合 {DeepSeek, Claude}）三道关拒绝，也不能做 `DEFAULT_LLM_PROVIDER`。型号只登记 `claude-sonnet-5-5`（默认，按《鲸鱼风筝》对比定的）/ `claude-opus-5-5` / `claude-haiku-5-5` / `claude-fable-5-1`；健康检查只核对所选型号，不把 `/v1/models` 的旧型号交给页面（参数规则不同，选到会 400）。对齐另外三家的约定：流式、只判空闲（`CLAUDE_API_STREAM_IDLE_TIMEOUT_MS`，ping 也算数据；SDK 的 timeout 只管等响应头，放到 1 小时）；SDK 自带重试关掉（`maxRetries: 0`），重试只归 coordinator 与各阶段预算；完整与否只看 `message_stop`；`stop_reason` 只统一两个值——`max_tokens` / `model_context_window_exceeded` → `length`（`MODEL_OUTPUT_TRUNCATED`），`refusal` → `content_filter`（`MODEL_CONTENT_FILTERED`，不可重试，消息带 `stop_details` 的类别与说明）。**不开 server-side `fallbacks`**：被拒时它会自动换另一个模型继续跑，等于静默换模型。不发 temperature / top_p、不做预填；**不发 `output_config.format`**——Claude 结构化输出不支持我们派生 Schema 里的 `minLength` / `maxItems` / `minimum`，`minItems` 只能 0 或 1，直接发会 400，所以 `responseSchema` 与千问、DeepSeek 一样被忽略，JSON 靠提示词、本地严格解析与既有重试预算；唯一的放宽是整段正文恰好被一对 Markdown 代码块包着（开头一行 ``` 或 ```json、结尾一行 ```、中间再没有以 ``` 开头的行）时，客户端先去掉这层包裹再交给严格解析（`unwrapWholeCodeFence`，返回值带 `contentUnwrappedFromCodeFence: true`，raw 保留原样）；代码块前后多了说明文字、两个代码块、没有收尾的，一律原样交回、照旧判失败。思考默认 `{type: "adaptive", display: "summarized"}`，深浅用 `CLAUDE_API_EFFORT`；单次关闭（只有导演助手传）按型号映射：Sonnet 5.5 发 `between_tools`、Haiku 5.5 发 `disabled`，Opus 5.5 / Fable 5.1 关不掉、没登记的型号不猜，都在发请求前抛 `MODEL_THINKING_UNSUPPORTED`（导演助手调用前 400），effort 为 xhigh/max 时关思考同样报错；判定只有一份 `CLAUDE_THINKING_OFF` / `claudeThinkingOffProblem`。错误码表抄 https://platform.claude.com/docs/en/api/errors （按 `error.type`），流途中的 `event: error` 按类型还原状态码。**环境变量一律 `CLAUDE_API_*`，不读 `ANTHROPIC_*` 与 `CLAUDE_EFFORT`**：Claude Code 会给它启动的进程导出 `CLAUDE_EFFORT`、`ANTHROPIC_BASE_URL`（也可能有 `ANTHROPIC_API_KEY`），从 Claude 会话里启动的服务会继承它们；传给 SDK 的 apiKey / baseURL 显式给出、`authToken: null`、`logLevel: "warn"`。不配置时默认路由与三家请求体逐字不变，只是页面下拉多一项、`/api/health` 的 `maxCompletionTokensByProvider` 多一个 Claude 键。已知缺口：`ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR` 的抓取器只认 `/chat/completions`，抓不到 Claude（`STAGE_MODEL_OUTPUT_LOG_DIR` 照常有原文）。真实小请求已核对（四个型号接受 128000、思考参数与能力表一致、推理摘要单独流回），《鲸鱼风筝》设计分镜对比（`scripts/claude-storyboard-compare.mjs`，各型号 2 次、不重试）：Sonnet 2/2、Fable 2/2、Haiku 1/2、Opus 0/2 过判据，失败的 3 次都是「未返回严格 JSON」；Haiku 再跑 4 次存下原文，确认是整段 JSON 被 ```json 代码块包着、里面完整合法，于是加了上面的去包裹规则，默认型号定为 Sonnet 5.5。详见 `docs/claude-provider-2026-10-19.md`。
 
 ---
 

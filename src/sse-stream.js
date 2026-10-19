@@ -42,10 +42,21 @@ export class SseStreamDegenerateError extends Error {
   }
 }
 
-function truncateRaw(raw, maxChars) {
+// Claude 客户端（Anthropic 事件格式，由 SDK 解析）也用这两份：raw 的截断规则与复读中断的消息只写一处。
+export function truncateRaw(raw, maxChars = DEFAULT_MAX_RAW_CHARS) {
   if (raw.length <= maxChars) return raw;
   const half = Math.floor(maxChars / 2);
   return `${raw.slice(0, half)}\n…[中段 ${raw.length - maxChars} 字符已省略]…\n${raw.slice(-half)}`;
+}
+
+const DEGENERATION_STREAM_LABELS = { content: "正文", reasoning: "推理" };
+
+export function degenerationError(streamName, hit, { contentLength = 0, reasoningLength = 0 } = {}) {
+  return new SseStreamDegenerateError(
+    `输出陷入重复：${DEGENERATION_STREAM_LABELS[streamName]}最后 2000 字里一段 ${hit.period} 字符的内容连续出现 ${hit.repeats} 次`
+      + `（「${hit.unit.slice(0, 40)}」），已在收到 ${contentLength} 字正文、${reasoningLength} 字推理时中断`,
+    { stream: streamName, ...hit }
+  );
 }
 
 /**
@@ -76,15 +87,10 @@ export async function readSseCompletion(body, { maxRawChars = DEFAULT_MAX_RAW_CH
   let chunks = 0;
   let sawDone = false;
   const degeneration = detectDegeneration ? createDegenerationWatch() : null;
-  const LABELS = { content: "正文", reasoning: "推理" };
   const checkDegeneration = (streamName, text) => {
     const hit = degeneration?.check(streamName, text);
     if (!hit) return;
-    throw new SseStreamDegenerateError(
-      `输出陷入重复：${LABELS[streamName]}最后 2000 字里一段 ${hit.period} 字符的内容连续出现 ${hit.repeats} 次`
-        + `（「${hit.unit.slice(0, 40)}」），已在收到 ${content.length} 字正文、${reasoningContent.length} 字推理时中断`,
-      { stream: streamName, ...hit }
-    );
+    throw degenerationError(streamName, hit, { contentLength: content.length, reasoningLength: reasoningContent.length });
   };
 
   const notify = () => {

@@ -313,6 +313,8 @@ const MODEL_STAGE_DEFS = [
   { key: "shotVideo", label: "镜头视频", hint: "全能参考单镜头视频候选", capability: "视频生成", capabilityKind: "video", providers: ["Seedance", "MiniMax"], optional: true }
 ];
 const MEDIA_INPUT_MODEL_STAGES = new Set(["analysis", "reconstruction", "visualGuardrails", "characterReference"]);
+// 在本工作流只接纯文本的文本供应商：要看图或视频的阶段不列出它们（服务端与客户端各有一道同样的关）。
+const TEXT_ONLY_MODEL_PROVIDERS = new Set(["DeepSeek", "Claude"]);
 const SHOT_VIDEO_PROVIDER_LABELS = {
   Seedance: "Seedance 2.0",
   MiniMax: "MiniMax H3"
@@ -334,6 +336,11 @@ const MODEL_OPTION_CATALOG = {
   },
   DeepSeek: {
     text: ["deepseek-v4-flash", "deepseek-v4-pro"]
+  },
+  Claude: {
+    // 只登记这四个型号（src/claude-client.js 的 CLAUDE_MODELS）；第一个是选 Claude 时的默认型号。
+    // https://platform.claude.com/docs/en/about-claude/models/overview（2026-10-19 核对）
+    text: ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
   },
   Jimeng: {
     imageGeneration: ["doubao-seedream-5-0-260128", "seedream-5-0-lite-260128"]
@@ -5756,6 +5763,9 @@ function modelSeriesLabel(provider, model) {
     if (/^qwen-(?:max|plus|turbo)/iu.test(id)) return "Qwen 通用";
   }
   if (provider === "DeepSeek" && (match = id.match(/^deepseek-v(\d+(?:\.\d+)?)/iu))) return `DeepSeek V${match[1]}`;
+  if (provider === "Claude" && (match = id.match(/^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d+))?$/iu))) {
+    return `Claude ${match[1][0].toUpperCase()}${match[1].slice(1).toLowerCase()} ${match[3] ? `${match[2]}.${match[3]}` : match[2]}`;
+  }
   if (provider === "Jimeng" && (match = id.match(/seedream-(\d+)-(\d+)/iu))) return `Seedream ${match[1]}.${match[2]}`;
   if (provider === "Seedance" && (match = id.match(/seedance-(\d+)-(\d+)/iu))) return `Seedance ${match[1]}.${match[2]}`;
   if (provider === "MiniMax" && (match = id.match(/^minimax-(h\d+)/iu))) return `MiniMax ${match[1].toUpperCase()}`;
@@ -6081,7 +6091,7 @@ function effectiveStageSetting(stage) {
   };
 }
 function availableModelProviders() {
-  const llmProviders = new Set(["Qwen", "MiMo", "DeepSeek"]);
+  const llmProviders = new Set(["Qwen", "MiMo", "DeepSeek", "Claude"]);
   const configured = Object.entries(state.providers || {})
     .filter(([provider, value]) => llmProviders.has(provider) && value?.configured)
     .map(([provider]) => provider);
@@ -6089,7 +6099,7 @@ function availableModelProviders() {
     .filter((stage) => !stage.providerLocked)
     .map((stage) => state.modelStages?.[stage.key]?.provider)
     .filter((provider) => llmProviders.has(provider));
-  return [...new Set([...configured, ...fromStages, "Qwen", "MiMo", "DeepSeek"])];
+  return [...new Set([...configured, ...fromStages, "Qwen", "MiMo", "DeepSeek", "Claude"])];
 }
 function renderModelOptions(stage, provider, selectedModel, defaultSetting = {}) {
   const options = modelOptionsForStage(stage, provider, selectedModel, defaultSetting);
@@ -6130,7 +6140,7 @@ function modelAllowedForStage(model, provider, stageKey) {
   return !isKnownQwenTextOnlyModel(model) && /(?:plus|vl|omni)/iu.test(model);
 }
 function providerAllowedForStage(provider, stageKey) {
-  return !(provider === "DeepSeek" && MEDIA_INPUT_MODEL_STAGES.has(stageKey));
+  return !(TEXT_ONLY_MODEL_PROVIDERS.has(provider) && MEDIA_INPUT_MODEL_STAGES.has(stageKey));
 }
 function uniqueModels(values = []) {
   const seen = new Set();

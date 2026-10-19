@@ -23,6 +23,7 @@
 // - 阿里云百炼 DashScope（Qwen）：https://help.aliyun.com/zh/model-studio/error-code
 // - DeepSeek：https://api-docs.deepseek.com/quick_start/error_codes
 // - 小米 MiMo：https://mimo.mi.com/docs/zh-CN/api/guidance/error-codes
+// - Claude（Anthropic）：https://platform.claude.com/docs/en/api/errors （2026-10-19 核对「HTTP errors」一节）
 
 export const PROVIDER_ERROR_DOC_URLS = Object.freeze({
   MiniMax: "https://platform.minimaxi.com/docs/api-reference/errorcode",
@@ -30,7 +31,8 @@ export const PROVIDER_ERROR_DOC_URLS = Object.freeze({
   Jimeng: "https://www.volcengine.com/docs/82379/1299023",
   Qwen: "https://help.aliyun.com/zh/model-studio/error-code",
   DeepSeek: "https://api-docs.deepseek.com/quick_start/error_codes",
-  MiMo: "https://mimo.mi.com/docs/zh-CN/api/guidance/error-codes"
+  MiMo: "https://mimo.mi.com/docs/zh-CN/api/guidance/error-codes",
+  Claude: "https://platform.claude.com/docs/en/api/errors"
 });
 
 const entry = (title, guidance, retryable = false) => Object.freeze({ title, guidance, retryable });
@@ -160,6 +162,50 @@ const MIMO_STATUS = Object.freeze({
   503: entry("小米 MiMo 服务故障", "稍后重试。", true)
 });
 
+// Claude（Anthropic）：错误体是 {type: "error", error: {type, message}, request_id}，
+// extractProviderErrorSignal 从 error.type 取码。标题与指引按官方原文的意思写，可重试与否跟随原文：
+// 429 / 500 / 504 / 529 官方建议重试；409 要先解决冲突。流式途中的 event: error 在客户端按类型还原了状态码。
+const CLAUDE_INVALID_REQUEST = entry("请求的格式或内容有问题", "按错误消息里的提示修正请求；组织或工作区达到你在 Claude Console 设置的花费上限时也返回这个错误。");
+const CLAUDE_AUTHENTICATION = entry("API Key 认证失败", "检查 CLAUDE_API_KEY 是否填写正确、是否过期或已被撤销。");
+const CLAUDE_BILLING = entry("账单或付款信息有问题", "在 Claude Console 检查付款信息。");
+const CLAUDE_PERMISSION = entry("API Key 没有权限使用该资源", "在 Claude Console 检查组织与工作区的访问设置。");
+const CLAUDE_NOT_FOUND = entry("请求的资源不存在", "检查接口地址（CLAUDE_API_BASE_URL）与请求里的资源 ID。");
+const CLAUDE_CONFLICT = entry("请求与资源的当前状态冲突", "先解决冲突，再重新发起请求。");
+const CLAUDE_TOO_LARGE = entry("请求体超过大小上限", "Messages API 单次请求最大 32 MB，缩短提示词后再试。");
+const CLAUDE_RATE_LIMIT = entry("触发速率限制或用量上限", "带 retry-after 的是速率限制，稍后重试；没有 retry-after 的是用量档位的月度花费封顶，会一直失败，直到额度恢复。", true);
+const CLAUDE_API_ERROR = entry("Anthropic 服务内部错误", "稍后重试；持续失败请带 request id 联系 Anthropic 支持。", true);
+const CLAUDE_TIMEOUT = entry("请求处理超时", "稍后重试。", true);
+const CLAUDE_OVERLOADED = entry("Anthropic API 暂时过载", "稍后重试。", true);
+
+const CLAUDE_CODES = Object.freeze({
+  invalid_request_error: CLAUDE_INVALID_REQUEST,
+  authentication_error: CLAUDE_AUTHENTICATION,
+  billing_error: CLAUDE_BILLING,
+  permission_error: CLAUDE_PERMISSION,
+  not_found_error: CLAUDE_NOT_FOUND,
+  conflict_error: CLAUDE_CONFLICT,
+  request_too_large: CLAUDE_TOO_LARGE,
+  rate_limit_error: CLAUDE_RATE_LIMIT,
+  api_error: CLAUDE_API_ERROR,
+  timeout_error: CLAUDE_TIMEOUT,
+  overloaded_error: CLAUDE_OVERLOADED
+});
+
+// 响应体不是 JSON 时（例如官方说 413 由 Cloudflare 在请求到达 API 之前返回）按状态码兜底。
+const CLAUDE_STATUS = Object.freeze({
+  400: CLAUDE_INVALID_REQUEST,
+  401: CLAUDE_AUTHENTICATION,
+  402: CLAUDE_BILLING,
+  403: CLAUDE_PERMISSION,
+  404: CLAUDE_NOT_FOUND,
+  409: CLAUDE_CONFLICT,
+  413: CLAUDE_TOO_LARGE,
+  429: CLAUDE_RATE_LIMIT,
+  500: CLAUDE_API_ERROR,
+  504: CLAUDE_TIMEOUT,
+  529: CLAUDE_OVERLOADED
+});
+
 // OpenAI 兼容协议的通用兜底：只在供应商没有可匹配的专属码时使用。
 const OPENAI_COMPATIBLE_STATUS = Object.freeze({
   400: entry("请求不合法", "检查请求参数是否符合该供应商的接口要求。"),
@@ -183,12 +229,14 @@ const PROVIDER_CODE_TABLES = Object.freeze({
   Jimeng: ARK_CODES,
   Qwen: DASHSCOPE_CODES,
   DeepSeek: Object.freeze({}),
-  MiMo: Object.freeze({})
+  MiMo: Object.freeze({}),
+  Claude: CLAUDE_CODES
 });
 
 const PROVIDER_STATUS_TABLES = Object.freeze({
   DeepSeek: DEEPSEEK_STATUS,
-  MiMo: MIMO_STATUS
+  MiMo: MIMO_STATUS,
+  Claude: CLAUDE_STATUS
 });
 
 const PROVIDER_ALIASES = Object.freeze({
@@ -202,7 +250,9 @@ const PROVIDER_ALIASES = Object.freeze({
   qwen: "Qwen",
   dashscope: "Qwen",
   deepseek: "DeepSeek",
-  mimo: "MiMo"
+  mimo: "MiMo",
+  claude: "Claude",
+  anthropic: "Claude"
 });
 
 export function normalizeProviderName(value) {

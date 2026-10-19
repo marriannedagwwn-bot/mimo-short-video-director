@@ -70,6 +70,7 @@ import { DIRECTOR_AGENT_STAGE, ensureDirectorAgentTurnContract, normalizeDirecto
 import { DIRECTOR_AGENT_SYSTEM_PROMPT, directorAgentRetryPrompt, directorAgentTurnPrompt } from "./director-agent-prompts.js";
 import { DIRECTOR_AGENT_TURN_MODEL_SCHEMA_NAME, directorAgentTurnModelSchema } from "./contracts/director-agent-turn-model-schema.js";
 import { isZhipuGlm53Model } from "./qwen-client.js";
+import { claudeThinkingOffProblem } from "./claude-client.js";
 import {
   assertOnlyCandidateRevisionFieldsChanged,
   candidateBlockerDefect,
@@ -531,6 +532,11 @@ export class WorkflowService {
     if (settings.provider === "Qwen" && isZhipuGlm53Model(settings.model)) {
       throw new InputError(`导演助手每次都要关闭思考，${settings.model} 不能关闭思考；请在模型设置里给「导演助手」换一个模型。`);
     }
+    // Claude 同理：Opus 5.5、Fable 5.1 关不掉思考，没登记的型号不猜（src/claude-client.js）。
+    if (settings.provider === "Claude") {
+      const problem = claudeThinkingOffProblem(settings.model, settings.client?.config?.effort || "");
+      if (problem) throw new InputError(`导演助手每次都要关闭思考：${problem}请在模型设置里给「导演助手」换一个模型。`);
+    }
 
     // 实数调用次数，不能从 rejections 反推：传输失败时它是空数组，供应商却确实被调用过。
     let providerCalls = 0;
@@ -549,7 +555,7 @@ export class WorkflowService {
           maxCompletionTokens: settings.maxCompletionTokens,
           requestTimeoutMs: settings.requestTimeoutMs,
           thinking: "disabled",
-          // 只有 MiMo 用它做约束解码；千问与 DeepSeek 忽略。枚举就是这一轮的动作清单加 none。
+          // 只有 MiMo 用它做约束解码；千问、DeepSeek 与 Claude 忽略。枚举就是这一轮的动作清单加 none。
           responseSchema: { name: DIRECTOR_AGENT_TURN_MODEL_SCHEMA_NAME, schema: directorAgentTurnModelSchema(offeredKeys) }
         },
         provider: settings.provider || "",
@@ -1083,7 +1089,7 @@ export class WorkflowService {
       maxCompletionTokens: settings.maxCompletionTokens,
       requestTimeoutMs: settings.requestTimeoutMs,
       // 与候选阶段同一个做法：约束解码 Schema 从严格 Schema 派生，提示词文本不变、所有模型共用。
-      // 只有 MiMo 客户端会用它发 json_schema，千问与 DeepSeek 按参数名解构、照旧发 json_object。
+      // 只有 MiMo 客户端会用它发 json_schema，千问与 DeepSeek 按参数名解构、照旧发 json_object；Claude 也忽略它（src/claude-client.js 文件头说明）。
       // coordinator 重试沿用同一个 request，所以第二次调用同样带着它。
       // 起因是 2026-09-24 展开前体检里 MiMo 开思考两次都在 candidateChecks 数组里写出孤立字符串
       // "holisticPreferenceOrder:["——与候选阶段当天的结构失败同形，重试打回诊断也没用。
@@ -1617,7 +1623,7 @@ export class WorkflowService {
       prompt: variantsPrompt(validatedInput, { deriveSource: true }),
       // 约束解码 Schema 从严格 Schema 派生；提示词文本不变、所有模型共用。只有 MiMo 客户端
       // 会用它发 json_schema：千问（欠费无法验证）与 DeepSeek（官方只支持 json_object）
-      // 按参数名解构，会忽略这个参数、照旧发 json_object。解码约束只减少结构类失败，
+      // 按参数名解构，会忽略这个参数、照旧发 json_object；Claude 也忽略它。解码约束只减少结构类失败，
       // finalize 里的严格 Schema 与全部校验不变，仍是唯一裁决方。
       responseSchema: {
         name: STORY_CANDIDATES_MODEL_SCHEMA_NAME,
@@ -1653,7 +1659,7 @@ export class WorkflowService {
   }
 
   // 「从剧情开始」的角色边界：没有参考视频，只看固定角色设定。与视频入口共用同一个阶段
-  // 设置（visualGuardrails，仍禁 DeepSeek）、同一套落定校验；只多一条 sourceSimilarityRules
+  // 设置（visualGuardrails，仍禁 DeepSeek 与 Claude）、同一套落定校验；只多一条 sourceSimilarityRules
   // 必须为空，签发时用剧情入口的 v2 摘要。只在服务端内部调用，不注册 HTTP 路由。
   async createStoryEntryVisualGuardrails(input, { storyEntry } = {}) {
     requireObject(input, "请求");
@@ -1909,6 +1915,9 @@ export class WorkflowService {
     const settings = this.resolveStage(stage, input);
     if (requiresMediaModel(stage) && settings.provider === "DeepSeek") {
       throw new InputError(`${stageLabel(stage)}需要图片或视频输入，DeepSeek-V4 仅允许用于纯文本阶段`);
+    }
+    if (requiresMediaModel(stage) && settings.provider === "Claude") {
+      throw new InputError(`${stageLabel(stage)}需要图片或视频输入，Claude 在本工作流只允许用于纯文本阶段`);
     }
     this.assertStageClient(settings, stageLabel(stage));
     return this.generateValidatedJson({
@@ -2473,6 +2482,7 @@ function canonicalProvider(provider = "") {
   if (/qwen|千问|通义/iu.test(value)) return "Qwen";
   if (/mimo|小米/iu.test(value)) return "MiMo";
   if (/deepseek|深度求索/iu.test(value)) return "DeepSeek";
+  if (/claude|anthropic/iu.test(value)) return "Claude";
   return value;
 }
 

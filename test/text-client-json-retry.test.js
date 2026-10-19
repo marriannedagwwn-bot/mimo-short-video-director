@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { MimoClient, ModelResponseError } from "../src/mimo-client.js";
 import { QwenClient } from "../src/qwen-client.js";
 import { DeepSeekClient } from "../src/deepseek-client.js";
+import { ClaudeClient } from "../src/claude-client.js";
 import { sseResponse } from "./helpers/sse-response.js";
+import { anthropicSseResponse } from "./helpers/anthropic-sse-response.js";
 
 // 三家文本客户端在调用方显式传 jsonRetryAttempts: 0 时只发一次请求。用例原在
 // test/static-frame-compiler-config.test.js（Static Frame Compiler 用这个参数关掉客户端内重试），
@@ -84,4 +86,29 @@ test("Qwen、MiMo 与 DeepSeek 显式禁用 JSON 内容重试；只有非流式�
     globalThis.fetch = originalFetch;
     AbortSignal.timeout = originalTimeout;
   }
+});
+
+test("Claude 同样遵守 jsonRetryAttempts: 0，只发一次请求；流式不设总时长，不用 requestTimeoutMs", async (t) => {
+  const observedTimeouts = [];
+  t.mock.method(AbortSignal, "timeout", (milliseconds) => {
+    observedTimeouts.push(milliseconds);
+    return new AbortController().signal;
+  });
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls += 1;
+    // 整段只被一对代码块包着的会被 Claude 客户端去掉包裹（unwrapWholeCodeFence），所以这里用前面多了说明文字的。
+    return anthropicSseResponse({ content: "下面是结果：\n```json\n{\"patches\":[]}\n```" });
+  });
+  await assert.rejects(
+    new ClaudeClient({ baseUrl: "https://claude.invalid", apiKey: "k", model: "claude-opus-5-5", jsonRetryAttempts: 3 }).generateJson({
+      prompt: "只返回 JSON",
+      requestTimeoutMs: 94_444,
+      jsonRetryAttempts: 0,
+      strictJson: true
+    }),
+    (error) => error instanceof ModelResponseError && /Claude 未返回严格 JSON/u.test(error.message)
+  );
+  assert.equal(calls, 1);
+  assert.deepEqual(observedTimeouts, []);
 });

@@ -12,6 +12,10 @@
 export const MIMO_OUTPUT_TOKEN_CEILING = 131072;
 export const QWEN_OUTPUT_TOKEN_CEILING = 65536;
 export const SHARED_OUTPUT_TOKEN_CEILING = 65536;
+// Claude（2026-10-19）：官方模型表写四个型号（opus-5-5 / sonnet-5-5 / haiku-5-5 / fable-5-1）同步接口
+// 最大输出都是「128K tokens」，官方流式示例写 max_tokens: 128000，取这个精确值。思考 token 计入这个上限。
+// https://platform.claude.com/docs/en/about-claude/models/overview（2026-10-19 核对）
+export const CLAUDE_OUTPUT_TOKEN_CEILING = 128000;
 
 // 参考片分析单独默认 16384（2026-10-05），Qwen 与 MiMo 共用这一个数，仍可用
 // QWEN_ANALYSIS_MAX_COMPLETION_TOKENS / MIMO_ANALYSIS_MAX_COMPLETION_TOKENS 覆盖。

@@ -421,7 +421,8 @@ export function parseModelJson(content, providerName = "模型") {
 export function assertCompletionNotTruncated(completion, providerName = "模型") {
   if (completion?.finishReason !== "length") return;
   const contentLength = typeof completion.content === "string" ? completion.content.length : 0;
-  const completionTokens = Number(completion.usage?.completion_tokens);
+  // Claude 的用量字段叫 output_tokens；只影响这句话里的数字。
+  const completionTokens = Number(completion.usage?.completion_tokens ?? completion.usage?.output_tokens);
   const budget = Number.isFinite(completionTokens) ? `，本次输出 ${completionTokens} token` : "";
   const detail = contentLength === 0
     ? "正文一个字都没写出来，额度很可能全部用在了推理上"
@@ -449,10 +450,12 @@ export function assertCompletionNotTruncated(completion, providerName = "模型"
 export function assertCompletionNotContentFiltered(completion, providerName = "模型") {
   if (completion?.finishReason !== "content_filter") return;
   const providerText = typeof completion.content === "string" ? completion.content.trim().slice(0, 200) : "";
-  const completionTokens = Number(completion.usage?.completion_tokens);
+  const completionTokens = Number(completion.usage?.completion_tokens ?? completion.usage?.output_tokens);
   const spent = Number.isFinite(completionTokens) ? `，本次已输出 ${completionTokens} token` : "";
+  // finishDetail 只有 Claude 客户端给（stop_details 的拒绝类别与说明）；没有时这句话逐字不变。
+  const detail = typeof completion.finishDetail === "string" && completion.finishDetail ? `（${completion.finishDetail}）` : "";
   throw new ModelResponseError(
-    `${providerName} 的内容审核拦截了这次输出（finish_reason=content_filter${spent}）${providerText ? `，供应商原文：${providerText}` : ""}。审核结果不稳定，同一提示词重试常能通过；系统不会自动重试`,
+    `${providerName} 的内容审核拦截了这次输出（finish_reason=content_filter${spent}）${detail}${providerText ? `，供应商原文：${providerText}` : ""}。审核结果不稳定，同一提示词重试常能通过；系统不会自动重试`,
     typeof completion.raw === "string" ? completion.raw : "",
     0,
     {

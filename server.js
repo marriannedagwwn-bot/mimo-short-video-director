@@ -8,6 +8,7 @@ import { initializeSystemProxy } from "./src/system-proxy.js";
 import { MimoClient } from "./src/mimo-client.js";
 import { QwenClient } from "./src/qwen-client.js";
 import { DeepSeekClient } from "./src/deepseek-client.js";
+import { ClaudeClient } from "./src/claude-client.js";
 import { JimengImageClient, JimengImageConfigError, JimengImageProviderError, buildCharacterReferenceImagePrompt } from "./src/jimeng-client.js";
 import { WorkflowService } from "./src/workflow.js";
 import {
@@ -175,10 +176,12 @@ if (animationPromptCapture.active) {
 const mimoClient = config.mimo.enabled ? new MimoClient(config.mimo) : null;
 const qwenClient = config.qwen.enabled ? new QwenClient(config.qwen) : null;
 const deepseekClient = config.deepseek.enabled ? new DeepSeekClient(config.deepseek) : null;
+// 构造时校验 CLAUDE_API_EFFORT，写错就在这里启动失败，不回退。
+const claudeClient = config.claude.enabled ? new ClaudeClient(config.claude) : null;
 const jimengClient = config.jimeng.enabled ? new JimengImageClient(config.jimeng) : null;
 const stageDefaults = buildStageDefaults(config, { mimoClient, qwenClient });
 const modelStages = buildModelStages(stageDefaults, config);
-const clients = { MiMo: mimoClient, Qwen: qwenClient, DeepSeek: deepseekClient };
+const clients = { MiMo: mimoClient, Qwen: qwenClient, DeepSeek: deepseekClient, Claude: claudeClient };
 const attemptStore = new AttemptStore();
 const productionRunCoordinator = new ProductionRunCoordinator();
 const productionStateStore = new ProductionStateStore({
@@ -1863,7 +1866,9 @@ const server = http.createServer(async (request, response) => {
           serverRequestMs: config.serverRequestTimeoutMs,
           qwenGenerationMs: config.qwen.requestTimeoutMs,
           mimoGenerationMs: config.mimo.requestTimeoutMs,
-          deepseekGenerationMs: config.deepseek.requestTimeoutMs
+          deepseekGenerationMs: config.deepseek.requestTimeoutMs,
+          // Claude 流式、不设总时长，这里报的是空闲超时。
+          claudeStreamIdleMs: config.claude.streamIdleTimeoutMs
         }
       });
     }
@@ -2041,8 +2046,8 @@ server.listen(config.port, () => {
     console.log("全局角色边界签名：测试包模式（保留 sourceDigest / boundaryDigest 校验）");
   }
   console.log(`运行模式：${workflow.mode === "live" ? `${stageDefaults.analysis.provider} (${stageDefaults.analysis.model}) / 剧情 ${stageDefaults.fullStory.provider} ${stageDefaults.fullStory.model} / 动画 ${stageDefaults.animationPlan.provider} ${stageDefaults.animationPlan.model}` : "演示数据（配置 .env 后接入模型服务）"}`);
-  // Qwen 与 MiMo 是流式，只判空闲、不设总时长；只有非流式的 DeepSeek 有总超时。
-  console.log(`生成请求超时：连续 ${Math.round(config.qwen.streamIdleTimeoutMs / 1000)} 秒无数据（Qwen）/ 连续 ${Math.round(config.mimo.streamIdleTimeoutMs / 1000)} 秒无数据（MiMo）/ 总时长 ${Math.round(config.deepseek.requestTimeoutMs / 60000)} 分钟（DeepSeek）`);
+  // Qwen、MiMo 与 Claude 是流式，只判空闲、不设总时长；只有非流式的 DeepSeek 有总超时。
+  console.log(`生成请求超时：连续 ${Math.round(config.qwen.streamIdleTimeoutMs / 1000)} 秒无数据（Qwen）/ 连续 ${Math.round(config.mimo.streamIdleTimeoutMs / 1000)} 秒无数据（MiMo）/ 总时长 ${Math.round(config.deepseek.requestTimeoutMs / 60000)} 分钟（DeepSeek）/ 连续 ${Math.round(config.claude.streamIdleTimeoutMs / 1000)} 秒无数据（Claude）`);
 });
 
 function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {}) {
@@ -2052,12 +2057,19 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
   return withProviderTokenCaps(stageDefaultsFor(provider, config), {
     Qwen: stageDefaultsFor("Qwen", config),
     MiMo: stageDefaultsFor("MiMo", config),
-    DeepSeek: stageDefaultsFor("DeepSeek", config)
+    DeepSeek: stageDefaultsFor("DeepSeek", config),
+    Claude: stageDefaultsFor("Claude", config)
   });
 }
 
 function stageDefaultsFor(provider, config) {
-  const source = provider === "Qwen" ? config.qwen : provider === "DeepSeek" ? config.deepseek : config.mimo;
+  const source = provider === "Qwen"
+    ? config.qwen
+    : provider === "DeepSeek"
+      ? config.deepseek
+      : provider === "Claude"
+        ? config.claude
+        : config.mimo;
   return {
     analysis: stageSetting(provider, source.analysisModel || source.videoModel || source.model, source.analysisMaxCompletionTokens || source.maxCompletionTokens),
     reconstruction: stageSetting(provider, source.reconstructionModel || source.videoModel || source.model, source.reconstructionMaxCompletionTokens || source.maxCompletionTokens),
@@ -2217,7 +2229,8 @@ async function healthByProvider(clients, config) {
   const entries = await Promise.all(Object.entries({
     MiMo: { client: clients.MiMo, model: config.mimo.model, media: mediaSettingsForProvider("MiMo", config) },
     Qwen: { client: clients.Qwen, model: config.qwen.model, media: mediaSettingsForProvider("Qwen", config) },
-    DeepSeek: { client: clients.DeepSeek, model: config.deepseek.model, media: mediaSettingsForProvider("DeepSeek", config) }
+    DeepSeek: { client: clients.DeepSeek, model: config.deepseek.model, media: mediaSettingsForProvider("DeepSeek", config) },
+    Claude: { client: clients.Claude, model: config.claude.model, media: mediaSettingsForProvider("Claude", config) }
   }).map(async ([provider, value]) => {
     const health = value.client
       ? await value.client.checkHealth(value.model)
@@ -2270,7 +2283,7 @@ function compactHealth(health = {}) {
 }
 
 function mediaSettingsForProvider(provider, config) {
-  if (provider === "DeepSeek") {
+  if (provider === "DeepSeek" || provider === "Claude") {
     return {
       mediaMode: "text-only",
       nativeVideoMaxBytes: 0,

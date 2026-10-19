@@ -93,7 +93,12 @@ test("真实服务的 /api/health 暴露的阶段设置带有各家自己的上�
     }
   }
   const stages = health.modelStages;
-  assert.deepEqual(stages.variants.maxCompletionTokensByProvider, { Qwen: 65536, MiMo: 131072, DeepSeek: 32768 });
-  assert.deepEqual(stages.analysis.maxCompletionTokensByProvider, { Qwen: 16384, MiMo: 16384, DeepSeek: 32768 });
+  // Claude（2026-10-19）没配置时也有一档上限，与 DeepSeek 没配置时一样列出；数值是官方的 128K。
+  // 参考片分析那一档 Claude 用不上（只接纯文本），列出来不影响任何调用。
+  assert.deepEqual(stages.variants.maxCompletionTokensByProvider, { Qwen: 65536, MiMo: 131072, DeepSeek: 32768, Claude: 128000 });
+  assert.deepEqual(stages.analysis.maxCompletionTokensByProvider, { Qwen: 16384, MiMo: 16384, DeepSeek: 32768, Claude: 128000 });
   assert.equal(stages.storyCandidateReview.maxCompletionTokensByProvider.DeepSeek, 32768);
+  assert.equal(stages.storyCandidateReview.maxCompletionTokensByProvider.Claude, 128000);
+  assert.equal(health.providers.Claude.configured, false);
+  assert.equal(health.providers.Claude.mediaMode, "text-only");
 });
