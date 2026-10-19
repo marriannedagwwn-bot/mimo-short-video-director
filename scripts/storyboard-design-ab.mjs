@@ -75,6 +75,7 @@ function metrics(design, fullStory) {
   const beats = shots.flatMap((shot) => (Array.isArray(shot.beats) ? shot.beats : []));
   const lengths = beats.map((beat) => Number(beat.endSeconds) - Number(beat.startSeconds));
   const names = storyCharacterNames(fullStory || {});
+  const protagonist = String(fullStory?.characterBible?.protagonist?.name || names[0] || "");
   // 只作参考的表面计数：soundDesign 里出现角色名不等于写了人声，人声写没写、写得对不对靠人工逐份看。
   const beatsNamingCharacterInSound = beats.filter((beat) => names.some((name) => String(beat.soundDesign || "").includes(name))).length;
   const storyLines = new Set((fullStory?.sceneScript || []).flatMap((scene) => (scene.dialogue || []).map((row) => normalizeDialogueChars(row.line))).filter(Boolean));
@@ -92,6 +93,13 @@ function metrics(design, fullStory) {
     // 与完整剧情逐句（去标点空白后）对不上的分镜台词：锁台词时应为 0。
     dialogueNotInStory: planLines.filter((line) => !storyLines.has(line)).length,
     dialogueLines: planLines.length,
+    // 以下同样只是表面计数（2026-10-19 第二轮）：用来和手写版比镜头结构，写得对不对要逐份读。
+    closeUps: beats.filter((beat) => /特写|微距/u.test(beat.framing)).length,
+    povShots: beats.filter((beat) => /视角|主观/u.test(`${beat.framing} ${beat.camera}`)).length,
+    specialAngles: beats.filter((beat) => /低机位|贴地|俯拍|仰拍|顶拍|地板高度/u.test(`${beat.framing} ${beat.camera}`)).length,
+    movingCamera: beats.filter((beat) => /推近|拉远|后拉|跟拍|跟摇|上摇|前推|横移|推到|摇向|摇到/u.test(beat.camera)).length,
+    protagonistVoiced: beats.filter((beat) => (beat.dialogue || []).some((row) => row.speaker === protagonist)
+      || new RegExp(`${protagonist}[^，。；]{0,12}(?:叫|喊|哼|笑|「|“)`, "u").test(beat.soundDesign || "")).length,
     beatsWithDirectionWords: beats.filter((beat) => count(`${beat.framing} ${beat.camera} ${beat.visibleAction}`, DIRECTION_WORDS) > 0).length,
     continuityOutWithDirectionWords: shots.filter((shot) => count(shot.continuityOut, DIRECTION_WORDS) > 0).length,
     beatTextChars: beats.reduce((sum, beat) => sum + `${beat.framing}${beat.camera}${beat.visibleAction}${beat.soundDesign}`.length, 0)
@@ -117,10 +125,10 @@ function renderSummary({ runs, options, model, startedAt, projected }) {
   lines.push(`- 冻结输入：${options.pkg}（时长窗口 ${projected.durationWindow.min}–${projected.durationWindow.max} 秒，画风「${projected.artStyle || "无"}」，背景音乐 ${projected.backgroundMusicMode}）`);
   lines.push(`- 写稿模型：MiMo ${model}（每次只调用一次，不走重试，带与生产相同的 responseSchema）；每种写法 ${options.samples} 次`);
   lines.push(`- 旧写法：${options.oldRev} 的 src/storyboard-prompts.js；新写法：当前工作区`, "");
-  lines.push("| 写法 | 次 | 判据 | 片段 / beat | 总时长 | 最短 beat / 不到 1 秒 / 非整数 | 空镜 beat / 开场是空镜 | soundDesign 点到角色名的 beat（代理） | 对不上剧情的台词 | 含方向词的 beat（代理） | 文字量 | 耗时 |", "|---|---|---|---|---|---|---|---|---|---|---|---|");
+  lines.push("| 写法 | 次 | 判据 | 片段 / beat | 总时长 | 平均每镜 | 最短 beat / 不到 1 秒 / 非整数 | 空镜 beat / 开场是空镜 | 特写 / 视角 / 特殊机位 / 带运镜（代理） | 主角出声的 beat（代理） | soundDesign 点到角色名的 beat（代理） | 对不上剧情的台词 | 含方向词的 beat（代理） | 文字量 | 耗时 |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const run of runs) {
     const m = run.metrics || {};
-    lines.push(`| ${run.arm} | ${run.sample} | ${run.error ? `调用失败：${run.error}` : run.codes.length ? run.codes.join("、") : "通过"} | ${m.shots ?? "—"} / ${m.beats ?? "—"} | ${m.totalSeconds ?? "—"} 秒 | ${m.minBeatSeconds ?? "—"} / ${m.beatsUnder1s ?? "—"} / ${m.nonIntegerBeats ?? "—"} | ${m.emptyBeats ?? "—"} / ${m.opensOnEmptyShot === undefined ? "—" : m.opensOnEmptyShot ? "是" : "否"} | ${m.beatsNamingCharacterInSound ?? "—"}/${m.beats ?? "—"} | ${m.dialogueNotInStory ?? "—"}/${m.dialogueLines ?? "—"} | ${m.beatsWithDirectionWords ?? "—"}/${m.beats ?? "—"} | ${m.beatTextChars ?? "—"} | ${Math.round(run.durationMs / 1000)} 秒 |`);
+    lines.push(`| ${run.arm} | ${run.sample} | ${run.error ? `调用失败：${run.error}` : run.codes.length ? run.codes.join("、") : "通过"} | ${m.shots ?? "—"} / ${m.beats ?? "—"} | ${m.totalSeconds ?? "—"} 秒 | ${m.beats ? (m.totalSeconds / m.beats).toFixed(1) : "—"} 秒 | ${m.minBeatSeconds ?? "—"} / ${m.beatsUnder1s ?? "—"} / ${m.nonIntegerBeats ?? "—"} | ${m.emptyBeats ?? "—"} / ${m.opensOnEmptyShot === undefined ? "—" : m.opensOnEmptyShot ? "是" : "否"} | ${m.closeUps ?? "—"} / ${m.povShots ?? "—"} / ${m.specialAngles ?? "—"} / ${m.movingCamera ?? "—"} | ${m.protagonistVoiced ?? "—"}/${m.beats ?? "—"} | ${m.beatsNamingCharacterInSound ?? "—"}/${m.beats ?? "—"} | ${m.dialogueNotInStory ?? "—"}/${m.dialogueLines ?? "—"} | ${m.beatsWithDirectionWords ?? "—"}/${m.beats ?? "—"} | ${m.beatTextChars ?? "—"} | ${Math.round(run.durationMs / 1000)} 秒 |`);
   }
   lines.push("", "逐片段原文在 calls.jsonl（design 字段）。带「代理」的列只是表面计数，写得对不对要逐份读。");
   return lines.join("\n");

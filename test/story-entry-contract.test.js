@@ -184,7 +184,8 @@ test("视频入口的完整剧情、角色边界与 4.0 分镜提示词与改动
   // 2026-10-13 有意修改：设计提示词第 6、8 条补了进出画面方向与相邻片段方向接续，按同一份输入重算。
   // 2026-10-19 有意修改：导演方法换成分镜写法（空镜、先局部后脸、动作拆三镜、人声写进 soundDesign），
   // 第 3、6、7 条与协议里 soundDesign 的说明跟着改，按同一份输入重算（docs/storyboard-style-2026-10-19.md）。
-  assert.equal(sha(storyboardPrompt({ durationWindow: { min: 51, max: 69 }, targetDurationSeconds: 60, targetAspectRatio: "16:9", fullStory: {} })), "3565860cc23c2b67a06c3cf723c88859c1d18d7c6f3e0401808899461f036baa");
+  // 同日第二轮：节奏改成一般 2–3 秒，加一镜一事（小动作合并、每段最多 4 镜）、镜头大多固定、关键接触特写、视角镜头、主角叫声与一段写法示范，重算。
+  assert.equal(sha(storyboardPrompt({ durationWindow: { min: 51, max: 69 }, targetDurationSeconds: 60, targetAspectRatio: "16:9", fullStory: {} })), "ab5861919306ad77548a0e52b12975d46bcb5e013609c3f245543e8ca2806cc4");
 });
 
 test("角色边界的共用判断规则仍逐字出现在视频版提示词里（防漂移）", () => {

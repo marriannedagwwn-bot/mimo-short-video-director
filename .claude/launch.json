@@ -46,6 +46,15 @@
         "cd /Users/qinfen/Documents/mimo-director/mimo-short-video-director && MINIMAX_API_KEY= KLING_V3_API_KEY= KLING_API_KEY= KLING_ACCESS_KEY= KLING_SECRET_KEY= VIDEO_HTTP_API_KEY= PORT=4194 WORKFLOW_PRODUCTION_STATE_DIR=runtime/demo-runs/film-check exec /Users/qinfen/.local/bin/node --env-file=/Users/qinfen/Documents/mimo-director/mimo-short-video-director/.env --use-env-proxy server.js"
       ],
       "port": 4194
+    },
+    {
+      "name": "film-check-h3",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/qinfen/Documents/mimo-director/mimo-short-video-director && KLING_V3_API_KEY= KLING_API_KEY= KLING_ACCESS_KEY= KLING_SECRET_KEY= VIDEO_HTTP_API_KEY= PORT=4196 WORKFLOW_PRODUCTION_STATE_DIR=runtime/demo-runs/film-check-h3 exec /Users/qinfen/.local/bin/node --env-file=/Users/qinfen/Documents/mimo-director/mimo-short-video-director/.env --use-env-proxy server.js"
+      ],
+      "port": 4196
     }
   ]
 }
