@@ -3,8 +3,7 @@ export function storyboardRevisionPrompt(context) {
   const old=revisionPrompt(context);
   const marker='## 先判断问题，再修改';
   if (!old.includes(marker)) throw new Error('Revision prompt anchor changed');
-  return old.replace('这次固定两份既有分镜中的当前一份，修稿不重做全片。','这次固定一份既有分镜，修稿不重做全片。')
-    .replace(marker, `${marker}
+  return old.replace(marker, `${marker}
 - 先区分用户明确的修订要求与外部编辑意见。用户明确选择了某种表达时，在已有授权内由你亲自设计并写出具体修订，不能以“原稿也有另一种合理解释”为由忽略该选择。其余编辑意见仍按下述保守尺度独立判断；意见中的示例不是必须照抄的答案。
 - 让修改落在观众真正能看见、听见的表演里。只改剧情作用、情绪目标、验收条件或解释性说明，不等于修好了实际场面。不要让正文写一种动作、说明和验收又要求另一种动作。
 - 需要澄清动作依据时，从已有空间、物件和人物状态中自行选择足以读懂的可见信息；不机械增加一次失败或另起一段情节。检查人物是否能从当前站位完成所写动作。
