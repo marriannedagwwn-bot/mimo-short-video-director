@@ -1,8 +1,10 @@
 import {
   ANALYSIS_OUTPUT_TOKEN_DEFAULT,
+  CLAUDE_OUTPUT_TOKEN_CEILING,
   MIMO_OUTPUT_TOKEN_CEILING,
   QWEN_OUTPUT_TOKEN_CEILING
 } from "./output-token-ceilings.js";
+import { CLAUDE_DEFAULT_BASE_URL, CLAUDE_DEFAULT_MODEL } from "./claude-client.js";
 import fs from "node:fs";
 import path from "node:path";
 import { parseModelPrices } from "./token-usage.js";
@@ -123,6 +125,16 @@ export function getConfig() {
   const deepseekThinking = ["disabled", "enabled"].includes(requestedDeepseekThinking) ? requestedDeepseekThinking : "disabled";
   const deepseekTemperature = clampNumber(process.env.DEEPSEEK_TEMPERATURE, 1, 0, 2);
   const deepseekTopP = clampNumber(process.env.DEEPSEEK_TOP_P, 1, 0, 1);
+  // Claude（2026-10-19）：纯文本、流式，只判空闲。环境变量一律用 CLAUDE_API_ 前缀：
+  // Claude Code 会给它启动的进程导出 CLAUDE_EFFORT、ANTHROPIC_BASE_URL（也可能有 ANTHROPIC_API_KEY），
+  // 从 Claude 会话里启动的服务（.claude/launch.json 的预览服务）会继承它们。所以这里不读
+  // ANTHROPIC_* / CLAUDE_EFFORT，免得把 Claude Code 自己的密钥或设置当成本工作流的配置。
+  // CLAUDE_API_EFFORT 由客户端按官方五档校验，写错时启动就报错。
+  const claudeApiKey = process.env.CLAUDE_API_KEY?.trim() || "";
+  const claudeBaseUrl = process.env.CLAUDE_API_BASE_URL?.trim() || CLAUDE_DEFAULT_BASE_URL;
+  const claudeMaxCompletionTokens = Math.round(clampNumber(process.env.CLAUDE_API_MAX_COMPLETION_TOKENS, CLAUDE_OUTPUT_TOKEN_CEILING, 1024, CLAUDE_OUTPUT_TOKEN_CEILING));
+  const claudeJsonRetryAttempts = Math.round(clampNumber(process.env.CLAUDE_API_JSON_RETRY_ATTEMPTS, 2, 0, 3));
+  const claudeStreamIdleTimeoutMs = Math.round(clampNumber(process.env.CLAUDE_API_STREAM_IDLE_TIMEOUT_MS, 120000, 10000, 900000));
   const fullStoryV2CastConfirmationTtlMs = Math.round(clampNumber(
     process.env.FULL_STORY_V2_CAST_CONFIRMATION_TTL_MS,
     30 * 60 * 1000,
@@ -250,6 +262,16 @@ export function getConfig() {
       jsonMode: process.env.DEEPSEEK_JSON_MODE !== "false",
       enabled: Boolean(deepseekBaseUrl && deepseekApiKey)
     },
+    claude: {
+      baseUrl: claudeBaseUrl,
+      apiKey: claudeApiKey,
+      model: process.env.CLAUDE_API_MODEL?.trim() || CLAUDE_DEFAULT_MODEL,
+      maxCompletionTokens: claudeMaxCompletionTokens,
+      effort: process.env.CLAUDE_API_EFFORT?.trim() || "",
+      jsonRetryAttempts: claudeJsonRetryAttempts,
+      streamIdleTimeoutMs: claudeStreamIdleTimeoutMs,
+      enabled: Boolean(claudeBaseUrl && claudeApiKey)
+    },
     fullStoryV2Pipeline: {
       enabled: process.env.FULL_STORY_V2_PIPELINE_ENABLED === "true",
       environment: process.env.FULL_STORY_V2_ENVIRONMENT?.trim()
@@ -276,14 +298,14 @@ export function getConfig() {
 // 默认阶段路由用哪一家：未设置 DEFAULT_LLM_PROVIDER 时保持原行为（配了 Qwen 就用 Qwen，否则 MiMo）。
 // 显式指定的那家没配置就直接启动失败，不静默换成另一家（CLAUDE.md §2.7「不得静默切换 provider」）。
 // 两家都没配置时是演示模式，没有真实 provider 可选，偏好不生效，沿用原来的 MiMo 标签。
-// DeepSeek 不能做默认：默认路由覆盖需要图片/视频输入的阶段，而 DeepSeek 只接纯文本。
+// DeepSeek 与 Claude 不能做默认：默认路由覆盖需要图片/视频输入的阶段，而它们在本工作流只接纯文本。
 export function resolveDefaultLlmProvider(config) {
   const fallback = config.qwen?.enabled ? "Qwen" : "MiMo";
   const requested = String(config.defaultLlmProvider || "").trim();
   if (!requested) return fallback;
   const provider = normalizeCompilerProvider(requested);
   if (provider !== "Qwen" && provider !== "MiMo") {
-    throw new Error(`DEFAULT_LLM_PROVIDER 只能是 Qwen 或 MiMo，收到「${requested}」。DeepSeek 不接受图片和视频输入，不能作为默认 provider。`);
+    throw new Error(`DEFAULT_LLM_PROVIDER 只能是 Qwen 或 MiMo，收到「${requested}」。DeepSeek 与 Claude 在本工作流只接纯文本，不能作为默认 provider。`);
   }
   if (!config.qwen?.enabled && !config.mimo?.enabled) return fallback;
   if (!config[provider === "Qwen" ? "qwen" : "mimo"]?.enabled) {
@@ -321,5 +343,6 @@ function normalizeCompilerProvider(value) {
   if (provider.toLowerCase() === "qwen") return "Qwen";
   if (provider.toLowerCase() === "mimo") return "MiMo";
   if (provider.toLowerCase() === "deepseek") return "DeepSeek";
+  if (["claude", "anthropic"].includes(provider.toLowerCase())) return "Claude";
   return provider;
 }

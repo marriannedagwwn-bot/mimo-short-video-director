@@ -203,6 +203,35 @@ test("供应商别名归一，未知名字不猜", () => {
   assert.equal(normalizeProviderName("dashscope"), "Qwen");
   assert.equal(normalizeProviderName("  "), "");
   assert.equal(normalizeProviderName("openai"), "");
+  assert.equal(normalizeProviderName("claude"), "Claude");
+  assert.equal(normalizeProviderName("Anthropic"), "Claude");
+});
+
+test("Claude 码表按官方 error.type 查，每一类都有；可重试与否跟随官方原文", () => {
+  // https://platform.claude.com/docs/en/api/errors（2026-10-19 核对）
+  const expected = {
+    invalid_request_error: [400, false],
+    authentication_error: [401, false],
+    billing_error: [402, false],
+    permission_error: [403, false],
+    not_found_error: [404, false],
+    conflict_error: [409, false],
+    request_too_large: [413, false],
+    rate_limit_error: [429, true],
+    api_error: [500, true],
+    timeout_error: [504, true],
+    overloaded_error: [529, true]
+  };
+  for (const [type, [status, retryable]] of Object.entries(expected)) {
+    const byCode = describeProviderError({ provider: "Claude", httpStatus: status, payload: { type: "error", error: { type, message: "m" }, request_id: "req_x" } });
+    assert.equal(byCode.code, type);
+    assert.equal(byCode.matchedBy, "code");
+    assert.equal(byCode.retryable, retryable, type);
+    assert.equal(byCode.requestId, "req_x");
+    const byStatus = describeProviderError({ provider: "Claude", httpStatus: status, payload: "not json" });
+    assert.equal(byStatus.matchedBy, "httpStatus");
+    assert.equal(byStatus.title, byCode.title, type);
+  }
 });
 
 test("视频错误出口带上 providerError，且供应商原文逐字保留在 detail 里", () => {

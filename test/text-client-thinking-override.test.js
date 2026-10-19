@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { MimoClient, buildRequestBody } from "../src/mimo-client.js";
 import { QwenClient, buildQwenRequestBody } from "../src/qwen-client.js";
 import { DeepSeekClient, buildDeepSeekRequestBody } from "../src/deepseek-client.js";
+import { ClaudeClient, buildClaudeRequestBody } from "../src/claude-client.js";
 import { SYSTEM_PROMPT } from "../src/prompts.js";
 import { sseResponse } from "./helpers/sse-response.js";
+import { anthropicSseResponse } from "./helpers/anthropic-sse-response.js";
 
 // 单次请求的 thinking 开关（2026-10-09）：只有导演助手会传，用来在全局开着思考时
 // 让一条对话几秒出结果。不传时三家客户端的请求体必须与改动前逐字节相同——
@@ -110,8 +112,37 @@ test("thinking 只接受 enabled / disabled，别的值直接报错", () => {
   for (const build of [
     () => buildRequestBody({ model: "m" }, { prompt: "p" }, { thinking: "off" }),
     () => buildQwenRequestBody({ model: "qwen3.7-max" }, { prompt: "p" }, { thinking: false }),
-    () => buildDeepSeekRequestBody({ model: "deepseek-v4-flash" }, { prompt: "p" }, { thinking: "none" })
+    () => buildDeepSeekRequestBody({ model: "deepseek-v4-flash" }, { prompt: "p" }, { thinking: "none" }),
+    () => buildClaudeRequestBody({ model: "claude-sonnet-5-5" }, { prompt: "p" }, { thinking: "off" })
   ]) assert.throws(build, TypeError);
+});
+
+test("Claude（2026-10-19）：不传 thinking 时发自适应思考；单次关闭只改 thinking，按型号映射", () => {
+  const config = { model: "claude-sonnet-5-5", maxCompletionTokens: 128000 };
+  const base = buildClaudeRequestBody(config, { prompt: "p" });
+  assert.equal(JSON.stringify(base), JSON.stringify({
+    model: "claude-sonnet-5-5", max_tokens: 128000, system: SYSTEM_PROMPT,
+    messages: [{ role: "user", content: "p" }], stream: true,
+    thinking: { type: "adaptive", display: "summarized" }
+  }));
+  assert.deepEqual(buildClaudeRequestBody(config, { prompt: "p" }, { thinking: "enabled" }), base);
+  const off = buildClaudeRequestBody(config, { prompt: "p" }, { thinking: "disabled" });
+  assert.deepEqual(off, { ...base, thinking: { type: "between_tools" } });
+  assert.throws(
+    () => buildClaudeRequestBody({ model: "claude-opus-5-5" }, { prompt: "p" }, { thinking: "disabled" }),
+    /不能关闭思考/u
+  );
+});
+
+test("Claude 的 requestCompletion 同样把 thinking 一路传进请求体", async (t) => {
+  const bodies = [];
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    bodies.push(JSON.parse(options.body));
+    return anthropicSseResponse({ content: '{"a":"x"}' });
+  });
+  await new ClaudeClient({ baseUrl: "https://claude.invalid", apiKey: "k", model: "claude-haiku-5-5" })
+    .requestCompletion({ prompt: "p", thinking: "disabled" });
+  assert.deepEqual(bodies[0].thinking, { type: "disabled" });
 });
 
 test("requestCompletion 把 thinking 一路传进请求体（协调器走的就是这条路）", async (t) => {

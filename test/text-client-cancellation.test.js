@@ -4,18 +4,43 @@ import { createServer } from "node:http";
 import { MimoClient } from "../src/mimo-client.js";
 import { DeepSeekClient } from "../src/deepseek-client.js";
 import { QwenClient } from "../src/qwen-client.js";
+import { ClaudeClient } from "../src/claude-client.js";
 import { runWithDurableTaskContext } from "../src/durable-task-context.js";
 import { ModelCallCoordinator, classifyAttemptError } from "../src/model-call-coordinator.js";
 import { readModelUsageFromError, runWithUsageAccounting } from "../src/token-usage.js";
 import { sseChunks } from "./helpers/sse-response.js";
+import { anthropicSseEvents } from "./helpers/anthropic-sse-response.js";
 import { AnimationPromptCapture } from "../src/animation-prompt-capture.js";
 
 const USAGE = { prompt_tokens: 101, completion_tokens: 37, total_tokens: 138 };
 const CONTENT = '{"ok":true}';
+// 流式客户端各自格式的夹具：OpenAI 兼容（MiMo / 千问）与 Anthropic（Claude）。测试意图一样，只是传输格式不同。
+const OPENAI_SSE = {
+  complete: () => sseChunks({ content: CONTENT, usage: USAGE }),
+  firstChunk: () => sseChunks({ content: "partial" }).split("\n\n")[0] + "\n\n",
+  firstChunkEvents: 1,
+  unfinished: () => sseChunks({ content: "partial", usage: USAGE, finishReason: null }).replace("data: [DONE]\n\n", ""),
+  keepAlive: () => `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "想" } }] })}\n\n`,
+  truncated: (usage) => sseChunks({ reasoningContent: "推理", content: "", finishReason: "length", usage }),
+  filtered: (text, usage) => sseChunks({ reasoningContent: "推理", content: text, finishReason: "content_filter", usage })
+};
+const claudeEvents = (options) => anthropicSseEvents({ inputTokens: USAGE.prompt_tokens, outputTokens: USAGE.completion_tokens, ...options });
+const ANTHROPIC_SSE = {
+  complete: () => claudeEvents({ content: CONTENT }),
+  // message_start、content_block_start 与第一段正文，一共 3 个事件、7 字正文。
+  firstChunk: () => claudeEvents({ content: "partial", ping: false }).split("\n\n").slice(0, 3).join("\n\n") + "\n\n",
+  firstChunkEvents: 3,
+  unfinished: () => claudeEvents({ content: "partial", omitStop: true }),
+  // Claude 推理期间可能只有 ping；SDK 不把 ping 交给调用方，空闲计时必须照样被它刷新。
+  keepAlive: () => 'event: ping\ndata: {"type": "ping"}\n\n',
+  truncated: (usage) => claudeEvents({ thinking: "推理", content: "", stopReason: "max_tokens", inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens }),
+  filtered: (text, usage) => claudeEvents({ thinking: "推理", content: text, stopReason: "refusal", inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens })
+};
 const CLIENTS = [
-  { provider: "MiMo", Client: MimoClient, model: "mimo-v2.5", streaming: true },
+  { provider: "MiMo", Client: MimoClient, model: "mimo-v2.5", streaming: true, sse: OPENAI_SSE },
   { provider: "DeepSeek", Client: DeepSeekClient, model: "deepseek-v4-flash" },
-  { provider: "Qwen", Client: QwenClient, model: "qwen3.7-max", streaming: true }
+  { provider: "Qwen", Client: QwenClient, model: "qwen3.7-max", streaming: true, sse: OPENAI_SSE },
+  { provider: "Claude", Client: ClaudeClient, model: "claude-opus-5-5", streaming: true, sse: ANTHROPIC_SSE, config: { apiKey: "fixture-key" } }
 ];
 
 function controlReason(code = "DIRECTOR_RUN_TERMINATED") {
@@ -25,7 +50,7 @@ function controlReason(code = "DIRECTOR_RUN_TERMINATED") {
 function complete(response, spec) {
   response.setHeader("content-type", spec.streaming ? "text/event-stream" : "application/json");
   response.end(spec.streaming
-    ? sseChunks({ content: CONTENT, usage: USAGE })
+    ? spec.sse.complete()
     : JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: CONTENT } }], usage: USAGE }));
 }
 
@@ -56,7 +81,7 @@ async function fixture(t, handler) {
 function clientFor(spec, baseUrl, overrides = {}) {
   // Longer than each cancellation test's deadline: waiting for the ordinary
   // provider timeout and merely relabelling its error must never pass.
-  return new spec.Client({ baseUrl, model: spec.model, requestTimeoutMs: 60_000, jsonRetryAttempts: 2, ...overrides });
+  return new spec.Client({ baseUrl, model: spec.model, requestTimeoutMs: 60_000, jsonRetryAttempts: 2, ...spec.config, ...overrides });
 }
 
 function start(client, context, operation = () => client.generateJson({ prompt: "Local cancellation fixture", strictJson: true })) {
@@ -118,7 +143,7 @@ for (const spec of CLIENTS) {
     const readStarted = Promise.withResolvers();
     const server = await fixture(t, (_request, response) => {
       response.writeHead(200, { "content-type": spec.streaming ? "text/event-stream" : "application/json" });
-      response.write(spec.streaming ? sseChunks({ content: "partial" }).split("\n\n")[0] + "\n\n" : '{"choices":[');
+      response.write(spec.streaming ? spec.sse.firstChunk() : '{"choices":[');
     });
     const controller = new AbortController();
     const reason = controlReason("DIRECTOR_STAGE_PAUSED");
@@ -239,7 +264,7 @@ for (const spec of CLIENTS.filter((item) => item.streaming)) {
     const server = await fixture(t, (_request, response) => {
       response.writeHead(200, { "content-type": "text/event-stream" });
       // Send real, structured provider usage without ending the HTTP response.
-      response.write(sseChunks({ content: CONTENT, usage: USAGE }));
+      response.write(spec.sse.complete());
     });
     await assert.rejects(start(clientFor(spec, server.baseUrl), {
       signal: controller.signal,
@@ -261,7 +286,7 @@ for (const spec of CLIENTS.filter((item) => item.streaming)) {
         responseToInterrupt = response;
         response.writeHead(200, { "content-type": "text/event-stream" });
         // Keep the helper's valid usage event but omit both completion markers.
-        response.write(sseChunks({ content: "partial", usage: USAGE, finishReason: null }).replace("data: [DONE]\n\n", ""));
+        response.write(spec.sse.unfinished());
       });
       await assert.rejects(start(clientFor(spec, server.baseUrl), {
         heartbeat() {
@@ -282,12 +307,12 @@ for (const spec of CLIENTS.filter((item) => item.streaming)) {
   test(`${spec.provider}: a stream that goes silent mid-body fails as a retryable idle timeout`, { timeout: 5_000 }, async (t) => {
     const server = await fixture(t, (_request, response) => {
       response.writeHead(200, { "content-type": "text/event-stream" });
-      response.write(sseChunks({ content: "partial" }).split("\n\n")[0] + "\n\n");
+      response.write(spec.sse.firstChunk());
     });
     const controller = new AbortController();
     await assert.rejects(start(clientFor(spec, server.baseUrl, { streamIdleTimeoutMs: 60 }), { signal: controller.signal }), (error) => {
       assert.equal(error.code, "MODEL_STREAM_IDLE_TIMEOUT");
-      assert.match(error.message, /连续 \d+ 秒没有收到任何数据.*7 字正文、1 个数据块/u);
+      assert.match(error.message, new RegExp(`连续 \\d+ 秒没有收到任何数据.*7 字正文、${spec.sse.firstChunkEvents} 个数据块`, "u"));
       const issue = classifyAttemptError(error);
       assert.equal(issue.category, "transport");
       assert.equal(issue.retryable, true);
@@ -305,11 +330,11 @@ for (const spec of CLIENTS.filter((item) => item.streaming)) {
       const timer = setInterval(() => {
         sent += 1;
         if (sent <= 8) {
-          response.write(`data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "想" } }] })}\n\n`);
+          response.write(spec.sse.keepAlive());
           return;
         }
         clearInterval(timer);
-        response.end(sseChunks({ content: CONTENT, usage: USAGE }));
+        response.end(spec.sse.complete());
       }, 40);
     });
     const client = clientFor(spec, server.baseUrl, { streamIdleTimeoutMs: 150, requestTimeoutMs: 100 });
@@ -323,7 +348,7 @@ for (const spec of CLIENTS.filter((item) => item.streaming)) {
     const reason = controlReason();
     const server = await fixture(t, (_request, response) => {
       response.writeHead(200, { "content-type": "text/event-stream" });
-      response.write(sseChunks({ content: "partial" }).split("\n\n")[0] + "\n\n");
+      response.write(spec.sse.firstChunk());
     });
     const client = clientFor(spec, server.baseUrl);
     await assert.rejects(start(client, {
@@ -344,7 +369,7 @@ for (const spec of CLIENTS) {
     const server = await fixture(t, (_request, response) => {
       response.setHeader("content-type", spec.streaming ? "text/event-stream" : "application/json");
       response.end(spec.streaming
-        ? sseChunks({ reasoningContent: "推理", content: "", finishReason: "length", usage })
+        ? spec.sse.truncated(usage)
         : JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "" } }], usage }));
     });
     await assert.rejects(start(clientFor(spec, server.baseUrl), {}, () => (
@@ -369,7 +394,7 @@ for (const spec of CLIENTS) {
     const server = await fixture(t, (_request, response) => {
       response.setHeader("content-type", spec.streaming ? "text/event-stream" : "application/json");
       response.end(spec.streaming
-        ? sseChunks({ reasoningContent: "推理", content: refusal, finishReason: "content_filter", usage })
+        ? spec.sse.filtered(refusal, usage)
         : JSON.stringify({ choices: [{ finish_reason: "content_filter", message: { content: refusal } }], usage }));
     });
     // jsonRetryAttempts 保持 2：审核拦截不得进入 JSON 内容重试循环。

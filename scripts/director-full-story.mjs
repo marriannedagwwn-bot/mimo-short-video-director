@@ -24,6 +24,7 @@ import { initializeSystemProxy } from "../src/system-proxy.js";
 import { MimoClient } from "../src/mimo-client.js";
 import { QwenClient } from "../src/qwen-client.js";
 import { DeepSeekClient } from "../src/deepseek-client.js";
+import { ClaudeClient } from "../src/claude-client.js";
 import { WorkflowService } from "../src/workflow.js";
 import { loadOrCreatePersistentKey } from "../src/persistent-key.js";
 import { runWithUsageAccounting, readModelUsageFromError } from "../src/token-usage.js";
@@ -612,7 +613,8 @@ async function main() {
     const clients = options.demo ? {} : {
       MiMo: config.mimo.enabled ? new MimoClient(config.mimo) : null,
       Qwen: config.qwen.enabled ? new QwenClient(config.qwen) : null,
-      DeepSeek: config.deepseek.enabled ? new DeepSeekClient(config.deepseek) : null
+      DeepSeek: config.deepseek.enabled ? new DeepSeekClient(config.deepseek) : null,
+      Claude: config.claude.enabled ? new ClaudeClient(config.claude) : null
     };
     const { source, stageDefaults, media } = await loadStageDefaults(options, config);
     const keyDirectory = config.workflowRuntime.productionStateDirectory;

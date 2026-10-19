@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { MimoClient } from "../src/mimo-client.js";
 import { DeepSeekClient } from "../src/deepseek-client.js";
 import { QwenClient } from "../src/qwen-client.js";
+import { ClaudeClient } from "../src/claude-client.js";
 import { runWithDurableTaskContext } from "../src/durable-task-context.js";
 import { readModelUsageFromError, runWithUsageAccounting } from "../src/token-usage.js";
 import { sseResponse } from "./helpers/sse-response.js";
+import { anthropicSseResponse } from "./helpers/anthropic-sse-response.js";
 
 const USAGE = { prompt_tokens: 101, completion_tokens: 37, total_tokens: 138 };
 const CONTENT = '{"ok":true}';
@@ -21,7 +23,9 @@ function jsonResponse() {
 const CLIENTS = [
   { provider: "Qwen", Client: QwenClient, model: "qwen3.7-max", streaming: true, response: () => sseResponse({ content: CONTENT, usage: USAGE }) },
   { provider: "MiMo", Client: MimoClient, model: "mimo-v2.5", streaming: true, response: () => sseResponse({ content: CONTENT, usage: USAGE }) },
-  { provider: "DeepSeek", Client: DeepSeekClient, model: "deepseek-v4-flash", response: jsonResponse }
+  { provider: "DeepSeek", Client: DeepSeekClient, model: "deepseek-v4-flash", response: jsonResponse },
+  // Anthropic 的用量分在 message_start（输入）与 message_delta（累计输出）里，合起来同样是 101 + 37。
+  { provider: "Claude", Client: ClaudeClient, model: "claude-opus-5-5", streaming: true, response: () => anthropicSseResponse({ content: CONTENT, inputTokens: 101, outputTokens: 37 }) }
 ];
 
 function conflictError() {

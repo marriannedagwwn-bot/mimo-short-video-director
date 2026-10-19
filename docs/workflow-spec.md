@@ -340,6 +340,7 @@ Plan 不含 `videoPrompt`。用户点某一镜的生成按钮时才创建 `shotV
 - MiMo 多模态视觉输入必须在文本指令之前；用户消息末尾保留 `/no_think`，请求体同时设置 `thinking={"type":"disabled"}`。
 - 默认阶段路由保持 Qwen 优先、MiMo 回退。DeepSeek 只在页面按阶段显式选择后参与创意简报、主题变体、Legacy Full Story 与 Animation Plan；默认模型为 `deepseek-v4-flash`，`deepseek-v4-pro` 为显式可选项，不静默回退。
 - DeepSeek 请求只发送字符串文本，使用官方 OpenAI 兼容 `/chat/completions`、`max_tokens`、`thinking` 和 JSON Output。参考片分析、脚本还原、视觉规则、人物图修正属于媒体输入阶段，前端不提供 DeepSeek，服务端也会在 provider 调用前拒绝绕过请求。
+- Claude（Anthropic，2026-10-19）与 DeepSeek 同一档：只在页面按阶段显式选择后参与纯文本阶段，不能做默认 provider，媒体输入阶段同样由前端、服务端与客户端三道关拒绝。请求走官方 SDK 的 Messages API（流式、只判空闲、SDK 不重试），只发 `model`、`max_tokens`、`system`、一条 user 消息与 `thinking`（默认自适应思考，可选 `output_config.effort`）；不发 temperature、结构化输出 Schema 与 server-side fallbacks。`stop_reason` 的 `max_tokens` / `model_context_window_exceeded` 按截断处理，`refusal` 按内容审核拦截处理且不重试。环境变量只读 `CLAUDE_API_*`。详见 `docs/claude-provider-2026-10-19.md`。
 - 当前实现通过小米 OpenAI 兼容 `/chat/completions` 接口连接 MiMo V2.5；原生视频使用 `video_url`，并携带 `fps=2`、`media_resolution=default`。Qwen 通过阿里云 Model Studio OpenAI 兼容 `/chat/completions` 接收文本、图片或视频。未配置服务时使用明确标注的演示模式。
 
 ## 4. 当前边界

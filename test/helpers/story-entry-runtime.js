@@ -125,7 +125,7 @@ export async function createStoryEntryRuntime({ storyMode = "fullStoryText" } = 
       QWEN_BASE_URL: `http://127.0.0.1:${providerPort}/v1`,
       QWEN_API_KEY: "protocol-fixture-key",
       QWEN_ANIMATION_MODEL: "qwen3.7-max",
-      MIMO_BASE_URL: "", DEFAULT_LLM_PROVIDER: "", DEEPSEEK_API_KEY: "", MINIMAX_API_KEY: "",
+      MIMO_BASE_URL: "", DEFAULT_LLM_PROVIDER: "", DEEPSEEK_API_KEY: "", CLAUDE_API_KEY: "", MINIMAX_API_KEY: "",
       JIMENG_BASE_URL: `http://127.0.0.1:${providerPort}/api/v3`, JIMENG_API_KEY: "protocol-fixture-key", SEEDANCE_API_KEY: "", KLING_API_KEY: "", KLING_ACCESS_KEY: "", KLING_SECRET_KEY: "",
       WORKFLOW_PRODUCTION_STATE_DIR: path.join(root, "state"),
       WORKFLOW_GROUNDING_KEY: workflow.groundingKey.toString("hex"),

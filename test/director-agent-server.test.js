@@ -171,6 +171,20 @@ test("千问的 GLM-5.3 关不掉思考：在调用之前说清楚，不发请�
   assert.equal(requests.length, 0);
 });
 
+test("Claude 的 Opus 5.5 / Fable 5.1 关不掉思考：同样在调用之前说清楚；Sonnet 5.5 能关，照常调用", async () => {
+  for (const model of ["claude-opus-5-5", "claude-fable-5-1"]) {
+    const { workflow, requests } = liveWorkflow([], { provider: "Claude", model });
+    await assert.rejects(() => workflow.createDirectorAgentTurn(turnInput()), (error) => error instanceof InputError
+      && /导演助手每次都要关闭思考/u.test(error.message) && error.message.includes(model));
+    assert.equal(requests.length, 0);
+  }
+  const { workflow, requests } = liveWorkflow([{ actionKey: "none", reply: "好的。" }], { provider: "Claude", model: "claude-sonnet-5-5" });
+  const { turn } = await workflow.createDirectorAgentTurn(turnInput());
+  assert.equal(turn.actionKey, "none");
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].thinking, "disabled");
+});
+
 test("源码登记：路由、阶段默认值、阶段兜底与名称、侧车 scope、模型设置表都用同一个名字", async () => {
   const server = await fs.readFile(new URL("../server.js", import.meta.url), "utf8");
   assert.match(server, /"\/api\/director-agent\/turn": \(body\) => workflow\.createDirectorAgentTurn\(body\),/u);

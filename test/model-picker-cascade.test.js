@@ -58,10 +58,30 @@ test("providers with a single series, or only one model per series, stay a flat 
     "doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615"
   ])), false);
   assert.equal(app.modelSeriesNeedsCascade(app.modelSeriesGroups("MiniMax", "shotVideo", ["MiniMax-H3"])), false);
+  // Claude（2026-10-19）：四个型号各自一个系列，仍是平铺列表。
+  const claude = app.modelSeriesGroups("Claude", "fullStory", ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]);
+  // 系列按目录顺序排：Sonnet 5.5 是默认型号，排第一。
+  assert.deepEqual(plain(claude).map((group) => group.label), ["Claude Sonnet 5.5", "Claude Opus 5.5", "Claude Haiku 5.5", "Claude Fable 5.1"]);
+  assert.equal(app.modelSeriesNeedsCascade(claude), false);
   // 每个系列都只有一个型号。原来用可灵 V3 / V2.1 举例，可灵已于 2026-10-11 删除。
   const oneEach = app.modelSeriesGroups("Qwen", "analysis", ["qwen-vl-max-latest", "qwen-omni-turbo-latest"]);
   assert.deepEqual(plain(oneEach).map((group) => group.label), ["Qwen VL", "Qwen Omni"]);
   assert.equal(app.modelSeriesNeedsCascade(oneEach), false);
+});
+
+test("Claude 与 DeepSeek 一样只列在纯文本阶段；纯文本阶段只给登记的四个型号，第一个是默认", async () => {
+  const app = await loadAppUi();
+  app.state.providers = { Claude: { configured: true, defaultModel: "claude-sonnet-5-5", modelIds: [] } };
+  assert.ok(app.availableModelProviders().includes("Claude"));
+  assert.equal(app.availableModelProviders()[0], "Claude", "配置了的供应商排在前面");
+  for (const stage of ["analysis", "reconstruction", "visualGuardrails", "characterReference"]) {
+    assert.equal(app.providerAllowedForStage("Claude", stage), false, stage);
+    assert.deepEqual(plain(app.modelOptionsForStage(stage, "Claude")), [], stage);
+  }
+  assert.equal(app.providerAllowedForStage("Claude", "fullStory"), true);
+  assert.equal(app.providerAllowedForStage("DeepSeek", "analysis"), false);
+  assert.deepEqual(plain(app.modelOptionsForStage("fullStory", "Claude")),
+    ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1"]);
 });
 
 test("every stage renders a picker trigger showing the selected model next to the hidden select", async () => {

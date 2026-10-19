@@ -245,14 +245,14 @@ token 数直接来自各家响应的 `usage`，不产生额外调用。金额需
 
 ```dotenv
 # 模型ID=输入单价/输出单价，逗号分隔，单位「元 / 百万 token」
-# 需要覆盖三家文本模型实际用到的全部型号，缺一个那个模型就只报 token 不报金额
+# 需要覆盖各家文本模型实际用到的全部型号，缺一个那个模型就只报 token 不报金额
 MODEL_PRICE_CNY_PER_MILLION=qwen3.7-max=12/36,qwen3.7-plus=2/8,mimo-v2.5=1/2,mimo-v2.5-pro=3/6,deepseek-v4-flash=0.5/1.5
 ```
 
 模型 ID 必须与实际使用的 `*_MODEL` 完全一致：Qwen 是 `qwen3.7-max`/`qwen3.7-plus`，MiMo 是 `mimo-v2.5`/`mimo-v2.5-pro`，DeepSeek 是 `deepseek-v4-flash`/`deepseek-v4-pro`。分隔符半角 `,` 与全角 `，`、`、` 都接受，价格分隔 `/` 与全角 `／` 都接受。未配置单价的模型只显示 token 数、不显示金额——宁可不报，也不报一个可能过期的错数字。单条格式错误只会被跳过并告警，不影响启动。
-该统计只覆盖文本模型（Qwen / MiMo / DeepSeek）；即梦图片与镜头视频按张、按秒计费，暂不纳入。
+该统计只覆盖文本模型（Qwen / MiMo / DeepSeek / Claude）；即梦图片与镜头视频按张、按秒计费，暂不纳入。
 
-配置 `QWEN_API_KEY` 后，只要 Qwen 可用，参考片分析、脚本还原、创意简报、视觉规则、主题变体、完整剧情、分镜和人物参考修正默认都会调用 Qwen 对应阶段模型；未配置 Qwen 时自动回退为 MiMo。要在两家都配置时默认用 MiMo，设 `DEFAULT_LLM_PROVIDER=MiMo`（只接受 `Qwen` / `MiMo`，DeepSeek 不支持图片和视频输入，不能做默认）；指定的那家没配置时服务直接启动失败、不静默换成另一家，两家都没配置的演示模式不受影响。`qwen3.7-max` 是纯文本阶段的默认选择；会传入视频或图片的参考片分析、脚本还原、视觉规则和人物参考修正默认使用 `qwen3.7-plus`，也可以改成账号可用的 Qwen-VL / Qwen-Omni 模型。页面顶部“模型设置”按钮可以按阶段临时切换 provider 和模型名（模型是级联菜单：先选系列，例如 MiMo V2.5 / MiMo V2.6，悬停或点击后在右侧展开该系列的型号；只有一个系列的 provider 直接平铺），覆盖值会随之后所有生成请求发送给后端，也会写入导出的生产包。角色图片仍由已配置的即梦图片服务生成。
+配置 `QWEN_API_KEY` 后，只要 Qwen 可用，参考片分析、脚本还原、创意简报、视觉规则、主题变体、完整剧情、分镜和人物参考修正默认都会调用 Qwen 对应阶段模型；未配置 Qwen 时自动回退为 MiMo。要在两家都配置时默认用 MiMo，设 `DEFAULT_LLM_PROVIDER=MiMo`（只接受 `Qwen` / `MiMo`，DeepSeek 与 Claude 在本工作流只接纯文本，不能做默认）；指定的那家没配置时服务直接启动失败、不静默换成另一家，两家都没配置的演示模式不受影响。`qwen3.7-max` 是纯文本阶段的默认选择；会传入视频或图片的参考片分析、脚本还原、视觉规则和人物参考修正默认使用 `qwen3.7-plus`，也可以改成账号可用的 Qwen-VL / Qwen-Omni 模型。页面顶部“模型设置”按钮可以按阶段临时切换 provider 和模型名（模型是级联菜单：先选系列，例如 MiMo V2.5 / MiMo V2.6，悬停或点击后在右侧展开该系列的型号；只有一个系列的 provider 直接平铺），覆盖值会随之后所有生成请求发送给后端，也会写入导出的生产包。角色图片仍由已配置的即梦图片服务生成。
 
 ## Animation Plan 4.0 自主分镜
 
@@ -283,9 +283,36 @@ DEEPSEEK_JSON_MODE=true
 
 可选模型为 `deepseek-v4-flash` 和 `deepseek-v4-pro`，页面默认把 Flash 放在首位，Pro 保留为显式对照选择，不做静默回退。客户端使用官方 OpenAI 兼容 `/chat/completions` 与 JSON Output；空内容、非法 JSON、鉴权失败和媒体输入都会明确失败或按既有受控次数重试，不会返回默认值掩盖错误。接口依据：[DeepSeek V4 模型与价格](https://api-docs.deepseek.com/quick_start/pricing)、[Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/) 和 [JSON Output](https://api-docs.deepseek.com/guides/json_mode/)。模型设置中的阶段标题会显示“视觉模型”或“文本模型”标签，图片和视频生成阶段保留独立标签。
 
-Qwen 与 MiMo 走流式传输，只判空闲、不设总时长：连续 `QWEN_STREAM_IDLE_TIMEOUT_MS` / `MIMO_STREAM_IDLE_TIMEOUT_MS`（默认 120000）没有收到任何数据（含推理内容）才中断，数据一直在来就不会被掐；`QWEN_REQUEST_TIMEOUT_MS` / `MIMO_REQUEST_TIMEOUT_MS` 对它们不再生效。非流式的 DeepSeek 仍按 `DEEPSEEK_REQUEST_TIMEOUT_MS=900000` 设单次请求总超时。`SERVER_REQUEST_TIMEOUT_MS=900000` 同步限制服务端接收请求体的时间；它不替代模型请求超时设置。
+Qwen、MiMo 与 Claude 走流式传输，只判空闲、不设总时长：连续 `QWEN_STREAM_IDLE_TIMEOUT_MS` / `MIMO_STREAM_IDLE_TIMEOUT_MS` / `CLAUDE_API_STREAM_IDLE_TIMEOUT_MS`（默认 120000）没有收到任何数据（含推理内容）才中断，数据一直在来就不会被掐；`QWEN_REQUEST_TIMEOUT_MS` / `MIMO_REQUEST_TIMEOUT_MS` 对它们不再生效。非流式的 DeepSeek 仍按 `DEEPSEEK_REQUEST_TIMEOUT_MS=900000` 设单次请求总超时。`SERVER_REQUEST_TIMEOUT_MS=900000` 同步限制服务端接收请求体的时间；它不替代模型请求超时设置。
 
 Qwen 视频解析遵循阿里云百炼 OpenAI 兼容 Chat Completions 的多模态格式：小视频优先以 `video_url` 发送 Base64 Data URL，大于 `QWEN_NATIVE_VIDEO_MAX_MB` 或 `QWEN_MEDIA_MODE=frames` 时改用关键帧图片列表 `video`。阿里云文档说明 `video_url` 支持公网 URL 或 Base64 Data URL，`fps` 可控制抽帧频率；同时 Base64 视频编码后需小于 10MB，所以默认把原始视频上限设为 7MB。Qwen-VL 只能理解视频视觉信息；如果需要理解视频里的音频，需要选择支持音频的 Qwen-Omni 模型。接口依据：[MiMo V2.5 模型说明](https://mimo.mi.com/docs/en-US/product/introduction/models#MiMo-V25)、[MiMo OpenAI API](https://mimo.mi.com/docs/en-US/api/chat/openai-api)、[MiMo 视频理解文档](https://mimo.mi.com/docs/en-US/use-cases/video-understanding)、[阿里云百炼 OpenAI Chat 兼容文档](https://www.alibabacloud.com/help/zh/model-studio/qwen-api-via-openai-chat-completions) 和 [阿里云图像与视频理解文档](https://help.aliyun.com/zh/model-studio/vision)。
+
+## 接入 Claude 纯文本模型（2026-10-19）
+
+Claude（Anthropic）与 DeepSeek 同一档：只作为显式可选的纯文本 provider，配了密钥也不接管 Qwen/MiMo 的默认阶段路由，也不能设成 `DEFAULT_LLM_PROVIDER`。页面「模型设置」只在纯文本阶段列出 Claude；参考片分析、脚本还原、视觉规则和人物图修正要看图或视频，前端不列、服务端在调用前拒绝、客户端也拒绝媒体输入。客户端走官方 SDK `@anthropic-ai/sdk`（版本锁死），不用 Anthropic 的 OpenAI 兼容端点。
+
+```dotenv
+CLAUDE_API_KEY=你的 Anthropic API key
+# 以下都是可选项，写出来的是默认值
+CLAUDE_API_BASE_URL=https://api.anthropic.com
+CLAUDE_API_MODEL=claude-sonnet-5-5
+CLAUDE_API_MAX_COMPLETION_TOKENS=128000
+CLAUDE_API_STREAM_IDLE_TIMEOUT_MS=120000
+CLAUDE_API_JSON_RETRY_ATTEMPTS=2
+# 不写就用型号自己的默认值；可选 low / medium / high / xhigh / max，写错时启动直接报错
+# CLAUDE_API_EFFORT=high
+```
+
+环境变量一律用 `CLAUDE_API_` 前缀，**不读 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `CLAUDE_EFFORT`**：Claude Code 会给它启动的进程导出后两个（也可能有第一个），从 Claude 会话里启动的服务会继承它们，读了就会把 Claude Code 自己的设置甚至密钥当成本工作流的配置。
+
+可选型号是 `claude-sonnet-5-5`（默认，按《鲸鱼风筝》剧本的分镜对比定的）、`claude-opus-5-5`、`claude-haiku-5-5` 和 `claude-fable-5-1`。几项行为：
+
+- 流式传输，只判空闲、不设总时长，ping 也算有数据。SDK 自带的重试关掉，重试只由各阶段已有的预算决定。
+- 默认开着自适应思考，推理字数会显示在进度里，深浅用 `CLAUDE_API_EFFORT` 调。导演助手每次都要关思考：Opus 5.5 与 Fable 5.1 关不掉，选了它们时导演助手在调用前就报错；Sonnet 5.5 与 Haiku 5.5 可以。
+- 输出被上限截断报截断；被 Anthropic 的安全分类器拒绝（`stop_reason: refusal`）报内容审核拦截，带上拒绝类别，**不会自动重试，也不会自动换别的模型**（Anthropic 的 server-side fallback 没有开）。
+- Claude 没有 `json_object` 模式；JSON 靠提示词与本地严格校验，第一期不发结构化输出 Schema。整段正文恰好被一对 ```json 代码块包着时，客户端先去掉这层包裹（Haiku 常这样写）；前后多了说明文字之类的仍然判失败。
+
+费用：Claude 按美元计价，要显示 ¥ 就在 `MODEL_PRICE_CNY_PER_MILLION` 里按型号自己换算后填写。Fable 5.1 要求组织开着 30 天数据保留，零数据保留（ZDR）的组织调用会 400。决定、映射与验证记录见 [docs/claude-provider-2026-10-19.md](docs/claude-provider-2026-10-19.md)。
 
 ## 接入即梦 5.0 Lite 角色参考图生成
 
@@ -377,7 +404,7 @@ MINIMAX_VIDEO_POLL_TIMEOUT_MS=900000
 
 调用失败时，服务端会按各家官方错误码表把响应翻译成可执行的中文提示，而不是把原始 JSON 甩给用户。例如 MiniMax 的 `insufficient_balance_error (1008)` 会显示成「账户余额不足（MiniMax insufficient_balance_error）。前往 MiniMax 控制台充值后重试。」
 
-覆盖 MiniMax（v2 的 `error.type`、消息尾部括号数字码与旧接口 `base_resp.status_code`）、火山方舟 Ark（Seedance 视频与即梦图片共用公共错误码）、阿里云百炼 DashScope（Qwen）、DeepSeek 与小米 MiMo 五家，码表出处与核对日期写在 `src/provider-error-codes.js` 文件头。
+覆盖 MiniMax（v2 的 `error.type`、消息尾部括号数字码与旧接口 `base_resp.status_code`）、火山方舟 Ark（Seedance 视频与即梦图片共用公共错误码）、阿里云百炼 DashScope（Qwen）、DeepSeek、小米 MiMo 与 Claude（按 `error.type`）六家，码表出处与核对日期写在 `src/provider-error-codes.js` 文件头。
 
 供应商原文逐字保留在响应的 `detail` 字段，解释放在新增的 `providerError` 里——排查时随时可取。匹配不到官方码时不做任何解释，直接回退原文展示。
 
@@ -391,6 +418,7 @@ MINIMAX_VIDEO_POLL_TIMEOUT_MS=900000
 - `src/mimo-client.js`：MiMo OpenAI 兼容适配器。
 - `src/qwen-client.js`：Qwen OpenAI 兼容多模态适配器。
 - `src/deepseek-client.js`：DeepSeek-V4 OpenAI 兼容纯文本适配器。
+- `src/claude-client.js`：Claude（Anthropic 官方 SDK）纯文本适配器。
 - `src/character-boundary.js`：全局角色边界的上游摘要、签发和验签。
 - `src/production-lineage.js`、`src/production-state-store.js`：确定性内容摘要、revision 依赖图、stale 传播、Run/Stage/Artifact/Checkpoint 持久化和 v3 测试包签发/导入。
 - `src/workflow.js`：完整创意工作流编排。
