@@ -124,6 +124,16 @@ test("写稿提示词：开头一句不变，写明切镜头与镜头不切换�
   assert.equal(text.includes("画风："), false, "没有画风时不出现画风规则");
 });
 
+// 2026-10-19：分镜把角色人声写进 soundDesign，空镜 beat 没有角色；写稿要把人声点名写出来，空镜不补人。
+test("写稿提示词：soundDesign 里的角色人声点名写出，空镜不补人物，无配乐时人声照常保留", () => {
+  const text = shotPrompt({ shot: {}, visualDesign: {}, characterReferences: [], targetAspectRatio: "16:9", visualStyle: "动画",
+    characterExpressionRules: "", backgroundMusicMode: "none", target: TARGET });
+  for (const phrase of ["soundDesign 里点名了角色的人声", "写成“[登记名]发出……”", "把叫声原样放进中文双引号",
+    "画面里没有角色的 beat（空镜）只写景物、光线和声音，不补人物", "（对白和角色人声照常保留）"]) {
+    assert.ok(text.includes(phrase), phrase);
+  }
+});
+
 test("重试提示词：单镜写稿用自己的那份——列出全部诊断、只翻译不改分镜；截断另走一支；没有诊断退回原文", () => {
   const details = [
     { path: "/videoPrompt", code: "SHOT_PROMPT_DIALOGUE_MISSING", reason: "单镜提示词未逐字保留对白：嘎" },

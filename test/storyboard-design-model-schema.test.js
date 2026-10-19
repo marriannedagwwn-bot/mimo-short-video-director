@@ -10,6 +10,7 @@ import { storyboardInput, createStoryboardPlan, createSingleShotPrompt } from ".
 import { storyboardPrompt, storyboardPromptWithLockedDialogue, storyboardRetryPrompt, storyboardSystem } from "../src/storyboard-prompts.js";
 import { fullStoryCharacterRegistryInput, mockFullStoryCharacterRegistry } from "../src/full-story-character-registry.js";
 import { catalog } from "../src/storyboard-editorial-utils.js";
+import { storyboardReviewPrompt } from "../src/storyboard-review.js";
 import { NO_BACKGROUND_MUSIC_SENTENCE } from "../src/validation.js";
 import { WorkflowService } from "../src/workflow.js";
 import { storyboardShotCharacterNames } from "../public/storyboard-plan.js";
@@ -147,6 +148,32 @@ test("设计提示词第 6 条要求写清进出画面与移动方向、压缩�
   // 锁台词版只换第 2 条那一句，方向要求原样保留。
   const locked = storyboardPromptWithLockedDialogue(projected);
   assert.ok(locked.includes(rule6) && locked.includes(rule8));
+});
+
+// 2026-10-19：导演方法换成分镜写法；原来关于剧情忠实、执行关系、对白前提与 visualDesign 的约束必须还在。
+test("设计提示词用分镜写法：一镜一 beat、空镜、先局部后脸、动作拆三镜、人声写进 soundDesign，锁台词版同样生效", async () => {
+  const { projected } = await fixture();
+  const prompt = storyboardPrompt(projected);
+  for (const phrase of ["这些写法是工具，不是配额", "一个镜头写成一个 beat", "每个 beat 至少 1 秒，起止都用整数秒", "不写 1 秒以下的快切",
+    "空镜 2–3 秒，这个 beat 的 characters 为空", "先局部，后脸", "大动作拆成起、中、落三个镜头", "切点放在动作进行到一半的时候",
+    "出画后让空画面再停约 1 秒才切", "角色不说词的人声写进 soundDesign，点名是谁发出", "接触那一刻一声短促的闷哼",
+    "这些人声和叫声不是台词：写在 soundDesign，不写进 dialogue；对白不可改的时候也照样可以加", "这种提前只在同一个片段内部跨镜头，不跨片段",
+    "外观设计不授予新能力", "不能构图里仍在远处却已操作道具", "对白保留说话动机、指代对象、所回答的问题和信息前提", "designedDetails 只列新增外观",
+    "前面的分镜写法是工具，不是配额", "局部可以先于脸出现，但要让观众很快认出是谁的", "角色不说词的人声（点名谁发出）"]) {
+    assert.ok(prompt.includes(phrase), phrase);
+  }
+  assert.equal(prompt.includes("没有镜头、运镜或大动作配额"), false);
+  const locked = storyboardPromptWithLockedDialogue(projected);
+  assert.ok(locked.includes("对白不可改：Full Story 的每句台词都来自用户故事原文"));
+  assert.ok(locked.includes("对白不可改的时候也照样可以加"));
+});
+
+test("审阅不把新写法里的空镜、留空、先局部后脸与人声当错误", () => {
+  const prompt = storyboardReviewPrompt({ input: {}, plan: {} });
+  for (const phrase of ["空镜头", "人物出画后的留空", "先给局部再给脸的镜头", "soundDesign 里的角色人声"]) {
+    assert.ok(prompt.includes(phrase), phrase);
+  }
+  assert.ok(prompt.startsWith("你是分镜修稿编辑。"), "测试替身靠开头一句认出审阅");
 });
 
 test("片段数由模型自己决定，不锁 shotPlan 条数", async () => {

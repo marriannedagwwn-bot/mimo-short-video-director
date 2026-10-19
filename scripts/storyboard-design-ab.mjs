@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// 4.0 分镜设计提示词新旧对比（2026-10-13）：只调用 storyboardDesign 这一步。
+// 4.0 分镜设计提示词新旧对比：只调用 storyboardDesign 这一步。
 //
 // 冻结输入取自一份已签发的 3.1 测试包（完整剧情、角色边界与原分镜的制作参数），用 storyboardInput
 // 按生产同一口径投影；「粘贴完整故事」的包用锁台词版提示词，与生产 createStoryboardPlan 相同。
-// 旧写法 = 现提示词去掉 2026-10-13 补的两段（第 6 条的进出画面方向、第 8 条的相邻片段方向接续），
-// 启动时用 golden 测试的同一份输入核对：去掉后的哈希必须等于改动前的值。
+// 旧写法 = 指定提交（--old-rev）里的 src/storyboard-prompts.js，用 git show 取出来临时加载；
+// 新写法 = 当前工作区。2026-10-13 的方向规则对比用 --old-rev cbc407e 可以复现。
 // 每次只调用一次、不走重试；判据用生产的 ensureStoryboardDesign。不建 Run、不写 Artifact，包文件只读。
 //
 // 用法：
@@ -12,12 +12,14 @@
 // 选项：
 //   --samples <n>       每种写法跑几次，默认 2
 //   --arms old,new      跑哪几种写法，默认两种
+//   --old-rev <提交>    旧写法取自哪个提交，默认 4b9bc03（2026-10-19 分镜写法替换之前）
 //   --concurrency <n>   同时进行的调用数，默认 4
 //   --out <dir>         输出目录，默认 reports/storyboard-design-ab-<日期>
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-import { createHash } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadEnv, getConfig } from "../src/config.js";
 import { initializeSystemProxy } from "../src/system-proxy.js";
 import { MimoClient } from "../src/mimo-client.js";
@@ -25,30 +27,26 @@ import { ModelCallCoordinator } from "../src/model-call-coordinator.js";
 import { storyboardPrompt, storyboardPromptWithLockedDialogue, storyboardSystem } from "../src/storyboard-prompts.js";
 import { storyboardInput } from "../src/storyboard-workflow.js";
 import { ensureStoryboardDesign } from "../src/storyboard-contract.js";
+import { storyCharacterNames } from "../src/full-story-character-registry.js";
+import { normalizeDialogueChars } from "../src/validation.js";
 import { STORYBOARD_DESIGN_MODEL_SCHEMA_NAME, storyboardDesignModelSchema } from "../src/contracts/storyboard-design-model-schema.js";
 import { STORY_MODE_FULL_TEXT } from "../public/story-entry.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const DEFAULT_OLD_REV = "4b9bc03";
 
-// ---- 旧写法：去掉 2026-10-13 补进第 6、8 条的两段 ----
-const RULE6_ADDED = "角色进出画面或在画面里移动时，写清从画面哪一侧进来、朝哪一侧或哪个位置去、停在哪里；几个人一起跑或一前一后追赶，写清谁在前、谁在后、朝画面哪一侧跑——不写方向，视频模型会自己定，前后镜头常常接反。来回追赶、绕圈这类反复的走位，按 beat 的秒数压缩成观众一眼看得清的一段路线（例如追着横穿画面一次），不要求几秒里跑好几圈。";
-const RULE8_NEW_TAIL = "不冒充已生成素材的观察结果；片段结束时还在移动的人，写明他在画面哪一侧、正朝哪个方向移动。相邻片段的画面方向要接得上：上一片段的人朝画面右侧跑出，下一片段就从画面左侧进来、继续朝右；朝画面左侧跑出，下一片段就从画面右侧进来、继续朝左。一起逃跑的人从同一侧进来，追赶的一方跟在他们后面、从同一侧出现，不会出现在他们前方。上一片段结束时人还在移动，下一片段的 transitionIn 写明他们从画面哪一侧进来；换到对面机位让方向反过来时，在 camera 里写明。";
-const RULE8_OLD_TAIL = "不冒充已生成素材的观察结果。";
-const GOLDEN_INPUT = { durationWindow: { min: 51, max: 69 }, targetDurationSeconds: 60, targetAspectRatio: "16:9", fullStory: {} };
-const GOLDEN_BEFORE = "e7428f562be38b85e6f45758f657d2b775737b4393598bd411eba580d123ef8f";
-
-function withoutDirectionRules(prompt) {
-  if (!prompt.includes(RULE6_ADDED) || !prompt.includes(RULE8_NEW_TAIL)) throw new Error("现提示词里找不到 2026-10-13 补的两段，旧写法还原不了");
-  return prompt.replace(RULE6_ADDED, "").replace(RULE8_NEW_TAIL, RULE8_OLD_TAIL);
-}
-
-function assertOldPromptMatchesBefore() {
-  const sha = createHash("sha256").update(withoutDirectionRules(storyboardPrompt(GOLDEN_INPUT))).digest("hex");
-  if (sha !== GOLDEN_BEFORE) throw new Error(`旧写法还原后与改动前的提示词不一致（${sha}）`);
+// 旧提示词模块里的相对 import 改成指向当前工作区的绝对路径（那两个模块这次没改）。
+async function loadOldPrompts(rev) {
+  const source = execFileSync("git", ["show", `${rev}:src/storyboard-prompts.js`], { cwd: projectRoot, encoding: "utf8" });
+  const rewritten = source.replace(/from "\.\/([^"]+)"/gu, (_, file) => `from "${pathToFileURL(path.join(projectRoot, "src", file)).href}"`);
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "storyboard-old-prompts-"));
+  const file = path.join(dir, "storyboard-prompts.mjs");
+  await fs.writeFile(file, rewritten);
+  return import(pathToFileURL(file).href);
 }
 
 function parseArgs(argv) {
-  const options = { env: "", pkg: "", samples: 2, arms: ["old", "new"], concurrency: 4, out: "" };
+  const options = { env: "", pkg: "", samples: 2, arms: ["old", "new"], oldRev: DEFAULT_OLD_REV, concurrency: 4, out: "" };
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i];
     const value = argv[i + 1];
@@ -58,6 +56,7 @@ function parseArgs(argv) {
     else if (key === "--arms") { options.arms = String(value || "").split(",").map((item) => item.trim()).filter(Boolean); i += 1; }
     else if (key === "--concurrency") { options.concurrency = Number(value); i += 1; }
     else if (key === "--out") { options.out = value; i += 1; }
+    else if (key === "--old-rev") { options.oldRev = value; i += 1; }
     else throw new Error(`不认识的参数：${key}`);
   }
   if (!options.env || !options.pkg) throw new Error("需要 --env 与 --package");
@@ -71,16 +70,31 @@ function parseArgs(argv) {
 const DIRECTION_WORDS = /画面(?:左|右)(?:侧|边)?|从(?:画面)?(?:左|右)(?:侧|边)?|朝(?:画面)?(?:左|右)|向(?:画面)?(?:左|右)|入画|出画/gu;
 const count = (text, pattern) => (String(text || "").match(pattern) || []).length;
 
-function metrics(design) {
+function metrics(design, fullStory) {
   const shots = Array.isArray(design?.shotPlan) ? design.shotPlan : [];
   const beats = shots.flatMap((shot) => (Array.isArray(shot.beats) ? shot.beats : []));
+  const lengths = beats.map((beat) => Number(beat.endSeconds) - Number(beat.startSeconds));
+  const names = storyCharacterNames(fullStory || {});
+  // 只作参考的表面计数：soundDesign 里出现角色名不等于写了人声，人声写没写、写得对不对靠人工逐份看。
+  const beatsNamingCharacterInSound = beats.filter((beat) => names.some((name) => String(beat.soundDesign || "").includes(name))).length;
+  const storyLines = new Set((fullStory?.sceneScript || []).flatMap((scene) => (scene.dialogue || []).map((row) => normalizeDialogueChars(row.line))).filter(Boolean));
+  const planLines = beats.flatMap((beat) => (Array.isArray(beat.dialogue) ? beat.dialogue : []).map((row) => normalizeDialogueChars(row.text))).filter(Boolean);
   return {
     shots: shots.length,
     beats: beats.length,
     totalSeconds: shots.reduce((sum, shot) => sum + (Number(shot.durationSeconds) || 0), 0),
+    minBeatSeconds: lengths.length ? Math.min(...lengths) : 0,
+    beatsUnder1s: lengths.filter((length) => length < 1).length,
+    nonIntegerBeats: beats.filter((beat) => !Number.isInteger(Number(beat.startSeconds)) || !Number.isInteger(Number(beat.endSeconds))).length,
+    emptyBeats: beats.filter((beat) => Array.isArray(beat.characters) && beat.characters.length === 0).length,
+    opensOnEmptyShot: Boolean(shots[0]?.beats?.[0] && shots[0].beats[0].characters?.length === 0),
+    beatsNamingCharacterInSound,
+    // 与完整剧情逐句（去标点空白后）对不上的分镜台词：锁台词时应为 0。
+    dialogueNotInStory: planLines.filter((line) => !storyLines.has(line)).length,
+    dialogueLines: planLines.length,
     beatsWithDirectionWords: beats.filter((beat) => count(`${beat.framing} ${beat.camera} ${beat.visibleAction}`, DIRECTION_WORDS) > 0).length,
     continuityOutWithDirectionWords: shots.filter((shot) => count(shot.continuityOut, DIRECTION_WORDS) > 0).length,
-    beatTextChars: beats.reduce((sum, beat) => sum + `${beat.framing}${beat.camera}${beat.visibleAction}`.length, 0)
+    beatTextChars: beats.reduce((sum, beat) => sum + `${beat.framing}${beat.camera}${beat.visibleAction}${beat.soundDesign}`.length, 0)
   };
 }
 
@@ -102,19 +116,18 @@ function renderSummary({ runs, options, model, startedAt, projected }) {
   lines.push(`- 时间：${startedAt}`);
   lines.push(`- 冻结输入：${options.pkg}（时长窗口 ${projected.durationWindow.min}–${projected.durationWindow.max} 秒，画风「${projected.artStyle || "无"}」，背景音乐 ${projected.backgroundMusicMode}）`);
   lines.push(`- 写稿模型：MiMo ${model}（每次只调用一次，不走重试，带与生产相同的 responseSchema）；每种写法 ${options.samples} 次`);
-  lines.push(`- 旧写法：现提示词去掉 2026-10-13 补的两段（启动时已核对与改动前的哈希一致）；新写法：当前工作区`, "");
-  lines.push("| 写法 | 次 | 判据 | 片段 / beat | 总时长 | 含方向词的 beat（代理） | continuityOut 含方向词（代理） | beat 文字量 | 耗时 |", "|---|---|---|---|---|---|---|---|---|");
+  lines.push(`- 旧写法：${options.oldRev} 的 src/storyboard-prompts.js；新写法：当前工作区`, "");
+  lines.push("| 写法 | 次 | 判据 | 片段 / beat | 总时长 | 最短 beat / 不到 1 秒 / 非整数 | 空镜 beat / 开场是空镜 | soundDesign 点到角色名的 beat（代理） | 对不上剧情的台词 | 含方向词的 beat（代理） | 文字量 | 耗时 |", "|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const run of runs) {
     const m = run.metrics || {};
-    lines.push(`| ${run.arm} | ${run.sample} | ${run.error ? `调用失败：${run.error}` : run.codes.length ? run.codes.join("、") : "通过"} | ${m.shots ?? "—"} / ${m.beats ?? "—"} | ${m.totalSeconds ?? "—"} 秒 | ${m.beatsWithDirectionWords ?? "—"}/${m.beats ?? "—"} | ${m.continuityOutWithDirectionWords ?? "—"}/${m.shots ?? "—"} | ${m.beatTextChars ?? "—"} | ${Math.round(run.durationMs / 1000)} 秒 |`);
+    lines.push(`| ${run.arm} | ${run.sample} | ${run.error ? `调用失败：${run.error}` : run.codes.length ? run.codes.join("、") : "通过"} | ${m.shots ?? "—"} / ${m.beats ?? "—"} | ${m.totalSeconds ?? "—"} 秒 | ${m.minBeatSeconds ?? "—"} / ${m.beatsUnder1s ?? "—"} / ${m.nonIntegerBeats ?? "—"} | ${m.emptyBeats ?? "—"} / ${m.opensOnEmptyShot === undefined ? "—" : m.opensOnEmptyShot ? "是" : "否"} | ${m.beatsNamingCharacterInSound ?? "—"}/${m.beats ?? "—"} | ${m.dialogueNotInStory ?? "—"}/${m.dialogueLines ?? "—"} | ${m.beatsWithDirectionWords ?? "—"}/${m.beats ?? "—"} | ${m.beatTextChars ?? "—"} | ${Math.round(run.durationMs / 1000)} 秒 |`);
   }
-  lines.push("", "逐片段原文在 calls.jsonl（design 字段）。");
+  lines.push("", "逐片段原文在 calls.jsonl（design 字段）。带「代理」的列只是表面计数，写得对不对要逐份读。");
   return lines.join("\n");
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  assertOldPromptMatchesBefore();
   const pkg = JSON.parse(await fs.readFile(path.resolve(options.pkg), "utf8"));
   const plan = pkg.animationPlan;
   // 角色边界的签名在导出时已经验过；这里只读，按生产同一口径投影。
@@ -126,8 +139,12 @@ async function main() {
   });
   if (JSON.stringify(projected.characterRegistry) !== JSON.stringify(plan.characterRegistry)) throw new Error("投影出的角色表与原分镜不一致");
   const dialogueLocked = pkg.storySource?.storyMode === STORY_MODE_FULL_TEXT;
-  const newPrompt = (dialogueLocked ? storyboardPromptWithLockedDialogue : storyboardPrompt)(projected);
-  const prompts = { new: newPrompt, old: withoutDirectionRules(newPrompt) };
+  const old = await loadOldPrompts(options.oldRev);
+  const prompts = {
+    new: (dialogueLocked ? storyboardPromptWithLockedDialogue : storyboardPrompt)(projected),
+    old: (dialogueLocked ? old.storyboardPromptWithLockedDialogue : old.storyboardPrompt)(projected)
+  };
+  if (prompts.new === prompts.old) throw new Error(`当前工作区与 ${options.oldRev} 的提示词相同，没有可比的`);
 
   loadEnv(path.resolve(options.env));
   const systemProxy = await initializeSystemProxy();
@@ -162,7 +179,7 @@ async function main() {
           const details = Array.isArray(error?.details) && error.details.length ? error.details : [{ code: error?.code || error?.name || "INVALID" }];
           codes = details.map((item) => item.code || "INVALID");
         }
-        const run = { ...job, durationMs: Date.now() - startedMs, attempt, codes, metrics: metrics(design), design };
+        const run = { ...job, durationMs: Date.now() - startedMs, attempt, codes, metrics: metrics(design, pkg.fullStory), design };
         process.stdout.write(`${job.arm} #${job.sample}：${codes.length ? codes.join("、") : "过判据"}，${run.metrics.shots} 段 ${run.metrics.totalSeconds} 秒，${Math.round(run.durationMs / 1000)}s\n`);
         return run;
       } catch (error) {
