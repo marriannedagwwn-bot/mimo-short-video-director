@@ -185,7 +185,9 @@ test("视频入口的完整剧情、角色边界与 4.0 分镜提示词与改动
   // 2026-10-19 有意修改：导演方法换成分镜写法（空镜、先局部后脸、动作拆三镜、人声写进 soundDesign），
   // 第 3、6、7 条与协议里 soundDesign 的说明跟着改，按同一份输入重算（docs/storyboard-style-2026-10-19.md）。
   // 同日第二轮：节奏改成一般 2–3 秒，加一镜一事（小动作合并、每段最多 4 镜）、镜头大多固定、关键接触特写、视角镜头、主角叫声与一段写法示范，重算。
-  assert.equal(sha(storyboardPrompt({ durationWindow: { min: 51, max: 69 }, targetDurationSeconds: 60, targetAspectRatio: "16:9", fullStory: {} })), "ab5861919306ad77548a0e52b12975d46bcb5e013609c3f245543e8ca2806cc4");
+  // 2026-10-20 有意修改：分镜写法换成《天使降临》全集版（节奏、开场与收尾、同构图重复、揭底无声、对话主镜头、真心话、人声位置、
+  // 不放人声的地方、第二段写法示范），只动 directorGuidance，按同一份输入重算（docs/storyboard-style-full-series-2026-10-20.md）。
+  assert.equal(sha(storyboardPrompt({ durationWindow: { min: 51, max: 69 }, targetDurationSeconds: 60, targetAspectRatio: "16:9", fullStory: {} })), "e4b20d4bcdf38f1ee4fed352af723789669af9c1f71b04acf6963fc4d64e3242");
 });
 
 test("角色边界的共用判断规则仍逐字出现在视频版提示词里（防漂移）", () => {

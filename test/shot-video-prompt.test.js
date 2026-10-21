@@ -134,6 +134,16 @@ test("写稿提示词：soundDesign 里的角色人声点名写出，空镜不�
   }
 });
 
+// 2026-10-20：分镜按全集写法会写「无人声」的 beat、与前面同一构图的重复镜头和背景换图案这类画面效果，写稿照写、不补人声。
+test("写稿提示词：写明无人声的 beat 不补人声，同一构图照那一镜写，画面效果照 visibleAction 写", () => {
+  const text = shotPrompt({ shot: {}, visualDesign: {}, characterReferences: [], targetAspectRatio: "16:9", visualStyle: "动画",
+    characterExpressionRules: "", backgroundMusicMode: "none", target: TARGET });
+  for (const phrase of ["soundDesign 写了「无人声」的 beat，不写任何角色人声", "camera 写了与前面某个片段的镜头同一构图的，照那一镜的景别与机位写",
+    "背景换成角色的图案、头顶冒出符号、溶镜这类画面效果，照 visibleAction 写"]) {
+    assert.ok(text.includes(phrase), phrase);
+  }
+});
+
 test("重试提示词：单镜写稿用自己的那份——列出全部诊断、只翻译不改分镜；截断另走一支；没有诊断退回原文", () => {
   const details = [
     { path: "/videoPrompt", code: "SHOT_PROMPT_DIALOGUE_MISSING", reason: "单镜提示词未逐字保留对白：嘎" },

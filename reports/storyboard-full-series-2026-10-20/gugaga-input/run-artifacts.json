@@ -1,0 +1,880 @@
+{
+ "note": "由 real-check Run（run-ab231f9d）的落盘产物拼成：角色边界 MiMo，拆镜头 Claude Sonnet 5.5（MiMo 两次结构失败后改用）。animationPlan 只放 productionStrategy 与 characterRegistry 两项，供回放脚本投影输入，不是签发的分镜。",
+ "creatorProfile": {
+  "fixedCharacter": "咕嘎：一只圆滚滚的小企鹅，黑色后背、白色肚子，两只小翅膀当手用，穿一件小衣服和一双小鞋子；认真、好奇，一看入迷就忘了手上的事；不会说人话，只会发出「咕嘎」的叫声。",
+  "vertical": "Q版二次元治愈系日常动画短片，讲过日子里的小事，几乎不用台词，靠动作、表情和拟声讲故事；面向喜欢可爱、治愈内容的年轻观众。",
+  "constraints": ""
+ },
+ "storySource": {
+  "schemaVersion": "story_source/1.0",
+  "storyMode": "fullStoryText",
+  "storyText": "午后，奶奶把一只小水壶放到咕嘎面前。\n“咕嘎，帮奶奶给檐下那几盆花浇点水。”\n“咕嘎！”\n咕嘎抱住水壶的提手，认认真真地往院子里走。壶里的水轻轻晃着，她也跟着放慢了脚步，走过门槛时，还特意把水壶抬高了一点。\n经过草地旁的石板路，她忽然停下来。\n一只蜗牛正沿着石板边缘慢慢往前爬。细细的触角伸在前面，背上的小壳随着身体一点点挪动。\n咕嘎蹲下来，歪头看了一会儿，又把水壶轻轻放到脚边。\n“咕嘎？”\n蜗牛没有停，仍然慢悠悠地往前走。\n咕嘎站起来，在它旁边迈了一个很小的步子。她觉得自己已经够慢了，低头一看，却还是走到了前面。\n她悄悄把脚收回来，重新站到蜗牛旁边。\n这一次，她只把鞋尖往前挪了一点点，然后立刻停住，低头看。\n蜗牛还在后面。\n咕嘎看看自己的脚，又看看蜗牛，索性蹲下来，不走了。\n她托着脸看。过了一会儿，换一只小翅膀托着。再过一会儿，干脆趴到旁边的草地上，把下巴搁在交叠的小翅膀上，身体顺着石板路伸开。\n蜗牛从她眼前缓缓经过。\n咕嘎的眼睛也跟着一点点转过去。\n一片树影轻轻晃过。她眨了眨眼，眼皮慢慢落下，脑袋往下一点，又赶紧抬起来。\n蜗牛还在爬。\n她看着看着，终于把脸搁稳，睡着了。\n小水壶安安静静地立在旁边。过了些时候，阳光从石板的一端，移到了另一端。\n咕嘎动动小脚，睁开眼，第一件事就是往刚才的地方看。\n石板上空空的。\n她一下撑起身体，往左看看，又往右看看，还低头瞅了瞅水壶后面。\n“咕嘎？”\n正准备站起来，她忽然瞥见自己的鞋面上，多了一个小小的壳。\n蜗牛已经爬到她脚上了。\n刚抬起一点的小脚立刻停住。咕嘎慢慢坐回去，把那只脚小心地放平，脑袋凑近，盯着鞋上的小家伙。\n她看看刚才那块石板，又看看自己的鞋，像是怎么也没想明白。\n蜗牛不紧不慢地爬着。\n咕嘎只好把腿伸好，两只小翅膀撑在身后，坐在原地等。\n等到蜗牛终于从鞋边爬回石板，她才轻轻收回脚，站起来，拍了拍衣服上沾着的草屑。\n往前走了两步，她又停住。\n小水壶还立在树荫里。\n咕嘎赶紧折回来，抱起提手。这回她没有再蹲下，只弯腰朝蜗牛看了一眼，便提着水壶往屋檐下走。\n几盆花排在墙边，等了好一会儿。\n咕嘎蹲到第一盆旁，慢慢倾斜壶身。细细的水流落进土里，她低着头，浇得很认真。"
+ },
+ "visualGuardrails": {
+  "fixedCharacterBoundary": {
+   "schemaVersion": "2.0",
+   "characterName": "咕嘎",
+   "canonicalDescription": "咕嘎是一只圆滚滚的小企鹅：黑色后背、白色肚子，两只小翅膀当作手来使用，身上穿一件小衣服，脚上穿一双小鞋子；性格认真、好奇，一看入迷就会忘记手上正在做的事；属于Q版二次元治愈系日常动画风格中的可爱小主角。",
+   "bodyForm": "圆滚滚、矮墩墩的小型企鹅体态，轮廓圆润，短小身体配两只小翅膀充当双手，整体呈Q版可爱比例。",
+   "requiredTraits": [
+    {
+     "canonicalName": "企鹅",
+     "terms": [
+      "企鹅",
+      "小企鹅",
+      "企鹅形象",
+      "企鹅宝宝"
+     ],
+     "scope": "identity",
+     "evidenceLevel": "explicit",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "一只圆滚滚的小企鹅"
+      }
+     ],
+     "reason": "用户明确指定咕嘎的身份为企鹅，后续所有内容必须保持该物种身份不变。"
+    },
+    {
+     "canonicalName": "圆滚滚的小体型",
+     "terms": [
+      "圆滚滚的小体型",
+      "圆滚滚",
+      "圆润小巧",
+      "矮墩墩",
+      "胖乎乎的小身子"
+     ],
+     "scope": "appearance",
+     "evidenceLevel": "explicit",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "一只圆滚滚的小企鹅"
+      }
+     ],
+     "reason": "体型关键词「圆滚滚」与「小」是用户明写的外观事实，必须沿用。"
+    },
+    {
+     "canonicalName": "黑色后背",
+     "terms": [
+      "黑色后背",
+      "黑色背部",
+      "黑色背羽",
+      "背部黑色"
+     ],
+     "scope": "appearance",
+     "evidenceLevel": "explicit",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "黑色后背、白色肚子"
+      }
+     ],
+     "reason": "背部颜色为用户明写的固定外观事实。"
+    },
+    {
+     "canonicalName": "白色肚子",
+     "terms": [
+      "白色肚子",
+      "白色腹部",
+      "白色肚皮",
+      "腹部白色"
+     ],
+     "scope": "appearance",
+     "evidenceLevel": "explicit",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "黑色后背、白色肚子"
+      }
+     ],
+     "reason": "腹部颜色为用户明写的固定外观事实。"
+    },
+    {
+     "canonicalName": "小翅膀当手",
+     "terms": [
+      "小翅膀当手",
+      "小翅膀",
+      "翅膀状小手",
+      "用翅膀拿东西",
+      "两只小翅膀"
+     ],
+     "scope": "appearance",
+     "evidenceLevel": "explicit",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "两只小翅膀当手用"
+      }
+     ],
+     "reason": "用户明确写明前肢是小翅膀并承担手的功能，不得改成手掌或人类手臂。"
+    },
+    {
+     "canonicalName": "小衣服",
+     "terms": [
+      "小衣服",
+      "穿着小衣服",
+      "小外套",
+      "小上衣"
+     ],
+     "scope": "appearance",
+     "evidenceLevel": "explicit",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "穿一件小衣服和一双小鞋子"
+      }
+     ],
+     "reason": "穿着小衣服是用户明写的外观事实，后续镜头必须始终可见。"
+    },
+    {
+     "canonicalName": "小鞋子",
+     "terms": [
+      "小鞋子",
+      "穿着小鞋子",
+      "小鞋",
+      "脚上的小鞋子"
+     ],
+     "scope": "appearance",
+     "evidenceLevel": "explicit",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "穿一件小衣服和一双小鞋子"
+      }
+     ],
+     "reason": "穿小鞋子是用户明写的外观事实，后续镜头必须始终可见。"
+    },
+    {
+     "canonicalName": "认真",
+     "terms": [
+      "认真",
+      "态度认真",
+      "做事认真",
+      "专注认真"
+     ],
+     "scope": "personality",
+     "evidenceLevel": "explicit",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "认真、好奇"
+      }
+     ],
+     "reason": "性格关键词为用户明写，须在表情与动作中稳定体现。"
+    },
+    {
+     "canonicalName": "好奇",
+     "terms": [
+      "好奇",
+      "好奇心强",
+      "充满好奇",
+      "好奇地打量"
+     ],
+     "scope": "personality",
+     "evidenceLevel": "explicit",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "认真、好奇"
+      }
+     ],
+     "reason": "性格关键词为用户明写，是情节驱动力，必须保留。"
+    },
+    {
+     "canonicalName": "一看入迷就忘事",
+     "terms": [
+      "一看入迷就忘事",
+      "入迷时忘记手上的事",
+      "看得入迷忘了做事",
+      "专注到忘记手边的事"
+     ],
+     "scope": "storyFunction",
+     "evidenceLevel": "explicit",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "一看入迷就忘了手上的事"
+      }
+     ],
+     "reason": "这是用户明写的核心喜剧功能与情节触发点，后续故事应保留该行为模式。"
+    }
+   ],
+   "allowedTraits": [
+    {
+     "canonicalName": "小衣服与小鞋子的款式配色",
+     "terms": [
+      "小衣服与小鞋子的款式配色",
+      "衣鞋款式可变",
+      "衣鞋配色可变",
+      "衣服样式",
+      "鞋子样式"
+     ],
+     "scope": "appearance",
+     "evidenceLevel": "explicit",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "穿一件小衣服和一双小鞋子"
+      }
+     ],
+     "reason": "用户只规定穿着小衣服和小鞋子，未规定具体款式与颜色，可按剧情选择，但含义不得改变为不穿或改穿其他类别服饰。"
+    },
+    {
+     "canonicalName": "小翅膀的动作姿态",
+     "terms": [
+      "小翅膀的动作姿态",
+      "挥动小翅膀",
+      "用翅膀捧起东西",
+      "翅膀拍打",
+      "翅膀指向某物"
+     ],
+     "scope": "storyFunction",
+     "evidenceLevel": "explicit",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "两只小翅膀当手用"
+      }
+     ],
+     "reason": "小翅膀承担手的功能，具体动作可随剧情选择，但必须始终是小翅膀而非手掌。"
+    },
+    {
+     "canonicalName": "日常小事中的探索观察情节",
+     "terms": [
+      "日常小事中的探索观察情节",
+      "观察小事物",
+      "好奇探索",
+      "专心摆弄东西",
+      "被小细节吸引"
+     ],
+     "scope": "storyFunction",
+     "evidenceLevel": "explicit",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "认真、好奇，一看入迷就忘了手上的事"
+      }
+     ],
+     "reason": "性格与行为模式支持以观察、探索、入迷为主的日常小情节，可按剧情选择具体事件。"
+    }
+   ],
+   "forbiddenTraits": [
+    {
+     "canonicalName": "非企鹅物种形态",
+     "terms": [
+      "非企鹅物种形态",
+      "人类形态",
+      "人形身体",
+      "鸭子形象",
+      "猫咪形象",
+      "狗狗形象",
+      "玩偶身体"
+     ],
+     "scope": "identity",
+     "evidenceLevel": "inferred",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "一只圆滚滚的小企鹅"
+      }
+     ],
+     "reason": "用户明确身份为企鹅，可据常识推断后续不得替换为其他物种、拟人化人类形态或非生物玩偶身体。"
+    },
+    {
+     "canonicalName": "黑白以外的羽色",
+     "terms": [
+      "黑白以外的羽色",
+      "彩色羽毛",
+      "粉色羽毛",
+      "蓝色羽毛",
+      "染色羽毛",
+      "花色羽毛"
+     ],
+     "scope": "appearance",
+     "evidenceLevel": "inferred",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "黑色后背、白色肚子"
+      }
+     ],
+     "reason": "用户只明写黑白双色配色，可据常识推断不得擅自加入其他羽色或图案改色。"
+    },
+    {
+     "canonicalName": "未授权配饰",
+     "terms": [
+      "未授权配饰",
+      "帽子",
+      "皇冠",
+      "发卡",
+      "头带",
+      "眼镜",
+      "墨镜"
+     ],
+     "scope": "appearance",
+     "evidenceLevel": "inferred",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "穿一件小衣服和一双小鞋子"
+      }
+     ],
+     "reason": "用户仅授权小衣服与小鞋子两件服饰，可据常识推断不得擅自添加头饰、眼镜等未授权配饰。"
+    },
+    {
+     "canonicalName": "人类手臂与手掌",
+     "terms": [
+      "人类手臂与手掌",
+      "人类手臂",
+      "手掌",
+      "五根手指的手",
+      "人类四肢"
+     ],
+     "scope": "appearance",
+     "evidenceLevel": "inferred",
+     "triggerEvidence": [
+      {
+       "sourcePath": "creatorProfile.fixedCharacter",
+       "evidence": "两只小翅膀当手用"
+      }
+     ],
+     "reason": "用户明确前肢是小翅膀而非人手，可据此推断不得画出人类手臂、手掌或五指结构。"
+    }
+   ],
+   "unresolvedConflicts": [],
+   "sourceDigest": "sha256:74e8c81b240499aec18a00af2cb32e627e8e64bcc45d3e929824c9e3a7326d14",
+   "boundaryDigest": "sha256:cd1a79bb02170ab4770d17cd58688e350c47cba3619f65d86b3ede38e72334de",
+   "boundarySignature": "WTcMyTLBZuDg-4CyMPmwmsSy7vwi16WfpUPovHEZ3mU"
+  },
+  "allowedPositiveTraits": [
+   {
+    "term": "企鹅",
+    "scope": "identity",
+    "reason": "用户明确指定咕嘎的身份为企鹅，后续所有内容必须保持该物种身份不变。"
+   },
+   {
+    "term": "圆滚滚的小体型",
+    "scope": "appearance",
+    "reason": "体型关键词「圆滚滚」与「小」是用户明写的外观事实，必须沿用。"
+   },
+   {
+    "term": "黑色后背",
+    "scope": "appearance",
+    "reason": "背部颜色为用户明写的固定外观事实。"
+   },
+   {
+    "term": "白色肚子",
+    "scope": "appearance",
+    "reason": "腹部颜色为用户明写的固定外观事实。"
+   },
+   {
+    "term": "小翅膀当手",
+    "scope": "appearance",
+    "reason": "用户明确写明前肢是小翅膀并承担手的功能，不得改成手掌或人类手臂。"
+   },
+   {
+    "term": "小衣服",
+    "scope": "appearance",
+    "reason": "穿着小衣服是用户明写的外观事实，后续镜头必须始终可见。"
+   },
+   {
+    "term": "小鞋子",
+    "scope": "appearance",
+    "reason": "穿小鞋子是用户明写的外观事实，后续镜头必须始终可见。"
+   },
+   {
+    "term": "认真",
+    "scope": "personality",
+    "reason": "性格关键词为用户明写，须在表情与动作中稳定体现。"
+   },
+   {
+    "term": "好奇",
+    "scope": "personality",
+    "reason": "性格关键词为用户明写，是情节驱动力，必须保留。"
+   },
+   {
+    "term": "一看入迷就忘事",
+    "scope": "storyFunction",
+    "reason": "这是用户明写的核心喜剧功能与情节触发点，后续故事应保留该行为模式。"
+   },
+   {
+    "term": "小衣服与小鞋子的款式配色",
+    "scope": "appearance",
+    "reason": "用户只规定穿着小衣服和小鞋子，未规定具体款式与颜色，可按剧情选择，但含义不得改变为不穿或改穿其他类别服饰。"
+   },
+   {
+    "term": "小翅膀的动作姿态",
+    "scope": "storyFunction",
+    "reason": "小翅膀承担手的功能，具体动作可随剧情选择，但必须始终是小翅膀而非手掌。"
+   },
+   {
+    "term": "日常小事中的探索观察情节",
+    "scope": "storyFunction",
+    "reason": "性格与行为模式支持以观察、探索、入迷为主的日常小情节，可按剧情选择具体事件。"
+   }
+  ],
+  "positivePromptBoundary": [
+   {
+    "rule": "固定角色「咕嘎」必须沿用：企鹅、圆滚滚的小体型、黑色后背、白色肚子、小翅膀当手、小衣服、小鞋子、认真、好奇、一看入迷就忘事；固定角色「咕嘎」不得具有：非企鹅物种形态、黑白以外的羽色、未授权配饰、人类手臂与手掌；该边界只约束固定角色，不套用到配角、道具、对白或声音；后续阶段不得重新推断、删除或替换固定角色事实",
+    "triggerEvidence": [
+     {
+      "sourcePath": "creatorProfile.fixedCharacter",
+      "evidence": "咕嘎：一只圆滚滚的小企鹅，黑色后背、白色肚子，两只小翅膀当手用，穿一件小衣服和一双小鞋子；认真、好奇，一看入迷就忘了手上的事；不会说人话，只会发出「咕嘎」的叫声。"
+     }
+    ],
+    "severity": "block"
+   }
+  ],
+  "sourceSimilarityRules": [],
+  "dialogueRules": [
+   {
+    "text": "咕嘎不使用人类语言对白，不出现任何人类语言台词、字幕台词或人声念白，叙事依靠动作、表情与拟声完成。",
+    "triggerEvidence": [
+     {
+      "sourcePath": "creatorProfile.fixedCharacter",
+      "evidence": "不会说人话"
+     }
+    ]
+   },
+   {
+    "text": "咕嘎的发声内容仅限「咕嘎」这一种拟声叫法，可有长短、轻重、语气变化，但不得替换成其他词汇或语句。",
+    "triggerEvidence": [
+     {
+      "sourcePath": "creatorProfile.fixedCharacter",
+      "evidence": "只会发出「咕嘎」的叫声"
+     }
+    ]
+   },
+   {
+    "text": "全片几乎不用台词，靠动作、表情和拟声讲故事；如出现发声，仅作情绪点缀，不承担叙事解释功能。",
+    "triggerEvidence": [
+     {
+      "sourcePath": "creatorProfile.verticalTrack",
+      "evidence": "几乎不用台词，靠动作、表情和拟声讲故事"
+     }
+    ]
+   }
+  ],
+  "stageInstructions": {
+   "themeVariants": "本阶段为角色边界审查，不生成主题变体；后续主题变体须限定在日常小事与治愈生活场景内，不得为咕嘎新增身份、外观、身体特征或语言能力。",
+   "fullStory": "本阶段不生成完整剧情；后续剧情须完整沿用本边界的固定角色事实，围绕咕嘎认真、好奇、入迷忘事的行为模式展开日常小事，结局保持治愈基调。",
+   "animationPlan": "正向提示词服从角色边界；渲染负面提示词由 animationPlan 按当前镜头和明确证据逐镜生成。"
+  },
+  "rationale": "本次仅对固定角色「咕嘎」做一次语义判断：用户原文完整给出物种身份（小企鹅）、体型（圆滚滚的小体型）、黑白配色（黑色后背、白色肚子）、前肢形态与功能（两只小翅膀当手用）、服饰（小衣服、小鞋子）、性格（认真、好奇）与行为功能（一看入迷就忘了手上的事），这些均标为 explicit 并进入 requiredTraits。说话能力（不说话、只发「咕嘎」声）属于发声与说话方式，按规则只写入 dialogueRules，不写入任何 trait 数组。小衣服与小鞋子的具体款式颜色、小翅膀的具体动作、日常情节事件未被指定，作为 allowedTraits 允许后续按剧情选择。企鹅物种以外的形态、黑白以外羽色、未授权配饰、人类手臂手掌为依据原文与常识推断的禁止项，均标为 inferred。创作限制为「无」，不存在其他角色，未将任何非咕嘎形象写入本边界；用户文字内部无冲突，unresolvedConflicts 为空；无参考视频，sourceSimilarityRules 为空数组；allowedPositiveTraits 与 positivePromptBoundary 由服务端确定性生成，此处输出空数组。",
+  "uncertainties": [
+   {
+    "field": "creatorProfile.fixedCharacter",
+    "reason": "用户未描述咕嘎的喙、眼睛、脚掌等基础企鹅细节的具体画法，无法确认其形态细节。",
+    "safeFallback": "不把这些未提及细节写入任何 trait；后续正向提示词不擅自添加特殊或夸张的器官细节，按通用Q版企鹅基础造型处理。"
+   },
+   {
+    "field": "creatorProfile.fixedCharacter",
+    "reason": "用户只写明穿一件小衣服和一双小鞋子，未给出款式、颜色与材质。",
+    "safeFallback": "保持始终穿着小衣服和小鞋子，款式与配色采用简洁Q版设计，且不得替换为未授权的其他服饰或配饰。"
+   },
+   {
+    "field": "creatorProfile.verticalTrack",
+    "reason": "「几乎不用台词」属于垂直赛道中的说话方式约束，其 sourcePath 字段命名按输入栏目推定为 creatorProfile.verticalTrack，未经服务端字段名确认。",
+    "safeFallback": "若该字段名不被接受，则仅保留固定角色原文中的「不使用人类语言、只发咕嘎声」两条说话约束，证据仍以 creatorProfile.fixedCharacter 为准。"
+   }
+  ]
+ },
+ "fullStory": {
+  "schemaVersion": "full_story/1.2",
+  "selectedVariantId": "V1",
+  "title": "咕嘎和蜗牛的午后",
+  "oneLinePremise": "咕嘎提着水壶去给檐下的花浇水，路上被一只慢慢爬的蜗牛吸引，看着看着睡着了，醒来后才继续去浇花。",
+  "targetDurationSeconds": 90,
+  "shootingSynopsis": "午后，奶奶把小水壶交给咕嘎，请她给檐下的花浇水。咕嘎抱着水壶走进院子，在石板路上遇到一只蜗牛，放下水壶蹲下来看。她试着和蜗牛并排慢走，可总是走到前面，于是蹲下、托脸，最后趴在草地上看，看着看着睡着了。醒来时蜗牛不见了，她四处找，才发现蜗牛爬到了自己的鞋面上，只好伸着脚坐着等它爬回石板。之后她想起水壶还立在树荫里，折回抱起，朝蜗牛看了一眼就走向屋檐下，认认真真地给第一盆花浇水。",
+  "characterBible": {
+   "protagonist": {
+    "name": "咕嘎",
+    "identity": "圆滚滚的Q版小企鹅，黑色后背、白色肚子，用两只小翅膀当手，穿小衣服和小鞋子",
+    "traits": [
+     "认真",
+     "好奇",
+     "一看入迷就忘记手上的事"
+    ],
+    "speechRules": "不说人类语言，只发出「咕嘎」的叫声，靠长短、轻重和语气表达疑问或应答；其余全靠动作、表情和拟声。",
+    "signatureBehaviors": [
+     "用小翅膀抱住水壶提手",
+     "歪头蹲下细看小东西",
+     "入迷时把手上的事忘掉",
+     "用小翅膀托脸或撑在身后",
+     "低头专注地做事"
+    ]
+   },
+   "supportingCharacters": [
+    {
+     "name": "奶奶",
+     "identity": "奶奶",
+     "appearanceFacts": [],
+     "personalityFacts": [],
+     "speechRules": [
+      "只在开头说一句温和的托付",
+      "说话是温和、随口托付的日常语气"
+     ],
+     "relationshipToProtagonist": "把小水壶交给咕嘎、请她给檐下的花浇水的人",
+     "storyRole": "在开场交代浇水任务，把水壶交给咕嘎，让咕嘎认真领命出发。",
+     "sourceEvidence": [
+      {
+       "field": "identity",
+       "sourceId": "E023",
+       "quote": "奶奶家",
+       "sourcePath": "/fullStory/sceneScript/0/location"
+      },
+      {
+       "field": "speechRules",
+       "sourceId": "E086",
+       "quote": "奶奶只在开头说一句温和的托付",
+       "sourcePath": "/fullStory/dialogueStyleGuide/supportingCharactersSpeechRule"
+      },
+      {
+       "field": "speechRules",
+       "sourceId": "E029",
+       "quote": "温和、随口托付的日常语气",
+       "sourcePath": "/fullStory/sceneScript/0/dialogue/0/deliveryOrSubtext"
+      },
+      {
+       "field": "relationshipToProtagonist",
+       "sourceId": "E005",
+       "quote": "奶奶把小水壶交给咕嘎，请她给檐下的花浇水",
+       "sourcePath": "/fullStory/shootingSynopsis"
+      },
+      {
+       "field": "storyRole",
+       "sourceId": "E035",
+       "quote": "交代任务与咕嘎认真的性格",
+       "sourcePath": "/fullStory/sceneScript/0/dramaticFunction"
+      }
+     ]
+    },
+    {
+     "name": "蜗牛",
+     "identity": "路上偶遇的小动物",
+     "appearanceFacts": [
+      "有细细的触角，爬行时伸在前面",
+      "背上有小壳"
+     ],
+     "personalityFacts": [
+      "爬行速度从头到尾保持同样缓慢"
+     ],
+     "speechRules": [
+      "不发声"
+     ],
+     "relationshipToProtagonist": "路上偶遇的小动物，被咕嘎好奇观察和陪伴",
+     "storyRole": "以自己不变的慢速爬行，牵住咕嘎的注意力，让她停下、入迷、睡着，又在醒来后让她耐心等待。",
+     "sourceEvidence": [
+      {
+       "field": "identity",
+       "sourceId": "E019",
+       "quote": "路上偶遇的小动物",
+       "sourcePath": "/fullStory/characterBible/helpers/0/relationshipToProtagonist"
+      },
+      {
+       "field": "appearanceFacts",
+       "sourceId": "E042",
+       "quote": "细细的触角伸在前面，背上的小壳随身体一点点挪动",
+       "sourcePath": "/fullStory/sceneScript/1/visibleAction"
+      },
+      {
+       "field": "personalityFacts",
+       "sourceId": "E049",
+       "quote": "蜗牛从头到尾保持同样缓慢的速度",
+       "sourcePath": "/fullStory/sceneScript/1/shootingNotes"
+      },
+      {
+       "field": "speechRules",
+       "sourceId": "E086",
+       "quote": "蜗牛不发声",
+       "sourcePath": "/fullStory/dialogueStyleGuide/supportingCharactersSpeechRule"
+      },
+      {
+       "field": "relationshipToProtagonist",
+       "sourceId": "E019",
+       "quote": "路上偶遇的小动物，被咕嘎好奇观察和陪伴",
+       "sourcePath": "/fullStory/characterBible/helpers/0/relationshipToProtagonist"
+      },
+      {
+       "field": "storyRole",
+       "sourceId": "E018",
+       "quote": "以自己不变的慢速爬行，牵住咕嘎的注意力，让她停下、入迷、睡着，又在醒来后让她耐心等待。",
+       "sourcePath": "/fullStory/characterBible/helpers/0/functionInStory"
+      }
+     ]
+    }
+   ]
+  },
+  "sceneScript": [
+   {
+    "sceneId": "S1",
+    "timeRange": "00:00-00:12",
+    "location": "奶奶家的屋门口与门槛",
+    "characters": [
+     "咕嘎",
+     "奶奶"
+    ],
+    "offscreenSoundSources": [],
+    "visibleAction": "午后的门口。奶奶弯身，把一只小水壶放到咕嘎面前的地面上，对着她说话。咕嘎仰头看着她，听完后用力点头，随即张口应声。她向前一步，用两只小翅膀从两侧抱住水壶的提手，把水壶抱离地面，转身往院子的方向走。壶里的水轻轻晃着，她看着壶口，脚步随之放慢。走到门槛前，她低头看看门槛，把抱着提手的小翅膀往上抬高了一点，小心地迈过门槛，进入院子。",
+    "dialogue": [
+     {
+      "speaker": "奶奶",
+      "line": "咕嘎，帮奶奶给檐下那几盆花浇点水。",
+      "deliveryOrSubtext": "温和、随口托付的日常语气"
+     },
+     {
+      "speaker": "咕嘎",
+      "line": "咕嘎！",
+      "deliveryOrSubtext": "短促响亮，认真地接下任务"
+     }
+    ],
+    "shotAndSound": "午后安静的院落环境声，水在壶里轻轻晃动的水声，小鞋子踩地的轻响。",
+    "emotionNode": "认真领命",
+    "dramaticFunction": "交代任务与咕嘎认真的性格，建立水壶这件需要照看的东西。",
+    "shootingNotes": "咕嘎全程穿小衣服和小鞋子，黑色后背、白色肚子，不戴任何配饰。水壶由奶奶放到她面前，之后一直在咕嘎手里或脚边，直到最后浇花。"
+   },
+   {
+    "sceneId": "S2",
+    "timeRange": "00:12-00:45",
+    "location": "院子里的石板路与草地旁",
+    "characters": [
+     "咕嘎",
+     "蜗牛"
+    ],
+    "offscreenSoundSources": [],
+    "visibleAction": "咕嘎抱着水壶走在石板路上，经过草地旁时忽然停住。石板边缘，一只蜗牛正慢慢往前爬，细细的触角伸在前面，背上的小壳随身体一点点挪动。咕嘎蹲下，歪头看了一会儿，把水壶轻轻放到脚边，发出疑问的叫声。蜗牛没有停，仍然慢悠悠地往前爬。咕嘎站起来，在蜗牛旁边迈出一个很小的步子，低头一看，自己的脚却已走到蜗牛前面。她悄悄把脚收回，重新站到蜗牛旁边，这一次只把鞋尖往前挪一点点，立刻停住低头看，蜗牛还在后面。她看看自己的脚，又看看蜗牛，索性蹲下来不走了。她先用一只小翅膀托着脸看，过了一会儿换另一只小翅膀托着，再过一会儿干脆趴到旁边的草地上，下巴搁在交叠的小翅膀上，身体顺着石板路伸开。蜗牛从她眼前缓缓经过，她的眼睛一点点跟着转过去。一片树影轻轻晃过，她眨眨眼，眼皮慢慢落下，脑袋往下一点，又赶紧抬起来。蜗牛还在爬。她看着看着，终于把脸搁稳，闭上眼睛睡着了。小水壶安安静静地立在她旁边。",
+    "dialogue": [
+     {
+      "speaker": "咕嘎",
+      "line": "咕嘎？",
+      "deliveryOrSubtext": "尾音上扬，好奇地问蜗牛，并没有期待回答"
+     }
+    ],
+    "shotAndSound": "微风和草叶轻响，小鞋子踩在石板上的轻响，树影晃动的沙沙声，咕嘎渐渐平稳的呼吸声。",
+    "emotionNode": "好奇、入迷、困倦",
+    "dramaticFunction": "呈现咕嘎被小细节吸引，忘记手上的事，直到睡着。",
+    "shootingNotes": "蜗牛从头到尾保持同样缓慢的速度。咕嘎试步的三次动作（小步走到前面、收脚重来、只挪鞋尖）要让观众分得清。水壶放下后一直立在她脚边附近，不被碰倒。"
+   },
+   {
+    "sceneId": "S3",
+    "timeRange": "00:45-01:15",
+    "location": "院子里的石板路与草地旁",
+    "characters": [
+     "咕嘎",
+     "蜗牛"
+    ],
+    "offscreenSoundSources": [],
+    "visibleAction": "咕嘎仍趴在草地上，水壶立在一旁，阳光从石板的一端缓缓移到另一端。她动动小脚，睁开眼，第一件事就是看向刚才蜗牛所在的位置，石板上空空的。她一下撑起身体，往左看，往右看，低头瞅了瞅水壶后面，发出疑问的叫声。她正准备站起来，忽然瞥见自己的鞋面上多了一个小小的壳，蜗牛已经爬到她脚上了。刚抬起一点的小脚立刻停住，她慢慢坐回去，把那只脚小心地放平，脑袋凑近，盯着鞋上的蜗牛。她看看刚才那块石板，又看看自己的鞋，一脸没想明白的样子。蜗牛不紧不慢地爬着，咕嘎把腿伸好，两只小翅膀撑在身后，坐在原地等。等蜗牛终于从鞋边爬回石板，她才轻轻收回脚，站起来，用小翅膀拍拍衣服上沾着的草屑。她往前走了两步，又停住，回头看见小水壶还立在树荫里。她赶紧折回，用两只小翅膀抱起提手。这回她没有再蹲下，只弯腰朝石板上的蜗牛看了一眼，便抱着水壶转身往屋檐下走。",
+    "dialogue": [
+     {
+      "speaker": "咕嘎",
+      "line": "咕嘎？",
+      "deliveryOrSubtext": "刚睡醒的迷糊疑问，找不到蜗牛时带点着急"
+     }
+    ],
+    "shotAndSound": "安静的院落环境声，微风与草叶轻响，咕嘎起身时小鞋子在石板上的轻响，水在壶里晃动的轻声。",
+    "emotionNode": "着急、惊讶、耐心",
+    "dramaticFunction": "让咕嘎醒来，从找不到蜗牛到发现它在鞋上并耐心等它离开，想起水壶后折回前往屋檐下。",
+    "shootingNotes": "阳光从石板一端移到另一端要让观众看得出来。蜗牛爬上鞋面再爬回石板的过程要完整，不跳过。咕嘎用小翅膀拍衣服、撑地、抱提手，不出现手指或人类手掌。"
+   },
+   {
+    "sceneId": "S4",
+    "timeRange": "01:15-01:30",
+    "location": "屋檐下的墙边",
+    "characters": [
+     "咕嘎"
+    ],
+    "offscreenSoundSources": [],
+    "visibleAction": "几盆花排在墙边的屋檐下，安静地立着。咕嘎抱着水壶走到最近的一盆花旁，蹲下。她用两只小翅膀抱着提手，慢慢倾斜壶身，细细的水流从壶嘴落进土里。她低着头，专注地看着水流，浇得很认真。",
+    "dialogue": [],
+    "shotAndSound": "细细的水流落进泥土的声音，屋檐下安静的环境声。",
+    "emotionNode": "认真专注",
+    "dramaticFunction": "完成原文中的浇水任务，收束在她认真浇水的画面。",
+    "shootingNotes": "全片停在咕嘎浇第一盆花的这一刻，不加其他情节。花盆是原文里的物件，只作为被浇水的对象，不做拟人处理。"
+   }
+  ],
+  "keyProps": [
+   {
+    "prop": "小水壶",
+    "storyFunction": "咕嘎受托的浇水用具，被她放下又被她想起，最终用于浇花。",
+    "visualUse": "由奶奶放到咕嘎面前，咕嘎抱着提手带走，放在石板路旁，睡着时立在一边，醒来后抱起，最后在花盆旁倾斜出水。"
+   },
+   {
+    "prop": "蜗牛",
+    "storyFunction": "让咕嘎停步、入迷、睡着和等待的小动物。",
+    "visualUse": "沿石板边缘爬行，从咕嘎眼前经过，爬到她的鞋面上，再爬回石板。"
+   },
+   {
+    "prop": "檐下的几盆花",
+    "storyFunction": "咕嘎要浇水的目的地。",
+    "visualUse": "排在屋檐下的墙边，最后咕嘎给第一盆花浇水。"
+   },
+   {
+    "prop": "石板路",
+    "storyFunction": "蜗牛爬行的路径和阳光移动的参照。",
+    "visualUse": "咕嘎在路上遇到蜗牛，阳光从石板一端移到另一端以表现时间流逝。"
+   }
+  ],
+  "dialogueStyleGuide": {
+   "overallTone": "轻柔、日常、治愈，几乎无台词。",
+   "protagonistSpeechRule": "咕嘎只发出「咕嘎」，用长短、轻重和语气区分应答与疑问，不说人类语言。",
+   "supportingCharactersSpeechRule": "奶奶只在开头说一句温和的托付；蜗牛不发声。",
+   "forbiddenDialoguePatterns": [
+    "不得新增原文没有的台词",
+    "不得加旁白或字幕台词",
+    "咕嘎不得说「咕嘎」以外的词句"
+   ]
+  },
+  "uncertainties": [
+   {
+    "field": "咕嘎抱提手与倾斜壶身",
+    "reason": "原文写咕嘎抱住提手、提着水壶并倾斜壶身，但已签发边界没有说明小翅膀能否精细操作。",
+    "safeFallback": "用两只小翅膀从两侧抱住提手，把水壶抱着走；浇水时抱着提手慢慢前倾身体带动壶身倾斜，不使用手指动作。"
+   },
+   {
+    "field": "咕嘎的叫声与对白规则",
+    "reason": "原文中咕嘎的台词「咕嘎！」「咕嘎？」符合只发「咕嘎」的规则，无冲突；奶奶的一句话是人类语言，但说话人是奶奶，不违反对咕嘎的限制。",
+    "safeFallback": "咕嘎的两处叫声保留原文，奶奶的台词逐字保留。"
+   },
+   {
+    "field": "奶奶与蜗牛的登记",
+    "reason": "奶奶只在S1出镜，不登记为帮助者；蜗牛在S2、S3出镜，登记为帮助者，但原文中它并非在帮忙，只是以自己的速度爬行。",
+    "safeFallback": "奶奶只写入S1的characters；蜗牛的helpingAction只写其原文中的爬行动作。"
+   },
+   {
+    "field": "时长",
+    "reason": "原文没有标明各动作时长，90秒按事件顺序分配（12+33+30+15）。",
+    "safeFallback": "各场只在其内部按需要调整动作停顿，不增减原文情节。"
+   }
+  ]
+ },
+ "animationPlan": {
+  "productionStrategy": {
+   "format": "storyboard_video",
+   "targetAspectRatio": "16:9",
+   "backgroundMusicMode": "none",
+   "characterExpressionRules": "",
+   "artStyle": "二维日系动画"
+  },
+  "characterRegistry": {
+   "protagonist": {
+    "name": "咕嘎",
+    "identity": "圆滚滚的Q版小企鹅，黑色后背、白色肚子，用两只小翅膀当手，穿小衣服和小鞋子",
+    "traits": [
+     "认真",
+     "好奇",
+     "一看入迷就忘记手上的事"
+    ],
+    "speechRules": "不说人类语言，只发出「咕嘎」的叫声，靠长短、轻重和语气表达疑问或应答；其余全靠动作、表情和拟声。",
+    "signatureBehaviors": [
+     "用小翅膀抱住水壶提手",
+     "歪头蹲下细看小东西",
+     "入迷时把手上的事忘掉",
+     "用小翅膀托脸或撑在身后",
+     "低头专注地做事"
+    ]
+   },
+   "supportingCharacters": [
+    {
+     "name": "奶奶",
+     "identity": "奶奶",
+     "appearanceFacts": [],
+     "personalityFacts": [],
+     "speechRules": [
+      "只在开头说一句温和的托付",
+      "说话是温和、随口托付的日常语气"
+     ],
+     "relationshipToProtagonist": "把小水壶交给咕嘎、请她给檐下的花浇水的人",
+     "storyRole": "在开场交代浇水任务，把水壶交给咕嘎，让咕嘎认真领命出发。",
+     "sourceEvidence": [
+      {
+       "field": "identity",
+       "sourceId": "E023",
+       "quote": "奶奶家",
+       "sourcePath": "/fullStory/sceneScript/0/location"
+      },
+      {
+       "field": "speechRules",
+       "sourceId": "E086",
+       "quote": "奶奶只在开头说一句温和的托付",
+       "sourcePath": "/fullStory/dialogueStyleGuide/supportingCharactersSpeechRule"
+      },
+      {
+       "field": "speechRules",
+       "sourceId": "E029",
+       "quote": "温和、随口托付的日常语气",
+       "sourcePath": "/fullStory/sceneScript/0/dialogue/0/deliveryOrSubtext"
+      },
+      {
+       "field": "relationshipToProtagonist",
+       "sourceId": "E005",
+       "quote": "奶奶把小水壶交给咕嘎，请她给檐下的花浇水",
+       "sourcePath": "/fullStory/shootingSynopsis"
+      },
+      {
+       "field": "storyRole",
+       "sourceId": "E035",
+       "quote": "交代任务与咕嘎认真的性格",
+       "sourcePath": "/fullStory/sceneScript/0/dramaticFunction"
+      }
+     ]
+    },
+    {
+     "name": "蜗牛",
+     "identity": "路上偶遇的小动物",
+     "appearanceFacts": [
+      "有细细的触角，爬行时伸在前面",
+      "背上有小壳"
+     ],
+     "personalityFacts": [
+      "爬行速度从头到尾保持同样缓慢"
+     ],
+     "speechRules": [
+      "不发声"
+     ],
+     "relationshipToProtagonist": "路上偶遇的小动物，被咕嘎好奇观察和陪伴",
+     "storyRole": "以自己不变的慢速爬行，牵住咕嘎的注意力，让她停下、入迷、睡着，又在醒来后让她耐心等待。",
+     "sourceEvidence": [
+      {
+       "field": "identity",
+       "sourceId": "E019",
+       "quote": "路上偶遇的小动物",
+       "sourcePath": "/fullStory/characterBible/helpers/0/relationshipToProtagonist"
+      },
+      {
+       "field": "appearanceFacts",
+       "sourceId": "E042",
+       "quote": "细细的触角伸在前面，背上的小壳随身体一点点挪动",
+       "sourcePath": "/fullStory/sceneScript/1/visibleAction"
+      },
+      {
+       "field": "personalityFacts",
+       "sourceId": "E049",
+       "quote": "蜗牛从头到尾保持同样缓慢的速度",
+       "sourcePath": "/fullStory/sceneScript/1/shootingNotes"
+      },
+      {
+       "field": "speechRules",
+       "sourceId": "E086",
+       "quote": "蜗牛不发声",
+       "sourcePath": "/fullStory/dialogueStyleGuide/supportingCharactersSpeechRule"
+      },
+      {
+       "field": "relationshipToProtagonist",
+       "sourceId": "E019",
+       "quote": "路上偶遇的小动物，被咕嘎好奇观察和陪伴",
+       "sourcePath": "/fullStory/characterBible/helpers/0/relationshipToProtagonist"
+      },
+      {
+       "field": "storyRole",
+       "sourceId": "E018",
+       "quote": "以自己不变的慢速爬行，牵住咕嘎的注意力，让她停下、入迷、睡着，又在醒来后让她耐心等待。",
+       "sourcePath": "/fullStory/characterBible/helpers/0/functionInStory"
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

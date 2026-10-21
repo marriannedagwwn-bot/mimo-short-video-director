@@ -1,0 +1,1047 @@
+{
+ "viewingIntent": "本片看点是认真的小企鹅咕嘎领了浇水的事，却被一只始终慢吞吞的蜗牛一步步「拖慢」：试着并排走、托脸、趴下，最后睡着；醒来找蜗牛，发现它在自己鞋上，于是坐着等它爬回石板，再想起水壶，回去认真浇下第一盆花。视听上，前段用短镜头交代任务和出发；遇到蜗牛后换成固定长镜头，节奏放慢，配合安静的院子和咕嘎轻轻的鼻音、哼声；收尾停在细细的水流和低头专注的她身上。",
+ "visualDesign": {
+  "characters": [
+   {
+    "name": "咕嘎",
+    "appearance": "二维日系动画Q版小企鹅。身体圆滚滚、矮墩墩，黑色后背、白色肚子，用两只短小的翅膀当手，没有手指，也没有人类手掌。身穿浅黄色圆领小上衣，脚穿橙红色小布鞋。橙黄色小短喙，黑亮的圆眼睛。不戴帽子、发卡、眼镜等任何配饰。",
+    "designedDetails": [
+     "小上衣为浅黄色圆领短款",
+     "小鞋子为橙红色小布鞋",
+     "橙黄色小短喙、黑亮圆眼睛"
+    ]
+   },
+   {
+    "name": "奶奶",
+    "appearance": "二维日系动画Q版的慈祥老奶奶。灰白头发挽成小发髻，穿浅米色针织开衫，系一条浅绿色围裙，笑起来眼角弯弯。",
+    "designedDetails": [
+     "设计为Q版人类老奶奶",
+     "灰白小发髻",
+     "浅米色针织开衫",
+     "浅绿色围裙",
+     "眼角弯弯的笑容"
+    ]
+   },
+   {
+    "name": "蜗牛",
+    "appearance": "二维日系动画风格的小蜗牛，身长约为咕嘎鞋长的三分之一。米灰色软身体，细细的触角爬行时伸在前面，背上是浅褐色带螺旋纹的小壳。全片以同样缓慢的速度朝画面右侧爬，不发声，不做拟人表情。",
+    "designedDetails": [
+     "浅褐色螺旋纹小壳",
+     "米灰色身体",
+     "身长约咕嘎鞋长的三分之一"
+    ]
+   }
+  ],
+  "locations": [
+   {
+    "name": "奶奶家屋门口与门槛",
+    "sourceSceneIds": [
+     "S1"
+    ],
+    "layout": "室内木地板玄关。画右是敞开的木门，门框下有一道低矮的木门槛，门外是明亮的院子。奶奶站在画左，咕嘎站在画右、面朝左，水壶放在两人之间的地板上。出发方向始终是画右，即门和院子所在的一侧。",
+    "lighting": "午后暖阳从画右的门外斜照进来，地板上有一块亮斑，室内略暗。"
+   },
+   {
+    "name": "院子里的石板路与草地旁",
+    "sourceSceneIds": [
+     "S2",
+     "S3"
+    ],
+    "layout": "大全景中，屋门在画左。灰色方石板路从门口向画右横穿院子，一直通到画右尽头的屋檐墙边。石板路靠近镜头的一侧是草地，远侧有一棵树。咕嘎放下的水壶立在石板上她蹲下的位置，即树荫边缘附近。她趴下时头在画左、靠近水壶，身体朝画右顺着石板伸开，小鞋子搭在石板边。蜗牛始终沿石板近侧边缘从左向右爬。",
+    "lighting": "午后阳光。开始时树荫边缘落在水壶左侧的石板上，水壶还在阳光里。睡着后的时间里，阳光光斑从石板一端移到另一端，树荫移过来盖住了水壶。"
+   },
+   {
+    "name": "屋檐下的墙边",
+    "sourceSceneIds": [
+     "S4"
+    ],
+    "layout": "石板路尽头，屋檐下的白墙边排着四盆花，左边第一盆离石板路最近，咕嘎从画左走来，停在这一盆旁。",
+    "lighting": "屋檐投下一条柔和的阴影，花盆在半阴里，檐外是午后亮光。"
+   }
+  ],
+  "props": [
+   {
+    "name": "小水壶",
+    "appearanceAndSupport": "浅蓝色小金属浇水壶，高约到咕嘎胸口，壶顶有一道拱形提手，侧面伸出细长壶嘴，壶里约有半壶水。咕嘎用两只小翅膀从两侧抱住提手把它抱起；放下时立在石板上，全程不被碰倒。浇水时她抱着提手、整个身体前倾，带动壶身倾斜。"
+   },
+   {
+    "name": "檐下的几盆花",
+    "appearanceAndSupport": "四个素色陶盆，各开着几朵小花，排在墙根地面上，只作为被浇水的对象，不拟人。"
+   },
+   {
+    "name": "石板路",
+    "appearanceAndSupport": "灰色方形石板，一块接一块平铺在草地边，是蜗牛爬行的路线，也是阳光移动的参照。"
+   },
+   {
+    "name": "门槛",
+    "appearanceAndSupport": "门框下一道低矮的木门槛，高度约到咕嘎小腿，固定在地面上。"
+   }
+  ]
+ },
+ "adaptations": [
+  {
+   "sourceSceneIds": [
+    "S3"
+   ],
+   "original": "原文中，咕嘎醒来后才发现蜗牛已在鞋面上；拍摄说明又要求蜗牛爬上鞋面、再爬回石板的过程完整，不跳过。",
+   "change": "用一个贴地的鞋子特写溶镜表现睡着后的时间流逝：阳光从石板一端移到另一端，同时蜗牛触角碰到鞋尖、爬上鞋面。咕嘎醒来看到原来的石板空空，四处寻找，最后低头才看见鞋上的蜗牛。爬回石板也给一个同构图的特写。",
+   "reason": "上鞋和下鞋两个过程都看得见，满足「完整」的要求。观众比咕嘎先知道蜗牛在哪，她找来找去就有了轻轻的趣味，发现鞋上蜗牛的那一下也仍然成立。"
+  },
+  {
+   "sourceSceneIds": [
+    "S1",
+    "S2",
+    "S3",
+    "S4"
+   ],
+   "original": "原场时长分配为12+33+30+15，共90秒。",
+   "change": "重新分配为S1约15秒、S2约33秒、S3约40秒、S4约10秒，全片98秒。",
+   "reason": "S3要容纳醒来、寻找、等待、折回四个阶段，需要更多可读时间；总长仍在76–104秒的窗口内，不增减情节。"
+  },
+  {
+   "sourceSceneIds": [
+    "S2"
+   ],
+   "original": "S2开头是咕嘎抱壶走在石板路上。",
+   "change": "进入院子只用一个大全景，同时交代门、石板路、树和檐下的花盆，咕嘎在画中小小地出现。",
+   "reason": "既交代了全片共用的方位，又压缩了时长，让后面的蜗牛段落有足够的时间。"
+  },
+  {
+   "sourceSceneIds": [
+    "S4"
+   ],
+   "original": "原文写咕嘎慢慢倾斜壶身；上游不确定项指出小翅膀不能做精细操作。",
+   "change": "采用安全写法：两只小翅膀抱着提手，身体整体前倾带动壶身倾斜，不出现手指动作。",
+   "reason": "保持浇水动作，同时符合小翅膀当手、没有人类手掌的设定。"
+  },
+  {
+   "sourceSceneIds": [
+    "S1",
+    "S2",
+    "S3",
+    "S4"
+   ],
+   "original": "咕嘎的台词只有「咕嘎！」「咕嘎？」「咕嘎？」三处；她只能发出「咕嘎」的叫声和拟声。",
+   "change": "三句台词逐字保留在dialogue中。其余情绪只用鼻音、哼声、吸气、呼气、用力声，以及少量语气不同的「咕嘎」叫声表现，全部写在soundDesign里，不进dialogue。",
+   "reason": "主角的情绪持续可听，又不新增台词，也不违反只发「咕嘎」的规则。"
+  }
+ ],
+ "blockedIssues": [],
+ "shotPlan": [
+  {
+   "sourceSceneIds": [
+    "S1"
+   ],
+   "durationSeconds": 8,
+   "storyPurpose": "奶奶把小水壶放到咕嘎面前，托付她浇花，咕嘎认真应下。",
+   "emotionalTarget": "温和的日常托付，小家伙一本正经地接活。",
+   "transitionIn": {
+    "type": "start",
+    "description": "全片从门口地板上的一个道具动作开场，先听到院子里的声音，再看到水壶被放下。"
+   },
+   "beats": [
+    {
+     "startSeconds": 0,
+     "endSeconds": 2,
+     "sourceSceneIds": [
+      "S1"
+     ],
+     "location": "玄关木地板，门在画右",
+     "characters": [
+      "奶奶",
+      "咕嘎"
+     ],
+     "framing": "贴地低机位特写。奶奶的手连同米色开衫袖口从画左上方伸进来，画右边缘露出咕嘎一双橙红色小鞋尖。",
+     "camera": "固定",
+     "visibleAction": "奶奶的手把浅蓝色小水壶稳稳放到地板上，随即收回出画；壶里的水晃了一下；咕嘎的鞋尖往前挪了一点。",
+     "dialogue": [],
+     "soundDesign": "门外传来午后微风和远处的鸟鸣；壶底落地「咚」一声轻响，壶里水轻晃。约第1.5秒，咕嘎在画内发出一声好奇的短鼻音「嗯？」，与鞋尖前挪同时。"
+    },
+    {
+     "startSeconds": 2,
+     "endSeconds": 6,
+     "sourceSceneIds": [
+      "S1"
+     ],
+     "location": "玄关，奶奶在画左，咕嘎在画右",
+     "characters": [
+      "奶奶",
+      "咕嘎"
+     ],
+     "framing": "从咕嘎视线高度仰拍的过肩镜头。前景画右下是咕嘎圆圆的黑色后脑和后背，奶奶在画左弯着腰低头看她。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "奶奶一手扶着膝盖，笑眯眯地对咕嘎说话；咕嘎的后脑微微仰着，一动不动地听。",
+     "dialogue": [
+      {
+       "speaker": "奶奶",
+       "text": "咕嘎，帮奶奶给檐下那几盆花浇点水。",
+       "source": "onscreen",
+       "timing": "约第2.3秒开口，第5.5秒说完，语气随口而温和"
+      }
+     ],
+     "soundDesign": "院子的微风和鸟鸣持续，压得很低；奶奶说完后安静约半秒。"
+    },
+    {
+     "startSeconds": 6,
+     "endSeconds": 8,
+     "sourceSceneIds": [
+      "S1"
+     ],
+     "location": "玄关，咕嘎站在水壶后",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "从奶奶视线俯拍的中近景，咕嘎仰着脸站在画中，水壶在她身前。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "咕嘎用力点一下头，张嘴应声，表情很认真。",
+     "dialogue": [
+      {
+       "speaker": "咕嘎",
+       "text": "咕嘎！",
+       "source": "onscreen",
+       "timing": "约第6.6秒，紧接着点头，短促响亮"
+      }
+     ],
+     "soundDesign": "镜头开头，咕嘎点头前先短吸一口气；之后只剩轻微的环境声。"
+    }
+   ],
+   "continuityOut": "奶奶仍弯着腰站在画左。咕嘎站在画右，面朝左，水壶立在她身前的地板上。",
+   "acceptanceCriteria": [
+    "看得清水壶是奶奶放到咕嘎面前的",
+    "奶奶的台词逐字完整",
+    "咕嘎先点头再应声，应声是「咕嘎！」"
+   ]
+  },
+  {
+   "sourceSceneIds": [
+    "S1"
+   ],
+   "durationSeconds": 7,
+   "storyPurpose": "咕嘎抱起水壶出发，照看着晃动的水，小心跨过门槛。",
+   "emotionalTarget": "认真又笨拙的小心翼翼。",
+   "transitionIn": {
+    "type": "continuous",
+    "description": "紧接上一片段的应声，咕嘎仍在水壶后，此刻开始抱壶。"
+   },
+   "beats": [
+    {
+     "startSeconds": 0,
+     "endSeconds": 2,
+     "sourceSceneIds": [
+      "S1"
+     ],
+     "location": "玄关地板上的水壶",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "俯拍特写，水壶在画中，咕嘎的两只小翅膀从左右两侧伸进来。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "两只小翅膀从两侧抱住拱形提手，把水壶抱离地面一小截。",
+     "dialogue": [],
+     "soundDesign": "壶离地的那一下，咕嘎在画内发出一声短促的用力声「嗯！」；壶里的水哗地晃一下。"
+    },
+    {
+     "startSeconds": 2,
+     "endSeconds": 4,
+     "sourceSceneIds": [
+      "S1"
+     ],
+     "location": "玄关，朝画右的门走",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "侧面中景，咕嘎在画中偏左，抱着壶朝画右走。",
+     "camera": "切到此机位，固定，咕嘎走到画面中线附近",
+     "visibleAction": "咕嘎抱着壶转身朝画右走，低头盯着晃动的壶口，脚步越走越慢。",
+     "dialogue": [],
+     "soundDesign": "小鞋子在木地板上嗒、嗒轻响，间隔越来越长；壶里的水轻轻晃荡；咕嘎憋着气，鼻子里极轻地「嗯…」一声。"
+    },
+    {
+     "startSeconds": 4,
+     "endSeconds": 7,
+     "sourceSceneIds": [
+      "S1"
+     ],
+     "location": "门框下的木门槛，门外是亮的院子",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "贴地低机位，木门槛横在画面中下部，门外一片明亮。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "一双小鞋子从画左走进来，停在门槛前；画面上方的壶底被往上抬高一截；先是一只脚小心跨过门槛，另一只脚跟上，人从画右出画；空门槛停约半秒。",
+     "dialogue": [],
+     "soundDesign": "鞋子在门槛前停住时，咕嘎在画内发出一声小心的短鼻音「嗯」；跨过时鞋尖轻擦木头；出画后门外的鸟鸣和风声变大。"
+    }
+   ],
+   "continuityOut": "咕嘎抱着水壶从门的画右一侧出去，进了院子，正朝画右方向走。",
+   "acceptanceCriteria": [
+    "抱提手是两只翅膀从两侧抱住，没有手指",
+    "看得出她因为水晃而放慢了脚步",
+    "跨门槛前水壶被抬高"
+   ]
+  },
+  {
+   "sourceSceneIds": [
+    "S2"
+   ],
+   "durationSeconds": 9,
+   "storyPurpose": "咕嘎走在院子里，发现了石板边的蜗牛，放下水壶蹲下来问它。",
+   "emotionalTarget": "被小东西一下子勾住的好奇。",
+   "transitionIn": {
+    "type": "cut",
+    "description": "换到院子里。咕嘎从画左的屋门出来，继续朝画右走，与上一片段的出画方向一致。"
+   },
+   "beats": [
+    {
+     "startSeconds": 0,
+     "endSeconds": 3,
+     "sourceSceneIds": [
+      "S2"
+     ],
+     "location": "院子大全景：画左是屋门，石板路向画右通往屋檐墙边的花盆",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "大全景，交代门、石板路、草地、树和画右尽头的檐下花盆，咕嘎小小地在画左。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "咕嘎抱着壶沿石板路朝画右走，走到树旁的草地边时忽然停住，低下头。",
+     "dialogue": [],
+     "soundDesign": "院子环境声：微风、草叶沙沙、鸟鸣。咕嘎边走边闭着嘴哼歌，停步时哼声断掉。镜头末尾约半秒，咕嘎在画内一声「嗯？」。"
+    },
+    {
+     "startSeconds": 3,
+     "endSeconds": 5,
+     "sourceSceneIds": [
+      "S2"
+     ],
+     "location": "石板近侧边缘",
+     "characters": [
+      "蜗牛"
+     ],
+     "framing": "咕嘎视角的俯拍特写，蜗牛在画中，石板边缘紧挨着草叶。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "蜗牛伸着两根细触角，慢慢朝画右爬，背上的小壳一点点往前挪。",
+     "dialogue": [],
+     "soundDesign": "无人声。只有微风和草叶轻响。"
+    },
+    {
+     "startSeconds": 5,
+     "endSeconds": 7,
+     "sourceSceneIds": [
+      "S2"
+     ],
+     "location": "石板上，咕嘎脚边",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "俯拍特写：咕嘎蹲下后弯着的膝头和小鞋子，两只翅膀抱着水壶落下。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "两只小翅膀把水壶轻轻放在她左脚旁的石板上，然后松开提手。",
+     "dialogue": [],
+     "soundDesign": "壶底碰石板一声轻「嗒」，水轻轻一晃；咕嘎蹲下时轻呼一口气。"
+    },
+    {
+     "startSeconds": 7,
+     "endSeconds": 9,
+     "sourceSceneIds": [
+      "S2"
+     ],
+     "location": "石板边，蜗牛在前，咕嘎蹲在后面",
+     "characters": [
+      "咕嘎",
+      "蜗牛"
+     ],
+     "framing": "贴着石板的蜗牛视线高度。前景蜗牛在画下方，后景咕嘎蹲着，歪头凑看。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "咕嘎歪着头对蜗牛发问；蜗牛没有停，照样慢慢朝画右爬。",
+     "dialogue": [
+      {
+       "speaker": "咕嘎",
+       "text": "咕嘎？",
+       "source": "onscreen",
+       "timing": "约第7.3秒，尾音上扬，问完继续看着蜗牛"
+      }
+     ],
+     "soundDesign": "问完后只剩风声；蜗牛不发声。"
+    }
+   ],
+   "continuityOut": "咕嘎蹲在石板边。水壶立在她左脚旁，还在阳光里，树荫边缘在它左侧。蜗牛在她前方石板近侧，朝画右爬。",
+   "acceptanceCriteria": [
+    "遇蜗牛前有完整的院子方位交代",
+    "先看到她停住，再看到蜗牛，再回到她的问话",
+    "水壶放下后稳稳立着"
+   ]
+  },
+  {
+   "sourceSceneIds": [
+    "S2"
+   ],
+   "durationSeconds": 8,
+   "storyPurpose": "咕嘎想和蜗牛并排走，三次试步一次比一次小，还是走到了它前面，只好蹲下。",
+   "emotionalTarget": "认真得有点可笑，最后无奈地放弃。",
+   "transitionIn": {
+    "type": "continuous",
+    "description": "同一处石板边。咕嘎从蹲着站起来，站在蜗牛左边。"
+   },
+   "beats": [
+    {
+     "startSeconds": 0,
+     "endSeconds": 2,
+     "sourceSceneIds": [
+      "S2"
+     ],
+     "location": "石板近侧边缘",
+     "characters": [
+      "咕嘎",
+      "蜗牛"
+     ],
+     "framing": "贴地侧面特写（本片段的试步构图）：蜗牛在画中偏左，咕嘎的小鞋子在蜗牛左边。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "咕嘎的右脚迈出很小一步，落下时鞋已经在蜗牛右前方。",
+     "dialogue": [],
+     "soundDesign": "鞋落在石板上一声轻响；迈步时咕嘎在画内一声得意的短哼「嗯♪」。"
+    },
+    {
+     "startSeconds": 2,
+     "endSeconds": 4,
+     "sourceSceneIds": [
+      "S2"
+     ],
+     "location": "石板边",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "略低机位的全身中景，咕嘎在画中低头看脚。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "咕嘎低头一看，眼睛一下睁圆，缩起脖子，把右脚悄悄往回收。",
+     "dialogue": [],
+     "soundDesign": "镜头开头，咕嘎短吸一口气；收脚时鞋底在石板上极轻地蹭一下。"
+    },
+    {
+     "startSeconds": 4,
+     "endSeconds": 6,
+     "sourceSceneIds": [
+      "S2"
+     ],
+     "location": "石板近侧边缘",
+     "characters": [
+      "咕嘎",
+      "蜗牛"
+     ],
+     "framing": "与本片段第一个镜头同一构图、同一机位的贴地特写。",
+     "camera": "切回试步构图，固定",
+     "visibleAction": "鞋子重新站回蜗牛旁边，鞋尖往前挪了一点点就停住；蜗牛仍在鞋尖后面一点。",
+     "dialogue": [],
+     "soundDesign": "鞋尖在石板上细细一蹭；咕嘎憋着气，无其他人声。"
+    },
+    {
+     "startSeconds": 6,
+     "endSeconds": 8,
+     "sourceSceneIds": [
+      "S2"
+     ],
+     "location": "石板边",
+     "characters": [
+      "咕嘎",
+      "蜗牛"
+     ],
+     "framing": "同第二个镜头的全身中景，蜗牛在画下边缘。",
+     "camera": "切回此中景，固定",
+     "visibleAction": "咕嘎看看自己的脚，又看看蜗牛，再看看脚，然后一屁股蹲下，不走了。",
+     "dialogue": [],
+     "soundDesign": "蹲下时咕嘎在画内发出一声拖长、泄气的低低叫声「咕嘎…」（叫声，不是台词）；衣服落下时窸窣一下。"
+    }
+   ],
+   "continuityOut": "咕嘎蹲在石板边的草地上。蜗牛在她前方继续朝画右爬，水壶仍立在她左后方的石板上。",
+   "acceptanceCriteria": [
+    "三次试步（迈到前面、收脚、只挪鞋尖）分得清",
+    "第一、三镜同构图，前后对照清楚",
+    "蜗牛速度始终不变"
+   ]
+  },
+  {
+   "sourceSceneIds": [
+    "S2"
+   ],
+   "durationSeconds": 8,
+   "storyPurpose": "咕嘎从托脸看到趴下看，越看越入迷，眼睛跟着蜗牛慢慢转。",
+   "emotionalTarget": "时间被拉长的安静入迷。",
+   "transitionIn": {
+    "type": "continuous",
+    "description": "同一处，咕嘎蹲着，换到较远的侧面固定机位，让她在一个镜头里自己换姿势。"
+   },
+   "beats": [
+    {
+     "startSeconds": 0,
+     "endSeconds": 6,
+     "sourceSceneIds": [
+      "S2"
+     ],
+     "location": "石板路与草地交界",
+     "characters": [
+      "咕嘎",
+      "蜗牛"
+     ],
+     "framing": "低机位侧面中全景。咕嘎在画左的草地边，水壶在她左后方的石板上，蜗牛在她前方的画中。",
+     "camera": "切到此机位，固定一镜到底",
+     "visibleAction": "咕嘎先用右翅托着脸看；约第2秒换成左翅托着；约第4秒身体往前一倾，趴到草地上，下巴搁在交叠的小翅膀上，头在画左、靠近水壶，身体朝画右顺着石板伸开，小鞋子搭在石板边；蜗牛始终慢慢朝画右爬。",
+     "dialogue": [],
+     "soundDesign": "微风、草叶沙沙；换翅膀时衣袖轻擦；趴下时草叶一压。趴稳后，咕嘎闭着嘴发出满足的「嗯～」。"
+    },
+    {
+     "startSeconds": 6,
+     "endSeconds": 8,
+     "sourceSceneIds": [
+      "S2"
+     ],
+     "location": "草地上咕嘎的脸前",
+     "characters": [
+      "咕嘎",
+      "蜗牛"
+     ],
+     "framing": "贴地特写。咕嘎的脸搁在小翅膀上，在画左；前景蜗牛虚焦，从她眼前横过。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "蜗牛从她眼前缓缓朝画右经过，她的眼珠一点点跟着转向画右。",
+     "dialogue": [],
+     "soundDesign": "风声更轻；咕嘎慢慢的鼻息。"
+    }
+   ],
+   "continuityOut": "咕嘎趴在草地上，头在画左，鞋子搭在画右的石板边。蜗牛已过了她的脸，朝她的脚爬去；水壶立在她头旁。",
+   "acceptanceCriteria": [
+    "托脸、换翅、趴下三个姿势在同一固定镜头里依次完成",
+    "蜗牛从她眼前经过，她的眼睛跟着转"
+   ]
+  },
+  {
+   "sourceSceneIds": [
+    "S2"
+   ],
+   "durationSeconds": 8,
+   "storyPurpose": "树影晃过，咕嘎犯困，点了两次头，最后睡着。",
+   "emotionalTarget": "暖洋洋、不知不觉的困。",
+   "transitionIn": {
+    "type": "continuous",
+    "description": "同一时刻，先插入树影晃动的镜头，再回到她的脸。"
+   },
+   "beats": [
+    {
+     "startSeconds": 0,
+     "endSeconds": 2,
+     "sourceSceneIds": [
+      "S2"
+     ],
+     "location": "石板路上，树荫边缘",
+     "characters": [],
+     "framing": "俯拍插入镜头：石板上树荫边缘的叶影在晃，水壶在画角落、仍在阳光里。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "叶影在石板上来回轻晃。",
+     "dialogue": [],
+     "soundDesign": "无人声。树叶沙沙声。"
+    },
+    {
+     "startSeconds": 2,
+     "endSeconds": 5,
+     "sourceSceneIds": [
+      "S2"
+     ],
+     "location": "草地上咕嘎的脸",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "与上一片段第二个镜头同一构图的贴地脸部特写。",
+     "camera": "切回此构图，固定",
+     "visibleAction": "咕嘎眨眨眼，眼皮慢慢落下，脑袋往下一点，又赶紧抬起；再往下一点，又抬起一半。",
+     "dialogue": [],
+     "soundDesign": "两次抬头时各有一下短吸气；第二次抬头后，咕嘎发出拖长的鼻音「嗯…」。"
+    },
+    {
+     "startSeconds": 5,
+     "endSeconds": 8,
+     "sourceSceneIds": [
+      "S2"
+     ],
+     "location": "石板路与草地交界",
+     "characters": [
+      "咕嘎",
+      "蜗牛"
+     ],
+     "framing": "侧面稍高的固定全景：咕嘎趴睡在画中，水壶在她头旁，蜗牛小小地在画右，正靠近她的鞋子。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "咕嘎把脸搁稳，闭上眼睡着了；蜗牛继续慢慢爬，水壶安安静静立着。",
+     "dialogue": [],
+     "soundDesign": "微风；咕嘎平稳的睡眠呼吸，约每1.5秒一次（第5.5秒、第7秒）。"
+    }
+   ],
+   "continuityOut": "咕嘎趴在草地上睡着。水壶在她头旁，还在阳光里；蜗牛已爬到她搭在石板边的鞋子附近。",
+   "acceptanceCriteria": [
+    "看得出点头两次之后才睡着",
+    "睡着时水壶仍立着、没被碰到"
+   ]
+  },
+  {
+   "sourceSceneIds": [
+    "S3"
+   ],
+   "durationSeconds": 8,
+   "storyPurpose": "时间过去，蜗牛爬上了咕嘎的鞋面；咕嘎醒来，第一眼看向原来的石板，那里空空的。",
+   "emotionalTarget": "观众比她先知道蜗牛在哪的轻轻好笑，以及她醒来时的迷糊。",
+   "transitionIn": {
+    "type": "ellipsis",
+    "description": "省略一段睡眠时间，用鞋子特写上的溶镜表现阳光移动和蜗牛上鞋。"
+   },
+   "beats": [
+    {
+     "startSeconds": 0,
+     "endSeconds": 3,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "石板边，咕嘎搭着的鞋子",
+     "characters": [
+      "咕嘎",
+      "蜗牛"
+     ],
+     "framing": "贴地侧面特写（鞋子构图）：橙红色小鞋子搭在石板边。",
+     "camera": "切到此机位，固定，中段溶镜",
+     "visibleAction": "阳光光斑从石板左端慢慢移到右端；溶镜间，蜗牛的触角碰到鞋尖，爬上鞋面，停在鞋面上；最后小鞋子动了两下，蜗牛跟着轻轻一晃。",
+     "dialogue": [],
+     "soundDesign": "无人声。微风和远处鸟鸣，鞋子动时有一下极轻的布料声。"
+    },
+    {
+     "startSeconds": 3,
+     "endSeconds": 6,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "草地上咕嘎的脸",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "与之前脸部特写同一构图，她脸上的光已经变斜。",
+     "camera": "切回此构图，固定",
+     "visibleAction": "咕嘎动了动，睁开眼，眼睛第一时间看向她前方原来蜗牛所在的石板。",
+     "dialogue": [],
+     "soundDesign": "镜头开头一声弱弱的鼻音「嗯…」；第4.6秒和第5秒两下急吸气，正对睁眼的动作。"
+    },
+    {
+     "startSeconds": 6,
+     "endSeconds": 8,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "咕嘎脸前的石板",
+     "characters": [],
+     "framing": "咕嘎视角，原来那块石板，空空的，被斜阳照着。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "石板上什么都没有。",
+     "dialogue": [],
+     "soundDesign": "无人声。只有风声。"
+    }
+   ],
+   "continuityOut": "咕嘎醒来，仍趴在草地上。蜗牛停在她右脚的鞋面上，水壶在她头旁。",
+   "acceptanceCriteria": [
+    "阳光从石板一端移到另一端看得出来",
+    "蜗牛爬上鞋面的过程可见",
+    "她醒后先看向原来的石板，石板是空的"
+   ]
+  },
+  {
+   "sourceSceneIds": [
+    "S3"
+   ],
+   "durationSeconds": 8,
+   "storyPurpose": "咕嘎撑起身左右找、瞅水壶后面，着急地问，准备起身时才看到鞋上的蜗牛。",
+   "emotionalTarget": "迷糊的着急，最后一下子愣住。",
+   "transitionIn": {
+    "type": "continuous",
+    "description": "接她看见空石板之后，立刻撑起身。"
+   },
+   "beats": [
+    {
+     "startSeconds": 0,
+     "endSeconds": 2,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "草地边",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "正面中景，咕嘎在画中。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "咕嘎一下用两只翅膀撑起上身坐起，先往画左看，再往画右看。",
+     "dialogue": [],
+     "soundDesign": "草叶一阵窸窣；咕嘎两下短促的鼻息，随转头的节奏。"
+    },
+    {
+     "startSeconds": 2,
+     "endSeconds": 4,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "咕嘎左侧的水壶旁",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "中近景，水壶在画左，咕嘎探身歪头。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "咕嘎歪着头，探身瞅了瞅水壶后面，什么也没有。",
+     "dialogue": [],
+     "soundDesign": "衣服轻擦草叶；咕嘎闭着嘴发出一声疑惑的「嗯？」。"
+    },
+    {
+     "startSeconds": 4,
+     "endSeconds": 6,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "草地边",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "与本片段第一个镜头同一正面中景。",
+     "camera": "切回此机位，固定",
+     "visibleAction": "咕嘎发问，然后弯起右腿、把右脚抬起一点准备站起来，同时目光往下一瞥。",
+     "dialogue": [
+      {
+       "speaker": "咕嘎",
+       "text": "咕嘎？",
+       "source": "onscreen",
+       "timing": "约第4.2秒，迷糊里带点着急，问完开始抬脚"
+      }
+     ],
+     "soundDesign": "镜头末尾，咕嘎往下瞥时倒吸一口气。"
+    },
+    {
+     "startSeconds": 6,
+     "endSeconds": 8,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "咕嘎抬起的右脚",
+     "characters": [
+      "咕嘎",
+      "蜗牛"
+     ],
+     "framing": "俯拍特写：右脚的鞋刚离开石板一点，鞋面上停着小小的壳，触角竖着。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "鞋子悬着不动，蜗牛在鞋面上慢慢挪了一点。",
+     "dialogue": [],
+     "soundDesign": "无人声。安静的院子风声。"
+    }
+   ],
+   "continuityOut": "咕嘎坐着，右脚稍微抬起，鞋面上停着蜗牛。",
+   "acceptanceCriteria": [
+    "寻找动作依次是：左右看、看水壶后面",
+    "倒吸气在发现之前，发现的镜头里没有人声"
+   ]
+  },
+  {
+   "sourceSceneIds": [
+    "S3"
+   ],
+   "durationSeconds": 8,
+   "storyPurpose": "咕嘎轻轻放平脚，盯着蜗牛想不明白，然后伸着腿撑着翅膀坐着等。",
+   "emotionalTarget": "想不通的困惑，变成不吭声的耐心。",
+   "transitionIn": {
+    "type": "continuous",
+    "description": "接她看到鞋上蜗牛，脚还悬着。"
+   },
+   "beats": [
+    {
+     "startSeconds": 0,
+     "endSeconds": 2,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "草地边",
+     "characters": [
+      "咕嘎",
+      "蜗牛"
+     ],
+     "framing": "侧面中景，咕嘎坐着，右腿朝画右伸向石板。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "抬起的脚停住；她慢慢坐回去，把右脚小心地放平在石板上。",
+     "dialogue": [],
+     "soundDesign": "她屏着气，只有衣服的轻擦声和鞋底贴回石板的一下轻响。"
+    },
+    {
+     "startSeconds": 2,
+     "endSeconds": 5,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "咕嘎的鞋前",
+     "characters": [
+      "咕嘎",
+      "蜗牛"
+     ],
+     "framing": "贴地特写：前景是鞋面和上面的蜗牛，后景是咕嘎凑近的脸。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "咕嘎把脑袋凑近盯着蜗牛，目光转向画左原来那块石板，又转回鞋上，歪着头一脸没想明白。",
+     "dialogue": [],
+     "soundDesign": "咕嘎闭着嘴发出一声拐着弯的「嗯…？」，与歪头同时。"
+    },
+    {
+     "startSeconds": 5,
+     "endSeconds": 8,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "石板路与草地交界",
+     "characters": [
+      "咕嘎",
+      "蜗牛"
+     ],
+     "framing": "与睡着时同一机位的侧面固定全景。画左的水壶已被树荫盖住，咕嘎坐在中间，腿伸向画右的石板。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "咕嘎把腿伸好，两只小翅膀撑在身后，坐着不动；蜗牛在鞋面上慢慢朝鞋的右边挪。",
+     "dialogue": [],
+     "soundDesign": "微风、远处鸟鸣；咕嘎一下轻长的鼻息。"
+    }
+   ],
+   "continuityOut": "咕嘎伸腿坐着，双翅撑在身后。蜗牛在鞋面右侧，快到鞋边；水壶在画左的树荫里。",
+   "acceptanceCriteria": [
+    "脚是小心放平的，没有抖掉蜗牛",
+    "看得出她来回看石板和鞋子",
+    "全景里水壶已在树荫中"
+   ]
+  },
+  {
+   "sourceSceneIds": [
+    "S3"
+   ],
+   "durationSeconds": 7,
+   "storyPurpose": "蜗牛从鞋边爬回石板，咕嘎收脚站起、拍掉草屑，往前走了两步，又停下回头。",
+   "emotionalTarget": "松一口气的轻快，然后「好像忘了什么」。",
+   "transitionIn": {
+    "type": "ellipsis",
+    "description": "压缩一小段等待，直接接蜗牛下鞋。"
+   },
+   "beats": [
+    {
+     "startSeconds": 0,
+     "endSeconds": 2,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "石板边，咕嘎的鞋子",
+     "characters": [
+      "咕嘎",
+      "蜗牛"
+     ],
+     "framing": "与第7片段第一个镜头同一构图的贴地鞋子特写。",
+     "camera": "切回此构图，固定",
+     "visibleAction": "蜗牛从鞋边慢慢挪下，回到石板上，继续朝画右爬。",
+     "dialogue": [],
+     "soundDesign": "风声。蜗牛落到石板上时，咕嘎在画内长长地、轻轻地呼出一口气。"
+    },
+    {
+     "startSeconds": 2,
+     "endSeconds": 4,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "草地边",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "侧面全身中景。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "咕嘎轻轻收回右脚站起来，顺手用小翅膀拍拍衣服，草屑掉落。",
+     "dialogue": [],
+     "soundDesign": "拍衣服两下噗噗的轻响；咕嘎轻快地哼了一小句。"
+    },
+    {
+     "startSeconds": 4,
+     "endSeconds": 7,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "石板路，朝画右",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "侧面中全景，咕嘎从画中走向画右。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "咕嘎朝画右走了两步，忽然停住，回过头望向画左。",
+     "dialogue": [],
+     "soundDesign": "两下鞋子踩石板的轻响。镜头末尾，咕嘎回头时倒吸一口气。"
+    }
+   ],
+   "continuityOut": "咕嘎站在石板路上，面朝画右，头回望向画左。蜗牛在她身后的石板上，水壶在更左边的树荫里。",
+   "acceptanceCriteria": [
+    "蜗牛爬回石板的过程可见",
+    "咕嘎是在蜗牛下鞋之后才收脚",
+    "停步回头前有吸气"
+   ]
+  },
+  {
+   "sourceSceneIds": [
+    "S3"
+   ],
+   "durationSeconds": 9,
+   "storyPurpose": "咕嘎看见树荫里的水壶，赶紧折回抱起，弯腰看了蜗牛一眼，然后朝屋檐走去。",
+   "emotionalTarget": "猛然想起的慌张，和向蜗牛道别般的轻轻一瞥。",
+   "transitionIn": {
+    "type": "continuous",
+    "description": "接她回头望向画左。"
+   },
+   "beats": [
+    {
+     "startSeconds": 0,
+     "endSeconds": 2,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "树荫下的石板",
+     "characters": [],
+     "framing": "咕嘎视角，水壶立在画中的树荫里。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "水壶静静立着，叶影在它身上轻晃。",
+     "dialogue": [],
+     "soundDesign": "无人声。树叶沙沙。"
+    },
+    {
+     "startSeconds": 2,
+     "endSeconds": 4,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "石板路",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "侧面全景，水壶在画左。",
+     "camera": "切到此机位，固定（与上一镜方向相同，人物真的往回走，所以朝画左）",
+     "visibleAction": "咕嘎从画右小跑着往画左折回，停到水壶旁。",
+     "dialogue": [],
+     "soundDesign": "小鞋子嗒嗒的碎步声；起跑时咕嘎在画内一声急急的短叫「咕嘎！」（叫声，不是台词）。"
+    },
+    {
+     "startSeconds": 4,
+     "endSeconds": 6,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "树荫下的水壶",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "俯拍特写，两只小翅膀从左右两侧伸进来。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "两只翅膀抱住提手，把水壶抱起来。",
+     "dialogue": [],
+     "soundDesign": "抱起时咕嘎一声短促的用力声「嗯！」；壶里水晃响。"
+    },
+    {
+     "startSeconds": 6,
+     "endSeconds": 9,
+     "sourceSceneIds": [
+      "S3"
+     ],
+     "location": "石板上，蜗牛所在处",
+     "characters": [
+      "咕嘎",
+      "蜗牛"
+     ],
+     "framing": "低机位中景，前景画右下是石板上的蜗牛。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "咕嘎抱着壶从画左走进来，经过蜗牛时弯腰看了它一眼，没有蹲下，直起身朝画右走出画；画面停在继续爬的蜗牛上约半秒。",
+     "dialogue": [],
+     "soundDesign": "弯腰时咕嘎闭着嘴发出轻轻的「嗯～」；脚步声朝画右远去；水在壶里轻晃。"
+    }
+   ],
+   "continuityOut": "咕嘎抱着水壶从画右出画，往屋檐方向走去；蜗牛留在石板上朝画右爬。",
+   "acceptanceCriteria": [
+    "先看到水壶，她才折回",
+    "抱壶仍是双翅抱提手",
+    "这次只弯腰看一眼，没有蹲下"
+   ]
+  },
+  {
+   "sourceSceneIds": [
+    "S4"
+   ],
+   "durationSeconds": 10,
+   "storyPurpose": "咕嘎来到檐下，蹲在第一盆花旁，认认真真地浇水，全片停在这一刻。",
+   "emotionalTarget": "安静、专注、事情终于做上了的踏实。",
+   "transitionIn": {
+    "type": "cut",
+    "description": "换到屋檐下的墙边。咕嘎从画左进来，继续朝画右走，与上一片段的出画方向一致。"
+   },
+   "beats": [
+    {
+     "startSeconds": 0,
+     "endSeconds": 3,
+     "sourceSceneIds": [
+      "S4"
+     ],
+     "location": "屋檐下的墙边，四盆花排开",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "固定全景：屋檐阴影下四盆花排在墙边，左边第一盆离画左最近。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "画面先空约半秒，咕嘎抱着壶从画左走进来，停在第一盆花旁，蹲下。",
+     "dialogue": [],
+     "soundDesign": "檐下安静的环境声，远处鸟鸣，微风；鞋子在石板上轻轻几下。"
+    },
+    {
+     "startSeconds": 3,
+     "endSeconds": 5,
+     "sourceSceneIds": [
+      "S4"
+     ],
+     "location": "第一盆花旁",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "侧面特写：两只翅膀抱着提手，壶嘴朝向花盆。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "咕嘎抱着提手，整个身体慢慢往前倾，壶嘴跟着往下斜。",
+     "dialogue": [],
+     "soundDesign": "壶里的水往壶嘴流动的轻响；咕嘎屏着气，鼻子里极轻地「嗯」了一下。"
+    },
+    {
+     "startSeconds": 5,
+     "endSeconds": 7,
+     "sourceSceneIds": [
+      "S4"
+     ],
+     "location": "花盆土面",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "俯拍特写：画上方是壶嘴和咕嘎翅膀的边缘，画中是盆土。",
+     "camera": "切到此机位，固定",
+     "visibleAction": "细细的水流落进土里，土色一圈圈变深。",
+     "dialogue": [],
+     "soundDesign": "细水流落进泥土的沙沙声。"
+    },
+    {
+     "startSeconds": 7,
+     "endSeconds": 10,
+     "sourceSceneIds": [
+      "S4"
+     ],
+     "location": "第一盆花旁",
+     "characters": [
+      "咕嘎"
+     ],
+     "framing": "侧面中景，咕嘎蹲在花盆左边，低头看着水流。",
+     "camera": "切到此机位，固定，停到片尾",
+     "visibleAction": "咕嘎低着头，专注地盯着壶嘴下的水流，一动不动地认真浇着。",
+     "dialogue": [],
+     "soundDesign": "水流声持续，檐下的风声很轻；咕嘎闭着嘴，低低地、断续地哼着。"
+    }
+   ],
+   "continuityOut": "咕嘎蹲在第一盆花旁，前倾着身体，水流仍在落进土里，全片结束。",
+   "acceptanceCriteria": [
+    "浇的是左边第一盆",
+    "倾壶靠身体前倾，没有手指动作",
+    "片尾停在她低头专注浇水的画面"
+   ]
+  }
+ ]
+}

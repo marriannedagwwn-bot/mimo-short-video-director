@@ -112,7 +112,15 @@ function metrics(design, fullStory) {
     protagonistVoiced: beats.filter((beat) => (beat.dialogue || []).some((row) => row.speaker === protagonist)
       || new RegExp(`${protagonist}[^，。；]{0,12}(?:叫|喊|哼|笑|「|“)`, "u").test(beat.soundDesign || "")).length,
     beatsWithDirectionWords: beats.filter((beat) => count(`${beat.framing} ${beat.camera} ${beat.visibleAction}`, DIRECTION_WORDS) > 0).length,
-    beatTextChars: beats.reduce((sum, beat) => sum + `${beat.framing}${beat.camera}${beat.visibleAction}${beat.soundDesign}`.length, 0)
+    beatTextChars: beats.reduce((sum, beat) => sum + `${beat.framing}${beat.camera}${beat.visibleAction}${beat.soundDesign}`.length, 0),
+    // 以下同样只是表面计数（2026-10-20 全集写法）：和手写的《咕嘎和蜗牛》《请对我凶一点》同一口径，写得对不对要逐份读。
+    maxBeatsPerShot: shots.reduce((max, shot) => Math.max(max, Array.isArray(shot.beats) ? shot.beats.length : 0), 0),
+    silentBeats: beats.filter((beat) => /无人声/u.test(beat.soundDesign || "")).length,
+    sameCompositionBeats: beats.filter((beat) => /同一构图|同构图/u.test(`${beat.framing} ${beat.camera}`)).length,
+    dialogueBeatSeconds: (() => {
+      const rows = beats.filter((beat) => (Array.isArray(beat.dialogue) ? beat.dialogue : []).length);
+      return rows.length ? rows.reduce((sum, beat) => sum + Number(beat.endSeconds) - Number(beat.startSeconds), 0) / rows.length : 0;
+    })()
   };
 }
 
@@ -145,6 +153,12 @@ function renderSummary({ runs, options, startedAt, projected }) {
     const m = run.metrics || {};
     const u = run.usage || {};
     lines.push(`| ${run.model} | ${run.sample} | ${run.error ? `调用失败：${run.error}` : run.codes.length ? run.codes.join("、") : "通过"} | ${m.shots ?? "—"} / ${m.beats ?? "—"} | ${m.totalSeconds ?? "—"} 秒 | ${m.beats ? (m.totalSeconds / m.beats).toFixed(1) : "—"} 秒 | ${m.minBeatSeconds ?? "—"} / ${m.beatsUnder1s ?? "—"} / ${m.nonIntegerBeats ?? "—"} | ${m.emptyBeats ?? "—"} / ${m.opensOnEmptyShot === undefined ? "—" : m.opensOnEmptyShot ? "是" : "否"} | ${m.closeUps ?? "—"} / ${m.povShots ?? "—"} / ${m.specialAngles ?? "—"} / ${m.movingCamera ?? "—"} | ${m.protagonistVoiced ?? "—"}/${m.beats ?? "—"} | ${m.beatsNamingCharacterInSound ?? "—"}/${m.beats ?? "—"} | ${m.dialogueNotInStory ?? "—"}/${m.dialogueLines ?? "—"} | ${m.beatsWithDirectionWords ?? "—"}/${m.beats ?? "—"} | ${m.beatTextChars ?? "—"} | ${u.input_tokens ?? "—"} / ${u.output_tokens ?? "—"}（${u.output_tokens_details?.thinking_tokens ?? "—"}） | ${run.costUsd === undefined ? "—" : `$${run.costUsd.toFixed(3)}`} | ${Math.round(run.durationMs / 1000)} 秒 |`);
+  }
+  lines.push("", "全集写法补充（表面计数，和手写版同一口径；手写《咕嘎和蜗牛》：每段最多 4 镜、特写 38%、写明无人声 17/81、写明同一构图 19/81、有台词的镜头平均 3.5 秒）：", "",
+    "| 型号 | 次 | 每段最多镜头 | 特写占比 | 写明「无人声」的 beat | 写明同一构图的 beat | 有台词 beat 平均 |", "|---|---|---|---|---|---|---|");
+  for (const run of runs) {
+    const m = run.metrics || {};
+    lines.push(`| ${run.model} | ${run.sample} | ${m.maxBeatsPerShot ?? "—"} | ${m.beats ? `${Math.round((100 * m.closeUps) / m.beats)}%` : "—"} | ${m.silentBeats ?? "—"}/${m.beats ?? "—"} | ${m.sameCompositionBeats ?? "—"}/${m.beats ?? "—"} | ${m.dialogueBeatSeconds ? `${m.dialogueBeatSeconds.toFixed(1)} 秒` : "—"} |`);
   }
   const total = runs.reduce((sum, run) => sum + (run.costUsd || 0), 0);
   lines.push("", `合计费用约 $${total.toFixed(2)}（按官方单价与实际用量算；调用失败但已产生输出的也计入）。`);
