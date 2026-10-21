@@ -197,6 +197,8 @@ test("审阅不把新写法里的空镜、留空、先局部后脸、人声、�
     assert.ok(prompt.includes(phrase), phrase);
   }
   assert.ok(prompt.startsWith("你是分镜修稿编辑。"), "测试替身靠开头一句认出审阅");
+  // 2026-10-21：Claude 带结构化输出后 5 份审阅里有 1 份整份写成英文；提示词此前从没写过用什么语言。
+  assert.ok(prompt.includes("所有文字用中文写，quote 照原文逐字复制。"));
 });
 
 test("片段数由模型自己决定，不锁 shotPlan 条数", async () => {

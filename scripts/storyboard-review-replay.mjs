@@ -117,9 +117,13 @@ function describeMiss(quote, lookup, id) {
   return { kind, distance: near.distance, matched: near.matched, ops: near.ops };
 }
 
+// 2026-10-21 起另数「以英文为主的文字字段」：字母多于汉字就算。quote 不算，它照原文复制。
+const mostlyEnglish = (text) => typeof text === "string" && (text.match(/[A-Za-z]/gu) || []).length > (text.match(/[\u4e00-\u9fff]/gu) || []).length;
+
 function analyzeReview(value, { input, plan }, catalog) {
   const problems = [];
-  const stats = { items: 0, quotes: 0, verbatimQuotes: 0, quoteChars: 0 };
+  const stats = { items: 0, quotes: 0, verbatimQuotes: 0, quoteChars: 0, textFields: 0, englishFields: 0 };
+  const countText = (text) => { stats.textFields += 1; if (mostlyEnglish(text)) stats.englishFields += 1; };
   const add = (code, pointer, detail) => problems.push({ code, pointer, detail });
   if (!value || typeof value !== "object" || Array.isArray(value)) { add("TOP_NOT_OBJECT", "/", typeof value); return { problems, stats }; }
   const keys = Object.keys(value).sort().join(",");
@@ -127,7 +131,7 @@ function analyzeReview(value, { input, plan }, catalog) {
   for (const key of ["strengths", "guidance"]) {
     const arr = value[key];
     if (!Array.isArray(arr)) add("TOP_FIELD_NOT_ARRAY", `/${key}`, arr === undefined ? "缺失" : typeof arr);
-    else arr.forEach((text, i) => { if (typeof text !== "string" || !text.trim()) add("TOP_FIELD_ITEM_NOT_STRING", `/${key}/${i}`, Array.isArray(text) ? "数组" : typeof text); });
+    else arr.forEach((text, i) => { countText(text); if (typeof text !== "string" || !text.trim()) add("TOP_FIELD_ITEM_NOT_STRING", `/${key}/${i}`, Array.isArray(text) ? "数组" : typeof text); });
   }
   if (!Array.isArray(value.items)) { add("ITEMS_NOT_ARRAY", "/items", typeof value.items); return { problems, stats }; }
   if (value.items.length > 8) add("ITEMS_TOO_MANY", "/items", String(value.items.length));
@@ -141,6 +145,7 @@ function analyzeReview(value, { input, plan }, catalog) {
     if (item.ref !== `I${index + 1}`) add("ITEM_REF", `${at}/ref`, String(item.ref));
     for (const key of ["reportedProblem", "guidance"]) {
       const v = item[key];
+      countText(v);
       if (typeof v !== "string" || !v.trim()) add(`ITEM_${key.toUpperCase()}_NOT_STRING`, `${at}/${key}`, Array.isArray(v) ? `数组（${v.length} 条）` : v === undefined ? "缺失" : typeof v);
     }
     if (!Array.isArray(item.originalEvidence) || !item.originalEvidence.length) { add("ITEM_EVIDENCE_EMPTY", `${at}/originalEvidence`, typeof item.originalEvidence); return; }
@@ -205,14 +210,14 @@ function renderSummary({ runs, baseline, options, startedAt, promptChars, claude
     for (const row of baseline) lines.push(`| ${row.file} | ${row.verdict.pass ? "通过" : row.verdict.codes.join("、")} | ${row.analysis.problems.length ? row.analysis.problems.map(problemLine).join("<br>") : "无问题"} |`);
     lines.push("");
   }
-  lines.push("## 每次调用", "", "| 型号 | 次 | 第几次调用 | 生产判据 | 全量扫描到的问题 | 意见条数 / 引用数 / 逐字对上 | 输入 / 输出 token | 费用 | 耗时 |", "|---|---|---|---|---|---|---|---|---|");
+  lines.push("## 每次调用", "", "| 型号 | 次 | 第几次调用 | 生产判据 | 全量扫描到的问题 | 意见条数 / 引用数 / 逐字对上 | 英文为主的文字字段 | 输入 / 输出 token | 费用 | 耗时 |", "|---|---|---|---|---|---|---|---|---|---|");
   for (const run of runs) {
     for (const a of run.attempts) {
       const s = a.analysis?.stats || {};
-      lines.push(`| ${run.model} | ${run.sample} | ${a.callIndex + 1} | ${attemptLabel(a)} | ${a.analysis?.problems.length ? a.analysis.problems.map(problemLine).join("<br>") : a.analysis ? "无" : "—"} | ${s.items ?? "—"} / ${s.quotes ?? "—"} / ${s.verbatimQuotes ?? "—"} | ${a.usage?.input_tokens ?? a.usage?.prompt_tokens ?? "—"} / ${a.usage?.output_tokens ?? a.usage?.completion_tokens ?? "—"} | ${a.costUsd === undefined ? "—" : `$${a.costUsd.toFixed(3)}`} | ${Math.round((a.durationMs || 0) / 1000)} 秒 |`);
+      lines.push(`| ${run.model} | ${run.sample} | ${a.callIndex + 1} | ${attemptLabel(a)} | ${a.analysis?.problems.length ? a.analysis.problems.map(problemLine).join("<br>") : a.analysis ? "无" : "—"} | ${s.items ?? "—"} / ${s.quotes ?? "—"} / ${s.verbatimQuotes ?? "—"} | ${s.textFields === undefined ? "—" : `${s.englishFields}/${s.textFields}`} | ${a.usage?.input_tokens ?? a.usage?.prompt_tokens ?? "—"} / ${a.usage?.output_tokens ?? a.usage?.completion_tokens ?? "—"} | ${a.costUsd === undefined ? "—" : `$${a.costUsd.toFixed(3)}`} | ${Math.round((a.durationMs || 0) / 1000)} 秒 |`);
     }
   }
-  lines.push("", "## 汇总", "", "| 型号 | 样本 | 第一次通过 | 这一步通过（预算内） | 第一次失败形状 | 每条引用逐字对上 | 费用 |", "|---|---|---|---|---|---|---|");
+  lines.push("", "## 汇总", "", "| 型号 | 样本 | 第一次通过 | 这一步通过（预算内） | 第一次失败形状 | 每条引用逐字对上 | 有英文为主字段的调用 | 费用 |", "|---|---|---|---|---|---|---|---|");
   for (const model of options.models) {
     const mine = runs.filter((run) => run.model === model);
     const first = mine.map((run) => run.attempts[0]).filter(Boolean);
@@ -223,7 +228,8 @@ function renderSummary({ runs, baseline, options, startedAt, promptChars, claude
     const quotes = analysed.reduce((sum, a) => sum + a.analysis.stats.quotes, 0);
     const verbatim = analysed.reduce((sum, a) => sum + a.analysis.stats.verbatimQuotes, 0);
     const cost = mine.flatMap((run) => run.attempts).reduce((sum, a) => sum + (a.costUsd || 0), 0);
-    lines.push(`| ${model} | ${mine.length} | ${firstPass}/${first.length} | ${stepPass}/${mine.length} | ${shapes} | ${verbatim}/${quotes} | ${providerOf(model) === "Claude" ? `$${cost.toFixed(2)}` : "—（MiMo 没有单价）"} |`);
+    const english = analysed.filter((a) => a.analysis.stats.englishFields > 0).length;
+    lines.push(`| ${model} | ${mine.length} | ${firstPass}/${first.length} | ${stepPass}/${mine.length} | ${shapes} | ${verbatim}/${quotes} | ${english}/${analysed.length} | ${providerOf(model) === "Claude" ? `$${cost.toFixed(2)}` : "—（MiMo 没有单价）"} |`);
   }
   const total = runs.flatMap((run) => run.attempts).reduce((sum, a) => sum + (a.costUsd || 0), 0);
   lines.push("", `Claude 合计约 $${total.toFixed(2)}（按官方单价与实际用量算，失败但已产生输出的也计入）。每次调用的原文在 raw/。`);
