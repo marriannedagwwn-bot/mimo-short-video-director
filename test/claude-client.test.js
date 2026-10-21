@@ -153,6 +153,31 @@ test("请求体：只有 model/max_tokens/system/messages/stream/thinking，没�
   }
 });
 
+test("结构化输出：只有拿到 claudeResponseSchema 才发 output_config.format；responseSchema 仍被忽略（2026-10-21）", async (t) => {
+  const schema = { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false };
+  const withSchema = buildClaudeRequestBody(clientConfig(), { prompt: "p" }, { claudeResponseSchema: { name: "fixture", schema } });
+  assert.deepEqual(withSchema.output_config, { format: { type: "json_schema", schema } });
+  // 与 effort 并存，effort 照旧在 output_config 里。
+  assert.deepEqual(
+    buildClaudeRequestBody(clientConfig({ effort: "low" }), { prompt: "p" }, { claudeResponseSchema: { name: "fixture", schema } }).output_config,
+    { effort: "low", format: { type: "json_schema", schema } }
+  );
+  // 给 MiMo 派生的 responseSchema 用了 Claude 不支持的关键字，照旧不发。
+  const mimoOnly = buildClaudeRequestBody(clientConfig(), { prompt: "p" }, { responseSchema: { name: "fixture", schema } });
+  assert.equal(JSON.stringify(mimoOnly), JSON.stringify(buildClaudeRequestBody(clientConfig(), { prompt: "p" })));
+  assert.throws(() => buildClaudeRequestBody(clientConfig(), { prompt: "p" }, { claudeResponseSchema: { name: "fixture" } }), /claudeResponseSchema 必须是/u);
+
+  // 经 coordinator 那条路（requestCompletion）真的发出去，generateJson 那条路也带着。
+  const requests = mockFetch(t, () => anthropicSseResponse({ content: '{"ok":true}' }));
+  const client = new ClaudeClient(clientConfig());
+  await client.requestCompletion({ prompt: "p", claudeResponseSchema: { name: "fixture", schema } });
+  assert.deepEqual(requests[0].body.output_config, { format: { type: "json_schema", schema } });
+  assert.deepEqual(await client.generateJson({ prompt: "p", strictJson: true, claudeResponseSchema: { name: "fixture", schema } }), { ok: true });
+  assert.deepEqual(requests[1].body.output_config, { format: { type: "json_schema", schema } });
+  await client.requestCompletion({ prompt: "p" });
+  assert.equal("output_config" in requests[2].body, false);
+});
+
 test("CLAUDE_API_EFFORT 只接受官方五档，写错在构造客户端时就报错", () => {
   for (const effort of ["low", "medium", "high", "xhigh", "max", "HIGH", ""]) new ClaudeClient(clientConfig({ effort }));
   assert.throws(() => new ClaudeClient(clientConfig({ effort: "extreme" })), /CLAUDE_API_EFFORT 只能是/u);

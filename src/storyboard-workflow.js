@@ -5,7 +5,7 @@ import { currentDurableTaskContext, durableTaskHeartbeat } from "./durable-task-
 import { fullStoryCharacterFacts } from "./full-story-contract.js";
 import { storyCharacterNames, fullStoryCharacterRegistryInput, mergeFullStoryCharacterRegistry, mockFullStoryCharacterRegistry } from "./full-story-character-registry.js";
 import { fullStoryCharacterRegistryPrompt } from "./full-story-character-registry-prompt.js";
-import { STORYBOARD_LOCKED_DIALOGUE_KEPT_CONTENT, storyboardPrompt, storyboardPromptWithLockedDialogue, storyboardRetryPrompt, storyboardSystem, shotPrompt, shotPromptRetryPrompt } from "./storyboard-prompts.js";
+import { STORYBOARD_LOCKED_DIALOGUE_KEPT_CONTENT, storyboardPrompt, storyboardPromptWithLockedDialogue, storyboardRetryPrompt, storyboardReviewRetryPrompt, storyboardSystem, shotPrompt, shotPromptRetryPrompt } from "./storyboard-prompts.js";
 import { STORY_MODE_FULL_TEXT } from "../public/story-entry.js";
 import { ModelPipelineError } from "./model-errors.js";
 import { storyboardReviewPrompt, validateStoryboardReview } from "./storyboard-review.js";
@@ -13,12 +13,16 @@ import { storyboardRevisionPrompt } from "./storyboard-revision-prompt.js";
 import { applyEditorial, revisionSystem } from "./storyboard-editorial.js";
 import { ensureStoryboardDesign, ensureStoryboardPlan, storyboardDesignFromPlan } from "./storyboard-contract.js";
 import { STORYBOARD_DESIGN_MODEL_SCHEMA_NAME, storyboardDesignModelSchema } from "./contracts/storyboard-design-model-schema.js";
+import { storyboardReviewClaudeResponseSchema } from "./contracts/storyboard-review-claude-schema.js";
 import { InputError, OutputContractError, ensureOutputContract, ensureFullStoryMatchesProfile, ensureCharacterReferenceMatchesBoundary,
   characterReferenceRestorableMissingTraits,
   normalizeBackgroundMusicMode, requireAnimationPlanAspectRatio, NO_BACKGROUND_MUSIC_SENTENCE } from "./validation.js";
 import { normalizeCharacterArtStyle } from "../public/character-art-style.js";
 
 const STORYBOARD_DESIGN_RESPONSE_SCHEMA = { name: STORYBOARD_DESIGN_MODEL_SCHEMA_NAME, schema: storyboardDesignModelSchema() };
+// 审阅与终审复查共用：只有 Claude 客户端读 claudeResponseSchema，另外三家按参数名解构、不认识就忽略，
+// 所以 MiMo 的审阅请求体逐字不变（2026-10-21）。重试话术也换成审阅自己的。
+const STORYBOARD_REVIEW_CALL_OPTIONS = { claudeResponseSchema: storyboardReviewClaudeResponseSchema(), retryPromptFor: storyboardReviewRetryPrompt };
 
 // storyEntry 只由服务端在剧情入口的 Run 上传入，用来按剧情入口的摘要验角色边界；
 // projected 不因它多出任何键（整份 projected 会原样序列化进分镜提示词）。
@@ -85,7 +89,7 @@ function storyboardPipelineFailure(error, rejections = []) {
   });
 }
 
-async function call(workflow, settings, stage, prompt, validate, { systemPrompt = storyboardSystem, telemetry = null, responseSchema = null, onStep = null, retryPromptFor = storyboardRetryPrompt } = {}) {
+async function call(workflow, settings, stage, prompt, validate, { systemPrompt = storyboardSystem, telemetry = null, responseSchema = null, claudeResponseSchema = null, onStep = null, retryPromptFor = storyboardRetryPrompt } = {}) {
   await onStep?.(stage);
   const rejections = [];
   const record = stageAttemptRecorder(workflow, stage);
@@ -96,7 +100,7 @@ async function call(workflow, settings, stage, prompt, validate, { systemPrompt 
     return await workflow.modelCallCoordinator.runJson({
       client: settings.client, provider: settings.provider, stage,
       request: { prompt, systemPrompt, model: settings.model, maxCompletionTokens: settings.maxCompletionTokens, requestTimeoutMs: settings.requestTimeoutMs,
-        ...(responseSchema ? { responseSchema } : {}) },
+        ...(responseSchema ? { responseSchema } : {}), ...(claudeResponseSchema ? { claudeResponseSchema } : {}) },
       maxProviderCalls: STORYBOARD_PROVIDER_CALL_BUDGET,
       attemptObserver: async (attempt) => {
         providerCalls += 1;
@@ -154,7 +158,7 @@ export async function createStoryboardPlan(workflow, input, { storyEntry = null 
   } else {
     workflow.assertStageClient(settings, "自主分镜");
     design = await call(workflow, settings, "storyboardDesign", (dialogueLocked ? storyboardPromptWithLockedDialogue : storyboardPrompt)(projected), value => ensureStoryboardDesign(value, projected), { telemetry: calls, responseSchema: STORYBOARD_DESIGN_RESPONSE_SCHEMA, onStep });
-    initialReview = await call(workflow, settings, "storyboardReview", storyboardReviewPrompt({ input: projected, plan: design }), value => validateStoryboardReview(value, { input: projected, plan: design }), { telemetry: calls, onStep });
+    initialReview = await call(workflow, settings, "storyboardReview", storyboardReviewPrompt({ input: projected, plan: design }), value => validateStoryboardReview(value, { input: projected, plan: design }), { telemetry: calls, onStep, ...STORYBOARD_REVIEW_CALL_OPTIONS });
     guidance.push(...initialReview.guidance);
     if (initialReview.items.length) {
       const context = { input: projected, plan: design, items: initialReview.items, keptContent: [
@@ -172,7 +176,7 @@ export async function createStoryboardPlan(workflow, input, { storyEntry = null 
       repairs = merged.rows;
       guidance.push(...repairs.map(row => row.note));
       if (repairs.some(row => row.status === "applied")) {
-        finalReview = await call(workflow, settings, "storyboardReviewFinal", storyboardReviewPrompt({ input: projected, plan: design }), value => validateStoryboardReview(value, { input: projected, plan: design }), { telemetry: calls, onStep });
+        finalReview = await call(workflow, settings, "storyboardReviewFinal", storyboardReviewPrompt({ input: projected, plan: design }), value => validateStoryboardReview(value, { input: projected, plan: design }), { telemetry: calls, onStep, ...STORYBOARD_REVIEW_CALL_OPTIONS });
         guidance.push(...finalReview.guidance);
       }
     }

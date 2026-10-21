@@ -12,10 +12,11 @@
 // - stop_reason 只统一两个值：max_tokens / model_context_window_exceeded → "length"（截断），
 //   refusal → "content_filter"（审核拦截，不可重试）。其余照抄 Anthropic 的原值。
 // - 不开 server-side fallbacks：被拒时它会自动换另一个模型继续跑，等于静默换模型。
-// - 不发 output_config.format：结构化输出不支持我们 Schema 里的 minLength / maxItems / minimum，
-//   直接发会 400；JSON 靠提示词、本地严格解析与已有的重试预算（整段被一对代码块包着时先去掉包裹，
-//   见 unwrapWholeCodeFence）。responseSchema 参数在这里被忽略，
-//   与千问、DeepSeek 一样。
+// - 只在阶段明确给了 Claude 版 Schema（claudeResponseSchema）时才发 output_config.format（2026-10-21，
+//   目前只有 4.0 分镜审阅与终审复查）。responseSchema 参数在这里仍被忽略，与千问、DeepSeek 一样：
+//   那几份是给 MiMo 派生的，用了 minLength / maxItems / minimum，Claude 的结构化输出不支持，直接发会 400。
+//   其余阶段的 JSON 靠提示词、本地严格解析与已有的重试预算（整段被一对代码块包着时先去掉包裹，
+//   见 unwrapWholeCodeFence）。
 // - 不发 temperature / top_p：这几个型号不接受或只接受默认值。不做 assistant 预填（会 400）。
 // 只用官方文档写明的事；出处与核对日期写在用到的地方。
 
@@ -135,7 +136,8 @@ export class ClaudeClient {
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
     strictJson = false,
-    onCompletion = null
+    onCompletion = null,
+    claudeResponseSchema = null
   } = {}) {
     return this.requestJson({
       prompt,
@@ -145,7 +147,8 @@ export class ClaudeClient {
       requestTimeoutMs,
       jsonRetryAttempts,
       strictJson,
-      onCompletion
+      onCompletion,
+      claudeResponseSchema
     });
   }
 
@@ -169,7 +172,8 @@ export class ClaudeClient {
     requestTimeoutMs = null,
     jsonRetryAttempts = null,
     strictJson = false,
-    onCompletion = null
+    onCompletion = null,
+    claudeResponseSchema = null
   }) {
     const retryAttempts = jsonRetryAttempts === null
       ? Number.isFinite(Number(this.config.jsonRetryAttempts)) ? Number(this.config.jsonRetryAttempts) : 2
@@ -184,7 +188,8 @@ export class ClaudeClient {
         model,
         maxCompletionTokens: activeMaxTokens,
         systemPrompt,
-        requestTimeoutMs
+        requestTimeoutMs,
+        claudeResponseSchema
       });
       await notifyCompletion(onCompletion, completion);
       const content = completion.content;
@@ -211,13 +216,14 @@ export class ClaudeClient {
     maxCompletionTokens = null,
     systemPrompt = null,
     requestTimeoutMs = null,
-    thinking = null
+    thinking = null,
+    claudeResponseSchema = null
   } = {}) {
     // 关不掉思考等问题在这里就抛出，一次请求都不发。
     const body = buildClaudeRequestBody(
       this.config,
       { prompt },
-      { model, maxCompletionTokens, systemPrompt, thinking }
+      { model, maxCompletionTokens, systemPrompt, thinking, claudeResponseSchema }
     );
     // 流式请求不设总时长上限，只判空闲；requestTimeoutMs 只为统一签名保留。
     const idleTimeoutMs = resolveStreamIdleTimeoutMs(this.config);
@@ -396,6 +402,14 @@ export function buildClaudeRequestBody(config, { prompt }, overrides = {}) {
     thinking: claudeThinkingConfig(model, resolveThinkingOverride(overrides.thinking), effort)
   };
   if (effort) body.output_config = { effort };
+  if (overrides.claudeResponseSchema) {
+    const schema = overrides.claudeResponseSchema.schema;
+    // 与关思考那条同理，用带码的 ModelResponseError：TypeError 会被协调器当成网络故障重试。
+    if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+      throw new ModelResponseError("claudeResponseSchema 必须是 {name, schema}", "", 0, { provider: PROVIDER, code: "MODEL_RESPONSE_SCHEMA_INVALID" });
+    }
+    body.output_config = { ...body.output_config, format: { type: "json_schema", schema } };
+  }
   return body;
 }
 

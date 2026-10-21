@@ -6,9 +6,9 @@
 // storyboardReviewPrompt / storyboardSystem / storyboardRetryPrompt，判据用生产的 validateStoryboardReview。
 // 预算默认 2 次、与生产 call() 同一套重试逻辑；--budget 1 只看第一次。不建 Run、不写 Artifact，输入文件只读。
 //
-// 生产校验遇到第一处问题就抛错，只报一条。为了数失败形状，另有一个只做统计的 analyzeReview：
-// 把同样几条判据全部走一遍、收集所有问题，并给逐字没对上的引用找最接近的原文、写出差在哪几个字。
-// 它不参与判定，通过与否只看生产校验器。
+// 另有一个只做统计的 analyzeReview：把同样几条判据全部走一遍、收集所有问题，并给逐字没对上的引用找最接近的原文、
+// 写出差在哪几个字（10-21 之前生产校验遇到第一处问题就停，只报一条）。它不参与判定，通过与否只看生产校验器。
+// 代码里有 Claude 版审阅 Schema 与审阅专用重试话术（2026-10-21 起）就照生产一样用上，没有就退回旧行为。
 //
 // 代码默认取本仓库；--code-root 可以指向另一个工作区（例如还没提交的分支），src/ 一律从那里加载、只读。
 //
@@ -194,12 +194,12 @@ function attemptLabel(a) {
   return a.verdict?.pass ? "通过" : a.verdict?.codes.join("、");
 }
 
-function renderSummary({ runs, baseline, options, startedAt, promptChars }) {
+function renderSummary({ runs, baseline, options, startedAt, promptChars, claudeSchema, reviewRetryLabel }) {
   const lines = ["# 4.0 分镜审阅一步回放", ""];
   lines.push(`- 时间：${startedAt}`);
   lines.push(`- 代码：${options.codeRoot}`);
   lines.push(`- 冻结输入：${options.pkg}；分镜：${options.design}`);
-  lines.push(`- 提示词：storyboardReviewPrompt（${promptChars} 字），系统提示 storyboardSystem，不带 responseSchema；每次预算 ${options.budget} 次调用，重试话术与生产 call() 相同；判据用生产的 validateStoryboardReview`, "");
+  lines.push(`- 提示词：storyboardReviewPrompt（${promptChars} 字），系统提示 storyboardSystem；Claude 结构化输出 Schema ${claudeSchema ? "带" : "不带"}（MiMo 一律不带）；每次预算 ${options.budget} 次调用，重试用${reviewRetryLabel}，与生产 call() 相同；判据用生产的 validateStoryboardReview`, "");
   if (baseline.length) {
     lines.push("## 已有原文核对（不花钱）", "", "| 文件 | 生产判据 | 全量扫描 |", "|---|---|---|");
     for (const row of baseline) lines.push(`| ${row.file} | ${row.verdict.pass ? "通过" : row.verdict.codes.join("、")} | ${row.analysis.problems.length ? row.analysis.problems.map(problemLine).join("<br>") : "无问题"} |`);
@@ -240,8 +240,14 @@ async function main() {
     "src/storyboard-prompts.js", "src/storyboard-review.js", "src/storyboard-workflow.js", "src/storyboard-contract.js",
     "src/storyboard-editorial-utils.js", "src/validation.js"
   ].map(load));
+  // 2026-10-21 起生产的两道审阅带 Claude 版结构化输出 Schema、用审阅自己的重试话术。旧代码里没有这两样，
+  // 就退回旧行为，拿旧代码做对照的能力还在。
+  const claudeSchemaModule = await load("src/contracts/storyboard-review-claude-schema.js").catch(() => null);
+  const claudeResponseSchema = claudeSchemaModule?.storyboardReviewClaudeResponseSchema?.() || null;
+  const reviewRetryPrompt = (await load("src/storyboard-prompts.js")).storyboardReviewRetryPrompt || storyboardRetryPrompt;
+  const reviewRetryLabel = reviewRetryPrompt === storyboardRetryPrompt ? "共用的设计分镜话术" : "审阅专用话术";
 
-  // 生产校验器只报第一处，这里照抄它的 code 与指针。
+  // 生产校验器的 code 与指针（2026-10-21 起一次报全，这里列出全部）。
   const productionVerdict = (value, context) => {
     try { validateStoryboardReview(structuredClone(value), context); return { pass: true, codes: [] }; }
     catch (error) {
@@ -264,7 +270,7 @@ async function main() {
   ensureStoryboardDesign(structuredClone(design), projected);
   const context = { input: projected, plan: design };
   const prompt = storyboardReviewPrompt(context);
-  process.stdout.write(`代码 ${options.codeRoot}\n审阅提示词 ${prompt.length} 字（系统提示 ${storyboardSystem.length} 字），可引用的原文 ${catalog(projected, "U").length + catalog(design, "P").length} 条\n`);
+  process.stdout.write(`代码 ${options.codeRoot}\n审阅提示词 ${prompt.length} 字（系统提示 ${storyboardSystem.length} 字），可引用的原文 ${catalog(projected, "U").length + catalog(design, "P").length} 条\nClaude 结构化输出 Schema：${claudeResponseSchema ? "带" : "不带"}；重试话术：${reviewRetryLabel}\n`);
 
   const baseline = [];
   for (const file of options.baseline) {
@@ -324,7 +330,8 @@ async function main() {
       try {
         await coordinator.runJson({
           client, provider, stage: "storyboardReview", maxProviderCalls: options.budget,
-          request: { prompt, systemPrompt: storyboardSystem, model: job.model, maxCompletionTokens },
+          // 与生产一样不分供应商地放进 request：只有 Claude 客户端读 claudeResponseSchema。
+          request: { prompt, systemPrompt: storyboardSystem, model: job.model, maxCompletionTokens, ...(claudeResponseSchema ? { claudeResponseSchema } : {}) },
           attemptObserver: async (info) => {
             const usage = info.usage || null;
             const content = typeof info.content === "string" ? info.content : "";
@@ -342,9 +349,9 @@ async function main() {
           },
           // 与生产 call() 同一套：截断单独一种话术；被校验拦下时只追加上一次的结构化诊断。
           retryPrompt: ({ originalPrompt, issue, error: failure }) => {
-            if (String(issue?.code || failure?.code || "") === "MODEL_OUTPUT_TRUNCATED") return storyboardRetryPrompt({ originalPrompt, truncated: true });
+            if (String(issue?.code || failure?.code || "") === "MODEL_OUTPUT_TRUNCATED") return reviewRetryPrompt({ originalPrompt, truncated: true });
             const last = rejections[rejections.length - 1];
-            return last?.details?.length ? storyboardRetryPrompt({ originalPrompt, details: last.details }) : originalPrompt;
+            return last?.details?.length ? reviewRetryPrompt({ originalPrompt, details: last.details }) : originalPrompt;
           },
           validate: (candidate) => {
             try { return validateStoryboardReview(candidate, context); } catch (failure) {
@@ -361,7 +368,7 @@ async function main() {
       return { ...job, attempts, stepPass, error };
     });
     await fs.writeFile(path.join(outDir, "calls.jsonl"), runs.map((run) => JSON.stringify(run)).join("\n") + "\n");
-    await fs.writeFile(path.join(outDir, "summary.md"), renderSummary({ runs, baseline, options, startedAt, promptChars: prompt.length }) + "\n");
+    await fs.writeFile(path.join(outDir, "summary.md"), renderSummary({ runs, baseline, options, startedAt, promptChars: prompt.length, claudeSchema: Boolean(claudeResponseSchema), reviewRetryLabel }) + "\n");
     process.stdout.write(`已写入 ${path.join(outDir, "summary.md")}\n`);
   } finally {
     await systemProxy?.close?.();

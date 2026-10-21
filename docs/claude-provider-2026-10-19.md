@@ -38,12 +38,12 @@ Claude 不能设成 `DEFAULT_LLM_PROVIDER`，因为默认路由覆盖看图的�
 
 ## 请求怎么发
 
-请求体只有这几项：`model`、`max_tokens`、`system`、`messages`（一条 user 消息）、`stream: true`、`thinking`，设了 effort 时再加 `output_config.effort`。
+请求体只有这几项：`model`、`max_tokens`、`system`、`messages`（一条 user 消息）、`stream: true`、`thinking`，设了 effort 时再加 `output_config.effort`。阶段明确给了 Claude 版 Schema（`claudeResponseSchema`）时再加 `output_config.format`，目前只有 4.0 分镜审阅与终审复查（2026-10-21，见「JSON 怎么保证」）。
 
 以下几项都不发：
 
 - `temperature` / `top_p`：Opus 5.5、Fable 5.1 会 400，Sonnet 5.5、Haiku 5.5 只接受默认值。
-- `output_config.format`：原因见下面「JSON 怎么保证」。
+- 其余阶段的 `output_config.format`：原因见下面「JSON 怎么保证」。
 - server-side `fallbacks`：原因见「内容审核」。
 - assistant 预填：这几个型号会 400。
 
@@ -129,6 +129,13 @@ Claude 没有 `json_object` 模式。第一期靠四样：
 
 要不要给 Claude 另派生一份 Schema，等实测看结构失败多不多再定。
 
+**4.0 分镜审阅已经另写了一份（2026-10-21）。** 选 Opus 5.5 时，审阅这一步 10 次调用里有 5 次把意见里的 `guidance` 写成数组（顶层的 `guidance` 才是数组），整步 4/6 过；数据见 `docs/storyboard-review-structure-2026-10-21.md`。
+
+- Schema 在 `src/contracts/storyboard-review-claude-schema.js`，只用 Claude 支持的子集：`type`、`properties`、`required`、`additionalProperties: false`、`items`。
+- 条数上限、非空、编号与逐字引用仍由校验器判。
+- 请求参数叫 `claudeResponseSchema`，不是 `responseSchema`：MiMo 认后者，用同一个名字会顺带改掉 MiMo 的审阅请求。另外三家按参数名解构，不认识的键直接忽略，它们的请求体逐字不变。
+- 2026-10-21 实测：Opus 5.5 接受它，可与流式和 `thinking: {type: "adaptive", display: "summarized"}` 一起用。
+
 ## 错误码
 
 码表出处：https://platform.claude.com/docs/en/api/errors （2026-10-19 核对「HTTP errors」一节），在 `src/provider-error-codes.js`。按 `error.type` 查，响应体不是 JSON 时按状态码兜底（官方说 413 可能由 Cloudflare 在请求到达 API 之前返回）。
@@ -175,7 +182,7 @@ SDK 还会读 `ANTHROPIC_CUSTOM_HEADERS`（往请求里加头），这个关不�
 ## 明确不做
 
 - 不开 server-side fallbacks（会静默换模型）。
-- 第一期不发 `output_config.format`。
+- 第一期不发 `output_config.format`（2026-10-21 起，4.0 分镜审阅与终审复查例外，见「JSON 怎么保证」）。
 - 不做提示词缓存。
 - 不接看图的阶段。
 - 不用 Anthropic 的 OpenAI 兼容端点。

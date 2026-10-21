@@ -250,3 +250,36 @@ ${list.join("\n")}
 请重新写一份完整的提示词，上面每一条都必须满足。这一步只是翻译分镜：beat 的时间、镜头、动作、台词与声音一律照分镜写，不因为这几条去改分镜或删内容——缺的逐字补进它所在的 beat，不该出现的去掉。
 不要解释上一次为什么错，也不要在输出里提到这次重做——直接输出新的 JSON。`;
 }
+
+/**
+ * 分镜审阅与终审复查的重试（2026-10-21）。与 storyboardRetryPrompt 同一个形状（原提示词逐字在前、
+ * 末尾只追加诊断），只换掉最后的修正方向：共用的那份让模型调整片段与 beat，那是设计分镜的话，
+ * 审阅不改分镜。重试不发回上一次的输出，模型会重写整份审阅，所以要说清楚只修格式与引用、
+ * 不因此删掉成立的问题。
+ */
+export function storyboardReviewRetryPrompt({ originalPrompt = "", details = [], truncated = false } = {}) {
+  if (truncated) {
+    return `${originalPrompt}
+
+---
+
+## 上一次的输出因为太长被截断了
+
+上一轮的 JSON 没写完就到了 token 上限，整份输出作废。字段一个都不要少，成立的问题一条都不要删；把篇幅压下来：reportedProblem 与 guidance 写到说清为止，quote 只摘能证明问题的最短一段原文。直接输出新的 JSON。`;
+  }
+  const list = diagnosticLines(details);
+  if (!list.length) return String(originalPrompt || "");
+
+  return `${originalPrompt}
+
+---
+
+## 上一次的输出被确定性校验拦下了
+
+这些不是主观意见，是程序逐字核对出来的。逐条如下：
+
+${list.join("\n")}
+
+请重新输出一份完整的审阅 JSON，输出协议一个字都没变，上面每一条都必须满足。只修正指出的字段格式与引用：字段类型照输出协议写，quote 从对应 id 的 text 原样复制。不要因为这几条就删掉成立的问题，也不要少报问题。
+不要解释上一次为什么错，也不要在输出里提到这次重做——直接输出新的 JSON。`;
+}

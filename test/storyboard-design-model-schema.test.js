@@ -11,6 +11,7 @@ import { storyboardPrompt, storyboardPromptWithLockedDialogue, storyboardRetryPr
 import { fullStoryCharacterRegistryInput, mockFullStoryCharacterRegistry } from "../src/full-story-character-registry.js";
 import { catalog } from "../src/storyboard-editorial-utils.js";
 import { storyboardReviewPrompt } from "../src/storyboard-review.js";
+import { storyboardReviewClaudeResponseSchema } from "../src/contracts/storyboard-review-claude-schema.js";
 import { NO_BACKGROUND_MUSIC_SENTENCE } from "../src/validation.js";
 import { WorkflowService } from "../src/workflow.js";
 import { storyboardShotCharacterNames } from "../public/storyboard-plan.js";
@@ -352,6 +353,10 @@ test("只有分镜设计及其重试带 Schema，其他分镜阶段不带；提�
       assert.deepEqual(request.responseSchema, { name: STORYBOARD_DESIGN_MODEL_SCHEMA_NAME, schema: storyboardDesignModelSchema() });
       assert.equal(request.systemPrompt, storyboardSystem);
     } else assert.equal(Object.hasOwn(request, "responseSchema"), false, stages[index]);
+    // 只有两道审阅带给 Claude 的结构化输出 Schema（2026-10-21）；MiMo 客户端不读这个参数。
+    if (["storyboardReview", "storyboardReviewFinal"].includes(stages[index])) {
+      assert.deepEqual(request.claudeResponseSchema, storyboardReviewClaudeResponseSchema(), stages[index]);
+    } else assert.equal(Object.hasOwn(request, "claudeResponseSchema"), false, stages[index]);
   }
   assert.equal(requests[1].prompt, storyboardPrompt(projected));
   assert.equal(requests[2].prompt, storyboardRetryPrompt({ originalPrompt: storyboardPrompt(projected), details: storyboardValidationErrors(broken, projected) }));

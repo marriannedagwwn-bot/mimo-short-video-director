@@ -9,7 +9,8 @@ import { fullStoryCharacterRegistryInput, mergeFullStoryCharacterRegistry, mockF
 import { applyEditorial } from "../src/storyboard-editorial.js";
 import { catalog } from "../src/storyboard-editorial-utils.js";
 import { validateStoryboardReview } from "../src/storyboard-review.js";
-import { storyboardRetryPrompt } from "../src/storyboard-prompts.js";
+import { storyboardRetryPrompt, storyboardReviewRetryPrompt } from "../src/storyboard-prompts.js";
+import { storyboardReviewClaudeResponseSchema } from "../src/contracts/storyboard-review-claude-schema.js";
 import { renderStoryboard } from "../public/storyboard-render.js";
 import { MODEL_OUTPUT_LOG_SCOPES } from "../src/full-model-output-log.js";
 import { sealGlobalCharacterBoundary } from "../src/character-boundary.js";
@@ -245,6 +246,94 @@ test("截断走单独的重试分支：要求压缩措辞而不是原样重发",
   assert.match(requests[2].prompt, /因为太长被截断/u);
   assert.doesNotMatch(requests[2].prompt, /确定性校验拦下/u);
   assert.ok(requests[2].maxCompletionTokens > (requests[1].maxCompletionTokens || 0));
+});
+
+// 2026-10-21 之前的审阅校验器，逐字照抄，只改成返回 true/false：新校验器只改诊断，通过与拦下的集合必须与它相同。
+function legacyReviewPasses(value, {input, plan}) {
+  const stringArray = arr => Array.isArray(arr) && arr.every(text => typeof text === "string" && text.trim());
+  if (!value || Object.keys(value).sort().join(",") !== "guidance,items,strengths" || !stringArray(value.strengths) || !stringArray(value.guidance) || !Array.isArray(value.items) || value.items.length > 8) return false;
+  const lookup = new Map([...catalog(input,"U"), ...catalog(plan,"P")].map(row => [row.id,row]));
+  return value.items.every((item,index) => {
+    if (!item || Object.keys(item).sort().join(",") !== "guidance,originalEvidence,ref,reportedProblem" || item.ref !== `I${index+1}` || ![item.guidance,item.reportedProblem].every(text => typeof text === "string" && text.trim()) || !Array.isArray(item.originalEvidence) || !item.originalEvidence.length) return false;
+    return item.originalEvidence.every(evidence => !(!evidence || Object.keys(evidence).sort().join(",") !== "id,quote" || typeof evidence.quote !== "string" || !evidence.quote.trim() || !lookup.get(evidence.id)?.value.includes(evidence.quote)));
+  });
+}
+
+async function reviewContext() {
+  const {workflow, input, plan} = await fixture();
+  const design = storyboardDesignFromPlan(plan);
+  const {projected} = await storyboardInput(workflow, input);
+  const evidence = catalog(design, "P").find(row => [...row.value].length > 6);
+  const item = (overrides = {}) => ({ref: "I1", reportedProblem: "动作终点不清楚", originalEvidence: [{id: evidence.id, quote: evidence.value}], guidance: "交代动作终点", ...overrides});
+  return {workflow, input, design, context: {input: projected, plan: design}, evidence, item};
+}
+
+function reviewDetails(value, context) {
+  try { validateStoryboardReview(structuredClone(value), context); return []; }
+  catch (error) { return error.details; }
+}
+
+test("审阅诊断写明哪个字段错成什么样、一次报全；通过与拦下的集合与旧校验器相同", async () => {
+  const {context, evidence, item} = await reviewContext();
+  const base = {strengths: ["保住的设计"], guidance: ["引导"], items: [item()]};
+  const dropped = [...evidence.value].filter((_, i) => i !== 2).join("");
+  const cases = {
+    valid: base,
+    empty: {strengths: [], guidance: [], items: []},
+    guidanceArray: {...base, items: [item({guidance: ["第一点", "第二点"]})]},
+    evidenceTextKey: {...base, items: [item({originalEvidence: [{id: evidence.id, text: evidence.value}]})]},
+    wrongRef: {...base, items: [item({ref: "I2"})]},
+    droppedChar: {...base, items: [item({originalEvidence: [{id: evidence.id, quote: dropped}]})]},
+    unknownId: {...base, items: [item({originalEvidence: [{id: "P9999", quote: evidence.value}]})]},
+    missingTopGuidance: {strengths: ["保住的设计"], items: []},
+    tooMany: {...base, items: Array.from({length: 9}, (_, i) => item({ref: `I${i + 1}`}))},
+    emptyEvidence: {...base, items: [item({originalEvidence: []})]},
+    blankProblem: {...base, items: [item({reportedProblem: "  "})]},
+    notObject: ["strengths"],
+    twoProblems: {...base, items: [item({guidance: ["第一点"]}), item({ref: "I2", originalEvidence: [{id: evidence.id, quote: dropped}]})]}
+  };
+  for (const [name, value] of Object.entries(cases)) {
+    assert.equal(reviewDetails(value, context).length === 0, legacyReviewPasses(structuredClone(value), context), name);
+  }
+  const pick = name => reviewDetails(cases[name], context).map(({code, path, reason}) => ({code, path, reason}));
+  assert.deepEqual(pick("valid"), []);
+  assert.deepEqual(pick("guidanceArray"), [{code: "STORYBOARD_REVIEW_ITEM_INCOMPLETE", path: "/items/0/guidance", reason: "必须是一段非空字符串，写成了数组（2 项）"}]);
+  assert.equal(pick("evidenceTextKey")[0].code, "STORYBOARD_REVIEW_EVIDENCE_NOT_VERBATIM");
+  assert.equal(pick("evidenceTextKey")[0].path, "/items/0/originalEvidence/0");
+  assert.match(pick("evidenceTextKey")[0].reason, /引用只能有 id 与 quote 两个字段，写的是 id、text/u);
+  assert.deepEqual(pick("wrongRef"), [{code: "STORYBOARD_REVIEW_ITEM_INCOMPLETE", path: "/items/0/ref", reason: "ref 应为 I1，写的是 \"I2\""}]);
+  assert.match(pick("droppedChar")[0].reason, new RegExp(`不是 ${evidence.id} 正文里的逐字原文：必须从该 id 的 text 原样复制`, "u"));
+  assert.match(pick("unknownId")[0].reason, /id "P9999" 不存在/u);
+  assert.deepEqual(pick("missingTopGuidance"), [{code: "STORYBOARD_REVIEW_STRUCTURE_INVALID", path: "/", reason: "缺少字段 guidance"}]);
+  assert.deepEqual(pick("tooMany").map(row => row.path), ["/items"]);
+  assert.deepEqual(pick("emptyEvidence"), [{code: "STORYBOARD_REVIEW_ITEM_INCOMPLETE", path: "/items/0/originalEvidence", reason: "至少要有一条引用"}]);
+  // 两条意见各有一处问题：一次都报出来，重试时不用一处一处地撞。
+  assert.deepEqual(pick("twoProblems").map(row => row.path), ["/items/0/guidance", "/items/1/originalEvidence/0"]);
+  // 「编造引文」那种照旧拦下。
+  assert.equal(pick("droppedChar").length, 1);
+});
+
+test("审阅被拦后用审阅自己的重试话术；两道审阅都带给 Claude 的结构化输出 Schema", async () => {
+  const {workflow, input, design, context, item} = await reviewContext();
+  const registry = mockFullStoryCharacterRegistry(fullStoryCharacterRegistryInput(input.fullStory, input.creatorProfile));
+  const badReview = {strengths: ["保留已有动作"], guidance: [], items: [item({guidance: ["第一点", "第二点"]})]};
+  const requests = scriptedWorkflow(workflow, [registry, design, badReview, emptyReview]);
+  const {metadata} = await workflow.createAnimationPlanWithMetadata(input);
+
+  assert.equal(requests.length, 4);
+  const details = reviewDetails(badReview, context);
+  assert.equal(requests[3].prompt, storyboardReviewRetryPrompt({originalPrompt: requests[2].prompt, details}));
+  assert.match(requests[3].prompt, /\/items\/0\/guidance 必须是一段非空字符串，写成了数组（2 项）（STORYBOARD_REVIEW_ITEM_INCOMPLETE）/u);
+  assert.match(requests[3].prompt, /请重新输出一份完整的审阅 JSON/u);
+  assert.doesNotMatch(requests[3].prompt, /片段怎么分/u, "设计分镜的重试话术不该出现在审阅里");
+  for (const index of [2, 3]) assert.deepEqual(requests[index].claudeResponseSchema, storyboardReviewClaudeResponseSchema());
+  for (const index of [0, 1]) assert.equal(Object.hasOwn(requests[index], "claudeResponseSchema"), false);
+  const review = metadata.storyboard.calls.find(row => row.stage === "storyboardReview");
+  assert.equal(review.providerCalls, 2);
+  assert.equal(review.rejections[0].details[0].path, "/items/0/guidance");
+  // 截断走审阅自己的截断话术。
+  assert.match(storyboardReviewRetryPrompt({originalPrompt: "p", truncated: true}), /成立的问题一条都不要删/u);
+  assert.equal(storyboardReviewRetryPrompt({originalPrompt: "p"}), "p");
 });
 
 test("没有结构化诊断时退回原提示词，不说一句空洞的「你错了」", () => {
