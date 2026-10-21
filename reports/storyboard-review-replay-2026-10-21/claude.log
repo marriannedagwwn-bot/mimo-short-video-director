@@ -1,0 +1,19 @@
+代码 /Users/qinfen/Documents/mimo-director/mimo-short-video-director
+审阅提示词 47787 字（系统提示 77 字），可引用的原文 832 条
+核对 /Users/qinfen/Documents/mimo-director/mimo-short-video-director/reports/storyboard-full-series-2026-10-20/opus-production/review-attempt-1.json：生产判据 STORYBOARD_REVIEW_ITEM_INCOMPLETE /items/0；全量扫描 1 处
+  - ITEM_GUIDANCE_NOT_STRING /items/0/guidance（数组（3 条））
+核对 /Users/qinfen/Documents/mimo-director/mimo-short-video-director/reports/storyboard-full-series-2026-10-20/opus-production/review-attempt-2.json：生产判据 STORYBOARD_REVIEW_EVIDENCE_NOT_VERBATIM /items/0/originalEvidence；全量扫描 1 处
+  - EVIDENCE_NOT_VERBATIM /items/0/originalEvidence/3 P015：差 1 个字，漏「面」；引用「全片以同样缓慢的速度朝画右侧爬」，原文最接近处「全片以同样缓慢的速度朝画面右侧爬」
+MODEL_PRICE_CNY_PER_MILLION 有 1 条无法解析，已跳过：deepseek-v4-flash=输入/输出
+10 个样本，每个最多 2 次调用 → /Users/qinfen/Documents/mimo-director/mimo-short-video-director/.claude/worktrees/frosty-shaw-3ae8ff/reports/storyboard-review-replay-2026-10-21/claude
+claude-opus-5-5 #2：通过；$0.228
+claude-opus-5-5 #3：通过；$0.254
+claude-opus-5-5 #4：STORYBOARD_REVIEW_ITEM_INCOMPLETE /items/0 → STORYBOARD_REVIEW_ITEM_INCOMPLETE /items/0；$0.465
+claude-opus-5-5 #1：STORYBOARD_REVIEW_ITEM_INCOMPLETE /items/0 → 通过；$0.488
+claude-opus-5-5 #5：STORYBOARD_REVIEW_ITEM_INCOMPLETE /items/0 → 通过；$0.451
+claude-sonnet-5-5 #1：通过；$0.218
+claude-sonnet-5-5 #2：通过；$0.215
+claude-sonnet-5-5 #4：通过；$0.212
+claude-sonnet-5-5 #3：STORYBOARD_REVIEW_ITEM_INCOMPLETE /items/0 → 通过；$0.330
+claude-sonnet-5-5 #5：通过；$0.214
+已写入 /Users/qinfen/Documents/mimo-director/mimo-short-video-director/.claude/worktrees/frosty-shaw-3ae8ff/reports/storyboard-review-replay-2026-10-21/claude/summary.md
