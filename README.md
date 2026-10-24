@@ -36,10 +36,11 @@
 - 时间轴采样仍最多显示 10 张，鼠标移到最后一张上会显示「+N」，是主题变体这一步还会多看的帧数。
 - 模型设置里的「主题变体」只能选 Claude 或 MiMo，默认 Claude Opus 5.5；没配 Claude 时 AI 导演开不了，不会自动换成 MiMo。原来那一栏改叫「故事候选（从剧情开始）」，只给「只给角色设定」用。
 
-要在本机配好两样工具，缺了「AI 导演」不能点，并会写明缺什么（不会跳过转写）：
+要在本机配好三样工具，缺了「AI 导演」不能点，并会写明缺什么（不会跳过转写）。第二样用来把 Bandit 漏掉的叫声、笑声捞回人声轨：
 
 ```bash
 REFERENCE_REWRITE_BANDIT_DIR=/Volumes/MacOS/AI/Bandit-v2-Multi
+REFERENCE_REWRITE_VOCAL_RECOVERY_DIR=/Volumes/MacOS/AI/SAM-Audio-Breath
 REFERENCE_REWRITE_WHISPER_BIN=~/.local/bin/whisper
 # 可选，写出来的是默认值；模型文件不在时直接报错，不会自动下载
 # REFERENCE_REWRITE_WHISPER_MODEL=small

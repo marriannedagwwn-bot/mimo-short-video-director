@@ -5,6 +5,12 @@
 // 原声、人声轨、「原声减音乐」三组 whisper 转写，加人声轨与音效轨的有声区间。实验里手挑的两张关键帧
 // 放大图与手截复核的那组无法自动化，去掉了。
 //
+// 人声轨（2026-10-24 晚）：Bandit 是按影视对白训练的，咕嘎这类尖细的叫声会被分进音效轨，偶尔进音乐轨，
+// 对白轨常常是空的。所以分轨之后再用用户外置盘上的 Mel-RoFormer（SAM-Audio-Breath/retain_vocalizations.py，
+// 只读调用，模型 SHA-256 由它自己核对）从「原声减对白」里把人声捞回来、与对白轨相加，B 组与人声区间都用它。
+// 四支片子的对照见外层「去配乐与转写-调试对照-2026-10-24.md」：一支明显变好、三支持平；whisper 提示词不变
+// （提示里写角色名会让有对白的片子整段塌掉）。配乐里有人唱歌时，歌词也会进这条人声轨。
+//
 // 两个入口都先把页面工作区里的副本复制进 Run 的 media-work 并核对 SHA-256，与 Run 记录的不符就 409。
 // 所有子进程都有超时并用 SIGKILL 收尾；执行器可注入，测试不跑真的 ffmpeg / Bandit / whisper。
 // 临时目录在 Run 目录的 media-work/ 下（页面关闭时随 Run 一起清掉），用完就删；
@@ -25,14 +31,18 @@ import {
 
 const defaultExec = promisify(execFileCallback);
 const STEMS_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "tools", "reference-audio-stems.py");
+const VOCAL_RECOVERY_SCRIPT = "retain_vocalizations.py";
+const VOCAL_RECOVERY_MODEL = path.join("models", "mel-roformer-kim-vocal-2", "model.safetensors");
+export const VOICE_RECOVERY = "mel-roformer-kim-vocal-2";
 
 export const CONTACT_SHEET_COLUMNS = 6;
 export const CONTACT_SHEET_ROWS = 4;
 export const CONTACT_SHEET_CELL_WIDTH = 320;
 const WHISPER_INITIAL_PROMPT = "以下是普通话的句子，使用简体中文。";
 
-// 超时：抽帧、解音轨各 2 分钟；Bandit 与每一次 whisper 各 10 分钟（51 秒的片子实测各 1 分钟左右）。
-const TIMEOUTS = Object.freeze({ probe: 30_000, ffmpeg: 120_000, bandit: 600_000, whisper: 600_000, version: 10_000 });
+// 超时：抽帧、解音轨各 2 分钟；Bandit、人声捞回与每一次 whisper 各 10 分钟
+// （51 秒的片子实测 Bandit 与 whisper 各 1 分钟左右，96 秒的片子人声捞回约 1 分钟）。
+const TIMEOUTS = Object.freeze({ probe: 30_000, ffmpeg: 120_000, bandit: 600_000, vocalRecovery: 600_000, activity: 120_000, whisper: 600_000, version: 10_000 });
 // 子进程跑着时每 20 秒续一次看门狗；每一步给 15 分钟的无进展窗口，比最长的子进程超时多 5 分钟。
 const HEARTBEAT_INTERVAL_MS = 20_000;
 export const REFERENCE_REWRITE_STEP_STALL_MS = 900_000;
@@ -64,6 +74,12 @@ export async function sourceTranscriptToolStatus(tools = {}, { exec = defaultExe
   else {
     if (!(await isFile(banditPython(tools)))) missing.push(`Bandit 的 Python 不在：${banditPython(tools)}（外置盘没挂上？）`);
     if (!(await isFile(path.join(tools.banditDir, "models", "checkpoint-multi.ckpt")))) missing.push("Bandit 的 checkpoint-multi.ckpt 不在");
+  }
+  if (!tools.vocalRecoveryDir) missing.push("REFERENCE_REWRITE_VOCAL_RECOVERY_DIR 没有设置");
+  else {
+    if (!(await isFile(vocalRecoveryPython(tools)))) missing.push(`人声捞回的 Python 不在：${vocalRecoveryPython(tools)}（外置盘没挂上？）`);
+    if (!(await isFile(path.join(tools.vocalRecoveryDir, VOCAL_RECOVERY_SCRIPT)))) missing.push(`人声捞回脚本 ${VOCAL_RECOVERY_SCRIPT} 不在`);
+    if (!(await isFile(path.join(tools.vocalRecoveryDir, VOCAL_RECOVERY_MODEL)))) missing.push("Mel-RoFormer 模型 model.safetensors 不在");
   }
   if (!tools.whisperBin) missing.push("REFERENCE_REWRITE_WHISPER_BIN 没有设置");
   else if (!(await isExecutable(tools.whisperBin))) missing.push(`whisper 不在或不能执行：${tools.whisperBin}`);
@@ -101,11 +117,20 @@ export async function buildSourceTranscript({ tools, onStep = async () => {}, ..
     const stemsDir = path.join(audioDir, "stems");
     await run(banditPython(tools), ["-I", STEMS_SCRIPT, "--bandit-dir", tools.banditDir, "--input", originalWav, "--output-dir", stemsDir], TIMEOUTS.bandit);
     const intervals = JSON.parse(await fs.readFile(path.join(stemsDir, "intervals.json"), "utf8"));
+    await assertWorkspaceMediaLifetime(lifetimeFile);
+    const voiceWav = path.join(audioDir, "voice.wav");
+    await run(vocalRecoveryPython(tools), [
+      "-I", "-B", path.join(tools.vocalRecoveryDir, VOCAL_RECOVERY_SCRIPT),
+      "--input", originalWav, "--speech", path.join(stemsDir, "speech.wav"), "--output", voiceWav
+    ], TIMEOUTS.vocalRecovery, { env: vocalRecoveryEnv() });
+    const voiceIntervalsFile = path.join(audioDir, "voice-intervals.json");
+    await run(banditPython(tools), ["-I", STEMS_SCRIPT, "--activity-input", voiceWav, "--activity-output", voiceIntervalsFile], TIMEOUTS.activity);
+    intervals.voice = JSON.parse(await fs.readFile(voiceIntervalsFile, "utf8")).spans;
 
     await onStep("transcribe");
     await assertWorkspaceMediaLifetime(lifetimeFile);
     const transcripts = {};
-    for (const [key, file] of [["original", originalWav], ["speech", path.join(stemsDir, "speech.wav")], ["noBgm", path.join(stemsDir, "no_bgm.wav")]]) {
+    for (const [key, file] of [["original", originalWav], ["voice", voiceWav], ["noBgm", path.join(stemsDir, "no_bgm.wav")]]) {
       const mono = path.join(audioDir, `${key}-16k.wav`);
       await run("ffmpeg", ["-nostdin", "-v", "error", "-n", "-i", file, "-ar", "16000", "-ac", "1", mono], TIMEOUTS.ffmpeg);
       transcripts[key] = await transcribe(run, tools, mono, path.join(audioDir, `whisper-${key}`));
@@ -116,6 +141,7 @@ export async function buildSourceTranscript({ tools, onStep = async () => {}, ..
       hasAudio: true,
       text: formatReferenceTranscript({ transcripts, intervals, whisperModel: tools.whisperModel }),
       separator: "bandit-v2-multi",
+      voiceRecovery: VOICE_RECOVERY,
       whisperModel: tools.whisperModel
     };
   });
@@ -136,8 +162,8 @@ export async function buildContactSheets(options) {
 // 两个入口共用：建临时目录 → 复制副本并核 SHA-256 → ffprobe 与时长上限 → 做事 → 删临时目录。
 async function withVerifiedSource({ sourcePath, expectedDigest, workRoot, lifetimeFile, heartbeat = async () => {}, exec = defaultExec }, action) {
   const workDir = await createWorkDirectory(workRoot, lifetimeFile);
-  const run = (file, args, timeout) => withHeartbeat(heartbeat, () => exec(file, args, {
-    timeout, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024
+  const run = (file, args, timeout, extra = {}) => withHeartbeat(heartbeat, () => exec(file, args, {
+    timeout, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024, ...extra
   }));
   try {
     const videoPath = path.join(workDir, "source.bin");
@@ -161,7 +187,10 @@ async function withVerifiedSource({ sourcePath, expectedDigest, workRoot, lifeti
 
 const NO_AUDIO_TRANSCRIPT = "# 音频转写资料\n\n这支参考视频没有音轨，没有可转写的声音。";
 
-/** 转写稿：与实验的 materials/transcript.md 同一结构（A/B/C 三组转写＋E 组有声区间），去掉了手截复核的 D 组。 */
+/**
+ * 转写稿：与实验的 materials/transcript.md 同一结构（A/B/C 三组转写＋E 组有声区间），去掉了手截复核的 D 组。
+ * B 组与 E 组的人声轨是「Bandit 对白＋Mel-RoFormer 捞回的人声」（transcripts.voice、intervals.voice）。
+ */
 export function formatReferenceTranscript({ transcripts, intervals, whisperModel }) {
   const block = (segments) => {
     const lines = (segments || []).map((segment) => `${clock(segment.start)}–${clock(segment.end)}  ${String(segment.text || "").trim()}`)
@@ -171,15 +200,15 @@ export function formatReferenceTranscript({ transcripts, intervals, whisperModel
   const spans = (list) => (list || []).map(([start, end]) => `${start.toFixed(2)}–${end.toFixed(2)}`).join("、") || "（没有）";
   return `# 音频转写资料
 
-处理方法：原片音轨用 Bandit v2 Multi 分成人声、音乐、音效三轨，再用 whisper（${whisperModel} 模型，中文）转写。whisper 只出文字和时间，**不标说话人**；同音错字和凭空编出来的句子都可能有。
+处理方法：原片音轨用 Bandit v2 Multi 分成对白、音乐、音效三轨；Bandit 会把尖细的叫声、笑声分进音效轨或音乐轨，所以再用 Mel-RoFormer 从对白以外的部分把人声捞回来，与对白轨合成人声轨。最后用 whisper（${whisperModel} 模型，中文）转写。whisper 只出文字和时间，**不标说话人**；同音错字和凭空编出来的句子都可能有。配乐里如果有人唱歌，歌词也会进人声轨。
 
 ## A. 原声直接转写（没去配乐）
 
 ${block(transcripts.original)}
 
-## B. 只用人声轨转写
+## B. 人声轨转写（Bandit 对白＋捞回的叫声、笑声）
 
-${block(transcripts.speech)}
+${block(transcripts.voice)}
 
 ## C. 原声减去音乐轨（人声＋音效）转写
 
@@ -187,7 +216,7 @@ ${block(transcripts.noBgm)}
 
 ## E. 各轨有明显声音的时间段（每 ${intervals?.cellSeconds ?? 0.25} 秒一格，响度高于 ${intervals?.thresholdDb ?? -30} dB）
 
-- 人声轨：${spans(intervals?.speech)}
+- 人声轨：${spans(intervals?.voice)}
 - 音效轨：${spans(intervals?.sfx)}`;
 }
 
@@ -327,6 +356,17 @@ async function withHeartbeat(heartbeat, action) {
 
 function banditPython(tools) {
   return path.join(tools.banditDir || "", ".venv", "bin", "python");
+}
+
+function vocalRecoveryPython(tools) {
+  return path.join(tools.vocalRecoveryDir || "", ".venv", "bin", "python");
+}
+
+// 人声捞回子进程只拿到这几个环境变量：不把服务端的 API 密钥传给外部脚本，并禁止它联网下载模型。
+function vocalRecoveryEnv() {
+  const env = { HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1", PYTHONUNBUFFERED: "1" };
+  for (const key of ["PATH", "HOME", "TMPDIR", "LANG"]) if (process.env[key]) env[key] = process.env[key];
+  return env;
 }
 
 function whisperModelFile(tools) {

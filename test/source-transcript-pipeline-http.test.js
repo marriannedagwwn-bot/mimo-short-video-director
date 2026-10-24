@@ -157,7 +157,10 @@ test("旧 Run 里没听过台词稿的分析会重跑；转写稿逐字进分析
   const transcript = run.latestArtifacts.sourceTranscript.content;
   assert.equal(transcript.schemaVersion, "source_transcript/1.0");
   assert.equal(transcript.separator, "bandit-v2-multi");
+  assert.equal(transcript.voiceRecovery, "mel-roformer-kim-vocal-2");
   assert.match(transcript.text, /快进来（original-16k）/u);
+  assert.match(transcript.text, /## B\. 人声轨转写（Bandit 对白＋捞回的叫声、笑声）\n\n```\n00:01\.0–00:02\.5  快进来（voice-16k）/u);
+  assert.match(transcript.text, /- 人声轨：1\.00–2\.50/u);
   assert.notEqual(run.latestArtifacts.referenceAnalysis.lineage.revision, old.lineage.revision, "旧分析被重跑");
   for (const stage of ["analysis", "reconstruction"]) {
     assert.ok(f.calls.find((call) => call.stage === stage).prompt.includes(transcript.text), `${stage} 收到同一份转写稿`);

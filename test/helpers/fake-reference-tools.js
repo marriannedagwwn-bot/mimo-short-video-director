@@ -1,6 +1,6 @@
-// AI 导演第一步「去配乐与转写」与主题变体切接触表要用本机的 ffmpeg / ffprobe / Bandit / whisper。
+// AI 导演第一步「去配乐与转写」与主题变体切接触表要用本机的 ffmpeg / ffprobe / Bandit / Mel-RoFormer / whisper。
 // 起真 server.js 的测试用这里的替身：几个小 Node 脚本按真实程序的约定写出文件
-// （单帧、接触表、分轨、区间、whisper 的 JSON），服务端照真实路径读回，不跑真的模型。
+// （单帧、接触表、分轨、区间、捞回的人声轨、whisper 的 JSON），服务端照真实路径读回，不跑真的模型。
 // 用法：const env = await fakeReferenceToolsEnv(directory); spawn(..., { env: { ...env, ... } })。
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -42,10 +42,18 @@ if (/f_%04d\\.jpg$/u.test(output)) {
 `);
 
 const BANDIT_PYTHON = script(`
+if (args.includes("--activity-input")) {
+  fs.writeFileSync(after("--activity-output"), JSON.stringify({ cellSeconds: 0.25, thresholdDb: -30, spans: [[1, 2.5]] }));
+  process.exit(0);
+}
 const output = after("--output-dir");
 fs.mkdirSync(output, { recursive: true });
 for (const name of ["speech.wav", "music.wav", "sfx.wav", "no_bgm.wav"]) fs.writeFileSync(path.join(output, name), "RIFF fake stem");
 fs.writeFileSync(path.join(output, "intervals.json"), JSON.stringify({ cellSeconds: 0.25, thresholdDb: -30, speech: [[1, 2.5]], sfx: [[3, 3.5]] }));
+`);
+
+const VOCAL_RECOVERY_PYTHON = script(`
+fs.writeFileSync(after("--output"), "RIFF fake voice");
 `);
 
 const WHISPER = script(`
@@ -61,10 +69,13 @@ export async function fakeReferenceToolsEnv(directory, { videoSeconds = 45 } = {
   const bin = path.join(root, "bin");
   const bandit = path.join(root, "bandit");
   const models = path.join(root, "whisper-models");
+  const vocal = path.join(root, "sam-audio-breath");
   await fs.mkdir(bin, { recursive: true });
   await fs.mkdir(path.join(bandit, ".venv", "bin"), { recursive: true });
   await fs.mkdir(path.join(bandit, "models"), { recursive: true });
   await fs.mkdir(models, { recursive: true });
+  await fs.mkdir(path.join(vocal, ".venv", "bin"), { recursive: true });
+  await fs.mkdir(path.join(vocal, "models", "mel-roformer-kim-vocal-2"), { recursive: true });
   const write = async (file, content) => {
     await fs.writeFile(file, content);
     await fs.chmod(file, 0o755);
@@ -73,11 +84,15 @@ export async function fakeReferenceToolsEnv(directory, { videoSeconds = 45 } = {
   await write(path.join(bin, "ffprobe"), FFPROBE);
   await write(path.join(bandit, ".venv", "bin", "python"), BANDIT_PYTHON);
   await write(path.join(bin, "whisper"), WHISPER);
+  await write(path.join(vocal, ".venv", "bin", "python"), VOCAL_RECOVERY_PYTHON);
+  await fs.writeFile(path.join(vocal, "retain_vocalizations.py"), "# fake");
+  await fs.writeFile(path.join(vocal, "models", "mel-roformer-kim-vocal-2", "model.safetensors"), "fake mel-roformer");
   await fs.writeFile(path.join(bandit, "models", "checkpoint-multi.ckpt"), "fake checkpoint");
   await fs.writeFile(path.join(models, "small.pt"), "fake whisper model");
   return {
     PATH: `${bin}${path.delimiter}${process.env.PATH || ""}`,
     REFERENCE_REWRITE_BANDIT_DIR: bandit,
+    REFERENCE_REWRITE_VOCAL_RECOVERY_DIR: vocal,
     REFERENCE_REWRITE_WHISPER_BIN: path.join(bin, "whisper"),
     REFERENCE_REWRITE_WHISPER_MODEL: "small",
     REFERENCE_REWRITE_WHISPER_MODEL_DIR: models,

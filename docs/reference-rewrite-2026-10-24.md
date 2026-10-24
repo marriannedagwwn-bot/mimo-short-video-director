@@ -49,7 +49,7 @@
 4. 时长窗口取剧情时长目标（`storyDurationWindow`；没给时与原片对齐，按实测时长取整、夹在 20–180 秒）；
 5. 输出从 Markdown 改成 JSON：Claude 用 `claudeResponseSchema` 结构化输出（不用 minLength / maxItems，条数由校验器管），MiMo 用约束解码 Schema（按篇数锁条数、非空）。
 
-实验里手挑的两张关键帧放大图、手截复核的那组转写无法自动化，去掉了。转写时 whisper 的提示词不写角色名。
+实验里手挑的两张关键帧放大图、手截复核的那组转写无法自动化，去掉了。转写时 whisper 的提示词不写角色名（第 10 节有实测：写了会让有对白的片子整段塌成角色名）。B 组的人声轨从 10-24 晚起是「Bandit 对白＋Mel-RoFormer 捞回的人声」，见第 10 节。
 
 按剧本拆场的提示词在粘贴故事那份的输出上做逐字锚点替换：系统消息换成不说「本次没有参考视频」的版本，「用户故事原文」换成「剧本原文」，故事位 `V1` 换成这篇的编号。拆场只拿固定角色设定、角色事实、时长目标与这篇剧本，不拿原片分析、还原与简报。
 
@@ -57,6 +57,7 @@
 
 ```bash
 REFERENCE_REWRITE_BANDIT_DIR=/Volumes/MacOS/AI/Bandit-v2-Multi
+REFERENCE_REWRITE_VOCAL_RECOVERY_DIR=/Volumes/MacOS/AI/SAM-Audio-Breath
 REFERENCE_REWRITE_WHISPER_BIN=~/.local/bin/whisper
 # 可选，写出来的是默认值
 # REFERENCE_REWRITE_WHISPER_MODEL=small
@@ -65,8 +66,9 @@ REFERENCE_REWRITE_WHISPER_BIN=~/.local/bin/whisper
 
 - 都不设，或外置盘没挂上、模型文件不在，`/api/health` 的 `sourceTranscript.reason` 逐项写明缺什么，「AI 导演」不能点、建任务 409。**不跳过转写这一步，不回退到不去配乐的转写，不让 whisper 自己下载模型**（`--model_dir` 指定目录、先查文件在不在）。已经转写过的 Run 继续跑后面几步时不再要求工具。
 - ffmpeg / ffprobe 从 PATH 找。Bandit 用它自带的 `.venv/bin/python -I`，先核对 checkpoint 的 SHA-256；只读地 import 安装目录，不改它。有 MPS 用 MPS，没有用 CPU。
+- 人声捞回用 `SAM-Audio-Breath` 自带的 `.venv/bin/python -I -B` 跑它的 `retain_vocalizations.py`（Mel-RoFormer Kim Vocal 2，MLX，Apple GPU），模型 SHA-256 由它自己核对；子进程只拿到 PATH/HOME/TMPDIR/LANG 与 `HF_HUB_OFFLINE=1`，不拿服务端的密钥。工具检查查 Python、脚本与 `models/mel-roformer-kim-vocal-2/model.safetensors` 在不在。捞回失败整步失败，不退回 Bandit 对白轨。捞回后的人声轨用 `tools/reference-audio-stems.py --activity-input … --activity-output …` 算有声区间（同一个阈值函数）。
 - 演示模式（没配任何模型）不跑本机工具：占位转写、一张占位接触表、N 篇占位稿，能免费走完六步。
-- 起真服务的测试用 `test/helpers/fake-reference-tools.js` 的替身程序（按真实程序的约定写出文件），不跑真的 ffmpeg / Bandit / whisper。
+- 起真服务的测试用 `test/helpers/fake-reference-tools.js` 的替身程序（按真实程序的约定写出文件），不跑真的 ffmpeg / Bandit / Mel-RoFormer / whisper。
 
 ## 6. 运行顺序与花费
 
@@ -117,7 +119,9 @@ AI 导演六步：去配乐与转写（本机约 2 分钟）→ 分析 → 还�
 
 ## 9. 已知缺口
 
-- 只能在这台 Mac 上用：Bandit 在外置盘，whisper 在本机。外置盘没挂上时 AI 导演开不了。
+- 只能在这台 Mac 上用：Bandit 与人声捞回在外置盘，whisper 在本机。外置盘没挂上时 AI 导演开不了。
+- whisper small 听不懂咕嘎这类尖细的叫声：纯叫声的片子换哪条轨都编出字来（「bgm」「字幕by…」「请点赞订阅」），每次编的不一样，whisper 自己的可信度分也分不出来。用户决定先维持现状，让分析与 Claude 自己判断；换更大的 whisper 模型要下载，没试。
+- 配乐里有人唱歌时，Mel-RoFormer 会把歌声也捞进人声轨，歌词会出现在 B 组。用户自己那套流程的「歌声排除」要人工核对过的歌曲区间，这里没法自动做。
 - 创意简报照跑，但主题变体不再读它；角色边界的签名摘要包含它，所以不能直接去掉。要不要去掉另行决定。
 - 旧的视频写候选代码（`createVariants` 两次调用、来源基线、`/api/variants` 直调路由与 CLI `workflow.run`）不再被 AI 导演调用，但这次没删；剧情入口的候选 Schema 仍从它派生。
 - 「写得好不好」「原片读对没有」「N 篇是不是换了事件」都没有确定性兜底，只能靠用户读；回放每组只能跑几次。Claude 有固定偏好的点子，比如收尾常用水彩速写。
@@ -126,3 +130,24 @@ AI 导演六步：去配乐与转写（本机约 2 分钟）→ 分析 → 还�
 - 「+N」在跑主题变体之前是按时长估的（`round(时长×帧率)`），与 ffmpeg 实际切出的帧数可能差一两帧。
 - 角色边界会把固定角色设定里的外观写法改写成另一种措辞（实测「帽子上有黄色的嘴」→「帽子上的黄色的嘴」），而剧情与分镜照用户原话写，4.0 分镜签发时按字面比对就会硬失败。这是既有问题，本次没改；要不要让边界的写法里总带上用户原话，另行决定。
 - 角色边界那一步 MiMo 偶尔写错结构（实测打枣连续两次），没有约束解码，失败了只能再点一次「启动 AI 导演」继续。
+
+## 10. 人声轨改用捞回版（2026-10-24 晚）
+
+起因：用户在 4173 跑《她好开心》（24 秒，只有咕嘎的叫声），转写稿 B 组（Bandit 对白轨）是空的，C 组（原声减音乐）转出「诗得浪玩吗」「诗得浪 bgm」，看上去像是配乐没去掉、台词也没认出来。
+
+**查下来的情况：**
+
+- **配乐是去掉了的。** 只有配乐的几秒，去配乐后的音轨比原声低 28–56 dB。「bgm」是 whisper 在叫声上编出来的字。
+- **对白轨是空的，因为 Bandit 不把咕嘎的叫声当人声。** 咕嘎的音高中位数约 450 Hz、最高约 1000 Hz；Bandit 把这些叫声分进音效轨，《打枣》开头那声还进了音乐轨。用户外置盘上的 Mel-RoFormer（`SAM-Audio-Breath/retain_vocalizations.py`）从「原声减对白」里能把它们捞回来；同一段里不是人声的音效会低 39–47 dB。
+- **四支有叫声的片子上对照了 whisper small**（同一次去配乐结果，提示词不变）：
+  - 《打枣》换成捞回的人声轨后明显变好：咕嘎 0–4 秒、12–22 秒、26–30 秒的叫声认出来了（同音写成「估计」），原来的对白轨漏掉了 0–3 秒、26–30 秒和「吃枣喽」；爷爷的台词一句没丢。
+  - 《特殊的留言》与原来持平。
+  - 《她好开心》《活泼嘎》只有叫声，哪条轨都转不出对的字。
+- **whisper 提示里写「主角叫咕嘎」不能用。** 它在《活泼嘎》上认出 4 声「咕嘎！」和 3 声「嘎！」，但在《打枣》上把 3.5–30 秒整段塌成「咕嘎，，，，」，爷爷的四句台词全丢了；它还会让转写跟着「固定角色」一栏变。
+- **whisper 自己的可信度分不出编的字**：「请点赞订阅」那段（-0.57）比《打枣》「原声减音乐」前 30 秒的真台词（-1.09）还高，所以不靠分数过滤。
+
+**用户的决定：** 人声轨换成「Bandit 对白＋Mel-RoFormer 捞回」，A、C 两组照旧，叫声认不出来的事先维持现状。
+
+**改了什么：** 分轨之后多跑一次 `retain_vocalizations.py` 得到人声轨（约 30 秒，Apple GPU），B 组转写它，E 组的人声区间按它算（`reference-audio-stems.py` 新增只算区间的用法）。转写稿开头的处理方法写明捞回这一步，以及配乐里的歌声也会进人声轨。Artifact 多一个 `voiceRecovery: "mel-roformer-kim-vocal-2"`，转写卡的处理参数一行写「Mel-RoFormer 捞回叫声」；`schemaVersion` 不变，已有的转写稿照常读。新增配置 `REFERENCE_REWRITE_VOCAL_RECOVERY_DIR`，缺了 AI 导演开不了。
+
+对照所用的逐句转写、试听文件与 Run 外的脚本都在仓库外（外层目录 `去配乐与转写-调试对照-2026-10-24.md`、`她好开心-音频分离/`），不入库。

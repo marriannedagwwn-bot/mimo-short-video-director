@@ -277,6 +277,7 @@ export function getConfig() {
     // 不回退到不去配乐的转写，也不让 whisper 自己去下载模型（src/reference-rewrite-tools.js）。
     referenceRewrite: {
       banditDir: expandHome(process.env.REFERENCE_REWRITE_BANDIT_DIR),
+      vocalRecoveryDir: expandHome(process.env.REFERENCE_REWRITE_VOCAL_RECOVERY_DIR),
       whisperBin: expandHome(process.env.REFERENCE_REWRITE_WHISPER_BIN),
       whisperModel: process.env.REFERENCE_REWRITE_WHISPER_MODEL?.trim() || "small",
       whisperModelDir: expandHome(process.env.REFERENCE_REWRITE_WHISPER_MODEL_DIR) || expandHome("~/.cache/whisper")

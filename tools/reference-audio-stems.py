@@ -10,7 +10,11 @@
 最后在 stdout 打一行 JSON。
 
 为什么要音效轨：10-23 实验发现「咕嘎」这类不说词的叫声会被分进音效轨，只转写人声轨会漏掉，
-所以转写用「原声减去音乐轨」。
+所以转写用「原声减去音乐轨」。10-24 起人声轨另由 Mel-RoFormer 从对白以外的部分把叫声捞回来
+（见 src/reference-rewrite-materials.js），捞回后的人声轨用本脚本的第二种用法算有声区间：
+
+  --activity-input voice.wav --activity-output voice-intervals.json
+  只算这一个文件的有声区间（同样每 0.25 秒一格、高于 -30 dB），不加载 Bandit。
 """
 import argparse
 import hashlib
@@ -55,12 +59,30 @@ def active_intervals(audio, rate):
     return spans
 
 
+def write_activity(input_path, output_path):
+    audio, rate = sf.read(input_path, dtype="float32", always_2d=True)
+    if rate != SAMPLE_RATE or len(audio) < 2 or not np.isfinite(audio).all():
+        raise SystemExit("算有声区间的输入必须是 48 kHz 的有限值 WAV")
+    spans = active_intervals(audio, rate)
+    output_path.write_text(json.dumps({"cellSeconds": CELL_SECONDS, "thresholdDb": ACTIVE_DB, "spans": spans}, ensure_ascii=False))
+    print(json.dumps({"done": True, "spans": len(spans)}), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Bandit v2 Multi 三轨分离（参考片仿写）")
-    parser.add_argument("--bandit-dir", required=True, type=Path)
-    parser.add_argument("--input", required=True, type=Path)
-    parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--bandit-dir", type=Path)
+    parser.add_argument("--input", type=Path)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--activity-input", type=Path)
+    parser.add_argument("--activity-output", type=Path)
     args = parser.parse_args()
+    if args.activity_input or args.activity_output:
+        if not (args.activity_input and args.activity_output) or args.bandit_dir or args.input or args.output_dir:
+            raise SystemExit("算有声区间时只给 --activity-input 与 --activity-output")
+        write_activity(args.activity_input, args.activity_output)
+        return
+    if not (args.bandit_dir and args.input and args.output_dir):
+        raise SystemExit("分轨需要 --bandit-dir、--input 与 --output-dir")
 
     root = args.bandit_dir.resolve()
     checkpoint = root / "models" / "checkpoint-multi.ckpt"

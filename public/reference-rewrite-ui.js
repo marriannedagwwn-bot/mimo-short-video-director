@@ -8,7 +8,11 @@ export function sourceTranscriptCardHtml(transcript, { escape, header }) {
     ? "演示模式：没有做去配乐和转写"
     : transcript.hasAudio === false
       ? "这支参考视频没有音轨"
-      : [transcript.separator === "bandit-v2-multi" ? "Bandit v2 Multi 去配乐" : "", transcript.whisperModel ? `whisper ${transcript.whisperModel} 转写` : ""].filter(Boolean).join(" · ");
+      : [
+        transcript.separator === "bandit-v2-multi" ? "Bandit v2 Multi 去配乐" : "",
+        transcript.voiceRecovery === "mel-roformer-kim-vocal-2" ? "Mel-RoFormer 捞回叫声" : "",
+        transcript.whisperModel ? `whisper ${transcript.whisperModel} 转写` : ""
+      ].filter(Boolean).join(" · ");
   return `${header}
     <p class="source-transcript-meta">${escape(meta)}。转写不标说话人，有同音错字和编出来的句子；分析、还原和主题变体都把它当台词稿参考，以画面为准。</p>
     <details class="source-transcript-text"><summary>看转写稿</summary><pre>${escape(transcript.text || "")}</pre></details>`;

@@ -14,8 +14,8 @@ import {
 import { estimatedContactSheetFrameCount } from "../public/reference-rewrite.js";
 
 // 参考视频的本机素材（2026-10-24）：AI 导演第一步的去配乐与转写、主题变体那一步的接触表。
-// 子进程用替身，不跑真的 ffmpeg / Bandit / whisper；替身按真实程序的约定写出文件
-// （单帧、接触表、分轨、whisper 的 JSON），模块照真实路径读回。
+// 子进程用替身，不跑真的 ffmpeg / Bandit / Mel-RoFormer / whisper；替身按真实程序的约定写出文件
+// （单帧、接触表、分轨、捞回的人声轨、有声区间、whisper 的 JSON），模块照真实路径读回。
 
 const sourceBytes = Buffer.from("synthetic reference video bytes");
 const digest = createHash("sha256").update(sourceBytes).digest("hex");
@@ -29,7 +29,13 @@ async function fixture(t, { durationSeconds = 51.1, hasAudio = true, failOn = nu
   await fs.writeFile(lifetimeFile, "{}");
   const sourcePath = path.join(root, "source.bin");
   await fs.writeFile(sourcePath, sourceBytes);
-  const tools = { banditDir: path.join(root, "bandit"), whisperBin: path.join(root, "whisper"), whisperModel: "small", whisperModelDir: path.join(root, "models") };
+  const tools = {
+    banditDir: path.join(root, "bandit"),
+    vocalRecoveryDir: path.join(root, "sam-audio-breath"),
+    whisperBin: path.join(root, "whisper"),
+    whisperModel: "small",
+    whisperModelDir: path.join(root, "models")
+  };
   const calls = [];
   const exec = async (file, args, options) => {
     calls.push({ file: path.basename(file), args, options });
@@ -56,6 +62,14 @@ async function fixture(t, { durationSeconds = 51.1, hasAudio = true, failOn = nu
       }
       return { stdout: "", stderr: "" };
     }
+    if (path.basename(file) === "python" && args.includes("--activity-input")) {
+      await fs.writeFile(after("--activity-output"), JSON.stringify({ cellSeconds: 0.25, thresholdDb: -30, spans: [[0.5, 1], [11, 14.75]] }));
+      return { stdout: "{\"done\":true}", stderr: "" };
+    }
+    if (path.basename(file) === "python" && String(args[2] || "").endsWith("retain_vocalizations.py")) {
+      await fs.writeFile(after("--output"), "wav");
+      return { stdout: "{\"event\":\"complete\"}", stderr: "" };
+    }
     if (path.basename(file) === "python") {
       const out = after("--output-dir");
       await fs.mkdir(out, { recursive: true });
@@ -80,17 +94,20 @@ async function fixture(t, { durationSeconds = 51.1, hasAudio = true, failOn = nu
   return { root, runDir, lifetimeFile, tools, calls, steps, build, sheets };
 }
 
-test("去配乐与转写：Bandit 分轨，三组转写加有声区间；不抽帧；临时目录用完删掉", async (t) => {
+test("去配乐与转写：Bandit 分轨、捞回人声，三组转写加有声区间；不抽帧；临时目录用完删掉", async (t) => {
   const f = await fixture(t);
   const result = await f.build();
   assert.deepEqual(f.steps, ["separate", "transcribe"]);
   assert.equal(result.durationSeconds, 51.1);
   assert.equal(result.hasAudio, true);
   assert.equal(result.separator, "bandit-v2-multi");
+  assert.equal(result.voiceRecovery, "mel-roformer-kim-vocal-2");
   assert.equal(result.whisperModel, "small");
   assert.match(result.text, /## A\. 原声直接转写（没去配乐）/u);
+  assert.match(result.text, /## B\. 人声轨转写（Bandit 对白＋捞回的叫声、笑声）\n\n```\n00:11\.1–00:14\.7  小菇哥/u);
   assert.match(result.text, /## C\. 原声减去音乐轨（人声＋音效）转写\n\n```\n00:00\.0–00:01\.0  咕嘎嘎嘎嘎/u);
-  assert.match(result.text, /- 人声轨：11\.25–12\.25/u);
+  assert.match(result.text, /- 人声轨：0\.50–1\.00、11\.00–14\.75/u, "人声区间按捞回后的人声轨算，不用 Bandit 对白轨的");
+  assert.match(result.text, /- 音效轨：0\.00–1\.00/u);
   assert.equal(f.calls.some((call) => call.args.some((arg) => String(arg).startsWith("fps="))), false, "转写这一步不抽帧");
   assert.deepEqual(await fs.readdir(path.join(f.runDir, "media-work")), [], "临时目录已删");
   const whisperCalls = f.calls.filter((call) => call.file === "whisper");
@@ -99,9 +116,21 @@ test("去配乐与转写：Bandit 分轨，三组转写加有声区间；不抽�
     assert.equal(call.args[call.args.indexOf("--model_dir") + 1], f.tools.whisperModelDir, "只用本机模型目录");
     assert.equal(call.args[call.args.indexOf("--word_timestamps") + 1], "True");
   }
-  const bandit = f.calls.find((call) => call.file === "python");
+  const pythonCalls = f.calls.filter((call) => call.file === "python");
+  assert.equal(pythonCalls.length, 3, "分轨、捞回人声、算人声区间各一次");
+  const [bandit, recovery, activity] = pythonCalls;
+  assert.equal(bandit.file, "python");
   assert.equal(bandit.args[0], "-I");
   assert.ok(bandit.args[1].endsWith(path.join("tools", "reference-audio-stems.py")));
+  assert.ok(f.calls.indexOf(bandit) < f.calls.indexOf(recovery) && f.calls.indexOf(recovery) < f.calls.indexOf(activity));
+  assert.ok(f.calls.indexOf(activity) < f.calls.findIndex((call) => call.file === "whisper"), "先捞回人声再转写");
+  assert.deepEqual(recovery.args.slice(0, 3), ["-I", "-B", path.join(f.tools.vocalRecoveryDir, "retain_vocalizations.py")]);
+  assert.ok(recovery.args[recovery.args.indexOf("--speech") + 1].endsWith(path.join("stems", "speech.wav")), "从 Bandit 对白轨出发捞回");
+  const voiceWav = recovery.args[recovery.args.indexOf("--output") + 1];
+  assert.equal(activity.args[activity.args.indexOf("--activity-input") + 1], voiceWav);
+  assert.equal(whisperCalls[1].args[0], path.join(path.dirname(voiceWav), "voice-16k.wav"), "B 组转写捞回后的人声轨");
+  assert.equal(recovery.options.env.HF_HUB_OFFLINE, "1", "人声捞回不联网下载模型");
+  assert.ok(Object.keys(recovery.options.env).every((key) => ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "PYTHONUNBUFFERED", "PATH", "HOME", "TMPDIR", "LANG"].includes(key)), "不把服务端环境变量（含密钥）传给外部脚本");
   assert.ok(f.calls.every((call) => call.options.killSignal === "SIGKILL" && call.options.timeout > 0), "每个子进程都有超时");
 });
 
@@ -165,15 +194,19 @@ test("子进程超时：如实说哪个程序超时被终止，临时目录删�
   const f = await fixture(t, { failOn: (file) => path.basename(file) === "python" });
   await assert.rejects(f.build(), (error) => error.code === "REFERENCE_REWRITE_MATERIALS_FAILED" && /python.*超时被终止/u.test(error.message));
   assert.deepEqual(await fs.readdir(path.join(f.runDir, "media-work")), []);
+  const recovery = await fixture(t, { failOn: (file, args) => String(args[2] || "").endsWith("retain_vocalizations.py") });
+  await assert.rejects(recovery.build(), (error) => error.code === "REFERENCE_REWRITE_MATERIALS_FAILED" && /超时被终止/u.test(error.message));
+  assert.equal(recovery.calls.some((call) => call.file === "whisper"), false, "人声捞回失败就不转写，不退回 Bandit 对白轨");
+  assert.deepEqual(await fs.readdir(path.join(recovery.runDir, "media-work")), []);
 });
 
 test("工具检查：逐项写明缺什么，不会自动下载 whisper 模型", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-reference-tools-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const ok = async () => ({ stdout: "", stderr: "" });
-  const empty = await sourceTranscriptToolStatus({ banditDir: "", whisperBin: "", whisperModel: "small", whisperModelDir: path.join(root, "models") }, { exec: ok });
+  const empty = await sourceTranscriptToolStatus({ banditDir: "", vocalRecoveryDir: "", whisperBin: "", whisperModel: "small", whisperModelDir: path.join(root, "models") }, { exec: ok });
   assert.equal(empty.available, false);
-  assert.deepEqual(empty.missing.map((item) => item.split("：")[0].split(" ")[0]), ["REFERENCE_REWRITE_BANDIT_DIR", "REFERENCE_REWRITE_WHISPER_BIN", "whisper"]);
+  assert.deepEqual(empty.missing.map((item) => item.split("：")[0].split(" ")[0]), ["REFERENCE_REWRITE_BANDIT_DIR", "REFERENCE_REWRITE_VOCAL_RECOVERY_DIR", "REFERENCE_REWRITE_WHISPER_BIN", "whisper"]);
   assert.match(empty.reason, /不会自动下载/u);
 
   const bandit = path.join(root, "bandit");
@@ -185,9 +218,17 @@ test("工具检查：逐项写明缺什么，不会自动下载 whisper 模型",
   await fs.writeFile(whisper, "#!/bin/sh\n", { mode: 0o755 });
   await fs.mkdir(path.join(root, "models"));
   await fs.writeFile(path.join(root, "models", "small.pt"), "");
-  const ready = await sourceTranscriptToolStatus({ banditDir: bandit, whisperBin: whisper, whisperModel: "small", whisperModelDir: path.join(root, "models") }, { exec: ok });
+  const vocal = path.join(root, "sam-audio-breath");
+  await fs.mkdir(path.join(vocal, ".venv", "bin"), { recursive: true });
+  await fs.writeFile(path.join(vocal, ".venv", "bin", "python"), "");
+  const noRecoveryModel = await sourceTranscriptToolStatus({ banditDir: bandit, vocalRecoveryDir: vocal, whisperBin: whisper, whisperModel: "small", whisperModelDir: path.join(root, "models") }, { exec: ok });
+  assert.deepEqual(noRecoveryModel.missing, ["人声捞回脚本 retain_vocalizations.py 不在", "Mel-RoFormer 模型 model.safetensors 不在"]);
+  await fs.writeFile(path.join(vocal, "retain_vocalizations.py"), "");
+  await fs.mkdir(path.join(vocal, "models", "mel-roformer-kim-vocal-2"), { recursive: true });
+  await fs.writeFile(path.join(vocal, "models", "mel-roformer-kim-vocal-2", "model.safetensors"), "");
+  const ready = await sourceTranscriptToolStatus({ banditDir: bandit, vocalRecoveryDir: vocal, whisperBin: whisper, whisperModel: "small", whisperModelDir: path.join(root, "models") }, { exec: ok });
   assert.deepEqual(ready, { available: true, reason: "", missing: [] });
-  const noFfmpeg = await sourceTranscriptToolStatus({ banditDir: bandit, whisperBin: whisper, whisperModel: "small", whisperModelDir: path.join(root, "models") }, {
+  const noFfmpeg = await sourceTranscriptToolStatus({ banditDir: bandit, vocalRecoveryDir: vocal, whisperBin: whisper, whisperModel: "small", whisperModelDir: path.join(root, "models") }, {
     exec: async (file) => { if (file === "ffmpeg") throw new Error("ENOENT"); return { stdout: "" }; }
   });
   assert.deepEqual(noFfmpeg.missing, ["ffmpeg（命令行里找不到）"]);
@@ -195,13 +236,15 @@ test("工具检查：逐项写明缺什么，不会自动下载 whisper 模型",
 
 test("转写稿格式：没识别出字的组写明，空文字的片段不列", () => {
   const text = formatReferenceTranscript({
-    transcripts: { original: [{ start: 0, end: 1.04, text: " 顾顾 " }, { start: 2, end: 3, text: " " }], speech: [], noBgm: [{ start: 61.2, end: 62, text: "咕嘎" }] },
-    intervals: { cellSeconds: 0.25, thresholdDb: -30, speech: [], sfx: [[0, 1]] },
+    transcripts: { original: [{ start: 0, end: 1.04, text: " 顾顾 " }, { start: 2, end: 3, text: " " }], voice: [], noBgm: [{ start: 61.2, end: 62, text: "咕嘎" }] },
+    intervals: { cellSeconds: 0.25, thresholdDb: -30, speech: [[5, 6]], voice: [], sfx: [[0, 1]] },
     whisperModel: "small"
   });
   assert.match(text, /```\n00:00\.0–00:01\.0  顾顾\n```/u);
-  assert.match(text, /## B\. 只用人声轨转写\n\n（没有识别出字）/u);
+  assert.match(text, /## B\. 人声轨转写（Bandit 对白＋捞回的叫声、笑声）\n\n（没有识别出字）/u);
   assert.match(text, /01:01\.2–01:02\.0  咕嘎/u);
-  assert.match(text, /- 人声轨：（没有）/u);
+  assert.match(text, /- 人声轨：（没有）/u, "人声区间只看捞回后的人声轨");
+  assert.match(text, /Mel-RoFormer 从对白以外的部分把人声捞回来/u);
+  assert.match(text, /配乐里如果有人唱歌，歌词也会进人声轨/u);
   assert.match(text, /whisper（small 模型，中文）/u);
 });
