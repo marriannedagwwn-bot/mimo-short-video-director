@@ -192,8 +192,9 @@ const NO_AUDIO_TRANSCRIPT = "# 音频转写资料\n\n这支参考视频没有音
  * B 组与 E 组的人声轨是「Bandit 对白＋Mel-RoFormer 捞回的人声」（transcripts.voice、intervals.voice）。
  */
 export function formatReferenceTranscript({ transcripts, intervals, whisperModel }) {
+  // whisper 按词对时间时偶尔把一个汉字的 UTF-8 字节切开，解出来是替换字符「�」；它不是任何字，去掉。
   const block = (segments) => {
-    const lines = (segments || []).map((segment) => `${clock(segment.start)}–${clock(segment.end)}  ${String(segment.text || "").trim()}`)
+    const lines = (segments || []).map((segment) => `${clock(segment.start)}–${clock(segment.end)}  ${String(segment.text || "").replace(/\uFFFD/gu, "").trim()}`)
       .filter((line) => !/\s$/u.test(line));
     return lines.length ? `\`\`\`\n${lines.join("\n")}\n\`\`\`` : "（没有识别出字）";
   };
@@ -370,7 +371,7 @@ function vocalRecoveryEnv() {
 }
 
 function whisperModelFile(tools) {
-  return path.join(tools.whisperModelDir || "", `${tools.whisperModel || "small"}.pt`);
+  return path.join(tools.whisperModelDir || "", `${tools.whisperModel || "large-v3-turbo"}.pt`);
 }
 
 async function isFile(file) {

@@ -43,7 +43,7 @@ REFERENCE_REWRITE_BANDIT_DIR=/Volumes/MacOS/AI/Bandit-v2-Multi
 REFERENCE_REWRITE_VOCAL_RECOVERY_DIR=/Volumes/MacOS/AI/SAM-Audio-Breath
 REFERENCE_REWRITE_WHISPER_BIN=~/.local/bin/whisper
 # 可选，写出来的是默认值；模型文件不在时直接报错，不会自动下载
-# REFERENCE_REWRITE_WHISPER_MODEL=small
+# REFERENCE_REWRITE_WHISPER_MODEL=large-v3-turbo
 # REFERENCE_REWRITE_WHISPER_MODEL_DIR=~/.cache/whisper
 ```
 

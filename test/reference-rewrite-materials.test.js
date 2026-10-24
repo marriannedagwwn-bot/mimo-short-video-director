@@ -12,6 +12,7 @@ import {
   sourceTranscriptToolStatus
 } from "../src/reference-rewrite-materials.js";
 import { estimatedContactSheetFrameCount } from "../public/reference-rewrite.js";
+import { getConfig } from "../src/config.js";
 
 // 参考视频的本机素材（2026-10-24）：AI 导演第一步的去配乐与转写、主题变体那一步的接触表。
 // 子进程用替身，不跑真的 ffmpeg / Bandit / Mel-RoFormer / whisper；替身按真实程序的约定写出文件
@@ -236,15 +237,33 @@ test("工具检查：逐项写明缺什么，不会自动下载 whisper 模型",
 
 test("转写稿格式：没识别出字的组写明，空文字的片段不列", () => {
   const text = formatReferenceTranscript({
-    transcripts: { original: [{ start: 0, end: 1.04, text: " 顾顾 " }, { start: 2, end: 3, text: " " }], voice: [], noBgm: [{ start: 61.2, end: 62, text: "咕嘎" }] },
+    transcripts: {
+      original: [{ start: 0, end: 1.04, text: " 顾顾 " }, { start: 2, end: 3, text: " " }, { start: 4, end: 5, text: "\uFFFD" }, { start: 6, end: 7, text: "咕嘎\uFFFD小咕嘎\uFFFD" }],
+      voice: [],
+      noBgm: [{ start: 61.2, end: 62, text: "咕嘎" }]
+    },
     intervals: { cellSeconds: 0.25, thresholdDb: -30, speech: [[5, 6]], voice: [], sfx: [[0, 1]] },
     whisperModel: "small"
   });
-  assert.match(text, /```\n00:00\.0–00:01\.0  顾顾\n```/u);
+  assert.match(text, /```\n00:00\.0–00:01\.0  顾顾\n00:06\.0–00:07\.0  咕嘎小咕嘎\n```/u, "去掉切坏的「�」，只剩它的片段不列");
+  assert.equal(text.includes("\uFFFD"), false);
   assert.match(text, /## B\. 人声轨转写（Bandit 对白＋捞回的叫声、笑声）\n\n（没有识别出字）/u);
   assert.match(text, /01:01\.2–01:02\.0  咕嘎/u);
   assert.match(text, /- 人声轨：（没有）/u, "人声区间只看捞回后的人声轨");
   assert.match(text, /Mel-RoFormer 从对白以外的部分把人声捞回来/u);
   assert.match(text, /配乐里如果有人唱歌，歌词也会进人声轨/u);
   assert.match(text, /whisper（small 模型，中文）/u);
+});
+
+test("转写模型默认 large-v3-turbo，可用 REFERENCE_REWRITE_WHISPER_MODEL 改回别的", () => {
+  const saved = process.env.REFERENCE_REWRITE_WHISPER_MODEL;
+  try {
+    delete process.env.REFERENCE_REWRITE_WHISPER_MODEL;
+    assert.equal(getConfig().referenceRewrite.whisperModel, "large-v3-turbo");
+    process.env.REFERENCE_REWRITE_WHISPER_MODEL = " small ";
+    assert.equal(getConfig().referenceRewrite.whisperModel, "small");
+  } finally {
+    if (saved === undefined) delete process.env.REFERENCE_REWRITE_WHISPER_MODEL;
+    else process.env.REFERENCE_REWRITE_WHISPER_MODEL = saved;
+  }
 });

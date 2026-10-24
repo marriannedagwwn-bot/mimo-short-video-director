@@ -279,7 +279,9 @@ export function getConfig() {
       banditDir: expandHome(process.env.REFERENCE_REWRITE_BANDIT_DIR),
       vocalRecoveryDir: expandHome(process.env.REFERENCE_REWRITE_VOCAL_RECOVERY_DIR),
       whisperBin: expandHome(process.env.REFERENCE_REWRITE_WHISPER_BIN),
-      whisperModel: process.env.REFERENCE_REWRITE_WHISPER_MODEL?.trim() || "small",
+      // 10-24 晚换成 large-v3-turbo：有对白的片子明显更准、连带写对咕嘎的叫声，且比 small 快
+      // （small 在叫声上反复重试）。对照见 docs/reference-rewrite-2026-10-24.md 第 11 节。
+      whisperModel: process.env.REFERENCE_REWRITE_WHISPER_MODEL?.trim() || "large-v3-turbo",
       whisperModelDir: expandHome(process.env.REFERENCE_REWRITE_WHISPER_MODEL_DIR) || expandHome("~/.cache/whisper")
     },
     fullStoryV2Pipeline: {
