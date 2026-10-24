@@ -390,3 +390,19 @@ test("修改稿等你决定时：不提别的动作，说明修改稿在哪；�
   assert.deepEqual(shot.actions, []);
   assert.deepEqual(deriveDirectorProgress(storyFacts({ busyText: "正在按你的话写剧情的修改稿…", edit: { pending } })).actions, [], "写稿、签发期间什么都不提");
 });
+
+// 2026-10-24 起参考视频的主题变体是完整剧本：选中后按剧本拆场，不做展开前体检；AI 导演少一次调用（转写不调模型）。
+test("剧本格式的主题变体：选它就是拆成完整剧情，不带体检说明，按两次调用记下限", () => {
+  assert.equal(DIRECTOR_AGENT_MIN_TEXT_CALLS.directorPipeline, 5);
+  const progress = deriveDirectorProgress(videoFacts({ scriptVariants: true }));
+  const choose = progress.actions.find((action) => action.key === "chooseCandidate:V1");
+  assert.match(choose.label, /^选 V1《雨天的纸箱》，拆成完整剧情$/u);
+  assert.equal(choose.cost.minCalls, DIRECTOR_AGENT_MIN_TEXT_CALLS.fullStory);
+  assert.equal(choose.cost.note, "");
+  const regenerate = progress.actions.find((action) => action.key === "regenerateCandidates");
+  assert.equal(regenerate.label, "换一批剧本");
+  assert.equal(regenerate.cost.minCalls, 1);
+  const old = deriveDirectorProgress(videoFacts());
+  assert.match(old.actions.find((action) => action.key === "chooseCandidate:V1").label, /展开成完整剧情$/u);
+  assert.equal(old.actions.find((action) => action.key === "chooseCandidate:V1").cost.minCalls, DIRECTOR_AGENT_MIN_TEXT_CALLS.fullStoryWithPrecheck);
+});

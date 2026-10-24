@@ -7,14 +7,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mockAnalysis, mockReconstruction, mockBrief, mockVisualGuardrails, mockVariants } from "../src/mock.js";
-import { variantSourceResponse } from "./helpers/variant-source-response.js";
+import { mockAnalysis, mockReconstruction, mockBrief, mockVisualGuardrails } from "../src/mock.js";
+import { fakeReferenceToolsEnv, scriptVariantsOutput } from "./helpers/fake-reference-tools.js";
 
 // Real server.js, HTTP routes, Task Manager, validators, signing and on-disk
 // stores. Only the remote model is replaced by a controlled local SSE server;
 // the synthetic media bytes are not decoded or sent to a paid provider.
+// 第一步「去配乐与转写」用本机工具替身（helpers/fake-reference-tools.js），不调模型；
+// 主题变体走 MiMo（这一步只允许 Claude 与 MiMo），同一个本地 SSE 服务按 model 名认出是哪一步。
 const stages = ["analysis", "reconstruction", "brief", "visualGuardrails", "variants"];
-const artifactIds = ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails", "themeVariants"];
+const artifactIds = ["sourceTranscript", "referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails", "themeVariants"];
 const input = {
   creatorProfile: { fixedCharacter: "小白子", vertical: "日常", constraints: "" },
   metadata: { duration: 45, width: 320, height: 180 },
@@ -24,7 +26,10 @@ const input = {
   })),
   count: 3,
   transcript: "",
-  modelOverrides: Object.fromEntries(stages.map((stage) => [stage, { provider: "Qwen", model: `${stage}-fixture` }]))
+  modelOverrides: {
+    ...Object.fromEntries(stages.slice(0, 4).map((stage) => [stage, { provider: "Qwen", model: `${stage}-fixture` }])),
+    referenceRewrite: { provider: "MiMo", model: "variants-fixture" }
+  }
 };
 
 async function until(read, predicate, message, timeoutMs = 8000) {
@@ -54,7 +59,7 @@ async function fixture(t) {
   const outputs = {
     analysis, reconstruction, brief,
     visualGuardrails: mockVisualGuardrails({ ...input, creativeBrief: brief }),
-    variants: mockVariants(input)
+    variants: scriptVariantsOutput({ count: input.count, characterName: "小白子" })
   };
   const calls = [];
   const providerErrors = [];
@@ -66,9 +71,10 @@ async function fixture(t) {
       for await (const chunk of request) raw += chunk;
       const body = JSON.parse(raw);
       assert.equal(body.stream, true);
-      assert.equal(body.stream_options.include_usage, true);
       const stage = body.model.replace(/-fixture$/u, "");
       assert.ok(stages.includes(stage));
+      // 千问要 stream_options 才回 usage；MiMo（主题变体）在尾块直接回，不发这个参数。
+      if (stage !== "variants") assert.equal(body.stream_options.include_usage, true);
       const call = { stage, closed: false, completed: false };
       calls.push(call);
       response.on("close", () => { call.closed = true; });
@@ -79,9 +85,7 @@ async function fixture(t) {
         send({ choices: [{ delta: { reasoning_content: "正在构思" }, finish_reason: null }] });
         return; // Held until the application aborts this real HTTP response.
       }
-      const prompt = body.messages.at(-1).content;
-      const sourceSelection = stage === "variants" ? variantSourceResponse(prompt) : null;
-      send({ choices: [{ delta: { content: JSON.stringify(sourceSelection || outputs[stage]) }, finish_reason: null }] });
+      send({ choices: [{ delta: { content: JSON.stringify(outputs[stage]) }, finish_reason: null }] });
       send({ choices: [{ delta: {}, finish_reason: "stop" }] });
       send({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
       call.completed = true;
@@ -100,7 +104,7 @@ async function fixture(t) {
     // No user .env, credentials, proxy variables or existing state are inherited.
     cwd: directory,
     env: {
-      PATH: process.env.PATH,
+      ...(await fakeReferenceToolsEnv(directory)),
       PORT: String(port),
       NODE_ENV: "test",
       QWEN_BASE_URL: `http://127.0.0.1:${providerPort}/v1`,
@@ -108,6 +112,9 @@ async function fixture(t) {
       QWEN_MODEL: "analysis-fixture",
       QWEN_MEDIA_MODE: "frames",
       QWEN_JSON_RETRY_ATTEMPTS: "0",
+      MIMO_BASE_URL: `http://127.0.0.1:${providerPort}/v1`,
+      MIMO_API_KEY: "local-http-fixture",
+      MIMO_JSON_RETRY_ATTEMPTS: "0",
       WORKFLOW_PRODUCTION_STATE_DIR: path.join(directory, "production"),
       PARTIAL_REPAIR_DEBUG_DIR: path.join(directory, "debug"),
       MODEL_PRICE_CNY_PER_MILLION: stages.map((stage) => `${stage}-fixture=1/1`).join(",")
@@ -195,17 +202,24 @@ test("director HTTP pause aborts the active stage; resume redoes only that stage
   assert.equal(resumedResponse.task.taskId, f.task.taskId);
   const completed = await until(f.getTask, (task) => task.status === "completed", "resumed director did not complete");
   const after = await f.loadRun();
-  for (const artifactId of artifactIds.slice(0, 2)) {
+  for (const artifactId of artifactIds.slice(0, 3)) {
     assert.equal(after.latestArtifacts[artifactId].lineage.revision, before.latestArtifacts[artifactId].lineage.revision);
     assert.equal(after.latestArtifacts[artifactId].lineage.contentDigest, before.latestArtifacts[artifactId].lineage.contentDigest);
   }
   assert.ok(artifactIds.every((id) => after.latestArtifacts[id]?.lineage.status === "current"));
-  assert.deepEqual(f.calls.map((call) => call.stage), ["analysis", "reconstruction", "brief", "brief", "visualGuardrails", "variants", "variants"]);
+  // 主题变体（剧本格式）只调一次模型；转写那一步不调模型。
+  assert.deepEqual(f.calls.map((call) => call.stage), ["analysis", "reconstruction", "brief", "brief", "visualGuardrails", "variants"]);
+  assert.equal(after.latestArtifacts.themeVariants.content.schemaVersion, "theme_variants_script/1.0");
+  assert.deepEqual(after.latestArtifacts.themeVariants.content.variants.map((variant) => variant.id), ["V1", "V2", "V3"]);
+  assert.deepEqual(
+    after.latestArtifacts.referenceAnalysis.lineage.dependencies.map((item) => item.artifactId),
+    ["sourceTranscript"]
+  );
   const children = (await f.getTasks()).filter((task) => task.kind === "brief");
   assert.equal(children.length, 2);
   const resumedChild = children.find((task) => task.status === "completed");
   assert.notEqual(resumedChild.requestId, interruptedChild.requestId);
-  assert.equal(completed.usage.totalTokens, 90);
+  assert.equal(completed.usage.totalTokens, 75);
   assert.equal(completed.usage.unreportedCalls, 1);
   assert.equal(completed.usage.usageComplete, false);
 });
@@ -224,7 +238,7 @@ test("director HTTP terminate closes the active request, reports known plus unkn
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.deepEqual(f.calls.map((call) => call.stage), ["analysis", "reconstruction", "brief"]);
   const after = await f.loadRun();
-  for (const id of artifactIds.slice(0, 2)) assert.deepEqual(after.latestArtifacts[id], before.latestArtifacts[id]);
-  for (const id of artifactIds.slice(2)) assert.equal(after.latestArtifacts[id], undefined);
+  for (const id of artifactIds.slice(0, 3)) assert.deepEqual(after.latestArtifacts[id], before.latestArtifacts[id]);
+  for (const id of artifactIds.slice(3)) assert.equal(after.latestArtifacts[id], undefined);
   assert.equal((await f.getTask()).status, "cancelled");
 });

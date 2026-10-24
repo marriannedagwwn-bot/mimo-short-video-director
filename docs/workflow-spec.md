@@ -14,6 +14,9 @@
 ```mermaid
 flowchart LR
     A[上传参考视频] --> B[浏览器抽取带时间戳关键帧]
+    A --> T[sourceTranscript 本机去配乐与转写]
+    T --> C
+    T --> F
     B --> C[referenceAnalysis]
     C --> D[sourceScriptReconstruction]
     D --> E[creativeBrief]
@@ -33,6 +36,10 @@ flowchart LR
 ```
 
 「从剧情开始」（2026-10-09）不经过参考视频那一段：用户原文或只有固定角色设定写入 `storySource`。只给角色设定时跑「只看文字的角色边界 → 单个故事候选（服务端签发 `variant:V1`）」两步，再接完整剧情、4.0 自主分镜与视频生成；粘贴完整故事时**不生成候选**，跑「只看文字的角色边界 → 按原文拆出可翻拍镜头（`fullStory:V1`，`V1` 是故事位）」两步，再接 4.0 自主分镜与视频生成。粘贴原文时原文是唯一的剧情依据，台词只能逐字取自原文；不做展开前体检、候选评审/修订、按问题修改与剧情体检。契约见 `docs/story-entry-phase1-2026-10-09.md`。
+
+### 阶段〇：sourceTranscript（去配乐与转写，2026-10-24）
+
+AI 导演的第一步，在本机跑、不调模型：服务端读页面工作区里的参考视频副本（核对 SHA-256，≤180 秒），Bandit v2 Multi 分出人声、音乐、音效三轨，whisper 分别转写原声、人声轨与「原声减音乐」三组，并附人声轨与音效轨的有声区间，提交 Artifact `sourceTranscript`（`source_transcript/1.0`）。转写稿逐字作为 `sourceTranscriptText` 交给分析与还原（两份提示词只在有转写时多一段「自动转写」，并进 `groundingSeal`），也交给主题变体；它不标说话人，有同音错字和编出来的句子，一律以画面为准。本机工具不齐时 AI 导演开不了，不跳过这一步。契约见 `docs/reference-rewrite-2026-10-24.md`。
 
 ### 阶段一：referenceAnalysis
 
@@ -107,6 +114,8 @@ flowchart LR
 该阶段没有 `commonNegativePrompt`，也不维护“未声明身体部件”的完整枚举。未声明不等于禁止；只有全局边界明确写入 `forbiddenTraits` 时，相关概念才参与后续拦截。
 
 ### 阶段五：themeVariants / Story Candidates
+
+**2026-10-24 起参考视频 Run 的这一步是剧本格式**（`theme_variants_script/1.0`）：Claude Opus 5.5 看整支视频的接触表、读第〇步的转写稿、按已签发的角色事实写 N 篇完整剧本（方向、概要、分场剧本），上方附原片拆解；选中一篇后完整剧情按剧本拆场，不做展开前体检、候选评审/修订与剧情体检。契约见 `docs/reference-rewrite-2026-10-24.md`。本节下文讲的是旧格式故事候选——旧 Run 里已有的、以及剧情入口「只给角色设定」的那一个。
 
 `themeVariants` 的 wire shape 与 Artifact 名称保持不变，但其中每个 `variants[]` 项按严格 Story Candidate 契约校验。所有对象递归拒绝未知字段；候选继续复用现有任务、压力、剧情节拍、结尾仪式与保真/原创性字段，只新增五个候选级字符串：`keyChoice`、`climax`、`emotionalPayoff`、`novelty`、`visualPotential`。这些字段是选题层摘要，不包含 Full Story、人物圣经、分场、镜头或 Animation Plan 数据。
 
@@ -347,5 +356,5 @@ Plan 不含 `videoPrompt`。用户点某一镜的生成按钮时才创建 `shotV
 
 - 项目固定使用 Node.js 24 LTS（见 `.nvmrc`，`package.json` 限定 `>=24 <25`）；验收测试应在该版本执行，避免把非支持版本或受限沙箱禁止监听本地回环端口造成的 native assertion 误判为业务失败。
 - 原生视频过大或推理服务不支持 `video_url` 时会回退浏览器抽帧；快速剪辑、声音设计和未出现在采样帧中的动作可能遗漏。
-- 音频尚未自动转写。需要准确对白时，应粘贴字幕/转写，或后续增加 ASR 阶段。
+- 2026-10-24 起 AI 导演第一步在本机去配乐与转写（Bandit v2 Multi + whisper，Artifact `sourceTranscript`），转写稿交给分析、还原与主题变体；它不标说话人，有同音错字和编出来的句子，以画面为准。需要准确对白时仍可在「字幕 / 对白补充」里粘贴。
 - 模型输出经过 JSON 解析、阶段契约校验和至多一次受控纠偏；Legacy Full Story 另经过内部 exact JSON Schema 与 Scene Contract。

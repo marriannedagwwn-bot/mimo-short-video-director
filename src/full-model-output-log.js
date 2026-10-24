@@ -32,7 +32,7 @@ export const MODEL_OUTPUT_LOG_SCOPES = Object.freeze({
   SHOT_VIDEO_PROMPT: "shotVideoPrompt",
   // 一句话修改（2026-10-11）走 coordinator，由 workflow.createOneSentenceEdit 自己接 attemptObserver。
   ONE_SENTENCE_EDIT: "oneSentenceEdit",
-  // 参考片仿写（2026-10-24）走 coordinator，由 workflow.createReferenceRewrite 自己接 attemptObserver。
+  // 主题变体的剧本格式（2026-10-24）走 coordinator，由 workflow.createScriptVariants 自己接 attemptObserver。
   REFERENCE_REWRITE: "referenceRewrite",
   // 导演助手（2026-10-09）走 coordinator，由 workflow.createDirectorAgentTurn 自己接 attemptObserver。
   DIRECTOR_AGENT: "directorAgent"

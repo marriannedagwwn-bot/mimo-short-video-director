@@ -44,19 +44,20 @@ import {
 } from "./story-entry.js";
 import { fullStoryControlView, fullStoryTaskView } from "./full-story-control-ui.js";
 import {
-  REFERENCE_REWRITE_ARTIFACT_ID,
   REFERENCE_REWRITE_PROVIDERS,
   REFERENCE_REWRITE_STAGE,
-  REFERENCE_REWRITE_TASK_KIND,
-  referenceRewriteDraftStoryText,
-  referenceRewriteMarkdown
+  SOURCE_TRANSCRIPT_ARTIFACT_ID,
+  estimatedContactSheetFrameCount,
+  isScriptThemeVariants,
+  isScriptVariant,
+  scriptVariantsMarkdown
 } from "./reference-rewrite.js";
 import {
-  referenceRewriteDraftPickerHtml,
-  referenceRewriteHint,
-  referenceRewriteProgressText,
-  referenceRewriteResultHtml,
-  referenceRewriteTextIsDraft
+  frameStripMoreHtml,
+  scriptVariantCardsHtml,
+  scriptVariantOriginalHtml,
+  scriptVariantSummaryHtml,
+  sourceTranscriptCardHtml
 } from "./reference-rewrite-ui.js";
 import {
   isActiveTask, latestTaskForTarget, rememberTaskSnapshot, taskStatusView, taskErrorMessage
@@ -138,13 +139,8 @@ const state = {
   // （切换入口会先清掉当前 Run）。故事草稿只留在输入框里，不进任何浏览器存储。
   entryMode: "video",
   storyMode: STORY_MODE_FULL_TEXT,
-  // 参考片仿写（2026-10-24）：referenceRewrite 是当前 Run 的 Artifact 内容；referenceRewriteDrafts 是切到
-  // 剧情入口时复制下来的四稿，只在页面内存里（刷新即清），不进任何浏览器存储。
-  referenceRewrite: null,
-  referenceRewriteRunning: false,
-  referenceRewriteHealth: { available: false, reason: "正在检查参考片仿写要用的本机工具…" },
-  referenceRewriteDrafts: null,
-  referenceRewriteStatus: { text: "", tone: "" },
+  // AI 导演第一步「去配乐与转写」的本机工具状态（/api/health 的 sourceTranscript）。
+  sourceTranscriptHealth: { available: false, reason: "正在检查去配乐与转写要用的本机工具…" },
   file: null,
   previewUrl: null,
   videoDataUrl: null,
@@ -243,9 +239,7 @@ const elements = {
   frames: $("#frames"), frameStatus: $("#frameStatus"), replace: $("#replaceVideo"), transcript: $("#transcript"),
   fixedCharacter: $("#fixedCharacter"), vertical: $("#vertical"), constraints: $("#constraints"), characterArtStyle: $("#characterArtStyle"), characterArtStylePresets: $("#characterArtStylePresets"), variantCount: $("#variantCount"),
   run: $("#runWorkflow"), error: $("#errorMessage"), modelState: $("#modelState"),
-  runReferenceRewrite: $("#runReferenceRewrite"), referenceRewriteHint: $("#referenceRewriteHint"),
-  referenceRewriteSection: $("#referenceRewriteSection"), referenceRewriteStatus: $("#referenceRewriteStatus"),
-  referenceRewriteResult: $("#referenceRewriteResult"), referenceRewritePicker: $("#referenceRewritePicker"),
+  runHint: $("#runWorkflowHint"),
   entryModeVideo: $("#entryModeVideo"), entryModeStory: $("#entryModeStory"),
   storyModeFullText: $("#storyModeFullText"), storyModeCharacterOnly: $("#storyModeCharacterOnly"),
   storySourceField: $("#storySourceField"), storySourceText: $("#storySourceText"), storySourceCounter: $("#storySourceCounter"),
@@ -261,7 +255,7 @@ const elements = {
   modelStageList: $("#modelStageList"), resetModelSettings: $("#resetModelSettings"), saveModelSettings: $("#saveModelSettings"),
   modelSettingsStatus: $("#modelSettingsStatus"),
   empty: $("#emptyResults"), resultStack: $("#resultStack"), export: $("#exportButton"),
-  analysis: $("#analysisResult"), script: $("#scriptResult"), brief: $("#briefResult"), guardrails: $("#guardrailsResult"), variants: $("#variantsResult"),
+  sourceTranscript: $("#transcriptResult"), analysis: $("#analysisResult"), script: $("#scriptResult"), brief: $("#briefResult"), guardrails: $("#guardrailsResult"), variants: $("#variantsResult"),
   mainPage: $("#top"), storyPage: $("#storyPage"), storyModelName: $("#storyModelName"),
   selectedVariantSummary: $("#selectedVariantSummary"), storyStatus: $("#storyStatus"),
   storyGenerate: $("#generateFullStory"), fullStory: $("#fullStoryResult"), backToResults: $("#backToResults"),
@@ -318,7 +312,8 @@ const MODEL_STAGE_DEFS = [
   { key: "reconstruction", label: "脚本还原", hint: "分场、动作、镜头、转折", capability: "视觉模型", capabilityKind: "vision" },
   { key: "brief", label: "创意简报", hint: "原片驱动结构、换角测试", capability: "文本模型", capabilityKind: "text" },
   { key: "visualGuardrails", label: "视觉规则", hint: "角色边界、原片来源记录、台词规则", capability: "视觉模型", capabilityKind: "vision" },
-  { key: "variants", label: "主题变体", hint: "新故事方向", capability: "文本模型", capabilityKind: "text" },
+  // 2026-10-24 起参考视频的主题变体改由下面的「主题变体」（referenceRewrite）写；这一栏只剩「从剧情开始 · 只给角色设定」的故事候选。
+  { key: "variants", label: "故事候选（从剧情开始）", hint: "只给角色设定时写的故事候选", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "storyCandidateReview", label: "候选对照评审", hint: "横向比对候选动作链，只出报告", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "storyCandidateRevision", label: "命题定向修订", hint: "按评审报出的因果断裂只改一个命题，只出修订稿", capability: "文本模型", capabilityKind: "text", optional: true },
   { key: "fullStory", label: "完整剧情", hint: "可拍分场剧本", capability: "文本模型", capabilityKind: "text" },
@@ -333,9 +328,10 @@ const MODEL_STAGE_DEFS = [
   { key: "oneSentenceEdit", label: "一句话修改", hint: "按你在导演助手里说的话写修改稿，只出修改稿", capability: "文本模型", capabilityKind: "text", optional: true },
   // 导演助手（2026-10-09）：理解对话栏里打的字，只提议下一步；每次调用都关闭思考。用户点对话栏才调用。
   { key: "directorAgent", label: "导演助手", hint: "理解对话栏里打的字，只提议下一步（思考关闭）", capability: "文本模型", capabilityKind: "text", optional: true },
-  // 参考片仿写（2026-10-24）：看接触表与去配乐后的转写写四稿。默认 Claude Opus 5.5（effort xhigh，页面不能改），
-  // 只能选 Claude 或 MiMo；这是 Claude 唯一能收图的一步。用户点「参考片仿写」才调用。
-  { key: REFERENCE_REWRITE_STAGE, label: "参考片仿写", hint: "看抽帧图和去配乐后的台词，写原片拆解和四篇剧本", capability: "看图写稿", capabilityKind: "vision", optional: true },
+  // 主题变体（2026-10-24 起是完整剧本）：看接触表与去配乐后的转写写 N 篇剧本。默认 Claude Opus 5.5（effort xhigh，
+  // 页面不能改），只能选 Claude 或 MiMo；这是 Claude 唯一能收图的一步。AI 导演的第六步。
+  // 标 optional 只是不让「从剧情开始」的用户因为没配 Claude 看到模型未就绪；AI 导演开跑前服务端会查。
+  { key: REFERENCE_REWRITE_STAGE, label: "主题变体", hint: "看抽帧图和去配乐后的台词，写原片拆解和几篇完整剧本", capability: "看图写稿", capabilityKind: "vision", optional: true },
   { key: "characterReference", label: "人物图修正", hint: "根据上传图片修正角色描述", capability: "视觉模型", capabilityKind: "vision" },
   { key: "imageGeneration", label: "图片生成", hint: "角色参考图", capability: "图片生成", capabilityKind: "image", providerLocked: true, optional: true },
   { key: "shotVideo", label: "镜头视频", hint: "全能参考单镜头视频候选", capability: "视频生成", capabilityKind: "video", providers: ["Seedance", "MiniMax"], optional: true }
@@ -438,7 +434,7 @@ async function init() {
     state.modelStages = health.modelStages || {};
     state.stageHealth = health.stageHealth || {};
     state.providers = health.providers || {};
-    state.referenceRewriteHealth = health.referenceRewrite || { available: false, reason: "服务端没有报告参考片仿写的状态，请重启服务。" };
+    state.sourceTranscriptHealth = health.sourceTranscript || { available: false, reason: "服务端没有报告去配乐与转写的状态，请重启服务。" };
     state.modelOverrides = readModelOverrides();
     applyEffectiveModelState();
     state.imageModel = health.imageModel || state.imageModel;
@@ -481,16 +477,6 @@ function bindEvents() {
   elements.dropzone.addEventListener("drop", (event) => event.dataTransfer.files[0] && handleFile(event.dataTransfer.files[0]));
   elements.replace.addEventListener("click", () => elements.input.click());
   elements.run.addEventListener("click", runWorkflow);
-  elements.runReferenceRewrite.addEventListener("click", () => { void runReferenceRewrite(); });
-  elements.referenceRewriteResult.addEventListener("click", (event) => {
-    const use = event.target.closest("[data-reference-draft-use]");
-    if (use) { void useReferenceRewriteDraft(Number(use.dataset.referenceDraftUse)); return; }
-    if (event.target.closest("[data-reference-rewrite-download]")) downloadReferenceRewrite();
-  });
-  elements.referenceRewritePicker.addEventListener("click", (event) => {
-    const fill = event.target.closest("[data-reference-draft-fill]");
-    if (fill) fillReferenceRewriteDraft(Number(fill.dataset.referenceDraftFill));
-  });
   elements.terminateDirector.addEventListener("click", () => controlDirectorPipeline("terminate"));
   elements.pauseDirector.addEventListener("click", () => {
     const task = state.taskSnapshots[state.directorTaskId];
@@ -789,7 +775,7 @@ function clearVideoWorkspaceUi({ keepSource = false } = {}) {
     elements.dropzone.classList.remove("hidden");
     elements.videoInfo.classList.add("hidden");
   }
-  for (const element of [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants,
+  for (const element of [elements.sourceTranscript, elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants,
     elements.fullStory, elements.animationPlan, elements.selectedVariantSummary, elements.characterImageResults,
     elements.shotVideoResults]) {
     element.innerHTML = "";
@@ -879,6 +865,7 @@ async function loadSourceVideo(file, epoch) {
     renderStoryDurationOptions();
     elements.fileMeta.textContent = `${formatBytes(file.size)} · ${formatTime(sampled.metadata.duration)} · ${sampled.metadata.width}×${sampled.metadata.height}`;
     elements.frames.innerHTML = sampled.frames.map((frame, index) => `<div class="frame"><img src="${frame.dataUrl}" alt="采样画面 ${index + 1}"><span>F${index + 1} · ${formatTime(frame.timestamp)}</span></div>`).join("");
+    renderFrameStripMore();
     const mediaNote = videoDataUrl
       ? "原生视频已就绪"
       : state.mode !== "demo" && media.mediaMode !== "frames" && file.size > media.nativeVideoMaxBytes
@@ -1001,7 +988,7 @@ async function runWorkflow() {
       }
       if (!continuingInterruptedRun) resetDirectorClientState();
       resetPipeline();
-      [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants]
+      [elements.sourceTranscript, elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants]
         .forEach((element) => { element.innerHTML = ""; element.classList.add("hidden"); });
       if (continuingInterruptedRun) renderRestoredDirectorArtifacts();
       const media = analysisMediaSettings();
@@ -1081,183 +1068,6 @@ async function runWorkflow() {
     setRunning(false);
     validateReady();
   }
-}
-
-// ---------------------------------------------------------------------------
-// 参考片仿写（2026-10-24）
-//
-// 在参考视频入口里点「参考片仿写」：服务端在本机抽帧、去配乐、转写，再让模型写「原片拆解＋四篇剧本」，
-// 提交 Artifact referenceRewrite。选中的一稿填进「从剧情开始 · 粘贴完整故事」，用户看过再点「开始拆镜头」。
-// 切过去时当前 Run（含四稿）会被删掉；四稿另复制一份在页面内存里，刷新即清，不进任何浏览器存储。
-
-function referenceRewriteReadiness() {
-  if (isStoryEntryMode()) return { ready: false, reason: "" };
-  if (sourceLoading || !browserWorkspace.workspace) return { ready: false, reason: "页面还在恢复上一次的进度。" };
-  if (state.referenceRewriteRunning) return { ready: false, reason: "参考片仿写正在进行。" };
-  const health = state.referenceRewriteHealth || {};
-  if (!health.available) return { ready: false, reason: health.reason || "参考片仿写现在用不了。" };
-  const setting = effectiveStageSetting(REFERENCE_REWRITE_STAGE);
-  if (state.mode !== "demo" && !REFERENCE_REWRITE_PROVIDERS.includes(setting.provider)) {
-    return { ready: false, reason: `参考片仿写只能用 ${REFERENCE_REWRITE_PROVIDERS.join(" 或 ")}，请在模型设置里改回来。` };
-  }
-  if (state.mode !== "demo" && !state.providers?.[setting.provider]?.configured) {
-    return { ready: false, reason: `参考片仿写用的是 ${setting.provider}，但服务端没有配置它。` };
-  }
-  if (!state.file || state.frames.length < 3) {
-    return { ready: false, reason: state.production.runId ? "要在这个 Run 上仿写，需要重新上传同一个参考视频。" : "先上传参考视频。" };
-  }
-  if (!elements.fixedCharacter.value.trim() || !elements.vertical.value.trim()) return { ready: false, reason: "先在左边填好固定角色和垂直赛道。" };
-  return { ready: true, reason: "" };
-}
-
-function renderReferenceRewriteControls() {
-  if (!elements.runReferenceRewrite) return;
-  const readiness = referenceRewriteReadiness();
-  elements.runReferenceRewrite.disabled = !readiness.ready;
-  const setting = effectiveStageSetting(REFERENCE_REWRITE_STAGE);
-  const health = state.referenceRewriteHealth || {};
-  elements.referenceRewriteHint.textContent = health.available && readiness.ready
-    ? referenceRewriteHint({ available: true, demo: state.mode === "demo", provider: setting.provider, model: setting.model })
-    : readiness.reason || referenceRewriteHint(health);
-}
-
-function setReferenceRewriteStatus(text, tone = "") {
-  state.referenceRewriteStatus = { text, tone };
-  renderReferenceRewritePanel();
-}
-
-function renderReferenceRewritePanel() {
-  if (!elements.referenceRewriteSection) return;
-  const result = state.referenceRewrite;
-  const status = state.referenceRewriteStatus || {};
-  const visible = Boolean(result || state.referenceRewriteRunning || status.text);
-  elements.referenceRewriteSection.classList.toggle("hidden", !visible);
-  elements.referenceRewriteStatus.textContent = status.text || "";
-  elements.referenceRewriteStatus.classList.toggle("error", status.tone === "error");
-  elements.referenceRewriteResult.innerHTML = result ? referenceRewriteResultHtml(result, { escape }) : "";
-}
-
-function renderReferenceRewritePicker() {
-  if (!elements.referenceRewritePicker) return;
-  const drafts = state.referenceRewriteDrafts?.drafts;
-  const visible = Boolean(drafts?.length && isStoryEntryMode() && state.storyMode === STORY_MODE_FULL_TEXT && !state.production.runId);
-  elements.referenceRewritePicker.classList.toggle("hidden", !visible);
-  elements.referenceRewritePicker.innerHTML = visible
-    ? referenceRewriteDraftPickerHtml(drafts, { escape, currentText: elements.storySourceText.value })
-    : "";
-}
-
-// 没有 Run 时照「启动 AI 导演」的写法先建一个参考视频 Run；之后点 AI 导演会接着用这个 Run。
-async function ensureVideoProductionRun(workspaceEpoch) {
-  if (state.production.projectId && state.production.runId) return;
-  const sourceVideoDigest = await sourceFileSha256(state.file);
-  assertWorkspaceCurrent(workspaceEpoch);
-  const productionRun = await api("/api/production/run/start", {
-    ...browserWorkspace.reference(),
-    metadata: {
-      sourceVideo: state.metadata,
-      sourceVideoDigest,
-      creatorProfile: profile(),
-      transcript: elements.transcript.value.trim()
-    }
-  });
-  assertWorkspaceCurrent(workspaceEpoch);
-  state.production = productionStateFromRun(productionRun);
-  persistActiveProductionRun();
-}
-
-async function runReferenceRewrite() {
-  const readiness = referenceRewriteReadiness();
-  if (!readiness.ready) { if (readiness.reason) showError(readiness.reason); return; }
-  const setting = effectiveStageSetting(REFERENCE_REWRITE_STAGE);
-  const hint = referenceRewriteHint({ available: true, demo: state.mode === "demo", provider: setting.provider, model: setting.model });
-  const confirmed = window.confirm(`${hint}\n\n会先在本机抽帧、去配乐、转写（几分钟），再调用模型写稿。继续吗？`);
-  if (!confirmed) return;
-  const workspaceEpoch = browserWorkspace.epoch;
-  state.referenceRewriteRunning = true;
-  showError("");
-  setReferenceRewriteStatus("正在建任务…");
-  renderReferenceRewriteControls();
-  elements.referenceRewriteSection.scrollIntoView({ behavior: "smooth", block: "start" });
-  try {
-    await ensureVideoProductionRun(workspaceEpoch);
-    const created = await createDurableTask(REFERENCE_REWRITE_TASK_KIND, withModelOverrides({
-      targetDurationSeconds: resolveStoryDurationTarget(state.storyDurationTarget, {
-        metadata: state.metadata,
-        sourceScriptReconstruction: state.output.sourceScriptReconstruction
-      })
-    }));
-    await finishReferenceRewriteTask(created.task, workspaceEpoch);
-  } catch (error) {
-    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
-    setReferenceRewriteStatus(isTaskCapacityError(error) ? taskCapacityMessage(error) : `参考片仿写没有完成：${error.message || "未知错误"}`, "error");
-  } finally {
-    if (browserWorkspace.isCurrent(workspaceEpoch)) {
-      state.referenceRewriteRunning = false;
-      renderReferenceRewriteControls();
-    }
-  }
-}
-
-// 新建与刷新后重新接管共用：等任务结束、读回 Run、显示四稿。
-async function finishReferenceRewriteTask(task, workspaceEpoch = browserWorkspace.epoch) {
-  const completed = await waitForDurableTask(task, (current) => setReferenceRewriteStatus(referenceRewriteProgressText(current)));
-  assertWorkspaceCurrent(workspaceEpoch);
-  recordStageUsage(completed.usage);
-  await reloadActiveProductionRun(state.production, { preserveSelectedVariant: true });
-  setReferenceRewriteStatus(`四稿写好了${formatStageUsageSuffix(completed.usage)}。挑一稿点「用这一稿开拍」。`);
-}
-
-async function useReferenceRewriteDraft(index) {
-  const result = state.referenceRewrite;
-  const draft = result?.drafts?.[index];
-  if (!draft || state.running || state.referenceRewriteRunning) return;
-  const confirmed = window.confirm(
-    `用「${draft.title}」开拍：会切到「从剧情开始 · 粘贴完整故事」，把这一稿填进输入框，你看过、改好再点「开始拆镜头」。\n\n`
-    + "切过去时服务端会删掉当前 Run（包括这四稿），参考视频副本会在开始拆镜头时删掉。"
-    + "四稿会在这个页面里留到刷新为止，要长期留着请先点「下载四稿」。继续吗？"
-  );
-  if (!confirmed) return;
-  const drafts = structuredClone(result.drafts);
-  const videoTitle = String(state.metadata?.name || "");
-  if (state.production.runId && !await invalidateGlobalCharacterBoundary("已切到「从剧情开始」，原来的参考视频 Run 已清空。")) return;
-  state.referenceRewriteDrafts = { drafts, videoTitle, original: structuredClone(result.original) };
-  state.referenceRewrite = null;
-  state.referenceRewriteStatus = { text: "", tone: "" };
-  state.entryMode = STORY_ENTRY_MODE;
-  state.storyMode = STORY_MODE_FULL_TEXT;
-  elements.storySourceText.value = referenceRewriteDraftStoryText(draft);
-  applyEntryModeUi();
-  renderReferenceRewritePanel();
-  validateReady();
-  elements.storySourceText.scrollIntoView({ behavior: "smooth", block: "center" });
-}
-
-function fillReferenceRewriteDraft(index) {
-  const drafts = state.referenceRewriteDrafts?.drafts;
-  const draft = drafts?.[index];
-  if (!draft || state.production.runId) return;
-  if (!referenceRewriteTextIsDraft(drafts, elements.storySourceText.value)
-    && !window.confirm("输入框里的字改过了，换成这一稿会覆盖你的修改。继续吗？")) return;
-  elements.storySourceText.value = referenceRewriteDraftStoryText(draft);
-  updateStorySourceCounter();
-  renderReferenceRewritePicker();
-  validateReady();
-}
-
-function downloadReferenceRewrite() {
-  const result = state.referenceRewrite;
-  if (!result) return;
-  const videoTitle = String(state.metadata?.name || "").replace(/\.[A-Za-z0-9]{1,5}$/u, "");
-  const blob = new Blob([referenceRewriteMarkdown(result, { videoTitle })], { type: "text/markdown;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `参考片仿写-${(videoTitle || "四稿").slice(0, 40).replace(/[\\/:*?"<>|]/gu, "_")}.md`;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ---------------------------------------------------------------------------
@@ -1355,7 +1165,6 @@ function applyEntryModeUi() {
   updateStorySourceCounter();
   renderStoryDurationOptions();
   renderDirectorControls();
-  renderReferenceRewritePicker();
 }
 
 // 切换入口会作废当前 Run：两种 Run 的上游完全不同，不能混在一页里。
@@ -1391,7 +1200,6 @@ async function handleStoryModeChange(mode) {
 
 async function handleStorySourceInput() {
   updateStorySourceCounter();
-  renderReferenceRewritePicker();
   await invalidateIfStorySourceChanged();
   validateReady();
 }
@@ -1575,9 +1383,11 @@ let storyDialogueCheckRequest = 0;
 async function refreshStoryDialogueCheck() {
   const panel = elements.storyDialogueCheck;
   const variant = selectedVariant();
-  const applicable = isStoryEntryMode()
-    && state.output.storySource?.storyMode === STORY_MODE_FULL_TEXT
-    && variant && state.production.runId && state.fullStories[variant.id];
+  // 粘贴完整故事，或参考视频 Run 里剧本格式的主题变体（2026-10-24）：两者都按原文拆场。
+  const bySource = isStoryEntryMode()
+    ? state.output.storySource?.storyMode === STORY_MODE_FULL_TEXT
+    : isScriptVariant(variant);
+  const applicable = bySource && variant && state.production.runId && state.fullStories[variant.id];
   const requestId = ++storyDialogueCheckRequest;
   if (!applicable) {
     panel.classList.add("hidden");
@@ -1607,15 +1417,18 @@ function renderStoryDialogueCheck(report) {
     return;
   }
   const missing = Array.isArray(report.missing) ? report.missing : [];
-  // 台词核对只在粘贴完整故事的 Run 上出现，那里 fullStory 叫「可翻拍镜头」。
-  const where = (item) => (item.artifact === "animationPlan" ? `分镜 ${item.location}` : `可翻拍镜头 ${item.location}`);
+  // 粘贴完整故事的 Run 里 fullStory 叫「可翻拍镜头」、原文是用户的故事；参考视频 Run 里叫「完整剧情」、原文是选中的剧本。
+  const storyLabel = fullStoryLabel();
+  const sourceLabel = isStoryEntryMode() ? "原文" : "剧本";
+  const planName = isStoryEntryMode() ? "分镜" : "动画生产包";
+  const where = (item) => (item.artifact === "animationPlan" ? `${planName} ${item.location}` : `${storyLabel} ${item.location}`);
   panel.className = `result-card story-result story-dialogue-check${missing.length ? " warn" : ""}`;
   panel.innerHTML = missing.length
-    ? `<h3>台词核对：${missing.length} 句在原文里找不到</h3>
-      <p>只是提示，不拦截。这些台词可能被改写或新增了；需要的话可以重新拆分镜头或重新生成分镜。比对时忽略标点和空格。</p>
+    ? `<h3>台词核对：${missing.length} 句在${sourceLabel}里找不到</h3>
+      <p>只是提示，不拦截。这些台词可能被改写或新增了；需要的话可以重新拆分镜头或重新生成${planName}。比对时忽略标点和空格。</p>
       <ul>${missing.map((item) => `<li><span>${escape(where(item))}</span> · ${escape(item.speaker || "未标注")}：${escape(item.text)}</li>`).join("")}</ul>`
-    : `<h3>台词核对：${escape(report.checked)} 句台词都能在原文里找到</h3>
-      <p>可翻拍镜头${state.output.animationPlan ? "和分镜" : ""}里的台词去掉标点后都与原文一致。</p>`;
+    : `<h3>台词核对：${escape(report.checked)} 句台词都能在${sourceLabel}里找到</h3>
+      <p>${storyLabel}${state.output.animationPlan ? `和${planName}` : ""}里的台词去掉标点后都与${sourceLabel}一致。</p>`;
 }
 
 async function requestProductionArtifact({
@@ -1785,16 +1598,10 @@ function renderDirectorTaskStatus(task) {
   // completed Artifacts. Always render the accepted snapshot for this task.
   task = state.taskSnapshots[task.taskId] || task;
   state.directorTaskId = task.taskId;
-  const artifactToStage = {
-    referenceAnalysis: "analysis",
-    sourceScriptReconstruction: "script",
-    creativeBrief: "brief",
-    visualGuardrails: "guardrails",
-    themeVariants: "variants"
-  };
+  const artifactToStage = Object.fromEntries(DIRECTOR_PAGE_STAGES.map(([artifactId, stage]) => [artifactId, stage]));
   const currentArtifact = String(task.progress?.currentStage || "");
   const completedCount = Number(task.progress?.completedStages) || 0;
-  const order = ["analysis", "script", "brief", "guardrails", "variants"];
+  const order = DIRECTOR_PAGE_STAGES.map(([, stage]) => stage);
   order.forEach((stage, index) => setStage(stage, index < completedCount ? "done" : ""));
   const view = directorTaskView(task);
   // currentStage can still refer to the stage just committed at a boundary.
@@ -1866,15 +1673,18 @@ async function controlDirectorPipeline(action) {
   }
 }
 
-function renderRestoredDirectorArtifacts({ fromStage = 0, toStage = 5 } = {}) {
-  const stages = [
-    ["referenceAnalysis", "analysis", renderAnalysis],
-    ["sourceScriptReconstruction", "script", renderScript],
-    ["creativeBrief", "brief", renderBrief],
-    ["visualGuardrails", "guardrails", renderVisualGuardrails],
-    ["themeVariants", "variants", renderVariants]
-  ];
-  stages.slice(Math.max(0, fromStage), Math.max(0, toStage)).forEach(([artifactId, stage, render]) => {
+// AI 导演（参考视频 Run）的六步与页面步骤条、结果卡的对应关系；顺序与服务端 DIRECTOR_PIPELINE_STAGES 一致。
+const DIRECTOR_PAGE_STAGES = [
+  ["sourceTranscript", "transcript", (value) => renderSourceTranscript(value)],
+  ["referenceAnalysis", "analysis", (value) => renderAnalysis(value)],
+  ["sourceScriptReconstruction", "script", (value) => renderScript(value)],
+  ["creativeBrief", "brief", (value) => renderBrief(value)],
+  ["visualGuardrails", "guardrails", (value) => renderVisualGuardrails(value)],
+  ["themeVariants", "variants", (value) => renderVariants(value)]
+];
+
+function renderRestoredDirectorArtifacts({ fromStage = 0, toStage = DIRECTOR_PAGE_STAGES.length } = {}) {
+  DIRECTOR_PAGE_STAGES.slice(Math.max(0, fromStage), Math.max(0, toStage)).forEach(([artifactId, stage, render]) => {
     if (!state.output[artifactId]) return;
     render(state.output[artifactId]);
     setStage(stage, "done");
@@ -1882,13 +1692,7 @@ function renderRestoredDirectorArtifacts({ fromStage = 0, toStage = 5 } = {}) {
 }
 
 function renderedDirectorStageCount() {
-  const artifactIds = [
-    "referenceAnalysis",
-    "sourceScriptReconstruction",
-    "creativeBrief",
-    "visualGuardrails",
-    "themeVariants"
-  ];
+  const artifactIds = DIRECTOR_PAGE_STAGES.map(([artifactId]) => artifactId);
   let count = 0;
   while (count < artifactIds.length && state.output[artifactIds[count]]) count += 1;
   return count;
@@ -1915,11 +1719,6 @@ function resetDirectorClientState() {
   state.storyTaskStatusVisible = false;
   localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
   state.selectedVariantId = null;
-  state.referenceRewrite = null;
-  state.referenceRewriteRunning = false;
-  state.referenceRewriteStatus = { text: "", tone: "" };
-  renderReferenceRewritePanel();
-  renderReferenceRewritePicker();
   resetStoryPackageStatus();
   scheduleDirectorAgentRefresh();
 }
@@ -2316,6 +2115,16 @@ function renderVariants(data) {
   const storyEntry = isStoryEntryMode();
   const regenerating = Boolean(state.variantsRegenerating);
   const regenerateButton = storyEntry ? "" : `<button class="round-add-button${regenerating ? " is-busy" : ""}" type="button" data-regenerate-variants aria-label="换一批主题变体" title="${regenerating ? "正在重新生成主题变体…" : "换一批：用同一份上游证据重新生成主题变体"}"${regenerating ? " disabled" : ""}>${REGENERATE_ICON}</button>`;
+  // 2026-10-24 起参考视频的主题变体是 N 篇完整剧本：原片拆解在上，剧本卡在下；没有相似风险、时长徽章和候选体检。
+  if (isScriptThemeVariants(data)) {
+    elements.variants.innerHTML = `${resultHeader("THEME VARIANTS", "看参考片写的几篇完整剧本", "", regenerateButton)}
+      ${scriptVariantOriginalHtml(data, { escape })}
+      ${scriptVariantCardsHtml(data, { escape, regenerating, topMeta: (variant) => backgroundMusicSwitchHtml(variant, regenerating) })}`;
+    reveal(elements.variants);
+    elements.variants.querySelector("[data-script-variants-download]")?.addEventListener("click", () => downloadScriptVariants(data));
+    renderFrameStripMore();
+    return;
+  }
   elements.variants.innerHTML = `${storyEntry
     ? resultHeader("STORY", state.output.storySource?.storyMode === STORY_MODE_CHARACTER_ONLY ? "按角色设定写出的故事" : "按原文整理的故事", "", "")
     : resultHeader("THEME VARIANTS", "可拍摄的具体主题变体", "", regenerateButton)}
@@ -2323,11 +2132,7 @@ function renderVariants(data) {
       <div class="variant-top">
         <div><span class="variant-number">${escape(variant.id)} · ${storyEntry ? "STORY" : "NEW EPISODE"}</span><h4>${escape(variant.title)}</h4></div>
         <div class="variant-top-meta">
-          <label class="variant-switch" title="${backgroundMusicEnabled(variant.id) ? "开启：允许为该主题生成背景音乐" : "关闭：成片只保留现场环境声与动作声"}">
-            <input type="checkbox" data-background-music="${escape(variant.id)}" aria-label="${escape(variant.title)} 的背景音乐"${backgroundMusicEnabled(variant.id) ? " checked" : ""}${regenerating ? " disabled" : ""}>
-            <span class="variant-switch-track" aria-hidden="true"></span>
-            <span class="variant-switch-label">配乐</span>
-          </label>
+          ${backgroundMusicSwitchHtml(variant, regenerating)}
           ${variantDurationBadge(variant.storyOutline)}
           ${narrativeModeBadge(variant.narrativeMode)}
           ${storyEntry ? "" : `<span class="risk">相似风险 ${escape(variant.originalityRiskCheck?.riskLevel || "-")}</span>`}
@@ -2352,6 +2157,52 @@ function renderVariants(data) {
   reveal(elements.variants);
   const reviewButton = elements.variants.querySelector("[data-candidate-review]");
   if (reviewButton) reviewButton.addEventListener("click", () => runStoryCandidateReview(data, reviewButton));
+}
+
+function backgroundMusicSwitchHtml(variant, regenerating) {
+  return `<label class="variant-switch" title="${backgroundMusicEnabled(variant.id) ? "开启：允许为该主题生成背景音乐" : "关闭：成片只保留现场环境声与动作声"}">
+            <input type="checkbox" data-background-music="${escape(variant.id)}" aria-label="${escape(variant.title)} 的背景音乐"${backgroundMusicEnabled(variant.id) ? " checked" : ""}${regenerating ? " disabled" : ""}>
+            <span class="variant-switch-track" aria-hidden="true"></span>
+            <span class="variant-switch-label">配乐</span>
+          </label>`;
+}
+
+// 「下载剧本」：浏览器生成 Markdown 文件，用户主动导出；不经过服务端。
+function downloadScriptVariants(themeVariants) {
+  const videoTitle = String(state.metadata?.name || "").replace(/\.[A-Za-z0-9]{1,5}$/u, "");
+  const blob = new Blob([scriptVariantsMarkdown(themeVariants, { videoTitle })], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${videoTitle || "参考片"}-主题变体.md`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// AI 导演第一步「去配乐与转写」的结果卡。
+function renderSourceTranscript(transcript) {
+  elements.sourceTranscript.innerHTML = sourceTranscriptCardHtml(transcript, {
+    escape,
+    header: resultHeader("SOURCE TRANSCRIPT", "去配乐后的台词稿", transcript?.durationSeconds ? `${Math.round(transcript.durationSeconds)} 秒` : "")
+  });
+  reveal(elements.sourceTranscript);
+}
+
+// 时间轴采样最多显示 10 张；主题变体那一步给模型看的帧更多，鼠标移到最后一张上显示「+N」。
+// 跑过主题变体之后用实际切出来的帧数，之前按时长估。
+function renderFrameStripMore() {
+  const frames = elements.frames?.querySelectorAll?.(".frame") || [];
+  const last = frames[frames.length - 1];
+  if (!last) return;
+  last.querySelector?.(".frame-more")?.remove();
+  const duration = Number(state.metadata?.duration) || 0;
+  const materials = isScriptThemeVariants(state.output?.themeVariants) ? state.output.themeVariants.materials : null;
+  const total = Number(materials?.frameCount) || estimatedContactSheetFrameCount(duration);
+  const fps = Number(materials?.fps) || (duration > 120 ? 1 : 2);
+  const html = frameStripMoreHtml({ total, shown: frames.length, fps, escape });
+  if (html) last.insertAdjacentHTML("beforeend", html);
 }
 
 // 粘贴完整故事：首页没有候选卡，只有一张通往分场页的入口卡。
@@ -2990,7 +2841,7 @@ async function regenerateThemeVariants() {
       },
       artifactId: "themeVariants",
       artifactType: "themeVariants",
-      dependencyIds: ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails"]
+      dependencyIds: ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails", SOURCE_TRANSCRIPT_ARTIFACT_ID]
     });
     state.output.themeVariants = themeVariants;
     // 旧的选中项已经不存在了，别让它继续指向一个已作废的 variant。
@@ -3098,6 +2949,7 @@ function renderRoute() {
 }
 
 function renderMainPage() {
+  document.body.classList.remove("script-variant-mode");
   resetStoryPackageStatus();
   elements.storyPage.classList.add("hidden");
   elements.mainPage.classList.remove("hidden");
@@ -3110,6 +2962,8 @@ function renderStoryPage({ autoGenerate = false } = {}) {
   elements.storyPage.classList.remove("hidden");
   window.scrollTo({ top: 0, behavior: "instant" });
   const variant = selectedVariant();
+  // 剧本格式的主题变体（2026-10-24）按剧本拆场：分场页标题换成「拆成」。
+  document.body.classList.toggle("script-variant-mode", isScriptVariant(variant));
   renderSelectedVariantSummary(variant);
   renderStoryMusicControl();
   // 展开前体检面板只在它所属的命题页上显示（另一个命题的面板隐藏，状态保留）。
@@ -3174,6 +3028,11 @@ function renderSelectedVariantSummary(variant) {
       <h3>你的故事（原文）</h3>
       <p class="story-source-original">${escape(text)}</p>
       <small class="story-source-note">共 ${escape(storyTextLength(text))} 字 · 情节、人物、结局和台词都按原文</small>`;
+    return;
+  }
+  // 剧本格式的主题变体（2026-10-24）：左侧显示选中的那篇剧本。
+  if (isScriptVariant(variant)) {
+    elements.selectedVariantSummary.innerHTML = scriptVariantSummaryHtml(variant, { escape });
     return;
   }
   elements.selectedVariantSummary.innerHTML = `
@@ -3297,6 +3156,8 @@ async function startFullStory({ force = false } = {}) {
     return generateFullStory({ force });
   }
 
+  // 剧本格式的主题变体已经是完整剧本，按剧本拆场，没有展开前体检（2026-10-24）。
+  if (isScriptVariant(variant)) return generateFullStory({ force });
   const sourceThemeVariants = state.output?.themeVariants;
   if (!sourceThemeVariants) return generateFullStory({ force });
   // 上一次体检已判「直接展开」、命题又一字没改：直接展开，不再花钱重跑。体检只看候选，
@@ -3622,6 +3483,8 @@ function renderFullStory(data) {
   // 粘贴完整故事的 fullStory 是按原文拆出的可翻拍镜头：换叫法，并且不提供「检查剧情硬伤」
   // （它要拿故事候选核对承诺，这类 Run 没有候选）。
   const storySource = isStorySourceRun();
+  // 剧本格式的主题变体按剧本拆场，同样没有故事候选可核对承诺（2026-10-24）。
+  const noQualityReview = storySource || isScriptVariant(selectedVariant());
   elements.fullStory.innerHTML = `${resultHeader(storySource ? "SHOTS" : "FULL STORY", data.title || fullStoryLabel(), `${escape(data.targetDurationSeconds || 60)} 秒`)}
     <div class="summary-strip">${escape(data.oneLinePremise || data.shootingSynopsis)}</div>
     ${shapeStrip}
@@ -3664,7 +3527,7 @@ function renderFullStory(data) {
     </div>`)}
     ${narrativeStory ? "" : `<div class="warning-box"><b>连续性检查：</b> ${escape(Object.values(data.continuityAndSafetyCheck || {}).filter(Boolean).join("；")) || "已通过结构校验"}</div>`}
     ${uncertainties(data.uncertainties)}
-    ${storySource ? "" : `<div class="story-review">
+    ${noQualityReview ? "" : `<div class="story-review">
       <button type="button" class="outline-button" data-story-review>检查剧情硬伤</button>
       <span class="story-review-hint">核对候选承诺有没有演出来，并做编辑诊断。可以勾选问题生成局部修改——看过对照、点「采纳」之前不会改动剧情。</span>
       <div class="story-review-body" data-story-review-body></div>
@@ -6363,7 +6226,7 @@ function modelAllowedForStage(model, provider, stageKey) {
   return !isKnownQwenTextOnlyModel(model) && /(?:plus|vl|omni)/iu.test(model);
 }
 function providerAllowedForStage(provider, stageKey) {
-  // 参考片仿写只列 Claude 与 MiMo（服务端同样只认这两家）。
+  // 主题变体（剧本格式）只列 Claude 与 MiMo（服务端同样只认这两家）。
   if (stageKey === REFERENCE_REWRITE_STAGE) return REFERENCE_REWRITE_PROVIDERS.includes(provider);
   return !(TEXT_ONLY_MODEL_PROVIDERS.has(provider) && MEDIA_INPUT_MODEL_STAGES.has(stageKey));
 }
@@ -6431,7 +6294,7 @@ function persistedTaskModelLabel(artifactId, stage, fallback = "") {
 }
 function modelName(model) { return String(model || "").split("/").pop(); }
 function validateReady() {
-  renderReferenceRewriteControls();
+  renderRunWorkflowHint();
   if (sourceLoading || !browserWorkspace.workspace) { elements.run.disabled = true; return; }
   if (state.running) return;
   elements.run.disabled = !setupReadiness().ready;
@@ -6465,7 +6328,20 @@ function setupReadiness() {
     return { ready: false, reason: state.production.runId ? "要继续这个 Run，需要重新上传同一个参考视频。" : "先上传参考视频。" };
   }
   if (profileReason) return { ready: false, reason: profileReason };
+  // AI 导演第一步要在本机去配乐、转写（2026-10-24）：工具不齐就开不了，不跳过这一步。
+  if (state.mode !== "demo" && !state.sourceTranscriptHealth?.available
+    && state.production.artifacts?.[SOURCE_TRANSCRIPT_ARTIFACT_ID]?.status !== "current") {
+    return { ready: false, reason: state.sourceTranscriptHealth?.reason || "去配乐与转写要用的本机工具不可用。" };
+  }
   return { ready: true, reason: "" };
+}
+// 「AI 导演」按钮下面那一行：为什么不能点。能点时不显示。
+function renderRunWorkflowHint() {
+  if (!elements.runHint) return;
+  const readiness = setupReadiness();
+  const show = !readiness.ready && !state.running && !isStoryEntryMode() && Boolean(readiness.reason) && !sourceLoading && Boolean(browserWorkspace.workspace);
+  elements.runHint.textContent = show ? readiness.reason : "";
+  elements.runHint.classList.toggle("hidden", !show);
 }
 function showError(message, tone = "error") {
   elements.error.textContent = message;
@@ -6658,22 +6534,6 @@ async function attachRestoredDirectorPipeline(task) {
   }
 }
 
-// 刷新后重新接管还在跑的参考片仿写任务。
-async function attachRestoredReferenceRewrite(task) {
-  const workspaceEpoch = browserWorkspace.epoch;
-  try {
-    await finishReferenceRewriteTask(task, workspaceEpoch);
-  } catch (error) {
-    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
-    setReferenceRewriteStatus(`参考片仿写没有完成：${error.message || "未知错误"}`, "error");
-  } finally {
-    if (browserWorkspace.isCurrent(workspaceEpoch)) {
-      state.referenceRewriteRunning = false;
-      renderReferenceRewriteControls();
-    }
-  }
-}
-
 function markRestoredTaskRunning(task) {
   const target = durableTaskTargetContext(task);
   if (task.kind === "variants") {
@@ -6688,10 +6548,6 @@ function markRestoredTaskRunning(task) {
     syncStoryTaskStatus();
   } else if (task.kind === "shotVideo" && target.shotId) {
     setShotVideoStateItem(target.shotId, { status: "running", message: "已重新接管服务端视频任务…" }, target.variantId);
-  } else if (task.kind === REFERENCE_REWRITE_TASK_KIND) {
-    state.referenceRewriteRunning = true;
-    setReferenceRewriteStatus(referenceRewriteProgressText(task));
-    renderReferenceRewriteControls();
   } else if (task.kind === "characterReferenceImages") {
     adoptCharacterImageTaskTarget(task);
     state.characterImageGeneration.running = true;
@@ -6712,7 +6568,6 @@ function adoptCharacterImageTaskTarget(task) {
 }
 
 async function attachRestoredStandaloneTask(task) {
-  if (task.kind === REFERENCE_REWRITE_TASK_KIND) return attachRestoredReferenceRewrite(task);
   const workspaceEpoch = browserWorkspace.epoch;
   try {
     const completed = await waitForDurableTask(task, (current) => {
@@ -6820,7 +6675,10 @@ function restoreRunArtifacts(latestArtifacts = {}, { selectedVariantId = null } 
   };
   // storySource 只在剧情 Run 上存在；只在有的时候加这个键，参考视频 Run 的导出内容逐字不变。
   const storySource = currentContent("storySource");
+  // 去配乐与转写（2026-10-24）同理：只在有的时候加这个键，旧 Run 的导出内容逐字不变。
+  const sourceTranscript = currentContent(SOURCE_TRANSCRIPT_ARTIFACT_ID);
   state.output = {
+    ...(sourceTranscript ? { sourceTranscript } : {}),
     referenceAnalysis: currentContent("referenceAnalysis"),
     sourceScriptReconstruction: currentContent("sourceScriptReconstruction"),
     creativeBrief: currentContent("creativeBrief"),
@@ -6828,8 +6686,6 @@ function restoreRunArtifacts(latestArtifacts = {}, { selectedVariantId = null } 
     themeVariants: currentContent("themeVariants"),
     ...(storySource ? { storySource } : {})
   };
-  state.referenceRewrite = currentContent(REFERENCE_REWRITE_ARTIFACT_ID);
-  renderReferenceRewritePanel();
   if (storySource) {
     elements.storySourceText.value = storySource.storyText || "";
     state.storyMode = storySource.storyMode === STORY_MODE_CHARACTER_ONLY ? STORY_MODE_CHARACTER_ONLY : STORY_MODE_FULL_TEXT;
@@ -6878,6 +6734,7 @@ function restoreRunArtifacts(latestArtifacts = {}, { selectedVariantId = null } 
 
 function renderCurrentMainOutputs() {
   const rendered = [
+    [state.output.sourceTranscript, renderSourceTranscript, "transcript"],
     [state.output.referenceAnalysis, renderAnalysis, "analysis"],
     [state.output.sourceScriptReconstruction, renderScript, "script"],
     [state.output.creativeBrief, renderBrief, "brief"],
@@ -6888,7 +6745,7 @@ function renderCurrentMainOutputs() {
       : [state.output.themeVariants, renderVariants, "variants"]
   ];
   resetPipeline();
-  for (const element of [elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants]) {
+  for (const element of [elements.sourceTranscript, elements.analysis, elements.script, elements.brief, elements.guardrails, elements.variants]) {
     element.innerHTML = "";
     element.classList.add("hidden");
   }
@@ -7296,6 +7153,8 @@ function directorAgentFacts() {
     selectedVariantId: state.selectedVariantId ? String(state.selectedVariantId) : "",
     candidates,
     candidatesRevision: artifacts.themeVariants?.revision || "",
+    // 参考视频 Run 的主题变体 2026-10-24 起是完整剧本：选中后按剧本拆场，不做展开前体检。
+    scriptVariants: !storyEntry && isScriptThemeVariants(state.output.themeVariants),
     storiesByVariant: storySlot
       ? { [STORY_ENTRY_VARIANT_ID]: Boolean(state.fullStories[STORY_ENTRY_VARIANT_ID]) }
       : Object.fromEntries(candidates.map((candidate) => [candidate.id, Boolean(state.fullStories[candidate.id])])),

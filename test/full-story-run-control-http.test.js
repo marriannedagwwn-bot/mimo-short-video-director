@@ -14,7 +14,7 @@ import {
 import { WorkflowService } from "../src/workflow.js";
 import { lineageRef } from "../src/production-lineage.js";
 import { FULL_STORY_BEAT_SCENE_POSTPASS_SCHEMA_VERSION } from "../src/full-story-beat-scene-postpass.js";
-import { variantSourceResponse } from "./helpers/variant-source-response.js";
+import { fakeReferenceToolsEnv, scriptVariantsOutput } from "./helpers/fake-reference-tools.js";
 
 // Exercise server.js, real HTTP/SSE transport, validation, signing, task control
 // and on-disk lineage. The only provider is a local fixture; its review pass is
@@ -30,7 +30,11 @@ const input = {
   })),
   count: 3,
   transcript: "",
-  modelOverrides: Object.fromEntries(stages.map((stage) => [stage, { provider: "Qwen", model: `${stage}-fixture` }]))
+  modelOverrides: {
+    ...Object.fromEntries(stages.filter((stage) => stage !== "variants").map((stage) => [stage, { provider: "Qwen", model: `${stage}-fixture` }])),
+    // 2026-10-24 起 AI 导演的主题变体写剧本，只允许 Claude 与 MiMo；这里走本地 MiMo 夹具。
+    referenceRewrite: { provider: "MiMo", model: "variants-fixture" }
+  }
 };
 
 // 下游夹具用的合法 4.0 分镜（2026-10-11 起提交口只收 4.0）：演示模式按同一份输入签出。
@@ -93,7 +97,7 @@ async function fixture(t, { narrative = false, hold = true, restale = false } = 
   const outputs = {
     analysis, reconstruction, brief,
     visualGuardrails: mockVisualGuardrails({ ...input, creativeBrief: brief }),
-    variants: mockVariants(input)
+    variants: scriptVariantsOutput({ count: input.count, characterName: "小白子" })
   };
   const calls = [];
   const providerErrors = [];
@@ -105,9 +109,9 @@ async function fixture(t, { narrative = false, hold = true, restale = false } = 
       for await (const chunk of request) raw += chunk;
       const body = JSON.parse(raw);
       assert.equal(body.stream, true);
-      assert.equal(body.stream_options.include_usage, true);
       const stage = body.model.replace(/-fixture$/u, "");
       assert.ok(stages.includes(stage));
+      if (stage !== "variants") assert.equal(body.stream_options.include_usage, true);
       const prompt = body.messages.at(-1).content;
       const review = stage === "fullStory" ? postpassResponse(prompt) : null;
       const call = { stage, phase: review ? "postpass" : "main", closed: false, completed: false };
@@ -116,8 +120,7 @@ async function fixture(t, { narrative = false, hold = true, restale = false } = 
       response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
       const send = (event) => response.write(`data: ${JSON.stringify(event)}\n\n`);
       send({ id: `fixture-${calls.length}`, choices: [{ delta: { content: "" }, finish_reason: null }] });
-      const source = stage === "variants" ? variantSourceResponse(prompt) : null;
-      const value = review || source || outputs[stage];
+      const value = review || outputs[stage];
       assert.ok(value, `fixture output missing for ${stage}`);
       call.finish = () => {
         send({ choices: [{ delta: { content: JSON.stringify(value) }, finish_reason: null }] });
@@ -148,10 +151,11 @@ async function fixture(t, { narrative = false, hold = true, restale = false } = 
     cwd: directory,
     // Explicit environment excludes user .env, credentials and existing state.
     env: {
-      PATH: process.env.PATH, PORT: String(port), NODE_ENV: "test",
+      ...(await fakeReferenceToolsEnv(directory)), PORT: String(port), NODE_ENV: "test",
       QWEN_BASE_URL: `http://127.0.0.1:${providerPort}/v1`,
       QWEN_API_KEY: "local-http-fixture", QWEN_MODEL: "analysis-fixture",
       QWEN_MEDIA_MODE: "frames", QWEN_JSON_RETRY_ATTEMPTS: "0",
+      MIMO_BASE_URL: `http://127.0.0.1:${providerPort}/v1`, MIMO_API_KEY: "local-http-fixture", MIMO_JSON_RETRY_ATTEMPTS: "0",
       WORKFLOW_PRODUCTION_STATE_DIR: path.join(directory, "production"),
       PARTIAL_REPAIR_DEBUG_DIR: path.join(directory, "debug"),
       MODEL_PRICE_CNY_PER_MILLION: stages.map((stage) => `${stage}-fixture=1/1`).join(",")
@@ -204,13 +208,18 @@ async function fixture(t, { narrative = false, hold = true, restale = false } = 
     ...ids, kind: "directorPipeline", input: { ...input, sourceVideoDigest: workspace.source.digest }
   }, 202)).task;
   await until(() => getTask(director.taskId), (task) => task.status === "completed", "fixture director failed");
-  const current = (await loadRun()).latestArtifacts;
   const commit = async (artifactId, artifactType, content, dependencies, options = {}) => (
     await json("/api/production/artifact/commit", {
       ...ids, artifactId, artifactType, content, dependencies,
       requestId: randomUUID(), expectedCurrentRevision: null, ...options
     })
   ).result;
+  // 这几条测的是旧格式故事候选的展开（旧 Run 里已有的候选照常可用）：AI 导演跑完之后，
+  // 照旧 Run 的样子换上一份旧格式 themeVariants，依赖与 AI 导演签发的那一版相同。
+  const piped = (await loadRun()).latestArtifacts;
+  await commit("themeVariants", "themeVariants", mockVariants(input), piped.themeVariants.lineage.dependencies,
+    { expectedCurrentRevision: piped.themeVariants.lineage.revision });
+  const current = (await loadRun()).latestArtifacts;
   const variant = current.themeVariants.content.variants[0];
   const candidate = await commit("variant:V1", "selectedVariant", variant, [lineageRef(current.themeVariants.lineage)]);
   const storyInput = {

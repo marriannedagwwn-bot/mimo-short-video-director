@@ -109,6 +109,15 @@ export function analysisEvidenceShape(input) {
   return { source: "frame", frameCount: Array.isArray(input?.frames) ? input.frames.length : 0 };
 }
 
+// AI 导演第一步「去配乐与转写」的结果（Artifact sourceTranscript，2026-10-24）。只在有转写时出现，
+// 没有转写时分析与还原的提示词逐字不变（golden 测试锁住）。用户自己写的「字幕/对白补充」照旧单列。
+const SOURCE_TRANSCRIPT_NOTE = "去掉配乐后用 whisper 机器转写，不标说话人，有同音错字和凭空编出来的句子，对不上画面时以画面为准；只读素材";
+
+function sourceTranscriptBlock(input, label) {
+  const text = String(input?.sourceTranscriptText || "").trim();
+  return text ? `\n${label}（${SOURCE_TRANSCRIPT_NOTE}）：\n\n${text}\n` : "";
+}
+
 export function analysisPrompt(input) {
   const timeline = input.frames.map((frame, index) => `画面 F${index + 1}：${formatTime(frame.timestamp)}`).join("；");
   const evidenceShape = analysisEvidenceShape(input);
@@ -127,7 +136,7 @@ export function analysisPrompt(input) {
 - 时长：${formatTime(input.metadata?.duration || 0)}${evidenceRule}
 - 尺寸：${input.metadata?.width || "?"}×${input.metadata?.height || "?"}
 - 采样时间：${timeline}
-- 用户补充的字幕/对白/背景：${input.transcript || "无"}
+- 用户补充的字幕/对白/背景：${input.transcript || "无"}${sourceTranscriptBlock(input, "- 自动转写")}
 
 分析“它为什么好看”，输出 referenceAnalysis，严格使用以下顶层结构：
 {
@@ -169,7 +178,7 @@ export function reconstructionPrompt(input) {
 
 referenceAnalysis：${JSON.stringify(input.referenceAnalysis || {})}
 视频元数据：${JSON.stringify(input.metadata || {})}
-字幕/对白补充：${input.transcript || "无"}
+字幕/对白补充：${input.transcript || "无"}${sourceTranscriptBlock(input, "自动转写")}
 
 输出 sourceScriptReconstruction，严格使用以下结构：
 {

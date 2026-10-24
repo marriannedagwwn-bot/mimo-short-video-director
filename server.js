@@ -87,20 +87,24 @@ import { DurableTaskStore, DURABLE_TASK_TERMINAL_STATUSES } from "./src/durable-
 import { DurableTaskManager } from "./src/durable-task-manager.js";
 import { currentDurableTaskContext, durableTaskHeartbeat, runWithDurableTaskContext } from "./src/durable-task-context.js";
 import {
-  REFERENCE_REWRITE_ARTIFACT_ID,
-  REFERENCE_REWRITE_ARTIFACT_TYPE,
   REFERENCE_REWRITE_DEFAULT_SETTING,
-  REFERENCE_REWRITE_SCHEMA_VERSION,
   REFERENCE_REWRITE_STAGE,
-  REFERENCE_REWRITE_STEPS,
-  REFERENCE_REWRITE_TASK_KIND
+  SCRIPT_VARIANT_STEPS,
+  SOURCE_TRANSCRIPT_ARTIFACT_ID,
+  SOURCE_TRANSCRIPT_SCHEMA_VERSION,
+  SOURCE_TRANSCRIPT_STEPS,
+  isScriptVariant,
+  scriptVariantStoryText
 } from "./public/reference-rewrite.js";
 import {
   REFERENCE_REWRITE_STEP_STALL_MS,
-  buildReferenceRewriteMaterials,
-  demoReferenceRewriteMaterials,
-  referenceRewriteToolStatus
+  buildContactSheets,
+  buildSourceTranscript,
+  demoContactSheets,
+  demoSourceTranscript,
+  sourceTranscriptToolStatus
 } from "./src/reference-rewrite-materials.js";
+import { ensureScriptVariant, sealScriptThemeVariants } from "./src/reference-rewrite.js";
 import { readModelUsageFromError, runWithUsageAccounting } from "./src/token-usage.js";
 import { resolveBuildIdentity } from "./src/build-identity.js";
 import { withProviderTokenCaps } from "./src/stage-token-caps.js";
@@ -161,7 +165,7 @@ const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
   MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_REVISION,
   MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_REVIEW_FINAL,
   MODEL_OUTPUT_LOG_SCOPES.SHOT_VIDEO_PROMPT,
-  // 参考片仿写（2026-10-24）同样走 coordinator，由 workflow 接 attemptObserver。
+  // 主题变体的剧本格式（2026-10-24）同样走 coordinator，由 workflow 接 attemptObserver。
   MODEL_OUTPUT_LOG_SCOPES.REFERENCE_REWRITE,
   // 一句话修改（2026-10-11）同样走 coordinator，由 workflow 接 attemptObserver。
   MODEL_OUTPUT_LOG_SCOPES.ONE_SENTENCE_EDIT,
@@ -335,6 +339,8 @@ const routes = {
       );
     }
     const validateBoundCandidate = (candidate) => {
+      // 剧本格式的主题变体（2026-10-24）只核形状；故事候选那套严格 Schema 与原片对照不适用。
+      if (isScriptVariant(candidate)) return ensureScriptVariant(candidate, { path: "selectedCandidate" });
       ensureStoryCandidateContract(candidate, { path: "selectedCandidate" });
       ensureThemeVariantsMatchProfile(
         { variants: [candidate] },
@@ -495,25 +501,43 @@ const routes = {
   "/api/run": (body) => workflow.run(body)
 };
 
+// AI 导演（参考视频 Run）的六步。第一步「去配乐与转写」在本机跑、不调模型（2026-10-24）；
+// 它的转写稿逐字交给分析与还原（sourceTranscriptText，进封印），也交给主题变体。
+// 主题变体（2026-10-24 起）由模型看接触表、读转写稿、按角色边界写 N 篇完整剧本（themeVariants 的剧本格式）。
+// stage.key 是页面与进度用的名字；stage.modelStage 是模型设置的阶段名（没有就是 key；本机那一步没有模型阶段）。
 const DIRECTOR_PIPELINE_STAGES = Object.freeze([
+  {
+    key: "sourceTranscript",
+    taskKind: "sourceTranscript",
+    artifactId: SOURCE_TRANSCRIPT_ARTIFACT_ID,
+    artifactType: SOURCE_TRANSCRIPT_ARTIFACT_ID,
+    dependencyIds: [],
+    modelStage: null,
+    taskDefinition: ({ projectId, runId, raw }) => sourceTranscriptTaskDefinition({ projectId, runId, raw })
+  },
   {
     key: "analysis",
     taskKind: "analyze",
     artifactId: "referenceAnalysis",
     artifactType: "referenceAnalysis",
-    dependencyIds: [],
+    dependencyIds: [SOURCE_TRANSCRIPT_ARTIFACT_ID],
     route: "/api/analyze",
-    buildInput: (raw) => ({ ...pipelineMediaInput(raw) })
+    buildInput: (raw, artifacts) => ({
+      ...pipelineMediaInput(raw),
+      sourceTranscriptText: sourceTranscriptText(artifacts)
+    })
   },
   {
     key: "reconstruction",
     taskKind: "reconstruct",
     artifactId: "sourceScriptReconstruction",
     artifactType: "sourceScriptReconstruction",
-    dependencyIds: ["referenceAnalysis"],
+    dependencyIds: ["referenceAnalysis", SOURCE_TRANSCRIPT_ARTIFACT_ID],
     route: "/api/reconstruct",
     buildInput: (raw, artifacts) => ({
       ...pipelineMediaInput(raw),
+      // 与分析逐字节相同（同一份 Artifact），还原核对分析封印时才对得上。
+      sourceTranscriptText: sourceTranscriptText(artifacts),
       referenceAnalysis: artifacts.referenceAnalysis
     })
   },
@@ -550,22 +574,54 @@ const DIRECTOR_PIPELINE_STAGES = Object.freeze([
     taskKind: "variants",
     artifactId: "themeVariants",
     artifactType: "themeVariants",
-    dependencyIds: ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails"],
-    route: "/api/variants",
-    buildInput: (raw, artifacts) => ({
-      referenceAnalysis: artifacts.referenceAnalysis,
-      sourceScriptReconstruction: artifacts.sourceScriptReconstruction,
-      creativeBrief: artifacts.creativeBrief,
-      visualGuardrails: artifacts.visualGuardrails,
-      creatorProfile: raw.creatorProfile,
-      count: raw.count,
-      // 白名单是显式构造：漏掉这个键会让 Durable 路径静默丢弃目标时长，
-      // 表现为「浏览器直调有效、走任务队列无效」。
-      targetDurationSeconds: raw.targetDurationSeconds,
-      modelOverrides: raw.modelOverrides
-    })
+    // 分析、还原、简报不给模型看，只用来验角色边界的签名（sourceDigest 包含它们），所以仍是依赖。
+    dependencyIds: ["referenceAnalysis", "sourceScriptReconstruction", "creativeBrief", "visualGuardrails", SOURCE_TRANSCRIPT_ARTIFACT_ID],
+    modelStage: REFERENCE_REWRITE_STAGE,
+    invoke: (trustedInput) => runScriptVariants(trustedInput),
+    // 「换一批」也走这一项（standaloneVariantsTaskDefinition），所以副本与模型设置在这里再查一次。
+    buildInput: async (raw, artifacts, run, ids) => {
+      await assertWorkspaceSourceReadable(run);
+      assertScriptVariantsStageReady(raw);
+      return scriptVariantsStageInput(raw, artifacts, run, ids);
+    }
   }
 ]);
+
+function scriptVariantsStageInput(raw, artifacts, run, ids) {
+  return {
+    ...trustedWorkspaceSource(run, ids),
+    referenceAnalysis: artifacts.referenceAnalysis,
+    sourceScriptReconstruction: artifacts.sourceScriptReconstruction,
+    creativeBrief: artifacts.creativeBrief,
+    visualGuardrails: artifacts.visualGuardrails,
+    transcriptText: sourceTranscriptText(artifacts),
+    creatorProfile: raw.creatorProfile,
+    count: raw.count,
+    // 白名单是显式构造：漏掉这个键会让 Durable 路径静默丢弃目标时长，
+    // 表现为「浏览器直调有效、走任务队列无效」。
+    targetDurationSeconds: raw.targetDurationSeconds,
+    modelOverrides: raw.modelOverrides
+  };
+}
+
+const DIRECTOR_PIPELINE_MODEL_STAGES = DIRECTOR_PIPELINE_STAGES
+  .map((stage) => pipelineModelStage(stage))
+  .filter(Boolean);
+
+function pipelineModelStage(stage) {
+  return Object.prototype.hasOwnProperty.call(stage, "modelStage") ? stage.modelStage : stage.key;
+}
+
+function sourceTranscriptText(artifacts = {}) {
+  const transcript = artifacts[SOURCE_TRANSCRIPT_ARTIFACT_ID];
+  if (!transcript || typeof transcript.text !== "string" || !transcript.text.trim()) {
+    throw new ProductionStateError("这个 Run 还没有去配乐与转写的结果，请重新运行 AI 导演。", {
+      code: "SOURCE_TRANSCRIPT_REQUIRED",
+      httpStatus: 409
+    });
+  }
+  return transcript.text;
+}
 
 function taskDefinitionForRequest(body = {}) {
   const projectId = safeIdentifier(body.projectId, "projectId");
@@ -593,7 +649,6 @@ function taskDefinitionForRequest(body = {}) {
   if (kind === "fullStory") return fullStoryTaskDefinition({ projectId, runId, input });
   if (kind === "animationPlan") return animationPlanTaskDefinition({ projectId, runId, input });
   if (kind === "shotVideoPrompt") return shotVideoPromptTaskDefinition({ projectId, runId, input });
-  if (kind === REFERENCE_REWRITE_TASK_KIND) return referenceRewriteTaskDefinition({ projectId, runId, input });
   if (kind === "characterReferenceRefine") return characterReferenceRefineTaskDefinition({ projectId, runId, input });
   if (kind === "characterReferenceImages") return characterReferenceImagesTaskDefinition({ projectId, runId, input });
   if (kind === "shotVideo") return shotVideoTaskDefinition({ projectId, runId, input });
@@ -607,19 +662,20 @@ function taskDefinitionForRequest(body = {}) {
 
 function directorPipelineTaskDefinition({ projectId, runId, input }) {
   const inputDigest = contentDigest(nonArtifactInputDigestSource(input));
+  const totalStages = DIRECTOR_PIPELINE_STAGES.length;
   return {
     projectId,
     runId,
     kind: "directorPipeline",
     pool: "workflow",
     targetArtifactIds: DIRECTOR_PIPELINE_STAGES.map((stage) => stage.artifactId),
-    modelSnapshot: modelSnapshotFor(input, DIRECTOR_PIPELINE_STAGES.map((stage) => stage.key)),
+    modelSnapshot: modelSnapshotFor(input, DIRECTOR_PIPELINE_MODEL_STAGES),
     prepare: async ({ run }) => {
       assertRunEntryMode(run, "video");
       const expectedSourceDigest = String(run.metadata?.sourceVideoDigest || "").trim().toLowerCase();
       const actualSourceDigest = String(input.sourceVideoDigest || "").trim().toLowerCase();
       const requiresSourceMedia = ["referenceAnalysis", "sourceScriptReconstruction", "visualGuardrails"]
-        .some((artifactId) => run.latestArtifacts?.[artifactId]?.lineage?.status !== "current");
+        .some((artifactId) => !pipelineArtifactReusable(run, stageForArtifact(artifactId)));
       if (requiresSourceMedia && expectedSourceDigest && actualSourceDigest !== expectedSourceDigest) {
         throw new ProductionStateError("重新上传的视频与当前 Run 的原始文件 SHA-256 不一致。", {
           code: "TASK_SOURCE_VIDEO_DIGEST_MISMATCH",
@@ -627,12 +683,20 @@ function directorPipelineTaskDefinition({ projectId, runId, input }) {
           details: [{ expectedSourceDigest, actualSourceDigest: actualSourceDigest || null }]
         });
       }
+      // 转写与主题变体都在服务端读页面工作区里的副本：建任务之前就把能确定的条件查完，不满足 4xx、不建任务。
+      const needsTranscript = !pipelineArtifactReusable(run, stageForArtifact(SOURCE_TRANSCRIPT_ARTIFACT_ID));
+      const needsVariants = !pipelineArtifactReusable(run, stageForArtifact("themeVariants"));
+      if (needsTranscript || needsVariants) {
+        await assertWorkspaceSourceReadable(run);
+        if (needsTranscript) await assertSourceTranscriptToolsAvailable();
+        if (needsVariants) assertScriptVariantsStageReady(input);
+      }
       return {
         input: structuredClone(input),
         inputDigest,
         targetArtifactIds: DIRECTOR_PIPELINE_STAGES.map((stage) => stage.artifactId),
-        modelSnapshot: modelSnapshotFor(input, DIRECTOR_PIPELINE_STAGES.map((stage) => stage.key)),
-        progress: { completedStages: 0, totalStages: DIRECTOR_PIPELINE_STAGES.length, controlState: "running" }
+        modelSnapshot: modelSnapshotFor(input, DIRECTOR_PIPELINE_MODEL_STAGES),
+        progress: { completedStages: 0, totalStages, controlState: "running" }
       };
     },
     execute: async (raw, context) => {
@@ -642,13 +706,13 @@ function directorPipelineTaskDefinition({ projectId, runId, input }) {
       for (const stage of DIRECTOR_PIPELINE_STAGES) {
         const snapshot = await productionStateStore.loadRun({ projectId, runId, includeContent: true });
         const existing = snapshot.latestArtifacts?.[stage.artifactId];
-        if (existing?.lineage?.status === "current") {
+        if (pipelineArtifactReusable(snapshot, stage)) {
           completed.push(lineageRef(existing.lineage));
           reusedStages += 1;
           await context.heartbeat({
             reusedStages,
             completedStages: completed.length,
-            totalStages: DIRECTOR_PIPELINE_STAGES.length,
+            totalStages,
             currentStage: stage.artifactId,
             reusedCurrentArtifact: true
           });
@@ -657,7 +721,7 @@ function directorPipelineTaskDefinition({ projectId, runId, input }) {
         assertPipelineMediaAvailable(stage, raw);
         await context.heartbeat({
           completedStages: completed.length,
-          totalStages: DIRECTOR_PIPELINE_STAGES.length,
+          totalStages,
           currentStage: stage.artifactId
         });
         const child = await context.runChild(pipelineStageTaskDefinition({ projectId, runId, raw, stage }));
@@ -665,7 +729,7 @@ function directorPipelineTaskDefinition({ projectId, runId, input }) {
         if (child.usage) usages.push(child.usage);
         await context.heartbeat({
           completedStages: completed.length,
-          totalStages: DIRECTOR_PIPELINE_STAGES.length,
+          totalStages,
           currentStage: stage.artifactId
         });
       }
@@ -673,7 +737,7 @@ function directorPipelineTaskDefinition({ projectId, runId, input }) {
       return {
         resultArtifactRefs: completed,
         usage: mergeTaskUsages(usages),
-        progress: { completedStages: DIRECTOR_PIPELINE_STAGES.length, totalStages: DIRECTOR_PIPELINE_STAGES.length, reusedStages },
+        progress: { completedStages: totalStages, totalStages, reusedStages },
         compatibilityResult: Object.fromEntries(DIRECTOR_PIPELINE_STAGES.map((stage) => [
           stage.artifactId,
           run.latestArtifacts?.[stage.artifactId]?.content
@@ -683,7 +747,22 @@ function directorPipelineTaskDefinition({ projectId, runId, input }) {
   };
 }
 
+function stageForArtifact(artifactId) {
+  return DIRECTOR_PIPELINE_STAGES.find((stage) => stage.artifactId === artifactId);
+}
+
+// 复用某一步的 current 产物时，要求它的依赖包含这一步现在的全部依赖（2026-10-24）。
+// 只看状态的话，加了转写这一步以后旧 Run 会拿没听过台词稿的旧分析接着用。
+function pipelineArtifactReusable(run, stage) {
+  const existing = run?.latestArtifacts?.[stage.artifactId];
+  if (existing?.lineage?.status !== "current") return false;
+  const recorded = new Set((existing.lineage.dependencies || []).map((dependency) => dependency?.artifactId));
+  return stage.dependencyIds.every((artifactId) => recorded.has(artifactId));
+}
+
 function pipelineStageTaskDefinition({ projectId, runId, raw, stage }) {
+  if (stage.taskDefinition) return stage.taskDefinition({ projectId, runId, raw });
+  const modelStage = pipelineModelStage(stage);
   return artifactRouteTaskDefinition({
     projectId,
     runId,
@@ -692,7 +771,7 @@ function pipelineStageTaskDefinition({ projectId, runId, raw, stage }) {
     artifactId: stage.artifactId,
     artifactType: stage.artifactType,
     dependencyIds: stage.dependencyIds,
-    modelStages: [stage.key],
+    modelStages: modelStage ? [modelStage] : [],
     rawInput: raw,
     prepareInput: (run) => {
       assertRunEntryMode(run, "video");
@@ -702,16 +781,187 @@ function pipelineStageTaskDefinition({ projectId, runId, raw, stage }) {
         ["creativeBrief", "creativeBrief"],
         ["visualGuardrails", "visualGuardrails"]
       ]);
-      return stage.buildInput(raw, currentArtifactContents(run));
+      return stage.buildInput(raw, currentArtifactContents(run), run, { projectId, runId });
     },
-    invoke: (trustedInput, request) => routes[stage.route](trustedInput, { request })
+    invoke: stage.invoke || ((trustedInput, request) => routes[stage.route](trustedInput, { request }))
   });
+}
+
+// AI 导演第一步「去配乐与转写」（2026-10-24）：读页面工作区里的参考视频副本，在本机用 Bandit 分轨、whisper 转写，
+// 提交 Artifact sourceTranscript。不调模型；没有上游依赖，靠 sourceVideoDigest 绑定这支视频。
+function sourceTranscriptTaskDefinition({ projectId, runId, raw }) {
+  return artifactRouteTaskDefinition({
+    projectId,
+    runId,
+    kind: "sourceTranscript",
+    pool: "workflow",
+    artifactId: SOURCE_TRANSCRIPT_ARTIFACT_ID,
+    artifactType: SOURCE_TRANSCRIPT_ARTIFACT_ID,
+    dependencyIds: [],
+    modelStages: [],
+    rawInput: raw,
+    prepareInput: async (run) => {
+      assertRunEntryMode(run, "video");
+      const source = trustedWorkspaceSource(run, { projectId, runId });
+      await assertWorkspaceSourceReadable(run);
+      await assertSourceTranscriptToolsAvailable();
+      return source;
+    },
+    invoke: (trustedInput) => runSourceTranscript(trustedInput)
+  });
+}
+
+// 只从 Run 元数据取：工作区 id、源视频摘要、文件名与时长。读副本、查工具另做（要等待）。
+function trustedWorkspaceSource(run, { projectId, runId } = {}) {
+  const workspaceId = String(run?.metadata?.browserWorkspaceId || "");
+  const sourceVideoDigest = String(run?.metadata?.sourceVideoDigest || "").toLowerCase();
+  if (!workspaceId || !sourceVideoDigest) {
+    throw new ProductionStateError("去配乐、转写和主题变体都要用页面上传的参考视频；这个 Run 没有绑定页面工作区或参考视频。请重新上传同一支视频。", {
+      code: "TASK_SOURCE_MEDIA_REQUIRED", httpStatus: 409
+    });
+  }
+  const videoName = String(run.metadata?.sourceVideo?.name || "");
+  return {
+    projectId: projectId || run.projectId,
+    runId: runId || run.runId,
+    workspaceId,
+    sourceVideoDigest,
+    videoTitle: videoName.replace(/\.[A-Za-z0-9]{1,5}$/u, ""),
+    demoDurationSeconds: Number(run.metadata?.sourceVideo?.duration) || 45
+  };
+}
+
+async function assertWorkspaceSourceReadable(run) {
+  const { workspaceId } = trustedWorkspaceSource(run);
+  if (workflow.mode !== "live") return;
+  await browserWorkspaceStore.getSource(workspaceId).catch((error) => {
+    throw new ProductionStateError("参考视频副本不在了，请重新上传同一支视频。", {
+      code: "TASK_SOURCE_MEDIA_REQUIRED", httpStatus: 409, cause: error
+    });
+  });
+}
+
+async function assertSourceTranscriptToolsAvailable() {
+  const tools = await sourceTranscriptHealth();
+  if (!tools.available) {
+    throw new ProductionStateError(tools.reason, { code: "SOURCE_TRANSCRIPT_TOOLS_UNAVAILABLE", httpStatus: 409 });
+  }
+}
+
+// 主题变体所选的供应商必须能看图、而且配置好了；在建任务之前就说清楚，不等跑完前五步才报错。
+function assertScriptVariantsStageReady(input) {
+  if (workflow.mode !== "live") return;
+  const settings = workflow.resolveStage(REFERENCE_REWRITE_STAGE, input);
+  try {
+    workflow.assertScriptVariantsStage(settings);
+  } catch (error) {
+    throw new ProductionStateError(error.message, { code: "SCRIPT_VARIANTS_STAGE_UNAVAILABLE", httpStatus: 409, cause: error });
+  }
+}
+
+function sourceWorkDirectory(trusted) {
+  return {
+    workRoot: path.join(productionStateStore.runDirectory(trusted.projectId, trusted.runId), "media-work"),
+    lifetimeFile: productionStateStore.manifestPath(trusted.projectId, trusted.runId)
+  };
+}
+
+async function runSourceTranscript(trusted) {
+  const stepMax = SOURCE_TRANSCRIPT_STEPS.length;
+  const onStep = async (step) => {
+    const stepIndex = SOURCE_TRANSCRIPT_STEPS.findIndex((item) => item.key === step) + 1;
+    await durableTaskHeartbeat({ step, stepIndex, stepMax }, { stallMs: REFERENCE_REWRITE_STEP_STALL_MS });
+  };
+  await onStep("separate");
+  const result = workflow.mode === "live"
+    ? await buildSourceTranscript({
+      sourcePath: (await browserWorkspaceStore.getSource(trusted.workspaceId)).path,
+      expectedDigest: trusted.sourceVideoDigest,
+      ...sourceWorkDirectory(trusted),
+      tools: config.referenceRewrite,
+      onStep: async (step) => { if (step !== "separate") await onStep(step); },
+      heartbeat: () => durableTaskHeartbeat({}, { stallMs: REFERENCE_REWRITE_STEP_STALL_MS })
+    })
+    : demoSourceTranscript(trusted.demoDurationSeconds);
+  return {
+    schemaVersion: SOURCE_TRANSCRIPT_SCHEMA_VERSION,
+    text: result.text,
+    sourceVideoDigest: trusted.sourceVideoDigest,
+    durationSeconds: result.durationSeconds,
+    hasAudio: result.hasAudio,
+    separator: result.separator,
+    whisperModel: result.whisperModel,
+    ...(result.demo ? { demo: true } : {})
+  };
+}
+
+// 主题变体（剧本格式）：从服务端副本现切接触表，交给模型写 N 篇剧本，再由服务端发 id 与 format。
+async function runScriptVariants(trusted) {
+  const stepMax = SCRIPT_VARIANT_STEPS.length;
+  const onStep = async (step) => {
+    const stepIndex = SCRIPT_VARIANT_STEPS.findIndex((item) => item.key === step) + 1;
+    await durableTaskHeartbeat({ step, stepIndex, stepMax, streamedChars: 0, reasoningChars: 0 }, { stallMs: REFERENCE_REWRITE_STEP_STALL_MS });
+  };
+  await onStep("frames");
+  const sheets = workflow.mode === "live"
+    ? await buildContactSheets({
+      sourcePath: (await browserWorkspaceStore.getSource(trusted.workspaceId)).path,
+      expectedDigest: trusted.sourceVideoDigest,
+      ...sourceWorkDirectory(trusted),
+      heartbeat: () => durableTaskHeartbeat({}, { stallMs: REFERENCE_REWRITE_STEP_STALL_MS })
+    })
+    : demoContactSheets(trusted.demoDurationSeconds);
+  await onStep("write");
+  const { result, metadata, settings, targetDurationSeconds } = await workflow.createScriptVariants({
+    frames: sheets.images,
+    contactSheets: sheets.layout,
+    transcriptText: trusted.transcriptText,
+    durationSeconds: sheets.durationSeconds,
+    targetDurationSeconds: trusted.targetDurationSeconds,
+    videoTitle: trusted.videoTitle,
+    creatorProfile: trusted.creatorProfile,
+    count: trusted.count,
+    referenceAnalysis: trusted.referenceAnalysis,
+    sourceScriptReconstruction: trusted.sourceScriptReconstruction,
+    creativeBrief: trusted.creativeBrief,
+    visualGuardrails: trusted.visualGuardrails,
+    modelOverrides: trusted.modelOverrides
+  });
+  const call = metadata?.[REFERENCE_REWRITE_STAGE] || {};
+  return sealScriptThemeVariants(result, {
+    materials: {
+      fps: sheets.layout.fps,
+      frameCount: sheets.frameCount,
+      sheetCount: sheets.images.length,
+      durationSeconds: sheets.durationSeconds,
+      targetDurationSeconds,
+      ...(sheets.demo ? { demo: true } : {})
+    },
+    model: {
+      provider: settings.provider,
+      model: settings.model,
+      effort: settings.effort,
+      providerCalls: Number(call.providerCalls) || 0,
+      rejectedAttempts: Array.isArray(call.rejections) ? call.rejections.length : 0
+    }
+  });
+}
+
+// 本机工具状态缓存 30 秒：健康检查轮询时不必每次都跑 ffmpeg -version。
+let sourceTranscriptHealthCache = null;
+async function sourceTranscriptHealth() {
+  if (workflow.mode !== "live") return { available: true, demo: true, reason: "", missing: [] };
+  const now = Date.now();
+  if (sourceTranscriptHealthCache && now - sourceTranscriptHealthCache.at < 30_000) return sourceTranscriptHealthCache.value;
+  const value = await sourceTranscriptToolStatus(config.referenceRewrite);
+  sourceTranscriptHealthCache = { at: now, value };
+  return value;
 }
 
 // 「从剧情开始」的两步，按 Run 元数据里的 storyMode 选：
 // - 只给角色设定：角色边界 → 单个故事候选，之后由父任务签发选中记录 variant:V1；
 // - 粘贴完整故事：角色边界 → 可翻拍镜头（原文直接拆场，写 fullStory:V1），没有候选这一步。
-// 与 DIRECTOR_PIPELINE_STAGES 并列、互不复用：AI 导演那条链的五个目标、「n/5」进度、
+// 与 DIRECTOR_PIPELINE_STAGES 并列、互不复用：AI 导演那条链的六个目标、「n/6」进度、
 // 需要源视频的判断和 standaloneVariantsTaskDefinition 取最后一项的写法都保持原样。
 // 子任务只能经由父任务创建，taskDefinitionForRequest 不接受它们的 kind。
 const STORY_PIPELINE_GUARDRAILS_STAGE = Object.freeze({
@@ -1362,117 +1612,6 @@ function shotVideoPromptTaskDefinition({ projectId, runId, input }) {
   });
 }
 
-// 参考片仿写（2026-10-24）：在参考视频的 Run 上，本机抽帧、去配乐、转写，再让模型写「原片拆解＋四篇剧本」，
-// 提交 Artifact referenceRewrite。设计见 docs/reference-rewrite-2026-10-24.md。
-// 创建前就把能确定的条件查完（视频 Run、绑着页面工作区、副本在、固定角色在、本机工具齐全），不满足 4xx、不建任务。
-// 只出四稿：选中的一稿由用户填进「从剧情开始 · 粘贴完整故事」，这里不碰 storySource。
-function referenceRewriteTaskDefinition({ projectId, runId, input }) {
-  const targetDurationSeconds = Number(input.targetDurationSeconds);
-  if (!isValidStoryDurationSeconds(targetDurationSeconds)) throw new InputError("targetDurationSeconds 必须是 20–180 的整数秒");
-  return artifactRouteTaskDefinition({
-    projectId, runId, kind: REFERENCE_REWRITE_TASK_KIND, pool: "workflow",
-    artifactId: REFERENCE_REWRITE_ARTIFACT_ID, artifactType: REFERENCE_REWRITE_ARTIFACT_TYPE,
-    dependencyIds: [], modelStages: [REFERENCE_REWRITE_STAGE], rawInput: input,
-    prepareInput: async (run) => {
-      assertRunEntryMode(run, "video");
-      const workspaceId = String(run.metadata?.browserWorkspaceId || "");
-      const sourceVideoDigest = String(run.metadata?.sourceVideoDigest || "").toLowerCase();
-      if (!workspaceId || !sourceVideoDigest) {
-        throw new ProductionStateError("参考片仿写要用页面上传的参考视频；这个 Run 没有绑定页面工作区或参考视频。", {
-          code: "TASK_SOURCE_MEDIA_REQUIRED", httpStatus: 409
-        });
-      }
-      const profile = plainObject(run.metadata?.creatorProfile);
-      const creatorProfile = {
-        fixedCharacter: String(profile.fixedCharacter || "").trim(),
-        vertical: String(profile.vertical || "").trim(),
-        constraints: String(profile.constraints || "").trim()
-      };
-      if (!creatorProfile.fixedCharacter || !creatorProfile.vertical) throw new InputError("参考片仿写需要固定角色与赛道，请先在「设定创作宇宙」里填好。");
-      if (workflow.mode === "live") {
-        await browserWorkspaceStore.getSource(workspaceId).catch((error) => {
-          throw new ProductionStateError("参考视频副本不在了，请重新上传同一支视频。", {
-            code: "TASK_SOURCE_MEDIA_REQUIRED", httpStatus: 409, cause: error
-          });
-        });
-        const tools = await referenceRewriteHealth();
-        if (!tools.available) {
-          throw new ProductionStateError(tools.reason, { code: "REFERENCE_REWRITE_TOOLS_UNAVAILABLE", httpStatus: 409 });
-        }
-      }
-      const videoName = String(run.metadata?.sourceVideo?.name || "");
-      return {
-        projectId,
-        runId,
-        workspaceId,
-        sourceVideoDigest,
-        creatorProfile,
-        targetDurationSeconds,
-        videoTitle: videoName.replace(/\.[A-Za-z0-9]{1,5}$/u, ""),
-        demoDurationSeconds: Number(run.metadata?.sourceVideo?.duration) || targetDurationSeconds,
-        modelOverrides: input.modelOverrides
-      };
-    },
-    invoke: (trustedInput) => runReferenceRewrite(trustedInput)
-  });
-}
-
-async function runReferenceRewrite(trusted) {
-  const stepMax = REFERENCE_REWRITE_STEPS.length;
-  const onStep = async (step) => {
-    const stepIndex = REFERENCE_REWRITE_STEPS.findIndex((item) => item.key === step) + 1;
-    await durableTaskHeartbeat({ step, stepIndex, stepMax }, { stallMs: REFERENCE_REWRITE_STEP_STALL_MS });
-  };
-  const materials = workflow.mode === "live"
-    ? await buildReferenceRewriteMaterials({
-      sourcePath: (await browserWorkspaceStore.getSource(trusted.workspaceId)).path,
-      expectedDigest: trusted.sourceVideoDigest,
-      workRoot: path.join(productionStateStore.runDirectory(trusted.projectId, trusted.runId), "media-work"),
-      lifetimeFile: productionStateStore.manifestPath(trusted.projectId, trusted.runId),
-      tools: config.referenceRewrite,
-      onStep,
-      heartbeat: () => durableTaskHeartbeat({}, { stallMs: REFERENCE_REWRITE_STEP_STALL_MS })
-    })
-    : demoReferenceRewriteMaterials(trusted.demoDurationSeconds);
-  await onStep("write");
-  const { result, metadata, settings } = await workflow.createReferenceRewrite({
-    frames: materials.frames,
-    contactSheets: materials.contactSheets,
-    transcriptText: materials.transcriptText,
-    durationSeconds: materials.durationSeconds,
-    targetDurationSeconds: trusted.targetDurationSeconds,
-    videoTitle: trusted.videoTitle,
-    creatorProfile: trusted.creatorProfile,
-    modelOverrides: trusted.modelOverrides
-  });
-  const call = metadata?.[REFERENCE_REWRITE_STAGE] || {};
-  return {
-    schemaVersion: REFERENCE_REWRITE_SCHEMA_VERSION,
-    original: result.original,
-    drafts: result.drafts,
-    transcript: materials.transcriptText,
-    materials: { ...materials.materials, durationSeconds: materials.durationSeconds, targetDurationSeconds: trusted.targetDurationSeconds },
-    model: {
-      provider: settings.provider,
-      model: settings.model,
-      effort: settings.effort,
-      providerCalls: Number(call.providerCalls) || 0,
-      rejectedAttempts: Array.isArray(call.rejections) ? call.rejections.length : 0
-    }
-  };
-}
-
-// 本机工具状态缓存 30 秒：健康检查轮询时不必每次都跑 ffmpeg -version。
-let referenceRewriteHealthCache = null;
-async function referenceRewriteHealth() {
-  if (workflow.mode !== "live") return { available: true, demo: true, reason: "", missing: [] };
-  const now = Date.now();
-  if (referenceRewriteHealthCache && now - referenceRewriteHealthCache.at < 30_000) return referenceRewriteHealthCache.value;
-  const value = await referenceRewriteToolStatus(config.referenceRewrite);
-  referenceRewriteHealthCache = { at: now, value };
-  return value;
-}
-
 function shotVideoTaskDefinition({ projectId, runId, input }) {
   const variantId = safeIdentifier(input.variantId || input.selectedVariantId, "variantId");
   const shotId = safeIdentifier(input.shotId || input.shot?.shotId, "shotId");
@@ -1980,8 +2119,8 @@ const server = http.createServer(async (request, response) => {
         providers: providerHealth,
         modelStages,
         stageHealth: fullStageHealth,
-        // 参考片仿写的本机工具（Bandit、whisper、ffmpeg）是否齐全；缺什么写在 reason 里，页面照抄。
-        referenceRewrite: await referenceRewriteHealth(),
+        // AI 导演第一步「去配乐与转写」的本机工具（Bandit、whisper、ffmpeg）是否齐全；缺什么写在 reason 里，页面照抄。
+        sourceTranscript: await sourceTranscriptHealth(),
         imageProvider: "Jimeng",
         imageModel: config.jimeng.model,
         imageProviderConfigured: config.jimeng.enabled,
@@ -2682,12 +2821,28 @@ async function startStoryEntryRun(body = {}) {
 // 只读的台词核对：现算现给，不写 Artifact、不进 Task Store、不落盘。
 async function storyEntryDialogueCheck(body = {}) {
   const run = await productionStateStore.loadRun({ projectId: body.projectId, runId: body.runId, includeContent: true });
-  const entry = trustedStoryEntryContext(run);
-  const variantId = safeIdentifier(body.variantId || STORY_ENTRY_VARIANT_ID, "variantId");
   const currentContent = (artifactId) => {
     const item = run.latestArtifacts?.[artifactId];
     return item?.lineage?.status === "current" ? item.content : null;
   };
+  // 参考视频的 Run：选中的是剧本格式的主题变体时（2026-10-24），原文就是这篇的「标题＋剧本」。
+  // 与粘贴故事同一个判据，只提示、不拦截。选中记录必须是服务端 Run 里 current 的那一份，不收页面副本。
+  if (!isStoryEntryRun(run)) {
+    const variantId = safeIdentifier(body.variantId, "variantId");
+    const variant = currentContent(`variant:${variantId}`);
+    if (!isScriptVariant(variant)) {
+      throw new ProductionStateError("台词核对只用于按原文拆场的剧情：粘贴完整故事，或剧本格式的主题变体。", {
+        code: "DIALOGUE_CHECK_SOURCE_UNSUPPORTED", httpStatus: 409
+      });
+    }
+    return storyEntryDialogueFaithfulness({
+      storySource: { storyMode: STORY_MODE_FULL_TEXT, storyText: scriptVariantStoryText(variant) },
+      fullStory: currentContent(`fullStory:${variantId}`),
+      animationPlan: currentContent(`animationPlan:${variantId}`)
+    });
+  }
+  const entry = trustedStoryEntryContext(run);
+  const variantId = safeIdentifier(body.variantId || STORY_ENTRY_VARIANT_ID, "variantId");
   return storyEntryDialogueFaithfulness({
     storySource: entry.storySource,
     fullStory: currentContent(`fullStory:${variantId}`),

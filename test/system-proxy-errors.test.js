@@ -12,6 +12,7 @@ import { ModelPipelineError } from "../src/model-errors.js";
 import { ProductionStateError } from "../src/production-lineage.js";
 import { ShotVideoProviderError } from "../src/shot-video-generator.js";
 import { serializeServerError } from "../src/server-error.js";
+import { fakeReferenceToolsEnv } from "./helpers/fake-reference-tools.js";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const secret = "fixture-proxy-secret";
@@ -175,9 +176,14 @@ test("real server durable failure returns the safe proxy diagnosis after disk pe
   await new Promise((resolve) => reserved.listen(0, "127.0.0.1", resolve));
   const port = reserved.address().port;
   await new Promise((resolve) => reserved.close(resolve));
+  // AI 导演第一步在本机去配乐与转写（替身工具），主题变体要能看图的供应商配好：建任务前服务端会查这两样。
+  const toolsDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-proxy-error-tools-"));
+  t.after(() => fs.rm(toolsDirectory, { recursive: true, force: true }));
   const f = await isolatedEntry(t, "server.js", {
+    ...(await fakeReferenceToolsEnv(toolsDirectory)),
     PORT: String(port), QWEN_BASE_URL: "https://controlled-provider.invalid/v1",
-    QWEN_API_KEY: "local-fixture", QWEN_MEDIA_MODE: "frames", QWEN_JSON_RETRY_ATTEMPTS: "0"
+    QWEN_API_KEY: "local-fixture", QWEN_MEDIA_MODE: "frames", QWEN_JSON_RETRY_ATTEMPTS: "0",
+    MIMO_BASE_URL: "https://controlled-provider.invalid/v1", MIMO_API_KEY: "local-fixture"
   });
   const base = `http://127.0.0.1:${port}`;
   const requestJson = async (route, body, expectedStatus = 200) => {
@@ -212,6 +218,7 @@ test("real server durable failure returns the safe proxy diagnosis after disk pe
   const initial = (await requestJson("/api/tasks/create", {
     ...ids, kind: "directorPipeline", input: {
       creatorProfile, sourceVideoDigest: workspace.source.digest, count: 3,
+      modelOverrides: { referenceRewrite: { provider: "MiMo", model: "mimo-v2.5" } },
       metadata: { duration: 45, width: 320, height: 180 },
       frames: Array.from({ length: 8 }, (_, index) => ({
         timestamp: index * 6, dataUrl: "data:image/jpeg;base64,Zml4dHVyZQ=="

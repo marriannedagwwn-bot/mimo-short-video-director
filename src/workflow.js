@@ -1,14 +1,14 @@
 import { ANALYSIS_SYSTEM_PROMPT, RECONSTRUCTION_SYSTEM_PROMPT, analysisPrompt, briefPrompt, characterReferenceRefinePrompt, fullStoryPromiseCheckRetryPrompt, fullStoryPromiseFindingsPrompt, fullStoryPromiseListPrompt, fullStoryPrompt, reconstructionPrompt, storyCandidateReviewPrompt, storyCandidateReviewRetryPrompt, storyCandidateRevisionPrompt, storyCandidateRevisionRetryPrompt, storyQualityEditorialPrompt, storyQualityPromisePrompt, storyQualityRepairPrompt, storyQualityRepairRetryPrompt, storyQualityReviewRetryPrompt, variantsCount, variantsPrompt, visualGuardrailsPrompt } from "./prompts.js";
 import { STORY_CANDIDATES_MODEL_SCHEMA_NAME, STORY_ENTRY_CANDIDATES_MODEL_SCHEMA_NAME, storyCandidatesModelSchema, storyEntryCandidatesModelSchema } from "./contracts/story-candidates-model-schema.js";
-import { STORY_ENTRY_SYSTEM_PROMPT, storyEntryCandidatePrompt, storyEntryFullStoryPrompt, storySceneScriptPrompt, storyEntryVisualGuardrailsPrompt } from "./story-entry-prompts.js";
+import { SCRIPT_VARIANT_SYSTEM_PROMPT, STORY_ENTRY_SYSTEM_PROMPT, storyEntryCandidatePrompt, storyEntryFullStoryPrompt, storySceneScriptPrompt, storyEntryVisualGuardrailsPrompt, variantScriptSceneScriptPrompt } from "./story-entry-prompts.js";
 import { STORY_ENTRY_VARIANT_ID, STORY_MODE_FULL_TEXT, normalizeStorySource } from "../public/story-entry.js";
 import { STORY_CANDIDATE_REVIEW_MODEL_SCHEMA_NAME, storyCandidateReviewModelSchema } from "./contracts/story-candidate-review-model-schema.js";
 import { REFERENCE_ANALYSIS_MODEL_SCHEMA_NAME, referenceAnalysisModelSchema } from "./contracts/reference-analysis-model-schema.js";
 import { mockAnalysis, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryEntryCandidates, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails, mockDirectorAgentTurn, mockOneSentenceEdit, mockReferenceRewrite } from "./mock.js";
-import { REFERENCE_REWRITE_MODEL_SCHEMA_NAME, ensureReferenceRewriteContract, referenceRewriteClaudeSchema, referenceRewriteMimoSchema } from "./reference-rewrite.js";
+import { REFERENCE_REWRITE_MODEL_SCHEMA_NAME, ensureReferenceRewriteContract, ensureScriptVariant, referenceRewriteClaudeSchema, referenceRewriteMimoSchema } from "./reference-rewrite.js";
 import { REFERENCE_REWRITE_SYSTEM_PROMPT, referenceRewritePrompt, referenceRewriteRetryPrompt } from "./reference-rewrite-prompts.js";
-import { REFERENCE_REWRITE_DEFAULT_SETTING, REFERENCE_REWRITE_MAX_VIDEO_SECONDS, REFERENCE_REWRITE_PROVIDERS, REFERENCE_REWRITE_STAGE } from "../public/reference-rewrite.js";
-import { isValidStoryDurationSeconds } from "../public/story-duration.js";
+import { REFERENCE_REWRITE_DEFAULT_SETTING, REFERENCE_REWRITE_MAX_VIDEO_SECONDS, REFERENCE_REWRITE_PROVIDERS, REFERENCE_REWRITE_STAGE, isScriptThemeVariants, isScriptVariant } from "../public/reference-rewrite.js";
+import { STORY_DURATION_MAX_SECONDS, STORY_DURATION_MIN_SECONDS, isValidStoryDurationSeconds } from "../public/story-duration.js";
 import { fullStoryCharacterFacts, isNarrativeFullStory } from "./full-story-contract.js";
 import { FULL_STORY_CAST_SCHEMA_VERSION } from "../public/full-story-format.js";
 import { ANIMATION_PLAN_VERSION_UNSUPPORTED, SHOT_VIDEO_PROMPT_VERSION, STORYBOARD_PLAN_VERSION, isStoryboardPlan } from "../public/storyboard-plan.js";
@@ -333,6 +333,7 @@ export class WorkflowService {
     requireObject(input.referenceAnalysis, "referenceAnalysis");
     const groundingContext = {
       transcript: input.transcript || "",
+      sourceTranscriptText: input.sourceTranscriptText || "",
       frames: input.frames,
       video: input.video,
       metadata: input.metadata || {}
@@ -409,6 +410,7 @@ export class WorkflowService {
    * 它是纯文本阶段（不在 requiresMediaModel 里），可按阶段 override 换任意一家。
    */
   async createStoryQualityReview(input) {
+    assertNotScriptVariants(input, "剧情体检");
     requireObject(input, "请求");
     const fullStory = requireObject(input.fullStory, "fullStory");
     // 体检的对象必须先是一份合法剧情，否则报告没有意义。
@@ -609,28 +611,42 @@ export class WorkflowService {
   }
 
   /**
-   * 参考片仿写（2026-10-24）：看参考片的接触表与去配乐后的转写，写「原片拆解＋四篇类似剧本」。
+   * 主题变体的剧本格式（2026-10-24，参考片仿写接进 AI 导演）：看参考片的接触表与去配乐后的转写，
+   * 按已签发的角色边界写「原片拆解＋N 篇完整剧本」。
    *
    * 素材（接触表图片、转写稿）由后台任务在本机做好再交进来（src/reference-rewrite-materials.js），
-   * 这里只负责调模型与校验。只出 Artifact 内容，不签发 storySource：选中的一稿由用户填进粘贴框。
+   * 这里只负责验签角色边界、调模型与校验；id、format、schemaVersion 由调用方签发（sealScriptThemeVariants）。
+   * 不给模型看 MiMo 写的分析、还原与简报正文；它们只用来验角色边界的签名。
    * 只允许 Claude 与 MiMo；Claude 是全工作流唯一收图的阶段（经 requestCompletion 的 frames）。
    * 走 coordinator，最多 2 次调用、禁止第三次；重试只发校验诊断，不把失败的输出发回去。审核拦截不重试。
    */
-  async createReferenceRewrite(input) {
+  // 主题变体要看图：只能是 Claude 或 MiMo，而且要配置好。服务端建 AI 导演任务前也用它先查一遍。
+  assertScriptVariantsStage(settings) {
+    if (!REFERENCE_REWRITE_PROVIDERS.includes(settings.provider)) {
+      throw new InputError(`主题变体要看接触表图片，只能用 ${REFERENCE_REWRITE_PROVIDERS.join(" 或 ")}，当前选的是 ${settings.provider || "未指定"}；请在模型设置里给「主题变体」换回来。`);
+    }
+    this.assertStageClient(settings, stageLabel(REFERENCE_REWRITE_STAGE));
+  }
+
+  async createScriptVariants(input) {
     const materials = normalizeReferenceRewriteInput(input);
+    const visualGuardrails = this.assertGlobalCharacterBoundary(input);
+    const characterFacts = fullStoryCharacterFacts(visualGuardrails);
+    const characterName = String(characterFacts.characterName || "").trim();
+    if (!characterName) throw new InputError("已签发的角色边界没有角色名，写不了以固定角色为主角的剧本；请重新生成角色边界。");
+    const promptInput = { ...materials, characterFacts };
+    const contract = (candidate) => ensureReferenceRewriteContract(candidate, { count: materials.count, characterName });
     if (!this.hasLiveClient) {
       // 演示模式没有调用模型，调用次数如实写 0。
       return {
-        result: ensureReferenceRewriteContract(mockReferenceRewrite(materials)),
+        result: contract(mockReferenceRewrite({ ...materials, characterName })),
         metadata: promiseCheckMetadata({ provider: "demo", model: "demo", providerCalls: 0, stageKey: REFERENCE_REWRITE_STAGE }),
-        settings: { provider: "demo", model: "demo", effort: "" }
+        settings: { provider: "demo", model: "demo", effort: "" },
+        targetDurationSeconds: materials.targetDurationSeconds
       };
     }
     const settings = this.resolveStage(REFERENCE_REWRITE_STAGE, input);
-    if (!REFERENCE_REWRITE_PROVIDERS.includes(settings.provider)) {
-      throw new InputError(`参考片仿写要看接触表图片，只能用 ${REFERENCE_REWRITE_PROVIDERS.join(" 或 ")}，当前选的是 ${settings.provider || "未指定"}；请在模型设置里给「参考片仿写」换回来。`);
-    }
-    this.assertStageClient(settings, stageLabel(REFERENCE_REWRITE_STAGE));
+    this.assertScriptVariantsStage(settings);
     const claude = settings.provider === "Claude";
 
     let providerCalls = 0;
@@ -642,7 +658,7 @@ export class WorkflowService {
       result = await this.modelCallCoordinator.runJson({
         client: settings.client,
         request: {
-          prompt: referenceRewritePrompt(materials),
+          prompt: referenceRewritePrompt(promptInput),
           systemPrompt: REFERENCE_REWRITE_SYSTEM_PROMPT,
           frames: materials.frames,
           model: settings.model,
@@ -651,7 +667,7 @@ export class WorkflowService {
           // Claude 用结构化输出与本阶段的 effort；MiMo 用约束解码。两家各自忽略对方的字段。
           ...(claude
             ? { effort: settings.effort || "", claudeResponseSchema: { name: REFERENCE_REWRITE_MODEL_SCHEMA_NAME, schema: referenceRewriteClaudeSchema() } }
-            : { responseSchema: { name: REFERENCE_REWRITE_MODEL_SCHEMA_NAME, schema: referenceRewriteMimoSchema() } })
+            : { responseSchema: { name: REFERENCE_REWRITE_MODEL_SCHEMA_NAME, schema: referenceRewriteMimoSchema(materials.count) } })
         },
         provider: settings.provider || "",
         stage: REFERENCE_REWRITE_STAGE,
@@ -668,11 +684,11 @@ export class WorkflowService {
         retryTokenLimit: (value) => value,
         retryPrompt: ({ originalPrompt }) => {
           const last = rejections[rejections.length - 1];
-          return last?.details?.length ? referenceRewriteRetryPrompt({ originalPrompt, details: last.details }) : originalPrompt;
+          return last?.details?.length ? referenceRewriteRetryPrompt({ originalPrompt, details: last.details, count: materials.count }) : originalPrompt;
         },
         validate: (candidate) => {
           try {
-            return ensureReferenceRewriteContract(candidate);
+            return contract(candidate);
           } catch (error) {
             if (error instanceof OutputContractError) {
               rejections.push({ message: error.message, details: Array.isArray(error.details) ? error.details : [] });
@@ -693,7 +709,8 @@ export class WorkflowService {
         rejections,
         stageKey: REFERENCE_REWRITE_STAGE
       }),
-      settings: { provider: settings.provider || "", model: settings.model || "", effort: claude ? settings.effort || "" : "" }
+      settings: { provider: settings.provider || "", model: settings.model || "", effort: claude ? settings.effort || "" : "" },
+      targetDurationSeconds: materials.targetDurationSeconds
     };
   }
 
@@ -711,6 +728,7 @@ export class WorkflowService {
    *     其余照常采用。不为单条失败整份重做：重做会让已经写对的那些条也跟着抖。
    */
   async createStoryQualityRepair(input) {
+    assertNotScriptVariants(input, "按问题修改");
     requireObject(input, "请求");
     // fullStory 与 review 都是**请求输入**，不是本阶段的模型输出。原样上抛 OutputContractError
     // 会变成 502「模型输出未通过校验」，让用户去查供应商——与命题修订那处同规格转成 400。
@@ -1098,6 +1116,7 @@ export class WorkflowService {
    * 它是纯文本阶段（不在 requiresMediaModel 里），可按阶段 override 换任意一家。
    */
   async createStoryCandidateReview(input) {
+    assertNotScriptVariants(input, "候选对照评审");
     requireObject(input, "请求");
     const themeVariants = requireObject(input.themeVariants, "themeVariants");
     // 评审对象必须先是一批合法候选，否则报告没有意义。**这个校验本身是对的**，
@@ -1278,6 +1297,7 @@ export class WorkflowService {
    * 对照预览也清楚。越权写入未授权的命题即 `CANDIDATE_REVISION_OUT_OF_SCOPE`。
    */
   async createStoryCandidateRevision(input) {
+    assertNotScriptVariants(input, "命题定向修订");
     requireObject(input, "请求");
     const themeVariants = requireObject(input.themeVariants, "themeVariants");
     const review = requireObject(input.review, "review");
@@ -1501,6 +1521,7 @@ export class WorkflowService {
    * 只看承诺核对会漏掉因果断裂与换皮，两种半截结论都会让人误以为候选没问题。
    */
   async createFullStoryPrecheck(input) {
+    assertNotScriptVariants(input, "展开前体检");
     requireObject(input, "请求");
     const themeVariants = requireObject(input.themeVariants, "themeVariants");
     const candidateId = requireText(input.candidateId, "candidateId");
@@ -1842,6 +1863,10 @@ export class WorkflowService {
     } else {
       requireObject(input.variant, "variant");
     }
+    // 参考视频的 Run 里选中的是剧本格式的主题变体（2026-10-24）：与「粘贴完整故事」同一套拆场规则，
+    // 但角色边界照旧按参考视频那一版验签，selectedVariantId 是这篇自己的编号。
+    const fromVariantScript = !entry && isScriptVariant(input.variant);
+    if (fromVariantScript) ensureScriptVariant(input.variant);
     const storySlotId = fromStorySource ? STORY_ENTRY_VARIANT_ID : String(input.variant?.id || "");
     const profile = requireObject(input.creatorProfile, "creatorProfile");
     requireText(profile.fixedCharacter, "固定角色");
@@ -1850,14 +1875,16 @@ export class WorkflowService {
       ? { ...input, storySource: entry.storySource }
       : groundedStageInput(input, this.groundingKey);
     const visualGuardrails = this.assertGlobalCharacterBoundary(groundedInput, { storyEntry: entry });
-    // 剧情入口的每次调用都显式换掉客户端默认的「受控改编」系统消息。
-    const systemPromptOverride = entry ? { systemPrompt: STORY_ENTRY_SYSTEM_PROMPT } : {};
+    // 剧情入口的每次调用都显式换掉客户端默认的「受控改编」系统消息；按剧本拆场同样不改编。
+    const systemPromptOverride = entry
+      ? { systemPrompt: STORY_ENTRY_SYSTEM_PROMPT }
+      : fromVariantScript ? { systemPrompt: SCRIPT_VARIANT_SYSTEM_PROMPT } : {};
     const validatedInput = { ...groundedInput, visualGuardrails };
     const settings = this.resolveStage("fullStory", validatedInput);
     // 故事位的 selectedVariantId 由服务端写定，与 targetDurationSeconds 由时间轴派生同规格：模型回显不作数。
     const withStorySlot = (result) => (
-      fromStorySource && result && typeof result === "object" && !Array.isArray(result)
-        ? { ...result, selectedVariantId: STORY_ENTRY_VARIANT_ID }
+      (fromStorySource || fromVariantScript) && result && typeof result === "object" && !Array.isArray(result)
+        ? { ...result, selectedVariantId: fromStorySource ? STORY_ENTRY_VARIANT_ID : storySlotId }
         : result
     );
     const validateFullStory = (result) => validateFullStoryForSigning(withStorySlot(result), {
@@ -1870,7 +1897,9 @@ export class WorkflowService {
       return validateFullStory(mergeFullStoryCharacterRegistry(story, mockFullStoryCharacterRegistry(registryInput), registryInput));
     }
     this.assertStageClient(settings, "完整剧情");
-    const promptFor = fromStorySource ? storySceneScriptPrompt : entry ? storyEntryFullStoryPrompt : fullStoryPrompt;
+    const promptFor = fromStorySource
+      ? storySceneScriptPrompt
+      : fromVariantScript ? variantScriptSceneScriptPrompt : entry ? storyEntryFullStoryPrompt : fullStoryPrompt;
     const basePrompt = promptFor({ ...validatedInput, targetProvider: settings.provider, targetModel: settings.model });
     const prompt = completeCast ? fullStoryRegisteredVoicesPrompt(basePrompt) : basePrompt;
     const observeFullStoryAttempt = this.fullModelOutputLogWriter?.enabled
@@ -2223,6 +2252,20 @@ function finalizeVisualGuardrails(result, { profile, sealInput, key, sealOptions
     sealOptions
   );
   return ensureVisualGuardrailsMatchesProfile(ensureOutputContract(sealed, "visualGuardrails"), profile);
+}
+
+// 体检、评审、修订都是给旧格式故事候选（storyOutline 动作链）用的。剧本格式的主题变体（2026-10-24）
+// 已经是完整剧本，选中后直接按剧本拆场，与「粘贴完整故事」一样不做这几样；请求带来剧本格式就明确拒绝。
+function assertNotScriptVariants(input = {}, featureLabel) {
+  const themeVariants = input?.themeVariants;
+  const variants = Array.isArray(themeVariants?.variants) ? themeVariants.variants : [];
+  if (isScriptThemeVariants(themeVariants) || variants.some(isScriptVariant) || isScriptVariant(input?.variant) || isScriptVariant(input?.selectedVariant)) {
+    throw new InputError(`${featureLabel}只适用于旧格式的故事候选；剧本格式的主题变体已经是完整剧本，选中后直接按剧本拆场。`, [{
+      code: "SCRIPT_VARIANT_NOT_SUPPORTED",
+      path: "themeVariants",
+      reason: `${featureLabel}不适用于剧本格式的主题变体`
+    }]);
+  }
 }
 
 function validateFullStoryForSigning(result, { profile, creativeBrief, variant, visualGuardrails }) {
@@ -2610,7 +2653,7 @@ function stageLabel(stage) {
     reconstruction: "原片脚本还原",
     brief: "创意简报",
     visualGuardrails: "角色与表达边界",
-    variants: "主题变体",
+    variants: "故事候选",
     fullStory: "完整剧情",
     animationPlan: "动画镜头生产包",
     characterReference: "人物参考修正",
@@ -2620,18 +2663,18 @@ function stageLabel(stage) {
     storyQualityRepair: "剧情按问题修改",
     oneSentenceEdit: "一句话修改",
     directorAgent: "导演助手",
-    referenceRewrite: "参考片仿写"
+    referenceRewrite: "主题变体"
   })[stage] || stage;
 }
 
-// 参考片仿写的素材由后台任务在本机做好；这里只核形状，一切不对都在调模型之前 InputError。
+// 主题变体（剧本格式）的素材由后台任务在本机做好；这里只核形状，一切不对都在调模型之前 InputError。
 const REFERENCE_REWRITE_MAX_SHEETS = 12;
 const REFERENCE_REWRITE_TRANSCRIPT_MAX_CHARS = 60000;
 
 function normalizeReferenceRewriteInput(input = {}) {
   const frames = input.frames;
   if (!Array.isArray(frames) || !frames.length || frames.length > REFERENCE_REWRITE_MAX_SHEETS) {
-    throw new InputError(`参考片仿写需要 1–${REFERENCE_REWRITE_MAX_SHEETS} 张接触表`);
+    throw new InputError(`主题变体需要 1–${REFERENCE_REWRITE_MAX_SHEETS} 张接触表`);
   }
   frames.forEach((frame, index) => {
     if (!/^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/u.test(String(frame?.dataUrl || ""))) {
@@ -2649,7 +2692,10 @@ function normalizeReferenceRewriteInput(input = {}) {
   if (!(durationSeconds > 0) || durationSeconds > REFERENCE_REWRITE_MAX_VIDEO_SECONDS + 1) {
     throw new InputError(`参考视频时长必须在 ${REFERENCE_REWRITE_MAX_VIDEO_SECONDS} 秒以内`);
   }
-  const targetDurationSeconds = Number(input.targetDurationSeconds);
+  // 没给剧情时长目标时与原片对齐（页面「剧情时长」的默认档），按实测时长取整、夹在 20–180 秒。
+  const targetDurationSeconds = input.targetDurationSeconds === undefined || input.targetDurationSeconds === null
+    ? Math.min(STORY_DURATION_MAX_SECONDS, Math.max(STORY_DURATION_MIN_SECONDS, Math.round(durationSeconds)))
+    : Number(input.targetDurationSeconds);
   if (!isValidStoryDurationSeconds(targetDurationSeconds)) throw new InputError("targetDurationSeconds 必须是 20–180 的整数秒");
   const transcriptText = typeof input.transcriptText === "string" ? input.transcriptText.trim() : "";
   if (!transcriptText || transcriptText.length > REFERENCE_REWRITE_TRANSCRIPT_MAX_CHARS) {
@@ -2657,11 +2703,10 @@ function normalizeReferenceRewriteInput(input = {}) {
   }
   const profile = input.creatorProfile || {};
   const creatorProfile = {
-    fixedCharacter: String(profile.fixedCharacter || "").trim(),
     vertical: String(profile.vertical || "").trim(),
     constraints: String(profile.constraints || "").trim()
   };
-  if (!creatorProfile.fixedCharacter || !creatorProfile.vertical) throw new InputError("参考片仿写需要固定角色与赛道");
+  if (!String(profile.fixedCharacter || "").trim() || !creatorProfile.vertical) throw new InputError("主题变体需要固定角色与赛道");
   return {
     frames: frames.map((frame) => ({ dataUrl: frame.dataUrl })),
     contactSheets: {
@@ -2678,7 +2723,8 @@ function normalizeReferenceRewriteInput(input = {}) {
     durationSeconds,
     targetDurationSeconds,
     transcriptText,
-    creatorProfile
+    creatorProfile,
+    count: variantsCount(input)
   };
 }
 

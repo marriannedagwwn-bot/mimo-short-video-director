@@ -837,24 +837,23 @@ export function mockOneSentenceEdit({ target, base, instruction = "" }) {
   return { decision: "edit", note, patches: [{ find: line, replace: `${line}${DEMO_EDIT_MARK}` }] };
 }
 
-// 参考片仿写（2026-10-24）的演示输出：不调用模型，四篇占位稿用固定角色名开头，能过真实的校验器，
-// 「用这一稿开拍」填进粘贴框后也能过剧情入口的主角名检查。
-export function mockReferenceRewrite({ creatorProfile = {}, durationSeconds = 45 } = {}) {
-  const fixed = String(creatorProfile.fixedCharacter || "").trim();
-  const name = extractFixedCharacterName(fixed) || fixed.split(/[，,；;、。\n\r（(]/u)[0]?.trim() || "主角";
+// 主题变体（剧本格式，2026-10-24）的演示输出：不调用模型，N 篇占位稿都写出签发的角色名，能过真实的校验器，
+// 选中后也能按剧本拆场。
+export function mockReferenceRewrite({ characterName = "主角", durationSeconds = 45, count = 3 } = {}) {
+  const name = String(characterName || "").trim() || "主角";
   const seconds = Math.max(20, Math.round(Number(durationSeconds) || 45));
-  const angles = ["换季节", "换帮的对象", "换主角在链条里的位置", "帮倒忙"];
+  const angles = ["换季节", "换帮的对象", "换主角在链条里的位置", "帮倒忙", "换地点", "换时间"];
   return {
     original: {
       summary: "（演示模式，没有调用模型）这里会是原片概要：谁、在哪、发生了什么，台词只引一两句原话。",
       dialogue: [{ time: "0:00", speaker: name, line: "（演示）开场的叫声", picture: "主角冲进画面" }],
       strengths: ["（演示）原片好看在哪的第一条", "（演示）原片好看在哪的第二条"]
     },
-    drafts: angles.map((angle, index) => ({
+    variants: Array.from({ length: count }, (_, index) => ({
       title: `演示稿${index + 1}`,
-      direction: `（演示）${angle}，约 ${seconds} 秒。`,
+      direction: `（演示）${angles[index % angles.length]}，约 ${seconds} 秒。`,
       summary: `（演示模式，没有调用模型）${name}的第 ${index + 1} 个故事概要。`,
-      script: `**1　外　街口　白天　（0–${seconds} 秒）**\n\n${name}一路跑进画面。\n\n> ${name}：（演示台词）`
+      script: `**1　外　街口　白天　（0–${seconds} 秒）**\n\n${name}一路跑进画面。\n\n> ${name}：嘿嘿！`
     }))
   };
 }

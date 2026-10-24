@@ -1,4 +1,4 @@
-// 参考片仿写（2026-10-24）测试共用的一份合格输出。
+// 主题变体（剧本格式，2026-10-24）测试共用的一份合格模型输出：四篇，每篇都写出固定角色名「咕嘎」。
 export function validRewrite(overrides = {}) {
   return {
     original: {
@@ -9,7 +9,7 @@ export function validRewrite(overrides = {}) {
       ],
       strengths: ["咕嘎自己也在躲雨。"]
     },
-    drafts: ["热红薯", "收被子", "伞下面还有伞", "摔开的西瓜"].map((title, index) => ({
+    variants: ["热红薯", "收被子", "伞下面还有伞", "摔开的西瓜"].map((title, index) => ({
       title,
       direction: `第 ${index + 1} 个角度，约 55 秒。`,
       summary: "一段连贯的概要。",

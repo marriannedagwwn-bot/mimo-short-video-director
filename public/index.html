@@ -73,7 +73,6 @@
             <label><input type="radio" name="storyMode" id="storyModeFullText" value="fullStoryText" checked><span>粘贴完整故事</span></label>
             <label><input type="radio" name="storyMode" id="storyModeCharacterOnly" value="characterOnly"><span>只给角色设定，让它写一个</span></label>
           </div>
-          <div class="reference-rewrite-picker-wrap hidden" id="referenceRewritePicker"></div>
           <label class="field" id="storySourceField">
             <span>故事正文 <small id="storySourceCounter">0 / 5000</small></span>
             <textarea id="storySourceText" rows="12" placeholder="粘贴完整故事。情节、人物、结局和台词都严格按原文，系统只补分场时间、画面动作和镜头设计；原文没写台词的地方不新增台词。"></textarea>
@@ -171,10 +170,7 @@
           </button>
         </div>
         <p class="director-control-hint hidden" id="directorControlHint">暂停会断开当前请求；继续会重新执行当前阶段，可能再次计费。</p>
-        <div class="reference-rewrite-controls video-only" id="referenceRewriteControls">
-          <button class="outline-button" id="runReferenceRewrite" type="button" disabled>参考片仿写：写四篇类似剧本</button>
-          <p class="reference-rewrite-hint" id="referenceRewriteHint"></p>
-        </div>
+        <p class="run-workflow-hint video-only hidden" id="runWorkflowHint" role="status"></p>
         <p class="error-message" id="errorMessage" role="alert"></p>
       </aside>
     </section>
@@ -187,11 +183,12 @@
         </div>
       </div>
       <ol class="pipeline" id="pipeline">
-        <li data-stage="analysis"><span>1</span><div><strong>参考片分析</strong><small>定位、人物、节奏、情绪与完播理由</small></div><b>等待</b></li>
-        <li data-stage="script"><span>2</span><div><strong>原片脚本还原</strong><small>分场、动作、镜头、转折与剧作功能</small></div><b>等待</b></li>
-        <li data-stage="brief"><span>3</span><div><strong>创意简报</strong><small>原片的驱动结构与换角测试</small></div><b>等待</b></li>
-        <li data-stage="guardrails"><span><i class="video-only">4</i><i class="story-only">1</i></span><div><strong>角色与表达边界</strong><small><span class="video-only">正向边界、原片规避与台词规则分开处理</span><span class="story-only">固定角色的身份、外观与台词规则</span></small></div><b>等待</b></li>
-        <li data-stage="variants"><span><i class="video-only">5</i><i class="story-only">2</i></span><div><strong><span class="video-only">主题变体</span><span class="story-only not-story-source">故事候选</span><span class="story-source-only">可翻拍镜头</span></strong><small><span class="video-only">适配固定角色和垂直赛道的新故事</span><span class="story-only not-story-source">按角色设定原创一个故事</span><span class="story-source-only">按原文分场：时间、地点、画面动作、声音和原台词</span></small></div><b>等待</b></li>
+        <li data-stage="transcript"><span>1</span><div><strong>去配乐与转写</strong><small>本机分出人声，转写成台词稿</small></div><b>等待</b></li>
+        <li data-stage="analysis"><span>2</span><div><strong>参考片分析</strong><small>定位、人物、节奏、情绪与完播理由</small></div><b>等待</b></li>
+        <li data-stage="script"><span>3</span><div><strong>原片脚本还原</strong><small>分场、动作、镜头、转折与剧作功能</small></div><b>等待</b></li>
+        <li data-stage="brief"><span>4</span><div><strong>创意简报</strong><small>原片的驱动结构与换角测试</small></div><b>等待</b></li>
+        <li data-stage="guardrails"><span><i class="video-only">5</i><i class="story-only">1</i></span><div><strong>角色与表达边界</strong><small><span class="video-only">正向边界、原片规避与台词规则分开处理</span><span class="story-only">固定角色的身份、外观与台词规则</span></small></div><b>等待</b></li>
+        <li data-stage="variants"><span><i class="video-only">6</i><i class="story-only">2</i></span><div><strong><span class="video-only">主题变体</span><span class="story-only not-story-source">故事候选</span><span class="story-source-only">可翻拍镜头</span></strong><small><span class="video-only">看参考片，写几篇完整剧本</span><span class="story-only not-story-source">按角色设定原创一个故事</span><span class="story-source-only">按原文分场：时间、地点、画面动作、声音和原台词</span></small></div><b>等待</b></li>
       </ol>
 
       <div class="empty-results" id="emptyResults">
@@ -200,20 +197,13 @@
         <p class="story-only">粘贴完整故事，或只填好固定角色，结果会在这里展开。</p>
       </div>
       <div class="result-stack hidden" id="resultStack">
+        <article class="result-card" id="transcriptResult"></article>
         <article class="result-card" id="analysisResult"></article>
         <article class="result-card" id="scriptResult"></article>
         <article class="result-card" id="briefResult"></article>
         <article class="result-card" id="guardrailsResult"></article>
         <article class="result-card" id="variantsResult"></article>
       </div>
-    </section>
-
-    <section class="reference-rewrite-section video-only hidden" id="referenceRewriteSection">
-      <div class="pipeline-head">
-        <div><p class="eyebrow">REFERENCE → FOUR DRAFTS</p><h2>参考片仿写</h2></div>
-      </div>
-      <p class="reference-rewrite-status" id="referenceRewriteStatus" role="status"></p>
-      <div class="reference-rewrite-result" id="referenceRewriteResult"></div>
     </section>
   </main>
 
@@ -223,8 +213,8 @@
       <div class="story-hero-card">
         <div>
           <p class="eyebrow"><span class="video-only">SELECTED VARIANT → FULL STORY</span><span class="story-only not-story-source">YOUR STORY → FULL STORY</span><span class="story-source-only">YOUR STORY → SHOTS</span></p>
-          <h1><span class="video-only">把主题变体扩写成</span><span class="story-only not-story-source">把你的故事展开成</span><span class="story-source-only">把你的故事拆成</span><br><em class="not-story-source">可拍完整剧情。</em><em class="story-source-only">可翻拍的镜头。</em></h1>
-          <p class="hero-copy"><span class="video-only">这一页只基于你选中的主题变体继续创作</span><span class="story-only not-story-source">这一页只基于你的故事继续创作</span><span class="story-source-only">这一页只按你的原文分场，情节、人物、结局和台词都不改</span>，调用 <span id="storyModelName">完整剧情模型</span>，<span class="not-story-source">输出可进入拍摄筹备的剧情、分场、对白、道具和拍摄要点。</span><span class="story-source-only">只补时间、地点、画面动作和声音；镜头景别和机位在下一步「生成分镜」里定。</span></p>
+          <h1><span class="video-only not-script-variant">把主题变体扩写成</span><span class="video-only script-variant-only">把选中的剧本拆成</span><span class="story-only not-story-source">把你的故事展开成</span><span class="story-source-only">把你的故事拆成</span><br><em class="not-story-source">可拍完整剧情。</em><em class="story-source-only">可翻拍的镜头。</em></h1>
+          <p class="hero-copy"><span class="video-only not-script-variant">这一页只基于你选中的主题变体继续创作</span><span class="video-only script-variant-only">这一页只按选中的剧本分场，情节、人物、结局和台词都不改</span><span class="story-only not-story-source">这一页只基于你的故事继续创作</span><span class="story-source-only">这一页只按你的原文分场，情节、人物、结局和台词都不改</span>，调用 <span id="storyModelName">完整剧情模型</span>，<span class="not-story-source">输出可进入拍摄筹备的剧情、分场、对白、道具和拍摄要点。</span><span class="story-source-only">只补时间、地点、画面动作和声音；镜头景别和机位在下一步「生成分镜」里定。</span></p>
           <div class="story-package-tools">
             <button class="outline-button" id="importStoryPackage" type="button">导入测试包 JSON</button>
             <button class="outline-button" id="exportStoryTestPackage" type="button" disabled>导出测试包 JSON</button>

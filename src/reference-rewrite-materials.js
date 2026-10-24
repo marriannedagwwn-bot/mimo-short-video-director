@@ -1,10 +1,11 @@
-// 参考片仿写（2026-10-24）的本机素材：抽帧拼接触表、Bandit 去配乐、whisper 转写。
-// 设计见 docs/reference-rewrite-2026-10-24.md。
+// 参考视频的本机素材（2026-10-24）：AI 导演第一步「去配乐与转写」用 buildSourceTranscript，
+// 主题变体那一步用 buildContactSheets 切接触表给 Claude 看。设计见 docs/reference-rewrite-2026-10-24.md。
 //
 // 做法照 10-23 对照实验（reports/reference-rewrite-ab-2026-10-23/）：每秒 2 帧、6×4、每格 320 宽的接触表；
 // 原声、人声轨、「原声减音乐」三组 whisper 转写，加人声轨与音效轨的有声区间。实验里手挑的两张关键帧
 // 放大图与手截复核的那组无法自动化，去掉了。
 //
+// 两个入口都先把页面工作区里的副本复制进 Run 的 media-work 并核对 SHA-256，与 Run 记录的不符就 409。
 // 所有子进程都有超时并用 SIGKILL 收尾；执行器可注入，测试不跑真的 ffmpeg / Bandit / whisper。
 // 临时目录在 Run 目录的 media-work/ 下（页面关闭时随 Run 一起清掉），用完就删；
 // 每一步开始前复核页面工作区还活着（manifest 还在），不往已清理的 Run 里写东西。
@@ -18,8 +19,8 @@ import { promisify } from "node:util";
 import { createUniqueDirectory } from "./unique-directory.js";
 import { assertWorkspaceMediaLifetime, requireWorkspaceMediaDirectory } from "./workspace-media-lifetime.js";
 import {
-  REFERENCE_REWRITE_DENSE_FPS_MAX_SECONDS,
-  REFERENCE_REWRITE_MAX_VIDEO_SECONDS
+  REFERENCE_REWRITE_MAX_VIDEO_SECONDS,
+  contactSheetFps
 } from "../public/reference-rewrite.js";
 
 const defaultExec = promisify(execFileCallback);
@@ -50,7 +51,7 @@ export class ReferenceRewriteMaterialsError extends Error {
  * 本机工具是否齐全。只查存在与可执行，不跑模型；Bandit checkpoint 的 SHA-256 在分轨脚本里核对。
  * @returns {Promise<{available:boolean, reason:string, missing:string[]}>}
  */
-export async function referenceRewriteToolStatus(tools = {}, { exec = defaultExec } = {}) {
+export async function sourceTranscriptToolStatus(tools = {}, { exec = defaultExec } = {}) {
   const missing = [];
   for (const binary of ["ffmpeg", "ffprobe"]) {
     try {
@@ -70,13 +71,13 @@ export async function referenceRewriteToolStatus(tools = {}, { exec = defaultExe
   if (!(await isFile(modelFile))) missing.push(`whisper 模型文件不在：${modelFile}（不会自动下载）`);
   return {
     available: missing.length === 0,
-    reason: missing.length ? `参考片仿写用不了：${missing.join("；")}` : "",
+    reason: missing.length ? `去配乐与转写用不了：${missing.join("；")}` : "",
     missing
   };
 }
 
 /**
- * 做好写稿要用的素材。返回接触表图片（data URL）、接触表说明、转写稿与实测时长。
+ * AI 导演第一步：去配乐与转写。返回转写稿正文与处理参数。
  * @param {object} options
  * @param {string} options.sourcePath 页面工作区里的参考视频副本
  * @param {string} options.expectedDigest Run 元数据记的 sourceVideoDigest
@@ -86,22 +87,59 @@ export async function referenceRewriteToolStatus(tools = {}, { exec = defaultExe
  * @param {(stepKey:string)=>Promise<void>} [options.onStep] 每步开始时调用（写进度、续看门狗）
  * @param {()=>Promise<void>} [options.heartbeat] 子进程跑着时定期调用
  */
-export async function buildReferenceRewriteMaterials({
-  sourcePath,
-  expectedDigest,
-  workRoot,
-  lifetimeFile,
-  tools,
-  onStep = async () => {},
-  heartbeat = async () => {},
-  exec = defaultExec
-}) {
+export async function buildSourceTranscript({ tools, onStep = async () => {}, ...options }) {
+  return withVerifiedSource(options, async ({ videoPath, probe, workDir, run, lifetimeFile }) => {
+    if (!probe.hasAudio) {
+      return { durationSeconds: probe.durationSeconds, hasAudio: false, text: NO_AUDIO_TRANSCRIPT, separator: "", whisperModel: "" };
+    }
+    await onStep("separate");
+    await assertWorkspaceMediaLifetime(lifetimeFile);
+    const audioDir = path.join(workDir, "audio");
+    await fs.mkdir(audioDir);
+    const originalWav = path.join(audioDir, "original.wav");
+    await run("ffmpeg", ["-nostdin", "-v", "error", "-n", "-i", videoPath, "-map", "0:a:0", "-vn", "-ar", "48000", "-ac", "2", "-c:a", "pcm_f32le", originalWav], TIMEOUTS.ffmpeg);
+    const stemsDir = path.join(audioDir, "stems");
+    await run(banditPython(tools), ["-I", STEMS_SCRIPT, "--bandit-dir", tools.banditDir, "--input", originalWav, "--output-dir", stemsDir], TIMEOUTS.bandit);
+    const intervals = JSON.parse(await fs.readFile(path.join(stemsDir, "intervals.json"), "utf8"));
+
+    await onStep("transcribe");
+    await assertWorkspaceMediaLifetime(lifetimeFile);
+    const transcripts = {};
+    for (const [key, file] of [["original", originalWav], ["speech", path.join(stemsDir, "speech.wav")], ["noBgm", path.join(stemsDir, "no_bgm.wav")]]) {
+      const mono = path.join(audioDir, `${key}-16k.wav`);
+      await run("ffmpeg", ["-nostdin", "-v", "error", "-n", "-i", file, "-ar", "16000", "-ac", "1", mono], TIMEOUTS.ffmpeg);
+      transcripts[key] = await transcribe(run, tools, mono, path.join(audioDir, `whisper-${key}`));
+    }
+    await assertWorkspaceMediaLifetime(lifetimeFile);
+    return {
+      durationSeconds: probe.durationSeconds,
+      hasAudio: true,
+      text: formatReferenceTranscript({ transcripts, intervals, whisperModel: tools.whisperModel }),
+      separator: "bandit-v2-multi",
+      whisperModel: tools.whisperModel
+    };
+  });
+}
+
+/**
+ * 主题变体那一步：把整支视频按每秒 2 帧（超过 120 秒改 1 帧）拼成 6×4 的接触表，给模型看。
+ * 参数与 buildSourceTranscript 相同（不需要 tools）。
+ */
+export async function buildContactSheets(options) {
+  return withVerifiedSource(options, async ({ videoPath, probe, workDir, run, lifetimeFile }) => {
+    const sheets = await makeContactSheets(run, videoPath, workDir, probe.durationSeconds, lifetimeFile);
+    await assertWorkspaceMediaLifetime(lifetimeFile);
+    return { durationSeconds: probe.durationSeconds, ...sheets };
+  });
+}
+
+// 两个入口共用：建临时目录 → 复制副本并核 SHA-256 → ffprobe 与时长上限 → 做事 → 删临时目录。
+async function withVerifiedSource({ sourcePath, expectedDigest, workRoot, lifetimeFile, heartbeat = async () => {}, exec = defaultExec }, action) {
   const workDir = await createWorkDirectory(workRoot, lifetimeFile);
   const run = (file, args, timeout) => withHeartbeat(heartbeat, () => exec(file, args, {
     timeout, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024
   }));
   try {
-    await onStep("frames");
     const videoPath = path.join(workDir, "source.bin");
     const digest = await copyWithDigest(sourcePath, videoPath);
     if (digest !== String(expectedDigest || "").toLowerCase()) {
@@ -115,48 +153,7 @@ export async function buildReferenceRewriteMaterials({
         code: "REFERENCE_REWRITE_VIDEO_TOO_LONG", httpStatus: 400
       });
     }
-    const contactSheets = await makeContactSheets(run, videoPath, workDir, probe.durationSeconds, lifetimeFile);
-
-    let transcriptText;
-    let separator = "";
-    if (!probe.hasAudio) {
-      transcriptText = NO_AUDIO_TRANSCRIPT;
-    } else {
-      await onStep("separate");
-      await assertWorkspaceMediaLifetime(lifetimeFile);
-      const audioDir = path.join(workDir, "audio");
-      await fs.mkdir(audioDir);
-      const originalWav = path.join(audioDir, "original.wav");
-      await run("ffmpeg", ["-nostdin", "-v", "error", "-n", "-i", videoPath, "-map", "0:a:0", "-vn", "-ar", "48000", "-ac", "2", "-c:a", "pcm_f32le", originalWav], TIMEOUTS.ffmpeg);
-      const stemsDir = path.join(audioDir, "stems");
-      await run(banditPython(tools), ["-I", STEMS_SCRIPT, "--bandit-dir", tools.banditDir, "--input", originalWav, "--output-dir", stemsDir], TIMEOUTS.bandit);
-      separator = "bandit-v2-multi";
-      const intervals = JSON.parse(await fs.readFile(path.join(stemsDir, "intervals.json"), "utf8"));
-
-      await onStep("transcribe");
-      await assertWorkspaceMediaLifetime(lifetimeFile);
-      const transcripts = {};
-      for (const [key, file] of [["original", originalWav], ["speech", path.join(stemsDir, "speech.wav")], ["noBgm", path.join(stemsDir, "no_bgm.wav")]]) {
-        const mono = path.join(audioDir, `${key}-16k.wav`);
-        await run("ffmpeg", ["-nostdin", "-v", "error", "-n", "-i", file, "-ar", "16000", "-ac", "1", mono], TIMEOUTS.ffmpeg);
-        transcripts[key] = await transcribe(run, tools, mono, path.join(audioDir, `whisper-${key}`));
-      }
-      transcriptText = formatReferenceTranscript({ transcripts, intervals, whisperModel: tools.whisperModel });
-    }
-    await assertWorkspaceMediaLifetime(lifetimeFile);
-    return {
-      durationSeconds: probe.durationSeconds,
-      frames: contactSheets.images,
-      contactSheets: contactSheets.layout,
-      transcriptText,
-      materials: {
-        fps: contactSheets.layout.fps,
-        sheetCount: contactSheets.images.length,
-        separator,
-        whisperModel: probe.hasAudio ? tools.whisperModel : "",
-        hasAudio: probe.hasAudio
-      }
-    };
+    return await action({ videoPath, probe, workDir, run, lifetimeFile });
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
   }
@@ -195,7 +192,7 @@ ${block(transcripts.noBgm)}
 }
 
 async function createWorkDirectory(workRoot, lifetimeFile) {
-  if (!workRoot || !lifetimeFile) throw new ReferenceRewriteMaterialsError("参考片仿写必须在页面工作区的 Run 里运行");
+  if (!workRoot || !lifetimeFile) throw new ReferenceRewriteMaterialsError("处理参考视频必须在页面工作区的 Run 里运行");
   const root = path.resolve(workRoot);
   await assertWorkspaceMediaLifetime(lifetimeFile);
   if (path.dirname(root) !== path.dirname(path.resolve(lifetimeFile))) {
@@ -208,7 +205,7 @@ async function createWorkDirectory(workRoot, lifetimeFile) {
     if (error.code !== "EEXIST") throw error;
   }
   await requireWorkspaceMediaDirectory(root, lifetimeFile);
-  return createUniqueDirectory(path.join(root, "reference-rewrite-"));
+  return createUniqueDirectory(path.join(root, "reference-video-"));
 }
 
 // 照 snapshotTrustedPreviousVideo 的写法：O_NOFOLLOW 打开、边读边算 SHA-256、独占写出。
@@ -261,7 +258,7 @@ async function probeVideo(run, videoPath) {
 
 // 先按帧率抽出单帧、数清楚有几帧，再拼成 6×4 的接触表：最后一张不满时才能如实写「只有前 N 格有画面」。
 async function makeContactSheets(run, videoPath, workDir, durationSeconds, lifetimeFile) {
-  const fps = durationSeconds > REFERENCE_REWRITE_DENSE_FPS_MAX_SECONDS ? 1 : 2;
+  const fps = contactSheetFps(durationSeconds);
   const framesDir = path.join(workDir, "frames");
   const sheetsDir = path.join(workDir, "sheets");
   await assertWorkspaceMediaLifetime(lifetimeFile);
@@ -286,7 +283,7 @@ async function makeContactSheets(run, videoPath, workDir, durationSeconds, lifet
     const cells = Math.min(perSheet, frameCount - first);
     sheets.push({ startSeconds: first / fps, endSeconds: (first + cells - 1) / fps, cells });
   }
-  return { images, layout: { fps, columns: CONTACT_SHEET_COLUMNS, rows: CONTACT_SHEET_ROWS, sheets } };
+  return { images, frameCount, layout: { fps, columns: CONTACT_SHEET_COLUMNS, rows: CONTACT_SHEET_ROWS, sheets } };
 }
 
 async function transcribe(run, tools, audioPath, outputDir) {
@@ -357,16 +354,33 @@ function clock(seconds) {
 }
 
 // 演示模式（没有配置任何模型）：不跑本机工具，给一张 16×16 的灰色占位图和一句说明，
-// 让页面能免费走完「参考片仿写 → 选一稿 → 填进粘贴框」。
+// 让页面能免费走完 AI 导演的六步。
 const DEMO_SHEET_DATA_URL = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAgAAAQABAAD//gAPTGF2YzYzLjEuMTAyAP/bAEMACAoKCwoLDQ0NDQ0NEA8QEBAQEBAQEBAQEBISEhUVFRISEhAQEhIUFBUVFxcXFRUVFRcXGRkZHh4cHCMjJCsrM//EAEoAAQAAAAAAAAAAAAAAAAAAAAABAQAAAAAAAAAAAAAAAAAAAAAQAQAAAAAAAAAAAAAAAAAAAAARAQAAAAAAAAAAAAAAAAAAAAD/wAARCAAQABADASIAAhEAAxEA/9oADAMBAAIRAxEAPwAAD//Z";
 
-export function demoReferenceRewriteMaterials(durationSeconds = 45) {
-  const seconds = Math.min(REFERENCE_REWRITE_MAX_VIDEO_SECONDS, Math.max(1, Number(durationSeconds) || 45));
+function demoDuration(durationSeconds) {
+  return Math.min(REFERENCE_REWRITE_MAX_VIDEO_SECONDS, Math.max(1, Number(durationSeconds) || 45));
+}
+
+export function demoSourceTranscript(durationSeconds = 45) {
+  return {
+    durationSeconds: demoDuration(durationSeconds),
+    hasAudio: false,
+    text: "# 音频转写资料\n\n（演示模式，没有做去配乐和转写。）",
+    separator: "",
+    whisperModel: "",
+    demo: true
+  };
+}
+
+export function demoContactSheets(durationSeconds = 45) {
+  const seconds = demoDuration(durationSeconds);
+  const fps = contactSheetFps(seconds);
+  const cells = CONTACT_SHEET_COLUMNS * CONTACT_SHEET_ROWS;
   return {
     durationSeconds: seconds,
-    frames: [{ dataUrl: DEMO_SHEET_DATA_URL }],
-    contactSheets: { fps: 2, columns: CONTACT_SHEET_COLUMNS, rows: CONTACT_SHEET_ROWS, sheets: [{ startSeconds: 0, endSeconds: 11.5, cells: 24 }] },
-    transcriptText: "# 音频转写资料\n\n（演示模式，没有做去配乐和转写。）",
-    materials: { fps: 2, sheetCount: 1, separator: "", whisperModel: "", hasAudio: false, demo: true }
+    images: [{ dataUrl: DEMO_SHEET_DATA_URL }],
+    frameCount: cells,
+    layout: { fps, columns: CONTACT_SHEET_COLUMNS, rows: CONTACT_SHEET_ROWS, sheets: [{ startSeconds: 0, endSeconds: (cells - 1) / fps, cells }] },
+    demo: true
   };
 }

@@ -18,6 +18,7 @@ import { InputError, OutputContractError, ensureOutputContract, ensureFullStoryM
   characterReferenceRestorableMissingTraits,
   normalizeBackgroundMusicMode, requireAnimationPlanAspectRatio, NO_BACKGROUND_MUSIC_SENTENCE } from "./validation.js";
 import { normalizeCharacterArtStyle } from "../public/character-art-style.js";
+import { isScriptVariant } from "../public/reference-rewrite.js";
 
 const STORYBOARD_DESIGN_RESPONSE_SCHEMA = { name: STORYBOARD_DESIGN_MODEL_SCHEMA_NAME, schema: storyboardDesignModelSchema() };
 // 审阅与终审复查共用：只有 Claude 客户端读 claudeResponseSchema，另外三家按参数名解构、不认识就忽略，
@@ -149,7 +150,8 @@ export async function createStoryboardPlan(workflow, input, { storyEntry = null 
   const onStep = (step) => durableTaskHeartbeat({ step, stepIndex: ++stepIndex, stepMax, streamedChars: 0, reasoningChars: 0 });
   const { projected, visualGuardrails } = await storyboardInput(workflow, input, calls, onStep, { storyEntry });
   // 粘贴完整故事的 Run：Full Story 的台词逐字来自用户原文，分镜设计与修订都不得改动。
-  const dialogueLocked = storyEntry?.storySource?.storyMode === STORY_MODE_FULL_TEXT;
+  // 参考视频的 Run 选中剧本格式的主题变体时（2026-10-24）同理：台词逐字来自那篇剧本。
+  const dialogueLocked = storyEntry?.storySource?.storyMode === STORY_MODE_FULL_TEXT || isScriptVariant(input.variant);
   const settings = workflow.resolveStage("animationPlan", input);
   let design, initialReview = null, finalReview = null, repairs = [], guidance = [];
   if (!workflow.hasLiveClient) {

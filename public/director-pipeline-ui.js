@@ -1,9 +1,32 @@
 import { formatStageUsageSuffix } from "./token-usage-format.js";
 import { taskErrorMessage } from "./task-status-ui.js";
+import { referenceStepLabel } from "./reference-rewrite.js";
 
 function completedStages(task) {
   const value = Number(task?.progress?.completedStages);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+// AI 导演 2026-10-24 起是六步（加了第一步「去配乐与转写」）；以服务端进度里的 totalStages 为准。
+function totalStages(task) {
+  const value = Number(task?.progress?.totalStages);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 6;
+}
+
+// 转写与主题变体两步各有小步骤（去配乐、转写台词；抽帧、写剧本），写剧本时另报推理与正文字数。
+function directorStepDetail(task) {
+  const progress = task?.progress || {};
+  if (!["sourceTranscript", "themeVariants"].includes(progress.currentStage)) return "";
+  const label = referenceStepLabel(progress.step);
+  if (!label) return "";
+  const parts = [label];
+  if (progress.step === "write") {
+    const streamed = Number(progress.streamedChars) || 0;
+    const reasoning = Number(progress.reasoningChars) || 0;
+    if (streamed) parts.push(`已接收 ${streamed} 字`);
+    else if (reasoning) parts.push(`推理中（已推理 ${reasoning} 字）`);
+  }
+  return ` · ${parts.join(" · ")}`;
 }
 
 export function nextDirectorArtifactSync(checkpoint = {}, task = {}) {
@@ -138,7 +161,7 @@ export function directorTaskView(task = {}, { modelLabel = "" } = {}) {
   });
   const message = task.status === "completed" ? formatDirectorCompletionStatus(task, usage)
     : active ? `${labels[controlState] || (task.status === "queued" ? "AI 导演任务排队中"
-      : `AI 导演执行中 ${completedStages(task)}/5`)}${model}${usage}`
+      : `AI 导演执行中 ${completedStages(task)}/${totalStages(task)}${directorStepDetail(task)}`)}${model}${usage}`
       : `${terminal[task.status] || "AI 导演任务状态未知"}${task.error?.message && task.status !== "cancelled" ? `：${taskErrorMessage(task)}` : ""}${usage}`;
   return {
     active, controlState, message,

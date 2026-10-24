@@ -5,9 +5,10 @@ import { directorControlView, directorTaskView } from "../public/director-pipeli
 import { formatStageUsageSuffix, mergeStageUsage } from "../public/token-usage-format.js";
 import { loadAppUi, uiTask } from "./helpers/app-ui-harness.js";
 
+// AI 导演 2026-10-24 起六步：去配乐与转写、分析、还原已完成，正在做创意简报。
 function task(controlState = "running", overrides = {}) {
   return uiTask("directorPipeline", "running", {
-    progress: { controlState, currentStage: "creativeBrief", completedStages: 2 }, ...overrides
+    progress: { controlState, currentStage: "creativeBrief", completedStages: 3, totalStages: 6 }, ...overrides
   });
 }
 const response = (result) => ({ ok: true, json: async () => ({ ok: true, result }) });
@@ -60,7 +61,7 @@ test("a restored pause and repeat output rendering keep resume accessible and co
 
 test("pause keeps a stage which just committed marked completed", async () => {
   const app = await loadAppUi();
-  app.updateTaskSnapshot(task("paused", { progress: { controlState: "paused", currentStage: "sourceScriptReconstruction", completedStages: 2 } }));
+  app.updateTaskSnapshot(task("paused", { progress: { controlState: "paused", currentStage: "sourceScriptReconstruction", completedStages: 3, totalStages: 6 } }));
   assert.equal(app.document.querySelector('[data-stage="script"]').className, "done");
 });
 
@@ -72,7 +73,7 @@ test("double clicking sends one scoped pause request and waits for a settled ser
     return new Promise((resolve) => { resolveControl = resolve; });
   } });
   app.updateTaskSnapshot(task());
-  app.directorArtifactSynchronizer.markRendered(task(), 2);
+  app.directorArtifactSynchronizer.markRendered(task(), 3);
   const pending = app.controlDirectorPipeline("pause");
   await app.controlDirectorPipeline("pause");
   assert.equal(calls.length, 1);
@@ -103,7 +104,7 @@ test("resume and terminate use the same task; cancellation retains Run content a
   } });
   const output = app.state.output;
   app.updateTaskSnapshot(task("paused"));
-  app.directorArtifactSynchronizer.markRendered(task(), 2);
+  app.directorArtifactSynchronizer.markRendered(task(), 3);
   await app.controlDirectorPipeline("resume");
   assert.equal(app.elements.pauseDirector.getAttribute("aria-label"), "暂停当前阶段");
   await app.controlDirectorPipeline("terminate");

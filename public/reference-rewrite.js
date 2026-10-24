@@ -1,17 +1,20 @@
-// 参考片仿写（2026-10-24）：浏览器与服务端共用的常量与纯函数。设计见 docs/reference-rewrite-2026-10-24.md。
+// 参考片仿写接进 AI 导演（2026-10-24）：浏览器与服务端共用的常量与纯函数。设计见 docs/reference-rewrite-2026-10-24.md。
 //
-// 从参考视频抽帧、去配乐、转写，再让模型写「原片拆解＋四篇类似剧本」。选中的一稿由用户填进
-// 「从剧情开始 · 粘贴完整故事」的输入框，之后走现有的拆镜头与 4.0 分镜；这里不签发 storySource。
+// 参考视频的 Run 上，AI 导演第一步在本机去配乐、转写（Artifact sourceTranscript）；主题变体那一步由模型
+// 看接触表、读转写稿、按角色边界写 N 篇完整剧本（themeVariants 的剧本格式）。选中一篇后完整剧情按剧本拆场。
 
-import { STORY_SOURCE_TEXT_MAX_CHARS, normalizeStoryText, storyTextLength } from "./story-entry.js";
+import { normalizeStoryText } from "./story-entry.js";
 
-// 阶段名、任务名与 Artifact id 都用这一个名字（侧车日志按 scope 建 writer、按 stage 查，必须逐字相同）。
+// 主题变体（剧本格式）的模型阶段。阶段名与侧车日志 scope 用同一个名字（writer 按 scope 建、按 stage 查）。
 export const REFERENCE_REWRITE_STAGE = "referenceRewrite";
-export const REFERENCE_REWRITE_TASK_KIND = "referenceRewrite";
-export const REFERENCE_REWRITE_ARTIFACT_ID = "referenceRewrite";
-export const REFERENCE_REWRITE_ARTIFACT_TYPE = "referenceRewrite";
-export const REFERENCE_REWRITE_SCHEMA_VERSION = "reference_rewrite/1.0";
-export const REFERENCE_REWRITE_DRAFT_COUNT = 4;
+
+// AI 导演第一步：去配乐与转写。任务、Artifact、阶段都叫这个名字；它不调模型。
+export const SOURCE_TRANSCRIPT_ARTIFACT_ID = "sourceTranscript";
+export const SOURCE_TRANSCRIPT_SCHEMA_VERSION = "source_transcript/1.0";
+
+// 主题变体的剧本格式：themeVariants 仍是同一个 Artifact，用 schemaVersion 与每篇的 format 区分旧的故事候选。
+export const SCRIPT_THEME_VARIANTS_SCHEMA_VERSION = "theme_variants_script/1.0";
+export const SCRIPT_VARIANT_FORMAT = "script";
 
 // 只有这两家能看图写稿：Claude 走 requestCompletion 的 frames（唯一允许 Claude 收图的阶段），
 // MiMo 本来就能看图。千问的多图请求会被拼成视频块，DeepSeek 不收图，都不放。
@@ -27,45 +30,62 @@ export const REFERENCE_REWRITE_DEFAULT_SETTING = Object.freeze({
 export const REFERENCE_REWRITE_MAX_VIDEO_SECONDS = 180;
 export const REFERENCE_REWRITE_DENSE_FPS_MAX_SECONDS = 120;
 
-// 进度的四步。页面文字与服务端 progress.step 用同一份。
-export const REFERENCE_REWRITE_STEPS = Object.freeze([
-  Object.freeze({ key: "frames", label: "抽帧" }),
-  Object.freeze({ key: "separate", label: "去配乐" }),
-  Object.freeze({ key: "transcribe", label: "转写台词" }),
-  Object.freeze({ key: "write", label: "写四稿" })
-]);
-
-export function referenceRewriteStepLabel(key) {
-  return REFERENCE_REWRITE_STEPS.find((step) => step.key === key)?.label || "";
+/** 接触表的抽帧率：与服务端切图用同一个判定。 */
+export function contactSheetFps(durationSeconds) {
+  return Number(durationSeconds) > REFERENCE_REWRITE_DENSE_FPS_MAX_SECONDS ? 1 : 2;
 }
 
-// 选中一稿后填进粘贴框的文字：标题空一行接剧本。概要与方向是给人挑稿看的，不进原文。
-export function referenceRewriteDraftStoryText(draft) {
-  const title = String(draft?.title || "").trim();
-  const script = String(draft?.script || "").trim();
+/** 还没切图时，按时长估一个帧数给页面「+N」用；切过之后以 themeVariants.materials.frameCount 为准。 */
+export function estimatedContactSheetFrameCount(durationSeconds) {
+  const seconds = Number(durationSeconds);
+  if (!(seconds > 0)) return 0;
+  return Math.max(1, Math.round(Math.min(seconds, REFERENCE_REWRITE_MAX_VIDEO_SECONDS) * contactSheetFps(seconds)));
+}
+
+// 两个阶段各自的进度步骤。页面文字与服务端 progress.step 用同一份。
+export const SOURCE_TRANSCRIPT_STEPS = Object.freeze([
+  Object.freeze({ key: "separate", label: "去配乐" }),
+  Object.freeze({ key: "transcribe", label: "转写台词" })
+]);
+export const SCRIPT_VARIANT_STEPS = Object.freeze([
+  Object.freeze({ key: "frames", label: "抽帧" }),
+  Object.freeze({ key: "write", label: "写剧本" })
+]);
+
+export function referenceStepLabel(key) {
+  return [...SOURCE_TRANSCRIPT_STEPS, ...SCRIPT_VARIANT_STEPS].find((step) => step.key === key)?.label || "";
+}
+
+export function isScriptThemeVariants(themeVariants) {
+  return themeVariants?.schemaVersion === SCRIPT_THEME_VARIANTS_SCHEMA_VERSION;
+}
+
+export function isScriptVariant(variant) {
+  return variant?.format === SCRIPT_VARIANT_FORMAT;
+}
+
+// 选中一篇后按剧本拆场的「原文」：标题空一行接剧本。概要与方向是给人挑稿看的，不进原文。
+// 拆场提示词、台词核对与长度上限用的都是这一份。
+export function scriptVariantStoryText(variant) {
+  const title = String(variant?.title || "").trim();
+  const script = String(variant?.script || "").trim();
   return normalizeStoryText(title ? `${title}\n\n${script}` : script);
 }
 
-// 校验器用它保证「选中后一定能开 Run」：按码点计数，与剧情原文的上限同一个数。
-export function referenceRewriteDraftFits(draft) {
-  return storyTextLength(referenceRewriteDraftStoryText(draft)) <= STORY_SOURCE_TEXT_MAX_CHARS;
-}
-
-// 「下载四稿」导出的 Markdown：原片拆解在前，四稿在后，与实验交给用户读的那份同一个结构。
-export function referenceRewriteMarkdown(result, { videoTitle = "" } = {}) {
-  const original = result?.original || {};
-  const drafts = Array.isArray(result?.drafts) ? result.drafts : [];
-  const lines = [`# ${videoTitle ? `${videoTitle} · ` : ""}参考片仿写`, "", "## 一、原片", "", "### 概要", "", String(original.summary || ""), "", "### 台词", ""];
+// 「下载剧本」导出的 Markdown：原片拆解在前，N 篇在后，与实验交给用户读的那份同一个结构。
+export function scriptVariantsMarkdown(themeVariants, { videoTitle = "" } = {}) {
+  const original = themeVariants?.original || {};
+  const variants = Array.isArray(themeVariants?.variants) ? themeVariants.variants : [];
+  const lines = [`# ${videoTitle ? `${videoTitle} · ` : ""}主题变体`, "", "## 一、原片", "", "### 概要", "", String(original.summary || ""), "", "### 台词", ""];
   lines.push("| 时间 | 谁 | 台词 | 画面 |", "| --- | --- | --- | --- |");
   for (const row of Array.isArray(original.dialogue) ? original.dialogue : []) {
     lines.push(`| ${cell(row.time)} | ${cell(row.speaker)} | ${cell(row.line)} | ${cell(row.picture)} |`);
   }
   lines.push("", "### 原片好看在哪", "");
   for (const item of Array.isArray(original.strengths) ? original.strengths : []) lines.push(`- ${String(item)}`);
-  lines.push("", "## 二、四篇剧本");
-  const numerals = ["一", "二", "三", "四"];
-  drafts.forEach((draft, index) => {
-    lines.push("", `### 稿${numerals[index] || index + 1}　${String(draft.title || "")}`, "", `**方向**：${String(draft.direction || "")}`, "", `**概要**：${String(draft.summary || "")}`, "", "**剧本**", "", String(draft.script || ""));
+  lines.push("", `## 二、${variants.length} 篇剧本`);
+  variants.forEach((variant) => {
+    lines.push("", `### ${String(variant.id || "")}　${String(variant.title || "")}`, "", `**方向**：${String(variant.direction || "")}`, "", `**概要**：${String(variant.summary || "")}`, "", "**剧本**", "", String(variant.script || ""));
   });
   return `${lines.join("\n")}\n`;
 }

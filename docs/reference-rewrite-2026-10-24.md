@@ -1,6 +1,7 @@
-# 参考片仿写（2026-10-24）
+# 参考片仿写接进 AI 导演（2026-10-24）
 
-> 状态：代码、自动化测试（新增 36 个，全量 1764 个通过）、真实回放（第 6 节）与页面实测（第 7 节）都已完成，未提交。分支 `feat/reference-rewrite`（基于 `feat/storyboard-full-series` 的 1b9a181）。
+> 状态：代码与自动化测试完成（全量 1774 个通过），第二版的真实整条运行见第 8 节；未提交。分支 `feat/reference-rewrite`。
+> 第一版（84c0c16）把它做成参考视频入口的独立按钮：写四稿 → 选一稿填进「从剧情开始 · 粘贴完整故事」。用户看过后指出理解错了：去配乐与转写要放在参考片分析之前，仿写就是 AI 导演的「主题变体」这一步。本文按第二版写；第一版的回放与页面实测数据留在第 7 节，提示词只有「设定创作宇宙」那段不同。
 
 ## 1. 为什么要有这一步
 
@@ -11,40 +12,46 @@
 - **Claude Opus 5.5（effort xhigh）能复现**：原片读对了（还看出 Claude Code 漏掉的片尾水彩淡出），四篇写法同一个路数；约 $1、9 分钟一次。
 - **MiMo v2.6 pro 只复现了格式**：第一层读错了「阿姨怎么放行」「伞在哪句话之后到」；第二层把拆解当模板，四篇都是原片事件链换皮。
 
-所以这一步默认 Claude Opus 5.5、effort xhigh，不跟随 `DEFAULT_LLM_PROVIDER`。
+所以主题变体默认 Claude Opus 5.5、effort xhigh，不跟随 `DEFAULT_LLM_PROVIDER`。
 
-## 2. 用户看到的流程
+## 2. 用户看到的流程（10-24 用户定的四条）
 
-1. 「从参考视频开始」上传参考视频、填好固定角色与赛道，点右侧的「参考片仿写：写四篇类似剧本」。确认框写明模型、约 12 分钟、约 1 美元。
-2. 服务端后台任务分四步：抽帧 → 去配乐 → 转写台词 → 写四稿（写稿时显示「推理中（已推理 N 字）」）。没有 Run 时先照「启动 AI 导演」的写法建一个参考视频 Run；之后点 AI 导演会接着用同一个 Run。
-3. 结果面板：原片拆解（概要、台词表、好看在哪）＋四张稿件卡（标题、方向、概要，展开看剧本）。刷新后从 Run 读回；任务还在跑时刷新会重新接管。面板上「下载四稿（Markdown）」是用户主动导出。
-4. 某一稿点「用这一稿开拍」：确认框说明切过去会删掉当前 Run（含四稿）、参考视频副本会在开始拆镜头时删掉，要留着先下载。确认后切到「从剧情开始 · 粘贴完整故事」，把「标题＋剧本」填进输入框；输入框上方列出四稿，可以「换成这一稿」（改过字时先问）。四稿只在页面内存里，刷新即清。
-5. 用户看过、改好字，点现有的「开始拆镜头」，之后的可翻拍镜头、4.0 分镜、角色参考图、镜头视频全部沿用现有流程。剧情原文由浏览器在开 Run 时送来，与用户自己粘贴完全相同，`storySource` 的写入点没有增加。
+1. **转写只作台词稿**：AI 导演第一步「去配乐与转写」在本机跑，转写稿交给分析、还原和主题变体；MiMo 照旧看原视频。
+2. **变体就是完整剧本**：主题变体写 N 篇（方向、概要、分场剧本），篇数取「候选数量」。选中一篇点「拆成完整剧情 →」，完整剧情按这篇剧本拆场（与「粘贴完整故事」一样），之后照常出 4.0 分镜、角色参考图、镜头视频。候选评审、展开前体检、命题修订、剧情体检与按问题修改对剧本变体不适用。
+3. **给 Claude 的是接触表、台词稿、角色边界**：不给 MiMo 写的分析、还原与简报正文。时间轴采样仍最多显示 10 张缩略图，鼠标移到最后一张上显示「+N」——主题变体这一步还会多看的帧数（跑过之后按实际切出的帧数，之前按时长估）。
+4. **去掉独立的「参考片仿写」按钮**。
 
-模型设置里多一栏「参考片仿写」，只列 Claude 与 MiMo；effort 页面不能改。导演助手不加这一步。
+页面：步骤条六步（去配乐与转写、参考片分析、原片脚本还原、创意简报、角色与表达边界、主题变体）；转写结果卡（转写稿默认折起）；剧本卡上方是原片拆解，每篇「看剧本」展开，「下载剧本（Markdown）」由浏览器生成。完整剧情页有台词核对（剧本里找不到的台词逐句列出，只提示不拦截）。「AI 导演」在本机工具不齐时禁用并写明缺什么。模型设置里「主题变体」只列 Claude 与 MiMo；原来那一栏改叫「故事候选（从剧情开始）」。导演助手：AI 导演最少 5 次调用（转写不调模型），选剧本变体写「拆成完整剧情」、不带体检说明。
+
+旧 Run 里已有的旧格式故事候选照常可用（体检、评审、修订、按候选展开都按原样走）。旧 Run 点「继续 AI 导演」会从转写开始重跑（第 3 节「复用规则」）。
 
 ## 3. 契约（五个面）
 
 | 契约 | 生产者 | 消费者 | 校验器 | 提示词 | 测试 |
 | --- | --- | --- | --- | --- | --- |
-| 任务 `referenceRewrite`（只在参考视频 Run 上） | `server.js` `referenceRewriteTaskDefinition`：创建前查视频 Run（否则 409 `TASK_ENTRY_MODE_MISMATCH`）、绑着页面工作区且副本在（`TASK_SOURCE_MEDIA_REQUIRED`）、固定角色与赛道、本机工具齐全（`REFERENCE_REWRITE_TOOLS_UNAVAILABLE`）、`targetDurationSeconds` 20–180 | 页面 `runReferenceRewrite` / `attachRestoredReferenceRewrite` | — | — | `test/reference-rewrite-http.test.js` |
-| 本机素材 | `src/reference-rewrite-materials.js`：副本 O_NOFOLLOW 复制到 Run 的 `media-work/` 并核对 SHA-256；ffprobe（>180 秒拒绝）；每秒 2 帧（>120 秒改 1 帧）拼 6×4 接触表；Bandit 三轨（`tools/reference-audio-stems.py`）；whisper 三组转写（原声、人声轨、原声减音乐，按词对时间）加有声区间 | `workflow.createReferenceRewrite` | 每个子进程超时＋SIGKILL；每步前复核页面工作区还活着；临时目录用完即删 | — | `test/reference-rewrite-materials.test.js` |
-| 模型输出 `reference_rewrite/1.0` | `workflow.createReferenceRewrite`（coordinator，最多 2 次调用，重试只发诊断） | Artifact `referenceRewrite`；页面结果面板 | `src/reference-rewrite.js` `ensureReferenceRewriteContract`：只查形状——键齐全、非空、恰好 4 篇、标题不重复、「标题＋剧本」≤5000 字（与剧情原文同一个上限，保证选中后一定能开 Run） | `src/reference-rewrite-prompts.js`（golden 锁定） | `test/reference-rewrite-contract.test.js`、`test/reference-rewrite-workflow.test.js` |
-| Claude 收图 | `src/claude-client.js` `buildClaudeRequestBody` 的 `frames` → `[image…, text]`；`overrides.effort` 优先于全局 | 只有参考片仿写传 `frames` | data URL 只收 jpeg/png/gif/webp 的 base64，否则 `MODEL_MEDIA_INVALID`；不传 frames 时请求体逐字不变 | — | `test/claude-client.test.js` |
-| 选中一稿 | 页面 `useReferenceRewriteDraft`：`referenceRewriteDraftStoryText` 填粘贴框 | 现有「开始拆镜头」 | 现有 `normalizeStorySource` 与主角名检查 | — | `test/reference-rewrite-ui.test.js` |
+| Artifact `sourceTranscript`（`source_transcript/1.0`） | AI 导演第一个子任务 `sourceTranscript`（`server.js` `sourceTranscriptTaskDefinition` / `runSourceTranscript`）；`src/reference-rewrite-materials.js` `buildSourceTranscript`：副本复制进 Run 的 `media-work/` 并核对 SHA-256、≤180 秒、Bandit 三轨（`tools/reference-audio-stems.py`）、whisper 三组（原声、人声轨、原声减音乐，按词对时间）加有声区间 | 分析与还原（`sourceTranscriptText`）、主题变体（`transcriptText`）、页面转写卡 | 子进程超时＋SIGKILL；每步前复核页面工作区还活着；临时目录用完即删；建 AI 导演任务前查本机工具，缺了 409 `SOURCE_TRANSCRIPT_TOOLS_UNAVAILABLE` | 分析与还原各多一段「自动转写」，只在有转写时出现 | `test/reference-rewrite-materials.test.js`、`test/source-transcript-pipeline-http.test.js` |
+| 转写进封印 | `evidenceContextDigest`（`src/reconstruction-grounding.js`）只在有转写时加 `sourceTranscriptHash` | 还原核对分析的封印 | 旧封印算出来不变；转写换了还原就拒绝 | — | `test/script-variants.test.js` |
+| 依赖与复用 | `DIRECTOR_PIPELINE_STAGES`：分析 `[sourceTranscript]`、还原 `[referenceAnalysis, sourceTranscript]`、主题变体 `[referenceAnalysis, sourceScriptReconstruction, creativeBrief, visualGuardrails, sourceTranscript]` | 递归作废；`pipelineArtifactReusable` 要求 current 产物的依赖包含这一步现在的全部依赖 | — | — | `test/source-transcript-pipeline-http.test.js`、`test/director-run-control-http.test.js` |
+| 主题变体 `theme_variants_script/1.0` | `runScriptVariants`：`buildContactSheets` 从副本现切接触表（每秒 2 帧、>120 秒 1 帧、6×4）→ `workflow.createScriptVariants`（先验签角色边界；coordinator 最多 2 次、重试只发诊断）→ `sealScriptThemeVariants` 发 id 与 format | 剧本卡、`variant:<id>`、完整剧情、导演助手、「+N」 | `ensureReferenceRewriteContract`：恰好 N 篇、键齐全、非空、标题不重复、「标题＋剧本」≤5000 字、剧本里写出签发的角色名（`SCRIPT_VARIANT_PROTAGONIST_NAME_MISSING`）；`ensureScriptVariant` 在读路径上复核选中的那篇 | `src/reference-rewrite-prompts.js`（golden 锁定） | `test/reference-rewrite-contract.test.js`、`test/reference-rewrite-workflow.test.js` |
+| 按剧本拆场 | `createFullStory` 见 `variant.format === "script"`：`variantScriptSceneScriptPrompt`、`SCRIPT_VARIANT_SYSTEM_PROMPT`，`selectedVariantId` 写成这篇的编号 | 4.0 分镜（锁台词）、台词核对、一句话修改 | 签发校验与视频版同一条（`validateFullStoryForSigning`），角色边界按参考视频那一版验签 | 在 `storySceneScriptPrompt` 输出上逐字锚点替换（golden 锁定），剧情入口那份不动 | `test/script-variants.test.js` |
+| 旧格式才有的工具 | 展开前体检、候选评审、命题修订、剧情体检、按问题修改 | — | 遇到剧本格式 `SCRIPT_VARIANT_NOT_SUPPORTED`，不调模型 | — | `test/script-variants.test.js` |
+| Claude 收图 | `src/claude-client.js` `buildClaudeRequestBody` 的 `frames` → `[image…, text]`；`overrides.effort` 优先于全局 | 只有主题变体传 `frames` | data URL 只收 jpeg/png/gif/webp 的 base64，否则 `MODEL_MEDIA_INVALID`；不传 frames 时请求体逐字不变 | — | `test/claude-client.test.js` |
 
-Artifact `referenceRewrite` 的内容：`schemaVersion`、`original`、`drafts`、`transcript`（转写稿原文）、`materials`（时长、帧率、张数、分轨器、whisper 模型、有无音轨、时长目标）、`model`（provider、model、effort、调用次数、被拦次数）。接触表图片不入库；Task Store 照旧不存提示词与图片。没有 Artifact 依赖（参考视频不是 Artifact）。
+`themeVariants`（剧本格式）的内容：`schemaVersion`、`original`（原片拆解：概要、台词表、好看在哪；只展示，不是事实来源）、`variants[{id, format, title, direction, summary, script}]`、`materials`（帧率、帧数、张数、时长、实际用的剧情时长目标）、`model`（provider、model、effort、调用次数、被拦次数）。接触表图片不入库；Task Store 照旧不存提示词与图片。3.0 测试包不校验 themeVariants 内容，剧本格式照原样带走；包里不带 `sourceTranscript`。
 
 ## 4. 提示词与输出
 
-来源是对照实验的 `materials/prompt.md`，写稿要求 8 条逐字沿用，只改四处：
+来源是对照实验的 `materials/prompt.md`，写稿要求 8 条逐字沿用，只改了这几处：
 
 1. 接触表说明按实际张数与帧率生成，最后一张不满时写明「只有前 N 格有画面」；
-2. 第 4 条从写死「咕嘎」改成用「设定创作宇宙」的固定角色、赛道与创作限制（「开场 3 秒内带着声音和大动作出场」保留）；
-3. 时长窗口取剧情时长目标（`storyDurationWindow`，默认与原片对齐）；
-4. 输出从 Markdown 改成 JSON（用户 10-24 选定）：Claude 用 `claudeResponseSchema` 结构化输出（不用 minLength / maxItems，条数由校验器管），MiMo 用约束解码 Schema（锁 4 篇、非空）。
+2. 「设定创作宇宙」那段：固定角色换成已签发的角色事实 `fullStoryCharacterFacts(visualGuardrails)`（第一版是用户填的固定角色原文），赛道与创作限制取页面设定；第 4 条写明「名字写『X』……不写角色事实里禁止的特征」（「开场 3 秒内带着声音和大动作出场」保留）；
+3. 篇数取页面「候选数量」（第一版写死 4 篇）；
+4. 时长窗口取剧情时长目标（`storyDurationWindow`；没给时与原片对齐，按实测时长取整、夹在 20–180 秒）；
+5. 输出从 Markdown 改成 JSON：Claude 用 `claudeResponseSchema` 结构化输出（不用 minLength / maxItems，条数由校验器管），MiMo 用约束解码 Schema（按篇数锁条数、非空）。
 
-实验里手挑的两张关键帧放大图、手截复核的那组转写无法自动化，去掉了。转写时 whisper 的提示词不再写「咕嘎」（实验里写了），参考片的主角不一定是咕嘎。
+实验里手挑的两张关键帧放大图、手截复核的那组转写无法自动化，去掉了。转写时 whisper 的提示词不写角色名。
+
+按剧本拆场的提示词在粘贴故事那份的输出上做逐字锚点替换：系统消息换成不说「本次没有参考视频」的版本，「用户故事原文」换成「剧本原文」，故事位 `V1` 换成这篇的编号。拆场只拿固定角色设定、角色事实、时长目标与这篇剧本，不拿原片分析、还原与简报。
 
 ## 5. 本机依赖
 
@@ -56,13 +63,20 @@ REFERENCE_REWRITE_WHISPER_BIN=~/.local/bin/whisper
 # REFERENCE_REWRITE_WHISPER_MODEL_DIR=~/.cache/whisper
 ```
 
-- 都不设，或外置盘没挂上、模型文件不在，`/api/health` 的 `referenceRewrite.reason` 逐项写明缺什么，按钮不能点、建任务 409。**不回退到不去配乐的转写**，也**不让 whisper 自己下载模型**（`--model_dir` 指定目录、先查文件在不在）。
+- 都不设，或外置盘没挂上、模型文件不在，`/api/health` 的 `sourceTranscript.reason` 逐项写明缺什么，「AI 导演」不能点、建任务 409。**不跳过转写这一步，不回退到不去配乐的转写，不让 whisper 自己下载模型**（`--model_dir` 指定目录、先查文件在不在）。已经转写过的 Run 继续跑后面几步时不再要求工具。
 - ffmpeg / ffprobe 从 PATH 找。Bandit 用它自带的 `.venv/bin/python -I`，先核对 checkpoint 的 SHA-256；只读地 import 安装目录，不改它。有 MPS 用 MPS，没有用 CPU。
-- 演示模式（没配任何模型）不跑本机工具，用一张占位图和固定的四篇占位稿，能免费走完整个流程。
+- 演示模式（没配任何模型）不跑本机工具：占位转写、一张占位接触表、N 篇占位稿，能免费走完六步。
+- 起真服务的测试用 `test/helpers/fake-reference-tools.js` 的替身程序（按真实程序的约定写出文件），不跑真的 ffmpeg / Bandit / whisper。
 
-## 6. 真实回放（2026-10-24）
+## 6. 运行顺序与花费
 
-`scripts/reference-rewrite-replay.mjs` 直接用服务端的素材模块与 `workflow.createReferenceRewrite`（不经页面与任务管理器），Claude Opus 5.5、effort xhigh，固定角色用 10-23 实验里的咕嘎设定。输出在 `reports/reference-rewrite-replay-2026-10-24/`（未入库），每份有 `output.md`（与「下载四稿」同格式）、`transcript.md`、接触表与 `meta.json`。
+AI 导演六步：去配乐与转写（本机约 2 分钟）→ 分析 → 还原 → 简报 → 角色边界（MiMo，与原来相同）→ 主题变体（Claude Opus 5.5，切接触表几秒、写稿约 8–9 分钟，约 1 美元；结构不合格时带诊断重做一次，最多 2 美元）。转写与主题变体都在服务端读页面工作区里的参考视频副本；页面关闭、工作区清掉之后这两步会如实报缺视频，不自动重跑。暂停或终止不会打断正在跑的 Bandit 或 whisper，最多等 20 秒，到下一次心跳才生效。
+
+## 7. 第一版的真实回放与页面实测（2026-10-24，独立按钮那一版）
+
+提示词与第二版只差「设定创作宇宙」那段（第一版直接写用户填的固定角色原文）与篇数写死 4 篇，看片与写稿的数据仍有参考价值。
+
+当时的回放脚本 `scripts/reference-rewrite-replay.mjs`（第二版已删：它调的是独立按钮那一版的函数；第二版改在真实服务上整条跑）直接用服务端的素材模块与模型方法（不经页面与任务管理器），Claude Opus 5.5、effort xhigh，固定角色用 10-23 实验里的咕嘎设定。输出在 `reports/reference-rewrite-replay-2026-10-24/`（未入库）。
 
 | | 参考片 | 本机素材 | 全程 | 调用 | 输入 / 输出 token | 花费 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -74,29 +88,41 @@ REFERENCE_REWRITE_WHISPER_BIN=~/.local/bin/whisper
 
 **看片**：三份都读对了。撑伞两份都写对「阿姨蹲下摸头、说不收钱」「伞在大叔叹气之后才从画外伸进来」「骑在肩上、阿姨在门口目送」，也都看出片尾转成手绘插画；打枣那份写对「爷爷拿带长柄的铝锅扣在她头上当头盔」「骑粉色小车带走一袋枣」，还说明转写里的「顾哥／伯哥／牧牧」是咕嘎的叫声、「打早」是「打枣」。
 
-**四稿**：每份四篇各换了事件，场次 7–9 场、每篇 950–1320 字，东西按实物写（冰棍一路化、肚皮贴地钩钥匙、雪坡上推没电的电动车）。三处值得留意：
+**四稿**：每份四篇各换了事件，场次 7–9 场、每篇 950–1320 字，东西按实物写。三处值得留意：umbrella-1 四篇都用「画面定格，转成水彩速写」收尾（另两份 0/4；10-23 实验里 Claude 第一层也是 4/4）；同一个模型反复用到几个点子（雪坡推车、停电夜里打手电、冰棍、烤红薯）；jujube-1 第一篇换的是季节和道具，离原片最近。
 
-- umbrella-1 四篇都用「画面定格，转成水彩速写」收尾，照搬了原片的收尾手法（另两份 0/4）。10-23 实验里 Claude 第一层也是 4/4。
-- 同一个模型反复用到几个点子：雪坡推车（umbrella-1、umbrella-2）、停电夜里打手电（umbrella-2，实验里两层各一次）、冰棍（umbrella-2，实验第二层也有）、烤红薯（umbrella-2、jujube-1，Claude Code 手写稿也有）。
-- jujube-1 第一篇的方向写的是「保留……的骨架」，换的是季节和道具，离原片最近。
+**一次调用失败**：jujube-1 第一次调用没有被校验拦，是在调用途中失败、按传输错误重做了一次，原因没查到；第一次调用已产生的 token 照样计费。
 
-**一次调用失败**：jujube-1 第一次调用没有被校验拦（`rejections` 为空），是在调用途中失败、按传输错误重做了一次，写稿用了 18.7 分钟。当时回放脚本没记每次调用的结局，原因没查到；之后回放脚本逐次记录，页面实测打开了 `STAGE_MODEL_OUTPUT_LOG_DIR`。第一次调用已产生的 token 照样计费。
+**页面实测（第一版）**：在 4189 上走通了「上传撑伞 → 参考片仿写（11.8 分钟、约 $0.86）→ 选一稿 → 粘贴框 → 拆镜头」，台词核对 8/8 句在原文里找得到；原文卡片把稿子里的 `**` 与 `>` 标记原样显示。
 
-## 7. 页面实测（2026-10-24）
+## 8. 第二版的回放与页面实测
 
-用 `.claude/launch.json` 的 `reference-rewrite-check`（4189，跑本 worktree 的代码，只留文本模型密钥，出图出视频的密钥清空，配了本机工具与 `STAGE_MODEL_OUTPUT_LOG_DIR`），在内置浏览器里走了一遍：
+在真实服务上整条跑（临时 launch 配置，端口 4190，跑本 worktree 的代码；出图出视频的密钥清空；本机工具用外置盘的 Bandit 与 `~/.local/bin/whisper` small 模型）。视频经页面脚本装进上传框，固定角色是 10-23 实验的咕嘎设定，候选数量 4，剧情时长与原片对齐。
 
-1. `/api/health`：`referenceRewrite.available: true`，阶段默认 Claude / `claude-opus-5-5` / effort `xhigh`。填好咕嘎设定、上传撑伞视频后，「参考片仿写」按钮可点，下面写明模型、约 12 分钟、约 1 美元。
-2. 点按钮 → 确认框 → 进度依次显示「第 2/4 步 去配乐」等。任务进行中刷新页面，进度照常显示、按钮锁住（重新接管）。
-3. 11.8 分钟完成，一次调用、输入 12.3k / 输出 40.8k token（约 $0.86）。Run 的 `media-work/` 已清空；侧车日志在 Run 的 `debug/stage-referenceRewrite/` 下记了这次调用。结果面板显示原片拆解与四张稿件卡（《半根冰棍》《一只手套》《车底下的咪咪》《上坡》）。
-4. 稿二点「用这一稿开拍」→ 确认框 → 切到「从剧情开始 · 粘贴完整故事」，输入框是「标题＋剧本」（1131 字），上方列出四稿、当前那篇高亮。旧的参考视频 Run 被删掉，开始拆镜头时视频副本也被删掉。发现并修了一处样式：当前那篇的按钮用了整行宽的主按钮样式，改成与其余三个同样大小、深色标出。
-5. 点「开始拆镜头」后剧情 Run 建好、流水线开跑，但这一次在跑完之前 Run 就被清掉了（这个标签页中途被刷新，页面工作区换了一个，旧工作区连同它的 Run 一起清理），没能看到结果。于是把回放里 Claude 写的一稿（umbrella-1 稿四《贩卖机底下》，1154 字）直接贴进粘贴框重测：`storyPipeline` 完成（MiMo 3 次调用），拆成 8 场，台词核对「8 句台词都能在原文里找到」。原文卡片把稿子里的 `**` 与 `>` 标记原样显示，只影响观感。
+| | 参考片 | 去配乐与转写 | 分析→角色边界（MiMo） | 主题变体（Claude） | 结果 |
+| --- | --- | --- | --- | --- | --- |
+| 撑伞 | 51 秒，102 帧 / 5 张接触表 | 3.6 分钟 | 4 步各 1 次，一次过 | 5.6 分钟，1 次调用，输入 13.3k / 输出 31.8k token | 六步全过，共 13.7 分钟 |
+| 打枣 | 44 秒，87 帧 / 4 张接触表 | 4.2 分钟 | 角色边界前两次被拦（见下），第三次过 | 6.2 分钟，1 次调用，输入 12.0k / 输出 36.7k token | 第三次继续后六步全过 |
 
-## 8. 已知缺口
+**看片**：两份都读对了。撑伞写对「阿姨摸头说好孩子快去吧、不收钱」「大叔蹲在车旁叹气『今天又卖不出去了』之后伞才从画外伸进来」「骑在肩上、阿姨门口目送」「转成手绘淡彩」；打枣写对「爷爷拿带柄的铝锅扣在她头上」「贴企鹅图案的粉色小车」「有空常来爷爷这儿玩啊」。转写稿去配乐后的人声轨把几句关键台词都转对了，叫声在原声与「原声减音乐」两组里（「嗑嗑」「小咕咕」），分析阶段把「顾哥」这类同音写法认成叫声。
 
-- 只能在这台 Mac 上用：Bandit 在外置盘，whisper 在本机。
-- 「写得好不好」「原片读对没有」「四篇是不是换了事件」都没有确定性兜底，只能靠用户读；回放每组只能跑几次。
+**剧本**：撑伞四篇《半杯酸梅汤》《地下通道的掌声》《半个包子》《穿针》，打枣四篇《看柿子》《冬至的碗》《企鹅风筝》《抢在雨前》，每篇各换了事件，880–1220 字；这一次 8 篇都没有「水彩速写」收尾。两份都存进外层目录（`总有人会给你撑伞-AI导演主题变体-2026-10-24.md`、`打枣-AI导演主题变体-2026-10-24.md`），给用户读，不打分。
+
+**页面**：时间轴最后一张悬停显示「+92」（撑伞）与「+77」（打枣）；跑完之后标题里的帧数换成实际切出的 102 帧。步骤条六步依次完成；转写卡、原片拆解、四张剧本卡、「看剧本」都正常；导演助手的选项写成「选 V1《半杯酸梅汤》，拆成完整剧情」。打枣那份在角色边界失败后，点「启动 AI 导演」在同一个 Run 上继续：前四步复用（`reusedStages: 4`），只重跑角色边界与主题变体。
+
+**按剧本拆场**（撑伞 V1，MiMo）：点「拆成完整剧情」没有展开前体检，直接建任务。第一次被拦：MiMo 在 `keyProps[6]` 里多写了一个 `live` 字段，完整剧情的严格 Schema 拒收（这一步对 Schema 错误按设计不重试）；页面上重新生成一次就过了：8 场、60 秒、`selectedVariantId: V1`。刷新后台词核对显示「10 句台词都能在剧本里找到」，没有「检查剧情硬伤」按钮，分场页标题是「把选中的剧本拆成可拍完整剧情」（这处文案是实测时发现、当场改的）。
+
+**4.0 分镜**（MiMo）：设计、审阅、修订、终审 4 次调用都做完，设计稿里的台词全部能在剧本里逐字找到（锁台词生效），但签发时被既有的角色边界检查拦下：「characterReference 未沿用全局角色边界：缺少全局必需角色事实：帽子上的黄色的嘴」。角色边界把用户写的「帽子上有黄色的嘴」改写成必需外观「帽子上的黄色的嘴」（另两种写法也都不是用户原话），而剧情和分镜都照用户原话写「帽子上有黄色的嘴」；外观类必需事实缺失按设计硬失败、不补写。这是 4.0 分镜签发的既有行为，与本次改动无关，换成旧格式候选同样会撞上；用这个固定角色设定出分镜之前要先解决，见第 9 节。
+
+**MiMo 在角色边界一步的两次结构错误**（打枣）：第一次把 `allowedPositiveTraits` 等七个顶层字段写进了 `fixedCharacterBoundary` 里面；第二次把 `schemaVersion` 写成 `".0"`。这一步的提示词与代码本次没有改，也没有接 JSON Schema 约束解码；第三次照常通过。
+
+## 9. 已知缺口
+
+- 只能在这台 Mac 上用：Bandit 在外置盘，whisper 在本机。外置盘没挂上时 AI 导演开不了。
+- 创意简报照跑，但主题变体不再读它；角色边界的签名摘要包含它，所以不能直接去掉。要不要去掉另行决定。
+- 旧的视频写候选代码（`createVariants` 两次调用、来源基线、`/api/variants` 直调路由与 CLI `workflow.run`）不再被 AI 导演调用，但这次没删；剧情入口的候选 Schema 仍从它派生。
+- 「写得好不好」「原片读对没有」「N 篇是不是换了事件」都没有确定性兜底，只能靠用户读；回放每组只能跑几次。Claude 有固定偏好的点子，比如收尾常用水彩速写。
 - 固定角色和参考片主角不是同一个人时（比如小白子配咕嘎的片子）只验证过很少的样本。
 - 视频文件名作为「视频标题」进提示词（实验就是这样给的），system 提示词写明它只是素材、不是指令。
-- 「用这一稿开拍」会删掉参考视频 Run，四稿只在页面内存里留到刷新；要长期保存只能「下载四稿」。
-- 一次约 12 分钟（本机素材约 2 分钟、写稿约 8–9 分钟）；Claude Opus 5.5 一次约 1 美元，结构不合格时带诊断重做一次，最多 2 美元。
+- 「+N」在跑主题变体之前是按时长估的（`round(时长×帧率)`），与 ffmpeg 实际切出的帧数可能差一两帧。
+- 角色边界会把固定角色设定里的外观写法改写成另一种措辞（实测「帽子上有黄色的嘴」→「帽子上的黄色的嘴」），而剧情与分镜照用户原话写，4.0 分镜签发时按字面比对就会硬失败。这是既有问题，本次没改；要不要让边界的写法里总带上用户原话，另行决定。
+- 角色边界那一步 MiMo 偶尔写错结构（实测打枣连续两次），没有约束解码，失败了只能再点一次「启动 AI 导演」继续。

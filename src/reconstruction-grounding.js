@@ -171,8 +171,11 @@ function assertAllowedEvidenceSource(source, path, allowedSources) {
 
 function evidenceContextDigest(input = {}) {
   const frames = Array.isArray(input.frames) ? input.frames : [];
+  const sourceTranscriptText = String(input.sourceTranscriptText || "");
   const value = {
     transcriptHash: hashText(String(input.transcript || "")),
+    // AI 导演第一步的自动转写（2026-10-24）：只在有转写时加这个键，旧封印算出来不变。
+    ...(sourceTranscriptText ? { sourceTranscriptHash: hashText(sourceTranscriptText) } : {}),
     metadata: {
       duration: Number.isFinite(Number(input.metadata?.duration)) ? Number(input.metadata.duration) : null,
       width: Number.isFinite(Number(input.metadata?.width)) ? Number(input.metadata.width) : null,

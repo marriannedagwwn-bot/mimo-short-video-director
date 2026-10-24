@@ -5,13 +5,17 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
-  buildReferenceRewriteMaterials,
+  buildContactSheets,
+  buildSourceTranscript,
+  demoContactSheets,
   formatReferenceTranscript,
-  referenceRewriteToolStatus
+  sourceTranscriptToolStatus
 } from "../src/reference-rewrite-materials.js";
+import { estimatedContactSheetFrameCount } from "../public/reference-rewrite.js";
 
-// 参考片仿写（2026-10-24）的本机素材：子进程用替身，不跑真的 ffmpeg / Bandit / whisper。
-// 替身按真实程序的约定写出文件（单帧、接触表、分轨、whisper 的 JSON），模块照真实路径读回。
+// 参考视频的本机素材（2026-10-24）：AI 导演第一步的去配乐与转写、主题变体那一步的接触表。
+// 子进程用替身，不跑真的 ffmpeg / Bandit / whisper；替身按真实程序的约定写出文件
+// （单帧、接触表、分轨、whisper 的 JSON），模块照真实路径读回。
 
 const sourceBytes = Buffer.from("synthetic reference video bytes");
 const digest = createHash("sha256").update(sourceBytes).digest("hex");
@@ -68,25 +72,26 @@ async function fixture(t, { durationSeconds = 51.1, hasAudio = true, failOn = nu
     throw new Error(`unexpected ${file}`);
   };
   const steps = [];
-  const build = (overrides = {}) => buildReferenceRewriteMaterials({
-    sourcePath, expectedDigest: digest, workRoot: path.join(runDir, "media-work"), lifetimeFile, tools,
-    onStep: async (step) => { steps.push(step); }, exec, ...overrides
+  const common = { sourcePath, expectedDigest: digest, workRoot: path.join(runDir, "media-work"), lifetimeFile, exec };
+  const build = (overrides = {}) => buildSourceTranscript({
+    ...common, tools, onStep: async (step) => { steps.push(step); }, ...overrides
   });
-  return { root, runDir, lifetimeFile, tools, calls, steps, build };
+  const sheets = (overrides = {}) => buildContactSheets({ ...common, ...overrides });
+  return { root, runDir, lifetimeFile, tools, calls, steps, build, sheets };
 }
 
-test("成功：每秒 2 帧拼 6×4 接触表，三组转写加有声区间；临时目录用完删掉", async (t) => {
+test("去配乐与转写：Bandit 分轨，三组转写加有声区间；不抽帧；临时目录用完删掉", async (t) => {
   const f = await fixture(t);
   const result = await f.build();
-  assert.deepEqual(f.steps, ["frames", "separate", "transcribe"]);
+  assert.deepEqual(f.steps, ["separate", "transcribe"]);
   assert.equal(result.durationSeconds, 51.1);
-  assert.equal(result.frames.length, 5);
-  assert.ok(result.frames.every((frame) => frame.dataUrl.startsWith("data:image/jpeg;base64,")));
-  assert.deepEqual(result.contactSheets.sheets.at(-1), { startSeconds: 48, endSeconds: 50.5, cells: 6 });
-  assert.deepEqual(result.materials, { fps: 2, sheetCount: 5, separator: "bandit-v2-multi", whisperModel: "small", hasAudio: true });
-  assert.match(result.transcriptText, /## A\. 原声直接转写（没去配乐）/u);
-  assert.match(result.transcriptText, /## C\. 原声减去音乐轨（人声＋音效）转写\n\n```\n00:00\.0–00:01\.0  咕嘎嘎嘎嘎/u);
-  assert.match(result.transcriptText, /- 人声轨：11\.25–12\.25/u);
+  assert.equal(result.hasAudio, true);
+  assert.equal(result.separator, "bandit-v2-multi");
+  assert.equal(result.whisperModel, "small");
+  assert.match(result.text, /## A\. 原声直接转写（没去配乐）/u);
+  assert.match(result.text, /## C\. 原声减去音乐轨（人声＋音效）转写\n\n```\n00:00\.0–00:01\.0  咕嘎嘎嘎嘎/u);
+  assert.match(result.text, /- 人声轨：11\.25–12\.25/u);
+  assert.equal(f.calls.some((call) => call.args.some((arg) => String(arg).startsWith("fps="))), false, "转写这一步不抽帧");
   assert.deepEqual(await fs.readdir(path.join(f.runDir, "media-work")), [], "临时目录已删");
   const whisperCalls = f.calls.filter((call) => call.file === "whisper");
   assert.equal(whisperCalls.length, 3);
@@ -100,19 +105,42 @@ test("成功：每秒 2 帧拼 6×4 接触表，三组转写加有声区间；�
   assert.ok(f.calls.every((call) => call.options.killSignal === "SIGKILL" && call.options.timeout > 0), "每个子进程都有超时");
 });
 
-test("超过 120 秒改每秒 1 帧；超过 180 秒在抽帧前就拒绝", async (t) => {
+test("接触表：每秒 2 帧拼 6×4，最后一张写明只有前几格；不跑去配乐和转写", async (t) => {
+  const f = await fixture(t);
+  const result = await f.sheets();
+  assert.equal(result.durationSeconds, 51.1);
+  assert.equal(result.images.length, 5);
+  assert.equal(result.frameCount, 102);
+  assert.ok(result.images.every((frame) => frame.dataUrl.startsWith("data:image/jpeg;base64,")));
+  assert.deepEqual(result.layout.sheets.at(-1), { startSeconds: 48, endSeconds: 50.5, cells: 6 });
+  assert.equal(f.calls.some((call) => call.file === "python" || call.file === "whisper"), false);
+  assert.deepEqual(await fs.readdir(path.join(f.runDir, "media-work")), []);
+});
+
+test("超过 120 秒改每秒 1 帧；超过 180 秒在抽帧、分轨之前就拒绝", async (t) => {
   const long = await fixture(t, { durationSeconds: 150 });
-  const result = await long.build();
-  assert.equal(result.contactSheets.fps, 1);
-  assert.equal(result.frames.length, Math.ceil(150 / 24));
+  const result = await long.sheets();
+  assert.equal(result.layout.fps, 1);
+  assert.equal(result.images.length, Math.ceil(150 / 24));
   const tooLong = await fixture(t, { durationSeconds: 181 });
+  await assert.rejects(tooLong.sheets(), (error) => error.code === "REFERENCE_REWRITE_VIDEO_TOO_LONG" && error.httpStatus === 400);
   await assert.rejects(tooLong.build(), (error) => error.code === "REFERENCE_REWRITE_VIDEO_TOO_LONG" && error.httpStatus === 400);
-  assert.equal(tooLong.calls.some((call) => call.args.some((arg) => String(arg).startsWith("fps="))), false);
+  assert.equal(tooLong.calls.some((call) => call.file === "ffmpeg" || call.file === "python"), false);
+});
+
+test("页面「+N」的估算与服务端切图同一个帧率：51 秒 102 帧，150 秒每秒 1 帧；演示模式也按它", () => {
+  assert.equal(estimatedContactSheetFrameCount(51), 102);
+  assert.equal(estimatedContactSheetFrameCount(150), 150);
+  assert.equal(estimatedContactSheetFrameCount(0), 0);
+  const demo = demoContactSheets(45);
+  assert.equal(demo.layout.fps, 2);
+  assert.equal(demo.images.length, 1);
 });
 
 test("副本和 Run 记录的不是同一个文件：在调任何子进程之前失败，临时目录照样删掉", async (t) => {
   const f = await fixture(t);
   await assert.rejects(f.build({ expectedDigest: "0".repeat(64) }), (error) => error.code === "TASK_SOURCE_VIDEO_DIGEST_MISMATCH" && error.httpStatus === 409);
+  await assert.rejects(f.sheets({ expectedDigest: "0".repeat(64) }), (error) => error.code === "TASK_SOURCE_VIDEO_DIGEST_MISMATCH" && error.httpStatus === 409);
   assert.equal(f.calls.length, 0);
   assert.deepEqual(await fs.readdir(path.join(f.runDir, "media-work")), []);
 });
@@ -127,10 +155,10 @@ test("页面工作区已关闭（manifest 没了）：不建临时目录、不�
 test("没有音轨：不跑去配乐和转写，转写稿如实写没有声音", async (t) => {
   const f = await fixture(t, { hasAudio: false });
   const result = await f.build();
-  assert.deepEqual(f.steps, ["frames"]);
+  assert.deepEqual(f.steps, []);
   assert.equal(f.calls.some((call) => call.file === "python" || call.file === "whisper"), false);
-  assert.match(result.transcriptText, /没有音轨/u);
-  assert.equal(result.materials.hasAudio, false);
+  assert.match(result.text, /没有音轨/u);
+  assert.equal(result.hasAudio, false);
 });
 
 test("子进程超时：如实说哪个程序超时被终止，临时目录删掉", async (t) => {
@@ -143,7 +171,7 @@ test("工具检查：逐项写明缺什么，不会自动下载 whisper 模型",
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-reference-tools-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const ok = async () => ({ stdout: "", stderr: "" });
-  const empty = await referenceRewriteToolStatus({ banditDir: "", whisperBin: "", whisperModel: "small", whisperModelDir: path.join(root, "models") }, { exec: ok });
+  const empty = await sourceTranscriptToolStatus({ banditDir: "", whisperBin: "", whisperModel: "small", whisperModelDir: path.join(root, "models") }, { exec: ok });
   assert.equal(empty.available, false);
   assert.deepEqual(empty.missing.map((item) => item.split("：")[0].split(" ")[0]), ["REFERENCE_REWRITE_BANDIT_DIR", "REFERENCE_REWRITE_WHISPER_BIN", "whisper"]);
   assert.match(empty.reason, /不会自动下载/u);
@@ -157,9 +185,9 @@ test("工具检查：逐项写明缺什么，不会自动下载 whisper 模型",
   await fs.writeFile(whisper, "#!/bin/sh\n", { mode: 0o755 });
   await fs.mkdir(path.join(root, "models"));
   await fs.writeFile(path.join(root, "models", "small.pt"), "");
-  const ready = await referenceRewriteToolStatus({ banditDir: bandit, whisperBin: whisper, whisperModel: "small", whisperModelDir: path.join(root, "models") }, { exec: ok });
+  const ready = await sourceTranscriptToolStatus({ banditDir: bandit, whisperBin: whisper, whisperModel: "small", whisperModelDir: path.join(root, "models") }, { exec: ok });
   assert.deepEqual(ready, { available: true, reason: "", missing: [] });
-  const noFfmpeg = await referenceRewriteToolStatus({ banditDir: bandit, whisperBin: whisper, whisperModel: "small", whisperModelDir: path.join(root, "models") }, {
+  const noFfmpeg = await sourceTranscriptToolStatus({ banditDir: bandit, whisperBin: whisper, whisperModel: "small", whisperModelDir: path.join(root, "models") }, {
     exec: async (file) => { if (file === "ffmpeg") throw new Error("ENOENT"); return { stdout: "" }; }
   });
   assert.deepEqual(noFfmpeg.missing, ["ffmpeg（命令行里找不到）"]);

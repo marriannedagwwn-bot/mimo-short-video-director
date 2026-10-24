@@ -105,14 +105,23 @@ storySource + guardrails + full story
           └─ shotVideo:V1:<shotId>
 ```
 
-参考片仿写（2026-10-24）在参考视频 Run 上另有一份独立的 Artifact，不进上面的依赖链：
+参考片仿写接进 AI 导演（2026-10-24）：参考视频 Run 的链路前面多了一步「去配乐与转写」，主题变体改成剧本格式：
 
 ```text
 （Run 元数据里的 sourceVideoDigest，参考视频本身不是 Artifact）
-  └─ referenceRewrite（任务 referenceRewrite 提交，没有 Artifact 依赖）
+  └─ sourceTranscript（本机 Bandit + whisper，没有 Artifact 依赖）
+      ├─ referenceAnalysis
+      │   └─ sourceScriptReconstruction（依赖 referenceAnalysis 与 sourceTranscript）
+      └─ themeVariants（theme_variants_script/1.0；依赖 referenceAnalysis、sourceScriptReconstruction、
+                         creativeBrief、visualGuardrails 与 sourceTranscript）
+          └─ variant:<id> → fullStory:<id>（按剧本拆场）→ animationPlan:<id> → …
 ```
 
-它与 AI 导演那条链可以同在一个 Run 上（目标不同、互不认领）；它不签发 `storySource`，选中的一稿由页面填进剧情入口的粘贴框，开剧情 Run 时照常由浏览器送原文，所以剧情 Run 与它之间没有 lineage 关系。任务在 Run 的 `media-work/` 下建临时目录做抽帧、分轨与转写，用完即删；页面关闭时随 Run 一起清理。Task Store 不存提示词与图片。详见 `docs/reference-rewrite-2026-10-24.md`。
+分析、还原、简报不进主题变体的提示词，只用来验角色边界的签名，所以仍是它的依赖。转写稿逐字进分析与还原，并进 `groundingSeal` 的 `evidenceContextDigest`（只在有转写时加 `sourceTranscriptHash`，旧封印不变）。转写与主题变体两步都在服务端读页面工作区里的参考视频副本，在 Run 的 `media-work/` 下建临时目录做分轨、转写与切接触表，用完即删；页面关闭时随 Run 一起清理。Task Store 不存提示词与图片。
+
+AI 导演复用某一步的 current 产物时，要求它的依赖包含这一步现在的全部依赖（`pipelineArtifactReusable`）；只看状态的话，旧 Run 会拿没听过台词稿的旧分析接着用。所以旧 Run 点「继续 AI 导演」会从转写开始重跑。导入的 3.0 测试包不带 `sourceTranscript`，导入后的分析没有这条依赖，同理会被重跑（导入的 Run 没有参考视频副本，转写那一步会如实报缺视频）。
+
+上一版（84c0c16）独立的 `referenceRewrite` 任务与 Artifact 已删除；旧 Run 里留下的那份 Artifact 不再读取。详见 `docs/reference-rewrite-2026-10-24.md`。
 
 依赖清单由服务端在任务 `prepare` 里按 Run 元数据决定（`resolveDependencies` 返回剧情链的精确 revision/digest），不听浏览器的；视频 Run 仍按原清单冻结。
 
@@ -158,7 +167,7 @@ Durable Task 创建时，服务端在共享的 per-Run Coordinator 临界区内�
 
 2026-09-18 之前 Task Manager 把 stale 目标冻结成 `null`，与上面三方都不一致，于是**任何已失效目标经 Durable Task 重新生成都必然冲突**：完整剧情在调模型之前以 `FULL_STORY_REQUEST_REVISION_CONFLICT` 失败，其余阶段会在模型调用做完、锁内提交时以 `ARTIFACT_REVISION_CONFLICT` 失败。实际触发路径是「采纳展开前体检给的候选修订 → 新的 `themeVariants` / `variant:<id>` → 旧剧情 stale → 再展开」；浏览器又因为 `null ≠` 它记住的那一版，把这个失败任务当成旧版本的历史藏起来，页面只剩「准备生成完整剧情。」。任务历史里留下 5 次（09-01 两次、09-18 三次，均为完整剧情；页面关闭会清理对应 Run，所以是下限）。回归由 `test/full-story-run-control-http.test.js`（真实 server 与假供应商原样复现该路径）与 `test/durable-task-manager.test.js` 锁定。
 
-每个目标最多有一个 active owner。`directorPipeline` 创建时一次占用 `referenceAnalysis`、`sourceScriptReconstruction`、`creativeBrief`、`visualGuardrails`、`themeVariants` 五个目标；五个子任务顺序调用现有 WorkflowService 并逐阶段独立提交。目标没有 claim 时，既有浏览器快速提交和 package import 保持可用；有 claim 时，只有 owner Task/child Task 能在 Coordinator lock 内调用 `commitArtifactUnlocked`。release、watchdog 或重启后 owner 失效，迟到结果不能回写。
+每个目标最多有一个 active owner。`directorPipeline` 创建时一次占用 `sourceTranscript`、`referenceAnalysis`、`sourceScriptReconstruction`、`creativeBrief`、`visualGuardrails`、`themeVariants` 六个目标（第一个 2026-10-24 加入）；六个子任务顺序执行并逐阶段独立提交（第一步在本机跑，不调模型）。目标没有 claim 时，既有浏览器快速提交和 package import 保持可用；有 claim 时，只有 owner Task/child Task 能在 Coordinator lock 内调用 `commitArtifactUnlocked`。release、watchdog 或重启后 owner 失效，迟到结果不能回写。
 
 相同 active operation 的幂等键由 kind、全部目标、目标 expected revisions、冻结 dependencies、模型快照和非 Artifact 输入摘要组成；完全相同则复用 taskId，同目标不同 operation 返回 `TASK_TARGET_BUSY`。同一 Task 重复 finalize 时，服务端先识别相同 requestId、digest 与 dependencies，再比较 expected revision，因此只复用原 revision；不同 requestId 没有该豁免。
 

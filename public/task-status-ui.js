@@ -10,8 +10,8 @@ const LABELS = Object.freeze({
   animationPlan: "动画生产包",
   characterReferenceRefine: "人物参考精修", characterReferenceImages: "角色参考图",
   shotVideo: "镜头视频",
-  // 参考片仿写（2026-10-24）自己的分步进度在 public/reference-rewrite-ui.js 的 referenceRewriteProgressText。
-  referenceRewrite: "参考片仿写"
+  // AI 导演第一步（2026-10-24）：本机去配乐与转写，不调模型。
+  sourceTranscript: "去配乐与转写"
 });
 const TERMINAL_LABELS = Object.freeze({
   completed: "已完成", failed: "失败", conflicted: "因依赖变化停止",

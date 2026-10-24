@@ -11,14 +11,15 @@ import { legacyAnimationPlanMessage } from "./storyboard-plan.js";
 // 各步骤最少调用几次文本模型。数字来自代码结构（这一步至少要发几次请求），是下限：
 // 带诊断的重试、审阅后的修订和终审都会多花；跑完后页面会显示实际用量。
 export const DIRECTOR_AGENT_MIN_TEXT_CALLS = Object.freeze({
-  // 分析、还原、简报、角色边界各 1 次，故事候选 2 次（先选原片证据，再写候选）。已完成的步骤不重跑。
-  directorPipeline: 6,
+  // 分析、还原、简报、角色边界、主题变体各 1 次（2026-10-24 起主题变体是一次写完 N 篇剧本）；
+  // 第一步去配乐与转写在本机跑，不调模型。已完成的步骤不重跑。
+  directorPipeline: 5,
   // 角色边界 1 次 + 按原文拆分 2 次（拆场 + 完整角色表）。
   storyPipelineFullText: 3,
   // 角色边界 1 次 + 写一个故事候选 1 次。
   storyPipelineCharacterOnly: 2,
-  // 先选原片证据，再写候选。
-  variants: 2,
+  // 换一批：看接触表与台词稿重写 N 篇剧本，一次调用。
+  variants: 1,
   // 展开前体检 3 次（评审 + 承诺清单 + 承诺核对）+ 完整剧情 2 次（剧情 + 角色表）。
   fullStoryWithPrecheck: 5,
   // 剧情入口不体检；参考视频入口上一次体检已判「直接展开」且候选没变时也不再体检。
@@ -284,7 +285,7 @@ function startPipelineAction(facts) {
 
 function regenerateCandidatesAction(facts) {
   return action("regenerateCandidates", [], {
-    label: "换一批故事候选",
+    label: facts.scriptVariants ? "换一批剧本" : "换一批故事候选",
     cost: { kind: "text", minCalls: DIRECTOR_AGENT_MIN_TEXT_CALLS.variants, model: facts.models.candidates, lastUsage: facts.usage.variants || null,
       note: "现在这批候选会被替换" },
     guard: { ...commonGuard(facts), candidates: facts.candidates.map((candidate) => candidate.id), candidatesRevision: facts.candidatesRevision }
@@ -292,9 +293,10 @@ function regenerateCandidatesAction(facts) {
 }
 
 function chooseCandidateAction(facts, candidate) {
-  const precheck = facts.entryMode !== "story";
+  // 剧本格式的主题变体（2026-10-24）按剧本拆场，不做展开前体检。
+  const precheck = facts.entryMode !== "story" && !facts.scriptVariants;
   return action("chooseCandidate", [candidate.id], {
-    label: `选 ${candidate.id}${candidate.title ? `《${truncate(candidate.title, 24)}》` : ""}，展开成完整剧情`,
+    label: `选 ${candidate.id}${candidate.title ? `《${truncate(candidate.title, 24)}》` : ""}，${facts.scriptVariants ? "拆成完整剧情" : "展开成完整剧情"}`,
     modelLabel: `选 ${candidate.id}`,
     cost: { kind: "text", minCalls: precheck ? DIRECTOR_AGENT_MIN_TEXT_CALLS.fullStoryWithPrecheck : DIRECTOR_AGENT_MIN_TEXT_CALLS.fullStory,
       model: facts.models.story, lastUsage: facts.usage.fullStory || null,
@@ -314,7 +316,7 @@ function openStoryPageAction(facts, variant) {
 }
 
 function generateFullStoryAction(facts, variant) {
-  const precheck = facts.entryMode !== "story" && !facts.precheck?.passStillValid;
+  const precheck = facts.entryMode !== "story" && !facts.scriptVariants && !facts.precheck?.passStillValid;
   return action("generateFullStory", [variant.id], {
     label: facts.storyFailure || facts.precheck?.failure ? "重新生成完整剧情" : "生成完整剧情",
     cost: { kind: "text", minCalls: precheck ? DIRECTOR_AGENT_MIN_TEXT_CALLS.fullStoryWithPrecheck : DIRECTOR_AGENT_MIN_TEXT_CALLS.fullStory,

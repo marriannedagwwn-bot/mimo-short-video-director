@@ -23,15 +23,20 @@
 
 详见 `docs/one-sentence-edit-2026-10-11.md`。
 
-## 参考片仿写（2026-10-24）
+## 参考片仿写接进 AI 导演（2026-10-24）
 
-参考视频入口多一个按钮「参考片仿写：写四篇类似剧本」。上传参考视频、填好固定角色和赛道后点它，服务端在本机抽帧、去掉配乐（Bandit v2 Multi）、转写台词（whisper），再让 Claude Opus 5.5 写「原片拆解＋四篇类似的剧本」。一次约 12 分钟、约 1 美元。
+参考视频的 AI 导演现在是六步：
 
-- 结果面板列出原片概要、台词表、原片好看在哪，和四张稿件卡；「下载四稿」导出 Markdown。
-- 某一稿点「用这一稿开拍」，页面切到「从剧情开始 · 粘贴完整故事」并把这一稿填进输入框，你看过、改好再点「开始拆镜头」，后面照常拆镜头、分镜、出图、出视频。切过去会清掉参考视频 Run，四稿只在这个页面里留到刷新，要留着请先下载。
-- 模型设置里的「参考片仿写」只能选 Claude 或 MiMo，默认 Claude Opus 5.5（effort xhigh）。
+1. **去配乐与转写**（新）：服务端在本机用 Bandit v2 Multi 去掉配乐、用 whisper 转写台词，转写稿交给后面的分析、还原和主题变体当台词稿；MiMo 照旧看原视频。
+2. 参考片分析 → 3. 原片脚本还原 → 4. 创意简报 → 5. 角色与表达边界（与原来相同）。
+6. **主题变体**：改由 Claude Opus 5.5（effort xhigh）看整支视频的接触表（每秒 2 帧）、读台词稿、按角色边界写几篇完整剧本，篇数取「候选数量」。上方先列原片拆解（概要、台词表、原片好看在哪），每篇写方向、概要，「看剧本」展开；「下载剧本」导出 Markdown。一次约 10 分钟、约 1 美元。
 
-要在本机配好两样工具，缺了按钮不能点，并会写明缺什么：
+选中一篇点「拆成完整剧情 →」，完整剧情按这篇剧本拆场（和「粘贴完整故事」一样，台词逐字照剧本），后面照常出 4.0 分镜、角色参考图和镜头视频。剧本变体没有展开前体检、候选评审和剧情体检；完整剧情页有台词核对（只提示不拦截）。旧 Run 里已有的旧格式故事候选照常可用。
+
+- 时间轴采样仍最多显示 10 张，鼠标移到最后一张上会显示「+N」，是主题变体这一步还会多看的帧数。
+- 模型设置里的「主题变体」只能选 Claude 或 MiMo，默认 Claude Opus 5.5；没配 Claude 时 AI 导演开不了，不会自动换成 MiMo。原来那一栏改叫「故事候选（从剧情开始）」，只给「只给角色设定」用。
+
+要在本机配好两样工具，缺了「AI 导演」不能点，并会写明缺什么（不会跳过转写）：
 
 ```bash
 REFERENCE_REWRITE_BANDIT_DIR=/Volumes/MacOS/AI/Bandit-v2-Multi
@@ -363,7 +368,7 @@ JIMENG_MAX_IMAGES=6
 
 浏览器工作数据现在随标签页存活：原视频副本保存在私有工作区，Run 元数据同时记录可恢复的视频 URL 和 SHA-256；有效期内刷新或服务器重启后，同一标签页可恢复原视频、抽帧和已完成结果。更换视频立即清除该页旧 Run、媒体及应用保存的视频副本；关闭页面后有 60 秒刷新宽限期，随后服务端删除该页的全部工作数据。页面生命周期连接断开也会触发关闭清理；后台页面连接仍在时保持数据，无连接也未收到关闭通知时，以最后一次心跳起 2 分钟过期兜底；服务器关闭期间无法执行删除，下次启动补清。仅“设定创作宇宙”中的七项设置长期保存，模型覆盖设置只在标签页会话内保存。不会删除用户最初选择的文件或主动导出的文件，也不会自动认领或批量删除升级前没有页面归属的历史 Run。详见 [浏览器工作区生命周期](docs/production-lineage-state.md#浏览器工作区生命周期2026-09-09)。
 
-Durable Task v1 另在每个 Run 的私有 `tasks/index.json` 保存执行 sidecar。AI 导演是一个 `directorPipeline` 父任务和五个顺序子任务；Full Story、Animation Plan、角色参考图和镜头媒体也由服务端 Runner 执行、校验并提交，浏览器只创建、轮询和重新 attach。刷新或 HTTP 断线不会中止同一 Node 进程内仍在运行的任务；重复创建相同 active operation 会返回同一 `taskId`，同一目标的不同 operation 会返回 `TASK_TARGET_BUSY`。任务没有总墙钟 deadline，watchdog 只检测“当前 provider/local operation 长时间没有进展”，并在每次 provider 返回或流事件后续期。
+Durable Task v1 另在每个 Run 的私有 `tasks/index.json` 保存执行 sidecar。AI 导演是一个 `directorPipeline` 父任务和六个顺序子任务（第一步去配乐与转写在本机跑，不调模型）；Full Story、Animation Plan、角色参考图和镜头媒体也由服务端 Runner 执行、校验并提交，浏览器只创建、轮询和重新 attach。刷新或 HTTP 断线不会中止同一 Node 进程内仍在运行的任务；重复创建相同 active operation 会返回同一 `taskId`，同一目标的不同 operation 会返回 `TASK_TARGET_BUSY`。任务没有总墙钟 deadline，watchdog 只检测“当前 provider/local operation 长时间没有进展”，并在每次 provider 返回或流事件后续期。
 
 Node 重启仍是明确边界：Prompt、Data URL、Base64 和完整请求体不落 Task Store，所以未完成任务会变为 `interrupted`，不会自动重新调用 provider；远端任务可能已经提交并计费。Brief/Variants 可以直接从 current Artifact 链继续，需要媒体的 Analyze/Reconstruct/Visual Guardrails 使用浏览器从已保存副本恢复并重新采样的原视频；没有副本的历史 Run 仍须重新上传 SHA-256 与原 Run 一致的源文件。`abandoned` 只是释放本地提交权，不等于远端取消。T04 媒体 quarantine、T05 provider task-id 查询/接管和正式跨进程 batch queue 尚未实现。详见 [Production Lineage 与持久状态](docs/production-lineage-state.md)。
 
