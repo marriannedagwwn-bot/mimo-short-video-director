@@ -376,7 +376,7 @@ Animation Plan 的 `targetAspectRatio` 只允许 `9:16` 或 `16:9`，生成时�
 
 `/api/generate-character-reference-images` 送给图像模型的提示词由 `public/character-reference-prompt.js` 单份构建，浏览器预览框与服务端回退共用同一份——用户看到并可编辑的必须逐字等于实际发送的。字段顺序按 `docs/video-prompt-guide.md` 模板 1：首行 → 角色外观 → 姿态表情 → 干净背景 → 画风（「风格与色调」那一格）→ 景别/取景/机位；4.0 分镜没有光线来源，不写光线行。画风取 4.0 分镜签发的 `productionStrategy.artStyle`，写在「风格与色调」那一格（「画风：……」），为空就省略、不编造；起因见 `docs/待解决项.md` 第 17 条（角色图不知道全片画风，写实图会被 Seedance 当成真人拒收）。2026-10-09 起上传参考图是可选的（两个入口都是）：第一行随有没有上传变化，没上传时是「生成一张角色参考图。」，不能说「参考我上传的这张图片」；没上传时请求不带图片字段，即梦请求不带 `image`，按文字设定出图。「设为人物参考图」写进 Plan 的 `referenceImageNotes` 只写确定的事（由哪个模型生成），不再一律写「根据上传参考图生成」。
 
-使用上一镜抽帧生成的后镜 `shotVideo` Artifact 必须同时依赖当前 Animation Plan 与上一镜 `shotVideo` 的精确 revision/digest；上一镜重生成或切换候选必须递归使下游视频 stale。切换后镜自身候选时必须保留既有媒体依赖。浏览器中的 `shotVideoResults` 必须按 variant + shotId 隔离，禁止只用 `A01` 作为状态键；单个媒体 stale 只能移除对应结果，不能清空其他 current 媒体。
+使用上一镜抽帧生成的后镜 `shotVideo` Artifact 必须同时依赖当前 Animation Plan 与上一镜 `shotVideo` 的精确 revision/digest；上一镜重生成或切换候选必须递归使下游视频 stale。切换后镜自身候选时必须保留既有媒体依赖。**之前生成的版本（2026-10-24）**：每生成一次，这一镜的 `shotVideo` 就整份换成新的一批候选，旧的只留在 superseded 修订里。分镜卡直接显示当前候选（10-11 删旧版分镜时播放器那一格一起删了，4.0 卡片一度只在生成弹窗里看得到视频），下面折叠「之前生成的版本」。`POST /api/production/shot-video/history` 只列**当前分镜版本**下生成、选中视频文件仍在当前 media namespace 的修订，并由服务端写明能不能换回；`POST /api/production/shot-video/restore` 在 Run 锁内把那一版**原样重新签发**（内容与依赖都从 Run 读，不收页面副本；`expectedCurrentRevision` 必须对得上；依赖必须仍是当前有效版本，上一镜换过视频就接不上、明确拒绝；任务占着这个目标时不写），之后照常递归 stale 依赖原当前版本的下游，页面换回前先说明会作废哪一镜。通用实现是状态库的 `listArtifactRevisions` / `restoreArtifactRevision`。浏览器中的 `shotVideoResults` 必须按 variant + shotId 隔离，禁止只用 `A01` 作为状态键；单个媒体 stale 只能移除对应结果，不能清空其他 current 媒体。
 
 ---
 

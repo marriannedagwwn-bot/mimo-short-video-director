@@ -526,6 +526,14 @@ h1 em { color: var(--accent); font-style: normal; }
 .shot-video-candidate { min-height: 0; }
 .shot-video-candidate video { width: 100%; aspect-ratio: var(--shot-video-aspect, 9 / 16); display: block; border-radius: 11px; background: #111; object-fit: contain; }
 .shot-video-candidate.selected { border-color: rgba(10,116,92,.45); background: rgba(10,116,92,.06); }
+.shot-video-card-results { margin: 12px 0 8px; justify-content: start; }
+.shot-video-candidate small { color: var(--muted); font-size: var(--fs-xs); line-height: 1.5; }
+.shot-video-history { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.shot-video-history > summary { cursor: pointer; color: var(--muted); font-size: var(--fs-sm); }
+.shot-video-history-version { padding: 10px 0 4px; border-bottom: 1px solid var(--line); }
+.shot-video-history-version:last-child { border-bottom: 0; }
+.shot-video-history-meta { margin: 0; color: var(--ink); font-size: var(--fs-sm); }
+.shot-video-history-blocked { margin: 0; color: var(--warn); font-size: var(--fs-xs); line-height: 1.6; }
 .shot-video-result p { margin: 0; color: var(--muted); font-size: var(--fs-sm); line-height: 1.6; }
 .shot-video-result p.active { color: var(--accent); }
 .shot-video-result p.capacity { color: var(--warn); }

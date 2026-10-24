@@ -22,7 +22,7 @@ import {
 import { characterPromptBoundaryMismatch, characterReferenceBoundaryMismatch, ensureCharacterPromptMatchesBoundary, ensureCharacterReferenceMatchesBoundary, ensureStoryCandidateContract, ensureStoryEntryCandidateContract, ensureThemeVariantsMatchProfile, extractFixedCharacterName, InputError, OutputContractError, requireAnimationPlanAspectRatio } from "./src/validation.js";
 import { ONE_SENTENCE_EDIT_TARGETS, chosenRoleImageCount, oneSentenceEditDependents, oneSentenceEditInvalidation } from "./src/one-sentence-edit.js";
 import { generateShotVideo, shotVideoGenerationPromptText, ShotVideoConfigError } from "./src/shot-video-generator.js";
-import { resolveAuthoritativeShotVideoInput, resolveAuthoritativeShotVideoReferenceAssets, resolvePreviousShotFrameReference } from "./src/shot-video-continuity.js";
+import { resolveAuthoritativeShotVideoInput, resolveAuthoritativeShotVideoReferenceAssets, resolvePreviousShotFrameReference, resolveTrustedGeneratedVideoPath } from "./src/shot-video-continuity.js";
 import {
   isShotVideoGenerationModeSupported,
   isShotVideoModelAllowed,
@@ -2659,6 +2659,12 @@ async function handleProductionStateRequest(pathname, body = {}) {
   if (pathname === "/api/production/story-entry/dialogue-check") {
     return storyEntryDialogueCheck(body);
   }
+  if (pathname === "/api/production/shot-video/history") {
+    return shotVideoHistory(body);
+  }
+  if (pathname === "/api/production/shot-video/restore") {
+    return restoreShotVideo(body);
+  }
   if (pathname === "/api/production/one-sentence-edit/adopt") {
     return adoptOneSentenceEdit(body);
   }
@@ -2821,6 +2827,140 @@ async function startStoryEntryRun(body = {}) {
 }
 
 // 只读的台词核对：现算现给，不写 Artifact、不进 Task Store、不落盘。
+// ---- 镜头视频「之前生成的版本」（2026-10-24）----
+// 每生成一次，这一镜的 shotVideo 就整份换成新的一批候选，旧的只留在 superseded 修订里（文件还在磁盘上）。
+// 历史只列当前分镜版本下生成的（换过分镜的旧视频属于另一份分镜，不列）；内容与依赖都从 Run 读，不收页面副本。
+// 换回 = 把那一版原样重新签发：依赖必须仍是当前有效版本（上一镜换过视频就接不上，不能换），
+// 选中的那条视频文件必须还在当前分镜的媒体目录里。换回后，依赖原当前版本的下一镜照常递归作废。
+function shotVideoHistoryVideos(content) {
+  const result = content?.result || {};
+  return Array.isArray(result.videos) && result.videos.length ? result.videos : result.outputUrl ? [result] : [];
+}
+
+async function shotVideoFileAvailable(outputUrl, planLineage) {
+  if (!outputUrl || !planLineage?.mediaNamespace || !planLineage.contentDigest) return false;
+  try {
+    const segments = planLineage.mediaNamespace.split("/").map((segment) => safeIdentifier(segment, "mediaNamespace"));
+    await resolveTrustedGeneratedVideoPath({
+      outputUrl,
+      videoOutputRoot: path.join(publicDir, "generated-videos", ...segments),
+      videoPublicBasePath: `/generated-videos/${segments.join("/")}`,
+      expectedFilenamePrefix: `${safeIdentifier(planLineage.revision, "planRevision")}-${planLineage.contentDigest.slice(0, 12)}`
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function shotVideoRestoreReason(blocker, variantId) {
+  if (!blocker) return "";
+  if (blocker.code === "ARTIFACT_RESTORE_ALREADY_LATEST") return "这一版已经是当前版本。";
+  const prefix = `shotVideo:${variantId}:`;
+  if (String(blocker.artifactId || "").startsWith(prefix)) {
+    const upstreamShot = blocker.artifactId.slice(prefix.length);
+    return `这一版用了 ${upstreamShot} 当时那条视频的抽帧，${upstreamShot} 后来换过视频，接不上了，不能换回。`;
+  }
+  if (String(blocker.artifactId || "").startsWith("animationPlan:")) return "这一版是用旧分镜生成的，分镜已经重新生成过，不能换回。";
+  return `这一版依赖的 ${blocker.artifactId} 已经变了，不能换回。`;
+}
+
+async function shotVideoHistoryContext(body = {}) {
+  const projectId = safeIdentifier(body.projectId, "projectId");
+  const runId = safeIdentifier(body.runId, "runId");
+  const variantId = safeIdentifier(body.variantId, "variantId");
+  const run = await productionStateStore.loadRun({ projectId, runId, includeContent: false });
+  const planLineage = run.latestArtifacts?.[`animationPlan:${variantId}`]?.lineage || null;
+  return { projectId, runId, variantId, planLineage };
+}
+
+async function shotVideoHistory(body = {}) {
+  const { projectId, runId, variantId, planLineage } = await shotVideoHistoryContext(body);
+  const shots = {};
+  if (!planLineage || planLineage.status !== "current") return { variantId, shots };
+  const prefix = `shotVideo:${variantId}:`;
+  const planId = `animationPlan:${variantId}`;
+  const revisions = await productionStateStore.listArtifactRevisions({ projectId, runId, artifactIdPrefix: prefix });
+  for (const entry of revisions) {
+    const shotId = entry.lineage.artifactId.slice(prefix.length);
+    const shot = shots[shotId] ||= { currentRevision: null, dependents: [], versions: [] };
+    if (entry.latest) {
+      shot.currentRevision = entry.lineage.revision;
+      shot.dependents = entry.dependents.filter((id) => id.startsWith(prefix)).map((id) => id.slice(prefix.length));
+      continue;
+    }
+    if (!entry.lineage.dependencies.some((dependency) => dependency.artifactId === planId && dependency.revision === planLineage.revision)) continue;
+    if (entry.content?.status !== "ready") continue;
+    const selectedIndex = Number.isInteger(Number(entry.content.selectedIndex)) ? Number(entry.content.selectedIndex) : 0;
+    const videos = [];
+    for (const [index, video] of shotVideoHistoryVideos(entry.content).entries()) {
+      const outputUrl = String(video?.outputUrl || video?.url || "");
+      if (!outputUrl) continue;
+      videos.push({
+        index,
+        outputUrl,
+        provider: video.provider || entry.content.result?.provider || "",
+        model: video.model || entry.content.result?.model || "",
+        resolution: typeof video.resolution === "string" ? video.resolution : "",
+        measuredWidth: Number(video.measuredWidth) || 0,
+        measuredHeight: Number(video.measuredHeight) || 0,
+        measuredDurationSeconds: Number(video.measuredDurationSeconds) || 0,
+        generatedAt: video.generatedAt || entry.content.result?.generatedAt || "",
+        available: await shotVideoFileAvailable(outputUrl, planLineage)
+      });
+    }
+    if (!videos.some((video) => video.available)) continue;
+    const selectedAvailable = videos.some((video) => video.index === selectedIndex && video.available);
+    const reason = shotVideoRestoreReason(entry.restoreBlocker, variantId) || (selectedAvailable ? "" : "这一版选中的那条视频文件已经不在了，不能换回。");
+    const receipt = entry.content.result?.continuityReferenceReceipt;
+    shot.versions.push({
+      revision: entry.lineage.revision,
+      createdAt: entry.lineage.createdAt,
+      selectedIndex,
+      continuitySourceShotId: receipt?.mode === "previous_shot_frames" ? String(receipt.sourceShotId || "") : "",
+      videos: videos.filter((video) => video.available),
+      restorable: !reason,
+      reason
+    });
+  }
+  for (const shot of Object.values(shots)) shot.versions.sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+  return { variantId, shots };
+}
+
+async function restoreShotVideo(body = {}) {
+  const { projectId, runId, variantId, planLineage } = await shotVideoHistoryContext(body);
+  const shotId = safeIdentifier(body.shotId, "shotId");
+  if (!planLineage || planLineage.status !== "current") {
+    throw new ProductionStateError("当前分镜已经失效，不能换回旧的镜头视频。", { code: "SHOT_VIDEO_RESTORE_PLAN_STALE", httpStatus: 409 });
+  }
+  const planId = `animationPlan:${variantId}`;
+  try {
+    return await productionStateStore.restoreArtifactRevision({
+      projectId,
+      runId,
+      artifactId: shotVideoArtifactIdFor(variantId, shotId),
+      revision: body.revision,
+      requestId: body.requestId,
+      expectedCurrentRevision: body.expectedCurrentRevision,
+      validateContent: async (content, lineage) => {
+        if (!lineage.dependencies.some((dependency) => dependency.artifactId === planId && dependency.revision === planLineage.revision)) {
+          throw new ProductionStateError("这一版是用旧分镜生成的，分镜已经重新生成过，不能换回。", { code: "SHOT_VIDEO_RESTORE_PLAN_CHANGED", httpStatus: 409 });
+        }
+        const selectedIndex = Number.isInteger(Number(content?.selectedIndex)) ? Number(content.selectedIndex) : 0;
+        const selected = shotVideoHistoryVideos(content)[selectedIndex];
+        if (content?.status !== "ready" || !(await shotVideoFileAvailable(selected?.outputUrl || selected?.url, planLineage))) {
+          throw new ProductionStateError("这一版选中的那条视频文件已经不在了，不能换回。", { code: "SHOT_VIDEO_RESTORE_FILE_MISSING", httpStatus: 409 });
+        }
+      }
+    });
+  } catch (error) {
+    if (error instanceof ProductionStateError && error.code === "ARTIFACT_RESTORE_DEPENDENCY_CHANGED") {
+      throw new ProductionStateError(shotVideoRestoreReason(error.details?.[0], variantId), { code: error.code, httpStatus: 409, details: error.details });
+    }
+    throw error;
+  }
+}
+
 async function storyEntryDialogueCheck(body = {}) {
   const run = await productionStateStore.loadRun({ projectId: body.projectId, runId: body.runId, includeContent: true });
   const currentContent = (artifactId) => {

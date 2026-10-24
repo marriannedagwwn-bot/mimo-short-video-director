@@ -1229,6 +1229,7 @@ vertical: "治愈/日常/日系 2.5D 新海诚光景"
 - 模型请求开始时冻结依赖 revision，返回时同时经过浏览器 request token 与服务端 `expectedCurrentRevision`/dependency 校验。
 - Animation Plan 每个 revision 签发独立 media namespace。
 - 用上一镜抽帧生成的后镜 `shotVideo` Artifact 必须**同时**依赖当前 Animation Plan 与上一镜 `shotVideo` 的精确 revision/digest；上一镜重生成或切换候选必须递归 stale 下游视频。切换后镜自身候选时保留既有媒体依赖。
+- **之前生成的版本（2026-10-24）**：每生成一次，这一镜的 `shotVideo` 就整份换成新的一批候选，旧的只留在 superseded 修订里。分镜卡直接显示当前候选（10-11 删旧版分镜时播放器那一格一起删了，4.0 卡片一度只在生成弹窗里看得到视频），下面折叠「之前生成的版本」。`POST /api/production/shot-video/history` 只列**当前分镜版本**下生成、选中视频文件仍在当前 media namespace 的修订，并由服务端写明能不能换回；`POST /api/production/shot-video/restore` 在 Run 锁内把那一版**原样重新签发**（内容与依赖都从 Run 读，不收页面副本；`expectedCurrentRevision` 必须对得上；依赖必须仍是当前有效版本，上一镜换过视频就接不上、明确拒绝；任务占着这个目标时不写），之后照常递归 stale 依赖原当前版本的下游，页面换回前先说明会作废哪一镜。通用实现是状态库的 `listArtifactRevisions` / `restoreArtifactRevision`。
 - 浏览器中的 `shotVideoResults` 必须按 **variant + shotId** 隔离，禁止只用 `A01` 作状态键；单个媒体 stale 只移除对应结果，不清空其他 current 媒体。
 
 ---

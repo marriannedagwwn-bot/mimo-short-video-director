@@ -158,6 +158,9 @@ const state = {
   storyDurationTarget: STORY_DURATION_SOURCE,
   backgroundMusicDrafts: {},
   shotVideoResults: {},
+  // 镜头视频「之前生成的版本」（2026-10-24）：服务端按当前 Run、当前分镜读回，只在页面内存里；折叠框开没开按镜头记。
+  shotVideoHistory: null,
+  shotVideoHistoryOpen: {},
   characterReferenceStatuses: {},
   characterAudioStatuses: {},
   taskSnapshots: {},
@@ -643,6 +646,10 @@ function bindEvents() {
     if (event.target.closest("[data-regenerate-storyboard]")) return generateAnimationPlan({ force: true });
     const button = event.target.closest("[data-generate-shot-video]");
     if (button) return openShotVideoGenerator(button.dataset.generateShotVideo);
+    const useShotVideoButton = event.target.closest("[data-use-shot-video]");
+    if (useShotVideoButton) return selectShotVideoCandidate(useShotVideoButton.dataset.useShotVideo, useShotVideoButton.dataset.candidateIndex);
+    const restoreShotVideoButton = event.target.closest("[data-restore-shot-video]");
+    if (restoreShotVideoButton) return restoreShotVideoVersion(restoreShotVideoButton.dataset.restoreShotVideo, restoreShotVideoButton.dataset.revision);
     const referenceUploadButton = event.target.closest("[data-character-reference-upload]");
     if (referenceUploadButton) return openCharacterReferenceInput(referenceUploadButton.dataset.characterReferenceUpload);
     const audioUploadButton = event.target.closest("[data-character-audio-upload]");
@@ -678,6 +685,11 @@ function bindEvents() {
       input.value = "";
     }
   });
+  // 「之前生成的版本」折叠框重画后保持开合（toggle 不冒泡，用捕获）。
+  elements.animationPlan.addEventListener("toggle", (event) => {
+    const details = event.target.closest?.("[data-shot-video-history]");
+    if (details) state.shotVideoHistoryOpen[details.dataset.shotVideoHistory] = details.open;
+  }, true);
   elements.animationPlan.addEventListener("dragenter", handleCharacterReferenceDrag);
   elements.animationPlan.addEventListener("dragover", handleCharacterReferenceDrag);
   elements.animationPlan.addEventListener("dragleave", handleCharacterReferenceDragLeave);
@@ -4065,6 +4077,7 @@ function renderAnimationPlan(data, metadata = selectedAnimationPlanMetadata()) {
   syncAnimationAspectRatioControls();
   reveal(elements.animationPlan);
   syncStoryTaskStatus();
+  scheduleShotVideoHistoryRefresh();
 }
 
 // 时长缺失是契约错误，不是可以静默补 4 秒的显示问题：如实显示缺失。
@@ -5231,6 +5244,7 @@ async function generateShotVideo(shotId, promptOverride = "", options = {}) {
     assertPlanProductionContextCurrent(productionContext);
     setShotVideoStateItem(shotId, readyResult, variant.id);
     setAnimationStatus(`${shotId} 镜头视频已生成 ${readyResult.result?.videos?.length || count} 条候选。`, "ready");
+    scheduleShotVideoHistoryRefresh();
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     if (!["STALE_ASYNC_RESULT", "STALE_MEDIA_RESULT"].includes(error.code)) {
@@ -5297,13 +5311,31 @@ function renderShotVideoModalResults() {
     elements.shotVideoResults.innerHTML = `<div class="generated-reference-card error"><strong>视频生成失败</strong><p>${escape(stateItem.message || "生成失败")}</p></div>`;
     return;
   }
-  const videos = Array.isArray(stateItem.result?.videos) && stateItem.result.videos.length ? stateItem.result.videos : stateItem.result?.outputUrl ? [stateItem.result] : [];
-  const selectedIndex = Number.isFinite(Number(stateItem.selectedIndex ?? stateItem.result?.selectedIndex)) ? Number(stateItem.selectedIndex ?? stateItem.result?.selectedIndex) : 0;
-  elements.shotVideoResults.innerHTML = videos.map((video, index) => `<div class="generated-reference-card shot-video-candidate${index === selectedIndex ? " selected" : ""}">
-    <video src="${escape(video.outputUrl || video.url || "")}" controls playsinline></video>
-    <small>${escape([`候选 ${index + 1}`, shotVideoResultLabel(video, stateItem.result), shotVideoResolutionText(video), video.generatedAt || stateItem.result?.generatedAt || ""].filter(Boolean).join(" · "))}</small>
-    <button class="outline-button" type="button" data-use-shot-video="${escape(shotId)}" data-candidate-index="${escape(index)}">${index === selectedIndex ? "已设为当前镜头视频" : "设为当前镜头视频"}</button>
-  </div>`).join("");
+  elements.shotVideoResults.innerHTML = shotVideoCandidateCardsHtml(shotId, stateItem);
+}
+
+// 候选卡片：弹窗与分镜卡共用一份。按 result.videos 的原始下标出卡（「设为当前」用这个下标），没有地址的候选不出卡。
+function shotVideoResultVideos(stateItem) {
+  const result = stateItem?.result;
+  return Array.isArray(result?.videos) && result.videos.length ? result.videos : result?.outputUrl ? [result] : [];
+}
+function shotVideoSelectedIndex(stateItem) {
+  const value = Number(stateItem?.selectedIndex ?? stateItem?.result?.selectedIndex);
+  return Number.isFinite(value) ? value : 0;
+}
+function shotVideoCandidateCardsHtml(shotId, stateItem) {
+  const selectedIndex = shotVideoSelectedIndex(stateItem);
+  return shotVideoResultVideos(stateItem).map((video, index) => {
+    const url = video.outputUrl || video.url || "";
+    if (!url) return "";
+    const seconds = Number(video.measuredDurationSeconds) > 0 ? `${Number(video.measuredDurationSeconds).toFixed(1)} 秒` : "";
+    const caption = [`候选 ${index + 1}`, shotVideoResultLabel(video, stateItem.result), shotVideoResolutionText(video), seconds, shotVideoGeneratedAtText(video.generatedAt || stateItem.result?.generatedAt)].filter(Boolean).join(" · ");
+    return `<div class="generated-reference-card shot-video-candidate${index === selectedIndex ? " selected" : ""}">
+    <video src="${escape(url)}" controls playsinline preload="metadata"></video>
+    <small>${escape(caption)}</small>
+    <button class="outline-button" type="button" data-use-shot-video="${escape(shotId)}" data-candidate-index="${escape(index)}"${index === selectedIndex ? " disabled" : ""}>${index === selectedIndex ? "已设为当前镜头视频" : "设为当前镜头视频"}</button>
+  </div>`;
+  }).join("");
 }
 
 async function selectShotVideoCandidate(shotId, candidateIndexValue) {
@@ -5337,9 +5369,12 @@ async function selectShotVideoCandidate(shotId, candidateIndexValue) {
     renderShotVideoModalResults();
     setShotVideoStatus(`已将第 ${selectedIndex + 1} 条设为当前镜头视频。`, "ready");
     setAnimationStatus(`${shotId} 已切换为第 ${selectedIndex + 1} 条视频候选。`, "ready");
+    scheduleShotVideoHistoryRefresh();
   } catch (error) {
     if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
     setShotVideoStatus(error.message || "切换镜头视频失败。", "error");
+    // 从分镜卡上切换时弹窗是关着的，失败原因也写到分镜状态行里。
+    setAnimationStatus(error.message || "切换镜头视频失败。", "error");
   }
 }
 
@@ -5353,20 +5388,114 @@ function updateShotVideoResult(shotId) {
 }
 
 function renderShotVideoResult(shotId) {
+  return `${renderCurrentShotVideoResult(shotId)}${renderShotVideoHistory(shotId)}`;
+}
+
+function renderCurrentShotVideoResult(shotId) {
   const stateItem = shotVideoStateItem(shotId);
   if (!stateItem) return "<p>本镜视频尚未生成。</p>";
   if (stateItem.status === "running") return `<p class="active">${escape(stateItem.message || `正在生成 ${stateItem.expectedCount || 1} 条视频候选…`)}</p>`;
   if (stateItem.status === "capacity") return `<p class="capacity">${escape(stateItem.message || "服务器任务队列已满，请稍后重试。")}</p>`;
   if (stateItem.status === "error") return `<p class="error">${escape(stateItem.message)}</p>`;
-  // 这里只留连续性回执与异常说明。
+  // 生成完的视频直接放在分镜卡里（2026-10-24）：10-11 删旧版分镜时，原来放播放器的那一格一起删掉了，
+  // 4.0 的卡片从此只剩连续性回执，视频只在生成弹窗里看得到。
   const videos = shotVideoPlayableCandidates(shotId);
   const continuityReceipt = stateItem.result?.continuityReferenceReceipt;
   const continuityHtml = continuityReceipt?.mode === SHOT_VIDEO_CONTINUITY_PREVIOUS_SHOT_FRAMES
     ? `<p class="ready">连续性参考：${escape(continuityReceipt.sourceShotId)} 均匀抽帧，共 ${escape(continuityReceipt.frameCount)} 张普通参考图。</p>`
     : "";
-  return videos.length
-    ? continuityHtml
-    : `${continuityHtml}<p>视频已生成，但未返回可播放地址。</p>`;
+  if (!videos.length) return `${continuityHtml}<p>视频已生成，但未返回可播放地址。</p>`;
+  const style = shotVideoAspectStyle(shotFrameContext(shotId)?.plan?.productionStrategy?.targetAspectRatio);
+  return `<div class="generated-reference-results shot-video-results shot-video-card-results" style="${escape(style)}">${shotVideoCandidateCardsHtml(shotId, stateItem)}</div>${continuityHtml}`;
+}
+
+// ---- 镜头视频「之前生成的版本」（2026-10-24）----
+// 每生成一次，这一镜的结果整份换成新的一批，旧的只留在服务端的历史修订里。服务端只列当前分镜版本下生成、
+// 文件还在的那些，并说明能不能换回（上一镜换过视频就接不上）；页面只展示、不自己判断。
+let shotVideoHistoryTimer = null;
+let shotVideoHistoryRequest = 0;
+
+function scheduleShotVideoHistoryRefresh(delay = 150) {
+  clearTimeout(shotVideoHistoryTimer);
+  shotVideoHistoryTimer = setTimeout(() => { refreshShotVideoHistory().catch(() => {}); }, delay);
+}
+
+async function refreshShotVideoHistory() {
+  const variantId = selectedVariant()?.id;
+  const { projectId, runId } = state.production;
+  if (!variantId || !projectId || !runId || !state.animationPlans?.[variantId]) return;
+  const request = ++shotVideoHistoryRequest;
+  const workspaceEpoch = browserWorkspace.epoch;
+  const result = await api("/api/production/shot-video/history", { projectId, runId, variantId });
+  if (request !== shotVideoHistoryRequest || !browserWorkspace.isCurrent(workspaceEpoch)) return;
+  if (state.production.runId !== runId || selectedVariant()?.id !== variantId) return;
+  state.shotVideoHistory = { runId, variantId, shots: result?.shots || {} };
+  for (const shot of state.animationPlans[variantId]?.shotPlan || []) updateShotVideoResult(shot.shotId);
+}
+
+function shotVideoHistoryFor(shotId) {
+  const history = state.shotVideoHistory;
+  if (!history || history.runId !== state.production.runId || history.variantId !== selectedVariant()?.id) return null;
+  return history.shots?.[shotId] || null;
+}
+
+function renderShotVideoHistory(shotId) {
+  const history = shotVideoHistoryFor(shotId);
+  const versions = history?.versions || [];
+  if (!versions.length) return "";
+  const style = shotVideoAspectStyle(shotFrameContext(shotId)?.plan?.productionStrategy?.targetAspectRatio);
+  return `<details class="shot-video-history" data-shot-video-history="${escape(shotId)}"${state.shotVideoHistoryOpen[shotId] ? " open" : ""}>
+    <summary>之前生成的版本（${versions.length}）</summary>
+    ${versions.map((version) => {
+      const meta = [`${shotVideoGeneratedAtText(version.createdAt)} 生成`, shotVideoResultLabel(version.videos[0] || {}),
+        version.continuitySourceShotId ? `用了 ${version.continuitySourceShotId} 的抽帧` : ""].filter(Boolean).join(" · ");
+      const cards = version.videos.map((video) => {
+        const seconds = video.measuredDurationSeconds > 0 ? `${video.measuredDurationSeconds.toFixed(1)} 秒` : "";
+        const caption = [`候选 ${video.index + 1}`, shotVideoResolutionText(video), seconds, video.index === version.selectedIndex && version.videos.length > 1 ? "当时选中" : ""].filter(Boolean).join(" · ");
+        return `<div class="generated-reference-card shot-video-candidate${video.index === version.selectedIndex ? " selected" : ""}">
+          <video src="${escape(video.outputUrl)}" controls playsinline preload="metadata"></video>
+          <small>${escape(caption)}</small>
+        </div>`;
+      }).join("");
+      const action = version.restorable
+        ? `<button class="outline-button" type="button" data-restore-shot-video="${escape(shotId)}" data-revision="${escape(version.revision)}">换回这一版</button>`
+        : `<p class="shot-video-history-blocked">${escape(version.reason)}</p>`;
+      return `<div class="shot-video-history-version">
+        <p class="shot-video-history-meta">${escape(meta)}</p>
+        <div class="generated-reference-results shot-video-results shot-video-card-results" style="${escape(style)}">${cards}</div>
+        ${action}
+      </div>`;
+    }).join("")}
+  </details>`;
+}
+
+async function restoreShotVideoVersion(shotId, revision) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  const variant = selectedVariant();
+  if (!variant) return setAnimationStatus("当前没有选中的主题变体。", "error");
+  // 换掉这一镜的当前视频，依赖它的下一镜（用了它的抽帧）会被作废：先说清楚再换。
+  const dependents = shotVideoHistoryFor(shotId)?.dependents || [];
+  if (dependents.length && !window.confirm(`换回这一版后，${dependents.join("、")} 用这一镜抽帧生成的视频会失效，需要重新生成。继续吗？`)) return;
+  const artifactId = shotVideoArtifactId(variant.id, shotId);
+  const token = beginArtifactRequest(state.production, artifactId, crypto.randomUUID());
+  try {
+    const result = await api("/api/production/shot-video/restore", { ...token, variantId: variant.id, shotId, revision });
+    assertCurrentProductionRequest(token);
+    acceptProductionCommit(result);
+    setShotVideoStateItem(shotId, result.content, variant.id);
+    const prefix = `shotVideo:${variant.id}:`;
+    for (const staleId of result.staleArtifactIds || []) if (staleId.startsWith(prefix)) updateShotVideoResult(staleId.slice(prefix.length));
+    updateShotVideoResult(shotId);
+    renderShotVideoModalResults();
+    const stale = (result.staleArtifactIds || []).filter((id) => id.startsWith(prefix)).map((id) => id.slice(prefix.length));
+    setAnimationStatus(`${shotId} 已换回之前生成的版本。${stale.length ? `${stale.join("、")} 的视频已失效，需要重新生成。` : ""}`, "ready");
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    setAnimationStatus(error.message || "换回之前的版本失败。", "error");
+  } finally {
+    finishArtifactRequest(state.production, token);
+    scheduleShotVideoHistoryRefresh(0);
+  }
 }
 
 function resultHeader(kicker, title, badge = "", action = "") {
@@ -5767,8 +5896,19 @@ function shotVideoResolutionText(video = {}) {
 function shotVideoResultLabel(video = {}, result = {}) {
   const setting = shotVideoSetting();
   const provider = video.provider || result.provider || setting.provider;
-  const model = video.model || result.model || setting.model || "";
-  return model ? `${shotVideoProviderLabel(provider)} ${modelName(model)}` : shotVideoProviderLabel(provider);
+  const model = modelName(video.model || result.model || setting.model || "");
+  // 型号 ID 太长又与供应商名重复（「Seedance 2.0 doubao-seedance-2-0-260128」）：已登记的三档 Seedance 与 H3 写成短名。
+  if (provider === "Seedance" && /seedance-2-0/u.test(model)) return `Seedance 2.0 ${/fast/u.test(model) ? "fast" : /mini/u.test(model) ? "mini" : "标准版"}`;
+  if (provider === "MiniMax" && model === "MiniMax-H3") return "MiniMax H3";
+  return model ? `${shotVideoProviderLabel(provider)} ${model}` : shotVideoProviderLabel(provider);
+}
+
+// 生成时间写成本地的「10-24 23:39」；解析不了就原样写出。
+function shotVideoGeneratedAtText(value) {
+  const date = new Date(value || "");
+  if (!value || Number.isNaN(date.getTime())) return String(value || "");
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 function openModelSettings() {
   setModelSettingsStatus("");

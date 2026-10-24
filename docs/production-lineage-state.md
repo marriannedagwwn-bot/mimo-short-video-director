@@ -221,6 +221,8 @@ public/generated-videos/<mediaNamespace>/
 
 复验之外，前端仍会拒绝把过期结果挂到新 Plan——两层是叠加关系，不是替代关系。
 
+**之前生成的版本（2026-10-24）**：每生成一次，这一镜的 `shotVideo` 就整份换成新的一批候选，旧的只留在 superseded 修订里。分镜卡直接显示当前候选（10-11 删旧版分镜时播放器那一格一起删了，4.0 卡片一度只在生成弹窗里看得到视频），下面折叠「之前生成的版本」。`POST /api/production/shot-video/history` 只列**当前分镜版本**下生成、选中视频文件仍在当前 media namespace 的修订，并由服务端写明能不能换回；`POST /api/production/shot-video/restore` 在 Run 锁内把那一版**原样重新签发**（内容与依赖都从 Run 读，不收页面副本；`expectedCurrentRevision` 必须对得上；依赖必须仍是当前有效版本，上一镜换过视频就接不上、明确拒绝；任务占着这个目标时不写），之后照常递归 stale 依赖原当前版本的下游，页面换回前先说明会作废哪一镜。通用实现是状态库的 `listArtifactRevisions` / `restoreArtifactRevision`。
+
 
 上一镜抽帧不信任浏览器提交的绝对路径或任意 URL。服务端根据当前 Plan 的 `shotPlan[]` 顺序导出 source shot，读取同一 Run 中 current `shotVideo` Artifact 的选中候选，只把当前 `public/generated-videos/<mediaNamespace>/` 单层目录内、文件名前缀同时绑定当前 Plan 和 source shotId 的普通 mp4 映射回本地文件。旧 namespace、远程 URL、路径穿越、子目录、符号链接和缺失文件必须明确拒绝。通过路径校验后仍须以 `O_NOFOLLOW` 文件句柄读取并冻结到任务私有目录，抽帧回执记录实际读取源字节及各 JPEG 的 SHA-256，避免路径校验与 FFmpeg 打开之间的文件替换使 lineage 与实际输入脱钩。
 

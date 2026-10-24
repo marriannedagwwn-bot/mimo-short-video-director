@@ -138,6 +138,71 @@ export class ProductionStateStore {
     };
   }
 
+  // 一组 Artifact 的全部修订（2026-10-24，镜头视频「之前生成的版本」用）。与 loadRun 一样锁外读：
+  // manifest 原子替换、内容文件发布在 manifest 之前且不再改动。restoreBlocker 说明这一版现在能不能换回，
+  // dependents 只对当前版本给出：换掉它之后会被作废的下游。
+  async listArtifactRevisions({ projectId, runId, artifactIdPrefix } = {}) {
+    const safeProjectId = safeIdentifier(projectId, "projectId");
+    const safeRunId = safeIdentifier(runId, "runId");
+    const prefix = String(artifactIdPrefix || "");
+    if (!prefix) throw new ProductionStateError("artifactIdPrefix 不能为空", { code: "ARTIFACT_PREFIX_REQUIRED" });
+    const manifest = await this.readManifest(safeProjectId, safeRunId);
+    const revisions = [];
+    for (const artifact of manifest.artifacts || []) {
+      if (!artifact.artifactId.startsWith(prefix)) continue;
+      const latest = manifest.latest?.[artifact.artifactId] === artifact.revision;
+      revisions.push({
+        lineage: publicLineage(artifact),
+        latest,
+        restoreBlocker: revisionRestoreBlocker(manifest, artifact),
+        dependents: latest ? currentDependents(manifest, artifact) : [],
+        content: await this.readArtifactContent(manifest, artifact)
+      });
+    }
+    return revisions;
+  }
+
+  // 把一个旧修订原样重新签发成新的当前版本（内容与依赖都取自那一版，不收页面副本）。
+  // 在 Run 锁内复核：依赖仍是当前有效版本、期望的当前版本没被别人换过、没有任务正占着这个目标；
+  // validateContent 由调用方在锁内做本地检查（例如媒体文件还在），不得做网络、模型或 FFmpeg。
+  async restoreArtifactRevision({ projectId, runId, artifactId, revision, requestId, expectedCurrentRevision, validateContent = null } = {}) {
+    const safeProjectId = safeIdentifier(projectId, "projectId");
+    const safeRunId = safeIdentifier(runId, "runId");
+    const id = normalizeArtifactId(artifactId);
+    const safeRevision = safeIdentifier(revision, "revision");
+    return this.withRunLock(safeProjectId, safeRunId, async () => {
+      const manifest = await this.readManifest(safeProjectId, safeRunId);
+      if (this.artifactWriteGuard) {
+        await this.artifactWriteGuard({ manifest, input: { artifactId: id }, projectId: safeProjectId, runId: safeRunId });
+      }
+      const artifact = findArtifact(manifest, id, safeRevision);
+      if (!artifact) {
+        throw new ProductionStateError(`找不到 ${id}@${safeRevision}`, { code: "ARTIFACT_REVISION_NOT_FOUND", httpStatus: 404 });
+      }
+      const blocker = revisionRestoreBlocker(manifest, artifact);
+      if (blocker) {
+        throw new ProductionStateError(blocker.code === "ARTIFACT_RESTORE_ALREADY_LATEST"
+          ? `${id}@${safeRevision} 已经是当前版本`
+          : `${id}@${safeRevision} 依赖的 ${blocker.artifactId} 已经换过版本，不能换回`, {
+          code: blocker.code,
+          httpStatus: 409,
+          details: [blocker]
+        });
+      }
+      const content = await this.readArtifactContent(manifest, artifact);
+      if (validateContent) await validateContent(content, publicLineage(artifact));
+      const committed = await this.commitArtifactUnlocked(manifest, {
+        artifactId: id,
+        artifactType: artifact.artifactType,
+        content,
+        dependencies: artifact.dependencies || [],
+        requestId,
+        expectedCurrentRevision: expectedCurrentRevision || null
+      });
+      return { ...committed, content, restoredFrom: artifact.revision };
+    });
+  }
+
   async readCurrentLineageSnapshot({ projectId, runId, artifactIds = null } = {}) {
     const safeProjectId = safeIdentifier(projectId, "projectId");
     const safeRunId = safeIdentifier(runId, "runId");
@@ -931,6 +996,39 @@ function propagateStale(manifest, timestamp = new Date().toISOString()) {
     }
   }
   return [...stale].sort();
+}
+
+// 一个旧修订现在能不能原样换回：本身不是当前版本，且每个依赖都还是那个依赖的当前有效版本。
+function revisionRestoreBlocker(manifest, artifact) {
+  if (manifest.latest?.[artifact.artifactId] === artifact.revision) {
+    return { code: "ARTIFACT_RESTORE_ALREADY_LATEST", artifactId: artifact.artifactId };
+  }
+  for (const dependency of artifact.dependencies || []) {
+    const upstream = findArtifact(manifest, dependency.artifactId, dependency.revision);
+    const latestRevision = manifest.latest?.[dependency.artifactId] || null;
+    if (!upstream || upstream.contentDigest !== dependency.contentDigest || upstream.status !== "current" || latestRevision !== dependency.revision) {
+      return {
+        code: "ARTIFACT_RESTORE_DEPENDENCY_CHANGED",
+        artifactId: dependency.artifactId,
+        expectedRevision: dependency.revision,
+        actualRevision: latestRevision
+      };
+    }
+  }
+  return null;
+}
+
+// 依赖这一版的当前有效下游（换掉这一版时 propagateStale 会作废它们）。
+function currentDependents(manifest, artifact) {
+  const dependents = [];
+  for (const [artifactId, revision] of Object.entries(manifest.latest || {})) {
+    const candidate = findArtifact(manifest, artifactId, revision);
+    if (!candidate || candidate.status !== "current") continue;
+    if ((candidate.dependencies || []).some((dependency) => dependency.artifactId === artifact.artifactId && dependency.revision === artifact.revision)) {
+      dependents.push(artifactId);
+    }
+  }
+  return dependents.sort();
 }
 
 function currentArtifact(manifest, artifactId) {

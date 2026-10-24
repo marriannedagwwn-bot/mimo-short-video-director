@@ -278,7 +278,7 @@ function selectedCandidate(content = {}) {
   return outputUrl ? { outputUrl, selectedIndex } : null;
 }
 
-async function resolveTrustedGeneratedVideoPath({
+export async function resolveTrustedGeneratedVideoPath({
   outputUrl,
   videoOutputRoot,
   videoPublicBasePath,
