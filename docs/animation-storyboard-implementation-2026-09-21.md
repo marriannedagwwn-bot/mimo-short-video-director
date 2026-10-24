@@ -483,3 +483,37 @@ skill 里这几条不搬进项目，以项目合同为准：「@图片N」改为
 `scripts/storyboard-design-ab.mjs` 的旧写法改为按 `--old-rev` 从 git 取提交里的提示词，10-13 的方向对比用 `--old-rev cbc407e` 复现。
 
 回放（两个故事各新旧 2 次）8/8 过判据、锁台词改动 0 条；成片 3 段人声 3/3 出声，切点仍早。规则、数据与没做的事见 `docs/storyboard-style-2026-10-19.md`。
+
+# 后续：签发前的固定角色边界检查提前到设计与修订（2026-10-24）
+
+## 起因
+
+run-702dbf0c（参考视频《总有人会给你撑伞》，咕嘎，MiMo `mimo-v2.6-pro`）生成 4.0 分镜：设计 451 秒、审阅 188 秒、修订 98 秒、终审 176 秒，**4 次调用全部通过**，最后签发时硬失败（126,099 token、约 15 分钟作废）：
+
+```
+characterReference 未沿用全局角色边界：缺少全局必需角色事实：帽子上的黄色的嘴
+```
+
+用户原文写「穿黑白企鹅连体衣（帽子上有黄色的嘴）」。角色边界把这一条签成 canonicalName「帽子上的黄色的嘴」，terms「黄色嘴形帽饰」「帽子前方的黄色嘴状装饰」——**三个写法没有一个是用户原话**，边界自己的 canonicalDescription（就是用户原文）都过不了自己的检查。签发时扫的是固定角色这一行：剧情角色表的特征照用户原话写了「黑白企鹅连体衣，帽子上有黄色的嘴」，分镜设计又改写成「帽子前方有黄色的嘴形装饰」，与签发写法只差两个字。外观事实按设计不补写（上面「后续：把全局必需角色事实补写接进角色参考」），而变体与剧情都不检查必需事实，所以第一次检查就在最后。
+
+分镜提示词其实收到了 terms（`characterSettings` 带 canonicalName / terms / scope），但没有一句话要求外观原样写其中一种。
+
+## 改动
+
+判定逐字不变（同一份拼装、先补非外观事实、再用签发用的 `characterReferenceMissingRequiredTraits` / `characterReferenceForbiddenHits` 比对，外观事实照旧不补），改的只是「什么时候发现」和「告诉模型什么」：
+
+1. **提前检查**（`fixedCharacterBoundaryErrors`，`src/storyboard-workflow.js`）：设计这一步的校验在结构通过后跑它（`ensureStoryboardDesign` 的 `extraErrors`，与其它确定性错误合在同一个错误里），修订合并之后再跑一次。缺外观事实报 `STORYBOARD_FIXED_CHARACTER_TRAIT_MISSING`，混进禁止写法报 `STORYBOARD_FIXED_CHARACTER_FORBIDDEN_TRAIT`，路径 `/visualDesign/characters/<i>/appearance`，诊断写出全部可接受写法。走这两步已有的那次带诊断重试，禁止第三次。签发时的 `ensureCharacterReferenceMatchesBoundary` 保留（演示模式不走提前检查）。签发与提前检查共用 `storyboardCharacterReferences` 这一份拼装。
+2. **设计提示词**（`fixedCharacterWordingRule`，`src/storyboard-prompts.js`）：有外观必需事实时，在画风那一行之后逐条列出「· 事实（可接受写法：a / b / c）」，要求固定角色的 appearance 原样写出其中一种。写法列表与诊断共用 `requiredTraitAcceptedWordings`（`src/validation.js`）。没有角色边界时提示词逐字不变（golden 不动）；审阅与修订提示词不变。
+3. **角色边界提示词**（共用规则 `userWordingTerm`，视频版与剧情入口两份都有）：外观必需事实的证据出自「固定角色」一栏时，terms 里要有一条用户原话，逐字照抄；canonicalName 仍可写标准名。**只是提示词，没有闸门**：角色边界这一步单次调用、被拦不重试（`docs/待解决项.md` 第 15 条第 3 点、第 20 条），上闸门要先给它加重试。
+
+## 回放
+
+- 离线回放（只 import 校验代码、不调模型）：这次的设计输出在第 1 次调用就被报出「帽子上的黄色的嘴」，诊断路径 `/visualDesign/characters/0/appearance`；把外观里那段换成任一可接受写法即通过；绕开提前检查时签发报出与原来逐字相同的错误。测试 `回放 run-702dbf0c` 锁住这段数据。
+- 发生频率（磁盘上能找到的已签发边界与边界原始输出，去重 20 份，全是 MiMo）：外观必需事实 124 条里，terms 没有一条逐字出现在用户原文中的只有 2 条，**都是这一段咕嘎原文的同一个写法**；同一段原文 MiMo 签了 5 次，3 次 terms 收了「帽子上有黄色的嘴」，2 次没收。历史上找到的同类签发失败只有这一次（debug 大多已清，数据少）。
+- 真实调用回放还没做（要付费），重试到底能不能救回来只有单元测试证明。
+
+## 这个改动救不了什么
+
+- 角色边界签出别扭的写法仍会发生，提示词那一条没有确定性兜底；提前检查只是让分镜在第 1 次调用就照边界写，代价是触发时设计多跑一次（这一步最慢，这次 451 秒）。
+- 两次设计都没写对时仍然失败，只是在设计这一步就失败、两次诊断都在。
+- 剧情角色表那部分（身份与特征）分镜改不了；禁止写法如果出在剧情那部分，重试救不回来。

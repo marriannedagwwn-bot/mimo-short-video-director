@@ -45,7 +45,10 @@ export const STORYBOARD_DIAGNOSTIC_CODES = Object.freeze({
   DIALOGUE_SPEAKER_CONFLICT: "STORYBOARD_DIALOGUE_SPEAKER_CONFLICT",
   BEATS_NOT_COVERING_SHOT: "STORYBOARD_BEATS_NOT_COVERING_SHOT",
   SCENE_NOT_CARRIED: "STORYBOARD_SCENE_NOT_CARRIED",
-  TOTAL_DURATION_OUT_OF_WINDOW: "STORYBOARD_TOTAL_DURATION_OUT_OF_WINDOW"
+  TOTAL_DURATION_OUT_OF_WINDOW: "STORYBOARD_TOTAL_DURATION_OUT_OF_WINDOW",
+  // 签发时那条固定角色边界检查，提前到设计与修订之后跑（2026-10-24，storyboard-workflow.js）。
+  FIXED_CHARACTER_TRAIT_MISSING: "STORYBOARD_FIXED_CHARACTER_TRAIT_MISSING",
+  FIXED_CHARACTER_FORBIDDEN_TRAIT: "STORYBOARD_FIXED_CHARACTER_FORBIDDEN_TRAIT"
 });
 const C = STORYBOARD_DIAGNOSTIC_CODES;
 
@@ -83,8 +86,11 @@ export function storyboardValidationErrors(value,input = {}) {
   return errors;
 }
 
-export function ensureStoryboardDesign(value,input) {
+// extraErrors 只在结构校验通过后才跑（它要读 visualDesign），跑出来的诊断与上面的合并进同一个错误，
+// 让唯一那次重试一次看到全部问题。
+export function ensureStoryboardDesign(value,input,{extraErrors = null} = {}) {
   const errors = storyboardValidationErrors(value,input);
+  if(extraErrors && !errors.some(entry => entry.code === C.SCHEMA)) errors.push(...extraErrors(value));
   // details 是第二参数：classifyAttemptError 把 OutputContractError 判为 retryable 并把
   // details 原样放进 issue.diagnostics，所以这条路不需要任何错误类型转换。
   if(errors.length) throw new OutputContractError(`自主分镜校验失败：${errors.map(entry => `${entry.path} ${entry.reason}`).join("；")}`,errors);
