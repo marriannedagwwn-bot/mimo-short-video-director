@@ -58,21 +58,22 @@
 ```bash
 REFERENCE_REWRITE_BANDIT_DIR=/Volumes/MacOS/AI/Bandit-v2-Multi
 REFERENCE_REWRITE_VOCAL_RECOVERY_DIR=/Volumes/MacOS/AI/SAM-Audio-Breath
-REFERENCE_REWRITE_WHISPER_BIN=~/.local/bin/whisper
-# 可选，写出来的是默认值
+REFERENCE_REWRITE_WHISPER_BIN=~/.local/bin/mlx_whisper
+# 可选，写出来的是默认值；模型目录是 <MODEL_DIR>/mlx-whisper-<MODEL>
 # REFERENCE_REWRITE_WHISPER_MODEL=large-v3-turbo
 # REFERENCE_REWRITE_WHISPER_MODEL_DIR=~/.cache/whisper
 ```
 
-- 都不设，或外置盘没挂上、模型文件不在，`/api/health` 的 `sourceTranscript.reason` 逐项写明缺什么，「AI 导演」不能点、建任务 409。**不跳过转写这一步，不回退到不去配乐的转写，不让 whisper 自己下载模型**（`--model_dir` 指定目录、先查文件在不在）。已经转写过的 Run 继续跑后面几步时不再要求工具。
+- 都不设，或外置盘没挂上、模型文件不在，`/api/health` 的 `sourceTranscript.reason` 逐项写明缺什么，「AI 导演」不能点、建任务 409。**不跳过转写这一步，不回退到不去配乐的转写，不让 whisper 自己下载模型**（`--model` 给本机的 MLX 模型目录而不是仓库名，先查 `config.json` 与 `weights.safetensors` 在不在，子进程设 `HF_HUB_OFFLINE=1`）。已经转写过的 Run 继续跑后面几步时不再要求工具。
 - ffmpeg / ffprobe 从 PATH 找。Bandit 用它自带的 `.venv/bin/python -I`，先核对 checkpoint 的 SHA-256；只读地 import 安装目录，不改它。有 MPS 用 MPS，没有用 CPU。
 - 人声捞回用 `SAM-Audio-Breath` 自带的 `.venv/bin/python -I -B` 跑它的 `retain_vocalizations.py`（Mel-RoFormer Kim Vocal 2，MLX，Apple GPU），模型 SHA-256 由它自己核对；子进程只拿到 PATH/HOME/TMPDIR/LANG 与 `HF_HUB_OFFLINE=1`，不拿服务端的密钥。工具检查查 Python、脚本与 `models/mel-roformer-kim-vocal-2/model.safetensors` 在不在。捞回失败整步失败，不退回 Bandit 对白轨。捞回后的人声轨用 `tools/reference-audio-stems.py --activity-input … --activity-output …` 算有声区间（同一个阈值函数）。
+- 转写用 mlx-whisper（`uv tool install mlx-whisper`，10-24 装的是 0.4.3，与 openai-whisper 分开的环境），模型 `mlx-community/whisper-large-v3-turbo@a4aaeec` 放在 `~/.cache/whisper/mlx-whisper-large-v3-turbo`。子进程与人声捞回一样只拿到 PATH/HOME/TMPDIR/LANG 与 `HF_HUB_OFFLINE=1`；它读音频要用 ffmpeg，所以保留 PATH。
 - 演示模式（没配任何模型）不跑本机工具：占位转写、一张占位接触表、N 篇占位稿，能免费走完六步。
 - 起真服务的测试用 `test/helpers/fake-reference-tools.js` 的替身程序（按真实程序的约定写出文件），不跑真的 ffmpeg / Bandit / Mel-RoFormer / whisper。
 
 ## 6. 运行顺序与花费
 
-AI 导演六步：去配乐与转写（本机约 3–5 分钟：分轨与捞回人声约 1–2 分钟，turbo 转写三组约 1.5–4 分钟，只有叫声的片子最慢）→ 分析 → 还原 → 简报 → 角色边界（MiMo，与原来相同）→ 主题变体（Claude Opus 5.5，切接触表几秒、写稿约 8–9 分钟，约 1 美元；结构不合格时带诊断重做一次，最多 2 美元）。转写与主题变体都在服务端读页面工作区里的参考视频副本；页面关闭、工作区清掉之后这两步会如实报缺视频，不自动重跑。暂停或终止不会打断正在跑的 Bandit 或 whisper，最多等 20 秒，到下一次心跳才生效。
+AI 导演六步：去配乐与转写（本机约 1.5–3 分钟：分轨与捞回人声约 1–2 分钟，mlx-whisper 转写三组约 0.5–1 分钟）→ 分析 → 还原 → 简报 → 角色边界（MiMo，与原来相同）→ 主题变体（Claude Opus 5.5，切接触表几秒、写稿约 8–9 分钟，约 1 美元；结构不合格时带诊断重做一次，最多 2 美元）。转写与主题变体都在服务端读页面工作区里的参考视频副本；页面关闭、工作区清掉之后这两步会如实报缺视频，不自动重跑。暂停或终止不会打断正在跑的 Bandit 或 whisper，最多等 20 秒，到下一次心跳才生效。
 
 ## 7. 第一版的真实回放与页面实测（2026-10-24，独立按钮那一版）
 
@@ -172,4 +173,37 @@ AI 导演六步：去配乐与转写（本机约 3–5 分钟：分轨与捞回�
 **本机真跑**（流水线同一段代码，turbo，命令行默认解码）：
 - 《打枣》共 163 秒（分轨与捞回 65 秒，转写 98 秒）。三组都转对了爷爷的全部台词和「爷爷打枣呢」；原声组写出 5 声「姑嘎」，人声轨与去配乐组没写单独的叫声。
 - 《她好开心》共 265 秒，三组仍是编的字：人声轨是一长串「…………」，去配乐组是「可可可可」。
+
+## 12. 转写改用 mlx-whisper（Apple GPU，2026-10-24 夜）
+
+用户问转写为什么慢、是不是因为模型放在外置硬盘。查下来不是：外置盘是 USB 固态，实测读取约 900 MB/s，1.6 GB 的模型 1.8 秒读完。慢的原因有两个：
+- openai-whisper 在 CPU 上一支片子转三遍，每次加载模型约 6 秒；只有叫声的片子还会编出一长串字，24 秒的人声轨要 90 秒（关掉温度回退也是 96 秒，所以不是慢在重试）。
+- 内存 16 GB、交换区已用约 11 GB，whisper 一跑就占 5 GB。用户在 4173 跑《她好开心》这一步用了 403 秒，单独跑是 265 秒。
+
+用户同意后装了 mlx-whisper 0.4.3，下载了 `mlx-community/whisper-large-v3-turbo@a4aaeec`（校验码对得上），同样四支片子、同样参数对照：
+
+| 片子 | mlx-whisper 三组合计（含每次加载） | CPU 版 turbo 三组合计（不含加载） |
+| --- | --- | --- |
+| 她好开心 24 秒 | 31 秒 | 240 秒 |
+| 活泼嘎 33 秒 | 33 秒 | 316 秒 |
+| 打枣 44 秒 | 38 秒 | 78 秒 |
+| 特殊的留言 96 秒 | 59 秒 | 135 秒 |
+
+- 单条《打枣》人声轨：mlx 12.6 秒、内存峰值约 3.1 GB；CPU 版 24.8 秒、约 5.0 GB。
+- 有对白的片子一样准。mlx 只有逐字贪心解码，人声轨里还写出了 4 处「姑嘎」，CPU 版的 beam search 在这条轨上把它们丢掉了。
+- 只有叫声的地方会编出几百字的重复串（「词曲 曲 曲 曲……」「不可可可可……」）；原声组偶尔吐出提示词。
+
+**用户的决定：** 换成 mlx-whisper，并把连续重复很多次的同一个字或短语压成一次加「（重复 N 次）」。
+
+**改了什么：**
+- `REFERENCE_REWRITE_WHISPER_BIN` 改指向 `mlx_whisper`，用户的 `.env` 已改。
+- 模型目录约定为 `<REFERENCE_REWRITE_WHISPER_MODEL_DIR>/mlx-whisper-<模型名>`，工具检查要求里面有 `config.json` 与 `weights.safetensors`。
+- 命令行参数换成 mlx_whisper 的写法；`--model` 给本机目录，子进程环境与人声捞回共用 `isolatedToolEnv()`。
+- Artifact 多一个 `whisperEngine: "mlx-whisper"`，转写卡写「mlx-whisper large-v3-turbo 转写」。
+- 写进转写稿时，连续重复 8 次以上（`REPEAT_COLLAPSE_MIN`）的同一个字或短语（≤8 个字，中间可隔空格或标点）压成一次加「（重复 N 次）」。阈值的依据是：实测真实的笑声、拟声最多五六次，编出来的串几十到几百次。转写稿开头写明了这条规则。
+- 提示词、三组转写、人声轨、按词对时间都不变。
+
+**本机真跑**（流水线同一段代码，mlx-whisper）：
+- 《她好开心》24 秒：整步 62 秒（分轨与捞回 41 秒，转写 21 秒）；原来 CPU 版单独跑 265 秒，在 4173 上 403 秒。三组仍是编的字，现在压成一行「词曲（重复 111 次）」。
+- 《打枣》44 秒：整步 83 秒（分轨与捞回 58 秒，转写 25 秒）；原来 163 秒。三组都转对了爷爷的全部台词，原声与人声轨都写出了 4 处「姑嘎」。开头 0.8 秒编出的串压成「咕嘎咕嘎咕（重复 53 次）」。
 

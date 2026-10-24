@@ -11,6 +11,10 @@
 // 四支片子的对照见外层「去配乐与转写-调试对照-2026-10-24.md」：一支明显变好、三支持平；whisper 提示词不变
 // （提示里写角色名会让有对白的片子整段塌掉）。配乐里有人唱歌时，歌词也会进这条人声轨。
 //
+// 转写（2026-10-24 夜）用 mlx-whisper 在 Apple GPU 上跑 large-v3-turbo 的 MLX 版：同样四支片子比 CPU 版
+// openai-whisper 快 2–8 倍、内存峰值 3.1 GB 对 5.0 GB，有对白的片子一样准。它只有逐字贪心解码，只有叫声的
+// 地方会编出几百字的重复串，所以写进转写稿时把连续重复 8 次以上的同一个字或短语压成一次加「（重复 N 次）」。
+//
 // 两个入口都先把页面工作区里的副本复制进 Run 的 media-work 并核对 SHA-256，与 Run 记录的不符就 409。
 // 所有子进程都有超时并用 SIGKILL 收尾；执行器可注入，测试不跑真的 ffmpeg / Bandit / whisper。
 // 临时目录在 Run 目录的 media-work/ 下（页面关闭时随 Run 一起清掉），用完就删；
@@ -39,6 +43,10 @@ export const CONTACT_SHEET_COLUMNS = 6;
 export const CONTACT_SHEET_ROWS = 4;
 export const CONTACT_SHEET_CELL_WIDTH = 320;
 const WHISPER_INITIAL_PROMPT = "以下是普通话的句子，使用简体中文。";
+// 连续重复这么多次才压缩：实测真实的笑声、拟声最多五六次（「哈哈哈哈哈」「嘭嘭嘭嘭嘭」），编出来的串几十到几百次。
+export const REPEAT_COLLAPSE_MIN = 8;
+const REPEAT_PATTERN = new RegExp(`(\\S{1,8}?)((?:[\\s、，,。.!！?？~～…]*\\1){${REPEAT_COLLAPSE_MIN - 1},})`, "gu");
+export const WHISPER_ENGINE = "mlx-whisper";
 
 // 超时：抽帧、解音轨各 2 分钟；Bandit、人声捞回与每一次 whisper 各 10 分钟
 // （51 秒的片子实测 Bandit 与 whisper 各 1 分钟左右，96 秒的片子人声捞回约 1 分钟）。
@@ -81,10 +89,12 @@ export async function sourceTranscriptToolStatus(tools = {}, { exec = defaultExe
     if (!(await isFile(path.join(tools.vocalRecoveryDir, VOCAL_RECOVERY_SCRIPT)))) missing.push(`人声捞回脚本 ${VOCAL_RECOVERY_SCRIPT} 不在`);
     if (!(await isFile(path.join(tools.vocalRecoveryDir, VOCAL_RECOVERY_MODEL)))) missing.push("Mel-RoFormer 模型 model.safetensors 不在");
   }
-  if (!tools.whisperBin) missing.push("REFERENCE_REWRITE_WHISPER_BIN 没有设置");
-  else if (!(await isExecutable(tools.whisperBin))) missing.push(`whisper 不在或不能执行：${tools.whisperBin}`);
-  const modelFile = whisperModelFile(tools);
-  if (!(await isFile(modelFile))) missing.push(`whisper 模型文件不在：${modelFile}（不会自动下载）`);
+  if (!tools.whisperBin) missing.push("REFERENCE_REWRITE_WHISPER_BIN 没有设置（要指向 mlx_whisper）");
+  else if (!(await isExecutable(tools.whisperBin))) missing.push(`mlx_whisper 不在或不能执行：${tools.whisperBin}`);
+  const modelDir = whisperModelDirectory(tools);
+  if (!(await isFile(path.join(modelDir, "config.json"))) || !(await isFile(path.join(modelDir, "weights.safetensors")))) {
+    missing.push(`whisper 模型不在：${modelDir}（要有 MLX 格式的 config.json 与 weights.safetensors，不会自动下载）`);
+  }
   return {
     available: missing.length === 0,
     reason: missing.length ? `去配乐与转写用不了：${missing.join("；")}` : "",
@@ -122,7 +132,7 @@ export async function buildSourceTranscript({ tools, onStep = async () => {}, ..
     await run(vocalRecoveryPython(tools), [
       "-I", "-B", path.join(tools.vocalRecoveryDir, VOCAL_RECOVERY_SCRIPT),
       "--input", originalWav, "--speech", path.join(stemsDir, "speech.wav"), "--output", voiceWav
-    ], TIMEOUTS.vocalRecovery, { env: vocalRecoveryEnv() });
+    ], TIMEOUTS.vocalRecovery, { env: isolatedToolEnv() });
     const voiceIntervalsFile = path.join(audioDir, "voice-intervals.json");
     await run(banditPython(tools), ["-I", STEMS_SCRIPT, "--activity-input", voiceWav, "--activity-output", voiceIntervalsFile], TIMEOUTS.activity);
     intervals.voice = JSON.parse(await fs.readFile(voiceIntervalsFile, "utf8")).spans;
@@ -142,6 +152,7 @@ export async function buildSourceTranscript({ tools, onStep = async () => {}, ..
       text: formatReferenceTranscript({ transcripts, intervals, whisperModel: tools.whisperModel }),
       separator: "bandit-v2-multi",
       voiceRecovery: VOICE_RECOVERY,
+      whisperEngine: WHISPER_ENGINE,
       whisperModel: tools.whisperModel
     };
   });
@@ -194,14 +205,14 @@ const NO_AUDIO_TRANSCRIPT = "# 音频转写资料\n\n这支参考视频没有音
 export function formatReferenceTranscript({ transcripts, intervals, whisperModel }) {
   // whisper 按词对时间时偶尔把一个汉字的 UTF-8 字节切开，解出来是替换字符「�」；它不是任何字，去掉。
   const block = (segments) => {
-    const lines = (segments || []).map((segment) => `${clock(segment.start)}–${clock(segment.end)}  ${String(segment.text || "").replace(/\uFFFD/gu, "").trim()}`)
+    const lines = (segments || []).map((segment) => `${clock(segment.start)}–${clock(segment.end)}  ${collapseRepeats(String(segment.text || "").replace(/\uFFFD/gu, "")).trim()}`)
       .filter((line) => !/\s$/u.test(line));
     return lines.length ? `\`\`\`\n${lines.join("\n")}\n\`\`\`` : "（没有识别出字）";
   };
   const spans = (list) => (list || []).map(([start, end]) => `${start.toFixed(2)}–${end.toFixed(2)}`).join("、") || "（没有）";
   return `# 音频转写资料
 
-处理方法：原片音轨用 Bandit v2 Multi 分成对白、音乐、音效三轨；Bandit 会把尖细的叫声、笑声分进音效轨或音乐轨，所以再用 Mel-RoFormer 从对白以外的部分把人声捞回来，与对白轨合成人声轨。最后用 whisper（${whisperModel} 模型，中文）转写。whisper 只出文字和时间，**不标说话人**；同音错字和凭空编出来的句子都可能有。配乐里如果有人唱歌，歌词也会进人声轨。
+处理方法：原片音轨用 Bandit v2 Multi 分成对白、音乐、音效三轨；Bandit 会把尖细的叫声、笑声分进音效轨或音乐轨，所以再用 Mel-RoFormer 从对白以外的部分把人声捞回来，与对白轨合成人声轨。最后用 mlx-whisper（${whisperModel} 模型，中文）转写。whisper 只出文字和时间，**不标说话人**；同音错字和凭空编出来的句子都可能有，连续重复 ${REPEAT_COLLAPSE_MIN} 次以上的同一个字或短语只写一次并注明重复了几次。配乐里如果有人唱歌，歌词也会进人声轨。
 
 ## A. 原声直接转写（没去配乐）
 
@@ -316,23 +327,25 @@ async function makeContactSheets(run, videoPath, workDir, durationSeconds, lifet
   return { images, frameCount, layout: { fps, columns: CONTACT_SHEET_COLUMNS, rows: CONTACT_SHEET_ROWS, sheets } };
 }
 
+// mlx_whisper 的命令行：--model 给本机的 MLX 模型目录（不给仓库名，免得联网下载），子进程只拿到几个环境变量
+// 并设 HF_HUB_OFFLINE；它读音频要用 ffmpeg，所以保留 PATH。
 async function transcribe(run, tools, audioPath, outputDir) {
   await fs.mkdir(outputDir);
+  const name = path.basename(audioPath, path.extname(audioPath));
   await run(tools.whisperBin, [
     audioPath,
-    "--model", tools.whisperModel,
-    "--model_dir", tools.whisperModelDir,
+    "--model", whisperModelDirectory(tools),
     "--language", "zh",
-    "--fp16", "False",
-    "--condition_on_previous_text", "False",
+    "--condition-on-previous-text", "False",
     // 按词对时间：10-24 本机回放里不开它，人声轨那组整段时间戳往前错了十几秒，静音处还编出一串「好」；
     // 10-23 实验里人声轨与去配乐两组开着它，时间都对得上画面。
-    "--word_timestamps", "True",
-    "--initial_prompt", WHISPER_INITIAL_PROMPT,
-    "--output_dir", outputDir,
-    "--output_format", "json"
-  ], TIMEOUTS.whisper);
-  const file = path.join(outputDir, `${path.basename(audioPath, path.extname(audioPath))}.json`);
+    "--word-timestamps", "True",
+    "--initial-prompt", WHISPER_INITIAL_PROMPT,
+    "--output-dir", outputDir,
+    "--output-name", name,
+    "--output-format", "json"
+  ], TIMEOUTS.whisper, { env: isolatedToolEnv() });
+  const file = path.join(outputDir, `${name}.json`);
   const parsed = JSON.parse(await fs.readFile(file, "utf8"));
   return (Array.isArray(parsed?.segments) ? parsed.segments : []).map((segment) => ({
     start: Number(segment.start) || 0,
@@ -363,15 +376,21 @@ function vocalRecoveryPython(tools) {
   return path.join(tools.vocalRecoveryDir || "", ".venv", "bin", "python");
 }
 
-// 人声捞回子进程只拿到这几个环境变量：不把服务端的 API 密钥传给外部脚本，并禁止它联网下载模型。
-function vocalRecoveryEnv() {
+// 人声捞回与 mlx_whisper 子进程只拿到这几个环境变量：不把服务端的 API 密钥传给外部程序，并禁止它们联网下载模型。
+function isolatedToolEnv() {
   const env = { HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1", PYTHONUNBUFFERED: "1" };
   for (const key of ["PATH", "HOME", "TMPDIR", "LANG"]) if (process.env[key]) env[key] = process.env[key];
   return env;
 }
 
-function whisperModelFile(tools) {
-  return path.join(tools.whisperModelDir || "", `${tools.whisperModel || "large-v3-turbo"}.pt`);
+// MLX 模型目录：<REFERENCE_REWRITE_WHISPER_MODEL_DIR>/mlx-whisper-<模型名>，里面是 config.json 与 weights.safetensors。
+function whisperModelDirectory(tools) {
+  return path.join(tools.whisperModelDir || "", `mlx-whisper-${tools.whisperModel || "large-v3-turbo"}`);
+}
+
+/** 把连续重复 REPEAT_COLLAPSE_MIN 次以上的同一个字或短语（≤8 个字，中间可隔空格或标点）压成一次加「（重复 N 次）」。 */
+export function collapseRepeats(text) {
+  return String(text || "").replace(REPEAT_PATTERN, (match, unit, tail) => `${unit}（重复 ${tail.split(unit).length} 次）`);
 }
 
 async function isFile(file) {

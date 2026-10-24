@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   buildContactSheets,
   buildSourceTranscript,
+  collapseRepeats,
   demoContactSheets,
   formatReferenceTranscript,
   sourceTranscriptToolStatus
@@ -80,8 +81,9 @@ async function fixture(t, { durationSeconds = 51.1, hasAudio = true, failOn = nu
     }
     if (path.basename(file) === "whisper") {
       const audio = args[0];
+      assert.equal(after("--output-name"), path.basename(audio, ".wav"));
       const segments = audio.includes("noBgm") ? [{ start: 0, end: 1, text: "咕嘎嘎嘎嘎" }, { start: 11.2, end: 14.7, text: "小咕嘎，怎么在外面啊？" }] : [{ start: 11.1, end: 14.7, text: "小菇哥,怎么在外面啊?" }];
-      await fs.writeFile(path.join(after("--output_dir"), `${path.basename(audio, ".wav")}.json`), JSON.stringify({ segments }));
+      await fs.writeFile(path.join(after("--output-dir"), `${after("--output-name")}.json`), JSON.stringify({ segments }));
       return { stdout: "", stderr: "" };
     }
     throw new Error(`unexpected ${file}`);
@@ -104,6 +106,7 @@ test("去配乐与转写：Bandit 分轨、捞回人声，三组转写加有声�
   assert.equal(result.separator, "bandit-v2-multi");
   assert.equal(result.voiceRecovery, "mel-roformer-kim-vocal-2");
   assert.equal(result.whisperModel, "small");
+  assert.equal(result.whisperEngine, "mlx-whisper");
   assert.match(result.text, /## A\. 原声直接转写（没去配乐）/u);
   assert.match(result.text, /## B\. 人声轨转写（Bandit 对白＋捞回的叫声、笑声）\n\n```\n00:11\.1–00:14\.7  小菇哥/u);
   assert.match(result.text, /## C\. 原声减去音乐轨（人声＋音效）转写\n\n```\n00:00\.0–00:01\.0  咕嘎嘎嘎嘎/u);
@@ -114,8 +117,11 @@ test("去配乐与转写：Bandit 分轨、捞回人声，三组转写加有声�
   const whisperCalls = f.calls.filter((call) => call.file === "whisper");
   assert.equal(whisperCalls.length, 3);
   for (const call of whisperCalls) {
-    assert.equal(call.args[call.args.indexOf("--model_dir") + 1], f.tools.whisperModelDir, "只用本机模型目录");
-    assert.equal(call.args[call.args.indexOf("--word_timestamps") + 1], "True");
+    assert.equal(call.args[call.args.indexOf("--model") + 1], path.join(f.tools.whisperModelDir, "mlx-whisper-small"), "只用本机的 MLX 模型目录，不给仓库名");
+    assert.equal(call.args[call.args.indexOf("--word-timestamps") + 1], "True");
+    assert.equal(call.args[call.args.indexOf("--condition-on-previous-text") + 1], "False");
+    assert.equal(call.options.env.HF_HUB_OFFLINE, "1", "转写不联网下载模型");
+    assert.ok(Object.keys(call.options.env).every((key) => ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "PYTHONUNBUFFERED", "PATH", "HOME", "TMPDIR", "LANG"].includes(key)), "不把服务端环境变量（含密钥）传给 mlx_whisper");
   }
   const pythonCalls = f.calls.filter((call) => call.file === "python");
   assert.equal(pythonCalls.length, 3, "分轨、捞回人声、算人声区间各一次");
@@ -217,13 +223,15 @@ test("工具检查：逐项写明缺什么，不会自动下载 whisper 模型",
   await fs.writeFile(path.join(bandit, "models", "checkpoint-multi.ckpt"), "");
   const whisper = path.join(root, "whisper");
   await fs.writeFile(whisper, "#!/bin/sh\n", { mode: 0o755 });
-  await fs.mkdir(path.join(root, "models"));
-  await fs.writeFile(path.join(root, "models", "small.pt"), "");
+  await fs.mkdir(path.join(root, "models", "mlx-whisper-small"), { recursive: true });
+  await fs.writeFile(path.join(root, "models", "mlx-whisper-small", "config.json"), "{}");
   const vocal = path.join(root, "sam-audio-breath");
   await fs.mkdir(path.join(vocal, ".venv", "bin"), { recursive: true });
   await fs.writeFile(path.join(vocal, ".venv", "bin", "python"), "");
   const noRecoveryModel = await sourceTranscriptToolStatus({ banditDir: bandit, vocalRecoveryDir: vocal, whisperBin: whisper, whisperModel: "small", whisperModelDir: path.join(root, "models") }, { exec: ok });
-  assert.deepEqual(noRecoveryModel.missing, ["人声捞回脚本 retain_vocalizations.py 不在", "Mel-RoFormer 模型 model.safetensors 不在"]);
+  assert.deepEqual(noRecoveryModel.missing.slice(0, 2), ["人声捞回脚本 retain_vocalizations.py 不在", "Mel-RoFormer 模型 model.safetensors 不在"]);
+  assert.match(noRecoveryModel.missing[2], /^whisper 模型不在：.*mlx-whisper-small（要有 MLX 格式的 config\.json 与 weights\.safetensors，不会自动下载）$/u, "只有 config.json 没有权重也算不在");
+  await fs.writeFile(path.join(root, "models", "mlx-whisper-small", "weights.safetensors"), "");
   await fs.writeFile(path.join(vocal, "retain_vocalizations.py"), "");
   await fs.mkdir(path.join(vocal, "models", "mel-roformer-kim-vocal-2"), { recursive: true });
   await fs.writeFile(path.join(vocal, "models", "mel-roformer-kim-vocal-2", "model.safetensors"), "");
@@ -252,7 +260,8 @@ test("转写稿格式：没识别出字的组写明，空文字的片段不列",
   assert.match(text, /- 人声轨：（没有）/u, "人声区间只看捞回后的人声轨");
   assert.match(text, /Mel-RoFormer 从对白以外的部分把人声捞回来/u);
   assert.match(text, /配乐里如果有人唱歌，歌词也会进人声轨/u);
-  assert.match(text, /whisper（small 模型，中文）/u);
+  assert.match(text, /mlx-whisper（small 模型，中文）/u);
+  assert.match(text, /连续重复 8 次以上的同一个字或短语只写一次/u);
 });
 
 test("转写模型默认 large-v3-turbo，可用 REFERENCE_REWRITE_WHISPER_MODEL 改回别的", () => {
@@ -266,4 +275,20 @@ test("转写模型默认 large-v3-turbo，可用 REFERENCE_REWRITE_WHISPER_MODEL
     if (saved === undefined) delete process.env.REFERENCE_REWRITE_WHISPER_MODEL;
     else process.env.REFERENCE_REWRITE_WHISPER_MODEL = saved;
   }
+});
+
+test("连续重复 8 次以上的同一个字或短语压成一次加「（重复 N 次）」；真实的笑声、拟声与正常台词不动", () => {
+  assert.equal(collapseRepeats("词曲 曲 曲 曲 曲 曲 曲 曲 曲 曲 曲 曲"), "词曲（重复 12 次）");
+  assert.equal(collapseRepeats("字幕作词 字幕作词 字幕作词 字幕作词 字幕作词 字幕作词 字幕作词 字幕作词 字幕作词"), "字幕作词（重复 9 次）");
+  assert.equal(collapseRepeats("咕嘎，咕嘎，咕嘎，咕嘎，咕嘎，咕嘎，咕嘎，咕嘎"), "咕嘎（重复 8 次）");
+  assert.equal(collapseRepeats("不可可可可可可可可可可可可，然后"), "不可（重复 12 次），然后");
+  for (const keep of ["哈哈哈哈哈", "嘭嘭嘭嘭嘭", "好好好好好好好", "咕嘎咕嘎", "小姑嘎来了,爷爷打枣呢", "你放心 家里冰箱里那些东西"]) {
+    assert.equal(collapseRepeats(keep), keep, keep);
+  }
+  const text = formatReferenceTranscript({
+    transcripts: { original: [], voice: [{ start: 0, end: 21.9, text: "词曲" + "曲".repeat(200) }], noBgm: [] },
+    intervals: { cellSeconds: 0.25, thresholdDb: -30, voice: [[0, 1]], sfx: [] },
+    whisperModel: "large-v3-turbo"
+  });
+  assert.match(text, /00:00\.0–00:21\.9  词曲（重复 201 次）\n/u);
 });

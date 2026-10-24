@@ -281,6 +281,7 @@ export function getConfig() {
       whisperBin: expandHome(process.env.REFERENCE_REWRITE_WHISPER_BIN),
       // 10-24 晚换成 large-v3-turbo：有对白的片子明显更准、连带写对咕嘎的叫声，且比 small 快
       // （small 在叫声上反复重试）。对照见 docs/reference-rewrite-2026-10-24.md 第 11 节。
+      // 10-24 夜改用 mlx-whisper：WHISPER_BIN 指向 mlx_whisper，模型是 <MODEL_DIR>/mlx-whisper-<模型名>（第 12 节）。
       whisperModel: process.env.REFERENCE_REWRITE_WHISPER_MODEL?.trim() || "large-v3-turbo",
       whisperModelDir: expandHome(process.env.REFERENCE_REWRITE_WHISPER_MODEL_DIR) || expandHome("~/.cache/whisper")
     },

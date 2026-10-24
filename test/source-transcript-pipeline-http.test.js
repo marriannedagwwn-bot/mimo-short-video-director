@@ -158,6 +158,7 @@ test("旧 Run 里没听过台词稿的分析会重跑；转写稿逐字进分析
   assert.equal(transcript.schemaVersion, "source_transcript/1.0");
   assert.equal(transcript.separator, "bandit-v2-multi");
   assert.equal(transcript.voiceRecovery, "mel-roformer-kim-vocal-2");
+  assert.equal(transcript.whisperEngine, "mlx-whisper");
   assert.match(transcript.text, /快进来（original-16k）/u);
   assert.match(transcript.text, /## B\. 人声轨转写（Bandit 对白＋捞回的叫声、笑声）\n\n```\n00:01\.0–00:02\.5  快进来（voice-16k）/u);
   assert.match(transcript.text, /- 人声轨：1\.00–2\.50/u);

@@ -41,13 +41,13 @@
 ```bash
 REFERENCE_REWRITE_BANDIT_DIR=/Volumes/MacOS/AI/Bandit-v2-Multi
 REFERENCE_REWRITE_VOCAL_RECOVERY_DIR=/Volumes/MacOS/AI/SAM-Audio-Breath
-REFERENCE_REWRITE_WHISPER_BIN=~/.local/bin/whisper
-# 可选，写出来的是默认值；模型文件不在时直接报错，不会自动下载
+REFERENCE_REWRITE_WHISPER_BIN=~/.local/bin/mlx_whisper
+# 可选，写出来的是默认值；模型目录是 <MODEL_DIR>/mlx-whisper-<MODEL>，不在时直接报错，不会自动下载
 # REFERENCE_REWRITE_WHISPER_MODEL=large-v3-turbo
 # REFERENCE_REWRITE_WHISPER_MODEL_DIR=~/.cache/whisper
 ```
 
-ffmpeg 要在命令行里能找到。详见 `docs/reference-rewrite-2026-10-24.md`。
+转写用 mlx-whisper（`uv tool install mlx-whisper`），模型是 `mlx-community/whisper-large-v3-turbo`，要先下载到 `~/.cache/whisper/mlx-whisper-large-v3-turbo`。ffmpeg 要在命令行里能找到。详见 `docs/reference-rewrite-2026-10-24.md`。
 
 ## 角色画风（2026-10-09）
 

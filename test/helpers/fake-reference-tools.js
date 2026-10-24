@@ -1,4 +1,4 @@
-// AI 导演第一步「去配乐与转写」与主题变体切接触表要用本机的 ffmpeg / ffprobe / Bandit / Mel-RoFormer / whisper。
+// AI 导演第一步「去配乐与转写」与主题变体切接触表要用本机的 ffmpeg / ffprobe / Bandit / Mel-RoFormer / mlx-whisper。
 // 起真 server.js 的测试用这里的替身：几个小 Node 脚本按真实程序的约定写出文件
 // （单帧、接触表、分轨、区间、捞回的人声轨、whisper 的 JSON），服务端照真实路径读回，不跑真的模型。
 // 用法：const env = await fakeReferenceToolsEnv(directory); spawn(..., { env: { ...env, ... } })。
@@ -58,10 +58,12 @@ fs.writeFileSync(after("--output"), "RIFF fake voice");
 
 const WHISPER = script(`
 const audio = args[0];
-const output = after("--output_dir");
+const output = after("--output-dir");
 const base = path.basename(audio, path.extname(audio));
-const line = process.env.FAKE_REFERENCE_WHISPER_LINE || "快进来";
-fs.writeFileSync(path.join(output, base + ".json"), JSON.stringify({ segments: [{ start: 1, end: 2.5, text: line + "（" + base + "）" }] }));
+if (after("--output-name") !== base || !fs.existsSync(path.join(after("--model"), "weights.safetensors"))) process.exit(2);
+// 转写子进程只拿到 PATH/HOME 等几个环境变量（不传服务端的密钥），所以这里不读别的环境变量。
+const line = "快进来";
+fs.writeFileSync(path.join(output, after("--output-name") + ".json"), JSON.stringify({ segments: [{ start: 1, end: 2.5, text: line + "（" + base + "）" }] }));
 `);
 
 export async function fakeReferenceToolsEnv(directory, { videoSeconds = 45 } = {}) {
@@ -88,7 +90,9 @@ export async function fakeReferenceToolsEnv(directory, { videoSeconds = 45 } = {
   await fs.writeFile(path.join(vocal, "retain_vocalizations.py"), "# fake");
   await fs.writeFile(path.join(vocal, "models", "mel-roformer-kim-vocal-2", "model.safetensors"), "fake mel-roformer");
   await fs.writeFile(path.join(bandit, "models", "checkpoint-multi.ckpt"), "fake checkpoint");
-  await fs.writeFile(path.join(models, "small.pt"), "fake whisper model");
+  await fs.mkdir(path.join(models, "mlx-whisper-small"), { recursive: true });
+  await fs.writeFile(path.join(models, "mlx-whisper-small", "config.json"), "{}");
+  await fs.writeFile(path.join(models, "mlx-whisper-small", "weights.safetensors"), "fake mlx whisper model");
   return {
     PATH: `${bin}${path.delimiter}${process.env.PATH || ""}`,
     REFERENCE_REWRITE_BANDIT_DIR: bandit,

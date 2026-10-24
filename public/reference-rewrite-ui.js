@@ -11,7 +11,7 @@ export function sourceTranscriptCardHtml(transcript, { escape, header }) {
       : [
         transcript.separator === "bandit-v2-multi" ? "Bandit v2 Multi 去配乐" : "",
         transcript.voiceRecovery === "mel-roformer-kim-vocal-2" ? "Mel-RoFormer 捞回叫声" : "",
-        transcript.whisperModel ? `whisper ${transcript.whisperModel} 转写` : ""
+        transcript.whisperModel ? `${transcript.whisperEngine === "mlx-whisper" ? "mlx-whisper" : "whisper"} ${transcript.whisperModel} 转写` : ""
       ].filter(Boolean).join(" · ");
   return `${header}
     <p class="source-transcript-meta">${escape(meta)}。转写不标说话人，有同音错字和编出来的句子；分析、还原和主题变体都把它当台词稿参考，以画面为准。</p>

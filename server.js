@@ -891,6 +891,7 @@ async function runSourceTranscript(trusted) {
     hasAudio: result.hasAudio,
     separator: result.separator,
     ...(result.voiceRecovery ? { voiceRecovery: result.voiceRecovery } : {}),
+    ...(result.whisperEngine ? { whisperEngine: result.whisperEngine } : {}),
     whisperModel: result.whisperModel,
     ...(result.demo ? { demo: true } : {})
   };
