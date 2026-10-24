@@ -21,17 +21,21 @@ function readyItem(selectedIndex = 1) {
   };
 }
 
-test("生成完的视频放在分镜卡里：每条候选一个播放器，写明模型、分辨率、时长；当前那条标出来、按钮不可点", async () => {
+test("生成完的视频放在分镜卡里：每条候选一张缩略图，型号与时长叠在画面上；当前那条打「当前」，其余可设为当前", async () => {
   const app = await loadAppUi({ story: true, plan: true });
   assert.equal(app.renderShotVideoResult("A01"), "<p>本镜视频尚未生成。</p>");
   app.setShotVideoStateItem("A01", readyItem(1), "V2");
   const html = app.renderShotVideoResult("A01");
   assert.equal((html.match(/<video /g) || []).length, 2, "没有地址的候选不出卡");
-  assert.match(html, /<video src="\/generated-videos\/a\.mp4" controls playsinline preload="metadata">/);
-  assert.match(html, /候选 1 · Seedance 2\.0 标准版 · 720p（实测 1280×720） · 6\.0 秒 · \d{2}-\d{2} \d{2}:\d{2}</);
-  assert.match(html, /shot-video-candidate selected">\s*<video src="\/generated-videos\/b\.mp4"/, "当前那条高亮");
-  assert.match(html, /data-candidate-index="1" disabled>已设为当前镜头视频/);
-  assert.match(html, /data-candidate-index="0">设为当前镜头视频/);
+  assert.match(html, /<video src="\/generated-videos\/a\.mp4#t=0\.1" muted playsinline preload="metadata" tabindex="-1" aria-hidden="true">/, "首帧作封面，卡片上不出原生控制条");
+  assert.doesNotMatch(html, /controls/);
+  assert.doesNotMatch(html, /候选 \d/, "不写「候选 N」");
+  assert.match(html, /shot-video-tile-meta">Seedance 2\.0 标准版 · 6\.0 秒</, "画面上只叠型号与时长");
+  assert.match(html, /data-preview-meta="Seedance 2\.0 标准版 · 720p（实测 1280×720） · 6\.0 秒 · \d{2}-\d{2} \d{2}:\d{2}"/, "完整信息留给放大播放");
+  assert.match(html, /shot-video-tile selected">\s*<button class="shot-video-tile-open" type="button" data-preview-shot-video="\/generated-videos\/b\.mp4"/, "当前那条高亮");
+  assert.match(html, /<span class="shot-video-tile-badge">当前<\/span>/);
+  assert.match(html, /data-use-shot-video="A01" data-candidate-index="0">设为当前</);
+  assert.doesNotMatch(html, /data-candidate-index="1"/, "当前那条不出「设为当前」");
   assert.match(html, /连续性参考：A01 均匀抽帧，共 5 张普通参考图/);
   assert.match(html, /--shot-video-aspect/, "播放器画幅跟随分镜画幅");
 });
@@ -56,8 +60,9 @@ test("候选说明里的型号写短名，生成时间写本地时间", async ()
   ];
   app.setShotVideoStateItem("A01", item, "V2");
   const html = app.renderShotVideoResult("A01");
-  assert.match(html, /候选 1 · Seedance 2\.0 fast · not-a-date</);
-  assert.match(html, /候选 2 · MiniMax H3 · \d{2}-\d{2} \d{2}:\d{2}</);
+  assert.match(html, /data-preview-meta="Seedance 2\.0 fast · not-a-date"/);
+  assert.match(html, /data-preview-meta="MiniMax H3 · \d{2}-\d{2} \d{2}:\d{2}"/);
+  assert.match(html, /shot-video-tile-meta">Seedance 2\.0 fast</);
 });
 
 const HISTORY = {
@@ -82,7 +87,7 @@ test("之前生成的版本：折叠在卡片下面，每版能播放；能换�
   app.state.shotVideoHistory = { runId: "run", variantId: "V2", shots: HISTORY };
   const html = app.renderShotVideoResult("A01");
   assert.match(html, /<details class="shot-video-history" data-shot-video-history="A01">\s*<summary>之前生成的版本（2）<\/summary>/);
-  assert.match(html, /<video src="\/old-a\.mp4" controls playsinline preload="metadata">/);
+  assert.match(html, /data-preview-shot-video="\/old-a\.mp4"/, "旧版本同样是缩略图，点开放大播放");
   assert.match(html, /\d{2}-\d{2} \d{2}:\d{2} 生成 · MiniMax H3</);
   assert.match(html, /data-restore-shot-video="A01" data-revision="shotVideo-V2-A01-r1">换回这一版/);
   assert.match(html, /Seedance 2\.0 fast · 用了 A00 的抽帧/);
@@ -132,4 +137,19 @@ test("换回：先说清会作废哪一镜；不同意就不发请求；同意�
   assert.equal(app.state.production.artifacts["shotVideo:V2:A01"].revision, "shotVideo-V2-A01-r3");
   assert.equal(app.state.production.artifacts["shotVideo:V2:A02"].status, "stale");
   assert.equal(app.shotVideoStateItem("A02"), null, "作废的下一镜结果从页面上去掉");
+});
+
+test("点开缩略图：模糊遮罩上放大播放，完整信息叠在视频左上角；关闭时停播并清掉地址", async () => {
+  const app = await loadAppUi({ story: true, plan: true });
+  const trigger = { dataset: { previewShotVideo: "/generated-videos/a.mp4", previewMeta: "MiniMax H3 · 768P（实测 1344×768） · 8.0 秒 · 10-24 23:28", previewAspect: "16:9" } };
+  app.openShotVideoPreview(trigger);
+  assert.equal(app.elements.shotVideoPreviewVideo.src, "/generated-videos/a.mp4");
+  assert.equal(app.elements.shotVideoPreviewMeta.textContent, "MiniMax H3 · 768P（实测 1344×768） · 8.0 秒 · 10-24 23:28");
+  assert.equal(app.elements.shotVideoPreviewCard.className, "video-preview-card landscape");
+  assert.equal(app.elements.shotVideoPreview.classList.contains("hidden"), false);
+  app.openShotVideoPreview({ dataset: { ...trigger.dataset, previewAspect: "9:16" } });
+  assert.equal(app.elements.shotVideoPreviewCard.className, "video-preview-card portrait", "竖屏按高度放大");
+  app.closeShotVideoPreview();
+  assert.equal(app.elements.shotVideoPreview.classList.contains("hidden"), true);
+  assert.equal(app.elements.shotVideoPreviewVideo.getAttribute("src"), null);
 });

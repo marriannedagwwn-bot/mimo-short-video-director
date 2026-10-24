@@ -292,6 +292,8 @@ const elements = {
   shotVideoPromptPreview: $("#shotVideoPromptPreview"), shotVideoStatus: $("#shotVideoStatus"),
   confirmGenerateShotVideo: $("#confirmGenerateShotVideo"), shotVideoResults: $("#shotVideoResults"),
   generatedImagePreview: $("#generatedImagePreview"), generatedImagePreviewImage: $("#generatedImagePreviewImage"),
+  shotVideoPreview: $("#shotVideoPreview"), shotVideoPreviewCard: $("#shotVideoPreviewCard"), shotVideoPreviewVideo: $("#shotVideoPreviewVideo"),
+  shotVideoPreviewMeta: $("#shotVideoPreviewMeta"), closeShotVideoPreview: $("#closeShotVideoPreview"),
   generatedImagePreviewCaption: $("#generatedImagePreviewCaption"), closeGeneratedImagePreview: $("#closeGeneratedImagePreview")
 };
 
@@ -556,6 +558,8 @@ function bindEvents() {
   elements.closeShotVideoModal.addEventListener("click", closeShotVideoGenerator);
   elements.shotVideoModal.addEventListener("click", (event) => {
     if (event.target === elements.shotVideoModal) closeShotVideoGenerator();
+    const previewShotVideo = event.target.closest("[data-preview-shot-video]");
+    if (previewShotVideo) return openShotVideoPreview(previewShotVideo);
     const useButton = event.target.closest("[data-use-shot-video]");
     if (useButton) return selectShotVideoCandidate(useButton.dataset.useShotVideo, useButton.dataset.candidateIndex);
     const removeButton = event.target.closest("[data-remove-shot-video-reference]");
@@ -601,8 +605,14 @@ function bindEvents() {
     if (event.target === elements.generatedImagePreview) closeGeneratedImagePreview();
   });
   elements.closeGeneratedImagePreview.addEventListener("click", closeGeneratedImagePreview);
+  elements.shotVideoPreview.addEventListener("click", (event) => {
+    if (event.target === elements.shotVideoPreview) closeShotVideoPreview();
+  });
+  elements.closeShotVideoPreview.addEventListener("click", closeShotVideoPreview);
   window.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !elements.generatedImagePreview.classList.contains("hidden")) closeGeneratedImagePreview();
+    // 放大播放叠在最上层（可能盖在生成弹窗上），Esc 先关它。
+    if (event.key === "Escape" && !elements.shotVideoPreview.classList.contains("hidden")) closeShotVideoPreview();
+    else if (event.key === "Escape" && !elements.generatedImagePreview.classList.contains("hidden")) closeGeneratedImagePreview();
     else if (event.key === "Escape" && !elements.modelSettingsModal.classList.contains("hidden")) closeModelSettings();
     else if (event.key === "Escape" && !elements.shotVideoModal.classList.contains("hidden")) closeShotVideoGenerator();
     else if (event.key === "Escape" && !elements.characterImageModal.classList.contains("hidden")) closeCharacterImageGenerator();
@@ -648,6 +658,8 @@ function bindEvents() {
     if (button) return openShotVideoGenerator(button.dataset.generateShotVideo);
     const useShotVideoButton = event.target.closest("[data-use-shot-video]");
     if (useShotVideoButton) return selectShotVideoCandidate(useShotVideoButton.dataset.useShotVideo, useShotVideoButton.dataset.candidateIndex);
+    const previewShotVideo = event.target.closest("[data-preview-shot-video]");
+    if (previewShotVideo) return openShotVideoPreview(previewShotVideo);
     const restoreShotVideoButton = event.target.closest("[data-restore-shot-video]");
     if (restoreShotVideoButton) return restoreShotVideoVersion(restoreShotVideoButton.dataset.restoreShotVideo, restoreShotVideoButton.dataset.revision);
     const referenceUploadButton = event.target.closest("[data-character-reference-upload]");
@@ -4090,8 +4102,8 @@ function formatShotDurationSeconds(shot) {
 // 只影响播放器外框尺寸，不改任何 Plan 字段。
 function shotVideoAspectStyle(aspectRatio) {
   return normalizeAnimationPlanAspectRatio(aspectRatio) === "9:16"
-    ? "--shot-video-aspect: 9 / 16; --shot-video-card-max: 165px"
-    : "--shot-video-aspect: 16 / 9; --shot-video-card-max: 240px";
+    ? "--shot-video-aspect: 9 / 16; --shot-video-card-max: 170px"
+    : "--shot-video-aspect: 16 / 9; --shot-video-card-max: 280px";
 }
 
 function shotVideoPlayableCandidates(shotId) {
@@ -5325,17 +5337,58 @@ function shotVideoSelectedIndex(stateItem) {
 }
 function shotVideoCandidateCardsHtml(shotId, stateItem) {
   const selectedIndex = shotVideoSelectedIndex(stateItem);
+  const aspectRatio = shotFrameContext(shotId)?.plan?.productionStrategy?.targetAspectRatio;
   return shotVideoResultVideos(stateItem).map((video, index) => {
     const url = video.outputUrl || video.url || "";
     if (!url) return "";
-    const seconds = Number(video.measuredDurationSeconds) > 0 ? `${Number(video.measuredDurationSeconds).toFixed(1)} 秒` : "";
-    const caption = [`候选 ${index + 1}`, shotVideoResultLabel(video, stateItem.result), shotVideoResolutionText(video), seconds, shotVideoGeneratedAtText(video.generatedAt || stateItem.result?.generatedAt)].filter(Boolean).join(" · ");
-    return `<div class="generated-reference-card shot-video-candidate${index === selectedIndex ? " selected" : ""}">
-    <video src="${escape(url)}" controls playsinline preload="metadata"></video>
-    <small>${escape(caption)}</small>
-    <button class="outline-button" type="button" data-use-shot-video="${escape(shotId)}" data-candidate-index="${escape(index)}"${index === selectedIndex ? " disabled" : ""}>${index === selectedIndex ? "已设为当前镜头视频" : "设为当前镜头视频"}</button>
-  </div>`;
+    const selected = index === selectedIndex;
+    return shotVideoTileHtml({
+      url, aspectRatio,
+      video: { ...video, generatedAt: video.generatedAt || stateItem.result?.generatedAt },
+      result: stateItem.result,
+      badge: selected ? "当前" : "",
+      action: selected ? "" : `<button class="shot-video-tile-use" type="button" data-use-shot-video="${escape(shotId)}" data-candidate-index="${escape(index)}">设为当前</button>`,
+      selected
+    });
   }).join("");
+}
+
+// 镜头视频缩略图（2026-10-25）：首帧作封面，中间一个播放钮，左下角半透明标签写型号与时长；
+// 点开是模糊遮罩上的放大播放（openShotVideoPreview），完整的型号、分辨率、时长、生成时间叠在视频左上角。
+function shotVideoTileHtml({ url, aspectRatio, video = {}, result = {}, badge = "", action = "", selected = false }) {
+  const seconds = Number(video.measuredDurationSeconds) > 0 ? `${Number(video.measuredDurationSeconds).toFixed(1)} 秒` : "";
+  const label = shotVideoResultLabel(video, result);
+  const short = [label, seconds].filter(Boolean).join(" · ");
+  const full = [label, shotVideoResolutionText(video), seconds, shotVideoGeneratedAtText(video.generatedAt)].filter(Boolean).join(" · ");
+  return `<div class="shot-video-tile${selected ? " selected" : ""}">
+    <button class="shot-video-tile-open" type="button" data-preview-shot-video="${escape(url)}" data-preview-meta="${escape(full)}" data-preview-aspect="${escape(normalizeAnimationPlanAspectRatio(aspectRatio))}" aria-label="放大播放：${escape(full)}">
+      <video src="${escape(url)}#t=0.1" muted playsinline preload="metadata" tabindex="-1" aria-hidden="true"></video>
+      <span class="shot-video-tile-play" aria-hidden="true"></span>
+      <span class="shot-video-tile-meta">${escape(short)}</span>
+    </button>
+    ${badge ? `<span class="shot-video-tile-badge">${escape(badge)}</span>` : ""}
+    ${action}
+  </div>`;
+}
+
+function openShotVideoPreview(trigger) {
+  const url = trigger?.dataset?.previewShotVideo || "";
+  if (!url) return;
+  elements.shotVideoPreviewCard.className = `video-preview-card ${trigger.dataset.previewAspect === "9:16" ? "portrait" : "landscape"}`;
+  elements.shotVideoPreviewMeta.textContent = trigger.dataset.previewMeta || "";
+  elements.shotVideoPreviewVideo.src = url;
+  elements.shotVideoPreview.classList.remove("hidden");
+  elements.shotVideoPreview.setAttribute("aria-hidden", "false");
+  Promise.resolve(elements.shotVideoPreviewVideo.play?.()).catch(() => {});
+  elements.closeShotVideoPreview.focus();
+}
+
+function closeShotVideoPreview() {
+  elements.shotVideoPreviewVideo.pause();
+  elements.shotVideoPreviewVideo.removeAttribute("src");
+  elements.shotVideoPreviewVideo.load();
+  elements.shotVideoPreview.classList.add("hidden");
+  elements.shotVideoPreview.setAttribute("aria-hidden", "true");
 }
 
 async function selectShotVideoCandidate(shotId, candidateIndexValue) {
@@ -5406,7 +5459,7 @@ function renderCurrentShotVideoResult(shotId) {
     : "";
   if (!videos.length) return `${continuityHtml}<p>视频已生成，但未返回可播放地址。</p>`;
   const style = shotVideoAspectStyle(shotFrameContext(shotId)?.plan?.productionStrategy?.targetAspectRatio);
-  return `<div class="generated-reference-results shot-video-results shot-video-card-results" style="${escape(style)}">${shotVideoCandidateCardsHtml(shotId, stateItem)}</div>${continuityHtml}`;
+  return `<div class="shot-video-tiles" style="${escape(style)}">${shotVideoCandidateCardsHtml(shotId, stateItem)}</div>${continuityHtml}`;
 }
 
 // ---- 镜头视频「之前生成的版本」（2026-10-24）----
@@ -5449,20 +5502,17 @@ function renderShotVideoHistory(shotId) {
     ${versions.map((version) => {
       const meta = [`${shotVideoGeneratedAtText(version.createdAt)} 生成`, shotVideoResultLabel(version.videos[0] || {}),
         version.continuitySourceShotId ? `用了 ${version.continuitySourceShotId} 的抽帧` : ""].filter(Boolean).join(" · ");
-      const cards = version.videos.map((video) => {
-        const seconds = video.measuredDurationSeconds > 0 ? `${video.measuredDurationSeconds.toFixed(1)} 秒` : "";
-        const caption = [`候选 ${video.index + 1}`, shotVideoResolutionText(video), seconds, video.index === version.selectedIndex && version.videos.length > 1 ? "当时选中" : ""].filter(Boolean).join(" · ");
-        return `<div class="generated-reference-card shot-video-candidate${video.index === version.selectedIndex ? " selected" : ""}">
-          <video src="${escape(video.outputUrl)}" controls playsinline preload="metadata"></video>
-          <small>${escape(caption)}</small>
-        </div>`;
-      }).join("");
+      const aspectRatio = shotFrameContext(shotId)?.plan?.productionStrategy?.targetAspectRatio;
+      const cards = version.videos.map((video) => shotVideoTileHtml({
+        url: video.outputUrl, aspectRatio, video,
+        badge: video.index === version.selectedIndex && version.videos.length > 1 ? "当时选中" : ""
+      })).join("");
       const action = version.restorable
         ? `<button class="outline-button" type="button" data-restore-shot-video="${escape(shotId)}" data-revision="${escape(version.revision)}">换回这一版</button>`
         : `<p class="shot-video-history-blocked">${escape(version.reason)}</p>`;
       return `<div class="shot-video-history-version">
         <p class="shot-video-history-meta">${escape(meta)}</p>
-        <div class="generated-reference-results shot-video-results shot-video-card-results" style="${escape(style)}">${cards}</div>
+        <div class="shot-video-tiles" style="${escape(style)}">${cards}</div>
         ${action}
       </div>`;
     }).join("")}
