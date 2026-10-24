@@ -2662,17 +2662,31 @@ function missingRequiredTraitEntries(value, visualGuardrails = null) {
   return (boundary.requiredTraits || []).filter((trait) => missing.has(trait?.canonicalName));
 }
 
+// 这条角色参考混进的全局边界禁止写法。非固定角色恒为空数组，与下面的短路口径一致。
+// 否定语境放行：「无企鹅服装、无动物拟态服装」是模型在**服从**边界，不是把禁止
+// 特征写了回来。缺了这个参数，模型照做反而被判违规——实测 appearancePrompt 结尾
+// 那句「无企鹅服装，无动物拟态服装」把整条角色参考在成片渲染前拦死。
+// 判定与 characterPromptBoundaryMismatch 共用同一份实现，不新建第二套词表。
+export function characterReferenceForbiddenHits(value, visualGuardrails = null) {
+  const boundary = visualGuardrails?.fixedCharacterBoundary;
+  if (!boundary || String(value?.characterName || "").trim() !== String(boundary.characterName || "").trim()) return [];
+  return findTerms(characterReferenceBoundaryScanFields(value), collectGlobalCharacterForbiddenTerms(visualGuardrails), {
+    allowNegativeContext: true
+  });
+}
+
+// 一条必需事实被判「写到了」的全部写法：canonicalName 加 terms，与 findMissingGlobalCharacterTraits
+// 实际比对的集合相同（签发时 normalizeGlobalCharacterBoundaryTerms 已把 canonicalName 放进 terms）。
+// 分镜提示词与分镜提前检查的诊断都从这里取，不另列一份。
+export function requiredTraitAcceptedWordings(trait) {
+  return [...new Set([trait?.canonicalName, ...(Array.isArray(trait?.terms) ? trait.terms : [])]
+    .map((term) => String(term || "").trim()).filter(Boolean))];
+}
+
 export function characterReferenceBoundaryMismatch(value, visualGuardrails = null) {
   const boundary = visualGuardrails?.fixedCharacterBoundary;
   if (!boundary || String(value?.characterName || "").trim() !== String(boundary.characterName || "").trim()) return "";
-  const fields = characterReferenceBoundaryScanFields(value);
-  // 否定语境放行：「无企鹅服装、无动物拟态服装」是模型在**服从**边界，不是把禁止
-  // 特征写了回来。缺了这个参数，模型照做反而被判违规——实测 appearancePrompt 结尾
-  // 那句「无企鹅服装，无动物拟态服装」把整条角色参考在成片渲染前拦死。
-  // 判定与 characterPromptBoundaryMismatch 共用同一份实现，不新建第二套词表。
-  const forbiddenHits = findTerms(fields, collectGlobalCharacterForbiddenTerms(visualGuardrails), {
-    allowNegativeContext: true
-  });
+  const forbiddenHits = characterReferenceForbiddenHits(value, visualGuardrails);
   const missingRequiredTraits = characterReferenceMissingRequiredTraits(value, visualGuardrails);
   const mismatches = [];
   if (forbiddenHits.length) mismatches.push(`混入全局边界禁止特征：${forbiddenHits.join("、")}`);

@@ -2,12 +2,25 @@
 // 提示词里再写一遍字面量必然漂移，模型会被要求做 A、却按 B 被拒（已删除的分镜定向修订记过这个教训，见历史文档 docs/animation-plan-revision-实施计划.md）。
 import { DIRECT_SHOT_MAX_DURATION_SECONDS, DIRECT_SHOT_MIN_DURATION_SECONDS } from "./shot-duration-limits.js";
 import { replaceExactlyOnce } from "./prompt-anchors.js";
+import { requiredTraitAcceptedWordings } from "./validation.js";
 
 // 角色画风（2026-10-09）：分镜签发了画风才出现，没有画风时两份提示词与之前逐字相同。
 function artStyleDesignRule(input) {
   return input.artStyle
     ? `画风：全片统一为「${input.artStyle}」。visualDesign 里角色外观、地点与道具的描述都按这个画风来写，不写成真人照片或实拍质感，也不混用别的画风。\n\n`
     : "";
+}
+
+// 固定角色的外观必需事实（2026-10-24）：签发时对固定角色这一行逐字比对，而冻结输入里的
+// characterSettings 虽然带着 terms，模型照样会改写（run-702dbf0c 把「帽子前方的黄色嘴状装饰」写成
+// 「帽子前方有黄色的嘴形装饰」，4 次调用后签发失败）。只在有外观必需事实时出现，没有角色边界时
+// 提示词与之前逐字相同。写法列表与分镜提前检查的诊断共用 requiredTraitAcceptedWordings。
+function fixedCharacterWordingRule(input) {
+  const settings = input.characterSettings;
+  const traits = (Array.isArray(settings?.requiredTraits) ? settings.requiredTraits : []).filter(trait => trait?.scope === "appearance");
+  if (!settings?.characterName || !traits.length) return "";
+  const lines = traits.map(trait => `· ${trait.canonicalName}（可接受写法：${requiredTraitAcceptedWordings(trait).join(" / ")}）`);
+  return `固定角色「${settings.characterName}」：visualDesign 里这个角色的 appearance 必须原样写出下列每一项外观必需事实的一种可接受写法。签发时逐字比对，同义改写、增删一两个字都算缺失：\n${lines.join("\n")}\n\n`;
 }
 
 function artStyleShotRule(input) {
@@ -32,7 +45,7 @@ function baseStoryboardPrompt(input) {
 9. 只使用提供的 Full Story、角色设定和制作参数，不另编候选稿、创意简报或原片要求。所有 sourceSceneIds 引用原 Full Story 的 sceneId；它们用于追溯，可以一对多和多对一。全片剧情段落的承接或有理由的省略必须可追溯。每个 beat 的 sourceSceneIds 都必须出现在其所在片段的 sourceSceneIds 中；beat 演到下一场（如片段末尾的过渡拍已开始演 S2 的动作），就把该场也补进本片段的 sourceSceneIds，不要只标在 beat 上。
 10. 先在内部完成整片安排，然后只输出下面结构。不要输出思维过程、模型自评分数、完整剧情复述、视频提示词或首尾帧提示词。viewingIntent 用 1–3 句说清整片的看点与视听组织方向。
 
-${artStyleDesignRule(input)}输出协议（所有字段必填；可空数组按实际需要，字符串除 original/change/reason 等说明外保持简洁明确）：
+${artStyleDesignRule(input)}${fixedCharacterWordingRule(input)}输出协议（所有字段必填；可空数组按实际需要，字符串除 original/change/reason 等说明外保持简洁明确）：
 {
  "viewingIntent":"",
  "visualDesign":{"characters":[{"name":"","appearance":"本片稳定外观，包含已有事实和必要设计","designedDetails":[]}],"locations":[{"name":"物理地点","sourceSceneIds":["S1"],"layout":"关键物件、门窗、行动区域的关系和支撑位置","lighting":"随剧情时间的物理光线"}],"props":[{"name":"已有道具","appearanceAndSupport":"外观、使用中的支撑与摆放"}]},

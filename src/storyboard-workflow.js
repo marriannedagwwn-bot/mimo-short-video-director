@@ -11,11 +11,11 @@ import { ModelPipelineError } from "./model-errors.js";
 import { storyboardReviewPrompt, validateStoryboardReview } from "./storyboard-review.js";
 import { storyboardRevisionPrompt } from "./storyboard-revision-prompt.js";
 import { applyEditorial, revisionSystem } from "./storyboard-editorial.js";
-import { ensureStoryboardDesign, ensureStoryboardPlan, storyboardDesignFromPlan } from "./storyboard-contract.js";
+import { STORYBOARD_DIAGNOSTIC_CODES, ensureStoryboardDesign, ensureStoryboardPlan, storyboardDesignFromPlan } from "./storyboard-contract.js";
 import { STORYBOARD_DESIGN_MODEL_SCHEMA_NAME, storyboardDesignModelSchema } from "./contracts/storyboard-design-model-schema.js";
 import { storyboardReviewClaudeResponseSchema } from "./contracts/storyboard-review-claude-schema.js";
 import { InputError, OutputContractError, ensureOutputContract, ensureFullStoryMatchesProfile, ensureCharacterReferenceMatchesBoundary,
-  characterReferenceRestorableMissingTraits,
+  characterReferenceRestorableMissingTraits, characterReferenceMissingRequiredTraits, characterReferenceForbiddenHits, requiredTraitAcceptedWordings,
   normalizeBackgroundMusicMode, requireAnimationPlanAspectRatio, NO_BACKGROUND_MUSIC_SENTENCE } from "./validation.js";
 import { normalizeCharacterArtStyle } from "../public/character-art-style.js";
 
@@ -139,6 +139,71 @@ async function call(workflow, settings, stage, prompt, validate, { systemPrompt 
   }
 }
 
+function characterReferenceRow(row, projected) {
+  const bible = projected.characterRegistry;
+  const primary = row.name === bible.protagonist.name;
+  const known = primary ? bible.protagonist : bible.supportingCharacters.find(item => item.name === row.name);
+  return { characterName: row.name, storyRole: primary ? "主角" : known?.storyRole || "", identity: known?.identity || "",
+    appearancePrompt: row.appearance, consistencyTags: primary ? [...(known.traits || [])] : [...(known.personalityFacts || [])],
+    forbiddenChanges: primary ? projected.characterSettings.forbiddenTraits.map(trait => trait.canonicalName) : [] };
+}
+
+// 签发用的角色参考，与下面的提前检查共用这一份拼装，两边不会各拼各的。
+function storyboardCharacterReferences(design, projected, visualGuardrails) {
+  const characterReferencePrompts = design.visualDesign.characters.map(row => characterReferenceRow(row, projected));
+  // 剧情的 characterBible.protagonist.traits 从来没有「必须逐条镜像边界」的契约，所以
+  // 直接拿它当 consistencyTags 会丢掉全局必需角色事实——实测《迷路的蒲公英》缺了 identity 类的
+  // 「学生或村民身份」，5 次模型调用全部一次通过却在这里硬失败、¥1.37 作废。
+  //
+  // 与 AGENTS.md §2.8 给 /api/refine-character-reference 定的同一条既有策略：缺哪条就在
+  // consistencyTags **尾部按签发顺序**补它的 exact canonicalName，冻结 appearancePrompt，
+  // 不用同义词、不重排。判定与扫描共用 characterReferenceRestorableMissingTraits，不另建第二套。
+  //
+  // **补写只覆盖非 appearance scope**（由该 helper 过滤）：外观必需事实缺失意味着模型真把
+  // 长相写错了，补个标签不会让图里长出猫耳，那一档必须继续硬失败。这条不对称是
+  // 整个机制不沦为免检后门的唯一原因，由构造保证。
+  //
+  // 对每一行都调用即可：helper 在 characterName !== boundary.characterName 时恒返回 []，
+  // 对配角是 no-op，不需要在这里再判断谁是固定角色。
+  const boundaryRestores = [];
+  for (const reference of characterReferencePrompts) {
+    const restoredTraits = characterReferenceRestorableMissingTraits(reference, visualGuardrails);
+    if (!restoredTraits.length) continue;
+    reference.consistencyTags = [...reference.consistencyTags, ...restoredTraits];
+    boundaryRestores.push({ characterName: reference.characterName, restoredTraits });
+  }
+  return { characterReferencePrompts, boundaryRestores };
+}
+
+// 签发时那条固定角色边界检查，提前到设计与修订之后跑（2026-10-24）。判定逐字不变：同一份拼装、
+// 先补非外观事实、再用签发用的同一组函数比对，外观事实照旧不补。改的只是「什么时候发现」——
+// 原来要等设计、审阅、修订、终审 4 次调用全部跑完才在签发时硬失败（run-702dbf0c：126k token、
+// 约 15 分钟作废），现在第 1 次调用就报出来，并把可接受写法写进诊断，走这一步已有的那次重试。
+//
+// 只拼固定角色这一行：设计还没过角色覆盖检查时可能多出未登记的名字，给它拼行会在 known 上抛错。
+export function fixedCharacterBoundaryErrors(design, projected, visualGuardrails) {
+  const boundary = visualGuardrails?.fixedCharacterBoundary;
+  const characters = design?.visualDesign?.characters || [];
+  const index = characters.findIndex(row => row?.name === boundary?.characterName);
+  if (!boundary || index < 0) return [];
+  const bible = projected.characterRegistry;
+  if (characters[index].name !== bible.protagonist.name && !bible.supportingCharacters.some(item => item.name === characters[index].name)) return [];
+  const reference = characterReferenceRow(characters[index], projected);
+  reference.consistencyTags.push(...characterReferenceRestorableMissingTraits(reference, visualGuardrails));
+  const path = `/visualDesign/characters/${index}/appearance`;
+  const traits = new Map((boundary.requiredTraits || []).map(trait => [trait.canonicalName, trait]));
+  const errors = characterReferenceMissingRequiredTraits(reference, visualGuardrails).map(name => ({
+    code: STORYBOARD_DIAGNOSTIC_CODES.FIXED_CHARACTER_TRAIT_MISSING, path,
+    reason: `固定角色「${reference.characterName}」这一行（appearance，加上剧情角色表里的身份与特征）没有写出全局必需角色事实「${name}」。签发时逐字比对，同义改写算缺失；剧情那部分这里改不了，请在 appearance 里原样写出下列写法之一：${requiredTraitAcceptedWordings(traits.get(name)).join(" / ")}`
+  }));
+  const forbiddenHits = characterReferenceForbiddenHits(reference, visualGuardrails);
+  if (forbiddenHits.length) errors.push({
+    code: STORYBOARD_DIAGNOSTIC_CODES.FIXED_CHARACTER_FORBIDDEN_TRAIT, path,
+    reason: `固定角色「${reference.characterName}」这一行（appearance，加上剧情角色表里的身份与特征）写进了全局角色边界禁止的特征：${forbiddenHits.join("、")}。请从 appearance 里去掉这些写法。`
+  });
+  return errors;
+}
+
 export async function createStoryboardPlan(workflow, input, { storyEntry = null } = {}) {
   // 每个阶段的实际调用次数与被拦诊断都记在这里，最后如实进 metadata。
   const calls = [];
@@ -157,7 +222,8 @@ export async function createStoryboardPlan(workflow, input, { storyEntry = null 
     guidance = ["演示模式：未进行真实 AI 分镜审查或修订。"];
   } else {
     workflow.assertStageClient(settings, "自主分镜");
-    design = await call(workflow, settings, "storyboardDesign", (dialogueLocked ? storyboardPromptWithLockedDialogue : storyboardPrompt)(projected), value => ensureStoryboardDesign(value, projected), { telemetry: calls, responseSchema: STORYBOARD_DESIGN_RESPONSE_SCHEMA, onStep });
+    const boundaryErrors = (value) => fixedCharacterBoundaryErrors(value, projected, visualGuardrails);
+    design = await call(workflow, settings, "storyboardDesign", (dialogueLocked ? storyboardPromptWithLockedDialogue : storyboardPrompt)(projected), value => ensureStoryboardDesign(value, projected, { extraErrors: boundaryErrors }), { telemetry: calls, responseSchema: STORYBOARD_DESIGN_RESPONSE_SCHEMA, onStep });
     initialReview = await call(workflow, settings, "storyboardReview", storyboardReviewPrompt({ input: projected, plan: design }), value => validateStoryboardReview(value, { input: projected, plan: design }), { telemetry: calls, onStep, ...STORYBOARD_REVIEW_CALL_OPTIONS });
     guidance.push(...initialReview.guidance);
     if (initialReview.items.length) {
@@ -170,6 +236,9 @@ export async function createStoryboardPlan(workflow, input, { storyEntry = null 
         const result = applyEditorial(value, context);
         // 诊断带 code + 指针，否则这一档的重试只能原样重发。判据逐字未改。
         if (result.errors.length) throw new OutputContractError(result.errors.join("；"), result.errors.map(reason => ({ code: "STORYBOARD_REVISION_INVALID", path: "/repairs", reason })));
+        // 修订能改 visualDesign，改掉固定角色的必需写法也要在这一步拦下，走这一步自己那次重试。
+        const boundary = boundaryErrors(result.result);
+        if (boundary.length) throw new OutputContractError(`修订后的分镜未沿用全局角色边界：${boundary.map(entry => `${entry.path} ${entry.reason}`).join("；")}`, boundary);
         return result;
       }, { systemPrompt: revisionSystem, telemetry: calls, onStep });
       design = merged.result;
@@ -181,35 +250,7 @@ export async function createStoryboardPlan(workflow, input, { storyEntry = null 
       }
     }
   }
-  const bible = projected.characterRegistry;
-  const characterReferencePrompts = design.visualDesign.characters.map(row => {
-    const primary = row.name === bible.protagonist.name;
-    const known = primary ? bible.protagonist : bible.supportingCharacters.find(item => item.name === row.name);
-    return { characterName: row.name, storyRole: primary ? "主角" : known?.storyRole || "", identity: known?.identity || "",
-      appearancePrompt: row.appearance, consistencyTags: primary ? [...(known.traits || [])] : [...(known.personalityFacts || [])],
-      forbiddenChanges: primary ? projected.characterSettings.forbiddenTraits.map(trait => trait.canonicalName) : [] };
-  });
-  // 剧情的 characterBible.protagonist.traits 从来没有「必须逐条镜像边界」的契约，所以
-  // 直接拿它当 consistencyTags 会丢掉全局必需角色事实——实测《迷路的蒲公英》缺了 identity 类的
-  // 「学生或村民身份」，5 次模型调用全部一次通过却在这里硬失败、¥1.37 作废。
-  //
-  // 与 AGENTS.md §2.8 给 /api/refine-character-reference 定的同一条既有策略：缺哪条就在
-  // consistencyTags **尾部按签发顺序**补它的 exact canonicalName，冻结 appearancePrompt，
-  // 不用同义词、不重排。判定与扫描共用 characterReferenceRestorableMissingTraits，不另建第二套。
-  //
-  // **补写只覆盖非 appearance scope**（由该 helper 过滤）：外观必需事实缺失意味着模型真把
-  // 长相写错了，补个标签不会让图里长出猫耳，那一档必须继续在下面硬失败。这条不对称是
-  // 整个机制不沦为免检后门的唯一原因，由构造保证。
-  //
-  // 对每一行都调用即可：helper 在 characterName !== boundary.characterName 时恒返回 []，
-  // 对配角是 no-op，不需要在这里再判断谁是固定角色。
-  const boundaryRestores = [];
-  for (const reference of characterReferencePrompts) {
-    const restoredTraits = characterReferenceRestorableMissingTraits(reference, visualGuardrails);
-    if (!restoredTraits.length) continue;
-    reference.consistencyTags = [...reference.consistencyTags, ...restoredTraits];
-    boundaryRestores.push({ characterName: reference.characterName, restoredTraits });
-  }
+  const { characterReferencePrompts, boundaryRestores } = storyboardCharacterReferences(design, projected, visualGuardrails);
   const plan = {
     promptSchemaVersion: STORYBOARD_PLAN_VERSION, selectedVariantId: projected.fullStory.selectedVariantId, title: projected.fullStory.title,
     productionStrategy: { format: "storyboard_video", targetAspectRatio: projected.targetAspectRatio, targetRuntimeSeconds: projected.targetDurationSeconds,

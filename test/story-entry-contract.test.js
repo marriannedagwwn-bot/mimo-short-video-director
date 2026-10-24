@@ -180,7 +180,11 @@ test("视频入口的完整剧情、角色边界与 4.0 分镜提示词与改动
   const variant = deriveStoryCandidateProjections(mockVariants({ creatorProfile: profile, count: 1 })).variants[0];
   assert.equal(sha(fullStoryPrompt({ creatorProfile: profile, visualGuardrails: vg, variant, targetDurationSeconds: 60 })), "664de9a52cc957abeda4497e0216132c799d7ba592723bd7613211d4fa42f056");
   assert.equal(sha(fullStoryPrompt({ creatorProfile: profile, visualGuardrails: vg, variant })), "1ca4695b91a3198a6125182a1e8c5ca544f44851472525f12e0090b929e7388f");
-  assert.equal(sha(visualGuardrailsPrompt({ creatorProfile: profile, referenceAnalysis: {}, sourceScriptReconstruction: { scenes: [] } })), "c67aed18ee3699a3068f54946ffaf835920e70870ff1099b5658682d5389fb2c");
+  // 2026-10-24 有意修改：角色边界加了一条共用规则 userWordingTerm（外观必需事实的 terms 要收用户原话），
+  // 只多这一行：去掉它就逐字回到原来的 c67aed18…（docs/animation-storyboard-implementation-2026-09-21.md）。
+  assert.equal(sha(visualGuardrailsPrompt({ creatorProfile: profile, referenceAnalysis: {}, sourceScriptReconstruction: { scenes: [] } })), "fc820f3367b9237976fec22a6f287dc37756229f84899f069151039c0cbfc4b8");
+  assert.equal(sha(visualGuardrailsPrompt({ creatorProfile: profile, referenceAnalysis: {}, sourceScriptReconstruction: { scenes: [] } })
+    .replace(`${CHARACTER_BOUNDARY_SHARED_RULES.userWordingTerm}\n`, "")), "c67aed18ee3699a3068f54946ffaf835920e70870ff1099b5658682d5389fb2c");
   // 2026-10-13 有意修改：设计提示词第 6、8 条补了进出画面方向与相邻片段方向接续，按同一份输入重算。
   // 2026-10-19 有意修改：导演方法换成分镜写法（空镜、先局部后脸、动作拆三镜、人声写进 soundDesign），
   // 第 3、6、7 条与协议里 soundDesign 的说明跟着改，按同一份输入重算（docs/storyboard-style-2026-10-19.md）。

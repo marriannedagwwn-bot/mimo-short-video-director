@@ -35,6 +35,8 @@ export const CHARACTER_BOUNDARY_SHARED_RULES = Object.freeze({
   userOverCommonSense: "- 用户明确肯定或否定的设定高于模型常识。配饰、服装、图案、兴趣、临时扮演和文化风格不得升级为真实器官或固定身份。",
   traitKinds: "- requiredTraits 是后续必须沿用的全局事实；allowedTraits 是可按剧情选择但不能改变含义的事实；forbiddenTraits 是后续正向内容不得出现的事实。",
   traitTerms: "- requiredTraits、allowedTraits、forbiddenTraits 中每项自行给出 canonicalName 和 terms；canonicalName 是你判断的标准名称，terms 只补充本次边界接受的其他同义表达，不来自程序词典；服务端会确定性地把 canonicalName 纳入最终匹配词集合。",
+  // 2026-10-24：签发的写法里没有用户原话时，下游照原话写会在分镜签发时被判缺失（run-702dbf0c）。
+  userWordingTerm: "- 外观类 requiredTraits 的证据出自「固定角色」那一栏时，terms 里必须有一条是用户原文描述这项特征的那段连续原话，逐字照抄，不改字、不加字（原文写「A上有B」，terms 就要收「A上有B」，不能只收改写成的「A上的B」）；canonicalName 仍可写你判断的标准名称。后续阶段常照用户原话写这个角色，而下游逐字比对，只收改写过的写法会把照原话写的正文判成缺失。这段原话若含有某条 forbiddenTraits 的写法，要改的是那条禁止写法，不是丢掉原话。",
   negation: "- **否定短语（「无 X」「没有 X」「不戴 X」）只写进 forbiddenTraits，不要写进 requiredTraits。** 禁止清单本身就表达「不得出现 X」，把「无 X」再列为必需事实，等于要求正文写出一个含有禁止词的字符串，与上一条直接冲突。用户说「无头饰」时，正确做法是 forbiddenTraits 加一条「头饰」，requiredTraits 不加任何条目。",
   scopes: "- scope 只允许 identity、appearance、personality、occupation、storyFunction；evidenceLevel 只允许 explicit 或 inferred。",
   conflicts: "- 用户文字自身存在无法消解的明确冲突时写入 unresolvedConflicts，不得擅自选择一方。存在 unresolvedConflicts 时工作流会阻断，不进入后续阶段。",
@@ -80,6 +82,7 @@ ${rules.semantic}
 ${rules.userOverCommonSense}
 ${rules.traitKinds}
 ${rules.traitTerms}
+${rules.userWordingTerm}
 ${REQUIRED_FORBIDDEN_OVERLAP_RULE}
 ${rules.negation}
 ${rules.scopes}

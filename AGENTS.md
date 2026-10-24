@@ -842,6 +842,8 @@ DeepSeek 当前只允许用于纯文本阶段：
 
 **取名本身曾会取错，而这条提示词会让模型照写错名（2026-10-05 修复）**：`extractFixedCharacterName` 的取名标签（含单字「叫」）此前在全文任何位置都算——「…开心时会发出嗷呜的叫声」取成「声」、「喜欢叫奶奶陪她玩」取成「奶奶陪她玩」、「大家都叫她小白」取成「她小白」；本条提示词让模型逐字照写，错名于是通过逐字比较并被签发（改前这类输入会在这一步报错停下）。现在标签的起点必须落在第一段（第一个分隔符之前）才算取名，否则按「第一段即名字」的既有规则；标签词表不增不减。当时本机 5 份历史设定按新规则取名逐字不变，所以已签发边界不受影响；「她叫小白」「名叫小白子」「角色名：小白子」照旧按标签取名。
 
+**分镜签发前的固定角色边界检查提前到设计与修订，角色边界的写法要收用户原话（2026-10-24）。** run-702dbf0c：用户写「帽子上有黄色的嘴」，角色边界签成「帽子上的黄色的嘴 / 黄色嘴形帽饰 / 帽子前方的黄色嘴状装饰」，剧情照原话写、分镜改写成「帽子前方有黄色的嘴形装饰」，设计、审阅、修订、终审 4 次调用全部通过，最后签发时才因外观事实缺失硬失败（126k token、约 15 分钟）。判定逐字不变、外观事实照旧不补，改了三处：①`fixedCharacterBoundaryErrors`（`src/storyboard-workflow.js`）在设计结构通过后、修订合并后各跑一次与签发相同的检查（同一份拼装 `storyboardCharacterReferences`），缺外观事实报 `STORYBOARD_FIXED_CHARACTER_TRAIT_MISSING`、混进禁止写法报 `STORYBOARD_FIXED_CHARACTER_FORBIDDEN_TRAIT`，路径 `/visualDesign/characters/<i>/appearance`，诊断写出全部可接受写法，走这两步已有的那次重试、禁止第三次；签发时的检查保留。②设计提示词在有外观必需事实时逐条列出可接受写法（写法列表与诊断共用 `requiredTraitAcceptedWordings`，没有角色边界时提示词逐字不变）。③角色边界提示词的共用规则 `userWordingTerm`（视频版与剧情入口两份都有）：外观必需事实的证据出自固定角色一栏时，terms 要收一条用户原话。③只是提示词、没有闸门：这一步单次调用、被拦不重试（`docs/待解决项.md` 第 15、20、24 条），上闸门要先加重试。磁盘上 20 份边界里外观事实 124 条，不含用户原话的只有 2 条、都是这段咕嘎原文（MiMo 签 5 次漏 2 次）。重试能不能救回来只有单元测试与离线回放证明。详见 `docs/animation-storyboard-implementation-2026-09-21.md` 末节。
+
 
 `groundingSeal` 与 `fixedCharacterBoundary.boundarySignature` 所用的两把密钥必须持久化在状态根目录（`.grounding-key` / `.character-boundary-key`，可由 `WORKFLOW_GROUNDING_KEY` / `WORKFLOW_CHARACTER_BOUNDARY_KEY` 覆盖），跨进程重启保持不变。缺失即生成，损坏、长度不足或环境变量非法一律硬失败，**禁止静默回退为随机生成**——换钥会让全部已落盘 Artifact 的签名作废。已落盘 Artifact 不得用新密钥重新签发。
 

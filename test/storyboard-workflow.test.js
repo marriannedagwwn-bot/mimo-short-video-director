@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { WorkflowService } from "../src/workflow.js";
 import { ensureOutputContract } from "../src/validation.js";
-import { storyboardInput, singleShotPromptInput } from "../src/storyboard-workflow.js";
+import { storyboardInput, singleShotPromptInput, fixedCharacterBoundaryErrors } from "../src/storyboard-workflow.js";
 import { ensureStoryboardPlan, storyboardDesignFromPlan } from "../src/storyboard-contract.js";
 import { fullStoryCharacterRegistryInput, mergeFullStoryCharacterRegistry, mockFullStoryCharacterRegistry } from "../src/full-story-character-registry.js";
 import { applyEditorial } from "../src/storyboard-editorial.js";
 import { catalog } from "../src/storyboard-editorial-utils.js";
 import { validateStoryboardReview } from "../src/storyboard-review.js";
-import { storyboardRetryPrompt, storyboardReviewRetryPrompt } from "../src/storyboard-prompts.js";
+import { storyboardPrompt, storyboardPromptWithLockedDialogue, storyboardRetryPrompt, storyboardReviewRetryPrompt } from "../src/storyboard-prompts.js";
 import { storyboardReviewClaudeResponseSchema } from "../src/contracts/storyboard-review-claude-schema.js";
 import { renderStoryboard } from "../public/storyboard-render.js";
 import { MODEL_OUTPUT_LOG_SCOPES } from "../src/full-model-output-log.js";
@@ -498,4 +498,147 @@ test("消费者面：浏览器必须把补写说明显示出来，旧 Plan 则�
   // 旧 Plan 没有这个键、以及补过但为空时，整段都不显示。
   assert.doesNotMatch(renderStoryboard(animationPlan, helpers), /缺了全局必需角色事实/u);
   assert.doesNotMatch(renderStoryboard(animationPlan, {...helpers, metadata: {storyboard: {boundaryRestores: []}}}), /缺了全局必需角色事实/u);
+});
+
+// ---------------------------------------------------------------------------
+// 签发时那条固定角色边界检查，提前到设计与修订之后（2026-10-24）。依据是 run-702dbf0c 的真实失败：
+// 角色边界签的写法「帽子上的黄色的嘴 / 黄色嘴形帽饰 / 帽子前方的黄色嘴状装饰」里没有用户原话
+// 「帽子上有黄色的嘴」，剧情照原话写、分镜又改写成「帽子前方有黄色的嘴形装饰」，设计、审阅、修订、
+// 终审 4 次调用全部通过，最后签发时才硬失败（126k token、约 15 分钟作废）。判定逐字不变，外观事实
+// 照旧不补，改的只是第 1 次调用就报出来、带上可接受写法、走这一步已有的那次重试。
+// ---------------------------------------------------------------------------
+
+const WOLF_EAR_TRAIT = {...APPEARANCE_TRAIT, terms: ["狼耳", "灰色狼耳朵"]};
+function withAppearance(design, name, append) {
+  const next = structuredClone(design);
+  const row = next.visualDesign.characters.find(item => item.name === name);
+  row.appearance = `${row.appearance}${append}`;
+  return next;
+}
+
+test("设计漏了外观必需事实：第 1 次调用就带可接受写法打回，第 2 次写上就正常签发", async () => {
+  const {workflow, input, design, registry} = await retryFixture();
+  const traitInput = withRequiredTrait(workflow, input, WOLF_EAR_TRAIT);
+  const index = design.visualDesign.characters.findIndex(row => row.name === "阿岚");
+  const fixed = withAppearance(design, "阿岚", "，头顶一对狼耳");
+  const requests = scriptedWorkflow(workflow, [registry, design, fixed, emptyReview]);
+  const {animationPlan, metadata} = await workflow.createAnimationPlanWithMetadata(traitInput);
+
+  assert.equal(requests.length, 4);
+  assert.deepEqual(storyboardDesignFromPlan(animationPlan), fixed);
+  assert.ok(requests[2].prompt.startsWith(requests[1].prompt));
+  assert.match(requests[2].prompt, new RegExp(`/visualDesign/characters/${index}/appearance .*STORYBOARD_FIXED_CHARACTER_TRAIT_MISSING`, "u"));
+  assert.match(requests[2].prompt, /「狼耳」.*狼耳 \/ 灰色狼耳朵/u);
+  const design1 = metadata.storyboard.calls.find(row => row.stage === "storyboardDesign");
+  assert.equal(design1.providerCalls, 2);
+  assert.deepEqual(design1.rejections[0].details.map(row => [row.code, row.path]),
+    [["STORYBOARD_FIXED_CHARACTER_TRAIT_MISSING", `/visualDesign/characters/${index}/appearance`]]);
+});
+
+test("两次设计都漏：在设计这一步就 fail closed，不再去调审阅，两次诊断都在", async () => {
+  const {workflow, input, design, registry} = await retryFixture();
+  const requests = scriptedWorkflow(workflow, [registry, design, design]);
+  const error = await workflow.createAnimationPlan(withRequiredTrait(workflow, input, WOLF_EAR_TRAIT)).then(() => null, err => err);
+
+  assert.ok(error, "两次都漏必须失败");
+  assert.equal(requests.length, 3, "第 4 次调用（审阅）不得发生");
+  const attempts = (error.diagnostics || []).map(detail => detail.metadata?.attempt);
+  assert.deepEqual([...new Set(attempts)], [1, 2]);
+  assert.ok(error.diagnostics.every(detail => detail.code === "STORYBOARD_FIXED_CHARACTER_TRAIT_MISSING"));
+});
+
+test("剧情角色表里已有可接受写法、或缺的是非外观事实：不打回，一次通过", async () => {
+  const {workflow, input, design, registry} = await retryFixture();
+  const story = await storyboardInput(workflow, input);
+  const tag = story.projected.characterRegistry.protagonist.traits?.[0] || story.projected.characterRegistry.protagonist.identity;
+  assert.ok(tag, "夹具的主角要有可扫描的身份或特征");
+  // 一种写法恰好写在剧情角色表里（签发时也扫这一部分），另一种不在任何地方。
+  const inTags = {...APPEARANCE_TRAIT, canonicalName: "剧情里写过的外观", terms: ["剧情里写过的外观", tag]};
+  for (const trait of [inTags, STORY_FUNCTION_TRAIT]) {
+    const requests = scriptedWorkflow(workflow, [registry, design, emptyReview]);
+    const {metadata} = await workflow.createAnimationPlanWithMetadata(withRequiredTrait(workflow, input, trait));
+    assert.equal(requests.length, 3, trait.canonicalName);
+    assert.equal(metadata.storyboard.calls.find(row => row.stage === "storyboardDesign").providerCalls, 1);
+  }
+});
+
+test("同一份设计里还有别的确定性错误时，边界问题合在同一次重试里一起报", async () => {
+  const {workflow, input, design, registry} = await retryFixture();
+  const broken = structuredClone(design);
+  broken.shotPlan[0].transitionIn.type = "cut";
+  const fixed = withAppearance(design, "阿岚", "，头顶一对狼耳");
+  const requests = scriptedWorkflow(workflow, [registry, broken, fixed, emptyReview]);
+  await workflow.createAnimationPlan(withRequiredTrait(workflow, input, WOLF_EAR_TRAIT));
+  assert.match(requests[2].prompt, /STORYBOARD_START_TRANSITION/u);
+  assert.match(requests[2].prompt, /STORYBOARD_FIXED_CHARACTER_TRAIT_MISSING/u);
+});
+
+test("修订把必需写法改掉了：修订这一步拦下并重试，不拖到签发", async () => {
+  const {workflow, input, design, registry} = await retryFixture();
+  const withEar = withAppearance(design, "阿岚", "，头顶一对狼耳");
+  const index = withEar.visualDesign.characters.findIndex(row => row.name === "阿岚");
+  const evidence = catalog(withEar, "P").find(row => row.path.join("/") === `visualDesign/characters/${index}/appearance`);
+  const report = {strengths: ["保留已有动作"], guidance: [], items: [{ref: "I1", reportedProblem: "外观描述偏长", originalEvidence: [{id: evidence.id, quote: "头顶一对狼耳"}], guidance: "精简"}]};
+  const dropEar = {repairs: [{ref: "I1", disposition: "revise", note: "删掉耳朵描写", patches: [{path: ["visualDesign", "characters", String(index), "appearance"], find: "，头顶一对狼耳", replace: ""}]}]};
+  const keep = {repairs: [{ref: "I1", disposition: "guidance_only", patches: [], note: "耳朵是角色边界的必需事实，保留"}]};
+  const requests = scriptedWorkflow(workflow, [registry, withEar, report, dropEar, keep]);
+  const {animationPlan, metadata} = await workflow.createAnimationPlanWithMetadata(withRequiredTrait(workflow, input, WOLF_EAR_TRAIT));
+
+  assert.equal(requests.length, 5);
+  assert.deepEqual(storyboardDesignFromPlan(animationPlan), withEar);
+  const revision = metadata.storyboard.calls.find(row => row.stage === "storyboardRevision");
+  assert.equal(revision.providerCalls, 2);
+  assert.equal(revision.rejections[0].details[0].code, "STORYBOARD_FIXED_CHARACTER_TRAIT_MISSING");
+  assert.match(requests[4].prompt, /STORYBOARD_FIXED_CHARACTER_TRAIT_MISSING/u);
+});
+
+test("回放 run-702dbf0c：提前检查在设计这一步就报出「帽子上的黄色的嘴」", () => {
+  // 摘自那次 Run 已签发的角色边界、剧情主角与设计输出（只保留检查用到的字段，原文逐字）。
+  const trait = (canonicalName, terms, scope = "appearance") => ({canonicalName, terms, scope});
+  const visualGuardrails = {fixedCharacterBoundary: {
+    characterName: "咕嘎",
+    requiredTraits: [
+      trait("黑白企鹅连体衣", ["黑白企鹅连体衣", "企鹅造型连体衣", "企鹅连体衣", "黑白企鹅服"]),
+      trait("帽子上的黄色的嘴", ["帽子上的黄色的嘴", "黄色嘴形帽饰", "帽子前方的黄色嘴状装饰"]),
+      trait("绿色小包", ["绿色小包", "斜挎绿色小包", "绿色挎包"]),
+      trait("短发", ["短发", "短头发"]),
+      trait("小女孩", ["小女孩", "幼女", "女童"], "identity")
+    ],
+    forbiddenTraits: [
+      trait("真实鸟喙器官", ["真实鸟喙器官", "真实鸟嘴", "鸟类喙部长在脸上"]),
+      trait("真实企鹅翅膀手臂", ["真实企鹅翅膀手臂", "鸟类翅膀手臂", "长羽毛的手臂"]),
+      trait("成年女性体型", ["成年女性体型", "成年女性身体", "成熟女性体型"]),
+      trait("其他动物造型连体衣", ["其他动物造型连体衣", "其他动物造型的连体衣"])
+    ]
+  }};
+  const projected = {
+    characterRegistry: {protagonist: {name: "咕嘎", identity: "穿黑白企鹅连体衣、斜挎绿色小包的短发小女孩，治愈系日常动画短片的固定角色",
+      traits: ["短发", "幼童小女孩体型", "黑白企鹅连体衣，帽子上有黄色的嘴", "斜挎绿色小包", "企鹅连体衣帽子可戴起"]}, supportingCharacters: []},
+    characterSettings: {forbiddenTraits: visualGuardrails.fixedCharacterBoundary.forbiddenTraits}
+  };
+  const design = {visualDesign: {characters: [{name: "咕嘎", appearance: "二维日系动画治愈风的小女孩：短发、幼童体型，圆脸大眼，穿黑白企鹅连体衣（帽子前方有黄色的嘴形装饰，本片全程把帽子戴起），斜挎一只绿色小包，鼓腮时脸蛋泛红", designedDetails: []}]}};
+
+  const errors = fixedCharacterBoundaryErrors(design, projected, visualGuardrails);
+  assert.deepEqual(errors.map(row => [row.code, row.path]), [["STORYBOARD_FIXED_CHARACTER_TRAIT_MISSING", "/visualDesign/characters/0/appearance"]]);
+  assert.match(errors[0].reason, /「帽子上的黄色的嘴」.*帽子上的黄色的嘴 \/ 黄色嘴形帽饰 \/ 帽子前方的黄色嘴状装饰$/u);
+  // 照诊断原样写进任一写法，同一个判定就通过。
+  const fixed = structuredClone(design);
+  fixed.visualDesign.characters[0].appearance = fixed.visualDesign.characters[0].appearance.replace("帽子前方有黄色的嘴形装饰", "帽子前方的黄色嘴状装饰");
+  assert.deepEqual(fixedCharacterBoundaryErrors(fixed, projected, visualGuardrails), []);
+  // 设计里没有固定角色、或没有角色边界时不检查。
+  assert.deepEqual(fixedCharacterBoundaryErrors({visualDesign: {characters: [{name: "路人", appearance: ""}]}}, projected, visualGuardrails), []);
+  assert.deepEqual(fixedCharacterBoundaryErrors(design, projected, null), []);
+});
+
+test("设计提示词：有外观必需事实时逐条列出可接受写法，没有角色边界时逐字不变", async () => {
+  const {workflow, input} = await fixture();
+  const {projected} = await storyboardInput(workflow, withRequiredTrait(workflow, input, WOLF_EAR_TRAIT));
+  const prompt = storyboardPrompt(projected);
+  assert.match(prompt, /固定角色「阿岚」：visualDesign 里这个角色的 appearance 必须原样写出/u);
+  assert.match(prompt, /· 狼耳（可接受写法：狼耳 \/ 灰色狼耳朵）/u);
+  // 非外观事实不列：它们签发时会补进标签。
+  assert.doesNotMatch(prompt, /· 阿岚（可接受写法/u);
+  assert.match(storyboardPromptWithLockedDialogue(projected), /· 狼耳（可接受写法：狼耳 \/ 灰色狼耳朵）/u);
+  const {characterSettings, ...withoutBoundary} = projected;
+  assert.doesNotMatch(storyboardPrompt(withoutBoundary), /可接受写法/u);
 });
