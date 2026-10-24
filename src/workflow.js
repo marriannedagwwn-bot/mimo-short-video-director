@@ -4,7 +4,11 @@ import { STORY_ENTRY_SYSTEM_PROMPT, storyEntryCandidatePrompt, storyEntryFullSto
 import { STORY_ENTRY_VARIANT_ID, STORY_MODE_FULL_TEXT, normalizeStorySource } from "../public/story-entry.js";
 import { STORY_CANDIDATE_REVIEW_MODEL_SCHEMA_NAME, storyCandidateReviewModelSchema } from "./contracts/story-candidate-review-model-schema.js";
 import { REFERENCE_ANALYSIS_MODEL_SCHEMA_NAME, referenceAnalysisModelSchema } from "./contracts/reference-analysis-model-schema.js";
-import { mockAnalysis, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryEntryCandidates, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails, mockDirectorAgentTurn, mockOneSentenceEdit } from "./mock.js";
+import { mockAnalysis, mockBrief, mockFullStoryPromiseCheck, mockNarrativeFullStory, mockReconstruction, mockStoryCandidateReview, mockStoryCandidateRevision, mockStoryEntryCandidates, mockStoryQualityRepair, mockStoryQualityReview, mockVariants, mockVisualGuardrails, mockDirectorAgentTurn, mockOneSentenceEdit, mockReferenceRewrite } from "./mock.js";
+import { REFERENCE_REWRITE_MODEL_SCHEMA_NAME, ensureReferenceRewriteContract, referenceRewriteClaudeSchema, referenceRewriteMimoSchema } from "./reference-rewrite.js";
+import { REFERENCE_REWRITE_SYSTEM_PROMPT, referenceRewritePrompt, referenceRewriteRetryPrompt } from "./reference-rewrite-prompts.js";
+import { REFERENCE_REWRITE_DEFAULT_SETTING, REFERENCE_REWRITE_MAX_VIDEO_SECONDS, REFERENCE_REWRITE_PROVIDERS, REFERENCE_REWRITE_STAGE } from "../public/reference-rewrite.js";
+import { isValidStoryDurationSeconds } from "../public/story-duration.js";
 import { fullStoryCharacterFacts, isNarrativeFullStory } from "./full-story-contract.js";
 import { FULL_STORY_CAST_SCHEMA_VERSION } from "../public/full-story-format.js";
 import { ANIMATION_PLAN_VERSION_UNSUPPORTED, SHOT_VIDEO_PROMPT_VERSION, STORYBOARD_PLAN_VERSION, isStoryboardPlan } from "../public/storyboard-plan.js";
@@ -250,12 +254,15 @@ export class WorkflowService {
       override.maxCompletionTokens,
       finiteNumber(defaults.maxCompletionTokensByProvider?.[provider], defaults.maxCompletionTokens)
     );
+    // effort 只有参考片仿写的默认设置带（Claude、xhigh），页面不能改；别家忽略。其余阶段的返回形状不变。
+    const effort = provider === "Claude" ? String(defaults.effort || "") : "";
     return {
       provider,
       model,
       maxCompletionTokens,
       requestTimeoutMs: finiteNumber(override.requestTimeoutMs, defaults.requestTimeoutMs),
-      client: provider ? this.clients[provider] || null : null
+      client: provider ? this.clients[provider] || null : null,
+      ...(effort ? { effort } : {})
     };
   }
 
@@ -598,6 +605,95 @@ export class WorkflowService {
         rejections,
         stageKey: DIRECTOR_AGENT_STAGE
       })
+    };
+  }
+
+  /**
+   * 参考片仿写（2026-10-24）：看参考片的接触表与去配乐后的转写，写「原片拆解＋四篇类似剧本」。
+   *
+   * 素材（接触表图片、转写稿）由后台任务在本机做好再交进来（src/reference-rewrite-materials.js），
+   * 这里只负责调模型与校验。只出 Artifact 内容，不签发 storySource：选中的一稿由用户填进粘贴框。
+   * 只允许 Claude 与 MiMo；Claude 是全工作流唯一收图的阶段（经 requestCompletion 的 frames）。
+   * 走 coordinator，最多 2 次调用、禁止第三次；重试只发校验诊断，不把失败的输出发回去。审核拦截不重试。
+   */
+  async createReferenceRewrite(input) {
+    const materials = normalizeReferenceRewriteInput(input);
+    if (!this.hasLiveClient) {
+      // 演示模式没有调用模型，调用次数如实写 0。
+      return {
+        result: ensureReferenceRewriteContract(mockReferenceRewrite(materials)),
+        metadata: promiseCheckMetadata({ provider: "demo", model: "demo", providerCalls: 0, stageKey: REFERENCE_REWRITE_STAGE }),
+        settings: { provider: "demo", model: "demo", effort: "" }
+      };
+    }
+    const settings = this.resolveStage(REFERENCE_REWRITE_STAGE, input);
+    if (!REFERENCE_REWRITE_PROVIDERS.includes(settings.provider)) {
+      throw new InputError(`参考片仿写要看接触表图片，只能用 ${REFERENCE_REWRITE_PROVIDERS.join(" 或 ")}，当前选的是 ${settings.provider || "未指定"}；请在模型设置里给「参考片仿写」换回来。`);
+    }
+    this.assertStageClient(settings, stageLabel(REFERENCE_REWRITE_STAGE));
+    const claude = settings.provider === "Claude";
+
+    let providerCalls = 0;
+    const rejections = [];
+    const outputLogWriter = this.stageModelOutputLogWriters?.get(REFERENCE_REWRITE_STAGE) || null;
+    const recordAttempt = outputLogWriter?.enabled ? (attempt) => outputLogWriter.recordAttempt(attempt) : null;
+    let result;
+    try {
+      result = await this.modelCallCoordinator.runJson({
+        client: settings.client,
+        request: {
+          prompt: referenceRewritePrompt(materials),
+          systemPrompt: REFERENCE_REWRITE_SYSTEM_PROMPT,
+          frames: materials.frames,
+          model: settings.model,
+          maxCompletionTokens: settings.maxCompletionTokens,
+          requestTimeoutMs: settings.requestTimeoutMs,
+          // Claude 用结构化输出与本阶段的 effort；MiMo 用约束解码。两家各自忽略对方的字段。
+          ...(claude
+            ? { effort: settings.effort || "", claudeResponseSchema: { name: REFERENCE_REWRITE_MODEL_SCHEMA_NAME, schema: referenceRewriteClaudeSchema() } }
+            : { responseSchema: { name: REFERENCE_REWRITE_MODEL_SCHEMA_NAME, schema: referenceRewriteMimoSchema() } })
+        },
+        provider: settings.provider || "",
+        stage: REFERENCE_REWRITE_STAGE,
+        maxProviderCalls: 2,
+        attemptObserver: async (attempt) => {
+          providerCalls += 1;
+          if (!recordAttempt) return;
+          try {
+            await recordAttempt(attempt);
+          } catch {
+            // 观测失败不改变结论。
+          }
+        },
+        retryTokenLimit: (value) => value,
+        retryPrompt: ({ originalPrompt }) => {
+          const last = rejections[rejections.length - 1];
+          return last?.details?.length ? referenceRewriteRetryPrompt({ originalPrompt, details: last.details }) : originalPrompt;
+        },
+        validate: (candidate) => {
+          try {
+            return ensureReferenceRewriteContract(candidate);
+          } catch (error) {
+            if (error instanceof OutputContractError) {
+              rejections.push({ message: error.message, details: Array.isArray(error.details) ? error.details : [] });
+            }
+            throw error;
+          }
+        }
+      });
+    } catch (error) {
+      throw candidateReviewPipelineFailure(error, rejections);
+    }
+    return {
+      result,
+      metadata: promiseCheckMetadata({
+        provider: settings.provider || "",
+        model: settings.model || "",
+        providerCalls,
+        rejections,
+        stageKey: REFERENCE_REWRITE_STAGE
+      }),
+      settings: { provider: settings.provider || "", model: settings.model || "", effort: claude ? settings.effort || "" : "" }
     };
   }
 
@@ -2438,7 +2534,10 @@ function normalizeStageDefaults(stageDefaults = null, fallback = {}) {
     oneSentenceEdit: { provider, model: "", maxCompletionTokens: 32768 },
     // 导演助手（2026-10-09）：沿用默认文本模型。输出只有一个动作编号加一两句话，
     // 调用时一律关闭思考，8192 足够。新阶段一上线就登记，不重演体检「漏在表外」那一次。
-    directorAgent: { provider, model: "", maxCompletionTokens: 8192 }
+    directorAgent: { provider, model: "", maxCompletionTokens: 8192 },
+    // 参考片仿写（2026-10-24）：不跟随默认供应商，固定 Claude Opus 5.5、effort xhigh（10-23 对照实验唯一复现的配置）。
+    // Claude 没配置时就是「选了 Claude 但未配置」，在调模型之前 InputError，不自动换 MiMo。
+    referenceRewrite: { ...REFERENCE_REWRITE_DEFAULT_SETTING, maxCompletionTokens: null }
   };
   const merged = { ...defaults, ...(stageDefaults || {}) };
   return Object.fromEntries(Object.entries(merged).map(([stage, value]) => [stage, normalizeStageSetting(value, defaults[stage] || defaults.analysis)]));
@@ -2459,6 +2558,9 @@ function normalizeStageSetting(value = {}, fallback = {}) {
     if (provider && cap) byProvider[provider] = cap;
   }
   if (Object.keys(byProvider).length) setting.maxCompletionTokensByProvider = byProvider;
+  // 只有参考片仿写带 effort；不带时设置形状逐字不变。
+  const effort = String(value.effort || fallback.effort || "").trim().toLowerCase();
+  if (effort) setting.effort = effort;
   return setting;
 }
 
@@ -2517,8 +2619,67 @@ function stageLabel(stage) {
     storyQualityReview: "剧情体检",
     storyQualityRepair: "剧情按问题修改",
     oneSentenceEdit: "一句话修改",
-    directorAgent: "导演助手"
+    directorAgent: "导演助手",
+    referenceRewrite: "参考片仿写"
   })[stage] || stage;
+}
+
+// 参考片仿写的素材由后台任务在本机做好；这里只核形状，一切不对都在调模型之前 InputError。
+const REFERENCE_REWRITE_MAX_SHEETS = 12;
+const REFERENCE_REWRITE_TRANSCRIPT_MAX_CHARS = 60000;
+
+function normalizeReferenceRewriteInput(input = {}) {
+  const frames = input.frames;
+  if (!Array.isArray(frames) || !frames.length || frames.length > REFERENCE_REWRITE_MAX_SHEETS) {
+    throw new InputError(`参考片仿写需要 1–${REFERENCE_REWRITE_MAX_SHEETS} 张接触表`);
+  }
+  frames.forEach((frame, index) => {
+    if (!/^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/u.test(String(frame?.dataUrl || ""))) {
+      throw new InputError(`第 ${index + 1} 张接触表不是 JPEG 的 base64 data URL`);
+    }
+  });
+  const sheets = input.contactSheets?.sheets;
+  const fps = Number(input.contactSheets?.fps);
+  const columns = Number(input.contactSheets?.columns);
+  const rows = Number(input.contactSheets?.rows);
+  if (!Array.isArray(sheets) || sheets.length !== frames.length || !(fps > 0) || !Number.isInteger(columns) || !Number.isInteger(rows) || columns < 1 || rows < 1) {
+    throw new InputError("contactSheets 的说明与接触表张数对不上");
+  }
+  const durationSeconds = Number(input.durationSeconds);
+  if (!(durationSeconds > 0) || durationSeconds > REFERENCE_REWRITE_MAX_VIDEO_SECONDS + 1) {
+    throw new InputError(`参考视频时长必须在 ${REFERENCE_REWRITE_MAX_VIDEO_SECONDS} 秒以内`);
+  }
+  const targetDurationSeconds = Number(input.targetDurationSeconds);
+  if (!isValidStoryDurationSeconds(targetDurationSeconds)) throw new InputError("targetDurationSeconds 必须是 20–180 的整数秒");
+  const transcriptText = typeof input.transcriptText === "string" ? input.transcriptText.trim() : "";
+  if (!transcriptText || transcriptText.length > REFERENCE_REWRITE_TRANSCRIPT_MAX_CHARS) {
+    throw new InputError(`转写稿必须是 1–${REFERENCE_REWRITE_TRANSCRIPT_MAX_CHARS} 字的文字`);
+  }
+  const profile = input.creatorProfile || {};
+  const creatorProfile = {
+    fixedCharacter: String(profile.fixedCharacter || "").trim(),
+    vertical: String(profile.vertical || "").trim(),
+    constraints: String(profile.constraints || "").trim()
+  };
+  if (!creatorProfile.fixedCharacter || !creatorProfile.vertical) throw new InputError("参考片仿写需要固定角色与赛道");
+  return {
+    frames: frames.map((frame) => ({ dataUrl: frame.dataUrl })),
+    contactSheets: {
+      fps,
+      columns,
+      rows,
+      sheets: sheets.map((sheet) => ({
+        startSeconds: Number(sheet.startSeconds) || 0,
+        endSeconds: Number(sheet.endSeconds) || 0,
+        cells: Math.max(1, Math.round(Number(sheet.cells) || 0))
+      }))
+    },
+    videoTitle: String(input.videoTitle || "").slice(0, 200),
+    durationSeconds,
+    targetDurationSeconds,
+    transcriptText,
+    creatorProfile
+  };
 }
 
 function retryTokenLimit(value) {

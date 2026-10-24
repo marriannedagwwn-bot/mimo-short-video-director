@@ -834,3 +834,32 @@ body.story-source-mode .not-story-source { display: none !important; }
   .director-agent-toggle { padding: 0 9px; }
   .director-agent { top: auto; left: 0; width: 100%; height: 72vh; border-left: 0; border-top: 1px solid var(--line); border-radius: 18px 18px 0 0; box-shadow: 0 -18px 48px rgba(56, 45, 31, .14); }
 }
+
+/* 参考片仿写（2026-10-24）：参考视频入口的第二个按钮、结果面板、剧情入口粘贴框上方的四稿列表。 */
+.reference-rewrite-controls { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.reference-rewrite-controls .outline-button { width: 100%; }
+.reference-rewrite-hint { margin: 8px 0 0; color: var(--muted); font-size: var(--fs-xs); line-height: 1.6; }
+.reference-rewrite-section { padding-top: 72px; }
+.reference-rewrite-status { margin: 0 0 18px; color: var(--muted); font-size: var(--fs-sm); }
+.reference-rewrite-status.error { color: var(--danger, #b3261e); }
+.reference-rewrite-original { padding: 26px 30px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow); }
+.reference-rewrite-original h3 { margin: 0 0 10px; }
+.reference-rewrite-original h4 { margin: 18px 0 6px; font-size: var(--fs-sm); }
+.reference-rewrite-summary { line-height: 1.8; }
+.reference-rewrite-dialogue table { width: 100%; margin-top: 8px; border-collapse: collapse; font-size: var(--fs-sm); }
+.reference-rewrite-dialogue th, .reference-rewrite-dialogue td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.reference-rewrite-drafts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 18px; }
+.reference-rewrite-draft { display: flex; flex-direction: column; gap: 8px; padding: 22px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow); }
+.reference-rewrite-draft h3 { margin: 0; }
+.reference-rewrite-draft p { margin: 0; line-height: 1.7; font-size: var(--fs-sm); }
+.reference-rewrite-direction { color: var(--muted); }
+.reference-rewrite-draft details { margin-top: auto; }
+.reference-rewrite-script { max-height: 420px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: inherit; font-size: var(--fs-sm); line-height: 1.7; }
+.reference-rewrite-draft .primary-button { align-self: flex-start; }
+.reference-rewrite-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 16px; color: var(--muted); }
+.reference-rewrite-picker-wrap { margin-bottom: 12px; }
+.reference-rewrite-picker-title { margin: 0 0 8px; font-size: var(--fs-sm); }
+.reference-rewrite-picker-title small { color: var(--muted); }
+.reference-rewrite-picker { display: flex; flex-wrap: wrap; gap: 8px; }
+.reference-rewrite-picker button { padding: 7px 12px; font-size: var(--fs-xs); }
+.reference-rewrite-picker .is-active, .reference-rewrite-picker .is-active:hover { border-color: var(--ink); background: var(--ink); color: #fff; }

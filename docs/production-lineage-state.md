@@ -105,6 +105,15 @@ storySource + guardrails + full story
           └─ shotVideo:V1:<shotId>
 ```
 
+参考片仿写（2026-10-24）在参考视频 Run 上另有一份独立的 Artifact，不进上面的依赖链：
+
+```text
+（Run 元数据里的 sourceVideoDigest，参考视频本身不是 Artifact）
+  └─ referenceRewrite（任务 referenceRewrite 提交，没有 Artifact 依赖）
+```
+
+它与 AI 导演那条链可以同在一个 Run 上（目标不同、互不认领）；它不签发 `storySource`，选中的一稿由页面填进剧情入口的粘贴框，开剧情 Run 时照常由浏览器送原文，所以剧情 Run 与它之间没有 lineage 关系。任务在 Run 的 `media-work/` 下建临时目录做抽帧、分轨与转写，用完即删；页面关闭时随 Run 一起清理。Task Store 不存提示词与图片。详见 `docs/reference-rewrite-2026-10-24.md`。
+
 依赖清单由服务端在任务 `prepare` 里按 Run 元数据决定（`resolveDependencies` 返回剧情链的精确 revision/digest），不听浏览器的；视频 Run 仍按原清单冻结。
 
 依赖记录的是实际 revision/digest，不只是 `variant.id` 或 `shotId`。上游提交新 revision 后，仍引用旧 revision 的所有下游 Artifact 会递归变为 `stale`。

@@ -2,6 +2,7 @@
 //
 // 走官方 SDK @anthropic-ai/sdk（package.json 锁死版本），只做纯文本阶段，与 DeepSeek 同一档：
 // 要看图或视频的阶段一律拒绝（generateJsonWithMedia 直接报错，workflow 与页面各有一道关）。
+// 唯一例外是参考片仿写（2026-10-24）：它经 requestCompletion 的 frames 发接触表图片，见 buildClaudeRequestBody。
 // 对外接口与 DeepSeek / MiMo / 千问客户端一样，返回同样的 7 个字段，所以 coordinator、
 // 截断与审核判定、记账、Durable 心跳都不用为 Claude 加分支。
 //
@@ -212,18 +213,20 @@ export class ClaudeClient {
 
   async requestCompletion({
     prompt,
+    frames = [],
     model = null,
     maxCompletionTokens = null,
     systemPrompt = null,
     requestTimeoutMs = null,
     thinking = null,
+    effort = null,
     claudeResponseSchema = null
   } = {}) {
-    // 关不掉思考等问题在这里就抛出，一次请求都不发。
+    // 关不掉思考、图片格式不对等问题在这里就抛出，一次请求都不发。
     const body = buildClaudeRequestBody(
       this.config,
-      { prompt },
-      { model, maxCompletionTokens, systemPrompt, thinking, claudeResponseSchema }
+      { prompt, frames },
+      { model, maxCompletionTokens, systemPrompt, thinking, effort, claudeResponseSchema }
     );
     // 流式请求不设总时长上限，只判空闲；requestTimeoutMs 只为统一签名保留。
     const idleTimeoutMs = resolveStreamIdleTimeoutMs(this.config);
@@ -388,16 +391,20 @@ export function unwrapWholeCodeFence(text) {
   return { content: match[1], unwrapped: true };
 }
 
-export function buildClaudeRequestBody(config, { prompt }, overrides = {}) {
+// 图片输入（2026-10-24，参考片仿写）：只有调用方给了 frames 才把 content 写成「图片在前、文字在后」的数组；
+// 不给时 content 仍是原来那个字符串，已有阶段的请求体逐字不变。generateJsonWithMedia 照旧拒绝，
+// 原来四个看图看视频的阶段仍不能选 Claude；能给 Claude 发图的只有走 requestCompletion 的参考片仿写。
+// effort 可以按次覆盖（参考片仿写默认 xhigh），不给时用全局 CLAUDE_API_EFFORT。
+export function buildClaudeRequestBody(config, { prompt, frames = [] }, overrides = {}) {
   const model = overrides.model || config.model || CLAUDE_DEFAULT_MODEL;
-  const effort = normalizeClaudeEffort(config.effort);
+  const effort = normalizeClaudeEffort(overrides.effort || config.effort);
   const body = {
     model,
     max_tokens: overrides.maxCompletionTokens ?? config.maxCompletionTokens ?? CLAUDE_OUTPUT_TOKEN_CEILING,
     system: typeof overrides.systemPrompt === "string" && overrides.systemPrompt.trim()
       ? overrides.systemPrompt
       : SYSTEM_PROMPT,
-    messages: [{ role: "user", content: prompt }],
+    messages: [{ role: "user", content: claudeUserContent(prompt, frames) }],
     stream: true,
     thinking: claudeThinkingConfig(model, resolveThinkingOverride(overrides.thinking), effort)
   };
@@ -411,6 +418,27 @@ export function buildClaudeRequestBody(config, { prompt }, overrides = {}) {
     body.output_config = { ...body.output_config, format: { type: "json_schema", schema } };
   }
   return body;
+}
+
+// 只收 base64 的 data URL，类型限官方支持的四种。格式不对用带码的 ModelResponseError，
+// 不用 TypeError（协调器会把 TypeError 当成网络故障重试）。
+// https://platform.claude.com/docs/en/build-with-claude/vision（2026-10-24 核对）
+const CLAUDE_IMAGE_DATA_URL = /^data:(image\/(?:jpeg|png|gif|webp));base64,([A-Za-z0-9+/]+=*)$/u;
+
+function claudeUserContent(prompt, frames) {
+  const list = Array.isArray(frames) ? frames : [];
+  if (!list.length) return prompt;
+  if (typeof prompt !== "string" || !prompt.trim()) {
+    throw new ModelResponseError("带图片的请求必须有文字提示词", "", 0, { provider: PROVIDER, code: "MODEL_MEDIA_INVALID" });
+  }
+  const images = list.map((frame, index) => {
+    const match = CLAUDE_IMAGE_DATA_URL.exec(String(frame?.dataUrl || ""));
+    if (!match) {
+      throw new ModelResponseError(`第 ${index + 1} 张图片不是 jpeg/png/gif/webp 的 base64 data URL`, "", 0, { provider: PROVIDER, code: "MODEL_MEDIA_INVALID" });
+    }
+    return { type: "image", source: { type: "base64", media_type: match[1], data: match[2] } };
+  });
+  return [...images, { type: "text", text: prompt }];
 }
 
 // 默认开着自适应思考（四个型号都是），display: summarized 让页面能显示「已推理 N 字」；

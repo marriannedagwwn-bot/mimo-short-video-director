@@ -23,6 +23,26 @@
 
 详见 `docs/one-sentence-edit-2026-10-11.md`。
 
+## 参考片仿写（2026-10-24）
+
+参考视频入口多一个按钮「参考片仿写：写四篇类似剧本」。上传参考视频、填好固定角色和赛道后点它，服务端在本机抽帧、去掉配乐（Bandit v2 Multi）、转写台词（whisper），再让 Claude Opus 5.5 写「原片拆解＋四篇类似的剧本」。一次约 12 分钟、约 1 美元。
+
+- 结果面板列出原片概要、台词表、原片好看在哪，和四张稿件卡；「下载四稿」导出 Markdown。
+- 某一稿点「用这一稿开拍」，页面切到「从剧情开始 · 粘贴完整故事」并把这一稿填进输入框，你看过、改好再点「开始拆镜头」，后面照常拆镜头、分镜、出图、出视频。切过去会清掉参考视频 Run，四稿只在这个页面里留到刷新，要留着请先下载。
+- 模型设置里的「参考片仿写」只能选 Claude 或 MiMo，默认 Claude Opus 5.5（effort xhigh）。
+
+要在本机配好两样工具，缺了按钮不能点，并会写明缺什么：
+
+```bash
+REFERENCE_REWRITE_BANDIT_DIR=/Volumes/MacOS/AI/Bandit-v2-Multi
+REFERENCE_REWRITE_WHISPER_BIN=~/.local/bin/whisper
+# 可选，写出来的是默认值；模型文件不在时直接报错，不会自动下载
+# REFERENCE_REWRITE_WHISPER_MODEL=small
+# REFERENCE_REWRITE_WHISPER_MODEL_DIR=~/.cache/whisper
+```
+
+ffmpeg 要在命令行里能找到。详见 `docs/reference-rewrite-2026-10-24.md`。
+
 ## 角色画风（2026-10-09）
 
 「设定创作宇宙」里原来的「角色表情规则」换成了「角色画风」，默认「二维日系动画」，可以从下拉预设里选，也可以自己写，清空就是不指定。它写进下一次生成的 4.0 分镜，之后每条单镜提示词和角色参考图都按这个画风来；已生成的分镜保持生成时的画风。起因是 4.0 分镜此前没有画风，角色参考图容易出写实照片，被 Seedance 当成真人拒收。

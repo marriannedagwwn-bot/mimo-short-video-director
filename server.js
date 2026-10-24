@@ -85,7 +85,22 @@ import { ProductionStateError, contentDigest, lineageRef, normalizeArtifactId, s
 import { ProductionRunCoordinator } from "./src/production-run-coordinator.js";
 import { DurableTaskStore, DURABLE_TASK_TERMINAL_STATUSES } from "./src/durable-task-store.js";
 import { DurableTaskManager } from "./src/durable-task-manager.js";
-import { currentDurableTaskContext, runWithDurableTaskContext } from "./src/durable-task-context.js";
+import { currentDurableTaskContext, durableTaskHeartbeat, runWithDurableTaskContext } from "./src/durable-task-context.js";
+import {
+  REFERENCE_REWRITE_ARTIFACT_ID,
+  REFERENCE_REWRITE_ARTIFACT_TYPE,
+  REFERENCE_REWRITE_DEFAULT_SETTING,
+  REFERENCE_REWRITE_SCHEMA_VERSION,
+  REFERENCE_REWRITE_STAGE,
+  REFERENCE_REWRITE_STEPS,
+  REFERENCE_REWRITE_TASK_KIND
+} from "./public/reference-rewrite.js";
+import {
+  REFERENCE_REWRITE_STEP_STALL_MS,
+  buildReferenceRewriteMaterials,
+  demoReferenceRewriteMaterials,
+  referenceRewriteToolStatus
+} from "./src/reference-rewrite-materials.js";
 import { readModelUsageFromError, runWithUsageAccounting } from "./src/token-usage.js";
 import { resolveBuildIdentity } from "./src/build-identity.js";
 import { withProviderTokenCaps } from "./src/stage-token-caps.js";
@@ -146,6 +161,8 @@ const STAGE_MODEL_OUTPUT_LOG_SCOPES = [
   MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_REVISION,
   MODEL_OUTPUT_LOG_SCOPES.STORYBOARD_REVIEW_FINAL,
   MODEL_OUTPUT_LOG_SCOPES.SHOT_VIDEO_PROMPT,
+  // 参考片仿写（2026-10-24）同样走 coordinator，由 workflow 接 attemptObserver。
+  MODEL_OUTPUT_LOG_SCOPES.REFERENCE_REWRITE,
   // 一句话修改（2026-10-11）同样走 coordinator，由 workflow 接 attemptObserver。
   MODEL_OUTPUT_LOG_SCOPES.ONE_SENTENCE_EDIT,
   // 导演助手（2026-10-09）同样走 coordinator，由 workflow 接 attemptObserver。
@@ -576,6 +593,7 @@ function taskDefinitionForRequest(body = {}) {
   if (kind === "fullStory") return fullStoryTaskDefinition({ projectId, runId, input });
   if (kind === "animationPlan") return animationPlanTaskDefinition({ projectId, runId, input });
   if (kind === "shotVideoPrompt") return shotVideoPromptTaskDefinition({ projectId, runId, input });
+  if (kind === REFERENCE_REWRITE_TASK_KIND) return referenceRewriteTaskDefinition({ projectId, runId, input });
   if (kind === "characterReferenceRefine") return characterReferenceRefineTaskDefinition({ projectId, runId, input });
   if (kind === "characterReferenceImages") return characterReferenceImagesTaskDefinition({ projectId, runId, input });
   if (kind === "shotVideo") return shotVideoTaskDefinition({ projectId, runId, input });
@@ -1344,6 +1362,117 @@ function shotVideoPromptTaskDefinition({ projectId, runId, input }) {
   });
 }
 
+// 参考片仿写（2026-10-24）：在参考视频的 Run 上，本机抽帧、去配乐、转写，再让模型写「原片拆解＋四篇剧本」，
+// 提交 Artifact referenceRewrite。设计见 docs/reference-rewrite-2026-10-24.md。
+// 创建前就把能确定的条件查完（视频 Run、绑着页面工作区、副本在、固定角色在、本机工具齐全），不满足 4xx、不建任务。
+// 只出四稿：选中的一稿由用户填进「从剧情开始 · 粘贴完整故事」，这里不碰 storySource。
+function referenceRewriteTaskDefinition({ projectId, runId, input }) {
+  const targetDurationSeconds = Number(input.targetDurationSeconds);
+  if (!isValidStoryDurationSeconds(targetDurationSeconds)) throw new InputError("targetDurationSeconds 必须是 20–180 的整数秒");
+  return artifactRouteTaskDefinition({
+    projectId, runId, kind: REFERENCE_REWRITE_TASK_KIND, pool: "workflow",
+    artifactId: REFERENCE_REWRITE_ARTIFACT_ID, artifactType: REFERENCE_REWRITE_ARTIFACT_TYPE,
+    dependencyIds: [], modelStages: [REFERENCE_REWRITE_STAGE], rawInput: input,
+    prepareInput: async (run) => {
+      assertRunEntryMode(run, "video");
+      const workspaceId = String(run.metadata?.browserWorkspaceId || "");
+      const sourceVideoDigest = String(run.metadata?.sourceVideoDigest || "").toLowerCase();
+      if (!workspaceId || !sourceVideoDigest) {
+        throw new ProductionStateError("参考片仿写要用页面上传的参考视频；这个 Run 没有绑定页面工作区或参考视频。", {
+          code: "TASK_SOURCE_MEDIA_REQUIRED", httpStatus: 409
+        });
+      }
+      const profile = plainObject(run.metadata?.creatorProfile);
+      const creatorProfile = {
+        fixedCharacter: String(profile.fixedCharacter || "").trim(),
+        vertical: String(profile.vertical || "").trim(),
+        constraints: String(profile.constraints || "").trim()
+      };
+      if (!creatorProfile.fixedCharacter || !creatorProfile.vertical) throw new InputError("参考片仿写需要固定角色与赛道，请先在「设定创作宇宙」里填好。");
+      if (workflow.mode === "live") {
+        await browserWorkspaceStore.getSource(workspaceId).catch((error) => {
+          throw new ProductionStateError("参考视频副本不在了，请重新上传同一支视频。", {
+            code: "TASK_SOURCE_MEDIA_REQUIRED", httpStatus: 409, cause: error
+          });
+        });
+        const tools = await referenceRewriteHealth();
+        if (!tools.available) {
+          throw new ProductionStateError(tools.reason, { code: "REFERENCE_REWRITE_TOOLS_UNAVAILABLE", httpStatus: 409 });
+        }
+      }
+      const videoName = String(run.metadata?.sourceVideo?.name || "");
+      return {
+        projectId,
+        runId,
+        workspaceId,
+        sourceVideoDigest,
+        creatorProfile,
+        targetDurationSeconds,
+        videoTitle: videoName.replace(/\.[A-Za-z0-9]{1,5}$/u, ""),
+        demoDurationSeconds: Number(run.metadata?.sourceVideo?.duration) || targetDurationSeconds,
+        modelOverrides: input.modelOverrides
+      };
+    },
+    invoke: (trustedInput) => runReferenceRewrite(trustedInput)
+  });
+}
+
+async function runReferenceRewrite(trusted) {
+  const stepMax = REFERENCE_REWRITE_STEPS.length;
+  const onStep = async (step) => {
+    const stepIndex = REFERENCE_REWRITE_STEPS.findIndex((item) => item.key === step) + 1;
+    await durableTaskHeartbeat({ step, stepIndex, stepMax }, { stallMs: REFERENCE_REWRITE_STEP_STALL_MS });
+  };
+  const materials = workflow.mode === "live"
+    ? await buildReferenceRewriteMaterials({
+      sourcePath: (await browserWorkspaceStore.getSource(trusted.workspaceId)).path,
+      expectedDigest: trusted.sourceVideoDigest,
+      workRoot: path.join(productionStateStore.runDirectory(trusted.projectId, trusted.runId), "media-work"),
+      lifetimeFile: productionStateStore.manifestPath(trusted.projectId, trusted.runId),
+      tools: config.referenceRewrite,
+      onStep,
+      heartbeat: () => durableTaskHeartbeat({}, { stallMs: REFERENCE_REWRITE_STEP_STALL_MS })
+    })
+    : demoReferenceRewriteMaterials(trusted.demoDurationSeconds);
+  await onStep("write");
+  const { result, metadata, settings } = await workflow.createReferenceRewrite({
+    frames: materials.frames,
+    contactSheets: materials.contactSheets,
+    transcriptText: materials.transcriptText,
+    durationSeconds: materials.durationSeconds,
+    targetDurationSeconds: trusted.targetDurationSeconds,
+    videoTitle: trusted.videoTitle,
+    creatorProfile: trusted.creatorProfile,
+    modelOverrides: trusted.modelOverrides
+  });
+  const call = metadata?.[REFERENCE_REWRITE_STAGE] || {};
+  return {
+    schemaVersion: REFERENCE_REWRITE_SCHEMA_VERSION,
+    original: result.original,
+    drafts: result.drafts,
+    transcript: materials.transcriptText,
+    materials: { ...materials.materials, durationSeconds: materials.durationSeconds, targetDurationSeconds: trusted.targetDurationSeconds },
+    model: {
+      provider: settings.provider,
+      model: settings.model,
+      effort: settings.effort,
+      providerCalls: Number(call.providerCalls) || 0,
+      rejectedAttempts: Array.isArray(call.rejections) ? call.rejections.length : 0
+    }
+  };
+}
+
+// 本机工具状态缓存 30 秒：健康检查轮询时不必每次都跑 ffmpeg -version。
+let referenceRewriteHealthCache = null;
+async function referenceRewriteHealth() {
+  if (workflow.mode !== "live") return { available: true, demo: true, reason: "", missing: [] };
+  const now = Date.now();
+  if (referenceRewriteHealthCache && now - referenceRewriteHealthCache.at < 30_000) return referenceRewriteHealthCache.value;
+  const value = await referenceRewriteToolStatus(config.referenceRewrite);
+  referenceRewriteHealthCache = { at: now, value };
+  return value;
+}
+
 function shotVideoTaskDefinition({ projectId, runId, input }) {
   const variantId = safeIdentifier(input.variantId || input.selectedVariantId, "variantId");
   const shotId = safeIdentifier(input.shotId || input.shot?.shotId, "shotId");
@@ -1851,6 +1980,8 @@ const server = http.createServer(async (request, response) => {
         providers: providerHealth,
         modelStages,
         stageHealth: fullStageHealth,
+        // 参考片仿写的本机工具（Bandit、whisper、ffmpeg）是否齐全；缺什么写在 reason 里，页面照抄。
+        referenceRewrite: await referenceRewriteHealth(),
         imageProvider: "Jimeng",
         imageModel: config.jimeng.model,
         imageProviderConfigured: config.jimeng.enabled,
@@ -2054,12 +2185,12 @@ function buildStageDefaults(config, { mimoClient = null, qwenClient = null } = {
   const provider = resolveDefaultLlmProvider(config);
   // 按阶段换成别家时，上限取那一家自己的阶段配置，不沿用默认供应商这一档（src/stage-token-caps.js）。
   // 同一张阶段表给每家各算一次，只取上限；模型名等其余字段仍只用默认供应商那份。
-  return withProviderTokenCaps(stageDefaultsFor(provider, config), {
+  return withReferenceRewriteDefault(withProviderTokenCaps(stageDefaultsFor(provider, config), {
     Qwen: stageDefaultsFor("Qwen", config),
     MiMo: stageDefaultsFor("MiMo", config),
     DeepSeek: stageDefaultsFor("DeepSeek", config),
     Claude: stageDefaultsFor("Claude", config)
-  });
+  }));
 }
 
 function stageDefaultsFor(provider, config) {
@@ -2132,7 +2263,27 @@ function stageDefaultsFor(provider, config) {
     ),
     // 导演助手（2026-10-09）：沿用默认文本模型。输出只有一个动作编号加一两句话，
     // 调用时一律关闭思考（src/thinking-override.js），8192 足够。
-    directorAgent: stageSetting(provider, source.model, 8192)
+    directorAgent: stageSetting(provider, source.model, 8192),
+    // 参考片仿写（2026-10-24）：这里只为了让每家各算一份上限（Claude 128000、MiMo 131072）；
+    // 供应商、型号与 effort 在 buildStageDefaults 里固定成 Claude Opus 5.5 xhigh，不跟随默认供应商。
+    referenceRewrite: stageSetting(provider, source.model, source.maxCompletionTokens)
+  };
+}
+
+// 参考片仿写的默认设置不跟随 DEFAULT_LLM_PROVIDER（10-23 对照实验只有 Claude Opus 5.5 xhigh 复现了效果）。
+// Claude 没配置时页面显示这一步不可用、调用前 InputError，不自动换 MiMo；用户可在模型设置里显式改成 MiMo。
+function withReferenceRewriteDefault(defaults) {
+  const current = defaults[REFERENCE_REWRITE_STAGE] || {};
+  const capByProvider = current.maxCompletionTokensByProvider || {};
+  return {
+    ...defaults,
+    [REFERENCE_REWRITE_STAGE]: {
+      ...current,
+      provider: REFERENCE_REWRITE_DEFAULT_SETTING.provider,
+      model: REFERENCE_REWRITE_DEFAULT_SETTING.model,
+      effort: REFERENCE_REWRITE_DEFAULT_SETTING.effort,
+      maxCompletionTokens: capByProvider[REFERENCE_REWRITE_DEFAULT_SETTING.provider] ?? current.maxCompletionTokens
+    }
   };
 }
 

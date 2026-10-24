@@ -44,6 +44,21 @@ import {
 } from "./story-entry.js";
 import { fullStoryControlView, fullStoryTaskView } from "./full-story-control-ui.js";
 import {
+  REFERENCE_REWRITE_ARTIFACT_ID,
+  REFERENCE_REWRITE_PROVIDERS,
+  REFERENCE_REWRITE_STAGE,
+  REFERENCE_REWRITE_TASK_KIND,
+  referenceRewriteDraftStoryText,
+  referenceRewriteMarkdown
+} from "./reference-rewrite.js";
+import {
+  referenceRewriteDraftPickerHtml,
+  referenceRewriteHint,
+  referenceRewriteProgressText,
+  referenceRewriteResultHtml,
+  referenceRewriteTextIsDraft
+} from "./reference-rewrite-ui.js";
+import {
   isActiveTask, latestTaskForTarget, rememberTaskSnapshot, taskStatusView, taskErrorMessage
 } from "./task-status-ui.js";
 import { buildCharacterReferenceImagePrompt } from "./character-reference-prompt.js";
@@ -123,6 +138,13 @@ const state = {
   // （切换入口会先清掉当前 Run）。故事草稿只留在输入框里，不进任何浏览器存储。
   entryMode: "video",
   storyMode: STORY_MODE_FULL_TEXT,
+  // 参考片仿写（2026-10-24）：referenceRewrite 是当前 Run 的 Artifact 内容；referenceRewriteDrafts 是切到
+  // 剧情入口时复制下来的四稿，只在页面内存里（刷新即清），不进任何浏览器存储。
+  referenceRewrite: null,
+  referenceRewriteRunning: false,
+  referenceRewriteHealth: { available: false, reason: "正在检查参考片仿写要用的本机工具…" },
+  referenceRewriteDrafts: null,
+  referenceRewriteStatus: { text: "", tone: "" },
   file: null,
   previewUrl: null,
   videoDataUrl: null,
@@ -221,6 +243,9 @@ const elements = {
   frames: $("#frames"), frameStatus: $("#frameStatus"), replace: $("#replaceVideo"), transcript: $("#transcript"),
   fixedCharacter: $("#fixedCharacter"), vertical: $("#vertical"), constraints: $("#constraints"), characterArtStyle: $("#characterArtStyle"), characterArtStylePresets: $("#characterArtStylePresets"), variantCount: $("#variantCount"),
   run: $("#runWorkflow"), error: $("#errorMessage"), modelState: $("#modelState"),
+  runReferenceRewrite: $("#runReferenceRewrite"), referenceRewriteHint: $("#referenceRewriteHint"),
+  referenceRewriteSection: $("#referenceRewriteSection"), referenceRewriteStatus: $("#referenceRewriteStatus"),
+  referenceRewriteResult: $("#referenceRewriteResult"), referenceRewritePicker: $("#referenceRewritePicker"),
   entryModeVideo: $("#entryModeVideo"), entryModeStory: $("#entryModeStory"),
   storyModeFullText: $("#storyModeFullText"), storyModeCharacterOnly: $("#storyModeCharacterOnly"),
   storySourceField: $("#storySourceField"), storySourceText: $("#storySourceText"), storySourceCounter: $("#storySourceCounter"),
@@ -308,6 +333,9 @@ const MODEL_STAGE_DEFS = [
   { key: "oneSentenceEdit", label: "一句话修改", hint: "按你在导演助手里说的话写修改稿，只出修改稿", capability: "文本模型", capabilityKind: "text", optional: true },
   // 导演助手（2026-10-09）：理解对话栏里打的字，只提议下一步；每次调用都关闭思考。用户点对话栏才调用。
   { key: "directorAgent", label: "导演助手", hint: "理解对话栏里打的字，只提议下一步（思考关闭）", capability: "文本模型", capabilityKind: "text", optional: true },
+  // 参考片仿写（2026-10-24）：看接触表与去配乐后的转写写四稿。默认 Claude Opus 5.5（effort xhigh，页面不能改），
+  // 只能选 Claude 或 MiMo；这是 Claude 唯一能收图的一步。用户点「参考片仿写」才调用。
+  { key: REFERENCE_REWRITE_STAGE, label: "参考片仿写", hint: "看抽帧图和去配乐后的台词，写原片拆解和四篇剧本", capability: "看图写稿", capabilityKind: "vision", optional: true },
   { key: "characterReference", label: "人物图修正", hint: "根据上传图片修正角色描述", capability: "视觉模型", capabilityKind: "vision" },
   { key: "imageGeneration", label: "图片生成", hint: "角色参考图", capability: "图片生成", capabilityKind: "image", providerLocked: true, optional: true },
   { key: "shotVideo", label: "镜头视频", hint: "全能参考单镜头视频候选", capability: "视频生成", capabilityKind: "video", providers: ["Seedance", "MiniMax"], optional: true }
@@ -410,6 +438,7 @@ async function init() {
     state.modelStages = health.modelStages || {};
     state.stageHealth = health.stageHealth || {};
     state.providers = health.providers || {};
+    state.referenceRewriteHealth = health.referenceRewrite || { available: false, reason: "服务端没有报告参考片仿写的状态，请重启服务。" };
     state.modelOverrides = readModelOverrides();
     applyEffectiveModelState();
     state.imageModel = health.imageModel || state.imageModel;
@@ -452,6 +481,16 @@ function bindEvents() {
   elements.dropzone.addEventListener("drop", (event) => event.dataTransfer.files[0] && handleFile(event.dataTransfer.files[0]));
   elements.replace.addEventListener("click", () => elements.input.click());
   elements.run.addEventListener("click", runWorkflow);
+  elements.runReferenceRewrite.addEventListener("click", () => { void runReferenceRewrite(); });
+  elements.referenceRewriteResult.addEventListener("click", (event) => {
+    const use = event.target.closest("[data-reference-draft-use]");
+    if (use) { void useReferenceRewriteDraft(Number(use.dataset.referenceDraftUse)); return; }
+    if (event.target.closest("[data-reference-rewrite-download]")) downloadReferenceRewrite();
+  });
+  elements.referenceRewritePicker.addEventListener("click", (event) => {
+    const fill = event.target.closest("[data-reference-draft-fill]");
+    if (fill) fillReferenceRewriteDraft(Number(fill.dataset.referenceDraftFill));
+  });
   elements.terminateDirector.addEventListener("click", () => controlDirectorPipeline("terminate"));
   elements.pauseDirector.addEventListener("click", () => {
     const task = state.taskSnapshots[state.directorTaskId];
@@ -1045,6 +1084,183 @@ async function runWorkflow() {
 }
 
 // ---------------------------------------------------------------------------
+// 参考片仿写（2026-10-24）
+//
+// 在参考视频入口里点「参考片仿写」：服务端在本机抽帧、去配乐、转写，再让模型写「原片拆解＋四篇剧本」，
+// 提交 Artifact referenceRewrite。选中的一稿填进「从剧情开始 · 粘贴完整故事」，用户看过再点「开始拆镜头」。
+// 切过去时当前 Run（含四稿）会被删掉；四稿另复制一份在页面内存里，刷新即清，不进任何浏览器存储。
+
+function referenceRewriteReadiness() {
+  if (isStoryEntryMode()) return { ready: false, reason: "" };
+  if (sourceLoading || !browserWorkspace.workspace) return { ready: false, reason: "页面还在恢复上一次的进度。" };
+  if (state.referenceRewriteRunning) return { ready: false, reason: "参考片仿写正在进行。" };
+  const health = state.referenceRewriteHealth || {};
+  if (!health.available) return { ready: false, reason: health.reason || "参考片仿写现在用不了。" };
+  const setting = effectiveStageSetting(REFERENCE_REWRITE_STAGE);
+  if (state.mode !== "demo" && !REFERENCE_REWRITE_PROVIDERS.includes(setting.provider)) {
+    return { ready: false, reason: `参考片仿写只能用 ${REFERENCE_REWRITE_PROVIDERS.join(" 或 ")}，请在模型设置里改回来。` };
+  }
+  if (state.mode !== "demo" && !state.providers?.[setting.provider]?.configured) {
+    return { ready: false, reason: `参考片仿写用的是 ${setting.provider}，但服务端没有配置它。` };
+  }
+  if (!state.file || state.frames.length < 3) {
+    return { ready: false, reason: state.production.runId ? "要在这个 Run 上仿写，需要重新上传同一个参考视频。" : "先上传参考视频。" };
+  }
+  if (!elements.fixedCharacter.value.trim() || !elements.vertical.value.trim()) return { ready: false, reason: "先在左边填好固定角色和垂直赛道。" };
+  return { ready: true, reason: "" };
+}
+
+function renderReferenceRewriteControls() {
+  if (!elements.runReferenceRewrite) return;
+  const readiness = referenceRewriteReadiness();
+  elements.runReferenceRewrite.disabled = !readiness.ready;
+  const setting = effectiveStageSetting(REFERENCE_REWRITE_STAGE);
+  const health = state.referenceRewriteHealth || {};
+  elements.referenceRewriteHint.textContent = health.available && readiness.ready
+    ? referenceRewriteHint({ available: true, demo: state.mode === "demo", provider: setting.provider, model: setting.model })
+    : readiness.reason || referenceRewriteHint(health);
+}
+
+function setReferenceRewriteStatus(text, tone = "") {
+  state.referenceRewriteStatus = { text, tone };
+  renderReferenceRewritePanel();
+}
+
+function renderReferenceRewritePanel() {
+  if (!elements.referenceRewriteSection) return;
+  const result = state.referenceRewrite;
+  const status = state.referenceRewriteStatus || {};
+  const visible = Boolean(result || state.referenceRewriteRunning || status.text);
+  elements.referenceRewriteSection.classList.toggle("hidden", !visible);
+  elements.referenceRewriteStatus.textContent = status.text || "";
+  elements.referenceRewriteStatus.classList.toggle("error", status.tone === "error");
+  elements.referenceRewriteResult.innerHTML = result ? referenceRewriteResultHtml(result, { escape }) : "";
+}
+
+function renderReferenceRewritePicker() {
+  if (!elements.referenceRewritePicker) return;
+  const drafts = state.referenceRewriteDrafts?.drafts;
+  const visible = Boolean(drafts?.length && isStoryEntryMode() && state.storyMode === STORY_MODE_FULL_TEXT && !state.production.runId);
+  elements.referenceRewritePicker.classList.toggle("hidden", !visible);
+  elements.referenceRewritePicker.innerHTML = visible
+    ? referenceRewriteDraftPickerHtml(drafts, { escape, currentText: elements.storySourceText.value })
+    : "";
+}
+
+// 没有 Run 时照「启动 AI 导演」的写法先建一个参考视频 Run；之后点 AI 导演会接着用这个 Run。
+async function ensureVideoProductionRun(workspaceEpoch) {
+  if (state.production.projectId && state.production.runId) return;
+  const sourceVideoDigest = await sourceFileSha256(state.file);
+  assertWorkspaceCurrent(workspaceEpoch);
+  const productionRun = await api("/api/production/run/start", {
+    ...browserWorkspace.reference(),
+    metadata: {
+      sourceVideo: state.metadata,
+      sourceVideoDigest,
+      creatorProfile: profile(),
+      transcript: elements.transcript.value.trim()
+    }
+  });
+  assertWorkspaceCurrent(workspaceEpoch);
+  state.production = productionStateFromRun(productionRun);
+  persistActiveProductionRun();
+}
+
+async function runReferenceRewrite() {
+  const readiness = referenceRewriteReadiness();
+  if (!readiness.ready) { if (readiness.reason) showError(readiness.reason); return; }
+  const setting = effectiveStageSetting(REFERENCE_REWRITE_STAGE);
+  const hint = referenceRewriteHint({ available: true, demo: state.mode === "demo", provider: setting.provider, model: setting.model });
+  const confirmed = window.confirm(`${hint}\n\n会先在本机抽帧、去配乐、转写（几分钟），再调用模型写稿。继续吗？`);
+  if (!confirmed) return;
+  const workspaceEpoch = browserWorkspace.epoch;
+  state.referenceRewriteRunning = true;
+  showError("");
+  setReferenceRewriteStatus("正在建任务…");
+  renderReferenceRewriteControls();
+  elements.referenceRewriteSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  try {
+    await ensureVideoProductionRun(workspaceEpoch);
+    const created = await createDurableTask(REFERENCE_REWRITE_TASK_KIND, withModelOverrides({
+      targetDurationSeconds: resolveStoryDurationTarget(state.storyDurationTarget, {
+        metadata: state.metadata,
+        sourceScriptReconstruction: state.output.sourceScriptReconstruction
+      })
+    }));
+    await finishReferenceRewriteTask(created.task, workspaceEpoch);
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    setReferenceRewriteStatus(isTaskCapacityError(error) ? taskCapacityMessage(error) : `参考片仿写没有完成：${error.message || "未知错误"}`, "error");
+  } finally {
+    if (browserWorkspace.isCurrent(workspaceEpoch)) {
+      state.referenceRewriteRunning = false;
+      renderReferenceRewriteControls();
+    }
+  }
+}
+
+// 新建与刷新后重新接管共用：等任务结束、读回 Run、显示四稿。
+async function finishReferenceRewriteTask(task, workspaceEpoch = browserWorkspace.epoch) {
+  const completed = await waitForDurableTask(task, (current) => setReferenceRewriteStatus(referenceRewriteProgressText(current)));
+  assertWorkspaceCurrent(workspaceEpoch);
+  recordStageUsage(completed.usage);
+  await reloadActiveProductionRun(state.production, { preserveSelectedVariant: true });
+  setReferenceRewriteStatus(`四稿写好了${formatStageUsageSuffix(completed.usage)}。挑一稿点「用这一稿开拍」。`);
+}
+
+async function useReferenceRewriteDraft(index) {
+  const result = state.referenceRewrite;
+  const draft = result?.drafts?.[index];
+  if (!draft || state.running || state.referenceRewriteRunning) return;
+  const confirmed = window.confirm(
+    `用「${draft.title}」开拍：会切到「从剧情开始 · 粘贴完整故事」，把这一稿填进输入框，你看过、改好再点「开始拆镜头」。\n\n`
+    + "切过去时服务端会删掉当前 Run（包括这四稿），参考视频副本会在开始拆镜头时删掉。"
+    + "四稿会在这个页面里留到刷新为止，要长期留着请先点「下载四稿」。继续吗？"
+  );
+  if (!confirmed) return;
+  const drafts = structuredClone(result.drafts);
+  const videoTitle = String(state.metadata?.name || "");
+  if (state.production.runId && !await invalidateGlobalCharacterBoundary("已切到「从剧情开始」，原来的参考视频 Run 已清空。")) return;
+  state.referenceRewriteDrafts = { drafts, videoTitle, original: structuredClone(result.original) };
+  state.referenceRewrite = null;
+  state.referenceRewriteStatus = { text: "", tone: "" };
+  state.entryMode = STORY_ENTRY_MODE;
+  state.storyMode = STORY_MODE_FULL_TEXT;
+  elements.storySourceText.value = referenceRewriteDraftStoryText(draft);
+  applyEntryModeUi();
+  renderReferenceRewritePanel();
+  validateReady();
+  elements.storySourceText.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function fillReferenceRewriteDraft(index) {
+  const drafts = state.referenceRewriteDrafts?.drafts;
+  const draft = drafts?.[index];
+  if (!draft || state.production.runId) return;
+  if (!referenceRewriteTextIsDraft(drafts, elements.storySourceText.value)
+    && !window.confirm("输入框里的字改过了，换成这一稿会覆盖你的修改。继续吗？")) return;
+  elements.storySourceText.value = referenceRewriteDraftStoryText(draft);
+  updateStorySourceCounter();
+  renderReferenceRewritePicker();
+  validateReady();
+}
+
+function downloadReferenceRewrite() {
+  const result = state.referenceRewrite;
+  if (!result) return;
+  const videoTitle = String(state.metadata?.name || "").replace(/\.[A-Za-z0-9]{1,5}$/u, "");
+  const blob = new Blob([referenceRewriteMarkdown(result, { videoTitle })], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `参考片仿写-${(videoTitle || "四稿").slice(0, 40).replace(/[\\/:*?"<>|]/gu, "_")}.md`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ---------------------------------------------------------------------------
 // 「从剧情开始」（2026-10-09）
 //
 // 没有参考视频：服务端先建一个剧情 Run 并写入 storySource，再跑两步。
@@ -1139,6 +1355,7 @@ function applyEntryModeUi() {
   updateStorySourceCounter();
   renderStoryDurationOptions();
   renderDirectorControls();
+  renderReferenceRewritePicker();
 }
 
 // 切换入口会作废当前 Run：两种 Run 的上游完全不同，不能混在一页里。
@@ -1174,6 +1391,7 @@ async function handleStoryModeChange(mode) {
 
 async function handleStorySourceInput() {
   updateStorySourceCounter();
+  renderReferenceRewritePicker();
   await invalidateIfStorySourceChanged();
   validateReady();
 }
@@ -1697,6 +1915,11 @@ function resetDirectorClientState() {
   state.storyTaskStatusVisible = false;
   localStorage.removeItem(ACTIVE_PRODUCTION_RUN_STORAGE_KEY);
   state.selectedVariantId = null;
+  state.referenceRewrite = null;
+  state.referenceRewriteRunning = false;
+  state.referenceRewriteStatus = { text: "", tone: "" };
+  renderReferenceRewritePanel();
+  renderReferenceRewritePicker();
   resetStoryPackageStatus();
   scheduleDirectorAgentRefresh();
 }
@@ -6140,6 +6363,8 @@ function modelAllowedForStage(model, provider, stageKey) {
   return !isKnownQwenTextOnlyModel(model) && /(?:plus|vl|omni)/iu.test(model);
 }
 function providerAllowedForStage(provider, stageKey) {
+  // 参考片仿写只列 Claude 与 MiMo（服务端同样只认这两家）。
+  if (stageKey === REFERENCE_REWRITE_STAGE) return REFERENCE_REWRITE_PROVIDERS.includes(provider);
   return !(TEXT_ONLY_MODEL_PROVIDERS.has(provider) && MEDIA_INPUT_MODEL_STAGES.has(stageKey));
 }
 function uniqueModels(values = []) {
@@ -6206,6 +6431,7 @@ function persistedTaskModelLabel(artifactId, stage, fallback = "") {
 }
 function modelName(model) { return String(model || "").split("/").pop(); }
 function validateReady() {
+  renderReferenceRewriteControls();
   if (sourceLoading || !browserWorkspace.workspace) { elements.run.disabled = true; return; }
   if (state.running) return;
   elements.run.disabled = !setupReadiness().ready;
@@ -6432,6 +6658,22 @@ async function attachRestoredDirectorPipeline(task) {
   }
 }
 
+// 刷新后重新接管还在跑的参考片仿写任务。
+async function attachRestoredReferenceRewrite(task) {
+  const workspaceEpoch = browserWorkspace.epoch;
+  try {
+    await finishReferenceRewriteTask(task, workspaceEpoch);
+  } catch (error) {
+    if (!browserWorkspace.isCurrent(workspaceEpoch)) return;
+    setReferenceRewriteStatus(`参考片仿写没有完成：${error.message || "未知错误"}`, "error");
+  } finally {
+    if (browserWorkspace.isCurrent(workspaceEpoch)) {
+      state.referenceRewriteRunning = false;
+      renderReferenceRewriteControls();
+    }
+  }
+}
+
 function markRestoredTaskRunning(task) {
   const target = durableTaskTargetContext(task);
   if (task.kind === "variants") {
@@ -6446,6 +6688,10 @@ function markRestoredTaskRunning(task) {
     syncStoryTaskStatus();
   } else if (task.kind === "shotVideo" && target.shotId) {
     setShotVideoStateItem(target.shotId, { status: "running", message: "已重新接管服务端视频任务…" }, target.variantId);
+  } else if (task.kind === REFERENCE_REWRITE_TASK_KIND) {
+    state.referenceRewriteRunning = true;
+    setReferenceRewriteStatus(referenceRewriteProgressText(task));
+    renderReferenceRewriteControls();
   } else if (task.kind === "characterReferenceImages") {
     adoptCharacterImageTaskTarget(task);
     state.characterImageGeneration.running = true;
@@ -6466,6 +6712,7 @@ function adoptCharacterImageTaskTarget(task) {
 }
 
 async function attachRestoredStandaloneTask(task) {
+  if (task.kind === REFERENCE_REWRITE_TASK_KIND) return attachRestoredReferenceRewrite(task);
   const workspaceEpoch = browserWorkspace.epoch;
   try {
     const completed = await waitForDurableTask(task, (current) => {
@@ -6581,6 +6828,8 @@ function restoreRunArtifacts(latestArtifacts = {}, { selectedVariantId = null } 
     themeVariants: currentContent("themeVariants"),
     ...(storySource ? { storySource } : {})
   };
+  state.referenceRewrite = currentContent(REFERENCE_REWRITE_ARTIFACT_ID);
+  renderReferenceRewritePanel();
   if (storySource) {
     elements.storySourceText.value = storySource.storyText || "";
     state.storyMode = storySource.storyMode === STORY_MODE_CHARACTER_ONLY ? STORY_MODE_CHARACTER_ONLY : STORY_MODE_FULL_TEXT;

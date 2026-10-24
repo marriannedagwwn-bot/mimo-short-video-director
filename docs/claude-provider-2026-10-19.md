@@ -184,7 +184,7 @@ SDK 还会读 `ANTHROPIC_CUSTOM_HEADERS`（往请求里加头），这个关不�
 - 不开 server-side fallbacks（会静默换模型）。
 - 第一期不发 `output_config.format`（2026-10-21 起，4.0 分镜审阅与终审复查例外，见「JSON 怎么保证」）。
 - 不做提示词缓存。
-- 不接看图的阶段。
+- 不接原来那四个看图的阶段（参考片分析、脚本还原、视觉规则、人物图修正）。2026-10-24 起参考片仿写例外：它经 `requestCompletion` 的 `frames` 发接触表图片，`buildClaudeRequestBody` 只在给了 `frames` 时把 content 写成「图片在前、文字在后」，不给时请求体逐字不变；同时加了按次覆盖的 `effort`。见 `docs/reference-rewrite-2026-10-24.md`。
 - 不用 Anthropic 的 OpenAI 兼容端点。
 - `ANIMATION_PLAN_MODEL_OUTPUT_LOG_DIR` 的抓取器只认 `/chat/completions`，抓不到 Claude 的请求。分镜与单镜提示词在 `STAGE_MODEL_OUTPUT_LOG_DIR` 里照常有每次调用的原文，所以这是已知缺口，不是丢日志。
 - `modelSnapshotFor` 不检查纯文本限制。这个缺口 DeepSeek 原来就有，不在这次修。

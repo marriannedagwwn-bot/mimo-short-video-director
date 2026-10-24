@@ -73,6 +73,7 @@
             <label><input type="radio" name="storyMode" id="storyModeFullText" value="fullStoryText" checked><span>粘贴完整故事</span></label>
             <label><input type="radio" name="storyMode" id="storyModeCharacterOnly" value="characterOnly"><span>只给角色设定，让它写一个</span></label>
           </div>
+          <div class="reference-rewrite-picker-wrap hidden" id="referenceRewritePicker"></div>
           <label class="field" id="storySourceField">
             <span>故事正文 <small id="storySourceCounter">0 / 5000</small></span>
             <textarea id="storySourceText" rows="12" placeholder="粘贴完整故事。情节、人物、结局和台词都严格按原文，系统只补分场时间、画面动作和镜头设计；原文没写台词的地方不新增台词。"></textarea>
@@ -170,6 +171,10 @@
           </button>
         </div>
         <p class="director-control-hint hidden" id="directorControlHint">暂停会断开当前请求；继续会重新执行当前阶段，可能再次计费。</p>
+        <div class="reference-rewrite-controls video-only" id="referenceRewriteControls">
+          <button class="outline-button" id="runReferenceRewrite" type="button" disabled>参考片仿写：写四篇类似剧本</button>
+          <p class="reference-rewrite-hint" id="referenceRewriteHint"></p>
+        </div>
         <p class="error-message" id="errorMessage" role="alert"></p>
       </aside>
     </section>
@@ -201,6 +206,14 @@
         <article class="result-card" id="guardrailsResult"></article>
         <article class="result-card" id="variantsResult"></article>
       </div>
+    </section>
+
+    <section class="reference-rewrite-section video-only hidden" id="referenceRewriteSection">
+      <div class="pipeline-head">
+        <div><p class="eyebrow">REFERENCE → FOUR DRAFTS</p><h2>参考片仿写</h2></div>
+      </div>
+      <p class="reference-rewrite-status" id="referenceRewriteStatus" role="status"></p>
+      <div class="reference-rewrite-result" id="referenceRewriteResult"></div>
     </section>
   </main>
 

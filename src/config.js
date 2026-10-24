@@ -6,6 +6,7 @@ import {
 } from "./output-token-ceilings.js";
 import { CLAUDE_DEFAULT_BASE_URL, CLAUDE_DEFAULT_MODEL } from "./claude-client.js";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { parseModelPrices } from "./token-usage.js";
 
@@ -272,6 +273,14 @@ export function getConfig() {
       streamIdleTimeoutMs: claudeStreamIdleTimeoutMs,
       enabled: Boolean(claudeBaseUrl && claudeApiKey)
     },
+    // 参考片仿写（2026-10-24）用到的本机工具。都不设就是「这一步不可用」，页面写明缺什么；
+    // 不回退到不去配乐的转写，也不让 whisper 自己去下载模型（src/reference-rewrite-tools.js）。
+    referenceRewrite: {
+      banditDir: expandHome(process.env.REFERENCE_REWRITE_BANDIT_DIR),
+      whisperBin: expandHome(process.env.REFERENCE_REWRITE_WHISPER_BIN),
+      whisperModel: process.env.REFERENCE_REWRITE_WHISPER_MODEL?.trim() || "small",
+      whisperModelDir: expandHome(process.env.REFERENCE_REWRITE_WHISPER_MODEL_DIR) || expandHome("~/.cache/whisper")
+    },
     fullStoryV2Pipeline: {
       enabled: process.env.FULL_STORY_V2_PIPELINE_ENABLED === "true",
       environment: process.env.FULL_STORY_V2_ENVIRONMENT?.trim()
@@ -313,6 +322,14 @@ export function resolveDefaultLlmProvider(config) {
     throw new Error(`DEFAULT_LLM_PROVIDER=${provider}，但 ${provider} 没有配置（缺少 ${missing}）。补全配置，或删掉 DEFAULT_LLM_PROVIDER 恢复原默认路由。`);
   }
   return provider;
+}
+
+// 路径里的 ~ 换成本机用户目录；空值返回空串。
+function expandHome(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  if (text === "~") return os.homedir();
+  return text.startsWith("~/") ? path.join(os.homedir(), text.slice(2)) : text;
 }
 
 function clampNumber(value, fallback, minimum, maximum) {

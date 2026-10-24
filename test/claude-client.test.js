@@ -153,6 +153,41 @@ test("请求体：只有 model/max_tokens/system/messages/stream/thinking，没�
   }
 });
 
+test("图片输入（参考片仿写）：给了 frames 才写成图片在前、文字在后的数组；不给时请求体逐字不变", () => {
+  const plain = JSON.stringify(buildClaudeRequestBody(clientConfig(), { prompt: "p" }));
+  assert.equal(JSON.stringify(buildClaudeRequestBody(clientConfig(), { prompt: "p", frames: [] })), plain);
+  const body = buildClaudeRequestBody(clientConfig(), {
+    prompt: "看图",
+    frames: [{ dataUrl: "data:image/jpeg;base64,AAAA" }, { dataUrl: "data:image/png;base64,BBBB==" }]
+  });
+  assert.deepEqual(body.messages, [{
+    role: "user",
+    content: [
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "AAAA" } },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "BBBB==" } },
+      { type: "text", text: "看图" }
+    ]
+  }]);
+  for (const dataUrl of ["https://example.com/a.jpg", "data:image/bmp;base64,AAAA", "data:image/jpeg,AAAA"]) {
+    assert.throws(
+      () => buildClaudeRequestBody(clientConfig(), { prompt: "p", frames: [{ dataUrl }] }),
+      (error) => error instanceof ModelResponseError && error.code === "MODEL_MEDIA_INVALID",
+      dataUrl
+    );
+  }
+  assert.throws(
+    () => buildClaudeRequestBody(clientConfig(), { prompt: "", frames: [{ dataUrl: "data:image/jpeg;base64,AAAA" }] }),
+    (error) => error.code === "MODEL_MEDIA_INVALID"
+  );
+});
+
+test("effort 可以按次覆盖，不给时用全局 CLAUDE_API_EFFORT；写错照旧报错", () => {
+  assert.deepEqual(buildClaudeRequestBody(clientConfig({ effort: "low" }), { prompt: "p" }, { effort: "xhigh" }).output_config, { effort: "xhigh" });
+  assert.deepEqual(buildClaudeRequestBody(clientConfig({ effort: "low" }), { prompt: "p" }).output_config, { effort: "low" });
+  assert.deepEqual(buildClaudeRequestBody(clientConfig(), { prompt: "p" }, { effort: "xhigh" }).output_config, { effort: "xhigh" });
+  assert.throws(() => buildClaudeRequestBody(clientConfig(), { prompt: "p" }, { effort: "huge" }), /CLAUDE_API_EFFORT 只能是/u);
+});
+
 test("结构化输出：只有拿到 claudeResponseSchema 才发 output_config.format；responseSchema 仍被忽略（2026-10-21）", async (t) => {
   const schema = { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false };
   const withSchema = buildClaudeRequestBody(clientConfig(), { prompt: "p" }, { claudeResponseSchema: { name: "fixture", schema } });
